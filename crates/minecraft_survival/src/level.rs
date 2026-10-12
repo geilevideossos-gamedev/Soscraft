@@ -383,7 +383,25 @@ pub fn leave_containers(
 }
 
 pub fn leave(level: &mut Level, player: &PlayerUuid) {
-    let writes = leave_containers(&mut level.openers, &level.terrain.scene, player);
+    let events = level.openers.leave(opener_key(player));
+    let mut writes: Writes = Vec::new();
+    for event in &events {
+        let outcome = opener_outcome(&level.terrain.scene, event);
+        if let Some(entities) = level.entities.as_mut() {
+            let (cell, id, count) = outcome.block_event;
+            entities
+                .lids
+                .block_event(&level.terrain.scene, cell, id, count);
+            if let Some(sound) = outcome.sound {
+                let pitch = minecraft_terrain::openers::pitch(entities.random_float());
+                let at = glam::DVec3::from_array(sound.position);
+                entities
+                    .sounds
+                    .push((sound.event.to_owned(), at, sound.volume, pitch));
+            }
+        }
+        writes.extend(outcome.state.map(|(pos, block)| (pos, Some(block))));
+    }
     let positions: Vec<_> = writes.iter().map(|(pos, _)| *pos).collect();
     for (pos, block) in writes {
         level.terrain.scene.set(pos, block);
@@ -625,6 +643,69 @@ mod tests {
             vec![((3, 64, 3), Some(barrel))]
         );
         assert_eq!(openers.count((3, 64, 3)), 0);
+    }
+
+    #[test]
+    fn a_chest_lid_closes_when_its_last_player_leaves_the_world() {
+        let Some(mut level) =
+            crate::commands::tests::test_stream().and_then(crate::commands::tests::test_level)
+        else {
+            return;
+        };
+        level.entities = Some(Entities::new(
+            &level.terrain.stream,
+            Dimension::Overworld,
+            0,
+            &crate::data::GameData::default(),
+            None,
+            None,
+        ));
+        level.terrain.scene = HandcraftedScene::default();
+        let chest = (3, 64, 3);
+        let block = Block::new("minecraft:chest")
+            .with("facing", "north")
+            .with("type", "single");
+        level.terrain.scene.set(chest, Some(block));
+        for player in [host(), friend()] {
+            let opened = toggle_openers(
+                &mut level.openers,
+                &level.terrain.scene,
+                &[chest],
+                &player,
+                true,
+                false,
+            );
+            let entities = level.entities.as_mut().unwrap();
+            for event in opened {
+                let (cell, id, count) = event.block_event();
+                entities
+                    .lids
+                    .block_event(&level.terrain.scene, cell, id, count);
+            }
+        }
+        let settle = |level: &mut Level| {
+            let entities = level.entities.as_mut().unwrap();
+            for _ in 0..20 {
+                let _ = entities.lids.take_apart_changes();
+                entities.lids.settle(&level.terrain.scene, |_| true);
+                entities.lids.tick();
+            }
+            entities.lids.lid_closed(chest)
+        };
+        assert!(!settle(&mut level), "both players opened it");
+        leave(&mut level, &friend());
+        assert!(!settle(&mut level), "the host still has it open");
+        leave(&mut level, &host());
+        assert!(settle(&mut level), "the last player left");
+        let heard: Vec<&str> = level
+            .entities
+            .as_ref()
+            .unwrap()
+            .sounds
+            .iter()
+            .map(|sound| sound.0.as_str())
+            .collect();
+        assert_eq!(heard, ["minecraft:block.chest.close"]);
     }
 
     #[test]

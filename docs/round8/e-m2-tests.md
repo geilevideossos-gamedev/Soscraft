@@ -220,3 +220,26 @@ Each window now draws the other player's Minecraft armour and held item on their
 ```
 IW4L_MINECRAFT_KIT=minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:iron_sword,minecraft:elytra,minecraft:firework_rocket*8
 ```
+
+## Review fixes
+
+Fixes from the adversarial review of M2. Each one is checked with the kit of the section it belongs to.
+
+### A burning furnace no longer makes a friend's clicks stale
+
+Use the E14 kit and steps 1 to 5 of E14.
+
+1. In step 5, while the furnace smelts, shift-click the coal out of the furnace and back in three times. Each click moves the stack at once and the flame and the arrow keep moving.
+
+### A chest lid closes when a friend leaves with it open
+
+Use the E14 kit.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-fix -Fresh -HostSound`. Spawn in both. Stand the two players about 3 blocks apart.
+2. Host window: place the chest. Friend window: right click the chest and leave it open. Host window: the lid is open.
+3. Friend window: close the window (Escape, then quit). Host window: the lid closes and the chest close sound plays. Screenshot the host window. **S23**
+4. Close the host window (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_log*4,minecraft:chest,minecraft:furnace,minecraft:raw_iron*3,minecraft:coal*6,minecraft:cobblestone*32,minecraft:anvil,minecraft:iron_sword
+```

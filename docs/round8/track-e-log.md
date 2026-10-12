@@ -838,6 +838,17 @@ Commit: see `git log` ("A burning furnace no longer makes a friend's clicks stal
 - **Test steps (two windows, `docs/round8/e-m2-tests.md`, section E14, step 5):** while the furnace smelts, shift-click the coal out of the furnace and back in a few times: each click moves the stack at once, as before.
 - **Kit:** the E14 kit.
 
+### Review fix: a chest lid closes when a friend leaves with it open
+
+Commit: see `git log` ("A chest lid closes when a friend leaves with it open"). The previous commit is `f1f4dbd0` (the furnace fix).
+
+- **Defect:** `level::leave`, which runs when a friend leaves the world (`Server::leave`), took the friend out of the level's chest openers and wrote a barrel's `open` state back, but sent no lid event. Since E14 a friend can open chests, so a friend who quit with a chest open left its lid drawn open on the host for good, with no close sound. The host's own leave (`leave_level`) already sent the lid events.
+- **Vanilla:** a player who disconnects is removed from `ContainerOpenersCounter`; the last one out plays the close sound and sends the block event that shuts the lid.
+- **Fix:** `level::leave` turns each opener event into the lid's block event and the close sound (in `entities.sounds`, which the host frame plays), besides the barrel state.
+- **Test:** `level::tests::a_chest_lid_closes_when_its_last_player_leaves_the_world` (real 26.3 data: the host and a friend open a chest; the friend leaves and the lid stays open; the host leaves and it shuts with `block.chest.close`).
+- **Test steps:** `docs/round8/e-m2-tests.md`, section "Review fixes" (this commit also adds the step for the furnace fix there).
+- **Kit:** the E14 kit.
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers E11 to E15 and the M2 owner test; the earlier sections keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`.
