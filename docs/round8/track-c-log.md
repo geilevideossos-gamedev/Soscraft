@@ -1172,3 +1172,16 @@ IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+unbreaking=3,minecraft:fire
 ```
 
 Later, once track E is merged: a friend with an elytra shows the same wings and pose on your screen.
+
+## Adversarial review of track C
+
+### 47. The new shulker world file passes rustfmt
+
+Previous commit: 30a794ca
+
+- **Changed:** `third_party/minecraftoss/entities/src/world/shulkers.rs`: the shoot voice push in `ShulkerEntity::tick_ai` is written the way rustfmt wants it. The file is new in this track, and since a9e98d20 `git show :<path> | rustfmt --check --edition 2021` printed this one hunk, against the rule for new files. No behaviour changes.
+- **Tests:** none (formatting only); `minecraftoss-entities` still builds and `rustfmt --check` on the staged file prints nothing.
+- **Decisions:** none.
+- **Test steps:** none.
+- **Kit:** none.
+- **Review note:** the log entry for commit 2 (1aeb79a9) names 53ecf14a as its previous commit; the commit right before it is 899ca39e (the cargo-slot change brought in from minecraft-survival).

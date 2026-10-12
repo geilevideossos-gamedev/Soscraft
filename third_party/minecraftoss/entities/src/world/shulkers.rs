@@ -147,10 +147,8 @@ impl ShulkerEntity {
         shots
             .into_iter()
             .map(|(target, pitch)| {
-                self.voices.push((
-                    Voice::Event("entity.shulker.shoot", 2.0, pitch),
-                    position,
-                ));
+                self.voices
+                    .push((Voice::Event("entity.shulker.shoot", 2.0, pitch), position));
                 target
             })
             .collect()
