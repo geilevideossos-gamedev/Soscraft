@@ -10,6 +10,13 @@ Started 2026-10-10 on `minecraft-survival` at e2313625. The owner's brief is the
 - Tracks run with the saved workflow `.claude/workflows/track-runner.js` (args now take `round: 8`; logs go to `docs/round8/track-<name>-log.md`).
 - Owner test steps and kit lines go into files under `docs/round8/` (the owner copies from files, not the terminal).
 
+## Where it stands (saved 2026-10-12, the owner left for school)
+- `minecraft-survival` = tracks A, B, C, D merged and pushed; release 1 built from 4d45e4fe and copied in; test steps `docs/round8/release-1-tests.md`.
+- Only track E is open: worktree `C:\Dev\mc-wt\track-e`, branch `track-e`, target `D:\iw4l-wt\track-e`. Its run "M3 + M4" (track-runner, base 03f1bc8d, groups `m3-merge-bcd`, `m3-e16`, `m3-e17`, `m4-e18`, then review and verify) was running: the merge of B, C and D is committed (8c7b95b5), E16 was in progress as uncommitted edits.
+- If the session stopped mid-run: in the track-e worktree read `docs/round8/track-e-log.md` and `git status`. Commit or discard a half-done group (`git diff` shows it; a group is one commit per item, so redo an unfinished item rather than committing half of it), then start the track-runner again with the same args and only the groups not yet committed (base stays 03f1bc8d so the review covers all of M3 and M4).
+- After M3 + M4: M5 (E19-E21, dimensions) and M6 (E22-E24, dragon, join code, friend install docs), one run each; then merge track E (full suite), release build 2 with `docs/round8/release-2-tests.md` and the two-window multiplayer steps, then update CLAUDE.md and `docs/MINECRAFT-SURVIVAL.md` and list the round's decisions for the owner.
+- Gentle cargo mode is still on (`%LOCALAPPDATA%\iw4l-cargo-slot.txt`).
+
 ## Owner's test of e231362
 Working: everything in `docs/round7/release-2-tests.md` up to and including the dragon kill.
 Broken (screenshot): 1 end gateway does not teleport, 2 eye of ender is not thrown, 3 Efficiency V diamond pickaxe does not insta-mine netherrack, 4 spawners show no mob inside, 5 after `random_tick_speed 20000` and back the world froze (items hang in the air); `/tick` missing.
