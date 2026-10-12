@@ -49,6 +49,10 @@ pub enum ToServer {
     },
     Chat(Serverbound),
     CreditsDone,
+    Lectern {
+        pos: [i32; 3],
+        button: Option<i32>,
+    },
 }
 
 impl ToServer {
@@ -256,6 +260,15 @@ pub enum ToClient {
     Bursts {
         entities: Blob,
     },
+    Lectern(Option<BookView>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookView {
+    pub pos: [i32; 3],
+    pub pages: Vec<String>,
+    pub page: u32,
+    pub take: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

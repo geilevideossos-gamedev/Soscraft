@@ -6,12 +6,13 @@ use minecraft_commands::text::YELLOW;
 use minecraft_commands::{Clientbound, CommandServer, Outgoing, PlayerId, Text};
 use minecraft_net::codec::{BATCH_CUT, BULK_LIMIT};
 use minecraft_net::messages::{
-    BossBarColor, BossBarFlags, BossBarOperation, BossBarOverlay, BossBarUpdate, ChunkBlob,
+    BookView, BossBarColor, BossBarFlags, BossBarOperation, BossBarOverlay, BossBarUpdate, ChunkBlob,
     GearView, HandEvent, HandEventKind, HandState, HelloRefusal, Login, Nbt, PlayerView, Rules,
     Target, check_hello,
 };
 use minecraft_net::{ChunkBatchBlob, Dimension, PROTOCOL, PlayerUuid, StateFrame, ToClient};
 use minecraft_terrain::game_rules::GameRules;
+use minecraft_terrain::lectern::{BookStack, LecternAction, LecternView, TAKE_BOOK};
 use minecraft_terrain::server::{OVERWORLD_CLOCK, THE_END_CLOCK};
 use minecraft_terrain::view::{MIN_VIEW_DISTANCE, TrackingView};
 use minecraftoss_core::{BlockStateId, Chunk, ChunkPos, Registries};
@@ -166,6 +167,7 @@ pub struct Session {
     pub hands: HandQueue,
     pub menu_inputs: Vec<crate::menus::MenuInput>,
     pub mobs: crate::mob_sender::MobSender,
+    pub lectern: Option<BlockPos>,
     gear: BTreeMap<u32, GearView>,
     command_level: Option<u8>,
     view: Option<PlayerView>,
@@ -187,6 +189,7 @@ impl Session {
             hands: HandQueue::default(),
             menu_inputs: Vec::new(),
             mobs: crate::mob_sender::MobSender::default(),
+            lectern: None,
             gear: BTreeMap::new(),
             command_level: None,
             view: None,
@@ -436,6 +439,73 @@ fn near(feet: [f64; 3], pos: BlockPos, range: f64) -> bool {
         f64::from(pos.2) + 0.5,
     ];
     (0..3).map(|k| (centre[k] - feet[k]).powi(2)).sum::<f64>() < range * range
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct LecternAnswer {
+    pub actions: Vec<(BlockPos, LecternAction)>,
+    pub books: Vec<Option<BookView>>,
+    pub taken: Vec<BookStack>,
+}
+
+pub fn friend_lectern(
+    open: &mut Option<BlockPos>,
+    clicks: Vec<([i32; 3], Option<i32>)>,
+    views: Vec<LecternView>,
+    eye: [f64; 3],
+    may_build: bool,
+) -> LecternAnswer {
+    let mut answer = LecternAnswer::default();
+    for (pos, button) in clicks {
+        let at = (pos[0], pos[1], pos[2]);
+        if *open != Some(at) {
+            continue;
+        }
+        match button {
+            None => {
+                *open = None;
+                answer.actions.push((at, LecternAction::Close));
+            }
+            Some(TAKE_BOOK) if !may_build => {}
+            Some(button) => answer.actions.push((at, LecternAction::Button(button))),
+        }
+    }
+    if let Some(at) = *open
+        && !minecraft_terrain::crafting::within_table_reach(eye, at)
+    {
+        *open = None;
+        answer.actions.push((at, LecternAction::Close));
+        answer.books.push(None);
+    }
+    for view in views {
+        answer.taken.extend(view.taken);
+        match view.book.filter(|_| !view.closed) {
+            Some(book) => {
+                *open = Some(view.pos);
+                let components = book
+                    .components
+                    .as_deref()
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+                let (x, y, z) = view.pos;
+                answer.books.push(Some(BookView {
+                    pos: [x, y, z],
+                    pages: minecraft_terrain::lectern::pages_text(components.as_ref()),
+                    page: u32::try_from(view.page).unwrap_or(0),
+                    take: may_build,
+                }));
+            }
+            None => {
+                if !view.closed {
+                    answer.actions.push((view.pos, LecternAction::Close));
+                }
+                if *open == Some(view.pos) {
+                    *open = None;
+                }
+                answer.books.push(None);
+            }
+        }
+    }
+    answer
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1470,6 +1540,56 @@ mod tests {
             "the spawner in a chunk the friend has, not the one outside"
         );
         assert!(sessions.sessions[&2].outbox.is_empty());
+    }
+
+    #[test]
+    fn a_friends_lectern_turns_pages_closes_and_gives_the_book_only_to_a_builder() {
+        use minecraft_terrain::lectern::NEXT_PAGE;
+        let at = (10, 64, 10);
+        let eye = [10.5, 65.6, 12.0];
+        let book = BookStack {
+            id: "minecraft:written_book".to_owned(),
+            components: None,
+        };
+        let view = |page: i32, closed: bool, taken: Option<BookStack>| LecternView {
+            player: 1,
+            pos: at,
+            book: (!closed).then(|| book.clone()),
+            page,
+            taken,
+            closed,
+        };
+        let shown = |page| BookView {
+            pos: [10, 64, 10],
+            pages: Vec::new(),
+            page,
+            take: true,
+        };
+        let mut open = None;
+        let next = vec![([10, 64, 10], Some(NEXT_PAGE))];
+        let opened = friend_lectern(&mut open, next.clone(), vec![view(0, false, None)], eye, true);
+        assert!(opened.actions.is_empty(), "a click before the screen opened is dropped");
+        assert_eq!((open, opened.books), (Some(at), vec![Some(shown(0))]));
+        let turned = friend_lectern(&mut open, next, vec![view(1, false, None)], eye, true);
+        assert_eq!(turned.actions, vec![(at, LecternAction::Button(NEXT_PAGE))]);
+        assert_eq!(turned.books, vec![Some(shown(1))]);
+        let take = vec![([10, 64, 10], Some(TAKE_BOOK))];
+        let refused = friend_lectern(&mut open, take.clone(), Vec::new(), eye, false);
+        assert!(refused.actions.is_empty(), "a player who may not build keeps their hands off");
+        let closing = vec![view(0, true, Some(book.clone()))];
+        let taken = friend_lectern(&mut open, take, closing, eye, true);
+        assert_eq!(taken.actions, vec![(at, LecternAction::Button(TAKE_BOOK))]);
+        assert_eq!((taken.taken, taken.books), (vec![book.clone()], vec![None]));
+        assert_eq!(open, None);
+        friend_lectern(&mut open, Vec::new(), vec![view(2, false, None)], eye, true);
+        let far = friend_lectern(&mut open, Vec::new(), Vec::new(), [30.0, 65.0, 30.0], true);
+        assert_eq!((far.actions, far.books), (vec![(at, LecternAction::Close)], vec![None]));
+        assert_eq!(open, None, "walking away closes it");
+        friend_lectern(&mut open, Vec::new(), vec![view(2, false, None)], eye, true);
+        let close = vec![([10, 64, 10], None)];
+        let closed = friend_lectern(&mut open, close, Vec::new(), eye, true);
+        assert_eq!(closed.actions, vec![(at, LecternAction::Close)]);
+        assert!(closed.books.is_empty() && open.is_none());
     }
 
     #[test]

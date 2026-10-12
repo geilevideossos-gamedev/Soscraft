@@ -212,6 +212,7 @@ mod tests {
             ToServer::CloseMenu { .. } => 7,
             ToServer::Chat(_) => 8,
             ToServer::CreditsDone => 9,
+            ToServer::Lectern { .. } => 10,
         }
     }
 
@@ -246,6 +247,7 @@ mod tests {
             ToClient::Credits => 26,
             ToClient::PlayerEvent { .. } => 27,
             ToClient::Bursts { .. } => 28,
+            ToClient::Lectern(_) => 29,
         }
     }
 
@@ -287,6 +289,14 @@ mod tests {
             ToServer::CloseMenu { menu: 3 },
             ToServer::Chat(Serverbound::Command("time set day".to_string())),
             ToServer::CreditsDone,
+            ToServer::Lectern {
+                pos: [4, 70, -9],
+                button: Some(102),
+            },
+            ToServer::Lectern {
+                pos: [4, 70, -9],
+                button: None,
+            },
         ]
     }
 
@@ -538,6 +548,13 @@ mod tests {
             ToClient::Bursts {
                 entities: Blob(vec![4, 5, 6]),
             },
+            ToClient::Lectern(Some(BookView {
+                pos: [4, 70, -9],
+                pages: vec!["Once upon a time".to_string(), String::new()],
+                page: 1,
+                take: true,
+            })),
+            ToClient::Lectern(None),
         ]
     }
 
@@ -552,7 +569,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 10];
+        let mut seen = [false; 11];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -571,7 +588,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 29];
+        let mut seen = [false; 30];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);

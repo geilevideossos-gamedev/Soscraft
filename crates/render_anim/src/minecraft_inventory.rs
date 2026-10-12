@@ -192,6 +192,27 @@ impl InventoryUi {
         std::mem::take(&mut self.lectern_actions)
     }
 
+    pub(crate) fn lectern_clicks(&mut self, ui: &mut MinecraftUi) -> bool {
+        let Some(pos) = self.lectern else {
+            return false;
+        };
+        for click in std::mem::take(&mut ui.clicks) {
+            match click {
+                McClick::Choose(button) => self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Button(button as i32))),
+                McClick::Close => ui.inventory_open = false,
+                _ => {}
+            }
+        }
+        if !ui.inventory_open {
+            self.lectern = None;
+            ui.book = None;
+            self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Close));
+        } else {
+            ui.screen = McScreen::Lectern;
+        }
+        true
+    }
+
     pub(crate) fn language(&self) -> Option<&HashMap<String, String>> {
         self.language.as_ref()
     }
@@ -770,6 +791,26 @@ mod tests {
         let empty = ItemStack::new("minecraft:shulker_box", 1);
         assert!(contents_lines(&language, &empty).is_empty());
         assert_eq!(more_line(&language, &empty), None);
+    }
+
+    #[test]
+    fn a_friends_lectern_screen_sends_its_buttons_and_closes_once() {
+        use minecraft_terrain::lectern::LecternAction;
+        let mut inventory_ui = InventoryUi::default();
+        let mut ui = MinecraftUi::default();
+        assert!(!inventory_ui.lectern_clicks(&mut ui), "no lectern open");
+        let pos = (4, 64, -2);
+        let book = frame::McBook { pages: vec!["one".to_owned()], page: 0, take: false };
+        assert!(inventory_ui.show_lectern(&mut ui, pos, book));
+        ui.clicks = vec![McClick::Choose(2), McClick::Choose(101)];
+        assert!(inventory_ui.lectern_clicks(&mut ui));
+        assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Button(2)), (pos, LecternAction::Button(101))]);
+        assert_eq!(ui.screen, McScreen::Lectern);
+        ui.clicks = vec![McClick::Close];
+        assert!(inventory_ui.lectern_clicks(&mut ui));
+        assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Close)]);
+        assert!(!ui.inventory_open && ui.book.is_none() && inventory_ui.lectern().is_none());
+        assert!(!inventory_ui.lectern_clicks(&mut ui));
     }
 
     #[test]

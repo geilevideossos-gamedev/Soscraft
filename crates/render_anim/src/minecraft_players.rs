@@ -1177,7 +1177,10 @@ pub(crate) struct Stepped {
     pub(crate) lines: Vec<Clientbound>,
     pub(crate) told: Option<Clientbound>,
     pub(crate) killers: Vec<String>,
+    pub(crate) books: Vec<Option<minecraft_net::messages::BookView>>,
 }
+
+pub(crate) type LecternClicks<'a> = (&'a mut Option<BlockPos>, Vec<([i32; 3], Option<i32>)>);
 
 pub(crate) struct FriendWorld<'a> {
     pub(crate) levels: &'a mut BTreeMap<Dimension, Level>,
@@ -1250,6 +1253,7 @@ pub(crate) fn step_friend(
     origin: [f64; 3],
     selected: Option<u8>,
     hands: &mut HandQueue,
+    (open, clicks): LecternClicks<'_>,
 ) -> Stepped {
     let mut stepped = Stepped::default();
     let Some(ps) = world.authority.player(client).copied() else {
@@ -1302,6 +1306,13 @@ pub(crate) fn step_friend(
         Begun::Left(switch) => {
             if let Some(level) = world.levels.get_mut(&switch.from) {
                 leave_level(player, level);
+                if let Some(at) = open.take() {
+                    stepped.books.push(None);
+                    if let Some(entities) = level.entities.as_mut() {
+                        let close = minecraft_terrain::lectern::LecternAction::Close;
+                        entities.lectern(u64::from(player.id.0), at, close, None);
+                    }
+                }
             }
         }
         Begun::Arriving { standing: true, .. }
@@ -1437,24 +1448,27 @@ pub(crate) fn step_friend(
             world.packs,
         )
         .told;
-        for view in entities.take_lecterns(u64::from(player.id.0)) {
-            if let Some(book) = view.taken {
-                let stack = entities.book_stack(&book);
-                let (dropped, _) = minecraft_survival::commands::give_stacks(
-                    &mut player.inventory,
-                    player.selected,
-                    &stack,
-                    1,
-                );
-                for stack in &dropped {
-                    entities.drop_given(stack, feet);
-                }
-            }
-            if !view.closed {
-                let close = minecraft_terrain::lectern::LecternAction::Close;
-                entities.lectern(u64::from(player.id.0), view.pos, close, None);
+        let id = u64::from(player.id.0);
+        let views = entities.take_lecterns(id);
+        let may_build = player.mode.may_build();
+        let lectern =
+            minecraft_survival::session::friend_lectern(open, clicks, views, eye, may_build);
+        for (pos, action) in lectern.actions {
+            entities.lectern(id, pos, action, None);
+        }
+        for book in lectern.taken {
+            let stack = entities.book_stack(&book);
+            let (dropped, _) = minecraft_survival::commands::give_stacks(
+                &mut player.inventory,
+                player.selected,
+                &stack,
+                1,
+            );
+            for stack in &dropped {
+                entities.drop_given(stack, feet);
             }
         }
+        stepped.books.extend(lectern.books);
         if !life.alive {
             let yaw = minecraft_yaw(ps.viewangles[1]);
             for stack in minecraft_survival::menus::close(player) {

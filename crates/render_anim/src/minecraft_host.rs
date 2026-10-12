@@ -80,6 +80,7 @@ pub(crate) struct HostSessions {
     chat: BTreeMap<u32, Vec<Serverbound>>,
     selects: BTreeMap<u32, u8>,
     credits_done: Vec<u32>,
+    lecterns: BTreeMap<u32, Vec<([i32; 3], Option<i32>)>>,
 }
 
 impl HostSessions {
@@ -90,6 +91,7 @@ impl HostSessions {
             && self.chat.is_empty()
             && self.selects.is_empty()
             && self.credits_done.is_empty()
+            && self.lecterns.is_empty()
     }
 }
 
@@ -149,6 +151,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
             Ok(ToServer::CreditsDone) => {
                 if host.sessions.sessions.contains_key(&client) {
                     host.credits_done.push(client);
+                }
+            }
+            Ok(ToServer::Lectern { pos, button }) => {
+                if host.sessions.sessions.contains_key(&client) {
+                    host.lecterns.entry(client).or_default().push((pos, button));
                 }
             }
             Ok(_) => {}
@@ -295,6 +302,7 @@ pub(crate) fn host(
         host.chat.remove(client);
         host.selects.remove(client);
         host.credits_done.retain(|done| done != client);
+        host.lecterns.remove(client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
     }
@@ -387,6 +395,7 @@ pub(crate) fn host(
                 continue;
             };
             let selected = host.selects.remove(&session.client);
+            let clicks = host.lecterns.remove(&session.client).unwrap_or_default();
             let id = sim::ClientId(session.client);
             let was = player.menus.block().cloned();
             let stepped = crate::minecraft_players::step_friend(
@@ -396,7 +405,11 @@ pub(crate) fn host(
                 origin,
                 selected,
                 &mut session.hands,
+                (&mut session.lectern, clicks),
             );
+            session
+                .outbox
+                .extend(stepped.books.into_iter().map(ToClient::Lectern));
             session
                 .outbox
                 .extend(stepped.lines.into_iter().map(ToClient::Chat));

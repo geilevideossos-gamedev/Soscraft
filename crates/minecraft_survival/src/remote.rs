@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use minecraft_commands::{Clientbound, Text};
 use minecraft_net::messages::{
-    BossBarColor, BossBarFlags, BossBarOperation, BossBarOverlay, BossBarUpdate, GearView, Login,
-    MenuView, Nbt, PlayerView, Rules,
+    BookView, BossBarColor, BossBarFlags, BossBarOperation, BossBarOverlay, BossBarUpdate, GearView,
+    Login, MenuView, Nbt, PlayerView, Rules,
 };
 use minecraft_net::{ChunkBatchBlob, Dimension, Lane, PlayerUuid, StateFrame, ToClient};
 use minecraft_terrain::ChunkEvent;
@@ -170,6 +170,7 @@ pub struct RemoteWorld {
     pub clocks: Clocks,
     pub weather: [f32; 2],
     pub boss_bars: BTreeMap<u64, BossBar>,
+    pub lecterns: Vec<Option<BookView>>,
     pub effects: Vec<ToClient>,
     pub state: Option<StateFrame>,
     pub recipes: Arc<RecipeBook>,
@@ -201,6 +202,7 @@ impl RemoteWorld {
             clocks: Clocks::default(),
             weather: [0.0; 2],
             boss_bars: BTreeMap::new(),
+            lecterns: Vec::new(),
             effects: Vec::new(),
             state: None,
             recipes: Arc::new(RecipeBook::default()),
@@ -471,6 +473,7 @@ impl RemoteWorld {
                 feet,
             } => self.open_level(dimension, epoch, origin, feet),
             ToClient::BossBar(update) => self.boss_bar(update),
+            ToClient::Lectern(book) => self.lecterns.push(book),
             ToClient::Bursts { entities } => {
                 let bursts = minecraft_net::decode::<EntitySnapshot>(Lane::Reliable, &entities.0);
                 if let (Some(level), Ok(mut bursts)) = (self.level.as_mut(), bursts) {

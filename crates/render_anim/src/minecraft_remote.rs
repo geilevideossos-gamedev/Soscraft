@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use minecraft_commands::{Clientbound, Serverbound, Text};
-use minecraft_net::messages::{Click, MenuView};
+use minecraft_net::messages::{BookView, Click, MenuView};
 use minecraft_net::messages::{GameMode, Target};
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
 use minecraft_survival::data::GameData;
@@ -17,6 +17,7 @@ use minecraft_survival::session::BREAK_EVENT;
 use minecraft_survival::switch::LoadingReason;
 use minecraft_survival::views::{HudClock, Selection, view_stack};
 use minecraft_terrain::containers::Containers;
+use minecraft_terrain::lectern::LecternAction;
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{AtlasAnimation, ItemVisuals};
 use minecraft_terrain::pack::PackStack;
@@ -946,14 +947,28 @@ fn show_player(
         ui.inventory_open = false;
     }
     let recipes = &prepared.recipes;
-    show_menus(
-        ui,
-        (&mut remote.menu, remote.inventory_menu.as_ref()),
-        (shown_menu, screen_open),
-        recipes,
-        &prepared.language,
-        &mut out,
-    );
+    for book in std::mem::take(&mut remote.lecterns) {
+        show_book(inventory_ui, ui, book, &mut out);
+    }
+    if !inventory_ui.lectern_clicks(ui) {
+        show_menus(
+            ui,
+            (&mut remote.menu, remote.inventory_menu.as_ref()),
+            (shown_menu, screen_open),
+            recipes,
+            &prepared.language,
+            &mut out,
+        );
+    }
+    for (pos, action) in inventory_ui.take_lectern_actions() {
+        let button = match action {
+            LecternAction::Button(button) => Some(button),
+            LecternAction::Close => None,
+            LecternAction::PlaceBook(_) | LecternAction::Open => continue,
+        };
+        let pos = [pos.0, pos.1, pos.2];
+        out.push(ToServer::Lectern { pos, button });
+    }
     let Some(ps) = alive else {
         ui.vitals = None;
         ui.weapon_request = None;
@@ -1010,6 +1025,32 @@ fn show_player(
         (&screen, level, &containers),
     );
     out
+}
+
+fn show_book(
+    inventory_ui: &mut crate::minecraft_inventory::InventoryUi,
+    ui: &mut frame::MinecraftUi,
+    book: Option<BookView>,
+    out: &mut Vec<ToServer>,
+) {
+    let Some(book) = book else {
+        if let Some(pos) = inventory_ui.lectern() {
+            inventory_ui.lectern_closed(ui, pos);
+        }
+        return;
+    };
+    let [x, y, z] = book.pos;
+    let shown = frame::McBook {
+        pages: book.pages,
+        page: usize::try_from(book.page).unwrap_or(0),
+        take: book.take,
+    };
+    if !inventory_ui.show_lectern(ui, (x, y, z), shown) {
+        out.push(ToServer::Lectern {
+            pos: book.pos,
+            button: None,
+        });
+    }
 }
 
 fn show_menus(

@@ -82,3 +82,19 @@ The friend's game now draws the small mob turning inside a spawner, with the fla
 ```
 IW4L_MINECRAFT_KIT=minecraft:spawner,minecraft:zombie_spawn_egg
 ```
+
+## Friends read books on lecterns
+
+A friend can now open the book on a lectern, turn its pages and take it, like the host. Both readers see the same page: a page turned in one window turns in the other.
+
+1. Friend window: place the lectern and right click it with the written book: the book lies on the lectern in both windows.
+2. Friend window: right click the lectern: the book screen opens with "Page one text." and the page count. Click the arrow to the right: "Page two text.", with the page turn sound. Screenshot. **S15**
+3. Host window: right click the same lectern: the host's screen opens on page 2 as well. Host: turn to page 3. Friend window: the friend's screen shows page 3 too.
+4. Friend window: press Escape: the screen closes. Host window: close yours too.
+5. **Out of reach.** Friend window: open the book again, then have the host push you away: Host window: `/tp Friend ~10 ~ ~`. The friend's screen closes by itself.
+6. **Adventure mode.** Host window: `/op Friend`, then Friend window: `/gamemode adventure`, open the book: there is no Take Book button. `/gamemode survival` and open it again: the button is there.
+7. **Take Book.** Friend window: click Take Book: the screen closes, the book is in the friend's hotbar, and the lectern is empty in both windows. If the host had the book open at that moment, the host's screen closes too.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lectern,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}]
+```

@@ -175,6 +175,7 @@ pub enum ToServer {
     CloseMenu { menu: u8 },
     Chat(minecraft_commands::protocol::Serverbound),
     CreditsDone,
+    Lectern { pos: [i32; 3], button: Option<i32> },
 }
 
 pub struct HandState { pub tick: u32, pub attack: bool, pub use_item: bool, pub target: Target }
@@ -214,7 +215,10 @@ pub enum ToClient {
     Credits,
     PlayerEvent { client: u32, event: u8 },
     Bursts { entities: Blob },
+    Lectern(Option<BookView>),
 }
+
+pub struct BookView { pub pos: [i32; 3], pub pages: Vec<String>, pub page: u32, pub take: bool }
 
 pub struct Login {
     pub client: u32, pub uuid: PlayerUuid, pub seed: i64, pub dimension: Dimension,
@@ -240,6 +244,8 @@ pub struct StateFrame { pub tick: u32, pub epoch: u32, pub mobs: Blob, pub entit
 - `menu` (the container id, 1..=100, vanilla's `containerCounter % 100 + 1`);
 - `kind` (`InventoryUi`'s screens: inventory, crafting table, chest of N rows, furnace, smoker, blast furnace, brewing stand, enchanting, anvil, grindstone, smithing, stonecutter, loom, cartography, ender chest, shulker box, hopper, dispenser, dropper, beacon later);
 - `title: Text`, `state: u16`, `slots`, `carried`, `data`, and kind-specific extras (enchant seeds and costs, anvil cost and name).
+
+**The lectern's book screen** is vanilla's `LecternMenu` cut to what the screen shows. `Lectern(Some(BookView))` opens the screen or shows a turned page (the pages as plain text, the page, and whether the Take Book button shows: the player may build); `Lectern(None)` closes it. The friend's `Lectern { pos, button }` is a button (1 previous page, 2 next page, 3 take the book, 100 + n go to page n; vanilla's `ServerboundContainerButtonClickPacket`) or, with no button, the screen closing (`ServerboundContainerClosePacket`). The host keeps which lectern each friend has open, drops buttons for any other one, refuses Take Book to a player who may not build (vanilla `LecternMenu.clickMenuButton`), and closes the screen when the friend is out of reach (vanilla `stillValid`) or leaves the level.
 
 **`RenameItem`** is vanilla's `ServerboundRenameItemPacket`: the anvil's name field (`Bench`'s name, `minecraft_terrain/src/stations.rs:472`), at most 50 characters, accepted only while an anvil menu is open.
 

@@ -1385,12 +1385,39 @@ Commit: see `git log` ("Friends see the mob spinning in spawner cages"). The pre
 IW4L_MINECRAFT_KIT=minecraft:spawner,minecraft:zombie_spawn_egg
 ```
 
+### Leftover: friends read books on lecterns
+
+Commit: see `git log` ("Friends read books on lecterns"). The previous commit is `b082f71f` (spawner cages).
+
+- **Changed:**
+  - `crates/minecraft_net`: `ToClient::Lectern(Option<BookView>)` and `ToServer::Lectern { pos, button }`; `BookView { pos, pages, page, take }`. Design section 4 follows. The protocol stays 3 (see the frost entry).
+  - `minecraft_survival/src/session.rs`: `Session.lectern` (the lectern a friend has open) and `friend_lectern(open, clicks, views, eye, may_build)`, the host's side of a friend's book screen: a click counts only for the open lectern; a button goes to the level thread as `LecternAction::Button`, Take Book only for a player who may build (vanilla `LecternMenu.clickMenuButton`); no button closes; a friend out of reach of their lectern is closed (vanilla `stillValid`, the host's own `within_table_reach`); each view from the level thread opens or updates the friend's screen with the pages as text, or closes it, and a taken book is handed back.
+  - `minecraft_survival/src/remote.rs`: `RemoteWorld.lecterns` keeps the screens to show in order.
+  - `render_anim/src/minecraft_players.rs`: `step_friend` takes the friend's open lectern and their lectern clicks and runs `friend_lectern` instead of closing every view at once; the taken book goes into the friend's inventory as before. A friend who leaves the level closes their lectern.
+  - `render_anim/src/minecraft_host.rs`: reads `ToServer::Lectern` and sends the friend's screens.
+  - `render_anim/src/minecraft_inventory.rs`: `InventoryUi::lectern_clicks`, the friend's book screen input (its buttons and closing; other clicks are ignored while it is open, as on the host).
+  - `render_anim/src/minecraft_remote.rs`: the friend's game opens, updates and closes the book screen from the host (`show_book`, the host's own `show_lectern`), sends its buttons and its close, and sends a close back when another screen is already open.
+- **Tests:**
+  - `minecraft_survival` `session::tests::a_friends_lectern_turns_pages_closes_and_gives_the_book_only_to_a_builder`.
+  - `render_anim` `minecraft_inventory::tests::a_friends_lectern_screen_sends_its_buttons_and_closes_once`.
+  - `minecraft_net` `codec::tests` cover both messages.
+- **Decisions:**
+  - **The pages travel as plain text** (`pages_text`, what the host's screen shows), not as the book item: the friend's screen needs nothing else, and the host already resolves them the same way for itself.
+  - **The Take Book check happens on the host** from the friend's mode, as vanilla's server checks `mayBuild`; the button is also hidden on the friend's screen when they may not build.
+  - **A view that was already on its way when the friend closed can open the screen again for a moment** (a page turned by another reader in the same tick). The friend closes it again with Escape; vanilla has the same window with its container ids.
+- **Test steps:** `docs/round8/e-m6-tests.md`, section "Friends read books on lecterns".
+- **Kit:** `minecraft:lectern` x1, `minecraft:written_book` x1 (three pages).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lectern,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}]
+```
+
 ## Combined kit for every test in this track
 
 This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
 
-`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:totem_of_undying` x1, `minecraft:spawner` x1, `minecraft:zombie_spawn_egg` x1 (19 stacks).
+`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:totem_of_undying` x1, `minecraft:spawner` x1, `minecraft:zombie_spawn_egg` x1, `minecraft:lectern` x1, `minecraft:written_book` x1 with three pages (21 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:totem_of_undying,minecraft:spawner,minecraft:zombie_spawn_egg
+IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:totem_of_undying,minecraft:spawner,minecraft:zombie_spawn_egg,minecraft:lectern,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}]
 ```
