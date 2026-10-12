@@ -1366,12 +1366,31 @@ Commit: see `git log` ("A friend sees their own totem rise in first person"). Th
 IW4L_MINECRAFT_KIT=minecraft:totem_of_undying
 ```
 
+### Leftover: friends see the mob spinning in spawner cages
+
+Commit: see `git log` ("Friends see the mob spinning in spawner cages"). The previous commit is `a4ebf119` (the friend's totem).
+
+- **Changed:**
+  - `minecraft_survival/src/remote.rs`: the friend's level feeds its `SpawnerDisplays` (round 8 track A's spawner render) from the stream: the spawner block entities of every chunk a batch loads (the chunk blob already carries them, as vanilla's chunk packet carries their update tags), a `BlockEntity` from the host, a block update that turns the block into something other than a spawner, and a forgotten chunk.
+  - `minecraft_survival/src/entities.rs`: `Entities.spawner_tags`, the spawner tags the level thread hands out (a spawn egg changing the mob, a spawn resetting the delay), kept only while a friend listens in that level.
+  - `minecraft_survival/src/session.rs`: `send_heard` sends them with `Sessions::send_spawners` as `BlockEntity` to each friend in that level who has the chunk (vanilla's `ClientboundBlockEntityDataPacket` from `sendBlockUpdated`).
+  - `minecraft_terrain/src/spawner_display.rs`: `is_spawner` is public.
+- **Tests:** `minecraft_survival` `remote::tests::a_spawner_streamed_to_the_friend_shows_its_cage_until_the_block_or_chunk_goes`, `session::tests::a_spawners_new_data_reaches_friends_in_that_level_with_that_chunk`.
+- **Decisions:**
+  - **The friend's game spins and smokes the cage itself**, near its own player, from the spawner's data, as vanilla's client does (`BaseSpawner.clientTick`). The host sends the data again when the level thread changes it; a spawn then resets the friend's spin delay as on the host (vanilla sends block event 1 for that; here the changed tag carries the same reset).
+- **Test steps:** `docs/round8/e-m6-tests.md`, section "Friends see the mob spinning in spawner cages".
+- **Kit:** `minecraft:spawner` x1, `minecraft:zombie_spawn_egg` x1.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner,minecraft:zombie_spawn_egg
+```
+
 ## Combined kit for every test in this track
 
 This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
 
-`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:totem_of_undying` x1 (17 stacks).
+`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:totem_of_undying` x1, `minecraft:spawner` x1, `minecraft:zombie_spawn_egg` x1 (19 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:totem_of_undying
+IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:totem_of_undying,minecraft:spawner,minecraft:zombie_spawn_egg
 ```

@@ -67,3 +67,18 @@ When a totem of undying saves the friend, the friend's own screen now shows the 
 ```
 IW4L_MINECRAFT_KIT=minecraft:totem_of_undying
 ```
+
+## Friends see the mob spinning in spawner cages
+
+The friend's game now draws the small mob turning inside a spawner, with the flames and smoke around the cage while a player is near, as the host's game does.
+
+1. Host window: `/op Friend`, `/time set night` (zombies stay out of the sun). Place the spawner on open ground, then `/gamemode creative`, right click the spawner with the zombie spawn egg and `/gamemode survival`. A small zombie turns inside the cage in the host window.
+2. Friend window: walk to within a few blocks of the spawner. The same small zombie turns in the cage, with flames and smoke rising from it. Screenshot. **S14**
+3. Friend window: walk more than 16 blocks away and look back: the zombie stops turning and the flames stop. Walk back: it turns again.
+4. Wait near it until it spawns zombies (up to 40 seconds): each time it spawns, the zombie in the cage spins fast for a moment in both windows.
+5. Friend window: `/gamemode creative`, break the spawner: the cage and its zombie are gone in both windows. Then `/gamemode survival`.
+6. A spawner placed by the friend: Friend window: place the spawner from the kit a few blocks from the first one, `/gamemode creative`, right click it with the zombie spawn egg from the kit, `/gamemode survival`. The zombie shows in both windows.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner,minecraft:zombie_spawn_egg
+```

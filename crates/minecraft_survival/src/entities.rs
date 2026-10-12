@@ -98,6 +98,7 @@ pub struct Entities {
     tracked: Tracked,
     friend_snapshot: Option<EntitySnapshot>,
     pub heard: crate::heard::HeardLog,
+    pub spawner_tags: Vec<((i32, i32, i32), minecraftoss_core::nbt::Tag)>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -380,6 +381,7 @@ impl Entities {
             tracked: Tracked::default(),
             friend_snapshot: None,
             heard: Default::default(),
+            spawner_tags: Vec::new(),
         }
     }
 
@@ -1345,6 +1347,9 @@ impl Entities {
             self.command_jobs.extend(output.jobs);
             changes.extend(output.changes);
             self.view.spawners.block_entities(&output.block_entities);
+            if self.heard.listening() {
+                self.spawner_tags.extend(output.block_entities.iter().filter_map(|(pos, tag)| tag.as_ref().filter(|tag| minecraft_terrain::spawner_display::is_spawner(tag)).map(|tag| (*pos, tag.clone()))));
+            }
             self.block_entity_changes.extend(output.block_entities);
             self.destroyed.extend(output.destroyed);
             let camera = DVec3::from_array(presenter_feet) + DVec3::Y * f64::from(EYE_HEIGHT);

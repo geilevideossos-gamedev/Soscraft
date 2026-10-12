@@ -19,6 +19,7 @@ use crate::level::Terrain;
 
 pub const QUEUE_LIMIT: usize = 64 * 1024 * 1024;
 pub const LOST_STREAM: &str = "Lost the world stream";
+const SPAWNER: &str = "minecraft:spawner";
 
 type BlockPos = (i32, i32, i32);
 
@@ -390,7 +391,11 @@ impl RemoteWorld {
             ToClient::BlockUpdates { changes } => self.set_blocks(&changes),
             ToClient::BlockEntity { pos, tag } => {
                 if let Some(level) = self.level.as_mut() {
-                    level.block_entities.insert((pos[0], pos[1], pos[2]), tag);
+                    let at = (pos[0], pos[1], pos[2]);
+                    if let Ok(parsed) = minecraftoss_core::nbt::parse(&tag.0) {
+                        level.view.spawners.block_entities(&[(at, Some(parsed))]);
+                    }
+                    level.block_entities.insert(at, tag);
                 }
             }
             ToClient::MobAdd { id, tag } => {
@@ -605,6 +610,12 @@ impl RemoteWorld {
             .stream
             .apply(chunks.into_iter().map(ChunkEvent::Load), &mut terrain.scene);
         terrain.scene.take_changed();
+        for chunk in &loaded {
+            level.view.spawners.load_chunk(chunk);
+        }
+        for pos in &forgotten {
+            level.view.spawners.unload_chunk(*pos);
+        }
         self.shown.loaded.extend(loaded);
         self.shown.forgotten.extend(forgotten);
         self.applied_seq = seq;
@@ -624,6 +635,9 @@ impl RemoteWorld {
         level
             .block_entities
             .retain(|&(x, _, z), _| (x >> 4, z >> 4) != (pos.x, pos.z));
+        for pos in &forgotten {
+            level.view.spawners.unload_chunk(*pos);
+        }
         self.shown.forgotten.extend(forgotten);
     }
 
@@ -652,7 +666,11 @@ impl RemoteWorld {
             {
                 continue;
             }
-            level.terrain.scene.set(at, states.block(state).cloned());
+            let block = states.block(state).cloned();
+            if block.as_ref().is_none_or(|block| block.id.key() != SPAWNER) {
+                level.view.spawners.block_entities(&[(at, None)]);
+            }
+            level.terrain.scene.set(at, block);
             positions.push(at);
             self.shown.blocks.push((at, state));
         }
@@ -776,6 +794,59 @@ mod tests {
         assert_eq!(shown.loaded.len(), 1);
         assert_eq!(shown.blocks, vec![((3, -64, 3), BlockStateId::AIR)]);
         assert_eq!(friend.held_bytes(), 0);
+    }
+
+    #[test]
+    fn a_spawner_streamed_to_the_friend_shows_its_cage_until_the_block_or_chunk_goes() {
+        use minecraftoss_core::nbt::Tag;
+        let Some(registries) = registries() else {
+            return;
+        };
+        let spawner = |(x, y, z): BlockPos, mob: &str| {
+            let entity = BTreeMap::from([("id".to_owned(), Tag::String(mob.to_owned()))]);
+            let data = BTreeMap::from([("entity".to_owned(), Tag::Compound(entity))]);
+            Tag::Compound(BTreeMap::from([
+                ("id".to_owned(), Tag::String("minecraft:mob_spawner".to_owned())),
+                ("x".to_owned(), Tag::Int(x)),
+                ("y".to_owned(), Tag::Int(y)),
+                ("z".to_owned(), Tag::Int(z)),
+                ("SpawnData".to_owned(), Tag::Compound(data)),
+            ]))
+        };
+        let cages = |friend: &RemoteWorld| friend.level.as_ref().map_or(0, |level| level.view.spawners.len());
+        let at: BlockPos = (3, -60, 4);
+        let Ok(mut chunk) = Arc::try_unwrap(stone_chunk(&registries, 0, 0, -64, 384)) else {
+            panic!("a fresh chunk has one owner");
+        };
+        let state = registries.blocks.parse_state("minecraft:spawner").unwrap();
+        chunk.set_block_raw(3, at.1, 4, state, &registries);
+        chunk
+            .block_entities
+            .entities
+            .insert(at, spawner(at, "minecraft:zombie"));
+        let mut friend = RemoteWorld::new(registries.clone());
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        friend.apply(ToClient::ChunkBatch { seq: 1 });
+        friend.receive_batch(blob(&registries, 1, &[Arc::new(chunk)]));
+        friend.decode_now();
+        assert_eq!(cages(&friend), 1, "the spawner came with its chunk");
+        friend.apply(ToClient::BlockUpdates {
+            changes: vec![([at.0, at.1, at.2], u32::from(state.0))],
+        });
+        assert_eq!(cages(&friend), 1, "still a spawner");
+        friend.apply(ToClient::BlockUpdates {
+            changes: vec![([at.0, at.1, at.2], 0)],
+        });
+        assert_eq!(cages(&friend), 0, "mined away");
+        let placed = (5, -60, 6);
+        let tag = Nbt(minecraftoss_core::nbt::write(&spawner(placed, "minecraft:pig"), ""));
+        friend.apply(ToClient::BlockEntity {
+            pos: [placed.0, placed.1, placed.2],
+            tag,
+        });
+        assert_eq!(cages(&friend), 1, "a spawner's data from the host");
+        friend.apply(ToClient::ChunkForget { pos: [0, 0] });
+        assert_eq!(cages(&friend), 0, "its chunk was forgotten");
     }
 
     #[test]

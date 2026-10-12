@@ -1169,6 +1169,28 @@ impl Sessions {
                 let place = player.arrival.or(player.place)?;
                 (place.dimension == dimension).then_some(place.feet)
             });
+            let spawners = std::mem::take(&mut entities.spawner_tags);
+            self.send_spawners(dimension, &spawners);
+        }
+    }
+
+    pub fn send_spawners(
+        &mut self,
+        dimension: Dimension,
+        spawners: &[((i32, i32, i32), minecraftoss_core::nbt::Tag)],
+    ) {
+        for session in self.sessions.values_mut() {
+            if session.chunks.level != Some(dimension) {
+                continue;
+            }
+            for (pos, tag) in spawners {
+                let (x, y, z) = *pos;
+                if session.chunks.has((x >> 4, z >> 4)) {
+                    let tag = Nbt(minecraftoss_core::nbt::write(tag, ""));
+                    let pos = [x, y, z];
+                    session.outbox.push(ToClient::BlockEntity { pos, tag });
+                }
+            }
         }
     }
 
@@ -1419,6 +1441,33 @@ mod tests {
                     tag: chest
                 },
             ]
+        );
+        assert!(sessions.sessions[&2].outbox.is_empty());
+    }
+
+    #[test]
+    fn a_spawners_new_data_reaches_friends_in_that_level_with_that_chunk() {
+        use minecraftoss_core::nbt::Tag;
+        let mut sessions = Sessions::default();
+        sessions
+            .sessions
+            .insert(1, session_with(1, Dimension::Overworld));
+        sessions
+            .sessions
+            .insert(2, session_with(2, Dimension::Nether));
+        let tag = Tag::Compound(BTreeMap::from([(
+            "id".to_owned(),
+            Tag::String("minecraft:mob_spawner".to_owned()),
+        )]));
+        let spawners = vec![((2, 30, 3), tag.clone()), ((40, 30, 40), tag.clone())];
+        sessions.send_spawners(Dimension::Overworld, &spawners);
+        assert_eq!(
+            sessions.sessions[&1].outbox,
+            vec![ToClient::BlockEntity {
+                pos: [2, 30, 3],
+                tag: Nbt(minecraftoss_core::nbt::write(&tag, "")),
+            }],
+            "the spawner in a chunk the friend has, not the one outside"
         );
         assert!(sessions.sessions[&2].outbox.is_empty());
     }
