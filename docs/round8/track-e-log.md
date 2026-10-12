@@ -1534,6 +1534,21 @@ Commit: see `git log` ("The Minecraft multiplayer state, limits and test steps a
 - **Test steps:** `docs/round8/track-e-tests.md` (all of track E) and `docs/round8/friend-install.md` (part 8 of it).
 - **Kit:** the combined line below.
 
+## Review of M6 (adversarial review of the whole track)
+
+### Review fix: a friend who quits in bed gets up first and frees the bed
+
+Commit: see `git log` ("A friend who quits in bed gets up and frees the bed"). The previous commit is `092db919` (E24).
+
+- **Defect:** since "Friends lie down in beds" (`7b90520f`) a friend can be asleep when their game closes. `Server::leave` saved and removed them still asleep, so the bed kept `occupied=true` until that friend came back: nobody else could sleep in it ("This bed is occupied"), and the player file held them in bed. Vanilla's `ServerPlayer.disconnect` (checked with javap) calls `stopSleepInBed(true, false)` before the player is saved: the bed is freed and the player stands up at once.
+- **Changed:**
+  - `minecraft_survival/src/sleep.rs`: `wake_leaving` gets a sleeper up at once (`get_up` with `wake_at_once`, no wake-up fade) in their level and returns the written bed blocks.
+  - `minecraft_survival/src/server.rs`: `Server::leave` calls it before the drops and the save, so the friend is saved standing beside the bed; `Left.woke` carries the written blocks.
+  - `render_anim/src/minecraft_host.rs`: the host refreshes the MW2 collision shapes of those blocks (a bed whose dimension rule breaks it on leaving is removed).
+- **Tests:** `minecraft_survival` `server::tests::a_friend_who_quits_in_bed_gets_up_at_once_and_frees_the_bed` (fails without the fix: the friend is saved asleep). `test -p minecraft_survival` 587 + 1; `check -p launcher` green.
+- **Test steps:** `docs/round8/e-m6-tests.md`, beds section step 6; `docs/round8/track-e-tests.md` step 73 (its end).
+- **Kit:** none new (`minecraft:white_bed` is in the combined kit).
+
 ## Combined kit for every test in this track
 
 This line covers `docs/round8/track-e-tests.md`, the one run of every track E test (27 stacks; the rest of the items come from its `/give @a` lines). The per-milestone tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m6-tests.md`; the M6 combined line is in the git history of this file at `3cc89dfb` (with `eye_of_ender`, which should read `ender_eye`), the M5 line at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.

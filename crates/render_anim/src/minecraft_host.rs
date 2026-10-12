@@ -331,7 +331,15 @@ pub(crate) fn host(
         let _ = sounds.take_recorded();
     }
     for client in left {
-        host.sessions.leave(server, client);
+        let Some(left) = host.sessions.leave(server, client) else {
+            continue;
+        };
+        if let Some(level) = server.levels.get(&left.player.dimension) {
+            let band = minecraft_survival::bands::level(level.dimension);
+            let tables = (&mut *view.shapes, &mut *view.shape_ids, band);
+            let registries = &server.globals.registries;
+            crate::minecraft_world::refresh_shapes(&level.terrain, registries, tables, &left.woke);
+        }
     }
     for client in std::mem::take(&mut host.credits_done) {
         host.sessions.credits_done(&mut server.players, client);

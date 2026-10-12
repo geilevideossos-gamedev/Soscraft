@@ -626,6 +626,23 @@ pub fn stop(
     events
 }
 
+pub fn wake_leaving(globals: &Globals, level: &mut Level, player: &mut Player) -> Vec<Pos> {
+    let mut written = Vec::new();
+    if player.sleeping.is_none() {
+        return written;
+    }
+    let Level {
+        terrain, entities, ..
+    } = level;
+    let mut room = LevelRoom {
+        terrain,
+        entities: entities.as_mut(),
+        written: &mut written,
+    };
+    get_up(&mut room, &globals.registries, player, true);
+    written
+}
+
 pub fn wake_teleported(
     globals: &Globals,
     levels: &mut BTreeMap<Dimension, Level>,

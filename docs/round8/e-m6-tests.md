@@ -110,6 +110,7 @@ A friend can now sleep: their view goes to the pillow, the screen darkens, the c
 3. **Leave Bed.** Friend window: click Leave Bed. The friend stands up beside the bed, the dark fades out, and the soldier stands in the host window too.
 4. **The night passes.** Friend window: lie down again. Host window: lie down too. After about 5 seconds of both in bed the night skips to morning: both wake up beside their beds and the sky is bright in both windows. Screenshot the friend window just after. **S17**
 5. **Only one asleep.** Host window: `/time set 13000`. Friend window: lie down and stay; the host stays up. The night does not pass (the default `players_sleeping_percentage` is 100). Friend window: press Escape: the friend gets up as with the button.
+6. **Quitting in bed.** Friend window: lie down again, then close the friend window (Alt+F4). Host window: "Friend left the game". Walk to the friend's bed and right click it: the host lies down in it, with no "This bed is occupied" line. Get up. Start the friend again: `& scripts\mp-local.ps1 -World mp-m6 -FriendOnly`. The friend stands beside the bed, awake.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:white_bed

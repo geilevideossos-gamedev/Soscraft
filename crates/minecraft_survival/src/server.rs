@@ -709,6 +709,10 @@ impl Server {
     pub fn leave(&mut self, uuid: &PlayerUuid) -> Option<Left> {
         let mut player = self.players.remove(uuid)?;
         crate::the_end::credits_done(&mut player);
+        let woke = match self.levels.get_mut(&player.dimension) {
+            Some(level) => crate::sleep::wake_leaving(&self.globals, level, &mut player),
+            None => Vec::new(),
+        };
         let feet = player
             .place
             .filter(|place| place.dimension == player.dimension)
@@ -741,13 +745,18 @@ impl Server {
         };
         self.globals.chat.leave(player.id);
         save_leaving(&mut self.globals, &player);
-        Some(Left { player, dropped })
+        Some(Left {
+            player,
+            dropped,
+            woke,
+        })
     }
 }
 
 pub struct Left {
     pub player: Player,
     pub dropped: Vec<minecraftoss_player::inventory::ItemStack>,
+    pub woke: Vec<(i32, i32, i32)>,
 }
 
 pub fn starting_game_mode(saved: Option<PlayerMode>, chosen: Option<&str>) -> PlayerMode {
@@ -1580,6 +1589,54 @@ pub(crate) mod tests {
         let slots = saved.inventory.unwrap();
         assert_eq!(slots[35].as_ref().map(|stack| stack.count), Some(2));
         assert!(server.globals.writer.recently_left(&uuid).is_none());
+    }
+
+    #[test]
+    fn a_friend_who_quits_in_bed_gets_up_at_once_and_frees_the_bed() {
+        let Some((_dir, _save, mut server, open)) = friend_server("friend-bed-leave") else {
+            return;
+        };
+        let registries = server.globals.registries.clone();
+        let Ok(terrain) = Terrain::open(registries.clone(), 0, 2, Dimension::Overworld, None, None)
+        else {
+            return;
+        };
+        let mut level = Level::new(Dimension::Overworld, terrain);
+        let (foot, head) = ((0, 64, 0), (0, 64, 1));
+        for (pos, part) in [(foot, "foot"), (head, "head")] {
+            let text = format!("minecraft:red_bed[facing=south,part={part},occupied=false]");
+            let state = registries.blocks.parse_state(&text).unwrap();
+            let block = level.terrain.stream.states.block(state).cloned();
+            level.terrain.scene.set(pos, block);
+        }
+        server.levels.insert(Dimension::Overworld, level);
+        let uuid = server.join_friend(PlayerId(1), "Alex", None).unwrap();
+        let bed = crate::respawn_block::Bed {
+            head,
+            facing: (0, 1),
+            occupied: false,
+            straw: false,
+        };
+        let level = server.levels.get_mut(&Dimension::Overworld).unwrap();
+        crate::sleep::start(&server.globals, level, &mut server.players, &uuid, &bed, false);
+        let occupied = |server: &Server, pos| {
+            let level = &server.levels[&Dimension::Overworld];
+            let block = minecraft_terrain::scene::Scene::block(&level.terrain.scene, pos)?;
+            let state = level.terrain.stream.states.state_of(block)?;
+            registries.blocks.property(state, "occupied").map(str::to_owned)
+        };
+        assert!(server.players[&uuid].sleeping.is_some());
+        assert_eq!(occupied(&server, head).as_deref(), Some("true"));
+        let left = server.leave(&uuid).expect("Alex was in the world");
+        assert!(left.player.sleeping.is_none(), "saved awake, as vanilla's disconnect");
+        assert_eq!(left.player.sleep_timer, 0, "woken at once");
+        assert_eq!(occupied(&server, head).as_deref(), Some("false"));
+        assert_eq!(occupied(&server, foot).as_deref(), Some("false"));
+        assert!(left.woke.contains(&head) && left.woke.contains(&foot));
+        let feet = left.player.place.unwrap().feet;
+        assert!(feet[1] >= 64.0, "standing beside or on the bed: {feet:?}");
+        open.send(()).unwrap();
+        server.globals.writer.finish();
     }
 
     #[test]
