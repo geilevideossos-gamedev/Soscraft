@@ -4,6 +4,8 @@ This collects the owner's two-window steps for milestone M6 of track E (`docs/MU
 
 The friend window is called **Friend**. The host window uses your own player name, written `<you>` below.
 
+Each section ends with its own kit line; the track log's "Combined kit for every test in this track" (`docs/round8/track-e-log.md`) has one line for all of them, for a fresh world.
+
 ## E22. The dragon fight and the credits work for every player
 
 Every player near the dragon now gets its boss bar, not only the host. The dragon's one-shot effects (the purple bursts of its fireballs, the breath from its mouth while it perches, the explosions when blocks break around it and when it dies, and a shattered eye of ender) now reach a friend on the reliable stream, so none of them is lost when a state frame is dropped. Each player who walks into the exit portal for the first time sees the credits on their own screen while the other window keeps playing, and the credits end for that player alone. A friend who quits during the credits is let go.
@@ -59,7 +61,7 @@ IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:cobblestone*64
 
 When a totem of undying saves the friend, the friend's own screen now shows the vanilla animation: the totem flies up in front of the view, spins and drops away over 2 seconds. The other window still shows the totem's green and yellow particles around the saved player.
 
-1. Both windows hold the totem: Friend window, select the totem in the hotbar (or put it in the offhand with F).
+1. Host window: `/op Friend`. Both windows hold the totem: select it in the hotbar (or put it in the offhand with F).
 2. Friend window: `/tp @s ~ ~40 ~` and fall (survival mode, no water below). The fall would kill; the totem pops instead: the friend's screen shows the totem rising, spinning and falling back, with the totem sound, and the friend keeps a little health. Screenshot the friend window during the spin. **S12**
 3. Host window, at the same time: the friend's soldier is wrapped in green and yellow particles; no totem shows on the host's screen.
 4. Host window: do the same fall with the host's totem: the host sees its own animation as before, and the friend window shows only the particles around the host. The friend does not see the host's totem on their own screen. **S13**
@@ -108,7 +110,6 @@ A friend can now sleep: their view goes to the pillow, the screen darkens, the c
 3. **Leave Bed.** Friend window: click Leave Bed. The friend stands up beside the bed, the dark fades out, and the soldier stands in the host window too.
 4. **The night passes.** Friend window: lie down again. Host window: lie down too. After about 5 seconds of both in bed the night skips to morning: both wake up beside their beds and the sky is bright in both windows. Screenshot the friend window just after. **S17**
 5. **Only one asleep.** Host window: `/time set 13000`. Friend window: lie down and stay; the host stays up. The night does not pass (the default `players_sleeping_percentage` is 100). Friend window: press Escape: the friend gets up as with the button.
-6. **Hit in bed.** Friend window: lie down. Host window: shoot the friend once (pvp is on): the friend wakes and stands up at once.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:white_bed

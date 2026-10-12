@@ -1288,6 +1288,17 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
   3. After the kill, each walks into the exit portal in turn and sees the credits; the other window keeps running meanwhile.
   4. A friend on another PC joins the Minecraft world over the internet with section 18.
 
+**Per-player leftovers of M2 to M5, done in M6** (each its own commit; the owner's steps are in `docs/round8/e-m6-tests.md`):
+- friends freeze in powder snow like the host: the frost slowdown on their own prediction and on the host, the powder snow walker, and the frozen hearts and frost outline from `PlayerView.frozen`;
+- every game makes the snowflakes around every player in powder snow;
+- a friend's own totem activation in first person, from the totem player event;
+- spawner cages on the friend's game, from the streamed chunks and the host's spawner data;
+- the lectern's book screen for friends, with the Take Book check on the host;
+- friends lie down in beds, count for the night and are drawn lying for everyone;
+- with pvp off, a player's harming potion hurts no player.
+
+Skating for friends, the friend's first-person hand, trading screens and Minecraft melee between players stay in section 20.
+
 ### Kit for the multiplayer tests (27 stacks)
 
 Both players get it on their first join to a fresh world:
@@ -1305,7 +1316,12 @@ M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper
 - **Chunk pacing:** vanilla's adaptive `chunks_per_tick` quota. The ack window paces the stream.
 - **PvP without guns:**
   - Minecraft melee against players: swords and axes on another player, with armour and shields;
-  - MW2 damage through Minecraft armour.
+  - MW2 damage through Minecraft armour;
+  - TNT lit by a player honouring `pvp`: the vendored level's primed TNT keeps no igniter (vanilla's `PrimedTnt.owner`), so its blast names nobody;
+  - a gun hit waking a sleeping player: MW2 damage only lowers the health the survival state follows, and only a Minecraft hurt wakes a sleeper (vanilla wakes on any damage). The host is no different.
+- **Skating for friends:** a friend's game has no `AuthorityWorld`, so its skate worker cannot move the friend's MW2 player. It needs a client-reported origin checked by the host (an external-motion command), the skating bits per player in the Minecraft rules (`Motion.riding`, the landing and the action gate, today the host's own `Skating`), and the skater's pose and board sent to the other games every frame, which track D's brief left out of round 8 (`docs/round8/d-skate.md` section 6). Until then a friend presses the skate key and nothing happens, and the host's board shows only on the host's own screen.
+- **The friend's first-person hand:** the held item, its swing, eating, blocking and the trident's charge on the friend's own screen. The friend sees only the totem's activation there; other players see the friend's held item on their body (E15).
+- **Music on the friend's game** (any music; the host's game plays it as before).
 - **Chat:** command suggestions (`CommandHints`) for friends, signed chat, narration.
 - **Languages:** a language setting; every game shows English this round.
 - **Creative inventory for friends** (`ServerboundSetCreativeModeSlotPacket`).

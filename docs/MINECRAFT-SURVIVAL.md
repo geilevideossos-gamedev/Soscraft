@@ -343,7 +343,7 @@ One list of what is open after round 7. Multiplayer is the next roadmap step; N6
 
 ### Multiplayer
 - No Minecraft multiplayer yet (see [Multiplayer today](#multiplayer-today)). The chat is local, and death messages go only to the host's chat, already resolved in the host's language; vanilla broadcasts them as translatable messages.
-- Per-player state that track E must still send to joined clients: the frost slowdown (a per-client move scale, not in `PlayerState`), other players' totem pops and snowflakes (made by each player's own client), and lectern viewers (the server knows one player id). Freezing, like the other hazards, is ticked for the local player only.
+- Per-player state that joined friends still lack (round 8 track E sends the frost, snowflakes, totem pops, spawner cages, lecterns and sleeping): skating, their own first-person held item and swing, trading screens, music, and Minecraft melee between players (`docs/MULTIPLAYER.md` section 20).
 - **Friends in different dimensions** need what the single player doesn't: every occupied level ticking (only the host's level ticks today; `Server::plan_ticks` already plans for a list of ticking levels), a server tick with several players (the level thread still talks to player `0`), chunk streaming around each player with a shared thread budget, and an MW2 collision world per dimension. Today one collision world (`sim::voxel`) mirrors the host's level, so bots and every MW2 entity follow the host into the Nether or the End.
 
 ### Dimensions

@@ -1456,6 +1456,26 @@ Commit: see `git log` ("With pvp off, a player's harming potion hurts no player"
 IW4L_MINECRAFT_KIT=minecraft:splash_potion@harming,minecraft:splash_potion@poison
 ```
 
+### Leftovers that stay for later, written down
+
+Commit: see `git log` ("The multiplayer leftovers that stay for later are written down"). The previous commit is `30564a2c` (harming potions with pvp off).
+
+- **Changed:**
+  - `docs/MULTIPLAYER.md`: section 19 lists the per-player leftovers of M2 to M5 done in M6; section 20 adds skating for friends, the friend's first-person hand, music on the friend's game, TNT lit by a player with pvp off and a gun hit waking a sleeper, each with its reason.
+  - `docs/MINECRAFT-SURVIVAL.md`: the multiplayer limitation that listed the per-player state still to send now lists only what friends still lack. The rest of that section ("Multiplayer today") is E24's.
+  - `docs/round8/e-m6-tests.md`: the totem steps start with `/op Friend` (the friend's `/tp` needs it); the sleeping section's step "Hit in bed" is gone, because a gun hit does not wake a sleeper on the host either (below); the intro points to the combined kit.
+- **Not done in M6, and why:**
+  - **Skating for friends.** A friend's game has no `AuthorityWorld`, so its skate worker cannot move the friend's MW2 player; it needs a client-reported origin checked by the host (an external-motion command through the MW2 netcode), the skating bits per player in the Minecraft rules, and the skater's pose and board sent to the other games every frame. Track D's brief (section 6) put the pose out of round 8. This is several commits of MW2 netcode, so it goes to a later round.
+  - **The merchant screen.** Not wired in single player either; it stays in section 20 ("Trading screens").
+  - **Minecraft melee between players.** There is no Minecraft hit on a player yet (pvp or not): `entities.punch` reaches mobs only, and a player target needs a hurt path with armour and shields. Section 20.
+  - **TNT lit by a player with pvp off.** The vendored level's primed TNT keeps no igniter, so nothing names the player behind its blast. Section 20.
+  - **The friend's first-person hand** (the held item, its swing, eating, blocking, the trident's charge). E12 left it; only the totem's activation shows now. Section 20.
+  - **Music on the friend's game** (E22). Section 20.
+- **Found while testing the sleeping change:** a gun hit does not wake a sleeping player, the host included: MW2 damage only lowers the health the survival state follows (`Survival::observe`), and the sleeper wakes on the hurt counter, which counts Minecraft hurts. Vanilla wakes on any damage. Recorded in section 20 for later.
+- **Tests:** none (documents only).
+- **Test steps:** the fixes above in `docs/round8/e-m6-tests.md`.
+- **Kit:** none new.
+
 ## Combined kit for every test in this track
 
 This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
