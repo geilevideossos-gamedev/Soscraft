@@ -479,6 +479,7 @@ fn update(
     real_time: Res<Time<Real>>,
     mc_camera: Option<Res<frame::McCamera>>,
     (mut body_gear, mut body_glide): (ResMut<crate::anim::minecraft_gear::McBodyGear>, ResMut<crate::anim::minecraft_glide::McGlide>),
+    weapon_names: (Option<Res<assets::PreparedWeapons>>, Option<Res<assets::PreparedLocalizedStrings>>),
 ) {
     if *role == frame::RuntimeRole::Client {
         for _ in installed.read() {}
@@ -683,6 +684,16 @@ fn update(
     let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
     let clients: Vec<u32> = players.values().filter(|player| &player.uuid != local_uuid).map(|player| player.id.0).chain([local.0.0]).collect();
     queues.drain(|client| clients.contains(&client));
+    sim::voxel::set_pvp(globals.game_rules.bool("pvp"));
+    let weapon_name = |weapon: u32| {
+        let key = weapon_names.0.as_deref()?.0.display_name_key_of(weapon)?;
+        weapon_names.1.as_deref()?.0.text(key).map(str::to_owned)
+    };
+    let pvp_told = crate::minecraft_players::tell_pvp_deaths(sim::voxel::take_pvp_deaths(), players, (&globals.game_rules, &globals.chat), (local_uuid, local.0.0), weapon_name);
+    if !pvp_told.is_empty() {
+        show_chat(&mut ui.chat, inventory_ui, &world.packs, &pvp_told);
+        relayed.delivered.extend(pvp_told.into_iter().map(|message| minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message }));
+    }
     if bed_request.is_some()
         && let Some(player) = players.get_mut(local_uuid)
         && player.riding.is_some()
@@ -1201,7 +1212,7 @@ fn update(
             item_activation.activate(|| entities.random_float());
         }
         if let Some(told) = settled.told {
-            crate::minecraft_chat::show(&mut ui.chat, std::slice::from_ref(&told), &HashMap::new());
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, std::slice::from_ref(&told));
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
         let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, .. } = &mut *player;

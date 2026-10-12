@@ -130,6 +130,7 @@ pub struct Survival {
     pub score: i32,
     pub rules: SurvivalRules,
     killed: bool,
+    death_told: bool,
     pub eye_in_water: bool,
     eye_in_lava: bool,
     stuck: bool,
@@ -505,6 +506,10 @@ impl Survival {
         self.combat.death_line(language, present)
     }
 
+    pub fn death_text(&self, victim: &str, present: impl Fn(u64) -> bool) -> minecraft_commands::Text {
+        self.combat.death_text(victim, present)
+    }
+
     pub fn last_feet(&self) -> Option<[f64; 3]> {
         self.last_feet
     }
@@ -783,6 +788,10 @@ impl Survival {
 
     pub fn killed(&self) -> bool {
         self.killed
+    }
+
+    pub fn tell_death(&mut self) -> bool {
+        !std::mem::replace(&mut self.death_told, true)
     }
 
     pub fn hurt_blocked(&mut self, cause: DamageCause) {

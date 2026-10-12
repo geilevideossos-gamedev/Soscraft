@@ -91,6 +91,7 @@ pub struct Entities {
     pub difficulty: i32,
     spawn_mobs: bool,
     block_drops: bool,
+    pvp: bool,
     presenter: Option<u64>,
     watchers: Vec<Watcher>,
     view_distance: i32,
@@ -372,6 +373,7 @@ impl Entities {
             difficulty: 2,
             spawn_mobs: true,
             block_drops: true,
+            pvp: true,
             presenter: None,
             watchers: Vec::new(),
             view_distance: HOST_VIEW_DISTANCE,
@@ -384,6 +386,7 @@ impl Entities {
     pub fn set_game_rules(&mut self, rules: &minecraft_terrain::game_rules::GameRules) {
         self.spawn_mobs = rules.bool("spawn_mobs");
         self.block_drops = rules.bool("block_drops");
+        self.pvp = rules.bool("pvp");
         self.server.set_game_rules(rules.clone());
     }
 
@@ -1296,6 +1299,8 @@ impl Entities {
                 self.heard.push(crate::heard::Said::all(crate::heard::Heard::sound(crate::heard::ITEM_PICKUP_SOUND, position, 0.2, pitch)));
             }
             let mobs = output.mobs.take();
+            let players = &self.players;
+            unharmed_without_pvp(&mut output.players_struck, self.pvp, |id| players.0.contains_key(&id));
             let unclaimed = {
                 let world = mobs.as_deref().unwrap_or(&self.view.world);
                 let dragons = &self.view.dragons;
@@ -1547,6 +1552,12 @@ fn mob_on_ray(world: &EntityWorld, player: u64, eye: DVec3, look: DVec3, reach: 
 fn mob_to_use(world: &EntityWorld, player: u64, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>, others: Option<f64>) -> Option<MobHit> {
     let (hit, distance) = mob_on_ray(world, player, eye, look, reach)?;
     (block.is_none_or(|block| distance < block) && others.is_none_or(|other| distance <= other)).then_some(hit)
+}
+
+fn unharmed_without_pvp(struck: &mut Vec<minecraft_terrain::thrown::PlayerStruck>, pvp: bool, is_player: impl Fn(u64) -> bool) {
+    if !pvp {
+        struck.retain(|struck| !is_player(struck.by));
+    }
 }
 
 fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> Hit {
@@ -2603,5 +2614,24 @@ mod tests {
             assert!(!guarded_by_piglins(&states, &block), "{id}");
             assert!(!mining_angers_piglins(&states, &[((0, 64, 0), block, None)]), "{id}");
         }
+    }
+
+    #[test]
+    fn with_pvp_off_a_players_trident_or_wind_charge_spares_every_player() {
+        let queues = two_queues();
+        let struck = |player: u64, by: u64| minecraft_terrain::thrown::PlayerStruck {
+            player,
+            by,
+            damage: 8.0,
+            kind: minecraft_terrain::trident::DAMAGE_TYPE,
+            velocity: DVec3::Z,
+        };
+        let all = vec![struck(HOST, FRIEND), struck(FRIEND, FRIEND), struck(FRIEND, 77)];
+        let is_player = |id: u64| queues.0.contains_key(&id);
+        let mut kept = all.clone();
+        unharmed_without_pvp(&mut kept, true, is_player);
+        assert_eq!(kept.len(), 3, "pvp on");
+        unharmed_without_pvp(&mut kept, false, is_player);
+        assert_eq!(kept.iter().map(|s| (s.player, s.by)).collect::<Vec<_>>(), [(FRIEND, 77)]);
     }
 }

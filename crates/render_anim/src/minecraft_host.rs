@@ -392,6 +392,12 @@ pub(crate) fn host(
             session
                 .outbox
                 .extend(stepped.lines.into_iter().map(ToClient::Chat));
+            for killer in stepped.killers {
+                session.outbox.push(ToClient::KilledBy {
+                    killer: Some(killer),
+                    line: minecraft_commands::Text::literal(""),
+                });
+            }
             let lines = crate::minecraft_players::friend_menus(
                 player,
                 &mut world,

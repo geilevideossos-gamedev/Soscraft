@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bevy::prelude::*;
-use minecraft_commands::Clientbound;
+use minecraft_commands::{Clientbound, CommandServer};
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_survival::actions::{Actor, Body, Effect, Moved};
 use minecraft_survival::entities::{Entities, TickActor};
@@ -11,6 +11,7 @@ use minecraft_survival::player::Player;
 use minecraft_survival::server::Globals;
 use minecraft_survival::session::{HandQueue, HandTake};
 use minecraft_survival::switch::Switch;
+use minecraft_terrain::game_rules::GameRules;
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::BlockPos;
 use minecraftoss_core::{BlockStateId, Registries};
@@ -960,13 +961,11 @@ pub(crate) fn settle(
                 let sound = minecraft_survival::survival::death_sound(|| entities.random_float());
                 sounds.play(packs, sound.event, None, sound.volume, sound.pitch);
             }
-            if let Some(death) = &death
-                && globals.game_rules.bool("show_death_messages")
-            {
+            if death.is_some() {
                 let name = globals.chat.name(*id).unwrap_or("Player");
-                told = Some(minecraft_survival::commands::death_message(
-                    death.line(name),
-                ));
+                let text = survival.death_text(name, |id| entities.mob_present(id));
+                told =
+                    minecraft_survival::commands::tell_death(&globals.game_rules, survival, text);
             }
             sim::voxel::push_player_damage(
                 client.0,
@@ -987,6 +986,50 @@ pub(crate) fn settle(
 pub(crate) struct Settled {
     pub(crate) told: Option<Clientbound>,
     pub(crate) popped: bool,
+}
+
+pub(crate) fn tell_pvp_deaths(
+    deaths: Vec<sim::voxel::PvpDeath>,
+    players: &mut BTreeMap<PlayerUuid, Player>,
+    (rules, chat): (&GameRules, &CommandServer),
+    (host, host_client): (&PlayerUuid, u32),
+    weapon_name: impl Fn(u32) -> Option<String>,
+) -> Vec<Clientbound> {
+    let mut told = Vec::new();
+    for death in deaths {
+        let player_of = |client: u32| {
+            players
+                .iter()
+                .find(|(uuid, player)| {
+                    if client == host_client {
+                        *uuid == host
+                    } else {
+                        *uuid != host && player.id.0 == client
+                    }
+                })
+                .map(|(uuid, player)| (uuid.clone(), player.id))
+        };
+        let (Some((victim, victim_id)), Some((_, attacker_id))) =
+            (player_of(death.victim), player_of(death.attacker))
+        else {
+            continue;
+        };
+        let name = |id| chat.name(id).unwrap_or("Player").to_owned();
+        let weapon = weapon_name(death.weapon).filter(|_| death.weapon > 0);
+        let text = minecraft_survival::death::player_kill_text(
+            &name(victim_id),
+            &name(attacker_id),
+            weapon.as_deref(),
+        );
+        if let Some(player) = players.get_mut(&victim) {
+            told.extend(minecraft_survival::commands::tell_death(
+                rules,
+                &mut player.survival,
+                text,
+            ));
+        }
+    }
+    told
 }
 
 pub(crate) fn pop_totem(
@@ -1118,6 +1161,7 @@ pub(crate) fn tick_actor<'a>(
 pub(crate) struct Stepped {
     pub(crate) lines: Vec<Clientbound>,
     pub(crate) told: Option<Clientbound>,
+    pub(crate) killers: Vec<String>,
 }
 
 pub(crate) struct FriendWorld<'a> {
@@ -1228,6 +1272,7 @@ pub(crate) fn step_friend(
         &ps,
         world.queues,
     );
+    stepped.killers.clone_from(&life.killers);
     let moved = movement(
         player,
         world.globals,
@@ -1780,5 +1825,66 @@ mod tests {
         assert!(!queues.take_totem(2));
         assert!(!queues.take_switch(2));
         assert_eq!(queues.take_deaths(0), ["Fall"]);
+    }
+
+    #[test]
+    fn a_gun_kill_between_players_is_told_once_with_both_names_and_the_gun() {
+        use minecraft_commands::PlayerId;
+        use minecraft_survival::commands::HOST;
+        use sim::voxel::PvpDeath;
+        let mut chat = CommandServer::new(HOST);
+        chat.join(HOST, "Steve");
+        chat.join(PlayerId(1), "Alex");
+        let player = |id| {
+            Player::new(
+                chat.profile(id).unwrap(),
+                minecraft_terrain::game_mode::PlayerMode::default(),
+                minecraft_survival::survival::Survival::default(),
+                minecraftoss_player::inventory::Inventory::default(),
+            )
+        };
+        let (host, friend) = (player(HOST), player(PlayerId(1)));
+        let host_uuid = host.uuid.clone();
+        let mut players =
+            BTreeMap::from([(host.uuid.clone(), host), (friend.uuid.clone(), friend)]);
+        let rules = GameRules::default();
+        let gun = |weapon: u32| (weapon == 7).then(|| "M4A1".to_owned());
+        let shot = |victim, attacker, weapon| PvpDeath {
+            victim,
+            attacker,
+            weapon,
+        };
+        let deaths = vec![shot(1, 5, 7), shot(5, 1, 0), shot(1, 5, 7), shot(9, 5, 7)];
+        let told = tell_pvp_deaths(deaths, &mut players, (&rules, &chat), (&host_uuid, 5), gun);
+        let lang = |key: &str| match key {
+            "death.attack.player" => Some("%1$s was slain by %2$s".to_owned()),
+            "death.attack.player.item" => Some("%1$s was slain by %2$s using %3$s".to_owned()),
+            _ => None,
+        };
+        let lines: Vec<String> = told
+            .iter()
+            .filter_map(Clientbound::chat_text)
+            .map(|text| text.resolve(&lang).text)
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "Alex was slain by Steve using [M4A1]",
+                "Steve was slain by Alex"
+            ]
+        );
+        for player in players.values_mut() {
+            player.survival.respawn();
+        }
+        let mut quiet = GameRules::default();
+        quiet.set("show_death_messages", "false").unwrap();
+        let told = tell_pvp_deaths(
+            vec![shot(5, 1, 7)],
+            &mut players,
+            (&quiet, &chat),
+            (&host_uuid, 5),
+            gun,
+        );
+        assert!(told.is_empty(), "death messages are off");
     }
 }

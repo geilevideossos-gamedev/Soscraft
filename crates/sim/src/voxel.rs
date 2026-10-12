@@ -374,6 +374,35 @@ pub fn take_minecraft_deaths() -> Vec<(u32, String)> {
     MINECRAFT_DEATHS.lock().map_or_else(|_| Vec::new(), |mut deaths| std::mem::take(&mut *deaths))
 }
 
+static PVP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_pvp(on: bool) {
+    PVP.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn pvp() -> bool {
+    PVP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PvpDeath {
+    pub victim: u32,
+    pub attacker: u32,
+    pub weapon: u32,
+}
+
+static PVP_DEATHS: std::sync::Mutex<Vec<PvpDeath>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn push_pvp_death(death: PvpDeath) {
+    if let Ok(mut deaths) = PVP_DEATHS.lock() {
+        deaths.push(death);
+    }
+}
+
+pub fn take_pvp_deaths() -> Vec<PvpDeath> {
+    PVP_DEATHS.lock().map_or_else(|_| Vec::new(), |mut deaths| std::mem::take(&mut *deaths))
+}
+
 static TEAM_SWITCHES: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
 pub(crate) fn push_team_switch(client: u32) {
@@ -556,6 +585,8 @@ pub fn deactivate() {
     let _ = take_player_damage();
     let _ = take_totem_pops();
     let _ = take_minecraft_deaths();
+    let _ = take_pvp_deaths();
+    set_pvp(true);
     let _ = take_team_switches();
     if let Ok(mut clients) = DEATH_PROTECTED.lock() {
         clients.clear();

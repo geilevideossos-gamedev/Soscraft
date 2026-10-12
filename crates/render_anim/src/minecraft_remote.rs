@@ -404,7 +404,7 @@ pub(crate) fn friend(
             crate::minecraft_chat::show(&mut ui.chat, &lines, &prepared.language);
             show_overlays(&mut ui, &lines, &prepared.language);
         }
-        show_effects(friend, &presented);
+        show_effects(friend, &presented, &mut ui);
         track_bodies(friend, &presented);
         if friend
             .remote
@@ -523,7 +523,11 @@ fn show_overlays(
     }
 }
 
-fn show_effects(friend: &mut Friend, presented: &net::PresentedSnapshot) {
+fn show_effects(
+    friend: &mut Friend,
+    presented: &net::PresentedSnapshot,
+    ui: &mut frame::MinecraftUi,
+) {
     let Friend {
         prepared: Some(prepared),
         remote: Some(remote),
@@ -566,6 +570,10 @@ fn show_effects(friend: &mut Friend, presented: &net::PresentedSnapshot) {
                     );
                 }
             }
+            ToClient::KilledBy {
+                killer: Some(killer),
+                ..
+            } => killed_by(ui, killer),
             effect => {
                 if let Some(level) = remote.level.as_mut() {
                     show_heard(level, effect, presented);
@@ -573,6 +581,14 @@ fn show_effects(friend: &mut Friend, presented: &net::PresentedSnapshot) {
             }
         }
     }
+}
+
+fn killed_by(ui: &mut frame::MinecraftUi, killer: String) {
+    let seq = ui
+        .killed_by
+        .as_ref()
+        .map_or(0, |(seq, _)| seq.wrapping_add(1));
+    ui.killed_by = Some((seq, killer));
 }
 
 fn show_heard(

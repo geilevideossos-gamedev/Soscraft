@@ -1011,6 +1011,48 @@ Commit: see `git log` ("Friends hear and see what happens around them"). The pre
 IW4L_MINECRAFT_KIT=minecraft:tnt*4,minecraft:flint_and_steel,minecraft:cow_spawn_egg*3,minecraft:cooked_beef*8,minecraft:chest,minecraft:cobblestone*32,minecraft:water_bucket,minecraft:lava_bucket,minecraft:bone_meal*8,minecraft:totem_of_undying,minecraft:snowball*16,minecraft:ender_pearl*4,minecraft:iron_sword
 ```
 
+## Milestone M4: fighting
+
+### E18. Guns hurt other players unless pvp is off, and deaths are told to everyone
+
+Commit: see `git log` ("MW2 guns hurt other players unless pvp is off, and every death is told to everyone"). The previous commit is `c1e5be0b` (E17).
+
+- **Changed:**
+  - `crates/session/src/match_apply.rs`: `match_kind` takes the zone and returns free-for-all for a Minecraft load, whatever the menu, the master offer or `IW4L_GAMETYPE` picked (section 13.4). Both games run the same install, so the friend loads `dm` too. The time and score limit zeroing moved unchanged into `zero_minecraft_limits` so a test can pin it.
+  - `crates/sim/src/voxel.rs`: `set_pvp` / `pvp` (an atomic that defaults to on and is reset by `deactivate`), and a `PvpDeath { victim, attacker, weapon }` queue (`take_pvp_deaths`).
+  - `crates/sim/src/damage.rs`: `DamageRefusal::PvpDisabled`. `apply_damage_attempt` refuses a hit when the voxel world is active, pvp is off, the attacker is a player client (`client_meta` knows them) and the attacker is not the target (`pvp_refuses`). Bullets, knives, MW2 grenades and killstreaks all go through it; self-damage and the Minecraft world's damage (`apply_block_world_damage`, which never calls it) still hurt.
+  - `crates/sim/src/script_player.rs`: `kill` queues a `PvpDeath` when the authoritative sim kills a player in the voxel world and the attacker is another player client, with the weapon of the death commit.
+  - `crates/minecraft_survival/src/death.rs`: `CombatTracker::death_text` builds the death line as a translatable `Text` (the key, the victim's name, the attacker as an entity name or the bad respawn point's link), and `player_kill_text` builds `death.attack.player` ("%1$s was slain by %2$s") or `death.attack.player.item` ("... using %3$s") with the MW2 gun's name in brackets, as vanilla's `ItemStack.getDisplayName` shows a weapon.
+  - `crates/minecraft_survival/src/survival.rs`: `tell_death` marks the current life's death as told (cleared by respawn); `death_text`.
+  - `crates/minecraft_survival/src/commands.rs`: `death_message` takes a `Text`; `tell_death(rules, survival, text)` returns the line once per death and only with `show_death_messages` on.
+  - `crates/minecraft_survival/src/entities.rs`: `Entities.pvp` (from `set_game_rules`). With pvp off, a trident or wind charge thrown by a player in the level does not strike any player (`unharmed_without_pvp`), as vanilla's `ServerPlayer.canHarmPlayer`.
+  - `crates/render_anim/src/minecraft_players.rs`: `settle` builds the translatable line through `tell_death` (each game resolves it in its own language). `tell_pvp_deaths` turns the queued PvP deaths into lines: the victim and the attacker by their MW2 client (the host's by the host's client number, friends by their own), their names from the command server, the gun's MW2 display name. `step_friend` returns the friend's Minecraft killers.
+  - `crates/render_anim/src/minecraft_world.rs`: the host frame writes the `pvp` rule into `sim::voxel::set_pvp` every frame, tells the PvP deaths right after draining the voxel queues (before any player's life step, so a death already told by `settle` is not told again), shows them and relays them to every friend. The weapon names come from `PreparedWeapons` and `PreparedLocalizedStrings`, as the HUD's weapon name. The host's own Minecraft death line is now resolved with its language.
+  - `crates/render_anim/src/minecraft_host.rs` / `minecraft_remote.rs`: a friend's Minecraft killer goes to them as `ToClient::KilledBy`, and the friend's game puts it on its killed-by card (`ui.killed_by`), as the host does for itself.
+- **Already per player, checked:** death drops (each player's own `death_watch` at their own death spot, `keep_inventory` for everyone) and the friend's broadcast death line (E10b/E11).
+- **Tests:**
+  - `session` `match_apply::tests::a_minecraft_world_runs_free_for_all_with_no_time_or_score_limit` (every menu choice gives `dm` on a Minecraft load and keeps itself elsewhere; `scr_dm_timelimit` and `scr_dm_scorelimit` are zeroed, another mode's limit is left alone).
+  - `sim` `damage::tests::with_pvp_off_players_cannot_hurt_each_other_but_still_hurt_themselves_and_the_world_hurts_them`, `damage::tests::with_pvp_on_one_player_knifes_another` (with both players known clients, nothing else refuses the hit).
+  - `minecraft_survival` `commands::tests::a_pvp_death_is_told_once_with_the_killers_gun_and_only_with_death_messages_on`, `death::tests::the_translatable_line_reads_as_the_resolved_one`, `entities::tests::with_pvp_off_a_players_trident_or_wind_charge_spares_every_player`.
+  - `render_anim` `minecraft_players::tests::a_gun_kill_between_players_is_told_once_with_both_names_and_the_gun` (host and friend by client number, a repeated death and an unknown victim give no line, no line with death messages off); `minecraft_chat::tests::death_messages_are_white_system_lines_each_game_reads_in_its_language` replaces the plain-line test.
+  - Results on the real 26.3 data: `test -p sim` 111, `session` 1, `minecraft_survival` 564 + 1, `render_anim --lib` 135; `check -p launcher` green.
+- **Decisions:**
+  - **No `DamageCause::Player`.** MW2 damage never enters the Minecraft combat tracker (it only lowers the MW2 health the survival state follows), so a cause in the tracker would never be read; the line is built straight from the sim's death. A gun hit followed by a fall or lava therefore says "fell from a high place" / "tried to swim in lava", not vanilla's "doomed to fall by <player>". Recorded for later.
+  - **The gun's name is in brackets** ("using [M4A1]"), as vanilla shows the weapon's display name. Vanilla only names the weapon when it has a custom name; here every gun kill names the MW2 gun, as the design asks.
+  - **One line per death:** `Survival::tell_death` is set by whichever path tells the death first (the Minecraft settle or the MW2 kill) and cleared on respawn.
+  - **Minecraft hits with pvp off follow vanilla:** `canHarmPlayer` has no exception for the thrower, so with pvp off a player's own trident does not hurt them either. The MW2 rule spares only other players, as the design says (a player's own grenade still hurts).
+  - **The friend's sim is not told the pvp rule:** damage is decided only on the host, whose snapshot corrects the friend.
+  - **`KilledBy.line` is empty:** the killer arrives a frame after the death line, and the friend reads the line from the chat; the card uses `killer` only.
+- **Left for later:**
+  - Minecraft melee against another player (a sword) and TNT lit by another player still ignore the pvp rule, as section 13.4 says for melee; a harming splash potion thrown by another player too.
+  - From the B/C/D logs and the merge, for M5/M6: friends sleeping, the lectern book screen for friends, the frost slowdown and powder snow walker replicated to friends, frozen hearts in `PlayerView`, skating for friends, the merchant screen, other players' snowflakes and the friend's own totem animation (see E17's list).
+- **Test steps:** `docs/round8/e-m4-tests.md`, section E18 (two windows; it is also the M4 owner test).
+- **Kit:** `minecraft:creeper_spawn_egg` x2, `minecraft:trident` x1, `minecraft:wind_charge` x8, `minecraft:cooked_beef` x8, `minecraft:cobblestone` x32.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:creeper_spawn_egg*2,minecraft:trident,minecraft:wind_charge*8,minecraft:cooked_beef*8,minecraft:cobblestone*32
+```
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers E11 to E15 and the M2 owner test; the earlier sections keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`.

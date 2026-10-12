@@ -1116,11 +1116,20 @@ pub fn run(
     }
 }
 
-pub fn death_message(line: String) -> Clientbound {
+pub fn death_message(text: Text) -> Clientbound {
     Clientbound::System {
-        text: Text::literal(line),
+        text,
         overlay: false,
     }
+}
+
+pub fn tell_death(
+    rules: &GameRules,
+    survival: &mut crate::survival::Survival,
+    text: Text,
+) -> Option<Clientbound> {
+    let first = survival.tell_death();
+    (first && rules.bool("show_death_messages")).then(|| death_message(text))
 }
 
 #[cfg(test)]
@@ -2541,5 +2550,39 @@ pub(crate) mod tests {
         assert!(status.effect(EffectKind::SlowFalling).is_none());
         assert_eq!(effect_kind("minecraft:levitation"), Some(EffectKind::Levitation));
         assert_eq!(effect_kind("minecraft:slow_falling"), Some(EffectKind::SlowFalling));
+    }
+
+    #[test]
+    fn a_pvp_death_is_told_once_with_the_killers_gun_and_only_with_death_messages_on() {
+        let language: HashMap<String, String> = [
+            ("death.attack.player", "%1$s was slain by %2$s"),
+            (
+                "death.attack.player.item",
+                "%1$s was slain by %2$s using %3$s",
+            ),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+        let lang = |key: &str| language.get(key).cloned();
+        let shot = crate::death::player_kill_text("Friend", "Steve", Some("M4A1"));
+        assert_eq!(
+            shot.resolve(&lang).text,
+            "Friend was slain by Steve using [M4A1]"
+        );
+        let killed = crate::death::player_kill_text("Friend", "Steve", None);
+        assert_eq!(killed.resolve(&lang).text, "Friend was slain by Steve");
+        let mut rules = GameRules::default();
+        let mut survival = crate::survival::Survival::default();
+        assert_eq!(
+            tell_death(&rules, &mut survival, shot.clone()),
+            Some(death_message(shot.clone()))
+        );
+        assert_eq!(tell_death(&rules, &mut survival, shot.clone()), None);
+        survival.respawn();
+        rules.set("show_death_messages", "false").unwrap();
+        assert_eq!(tell_death(&rules, &mut survival, shot.clone()), None);
+        rules.set("show_death_messages", "true").unwrap();
+        assert_eq!(tell_death(&rules, &mut survival, shot), None);
     }
 }

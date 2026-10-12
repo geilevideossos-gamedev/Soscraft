@@ -925,7 +925,7 @@ fn preflight_match_install(
         }
     }
     let strings = std::mem::take(&mut prepared.strings);
-    let kind = match match_kind(mode_selection) {
+    let kind = match match_kind(mode_selection, zone) {
         Ok(kind) => kind,
         Err(gap) => {
             diag::info!(Sim, "match install refused: {gap}");
@@ -1048,13 +1048,7 @@ fn preflight_match_install(
     }
     // A Minecraft world has no time or score limit.
     if assets::minecraft_map::is_minecraft_load(zone) {
-        let limits = ["timelimit", "scorelimit"].map(|limit| format!("scr_{gametype}_{limit}"));
-        for name in limits.into_iter().chain(["scr_player_healthregentime".to_owned()]) {
-            match script_dvars.iter_mut().find(|(set, _)| set.eq_ignore_ascii_case(&name)) {
-                Some((_, set)) => *set = "0".into(),
-                None => script_dvars.push((name, "0".into())),
-            }
-        }
+        zero_minecraft_limits(gametype, &mut script_dvars);
     }
     if let Some(rules) = rules {
         diag::info!(
@@ -1174,7 +1168,11 @@ fn player_kit_collision(
 
 fn match_kind(
     selection: Option<&sim::HostGameModeSelection>,
+    zone: &str,
 ) -> Result<gamemode_iw4::GameModeKind, &'static str> {
+    if assets::minecraft_map::is_minecraft_load(zone) {
+        return Ok(gamemode_iw4::GameModeKind::FreeForAll);
+    }
     if let Some(selection) = selection {
         return Ok(selection.kind());
     }
@@ -1182,6 +1180,16 @@ fn match_kind(
         Ok(s) if !s.trim().is_empty() => gamemode_iw4::GameModeKind::parse_ascii_ignore_case(&s)
             .ok_or("IW4L_GAMETYPE names no known gametype (gsc.mode.out-of-scope)"),
         _ => Ok(gamemode_iw4::GameModeKind::FreeForAll),
+    }
+}
+
+fn zero_minecraft_limits(gametype: &str, script_dvars: &mut Vec<(String, String)>) {
+    let limits = ["timelimit", "scorelimit"].map(|limit| format!("scr_{gametype}_{limit}"));
+    for name in limits.into_iter().chain(["scr_player_healthregentime".to_owned()]) {
+        match script_dvars.iter_mut().find(|(set, _)| set.eq_ignore_ascii_case(&name)) {
+            Some((_, set)) => *set = "0".into(),
+            None => script_dvars.push((name, "0".into())),
+        }
     }
 }
 
@@ -1742,4 +1750,40 @@ fn stage_resource<T: Resource>(queue: &mut bevy::ecs::world::CommandQueue, resou
     queue.push(move |world: &mut World| {
         world.insert_resource(resource);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_minecraft_world_runs_free_for_all_with_no_time_or_score_limit() {
+        for chosen in sim::HostGameModeSelection::ALL {
+            assert_eq!(match_kind(Some(&chosen), "iw4:mp_rust"), Ok(chosen.kind()));
+            for zone in [assets::minecraft_map::ZONE, "iw4:minecraft:overworld"] {
+                assert_eq!(
+                    match_kind(Some(&chosen), zone),
+                    Ok(gamemode_iw4::GameModeKind::FreeForAll)
+                );
+            }
+        }
+        let gametype = gamemode_iw4::GameModeKind::FreeForAll.token();
+        assert_eq!(gametype, "dm");
+        let mut dvars = vec![
+            ("scr_dm_scorelimit".to_owned(), "1500".to_owned()),
+            ("SCR_DM_TIMELIMIT".to_owned(), "10".to_owned()),
+            ("scr_war_scorelimit".to_owned(), "7500".to_owned()),
+        ];
+        zero_minecraft_limits(gametype, &mut dvars);
+        assert_eq!(
+            dvars,
+            [
+                ("scr_dm_scorelimit", "0"),
+                ("SCR_DM_TIMELIMIT", "0"),
+                ("scr_war_scorelimit", "7500"),
+                ("scr_player_healthregentime", "0"),
+            ]
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        );
+    }
 }

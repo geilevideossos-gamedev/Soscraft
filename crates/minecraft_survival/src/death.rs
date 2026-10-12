@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use minecraft_commands::Text;
 use minecraftoss_entities::inside_blocks::Hazard;
 use minecraftoss_player::GameMode;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
@@ -17,6 +18,8 @@ const MAX_DEATH_EXPERIENCE: u32 = 100;
 const STORAGE_SLOTS: usize = 36;
 const EQUIPMENT_DROP_ORDER: [usize; 7] = [40, 36, 37, 38, 39, 41, 42];
 const ENCHANTMENTS: &str = "minecraft:enchantments";
+pub const PLAYER_KILL: &str = "death.attack.player";
+pub const PLAYER_KILL_ITEM: &str = "death.attack.player.item";
 const VANISHING_CURSE: &str = "minecraft:vanishing_curse";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -472,6 +475,29 @@ impl CombatTracker {
             });
         DeathLine { message, killer }
     }
+
+    pub fn death_text(&self, victim: &str, present: impl Fn(u64) -> bool) -> Text {
+        let death = self.death_key(present);
+        let mut args = vec![Text::literal(victim)];
+        if let Some(type_id) = death.attacker {
+            args.push(Text::entity(type_id));
+        } else if let Some(key) = death.cause.and_then(DamageCause::link_key) {
+            let link = Text::translate(key, Vec::new());
+            args.push(Text::literal("[").append(link).append(Text::literal("]")));
+        }
+        Text::translate(death.key, args)
+    }
+}
+
+pub fn player_kill_text(victim: &str, attacker: &str, weapon: Option<&str>) -> Text {
+    let (victim, attacker) = (Text::literal(victim), Text::literal(attacker));
+    match weapon {
+        Some(weapon) => {
+            let weapon = Text::literal(format!("[{weapon}]"));
+            Text::translate(PLAYER_KILL_ITEM, vec![victim, attacker, weapon])
+        }
+        None => Text::translate(PLAYER_KILL, vec![victim, attacker]),
+    }
 }
 
 fn entity_name(language: &HashMap<String, String>, type_id: &str) -> String {
@@ -701,6 +727,33 @@ mod tests {
         DeathLine {
             message: message.to_owned(),
             killer: killer.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_translatable_line_reads_as_the_resolved_one() {
+        let language = language();
+        let lang = |key: &str| language.get(key).cloned();
+        let mut bitten = CombatTracker::default();
+        bitten.record(1, zombie_bite(), 3.0, None, 0.0);
+        let mut doomed = CombatTracker::default();
+        doomed.record(1, skeleton_arrow(), 2.0, None, 0.0);
+        doomed.record(
+            2,
+            DamageCause::Fall,
+            20.0,
+            Some(FallLocation::Generic),
+            12.0,
+        );
+        let mut bed = CombatTracker::default();
+        bed.record(1, DamageCause::BadRespawnPoint, 20.0, None, 0.0);
+        let mut escaping = CombatTracker::default();
+        escaping.hurt_by(1, zombie_bite());
+        escaping.record(1, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
+        for tracker in [CombatTracker::default(), bitten, doomed, bed, escaping] {
+            let text = tracker.death_text("Steve", |_| true).resolve(&lang).text;
+            assert_eq!(text, line(&tracker).message.replace(VICTIM, "Steve"));
+            assert!(!text.contains('%'), "{text}");
         }
     }
 

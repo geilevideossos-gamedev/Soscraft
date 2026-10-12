@@ -208,9 +208,11 @@ mod tests {
     }
 
     #[test]
-    fn death_messages_are_plain_system_lines() {
+    fn death_messages_are_white_system_lines_each_game_reads_in_its_language() {
         let mut chat = McChat::default();
-        show(&mut chat, &[death_message("Steve was killed".into())], &HashMap::new());
+        let killed = minecraft_commands::Text::translate("death.attack.genericKill", vec![minecraft_commands::Text::literal("Steve")]);
+        let language: HashMap<String, String> = [("death.attack.genericKill".to_owned(), "%1$s was killed".to_owned())].into();
+        show(&mut chat, &[death_message(killed)], &language);
         assert_eq!(chat.received[0].text, "Steve was killed");
         assert_eq!(chat.received[0].color, minecraft_commands::text::WHITE);
     }
