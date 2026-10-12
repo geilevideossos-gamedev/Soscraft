@@ -268,9 +268,18 @@ mod tests {
             ToServer::Click(Click {
                 menu: 100,
                 state: 0x7fff,
-                slot: -999,
-                button: 1,
-                mode: ClickMode::QuickCraft,
+                action: MenuAction::Spread {
+                    slots: vec![MenuSlot::Inventory(40), MenuSlot::Container(53)],
+                    right: true,
+                },
+            }),
+            ToServer::Click(Click {
+                menu: 0,
+                state: 1,
+                action: MenuAction::Swap {
+                    slot: MenuSlot::Crafting(3),
+                    hotbar: 40,
+                },
             }),
             ToServer::RenameItem("Pick \u{f6}".to_string()),
             ToServer::CloseMenu { menu: 3 },
@@ -426,9 +435,7 @@ mod tests {
                 Text::literal("Enchant"),
                 MenuExtras::Enchanting {
                     seed: -5,
-                    costs: [1, 15, 30],
-                    clues: [0, 9, -1],
-                    levels: [1, 2, -1],
+                    shelves: 15,
                 },
             ),
             menu(
@@ -437,7 +444,7 @@ mod tests {
                 Text::literal("Repair & Name"),
                 MenuExtras::Anvil {
                     cost: 3,
-                    name: "Pick".to_string(),
+                    name: Some("Pick".to_string()),
                 },
             ),
             ToClient::MenuSlots {

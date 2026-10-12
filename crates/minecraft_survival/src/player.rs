@@ -45,6 +45,8 @@ pub struct Player {
     pub travel_locked: bool,
     pub travel_refused: bool,
     pub follow: crate::guns::Follow,
+    pub menus: crate::menus::Menus,
+    pub enchantment_seed: i32,
 }
 
 #[derive(Default)]
@@ -113,6 +115,8 @@ impl Player {
             travel_locked: false,
             travel_refused: false,
             follow: crate::guns::Follow::default(),
+            menus: crate::menus::Menus::default(),
+            enchantment_seed: crate::level::opener_key(&PlayerUuid(profile.uuid.clone())) as i32,
         }
     }
 
@@ -124,19 +128,7 @@ impl Player {
     }
 
     pub fn close_menu(&mut self) -> Vec<ItemStack> {
-        let inventory = &mut self.inventory;
-        let loose: Vec<ItemStack> = inventory
-            .crafting
-            .iter_mut()
-            .chain(inventory.workbench.iter_mut())
-            .chain(std::iter::once(&mut inventory.cursor))
-            .filter_map(Option::take)
-            .collect();
-        let selected = self.selected;
-        loose
-            .into_iter()
-            .filter_map(|stack| self.inventory.add_item(stack, selected))
-            .collect()
+        crate::menus::close(self)
     }
 
     pub fn arrive(&mut self, place: Place) {
@@ -230,13 +222,20 @@ impl Player {
 
     pub fn data(&self) -> PlayerData {
         let mut inventory = self.inventory.clone();
-        let loose: Vec<ItemStack> = inventory
+        let mut loose: Vec<ItemStack> = inventory
             .crafting
             .iter_mut()
             .chain(inventory.workbench.iter_mut())
             .chain(std::iter::once(&mut inventory.cursor))
             .filter_map(Option::take)
             .collect();
+        if let Some(crate::menus::Menu {
+            open: crate::menus::Open::Bench(_, bench),
+            ..
+        }) = self.menus.open.as_ref()
+        {
+            loose.extend(bench.cells.iter().flatten().cloned());
+        }
         for stack in loose {
             let _ = inventory.add_item(stack, self.selected);
         }

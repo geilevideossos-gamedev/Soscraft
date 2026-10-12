@@ -140,7 +140,7 @@ pub fn sent_key(view: &PlayerView) -> PlayerView {
     key
 }
 
-fn slot_nbt(stack: &ItemStack) -> Option<Nbt> {
+pub fn slot_nbt(stack: &ItemStack) -> Option<Nbt> {
     let tag = match weapon_of(stack) {
         Some(_) => Tag::Compound(BTreeMap::from([
             ("id".to_owned(), Tag::String(stack.id.clone())),

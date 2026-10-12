@@ -182,3 +182,24 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*32,minecraft:stone_pickaxe,minecraft:oak_door*2,minecraft:cooked_beef*8,minecraft:water_bucket,minecraft:snowball*16,minecraft:coal_ore*4
 ```
+
+## E14. Each player has their own inventory screens, and chests are shared
+
+Every player's crafting grid, carried stack and open station now live on the host, per player. The friend's screens show what the host sends, one round trip after a click. Two players in one chest see each other's moves.
+
+Put the kit below in the `.env` next to the exe before the first start: both players get it on their first join.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-e14 -Fresh -HostSound`. Spawn in both. Host window: `/time set day`, then `/op Friend`. Stand the two players about 3 blocks apart.
+2. Host window (single-player check): press E, put an oak log in the 2x2 grid, take the 4 planks, close with E. Place the chest, open it, shift-click the cobblestone into it, take it back, close. Everything works as before.
+3. Friend window: press E. Put one oak log in the 2x2 grid: 4 planks show in the output. Take them, put 4 planks in the 2x2 grid and take the crafting table. Close with E. The crafting table is in the friend's inventory and the host's inventory did not change. Screenshot the friend window with the grid filled. **S17**
+4. Friend window: place the crafting table and right click it: the crafting screen opens. Put two planks in a column, take the sticks. Put one plank in the grid and walk 8 blocks away with the screen open: it closes by itself and the plank is back in the friend's inventory.
+5. Friend window: place the furnace and right click it. Put the raw iron on top and one coal below (right click drops one): the flame and the arrow move. Take the iron ingots: the friend's XP bar rises.
+6. Host window: right click the chest the host placed in step 2 and leave it open. Friend window: right click the same chest: the lid is open in both windows. Shift-click the friend's cobblestone into the chest. Host window: the cobblestone shows in the host's open chest right away. Take it into the host's inventory. Friend window: the chest slot is empty. Screenshot both windows. **S18** (host) **S19** (friend)
+7. Friend window: press Escape. Host window: the lid stays open (the host still has it open). Press Escape: the lid closes with the chest sound.
+8. Friend window: `/xp add @s 5 levels`. Place the anvil and right click it. Put the iron sword in the left slot and type `Blade` as the name: the result shows "Blade" and costs 1 level. Take it: the friend has 4 levels and a sword named Blade.
+9. Friend window: press E, put the remaining coal in the 2x2 grid and leave the screen open. Host window: `/kill Friend`. Friend window: the screen closes, and the coal lies on the ground with the rest of the friend's items where the friend died.
+10. Close both windows (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_log*4,minecraft:chest,minecraft:furnace,minecraft:raw_iron*3,minecraft:coal*6,minecraft:cobblestone*32,minecraft:anvil,minecraft:iron_sword
+```

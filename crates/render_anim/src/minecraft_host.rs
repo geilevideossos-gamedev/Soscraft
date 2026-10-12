@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use minecraft_commands::{Outgoing, Recipient, Serverbound};
 use minecraft_net::messages::HandState;
 use minecraft_net::{Lane, PlayerUuid, ToClient, ToServer};
+use minecraft_survival::menus::{Books, MenuInput};
 use minecraft_survival::session::{BatchJob, EncodedBatch, Hello, JoinContext, Sessions};
 use minecraftoss_core::Registries;
 
@@ -126,6 +127,21 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
             Ok(ToServer::Hand(events)) => {
                 if let Some(session) = host.sessions.sessions.get_mut(&client) {
                     session.hands.push(events);
+                }
+            }
+            Ok(ToServer::Click(click)) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    session.push_menu(MenuInput::Click(click));
+                }
+            }
+            Ok(ToServer::RenameItem(name)) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    session.push_menu(MenuInput::Rename(name));
+                }
+            }
+            Ok(ToServer::CloseMenu { menu }) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    session.push_menu(MenuInput::Close(menu));
                 }
             }
             Ok(_) => {}
@@ -317,6 +333,7 @@ pub(crate) fn host(
         };
         let mut told = Vec::new();
         for session in host.sessions.sessions.values_mut() {
+            let inputs = std::mem::take(&mut session.menu_inputs);
             let Some(player) = players.get_mut(&session.uuid) else {
                 session.hands.take(now, |_| false);
                 continue;
@@ -331,6 +348,7 @@ pub(crate) fn host(
             }
             let selected = host.selects.remove(&session.client);
             let id = sim::ClientId(session.client);
+            let was = player.menus.block().cloned();
             let stepped = crate::minecraft_players::step_friend(
                 player,
                 &mut world,
@@ -342,6 +360,14 @@ pub(crate) fn host(
             session
                 .outbox
                 .extend(stepped.lines.into_iter().map(ToClient::Chat));
+            let lines = crate::minecraft_players::friend_menus(
+                player,
+                &mut world,
+                (id, origin),
+                inputs,
+                was,
+            );
+            session.outbox.extend(lines.into_iter().map(ToClient::Chat));
             told.extend(stepped.told.map(|message| Outgoing {
                 to: Recipient::All,
                 message,
@@ -362,6 +388,9 @@ pub(crate) fn host(
         host.chat.clear();
     }
     host.sessions.send_views(&server.players);
+    let books = Books::of(&server.globals.data);
+    host.sessions
+        .send_menus(&mut server.players, &mut server.levels, books);
     if host.worker.is_none() && !host.sessions.is_empty() {
         host.worker = ChunkWorker::start();
     }

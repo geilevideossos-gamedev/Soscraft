@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 1;
+pub const PROTOCOL: u16 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -103,24 +103,51 @@ pub enum Target {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Click {
     pub menu: u8,
     pub state: u16,
-    pub slot: i16,
-    pub button: u8,
-    pub mode: ClickMode,
+    pub action: MenuAction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClickMode {
-    Pickup,
-    QuickMove,
-    Swap,
-    Clone,
-    Throw,
-    QuickCraft,
-    PickupAll,
+pub enum MenuSlot {
+    Inventory(u8),
+    Crafting(u8),
+    Result,
+    Workbench(u8),
+    WorkbenchResult,
+    Container(u16),
+    Output,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MenuAction {
+    Slot {
+        slot: MenuSlot,
+        right: bool,
+        shift: bool,
+    },
+    Outside {
+        right: bool,
+    },
+    Gather {
+        slot: MenuSlot,
+        right: bool,
+    },
+    Swap {
+        slot: MenuSlot,
+        hotbar: u8,
+    },
+    Spread {
+        slots: Vec<MenuSlot>,
+        right: bool,
+    },
+    Throw {
+        slot: MenuSlot,
+        whole: bool,
+    },
+    Choose(u16),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -408,13 +435,11 @@ pub enum MenuExtras {
     None,
     Enchanting {
         seed: i32,
-        costs: [i32; 3],
-        clues: [i32; 3],
-        levels: [i32; 3],
+        shelves: i32,
     },
     Anvil {
         cost: i32,
-        name: String,
+        name: Option<String>,
     },
 }
 

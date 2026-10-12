@@ -5,9 +5,12 @@ use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use minecraft_commands::{Clientbound, Serverbound, Text};
+use minecraft_net::messages::{Click, MenuView};
 use minecraft_net::messages::{GameMode, Target};
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
+use minecraft_survival::data::GameData;
 use minecraft_survival::guns::{Follow, weapon_of};
+use minecraft_survival::menus::Open;
 use minecraft_survival::remote::{DecodeJob, RemoteWorld};
 use minecraft_survival::session::BREAK_EVENT;
 use minecraft_survival::views::{HudClock, Selection, view_stack};
@@ -15,8 +18,10 @@ use minecraft_terrain::containers::Containers;
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::AtlasAnimation;
 use minecraft_terrain::pack::PackStack;
+use minecraft_terrain::stations::StationBook;
 use minecraftoss_core::registries::{DataPaths, Registries};
 use minecraftoss_core::{BlockStateId, Chunk};
+use minecraftoss_entities::enchant::Enchantments;
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::Inventory;
 use net::minecraft_wire::HOST;
@@ -35,20 +40,8 @@ struct Prepared {
     registry: u64,
     language: HashMap<String, String>,
     recipes: Arc<RecipeBook>,
-}
-
-fn recipes(root: &std::path::Path) -> RecipeBook {
-    let Some(jar) = crate::minecraft_world::data_jar() else {
-        return RecipeBook::default();
-    };
-    let catalog = minecraft_terrain::crafting::find_item_catalog(Some(root), &jar);
-    match minecraft_terrain::crafting::load_recipes(&jar, catalog.as_deref()) {
-        Ok((recipes, _)) => recipes,
-        Err(error) => {
-            diag::warn!(World, "Minecraft recipes unavailable: {error:#}");
-            RecipeBook::default()
-        }
-    }
+    stations: Arc<StationBook>,
+    enchantments: Option<Arc<Enchantments>>,
 }
 
 fn prepare() -> Result<Prepared, String> {
@@ -61,12 +54,15 @@ fn prepare() -> Result<Prepared, String> {
         minecraft_terrain::item_icons::language(&packs).unwrap_or_else(|_| HashMap::new());
     let look = crate::minecraft_world::load_look(packs)?;
     let registry = minecraft_survival::session::registry_fingerprint(&registries);
+    let data = GameData::load(Some(&root), crate::minecraft_world::data_jar());
     Ok(Prepared {
         look,
         registries,
         registry,
         language,
-        recipes: Arc::new(recipes(&root)),
+        recipes: data.recipes,
+        stations: data.stations,
+        enchantments: data.enchantments,
     })
 }
 
@@ -149,6 +145,8 @@ pub(crate) struct Friend {
     mining: crate::minecraft_mining::Mining,
     cracks: BTreeMap<(u32, [i32; 3]), u8>,
     hand: crate::minecraft_input::HandSampler,
+    shown_menu: Option<u8>,
+    screen_open: bool,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -358,6 +356,9 @@ pub(crate) fn friend(
                 );
                 friend.fire_frames = crate::minecraft_world::fire_frames(&prepared.look.packs)
                     .map(|(image, frames)| (images.add(image), frames));
+                friend
+                    .inventory_ui
+                    .set_station_data(prepared.stations.clone(), prepared.enchantments.clone());
                 friend.prepared = Some(prepared);
                 diag::info!(World, "Minecraft look loaded: waiting for the host's world");
             }
@@ -369,7 +370,6 @@ pub(crate) fn friend(
         }
     }
     ui.active = false;
-    ui.inventory_open = false;
     let sent = std::mem::take(&mut ui.chat.sent);
     let mut wire = wire.filter(|wire| wire.role() == Some(net::WireRole::Friend));
     if let Some(wire) = wire.as_mut() {
@@ -425,10 +425,12 @@ pub(crate) fn friend(
     let shown = (dt, seconds, now_ms);
     let swap = std::mem::take(&mut ui.swap_hands);
     let drop = ui.drop_selected.take();
-    let picked = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
+    let messages = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
     crate::minecraft_respawn::fade_overlay(&mut ui, dt);
-    if let (Some(wire), Some(slot)) = (wire.as_mut(), picked) {
-        send(wire, &ToServer::SelectSlot(slot));
+    if let Some(wire) = wire.as_mut() {
+        for message in &messages {
+            send(wire, message);
+        }
     }
     let logged_in = friend
         .remote
@@ -570,7 +572,8 @@ fn show_player(
     ps: Option<&playerstate_iw4::PlayerState>,
     images: &mut Assets<Image>,
     (dt, seconds, now_ms): (f64, f64, u64),
-) -> Option<u8> {
+) -> Vec<ToServer> {
+    let mut out = Vec::new();
     let Friend {
         prepared: Some(prepared),
         remote: Some(remote),
@@ -581,40 +584,73 @@ fn show_player(
         follow,
         fire_frames,
         atlas_animation,
+        shown_menu,
+        screen_open,
         ..
     } = friend
     else {
-        return None;
+        ui.inventory_open = false;
+        return out;
     };
-    let view = remote
+    let Some(view) = remote
         .player
         .as_ref()
-        .filter(|_| remote.level.is_some() && remote.rejected.is_none())?;
+        .filter(|_| remote.level.is_some() && remote.rejected.is_none())
+    else {
+        ui.inventory_open = false;
+        return out;
+    };
     selection.follow(view.selected, seconds);
     let picked = ui
         .select
         .take()
         .and_then(|slot| selection.pick(slot, seconds));
+    out.extend(picked.map(ToServer::SelectSlot));
     ui.drop_selected = None;
     ui.swap_hands = false;
-    ui.clicks.clear();
     let interacts = view.game_mode != GameMode::Spectator;
     ui.game_mode = mc_game_mode(view.game_mode);
     let alive = ps.filter(|ps| ps.pm_type == 0 && !spawn_gate.holding(now_ms));
     ui.active = alive.is_some();
+    if alive.is_none() || !interacts {
+        ui.inventory_open = false;
+    }
+    let recipes = &prepared.recipes;
+    show_menus(
+        ui,
+        (&mut remote.menu, remote.inventory_menu.as_ref()),
+        (shown_menu, screen_open),
+        recipes,
+        &prepared.language,
+        &mut out,
+    );
     let Some(ps) = alive else {
         ui.vitals = None;
         ui.weapon_request = None;
         ui.holding_item = false;
         ui.empty_hand = false;
-        return picked;
+        return out;
     };
     let mut inventory = Inventory::default();
-    inventory.recipes = prepared.recipes.clone();
+    inventory.recipes = recipes.clone();
     for (slot, stack) in inventory.slots.iter_mut().zip(&view.slots) {
-        *slot = stack
-            .as_ref()
-            .and_then(|nbt| view_stack(nbt, &prepared.recipes));
+        *slot = stack.as_ref().and_then(|nbt| view_stack(nbt, recipes));
+    }
+    let screen = minecraft_survival::menus::mirror(remote.menu.as_ref(), recipes);
+    let current = remote.menu.as_ref().or(remote.inventory_menu.as_ref());
+    inventory.cursor = current
+        .and_then(|menu| menu.carried.as_ref())
+        .and_then(|nbt| view_stack(nbt, recipes));
+    if let Some(grid) = remote.inventory_menu.as_ref() {
+        let cells = minecraft_survival::menus::stacks(&grid.slots, recipes);
+        for (cell, stack) in inventory.crafting.iter_mut().zip(cells) {
+            *cell = stack;
+        }
+    }
+    if matches!(screen.open, Some(Open::Table(_))) {
+        for (cell, stack) in inventory.workbench.iter_mut().zip(&screen.cells) {
+            *cell = stack.clone();
+        }
     }
     let (mins, maxs) = sim::voxel::player_hull(ps);
     let eye_in_water = sim::voxel::water(ps.origin, mins, maxs, ps.view_height_current).eye;
@@ -633,15 +669,83 @@ fn show_player(
     inventory_ui.animation_tick = atlas_animation.ticks();
     let packs = &prepared.look.packs;
     let mut containers = Containers::default();
+    containers.set_book(prepared.stations.clone());
+    let level = u32::try_from(view.xp_level).unwrap_or(0);
     inventory_ui.publish(
         ui,
         &inventory,
         selection.slot,
         packs,
         images,
-        &mut containers,
+        (&screen, level, &containers),
     );
-    picked
+    out
+}
+
+fn show_menus(
+    ui: &mut frame::MinecraftUi,
+    (menu, inventory_menu): (&mut Option<MenuView>, Option<&MenuView>),
+    (shown_menu, screen_open): (&mut Option<u8>, &mut bool),
+    recipes: &RecipeBook,
+    language: &HashMap<String, String>,
+    out: &mut Vec<ToServer>,
+) {
+    if shown_menu.is_some() && menu.as_ref().map(|view| view.menu) != *shown_menu {
+        *shown_menu = None;
+        *screen_open = false;
+        ui.inventory_open = false;
+    }
+    if let Some(view) = menu
+        .as_ref()
+        .filter(|view| Some(view.menu) != *shown_menu && ui.active)
+    {
+        *shown_menu = Some(view.menu);
+        let screen = minecraft_survival::menus::mirror(Some(view), recipes);
+        let lang = |key: &str| language.get(key).cloned();
+        ui.screen = crate::minecraft_inventory::screen_for(screen.open.as_ref());
+        ui.screen_title = view.title.resolve(&lang).text;
+        ui.inventory_open = true;
+        ui.screen_opened = true;
+        *screen_open = true;
+    }
+    if menu.is_none() && matches!(ui.screen, frame::McScreen::Creative(_)) {
+        ui.screen = frame::McScreen::Inventory;
+    }
+    let (id, state) = menu
+        .as_ref()
+        .or(inventory_menu)
+        .map_or((minecraft_survival::menus::INVENTORY_MENU, 0), |view| {
+            (view.menu, view.state)
+        });
+    let mut closed = false;
+    for click in std::mem::take(&mut ui.clicks) {
+        match click {
+            frame::McClick::Close => {
+                if !closed {
+                    closed = true;
+                    out.push(ToServer::CloseMenu { menu: id });
+                }
+                *menu = None;
+                *shown_menu = None;
+            }
+            frame::McClick::Rename(name) => out.push(ToServer::RenameItem(name)),
+            other => {
+                if let Some(action) = crate::minecraft_inventory::action_of(&other) {
+                    out.push(ToServer::Click(Click {
+                        menu: id,
+                        state,
+                        action,
+                    }));
+                }
+            }
+        }
+    }
+    if *screen_open && !ui.inventory_open && !closed {
+        out.push(ToServer::CloseMenu { menu: id });
+        *menu = None;
+        *shown_menu = None;
+    }
+    *screen_open = ui.inventory_open;
 }
 
 #[allow(clippy::too_many_arguments)]

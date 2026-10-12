@@ -159,6 +159,7 @@ pub struct Session {
     pub chunks: ChunkSender,
     pub outbox: Vec<ToClient>,
     pub hands: HandQueue,
+    pub menu_inputs: Vec<crate::menus::MenuInput>,
     command_level: Option<u8>,
     view: Option<PlayerView>,
     cracks: BTreeMap<(u32, BlockPos), u8>,
@@ -173,6 +174,7 @@ impl Session {
             chunks: ChunkSender::new(view_distance),
             outbox: Vec::new(),
             hands: HandQueue::default(),
+            menu_inputs: Vec::new(),
             command_level: None,
             view: None,
             cracks: BTreeMap::new(),
@@ -214,6 +216,12 @@ impl Session {
                     data: i32::try_from(state).unwrap_or_default(),
                 });
             }
+        }
+    }
+
+    pub fn push_menu(&mut self, input: crate::menus::MenuInput) {
+        if self.menu_inputs.len() < crate::menus::MENU_INPUTS {
+            self.menu_inputs.push(input);
         }
     }
 
@@ -918,6 +926,24 @@ impl Sessions {
             if let Some(player) = players.get(&session.uuid) {
                 session.send_view(player);
             }
+        }
+    }
+
+    pub fn send_menus(
+        &mut self,
+        players: &mut BTreeMap<PlayerUuid, Player>,
+        levels: &mut BTreeMap<Dimension, Level>,
+        books: crate::menus::Books<'_>,
+    ) {
+        for session in self.sessions.values_mut() {
+            let Some(player) = players.get_mut(&session.uuid) else {
+                continue;
+            };
+            let Some(level) = levels.get_mut(&player.dimension) else {
+                continue;
+            };
+            let changes = crate::menus::changes(player, &mut level.containers, books);
+            session.outbox.extend(changes);
         }
     }
 

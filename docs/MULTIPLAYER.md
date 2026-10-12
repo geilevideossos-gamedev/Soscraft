@@ -181,7 +181,8 @@ pub struct HandState { pub tick: u32, pub attack: bool, pub use_item: bool, pub 
 pub struct HandEvent { pub seq: u32, pub kind: HandEventKind, pub target: Target }
 pub enum HandEventKind { AttackPressed, AttackReleased, UsePressed, UseReleased, SwapHands, Drop { whole_stack: bool } }
 pub enum Target { Miss, Block { pos: [i32; 3], face: u8, hit: [f32; 3] }, Mob { id: u64 }, Player { client: u32 } }
-pub struct Click { pub menu: u8, pub state: u16, pub slot: i16, pub button: u8, pub mode: ClickMode }
+pub struct Click { pub menu: u8, pub state: u16, pub action: MenuAction }
+pub enum MenuAction { Slot { slot, right, shift }, Outside { right }, Gather { slot, right }, Swap { slot, hotbar }, Spread { slots, right }, Throw { slot, whole }, Choose(u16) }
 
 pub enum ToClient {
     Login(Login),

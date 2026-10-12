@@ -13,6 +13,7 @@ pub mod gear;
 pub mod guns;
 pub mod impulse;
 pub mod level;
+pub mod menus;
 pub mod offhand;
 pub mod player;
 pub mod player_nbt;

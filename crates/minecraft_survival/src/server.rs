@@ -1498,8 +1498,8 @@ pub(crate) mod tests {
             .iter()
             .map(|stack| (stack.id.as_str(), stack.count))
             .collect();
-        assert_eq!(dropped, vec![("minecraft:diamond", 2)]);
-        assert_eq!(held(&left.player, 35), Some(("minecraft:stick", 1)));
+        assert_eq!(dropped, vec![("minecraft:stick", 1)]);
+        assert_eq!(held(&left.player, 35), Some(("minecraft:diamond", 2)));
         assert!(server.players.is_empty());
         assert!(server.globals.chat.profile(alex).is_none());
         let recipes = server.globals.data.recipes.clone();
@@ -1515,7 +1515,7 @@ pub(crate) mod tests {
             .unwrap()
             .expect("the leave wrote the file");
         let slots = saved.inventory.unwrap();
-        assert_eq!(slots[35].as_ref().map(|stack| stack.count), Some(1));
+        assert_eq!(slots[35].as_ref().map(|stack| stack.count), Some(2));
         assert!(server.globals.writer.recently_left(&uuid).is_none());
     }
 

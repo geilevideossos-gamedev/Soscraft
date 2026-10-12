@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use minecraft_commands::{Clientbound, Text};
-use minecraft_net::messages::{Login, Nbt, PlayerView, Rules};
+use minecraft_net::messages::{Login, MenuView, Nbt, PlayerView, Rules};
 use minecraft_net::{ChunkBatchBlob, Dimension, Lane, PlayerUuid, StateFrame, ToClient};
 use minecraft_terrain::ChunkEvent;
 use minecraft_terrain::server::{OVERWORLD_CLOCK, THE_END_CLOCK};
@@ -108,6 +108,8 @@ pub struct RemoteWorld {
     pub chat: Vec<Clientbound>,
     pub command_level: u8,
     pub player: Option<PlayerView>,
+    pub menu: Option<MenuView>,
+    pub inventory_menu: Option<MenuView>,
     pub rules: Rules,
     pub game_time: i64,
     pub clocks: Clocks,
@@ -134,6 +136,8 @@ impl RemoteWorld {
             chat: Vec::new(),
             command_level: 0,
             player: None,
+            menu: None,
+            inventory_menu: None,
             rules: Rules::default(),
             game_time: 0,
             clocks: Clocks::default(),
@@ -340,6 +344,31 @@ impl RemoteWorld {
                 }
             }
             ToClient::Player(view) => self.player = Some(*view),
+            ToClient::MenuOpen(view) if view.menu == crate::menus::INVENTORY_MENU => {
+                self.inventory_menu = Some(view);
+            }
+            ToClient::MenuOpen(view) => self.menu = Some(view),
+            ToClient::MenuSlots {
+                menu,
+                state,
+                slots,
+                carried,
+                data,
+            } => {
+                let view = if menu == crate::menus::INVENTORY_MENU {
+                    self.inventory_menu.as_mut()
+                } else {
+                    self.menu.as_mut().filter(|view| view.menu == menu)
+                };
+                if let Some(view) = view {
+                    crate::menus::apply_slots(view, state, slots, carried, data);
+                }
+            }
+            ToClient::MenuClose { menu } => {
+                if self.menu.as_ref().is_some_and(|view| view.menu == menu) {
+                    self.menu = None;
+                }
+            }
             ToClient::Chat(Clientbound::Commands { level }) => self.command_level = level,
             ToClient::Chat(line) => self.chat.push(line),
             ToClient::PlayerList { added, removed } => {
@@ -523,6 +552,7 @@ mod tests {
     use crate::server::tests::{registries, test_globals, world};
     use crate::session::{Answer, Hello, JoinContext, Sessions, encode_batch};
     use minecraft_net::PROTOCOL;
+    use minecraft_net::messages::{MenuExtras, MenuKind};
     use minecraftoss_core::BiomeId;
     use minecraftoss_core::chunk::ChunkStatus;
     use std::time::{Duration, Instant};
@@ -725,6 +755,62 @@ mod tests {
         let stone = registries.blocks.parse_state("minecraft:stone").unwrap();
         assert_eq!(state(&friend, (5, -60, 5)), Some(stone));
         assert_eq!(friend.take_acks(), vec![1]);
+    }
+
+    #[test]
+    fn menus_open_change_and_close_on_the_friend() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let view = |menu: u8, kind: MenuKind, cells: usize| MenuView {
+            menu,
+            kind,
+            title: Text::literal("Chest"),
+            state: 1,
+            slots: vec![None; cells],
+            carried: None,
+            data: Vec::new(),
+            extras: MenuExtras::None,
+        };
+        let mut friend = RemoteWorld::new(registries);
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        friend.apply(ToClient::MenuOpen(view(0, MenuKind::Inventory, 4)));
+        friend.apply(ToClient::MenuOpen(view(5, MenuKind::Chest { rows: 3 }, 27)));
+        friend.apply(ToClient::MenuSlots {
+            menu: 5,
+            state: 2,
+            slots: vec![(26, Some(Nbt(vec![1])))],
+            carried: Some(Some(Nbt(vec![2]))),
+            data: vec![(0, 9)],
+        });
+        friend.apply(ToClient::MenuSlots {
+            menu: 4,
+            state: 9,
+            slots: vec![(0, Some(Nbt(vec![3])))],
+            carried: None,
+            data: Vec::new(),
+        });
+        friend.apply(ToClient::MenuSlots {
+            menu: 0,
+            state: 3,
+            slots: vec![(1, Some(Nbt(vec![4]))), (99, None)],
+            carried: None,
+            data: Vec::new(),
+        });
+        let chest = friend.menu.as_ref().unwrap();
+        assert_eq!(chest.state, 2);
+        assert_eq!(chest.slots[26], Some(Nbt(vec![1])));
+        assert_eq!(chest.slots[0], None, "a change for another menu");
+        assert_eq!(chest.carried, Some(Nbt(vec![2])));
+        assert_eq!(chest.data, vec![(0, 9)]);
+        let inventory = friend.inventory_menu.as_ref().unwrap();
+        assert_eq!((inventory.state, inventory.slots.len()), (3, 4));
+        assert_eq!(inventory.slots[1], Some(Nbt(vec![4])));
+        friend.apply(ToClient::MenuClose { menu: 4 });
+        assert!(friend.menu.is_some());
+        friend.apply(ToClient::MenuClose { menu: 5 });
+        assert!(friend.menu.is_none());
+        assert!(friend.inventory_menu.is_some());
     }
 
     #[test]

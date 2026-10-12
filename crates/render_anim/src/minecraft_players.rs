@@ -6,6 +6,7 @@ use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_survival::actions::{Actor, Body, Effect, Moved};
 use minecraft_survival::entities::{Entities, TickActor};
 use minecraft_survival::level::{Level, Terrain};
+use minecraft_survival::menus::MenuInput;
 use minecraft_survival::player::Player;
 use minecraft_survival::server::Globals;
 use minecraft_survival::session::{HandQueue, HandTake};
@@ -1001,6 +1002,21 @@ pub(crate) fn step_friend(
         world.packs,
         &mut stepped.lines,
     );
+    if let Begun::Left(switch) = &begun {
+        let thrown = minecraft_survival::menus::close(player);
+        let feet = player.place.map(|place| place.feet);
+        if let (Some(entities), Some(feet)) = (
+            world
+                .levels
+                .get_mut(&switch.from)
+                .and_then(|level| level.entities.as_mut()),
+            feet,
+        ) {
+            for stack in &thrown {
+                entities.drop_given(stack, feet);
+            }
+        }
+    }
     if !matches!(begun, Begun::Live) {
         return stepped;
     }
@@ -1067,6 +1083,13 @@ pub(crate) fn step_friend(
             &mut sounds,
             world.packs,
         );
+        if !life.alive {
+            let yaw = minecraft_yaw(ps.viewangles[1]);
+            for stack in minecraft_survival::menus::close(player) {
+                let eye = glam::DVec3::from_array(eye);
+                entities.world_items.toss(stack, eye, yaw, ps.viewangles[0]);
+            }
+        }
         let Player {
             death_watch,
             inventory,
@@ -1075,38 +1098,29 @@ pub(crate) fn step_friend(
         } = player;
         drop_on_death(death_watch, inventory, hand, entities);
     }
-    let effects = friend_hand(
+    let (effects, (table, block, bench)) = friend_hand(
         player, world, client, origin, &ps, &moved, taken, life.alive,
     );
-    let heard_at = Some(eye);
-    for effect in effects {
-        match effect {
-            Effect::Sound {
-                event,
-                at,
-                volume,
-                pitch,
-                spread,
-            } => {
-                let at = at.or(heard_at);
-                if let (Some(sounds), Some(at)) = (world.sounds.as_deref_mut(), at) {
-                    let pitch = if spread == 0.0 {
-                        pitch
-                    } else {
-                        pitch + sounds.random() * spread
-                    };
-                    let at = Vec3::from_array(sim::voxel::to_map(origin, at));
-                    sounds.play(world.packs, &event, Some(at), volume, pitch);
-                }
-            }
-            Effect::Chat(line) => stepped.lines.push(line),
-            Effect::Overlay(key) => stepped.lines.push(Clientbound::System {
-                text: minecraft_commands::Text::translate(&key, Vec::new()),
-                overlay: true,
-            }),
-            Effect::Crumbs { .. } | Effect::Dig { .. } => {}
-        }
+    if let Some(level) = world.levels.get_mut(&player.dimension) {
+        let recipes = player.inventory.recipes.clone();
+        minecraft_survival::menus::open_station(
+            player,
+            &mut level.containers,
+            &level.terrain,
+            world.globals,
+            &recipes,
+            table,
+            block,
+            bench,
+        );
     }
+    hear(
+        world.sounds.as_deref_mut(),
+        world.packs,
+        (origin, Some(eye)),
+        effects,
+        &mut stepped.lines,
+    );
     let owned = owned_weapons(&ps, world.authority);
     let Player {
         survival,
@@ -1134,9 +1148,9 @@ fn friend_hand(
     moved: &Moved,
     taken: HandTake,
     alive: bool,
-) -> Vec<Effect> {
+) -> (Vec<Effect>, Opens) {
     let Some(level) = world.levels.get_mut(&player.dimension) else {
-        return Vec::new();
+        return (Vec::new(), (None, None, None));
     };
     let interacts = alive && player.mode.interacts();
     if interacts
@@ -1219,7 +1233,156 @@ fn friend_hand(
         &acted.hand_mined,
     );
     effects.extend(harvest.effects);
-    effects
+    (
+        effects,
+        (acted.open_table, acted.open_block, acted.open_bench),
+    )
+}
+
+type Opens = (
+    Option<BlockPos>,
+    Option<minecraft_terrain::containers::Opened>,
+    Option<(BlockPos, minecraft_terrain::stations::Workshop)>,
+);
+
+fn hear(
+    mut sounds: Option<&mut Sounds>,
+    packs: &PackStack,
+    (origin, heard_at): ([f64; 3], Option<[f64; 3]>),
+    effects: Vec<Effect>,
+    lines: &mut Vec<Clientbound>,
+) {
+    for effect in effects {
+        match effect {
+            Effect::Sound {
+                event,
+                at,
+                volume,
+                pitch,
+                spread,
+            } => {
+                let at = at.or(heard_at);
+                if let (Some(sounds), Some(at)) = (sounds.as_deref_mut(), at) {
+                    let pitch = if spread == 0.0 {
+                        pitch
+                    } else {
+                        pitch + sounds.random() * spread
+                    };
+                    let at = Vec3::from_array(sim::voxel::to_map(origin, at));
+                    sounds.play(packs, &event, Some(at), volume, pitch);
+                }
+            }
+            Effect::Chat(line) => lines.push(line),
+            Effect::Overlay(key) => lines.push(Clientbound::System {
+                text: minecraft_commands::Text::translate(&key, Vec::new()),
+                overlay: true,
+            }),
+            Effect::Crumbs { .. } | Effect::Dig { .. } => {}
+        }
+    }
+}
+
+pub(crate) fn friend_menus(
+    player: &mut Player,
+    world: &mut FriendWorld<'_>,
+    (client, origin): (sim::ClientId, [f64; 3]),
+    inputs: Vec<MenuInput>,
+    was: Option<minecraft_terrain::containers::Opened>,
+) -> Vec<Clientbound> {
+    let mut lines = Vec::new();
+    let ps = world.authority.player(client).copied();
+    let Some(level) = world.levels.get_mut(&player.dimension) else {
+        return lines;
+    };
+    let Level {
+        entities,
+        containers,
+        terrain,
+        openers,
+        ..
+    } = level;
+    let Some(entities) = entities.as_mut() else {
+        return lines;
+    };
+    let books = minecraft_survival::menus::Books::of(&world.globals.data);
+    let mut clicked = minecraft_survival::menus::take_inputs(
+        player,
+        containers,
+        books,
+        inputs,
+        world.language,
+        || entities.random_float(),
+    );
+    let Some(ps) = ps else {
+        if let Some(feet) = player.place.map(|place| place.feet) {
+            for stack in &clicked.thrown {
+                entities.drop_given(stack, feet);
+            }
+        }
+        return lines;
+    };
+    let eye = sim::voxel::to_block(
+        origin,
+        [
+            ps.origin[0],
+            ps.origin[1],
+            ps.origin[2] + ps.view_height_current,
+        ],
+    );
+    let invalid = player
+        .menus
+        .open
+        .as_ref()
+        .is_some_and(|menu| !minecraft_survival::menus::still_valid(menu, &terrain.scene, eye));
+    if invalid {
+        clicked
+            .thrown
+            .extend(minecraft_survival::menus::close(player));
+    }
+    let yaw = minecraft_yaw(ps.viewangles[1]);
+    for stack in clicked.thrown {
+        let at = glam::DVec3::from_array(eye);
+        entities.world_items.toss(stack, at, yaw, ps.viewangles[0]);
+    }
+    let _ = player.survival.gain_experience(clicked.experience);
+    let mut body = MwBody {
+        authority: &mut *world.authority,
+        client,
+        ps: &ps,
+        registries: &world.globals.registries,
+        shapes: &mut *world.shapes,
+        shape_ids: &mut *world.shape_ids,
+    };
+    let mut effects = minecraft_survival::menus::finish(
+        entities,
+        terrain,
+        &mut body,
+        clicked.used,
+        clicked.anvil,
+    );
+    let now = player.menus.block().cloned();
+    let spectator = player.mode.mode == minecraftoss_player::GameMode::Spectator;
+    let lids = minecraft_survival::menus::Lids {
+        entities,
+        terrain,
+        openers,
+        body: &mut body,
+    };
+    effects.extend(minecraft_survival::menus::lids(
+        lids,
+        &player.uuid,
+        was.as_ref(),
+        now.as_ref(),
+        spectator,
+    ));
+    hear(
+        world.sounds.as_deref_mut(),
+        world.packs,
+        (origin, Some(eye)),
+        effects,
+        &mut lines,
+    );
+    lines
 }
 
 fn finish_item_use(
