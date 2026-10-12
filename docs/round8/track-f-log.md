@@ -197,3 +197,25 @@ Commit: the one after `f5db780f`.
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16
 ```
+
+## Review R1. Cave spider spawners keep the monster light rules
+
+Commit: the one after `48e7cf50` (adversarial review of F1 to F4).
+
+- **Defect:** F3 made cave spiders real mobs, but the spawn rules had no entry for `minecraft:cave_spider` (`natural_spawner::type_info`). A spawner with no entry treats the mob as allowed anywhere, so a cave spider spawner made cave spiders in full daylight, next to torches and inside blocks. The new test counted 4 cave spiders from a spawner in the open at noon. Lighting up a mineshaft spawner, the usual way to stop it, did nothing.
+- **Vanilla 26.3** (javap `SpawnPlacements`): `CAVE_SPIDER` is registered like `SPIDER`: `ON_GROUND`, `MOTION_BLOCKING_NO_LEAVES` and the same predicate (`Monster.checkMonsterSpawnRules`). `BaseSpawner` checks room for the type's spawn box and that predicate. `CaveSpider.finalizeSpawn` returns at once, so a cave spider gets no `Mob.finalizeSpawn` part (no random follow-range bonus) and no jockey or spider effect.
+- **Changed:**
+  - `minecraftoss-world` `natural_spawner.rs`: `type_info` knows the cave spider (0.7 by 0.5, on the ground, a monster), so spawners check room, light and peaceful for it like for a spider.
+  - `natural_spawner/spawning.rs`: `finalize_monster` leaves a cave spider as it is, like `CaveSpider.finalizeSpawn`. Without this arm the new entry would have sent it through the generic `Mob.finalizeSpawn`.
+- **Tests:**
+  - `minecraftoss-world` `natural_spawner::spawning::tests::a_cave_spider_spawns_by_the_spider_rules_at_its_own_size`.
+  - `minecraft_terrain` `server::tests::a_cave_spider_spawner_keeps_the_monster_light_rules` (with the 26.3 data): a cave spider spawner in the open makes none in 400 ticks at noon and makes some at midnight, with no rider and no random spawn bonus. It fails without the fix.
+- **Owner's test steps** (survival, normal difficulty, by day, kit below):
+  1. Place the spawner on the grass in daylight and use the cave spider egg on it. Wait a minute nearby: no cave spider comes out. **Screenshot 1.**
+  2. Build a dark room around it (cobblestone walls and roof, no torches) and wait inside a few blocks away: cave spiders come out.
+  3. Place torches on the inside walls all around the spawner so the room is lit: no more cave spiders come out.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner,minecraft:cave_spider_spawn_egg,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:torch*16,minecraft:iron_sword
+```

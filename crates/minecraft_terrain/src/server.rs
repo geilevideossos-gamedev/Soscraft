@@ -6405,6 +6405,51 @@ mod tests {
     }
 
     #[test]
+    fn a_cave_spider_spawner_keeps_the_monster_light_rules() {
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(4.5, 205.0, 7.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let run = |time: i64| -> Option<Vec<minecraftoss_core::nbt::Tag>> {
+            let mut server = spawner_with_egg(2, true)?;
+            server.spawner_egg((4, 205, 4), "minecraft:cave_spider").unwrap();
+            server.level.natural_spawning.as_mut().unwrap().spawn_mobs = false;
+            let mut spawned = Vec::new();
+            for _ in 0..400 {
+                server.set_time(time);
+                server.set_players(&[[4.5, 205.0, 7.5]], 2);
+                server.set_simulation_area((0, 0), 1);
+                server.prepare_spawning(&[player]);
+                server.tick();
+                spawned.extend(server.level.spawned.iter().filter(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:cave_spider")).cloned());
+                server.take_spawned();
+            }
+            Some(spawned)
+        };
+        let Some(noon) = run(6000) else { return };
+        assert!(noon.is_empty(), "no cave spider in full daylight: {}", noon.len());
+        let midnight = run(18000).unwrap();
+        assert!(!midnight.is_empty(), "the spawner makes cave spiders in the dark");
+        assert!(midnight.iter().all(|tag| tag.get("Passengers").is_none() && !format!("{tag:?}").contains("random_spawn_bonus")), "no jockey and no Mob.finalizeSpawn");
+    }
+
+    #[test]
     fn command_summons_do_not_reach_the_egg_results() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:smooth_stone_slab").with("type", "bottom").with("waterlogged", "false"));
