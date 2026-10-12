@@ -199,9 +199,11 @@ pub fn push_explosion(origin: [f32; 3], power: f32) {
     }
 }
 
+type MobBoxes = Vec<(u64, [f64; 6])>;
+
 /// The world's mobs as bullets see them: a key and a block-space box
 /// `[min, max]` each.
-static MOB_BOXES: RwLock<[Vec<(u64, [f64; 6])>; LEVELS]> = RwLock::new([Vec::new(), Vec::new(), Vec::new()]);
+static MOB_BOXES: RwLock<[MobBoxes; LEVELS]> =RwLock::new([Vec::new(), Vec::new(), Vec::new()]);
 
 pub fn set_mob_boxes(level: u8, boxes: Vec<(u64, [f64; 6])>) {
     if let Ok(mut held) = MOB_BOXES.write()

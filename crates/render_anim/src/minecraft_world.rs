@@ -1782,6 +1782,8 @@ type ColumnLights = Vec<((i32, i32), Option<Arc<SkyLight>>)>;
 
 type OpenCells = (u128, Vec<(i32, i32, i32)>);
 
+type ShapeTables<'a> = (&'a mut HashMap<BlockStateId, u16>, &'a mut HashMap<(Vec<[u32; 6]>, u16), u16>, u8);
+
 pub(crate) fn terrain_frame(terrain: &mut minecraft_survival::level::Terrain, world: &Loaded, view: &mut MinecraftWorldView, camera: &CullCamera) -> ColumnLights {
     let update = terrain
         .stream
@@ -1804,7 +1806,7 @@ pub(crate) fn animate_atlas(view: &mut MinecraftWorldView, animation: &mut Atlas
 
 pub(crate) fn apply_streamed(
     registries: &Registries,
-    (shapes, shape_ids, level): (&mut HashMap<BlockStateId, u16>, &mut HashMap<(Vec<[u32; 6]>, u16), u16>, u8),
+    (shapes, shape_ids, level): ShapeTables<'_>,
     (loaded, forgotten): (Vec<Arc<minecraftoss_core::Chunk>>, Vec<minecraftoss_core::ChunkPos>),
 ) {
     for chunk in loaded {
@@ -2049,7 +2051,7 @@ pub(crate) fn shape_id(
 pub(crate) fn write_blocks(
     terrain: &mut minecraft_survival::level::Terrain,
     registries: &Registries,
-    (shapes, shape_ids, level): (&mut HashMap<BlockStateId, u16>, &mut HashMap<(Vec<[u32; 6]>, u16), u16>, u8),
+    (shapes, shape_ids, level): ShapeTables<'_>,
     entities: &mut minecraft_survival::entities::Entities,
     writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
 ) {
@@ -2064,7 +2066,7 @@ pub(crate) fn write_blocks(
 pub(crate) fn refresh_shapes(
     terrain: &minecraft_survival::level::Terrain,
     registries: &Registries,
-    (shapes, shape_ids, level): (&mut HashMap<BlockStateId, u16>, &mut HashMap<(Vec<[u32; 6]>, u16), u16>, u8),
+    (shapes, shape_ids, level): ShapeTables<'_>,
     written: &[(i32, i32, i32)],
 ) {
     for &(x, y, z) in written {

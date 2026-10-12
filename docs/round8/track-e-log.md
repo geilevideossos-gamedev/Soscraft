@@ -1244,12 +1244,25 @@ Commit: see `git log` ("A friend's Minecraft menu is not served while they trave
 - **Test steps:** `docs/round8/e-m5-tests.md`, section "Review fixes", step R2.
 - **Kit:** the E20 kit and `minecraft:chest` x1; the line in the "Review fixes" section of `docs/round8/e-m5-tests.md` holds both.
 
+### Final verification of M5: clippy on the track's own lines
+
+Commit: see `git log` ("Multiplayer M5 passes clippy"). The previous commit is `6571e5db` (the friend's menu fix).
+
+- **Clippy** on every crate M5 changes (`hud`, `minecraft_survival`, `render_anim`, `sim`) with `--all-targets -A clippy::approx_constant`. Four warnings were on lines this run added (E19), all `type_complexity`; none on E20, E21 or the review fixes. Older warnings stay.
+- **Changed (no behaviour change):**
+  - `render_anim::minecraft_world`: `apply_streamed`, `write_blocks` and `refresh_shapes` take their shape tables and level as `ShapeTables<'_>`, a type alias for the same tuple.
+  - `sim::voxel`: `MOB_BOXES` holds `[MobBoxes; LEVELS]`, a type alias for one level's list.
+- **Tests:** none new. `test -p` of each touched crate is green on the real 26.3 data: `hud` 148, `minecraft_survival` 570 + 1, `render_anim` 141, `sim` 116. `check -p launcher` is green. The new files (`bands.rs`, `minecraft_levels.rs`) still pass `rustfmt --check` on their staged content.
+- **Combined kit:** the section below now covers the M5 owner tests.
+- **Test steps:** none new; `docs/round8/e-m5-tests.md` (E19 for the mob boxes, E19 and E20 for the streamed chunks and block writes) covers these lines.
+- **Kit:** none needed.
+
 ## Combined kit for every test in this track
 
-27 stacks no longer hold every test's kit. This line covers the M3 and M4 owner tests: the merge of tracks B, C and D, E16, E17 and the review fixes in `docs/round8/e-m3-tests.md`, and E18 in `docs/round8/e-m4-tests.md`. It leaves out six items of the merge section's steps 7 to 9 (lectern, trapped chest and piglins); give them from the host window before those steps: `/give @a minecraft:lectern`, `/give @a minecraft:writable_book`, `/give @a minecraft:trapped_chest`, `/give @a minecraft:redstone_lamp`, `/give @a minecraft:gold_block 4`, `/give @a minecraft:stone_pickaxe`. The M1 and M2 tests keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`; the M2 combined line (E11 to E15) is in the git history of this file at `bf0a3a47`.
+This line covers the M5 owner tests: E19, E20, E21 and the review fixes in `docs/round8/e-m5-tests.md`. The M1 to M4 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m4-tests.md`; the M3 and M4 combined line is in the git history of this file at `6571e5db`, and the M2 combined line (E11 to E15) at `bf0a3a47`.
 
-`minecraft:cow_spawn_egg` x5, `minecraft:pig_spawn_egg` x1, `minecraft:saddle` x1, `minecraft:snowball` x16, `minecraft:ender_pearl` x4, `minecraft:shulker_spawn_egg` x1, `minecraft:item_frame` x2, `minecraft:iron_sword` x1, `minecraft:cobblestone` x32, `minecraft:tnt` x4, `minecraft:flint_and_steel` x1, `minecraft:cooked_beef` x8, `minecraft:chest` x1, `minecraft:water_bucket` x1, `minecraft:lava_bucket` x1, `minecraft:bone_meal` x8, `minecraft:totem_of_undying` x1, `minecraft:creeper_spawn_egg` x2, `minecraft:trident` x1, `minecraft:wind_charge` x8, `minecraft:elytra` x1, `minecraft:firework_rocket` x8, `minecraft:warped_fungus_on_a_stick` x1, `minecraft:strider_spawn_egg` x1, `minecraft:powder_snow_bucket` x1, `minecraft:white_bed` x1, `minecraft:golden_helmet` x1 (27 stacks).
+`minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:iron_pickaxe` x1, `minecraft:iron_sword` x1, `minecraft:cobblestone` x32, `minecraft:cow_spawn_egg` x2, `minecraft:white_bed` x1, `minecraft:cooked_beef` x8, `minecraft:iron_helmet` x1, `minecraft:iron_chestplate` x1, `minecraft:torch` x16, `minecraft:chest` x1 (12 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:cow_spawn_egg*5,minecraft:pig_spawn_egg,minecraft:saddle,minecraft:snowball*16,minecraft:ender_pearl*4,minecraft:shulker_spawn_egg,minecraft:item_frame*2,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:cooked_beef*8,minecraft:chest,minecraft:water_bucket,minecraft:lava_bucket,minecraft:bone_meal*8,minecraft:totem_of_undying,minecraft:creeper_spawn_egg*2,minecraft:trident,minecraft:wind_charge*8,minecraft:elytra,minecraft:firework_rocket*8,minecraft:warped_fungus_on_a_stick,minecraft:strider_spawn_egg,minecraft:powder_snow_bucket,minecraft:white_bed,minecraft:golden_helmet
+IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:cow_spawn_egg*2,minecraft:white_bed,minecraft:cooked_beef*8,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:torch*16,minecraft:chest
 ```
