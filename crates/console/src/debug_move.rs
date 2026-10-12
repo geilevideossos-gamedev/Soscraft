@@ -820,6 +820,7 @@ pub(crate) fn update_skate_overlay(mode:Res<frame::SkateMode>,binds:Res<crate::K
         *visibility=if mode.active || mode.entering || failed {Visibility::Visible}else{Visibility::Hidden};
         **text=if failed {format!("Skate unavailable: {}", mode.status)}
         else if mode.entering && !mode.preloaded {format!("Skate is finishing map preparation... | {key}: cancel")}
+        else if mode.keyboard {format!("SKATE | Keyboard: WASD steer, mouse flick, Space push | {key}: {leave}")}
         else if mode.controller.is_none() {format!("SKATE | Connect a controller | {key}: {leave}")}
         else {format!("SKATE | Original controller controls | Start: pause | {key}: {leave}")};
     }

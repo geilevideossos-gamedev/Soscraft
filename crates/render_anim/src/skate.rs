@@ -34,6 +34,7 @@ struct Host {
     preloaded_banks: bool,
     notice_at: Option<f64>,
     teleport_bit: Option<u32>,
+    flick: FlickState,
 }
 
 const SKATING_OFF: &str = "Skating is off (Options > Controls > Minecraft)";
@@ -387,6 +388,7 @@ fn update(
     (gamepads, active): (Query<&bevy::input::gamepad::Gamepad>, Option<Res<frame::ActivePad>>),
     minecraft: Option<Res<frame::MinecraftUi>>,
     settings: Option<Res<frame::GameSettings>>,
+    (keys, mouse_buttons, motion, devices): KeyboardInput<'_>,
 ) {
     let Some(authority) = authority.as_deref_mut() else {
         return;
@@ -465,9 +467,29 @@ fn update(
     let pad = active.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
     host.pad_packet = host.pad_packet.wrapping_add(1);
     let screen_open = minecraft.as_deref().is_some_and(|ui| ui.active && (ui.inventory_open || ui.chat.open));
-    let input = pad.map_or_else(InputFrame::neutral, |pad| {
-        if screen_open { InputFrame::from_pad(0, [0; 2], [0; 2], [0; 2], host.pad_packet) } else { pad_frame(pad, host.pad_packet) }
-    });
+    let packet = host.pad_packet;
+    let typing = screen_open || devices.as_deref().is_some_and(|devices| !devices.focused);
+    let input = match (pad, keys.as_deref(), mouse_buttons.as_deref()) {
+        (Some(_), ..) if screen_open => InputFrame::from_pad(0, [0; 2], [0; 2], [0; 2], packet),
+        (Some(pad), ..) => pad_frame(pad, packet),
+        (None, Some(keys), Some(mouse)) if !typing => {
+            let delta = motion
+                .as_deref()
+                .map_or([0.0; 2], |motion| motion.delta.to_array());
+            keyboard_frame(
+                key_sample(keys, mouse),
+                delta,
+                &mut host.flick,
+                time.delta_secs(),
+            )
+            .frame(packet)
+        }
+        (None, ..) => {
+            host.flick = FlickState::default();
+            InputFrame::from_pad(0, [0; 2], [0; 2], [0; 2], packet)
+        }
+    };
+    mode.keyboard = pad.is_none();
     mode.controller = input.controller();
     host.previous_buttons = input.buttons();
 
@@ -640,6 +662,98 @@ fn pad_frame(pad: &bevy::input::gamepad::Gamepad, packet: u32) -> InputFrame {
     )
 }
 
+const STICK: f32 = 32767.0;
+const FLICK_PER_PIXEL: f32 = 600.0;
+const FLICK_SETTLE: f32 = 0.1;
+
+#[derive(Clone, Copy, Default)]
+struct KeySample {
+    w: bool,
+    a: bool,
+    s: bool,
+    d: bool,
+    space: bool,
+    shift: bool,
+    ctrl: bool,
+    tab: bool,
+    z: bool,
+    v: bool,
+    left_mouse: bool,
+    right_mouse: bool,
+}
+
+type KeyboardInput<'w> = (
+    Option<Res<'w, ButtonInput<KeyCode>>>,
+    Option<Res<'w, ButtonInput<MouseButton>>>,
+    Option<Res<'w, bevy::input::mouse::AccumulatedMouseMotion>>,
+    Option<Res<'w, frame::InputDevices>>,
+);
+
+#[derive(Default)]
+struct FlickState {
+    stick: [f32; 2],
+}
+
+#[derive(Debug, PartialEq)]
+struct PadState {
+    buttons: u16,
+    triggers: [u8; 2],
+    left: [i16; 2],
+    right: [i16; 2],
+}
+
+impl PadState {
+    fn frame(&self, packet: u32) -> InputFrame {
+        InputFrame::from_pad(self.buttons, self.triggers, self.left, self.right, packet)
+    }
+}
+
+fn key_sample(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> KeySample {
+    KeySample {
+        w: keys.pressed(KeyCode::KeyW),
+        a: keys.pressed(KeyCode::KeyA),
+        s: keys.pressed(KeyCode::KeyS),
+        d: keys.pressed(KeyCode::KeyD),
+        space: keys.pressed(KeyCode::Space),
+        shift: keys.pressed(KeyCode::ShiftLeft),
+        ctrl: keys.pressed(KeyCode::ControlLeft),
+        tab: keys.pressed(KeyCode::Tab),
+        z: keys.pressed(KeyCode::KeyZ),
+        v: keys.pressed(KeyCode::KeyV),
+        left_mouse: mouse.pressed(MouseButton::Left),
+        right_mouse: mouse.pressed(MouseButton::Right),
+    }
+}
+
+fn keyboard_frame(keys: KeySample, mouse: [f32; 2], state: &mut FlickState, dt: f32) -> PadState {
+    let settle = STICK * dt / FLICK_SETTLE;
+    for (stick, moved) in state.stick.iter_mut().zip([mouse[0], -mouse[1]]) {
+        let eased = stick.signum() * (stick.abs() - settle).max(0.0);
+        let push = moved * FLICK_PER_PIXEL;
+        let base = if eased * push < 0.0 { 0.0 } else { eased };
+        *stick = (base + push).clamp(-STICK, STICK);
+    }
+    let buttons = [
+        (keys.space, 0x1000),
+        (keys.ctrl, 0x2000),
+        (keys.shift, 0x4000),
+        (keys.tab, 0x8000),
+        (keys.z, 0x0100),
+        (keys.v, 0x0200),
+    ]
+    .iter()
+    .filter(|(held, _)| *held)
+    .fold(0, |bits, (_, bit)| bits | bit);
+    let axis = |plus: bool, minus: bool| (i16::from(plus) - i16::from(minus)) * 32767;
+    let trigger = |held: bool| if held { 255 } else { 0 };
+    PadState {
+        buttons,
+        triggers: [trigger(keys.right_mouse), trigger(keys.left_mouse)],
+        left: [axis(keys.d, keys.a), axis(keys.w, keys.s)],
+        right: state.stick.map(|v| v.round() as i16),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,6 +795,87 @@ mod tests {
         assert!(!teleported(Some(2), 2));
         assert!(teleported(Some(0), 2));
         assert!(teleported(Some(2), 0));
+    }
+
+    fn keyboard(keys: KeySample) -> PadState {
+        keyboard_frame(keys, [0.0; 2], &mut FlickState::default(), 1.0 / 60.0)
+    }
+
+    #[test]
+    fn w_pushes_the_left_stick_forward() {
+        let w = KeySample { w: true, ..KeySample::default() };
+        assert_eq!(keyboard(w).left, [0, 32767]);
+        assert_eq!(keyboard(KeySample { s: true, ..w }).left, [0, 0]);
+        assert_eq!(keyboard(KeySample { s: true, ..KeySample::default() }).left, [0, -32767]);
+        assert_eq!(keyboard(KeySample { d: true, ..w }).left, [32767, 32767]);
+        assert_eq!(keyboard(KeySample { a: true, ..KeySample::default() }).left, [-32767, 0]);
+        let pad = keyboard(w);
+        assert_eq!((pad.buttons, pad.triggers, pad.right), (0, [0; 2], [0; 2]));
+    }
+
+    #[test]
+    fn a_mouse_flick_reaches_the_right_stick_and_settles() {
+        let mut flick = FlickState::default();
+        let none = KeySample::default();
+        let down = keyboard_frame(none, [0.0, 60.0], &mut flick, 1.0 / 60.0);
+        assert_eq!(down.right, [0, -32767], "a quick move down pulls the stick down");
+        let up = keyboard_frame(none, [0.0, -60.0], &mut flick, 1.0 / 60.0);
+        assert_eq!(up.right, [0, 32767], "flicking back up goes straight up");
+        let right = keyboard_frame(none, [20.0, 0.0], &mut flick, 0.01);
+        assert_eq!(right.right[0], 12000);
+        let mut last = right.right;
+        for _ in 0..5 {
+            last = keyboard_frame(none, [0.0; 2], &mut flick, 0.01).right;
+        }
+        assert_eq!(last[0], 0, "the sideways nudge is gone");
+        assert!((13000..=13200).contains(&last[1]), "four tenths of the way up 0.06 s after the flick: {last:?}");
+        for _ in 0..5 {
+            last = keyboard_frame(none, [0.0; 2], &mut flick, 0.01).right;
+        }
+        assert_eq!(last, [0, 0], "centred 0.1 s after the mouse stops");
+
+        let mut slow = FlickState::default();
+        for _ in 0..200 {
+            last = keyboard_frame(none, [1.0, 1.0], &mut slow, 1.0 / 144.0).right;
+        }
+        assert!(last.iter().all(|v| v.unsigned_abs() < 8192), "a slow drift stays inside the dead zone: {last:?}");
+    }
+
+    #[test]
+    fn space_presses_a_and_the_mouse_buttons_pull_the_triggers() {
+        let none = KeySample::default();
+        assert_eq!(keyboard(KeySample { space: true, ..none }).buttons, 0x1000);
+        assert_eq!(keyboard(KeySample { ctrl: true, ..none }).buttons, 0x2000);
+        assert_eq!(keyboard(KeySample { shift: true, ..none }).buttons, 0x4000);
+        assert_eq!(keyboard(KeySample { tab: true, ..none }).buttons, 0x8000);
+        assert_eq!(keyboard(KeySample { z: true, ..none }).buttons, 0x0100);
+        assert_eq!(keyboard(KeySample { v: true, ..none }).buttons, 0x0200);
+        assert_eq!(keyboard(KeySample { left_mouse: true, ..none }).triggers, [0, 255]);
+        assert_eq!(keyboard(KeySample { right_mouse: true, ..none }).triggers, [255, 0]);
+        let all = KeySample {
+            w: true,
+            a: true,
+            s: true,
+            d: true,
+            space: true,
+            shift: true,
+            ctrl: true,
+            tab: true,
+            z: true,
+            v: true,
+            left_mouse: true,
+            right_mouse: true,
+        };
+        assert_eq!(keyboard(all).buttons & 0x00ff, 0, "no Start, Back, d-pad or stick click");
+    }
+
+    #[test]
+    fn no_key_gives_a_centred_frame() {
+        let pad = keyboard(KeySample::default());
+        assert_eq!(pad, PadState { buttons: 0, triggers: [0; 2], left: [0; 2], right: [0; 2] });
+        let frame = pad.frame(7);
+        assert_eq!(frame.controller(), Some(0), "a keyboard frame is a connected controller");
+        assert_eq!(frame.buttons(), 0);
     }
 
     fn to_map(p: [f64; 3]) -> Vec3 {

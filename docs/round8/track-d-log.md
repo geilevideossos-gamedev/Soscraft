@@ -259,9 +259,43 @@ Commit: the one after `095c7a40` (the clippy cleanup).
   1. Optional: add `IW4L_LOG_LEVEL=debug` to the `.env` next to the exe. Far from spawn, in land you have never visited, put the board down and push in a straight line at full speed for a minute. If the world can't generate as fast as you ride, the board bumps to a stop at an invisible wall at a chunk edge instead of falling into the void, and rolls on once the land appears. The newest log in `iw4l-artifacts\logs` then has "Skate chunk walls: N triangles at chunks not loaded yet". If the land always keeps up, no wall ever shows, which is also right. Remove the log line again afterwards.
 - **Kit:** none.
 
+## Group 7. Keyboard and mouse can skate when no controller is connected
+
+Commit: the one after `37cc3663` (group 6).
+
+- **Changed:**
+  - `frame/src/skate.rs`: `SkateMode.keyboard` (per viewer), true while the skate input comes from the keyboard and mouse.
+  - `render_anim/src/skate.rs`:
+    - With no active controller, `update` builds the skate input from the keyboard and mouse through the pure `keyboard_frame(keys: KeySample, mouse, &mut FlickState, dt) -> PadState` (XInput layout; `PadState::frame` makes the `InputFrame`). `key_sample` reads the physical keys (`KeyCode`) and mouse buttons; the mouse motion is bevy's `AccumulatedMouseMotion`.
+      - W/A/S/D: the left stick, full deflection (opposite keys cancel).
+      - Mouse motion: the right stick, 600 per pixel, clamped to full deflection. The stick always eases back to centre at a full deflection per 0.1 s, and a move against the current deflection starts from centre, so a quick down-then-up flick snaps through while a slow drift stays inside the engine's 25% dead zone. Mouse down pulls the stick down.
+      - Space A (`0x1000`), Left Ctrl B (`0x2000`), Left Shift X (`0x4000`), Tab Y (`0x8000`), Z LB (`0x0100`), V RB (`0x0200`); left mouse RT and right mouse LT (255 while held). Start, Back, the d-pad and the stick clicks are never sent, so Esc stays the MW2 pause menu.
+    - An open Minecraft screen or chat, and an unfocused window, send a centred frame from a connected controller (`InputFrame::from_pad` with zeros) instead of `InputFrame::neutral()`, which reported every controller as disconnected, and reset the flick. The console and script menus still suspend the input through `mode.input_blocked`. A connected controller is used exactly as before.
+    - `mode.keyboard` is set from the source; `mode.controller` is `Some(0)` for a keyboard frame too.
+  - `console/src/debug_move.rs`: the overlay reads "SKATE | Keyboard: WASD steer, mouse flick, Space push | <key>: pick up" (or "return to MW2" on MW2 maps) while the keyboard skates.
+  - `docs/MINECRAFT-SURVIVAL.md`: the Skating bullet lists the keyboard and mouse controls instead of "and a controller".
+- **Tests:** `render_anim` (`skate.rs`): `w_pushes_the_left_stick_forward` (W, S, W+S, W+D, A), `a_mouse_flick_reaches_the_right_stick_and_settles` (a 60-pixel move down is full down, back up is full up at once, a sideways nudge and the flick settle to centre 0.1 s after the mouse stops, a 1-pixel-per-frame drift at 144 fps stays under the dead zone), `space_presses_a_and_the_mouse_buttons_pull_the_triggers` (every key's bit, both triggers, and no Start, Back, d-pad or stick-click bit with every key held) and `no_key_gives_a_centred_frame` (all zero, and the frame is a connected controller with no buttons).
+- **Decisions:**
+  - Button meanings were checked in the engine (`skate-core/src/input/gameplay_map.rs`, `controller.rs`, `riding_intentions.rs`, `offboard_intentions.rs`): A is the right-foot push (`RightPush`), X the left-foot push (`LeftPush`), B the brake, RB grabs the world (`GrabWorld`), and **Y toggles the off-board state** (`ToggleOffBoardState`, steps off the board), as the brief expected. So Y goes on Tab, the least reachable key, as the brief's rule says, and R sends nothing. The brief's Tab-to-Back is dropped: the engine's gameplay map never reads Back (or Start), so it did nothing.
+  - Push stays on Space. The triggers (grabs and crouch) are the mouse buttons as the brief says: left mouse is RT, right mouse is LT.
+  - The keys are physical positions: on the owner's German keyboard, "Z" is the key labelled Y. They are fixed this round (rebindable skate controls are out of scope). The mouse flick ignores "Invert mouse": down is always down, like the pad's stick.
+  - The flick constants (600 per pixel, 0.1 s) are the brief's starting point. Reversal from centre and a constant settle rate were added so the result barely depends on the frame rate and a slow mouse drift does not hold the stick over.
+  - A controller always wins when one is the active pad; there is no mixing of pad and keyboard in one frame.
+  - `update` takes one more system parameter (a tuple behind the `KeyboardInput` type alias, which keeps clippy's `type_complexity` quiet). Its `too_many_arguments` warning was already there (12, now 13).
+- **Owner's test steps** (brief section 5, step 22, spelled out):
+  1. Unplug or switch off the controller. On flat ground in the Overworld press J: the board goes down and the overlay reads "SKATE | Keyboard: WASD steer, mouse flick, Space push | J: pick up" (screenshot).
+  2. Tap Space to push, hold Left Ctrl to brake, steer with A and D.
+  3. While rolling, move the mouse down quickly and straight back up: the skater ollies. Try it off a single oak stair as a kicker.
+  4. In the air, hold the left or right mouse button: the skater grabs the board.
+  5. Press Tab: the skater steps off the board and walks with W/A/S/D; Tab again gets back on. J still picks the board up.
+  6. Press E: the inventory opens and the skater coasts; the keys and the mouse don't move it until it is closed. Esc opens the pause menu.
+  7. Alt-Tab out of the game while rolling: the skater coasts and doesn't keep turning.
+  8. Plug the controller back in: the overlay switches to "Original controller controls" and the pad steers again.
+- **Kit:** `minecraft:oak_stairs*64` (already in the combined kit).
+
 ## The whole track's owner test, one kit
 
-Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6, group 5a steps 1-4, group 5b steps 1-3, group 6 step 1. Groups 1, 2 and 6 need no items. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, 4 the cobblestone, stairs, slabs, carpet and snow, 5a the fence, wall and iron bars, and 5b the rails.
+Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6, group 5a steps 1-4, group 5b steps 1-3, group 6 step 1, group 7 steps 1-8. Groups 1, 2 and 6 need no items, and group 7 only the oak stairs. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, 4 the cobblestone, stairs, slabs, carpet and snow, 5a the fence, wall and iron bars, and 5b the rails.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:hay_block*16,minecraft:iron_helmet,minecraft:water_bucket,minecraft:ender_pearl*16,minecraft:oak_stairs*64,minecraft:stone_slab*64,minecraft:cobblestone_slab*64,minecraft:white_carpet*64,minecraft:snow*64,minecraft:oak_fence*64,minecraft:cobblestone_wall*64,minecraft:iron_bars*64,minecraft:rail*64,minecraft:powered_rail*16
