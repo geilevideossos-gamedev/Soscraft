@@ -25,6 +25,7 @@ pub enum BindButton {
     WheelUp,
     WheelDown,
     Pad(PadButton),
+    Shifted(KeyCode),
 }
 
 impl BindButton {
@@ -237,6 +238,23 @@ pub fn pad_layout(layout: usize) -> Vec<(PadButton, &'static str)> {
     binds
 }
 
+pub(crate) fn captured_key(keys: &ButtonInput<KeyCode>) -> Option<BindButton> {
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    match keys
+        .get_just_pressed()
+        .copied()
+        .find(|key| !key_names::is_shift(*key))
+    {
+        Some(key) if shift => Some(BindButton::Shifted(key)),
+        Some(key) => Some(BindButton::Key(key)),
+        None => keys
+            .get_just_released()
+            .copied()
+            .find(|key| key_names::is_shift(*key))
+            .map(BindButton::Key),
+    }
+}
+
 pub(crate) fn wheel_button(y: f32) -> Option<BindButton> {
     if y > 0.0 {
         Some(BindButton::WheelUp)
@@ -265,6 +283,7 @@ pub struct BindInputs<'a> {
     pub keys: &'a ButtonInput<KeyCode>,
     pub mouse: &'a ButtonInput<MouseButton>,
     pub pad: Option<&'a Gamepad>,
+    pub shifted: HashSet<KeyCode>,
 }
 
 impl<'a> BindInputs<'a> {
@@ -273,6 +292,7 @@ impl<'a> BindInputs<'a> {
             keys,
             mouse,
             pad: None,
+            shifted: HashSet::new(),
         }
     }
 
@@ -281,9 +301,18 @@ impl<'a> BindInputs<'a> {
         self
     }
 
+    pub fn with_shifted_keys(mut self, binds: &KeyBinds) -> Self {
+        self.shifted = binds.shifted_keys().collect();
+        self
+    }
+
+    fn shift_down(&self) -> bool {
+        self.keys.pressed(KeyCode::ShiftLeft) || self.keys.pressed(KeyCode::ShiftRight)
+    }
+
     pub fn pressed(&self, button: BindButton) -> bool {
         match button {
-            BindButton::Key(key) => self.keys.pressed(key),
+            BindButton::Key(key) | BindButton::Shifted(key) => self.keys.pressed(key),
             BindButton::Mouse(btn) => self.mouse.pressed(btn),
             BindButton::WheelUp | BindButton::WheelDown => false,
             BindButton::Pad(btn) => self
@@ -294,7 +323,10 @@ impl<'a> BindInputs<'a> {
 
     pub fn just_pressed(&self, button: BindButton) -> bool {
         match button {
-            BindButton::Key(key) => self.keys.just_pressed(key),
+            BindButton::Key(key) => {
+                self.keys.just_pressed(key) && !(self.shifted.contains(&key) && self.shift_down())
+            }
+            BindButton::Shifted(key) => self.keys.just_pressed(key) && self.shift_down(),
             BindButton::Mouse(btn) => self.mouse.just_pressed(btn),
             BindButton::WheelUp | BindButton::WheelDown => false,
             BindButton::Pad(btn) => self
@@ -305,7 +337,7 @@ impl<'a> BindInputs<'a> {
 
     pub fn just_released(&self, button: BindButton) -> bool {
         match button {
-            BindButton::Key(key) => self.keys.just_released(key),
+            BindButton::Key(key) | BindButton::Shifted(key) => self.keys.just_released(key),
             BindButton::Mouse(btn) => self.mouse.just_released(btn),
             BindButton::WheelUp | BindButton::WheelDown => false,
             BindButton::Pad(btn) => self
@@ -401,6 +433,37 @@ impl KeyBinds {
         self.map.insert(g, frag);
         self.map.insert(b, smoke);
         true
+    }
+
+    pub fn move_tactical_to_shift_g(&mut self) -> bool {
+        let b = BindButton::Key(KeyCode::KeyB);
+        let shift_g = BindButton::Shifted(KeyCode::KeyG);
+        let Some(smoke) = command_id_lookup("+smoke") else {
+            return false;
+        };
+        let keys: Vec<BindButton> = self
+            .map
+            .iter()
+            .filter(|(button, bound)| **bound == smoke && !button.is_pad())
+            .map(|(button, _)| *button)
+            .collect();
+        if keys != [b] || self.map.contains_key(&shift_g) || self.minecraft.contains_key(&shift_g)
+        {
+            return false;
+        }
+        self.map.remove(&b);
+        self.map.insert(shift_g, smoke);
+        true
+    }
+
+    pub fn shifted_keys(&self) -> impl Iterator<Item = KeyCode> + '_ {
+        self.map
+            .keys()
+            .chain(self.minecraft.keys())
+            .filter_map(|button| match button {
+                BindButton::Shifted(key) => Some(*key),
+                _ => None,
+            })
     }
 
     pub fn apply_script(&mut self, script: &str) -> Vec<String> {
@@ -742,6 +805,7 @@ mod minecraft_bind_tests {
     const G: BindButton = BindButton::Key(KeyCode::KeyG);
     const B: BindButton = BindButton::Key(KeyCode::KeyB);
     const X: BindButton = BindButton::Key(KeyCode::KeyX);
+    const SHIFT_G: BindButton = BindButton::Shifted(KeyCode::KeyG);
 
     fn id(name: &str) -> u32 {
         command_id_lookup(name).expect("known command")
@@ -791,12 +855,18 @@ mod minecraft_bind_tests {
     }
 
     #[test]
-    fn the_defaults_put_the_grenades_on_g_and_b_and_leave_f_to_swap_hands() {
+    fn the_defaults_put_the_grenades_on_g_and_shift_g_and_leave_f_to_swap_hands() {
         let binds = defaults();
         assert_eq!(binds.binding_name(G), Some("+frag"));
-        assert_eq!(binds.binding_name(B), Some("+smoke"));
+        assert_eq!(binds.binding_name(SHIFT_G), Some("+smoke"));
+        assert_eq!(binds.binding_name(B), None);
         assert_eq!(binds.minecraft_binding(G), None);
+        assert_eq!(binds.minecraft_binding(SHIFT_G), None);
         assert_eq!(binds.minecraft_binding(B), None);
+        assert_eq!(
+            binds.binding_name(BindButton::Key(KeyCode::ShiftLeft)),
+            Some("+breath_sprint")
+        );
         assert_eq!(binds.binding_name(F), None);
         assert_eq!(binds.minecraft_binding(F), Some("mc_swaphands"));
         let keys = |command: &str| {
@@ -809,7 +879,7 @@ mod minecraft_bind_tests {
             keys
         };
         assert_eq!(keys("+frag"), vec![G]);
-        assert_eq!(keys("+smoke"), vec![B]);
+        assert_eq!(keys("+smoke"), vec![SHIFT_G]);
         assert_eq!(
             binds.binding_name(BindButton::Pad(PadButton::RightBumper)),
             Some("+frag")
@@ -820,7 +890,168 @@ mod minecraft_bind_tests {
         );
         let mut moved = binds.clone();
         assert!(!moved.move_old_grenade_keys());
+        assert!(!moved.move_tactical_to_shift_g());
         assert_eq!(moved.list_lines(), binds.list_lines());
+        assert_eq!(binds.shifted_keys().collect::<Vec<_>>(), vec![KeyCode::KeyG]);
+    }
+
+    #[test]
+    fn the_tactical_moves_from_b_to_shift_g_only_when_untouched() {
+        let mut binds = KeyBinds::default();
+        let _ = binds.apply_config_script("bind g +frag\nbind b +smoke\nbind BUTTON_LSHLDR +smoke");
+        assert!(binds.move_tactical_to_shift_g());
+        assert_eq!(binds.binding_name(SHIFT_G), Some("+smoke"));
+        assert_eq!(binds.binding_name(B), None);
+        assert_eq!(binds.binding_name(G), Some("+frag"));
+        assert_eq!(
+            binds.binding_name(BindButton::Pad(PadButton::LeftBumper)),
+            Some("+smoke")
+        );
+        let once = binds.list_lines();
+        assert!(!binds.move_tactical_to_shift_g());
+        assert_eq!(binds.list_lines(), once);
+        for customised in [
+            "bind h +smoke",
+            "bind mouse4 +smoke",
+            "bind SHIFT+G +melee",
+            "bind SHIFT+G mc_drop",
+            "unbind b",
+        ] {
+            let mut binds = KeyBinds::default();
+            let _ = binds.apply_config_script("bind g +frag\nbind b +smoke");
+            let _ = binds.apply_config_script(customised);
+            let before = binds.list_lines();
+            assert!(!binds.move_tactical_to_shift_g(), "{customised}");
+            assert_eq!(binds.list_lines(), before, "{customised}");
+        }
+    }
+
+    #[test]
+    fn shift_chords_parse_display_list_and_load_back() {
+        for name in ["SHIFT+G", "shift+g", " Shift+G "] {
+            assert_eq!(parse_button_name(name), Some(vec![SHIFT_G]), "{name}");
+        }
+        assert_eq!(display_button(SHIFT_G), "SHIFT+G");
+        assert_eq!(
+            parse_button_name("shift+ctrl"),
+            Some(vec![
+                BindButton::Shifted(KeyCode::ControlLeft),
+                BindButton::Shifted(KeyCode::ControlRight)
+            ])
+        );
+        for refused in ["shift+shift", "shift+rshift", "shift+mouse1", "shift+mwheelup", "shift+BUTTON_A", "shift+", "shift+nope"] {
+            assert_eq!(parse_button_name(refused), None, "{refused}");
+        }
+        let mut binds = KeyBinds::default();
+        let output = binds.apply_script("bind SHIFT+G +smoke");
+        assert_eq!(output, vec!["bind SHIFT+G +smoke".to_owned()]);
+        assert_eq!(binds.binding_name(SHIFT_G), Some("+smoke"));
+        assert_eq!(binds.binding_name(G), None);
+        let lines = binds.list_lines();
+        assert_eq!(lines, vec!["bind SHIFT+G +smoke".to_owned()]);
+        let mut loaded = KeyBinds::default();
+        let _ = loaded.apply_config_script(&lines.join("\n"));
+        assert_eq!(loaded.list_lines(), lines);
+        let _ = loaded.apply_script("unbind shift+g");
+        assert_eq!(loaded.iter().count(), 0);
+    }
+
+    #[test]
+    fn every_shift_chord_has_its_own_host_key_number_below_the_mouse() {
+        let plain: Vec<BindButton> = BINDABLE_KEYS
+            .iter()
+            .filter_map(|name| parse_button_name(name))
+            .flatten()
+            .filter(|button| matches!(button, BindButton::Key(_)))
+            .collect();
+        let mut numbers: Vec<usize> = plain.iter().map(|button| host_keynum(*button)).collect();
+        for button in &plain {
+            let BindButton::Key(key) = *button else { continue };
+            let chord = host_keynum(BindButton::Shifted(key));
+            assert!(chord < host_keynum(BindButton::Mouse(MouseButton::Left)), "{key:?}");
+            numbers.push(chord);
+        }
+        numbers.sort();
+        let count = numbers.len();
+        numbers.dedup();
+        assert_eq!(numbers.len(), count);
+        assert!(numbers.iter().all(|number| *number < input_iw4::KEY_COUNT));
+    }
+
+    fn keyboard(held: &[KeyCode], pressed_now: &[KeyCode]) -> ButtonInput<KeyCode> {
+        let mut keys = ButtonInput::default();
+        for key in held {
+            keys.press(*key);
+        }
+        keys.clear();
+        for key in pressed_now {
+            keys.press(*key);
+        }
+        keys
+    }
+
+    #[test]
+    fn shift_g_throws_the_tactical_and_g_alone_the_lethal() {
+        let binds = defaults();
+        let mouse = ButtonInput::<MouseButton>::default();
+        let g = keyboard(&[], &[KeyCode::KeyG]);
+        let inputs = BindInputs::new(&g, &mouse).with_shifted_keys(&binds);
+        assert!(inputs.just_pressed(G) && !inputs.just_pressed(SHIFT_G));
+        for shift in [KeyCode::ShiftLeft, KeyCode::ShiftRight] {
+            for keys in [keyboard(&[shift], &[KeyCode::KeyG]), keyboard(&[], &[shift, KeyCode::KeyG])] {
+                let inputs = BindInputs::new(&keys, &mouse).with_shifted_keys(&binds);
+                assert!(inputs.just_pressed(SHIFT_G) && !inputs.just_pressed(G), "{shift:?}");
+                assert!(inputs.pressed(SHIFT_G));
+                let w = BindButton::Key(KeyCode::KeyW);
+                let moving = keyboard(&[shift], &[KeyCode::KeyW]);
+                assert!(BindInputs::new(&moving, &mouse).with_shifted_keys(&binds).just_pressed(w));
+            }
+        }
+        let cooking = keyboard(&[KeyCode::KeyG], &[KeyCode::ShiftLeft]);
+        let inputs = BindInputs::new(&cooking, &mouse).with_shifted_keys(&binds);
+        assert!(inputs.pressed(G) && !inputs.just_pressed(G) && !inputs.just_pressed(SHIFT_G));
+        let mut let_go = keyboard(&[KeyCode::ShiftLeft, KeyCode::KeyG], &[]);
+        let_go.release(KeyCode::ShiftLeft);
+        let inputs = BindInputs::new(&let_go, &mouse).with_shifted_keys(&binds);
+        assert!(inputs.pressed(SHIFT_G) && !inputs.just_released(SHIFT_G));
+        let_go.release(KeyCode::KeyG);
+        let inputs = BindInputs::new(&let_go, &mouse).with_shifted_keys(&binds);
+        assert!(!inputs.pressed(SHIFT_G) && inputs.just_released(SHIFT_G));
+        let mut unchorded = defaults();
+        let _ = unchorded.apply_script("unbind shift+g");
+        let keys = keyboard(&[KeyCode::ShiftLeft], &[KeyCode::KeyG]);
+        let inputs = BindInputs::new(&keys, &mouse).with_shifted_keys(&unchorded);
+        assert!(inputs.just_pressed(G));
+    }
+
+    #[test]
+    fn shift_g_keeps_its_throw_and_takes_no_minecraft_action() {
+        let binds = defaults();
+        for screen_open in [false, true] {
+            let (suppressed, presses) = press(&binds, state(false, screen_open), SHIFT_G);
+            assert!(!suppressed.contains(&SHIFT_G) && !suppressed.contains(&G));
+            assert!(McAction::ALL.iter().all(|a| !presses.just_pressed(*a) && !presses.is_held(*a)));
+        }
+        let (suppressed, presses) = press(&binds, state(false, false), G);
+        assert!(!suppressed.contains(&G));
+        assert!(McAction::ALL.iter().all(|a| !presses.just_pressed(*a)));
+    }
+
+    #[test]
+    fn the_controls_menu_takes_shift_and_a_key_as_one_chord() {
+        assert_eq!(captured_key(&keyboard(&[], &[KeyCode::KeyG])), Some(G));
+        assert_eq!(captured_key(&keyboard(&[], &[KeyCode::ShiftLeft])), None);
+        assert_eq!(captured_key(&keyboard(&[KeyCode::ShiftLeft], &[])), None);
+        assert_eq!(captured_key(&keyboard(&[KeyCode::ShiftLeft], &[KeyCode::KeyG])), Some(SHIFT_G));
+        assert_eq!(
+            captured_key(&keyboard(&[], &[KeyCode::ShiftRight, KeyCode::KeyG])),
+            Some(SHIFT_G)
+        );
+        for shift in [KeyCode::ShiftLeft, KeyCode::ShiftRight] {
+            let mut released = keyboard(&[shift], &[]);
+            released.release(shift);
+            assert_eq!(captured_key(&released), Some(BindButton::Key(shift)));
+        }
     }
 
     #[test]

@@ -59,15 +59,23 @@ macro_rules! key_catalog {
                 BindButton::WheelUp => 186,
                 BindButton::WheelDown => 187,
                 BindButton::Pad(pad) => pad.keynum(),
-                BindButton::Key(key) => match key {
-                    $(KeyCode::$k_button => $k_code,)*
-                    _ => 62,
-                },
+                BindButton::Key(key) => key_code(key),
+                BindButton::Shifted(key) => SHIFTED_KEYNUM_BASE + key_code(key),
+            }
+        }
+
+        fn key_code(key: KeyCode) -> usize {
+            match key {
+                $(KeyCode::$k_button => $k_code,)*
+                _ => 62,
             }
         }
 
         pub fn parse_button_name(name: &str) -> Option<Vec<BindButton>> {
             let name = name.trim().to_ascii_lowercase();
+            if let Some(key) = name.strip_prefix("shift+") {
+                return parse_shifted(key);
+            }
             match name.as_str() {
                 $(
                     $( $k_name )|+ => {
@@ -106,6 +114,7 @@ macro_rules! key_catalog {
                 BindButton::WheelUp => "MWHEELUP".into(),
                 BindButton::WheelDown => "MWHEELDOWN".into(),
                 BindButton::Pad(pad) => pad.console_name().into(),
+                BindButton::Shifted(key) => format!("SHIFT+{}", display_key(key).to_uppercase()),
             }
         }
 
@@ -117,6 +126,23 @@ macro_rules! key_catalog {
             .to_owned()
         }
     };
+}
+
+const SHIFTED_KEYNUM_BASE: usize = 75;
+
+pub(crate) fn is_shift(key: KeyCode) -> bool {
+    matches!(key, KeyCode::ShiftLeft | KeyCode::ShiftRight)
+}
+
+fn parse_shifted(key: &str) -> Option<Vec<BindButton>> {
+    let buttons = parse_button_name(key)?;
+    buttons
+        .into_iter()
+        .map(|button| match button {
+            BindButton::Key(key) if !is_shift(key) => Some(BindButton::Shifted(key)),
+            _ => None,
+        })
+        .collect()
 }
 
 key_catalog! {

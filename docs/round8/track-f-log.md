@@ -133,3 +133,67 @@ Commit: the one after `d17eaf15`.
 ```
 IW4L_MINECRAFT_KIT=minecraft:cave_spider_spawn_egg*16,minecraft:spider_spawn_egg*4,minecraft:zombie_spawn_egg*8,minecraft:horse_spawn_egg,minecraft:donkey_spawn_egg,minecraft:iron_golem_spawn_egg,minecraft:villager_spawn_egg,minecraft:wolf_spawn_egg,minecraft:ghast_spawn_egg,minecraft:shulker_spawn_egg,minecraft:witch_spawn_egg,minecraft:hoglin_spawn_egg,minecraft:piglin_spawn_egg,minecraft:strider_spawn_egg,minecraft:mooshroom_spawn_egg,minecraft:bat_spawn_egg,minecraft:magma_cube_spawn_egg,minecraft:ender_dragon_spawn_egg,minecraft:fox_spawn_egg,minecraft:wither_spawn_egg,minecraft:spawner,minecraft:milk_bucket,minecraft:iron_sword
 ```
+
+## F4. G throws the lethal grenade and Shift+G the tactical
+
+Commit: the one after `f5db780f`.
+
+- **Before:** `G +frag` and `B +smoke` (round 7, track A). The owner's `settings.cfg` (v4) had exactly that, so B threw the tactical in code, but nothing in the game said so and the owner found no key for the flash. The bind system had no chords, so Shift+G could not be bound.
+- **Changed** (all in `console`):
+  - `binds.rs`: a new `BindButton::Shifted(KeyCode)`, a key pressed while either Shift is held.
+    - `BindInputs::with_shifted_keys` takes the keys that have a Shift chord in either layer. For such a key, a press with Shift held goes to the chord and a press without Shift to the plain key. A key without a chord ignores Shift as before, so Shift+W still sprints forward.
+    - Which binding a press fires is decided when the key goes down. The binding then stays held until the key is let go, so pressing or letting go of Shift while a grenade is cooking changes nothing.
+    - `KeyBinds::move_tactical_to_shift_g` moves `+smoke` from B to Shift+G when the keyboard tactical is exactly B and Shift+G is free in both layers. `KeyBinds::shifted_keys` lists the chorded keys.
+    - `captured_key` is the controls menu's key capture. A key pressed while Shift is held binds the chord. Shift on its own waits and binds Shift when it is let go, so Shift can still be bound alone.
+  - `binds/key_names.rs`: `SHIFT+<key>` parses (any case) and displays as `SHIFT+G`. Each chord has its own host key number, 75 above its key (76 to 149, below the mouse at 180), so it can hold its own MW2 binding. `shift+shift`, a mouse button, the wheel or a pad button after `shift+` is refused.
+  - `assets/default_controls.cfg`: `bind SHIFT+G +smoke` replaces `bind B +smoke`. `SHIFT +breath_sprint` and `F mc_swaphands` are unchanged, and the pad layouts too (RB lethal, LB tactical).
+  - `user_settings.rs`: `settings.cfg` is written as v6. A v1 to v5 file gets `move_tactical_to_shift_g` once and is rewritten at start, after the older F/G move for v1 to v3. The controls menu uses `captured_key`.
+  - `plugin/mod.rs`: the gameplay input reads the chords.
+  - `docs/MINECRAFT-SURVIVAL.md`: the grenade keys and the v6 note.
+- **Tests** (`console`):
+  - `binds`:
+    - `the_defaults_put_the_grenades_on_g_and_shift_g_and_leave_f_to_swap_hands` replaces the G-and-B test.
+    - `the_tactical_moves_from_b_to_shift_g_only_when_untouched`: the move happens once. It does not happen with H, MOUSE4, an MW2 or Minecraft binding on Shift+G, or an unbound B.
+    - `shift_chords_parse_display_list_and_load_back`.
+    - `every_shift_chord_has_its_own_host_key_number_below_the_mouse`.
+    - `shift_g_throws_the_tactical_and_g_alone_the_lethal`: both Shift keys, Shift pressed in the same frame, Shift+W, Shift pressed while G cooks, letting go of Shift before G, and plain G with Shift when no chord is bound.
+    - `shift_g_keeps_its_throw_and_takes_no_minecraft_action`.
+    - `the_controls_menu_takes_shift_and_a_key_as_one_chord`.
+  - `user_settings`:
+    - `the_tactical_on_b_moves_to_shift_g_once`: v4 and v5 move, and the owner's own v4 binding set loads back the same. MOUSE4, Shift+G taken and v6 are left alone.
+    - `old_grenade_keys_move_to_g_and_shift_g`: the v1 to v3 F/G pair ends up on G and Shift+G, saved as v6.
+    - Updated: `only_a_moved_grenade_pair_asks_for_the_file_to_be_rewritten` (a v5 B tactical asks, v6 does not), `older_settings_get_the_vanilla_minecraft_keys`, `current_settings_keep_their_minecraft_keys_unbound` (v6 too), `a_rebound_grenade_key_survives_a_restart`, `a_rebound_minecraft_key_survives_a_restart`, `older_settings_get_the_skate_key_on_a_free_j`, `a_rebound_skate_key_survives_a_restart` (v6 header), and the controls-menu test (`ui_bind_+smoke` is `SHIFT+G | L-BUMPER`).
+- **Conflicts checked:**
+  - No other default binding is on G or Shift+G in either layer. No game code reads G raw.
+  - Shift is read raw only in places where the grenade keys don't throw:
+    - the inventory's shift-click and chat text selection: a Minecraft screen or the chat is open, and gameplay input is captured;
+    - the skate keyboard: the cmd buttons are zeroed while skating;
+    - the debug fly camera.
+  - Vanilla 26.3's `keyQuickActions` is G. It opens only a dialog the server sends, and there is none here (round 7 javap check).
+- **MW2 behaviour:**
+  - The keys are the same on MW2 maps. Shift stays `+breath_sprint`.
+  - Shift+G while sprinting forward throws: `sprint_ending_buttons` (mask 0xcf35, which includes SMOKE) ends the sprint in `pmove`, and that runs before the weapon tick checks the offhand. Holding G keeps a new sprint from starting (0xcc35). Nothing MW2 needs breaks.
+- **Decisions:**
+  - **Only Shift chords**, the one modifier the owner asked for. Any key can take one, through the console (`bind SHIFT+H +smoke`) or the menu.
+  - **B is freed** rather than kept as a second tactical key, so the layout is exactly the owner's. The move needs the untouched B tactical and a free Shift+G, like the round 7 move. Any other choice is kept.
+  - **F only swaps hands:** with a Minecraft item or an empty hand, F swaps like vanilla. With a gun selected, holding F still uses the offhand item (eat, block, place), as since round 7. A gun can't go to the offhand, so F has nothing to swap there, and it is the only way to use the offhand item while holding a gun. F has no grenade role.
+  - A `settings.cfg` saved by upstream's `iw4l.exe` would drop the `SHIFT+G` line it doesn't know. This build never writes for upstream, so this is noted only.
+- **Not run in game.** The chord logic is covered by the unit tests above.
+- **Owner's test steps** (survival, kit below, a class with Frag and Flash):
+  1. Start once with your current `settings.cfg` and quit. `iw4l-artifacts\settings.cfg` starts with `// IW4L user settings v6`. It has `bind g +frag`, `bind SHIFT+G +smoke` and `bind f mc_swaphands`, and no `bind b +smoke`.
+  2. Options > Controls > Actions: "Throw Frag/Use Equipment" shows `g | R-BUMPER` and "Throw Special Grenade" shows `SHIFT+G | L-BUMPER`. **Screenshot 1.**
+  3. In the Minecraft world with a gun selected:
+     - Press G: a frag flies.
+     - Hold Shift and press G: a flash flies, and no frag.
+     - Hold G to cook a frag, press Shift while still holding it, then let go: the frag is thrown, not a flash.
+  4. Select cobblestone and press Shift+G: MW2's hand comes up with the flash and throws it, and the cobblestone comes back. **Screenshot 2** mid-throw. Select an empty slot: G throws a frag and Shift+G a flash.
+  5. Sprint (Shift+W) and, still holding Shift, press G: the sprint ends and a flash flies. Let go of G and walk with Shift+W: you sprint as before.
+  6. Press F with cobblestone selected: it goes to the offhand and nothing is thrown. Put the golden apples in the offhand, select the gun and hold F: you eat, as before.
+  7. Options > Controls > Actions, click "Throw Special Grenade", hold Shift and press H: the row shows `SHIFT+H`. In game, Shift+H throws a flash, and Shift+G now throws a frag (G has no chord any more). Restart: the row still shows `SHIFT+H`. Click it again, hold Shift and press G to set it back.
+  8. On an MW2 map (`iw4l-survival.exe map mp_rust`): G throws a frag and Shift+G a flash. **Screenshot 3.**
+  9. Optional, controller: RB throws a frag and LB a flash, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:golden_apple*16
+```
