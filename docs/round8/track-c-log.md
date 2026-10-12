@@ -1277,6 +1277,13 @@ IW4L_MINECRAFT_KIT=minecraft:spawner*2,minecraft:shulker_spawn_egg*2
 IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket*6,minecraft:diamond_shovel,minecraft:dirt*64
 ```
 
+### M4. The rail shape bits are checked against the powder snow flag
+
+- **Changed:** D's `rail_shapes_get_their_own_shape_ids` (`sim` `voxel.rs`) checks that `RAIL_SHAPE` (`0x7800`) overlaps no other flag in the per-shape flags; C's `POWDER_SNOW` (`0x8000`) is now in that list, so the full u16 is checked. Test only.
+- **Clash checks of the merge (no other fix needed):** `pm_flags` bits are all distinct (B's `MC_RIDING` `0x0100_0000`, C's `MC_POWDER_WALKER` `0x0080_0000`, the round 7 ones above); `PlayerState` gained only C's `mc_float` (A, B and D added none); the voxel flags are water/lava/amount `0x3f`, climbable `0x40`, scaffolding `0x80`/`0x100`, stuck `0x200`/`0x400`, rails `0x7800` and powder snow `0x8000`; `free_spawn_spot` masks only the rail bits, so a powder snow cell still counts as unsafe for a respawn, as on track C; the hit keys are 0 to 16, 17 fireball, 18 blaze, 19 crystal, 20 dragon, 21 to 23 piglin, hoglin and strider, 26 shulker, 27 shulker bullet and 28 item frame.
+- **Test steps:** none.
+- **Kit:** none.
+
 ## Track C, combined kit
 
 One kit for a session through the whole track (27 stacks): shulkers and their bullets, levitation and slow falling, powder snow and cobwebs, ladders, item frames and comparators, trapped chests, lecterns and the book screen, totems, the dragon fight in diamond gear, and the elytra on the body. End cities need no items (creative flight and their generated chests); `/effect` gives levitation and clears effects.

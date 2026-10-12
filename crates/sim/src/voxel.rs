@@ -2967,7 +2967,7 @@ mod tests {
         assert_eq!(rail_flags("minecraft:stone", None), 0);
         assert_eq!(rail_flags("minecraft:rail", None), 0);
         assert_eq!(rail_flags("minecraft:rail", Some("sideways")), 0);
-        let others = WATER | LAVA | FLUID_AMOUNT | CLIMBABLE | SCAFFOLDING | SCAFFOLDING_BOTTOM | STUCK_BERRY_BUSH | STUCK_COBWEB;
+        let others = WATER | LAVA | FLUID_AMOUNT | CLIMBABLE | SCAFFOLDING | SCAFFOLDING_BOTTOM | STUCK_BERRY_BUSH | STUCK_COBWEB | POWDER_SNOW;
         assert_eq!(RAIL_SHAPE & others, 0);
     }
 
