@@ -125,6 +125,7 @@ pub struct Entities {
     pub recipes: std::sync::Arc<minecraftoss_player::crafting::RecipeBook>,
     item_use_waiting: Option<SentItemUse>,
     pub item_uses_done: Vec<SentItemUse>,
+    pub lecterns: Vec<minecraft_terrain::lectern::LecternView>,
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
     pub command_summons: Vec<Result<String, String>>,
     pub command_jobs: Vec<Box<dyn std::any::Any + Send>>,
@@ -271,6 +272,7 @@ impl Entities {
             recipes: data.recipes.clone(),
             item_use_waiting: None,
             item_uses_done: Vec::new(),
+            lecterns: Vec::new(),
             eggs_waiting: Default::default(),
             command_summons: Vec::new(),
             command_jobs: Vec::new(),
@@ -768,6 +770,19 @@ impl Entities {
         self.ambient.totem_emitter(key, body);
     }
 
+    pub fn lectern(&mut self, pos: (i32, i32, i32), action: minecraft_terrain::lectern::LecternAction, sent: Option<SentItemUse>) {
+        self.server.lectern(PLAYER, pos, action);
+        if sent.is_some() {
+            self.item_use_waiting = sent;
+        }
+    }
+
+    pub fn book_stack(&self, book: &minecraft_terrain::lectern::BookStack) -> ItemStack {
+        let mut stack = self.recipes.stack(&book.id, 1);
+        stack.components = book.components.as_deref().and_then(|text| serde_json::from_str(text).ok());
+        stack
+    }
+
     pub fn chest_openers(&mut self, pos: (i32, i32, i32), count: u32) {
         self.server.chest_openers(pos, count);
     }
@@ -1044,6 +1059,7 @@ impl Entities {
                 self.weather_data = Some(weather);
             }
             self.server_picked.extend(output.picked);
+            self.lecterns.extend(output.lecterns.into_iter().filter(|view| view.player == PLAYER));
             for used in output.item_uses {
                 if let Some(sent) = self.item_use_waiting.take().filter(|_| used) {
                     self.item_uses_done.push(sent);

@@ -904,3 +904,42 @@ Previous commit: 6570c43c
 ```
 IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two + three","Page two"]}],minecraft:writable_book
 ```
+
+### 37. Minecraft lecterns hold books, pulse on page turns and feed comparators
+
+Previous commit: 92d24293
+
+- **Changed:**
+  - New vendored `world` `level/lectern.rs` (a MinecraftOSS addition), on the server thread's `Level` and the block entity it already saves (`Book`, `Page`): `lectern_place_book` (only on a lectern without a book: the book, page 0, comparators told, `has_book=true, powered=false`, the block below updated, `item.book.put` at the block; vanilla `tryPlaceBook`/`resetBookState`), `lectern_set_page` (clamped to the pages; a real change sets `powered=true`, updates below, schedules the block tick in 2 and pushes level event 1043; vanilla `setPage`/`signalPageChange`), `lectern_take_book`, `lectern_view`, `signal` (vanilla `getRedstoneSignal`: `floor(page/(count − 1)·14)`, or 14 with one page or none, plus 1 when the book has `writable_book_content` or `written_book_content`) and `drop_point`.
+  - Vendored `level/redstone.rs`: `Kind::Lectern` (`LecternBlock`): own signal 15 while powered, direct signal 15 only up, the scheduled tick turns it off and updates below, the removal of a powered one updates below, and its comparator output reads the block entity (`has_analog_output` counts it). `level/drops.rs`: breaking a lectern with a book drops the book as one item at `(x + 0.5 + 0.25·facing x, y + 1, z + 0.5 + 0.25·facing z)` with the default pickup delay (vanilla `LecternBlockEntity.preRemoveSideEffects`), instead of logging it as unsupported. Vendored `core` `block_entity.rs`: `Page` is clamped to the book's pages on load (vanilla `loadAdditional`), with `lectern_book_pages` and `lectern_book_has_content`.
+  - New `minecraft_terrain` `lectern.rs`: `BookStack`, `LecternAction` (`PlaceBook`, `Open`, `Button(i32)`, `Close`), `LecternView` and the button numbers; `pages_text` flattens pages to plain text for the screen (`text`, `translate` with its `fallback` or key, `keybind`, `extra`); `book_item_use`. `server.rs`: `Command::Lectern { player, pos, action }`; `PlaceBook` answers through `item_uses` like a bucket; the server keeps `lectern_viewers` per player id and answers in `Output.lecterns`: `Open` the view (or a closed one on an empty lectern), page buttons 1, 2 and 100 + n answer every viewer of that lectern when the page changed, button 3 takes the book (the taker's view carries it) and closes every viewer, and each tick closes viewers whose lectern lost its book (vanilla `stillValid`). `level_events.rs`: event 1043 plays `item.book.page_turn` at the block (1.0, 0.9 + r·0.1). `bucket.rs`: `Change::Lectern`.
+  - `minecraft_survival` `entities.rs`: `lectern(pos, action, sent)` (the local player is server player `PLAYER` **[E]**), `book_stack`, and `lecterns` (this player's views).
+  - `render_anim`: a right-click (main hand, not crouching with an item) on a lectern with a book sends `Open` and swings; one with a written book or book and quill in the hand on an empty lectern sends `PlaceBook` and takes the book from the hand when the server answers (creative keeps it). A taken book goes into the inventory or drops at the feet.
+- **Tests:**
+  - `lectern`: `the_comparator_reads_page_steps_like_vanilla` (3 pages: 1, 8, 15; one page: 15; an empty book and quill: 15; a written book without content: 14; no book: 0; 15 pages on page 7: 8), `written_pages_flatten_to_text`.
+  - `server`: `a_book_placed_by_a_player_reaches_the_lectern_and_its_comparator` (through the server thread: placed, a second book refused, the client sees `has_book`; then a plain book refused, the book sound, page 0, the comparator reads 1), `a_page_turn_pulses_two_ticks` (only an opened viewer turns pages, the view's page, `powered` and signal 15 beside and strongly below for exactly two ticks, event 1043, comparator 8 and 15, no turn past the last page, buttons 1 and 100 + n, Close), `take_book_closes_every_viewer`, `a_broken_lectern_closes_its_viewers_and_drops_its_book_above` (the book at (8.5, 201, 8.25) for a north-facing lectern, pickup delay 10).
+  - `core` `block_entity`: `page_is_clamped_on_load`; `level_events`: `a_lectern_page_turn_rustles_at_the_lectern`.
+- **Decisions:**
+  - A written book without `written_book_content` reads 14, not the brief's 0: javap of 26.3 `getRedstoneSignal` uses 1.0 when the page count is at most 1, and adds 1 only for a book with content.
+  - A book with no pages keeps page 0 where vanilla's `Mth.clamp(page, 0, count − 1)` would give −1; no screen can ask for another page of it.
+  - The Take Book button's `mayBuild` check is left to the client that sends it (the server thread does not know game modes yet) **[E]**.
+  - The vendored `world` crate has no level fixture, so the lectern's level tests run in `minecraft_terrain`'s server tests against the vendored code.
+  - The book screen comes in the next commit: until then a right-click on a lectern with a book opens nothing you can see.
+  - `minecraft_survival`'s `the_end::tests::an_arrival_rebuilds_the_platform_once_its_chunks_are_in` failed once and passed on the rerun: it reads block changes from a server job and races the per-batch change output. It is older than this commit.
+- **Test steps:** (survival; kit below)
+  1. Place a lectern on the ground. Put a comparator on the ground facing away from the lectern's side, then 15 redstone dust in a line from it. Right-click the lectern with the written book: the book lies open on the lectern with the book sound and leaves your hand; the dust shows 1 lit block (**1**).
+  2. Place the second lectern and right-click it with the book and quill: it lies on the lectern, and a comparator facing out of this lectern lights 15 dust (vanilla does the same for an empty book and quill).
+  3. Crouch with a book in hand and right-click a lectern: nothing goes on it.
+  4. Leave the world and load it again: both books are still on their lecterns and the dust still shows 1 and 15.
+  5. Break the first lectern: the written book pops out on top of where it stood, next to the lectern item (**2**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book,minecraft:lectern*2,minecraft:comparator*2,minecraft:redstone*32,minecraft:redstone_lamp*2,minecraft:cobblestone*16
+```
+
+### Group c5-rest-1, combined kit
+
+```
+IW4L_MINECRAFT_KIT=minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:trapped_chest*4,minecraft:redstone_lamp*8,minecraft:redstone*64,minecraft:comparator*4,minecraft:cobblestone*64,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book,minecraft:lectern*2
+```

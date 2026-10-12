@@ -1261,6 +1261,12 @@ fn update(
                 .map(|hit| hit.pos)
                 .filter(|&pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::campfire::is_campfire))
                 .filter(|_| !(player.crouching && has_item));
+            let lectern = player
+                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
+                .map(|hit| hit.pos)
+                .filter(|_| !(player.crouching && has_item))
+                .and_then(|pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).filter(|block| minecraft_terrain::lectern::is_lectern(block)).map(|block| (pos, minecraft_terrain::lectern::has_book(block))))
+                .filter(|&(_, has_book)| if has_book { main } else { held.as_ref().is_some_and(|stack| minecraft_terrain::lectern::is_lectern_book(&stack.id)) });
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
                 minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
@@ -1307,6 +1313,21 @@ fn update(
                     if !blocked {
                         open_block = Some(opened);
                     }
+                    hand.swing = Some(0.0);
+                }
+                HandUse::Consumed
+            } else if let Some((pos, has_book)) = lectern {
+                if has_book {
+                    if use_pressed {
+                        entities.lectern(pos, minecraft_terrain::lectern::LecternAction::Open, None);
+                        hand.swing = Some(0.0);
+                    }
+                } else if let Some(stack) = held.as_ref()
+                    && !entities.awaits_item_use()
+                {
+                    let book = minecraft_terrain::lectern::BookStack { id: stack.id.clone(), components: stack.components.as_ref().map(|components| components.to_string()) };
+                    let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome: minecraft_terrain::lectern::book_item_use(pos) };
+                    entities.lectern(pos, minecraft_terrain::lectern::LecternAction::PlaceBook(book), Some(sent));
                     hand.swing = Some(0.0);
                 }
                 HandUse::Consumed
@@ -1411,7 +1432,7 @@ fn update(
                     minecraft_terrain::bucket::Change::ThrowEye(throw) => entities.throw_eye(throw, sent),
                     minecraft_terrain::bucket::Change::Rocket(boost_ticks) => crate::minecraft_elytra::launch_rocket(&mut authority.0, local.0, boost_ticks, &mut hand.swing, || finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items())),
                     minecraft_terrain::bucket::Change::Breath => entities.bottle_breath(player.pos, if player.crouching { 1.5 } else { 1.8 }, sent),
-                    minecraft_terrain::bucket::Change::Frame(_) => {}
+                    minecraft_terrain::bucket::Change::Frame(_) | minecraft_terrain::bucket::Change::Lectern(_) => {}
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()
@@ -2092,6 +2113,15 @@ fn update(
             let key = minecraft_survival::level::opener_key(local_uuid);
             let open_cells = inventory_ui.block().map_or_else(Vec::new, |opened| opened.cells.clone());
             opener_events.extend(openers.recheck(|player, pos| player != key || open_cells.contains(&pos)));
+        }
+        for view in std::mem::take(&mut entities.lecterns) {
+            if let Some(book) = view.taken {
+                let stack = entities.book_stack(&book);
+                let (dropped, _) = minecraft_survival::commands::give_stacks(inventory, *selected, &stack, 1);
+                for stack in &dropped {
+                    entities.drop_given(stack, feet);
+                }
+            }
         }
         for event in opener_events {
             let outcome = minecraft_survival::level::opener_outcome(&terrain.scene, &event);

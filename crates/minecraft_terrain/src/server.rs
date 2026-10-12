@@ -102,6 +102,8 @@ pub struct ServerSim {
     end_players: Vec<crate::ender_dragon::PlayerBody>,
     frames: crate::item_frame::Frames,
     frame_sounds: Vec<minecraftoss_entities::world::MobSound>,
+    lectern_viewers: std::collections::HashMap<u64, BlockPos>,
+    lecterns: Vec<crate::lectern::LecternView>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -245,6 +247,27 @@ fn stack_of(item: &str, count: i32, components: Option<&str>) -> minecraftoss_co
     stack
 }
 
+fn book_tag(book: &crate::lectern::BookStack) -> minecraftoss_core::nbt::Tag {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("id".to_owned(), minecraftoss_core::nbt::Tag::String(book.id.clone()));
+    map.insert("count".to_owned(), minecraftoss_core::nbt::Tag::Int(1));
+    if let Some(components) = book.components.as_deref().and_then(crate::item_nbt::components_from_text) {
+        map.insert("components".to_owned(), components);
+    }
+    minecraftoss_core::nbt::Tag::Compound(map)
+}
+
+fn book_stack(tag: &minecraftoss_core::nbt::Tag) -> crate::lectern::BookStack {
+    crate::lectern::BookStack {
+        id: tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).unwrap_or("minecraft:air").to_owned(),
+        components: tag.get("components").and_then(crate::item_nbt::saved_components).as_ref().map(crate::item_nbt::components_text),
+    }
+}
+
+fn closed_lectern(player: u64, pos: BlockPos, taken: Option<crate::lectern::BookStack>) -> crate::lectern::LecternView {
+    crate::lectern::LecternView { player, pos, book: None, page: 0, taken, closed: true }
+}
+
 fn components_of(stack: &minecraftoss_core::item::ItemStack) -> Option<String> {
     stack.components.as_ref().map(crate::item_nbt::components_text)
 }
@@ -335,6 +358,8 @@ impl ServerSim {
             end_players: Vec::new(),
             frames: crate::item_frame::Frames::default(),
             frame_sounds: Vec::new(),
+            lectern_viewers: std::collections::HashMap::new(),
+            lecterns: Vec::new(),
         }
     }
 
@@ -825,6 +850,93 @@ impl ServerSim {
 
     pub fn hurt_shulker_bullet(&mut self, id: u64) -> bool {
         self.mobs.hurt_shulker_bullet(id)
+    }
+
+    pub fn lectern(&mut self, player: u64, pos: BlockPos, action: crate::lectern::LecternAction) -> Option<bool> {
+        use crate::lectern::{LecternAction, GO_TO_PAGE, NEXT_PAGE, PREVIOUS_PAGE, TAKE_BOOK};
+        let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        match action {
+            LecternAction::PlaceBook(book) => Some(crate::lectern::is_lectern_book(&book.id) && self.level.lectern_place_book(at, book_tag(&book))),
+            LecternAction::Open => {
+                if self.level.lectern_view(at).is_some() {
+                    self.lectern_viewers.insert(player, pos);
+                    let view = self.lectern_view(player, pos);
+                    self.lecterns.push(view);
+                } else {
+                    self.lectern_viewers.remove(&player);
+                    self.lecterns.push(closed_lectern(player, pos, None));
+                }
+                None
+            }
+            LecternAction::Button(button) => {
+                if self.lectern_viewers.get(&player) != Some(&pos) {
+                    return None;
+                }
+                let (_, page) = self.level.lectern_view(at)?;
+                let turned = match button {
+                    PREVIOUS_PAGE => self.level.lectern_set_page(at, page - 1),
+                    NEXT_PAGE => self.level.lectern_set_page(at, page + 1),
+                    TAKE_BOOK => {
+                        let taken = self.level.lectern_take_book(at).map(|book| book_stack(&book));
+                        for viewer in self.lectern_viewers_of(pos) {
+                            self.lectern_viewers.remove(&viewer);
+                            let taken = taken.clone().filter(|_| viewer == player);
+                            self.lecterns.push(closed_lectern(viewer, pos, taken));
+                        }
+                        false
+                    }
+                    button if button >= GO_TO_PAGE => self.level.lectern_set_page(at, button - GO_TO_PAGE),
+                    _ => false,
+                };
+                if turned {
+                    for viewer in self.lectern_viewers_of(pos) {
+                        let view = self.lectern_view(viewer, pos);
+                        self.lecterns.push(view);
+                    }
+                }
+                None
+            }
+            LecternAction::Close => {
+                self.lectern_viewers.remove(&player);
+                None
+            }
+        }
+    }
+
+    fn lectern_viewers_of(&self, pos: BlockPos) -> Vec<u64> {
+        let mut viewers: Vec<u64> = self.lectern_viewers.iter().filter(|(_, at)| **at == pos).map(|(player, _)| *player).collect();
+        viewers.sort_unstable();
+        viewers
+    }
+
+    fn lectern_view(&self, player: u64, pos: BlockPos) -> crate::lectern::LecternView {
+        let view = self.level.lectern_view(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+        crate::lectern::LecternView {
+            player,
+            pos,
+            book: view.as_ref().map(|(book, _)| book_stack(book)),
+            page: view.map_or(0, |(_, page)| page),
+            taken: None,
+            closed: false,
+        }
+    }
+
+    fn check_lectern_viewers(&mut self) {
+        let mut gone: Vec<(u64, BlockPos)> = self
+            .lectern_viewers
+            .iter()
+            .filter(|(_, pos)| self.level.lectern_view(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2)).is_none())
+            .map(|(player, pos)| (*player, *pos))
+            .collect();
+        gone.sort_unstable();
+        for (player, pos) in gone {
+            self.lectern_viewers.remove(&player);
+            self.lecterns.push(closed_lectern(player, pos, None));
+        }
+    }
+
+    pub fn take_lecterns(&mut self) -> Vec<crate::lectern::LecternView> {
+        std::mem::take(&mut self.lecterns)
     }
 
     pub fn set_chest_openers(&mut self, pos: BlockPos, count: u32) {
@@ -2115,6 +2227,7 @@ impl ServerSim {
             }
         }
         self.tick_frames();
+        self.check_lectern_viewers();
     }
 
     fn tick_frames(&mut self) {
@@ -2389,6 +2502,7 @@ pub enum Command {
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
     FrameAction { id: u64, action: crate::item_frame::FrameAction },
     ChestOpeners { pos: BlockPos, count: u32 },
+    Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
@@ -2559,6 +2673,7 @@ pub struct Output {
     pub jobs: Vec<Box<dyn std::any::Any + Send>>,
     pub dragons_killed: Vec<[i32; 4]>,
     pub fight_reports: Vec<FightReport>,
+    pub lecterns: Vec<crate::lectern::LecternView>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -2793,6 +2908,10 @@ impl ServerHandle {
         self.send(Command::ChestOpeners { pos, count });
     }
 
+    pub fn lectern(&mut self, player: u64, pos: BlockPos, action: crate::lectern::LecternAction) {
+        self.send(Command::Lectern { player, pos, action });
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -2921,6 +3040,11 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                 }
                 Command::ChestOpeners { pos, count } => sim.set_chest_openers(pos, count),
+                Command::Lectern { player, pos, action } => {
+                    if let Some(placed) = sim.lectern(player, pos, action) {
+                        out.item_uses.push(placed);
+                    }
+                }
                 Command::Save => {
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
@@ -3024,6 +3148,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
             }
         }
         out.changes = sim.take_changes();
+        out.lecterns = sim.take_lecterns();
         out.block_entities = sim.take_block_entity_changes();
         out.destroyed = sim.take_destroyed();
         out.handled = handled;
@@ -8312,6 +8437,158 @@ mod tests {
         handle.wait_idle();
         let sent: std::collections::HashMap<_, _> = handle.poll().into_iter().flat_map(|out| out.changes).collect();
         assert_eq!(lit(&sent, (8, 200, 9)), Some(true), "the command reaches the server thread");
+    }
+
+    const LECTERN: BlockPos = (8, 200, 8);
+
+    fn lectern_world() -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut server, mut scene) = door_world()?;
+        place(&mut server, &mut scene, LECTERN, Block::new("minecraft:lectern").with("facing", "north").with("has_book", "false").with("powered", "false"));
+        server.take_changes();
+        Some((server, scene))
+    }
+
+    fn written(pages: &[&str]) -> crate::lectern::BookStack {
+        let pages: Vec<serde_json::Value> = pages.iter().map(|page| serde_json::json!({"raw": page})).collect();
+        crate::lectern::BookStack {
+            id: "minecraft:written_book".to_owned(),
+            components: Some(serde_json::json!({"minecraft:written_book_content": {"title": {"raw": "T"}, "author": "A", "pages": pages}}).to_string()),
+        }
+    }
+
+    fn lectern_flag(server: &ServerSim, name: &str) -> bool {
+        let (x, y, z) = LECTERN;
+        let state = server.level.block(minecraftoss_core::BlockPos::new(x, y, z));
+        server.level.registries().blocks.property(state, name) == Some("true")
+    }
+
+    fn reader_world() -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut server, mut scene) = lectern_world()?;
+        place(&mut server, &mut scene, (8, 199, 7), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 200, 7), Block::new("minecraft:comparator").with("facing", "south").with("mode", "compare").with("powered", "false"));
+        Some((server, scene))
+    }
+
+    fn comparator_reads(server: &mut ServerSim) -> i32 {
+        for _ in 0..4 {
+            server.tick();
+        }
+        server.level.comparator_output_at(minecraftoss_core::BlockPos::new(8, 200, 7))
+    }
+
+    #[test]
+    fn a_book_placed_by_a_player_reaches_the_lectern_and_its_comparator() {
+        use crate::lectern::LecternAction;
+        let Some((server, _)) = lectern_world() else { return };
+        let mut handle = ServerHandle::spawn(server);
+        handle.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["a", "b", "c"])));
+        handle.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["d"])));
+        handle.wait_idle();
+        let outputs = handle.poll();
+        let uses: Vec<bool> = outputs.iter().flat_map(|out| out.item_uses.iter().copied()).collect();
+        assert_eq!(uses, [true, false], "the second book finds the lectern taken");
+        let shown = outputs.iter().flat_map(|out| out.changes.iter()).filter(|(pos, _)| *pos == LECTERN).last().and_then(|(_, block)| block.clone());
+        assert_eq!(shown.as_ref().and_then(|block| block.properties.get("has_book")).map(String::as_str), Some("true"));
+        let Some((mut server, _)) = reader_world() else { return };
+        assert_eq!(comparator_reads(&mut server), 0, "an empty lectern gives nothing");
+        let plain = crate::lectern::BookStack { id: "minecraft:book".to_owned(), components: None };
+        assert_eq!(server.lectern(0, LECTERN, LecternAction::PlaceBook(plain)), Some(false));
+        assert_eq!(server.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["a", "b", "c"]))), Some(true));
+        assert!(lectern_flag(&server, "has_book") && !lectern_flag(&server, "powered"));
+        assert!(server.level.sounds.iter().any(|sound| sound.event == "minecraft:item.book.put"));
+        let (book, page) = server.level.lectern_view(minecraftoss_core::BlockPos::new(8, 200, 8)).unwrap();
+        assert_eq!(page, 0);
+        assert_eq!(book.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:written_book"));
+        assert_eq!(comparator_reads(&mut server), 1, "page 1 of 3");
+    }
+
+    #[test]
+    fn a_page_turn_pulses_two_ticks() {
+        use crate::lectern::LecternAction;
+        let Some((mut server, _)) = reader_world() else { return };
+        server.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["a", "b", "c"])));
+        assert_eq!(server.lectern(0, LECTERN, LecternAction::Button(2)), None);
+        assert!(server.take_lecterns().is_empty(), "a player who has not opened the lectern turns nothing");
+        server.lectern(0, LECTERN, LecternAction::Open);
+        let opened = server.take_lecterns();
+        assert_eq!(opened.len(), 1);
+        assert_eq!((opened[0].page, opened[0].closed, opened[0].book.as_ref().map(|book| book.id.as_str())), (0, false, Some("minecraft:written_book")));
+        server.level.level_events.clear();
+        server.lectern(0, LECTERN, LecternAction::Button(2));
+        assert_eq!(server.take_lecterns().iter().map(|view| view.page).collect::<Vec<_>>(), [1]);
+        assert!(lectern_flag(&server, "powered"));
+        assert_eq!(std::mem::take(&mut server.level.level_events), vec![(1043, minecraftoss_core::BlockPos::new(8, 200, 8), 0)]);
+        let at = minecraftoss_core::BlockPos::new;
+        let east = minecraftoss_core::pos::Direction::East;
+        let down = minecraftoss_core::pos::Direction::Down;
+        assert!(server.level.is_signal_source(server.level.block(at(8, 200, 8))));
+        assert_eq!(server.level.signal(at(8, 200, 8), east), 15);
+        assert_eq!(server.level.signal(at(8, 199, 8), down), 15, "the block below is strongly powered");
+        server.tick();
+        assert!(lectern_flag(&server, "powered"), "still on after one tick");
+        server.tick();
+        assert!(!lectern_flag(&server, "powered"), "off after two");
+        assert_eq!(server.level.signal(at(8, 200, 8), east), 0);
+        assert_eq!(server.level.signal(at(8, 199, 8), down), 0);
+        assert_eq!(comparator_reads(&mut server), 8);
+        server.lectern(0, LECTERN, LecternAction::Button(2));
+        server.take_lecterns();
+        server.level.level_events.clear();
+        server.lectern(0, LECTERN, LecternAction::Button(2));
+        assert!(server.take_lecterns().is_empty(), "the last page does not turn further");
+        assert!(server.level.level_events.is_empty());
+        assert_eq!(comparator_reads(&mut server), 15);
+        server.lectern(0, LECTERN, LecternAction::Button(1));
+        assert_eq!(server.take_lecterns().iter().map(|view| view.page).collect::<Vec<_>>(), [1]);
+        server.lectern(0, LECTERN, LecternAction::Button(100));
+        assert_eq!(server.take_lecterns().iter().map(|view| view.page).collect::<Vec<_>>(), [0]);
+        server.lectern(0, LECTERN, LecternAction::Button(109));
+        assert_eq!(server.take_lecterns().iter().map(|view| view.page).collect::<Vec<_>>(), [2], "a page past the end goes to the last");
+        server.lectern(0, LECTERN, LecternAction::Close);
+        server.lectern(0, LECTERN, LecternAction::Button(1));
+        assert!(server.take_lecterns().is_empty());
+    }
+
+    #[test]
+    fn take_book_closes_every_viewer() {
+        use crate::lectern::LecternAction;
+        let Some((mut server, _)) = reader_world() else { return };
+        let book = written(&["a", "b"]);
+        server.lectern(0, LECTERN, LecternAction::PlaceBook(book.clone()));
+        server.lectern(0, LECTERN, LecternAction::Open);
+        server.lectern(1, LECTERN, LecternAction::Open);
+        server.take_lecterns();
+        server.lectern(1, LECTERN, LecternAction::Button(3));
+        let closed = server.take_lecterns();
+        assert_eq!(closed.iter().map(|view| (view.player, view.closed)).collect::<Vec<_>>(), [(0, true), (1, true)]);
+        assert_eq!(closed[0].taken, None);
+        let taken = closed[1].taken.clone().unwrap();
+        assert_eq!(taken.id, book.id);
+        let parse = |text: &Option<String>| text.as_deref().and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+        assert_eq!(parse(&taken.components), parse(&book.components));
+        assert!(!lectern_flag(&server, "has_book"));
+        assert!(server.level.lectern_view(minecraftoss_core::BlockPos::new(8, 200, 8)).is_none());
+        assert_eq!(comparator_reads(&mut server), 0);
+        server.lectern(1, LECTERN, LecternAction::Button(3));
+        assert!(server.take_lecterns().is_empty());
+        server.lectern(0, LECTERN, LecternAction::Open);
+        assert_eq!(server.take_lecterns().iter().map(|view| view.closed).collect::<Vec<_>>(), [true], "an empty lectern does not open");
+    }
+
+    #[test]
+    fn a_broken_lectern_closes_its_viewers_and_drops_its_book_above() {
+        use crate::lectern::LecternAction;
+        let Some((mut server, mut scene)) = lectern_world() else { return };
+        server.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["a"])));
+        server.lectern(0, LECTERN, LecternAction::Open);
+        server.take_lecterns();
+        take(&mut server, &mut scene, LECTERN);
+        let books: Vec<[f64; 3]> = server.level.entities.iter().filter(|entity| entity.item_data().is_some_and(|item| item.stack.id == "minecraft:written_book")).map(|entity| entity.pos).collect();
+        assert_eq!(books, [[8.5, 201.0, 8.25]]);
+        let pickup = server.level.entities.iter().find_map(|entity| entity.item_data().filter(|item| item.stack.id == "minecraft:written_book")).map(|item| item.pickup_delay);
+        assert_eq!(pickup, Some(10));
+        server.tick();
+        assert_eq!(server.take_lecterns().iter().map(|view| (view.player, view.closed)).collect::<Vec<_>>(), [(0, true)]);
     }
 
     #[test]

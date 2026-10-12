@@ -67,6 +67,7 @@ pub enum Kind {
     PressurePlate,
     /// `LightningRodBlock`.
     LightningRod,
+    Lectern,
 }
 
 /// Block ids by redstone behaviour.
@@ -112,6 +113,7 @@ impl Kinds {
             ("DaylightDetectorBlock", Kind::DaylightDetector),
             ("BasePressurePlateBlock", Kind::PressurePlate),
             ("LightningRodBlock", Kind::LightningRod),
+            ("LecternBlock", Kind::Lectern),
         ];
         let mut by_block = HashMap::new();
         for (id, info) in registries.blocks.blocks() {
@@ -275,7 +277,7 @@ impl Level<'_> {
                     0
                 }
             }
-            Some(Kind::Lever | Kind::Button(_) | Kind::Observer | Kind::LightningRod) => {
+            Some(Kind::Lever | Kind::Button(_) | Kind::Observer | Kind::LightningRod | Kind::Lectern) => {
                 if self.flag(state, "powered") {
                     15
                 } else {
@@ -383,6 +385,7 @@ impl Level<'_> {
                 }
             }
             Some(Kind::Container) if direction == Direction::Up => self.trapped_chest_signal(state, pos),
+            Some(Kind::Lectern) if direction == Direction::Up => self.own_signal(state, pos),
             Some(Kind::Lever | Kind::Button(_)) => {
                 let towards = connected_direction(self.prop(state, "face"), self.facing(state));
                 if self.flag(state, "powered") && towards == direction {
@@ -479,6 +482,9 @@ impl Level<'_> {
             };
             return Some(self.container_signal(container));
         }
+        if self.redstone_kind(state) == Some(Kind::Lectern) {
+            return Some(self.lectern_signal(pos));
+        }
         self.state_analog_output(state)
     }
 
@@ -564,7 +570,7 @@ impl Level<'_> {
     }
 
     pub(super) fn has_analog_output(&self, state: BlockStateId) -> bool {
-        self.store_of(state).is_some() || self.state_analog_output(state).is_some()
+        self.store_of(state).is_some() || self.state_analog_output(state).is_some() || self.redstone_kind(state) == Some(Kind::Lectern)
     }
 
     // ---- block hooks --------------------------------------------------------
@@ -633,6 +639,7 @@ impl Level<'_> {
             Kind::PistonHead => self.piston_head_after_removal(state, pos),
             Kind::Rail { .. } => self.rail_after_removal(state, pos, moved),
             Kind::LightningRod if self.flag(state, "powered") => self.lightning_rod_update(state, pos),
+            Kind::Lectern if self.flag(state, "powered") => self.update_neighbors_at(pos.below(), block),
             Kind::PressurePlate if !moved && self.plate_signal(state) > 0 => {
                 self.update_neighbors_at(pos, block);
                 self.update_neighbors_at(pos.below(), block);
@@ -775,6 +782,10 @@ impl Level<'_> {
                 }
             }
             Kind::Comparator => self.comparator_refresh(pos, state),
+            Kind::Lectern => {
+                self.set_block_and_update(pos, self.with_bool(state, "powered", false));
+                self.update_neighbors_at(pos.below(), block);
+            }
             Kind::LightningRod => {
                 self.set_block_and_update(pos, self.with_bool(state, "powered", false));
                 self.lightning_rod_update(state, pos);
