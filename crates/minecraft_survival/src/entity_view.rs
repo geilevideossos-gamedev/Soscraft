@@ -348,6 +348,27 @@ impl EntityView {
         self.ambient.totem_emitter(key, body);
     }
 
+    pub fn powder_snow_flake(&mut self, feet: [f64; 3], block_y: i32) {
+        let mut across = || f64::from((self.random.next_float() * 2.0 - 1.0) * 0.083_333_336);
+        let motion = DVec3::new(across(), f64::from(0.05_f32), across());
+        let at = DVec3::new(feet[0], f64::from(block_y + 1), feet[2]);
+        self.ambient
+            .add(minecraft_terrain::ambient_particles::Kind::Snowflake, at, motion);
+    }
+
+    pub fn snowflakes(
+        &mut self,
+        world: &impl minecraftoss_player::World,
+        feet: [f64; 3],
+        height: f32,
+    ) {
+        for block_y in crate::survival::powder_snow_flakes(world, feet, height) {
+            if self.random.next_float() < 0.5 {
+                self.powder_snow_flake(feet, block_y);
+            }
+        }
+    }
+
     pub fn rain_tick(
         &mut self,
         scene: &HandcraftedScene,

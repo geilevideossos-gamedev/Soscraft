@@ -679,6 +679,28 @@ mod tests {
     use minecraftoss_core::chunk::ChunkStatus;
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn a_body_moving_in_powder_snow_makes_snowflakes_on_any_game() {
+        struct Snow;
+        impl minecraftoss_player::World for Snow {
+            fn block(&self, pos: (i32, i32, i32)) -> Option<minecraftoss_player::Block> {
+                let snow = pos.1 == 1 || pos.1 == 2;
+                snow.then(|| minecraftoss_player::Block::new("minecraft:powder_snow"))
+            }
+
+            fn set_block(&mut self, _: (i32, i32, i32), _: Option<minecraftoss_player::Block>) {}
+        }
+        let mut inside = crate::entity_view::EntityView::new(7);
+        let mut above = crate::entity_view::EntityView::new(7);
+        for _ in 0..40 {
+            inside.snowflakes(&Snow, [0.5, 1.2, 0.5], 1.8);
+            above.snowflakes(&Snow, [0.5, 3.5, 0.5], 1.8);
+        }
+        let made = inside.ambient.len();
+        assert!((20..=60).contains(&made), "half of 80 rolls, two blocks a tick: {made}");
+        assert_eq!(above.ambient.len(), 0, "the feet must be in the snow");
+    }
+
     fn login(dimension: Dimension) -> Login {
         Login {
             client: 1,

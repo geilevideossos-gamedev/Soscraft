@@ -1328,6 +1328,25 @@ Commit: see `git log` ("Friends freeze in powder snow like the host"). The previ
 IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:cobblestone*64
 ```
 
+### Leftover: friends see snowflakes around every player in powder snow
+
+Commit: see `git log` ("Friends see snowflakes around every player in powder snow"). The previous commit is `e130f5a5` (friends freeze in powder snow).
+
+- **Changed:**
+  - `minecraft_survival/src/entity_view.rs`: `powder_snow_flake` moved here from `Entities` unchanged, and `snowflakes(world, feet, height)`: vanilla's `PowderSnowBlock.entityInside` on the client, one `snowflake` with a chance of one half for each powder snow block the body is in while its feet are, rising from the top of that block.
+  - `render_anim/src/minecraft_players.rs`: the host's player step calls `snowflakes` (the same rolls as before, from the same random).
+  - `render_anim/src/minecraft_remote.rs`: each client tick, the friend's game makes the snowflakes of every living player whose feet moved sideways since the last tick, its own body included, from the bodies in its MW2 snapshot (`Flakes`: the last feet per client and the last tick seen; a new level forgets them).
+- **Tests:** `minecraft_survival` `remote::tests::a_body_moving_in_powder_snow_makes_snowflakes_on_any_game`.
+- **Decisions:**
+  - **Each game makes the snowflakes itself**, as vanilla's client does for every entity it sees, so nothing is sent. The host already made them for every player in its level (each player's step runs on the host).
+  - **A frame with several client ticks rolls once a tick, at most four,** with the body where the frame shows it; the friend has no per-tick positions of other players.
+- **Test steps:** `docs/round8/e-m6-tests.md`, section "Friends see snowflakes around every player in powder snow".
+- **Kit:** `minecraft:powder_snow_bucket` x1, `minecraft:cobblestone` x64.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:cobblestone*64
+```
+
 ## Combined kit for every test in this track
 
 This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.

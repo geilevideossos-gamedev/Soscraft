@@ -117,6 +117,12 @@ struct Told {
 }
 
 #[derive(Default)]
+struct Flakes {
+    tick: u64,
+    feet: BTreeMap<u32, [f64; 3]>,
+}
+
+#[derive(Default)]
 pub(crate) struct Friend {
     loading: Option<mpsc::Receiver<Result<Prepared, String>>>,
     loader: Option<JoinHandle<()>>,
@@ -157,6 +163,7 @@ pub(crate) struct Friend {
     loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
     boss_bars: BTreeMap<u64, frame::minecraft_ui::McBossBar>,
     credits_due: bool,
+    flakes: Flakes,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -486,6 +493,7 @@ pub(crate) fn friend(
         (dt, shown_ui),
         now_ms,
     );
+    snowflakes(friend, &presented);
     if let Some(prediction) = prediction.as_deref_mut() {
         prediction
             .0
@@ -762,6 +770,53 @@ fn track_bodies(friend: &mut Friend, presented: &net::PresentedSnapshot) {
                 .track_body(u128::from(client), feet, width, height);
         }
     }
+}
+
+fn snowflakes(friend: &mut Friend, presented: &net::PresentedSnapshot) {
+    let Friend {
+        remote: Some(remote),
+        flakes,
+        ..
+    } = friend
+    else {
+        return;
+    };
+    let Some(level) = remote.level.as_mut() else {
+        flakes.feet.clear();
+        return;
+    };
+    let now = level.view.ticks();
+    if now < flakes.tick {
+        flakes.feet.clear();
+    }
+    let ticks = now.saturating_sub(flakes.tick).min(4);
+    flakes.tick = now;
+    if ticks == 0 {
+        return;
+    }
+    let mut seen = BTreeMap::new();
+    for &client in remote.players.keys() {
+        let alive = presented
+            .player(sim::ClientId(client))
+            .is_some_and(|ps| ps.pm_type == 0);
+        let Some((feet, height)) = body_of(presented, client, level.origin).filter(|_| alive)
+        else {
+            continue;
+        };
+        let moved = flakes
+            .feet
+            .get(&client)
+            .is_some_and(|last| last[0] != feet[0] || last[2] != feet[2]);
+        if moved {
+            for _ in 0..ticks {
+                level
+                    .view
+                    .snowflakes(&level.terrain.scene, feet, height as f32);
+            }
+        }
+        seen.insert(client, feet);
+    }
+    flakes.feet = seen;
 }
 
 fn aim(friend: &Friend, ps: Option<&playerstate_iw4::PlayerState>) -> Target {

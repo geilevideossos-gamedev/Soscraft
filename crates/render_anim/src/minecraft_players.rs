@@ -542,15 +542,7 @@ pub(crate) fn movement(
             if (feet[0] != from[0] || feet[2] != from[2])
                 && let Some(entities) = entities.as_mut()
             {
-                for block_y in minecraft_survival::survival::powder_snow_flakes(
-                    &terrain.scene,
-                    feet,
-                    motion.height,
-                ) {
-                    if entities.random_float() < 0.5 {
-                        entities.powder_snow_flake(feet, block_y);
-                    }
-                }
+                entities.view.snowflakes(&terrain.scene, feet, motion.height);
             }
             let bodies = entities
                 .as_ref()

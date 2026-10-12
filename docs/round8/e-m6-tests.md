@@ -42,3 +42,15 @@ A friend in powder snow now freezes on their own screen as the host does: the wh
 ```
 IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:cobblestone*64
 ```
+
+## Friends see snowflakes around every player in powder snow
+
+White snowflakes rise from powder snow around anyone who moves inside it, in both windows: around the friend's own body and around the other player.
+
+1. Use the powder snow from the frost steps above (or fill a fresh hole two blocks wide and one deep with the bucket). Host window: stand inside the powder snow and walk back and forth with A and D.
+2. Friend window: watch the host's soldier. Small white snowflakes rise out of the snow around the host's legs while the host moves, and stop when the host stands still. Screenshot the friend window. **S10**
+3. Friend window: step into the snow and walk back and forth yourself (F5 for third person helps). Snowflakes rise around your own body in the friend window too. Host window: the host sees them around the friend as well. **S11**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:cobblestone*64
+```

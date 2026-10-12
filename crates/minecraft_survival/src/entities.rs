@@ -1033,13 +1033,6 @@ impl Entities {
         self.view.present(effects);
     }
 
-    pub fn powder_snow_flake(&mut self, feet: [f64; 3], block_y: i32) {
-        let mut across = || f64::from((self.view.random.next_float() * 2.0 - 1.0) * 0.083_333_336);
-        let motion = DVec3::new(across(), f64::from(0.05_f32), across());
-        let at = DVec3::new(feet[0], f64::from(block_y + 1), feet[2]);
-        self.view.ambient.add(minecraft_terrain::ambient_particles::Kind::Snowflake, at, motion);
-    }
-
     pub fn track_body(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
         self.view.track_body(key, feet, width, height);
     }
