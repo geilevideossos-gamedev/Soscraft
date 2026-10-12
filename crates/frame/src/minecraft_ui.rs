@@ -197,6 +197,7 @@ pub struct MinecraftUi {
     pub portal_frames: Option<(Handle<Image>, u32)>,
     pub portal_overlay: Option<McPortalOverlay>,
     pub overlay_message: Option<McOverlayMessage>,
+    pub sleep: Option<McSleep>,
     pub boss_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
 }
@@ -245,6 +246,11 @@ impl McBossBar {
 pub struct McPortalOverlay {
     pub alpha: f32,
     pub frame: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct McSleep {
+    pub timer: i32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

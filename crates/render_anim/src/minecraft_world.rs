@@ -617,12 +617,23 @@ fn update(
     {
         crate::minecraft_riding::dismount(&mut player.riding, levels.get_mut(&player.dimension).and_then(|level| level.entities.as_mut()), &mut authority.0, local.0);
     }
-    let slept = minecraft_survival::sleep::serve(globals, levels, players, local_uuid, bed_request.take(), std::mem::take(sleep_ticks), *published);
+    let leave_bed = std::mem::take(&mut ui.chat.leave_bed);
+    let bed_action = bed_request.take().map(minecraft_survival::sleep::BedAction::Lie).or(leave_bed.then_some(minecraft_survival::sleep::BedAction::Leave));
+    let slept = minecraft_survival::sleep::serve(globals, levels, players, local_uuid, bed_action, std::mem::take(sleep_ticks), *published);
     if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
         refresh_shapes(&level.terrain, &globals.registries, shapes, shape_ids, &slept.written);
     }
     let local_messages: Vec<_> = slept.messages.into_iter().filter(|(uuid, _)| uuid == local_uuid).map(|(_, message)| message).collect();
     crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &local_messages);
+    if let Some(player) = players.get(local_uuid) {
+        ui.sleep = (player.sleep_timer > 0).then_some(frame::minecraft_ui::McSleep { timer: player.sleep_timer });
+        let blocked = ui.inventory_open || hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
+        if player.sleeping.is_none() {
+            ui.chat.wake_up();
+        } else if !blocked {
+            ui.chat.lie_in_bed();
+        }
+    }
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;

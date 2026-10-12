@@ -153,6 +153,12 @@ pub trait Bedroom: BlockView {
     fn sound(&mut self, event: &'static str, at: [f64; 3]);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BedAction {
+    Lie(Bed),
+    Leave,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Night {
     pub dark: bool,
@@ -600,7 +606,7 @@ pub fn serve(
     levels: &mut BTreeMap<Dimension, Level>,
     players: &mut BTreeMap<PlayerUuid, Player>,
     uuid: &PlayerUuid,
-    request: Option<Bed>,
+    action: Option<BedAction>,
     ticks: u32,
     published: bool,
 ) -> SleepEvents {
@@ -615,8 +621,14 @@ pub fn serve(
     let Some(level) = levels.get_mut(&dimension) else {
         return events;
     };
-    if let Some(bed) = request {
-        events.extend(start(globals, level, players, uuid, &bed, published));
+    match action {
+        Some(BedAction::Lie(bed)) => {
+            events.extend(start(globals, level, players, uuid, &bed, published));
+        }
+        Some(BedAction::Leave) => {
+            events.extend(stop(globals, level, players, uuid, false, published));
+        }
+        None => {}
     }
     for _ in 0..ticks {
         events.extend(tick(globals, level, players, published));

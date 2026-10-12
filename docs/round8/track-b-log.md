@@ -864,3 +864,30 @@ After f4d14bdc.
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:blue_bed,minecraft:straw_bed,minecraft:villager_spawn_egg*2,minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:clock
 ```
+
+### b4.3. The Minecraft sleep screen fades to dark with a Leave Bed button
+
+After 423283a9.
+
+- **Changed:**
+  - `frame`: `MinecraftUi.sleep: Option<McSleep { timer }>`; `McChat.in_bed` and `McChat.leave_bed`, with `lie_in_bed` (opens an empty chat, or keeps one that is already open) and `wake_up` (closes it, unless text was typed: then it stays as an ordinary chat, as `InBedChatScreen.onPlayerWokeUp` does).
+  - New `hud/src/minecraft_sleep.rs`: the overlay (`Hud.extractSleepOverlay`: alpha `220 x timer / 100`, then `1 - (timer - 100) / 10` over the fade, colour `0x101020`), drawn over the world and the HUD and under the chat; the Leave Bed button (`widget/button`, `widget/button_highlighted` on hover, nine-slice 200 x 20 with 3-pixel borders, at `(width / 2 - 100, height - 40)`, its label centred in white with a shadow). A click on it asks to leave.
+  - `hud/src/minecraft_chat.rs`: in bed, Escape asks to leave instead of closing the chat, and Enter sends the line and clears the input but keeps the screen.
+  - `render_anim/src/minecraft_gui.rs`: the button sprites and `multiplayer.stopSleeping` join the allow-lists.
+  - `render_anim/src/minecraft_world.rs`: each frame after the sleep tick, `ui.sleep` follows the local player's `sleep_timer`, the bed chat opens while the player sleeps (not over the inventory, the console or a script menu) and closes on waking; a leave request becomes `sleep::BedAction::Leave`, which `sleep::serve` turns into `stop(wake_at_once = false)` before the tick.
+- **Tests:** `hud::minecraft_sleep`: `the_sleep_overlay_darkens_over_100_ticks_and_fades_in_10`, `the_leave_bed_button_sits_40_pixels_above_the_bottom` (also the hover edges), `escape_in_bed_asks_to_leave` (and Enter keeps the screen), `a_nine_slice_keeps_three_pixel_borders`. `frame::minecraft_chat`: `the_bed_screen_opens_empty_and_keeps_typed_text_when_the_sleeper_wakes`. `render_anim::minecraft_gui`: the atlas test (with the game data) checks both button sprites' nine-slice and the Leave Bed text.
+- **Decisions:**
+  - `leave_bed` lives on `McChat` next to `in_bed` (the brief had it on `MinecraftUi`), because the chat's key handler only sees the chat.
+  - The darkening steps once per server tick, as vanilla reads the whole-tick sleep timer.
+  - While the console or a script menu is open the bed chat is not reopened, so the two don't fight over the cursor.
+- **Test steps (Overworld, survival):**
+  1. `/time set 12600`, right-click the red bed: the screen darkens to a dark blue over 5 seconds (**5**), the chat bar is open and a "Leave Bed" button sits near the bottom (**6**); it lights up under the mouse.
+  2. Stay: at the skip the screen fades back in half a second and the chat and button go away.
+  3. `/time set night`, lie down and click "Leave Bed" before it is fully dark: you stand up at once beside the bed and the screen fades back. It is still night.
+  4. Lie down again and press Escape: the same.
+  5. Lie down, type `hello` in the bed chat and press Enter: the line appears in the chat and the bed screen stays. Type `abc` without Enter and click Leave Bed: you stand up and the chat stays open with `abc` in it.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:blue_bed,minecraft:straw_bed,minecraft:clock
+```
