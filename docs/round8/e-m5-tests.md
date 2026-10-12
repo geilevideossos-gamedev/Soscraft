@@ -77,15 +77,20 @@ IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iro
 
 ## Review fixes
 
-The adversarial review of M5 fixed the defects below. Use the E20 kit (repeated at the end of this section) and a fresh world.
+The adversarial review of M5 fixed the defects below. Use the kit line at the end of this section (the E20 kit and a chest) and a fresh world.
 
 R1. **A friend arriving alone in a dimension gets its chunks.** Start both windows: `& scripts\mp-local.ps1 -World mp-m5r -Fresh`. Spawn in both. Host window: `/op Friend`, `/time set day`. The host stays in the overworld for the whole step.
    1. Friend window: `/execute in minecraft:the_nether run tp @s ~ 100 ~`. The loading screen shows and then the Nether: the friend stands (or falls a little onto netherrack, or mines out if they land inside it) and can walk and mine. Before this fix the friend stayed on the loading screen for ever. Screenshot. **R1a**
    2. Friend window: `/execute in minecraft:overworld run tp @s ~ 100 ~`, which brings the friend back next to the host. Then build a nether portal with the 10 obsidian, light it and walk in, while the host stays away from the portal. The purple loading screen shows, then the Nether, and the friend can walk. Screenshot. **R1b**
    3. Friend window: `/kill` in the Nether. Host window: walk through the friend's portal into the Nether before the friend respawns, so the overworld is left to the friend. Friend window: respawn. The friend gets the loading screen and then the overworld at the world spawn, standing on the ground.
 
+R2. **A friend's chest closes in the dimension they leave.** Same windows, the host in the Nether and the friend in the overworld next to the lit portal.
+   1. Friend window: place the chest right beside the portal, so it can be opened while standing inside the portal. Put the 32 cobblestone in it. Step into the portal, look at the chest and open it, then take the cobblestone back out one stack at a time while the portal swirl builds up. Do not close the chest.
+   2. The portal takes the friend to the Nether with the chest still open. In the Nether the chest screen is gone, and the cobblestone is either in the friend's inventory or still in the chest (whatever was moved before the trip). Nothing lies on the netherrack around the friend. Screenshot the friend's inventory. **R2a**
+   3. Friend window: go back through the portal. The chest in the overworld is closed (its lid is down) and holds whatever was left in it. Screenshot. **R2b**
+
 Close the windows (type `quit` in the script's console).
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:cow_spawn_egg*2,minecraft:white_bed,minecraft:cooked_beef*8
+IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:cow_spawn_egg*2,minecraft:white_bed,minecraft:cooked_beef*8,minecraft:chest
 ```

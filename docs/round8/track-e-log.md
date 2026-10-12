@@ -1233,6 +1233,17 @@ Commit: see `git log` ("A friend arriving alone in a Minecraft dimension gets it
 - **Test steps:** `docs/round8/e-m5-tests.md`, section "Review fixes", step R1.
 - **Kit:** the E20 kit.
 
+### Review fix: a friend's menu is not served in the level they are travelling to
+
+Commit: see `git log` ("A friend's Minecraft menu is not served while they travel"). The previous commit is `e11696bc` (the arrival streaming fix).
+
+- **Defect:** E20 lets a friend set off through a portal inside `step_friend`, which changes `player.dimension` at once. The host loop then ran `friend_menus` for that friend in the same frame, against the level they are going to: their queued menu clicks were applied to that level's containers, the open menu was checked against that level's blocks (so it closed there), its overflow was tossed into that level at a point worked out with the old level's origin, and the lid of the chest they had open was closed in the wrong level. The same held on every frame of the trip and after a respawn in another dimension. Vanilla serves a player's menu only in the level the player is in, and `leave_level` already closes the menu and drops its overflow at the friend's feet in the level they left.
+- **Fix:** `friend_menus` does nothing while the friend has a switch; their menu is settled with the old level by `leave_level` on the next frame, and served again once they stand in the new level.
+- **Test:** none new: `friend_menus` needs the MW2 authority and a live level, which the unit tests do not build. R2 checks it in game.
+- **Results:** `test -p render_anim --lib` green on the real 26.3 data; `check -p launcher` green.
+- **Test steps:** `docs/round8/e-m5-tests.md`, section "Review fixes", step R2.
+- **Kit:** the E20 kit and `minecraft:chest` x1; the line in the "Review fixes" section of `docs/round8/e-m5-tests.md` holds both.
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers the M3 and M4 owner tests: the merge of tracks B, C and D, E16, E17 and the review fixes in `docs/round8/e-m3-tests.md`, and E18 in `docs/round8/e-m4-tests.md`. It leaves out six items of the merge section's steps 7 to 9 (lectern, trapped chest and piglins); give them from the host window before those steps: `/give @a minecraft:lectern`, `/give @a minecraft:writable_book`, `/give @a minecraft:trapped_chest`, `/give @a minecraft:redstone_lamp`, `/give @a minecraft:gold_block 4`, `/give @a minecraft:stone_pickaxe`. The M1 and M2 tests keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`; the M2 combined line (E11 to E15) is in the git history of this file at `bf0a3a47`.

@@ -1712,7 +1712,11 @@ pub(crate) fn friend_menus(
 ) -> Vec<Clientbound> {
     let mut lines = Vec::new();
     let ps = world.authority.player(client).copied();
-    let Some(level) = world.levels.get_mut(&player.dimension) else {
+    let Some(level) = world
+        .levels
+        .get_mut(&player.dimension)
+        .filter(|_| player.switching.is_none())
+    else {
         return lines;
     };
     let Level {
