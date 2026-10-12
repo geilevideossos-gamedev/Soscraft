@@ -1028,3 +1028,24 @@ Previous commit: fa1af90e
 ```
 IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book,minecraft:lectern*2,minecraft:comparator*2,minecraft:redstone*32,minecraft:redstone_lamp*2,minecraft:oak_planks*64,minecraft:torch*16
 ```
+
+## Group c4-elytra: the elytra and the glide pose on the MW2 body (c4 groups 1-6)
+
+### 41. Minecraft elytra wings are modelled and eased like vanilla
+
+Previous commit: 237ef4c9
+
+- **Changed:**
+  - New `minecraft_terrain` `elytra_render.rs`, vanilla `ElytraModel`, `WingsLayer`, `ElytraAnimationState` and `AvatarRenderer.extractFlightData` (javap of 26.3):
+    - `wings_texture`: only `minecraft:elytra` has a wings layer (`entity/equipment/wings/elytra`, 64 x 32).
+    - `WingAngles` (the left wing's x, y, z rotation): `REST` 15, 0, -15 degrees; `CROUCH` 40, 5, -45; `SPREAD` 20, 0, -90. `target` while gliding lerps from rest to spread by k = 1 - (-normalised motion.y)^1.5 when falling (k = 1 otherwise), so a level or climbing glide spreads the wings and a vertical dive folds them back to rest.
+    - `ElytraAnim`: starts at zero like vanilla's fields; `advance(seconds, gliding, crouching, motion)` runs whole 50 ms ticks (fall-fly ticks +1 or back to 0, then each angle moves 0.3 of the way to its target) and keeps the fraction; `wings()` lerps the old angles to the new by it; `scale()` is `fall_flying_scale(ticks + partial)` = clamp(t²/100, 0, 1) while gliding and 0 otherwise.
+    - `flying_roll(look, motion)`: vanilla's signed angle between the horizontal motion and look, sign(look × motion) · acos(min(1, |cos|)), in map axes; `None` when either horizontal length squared is at most 1e-5.
+    - `append_elytra`: the two wing boxes (10 x 20 x 2 at UV 22, 0, grown by 1) on a part frame in model pixels; the left wing pivots at (5, 0, 2) and turns Rz·Ry·Rx, the right one at (-5, 0, 2) with z and y negated and the texture mirrored. The 2 pixels are `WingsLayer`'s 0.125-block push toward the back. An enchanted elytra adds its range to `armor_glint`. Nothing is drawn when the atlas lacks the texture.
+  - `mesh.rs`: the entity atlas takes the elytra texture when the pack has it.
+- **Tests:** `elytra_render`: `only_the_elytra_has_wings`; `the_wings_fold_at_15_degrees_spread_to_90_and_crouch_at_40_and_45` (rest, crouch, level and climbing glide, a vertical dive back to rest, a 45-degree dive with k = 0.4054); `the_wings_ease_three_tenths_a_tick_from_zero` (one tick from zero gives x = 0.0785398, half a tick later the drawn wings are halfway, 30 + 20 ms frames match 50 ms ticks, a huge or NaN frame time is safe); `fall_flying_scale_is_ticks_squared_over_100`; `the_flying_roll_is_the_signed_angle_between_motion_and_look` (30 degrees left +0.5236, right -0.5236, at right angles ±1.5708, straight backward 0, 150 degrees +0.5236 because of the `abs`, a vertical dive `None`); `an_elytra_is_two_mirrored_wings_on_the_back` (12 faces, UVs inside the 22..46 x 0..22 panel, both boxes span x -6..6, y -1..21, z 1..5 at zero angles, the right wing is the left one mirrored with the same texture, every face faces out); `the_wings_turn_out_from_their_shoulder_pivots` (spread wings reach about 25 pixels out on each side, rest wings open at the bottom and swing back, the frame moves them); `an_enchanted_elytra_shimmers_with_the_armour_glint`.
+- **Decisions:**
+  - `append_elytra` takes no crouch flag: the brief keeps vanilla's crouch angles but not its 3-pixel crouch drop, because the MW2 spine already lowers when crouching.
+  - Frame times are summed in ticks with a 1e-4 tick slack, so 30 + 20 ms frames make a whole tick despite float rounding; at most 100 ticks run in one frame (the ease has long settled by then).
+- **Test steps:** none in game yet; nothing is drawn until the next commit.
+- **Kit:** none.

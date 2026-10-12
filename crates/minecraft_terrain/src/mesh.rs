@@ -622,6 +622,10 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
             }
         }
     }
+    let wings = ResourceId::parse(crate::elytra_render::WINGS_TEXTURE)?;
+    if packs.texture(&wings)?.is_some() {
+        textures.insert(wings, ());
+    }
     for chunk in scene.chunks() {
         for x in chunk.0 * 16..chunk.0 * 16 + 16 {
             for z in chunk.1 * 16..chunk.1 * 16 + 16 {
