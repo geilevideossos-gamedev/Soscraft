@@ -277,7 +277,7 @@ The registry fingerprint (`registry`) hashes the block state count and every blo
    - The Minecraft map always runs the `dm` game type (section 13.4).
    - When the room is created, the host's Minecraft chat shows the join code, the room's `AdvertId` in hex: "Friends join with the code [<code>]", the code in green brackets like vanilla's `/seed`. Only the host sees it, once per room, as soon as their world is shown. `IW4L_MASTER_STATUS_FILE` also writes it as `room=`.
 2. **The friend joins.** Either `IW4L_MASTER_JOIN=<code>` with `map minecraft:overworld` (what `Join Minecraft World.bat` asks for), the console command `ui_join_lobby_id <code>`, or the server browser.
-   - Both typed ways read the code with `net::join_code`, which drops spaces, dashes and the chat's brackets; capitals are fine.
+   - Both typed ways read the code with `net::join_code`, which drops spaces, dashes and the chat's brackets; capitals are fine. The console splits its arguments at spaces, so there a code typed with spaces goes in quotes (`ui_join_lobby_id "0123abcd 4567ef01 ..."`).
    - MW2 runs its handshake, bootstrap and `EnterMatch` as for any match.
 3. **The friend's game sees the Minecraft map installed** (`assets::minecraft_map::is_minecraft`).
    - In the `Client` role it **does not** start `load()`. Today it does (`minecraft_world.rs:432-450`), and that opens a world folder.

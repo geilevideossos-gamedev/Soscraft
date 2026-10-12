@@ -1549,6 +1549,16 @@ Commit: see `git log` ("A friend who quits in bed gets up and frees the bed"). T
 - **Test steps:** `docs/round8/e-m6-tests.md`, beds section step 6; `docs/round8/track-e-tests.md` step 73 (its end).
 - **Kit:** none new (`minecraft:white_bed` is in the combined kit).
 
+### Review fix: the console takes a join code with spaces only in quotes
+
+Commit: see `git log` ("The join code docs say the console needs quotes around a spaced code"). The previous commit is `745d9ba7` (a friend who quits in bed).
+
+- **Defect (documents):** E23's `docs/MULTIPLAYER.md` section 5.1 and `docs/round8/e-m6-tests.md` said both typed ways, `IW4L_MASTER_JOIN` and the console's `ui_join_lobby_id`, accept a code typed with spaces. The console splits its arguments at spaces (`console/src/command.rs`, `command_words`) and `ui_join_lobby_id` reads only the first one, so `ui_join_lobby_id 0123abcd 4567ef01 ...` says "Invalid lobby ID". A quoted code is one argument and `net::join_code` then drops its spaces.
+- **Changed:** both documents now say that in the console a code with spaces goes in quotes. No code change: the console path is not a way into a Minecraft world anyway (section 18.3: it joins with the Create Game menu's map and no password).
+- **Tests:** none (documents only).
+- **Test steps:** none new.
+- **Kit:** none.
+
 ## Combined kit for every test in this track
 
 This line covers `docs/round8/track-e-tests.md`, the one run of every track E test (27 stacks; the rest of the items come from its `/give @a` lines). The per-milestone tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m6-tests.md`; the M6 combined line is in the git history of this file at `3cc89dfb` (with `eye_of_ender`, which should read `ender_eye`), the M5 line at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.

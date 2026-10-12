@@ -131,7 +131,7 @@ IW4L_MINECRAFT_KIT=minecraft:splash_potion@harming,minecraft:splash_potion@poiso
 
 ## E23. The host shows a join code
 
-When the host's room is created, the host's Minecraft chat shows "Friends join with the code [<code>]", the 32-character room code in green brackets (like `/seed` in vanilla). It shows once per room, as soon as the host's world is on screen, and only on the host. The friend types that code into `Join Minecraft World.bat` (or `IW4L_MASTER_JOIN`, or the console's `ui_join_lobby_id`); the brackets, spaces, dashes and capitals may be typed or left out. `mp-local.ps1 -FriendOnly` takes a typed code with `-Join`.
+When the host's room is created, the host's Minecraft chat shows "Friends join with the code [<code>]", the 32-character room code in green brackets (like `/seed` in vanilla). It shows once per room, as soon as the host's world is on screen, and only on the host. The friend types that code into `Join Minecraft World.bat` (or `IW4L_MASTER_JOIN`, or the console's `ui_join_lobby_id`, where a code with spaces goes in quotes); the brackets, spaces, dashes and capitals may be typed or left out. `mp-local.ps1 -FriendOnly` takes a typed code with `-Join`.
 
 1. Start both windows: `& scripts\mp-local.ps1 -World mp-m6 -Fresh`. Spawn in both.
 2. **The line.** Host window: as soon as the world shows, the chat reads "Friends join with the code [...]" with the code in green. Press T to see it again if it faded. Open `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-artifacts\mp-local\host\master.status` in Notepad: its `room=` value is the same code. Screenshot the host window with the line. **S19**
