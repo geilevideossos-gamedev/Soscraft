@@ -823,6 +823,21 @@ Commit: see `git log` ("Players see each other's armour, held items and elytra")
 - **Test steps:** `docs/round8/e-m2-tests.md`, section E15 (two windows; step 6 shows the wings only once c4 is merged).
 - **Kit:** `minecraft:iron_helmet` x1, `minecraft:iron_chestplate` x1, `minecraft:iron_leggings` x1, `minecraft:iron_boots` x1, `minecraft:iron_sword` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8.
 
+## Adversarial review of M2
+
+The review covers every M2 commit from `79ba1549` (E9 to E15 and the merge of track A). Each fix below is its own commit.
+
+### Review fix: a burning furnace no longer makes a friend's clicks stale
+
+Commit: see `git log` ("A burning furnace no longer makes a friend's clicks stale"). The previous commit is `6457abca` (E15).
+
+- **Defect:** `menus::changes` counted up a menu's `state` for every change it sent, including a change of data alone (a furnace's flame and arrow, a brewing stand's progress) or of the carried stack. A furnace or brewing stand that works changes its data every tick, so a friend's click in it almost always carried a `state` one behind the host's and was taken for stale: it still acted, but the whole menu was sent again after nearly every click.
+- **Vanilla (javap, `ServerPlayer$1`):** `sendInitialData` and `sendSlotChange` call `incrementStateId`; `sendDataChange` (`ClientboundContainerSetDataPacket`) and `sendCarriedChange` (`ClientboundSetCursorItemPacket`) do not.
+- **Fix:** `menus::sync` counts the state up only for a full `MenuOpen` and for a `MenuSlots` that changes a slot. Data and the carried stack alone keep the state.
+- **Test:** `menus::tests::a_burning_furnace_does_not_make_a_click_stale` (a lit furnace burns one tick: the `MenuSlots` carries only its new data and the old state, and a click with that state is not stale).
+- **Test steps (two windows, `docs/round8/e-m2-tests.md`, section E14, step 5):** while the furnace smelts, shift-click the coal out of the furnace and back in a few times: each click moves the stack at once, as before.
+- **Kit:** the E14 kit.
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers E11 to E15 and the M2 owner test; the earlier sections keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`.

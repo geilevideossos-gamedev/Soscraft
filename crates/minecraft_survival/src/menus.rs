@@ -1004,11 +1004,13 @@ fn sync(
         menu.sent = before;
         return;
     }
-    menu.state = (menu.state + 1) & STATE_MASK;
     match before.filter(|before| {
         !resend && before.extras == now.extras && before.slots.len() == now.slots.len()
     }) {
         Some(before) => {
+            if before.slots != now.slots {
+                menu.state = (menu.state + 1) & STATE_MASK;
+            }
             let slots = now
                 .slots
                 .iter()
@@ -1030,7 +1032,10 @@ fn sync(
                 data,
             });
         }
-        None => out.push(ToClient::MenuOpen(view_of(menu, &now))),
+        None => {
+            menu.state = (menu.state + 1) & STATE_MASK;
+            out.push(ToClient::MenuOpen(view_of(menu, &now)));
+        }
     }
     menu.sent = Some(now);
 }
@@ -1509,6 +1514,63 @@ mod tests {
         assert!(
             matches!(out[..], [ToClient::MenuSlots { menu: 1, .. }]),
             "{out:?}"
+        );
+    }
+
+    #[test]
+    fn a_burning_furnace_does_not_make_a_click_stale() {
+        use minecraftoss_core::nbt::Tag;
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = player(&mut chat, 1, "Alex");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let pos = (4, 64, 4);
+        let tag = Tag::Compound(std::collections::BTreeMap::from([
+            ("id".to_owned(), Tag::String("minecraft:furnace".to_owned())),
+            ("lit_time_remaining".to_owned(), Tag::Int(100)),
+            ("lit_total_time".to_owned(), Tag::Int(100)),
+        ]));
+        containers.import(pos, &tag, &RecipeBook::default());
+        let furnace = Opened {
+            station: Station::Oven(CookingKind::Furnace),
+            cells: vec![pos],
+        };
+        open(
+            &mut friend,
+            Open::Block(furnace),
+            Text::literal("Furnace"),
+            0,
+        );
+        let _ = changes(&mut friend, &mut containers, books(&book));
+        let state = friend.menus.current().state;
+        containers.tick(&RecipeBook::default());
+        let burning = changes(&mut friend, &mut containers, books(&book));
+        let [
+            ToClient::MenuSlots {
+                menu: 1,
+                state: sent,
+                slots,
+                data,
+                ..
+            },
+        ] = &burning[..]
+        else {
+            panic!("{burning:?}");
+        };
+        assert!(slots.is_empty(), "{slots:?}");
+        assert_eq!(data, &vec![(0, 99)]);
+        assert_eq!(*sent, state, "a data change keeps the state, as vanilla's");
+        friend.inventory.slots[3] = Some(ItemStack::new("minecraft:coal", 2));
+        friend_click(
+            &mut friend,
+            &mut containers,
+            &book,
+            (1, state),
+            slot(3, true),
+        );
+        assert!(
+            !friend.menus.current().resends(),
+            "the click saw the latest state"
         );
     }
 
