@@ -78,7 +78,7 @@ fn skating_wanted(text: &str) -> bool {
         .filter_map(|line| line.trim().split_once('='))
         .filter(|(key, _)| *key == "skating")
         .filter_map(|(_, value)| value.parse::<bool>().ok())
-        .last()
+        .next_back()
         .unwrap_or(false)
 }
 

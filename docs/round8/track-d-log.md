@@ -305,6 +305,14 @@ Commit: the one after `d6553124` (group 7). Found by the track's adversarial rev
   1. From the 8-block tower of group 3b step 3, ride off the edge badly (turn the board sideways or lean back hard) so the skater bails in the air: you lose 2.5 hearts (5 points), the same as a clean landing, not less.
 - **Kit:** none beyond group 3b.
 
+## Clippy 2. The launcher's skating check passes clippy without new warnings
+
+Commit: the one after `a01029cf` (review fix 1). Found by the track's final clippy run on every touched crate (`console`, `frame`, `input_iw4`, `launcher`, `minecraft_survival`, `render_anim`, `sim`, `ui`).
+
+- **Changed:** `launcher/src/first_run.rs`: `skating_wanted` takes the last `skating=` line with `next_back()` instead of `last()` (clippy's `double_ended_iterator_last`, from group 1). No behaviour change. Every other warning in the touched crates is on code the track did not add.
+- **Tests:** none new; `launcher` passes.
+- **Owner's test steps:** none. **Kit:** none.
+
 ## The whole track's owner test, one kit
 
 Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6, group 5a steps 1-4, group 5b steps 1-3, group 6 step 1, group 7 steps 1-8, review fix 1 step 1. Groups 1, 2 and 6 need no items, and group 7 only the oak stairs. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, 4 the cobblestone, stairs, slabs, carpet and snow, 5a the fence, wall and iron bars, and 5b the rails.
