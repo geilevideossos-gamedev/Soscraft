@@ -33,6 +33,7 @@ mod minecraft_loading;
 mod minecraft_portal;
 mod minecraft_screens;
 mod minecraft_sleep;
+mod minecraft_spyglass;
 mod minecraft_suggestions;
 mod minecraft_tooltip;
 mod minecraft_vitals;

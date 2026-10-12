@@ -104,6 +104,7 @@ pub(crate) fn arriving(player: &mut Player, sounds: Option<&mut Sounds>, packs: 
 }
 
 pub(crate) const FREEZE_OUTLINE: &str = "minecraft:misc/powder_snow_outline";
+pub(crate) const SPYGLASS_SCOPE: &str = "minecraft:misc/spyglass_scope";
 
 pub(crate) fn frames(
     packs: &PackStack,

@@ -30,7 +30,7 @@ IW4L_MINECRAFT_KIT=minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:tor
 
 Commit: the one after `456bef90`.
 
-- **Cause:** the inventory icon took its model from `item_model_reference`, which follows a `minecraft:select`'s `fallback` first. The 26.3 spyglass definition is a `minecraft:display_context` select whose `gui`, `ground`, `fixed` and `on_shelf` case is `item/spyglass` (the flat sprite) and whose fallback is `item/spyglass_in_hand` (the small 3D tube with `item/spyglass_model`). So the hotbar and inventory drew the in-hand texture strip (screenshot 2). The six spears (`*_spear` with `*_spear_in_hand`) have the same definition and showed their in-hand sprite too. The bundles and the trident were not affected (same model in both cases, or the trident's special path).
+- **Cause:** the inventory icon took its model from `item_model_reference`, which follows a `minecraft:select`'s `fallback` first. The 26.3 spyglass definition is a `minecraft:display_context` select whose `gui`, `ground`, `fixed` and `on_shelf` case is `item/spyglass` (the flat sprite) and whose fallback is `item/spyglass_in_hand` (the small 3D tube with `item/spyglass_model`). So the hotbar and inventory drew the in-hand texture strip (screenshot 2). The seven spears (`*_spear` with `*_spear_in_hand`) have the same definition and showed their in-hand sprite too. The bundles and the trident were not affected (same model in both cases, or the trident's special path).
 - **Changed:** `minecraft_terrain` `interface.rs`: `item_gui_model_reference` picks the first `display_context` case whose `when` holds `gui`, else falls back to `item_model_reference`. `item_icons.rs` uses it for the icon. The held, dropped and framed models are unchanged (they keep `item_model_reference` and their own display contexts).
 - **Tests:** `interface::tests::the_inventory_icon_takes_the_gui_case_of_a_display_context_select` (spyglass, bundle, a select with no `gui` case, a select on another property) and, with the 26.3 pack, `item_icons::tests::vanilla_spyglass_and_spear_icons_are_their_inventory_sprites` (the 32 px icon equals `item/spyglass` and `item/iron_spear` scaled with nearest).
 - **Decisions:** the fix follows vanilla's `ItemModelResolver` for the GUI context instead of special-casing the spyglass, so every item with a GUI case (today the spyglass and the spears) is right.
@@ -42,4 +42,36 @@ Commit: the one after `456bef90`.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:spyglass,minecraft:iron_spear
+```
+
+## F2b. The spyglass zooms like vanilla
+
+Commit: the one after `0d6f48be` (whose log entry said "six spears": there are seven, corrected here).
+
+- **Before:** the spyglass had no use at all; right-click did nothing.
+- **Vanilla 26.3** (javap): `SpyglassItem.use` plays `item.spyglass.use` and starts using at once, use duration 1200 ticks; `releaseUsing` and `finishUsingItem` play `item.spyglass.stop_using`; switching away or dying stops without a sound (`stopUsingItem`). `AbstractClientPlayer.getFieldOfViewModifier` returns 0.1 while scoping in first person; `Camera.tickFov` moves the modifier half way to its target each tick (clamped 0.1 to 1.5) and the FOV is `fov * modifier`. `Hud.extractSpyglassOverlay` draws `textures/misc/spyglass_scope.png` as a centred square of side `min(w, h) * scopeScale` with black around it; `scopeScale` moves `0.5 * deltaTicks` of the way to 1.125 every frame and is reset to 0.5 when not scoping. `MouseHandler` turns at 1/8 of the usual speed while scoping in first person. `FirstPersonHandsAndItemsRenderer.submitArmWithItem` draws no arms or items while scoping.
+- **Changed:**
+  - `minecraft_survival` `spyglass.rs` (new): `Scoping {slot, ticks}` on the player's `Hand` (per player, server side), `Scoping::start`, and `step`, which keeps scoping while the use key is held and the spyglass stays in that hand, and returns whether the stop sound plays (released or 1200 ticks: yes; switched away, dropped or dead: no). `offhand::has_use` counts the spyglass, so it works from the offhand too.
+  - `render_anim` `minecraft_world.rs`: a spyglass use starts scoping with the use sound; scoping makes the hand busy (no punching, digging or other uses), slows walking like any item use, blocks MW2 fire and aim through `offhand_busy` and hides the gun, hides the first-person hands and items, and ends with the stop sound. `ui.scoping` tells the camera and the HUD; the scope texture is loaded with the other overlays.
+  - `render_anim` `minecraft_spyglass.rs` (new) and `occupancy/view_kick.rs`: in first person the vertical FOV is multiplied by the smoothed modifier and look speed by 1/8 while scoping. Third person (F5) neither zooms nor shows the overlay, as in vanilla.
+  - `hud` `minecraft_spyglass.rs` (new): the scope overlay below the hotbar and the frost outline, with vanilla's growing scale.
+- **Tests:** `minecraft_survival` `spyglass::tests` (only a spyglass in the used hand starts; letting go stops with the sound, switching away, a changed slot or death stop quietly; the offhand counts; 1200 ticks finish like letting go), `offhand` `has_use` now asserts the spyglass; `render_anim` `minecraft_spyglass::tests` (the modifier halves its distance each tick and back, is frame-rate independent, and scales the vertical FOV by exactly 0.1); `hud` `minecraft_spyglass::tests` (the scale grows 0.5 to 1.125 by half a tick per frame, the 16:9 layout with black bars left and right, a small scope framed on four sides).
+- **Decisions:**
+  - The modifier is stepped continuously per frame (`0.5^(seconds * 20)`), which equals vanilla's per-tick halving with its partial-tick lerp closely enough and stays smooth at any frame rate.
+  - The MW2 FOV setting is horizontal at 4:3; the zoom scales the matching vertical FOV by 0.1, like vanilla scales its vertical FOV.
+  - The scope's growth uses vanilla's frame formula with the step clamped to 1, so a long frame can't overshoot.
+  - Third person: the MW2 body has no Minecraft arm poses, so it does not raise the spyglass to its eye (vanilla's `SPYGLASS` arm pose). The use sound, the slowdown and the stop still happen.
+  - Not done (vanilla client-only effects without a player-facing change here): the `minecraft:used` statistic and the spyglass advancements (no statistics or advancements yet).
+- **Owner's test steps** (survival, kit below, first person):
+  1. Select the spyglass in the hotbar and hold right-click: a quick zoom in to about ten times, the round spyglass overlay grows in with black bars left and right, and the spyglass use sound plays. The hands and the spyglass are not drawn, and walking is slow. **Screenshot 1.**
+  2. Move the mouse while zoomed: the view turns much slower than normal.
+  3. Let go: the view zooms back out over a few frames, the overlay is gone and the stop sound plays.
+  4. Hold right-click again and press 1 to 9 to another slot while zoomed: zoom and overlay end at once, with no stop sound.
+  5. Hold right-click and press F5: third person, no zoom and no overlay. F5 twice back to first person while still holding: zoom and overlay again. **Screenshot 2** (third person).
+  6. Put the spyglass in the offhand (F with it selected), select an empty hotbar slot and hold right-click: it zooms from the offhand as well.
+  7. Select a gun with the spyglass still in the offhand and use the offhand (hold F today; skip this step if F4 has changed the key): the gun is lowered, does not fire or aim while zoomed, and comes back when you let go.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spyglass,minecraft:spyglass
 ```

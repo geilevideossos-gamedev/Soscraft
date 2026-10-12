@@ -57,5 +57,6 @@ mod minecraft_riding;
 mod minecraft_sleep;
 mod minecraft_sounds;
 mod minecraft_spawn_gate;
+pub mod minecraft_spyglass;
 pub mod minecraft_world;
 pub mod skate;

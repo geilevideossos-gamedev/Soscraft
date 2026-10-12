@@ -23,6 +23,7 @@ pub mod riding;
 pub mod save;
 pub mod server;
 pub mod sleep;
+pub mod spyglass;
 pub mod survival;
 pub mod switch;
 pub mod the_end;

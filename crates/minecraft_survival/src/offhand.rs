@@ -97,6 +97,7 @@ pub fn has_use(stack: &ItemStack, placeable: bool, food: &FoodData, mode: GameMo
         || FoodUse::start(OFFHAND, stack, food, mode).is_some()
         || minecraft_terrain::thrown::Throwable::of(&stack.id).is_some()
         || stack.id == minecraft_terrain::trident::ITEM
+        || stack.id == crate::spyglass::ITEM
         || stack.id == minecraft_terrain::ender_eye::ENDER_EYE
         || stack.id == minecraft_terrain::firework::FIREWORK_ROCKET
         || minecraft_terrain::spawn_egg::spawned_kind(&stack.id).is_some()
@@ -291,6 +292,7 @@ mod tests {
         ));
         assert!(has_use(&stack("minecraft:snowball"), false, &full));
         assert!(has_use(&stack("minecraft:trident"), false, &full));
+        assert!(has_use(&stack("minecraft:spyglass"), false, &full));
         assert!(has_use(&stack("minecraft:ender_eye"), false, &full));
         assert!(has_use(&stack("minecraft:firework_rocket"), false, &full));
         assert!(has_use(&stack("minecraft:water_bucket"), false, &full));

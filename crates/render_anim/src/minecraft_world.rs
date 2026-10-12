@@ -595,6 +595,7 @@ fn update(
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
                 ui.portal_frames = crate::minecraft_portal::frames(&world.packs, &mut images);
                 ui.freeze_outline = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::FREEZE_OUTLINE).map(|(image, _)| image);
+                ui.spyglass_scope = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::SPYGLASS_SCOPE).map(|(image, _)| image);
                 runtime.loading_backgrounds = Some(crate::minecraft_loading::LoadingBackgrounds::load(&world.packs, &mut images));
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
@@ -1157,6 +1158,11 @@ fn update(
             sounds.play(&world.packs, sound, None, 1.0, 1.0);
         }
     }
+    let (scoping, stopped) = minecraft_survival::spyglass::step(hand.scoping, use_live, alive && !skate.active, inventory, *selected);
+    hand.scoping = scoping;
+    if let Some(sounds) = sounds.as_mut().filter(|_| stopped) {
+        sounds.play(&world.packs, minecraft_survival::spyglass::STOP_SOUND, None, 1.0, 1.0);
+    }
     let mut open_table = None;
     let mut open_block = None;
     let mut open_bench = None;
@@ -1182,7 +1188,7 @@ fn update(
             hand.miss_time = 0;
         }
         let mw2_offhand = (weapon_iw4::WeaponState::OffhandInit as i32..=weapon_iw4::WeaponState::OffhandEnd as i32).contains(&ps.weaponstate_primary);
-        let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.miss_time > 0 || mw2_offhand;
+        let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.scoping.is_some() || hand.miss_time > 0 || mw2_offhand;
         let mut block_press = false;
         let mut punched = false;
         if ui.holding_item && !skate.active && (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
@@ -1328,8 +1334,11 @@ fn update(
         if let Some(charging) = hand.charging.as_mut() {
             charging.ticks = charging.ticks.saturating_add(hand_ticks);
         }
+        if let Some(scoping) = hand.scoping.as_mut() {
+            scoping.ticks = scoping.ticks.saturating_add(hand_ticks);
+        }
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
-        let idle = survival.eating().is_none() && hand.blocking.is_none() && hand.charging.is_none() && !mw2_offhand;
+        let idle = survival.eating().is_none() && hand.blocking.is_none() && hand.charging.is_none() && hand.scoping.is_none() && !mw2_offhand;
         let (use_pressed, use_down) = if ui.holding_item {
             (!skate.active && (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true)), use_held)
         } else {
@@ -1603,6 +1612,17 @@ fn update(
                 match minecraft_survival::trident::Charging::start(inventory, slot, water.wet() || entities.weather.player_in_rain) {
                     Some(charging) => {
                         hand.charging = Some(charging);
+                        HandUse::Consumed
+                    }
+                    None => HandUse::Failed,
+                }
+            } else if held.as_ref().is_some_and(|stack| stack.id == minecraft_survival::spyglass::ITEM) {
+                match minecraft_survival::spyglass::Scoping::start(inventory, slot) {
+                    Some(scoping) => {
+                        hand.scoping = Some(scoping);
+                        if let Some(sounds) = sounds.as_mut() {
+                            sounds.play(&world.packs, minecraft_survival::spyglass::USE_SOUND, None, 1.0, 1.0);
+                        }
                         HandUse::Consumed
                     }
                     None => HandUse::Failed,
@@ -2434,8 +2454,9 @@ fn update(
             && offhand_stack.as_ref().is_some_and(|stack| {
                 minecraft_survival::offhand::has_use(stack, placeable(stack), &survival.status.food, player_mode.mode) || (containers.cooks_on_campfire(stack, &entities.recipes) && aims_at_campfire())
             });
-        ui.offhand_busy = alive && !holding && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some());
-        ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some());
+        ui.offhand_busy = alive && !holding && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.scoping.is_some());
+        ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.scoping.is_some());
+        ui.scoping = alive && hand.scoping.is_some();
         sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
@@ -2444,8 +2465,8 @@ fn update(
         let main_stack = inventory.slots[*selected].clone().filter(|_| ui.holding_item);
         let offhand_stack = offhand_stack.filter(|_| ui.holding_item || ui.offhand_busy);
         let activation = item_activation.pose((hand.clock / TICK_SECONDS) as f32, aspect).filter(|_| ui_draw.as_ref().is_none_or(|draw| draw.0));
-        let main_stack = main_stack.filter(|_| !mc_detached);
-        let offhand_stack = offhand_stack.filter(|_| !mc_detached);
+        let main_stack = main_stack.filter(|_| !mc_detached && hand.scoping.is_none());
+        let offhand_stack = offhand_stack.filter(|_| !mc_detached && hand.scoping.is_none());
         if !puppet.active && sleepers.camera.is_none() && (activation.is_some() || main_stack.is_some() || offhand_stack.is_some()) {
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
             let mut posed = Vec::new();
@@ -3272,6 +3293,7 @@ fn leave_level(
     survival.stop_eating();
     hand.blocking = None;
     hand.charging = None;
+    hand.scoping = None;
     hand.swing = None;
     hand.recent.clear();
     steps.air_peak = None;
