@@ -36,6 +36,7 @@ pub enum ItemOnBlock {
     BoneMeal { face: &'static str },
     EnderEye,
     EndCrystal,
+    HangFrame { face: minecraftoss_core::pos::Direction, glow: bool },
 }
 
 pub struct ServerSim {
@@ -98,7 +99,13 @@ pub struct ServerSim {
     respawn: Option<crate::dragon_respawn::Respawn>,
     fight_reports: Vec<FightReport>,
     dragon_fireballs: crate::dragon_fireball::DragonFireballs,
+    dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
+    dragon_explosions: Vec<(glam::DVec3, bool)>,
     end_players: Vec<crate::ender_dragon::PlayerBody>,
+    frames: crate::item_frame::Frames,
+    frame_sounds: Vec<minecraftoss_entities::world::MobSound>,
+    lectern_viewers: std::collections::HashMap<u64, BlockPos>,
+    lecterns: Vec<crate::lectern::LecternView>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -226,6 +233,9 @@ pub struct EntitySnapshot {
     pub dragon_fireballs: Vec<crate::dragon_fireball::FireballView>,
     pub breath_bursts: Vec<glam::DVec3>,
     pub gateways: Vec<crate::end_gateway::GatewayView>,
+    pub frames: Vec<crate::item_frame::FrameView>,
+    pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
+    pub dragon_explosions: Vec<(glam::DVec3, bool)>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -240,6 +250,27 @@ fn stack_of(item: &str, count: i32, components: Option<&str>) -> minecraftoss_co
     let mut stack = minecraftoss_core::item::ItemStack::new(item, count);
     stack.components = components.and_then(crate::item_nbt::components_from_text);
     stack
+}
+
+fn book_tag(book: &crate::lectern::BookStack) -> minecraftoss_core::nbt::Tag {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("id".to_owned(), minecraftoss_core::nbt::Tag::String(book.id.clone()));
+    map.insert("count".to_owned(), minecraftoss_core::nbt::Tag::Int(1));
+    if let Some(components) = book.components.as_deref().and_then(crate::item_nbt::components_from_text) {
+        map.insert("components".to_owned(), components);
+    }
+    minecraftoss_core::nbt::Tag::Compound(map)
+}
+
+fn book_stack(tag: &minecraftoss_core::nbt::Tag) -> crate::lectern::BookStack {
+    crate::lectern::BookStack {
+        id: tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).unwrap_or("minecraft:air").to_owned(),
+        components: tag.get("components").and_then(crate::item_nbt::saved_components).as_ref().map(crate::item_nbt::components_text),
+    }
+}
+
+fn closed_lectern(player: u64, pos: BlockPos, taken: Option<crate::lectern::BookStack>) -> crate::lectern::LecternView {
+    crate::lectern::LecternView { player, pos, book: None, page: 0, taken, closed: true }
 }
 
 fn components_of(stack: &minecraftoss_core::item::ItemStack) -> Option<String> {
@@ -330,7 +361,13 @@ impl ServerSim {
             respawn: None,
             fight_reports: Vec::new(),
             dragon_fireballs: crate::dragon_fireball::DragonFireballs::default(),
+            dragon_breath: Vec::new(),
+            dragon_explosions: Vec::new(),
             end_players: Vec::new(),
+            frames: crate::item_frame::Frames::default(),
+            frame_sounds: Vec::new(),
+            lectern_viewers: std::collections::HashMap::new(),
+            lecterns: Vec::new(),
         }
     }
 
@@ -615,6 +652,10 @@ impl ServerSim {
         if crate::server_mobs::load_level_entity(&mut self.level, &tag) {
             return;
         }
+        if self.frames.add(&tag).is_some() {
+            self.sync_frame_outputs(false);
+            return;
+        }
         if self.crystals.add(&tag).is_some() || self.dragons.add(&tag).is_some() {
             return;
         }
@@ -640,10 +681,13 @@ impl ServerSim {
         tags.extend(self.tridents.iter().filter(|t| t.alive && inside(t.position)).map(|t| t.to_tag(t.owner_uuid)));
         tags.extend(self.crystals.tags_where(inside));
         tags.extend(self.dragons.tags_where(inside));
+        tags.extend(self.frames.tags_where(inside));
         if unload {
             self.tridents.retain(|t| !inside(t.position));
             self.crystals.remove_where(inside);
             self.dragons.remove_where(inside);
+            self.frames.remove_where(inside);
+            self.sync_frame_outputs(false);
             self.mobs.remove_where(inside);
             self.dormant.retain(|(group, _)| !inside(glam::DVec3::from_array(group[0].pos)));
             self.level.entities.retain(|e| !(inside(glam::DVec3::from_array(e.pos)) && (e.item_data().is_some() || e.orb_data().is_some())));
@@ -921,6 +965,102 @@ impl ServerSim {
         self.mobs.push_fireball(id, glam::DVec3::from_array(push))
     }
 
+    pub fn hurt_shulker_bullet(&mut self, id: u64) -> bool {
+        self.mobs.hurt_shulker_bullet(id)
+    }
+
+    pub fn lectern(&mut self, player: u64, pos: BlockPos, action: crate::lectern::LecternAction) -> Option<bool> {
+        use crate::lectern::{LecternAction, GO_TO_PAGE, NEXT_PAGE, PREVIOUS_PAGE, TAKE_BOOK};
+        let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        match action {
+            LecternAction::PlaceBook(book) => Some(crate::lectern::is_lectern_book(&book.id) && self.level.lectern_place_book(at, book_tag(&book))),
+            LecternAction::Open => {
+                if self.level.lectern_view(at).is_some() {
+                    self.lectern_viewers.insert(player, pos);
+                    let view = self.lectern_view(player, pos);
+                    self.lecterns.push(view);
+                } else {
+                    self.lectern_viewers.remove(&player);
+                    self.lecterns.push(closed_lectern(player, pos, None));
+                }
+                None
+            }
+            LecternAction::Button(button) => {
+                if self.lectern_viewers.get(&player) != Some(&pos) {
+                    return None;
+                }
+                let (_, page) = self.level.lectern_view(at)?;
+                let turned = match button {
+                    PREVIOUS_PAGE => self.level.lectern_set_page(at, page - 1),
+                    NEXT_PAGE => self.level.lectern_set_page(at, page + 1),
+                    TAKE_BOOK => {
+                        let taken = self.level.lectern_take_book(at).map(|book| book_stack(&book));
+                        for viewer in self.lectern_viewers_of(pos) {
+                            self.lectern_viewers.remove(&viewer);
+                            let taken = taken.clone().filter(|_| viewer == player);
+                            self.lecterns.push(closed_lectern(viewer, pos, taken));
+                        }
+                        false
+                    }
+                    button if button >= GO_TO_PAGE => self.level.lectern_set_page(at, button - GO_TO_PAGE),
+                    _ => false,
+                };
+                if turned {
+                    for viewer in self.lectern_viewers_of(pos) {
+                        let view = self.lectern_view(viewer, pos);
+                        self.lecterns.push(view);
+                    }
+                }
+                None
+            }
+            LecternAction::Close => {
+                self.lectern_viewers.remove(&player);
+                None
+            }
+        }
+    }
+
+    fn lectern_viewers_of(&self, pos: BlockPos) -> Vec<u64> {
+        let mut viewers: Vec<u64> = self.lectern_viewers.iter().filter(|(_, at)| **at == pos).map(|(player, _)| *player).collect();
+        viewers.sort_unstable();
+        viewers
+    }
+
+    fn lectern_view(&self, player: u64, pos: BlockPos) -> crate::lectern::LecternView {
+        let view = self.level.lectern_view(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+        crate::lectern::LecternView {
+            player,
+            pos,
+            book: view.as_ref().map(|(book, _)| book_stack(book)),
+            page: view.map_or(0, |(_, page)| page),
+            taken: None,
+            closed: false,
+        }
+    }
+
+    fn check_lectern_viewers(&mut self) {
+        let mut gone: Vec<(u64, BlockPos)> = self
+            .lectern_viewers
+            .iter()
+            .filter(|(_, pos)| self.level.lectern_view(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2)).is_none())
+            .map(|(player, pos)| (*player, *pos))
+            .collect();
+        gone.sort_unstable();
+        for (player, pos) in gone {
+            self.lectern_viewers.remove(&player);
+            self.lecterns.push(closed_lectern(player, pos, None));
+        }
+    }
+
+    pub fn take_lecterns(&mut self) -> Vec<crate::lectern::LecternView> {
+        std::mem::take(&mut self.lecterns)
+    }
+
+    pub fn set_chest_openers(&mut self, pos: BlockPos, count: u32) {
+        let (x, y, z) = pos;
+        self.level.set_chest_openers(minecraftoss_core::BlockPos::new(x, y, z), count.min(i32::MAX as u32) as i32);
+    }
+
     fn explode_blasts(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         for (blast, source) in std::mem::take(&mut self.blasts) {
@@ -1075,6 +1215,7 @@ impl ServerSim {
             }
             let mut targets = mob_targets.clone();
             targets.extend(crate::thrown::player_targets(players, trident.owner));
+            targets.extend(self.frames.targets());
             let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of);
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
@@ -1083,6 +1224,11 @@ impl ServerSim {
             };
             for event in events {
                 match event {
+                    TridentEvent::Struck { target, .. } if crate::item_frame::struck_frame(target).is_some() => {
+                        if let Some(frame) = crate::item_frame::struck_frame(target) {
+                            self.frame_action(frame, crate::item_frame::FrameAction::Shot { infinite: false });
+                        }
+                    }
                     TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
                         Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
                         None => {
@@ -1214,6 +1360,8 @@ impl ServerSim {
             return;
         }
         let mob_targets = crate::thrown::targets(&self.mobs);
+        let frame_targets = self.frames.targets();
+        let mut frame_hits = Vec::new();
         let mut struck = Vec::new();
         let mut hatched = Vec::new();
         let mut awards = Vec::new();
@@ -1227,6 +1375,7 @@ impl ServerSim {
             for t in thrown.iter_mut() {
                 let mut targets = mob_targets.clone();
                 targets.extend(crate::thrown::player_targets(players, t.owner));
+                targets.extend(frame_targets.iter().cloned());
                 let landed = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner));
                 if t.kind == Throwable::EnderPearl {
                     let to = landed.as_ref().map_or_else(|| t.position(), |landed| landed.at);
@@ -1245,7 +1394,9 @@ impl ServerSim {
                 }
                 let Some(landed) = landed else { continue };
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
-                if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none()) {
+                let frame = landed.mob.and_then(crate::item_frame::struck_frame);
+                frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));
+                if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
                     struck.push((mob, landed.velocity, t.owner, t.random().next_long()));
                 }
                 if hurts {
@@ -1269,7 +1420,7 @@ impl ServerSim {
                     }
                     Throwable::WindCharge => {
                         let center = if landed.mob.is_some() { t.position() } else { crate::wind::burst_point(landed.at, landed.face) };
-                        bursts.push((landed.mob, landed.velocity, t.owner, t.random().next_long(), center));
+                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, t.random().next_long(), center));
                     }
                     Throwable::SplashPotion | Throwable::LingeringPotion => {
                         let contents = t.contents();
@@ -1300,6 +1451,9 @@ impl ServerSim {
         }
         for (pos, age) in aged {
             crate::end_gateway::write_age(&mut self.level, pos, age);
+        }
+        for id in frame_hits {
+            self.frame_action(id, crate::item_frame::FrameAction::Shot { infinite: false });
         }
         for (cell, pitch, hit, direction, amount) in awards {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
@@ -1586,7 +1740,26 @@ impl ServerSim {
                 }
                 placed
             }
+            ItemOnBlock::HangFrame { face, glow } => self.hang_frame(pos, face, glow),
         }
+    }
+
+    pub fn hang_frame(&mut self, clicked: BlockPos, face: minecraftoss_core::pos::Direction, glow: bool) -> bool {
+        let pos = crate::item_frame::hung_at(clicked, face);
+        if pos.1 < self.level.min_y() || pos.1 > self.level.max_y() {
+            return false;
+        }
+        let tag = self.frames.fresh_tag(glow, pos, face);
+        let Some(frame) = crate::item_frame::ItemFrame::from_tag(&tag, 0) else {
+            return false;
+        };
+        if !self.frames.survives(&frame, &FrameLevel(&self.level)) {
+            return false;
+        }
+        self.frames.add(&tag);
+        self.sync_frame_outputs(true);
+        self.frame_sound(&frame, crate::item_frame::FrameSound::Place);
+        true
     }
 
     pub fn place_end_crystal(&mut self, base: BlockPos) -> bool {
@@ -1670,7 +1843,7 @@ impl ServerSim {
         let griefing = self.mobs.mob_griefing();
         let peaceful = self.level.difficulty == 0;
         {
-            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, players_pushed, .. } = self;
+            let Self { level, states, mob_tables, dragons, fight_dragon, alive_crystals, end_sounds, end_hits, dragons_killed, crystals: self_crystals, fight, dragon_drops, dragon_fireballs, clouds, players_pushed, dragon_breath, dragon_explosions, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             let height = |x: i32, z: i32| world.level.borrow().height_at(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
             let sees = |from: glam::DVec3, to: glam::DVec3| minecraftoss_entities::sight::line_of_sight(&world, from, to);
@@ -1717,6 +1890,9 @@ impl ServerSim {
                     dragon_fireballs.shoot(dragon.id, from, direction);
                 }
                 clouds.extend(events.clouds);
+                dragon_breath.extend(events.breath);
+                dragon_explosions.extend(events.wall_bursts.iter().map(|&(x, y, z)| (glam::DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5), false)));
+                dragon_explosions.extend(events.explosions);
             }
             for dragon in dragons.list.iter_mut().filter(|dragon| dragon.flame_out) {
                 dragon.flame_out = false;
@@ -2220,6 +2396,78 @@ impl ServerSim {
                 self.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: glam::DVec3::from_array(position), radius: TNT_BLAST_RADIUS, powered: false });
             }
         }
+        self.tick_frames();
+        self.check_lectern_viewers();
+    }
+
+    fn tick_frames(&mut self) {
+        let popped = self.frames.tick(&FrameLevel(&self.level), self.level.min_y());
+        for frame in popped {
+            self.frame_broken(&frame, false);
+        }
+        self.sync_frame_outputs(true);
+    }
+
+    fn sync_frame_outputs(&mut self, notify: bool) {
+        let mut wanted: std::collections::HashMap<minecraftoss_core::BlockPos, Vec<(minecraftoss_core::pos::Direction, i32)>> = std::collections::HashMap::new();
+        for frame in &self.frames.list {
+            wanted.entry(minecraftoss_core::BlockPos::new(frame.pos.0, frame.pos.1, frame.pos.2)).or_default().push((frame.facing, frame.analog_output()));
+        }
+        let cells: std::collections::BTreeSet<minecraftoss_core::BlockPos> = wanted.keys().chain(self.level.frame_outputs.keys()).copied().collect();
+        for cell in cells {
+            let now = std::mem::take(wanted.entry(cell).or_default());
+            if self.level.frame_outputs.get(&cell).map_or(now.is_empty(), |old| *old == now) {
+                continue;
+            }
+            self.level.set_frame_outputs(cell, now, notify);
+        }
+    }
+
+    fn frame_sound(&mut self, frame: &crate::item_frame::ItemFrame, sound: crate::item_frame::FrameSound) {
+        self.frame_sounds.push(minecraftoss_entities::world::MobSound { event: sound.event(frame.glow).to_owned(), position: frame.position(), volume: 1.0, pitch: 1.0, category: "neutral" });
+    }
+
+    fn frame_broken(&mut self, frame: &crate::item_frame::ItemFrame, infinite: bool) {
+        self.frame_sound(frame, crate::item_frame::FrameSound::Break);
+        let drops = self.frames.drops(frame, true, self.level.entity_drops, infinite);
+        self.drop_from_frame(frame, drops);
+    }
+
+    fn drop_from_frame(&mut self, frame: &crate::item_frame::ItemFrame, drops: Vec<minecraftoss_player::inventory::ItemStack>) {
+        for stack in drops {
+            let components = stack.components.as_ref().map(|c| c.to_string());
+            self.level.spawn_at_location(frame.drop_point().to_array(), stack_of(&stack.id, i32::from(stack.count), components.as_deref()));
+        }
+    }
+
+    pub fn frame_action(&mut self, id: u64, action: crate::item_frame::FrameAction) -> crate::item_frame::FrameOutcome {
+        let Some((frame, outcome)) = self.frames.act(id, &action, self.level.entity_drops) else {
+            return crate::item_frame::FrameOutcome::default();
+        };
+        for &sound in &outcome.sounds {
+            self.frame_sound(&frame, sound);
+        }
+        self.drop_from_frame(&frame, outcome.drops.clone());
+        self.sync_frame_outputs(true);
+        outcome
+    }
+
+    pub fn break_blasted_frames(&mut self) {
+        let blasts: Vec<(glam::DVec3, f32)> = self.level.explosion_effects.iter().filter(|effect| effect.interacts).map(|effect| (glam::DVec3::from_array(effect.center), effect.radius)).collect();
+        for (center, radius) in blasts {
+            let reached: Vec<u64> = self.frames.list.iter().filter(|frame| crate::end_crystal::in_blast(frame.position(), center, radius)).map(|frame| frame.id).collect();
+            for id in reached {
+                self.frame_action(id, crate::item_frame::FrameAction::Blast { infinite: false });
+            }
+        }
+    }
+
+    pub fn frame_views(&self) -> Vec<crate::item_frame::FrameView> {
+        self.frames.views()
+    }
+
+    pub fn take_frame_sounds(&mut self) -> Vec<minecraftoss_entities::world::MobSound> {
+        std::mem::take(&mut self.frame_sounds)
     }
 
     /// Hands an item entity the client created (a drop, a spill) to the
@@ -2367,6 +2615,23 @@ fn tag_uuid_at(tag: &minecraftoss_core::nbt::Tag, key: &str) -> Option<u128> {
     Some(minecraftoss_entities::gossip::uuid_from_ints([a, b, c, d]))
 }
 
+struct FrameLevel<'a, 'l>(&'a Level<'l>);
+
+impl crate::item_frame::FrameWorld for FrameLevel<'_, '_> {
+    fn legacy_solid(&self, (x, y, z): BlockPos) -> bool {
+        self.0.registries().blocks.is(self.0.block(minecraftoss_core::BlockPos::new(x, y, z)), minecraftoss_core::block::flags::LEGACY_SOLID)
+    }
+
+    fn is_diode(&self, (x, y, z): BlockPos) -> bool {
+        let blocks = &self.0.registries().blocks;
+        blocks.block(blocks.block_of(self.0.block(minecraftoss_core::BlockPos::new(x, y, z)))).is_a("DiodeBlock")
+    }
+
+    fn collides(&self, low: glam::DVec3, high: glam::DVec3) -> bool {
+        !self.0.no_block_collision(&minecraftoss_world::level::physics::Aabb::new(low.x, low.y, low.z, high.x, high.y, high.z))
+    }
+}
+
 /// What the client asks of the integrated server thread, in order.
 pub enum Command {
     LoadChunk(Arc<Chunk>),
@@ -2402,6 +2667,7 @@ pub enum Command {
     RespawnPointBlast { blast: Blast, shield: Option<BlockPos> },
     DeflectFireball { id: u64, look: [f64; 3], player: u64, by_attack: bool },
     PushFireball { id: u64, push: [f64; 3] },
+    HurtShulkerBullet { id: u64 },
     /// An operation on the player's trading screen.
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
@@ -2423,6 +2689,9 @@ pub enum Command {
     Reattach { player: u64, root: Box<minecraftoss_core::nbt::Tag> },
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
+    FrameAction { id: u64, action: crate::item_frame::FrameAction },
+    ChestOpeners { pos: BlockPos, count: u32 },
+    Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
@@ -2574,6 +2843,7 @@ pub struct Output {
     pub level_events: Vec<(i32, (i32, i32, i32), i32)>,
     /// Sounds mobs made this tick.
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
+    pub bullet_puffs: Vec<minecraftoss_entities::world::BulletPuff>,
     /// Items the player picked up: (entity ID, position, item, count, components).
     pub picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>,
     /// What each `/summon` did: the type it made, or why it failed.
@@ -2600,6 +2870,7 @@ pub struct Output {
     pub fight_reports: Vec<FightReport>,
     pub tick_nanos: Vec<u64>,
     pub eye_answers: Vec<crate::eye_of_ender::EyeAnswer>,
+    pub lecterns: Vec<crate::lectern::LecternView>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -2840,6 +3111,10 @@ impl ServerHandle {
         self.send(Command::PushFireball { id, push });
     }
 
+    pub fn hurt_shulker_bullet(&mut self, id: u64) {
+        self.send(Command::HurtShulkerBullet { id });
+    }
+
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
         self.send(Command::Throw(Box::new(thrown)));
     }
@@ -2858,6 +3133,18 @@ impl ServerHandle {
 
     pub fn end_hit(&mut self, target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage) {
         self.send(Command::EndHit { target, damage });
+    }
+
+    pub fn frame_action(&mut self, id: u64, action: crate::item_frame::FrameAction) {
+        self.send(Command::FrameAction { id, action });
+    }
+
+    pub fn chest_openers(&mut self, pos: BlockPos, count: u32) {
+        self.send(Command::ChestOpeners { pos, count });
+    }
+
+    pub fn lectern(&mut self, player: u64, pos: BlockPos, action: crate::lectern::LecternAction) {
+        self.send(Command::Lectern { player, pos, action });
     }
 
     pub fn save(&mut self) {
@@ -2979,6 +3266,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::PushFireball { id, push } => {
                     sim.push_fireball(id, push);
                 }
+                Command::HurtShulkerBullet { id } => {
+                    sim.hurt_shulker_bullet(id);
+                }
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
                 }
@@ -3005,6 +3295,19 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
                 Command::EndHit { target, damage } => sim.end_hit(target, damage),
+                Command::FrameAction { id, action } => {
+                    let answers = matches!(action, crate::item_frame::FrameAction::Use { held: Some(_), .. });
+                    let outcome = sim.frame_action(id, action);
+                    if answers {
+                        out.item_uses.push(outcome.consumed);
+                    }
+                }
+                Command::ChestOpeners { pos, count } => sim.set_chest_openers(pos, count),
+                Command::Lectern { player, pos, action } => {
+                    if let Some(placed) = sim.lectern(player, pos, action) {
+                        out.item_uses.push(placed);
+                    }
+                }
                 Command::Save => {
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
@@ -3029,6 +3332,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
             }
         }
         out.changes = sim.take_changes();
+        out.lecterns = sim.take_lecterns();
         out.block_entities = sim.take_block_entity_changes();
         out.destroyed = sim.take_destroyed();
         out.handled = handled;
@@ -3086,6 +3390,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.dismounts.extend(sim.take_vehicle_losses());
     out.player_hits.extend(sim.take_end_hits());
     out.mob_sounds.extend(sim.take_end_sounds());
+    out.mob_sounds.extend(sim.take_frame_sounds());
     out.dragons_killed.extend(sim.take_dragons_killed());
     out.fight_reports.extend(sim.take_fight_reports());
     out.pearl_teleports.extend(sim.take_pearl_teleports());
@@ -3104,9 +3409,12 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.players_pushed.extend(sim.take_players_pushed());
     out.potion_breaks.extend(sim.take_potion_breaks());
     out.explosions.extend(sim.take_explosions());
+    sim.break_blasted_frames();
     out.explosion_effects.extend(sim.take_explosion_effects());
     out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
     out.mob_sounds.extend(sim.mobs.take_sounds());
+    out.egg_teleports.extend(sim.mobs.take_shulker_teleports());
+    out.bullet_puffs.extend(sim.mobs.take_bullet_puffs());
     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
     let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
@@ -3138,7 +3446,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
     out.weather = Some(sim.weather(input.players.first().copied()));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views() });
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -6082,13 +6390,14 @@ mod tests {
     }
 
     #[test]
-    fn dormant_shulkers_stay_far_from_players_while_dormant_monsters_go() {
+    fn live_shulkers_stay_far_from_players_while_dormant_monsters_go() {
         let Some((mut server, _)) = door_world() else { return };
         let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
         server.summon("minecraft:shulker", [8.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
         server.summon("minecraft:pillager", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
         let kinds = |server: &ServerSim| server.dormant.iter().map(|(group, _)| group[0].kind.clone()).collect::<Vec<_>>();
-        assert_eq!(kinds(&server), ["minecraft:shulker", "minecraft:pillager"]);
+        assert_eq!(kinds(&server), ["minecraft:pillager"]);
+        assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are simulated");
         let player = minecraftoss_entities::tempt::PlayerCandidate {
             id: 0,
             position: glam::DVec3::new(3008.5, 200.0, 8.5),
@@ -6110,9 +6419,10 @@ mod tests {
             attackable: true,
         };
         server.despawn_mobs(&[player], 2);
-        assert_eq!(kinds(&server), ["minecraft:shulker"]);
+        assert!(kinds(&server).is_empty());
+        assert_eq!(server.mobs.shulkers().len(), 1);
         server.despawn_mobs(&[player], 0);
-        assert_eq!(kinds(&server), ["minecraft:shulker"], "shulkers are allowed in peaceful");
+        assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are allowed in peaceful");
     }
 
     #[test]
@@ -6412,7 +6722,7 @@ mod tests {
         let shulker = minecraftoss_core::snbt::parse_compound(&format!("{{id:\"minecraft:shulker\",Pos:[8.5d,206.0d,8.5d],UUID:[I;{},{},{},{}]}}", uuid[0], uuid[1], uuid[2], uuid[3])).unwrap();
         World::add_entity(&mut server.level, shulker);
         server.take_spawned();
-        assert!(server.dormant.iter().any(|(group, _)| group[0].kind == "minecraft:shulker"), "the entity joins the server");
+        assert_eq!(server.mobs.shulkers().len(), 1, "the entity joins the server");
         assert_eq!(server.level.unsupported, Vec::<String>::new());
     }
 
@@ -7717,6 +8027,97 @@ mod tests {
     }
 
     #[test]
+    fn levitation_and_slow_falling_on_a_mob_round_trip_through_its_save() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:zombie\",Pos:[0.5d,64.0d,0.5d],active_effects:[{id:\"minecraft:levitation\",amplifier:1b,duration:200},{id:\"minecraft:slow_falling\",amplifier:0b,duration:4800}]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut world, &tag).expect("zombies load");
+        let effects = world.mob_effects(id).unwrap();
+        let levitation = effects.get(minecraftoss_entities::effects::MobEffect::Levitation).unwrap();
+        assert_eq!((levitation.amplifier, levitation.duration), (1, 200));
+        assert_eq!(effects.get(minecraftoss_entities::effects::MobEffect::SlowFalling).map(|e| e.duration), Some(4800));
+        let tags = crate::server_mobs::mob_tags(&world, |_| true, &std::collections::HashMap::new());
+        let (_, saved) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        let ids: Vec<&str> = saved.get("active_effects").and_then(minecraftoss_core::nbt::Tag::as_list).unwrap().iter().filter_map(|e| e.get("id").and_then(minecraftoss_core::nbt::Tag::as_str)).collect();
+        assert_eq!(ids, vec!["minecraft:levitation", "minecraft:slow_falling"]);
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        assert_eq!(loaded.mob_effects(back), world.mob_effects(id));
+    }
+
+    #[test]
+    fn a_shulker_keeps_its_face_peek_colour_and_shell_through_a_save() {
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_player::Face;
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:shulker\",Pos:[3.5d,70.0d,-1.5d],AttachFace:5b,Peek:30b,Color:14b,attributes:[{id:\"minecraft:armor\",base:0.0d,modifiers:[{id:\"minecraft:covered\",amount:20.0d,operation:\"add_value\"}]}]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut world, &tag).expect("shulkers load");
+        let fields = |world: &minecraftoss_entities::world::EntityWorld, id: u64| {
+            let s = &world.shulkers().iter().find(|e| e.id == id).unwrap().shulker;
+            (s.attach_face, s.raw_peek, s.color, s.covered, s.body.position)
+        };
+        assert_eq!(fields(&world, id), (Face::East, 30, Some(14), true, glam::DVec3::new(3.5, 70.0, -1.5)));
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag.clone())].into_iter().collect();
+        let tags = crate::server_mobs::mob_tags(&world, |_| true, &originals);
+        let (_, saved) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        assert_eq!((saved.get("AttachFace"), saved.get("Peek"), saved.get("Color")), (Some(&Tag::Byte(5)), Some(&Tag::Byte(30)), Some(&Tag::Byte(14))));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        assert_eq!(fields(&loaded, back), fields(&world, id));
+        let entity = world.shulker_mut(id).unwrap();
+        (entity.shulker.covered, entity.shulker.color) = (false, None);
+        let tags = crate::server_mobs::mob_tags(&world, |_| true, &originals);
+        let (_, saved) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        assert_eq!(saved.get("Color"), Some(&Tag::Byte(16)), "no colour saves 16");
+        let armor = saved.get("attributes").and_then(Tag::as_list).unwrap().iter().find(|a| a.get("id").and_then(Tag::as_str) == Some("minecraft:armor")).unwrap();
+        assert_eq!(armor.get("modifiers"), None, "an open shell saves no covered modifier");
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        assert!(!fields(&loaded, back).3);
+    }
+
+    #[test]
+    fn a_shulker_bullet_keeps_its_course_owner_and_target_through_a_save() {
+        use minecraftoss_core::nbt::Tag;
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:shulker_bullet\",Pos:[3.5d,70.0d,-1.5d],Motion:[0.0d,0.0d,0.12d],Steps:30,TXD:0.0d,TYD:0.0d,TZD:0.15d,Dir:3b,Owner:[I;1,2,3,4],Target:[I;5,6,7,8],UUID:[I;9,10,11,12]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut world, &tag).expect("shulker bullets load");
+        let fields = |world: &minecraftoss_entities::world::EntityWorld, id: u64| {
+            let b = &world.shulker_bullets().iter().find(|e| e.id == id).unwrap().bullet;
+            (b.position, b.velocity, b.steps, b.target_delta, b.direction, b.owner_uuid, b.target_uuid)
+        };
+        let owner = minecraftoss_entities::gossip::uuid_from_ints([1, 2, 3, 4]);
+        let target = minecraftoss_entities::gossip::uuid_from_ints([5, 6, 7, 8]);
+        assert_eq!(fields(&world, id), (glam::DVec3::new(3.5, 70.0, -1.5), glam::DVec3::new(0.0, 0.0, 0.12), 30, glam::DVec3::new(0.0, 0.0, 0.15), Some(minecraftoss_player::Face::South), Some(owner), Some(target)));
+        assert_eq!(world.uuid_of(id), minecraftoss_entities::gossip::uuid_from_ints([9, 10, 11, 12]));
+        let tags = crate::server_mobs::mob_tags(&world, |_| true, &std::collections::HashMap::new());
+        let (_, saved) = tags.iter().find(|(tag_id, _)| *tag_id == id).unwrap();
+        assert_eq!((saved.get("Dir"), saved.get("Steps"), saved.get("TZD")), (Some(&Tag::Byte(3)), Some(&Tag::Int(30)), Some(&Tag::Double(0.15))));
+        assert_eq!((saved.get("Owner"), saved.get("Target"), saved.get("UUID")), (tag.get("Owner"), tag.get("Target"), tag.get("UUID")));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        assert_eq!(fields(&loaded, back), fields(&world, id));
+        let lost = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:shulker_bullet\",Pos:[3.5d,70.0d,-1.5d]}").unwrap();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, &lost).unwrap();
+        assert_eq!(fields(&loaded, back).4, None, "no Dir loads as none");
+    }
+
+    #[test]
+    fn an_end_city_sentry_becomes_a_live_shulker_on_the_floor() {
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let Some(entities) = registries.entities.as_ref() else { return };
+        let mut tag = entities.default_tag("minecraft:shulker").expect("the shulker's default tag");
+        if let Tag::Compound(map) = &mut tag {
+            map.insert("Pos".to_owned(), Tag::List(vec![Tag::Double(10.5), Tag::Double(80.0), Tag::Double(-4.5)]));
+        }
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let id = crate::server_mobs::spawn_saved(&mut world, &tag).expect("a sentry is simulated");
+        let s = &world.shulkers().iter().find(|e| e.id == id).unwrap().shulker;
+        assert_eq!((s.attach_face, s.raw_peek, s.color, s.covered), (minecraftoss_player::Face::Down, 0, None, false));
+        assert_eq!((s.health, s.body.position), (30.0, glam::DVec3::new(10.5, 80.0, -4.5)));
+    }
+
+    #[test]
     fn a_fortress_spawner_spawns_blazes_near_a_player_and_waits_between_rounds() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };
@@ -8509,6 +8910,9 @@ mod tests {
         let Some(mut server) = end_world((-5..=4).flat_map(|x| (-5..=4).map(move |z| (x, z)))) else { return };
         let first = kill_dragon(&mut server, FightLink::default());
         assert_eq!(server.take_dragons_killed(), vec![first]);
+        let explosions = std::mem::take(&mut server.dragon_explosions);
+        assert_eq!(explosions.iter().filter(|(_, emitter)| *emitter).count(), 21, "explosion emitters on death ticks 180 to 200");
+        assert!(explosions.iter().filter(|(_, emitter)| !*emitter).count() >= 199, "an explosion every tick it lies dying");
         assert_eq!(orb_experience(&server), 12000);
         let sounds = server.take_end_sounds();
         assert_eq!(sounds.iter().filter(|sound| sound.event == crate::ender_dragon::DRAGON_DEATH_SOUND).count(), 1);
@@ -8718,9 +9122,16 @@ mod tests {
         assert!(broken.len() > 50, "{}", broken.len());
         assert!(broken.iter().all(|&pos| inside(pos) && block_name(&server, pos) == "minecraft:air"));
         assert!(!server.dragons.list[0].in_wall, "cobblestone does not hold it");
+        let bursts = std::mem::take(&mut server.dragon_explosions);
+        assert!(!bursts.is_empty());
+        for (at, emitter) in bursts {
+            assert!(!emitter && at.x.rem_euclid(1.0) == 0.5 && at.y.rem_euclid(1.0) == 0.5 && at.z.rem_euclid(1.0) == 0.5, "{at:?}");
+            assert!(inside((at.x.floor() as i32, at.y.floor() as i32, at.z.floor() as i32)), "{at:?}");
+        }
         fill(&mut server, "minecraft:end_stone");
         server.take_changes();
         server.tick_end(&[away]);
+        assert!(server.dragon_explosions.is_empty(), "no burst where nothing broke");
         let near = |&(pos, _): &(BlockPos, Option<Block>)| (-12..=12).contains(&pos.0) && (100..=120).contains(&pos.1) && (-12..=12).contains(&pos.2);
         assert!(!server.take_changes().iter().any(near), "end stone is dragon immune");
         assert!(server.dragons.list[0].in_wall);
@@ -8748,12 +9159,16 @@ mod tests {
         let flame = crate::effect_cloud::Breath::Flame(id);
         let mut sat = None;
         let mut phases = vec![Phase::LandingApproach];
+        let mut landing_ticks = 0;
         for _ in 0..4000 {
             server.tick_clouds(&bodies);
             server.tick_end(&[player]);
             let dragon = &server.dragons.list[0];
             if phases.last() != Some(&dragon.phase) {
                 phases.push(dragon.phase);
+            }
+            if dragon.phase == Phase::Landing {
+                landing_ticks += 1;
             }
             if dragon.phase.is_sitting() && sat.is_none() {
                 sat = Some(dragon.position);
@@ -8767,6 +9182,10 @@ mod tests {
         assert!(sat.distance_squared(glam::DVec3::new(0.5, f64::from(top), 0.5)) < 1.0, "on the podium's pillar at {top}: {sat:?}");
         let cloud = server.clouds.iter().find(|cloud| cloud.breath == Some(flame)).expect("the flame");
         assert_eq!(cloud.radius, crate::ender_dragon::FLAME_RADIUS);
+        let breathed = |kind| server.dragon_breath.iter().filter(|breath| breath.kind == kind).count();
+        assert!(landing_ticks > 0);
+        assert_eq!(breathed(crate::ender_dragon::BreathKind::Landing), landing_ticks, "a mouthful each landing tick");
+        assert_eq!(breathed(crate::ender_dragon::BreathKind::Flame), 4, "four puffs before the flame lands");
         assert!(cloud.position.distance(sat) < 10.5, "{:?}", cloud.position);
         for _ in 0..2 {
             server.dragons.list[0].damage_cooldown = 0;
@@ -9039,5 +9458,476 @@ mod tests {
         assert_eq!(held("mainhand"), Some("minecraft:golden_sword"));
         assert_eq!(held("offhand"), Some("minecraft:shield"), "the offhand is kept in the save");
         assert_eq!(tag.get("CanPickUpLoot").and_then(Tag::as_i64), Some(0));
+    }
+
+    fn framed(server: &mut ServerSim, glow: bool, pos: BlockPos, facing: minecraftoss_core::pos::Direction, item: Option<&str>) -> u64 {
+        use minecraftoss_core::nbt::Tag;
+        let mut tag = server.frames.fresh_tag(glow, pos, facing);
+        if let (Tag::Compound(map), Some(item)) = (&mut tag, item) {
+            map.insert("Item".to_owned(), Tag::Compound(std::collections::BTreeMap::from([("id".to_owned(), Tag::String(item.to_owned())), ("count".to_owned(), Tag::Int(1))])));
+        }
+        server.add_saved_entity(tag);
+        server.frames.list.last().unwrap().id
+    }
+
+    fn item_ids(server: &ServerSim) -> Vec<String> {
+        let mut ids: Vec<String> = server.items().into_iter().map(|item| item.item).collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn the_end_city_elytra_frame_is_live_not_dormant() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = door_world() else { return };
+        let Some(entities) = server.level.registries().entities.as_ref() else { return };
+        let mut tag = entities.default_tag("minecraft:item_frame").expect("the item frame's default tag");
+        if let Tag::Compound(map) = &mut tag {
+            map.insert("Pos".to_owned(), Tag::List(vec![Tag::Double(8.5), Tag::Double(199.5), Tag::Double(9.03125)]));
+            map.insert("Facing".to_owned(), Tag::Byte(3));
+            map.insert("block_pos".to_owned(), Tag::IntArray(vec![8, 199, 9]));
+            map.insert("Item".to_owned(), Tag::Compound(std::collections::BTreeMap::from([("id".to_owned(), Tag::String("minecraft:elytra".to_owned())), ("count".to_owned(), Tag::Int(1))])));
+        }
+        server.add_saved_entity(tag);
+        assert_eq!(server.dormant_count(), 0, "the frame is live");
+        let views = server.frame_views();
+        assert_eq!(views.len(), 1);
+        assert_eq!((views[0].pos, views[0].facing, views[0].item.as_deref()), ((8, 199, 9), minecraftoss_core::pos::Direction::South, Some("minecraft:elytra")));
+        assert!(!views[0].glow && !views[0].glint);
+    }
+
+    #[test]
+    fn a_frame_whose_wall_is_removed_drops_itself_and_its_item_within_101_ticks() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        framed(&mut server, false, (8, 199, 9), Direction::South, Some("minecraft:carrot"));
+        for _ in 0..150 {
+            server.tick();
+        }
+        assert_eq!(server.frames.list.len(), 1, "the stone holds it");
+        take(&mut server, &mut scene, (8, 199, 8));
+        let mut ticks = 0;
+        while !server.frames.list.is_empty() {
+            server.tick();
+            ticks += 1;
+            assert!(ticks <= 101, "it falls off at its next check");
+        }
+        assert_eq!(item_ids(&server), ["minecraft:carrot", "minecraft:item_frame"]);
+        let sounds = server.take_frame_sounds();
+        assert_eq!(sounds.len(), 1);
+        assert_eq!((sounds[0].event.as_str(), sounds[0].category), ("minecraft:entity.item_frame.break", "neutral"));
+        assert_eq!(sounds[0].position, glam::DVec3::new(8.5, 199.5, 9.03125));
+        let Some((mut quiet, mut scene)) = door_world() else { return };
+        quiet.level.entity_drops = false;
+        framed(&mut quiet, true, (8, 199, 9), Direction::South, Some("minecraft:carrot"));
+        take(&mut quiet, &mut scene, (8, 199, 8));
+        for _ in 0..101 {
+            quiet.tick();
+        }
+        assert!(quiet.frames.list.is_empty());
+        assert!(item_ids(&quiet).is_empty(), "entity_drops off drops nothing");
+        assert_eq!(quiet.take_frame_sounds()[0].event, "minecraft:entity.glow_item_frame.break");
+    }
+
+    #[test]
+    fn frames_are_saved_with_their_chunk_and_come_back() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        let dir = std::env::temp_dir().join(format!("minecraftoss-frame-save-{}", std::process::id()));
+        let registries = Arc::new(Registries::load(&DataPaths::discover().unwrap()).unwrap());
+        server.set_entity_storage(Some(Arc::new(minecraftoss_world::storage::ChunkStorage::new(&dir, "minecraft:overworld", registries, -64, 384))));
+        framed(&mut server, true, (8, 199, 9), Direction::South, Some("minecraft:compass"));
+        server.frames.list[0].rotation = 3;
+        framed(&mut server, false, (8, 200, 8), Direction::Up, None);
+        let before: Vec<_> = server.frame_views().into_iter().map(|view| (view.glow, view.pos, view.facing, view.item, view.rotation)).collect();
+        let chunk = server.level.chunk(ChunkPos::new(0, 0)).unwrap().clone();
+        server.unload_chunk(ChunkPos::new(0, 0));
+        assert!(server.frames.list.is_empty(), "unloading takes the frames out");
+        server.load_chunk(&chunk);
+        let after: Vec<_> = server.frame_views().into_iter().map(|view| (view.glow, view.pos, view.facing, view.item, view.rotation)).collect();
+        assert_eq!(after, before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn hung(server: &mut ServerSim, clicked: BlockPos, face: minecraftoss_core::pos::Direction, glow: bool) -> bool {
+        server.item_on_block(clicked, ItemOnBlock::HangFrame { face, glow })
+    }
+
+    #[test]
+    fn a_frame_is_refused_without_support_on_a_taken_face_or_inside_a_block() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        assert!(hung(&mut server, (8, 199, 8), Direction::South, false), "on the stone");
+        assert_eq!(server.frame_views()[0].pos, (8, 199, 9));
+        assert!(!hung(&mut server, (8, 199, 12), Direction::Up, false), "on air");
+        place(&mut server, &mut scene, (7, 199, 8), Block::new("minecraft:stone"));
+        assert!(!hung(&mut server, (8, 199, 8), Direction::West, false), "inside a block");
+        assert!(!hung(&mut server, (8, 319, 8), Direction::Up, false), "above the build height");
+        assert_eq!(server.frame_views().len(), 1);
+    }
+
+    #[test]
+    fn a_repeater_holds_a_wall_frame_but_not_a_floor_frame() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:repeater").with("facing", "north").with("delay", "1").with("locked", "false").with("powered", "false"));
+        assert!(hung(&mut server, (8, 200, 8), Direction::East, false));
+        assert!(!hung(&mut server, (8, 200, 8), Direction::Up, false));
+        for _ in 0..202 {
+            server.tick();
+        }
+        assert_eq!(server.frame_views().len(), 1, "the wall frame stays on the repeater");
+    }
+
+    #[test]
+    fn two_frames_on_one_face_never_overlap() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        assert!(hung(&mut server, (8, 199, 8), Direction::North, false));
+        assert!(!hung(&mut server, (8, 199, 8), Direction::North, true));
+        assert_eq!(server.frame_views().len(), 1);
+    }
+
+    #[test]
+    fn a_frame_and_a_floor_frame_share_a_cell() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 198, 9), Block::new("minecraft:stone"));
+        assert!(hung(&mut server, (8, 199, 8), Direction::South, false));
+        assert!(hung(&mut server, (8, 198, 9), Direction::Up, false));
+        let cells: Vec<_> = server.frame_views().iter().map(|view| (view.pos, view.facing)).collect();
+        assert_eq!(cells, [((8, 199, 9), Direction::South), ((8, 199, 9), Direction::Up)]);
+    }
+
+    #[test]
+    fn the_place_sound_is_the_glow_one_for_glow_frames() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        assert!(hung(&mut server, (8, 199, 8), Direction::East, true));
+        assert!(hung(&mut server, (8, 199, 8), Direction::West, false));
+        assert!(!hung(&mut server, (8, 199, 8), Direction::West, false));
+        let sounds: Vec<_> = server.take_frame_sounds().into_iter().map(|sound| (sound.event, sound.position)).collect();
+        assert_eq!(sounds, [("minecraft:entity.glow_item_frame.place".to_owned(), glam::DVec3::new(9.03125, 199.5, 8.5)), ("minecraft:entity.item_frame.place".to_owned(), glam::DVec3::new(7.96875, 199.5, 8.5))]);
+    }
+
+    #[test]
+    fn a_bullet_pops_the_elytra_out_of_the_ship_frame() {
+        use crate::item_frame::FrameAction;
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        let id = framed(&mut server, false, (8, 199, 9), Direction::South, Some("minecraft:elytra"));
+        let outcome = server.frame_action(id, FrameAction::Shot { infinite: false });
+        assert!(outcome.handled && !outcome.removed);
+        assert_eq!(item_ids(&server), ["minecraft:elytra"]);
+        let dropped = server.items()[0].position;
+        assert!((dropped[2] - (9.03125 + f64::from(0.15f32))).abs() < 1e-9, "a step out from the wall: {dropped:?}");
+        assert_eq!(server.items()[0].pickup_delay, 10);
+        assert_eq!(server.frame_views()[0].item, None, "the empty frame stays");
+        assert_eq!(server.take_frame_sounds()[0].event, "minecraft:entity.item_frame.remove_item");
+        server.frame_action(id, FrameAction::Shot { infinite: false });
+        assert!(server.frame_views().is_empty());
+        assert_eq!(item_ids(&server), ["minecraft:elytra", "minecraft:item_frame"]);
+    }
+
+    #[test]
+    fn tnt_beside_a_frame_breaks_it() {
+        use minecraftoss_core::pos::Direction;
+        use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        let Some((mut server, _)) = door_world() else { return };
+        framed(&mut server, false, (8, 199, 9), Direction::South, Some("minecraft:carrot"));
+        server.level.explode(Explosion { center: [8.5, 199.0, 12.5], radius: 3.0, fire: false, interaction: BlockInteraction::Keep, source: None });
+        server.break_blasted_frames();
+        assert_eq!(server.frame_views().len(), 1, "a creeper that may not grief leaves frames alone");
+        server.take_explosion_effects();
+        server.level.explode(Explosion { center: [8.5, 199.5, 17.5], radius: 4.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+        server.break_blasted_frames();
+        assert_eq!(server.frame_views().len(), 1, "out of reach: more than twice the power away");
+        server.take_explosion_effects();
+        server.level.explode(Explosion { center: [8.5, 199.5, 13.5], radius: 4.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+        server.break_blasted_frames();
+        assert!(server.frame_views().is_empty(), "TNT breaks it");
+        let dropped = item_ids(&server);
+        assert!(["minecraft:carrot", "minecraft:item_frame"].iter().all(|id| dropped.iter().any(|d| d == id)), "{dropped:?}");
+    }
+
+    #[test]
+    fn a_frame_use_answers_on_the_item_uses_only_when_an_item_was_held() {
+        use crate::item_frame::FrameAction;
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        let id = framed(&mut server, false, (8, 199, 9), Direction::South, None);
+        let mut handle = ServerHandle::spawn(server);
+        handle.frame_action(id, FrameAction::Use { held: None, infinite: false });
+        handle.frame_action(id, FrameAction::Use { held: Some(minecraftoss_player::inventory::ItemStack::new("minecraft:compass", 3)), infinite: false });
+        handle.frame_action(id, FrameAction::Use { held: Some(minecraftoss_player::inventory::ItemStack::new("minecraft:compass", 2)), infinite: false });
+        handle.wait_idle();
+        let uses: Vec<bool> = handle.poll().into_iter().flat_map(|out| out.item_uses).collect();
+        assert_eq!(uses, [true, false], "the first took the compass, the second turned it");
+    }
+
+    #[test]
+    fn a_comparator_reads_the_frame_rotation_through_a_block() {
+        use crate::item_frame::FrameAction;
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 198, 7), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 199, 7), Block::new("minecraft:comparator").with("facing", "south").with("mode", "compare").with("powered", "false"));
+        let id = framed(&mut server, false, (8, 199, 9), Direction::South, None);
+        let output = |server: &mut ServerSim| {
+            for _ in 0..4 {
+                server.tick();
+            }
+            server.level.comparator_output_at(minecraftoss_core::BlockPos::new(8, 199, 7))
+        };
+        assert_eq!(output(&mut server), 0, "an empty frame gives nothing");
+        server.frame_action(id, FrameAction::Use { held: Some(minecraftoss_player::inventory::ItemStack::new("minecraft:arrow", 1)), infinite: false });
+        let mut outputs = vec![output(&mut server)];
+        for _ in 0..8 {
+            server.frame_action(id, FrameAction::Use { held: None, infinite: false });
+            outputs.push(output(&mut server));
+        }
+        assert_eq!(outputs, [1, 2, 3, 4, 5, 6, 7, 8, 1]);
+        let side = framed(&mut server, false, (8, 199, 9), Direction::Up, Some("minecraft:arrow"));
+        assert_eq!(output(&mut server), 1, "a frame facing another way is not read");
+        server.frame_action(side, FrameAction::Attack { infinite: true });
+        server.frame_action(side, FrameAction::Attack { infinite: true });
+        server.frame_action(id, FrameAction::Attack { infinite: false });
+        assert_eq!(output(&mut server), 0, "and nothing once it is empty");
+    }
+
+    fn trapped_chest() -> Block {
+        Block::new("minecraft:trapped_chest").with("facing", "north").with("type", "single").with("waterlogged", "false")
+    }
+
+    #[test]
+    fn a_trapped_chest_powers_by_viewers_and_strongly_below() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), trapped_chest());
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 200, 12), Block::new("minecraft:chest").with("facing", "north").with("type", "single").with("waterlogged", "false"));
+        let at = |(x, y, z): BlockPos| minecraftoss_core::BlockPos::new(x, y, z);
+        let state = server.level.block(at((8, 200, 8)));
+        assert!(server.level.is_signal_source(state));
+        for (count, power) in [(1, 1), (3, 3), (20, 15), (0, 0)] {
+            server.set_chest_openers((8, 200, 8), count);
+            for direction in Direction::ALL {
+                assert_eq!(server.level.signal(at((8, 200, 8)), direction), power, "{count} viewers, {direction:?}");
+            }
+            assert_eq!(server.level.signal(at((8, 199, 8)), Direction::Down), power, "the block below is strongly powered");
+            assert_eq!(server.level.signal(at((9, 200, 8)), Direction::East), 0, "the block beside is not");
+        }
+        server.set_chest_openers((8, 200, 12), 4);
+        assert_eq!(server.level.signal(at((8, 200, 12)), Direction::North), 0, "a plain chest gives no signal");
+        server.set_chest_openers((8, 200, 8), 2);
+        take(&mut server, &mut scene, (8, 200, 8));
+        place(&mut server, &mut scene, (8, 200, 8), trapped_chest());
+        assert_eq!(server.level.signal(at((8, 200, 8)), Direction::North), 0, "a new chest starts with no viewers");
+    }
+
+    #[test]
+    fn opening_a_trapped_chest_lights_a_lamp_beside_it() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), trapped_chest());
+        place(&mut server, &mut scene, (8, 200, 9), Block::new("minecraft:redstone_lamp").with("lit", "false"));
+        place(&mut server, &mut scene, (8, 198, 8), Block::new("minecraft:redstone_lamp").with("lit", "false"));
+        server.take_changes();
+        let lit = |changes: &std::collections::HashMap<BlockPos, Option<Block>>, pos: BlockPos| {
+            changes.get(&pos).and_then(Option::as_ref).map(|block| block.properties.get("lit").map(String::as_str) == Some("true"))
+        };
+        server.set_chest_openers((8, 200, 8), 1);
+        let opened: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(lit(&opened, (8, 200, 9)), Some(true), "the lamp beside lights at once");
+        assert_eq!(lit(&opened, (8, 198, 8)), Some(true), "the lamp under the block below lights too");
+        server.set_chest_openers((8, 200, 8), 0);
+        let closed = ticked(&mut server, 5);
+        assert_eq!(lit(&closed, (8, 200, 9)), Some(false));
+        assert_eq!(lit(&closed, (8, 198, 8)), Some(false));
+        let mut handle = ServerHandle::spawn(server);
+        handle.chest_openers((8, 200, 8), 1);
+        handle.wait_idle();
+        let sent: std::collections::HashMap<_, _> = handle.poll().into_iter().flat_map(|out| out.changes).collect();
+        assert_eq!(lit(&sent, (8, 200, 9)), Some(true), "the command reaches the server thread");
+    }
+
+    const LECTERN: BlockPos = (8, 200, 8);
+
+    fn lectern_world() -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut server, mut scene) = door_world()?;
+        place(&mut server, &mut scene, LECTERN, Block::new("minecraft:lectern").with("facing", "north").with("has_book", "false").with("powered", "false"));
+        server.take_changes();
+        Some((server, scene))
+    }
+
+    fn written(pages: &[&str]) -> crate::lectern::BookStack {
+        let pages: Vec<serde_json::Value> = pages.iter().map(|page| serde_json::json!({"raw": page})).collect();
+        crate::lectern::BookStack {
+            id: "minecraft:written_book".to_owned(),
+            components: Some(serde_json::json!({"minecraft:written_book_content": {"title": {"raw": "T"}, "author": "A", "pages": pages}}).to_string()),
+        }
+    }
+
+    fn lectern_flag(server: &ServerSim, name: &str) -> bool {
+        let (x, y, z) = LECTERN;
+        let state = server.level.block(minecraftoss_core::BlockPos::new(x, y, z));
+        server.level.registries().blocks.property(state, name) == Some("true")
+    }
+
+    fn reader_world() -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut server, mut scene) = lectern_world()?;
+        place(&mut server, &mut scene, (8, 199, 7), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (8, 200, 7), Block::new("minecraft:comparator").with("facing", "south").with("mode", "compare").with("powered", "false"));
+        Some((server, scene))
+    }
+
+    fn comparator_reads(server: &mut ServerSim) -> i32 {
+        for _ in 0..4 {
+            server.tick();
+        }
+        server.level.comparator_output_at(minecraftoss_core::BlockPos::new(8, 200, 7))
+    }
+
+    #[test]
+    fn a_book_placed_by_a_player_reaches_the_lectern_and_its_comparator() {
+        use crate::lectern::LecternAction;
+        let Some((server, _)) = lectern_world() else { return };
+        let mut handle = ServerHandle::spawn(server);
+        handle.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["a", "b", "c"])));
+        handle.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["d"])));
+        handle.wait_idle();
+        let outputs = handle.poll();
+        let uses: Vec<bool> = outputs.iter().flat_map(|out| out.item_uses.iter().copied()).collect();
+        assert_eq!(uses, [true, false], "the second book finds the lectern taken");
+        let shown = outputs.iter().flat_map(|out| out.changes.iter()).rfind(|(pos, _)| *pos == LECTERN).and_then(|(_, block)| block.clone());
+        assert_eq!(shown.as_ref().and_then(|block| block.properties.get("has_book")).map(String::as_str), Some("true"));
+        let Some((mut server, _)) = reader_world() else { return };
+        assert_eq!(comparator_reads(&mut server), 0, "an empty lectern gives nothing");
+        let plain = crate::lectern::BookStack { id: "minecraft:book".to_owned(), components: None };
+        assert_eq!(server.lectern(0, LECTERN, LecternAction::PlaceBook(plain)), Some(false));
+        assert_eq!(server.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["a", "b", "c"]))), Some(true));
+        assert!(lectern_flag(&server, "has_book") && !lectern_flag(&server, "powered"));
+        assert!(server.level.sounds.iter().any(|sound| sound.event == "minecraft:item.book.put"));
+        let (book, page) = server.level.lectern_view(minecraftoss_core::BlockPos::new(8, 200, 8)).unwrap();
+        assert_eq!(page, 0);
+        assert_eq!(book.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:written_book"));
+        assert_eq!(comparator_reads(&mut server), 1, "page 1 of 3");
+    }
+
+    #[test]
+    fn a_page_turn_pulses_two_ticks() {
+        use crate::lectern::LecternAction;
+        let Some((mut server, _)) = reader_world() else { return };
+        server.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["a", "b", "c"])));
+        assert_eq!(server.lectern(0, LECTERN, LecternAction::Button(2)), None);
+        assert!(server.take_lecterns().is_empty(), "a player who has not opened the lectern turns nothing");
+        server.lectern(0, LECTERN, LecternAction::Open);
+        let opened = server.take_lecterns();
+        assert_eq!(opened.len(), 1);
+        assert_eq!((opened[0].page, opened[0].closed, opened[0].book.as_ref().map(|book| book.id.as_str())), (0, false, Some("minecraft:written_book")));
+        server.level.level_events.clear();
+        server.lectern(0, LECTERN, LecternAction::Button(2));
+        assert_eq!(server.take_lecterns().iter().map(|view| view.page).collect::<Vec<_>>(), [1]);
+        assert!(lectern_flag(&server, "powered"));
+        assert_eq!(std::mem::take(&mut server.level.level_events), vec![(1043, minecraftoss_core::BlockPos::new(8, 200, 8), 0)]);
+        let at = minecraftoss_core::BlockPos::new;
+        let east = minecraftoss_core::pos::Direction::East;
+        let down = minecraftoss_core::pos::Direction::Down;
+        assert!(server.level.is_signal_source(server.level.block(at(8, 200, 8))));
+        assert_eq!(server.level.signal(at(8, 200, 8), east), 15);
+        assert_eq!(server.level.signal(at(8, 199, 8), down), 15, "the block below is strongly powered");
+        server.tick();
+        assert!(lectern_flag(&server, "powered"), "still on after one tick");
+        server.tick();
+        assert!(!lectern_flag(&server, "powered"), "off after two");
+        assert_eq!(server.level.signal(at(8, 200, 8), east), 0);
+        assert_eq!(server.level.signal(at(8, 199, 8), down), 0);
+        assert_eq!(comparator_reads(&mut server), 8);
+        server.lectern(0, LECTERN, LecternAction::Button(2));
+        server.take_lecterns();
+        server.level.level_events.clear();
+        server.lectern(0, LECTERN, LecternAction::Button(2));
+        assert!(server.take_lecterns().is_empty(), "the last page does not turn further");
+        assert!(server.level.level_events.is_empty());
+        assert_eq!(comparator_reads(&mut server), 15);
+        server.lectern(0, LECTERN, LecternAction::Button(1));
+        assert_eq!(server.take_lecterns().iter().map(|view| view.page).collect::<Vec<_>>(), [1]);
+        server.lectern(0, LECTERN, LecternAction::Button(100));
+        assert_eq!(server.take_lecterns().iter().map(|view| view.page).collect::<Vec<_>>(), [0]);
+        server.lectern(0, LECTERN, LecternAction::Button(109));
+        assert_eq!(server.take_lecterns().iter().map(|view| view.page).collect::<Vec<_>>(), [2], "a page past the end goes to the last");
+        server.lectern(0, LECTERN, LecternAction::Close);
+        server.lectern(0, LECTERN, LecternAction::Button(1));
+        assert!(server.take_lecterns().is_empty());
+    }
+
+    #[test]
+    fn take_book_closes_every_viewer() {
+        use crate::lectern::LecternAction;
+        let Some((mut server, _)) = reader_world() else { return };
+        let book = written(&["a", "b"]);
+        server.lectern(0, LECTERN, LecternAction::PlaceBook(book.clone()));
+        server.lectern(0, LECTERN, LecternAction::Open);
+        server.lectern(1, LECTERN, LecternAction::Open);
+        server.take_lecterns();
+        server.lectern(1, LECTERN, LecternAction::Button(3));
+        let closed = server.take_lecterns();
+        assert_eq!(closed.iter().map(|view| (view.player, view.closed)).collect::<Vec<_>>(), [(0, true), (1, true)]);
+        assert_eq!(closed[0].taken, None);
+        let taken = closed[1].taken.clone().unwrap();
+        assert_eq!(taken.id, book.id);
+        let parse = |text: &Option<String>| text.as_deref().and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+        assert_eq!(parse(&taken.components), parse(&book.components));
+        assert!(!lectern_flag(&server, "has_book"));
+        assert!(server.level.lectern_view(minecraftoss_core::BlockPos::new(8, 200, 8)).is_none());
+        assert_eq!(comparator_reads(&mut server), 0);
+        server.lectern(1, LECTERN, LecternAction::Button(3));
+        assert!(server.take_lecterns().is_empty());
+        server.lectern(0, LECTERN, LecternAction::Open);
+        assert_eq!(server.take_lecterns().iter().map(|view| view.closed).collect::<Vec<_>>(), [true], "an empty lectern does not open");
+    }
+
+    #[test]
+    fn a_broken_lectern_closes_its_viewers_and_drops_its_book_above() {
+        use crate::lectern::LecternAction;
+        let Some((mut server, mut scene)) = lectern_world() else { return };
+        server.lectern(0, LECTERN, LecternAction::PlaceBook(written(&["a"])));
+        server.lectern(0, LECTERN, LecternAction::Open);
+        server.take_lecterns();
+        take(&mut server, &mut scene, LECTERN);
+        let books: Vec<[f64; 3]> = server.level.entities.iter().filter(|entity| entity.item_data().is_some_and(|item| item.stack.id == "minecraft:written_book")).map(|entity| entity.pos).collect();
+        assert_eq!(books, [[8.5, 201.0, 8.25]]);
+        let pickup = server.level.entities.iter().find_map(|entity| entity.item_data().filter(|item| item.stack.id == "minecraft:written_book")).map(|item| item.pickup_delay);
+        assert_eq!(pickup, Some(10));
+        server.tick();
+        assert_eq!(server.take_lecterns().iter().map(|view| (view.player, view.closed)).collect::<Vec<_>>(), [(0, true)]);
+    }
+
+    #[test]
+    fn a_snowball_pops_a_framed_item_and_a_trident_breaks_the_empty_frame() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, _)) = door_world() else { return };
+        framed(&mut server, false, (8, 200, 8), Direction::Up, Some("minecraft:carrot"));
+        server.throw(thrown_down("minecraft:snowball", 1));
+        let away = [player_at(0, [40.0, 250.0, 40.0], true)];
+        for _ in 0..20 {
+            server.tick_thrown(&away);
+        }
+        assert_eq!(item_ids(&server), ["minecraft:carrot"]);
+        assert_eq!(server.frame_views().len(), 1, "the frame stays");
+        assert_eq!(server.frame_views()[0].item, None);
+        server.throw(thrown_down("minecraft:splash_potion", 2));
+        for _ in 0..20 {
+            server.tick_thrown(&away);
+        }
+        assert_eq!(server.frame_views().len(), 1, "a potion only breaks on it");
+        server.throw_trident(trident_down(0, None, 5));
+        for _ in 0..30 {
+            server.tick_tridents(&away);
+        }
+        assert!(server.frame_views().is_empty(), "the trident breaks the empty frame");
+        assert!(item_ids(&server).contains(&"minecraft:item_frame".to_owned()));
+        assert!(crate::item_frame::struck_frame(crate::thrown::PLAYER_TARGET).is_none());
+        assert_eq!(crate::item_frame::struck_frame(crate::item_frame::FRAME_TARGET + 3), Some(3));
+        assert_eq!(crate::item_frame::struck_frame(3), None);
     }
 }

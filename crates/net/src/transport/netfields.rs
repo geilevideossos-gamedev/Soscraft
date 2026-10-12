@@ -365,6 +365,7 @@ ps_netfields! {
     hold_breath_timer: i32 = Replication::Replicated, Validation::Exact;
     hold_breath_scale: f32 = Replication::Replicated, Validation::Exact;
     mc_rocket_time: i32 = Replication::Replicated, Validation::Exact;
+    mc_float: i32 = Replication::Replicated, Validation::Exact;
 }
 
 pub const PS_FIELD_COUNT: usize = PS_NETFIELDS.len();

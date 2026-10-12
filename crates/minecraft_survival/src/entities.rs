@@ -20,6 +20,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::items::{ItemEntity, WorldItems};
 use minecraftoss_player::loot::LootBook;
 use minecraftoss_player::rng::XoroshiroRandom;
+use minecraftoss_player::survival::EffectKind;
 use std::collections::HashMap;
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::poof_particles::PoofParticles;
@@ -27,6 +28,7 @@ use minecraft_terrain::portal_particles::PortalParticles;
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_entities::world::{EntityWorld, MobHit, PlayerHitKind};
 use minecraft_terrain::end_crystal::{EndDamage, EndTarget};
+use minecraft_terrain::item_frame::FrameAction;
 
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 /// Minecraft health per MW2 health.
@@ -38,7 +40,8 @@ const PLAYER: u64 = 0;
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
 const GUARDED_BY_PIGLINS: &str = "minecraft:guarded_by_piglins";
-type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush)>;
+type Hit = (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush, Option<(EffectKind, u32)>);
+type Hits = Vec<Hit>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 type Picked = (i32, [f64; 3], String, i32, Option<String>);
 
@@ -47,6 +50,8 @@ pub struct Blow {
     pub can_critical: bool,
     pub can_sweep: bool,
     pub reach: f64,
+    pub block: Option<f64>,
+    pub creative: bool,
 }
 
 pub struct SentItemUse {
@@ -69,6 +74,7 @@ pub struct Entities {
     eyes: minecraft_terrain::eye_of_ender::EyeTrails,
     spell: minecraft_terrain::spell_particles::SpellParticles,
     ambient: minecraft_terrain::ambient_particles::AmbientParticles,
+    bodies: HashMap<u128, minecraft_terrain::ambient_particles::Body>,
     level_events: Vec<(i32, (i32, i32, i32), i32)>,
     pub broken_items: Vec<String>,
     items: ItemVisuals,
@@ -100,6 +106,7 @@ pub struct Entities {
     gateways: minecraft_terrain::end_gateway::ClientGateways,
     dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
+    frames: Vec<minecraft_terrain::item_frame::FrameView>,
     growls: HashMap<u64, i32>,
     dragons_killed: Vec<[i32; 4]>,
     fight_reports: Vec<minecraft_terrain::server::FightReport>,
@@ -124,6 +131,7 @@ pub struct Entities {
     pub recipes: std::sync::Arc<minecraftoss_player::crafting::RecipeBook>,
     item_use_waiting: Option<SentItemUse>,
     pub item_uses_done: Vec<SentItemUse>,
+    pub lecterns: Vec<minecraft_terrain::lectern::LecternView>,
     eggs_waiting: minecraft_terrain::spawn_egg::EggsWaiting,
     pub command_summons: Vec<Result<String, String>>,
     pub command_jobs: Vec<Box<dyn std::any::Any + Send>>,
@@ -243,6 +251,7 @@ impl Entities {
             eyes: minecraft_terrain::eye_of_ender::EyeTrails::default(),
             spell: minecraft_terrain::spell_particles::SpellParticles::new((seed ^ 0x5be1) as u64),
             ambient: minecraft_terrain::ambient_particles::AmbientParticles::new((seed ^ 0xa3b1) as u64),
+            bodies: HashMap::new(),
             level_events: Vec::new(),
             broken_items: Vec::new(),
             items: ItemVisuals::default(),
@@ -266,6 +275,7 @@ impl Entities {
             tridents: Vec::new(),
             crystals: Vec::new(),
             gateways: Default::default(),
+            frames: Vec::new(),
             dragons: Vec::new(),
             dragon_fireballs: Vec::new(),
             growls: HashMap::new(),
@@ -292,6 +302,7 @@ impl Entities {
             recipes: data.recipes.clone(),
             item_use_waiting: None,
             item_uses_done: Vec::new(),
+            lecterns: Vec::new(),
             eggs_waiting: Default::default(),
             command_summons: Vec::new(),
             command_jobs: Vec::new(),
@@ -560,12 +571,22 @@ impl Entities {
 
     #[allow(clippy::too_many_arguments)]
     pub fn punch(&mut self, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
+        if let Some(frame) = frame_target(&self.frames, eye, look, blow.reach, blow.block, self.entity_distance(eye, look, blow.reach)) {
+            self.server.frame_action(frame, FrameAction::Attack { infinite: blow.creative });
+            return true;
+        }
         let mob = mob_on_ray(&self.world, eye, look, blow.reach);
         if let Some((target, distance)) = self.end_on_ray(eye, look, blow.reach)
             && mob.is_none_or(|(_, nearest)| distance < nearest)
         {
             let damage = attack_damage as f32 * (0.2 + strength * strength * 0.8);
-            self.server.end_hit(target, EndDamage::attack(damage, PLAYER));
+            self.server.end_hit(target, EndDamage::attack(damage, PLAYER).from_position(eye));
+            return true;
+        }
+        if let Some((bullet, distance)) = self.world.shulker_bullet_on_ray(eye, look, blow.reach)
+            && mob.is_none_or(|(_, nearest)| distance < nearest)
+        {
+            self.server.hurt_shulker_bullet(bullet);
             return true;
         }
         if let Some((fireball, distance)) = self.world.fireball_on_ray(eye, look, blow.reach)
@@ -594,10 +615,37 @@ impl Entities {
     }
 
     pub fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
+        let frame = minecraft_terrain::item_frame::on_ray(&self.frames, eye, look, reach).map(|(_, distance)| distance);
+        self.entity_distance(eye, look, reach).into_iter().chain(frame).min_by(f64::total_cmp)
+    }
+
+    fn entity_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         let mob = mob_on_ray(&self.world, eye, look, reach).map(|(_, distance)| distance);
         let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        let bullet = self.world.shulker_bullet_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let end = self.end_on_ray(eye, look, reach).map(|(_, distance)| distance);
-        [mob, fireball, end].into_iter().flatten().min_by(f64::total_cmp)
+        [mob, fireball, bullet, end].into_iter().flatten().min_by(f64::total_cmp)
+    }
+
+    pub fn frame_on_ray(&self, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>) -> Option<u64> {
+        frame_target(&self.frames, eye, look, reach, block, self.entity_distance(eye, look, reach))
+    }
+
+    pub fn use_frame(&mut self, id: u64, held: Option<&ItemStack>, infinite: bool, sent: Option<SentItemUse>) -> bool {
+        let Some(view) = self.frames.iter().find(|view| view.id == id) else {
+            return false;
+        };
+        if minecraft_terrain::item_frame::use_passes(view, held.is_some()) {
+            return false;
+        }
+        if held.is_some() && self.item_use_waiting.is_some() {
+            return true;
+        }
+        self.server.frame_action(id, FrameAction::Use { held: held.cloned(), infinite });
+        if held.is_some() {
+            self.item_use_waiting = sent;
+        }
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -871,12 +919,69 @@ impl Entities {
         self.present(effects);
     }
 
+    pub fn powder_snow_flake(&mut self, feet: [f64; 3], block_y: i32) {
+        let mut across = || f64::from((self.random.next_float() * 2.0 - 1.0) * 0.083_333_336);
+        let motion = DVec3::new(across(), f64::from(0.05_f32), across());
+        let at = DVec3::new(feet[0], f64::from(block_y + 1), feet[2]);
+        self.ambient.add(minecraft_terrain::ambient_particles::Kind::Snowflake, at, motion);
+    }
+
+    pub fn track_body(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
+        self.bodies.insert(key, minecraft_terrain::ambient_particles::Body { feet: DVec3::from_array(feet), width, height });
+    }
+
+    pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
+        self.track_body(key, feet, width, height);
+        let body = self.bodies[&key];
+        self.ambient.totem_emitter(key, body);
+    }
+
+    pub fn lectern(&mut self, pos: (i32, i32, i32), action: minecraft_terrain::lectern::LecternAction, sent: Option<SentItemUse>) {
+        self.server.lectern(PLAYER, pos, action);
+        if sent.is_some() {
+            self.item_use_waiting = sent;
+        }
+    }
+
+    pub fn book_stack(&self, book: &minecraft_terrain::lectern::BookStack) -> ItemStack {
+        let mut stack = self.recipes.stack(&book.id, 1);
+        stack.components = book.components.as_deref().and_then(|text| serde_json::from_str(text).ok());
+        stack
+    }
+
+    pub fn chest_openers(&mut self, pos: (i32, i32, i32), count: u32) {
+        self.server.chest_openers(pos, count);
+    }
+
     pub fn campfire_douse(&mut self, pos: (i32, i32, i32), signal: bool) {
         self.ambient.douse(pos, signal);
     }
 
     pub fn rain_tick(&mut self, scene: &HandcraftedScene, camera: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
         self.ambient.rain_tick(scene, DVec3::from_array(camera), self.weather.rain_level)
+    }
+
+    pub fn partial_tick(&self) -> f32 {
+        (self.clock / TICK_SECONDS).clamp(0.0, 1.0) as f32
+    }
+
+    pub fn weather_mesh(&self, scene: &HandcraftedScene, camera: [f64; 3], light: &minecraft_terrain::lighting::SkyLight) -> (Vec<minecraft_terrain::weather::WeatherVertex>, Vec<u32>) {
+        let rain_level = self.weather.rain_level;
+        if rain_level <= 0.0 {
+            return Default::default();
+        }
+        let camera = DVec3::from_array(camera);
+        let radius = minecraft_terrain::rain::WEATHER_RADIUS;
+        let columns = minecraft_terrain::weather::columns(
+            camera,
+            radius,
+            self.ticks as i64,
+            self.partial_tick(),
+            |x, z| minecraft_terrain::rain::motion_blocking_height(scene, x, z),
+            |pos| self.ambient.precipitation_at(scene, pos),
+            |pos| (light.get(pos), light.get_block(pos)),
+        );
+        minecraft_terrain::weather::mesh(&columns, camera, radius, rain_level)
     }
 
     pub fn campfire_tick(&mut self, scene: &HandcraftedScene, food: impl Fn((i32, i32, i32)) -> [bool; 4]) {
@@ -919,9 +1024,17 @@ impl Entities {
 
     /// A bullet on a mob: an attack with the bullet's damage from where it
     /// was fired.
-    pub fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32) {
+    pub fn shoot(&mut self, key: u64, damage: f32, from: [f64; 3], yaw: f32, creative: bool) {
+        if let Some(id) = frame_of(key) {
+            self.server.frame_action(id, FrameAction::Shot { infinite: creative });
+            return;
+        }
         if let Some(target) = end_target_of(key) {
-            self.server.end_hit(target, EndDamage::attack(damage * HEALTH_SCALE, PLAYER));
+            self.server.end_hit(target, EndDamage::attack(damage * HEALTH_SCALE, PLAYER).from_position(DVec3::from_array(from)));
+            return;
+        }
+        if let Some(id) = shulker_bullet_of(key) {
+            self.server.hurt_shulker_bullet(id);
             return;
         }
         if let Some(id) = fireball_of(key) {
@@ -949,9 +1062,18 @@ impl Entities {
             .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false, PLAYER);
     }
 
-    pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32, creative: bool) {
+        if let Some(id) = frame_of(key) {
+            self.server.frame_action(id, FrameAction::Blast { infinite: by_player && creative });
+            return;
+        }
         if let Some(target) = end_target_of(key) {
             self.server.end_hit(target, EndDamage::explosion(damage * BLAST_HEALTH_SCALE, by_player.then_some(PLAYER)));
+            return;
+        }
+        if let Some(id) = shulker_bullet_of(key) {
+            self.server.hurt_shulker_bullet(id);
             return;
         }
         if let Some(id) = fireball_of(key) {
@@ -1027,7 +1149,11 @@ impl Entities {
             }
             self.portal.tick();
             for cloud in &self.clouds {
-                self.spell.cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
+                if cloud.breath {
+                    self.ambient.breath_cloud(cloud.position, cloud.radius, cloud.waiting);
+                } else {
+                    self.spell.cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
+                }
             }
             self.spell.tick();
             minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_pickup_target);
@@ -1090,8 +1216,19 @@ impl Entities {
                 self.gateways.receive(std::mem::take(&mut snapshot.gateways), self.ticks);
                 self.dragons = std::mem::take(&mut snapshot.dragons);
                 self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
+                for fireball in &self.dragon_fireballs {
+                    self.ambient.breath_trail(fireball.position);
+                }
+                self.frames = std::mem::take(&mut snapshot.frames);
                 for at in std::mem::take(&mut snapshot.breath_bursts) {
-                    self.spell.burst(at, minecraft_terrain::effect_cloud::BREATH_COLOR, false);
+                    self.ambient.breath_burst(at);
+                }
+                for breath in std::mem::take(&mut snapshot.dragon_breath) {
+                    self.ambient.mouth_breath(&breath);
+                }
+                for (at, emitter) in std::mem::take(&mut snapshot.dragon_explosions) {
+                    let kind = if emitter { minecraft_terrain::ambient_particles::Kind::ExplosionEmitter } else { minecraft_terrain::ambient_particles::Kind::Explosion };
+                    self.ambient.add(kind, at, DVec3::ZERO);
                 }
                 self.dragon_voices();
                 self.orbs = snapshot.orbs.clone();
@@ -1137,6 +1274,7 @@ impl Entities {
                     diag::warn!(World, "{}", answer.line());
                 }
             }
+            self.lecterns.extend(output.lecterns.into_iter().filter(|view| view.player == PLAYER));
             for used in output.item_uses {
                 if let Some(sent) = self.item_use_waiting.take().filter(|_| used) {
                     self.item_uses_done.push(sent);
@@ -1188,6 +1326,9 @@ impl Entities {
             for effect in &output.explosion_effects {
                 self.ambient.explosion(DVec3::from_array(effect.center), effect.radius, effect.blocks, effect.interacts);
             }
+            for puff in &output.bullet_puffs {
+                self.ambient.puffs(bullet_puff_particle(puff.kind), puff.position, puff.kind.count(), 0.2);
+            }
             if let Some(mobs) = output.mobs {
                 self.world = *mobs;
                 for (feet, width, height) in self.client.receive(server_mobs(&self.world)) {
@@ -1196,31 +1337,8 @@ impl Entities {
             }
             hits.extend(output.players_struck.iter().filter(|struck| struck.player == PLAYER).map(|struck| struck_hit(player.feet, struck)));
             for hit in output.player_hits.into_iter().filter(|h| h.player_id == PLAYER) {
-                let from = match hit.kind {
-                    PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
-                    _ => None,
-                };
-                let toward = match hit.kind {
-                    PlayerHitKind::Melee { attacker, .. } => [attacker.x - player.feet[0], attacker.z - player.feet[2]],
-                    PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } => [-velocity.x, -velocity.z],
-                    PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
-                };
-                let attack = match hit.kind {
-                    PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
-                    PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
-                    PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. } => crate::death::MobAttack::Explosion,
-                    PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
-                    PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
-                };
-                let cause = match hit.kind {
-                    PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
-                    _ => crate::death::DamageCause::mob(attack, hit.source, hit.source.and_then(|id| self.entity_type(id))),
-                };
-                let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
-                let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
-                if damage > 0.0 {
-                    hits.push((damage, from, Some(toward), cause, melee_push(&hit.kind)));
-                }
+                let type_id = hit.source.and_then(|id| self.entity_type(id));
+                hits.extend(mob_hit(&hit, player.feet, self.difficulty, type_id));
             }
         }
         if ticked {
@@ -1378,6 +1496,10 @@ impl Entities {
         for e in w.piglins().iter().filter(|e| e.piglin.health > 0.0) {
             add(MobHit::Piglin(e.id), &e.piglin.body);
         }
+        for e in w.shulkers().iter().filter(|e| e.shulker.health > 0.0) {
+            let (low, high) = e.shulker.bounding_box();
+            out.push((encode(MobHit::Shulker(e.id)), [low.x, low.y, low.z, high.x, high.y, high.z]));
+        }
         for crystal in &self.crystals {
             let (low, high) = minecraft_terrain::end_crystal::pick_box(crystal.position);
             out.push((CRYSTAL_KEY | (crystal.id & ((1 << 56) - 1)), [low.x, low.y, low.z, high.x, high.y, high.z]));
@@ -1396,11 +1518,19 @@ impl Entities {
             let (min, max) = minecraftoss_entities::fireball::pick_box(e.fireball.kind, e.fireball.position);
             out.push((FIREBALL_KEY | (e.id & ((1 << 56) - 1)), [min.x, min.y, min.z, max.x, max.y, max.z]));
         }
+        for e in self.world.shulker_bullets().iter().filter(|e| e.bullet.alive) {
+            let (min, max) = e.bullet.bounds();
+            out.push((SHULKER_BULLET_KEY | (e.id & ((1 << 56) - 1)), [min.x, min.y, min.z, max.x, max.y, max.z]));
+        }
         for dragon in self.dragons.iter().filter(|dragon| dragon.health > 0.0) {
             for (part, &feet) in dragon.parts.iter().enumerate() {
                 let (low, high) = minecraft_terrain::ender_dragon::part_box(feet, part);
                 out.push((dragon_part_key(dragon.id, part), [low.x, low.y, low.z, high.x, high.y, high.z]));
             }
+        }
+        for frame in &self.frames {
+            let (low, high) = minecraft_terrain::item_frame::hanging_box(frame.position, frame.facing);
+            out.push((FRAME_KEY | (frame.id & ((1 << 56) - 1)), [low.x, low.y, low.z, high.x, high.y, high.z]));
         }
         out
     }
@@ -1409,7 +1539,12 @@ impl Entities {
     pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
         for _ in 0..ticks {
             self.poof.tick(scene);
+            let bodies = &self.bodies;
+            self.ambient.tick_emitters(|key| bodies.get(&key).copied());
             self.ambient.tick(scene);
+            for entity in self.world.shulker_bullets().iter().filter(|e| e.bullet.alive) {
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::EndRod, entity.bullet.trail(), DVec3::ZERO);
+            }
         }
     }
 
@@ -1478,6 +1613,8 @@ impl Entities {
         strider_render::append_striders(&mut out.models, w.striders().iter(), poses, atlas, light, partial);
         hoglin_render::append_hoglins(&mut out.models, w.hoglins().iter(), poses, atlas, light, partial);
         let piglin_items = piglin_render::append_piglins(&mut out.models, w.piglins().iter(), poses, atlas, light, partial);
+        shulker_render::append_shulkers(&mut out.models, w.shulkers().iter(), poses, atlas, light, partial);
+        shulker_render::append_bullets(&mut out.models, &mut out.translucent, w.shulker_bullets(), atlas, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
         flame_render::append_flames(
@@ -1519,6 +1656,8 @@ impl Entities {
         self.lids.settle(scene, cell_settled);
         let lids = self.lids.posed(scene, partial);
         let _ = self.items.append_open_lids(&mut out.items, &lids, scene, packs, atlas, light);
+        let frames: Vec<_> = self.frames.iter().filter(|frame| minecraft_terrain::item_frame::tracked(frame, camera)).cloned().collect();
+        let _ = self.items.append_frames(&mut out.items, &frames, packs, atlas, light);
         let _ = self.items.append_primed_tnt(&mut out.items, &self.falling.primed_tnt(partial), packs, atlas, light);
         minecraft_terrain::thrown::append_views(&mut out.items, &self.thrown, partial, camera, atlas, forward, light);
         minecraft_terrain::eye_of_ender::append_eyes(&mut out.items, self.eyes.views(), partial, camera, atlas, forward);
@@ -1612,15 +1751,59 @@ fn apply_mob_result(inventory: &mut Inventory, result: &minecraft_terrain::serve
     }
 }
 
-fn struck_hit(feet: [f64; 3],struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush) {
+fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> Hit {
     let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
-    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, Default::default())
+    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, Default::default(), None)
 }
 
 fn melee_push(kind: &PlayerHitKind) -> crate::impulse::MeleePush {
     match *kind {
         PlayerHitKind::Melee { throw, lift, disable_shield_seconds, .. } => crate::impulse::MeleePush { throw, lift: f64::from(lift), disable_shield_ticks: crate::offhand::disable_ticks(disable_shield_seconds) },
         _ => Default::default(),
+    }
+}
+
+fn mob_hit(
+    hit: &minecraftoss_entities::world::PlayerHit,
+    feet: [f64; 3],
+    difficulty: i32,
+    type_id: Option<&'static str>,
+) -> Option<Hit> {
+    let from = match hit.kind {
+        PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
+        _ => None,
+    };
+    let toward = match hit.kind {
+        PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
+        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } => [-velocity.x, -velocity.z],
+        PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
+    };
+    let attack = match hit.kind {
+        PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
+        PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
+        PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. } => crate::death::MobAttack::Explosion,
+        PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
+        PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
+        PlayerHitKind::ShulkerBullet { .. } => crate::death::MobAttack::MobProjectile,
+    };
+    let cause = match hit.kind {
+        PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
+        _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
+    };
+    let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
+    let damage = difficulty_scaled(hit.damage, difficulty, scales);
+    let effect = match hit.kind {
+        PlayerHitKind::Arrow { effect, .. } => effect,
+        PlayerHitKind::ShulkerBullet { .. } => Some((EffectKind::Levitation, minecraftoss_entities::shulker_bullet::LEVITATION_TICKS)),
+        _ => None,
+    };
+    (damage > 0.0).then_some((damage, from, Some(toward), cause, melee_push(&hit.kind), effect))
+}
+
+fn bullet_puff_particle(kind: minecraftoss_entities::world::BulletPuffKind) -> minecraft_terrain::ambient_particles::Kind {
+    match kind {
+        minecraftoss_entities::world::BulletPuffKind::Hit => minecraft_terrain::ambient_particles::Kind::Explosion,
+        minecraftoss_entities::world::BulletPuffKind::Hurt => minecraft_terrain::ambient_particles::Kind::Crit,
     }
 }
 
@@ -1695,6 +1878,7 @@ fn encode(hit: MobHit) -> u64 {
         MobHit::Strider(_) => STRIDER_KEY,
         MobHit::Hoglin(_) => HOGLIN_KEY,
         MobHit::Piglin(_) => PIGLIN_KEY,
+        MobHit::Shulker(_) => 26,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1723,16 +1907,19 @@ fn decode(key: u64) -> Option<MobHit> {
         STRIDER_KEY => MobHit::Strider(id),
         HOGLIN_KEY => MobHit::Hoglin(id),
         PIGLIN_KEY => MobHit::Piglin(id),
+        26 => MobHit::Shulker(id),
         _ => return None,
     })
 }
 
 const FIREBALL_KEY: u64 = 17 << 56;
+const SHULKER_BULLET_KEY: u64 = 27 << 56;
 const CRYSTAL_KEY: u64 = 19 << 56;
 const DRAGON_KEY: u64 = 20 << 56;
 const STRIDER_KEY: u64 = 23;
 const HOGLIN_KEY: u64 = 22;
 const PIGLIN_KEY: u64 = 21;
+const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
 fn dragon_part_key(id: u64, part: usize) -> u64 {
@@ -1761,6 +1948,19 @@ fn crystal_of(key: u64) -> Option<u64> {
 
 fn fireball_of(key: u64) -> Option<u64> {
     (key >> 56 == FIREBALL_KEY >> 56).then_some(key & ((1 << 56) - 1))
+}
+
+fn frame_of(key: u64) -> Option<u64> {
+    (key >> 56 == FRAME_KEY >> 56).then_some(key & ((1 << 56) - 1))
+}
+
+fn frame_target(frames: &[minecraft_terrain::item_frame::FrameView], eye: DVec3, look: DVec3, reach: f64, block: Option<f64>, others: Option<f64>) -> Option<u64> {
+    let (id, distance) = minecraft_terrain::item_frame::on_ray(frames, eye, look, reach)?;
+    (block.is_none_or(|block| distance < block) && others.is_none_or(|other| distance < other)).then_some(id)
+}
+
+fn shulker_bullet_of(key: u64) -> Option<u64> {
+    (key >> 56 == SHULKER_BULLET_KEY >> 56).then_some(key & ((1 << 56) - 1))
 }
 
 fn take_picked(inventory: &mut Inventory, selected: usize, picked: Vec<Picked>) -> Vec<ItemStack> {
@@ -2036,6 +2236,74 @@ mod tests {
     }
 
     #[test]
+    fn shulkers_take_bullet_key_26() {
+        let key = encode(MobHit::Shulker(42));
+        assert_eq!(key >> 56, 26);
+        assert_eq!(decode(key), Some(MobHit::Shulker(42)));
+        assert_eq!((crystal_of(key), fireball_of(key), end_target_of(key)), (None, None, None));
+    }
+
+    #[test]
+    fn the_frame_key_round_trips() {
+        let key = FRAME_KEY | 42;
+        assert_eq!(frame_of(key), Some(42));
+        assert_eq!((decode(key), crystal_of(key), fireball_of(key), shulker_bullet_of(key), end_target_of(key)), (None, None, None, None, None));
+        assert_eq!(frame_of(SHULKER_BULLET_KEY | 42), None);
+        assert_eq!(frame_of(encode(MobHit::Shulker(42))), None);
+    }
+
+    #[test]
+    fn a_frame_behind_a_wall_is_not_hit() {
+        let mut frames = minecraft_terrain::item_frame::Frames::default();
+        let tag = frames.fresh_tag(false, (0, 64, 3), minecraftoss_core::pos::Direction::North);
+        let id = frames.add(&tag).unwrap();
+        let views = frames.views();
+        let eye = DVec3::new(0.5, 64.5, 0.5);
+        assert_eq!(frame_target(&views, eye, DVec3::Z, 4.5, None, None), Some(id));
+        assert_eq!(frame_target(&views, eye, DVec3::Z, 4.5, Some(2.0), None), None, "a block nearer than the frame");
+        assert_eq!(frame_target(&views, eye, DVec3::Z, 4.5, Some(3.5), Some(1.0)), None, "a mob nearer than the frame");
+        assert_eq!(frame_target(&views, eye, DVec3::Z, 2.0, None, None), None, "out of reach");
+        let (low, high) = minecraft_terrain::item_frame::hanging_box(views[0].position, views[0].facing);
+        assert!((high - low - DVec3::new(0.75, 0.75, 0.0625)).length() < 1e-12);
+        assert!((low.z - 3.9375).abs() < 1e-12);
+    }
+
+    #[test]
+    fn shulker_bullets_take_bullet_key_27() {
+        let key = SHULKER_BULLET_KEY | 42;
+        assert_eq!((key >> 56, shulker_bullet_of(key)), (27, Some(42)));
+        assert_eq!((decode(key), crystal_of(key), fireball_of(key), end_target_of(key)), (None, None, None, None));
+        assert_eq!(shulker_bullet_of(encode(MobHit::Shulker(42))), None);
+    }
+
+    #[test]
+    fn a_struck_bullet_sparks_and_one_that_lands_puffs() {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraftoss_entities::world::BulletPuffKind;
+        assert_eq!((bullet_puff_particle(BulletPuffKind::Hit), BulletPuffKind::Hit.count()), (Kind::Explosion, 2));
+        assert_eq!((bullet_puff_particle(BulletPuffKind::Hurt), BulletPuffKind::Hurt.count()), (Kind::Crit, 15));
+    }
+
+    #[test]
+    fn a_shulker_bullet_hurts_by_difficulty_and_lifts_for_ten_seconds() {
+        let hit = minecraftoss_entities::world::PlayerHit {
+            player_id: PLAYER,
+            damage: 4.0,
+            kind: PlayerHitKind::ShulkerBullet { velocity: DVec3::new(0.15, 0.0, 0.0) },
+            source: Some(9),
+        };
+        let damage = |difficulty| mob_hit(&hit, [0.0; 3], difficulty, Some("minecraft:shulker")).map(|h| h.0);
+        assert_eq!((damage(0), damage(1), damage(2), damage(3)), (None, Some(3.0), Some(4.0), Some(6.0)));
+        let (_, from, toward, cause, _, effect) = mob_hit(&hit, [0.0; 3], 2, Some("minecraft:shulker")).unwrap();
+        assert_eq!((from, toward), (None, Some([-0.15, -0.0])));
+        assert_eq!(cause, crate::death::DamageCause::Mob { id: 9, type_id: "minecraft:shulker", attack: crate::death::MobAttack::MobProjectile });
+        assert_eq!(effect, Some((EffectKind::Levitation, 200)));
+        let ownerless = minecraftoss_entities::world::PlayerHit { source: None, ..hit };
+        let (damage, _, _, cause, _, effect) = mob_hit(&ownerless, [0.0; 3], 3, None).unwrap();
+        assert_eq!((damage, cause, effect), (4.0, crate::death::DamageCause::Generic, Some((EffectKind::Levitation, 200))));
+    }
+
+    #[test]
     fn blasts_hurt_mobs_four_times_as_hard_as_bullets() {
         assert_eq!(HEALTH_SCALE, 0.2);
         assert_eq!(BLAST_HEALTH_SCALE, 0.8);
@@ -2051,7 +2319,7 @@ mod tests {
             kind: minecraft_terrain::trident::DAMAGE_TYPE,
             velocity: DVec3::new(2.0, 0.0, 0.0),
         };
-        let (damage, from, toward, cause, _) = struck_hit([10.0, 64.0, 5.0], &struck);
+        let (damage, from, toward, cause, _, _) = struck_hit([10.0, 64.0, 5.0], &struck);
         assert_eq!(damage, 8.0);
         assert_eq!(from, Some([9.0, 64.0, 5.0]));
         assert_eq!(toward, Some([-2.0, -0.0]));

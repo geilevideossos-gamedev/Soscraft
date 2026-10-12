@@ -1,6 +1,7 @@
 use minecraft_terrain::trident::{enchantment, next_damage_breaks};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::rng::LegacyRandom;
+use minecraftoss_player::survival::{EffectKind, SurvivalStatus};
 use serde_json::Value;
 
 pub const ELYTRA: &str = "minecraft:elytra";
@@ -58,6 +59,19 @@ pub fn wall_damage(old_speed: f64, new_speed: f64) -> Option<f32> {
 pub fn fall_peak(peak: Option<f64>, feet_y: f64, flight: Flight) -> Option<f64> {
     if flight.gliding && flight.motion[1] > SLOW_FALL {
         peak.map(|peak| peak.min(feet_y + 1.0))
+    } else {
+        peak
+    }
+}
+
+pub fn floating(status: &SurvivalStatus) -> bool {
+    status.effect(EffectKind::Levitation).is_some()
+        || status.effect(EffectKind::SlowFalling).is_some()
+}
+
+pub fn float_peak(peak: Option<f64>, feet_y: f64, floating: bool) -> Option<f64> {
+    if floating {
+        peak.map(|_| feet_y)
     } else {
         peak
     }
@@ -286,5 +300,32 @@ mod tests {
             against_wall: false,
         };
         assert_eq!(fall_peak(Some(100.0), 60.0, falling), Some(100.0));
+    }
+
+    #[test]
+    fn floating_restarts_the_fall_and_a_fall_after_it_hurts_from_where_it_ended() {
+        let mut status = SurvivalStatus::default();
+        assert!(!floating(&status));
+        status.add_effect(EffectKind::Levitation, 200, 0);
+        assert!(floating(&status));
+        let mut peak = Some(64.0);
+        for feet in [64.0, 66.0, 70.0, 72.9] {
+            peak = float_peak(peak, feet, floating(&status));
+            assert_eq!(peak, Some(feet));
+        }
+        status.remove_effect(EffectKind::Levitation);
+        assert!(!floating(&status));
+        for feet in [72.5, 70.0, 64.0] {
+            peak = float_peak(peak, feet, floating(&status));
+        }
+        assert_eq!(peak, Some(72.9));
+        let mut survival = crate::survival::Survival::default();
+        survival.observe(20, 20);
+        let fall = survival.impulse_fall(72.9 - 64.0, 64.0);
+        assert!(survival.fall(fall, Some("minecraft:stone"), false) >= 5);
+        status.add_effect(EffectKind::SlowFalling, 200, 0);
+        assert!(floating(&status));
+        assert_eq!(float_peak(Some(100.0), 60.0, floating(&status)), Some(60.0));
+        assert_eq!(float_peak(None, 60.0, true), None);
     }
 }

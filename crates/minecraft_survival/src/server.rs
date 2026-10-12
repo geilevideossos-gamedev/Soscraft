@@ -713,7 +713,7 @@ pub fn join(
     let survival = match (saved.stats, carried) {
         (Some(stats), _) => {
             let mut survival = Survival::default();
-            survival.restore(stats.status, stats.fire, stats.score);
+            survival.restore(stats.status, stats.fire, stats.frozen, stats.score);
             if dead {
                 if crate::death::keeps_belongings(rules.keep_inventory(), mode.mode) {
                     survival.respawn_keeping_experience();

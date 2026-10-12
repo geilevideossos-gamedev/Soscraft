@@ -281,6 +281,7 @@ pub struct OpenerOutcome {
     pub block_event: ((i32, i32, i32), u8, u32),
     pub sound: Option<OpenerSound>,
     pub state: Option<((i32, i32, i32), Block)>,
+    pub trapped: Option<((i32, i32, i32), u32)>,
 }
 
 pub fn opener_outcome(scene: &HandcraftedScene, event: &OpenerEvent) -> OpenerOutcome {
@@ -293,6 +294,9 @@ pub fn opener_outcome(scene: &HandcraftedScene, event: &OpenerEvent) -> OpenerOu
         state: changed
             .and_then(|(block, change)| minecraft_terrain::openers::opened_state(block, change))
             .map(|state| (event.pos, state)),
+        trapped: Scene::block(scene, event.pos)
+            .filter(|block| block.id.key() == "minecraft:trapped_chest")
+            .map(|_| (event.pos, event.count)),
     }
 }
 
@@ -467,6 +471,38 @@ mod tests {
         let last = toggle_openers(&mut openers, &scene, &cells, &friend(), false, false);
         let sound = opener_outcome(&scene, &last[0]).sound.map(|s| s.event);
         assert_eq!(sound, Some("minecraft:block.shulker_box.close"));
+    }
+
+    #[test]
+    fn a_double_trapped_chest_counts_on_both_halves() {
+        let mut scene = HandcraftedScene::default();
+        let half = |kind: &str| {
+            Block::new("minecraft:trapped_chest")
+                .with("facing", "north")
+                .with("type", kind)
+                .with("waterlogged", "false")
+        };
+        scene.set((0, 64, 0), Some(half("left")));
+        scene.set((1, 64, 0), Some(half("right")));
+        scene.set((5, 64, 0), Some(Block::new("minecraft:chest").with("facing", "north")));
+        let mut openers = Openers::default();
+        let cells = [(0, 64, 0), (1, 64, 0)];
+        let trapped = |events: &[OpenerEvent]| -> Vec<_> {
+            events
+                .iter()
+                .map(|event| opener_outcome(&scene, event).trapped)
+                .collect()
+        };
+        let opened = toggle_openers(&mut openers, &scene, &cells, &host(), true, false);
+        assert_eq!(trapped(&opened), [Some(((0, 64, 0), 1)), Some(((1, 64, 0), 1))]);
+        let joined = toggle_openers(&mut openers, &scene, &cells, &friend(), true, false);
+        assert_eq!(trapped(&joined), [Some(((0, 64, 0), 2)), Some(((1, 64, 0), 2))]);
+        let left = openers.leave(opener_key(&host()));
+        assert_eq!(trapped(&left), [Some(((0, 64, 0), 1)), Some(((1, 64, 0), 1))]);
+        let closed = toggle_openers(&mut openers, &scene, &cells, &friend(), false, false);
+        assert_eq!(trapped(&closed), [Some(((0, 64, 0), 0)), Some(((1, 64, 0), 0))]);
+        let plain = toggle_openers(&mut openers, &scene, &[(5, 64, 0)], &host(), true, false);
+        assert_eq!(trapped(&plain), [None]);
     }
 
     #[test]

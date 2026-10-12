@@ -4,6 +4,7 @@ use crate::pack::ResourceId;
 use crate::scene::{BlockPos, HandcraftedScene, Scene};
 use glam::{DVec3, Vec2, Vec3};
 use minecraftoss_player::{Block as PlayerBlock, collision_shape_boxes, rng::LegacyRandom};
+use minecraftoss_player::mth;
 use std::collections::HashMap;
 
 const CAP: usize = 16384;
@@ -21,6 +22,19 @@ const EMITTER_FLASHES: usize = 6;
 const MAX_BLAST_PARTICLES: usize = 512;
 const SMALL_BLAST_RADIUS: f32 = 2.0;
 const SPLASH_SPRITES: u32 = 4;
+const GLITTER_SPRITES: i32 = 8;
+const END_ROD_FADE: [f32; 3] = [242.0 / 255.0, 222.0 / 255.0, 201.0 / 255.0];
+const BREATH_RED: (f32, f32) = (0.7176471, 0.8745098);
+const BREATH_BLUE: (f32, f32) = (0.8235294, 0.9764706);
+const BREATH_SPRITES: i32 = 3;
+const BREATH_FIRST_SPRITE: i32 = 5;
+const WAITING_CLOUD_PUFFS: usize = 2;
+const WAITING_CLOUD_RADIUS: f32 = 0.2;
+const BURST_PARTICLES: usize = 200;
+const MOUTH_POINTS: usize = 8;
+const FLAME_SPEEDS: usize = 6;
+const TOTEM_EMITTER_TICKS: i32 = 30;
+const TOTEM_TRIES: usize = 16;
 
 type Boxes = Vec<([f64; 3], [f64; 3])>;
 
@@ -37,6 +51,11 @@ pub enum Kind {
     HappyVillager,
     Rain,
     Flame,
+    Snowflake,
+    EndRod,
+    Crit,
+    DragonBreath,
+    Totem,
 }
 
 #[derive(Clone, Debug)]
@@ -212,6 +231,163 @@ impl Particle {
         particle
     }
 
+    fn snowflake(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Snowflake, at, DVec3::ZERO, random);
+        particle.gravity = 0.225;
+        particle.friction = 1.0;
+        let mut jitter = || f64::from((random.next_float() * 2.0 - 1.0) * 0.05);
+        particle.velocity = DVec3::new(
+            motion.x + jitter(),
+            motion.y + jitter(),
+            motion.z + jitter(),
+        );
+        particle.quad_size = 0.1 * (random.next_float() * random.next_float() + 1.0);
+        particle.lifetime = (16.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32 + 2;
+        particle
+    }
+
+    fn end_rod(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::EndRod, at, DVec3::ZERO, random);
+        particle.velocity = motion;
+        particle.gravity = 0.0125;
+        particle.friction = 0.91;
+        particle.quad_size *= 0.75;
+        particle.lifetime = 60 + random.next_int(12) as i32;
+        particle
+    }
+
+    fn crit(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::Crit, at, motion, random);
+        particle.friction = 0.7;
+        particle.gravity = 0.5;
+        particle.velocity = particle.velocity * f64::from(0.1_f32) + motion * 0.4;
+        let shade = random.next_float() * 0.3 + 0.6;
+        particle.color = [shade; 3];
+        particle.quad_size *= 0.75;
+        particle.lifetime = ((6.0 / (f64::from(random.next_float()) * 0.8 + 0.6)) as i32).max(1);
+        particle.coast();
+        particle
+    }
+
+    fn dragon_breath(at: DVec3, motion: DVec3, power: f32, random: &mut LegacyRandom) -> Self {
+        random.next_float();
+        let quad_size = 0.1 * (random.next_float() * 0.5 + 0.5) * 2.0;
+        let between = |random: &mut LegacyRandom, (low, high): (f32, f32)| random.next_float() * (high - low) + low;
+        let red = between(random, BREATH_RED);
+        let blue = between(random, BREATH_BLUE);
+        let lifetime = (20.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        let power = f64::from(power);
+        let tenth = f64::from(0.1_f32);
+        Self {
+            kind: Kind::DragonBreath,
+            position: at,
+            previous: at,
+            velocity: DVec3::new(motion.x * power, (motion.y - tenth) * power + tenth, motion.z * power),
+            color: [red, 0.0, blue],
+            alpha: 1.0,
+            quad_size: quad_size * 0.75,
+            sprite: 0,
+            age: 0,
+            lifetime,
+            gravity: 0.0,
+            friction: 0.96,
+            size: f64::from(0.2_f32),
+            speed_up: false,
+            on_ground: false,
+            stopped: false,
+        }
+    }
+
+    fn totem(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        random.next_float();
+        let quad_size = 0.1 * (random.next_float() * 0.5 + 0.5) * 2.0;
+        let lifetime = 60 + random.next_int(12) as i32;
+        let color = if random.next_int(4) == 0 {
+            [
+                0.6 + random.next_float() * 0.2,
+                0.6 + random.next_float() * 0.3,
+                random.next_float() * 0.2,
+            ]
+        } else {
+            [
+                0.1 + random.next_float() * 0.2,
+                0.4 + random.next_float() * 0.3,
+                random.next_float() * 0.2,
+            ]
+        };
+        Self {
+            kind: Kind::Totem,
+            position: at,
+            previous: at,
+            velocity: motion,
+            color,
+            alpha: 1.0,
+            quad_size: quad_size * 0.75,
+            sprite: 0,
+            age: 0,
+            lifetime,
+            gravity: 1.25,
+            friction: 0.6,
+            size: f64::from(0.2_f32),
+            speed_up: false,
+            on_ground: false,
+            stopped: false,
+        }
+    }
+
+    fn fade_after_half_life(&mut self) {
+        let half = self.lifetime / 2;
+        if self.age > half {
+            self.alpha = 1.0 - (self.age - half) as f32 / self.lifetime as f32;
+        }
+    }
+
+    fn breathe(&mut self) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        if prior >= self.lifetime {
+            return false;
+        }
+        self.position += self.velocity;
+        if self.position.y == self.previous.y {
+            self.velocity.x *= 1.1;
+            self.velocity.z *= 1.1;
+        }
+        self.velocity.x *= f64::from(self.friction);
+        self.velocity.z *= f64::from(self.friction);
+        true
+    }
+
+    fn coast(&mut self) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        if prior >= self.lifetime {
+            return false;
+        }
+        self.velocity.y -= 0.04 * f64::from(self.gravity);
+        self.position += self.velocity;
+        self.velocity *= f64::from(self.friction);
+        match self.kind {
+            Kind::EndRod => {
+                let half = self.lifetime / 2;
+                if self.age > half {
+                    self.alpha = 1.0 - (self.age - half) as f32 / self.lifetime as f32;
+                    for (color, fade) in self.color.iter_mut().zip(END_ROD_FADE) {
+                        *color += (fade - *color) * 0.2;
+                    }
+                }
+            }
+            Kind::Crit => {
+                self.color[1] *= 0.96;
+                self.color[2] *= 0.9;
+            }
+            _ => {}
+        }
+        true
+    }
+
     fn drip<S: Scene + ?Sized>(
         &mut self,
         scene: &S,
@@ -266,12 +442,15 @@ impl Particle {
     }
 
     fn translucent(&self) -> bool {
-        matches!(self.kind, Kind::CosySmoke | Kind::SignalSmoke)
+        matches!(
+            self.kind,
+            Kind::CosySmoke | Kind::SignalSmoke | Kind::EndRod | Kind::Totem
+        )
     }
 
     fn sprite(&self) -> Option<ResourceId> {
         let name = match self.kind {
-            Kind::Smoke | Kind::LargeSmoke | Kind::Poof => {
+            Kind::Smoke | Kind::LargeSmoke | Kind::Poof | Kind::Snowflake => {
                 let step = self.age * (GENERIC_SPRITES - 1) / self.lifetime.max(1);
                 format!(
                     "generic_{}",
@@ -288,6 +467,18 @@ impl Particle {
             Kind::HappyVillager => "glint".to_owned(),
             Kind::Rain => format!("splash_{}", self.sprite),
             Kind::Flame => "flame".to_owned(),
+            Kind::EndRod | Kind::Totem => {
+                let step = self.age * (GLITTER_SPRITES - 1) / self.lifetime.max(1);
+                format!(
+                    "glitter_{}",
+                    GLITTER_SPRITES - 1 - step.clamp(0, GLITTER_SPRITES - 1)
+                )
+            }
+            Kind::Crit => "critical_hit".to_owned(),
+            Kind::DragonBreath => {
+                let step = self.age * (BREATH_SPRITES - 1) / self.lifetime.max(1);
+                format!("generic_{}", BREATH_FIRST_SPRITE + step.clamp(0, BREATH_SPRITES - 1))
+            }
         };
         ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
     }
@@ -295,7 +486,9 @@ impl Particle {
     fn size_at(&self, partial: f32) -> f32 {
         let grown = (self.age as f32 + partial) / self.lifetime as f32;
         match self.kind {
-            Kind::Smoke | Kind::LargeSmoke => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
+            Kind::Smoke | Kind::LargeSmoke | Kind::Crit | Kind::DragonBreath => {
+                self.quad_size * (grown * 32.0).clamp(0.0, 1.0)
+            }
             Kind::Lava => self.quad_size * (1.0 - grown * grown),
             Kind::Flame => self.quad_size * (1.0 - grown * grown * 0.5),
             Kind::CosySmoke
@@ -304,7 +497,10 @@ impl Particle {
             | Kind::Explosion
             | Kind::ExplosionEmitter
             | Kind::HappyVillager
-            | Kind::Rain => self.quad_size,
+            | Kind::Rain
+            | Kind::Snowflake
+            | Kind::EndRod
+            | Kind::Totem => self.quad_size,
         }
     }
 
@@ -482,11 +678,13 @@ fn clip(boxes: &Boxes, low: &[f64; 3], high: &[f64; 3], axis: usize, mut wanted:
 pub fn textures() -> Vec<ResourceId> {
     let big_smoke = (0..BIG_SMOKE_SPRITES).map(|index| format!("big_smoke_{index}"));
     let explosion = (0..EXPLOSION_SPRITES).map(|index| format!("explosion_{index}"));
-    ["lava", "glint", "flame"]
+    let glitter = (0..GLITTER_SPRITES).map(|index| format!("glitter_{index}"));
+    ["lava", "glint", "flame", "critical_hit"]
         .into_iter()
         .map(str::to_owned)
         .chain(big_smoke)
         .chain(explosion)
+        .chain(glitter)
         .filter_map(|name| ResourceId::parse(&format!("minecraft:particle/{name}")).ok())
         .collect()
 }
@@ -507,6 +705,14 @@ pub struct AmbientParticles {
     blasts: Vec<(DVec3, f32, usize)>,
     temperature: minecraftoss_generator::temperature::BiomeTemperature,
     rain_sound_time: i32,
+    emitters: Vec<(u128, i32)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Body {
+    pub feet: DVec3,
+    pub width: f64,
+    pub height: f64,
 }
 
 impl AmbientParticles {
@@ -518,7 +724,52 @@ impl AmbientParticles {
             blasts: Vec::new(),
             temperature: minecraftoss_generator::temperature::BiomeTemperature::new(),
             rain_sound_time: 0,
+            emitters: Vec::new(),
         }
+    }
+
+    pub fn totem_emitter(&mut self, key: u128, body: Body) {
+        self.emit_totem(body);
+        self.emitters.push((key, 1));
+    }
+
+    pub fn tick_emitters(&mut self, body: impl Fn(u128) -> Option<Body>) {
+        let mut emitters = std::mem::take(&mut self.emitters);
+        emitters.retain_mut(|(key, life)| {
+            let Some(body) = body(*key) else {
+                return false;
+            };
+            self.emit_totem(body);
+            *life += 1;
+            *life < TOTEM_EMITTER_TICKS
+        });
+        emitters.append(&mut self.emitters);
+        self.emitters = emitters;
+    }
+
+    fn emit_totem(&mut self, body: Body) {
+        for _ in 0..TOTEM_TRIES {
+            let mut unit = || f64::from(self.random.next_float() * 2.0 - 1.0);
+            let (x, y, z) = (unit(), unit(), unit());
+            if x * x + y * y + z * z > 1.0 {
+                continue;
+            }
+            let at = body.feet
+                + DVec3::new(
+                    body.width * (x / 4.0),
+                    body.height * (0.5 + y / 4.0),
+                    body.width * (z / 4.0),
+                );
+            self.add(Kind::Totem, at, DVec3::new(x, y + 0.2, z));
+        }
+    }
+
+    pub fn precipitation_at(
+        &self,
+        scene: &HandcraftedScene,
+        pos: crate::scene::BlockPos,
+    ) -> crate::rain::Precipitation {
+        crate::rain::precipitation_at(scene, &self.temperature, pos)
     }
 
     pub fn rain_tick(
@@ -691,6 +942,106 @@ impl AmbientParticles {
         self.add(kind, DVec3::new(x, y, z), DVec3::new(0.0, 0.07, 0.0));
     }
 
+    pub fn puffs(&mut self, kind: Kind, at: DVec3, count: usize, spread: f64) {
+        for _ in 0..count {
+            let random = &mut self.random;
+            let offset = DVec3::new(
+                random.next_gaussian() * spread,
+                random.next_gaussian() * spread,
+                random.next_gaussian() * spread,
+            );
+            for _ in 0..3 {
+                random.next_gaussian();
+            }
+            self.add(kind, at + offset, DVec3::ZERO);
+        }
+    }
+
+    pub fn add_breath(&mut self, at: DVec3, motion: DVec3, power: f32) {
+        let particle = Particle::dragon_breath(at, motion, power, &mut self.random);
+        self.particles.push(particle);
+        if self.particles.len() > CAP {
+            self.particles.remove(0);
+        }
+    }
+
+    pub fn breath_cloud(&mut self, feet: DVec3, radius: f32, waiting: bool) {
+        if waiting && self.random.next_boolean() {
+            return;
+        }
+        let (count, radius) = if waiting {
+            (WAITING_CLOUD_PUFFS, WAITING_CLOUD_RADIUS)
+        } else {
+            ((std::f32::consts::PI * radius * radius).ceil() as usize, radius)
+        };
+        for _ in 0..count {
+            let angle = self.random.next_float() * std::f32::consts::TAU;
+            let distance = self.random.next_float().sqrt() * radius;
+            let at = DVec3::new(
+                feet.x + f64::from(mth::cos(f64::from(angle)) * distance),
+                feet.y,
+                feet.z + f64::from(mth::sin(f64::from(angle)) * distance),
+            );
+            let motion = if waiting {
+                DVec3::ZERO
+            } else {
+                let x = (0.5 - self.random.next_double()) * 0.15;
+                let z = (0.5 - self.random.next_double()) * 0.15;
+                DVec3::new(x, f64::from(0.01_f32), z)
+            };
+            self.add_breath(at, motion, 1.0);
+        }
+    }
+
+    pub fn breath_burst(&mut self, at: DVec3) {
+        let block = at.floor();
+        for _ in 0..BURST_PARTICLES {
+            let power = self.random.next_float() * 4.0;
+            let angle = self.random.next_float() * std::f32::consts::TAU;
+            let x = f64::from(mth::cos(f64::from(angle)) * power);
+            let y = 0.01 + self.random.next_double() * 0.5;
+            let z = f64::from(mth::sin(f64::from(angle)) * power);
+            let start = DVec3::new(block.x + x * 0.1, block.y + 0.3, block.z + z * 0.1);
+            self.add_breath(start, DVec3::new(x, y, z), power);
+        }
+    }
+
+    pub fn mouth_breath(&mut self, breath: &crate::ender_dragon::DragonBreath) {
+        let look = breath.look;
+        let sideways = f64::from(0.08_f32);
+        for _ in 0..MOUTH_POINTS {
+            let x = breath.head.x + self.random.next_gaussian() / 2.0;
+            let y = breath.head.y + self.random.next_gaussian() / 2.0;
+            let z = breath.head.z + self.random.next_gaussian() / 2.0;
+            let at = DVec3::new(x, y, z);
+            match breath.kind {
+                crate::ender_dragon::BreathKind::Landing => {
+                    let motion = DVec3::new(
+                        -look.x * sideways + breath.motion.x,
+                        -look.y * f64::from(0.3_f32) + breath.motion.y,
+                        -look.z * sideways + breath.motion.z,
+                    );
+                    self.add_breath(at, motion, 1.0);
+                }
+                crate::ender_dragon::BreathKind::Flame => {
+                    for speed in 0..FLAME_SPEEDS {
+                        let speed = speed as f64;
+                        let motion = DVec3::new(
+                            -look.x * sideways * speed,
+                            -look.y * f64::from(0.6_f32),
+                            -look.z * sideways * speed,
+                        );
+                        self.add_breath(at, motion, 1.0);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn breath_trail(&mut self, at: DVec3) {
+        self.add_breath(at + DVec3::new(0.0, 0.5, 0.0), DVec3::ZERO, 1.0);
+    }
+
     pub fn len(&self) -> usize {
         self.particles.len()
     }
@@ -721,6 +1072,11 @@ impl AmbientParticles {
             Kind::HappyVillager => Particle::happy_villager(at, motion, random),
             Kind::Rain => Particle::rain(at, random),
             Kind::Flame => Particle::flame(at, motion, random),
+            Kind::Snowflake => Particle::snowflake(at, motion, random),
+            Kind::EndRod => Particle::end_rod(at, motion, random),
+            Kind::Crit => Particle::crit(at, motion, random),
+            Kind::DragonBreath => Particle::dragon_breath(at, motion, 1.0, random),
+            Kind::Totem => Particle::totem(at, motion, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -748,7 +1104,20 @@ impl AmbientParticles {
             Kind::HappyVillager => particle.linger(),
             Kind::Rain => particle.drip(scene, &mut cache, random),
             Kind::Flame => particle.rise(),
+            Kind::Snowflake => {
+                let alive = particle.tick(scene, &mut cache);
+                let (side, down) = (f64::from(0.95_f32), f64::from(0.9_f32));
+                particle.velocity *= DVec3::new(side, down, side);
+                alive
+            }
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
+            Kind::EndRod | Kind::Crit => particle.coast(),
+            Kind::DragonBreath => particle.breathe(),
+            Kind::Totem => {
+                let alive = particle.tick(scene, &mut cache);
+                particle.fade_after_half_life();
+                alive
+            }
             _ => {
                 let alive = particle.tick(scene, &mut cache);
                 if alive && particle.kind == Kind::Lava {
@@ -794,7 +1163,7 @@ impl AmbientParticles {
                 center.z.floor() as i32,
             );
             let (sky, block) = match particle.kind {
-                Kind::Explosion => (FULL_BRIGHT, FULL_BRIGHT),
+                Kind::Explosion | Kind::EndRod | Kind::Totem => (FULL_BRIGHT, FULL_BRIGHT),
                 Kind::Lava => (f32::from(light.get(cell)), FULL_BRIGHT),
                 Kind::Flame => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
                 _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
@@ -1345,5 +1714,390 @@ mod tests {
             .find(|p| p.kind == Kind::Lava)
             .unwrap();
         assert!(lava.position.y >= 11.0 - 1e-9);
+    }
+
+    #[test]
+    fn snowflakes_live_and_slow_like_vanilla() {
+        let mut particles = AmbientParticles::new(19);
+        let motion = DVec3::new(0.08, 0.05, -0.04);
+        particles.add(Kind::Snowflake, DVec3::new(0.5, 65.0, 0.5), motion);
+        let flake = particles.particles[0].clone();
+        assert!((18..=82).contains(&flake.lifetime), "{}", flake.lifetime);
+        assert!(flake.quad_size >= 0.1 && flake.quad_size <= 0.2);
+        assert!((flake.velocity - motion).abs().max_element() <= 0.05 + 1e-9);
+        assert_eq!(
+            flake.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/generic_7")
+        );
+        let scene = Blocks(HashMap::new());
+        particles.tick(&scene);
+        let ticked = &particles.particles[0];
+        let fall = f64::from(0.04_f32 * 0.225);
+        let expected = DVec3::new(
+            flake.velocity.x * f64::from(0.95_f32),
+            (flake.velocity.y - fall) * f64::from(0.9_f32),
+            flake.velocity.z * f64::from(0.95_f32),
+        );
+        assert!((ticked.velocity - expected).abs().max_element() < 1e-6, "{:?}", ticked.velocity);
+        let moved = flake.velocity - DVec3::new(0.0, f64::from(0.04 * 0.225_f32), 0.0);
+        assert!((ticked.position - flake.position - moved).abs().max_element() < 1e-6);
+        for _ in 0..flake.lifetime {
+            particles.tick(&scene);
+        }
+        assert!(particles.is_empty());
+        assert!(!particles_translucent(Kind::Snowflake));
+    }
+
+    #[test]
+    fn end_rod_sparkles_drift_down_glitter_and_fade_out() {
+        let mut particles = AmbientParticles::new(23);
+        let at = DVec3::new(0.5, 70.0, 0.5);
+        particles.add(Kind::EndRod, at, DVec3::ZERO);
+        let rod = particles.particles[0].clone();
+        assert!((60..=71).contains(&rod.lifetime), "{}", rod.lifetime);
+        assert!(rod.quad_size >= 0.075 && rod.quad_size <= 0.15);
+        assert_eq!(rod.velocity, DVec3::ZERO);
+        assert_eq!(
+            rod.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/glitter_7")
+        );
+        assert!(particles_translucent(Kind::EndRod));
+        let scene = open();
+        particles.tick(&scene);
+        let fall = f64::from(0.04_f32 * 0.0125);
+        let ticked = &particles.particles[0];
+        assert!((ticked.position.y - (70.0 - fall)).abs() < 1e-9);
+        assert!((ticked.velocity.y + fall * f64::from(0.91_f32)).abs() < 1e-9);
+        assert_eq!((ticked.alpha, ticked.color), (1.0, [1.0; 3]));
+        for _ in 0..rod.lifetime / 2 + 4 {
+            particles.tick(&scene);
+        }
+        let late = &particles.particles[0];
+        assert!(late.alpha < 1.0 && late.alpha > 0.5, "{}", late.alpha);
+        assert!(late.color[2] < 1.0 && late.color[2] > END_ROD_FADE[2] - 1e-6);
+        assert!(late.sprite().unwrap().key() != "minecraft:particle/glitter_7");
+        for _ in 0..rod.lifetime {
+            particles.tick(&scene);
+        }
+        assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn crits_fly_out_slowly_and_redden() {
+        let mut particles = AmbientParticles::new(29);
+        particles.puffs(Kind::Crit, DVec3::new(0.5, 70.0, 0.5), 15, 0.2);
+        assert_eq!(particles.len(), 15);
+        for crit in &particles.particles {
+            assert!((1..=10).contains(&crit.lifetime), "{}", crit.lifetime);
+            assert_eq!(crit.age, 1, "it ticks once as it is made");
+            assert!(crit.color[0] >= 0.6 && crit.color[0] <= 0.9);
+            assert!(crit.color[2] < crit.color[1] && crit.color[1] < crit.color[0]);
+            assert!((crit.position - DVec3::new(0.5, 70.0, 0.5)).length() < 2.0);
+            assert_eq!(
+                crit.sprite().unwrap().key(),
+                "minecraft:particle/critical_hit"
+            );
+            assert!(!crit.translucent());
+            assert!(crit.size_at(0.0) <= crit.quad_size);
+        }
+        let mut puffs = AmbientParticles::new(31);
+        puffs.puffs(Kind::Explosion, DVec3::new(0.5, 70.0, 0.5), 2, 0.2);
+        assert_eq!(puffs.len(), 2);
+        assert!(puffs.particles.iter().all(|p| p.quad_size == 2.0));
+        let names: Vec<String> = textures().iter().map(|id| id.key()).collect();
+        assert!(names.contains(&"minecraft:particle/critical_hit".to_owned()));
+        assert!(names.contains(&"minecraft:particle/glitter_0".to_owned()));
+        assert!(names.contains(&"minecraft:particle/glitter_7".to_owned()));
+    }
+
+    #[test]
+    fn a_breath_particle_draws_its_lifetime_size_and_colour_in_vanilla_order() {
+        for seed in [3, 40, 777] {
+            let mut particles = AmbientParticles::new(seed);
+            particles.add_breath(DVec3::new(0.5, 70.0, 0.5), DVec3::ZERO, 1.0);
+            let breath = particles.particles[0].clone();
+            let mut random = LegacyRandom::new(seed);
+            random.next_float();
+            let quad_size = 0.1 * (random.next_float() * 0.5 + 0.5) * 2.0 * 0.75;
+            let red = random.next_float() * (0.8745098 - 0.7176471) + 0.7176471;
+            let blue = random.next_float() * (0.9764706 - 0.8235294) + 0.8235294;
+            let lifetime = (20.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+            assert_eq!(breath.quad_size, quad_size);
+            assert_eq!(breath.color, [red, 0.0, blue]);
+            assert_eq!(breath.lifetime, lifetime);
+            assert!((20..=100).contains(&breath.lifetime));
+            assert_eq!(breath.velocity, DVec3::ZERO);
+            assert!(!breath.translucent());
+            assert_eq!(breath.size_at(0.0), 0.0);
+            assert_eq!(breath.size_at(1.0), breath.quad_size * (1.0 / breath.lifetime as f32 * 32.0).clamp(0.0, 1.0));
+            assert_eq!(breath.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_5"));
+            let mut aged = breath.clone();
+            aged.age = aged.lifetime - 1;
+            assert_eq!(aged.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_6"));
+            aged.age = aged.lifetime;
+            assert_eq!(aged.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_7"));
+        }
+        let mut particles = AmbientParticles::new(9);
+        particles.add(Kind::DragonBreath, DVec3::ZERO, DVec3::ZERO);
+        assert_eq!(particles.particles[0].kind, Kind::DragonBreath);
+    }
+
+    #[test]
+    fn power_scales_the_motion_like_set_power() {
+        let mut particles = AmbientParticles::new(5);
+        particles.add_breath(DVec3::ZERO, DVec3::new(1.0, 0.5, -2.0), 2.0);
+        let tenth = f64::from(0.1_f32);
+        assert_eq!(particles.particles[0].velocity, DVec3::new(2.0, (0.5 - tenth) * 2.0 + tenth, -4.0));
+        particles.add_breath(DVec3::ZERO, DVec3::new(1.0, 0.0, 1.0), 1.0);
+        assert_eq!(particles.particles[1].velocity, DVec3::new(1.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn a_breath_particle_drifts_through_blocks_and_spreads_when_it_stops_rising() {
+        let scene = Blocks(HashMap::from([
+            ((0, 63, 0), Block::new("minecraft:stone")),
+            ((1, 64, 0), Block::new("minecraft:stone")),
+        ]));
+        let mut particles = AmbientParticles::new(6);
+        particles.add_breath(DVec3::new(0.5, 64.2, 0.5), DVec3::new(0.0, -0.5, 0.0), 1.0);
+        particles.tick(&scene);
+        particles.tick(&scene);
+        let sinking = &particles.particles[0];
+        assert!(sinking.position.y < 63.5, "{}", sinking.position.y);
+        assert!((sinking.velocity.y + 0.5).abs() < 1e-12);
+        let mut particles = AmbientParticles::new(7);
+        particles.add_breath(DVec3::new(0.5, 64.5, 0.5), DVec3::new(0.2, 0.0, 0.0), 1.0);
+        particles.tick(&scene);
+        let spreading = &particles.particles[0];
+        assert!((spreading.position - DVec3::new(0.7, 64.5, 0.5)).length() < 1e-12);
+        assert_eq!(spreading.velocity.x, 0.2 * 1.1 * f64::from(0.96_f32));
+        for _ in 0..5 {
+            particles.tick(&scene);
+        }
+        assert!(particles.particles[0].position.x > 1.5, "it passes through the stone at x 1");
+        let mut particles = AmbientParticles::new(8);
+        particles.add_breath(DVec3::new(0.5, 64.5, 0.5), DVec3::new(0.2, 0.05, 0.0), 1.0);
+        particles.tick(&scene);
+        assert_eq!(particles.particles[0].velocity.x, 0.2 * f64::from(0.96_f32));
+        let lifetime = particles.particles[0].lifetime;
+        for _ in 1..lifetime {
+            particles.tick(&scene);
+        }
+        assert_eq!(particles.len(), 1);
+        particles.tick(&scene);
+        assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn a_waiting_breath_cloud_puffs_two_or_none_and_an_active_one_fills_pi_r_squared() {
+        let feet = DVec3::new(10.0, 64.0, -5.0);
+        let mut particles = AmbientParticles::new(11);
+        let mut counts = Vec::new();
+        for _ in 0..40 {
+            let before = particles.len();
+            particles.breath_cloud(feet, 3.0, true);
+            counts.push(particles.len() - before);
+        }
+        assert!(counts.iter().all(|&count| count == 0 || count == 2), "{counts:?}");
+        assert!(counts.contains(&0) && counts.contains(&2));
+        for breath in &particles.particles {
+            let offset = breath.position - feet;
+            assert!(offset.x.hypot(offset.z) <= 0.2 + 1e-6 && offset.y == 0.0);
+            assert_eq!(breath.velocity, DVec3::ZERO);
+        }
+        let mut particles = AmbientParticles::new(12);
+        particles.breath_cloud(feet, 3.0, false);
+        assert_eq!(particles.len(), 29);
+        let tenth = f64::from(0.1_f32);
+        for breath in &particles.particles {
+            let offset = breath.position - feet;
+            assert!(offset.x.hypot(offset.z) <= 3.0 + 1e-4 && offset.y == 0.0);
+            assert!(breath.velocity.x.abs() <= 0.075 && breath.velocity.z.abs() <= 0.075);
+            assert_eq!(breath.velocity.y, (f64::from(0.01_f32) - tenth) + tenth);
+        }
+        assert!(particles.particles.iter().any(|breath| (breath.position - feet).length() > 1.5));
+    }
+
+    #[test]
+    fn the_fireball_burst_sprays_two_hundred_breath_particles_from_its_block() {
+        let mut particles = AmbientParticles::new(13);
+        particles.breath_burst(DVec3::new(10.7, 64.2, -3.4));
+        assert_eq!(particles.len(), 200);
+        let tenth = f64::from(0.1_f32);
+        for breath in &particles.particles {
+            assert!((breath.position.x - 10.0).abs() <= 0.4 + 1e-9, "{}", breath.position);
+            assert!((breath.position.z + 4.0).abs() <= 0.4 + 1e-9, "{}", breath.position);
+            assert!((breath.position.y - 64.3).abs() < 1e-12);
+            let power = ((breath.position.x - 10.0).hypot(breath.position.z + 4.0) * 10.0) as f32;
+            let reach = f64::from(power).max(1e-3);
+            assert!(breath.velocity.x.hypot(breath.velocity.z) <= reach * reach + 1e-3, "{breath:?}");
+            assert!(breath.velocity.y >= (0.01 - tenth) * reach + tenth - 1e-3);
+            assert!(breath.velocity.y <= (0.51 - tenth) * reach + tenth + 1e-3);
+        }
+        assert!(particles.particles.iter().any(|breath| breath.velocity.x.hypot(breath.velocity.z) > 4.0));
+        let mut trail = AmbientParticles::new(14);
+        trail.breath_trail(DVec3::new(1.0, 80.0, 2.0));
+        assert_eq!(trail.particles[0].position, DVec3::new(1.0, 80.5, 2.0));
+        assert_eq!(trail.particles[0].velocity, DVec3::ZERO);
+    }
+
+    fn breath_of(kind: crate::ender_dragon::BreathKind, motion: DVec3) -> crate::ender_dragon::DragonBreath {
+        crate::ender_dragon::DragonBreath {
+            head: DVec3::new(3.0, 70.5, -2.0),
+            look: DVec3::new(0.6, 0.8, 0.0),
+            motion,
+            kind,
+        }
+    }
+
+    #[test]
+    fn landing_breath_streams_eight_particles_back_along_the_look() {
+        let motion = DVec3::new(0.1, -0.2, 0.05);
+        let breath = breath_of(crate::ender_dragon::BreathKind::Landing, motion);
+        let mut particles = AmbientParticles::new(21);
+        particles.mouth_breath(&breath);
+        assert_eq!(particles.len(), 8);
+        let mut random = LegacyRandom::new(21);
+        let tenth = f64::from(0.1_f32);
+        let expected_motion = DVec3::new(
+            -0.6 * f64::from(0.08_f32) + 0.1,
+            (-0.8 * f64::from(0.3_f32) - 0.2 - tenth) + tenth,
+            0.05,
+        );
+        for particle in &particles.particles {
+            let x = 3.0 + random.next_gaussian() / 2.0;
+            let y = 70.5 + random.next_gaussian() / 2.0;
+            let z = -2.0 + random.next_gaussian() / 2.0;
+            for _ in 0..5 {
+                random.next_float();
+            }
+            assert_eq!(particle.position, DVec3::new(x, y, z));
+            assert!((particle.velocity - expected_motion).length() < 1e-12, "{:?}", particle.velocity);
+            assert_eq!(particle.kind, Kind::DragonBreath);
+        }
+    }
+
+    #[test]
+    fn flame_breath_fans_six_speeds_at_eight_points() {
+        let breath = breath_of(crate::ender_dragon::BreathKind::Flame, DVec3::new(5.0, 5.0, 5.0));
+        let mut particles = AmbientParticles::new(22);
+        particles.mouth_breath(&breath);
+        assert_eq!(particles.len(), 48);
+        let tenth = f64::from(0.1_f32);
+        for (point, fan) in particles.particles.chunks(6).enumerate() {
+            for (speed, particle) in fan.iter().enumerate() {
+                assert_eq!(particle.position, fan[0].position, "point {point}");
+                let expected = DVec3::new(
+                    -0.6 * f64::from(0.08_f32) * speed as f64,
+                    (-0.8 * f64::from(0.6_f32) - tenth) + tenth,
+                    0.0,
+                );
+                assert!((particle.velocity - expected).length() < 1e-12, "point {point} speed {speed}: {:?}", particle.velocity);
+            }
+            assert!((fan[0].position - breath.head).length() < 4.0);
+        }
+        let points: Vec<DVec3> = particles.particles.chunks(6).map(|fan| fan[0].position).collect();
+        assert!(points.windows(2).all(|pair| pair[0] != pair[1]));
+    }
+
+    #[test]
+    fn a_totem_emitter_runs_thirty_ticks_inside_the_body() {
+        let mut particles = AmbientParticles::new(41);
+        let body = Body {
+            feet: DVec3::new(10.5, 64.0, -3.5),
+            width: 0.6,
+            height: 1.8,
+        };
+        particles.totem_emitter(7, body);
+        let mut emissions = 1;
+        let mut counts = vec![particles.len()];
+        while !particles.emitters.is_empty() {
+            let before = particles.len();
+            particles.tick_emitters(|key| (key == 7).then_some(body));
+            counts.push(particles.len() - before);
+            emissions += 1;
+        }
+        assert_eq!(emissions, TOTEM_EMITTER_TICKS);
+        assert!(counts.iter().all(|count| (1..=TOTEM_TRIES).contains(count)), "{counts:?}");
+        let before = particles.len();
+        particles.tick_emitters(|_| Some(body));
+        assert_eq!(particles.len(), before);
+        for particle in &particles.particles {
+            assert_eq!(particle.kind, Kind::Totem);
+            let offset = particle.position - body.feet;
+            assert!(offset.x.abs() <= 0.15 && offset.z.abs() <= 0.15, "{offset}");
+            assert!((0.45..=1.35).contains(&offset.y), "{offset}");
+            let unit = DVec3::new(
+                offset.x / 0.15,
+                (offset.y / 1.8 - 0.5) * 4.0,
+                offset.z / 0.15,
+            );
+            assert!(unit.length() <= 1.0 + 1e-6);
+            let motion = DVec3::new(unit.x, unit.y + 0.2, unit.z);
+            assert!((particle.velocity - motion).length() < 1e-6);
+        }
+        let mut gone = AmbientParticles::new(43);
+        gone.totem_emitter(9, body);
+        let first = gone.len();
+        gone.tick_emitters(|_| None);
+        assert!(gone.emitters.is_empty());
+        assert_eq!(gone.len(), first);
+    }
+
+    #[test]
+    fn totem_glitter_is_mostly_green_and_fades_after_half_life() {
+        let mut particles = AmbientParticles::new(47);
+        for _ in 0..2000 {
+            particles.add(Kind::Totem, DVec3::new(0.5, 80.0, 0.5), DVec3::ZERO);
+        }
+        let yellow = particles
+            .particles
+            .iter()
+            .filter(|particle| particle.color[0] >= 0.6)
+            .count();
+        assert!((400..600).contains(&yellow), "{yellow}");
+        for particle in &particles.particles {
+            let [r, g, b] = particle.color;
+            if r >= 0.6 {
+                assert!(r <= 0.8 && (0.6..=0.9).contains(&g) && b <= 0.2);
+            } else {
+                assert!((0.1..=0.3).contains(&r) && (0.4..=0.7).contains(&g) && b <= 0.2);
+            }
+            assert!((60..72).contains(&particle.lifetime));
+            assert!(particle.quad_size >= 0.075 - 1e-6 && particle.quad_size <= 0.15 + 1e-6);
+        }
+        assert!(particles_translucent(Kind::Totem));
+        let mut one = AmbientParticles::new(53);
+        one.add(Kind::Totem, DVec3::new(0.5, 80.0, 0.5), DVec3::new(0.0, 0.5, 0.0));
+        let lifetime = one.particles[0].lifetime;
+        assert_eq!(
+            one.particles[0].sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/glitter_7")
+        );
+        let scene = open();
+        one.tick(&scene);
+        let ticked = &one.particles[0];
+        let rise = (0.5 - 0.04 * f64::from(1.25_f32)) * f64::from(0.6_f32);
+        assert!((ticked.velocity.y - rise).abs() < 1e-9, "{}", ticked.velocity.y);
+        assert_eq!(ticked.alpha, 1.0);
+        while one.particles[0].age < lifetime / 2 {
+            one.tick(&scene);
+            assert_eq!(one.particles[0].alpha, 1.0);
+        }
+        one.tick(&scene);
+        let late = &one.particles[0];
+        let expected = 1.0 - (late.age - lifetime / 2) as f32 / lifetime as f32;
+        assert!((late.alpha - expected).abs() < 1e-6);
+        assert!(late.alpha < 1.0);
+        for _ in 0..lifetime {
+            one.tick(&scene);
+        }
+        assert!(one.is_empty());
+    }
+
+    fn particles_translucent(kind: Kind) -> bool {
+        let mut particles = AmbientParticles::new(1);
+        particles.add(kind, DVec3::ZERO, DVec3::ZERO);
+        particles.particles[0].translucent()
     }
 }

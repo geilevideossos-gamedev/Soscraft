@@ -64,8 +64,8 @@ pub fn stuck_move<C: CollisionBackend>(
     let sprinting = ps.pm_flags & pm_flags::SPRINTING != 0;
     let speed = match (stuck.fluid_sink, grounded, sprinting) {
         (Some(_), _, _) => FLUID_SPEED,
-        (None, true, false) => WALK_SPEED,
-        (None, true, true) => SPRINT_SPEED,
+        (None, true, false) => WALK_SPEED * context.weapon_move_scale,
+        (None, true, true) => SPRINT_SPEED * context.weapon_move_scale,
         (None, false, false) => AIR_SPEED,
         (None, false, true) => SPRINT_AIR_SPEED,
     };
@@ -92,11 +92,11 @@ pub fn stuck_move<C: CollisionBackend>(
         _ if climb_rising => CLIMB_RISE / PER_TICK,
         _ if pml.walking != 0 && rising_ms == 0 => 0.0,
         Some(sink) => lift - sink,
-        None => -GRAVITY * VERTICAL_DRAG,
+        None => crate::float::stuck_fall(ps).unwrap_or(-GRAVITY * VERTICAL_DRAG),
     };
     step[2] = JUMP_POWER * rise + fall * (1.0 - rise);
     let mut velocity = step.map(|v| v * PER_TICK);
-    if let Some(climb) = stuck.climb {
+    if let Some(climb) = stuck.climb.filter(|climb| !climb.powder) {
         crate::climb::hold(&mut velocity, climb.scaffolding, crate::sneaking(ps, cmd));
     }
     ps.velocity = core::array::from_fn(|k| velocity[k] * stuck.multiplier[k]);
@@ -134,6 +134,7 @@ mod tests {
 
     const BUSH: [f32; 3] = [0.8, 0.8, 0.75];
     const WEB: [f32; 3] = [0.25, 0.25, 0.05];
+    const POWDER: [f32; 3] = [0.9, 0.9, 1.5];
     struct Open;
 
     impl CollisionBackend for Open {
@@ -397,6 +398,7 @@ mod tests {
             ClimbSample {
                 on: true,
                 scaffolding: false,
+                powder: false,
             }
         }
     }
@@ -404,6 +406,7 @@ mod tests {
     const LADDER: ClimbSample = ClimbSample {
         on: true,
         scaffolding: false,
+        powder: false,
     };
 
     fn climbed(
@@ -505,5 +508,114 @@ mod tests {
         free.origin[0] = 9.0;
         assert!(climbed(&mut free, ahead(0), BUSH, LADDER, &open, &[50; 20]) < 0.0);
         assert!(free.velocity[2] <= 0.0, "{:?}", free.velocity);
+    }
+
+    #[test]
+    fn powder_snow_sinks_at_the_vanilla_rate() {
+        for frames in [&[50; 20][..], &[10; 100], &[25; 40]] {
+            let mut ps = airborne();
+            ps.velocity = [0.0, 0.0, -400.0];
+            let sunk = moved(&mut ps, UserCmd::default(), POWDER, frames, false);
+            let expected = 0.0784 * 1.5 * 20.0;
+            assert!(
+                (sunk[2] + expected).abs() < expected * 0.02,
+                "{frames:?} {sunk:?}"
+            );
+        }
+        let mut ps = airborne();
+        let drifted = moved(&mut ps, ahead(0), POWDER, &[50], false);
+        assert!((drifted[0] - 0.02 * 0.98 * 0.9).abs() < 1e-6, "{drifted:?}");
+        let mut ps = standing();
+        let walked = moved(&mut ps, ahead(0), POWDER, &[50], true);
+        assert!((walked[0] - 0.098 * 0.9).abs() < 1e-5, "{walked:?}");
+    }
+
+    #[test]
+    fn levitation_lifts_and_slow_falling_sinks_slowly_while_stuck() {
+        let cases = [
+            (crate::float::encode(Some(0), false), 0.0098),
+            (crate::float::encode(Some(2), true), 0.0294),
+            (crate::float::SLOW_FALLING, -0.0098),
+        ];
+        for (float, per_tick) in cases {
+            for (multiplier, frames) in [(POWDER, &[50; 20][..]), (POWDER, &[10; 100]), (WEB, &[25; 40])] {
+                let mut ps = airborne();
+                ps.mc_float = float;
+                let shifted = moved(&mut ps, UserCmd::default(), multiplier, frames, false);
+                let expected = per_tick * multiplier[2] * 20.0;
+                assert!(
+                    (shifted[2] - expected).abs() < expected.abs() * 0.02,
+                    "{float:x} {frames:?} {shifted:?} {expected}"
+                );
+            }
+        }
+        let mut ps = airborne();
+        ps.mc_float = crate::float::encode(Some(0), false);
+        let mut cmd = UserCmd::default();
+        let snow = Stuck {
+            multiplier: POWDER,
+            fluid_sink: Some(0.0),
+            climb: None,
+        };
+        stuck_move(&mut ps, &mut frame(50, false), &mut cmd, snow, context(), BOUNDS, &Open);
+        assert!(ps.origin[2] <= 0.0, "{:?}", ps.origin);
+    }
+
+    #[test]
+    fn frost_slows_the_walk_but_not_the_drift() {
+        let step = |walking: bool| {
+            let mut ps = if walking { standing() } else { airborne() };
+            let mut cmd = UserCmd {
+                server_time: 1050,
+                ..ahead(0)
+            };
+            let frosty = WalkMoveContext {
+                weapon_move_scale: 0.5,
+                ..context()
+            };
+            let snow = Stuck {
+                multiplier: POWDER,
+                fluid_sink: None,
+                climb: None,
+            };
+            stuck_move(&mut ps, &mut frame(50, walking), &mut cmd, snow, frosty, BOUNDS, &Open);
+            ps.origin[0] / WATER_BLOCK
+        };
+        assert!((step(true) - 0.098 * 0.9 * 0.5).abs() < 1e-5, "{}", step(true));
+        assert!((step(false) - 0.02 * 0.98 * 0.9).abs() < 1e-6, "{}", step(false));
+    }
+
+    #[test]
+    fn a_walker_climbs_out_of_powder_snow_at_two_tenths() {
+        let open = Ladder { wall: f32::MAX };
+        let snow = ClimbSample {
+            on: true,
+            scaffolding: false,
+            powder: true,
+        };
+        let jump = UserCmd {
+            buttons: BUTTON_JUMP,
+            ..UserCmd::default()
+        };
+        let up = climbed(&mut airborne(), jump, POWDER, snow, &open, &[50; 20]);
+        let rise = CLIMB_RISE / PER_TICK * 1.5 * 20.0;
+        assert!((up - rise).abs() < 1e-4, "{up} {rise}");
+        let wall = Ladder { wall: 20.0 };
+        let mut pushing = airborne();
+        pushing.origin[0] = 9.0;
+        climbed(&mut pushing, ahead(0), POWDER, snow, &wall, &[50]);
+        assert_eq!(pushing.velocity[2], CLIMB_RISE);
+        let mut sneaking = airborne();
+        sneaking.pm_flags |= pm_flags::CROUCH;
+        let sunk = climbed(
+            &mut sneaking,
+            UserCmd::default(),
+            POWDER,
+            snow,
+            &open,
+            &[50; 20],
+        );
+        let slide = -GRAVITY * VERTICAL_DRAG * 1.5 * 20.0;
+        assert!((sunk - slide).abs() < 1e-4, "{sunk} {slide}");
     }
 }

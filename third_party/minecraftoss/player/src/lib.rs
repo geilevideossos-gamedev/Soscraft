@@ -1052,6 +1052,7 @@ pub fn authored_block_in_tag(block: &Block, tag: &str, collision: &[[f64; 6]]) -
                 | "minecraft:cactus" | "minecraft:magma_block" | "minecraft:sweet_berry_bush" | "minecraft:wither_rose"
                 | "minecraft:pointed_dripstone" | "minecraft:powder_snow" | "minecraft:bedrock"
         ),
+        "minecraft:shulker_does_not_teleport_to" => id == "minecraft:bedrock",
         _ => false,
     }
 }

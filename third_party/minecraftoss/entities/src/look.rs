@@ -114,7 +114,7 @@ pub struct LookControl {
     pub cooldown: i32,
     pub head_yaw: f32,
     pub pitch: f32,
-    y_max_rot_speed: f32,
+    pub y_max_rot_speed: f32,
     x_max_rot_angle: f32,
 }
 
@@ -212,7 +212,7 @@ fn wrap_degrees(angle: f32) -> f32 {
     angle
 }
 
-fn rotate_towards(from: f32, to: f32, max: f32) -> f32 {
+pub fn rotate_towards(from: f32, to: f32, max: f32) -> f32 {
     from + wrap_degrees(to - from).clamp(-max, max)
 }
 

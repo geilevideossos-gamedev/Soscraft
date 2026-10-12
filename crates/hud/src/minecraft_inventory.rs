@@ -242,7 +242,8 @@ pub(crate) fn update_minecraft_hud(
     let typing = searching || (ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some));
     let events: Vec<bevy::input::keyboard::KeyboardInput> = typed.read().cloned().collect();
     let text: String = events.iter().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
-    if !blocked && ((mc(McAction::Inventory) && !typing && !ui.chat.open && (hotbar || ui.inventory_open)) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
+    let reading = ui.inventory_open && ui.screen == McScreen::Lectern;
+    if !blocked && ((mc(McAction::Inventory) && !typing && !reading && !ui.chat.open && (hotbar || ui.inventory_open)) || (ui.inventory_open && keys.just_pressed(KeyCode::Escape))) {
         ui.inventory_open = !ui.inventory_open && !keys.just_pressed(KeyCode::Escape);
     } else if ui.inventory_open && (menus.captures_input() || pad_just(GamepadButton::East)) {
         ui.inventory_open = false;
@@ -363,7 +364,23 @@ pub(crate) fn update_minecraft_hud(
         }
     }
 
-    if ui.inventory_open {
+    if ui.inventory_open && ui.screen == McScreen::Lectern {
+        let mouse = window.physical_cursor_position().map(|m| space.mouse([m.x, m.y]));
+        if !opened && !blocked {
+            let press = crate::minecraft_book::Press {
+                mouse,
+                click: buttons.just_pressed(MouseButton::Left),
+                page_up: keys.just_pressed(KeyCode::PageUp) || pad_just(GamepadButton::LeftTrigger),
+                page_down: keys.just_pressed(KeyCode::PageDown) || pad_just(GamepadButton::RightTrigger),
+            };
+            crate::minecraft_book::input(&mut ui, space.width, press);
+        }
+        painter.gradient([0, 0, space.width, space.height], None, 0xC010_1010, 0xD010_1010);
+        if let Some(book) = ui.book.as_ref() {
+            crate::minecraft_book::draw(&mut painter, book, mouse);
+        }
+        ui.character_box = None;
+    } else if ui.inventory_open {
         let layout = match ui.screen {
             McScreen::Creative(kind) => crate::minecraft_creative::layout(kind, ui.creative.first_shown()),
             screen => crate::minecraft_screens::layout(screen),

@@ -1232,8 +1232,15 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.piglins() {
         push(e.id, e.piglin.yaw, &e.look_control, &e.piglin.body, e.piglin.is_baby(), e.piglin.eye_height());
     }
+    for e in world.shulkers() {
+        push(e.id, 0.0, &e.ai.state.look_control, &e.shulker.body, false, e.shulker.eye_height());
+    }
+    let shulkers: std::collections::HashSet<u64> = world.shulkers().iter().map(|e| e.id).collect();
     for mob in &mut out {
         mob.vehicle = world.seat_offset(minecraftoss_entities::world::Rider::Mob(mob.id));
+        if shulkers.contains(&mob.id) {
+            mob.max_head_y_rot = 180.0;
+        }
         mob.resting = resting_bats.contains(&mob.id);
         if let Some(damage) = world.damage_state(mob.id) {
             mob.hurts = damage.hurts;

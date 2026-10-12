@@ -304,6 +304,7 @@ impl EntityWorld {
                 _ => {}
             }
         }
+        entity.slime.body.float_from(&entity.effects);
         // No ambient sound, but `Mob.baseTick` still rolls for one.
         if entity.slime.health > 0.0 {
             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {

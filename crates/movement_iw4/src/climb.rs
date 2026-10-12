@@ -3,11 +3,13 @@ use playerstate_iw4::{
 };
 
 use crate::{
-    CollisionBackend, MoveBounds, Pml, WalkMoveContext, accelerate, cmd_scale_walk, friction,
-    settle, step_slide_move, swim_push,
+    CollisionBackend, JumpCheckContext, JumpCheckResult, MoveBounds, Pml, WalkMoveContext,
+    accelerate, cmd_scale_walk, friction, jump, settle, stance_surface_type, step_slide_move,
+    swim_push,
 };
 
 const BLOCK: f32 = crate::WATER_BLOCK;
+const TICK_MS: i32 = 50;
 const TICK_SECONDS: f32 = 0.05;
 const PER_TICK: f32 = BLOCK / TICK_SECONDS;
 const CLIMB_LIMIT: f32 = 0.15;
@@ -17,6 +19,8 @@ const VERTICAL_DRAG: f32 = 0.98;
 const AIR_FRICTION: f32 = 0.91;
 const BLOCKED_SHARE: f32 = 0.9;
 const MIN_MOVE: f32 = 0.01;
+const JUMP_POWER: f32 = 0.42;
+const SPRINT_JUMP_BOOST: f32 = 0.2;
 const PM_TYPE_NORMAL: i32 = 0;
 
 pub const CLIMB_SPEED: f32 = CLIMB_LIMIT * PER_TICK;
@@ -26,6 +30,7 @@ pub const CLIMB_RISE: f32 = (CLIMB_BOOST - GRAVITY) * VERTICAL_DRAG * PER_TICK;
 pub struct ClimbSample {
     pub on: bool,
     pub scaffolding: bool,
+    pub powder: bool,
 }
 
 #[must_use]
@@ -102,8 +107,11 @@ pub fn climb_move<C: CollisionBackend>(
                 settle(ps.velocity[k] / PER_TICK, target, AIR_FRICTION, ticks) * PER_TICK;
         }
     }
+    let rise = ground_jump(ps, pml, cmd, walk);
     let descending = sneaking(ps, cmd);
-    hold(&mut ps.velocity, climb.scaffolding, descending);
+    if !climb.powder {
+        hold(&mut ps.velocity, climb.scaffolding, descending);
+    }
     if pml.walking != 0 {
         crate::back_off_from_edge(ps, cmd, pml.frametime, bounds, collision);
     }
@@ -123,7 +131,53 @@ pub fn climb_move<C: CollisionBackend>(
         None,
     );
     let rising = rise_after_move(ps, pml, cmd, start, wanted, collision);
-    ps.velocity[2] = after_move(ps.velocity[2], rising, ticks);
+    ps.velocity[2] = crate::float::climb_rise(ps, ps.velocity[2], rising, ticks)
+        .unwrap_or_else(|| after_move(ps.velocity[2], rising, ticks));
+    if rise > 0.0 {
+        ps.velocity[2] = CLIMB_RISE;
+    }
+}
+
+fn ground_jump(
+    ps: &mut PlayerState,
+    pml: &mut Pml,
+    cmd: &UserCmd,
+    walk: WalkMoveContext,
+) -> f32 {
+    let frame_start = cmd.server_time.wrapping_sub(pml.msec);
+    if pml.walking != 0 {
+        if ps.pm_flags & pm_flags::JUMPING != 0 {
+            jump::clear_state(ps);
+        }
+        let gate = JumpCheckContext {
+            time_since_jump: cmd.server_time.wrapping_sub(ps.jump_time),
+            old_buttons: walk.old_buttons,
+            stance_surface_type: stance_surface_type(ps) as u8,
+        };
+        let mut gated = *cmd;
+        if let JumpCheckResult::Launched { .. } =
+            jump::check(ps, pml, &mut gated, gate, walk.jump)
+        {
+            ps.jump_time = frame_start;
+        }
+    }
+    let rising_ms = ps
+        .jump_time
+        .wrapping_add(TICK_MS)
+        .wrapping_sub(frame_start)
+        .clamp(0, pml.msec);
+    if rising_ms == 0 || ps.pm_flags & pm_flags::JUMPING == 0 {
+        return 0.0;
+    }
+    let rise = rising_ms as f32 / pml.msec.max(1) as f32;
+    ps.velocity[2] = (JUMP_POWER * rise + CLIMB_RISE / PER_TICK * (1.0 - rise)) * PER_TICK;
+    let facing = libm::sqrtf(pml.forward[0] * pml.forward[0] + pml.forward[1] * pml.forward[1]);
+    if ps.pm_flags & pm_flags::SPRINTING != 0 && facing > 0.0 {
+        let boost = SPRINT_JUMP_BOOST * rise * PER_TICK / facing;
+        ps.velocity[0] += pml.forward[0] * boost;
+        ps.velocity[1] += pml.forward[1] * boost;
+    }
+    rise
 }
 
 pub(crate) fn rise_after_move<C: CollisionBackend>(
@@ -227,6 +281,7 @@ mod tests {
             ClimbSample {
                 on: origin[2] < self.climbable_below,
                 scaffolding: false,
+                powder: false,
             }
         }
     }
@@ -471,12 +526,131 @@ mod tests {
         assert!(free.origin[2] < 0.0, "{:?}", free.origin);
     }
 
+    fn from_ground(
+        ps: &mut PlayerState,
+        held: impl Fn(i32) -> bool,
+        context: WalkMoveContext,
+        msec: i32,
+        total: i32,
+        mut observe: impl FnMut(i32, f32),
+    ) {
+        let column = Column {
+            floor: 0.0,
+            wall: f32::MAX,
+            climbable_below: 1000.0,
+        };
+        let mut time = 1000;
+        let mut old_buttons = context.old_buttons;
+        while time - 1000 < total {
+            time += msec;
+            let jump = held(time - 1000);
+            let cmd = UserCmd {
+                server_time: time,
+                buttons: if jump { buttons::JUMP } else { 0 },
+                ..UserCmd::default()
+            };
+            let mut pml = tick_pml(msec as f32 * 0.001);
+            pml.msec = msec;
+            pml.walking = u32::from(ps.ground_entity_num != ENTITYNUM_NONE);
+            let walk = WalkMoveContext {
+                old_buttons,
+                ..context
+            };
+            climb_move(ps, &mut pml, &cmd, walk, LADDER, BOUNDS, &column);
+            old_buttons = cmd.buttons;
+            observe(time - 1000, ps.origin[2] / BLOCK);
+        }
+    }
+
+    const LADDER: ClimbSample = ClimbSample {
+        on: true,
+        scaffolding: false,
+        powder: false,
+    };
+
+    fn at_the_foot() -> PlayerState {
+        let mut ps = PlayerState::ZERO;
+        ps.ground_entity_num = 0;
+        ps.jump_time = -10_000;
+        ps.speed = 190;
+        ps
+    }
+
+    #[test]
+    fn a_ground_jump_at_a_ladder_rises_the_vanilla_first_tick() {
+        for msec in [50, 8, 3] {
+            let mut ps = at_the_foot();
+            from_ground(&mut ps, |_| true, walk_context(), msec, 1000, |t, height| {
+                let expected = if t <= 50 {
+                    JUMP_POWER * t as f32 / 50.0
+                } else {
+                    JUMP_POWER + 0.1176 * (t - 50) as f32 / 50.0
+                };
+                assert!(
+                    (height - expected).abs() < expected * 0.01,
+                    "{msec} ms, {t} ms: {height} {expected}"
+                );
+            });
+            assert_ne!(ps.ground_entity_num, 0);
+        }
+    }
+
+    #[test]
+    fn a_tap_at_a_ladder_lifts_about_half_a_block() {
+        let mut peaks = [0.0; 4];
+        for (k, msec) in [50, 16, 8, 3].into_iter().enumerate() {
+            let mut ps = at_the_foot();
+            let (mut peak, mut last) = (f32::MIN, 0.0);
+            from_ground(&mut ps, |t| t <= 50, walk_context(), msec, 1000, |_, h| {
+                peak = peak.max(h);
+                last = h;
+            });
+            assert!(last < peak - 0.1, "{msec} ms: {last} {peak}");
+            peaks[k] = peak;
+        }
+        assert!((peaks[0] - 0.575).abs() < 0.02, "{peaks:?}");
+        assert!(peaks.iter().all(|p| (0.5..0.6).contains(p)), "{peaks:?}");
+    }
+
+    #[test]
+    fn the_jump_waits_for_the_gate() {
+        let first_two = |ps: &mut PlayerState, context| {
+            let mut heights = [0.0; 2];
+            from_ground(ps, |_| true, context, 50, 100, |t, h| {
+                heights[(t / 50 - 1) as usize] = h;
+            });
+            heights
+        };
+        let mut recent = at_the_foot();
+        recent.jump_time = 1000 - 200;
+        let heights = first_two(&mut recent, walk_context());
+        assert!(heights[0].abs() < 1e-4, "{heights:?}");
+        assert!((heights[1] - 0.1176).abs() < 1e-4, "{heights:?}");
+        let still = WalkMoveContext {
+            old_buttons: buttons::JUMP,
+            ..walk_context()
+        };
+        let heights = first_two(&mut at_the_foot(), still);
+        assert!(heights[0].abs() < 1e-4, "{heights:?}");
+        assert!((heights[1] - 0.1176).abs() < 1e-4, "{heights:?}");
+        let mut sprinting = at_the_foot();
+        sprinting.pm_flags |= pm_flags::SPRINTING;
+        let heights = first_two(&mut sprinting, walk_context());
+        assert!((heights[0] - JUMP_POWER).abs() < 1e-4, "{heights:?}");
+        assert!(
+            sprinting.origin[0] <= CLIMB_SPEED * 0.1 + 1e-3,
+            "{:?}",
+            sprinting.origin
+        );
+    }
+
     #[test]
     fn jump_is_kept_from_the_mantle_while_climbing() {
         let ps = PlayerState::ZERO;
         let on = ClimbSample {
             on: true,
             scaffolding: true,
+            powder: false,
         };
         assert_eq!(mantle_buttons(&ps, on, buttons::JUMP | 1), 1);
         assert_eq!(

@@ -29,6 +29,8 @@ pub const EFFECTS: [(EffectKind, &str); EffectKind::ALL.len()] = [
     (EffectKind::Haste, "minecraft:haste"),
     (EffectKind::MiningFatigue, "minecraft:mining_fatigue"),
     (EffectKind::ConduitPower, "minecraft:conduit_power"),
+    (EffectKind::Levitation, "minecraft:levitation"),
+    (EffectKind::SlowFalling, "minecraft:slow_falling"),
 ];
 
 struct EffectModifier {
@@ -88,6 +90,7 @@ pub struct Stats {
     pub status: SurvivalStatus,
     pub fire: i32,
     pub score: i32,
+    pub frozen: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -138,7 +141,7 @@ pub const EQUIPMENT: [(usize, &str); 7] = [
     (41, "body"),
     (42, "saddle"),
 ];
-const OWNED: [&str; 24] = [
+const OWNED: [&str; 25] = [
     "playerGameType",
     "previousPlayerGameType",
     "abilities",
@@ -158,6 +161,7 @@ const OWNED: [&str; 24] = [
     "Score",
     "Air",
     "Fire",
+    "TicksFrozen",
     "respawn",
     "LastDeathLocation",
     "RootVehicle",
@@ -383,6 +387,9 @@ fn stats_entries(stats: &Stats, entries: &mut BTreeMap<String, Tag>) {
     for (key, value) in values {
         entries.insert(key.to_owned(), value);
     }
+    if stats.frozen > 0 {
+        entries.insert("TicksFrozen".to_owned(), Tag::Int(stats.frozen));
+    }
 }
 
 fn global_pos_tag(at: &GlobalPos, extra: Vec<(&str, Tag)>) -> Tag {
@@ -526,6 +533,7 @@ fn read_stats(tag: &Tag) -> Option<Stats> {
         status,
         fire: int("Fire", 0) as i32,
         score: int("Score", 0) as i32,
+        frozen: int("TicksFrozen", 0).clamp(0, i64::from(i32::MAX)) as i32,
     })
 }
 
@@ -853,7 +861,26 @@ mod tests {
             status,
             fire: 35,
             score: 120,
+            frozen: 0,
         }
+    }
+
+    #[test]
+    fn ticks_frozen_round_trips_and_is_left_out_at_zero() {
+        let thawed = with_stats(hurt_and_fed()).entries();
+        assert!(!thawed.contains_key("TicksFrozen"));
+        let frozen = Stats {
+            frozen: 97,
+            ..hurt_and_fed()
+        };
+        let entries = with_stats(frozen).entries();
+        assert_eq!(entries.get("TicksFrozen"), Some(&Tag::Int(97)));
+        let tag = Tag::Compound(entries);
+        assert_eq!(read_stats(&tag).map(|stats| stats.frozen), Some(97));
+        let old = with_stats(frozen).merged(None);
+        let merged = with_stats(hurt_and_fed()).merged(Some(old));
+        assert!(merged.get("TicksFrozen").is_none(), "a thawed player drops the saved frost");
+        assert_eq!(read_stats(&merged).map(|stats| stats.frozen), Some(0));
     }
 
     fn with_stats(stats: Stats) -> PlayerData {
@@ -939,6 +966,34 @@ mod tests {
             Some(&Tag::String("minecraft:weakness".to_owned()))
         );
         assert_eq!(effects[1].get("duration"), Some(&Tag::Int(600)));
+    }
+
+    #[test]
+    fn levitation_and_slow_falling_are_saved_and_read_back() {
+        let mut stats = hurt_and_fed();
+        stats.status.add_effect(EffectKind::Levitation, 200, 1);
+        stats.status.add_effect(EffectKind::SlowFalling, 4800, 0);
+        let data = with_stats(stats);
+        let entries = data.entries();
+        let ids: Vec<&str> = entries["active_effects"]
+            .as_list()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("id").and_then(Tag::as_str))
+            .collect();
+        assert_eq!(ids, vec!["minecraft:levitation", "minecraft:slow_falling"]);
+        let read = PlayerData::read(&data.merged(None), &RecipeBook::default());
+        let status = read.stats.unwrap().status;
+        assert_eq!(
+            status
+                .effect(EffectKind::Levitation)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((200, 1))
+        );
+        assert_eq!(
+            status.effect(EffectKind::SlowFalling).map(|e| e.duration),
+            Some(4800)
+        );
     }
 
     #[test]

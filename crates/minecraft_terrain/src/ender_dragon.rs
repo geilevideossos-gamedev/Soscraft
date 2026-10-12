@@ -30,6 +30,7 @@ pub const PART_SIZES: [(f64, f64); 8] = [
 pub const HISTORY_SENT: usize = 26;
 pub const CONTACT_DAMAGE: f32 = 10.0;
 pub const SOUND_VOLUME: f32 = 5.0;
+pub const FLAME_BREATH_TICKS: i32 = 10;
 pub const AMBIENT_SOUND: &str = "minecraft:entity.ender_dragon.ambient";
 pub const HURT_SOUND: &str = "minecraft:entity.ender_dragon.hurt";
 pub const DEATH_SOUND: &str = "minecraft:entity.generic.death";
@@ -730,6 +731,22 @@ pub struct DragonEvents {
     pub experience: Vec<(DVec3, i32)>,
     pub fireballs: Vec<(DVec3, DVec3)>,
     pub clouds: Vec<EffectCloud>,
+    pub breath: Vec<DragonBreath>,
+    pub explosions: Vec<(DVec3, bool)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BreathKind {
+    Landing,
+    Flame,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DragonBreath {
+    pub head: DVec3,
+    pub look: DVec3,
+    pub motion: DVec3,
+    pub kind: BreathKind,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1023,6 +1040,17 @@ impl EnderDragon {
         }
         let before = self.health;
         let hurt = self.really_hurt(amount, events);
+        if let Some(from) = damage
+            .from
+            .filter(|_| hurt.full && damage.kind == DamageKind::Attack && !self.phase.is_sitting())
+        {
+            self.velocity = knockback(
+                self.velocity,
+                false,
+                from.x - self.position.x,
+                from.z - self.position.z,
+            );
+        }
         if self.phase.is_sitting() {
             self.sitting_damage_received += before - self.health;
             if self.sitting_damage_received > 0.25 * MAX_HEALTH {
@@ -1194,12 +1222,25 @@ impl EnderDragon {
                     .push((AMBIENT_SOUND, self.position, SOUND_VOLUME, pitch));
             }
         }
-        self.ai_step(env, &mut events);
+        if !self.removed {
+            self.ai_step(env, &mut events);
+        }
         events
+    }
+
+    fn death_burst(&mut self) -> DVec3 {
+        let a = (self.random.next_float() - 0.5) * 8.0;
+        let b = (self.random.next_float() - 0.5) * 4.0;
+        let c = (self.random.next_float() - 0.5) * 8.0;
+        self.position + DVec3::new(f64::from(a), 2.0 + f64::from(b), f64::from(c))
     }
 
     fn tick_death(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
         self.death_time += 1;
+        if (180..=200).contains(&self.death_time) {
+            let at = self.death_burst();
+            events.explosions.push((at, true));
+        }
         if let Some(total) = env
             .death_experience
             .filter(|_| self.death_time > 150 && self.death_time % 5 == 0)
@@ -1231,6 +1272,8 @@ impl EnderDragon {
     fn ai_step(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
         self.o_flap_time = self.flap_time;
         if self.dead_or_dying() {
+            let at = self.death_burst();
+            events.explosions.push((at, false));
             return;
         }
         self.check_crystals(env.crystals);
@@ -1262,6 +1305,10 @@ impl EnderDragon {
         self.phase_tick(env, events);
         if self.phase != before {
             self.phase_tick(env, events);
+        }
+        if self.phase == Phase::Landing {
+            let breath = self.breath(env, BreathKind::Landing, self.velocity);
+            events.breath.push(breath);
         }
         let target = match self.phase {
             Phase::HoldingPattern => self.holding.target,
@@ -1586,8 +1633,21 @@ impl EnderDragon {
         }
     }
 
+    fn breath(&self, env: &DragonEnv, kind: BreathKind, motion: DVec3) -> DragonBreath {
+        DragonBreath {
+            head: self.parts[HEAD] + DVec3::new(0.0, PART_SIZES[HEAD].1 * 0.5, 0.0),
+            look: self.head_look_vector(env).normalize_or_zero(),
+            motion,
+            kind,
+        }
+    }
+
     fn flaming_tick(&mut self, env: &DragonEnv, events: &mut DragonEvents) {
         self.flame.ticks += 1;
+        if self.flame.ticks % 2 == 0 && self.flame.ticks < FLAME_BREATH_TICKS {
+            let breath = self.breath(env, BreathKind::Flame, DVec3::ZERO);
+            events.breath.push(breath);
+        }
         if self.flame.ticks >= FLAME_TICKS {
             if self.flame.count >= FLAME_ATTACKS {
                 self.set_phase(Phase::Takeoff);
@@ -2209,6 +2269,7 @@ mod tests {
             amount: 20.0,
             player: None,
             kind: DamageKind::Attack,
+            from: None,
         };
         dragon.damage_cooldown = 0;
         assert!(
@@ -2355,6 +2416,157 @@ mod tests {
             (last.y - 90.0).abs() < 1e-6,
             "the last share comes after the last rise"
         );
+    }
+
+    #[test]
+    fn a_dying_dragon_explodes_every_tick_and_bursts_from_tick_180_to_200() {
+        let (ticks, dragon) = die(None);
+        assert_eq!(ticks.len(), 200);
+        for (tick, events) in ticks.iter().enumerate() {
+            let death_time = tick as i32 + 1;
+            let emitters: Vec<DVec3> = events
+                .explosions
+                .iter()
+                .filter(|(_, emitter)| *emitter)
+                .map(|(at, _)| *at)
+                .collect();
+            let plain: Vec<DVec3> = events
+                .explosions
+                .iter()
+                .filter(|(_, emitter)| !*emitter)
+                .map(|(at, _)| *at)
+                .collect();
+            assert_eq!(
+                emitters.len(),
+                usize::from((180..=200).contains(&death_time)),
+                "{death_time}"
+            );
+            assert_eq!(
+                plain.len(),
+                usize::from(death_time < DEATH_TICKS),
+                "aiStep does not run once it is removed, {death_time}"
+            );
+            let near = |at: DVec3, feet_y: f64| {
+                at.x.abs() <= 4.0 && at.z.abs() <= 4.0 && (at.y - feet_y - 2.0).abs() <= 2.0 + 1e-9
+            };
+            for at in emitters {
+                assert!(near(at, 70.0 + 0.1 * f64::from(death_time - 1)), "{at:?}");
+            }
+            for at in plain {
+                assert!(near(at, 70.0 + 0.1 * f64::from(death_time)), "{at:?}");
+            }
+        }
+        let all: Vec<&(DVec3, bool)> = ticks.iter().flat_map(|events| &events.explosions).collect();
+        assert_eq!(all.iter().filter(|(_, emitter)| !*emitter).count(), 199);
+        assert_eq!(all.iter().filter(|(_, emitter)| *emitter).count(), 21);
+        assert!(dragon.removed);
+    }
+
+    #[test]
+    fn the_dying_dragon_s_random_draws_three_floats_a_tick() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 70.0, 0.0), 0.0);
+        dragon.health = 0.0;
+        let mut mirror = dragon.random.clone();
+        let height = flat;
+        let top = || 64;
+        let env = env(&height, &top, None);
+        let mut burst = |at: DVec3| {
+            let a = (mirror.next_float() - 0.5) * 8.0;
+            let b = (mirror.next_float() - 0.5) * 4.0;
+            let c = (mirror.next_float() - 0.5) * 8.0;
+            at + DVec3::new(f64::from(a), 2.0 + f64::from(b), f64::from(c))
+        };
+        while !dragon.removed {
+            let before = dragon.position;
+            let events = dragon.tick(&env);
+            let mut expected = Vec::new();
+            if (180..=200).contains(&dragon.death_time) {
+                expected.push((burst(before), true));
+            }
+            if !dragon.removed {
+                expected.push((burst(dragon.position), false));
+            }
+            assert_eq!(events.explosions, expected, "{}", dragon.death_time);
+        }
+        assert_eq!(dragon.random.next_int(1 << 30), mirror.next_int(1 << 30));
+    }
+
+    fn assert_close(actual: DVec3, expected: DVec3) {
+        assert!((actual - expected).length() < 1e-9, "{actual:?} {expected:?}");
+    }
+
+    #[test]
+    fn a_hit_knocks_a_flying_dragon_away_from_the_attacker() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        dragon.velocity = DVec3::new(0.6, -0.2, 0.4);
+        let mut events = DragonEvents::default();
+        let from = DVec3::new(-3.0, 90.0, 4.0);
+        let hit = EndDamage::attack(10.0, 0).from_position(from);
+        assert!(dragon.hurt_part(6, &hit, &mut events).full);
+        let (dx, dz) = (-3.0 / 5.0 * KNOCKBACK, 4.0 / 5.0 * KNOCKBACK);
+        assert_close(dragon.velocity, DVec3::new(0.3 - dx, -0.2, 0.2 - dz));
+        let before = dragon.velocity;
+        dragon.damage_cooldown = 0;
+        assert!(
+            dragon
+                .hurt_part(HEAD, &EndDamage::attack(10.0, 0), &mut events)
+                .full
+        );
+        assert_eq!(dragon.velocity, before, "a hit from nowhere does not push");
+        dragon.damage_cooldown = 0;
+        dragon.health = 5.0;
+        dragon.velocity = DVec3::ZERO;
+        let killing = EndDamage::attack(10.0, 0).from_position(DVec3::new(0.0, 0.0, -2.0));
+        assert!(dragon.hurt_part(HEAD, &killing, &mut events).died);
+        assert_eq!(dragon.phase, Phase::Dying);
+        assert_close(dragon.velocity, DVec3::new(0.0, 0.0, KNOCKBACK));
+    }
+
+    #[test]
+    fn a_sitting_or_dying_dragon_is_not_knocked_back() {
+        let mut events = DragonEvents::default();
+        let hit = EndDamage::attack(10.0, 0).from_position(DVec3::new(8.0, 64.0, 0.0));
+        let mut sitting = dragon_at(DVec3::new(0.0, 64.0, 0.0), 0.0);
+        sitting.set_phase(Phase::SittingScanning);
+        sitting.velocity = DVec3::new(0.1, 0.0, 0.1);
+        assert!(sitting.hurt_part(HEAD, &hit, &mut events).full);
+        assert_eq!(sitting.velocity, DVec3::new(0.1, 0.0, 0.1));
+        let mut dying = dragon_at(DVec3::new(0.0, 64.0, 0.0), 0.0);
+        dying.set_phase(Phase::Dying);
+        dying.velocity = DVec3::new(0.1, 0.0, 0.1);
+        assert!(!dying.hurt_part(HEAD, &hit, &mut events).applied);
+        assert_eq!(dying.velocity, DVec3::new(0.1, 0.0, 0.1));
+    }
+
+    #[test]
+    fn an_explosion_does_not_knock_the_dragon_back() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        dragon.velocity = DVec3::new(0.2, 0.0, 0.0);
+        let mut events = DragonEvents::default();
+        let blast = EndDamage::explosion(10.0, Some(0)).from_position(DVec3::new(5.0, 100.0, 0.0));
+        assert!(dragon.hurt_part(HEAD, &blast, &mut events).full);
+        assert_eq!(dragon.velocity, DVec3::new(0.2, 0.0, 0.0));
+    }
+
+    #[test]
+    fn only_a_full_hit_knocks_back_not_a_partial_one_in_the_cooldown() {
+        let mut dragon = dragon_at(DVec3::new(0.0, 100.0, 0.0), 0.0);
+        let mut events = DragonEvents::default();
+        let from = DVec3::new(10.0, 100.0, 0.0);
+        dragon.velocity = DVec3::ZERO;
+        assert!(
+            dragon
+                .hurt_part(HEAD, &EndDamage::attack(10.0, 0).from_position(from), &mut events)
+                .full
+        );
+        assert_close(dragon.velocity, DVec3::new(-KNOCKBACK, 0.0, 0.0));
+        dragon.velocity = DVec3::ZERO;
+        let partial = dragon.hurt_part(HEAD, &EndDamage::attack(15.0, 0).from_position(from), &mut events);
+        assert!(partial.applied && !partial.full);
+        assert_eq!(dragon.velocity, DVec3::ZERO, "a partial hit in the cooldown");
+        let wasted = dragon.hurt_part(HEAD, &EndDamage::attack(5.0, 0).from_position(from), &mut events);
+        assert!(!wasted.applied);
+        assert_eq!(dragon.velocity, DVec3::ZERO);
     }
 
     #[test]
@@ -3081,6 +3293,67 @@ mod tests {
             distance_to_center_sqr((0, 62, 0), dragon.position) >= 100.0,
             "it leaves the podium before circling"
         );
+    }
+
+    #[test]
+    fn a_landing_dragon_breathes_every_tick_from_its_head() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let env = podium_env(&[], &sees, Some(0));
+        let mut dragon = dragon_at(DVec3::new(0.5, 110.0, 60.5), 0.0);
+        dragon.set_phase(Phase::LandingApproach);
+        let mut landing_ticks = 0;
+        for _ in 1..=4000 {
+            let head = dragon.parts[HEAD];
+            let events = dragon.tick(&env);
+            if dragon.phase == Phase::Landing {
+                landing_ticks += 1;
+                assert_eq!(events.breath.len(), 1);
+                let breath = events.breath[0];
+                assert_eq!(breath.kind, BreathKind::Landing);
+                assert_eq!(breath.head, head + DVec3::new(0.0, 0.5, 0.0));
+                assert!((breath.look.length() - 1.0).abs() < 1e-9);
+                assert!(breath.look.y > 0.0, "the landing head looks up, so its breath falls");
+            } else {
+                assert!(events.breath.is_empty(), "{:?}", dragon.phase);
+            }
+            if dragon.phase == Phase::SittingScanning {
+                break;
+            }
+        }
+        assert!(landing_ticks > 5, "{landing_ticks}");
+    }
+
+    #[test]
+    fn a_flaming_dragon_breathes_on_its_second_to_eighth_flame_tick() {
+        let sees = |_: DVec3, _: DVec3| true;
+        let players = [player(4, DVec3::new(8.0, 63.0, 0.5), true)];
+        let env = podium_env(&players, &sees, Some(0));
+        let mut dragon = perched();
+        let mut flame_started = None;
+        let mut puffs: Vec<Vec<usize>> = Vec::new();
+        for tick in 1..=1400 {
+            let head = dragon.parts[HEAD];
+            let before = dragon.phase;
+            let events = dragon.tick(&env);
+            if dragon.phase == Phase::SittingFlaming && before != Phase::SittingFlaming {
+                flame_started = Some(tick);
+                puffs.push(Vec::new());
+            }
+            for breath in &events.breath {
+                assert_eq!(breath.kind, BreathKind::Flame);
+                assert_eq!(breath.motion, DVec3::ZERO);
+                assert_eq!(breath.head, head + DVec3::new(0.0, 0.5, 0.0));
+                assert!((breath.look - view_vector(-45.0, dragon.y_rot).normalize()).length() < 1e-9);
+                puffs.last_mut().unwrap().push(tick - flame_started.unwrap());
+            }
+            if dragon.phase == Phase::Takeoff {
+                break;
+            }
+        }
+        assert_eq!(puffs.len(), 4);
+        for flame in puffs {
+            assert_eq!(flame, [1, 3, 5, 7]);
+        }
     }
 
     fn perched() -> EnderDragon {

@@ -26,6 +26,7 @@ pub struct EndDamage {
     pub amount: f32,
     pub player: Option<u64>,
     pub kind: DamageKind,
+    pub from: Option<DVec3>,
 }
 
 impl EndDamage {
@@ -34,6 +35,14 @@ impl EndDamage {
             amount,
             player: Some(player),
             kind: DamageKind::Attack,
+            from: None,
+        }
+    }
+
+    pub fn from_position(self, from: DVec3) -> Self {
+        Self {
+            from: Some(from),
+            ..self
         }
     }
 
@@ -42,6 +51,7 @@ impl EndDamage {
             amount,
             player,
             kind: DamageKind::Explosion,
+            from: None,
         }
     }
 }

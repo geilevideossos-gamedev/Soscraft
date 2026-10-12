@@ -163,16 +163,10 @@ fn run(dir: &Path) -> Result<(), String> {
     fetch(index_url, &index_path, Some(index_sha1))?;
     let index: serde_json::Value = read_json(&index_path)?;
     let objects = index["objects"].as_object().ok_or("asset index has no objects")?;
-    // Sounds and English text: what the world plays and names. Music,
-    // records and the other languages are left on Mojang's servers.
     let assets = staging.join(RESOURCE_PACK).join("assets");
     let mut wanted = Vec::new();
     for (key, object) in objects {
-        let keep = key == "minecraft/sounds.json"
-            || key == "minecraft/lang/en_us.json"
-            || (key.starts_with("minecraft/sounds/")
-                && !key.starts_with("minecraft/sounds/music/")
-                && !key.starts_with("minecraft/sounds/records/"));
+        let keep = wanted_asset(key);
         let Some(hash) = object["hash"].as_str().filter(|_| keep) else {
             continue;
         };
@@ -298,6 +292,62 @@ fn fetch(url: &str, path: &Path, sha1: Option<&str>) -> Result<(), String> {
     }
 }
 
+const END_MUSIC: [&str; 3] = [
+    "minecraft/sounds/music/game/end/boss.ogg",
+    "minecraft/sounds/music/game/end/the_end.ogg",
+    "minecraft/sounds/music/game/end/alpha.ogg",
+];
+
+static END_MUSIC_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn wanted_asset(key: &str) -> bool {
+    key == "minecraft/sounds.json"
+        || key == "minecraft/lang/en_us.json"
+        || END_MUSIC.contains(&key)
+        || (key.starts_with("minecraft/sounds/")
+            && !key.starts_with("minecraft/sounds/music/")
+            && !key.starts_with("minecraft/sounds/records/"))
+}
+
+fn asset_path(root: &Path, key: &str) -> PathBuf {
+    root.join(RESOURCE_PACK).join("assets").join(key)
+}
+
+pub fn begin_end_music(root: &Path) {
+    if END_MUSIC_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let root = root.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("minecraft-music".into())
+        .spawn(move || match fetch_end_music(&root, fetch) {
+            Ok(()) => diag::info!(World, "Minecraft End music ready"),
+            Err(error) => diag::warn!(World, "Minecraft End music could not be fetched: {error}"),
+        });
+    if let Err(error) = spawned {
+        diag::warn!(World, "Minecraft End music could not be fetched: {error}");
+    }
+}
+
+fn fetch_end_music(root: &Path, get: impl Fn(&str, &Path, Option<&str>) -> Result<(), String>) -> Result<(), String> {
+    let index = read_json(&root.join("asset-index.json"))?;
+    let objects = index["objects"].as_object().ok_or("asset index has no objects")?;
+    for key in END_MUSIC {
+        let hash = objects
+            .get(key)
+            .and_then(|object| object["hash"].as_str())
+            .ok_or_else(|| format!("the asset index has no {key}"))?;
+        let path = asset_path(root, key);
+        if sha1_of(&path).as_deref() == Some(hash) {
+            continue;
+        }
+        let partial = path.with_extension("ogg.partial");
+        get(&format!("{OBJECTS_URL}/{}/{hash}", &hash[..2]), &partial, Some(hash))?;
+        std::fs::rename(&partial, &path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn curl() -> std::process::Command {
     let mut command = std::process::Command::new("curl");
     #[cfg(windows)]
@@ -318,4 +368,68 @@ fn sha1_of(path: &Path) -> Option<String> {
 fn read_json(path: &Path) -> Result<serde_json::Value, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_end_music_is_fetched_of_mojangs_music() {
+        for key in END_MUSIC {
+            assert!(wanted_asset(key), "{key}");
+        }
+        assert!(wanted_asset("minecraft/sounds.json"));
+        assert!(wanted_asset("minecraft/lang/en_us.json"));
+        assert!(wanted_asset("minecraft/sounds/ambient/weather/end_flash1.ogg"));
+        assert!(!wanted_asset("minecraft/sounds/music/game/creative/aria_math.ogg"));
+        assert!(!wanted_asset("minecraft/sounds/music/menu/moog_city_2.ogg"));
+        assert!(!wanted_asset("minecraft/sounds/records/cat.ogg"));
+        assert!(!wanted_asset("minecraft/lang/de_de.json"));
+    }
+
+    #[test]
+    fn the_end_music_lands_in_the_resource_pack_path() {
+        let root = Path::new("artifacts");
+        assert_eq!(
+            asset_path(root, END_MUSIC[0]),
+            root.join("resourcepacks/local/minecraft-26.3/assets/minecraft/sounds/music/game/end/boss.ogg")
+        );
+    }
+
+    #[test]
+    fn missing_end_music_is_fetched_by_hash_and_music_already_here_is_kept() {
+        let root = std::env::temp_dir().join(format!("iw4l-end-music-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bytes: Vec<Vec<u8>> = END_MUSIC.iter().map(|key| key.as_bytes().to_vec()).collect();
+        let hash = |bytes: &[u8]| Sha1::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let objects: serde_json::Map<String, serde_json::Value> = END_MUSIC
+            .iter()
+            .zip(&bytes)
+            .map(|(key, bytes)| (key.to_string(), serde_json::json!({ "hash": hash(bytes), "size": bytes.len() })))
+            .collect();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("asset-index.json"), serde_json::json!({ "objects": objects }).to_string()).unwrap();
+        let here = asset_path(&root, END_MUSIC[1]);
+        std::fs::create_dir_all(here.parent().unwrap()).unwrap();
+        std::fs::write(&here, &bytes[1]).unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let get = |url: &str, path: &Path, sha1: Option<&str>| {
+            let index = END_MUSIC.iter().position(|key| hash(key.as_bytes()) == sha1.unwrap()).unwrap();
+            assert_eq!(url, format!("{OBJECTS_URL}/{}/{}", &sha1.unwrap()[..2], sha1.unwrap()));
+            assert!(path.to_string_lossy().ends_with(".ogg.partial"));
+            std::fs::write(path, &bytes[index]).unwrap();
+            asked.borrow_mut().push(index);
+            Ok(())
+        };
+        fetch_end_music(&root, get).unwrap();
+        assert_eq!(*asked.borrow(), [0, 2]);
+        for (key, bytes) in END_MUSIC.iter().zip(&bytes) {
+            assert_eq!(std::fs::read(asset_path(&root, key)).unwrap(), *bytes);
+        }
+        fetch_end_music(&root, |_: &str, _: &Path, _: Option<&str>| Err("fetched again".to_owned())).unwrap();
+        std::fs::remove_file(root.join("asset-index.json")).unwrap();
+        assert!(fetch_end_music(&root, get).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

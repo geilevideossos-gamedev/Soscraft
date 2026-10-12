@@ -571,6 +571,10 @@ pub fn targets(world: &EntityWorld) -> Vec<PotionTarget> {
             .filter(|e| e.chicken.health > 0.0)
             .map(|e| target(e.id, &e.chicken.body)),
     );
+    out.extend(world.shulkers().iter().filter(|e| e.shulker.health > 0.0).map(|e| {
+        let (min, max) = e.shulker.bounding_box();
+        PotionTarget { id: e.id, min, max, owner: false }
+    }));
     out
 }
 
@@ -678,6 +682,15 @@ pub fn hurt_by(
         (e.hurt(amount, projectile), false)
     } else if let Some(e) = world.chicken_mut(id) {
         (e.hurt_with_source(amount, projectile), false)
+    } else if let Some(e) = world.shulker_mut(id) {
+        if kind == crate::trident::DAMAGE_TYPE && e.refuses_arrows() {
+            return false;
+        }
+        let hit = e.hurt_armored(amount);
+        if let Some(blamed) = blame(&hit, e.tick_count) {
+            e.ai.state.hurt_by = Some(blamed);
+        }
+        (hit, true)
     } else {
         return false;
     };
@@ -779,6 +792,23 @@ mod tests {
     use super::*;
     use minecraftoss_player::{Block, Pos};
     use std::collections::HashMap;
+
+    #[test]
+    fn a_closed_shulker_turns_tridents_away_and_is_struck_where_its_shell_is() {
+        let mut world = EntityWorld::default();
+        let mut shulker = minecraftoss_entities::shulker::Shulker::new(DVec3::new(0.5, 64.0, 0.5));
+        shulker.attach_face = Face::Up;
+        shulker.peek = 1.0;
+        let id = world.spawn_shulker(shulker, false);
+        let target = targets(&world).into_iter().find(|t| t.id == id).unwrap();
+        assert_eq!((target.min, target.max), (DVec3::new(0.0, 63.0, 0.0), DVec3::new(1.0, 65.0, 1.0)), "a ceiling shulker hangs down");
+        let mut random = LegacyRandom::new(1);
+        assert!(!hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        world.shulker_mut(id).unwrap().shulker.raw_peek = 30;
+        assert!(hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        let shulker = &world.shulkers()[0].shulker;
+        assert_eq!((shulker.health, shulker.body.velocity), (22.0, DVec3::ZERO));
+    }
 
     #[derive(Default)]
     struct Blocks(HashMap<Pos, Block>);

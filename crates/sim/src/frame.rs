@@ -437,6 +437,27 @@ impl FrameWorld<'_> {
         true
     }
 
+    pub fn set_minecraft_move_scale(&mut self, id: ClientId, scale: f32) -> bool {
+        if self.player_mut(id).is_none() {
+            return false;
+        }
+        self.client_meta_mut(id).minecraft_slowdown = 1.0 - scale;
+        true
+    }
+
+    pub fn set_powder_snow_walker(&mut self, id: ClientId, walker: bool) -> bool {
+        use playerstate_iw4::pm_flags::MC_POWDER_WALKER;
+        let Some(ps) = self.player_mut(id) else {
+            return false;
+        };
+        if walker {
+            ps.pm_flags |= MC_POWDER_WALKER;
+        } else {
+            ps.pm_flags &= !MC_POWDER_WALKER;
+        }
+        true
+    }
+
     pub fn launch_rocket(&mut self, id: ClientId, boost_ticks: i32) -> bool {
         self.player_mut(id).is_some_and(|ps| movement_iw4::launch_rocket(ps, boost_ticks))
     }
@@ -458,6 +479,14 @@ impl FrameWorld<'_> {
             delta
         };
         self.translate_player_area(id, delta);
+        true
+    }
+
+    pub fn set_float(&mut self, id: ClientId, levitation: Option<u8>, slow_falling: bool) -> bool {
+        let Some(ps) = self.player_mut(id) else {
+            return false;
+        };
+        ps.mc_float = movement_iw4::encode_float(levitation, slow_falling);
         true
     }
 
@@ -1248,6 +1277,36 @@ mod tests {
     }
 
     #[test]
+    fn frost_sets_a_minecraft_move_scale_per_client() {
+        let mut sim = crate::SimWorld::default();
+        let (id, other) = (ClientId(5), ClientId(6));
+        assert!(!sim.set_minecraft_move_scale(id, 0.5));
+        sim.frame().ensure_player(id);
+        sim.frame().ensure_player(other);
+        assert!(sim.set_minecraft_move_scale(id, 0.75));
+        let slowdown = |sim: &mut crate::SimWorld, id| sim.frame().client_meta(id).map_or(0.0, |meta| meta.minecraft_slowdown);
+        assert_eq!(slowdown(&mut sim, id), 0.25);
+        assert_eq!(slowdown(&mut sim, other), 0.0);
+        assert!(sim.set_minecraft_move_scale(id, 1.0));
+        assert_eq!(slowdown(&mut sim, id), 0.0);
+    }
+
+    #[test]
+    fn leather_boots_mark_a_powder_snow_walker() {
+        use playerstate_iw4::pm_flags::{LAST_STAND, MC_GLIDING, MC_MAY_GLIDE, MC_NO_SKY, MC_POWDER_WALKER};
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(4);
+        assert!(!sim.set_powder_snow_walker(id, true));
+        sim.frame().ensure_player(id).pm_flags = SPRINT_BLOCKED;
+        assert!(sim.set_powder_snow_walker(id, true));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED | MC_POWDER_WALKER);
+        assert!(sim.set_powder_snow_walker(id, false));
+        assert_eq!(flags(&mut sim, id), SPRINT_BLOCKED);
+        let taken = LAST_STAND | MC_GLIDING | MC_MAY_GLIDE | MC_NO_SKY | MC_INVULNERABLE | MC_MAY_FLY | MC_NOCLIP | MC_FLYING;
+        assert_eq!(MC_POWDER_WALKER & (taken | SPRINT_BLOCKED), 0);
+    }
+
+    #[test]
     fn an_elytra_lets_a_player_glide_and_a_rocket_lights_only_while_gliding() {
         use playerstate_iw4::pm_flags::{LAST_STAND, MC_GLIDING, MC_MAY_GLIDE, MC_NO_SKY};
         let mut sim = crate::SimWorld::default();
@@ -1294,5 +1353,19 @@ mod tests {
         assert!(sim.ride(id, None));
         let ps = *sim.frame().player(id).unwrap();
         assert_eq!((ps.origin, ps.pm_flags), ([12.0, 20.0, 70.0], SPRINT_BLOCKED));
+    }
+
+    #[test]
+    fn levitation_and_slow_falling_reach_the_player_state() {
+        let mut sim = crate::SimWorld::default();
+        let id = ClientId(4);
+        assert!(!sim.set_float(id, Some(0), false));
+        sim.frame().ensure_player(id);
+        assert!(sim.set_float(id, Some(2), true));
+        let ps = *sim.frame().player(id).unwrap();
+        assert_eq!(movement_iw4::levitation(&ps), Some(3.0));
+        assert!(movement_iw4::slow_falling(&ps));
+        assert!(sim.set_float(id, None, false));
+        assert_eq!(sim.frame().player(id).map(|ps| ps.mc_float), Some(0));
     }
 }

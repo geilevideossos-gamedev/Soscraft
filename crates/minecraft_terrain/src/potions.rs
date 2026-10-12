@@ -241,6 +241,8 @@ impl PotionEffect {
             "haste" => EffectKind::Haste,
             "mining_fatigue" => EffectKind::MiningFatigue,
             "conduit_power" => EffectKind::ConduitPower,
+            "levitation" => EffectKind::Levitation,
+            "slow_falling" => EffectKind::SlowFalling,
             _ => return None,
         })
     }

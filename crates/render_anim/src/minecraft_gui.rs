@@ -50,16 +50,23 @@ const SPRITE_FOLDERS: [&str; 13] = [
     "tooltip/",
 ];
 
-const LOOSE_SPRITES: [&str; 6] = [
+const LOOSE_SPRITES: [&str; 11] = [
     "container/slot_highlight_back",
     "container/slot_highlight_front",
     "boss_bar/pink_background",
     "boss_bar/pink_progress",
+    "widget/page_forward",
+    "widget/page_forward_highlighted",
+    "widget/page_backward",
+    "widget/page_backward_highlighted",
     "widget/button",
     "widget/button_highlighted",
+    "widget/button_disabled",
 ];
 
-const TEXT_PREFIXES: [&str; 8] = [
+pub(crate) const BOOK_SHEET: &str = "book";
+
+const TEXT_PREFIXES: [&str; 11] = [
     "container.",
     "itemGroup.",
     "inventory.",
@@ -68,6 +75,9 @@ const TEXT_PREFIXES: [&str; 8] = [
     "item.minecraft.smithing_template.",
     "multiplayer.downloadingTerrain",
     "multiplayer.stopSleeping",
+    "book.",
+    "lectern.",
+    "gui.done",
 ];
 
 pub(crate) const PUPPET_HEIGHT: f32 = 60.0 / 70.0;
@@ -213,6 +223,11 @@ fn build_atlas(
         };
         pieces.push((Piece::Sheet(sheet.to_owned()), decode(&bytes)?));
     }
+    let id = ResourceId::parse(&format!("minecraft:gui/{BOOK_SHEET}"))?;
+    let Some(bytes) = packs.texture(&id)? else {
+        anyhow::bail!("missing textures/gui/{BOOK_SHEET}.png");
+    };
+    pieces.push((Piece::Sheet(BOOK_SHEET.to_owned()), decode(&bytes)?));
     let mut names: Vec<String> = LOOSE_SPRITES
         .iter()
         .map(|name| (*name).to_owned())
@@ -598,7 +613,7 @@ mod tests {
         let (atlas, gui) = build_atlas(&packs, &language).unwrap();
         assert_eq!(atlas.width(), ATLAS_WIDTH);
         assert!(atlas.height() <= 2048);
-        assert_eq!(gui.sheets.len(), CONTAINER_SHEETS.len());
+        assert_eq!(gui.sheets.len(), CONTAINER_SHEETS.len() + 1);
         assert!(gui.sheets.contains_key("creative_inventory/tab_item_search"));
         assert_eq!(gui.sprites["container/creative_inventory/tab_top_selected_7"].rect[2..], [26, 32]);
         assert_eq!(gui.sprites["container/creative_inventory/tab_bottom_unselected_1"].rect[2..], [26, 32]);
@@ -636,6 +651,47 @@ mod tests {
         assert!(!gui.texts.contains_key("block.minecraft.stone"));
         let [wx, wy] = gui.white;
         assert_eq!(atlas.get_pixel(wx, wy).0, [255; 4]);
+    }
+
+    #[test]
+    fn the_book_sheet_and_page_sprites_load() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let language = HashMap::from([
+            ("book.pageIndicator".to_owned(), "Page %1$s of %2$s".to_owned()),
+            ("lectern.take_book".to_owned(), "Take Book".to_owned()),
+            ("gui.done".to_owned(), "Done".to_owned()),
+            ("gui.cancel".to_owned(), "Cancel".to_owned()),
+        ]);
+        let (atlas, gui) = build_atlas(&packs, &language).unwrap();
+        let [bx, by] = gui.sheets[BOOK_SHEET];
+        assert!(atlas.width() >= bx + 256 && atlas.height() >= by + 256);
+        let book = decode(&packs.texture(&ResourceId::parse("minecraft:gui/book").unwrap()).unwrap().unwrap()).unwrap();
+        assert_eq!(atlas.get_pixel(bx + 96, by + 96), book.get_pixel(96, 96));
+        for page in ["page_forward", "page_backward"] {
+            assert_eq!(gui.sprites[&format!("widget/{page}")].rect[2..], [23, 13]);
+            assert_eq!(gui.sprites[&format!("widget/{page}_highlighted")].rect[2..], [23, 13]);
+        }
+        assert_eq!(
+            gui.sprites["widget/button"].scaling,
+            McScaling::NineSlice {
+                width: 200,
+                height: 20,
+                border: [3; 4],
+                stretch_inner: false
+            }
+        );
+        assert!(gui.sprites.contains_key("widget/button_highlighted"));
+        assert_eq!(gui.format("book.pageIndicator", &["2", "3"]), "Page 2 of 3");
+        assert_eq!(gui.text("lectern.take_book"), "Take Book");
+        assert_eq!(gui.text("gui.done"), "Done");
+        assert!(!gui.texts.contains_key("gui.cancel"));
     }
 
     #[test]

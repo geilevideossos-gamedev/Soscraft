@@ -78,6 +78,7 @@ pub enum McScreen {
     Anvil,
     Enchanting,
     Creative(crate::McTabKind),
+    Lectern,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -86,6 +87,13 @@ pub enum McOven {
     Furnace,
     Smoker,
     BlastFurnace,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McBook {
+    pub pages: Vec<String>,
+    pub page: usize,
+    pub take: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -197,10 +205,13 @@ pub struct MinecraftUi {
     pub level_loading: Option<McLevelLoading>,
     pub portal_frames: Option<(Handle<Image>, u32)>,
     pub portal_overlay: Option<McPortalOverlay>,
+    pub freeze_outline: Option<Handle<Image>>,
     pub overlay_message: Option<McOverlayMessage>,
     pub sleep: Option<McSleep>,
     pub boss_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
+    pub book: Option<McBook>,
+    pub ui_sounds: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -210,18 +221,20 @@ pub struct McBossBar {
     pub target: f32,
     pub elapsed: f32,
     pub world_fog: bool,
+    pub music: bool,
 }
 
 impl McBossBar {
     pub const LERP_SECONDS: f32 = 0.1;
 
-    pub fn new(name: String, progress: f32, world_fog: bool) -> Self {
+    pub fn new(name: String, progress: f32, world_fog: bool, music: bool) -> Self {
         Self {
             name,
             from: progress,
             target: progress,
             elapsed: Self::LERP_SECONDS,
             world_fog,
+            music,
         }
     }
 
@@ -337,6 +350,8 @@ pub struct McVitals {
     pub on_fire: bool,
     pub eye_in_lava: bool,
     pub withered: bool,
+    pub frozen: f32,
+    pub fully_frozen: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -579,7 +594,8 @@ mod tests {
 
     #[test]
     fn a_boss_bar_slides_to_its_new_progress_over_a_tenth_of_a_second() {
-        let mut bar = McBossBar::new("Ender Dragon".to_owned(), 1.0, true);
+        let mut bar = McBossBar::new("Ender Dragon".to_owned(), 1.0, true, true);
+        assert!(bar.world_fog && bar.music);
         assert_eq!(bar.progress(), 1.0);
         bar.set_progress(0.5);
         assert_eq!(bar.progress(), 1.0);

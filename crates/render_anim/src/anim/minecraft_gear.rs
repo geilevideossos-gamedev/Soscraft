@@ -8,6 +8,8 @@ use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{Atlas, ChunkMesh, ItemVisuals};
 use minecraft_terrain::pack::PackStack;
 
+use crate::anim::minecraft_glide::McGlide;
+
 pub const HEAD: usize = 0;
 pub const NECK: usize = 1;
 pub const SPINE4: usize = 2;
@@ -470,6 +472,7 @@ pub fn body_rig(joints: &[Option<PosedJoint>; JOINTS], origin: [f64; 3], fit: &G
             .map(|side| hand_frame(joints, side, fit).map(|hand| to_terrain(to_block * hand))),
         armor: bound_armor(joints, fit).posed(to_block),
         light: glam::Vec3::from_array(lit_at.to_array()),
+        wings: None,
     }
 }
 
@@ -483,6 +486,7 @@ pub struct GearRig<'a> {
 pub fn gear_rigs<'a>(
     posed: &PosedGearFrame,
     gear: &'a McBodyGear,
+    glide: &McGlide,
     origin: [f64; 3],
     puppet: Option<u32>,
 ) -> Vec<GearRig<'a>> {
@@ -493,7 +497,10 @@ pub fn gear_rigs<'a>(
             Some(GearRig {
                 client: body.client,
                 puppet: puppet == Some(body.client),
-                rig: body_rig(&body.joints, origin, &GEAR_FIT),
+                rig: BodyRig {
+                    wings: glide.pose(body.client).map(|pose| pose.wings),
+                    ..body_rig(&body.joints, origin, &GEAR_FIT)
+                },
                 gear: worn,
             })
         })
@@ -510,6 +517,7 @@ pub struct GearMeshes {
 pub fn gear_meshes(
     posed: &PosedGearFrame,
     gear: &McBodyGear,
+    glide: &McGlide,
     origin: [f64; 3],
     puppet: Option<u32>,
     items: &mut ItemVisuals,
@@ -518,7 +526,7 @@ pub fn gear_meshes(
     light: &SkyLight,
 ) -> GearMeshes {
     let mut meshes = GearMeshes::default();
-    for body in gear_rigs(posed, gear, origin, puppet) {
+    for body in gear_rigs(posed, gear, glide, origin, puppet) {
         let mesh = if body.puppet {
             &mut meshes.puppet
         } else {
@@ -824,13 +832,58 @@ mod tests {
         gear.set(1, torch.clone());
         gear.set(2, torch);
         gear.set(3, BodyGear::default());
-        let rigs = gear_rigs(&posed, &gear, [0.0; 3], Some(2));
+        let rigs = gear_rigs(&posed, &gear, &McGlide::default(), [0.0; 3], Some(2));
         assert_eq!(
             rigs.iter()
                 .map(|rig| (rig.client, rig.puppet))
                 .collect::<Vec<_>>(),
             [(1, false), (2, true)]
         );
+    }
+
+    #[test]
+    fn gear_rigs_take_each_clients_wing_angles_and_rest_without_one() {
+        let mut posed = PosedGearFrame::default();
+        let mut gear = McBodyGear::default();
+        let elytra = BodyGear {
+            armor: [
+                None,
+                Some(minecraft_terrain::body_gear::GearItem {
+                    id: "minecraft:elytra".to_owned(),
+                    glint: false,
+                    dye: None,
+                }),
+                None,
+                None,
+            ],
+            ..BodyGear::default()
+        };
+        for client in [1, 2] {
+            posed.publish(PosedGear {
+                client,
+                joints: [None; JOINTS],
+            });
+            gear.set(client, elytra.clone());
+        }
+        let mut glide = McGlide::default();
+        let flying = crate::anim::minecraft_glide::GlideInput {
+            gliding: true,
+            motion: [1.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            glide.step(0.05, [(1, flying)]);
+        }
+        let rigs = gear_rigs(&posed, &gear, &glide, [0.0; 3], None);
+        let wings = |client: u32| {
+            rigs.iter()
+                .find(|rig| rig.client == client)
+                .map(|rig| rig.rig.wings)
+                .unwrap()
+        };
+        assert_eq!(wings(1), Some(glide.pose(1).unwrap().wings));
+        assert!(wings(1).unwrap().z < -0.3);
+        assert_eq!(wings(2), None);
     }
 
     fn standing() -> [Option<PosedJoint>; JOINTS] {

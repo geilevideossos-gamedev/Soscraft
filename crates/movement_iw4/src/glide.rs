@@ -32,7 +32,8 @@ pub fn prepare(
         && ps.pm_flags & BLOCKED == 0
         && ps.ground_entity_num == ENTITYNUM_NONE
         && !liquid
-        && !climbing;
+        && !climbing
+        && crate::float::levitation(ps).is_none();
     let fresh_jump = cmd.buttons & buttons::JUMP != 0 && old_buttons & buttons::JUMP == 0;
     if !may {
         ps.pm_flags &= !pm_flags::MC_GLIDING;
@@ -72,14 +73,15 @@ pub fn glide_move<C: CollisionBackend>(
         motion = boost(motion, look, boost_ticks);
         ps.mc_rocket_time -= boosted;
     }
+    let gravity = crate::float::glide_gravity(ps, motion[2], GRAVITY);
     let moved = match stuck {
         Some(multiplier) => {
-            let step = glide(motion, look, 1.0);
+            let step = glide_with(motion, look, 1.0, gravity);
             motion = [0.0; 3];
             core::array::from_fn(|k| step[k] * f64::from(multiplier[k]))
         }
         None => {
-            motion = glide(motion, look, ticks);
+            motion = glide_with(motion, look, ticks, gravity);
             motion
         }
     };
@@ -102,9 +104,14 @@ pub fn glide_move<C: CollisionBackend>(
     }
 }
 
+#[cfg(test)]
+fn glide(motion: [f64; 3], look: [f64; 3], ticks: f64) -> [f64; 3] {
+    glide_with(motion, look, ticks, GRAVITY)
+}
+
 #[must_use]
-pub fn glide(motion: [f64; 3], look: [f64; 3], ticks: f64) -> [f64; 3] {
-    let pushed = glide_push(motion, look);
+pub fn glide_with(motion: [f64; 3], look: [f64; 3], ticks: f64, gravity: f64) -> [f64; 3] {
+    let pushed = glide_push(motion, look, gravity);
     core::array::from_fn(|k| {
         let keep = libm::pow(DRAG[k], ticks);
         keep * motion[k] + (pushed[k] - motion[k]) * DRAG[k] * (1.0 - keep) / (1.0 - DRAG[k])
@@ -118,12 +125,12 @@ pub fn boost(motion: [f64; 3], look: [f64; 3], ticks: f64) -> [f64; 3] {
     core::array::from_fn(|k| keep * motion[k] + look[k] * target * (1.0 - keep))
 }
 
-fn glide_push(motion: [f64; 3], look: [f64; 3]) -> [f64; 3] {
+fn glide_push(motion: [f64; 3], look: [f64; 3], gravity: f64) -> [f64; 3] {
     let look_h = libm::sqrt(look[0] * look[0] + look[1] * look[1]);
     let speed_h = libm::sqrt(motion[0] * motion[0] + motion[1] * motion[1]);
     let lift = look_h * look_h;
     let mut m = motion;
-    m[2] += GRAVITY * (-1.0 + lift * 0.75);
+    m[2] += gravity * (-1.0 + lift * 0.75);
     if m[2] < 0.0 && look_h > 0.0 {
         let d = m[2] * -0.1 * lift;
         m[0] += look[0] * d / look_h;
@@ -517,5 +524,28 @@ mod tests {
             let fallen = (top - ps.origin[2]) / WATER_BLOCK;
             assert!(fallen < 0.1, "msec {msec}: {fallen}");
         }
+    }
+
+    #[test]
+    fn levitation_stops_the_glide_and_slow_falling_sinks_it_with_gravity_0_01() {
+        let mut ps = glider(100.0);
+        ps.mc_float = crate::float::encode(Some(0), false);
+        let mut cmd = UserCmd::default();
+        assert!(!prepare(&mut ps, &mut cmd, 0, false, false, 16));
+        assert_eq!(ps.pm_flags & pm_flags::MC_GLIDING, 0);
+        let look = [1.0, 0.0, 0.0];
+        let slow = glide_with([0.0; 3], look, 1.0, 0.01);
+        assert!((slow[2] + 0.01 * 0.25 * 0.9 * DRAG[2]).abs() < 1e-12, "{slow:?}");
+        assert!((glide([0.0; 3], look, 1.0)[2] - 8.0 * slow[2]).abs() < 1e-12);
+        let mut ps = glider(100.0 * WATER_BLOCK);
+        ps.mc_float = crate::float::SLOW_FALLING;
+        glide_frames(&mut ps, 50, 1, [1.0, 0.0, 0.0], None, &Open);
+        assert!(close(per_tick(ps.velocity), slow, 1e-6), "{:?}", per_tick(ps.velocity));
+        let mut ps = glider(100.0 * WATER_BLOCK);
+        ps.mc_float = crate::float::SLOW_FALLING;
+        ps.velocity = [0.0, 0.0, (0.5 * PER_TICK) as f32];
+        glide_frames(&mut ps, 50, 1, [1.0, 0.0, 0.0], None, &Open);
+        let rising = glide([0.0, 0.0, 0.5], look, 1.0);
+        assert!(close(per_tick(ps.velocity), rising, 1e-6), "{:?}", per_tick(ps.velocity));
     }
 }

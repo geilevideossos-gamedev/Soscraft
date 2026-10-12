@@ -418,10 +418,12 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:ender_dragon",
     "minecraft:enderman",
     "minecraft:ghast",
+    "minecraft:glow_item_frame",
     "minecraft:hoglin",
     "minecraft:horse",
     "minecraft:husk",
     "minecraft:iron_golem",
+    "minecraft:item_frame",
     "minecraft:magma_cube",
     "minecraft:mooshroom",
     "minecraft:parched",
@@ -429,6 +431,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:piglin",
     "minecraft:piglin_brute",
     "minecraft:sheep",
+    "minecraft:shulker",
     "minecraft:skeleton",
     "minecraft:slime",
     "minecraft:spider",
@@ -947,6 +950,26 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
+        "minecraft:shulker" => {
+            use minecraftoss_entities::shulker;
+            let mut entity = shulker::Shulker::new(pos);
+            entity.yaw = yaw;
+            entity.persistence_required = persistent;
+            entity.attach_face = shulker::face_of_id(tag.get("AttachFace").and_then(Tag::as_i64).unwrap_or(0));
+            entity.raw_peek = tag.get("Peek").and_then(Tag::as_i64).map_or(0, |peek| i32::from(peek as i8));
+            entity.color = tag.get("Color").and_then(Tag::as_i64).map(|color| color as i8).filter(|color| (0..16).contains(color)).map(|color| color as u8);
+            entity.covered = has_modifier(tag, "minecraft:armor", COVERED_MODIFIER);
+            if let Some(health) = health {
+                entity.health = health;
+            }
+            let id = world.spawn_shulker(entity, no_ai);
+            let entity = world.shulker_mut(id)?;
+            entity.random = random;
+            if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
+                entity.ai.state.follow_range = range;
+            }
+            id
+        }
         "minecraft:fireball" | "minecraft:small_fireball" => {
             let motion = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
             let kind = if kind == "minecraft:small_fireball" { minecraftoss_entities::fireball::FireballKind::Small } else { minecraftoss_entities::fireball::FireballKind::Large { explosion_power: int(tag, "ExplosionPower").unwrap_or(1) } };
@@ -956,6 +979,22 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             fireball.acceleration_power = tag.get("acceleration_power").and_then(Tag::as_f64).unwrap_or(minecraftoss_entities::fireball::ACCELERATION_POWER);
             fireball.left_owner = int(tag, "LeftOwner").unwrap_or(1) != 0;
             return Some(world.spawn_fireball(fireball));
+        }
+        "minecraft:shulker_bullet" => {
+            let double = |key: &str| tag.get(key).and_then(Tag::as_f64).unwrap_or(0.0);
+            let uuid = |key: &str| tag.get(key).and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+            let mut bullet = minecraftoss_entities::shulker_bullet::ShulkerBullet::new(pos);
+            bullet.velocity = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
+            bullet.steps = int(tag, "Steps").unwrap_or(0);
+            bullet.target_delta = DVec3::new(double("TXD"), double("TYD"), double("TZD"));
+            bullet.direction = tag.get("Dir").and_then(Tag::as_i64).map(minecraftoss_entities::shulker::face_of_id);
+            bullet.owner_uuid = uuid("Owner");
+            bullet.target_uuid = uuid("Target");
+            let id = world.spawn_shulker_bullet(bullet);
+            if let Some(own) = uuid("UUID") {
+                world.set_uuid(id, own);
+            }
+            return Some(id);
         }
         "minecraft:splash_potion" => {
             // A potion in flight (`ThrowableItemProjectile.Item`), its thrower
@@ -1268,6 +1307,16 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         let b = &e.blaze;
         add(e.id, "minecraft:blaze", &b.body, b.yaw, b.health, b.persistence_required, Vec::new());
     }
+    for e in world.shulkers() {
+        let s = &e.shulker;
+        let fields = vec![
+            ("AttachFace", Tag::Byte(minecraftoss_entities::shulker::face_id(s.attach_face))),
+            ("Peek", Tag::Byte(s.raw_peek as i8)),
+            ("Color", Tag::Byte(s.color.unwrap_or(minecraftoss_entities::shulker::NO_COLOR) as i8)),
+            ("attributes", with_modifier(originals.get(&e.id), "minecraft:armor", COVERED_MODIFIER, s.covered.then_some(f64::from(minecraftoss_entities::shulker::COVERED_ARMOR)))),
+        ];
+        add(e.id, "minecraft:shulker", &s.body, s.yaw, s.health, s.persistence_required, fields);
+    }
     for e in world.iron_golems() {
         let g = &e.golem;
         let fields = vec![("PlayerCreated", Tag::Byte(i8::from(g.player_created))), ("anger_end_time", Tag::Long(e.ai.state.enderman.anger_end_time))];
@@ -1487,6 +1536,33 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         map.insert("UUID".to_owned(), fresh_uuid(f.id, fireball.position));
         out.push((f.id, Tag::Compound(map)));
     }
+    for b in world.shulker_bullets() {
+        let bullet = &b.bullet;
+        if !keep(bullet.position) || !bullet.alive {
+            continue;
+        }
+        let uuid = |uuid: u128| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec());
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String("minecraft:shulker_bullet".to_owned()));
+        map.insert("Pos".to_owned(), doubles(bullet.position.to_array()));
+        map.insert("Motion".to_owned(), doubles(bullet.velocity.to_array()));
+        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(0.0), Tag::Float(0.0)]));
+        map.insert("UUID".to_owned(), uuid(world.uuid_of(b.id)));
+        map.insert("Steps".to_owned(), Tag::Int(bullet.steps));
+        map.insert("TXD".to_owned(), Tag::Double(bullet.target_delta.x));
+        map.insert("TYD".to_owned(), Tag::Double(bullet.target_delta.y));
+        map.insert("TZD".to_owned(), Tag::Double(bullet.target_delta.z));
+        if let Some(direction) = bullet.direction {
+            map.insert("Dir".to_owned(), Tag::Byte(minecraftoss_entities::shulker::face_id(direction)));
+        }
+        if let Some(owner) = bullet.owner.map(|o| world.uuid_of(o)).or(bullet.owner_uuid) {
+            map.insert("Owner".to_owned(), uuid(owner));
+        }
+        if let Some(target) = bullet.target.map(|t| world.uuid_of(t)).or(bullet.target_uuid) {
+            map.insert("Target".to_owned(), uuid(target));
+        }
+        out.push((b.id, Tag::Compound(map)));
+    }
     // Splash potions in flight (`ThrowableItemProjectile`).
     for p in world.potions() {
         let potion = &p.potion;
@@ -1606,6 +1682,48 @@ fn with_attribute_base(original: Option<&Tag>, id: &str, base: f64) -> Tag {
         _ => {
             let entry: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), Tag::String(id.to_owned())), ("base".to_owned(), Tag::Double(base))].into_iter().collect();
             list.push(Tag::Compound(entry));
+        }
+    }
+    Tag::List(list)
+}
+
+const COVERED_MODIFIER: &str = "minecraft:covered";
+
+fn has_modifier(tag: &Tag, attribute: &str, modifier: &str) -> bool {
+    let Some(entry) = tag.get("attributes").and_then(Tag::as_list).and_then(|list| list.iter().find(|a| a.get("id").and_then(Tag::as_str) == Some(attribute))) else {
+        return false;
+    };
+    entry.get("modifiers").and_then(Tag::as_list).is_some_and(|list| list.iter().any(|m| m.get("id").and_then(Tag::as_str) == Some(modifier)))
+}
+
+fn with_modifier(original: Option<&Tag>, attribute: &str, modifier: &str, amount: Option<f64>) -> Tag {
+    let mut list = original.and_then(|t| t.get("attributes")).and_then(Tag::as_list).map_or_else(Vec::new, <[Tag]>::to_vec);
+    let index = match list.iter().position(|a| a.get("id").and_then(Tag::as_str) == Some(attribute)) {
+        Some(index) => index,
+        None if amount.is_none() => return Tag::List(list),
+        None => {
+            let entry: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), Tag::String(attribute.to_owned())), ("base".to_owned(), Tag::Double(0.0))].into_iter().collect();
+            list.push(Tag::Compound(entry));
+            list.len() - 1
+        }
+    };
+    if let Some(Tag::Compound(entry)) = list.get_mut(index) {
+        let mut modifiers = entry.get("modifiers").and_then(Tag::as_list).map_or_else(Vec::new, <[Tag]>::to_vec);
+        modifiers.retain(|m| m.get("id").and_then(Tag::as_str) != Some(modifier));
+        if let Some(amount) = amount {
+            let added: std::collections::BTreeMap<String, Tag> = [
+                ("id".to_owned(), Tag::String(modifier.to_owned())),
+                ("amount".to_owned(), Tag::Double(amount)),
+                ("operation".to_owned(), Tag::String("add_value".to_owned())),
+            ]
+            .into_iter()
+            .collect();
+            modifiers.push(Tag::Compound(added));
+        }
+        if modifiers.is_empty() {
+            entry.remove("modifiers");
+        } else {
+            entry.insert("modifiers".to_owned(), Tag::List(modifiers));
         }
     }
     Tag::List(list)

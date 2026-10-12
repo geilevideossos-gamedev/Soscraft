@@ -1,4 +1,5 @@
 use minecraftoss_player::GameMode;
+use minecraftoss_world::book;
 use minecraftoss_world::game_rules::{self, Rule, Value};
 
 use crate::reader::{CommandError, StringReader, literal};
@@ -55,6 +56,7 @@ pub struct ItemArg {
     pub enchantments: Vec<(String, i32)>,
     pub potion: Option<String>,
     pub at: usize,
+    pub components: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -366,8 +368,9 @@ fn item(reader: &mut StringReader) -> Result<ItemArg, CommandError> {
     let at = reader.cursor;
     let id = resource_id(reader)?;
     let mut enchantments = Vec::new();
+    let mut books = serde_json::Map::new();
     match reader.peek() {
-        Some('[') => components(reader, &mut enchantments)?,
+        Some('[') => components(reader, &mut enchantments, &mut books)?,
         Some('+') => kit_enchantments(reader, &mut enchantments)?,
         _ => {}
     }
@@ -376,17 +379,23 @@ fn item(reader: &mut StringReader) -> Result<ItemArg, CommandError> {
         enchantments,
         potion: None,
         at,
+        components: (!books.is_empty()).then_some(serde_json::Value::Object(books)),
     })
 }
 
-fn components(reader: &mut StringReader, out: &mut Vec<(String, i32)>) -> Result<(), CommandError> {
+fn components(
+    reader: &mut StringReader,
+    out: &mut Vec<(String, i32)>,
+    books: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CommandError> {
     reader.expect('[')?;
     let mut seen: Vec<String> = Vec::new();
     while reader.can_read() && reader.peek() != Some(']') {
         reader.skip_ws();
         let start = reader.cursor;
         let id = resource_id(reader)?;
-        if !ENCHANTMENT_COMPONENTS.contains(&id.as_str()) {
+        let book = book::CONTENT_COMPONENTS.contains(&id.as_str());
+        if !book && !ENCHANTMENT_COMPONENTS.contains(&id.as_str()) {
             reader.cursor = start;
             return Err(
                 CommandError::new("arguments.item.component.unknown", vec![literal(&id)]).at(start),
@@ -401,7 +410,11 @@ fn components(reader: &mut StringReader, out: &mut Vec<(String, i32)>) -> Result
         reader.skip_ws();
         reader.expect('=')?;
         reader.skip_ws();
-        enchantment_levels(reader, &id, out)?;
+        if book {
+            book_content(reader, &id, books)?;
+        } else {
+            enchantment_levels(reader, &id, out)?;
+        }
         seen.push(id);
         reader.skip_ws();
         if reader.peek() != Some(',') {
@@ -417,6 +430,29 @@ fn components(reader: &mut StringReader, out: &mut Vec<(String, i32)>) -> Result
         }
     }
     reader.expect(']')
+}
+
+fn book_content(
+    reader: &mut StringReader,
+    component: &str,
+    books: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CommandError> {
+    let start = reader.cursor;
+    let text = nbt(reader)?;
+    match book::content(component, &text) {
+        Ok(content) => {
+            books.insert(component.to_owned(), content);
+            Ok(())
+        }
+        Err(reason) => {
+            reader.cursor = start;
+            Err(CommandError::new(
+                "arguments.item.component.malformed",
+                vec![literal(component), literal(reason)],
+            )
+            .at(start))
+        }
+    }
 }
 
 fn enchantment_levels(
@@ -912,6 +948,65 @@ mod tests {
     }
 
     #[test]
+    fn a_written_book_takes_title_author_and_pages() {
+        let item = parse_item(
+            r#"written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one, with a comma.",'Page two',{text:"Three",bold:1b}]}]"#,
+        )
+        .unwrap();
+        assert_eq!(item.id, "minecraft:written_book");
+        assert_eq!(
+            item.components,
+            Some(serde_json::json!({"minecraft:written_book_content": {
+                "title": {"raw": "Test"},
+                "author": "Owner",
+                "pages": [{"raw": "Page one, with a comma."}, {"raw": "Page two"}, {"raw": {"text": "Three", "bold": 1}}]
+            }}))
+        );
+        assert!(item.enchantments.is_empty());
+        let both = parse_item(
+            r#"written_book[enchantments={unbreaking:1},minecraft:written_book_content={title:"T",author:"A"}]"#,
+        )
+        .unwrap();
+        assert_eq!(both.enchantments, levels(&[("minecraft:unbreaking", 1)]));
+        assert_eq!(
+            both.components,
+            Some(serde_json::json!({"minecraft:written_book_content": {"title": {"raw": "T"}, "author": "A"}}))
+        );
+    }
+
+    #[test]
+    fn writable_pages_take_plain_and_raw_strings() {
+        let item = parse_item(r#"writable_book[writable_book_content={pages:["one",{raw:"two"}]}]"#).unwrap();
+        assert_eq!(
+            item.components,
+            Some(serde_json::json!({"minecraft:writable_book_content": {"pages": [{"raw": "one"}, {"raw": "two"}]}}))
+        );
+        assert_eq!(parse_item("writable_book").unwrap().components, None);
+    }
+
+    #[test]
+    fn bad_book_content_is_malformed() {
+        for text in [
+            r#"written_book[written_book_content={author:"A"}]"#,
+            r#"written_book[written_book_content={title:"T",author:"A",generation:9}]"#,
+            r#"writable_book[writable_book_content={pages:[{text:"x"}]}]"#,
+            r#"writable_book[writable_book_content={pages:[1b]}]"#,
+        ] {
+            let error = parse_item(text).unwrap_err();
+            assert_eq!(key(&error), "arguments.item.component.malformed", "{text}");
+            assert_eq!(error.cursor, text.find('{'), "{text}");
+        }
+        assert_eq!(
+            key(&parse_item("writable_book[writable_book_content=[]]").unwrap_err()),
+            "argument.nbt.expected.compound"
+        );
+        assert_eq!(
+            key(&parse_item(r#"written_book[written_book_content={title:"T",author:"A"},written_book_content={title:"T",author:"A"}]"#).unwrap_err()),
+            "arguments.item.component.repeated"
+        );
+    }
+
+    #[test]
     fn item_ids_take_vanilla_resource_location_syntax() {
         let mut reader = StringReader::new("Stone");
         let item = ArgKind::Item.parse(&mut reader, &[]).unwrap();
@@ -921,7 +1016,8 @@ mod tests {
                 id: "minecraft:".into(),
                 enchantments: Vec::new(),
                 potion: None,
-                at: 0
+                at: 0,
+                components: None
             })
         );
         assert_eq!(reader.cursor, 0);

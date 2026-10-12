@@ -191,6 +191,9 @@ impl EntityWorld {
         if let Some(e) = self.piglins.iter().find(|e| e.id == id) {
             return Some((e.piglin.body.clone(), e.piglin.health));
         }
+        if let Some(e) = self.shulkers.iter().find(|e| e.id == id) {
+            return Some((e.shulker.body.clone(), e.shulker.health));
+        }
         None
     }
 
@@ -215,7 +218,7 @@ impl EntityWorld {
             (&mut e.enderman.body, &mut e.random)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             (&mut e.villager.body, &mut e.random)
-        } else if self.iron_golems.iter().any(|e| e.id == id) {
+        } else if self.iron_golems.iter().any(|e| e.id == id) || self.shulkers.iter().any(|e| e.id == id) {
             // `KNOCKBACK_RESISTANCE` 1: knockback has no power left.
             return;
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
@@ -339,6 +342,12 @@ impl EntityWorld {
             e.hurt(amount)
         } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
             e.hurt_armored(amount)
+        } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
+            let hit = e.hurt_armored(amount);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
+            }
+            hit
         } else {
             let e = self.blazes.iter_mut().find(|e| e.id == id)?;
             let hit = e.hurt(amount);

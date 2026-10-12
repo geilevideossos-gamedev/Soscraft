@@ -319,6 +319,7 @@ impl EntityWorld {
                 _ => {}
             }
         }
+        entity.witch.body.float_from(&entity.witch.effects);
         if entity.witch.health > 0.0 {
             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                 entity.ambient_sound_time = -80;
@@ -506,6 +507,9 @@ impl EntityWorld {
         if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
+        if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
         None
     }
 
@@ -531,6 +535,7 @@ impl EntityWorld {
             .or_else(|| self.striders.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.hoglins.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.piglins.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.shulkers.iter().find(|e| e.id == id).map(|e| &e.effects))
     }
 
     /// `HealOrHarmMobEffect.applyInstantaneousEffect` on a mob: the heal,
@@ -608,6 +613,8 @@ impl EntityWorld {
         } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
             let max = e.piglin.max_health();
             (&mut e.piglin.health, max)
+        } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
+            (&mut e.shulker.health, crate::shulker::MAX_HEALTH)
         } else {
             return;
         };
@@ -657,6 +664,8 @@ impl EntityWorld {
         } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, source)
         } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
+            e.hurt(amount)
+        } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
         } else {
             self.piglins.iter_mut().find(|e| e.id == id)?.hurt(amount)

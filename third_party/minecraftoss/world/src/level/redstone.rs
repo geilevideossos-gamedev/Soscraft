@@ -67,6 +67,7 @@ pub enum Kind {
     PressurePlate,
     /// `LightningRodBlock`.
     LightningRod,
+    Lectern,
 }
 
 /// Block ids by redstone behaviour.
@@ -75,6 +76,7 @@ pub struct Kinds {
     pub wire: BlockId,
     pub comparator: BlockId,
     pub redstone_block: BlockId,
+    pub trapped_chest: BlockId,
 }
 
 impl Kinds {
@@ -111,6 +113,7 @@ impl Kinds {
             ("DaylightDetectorBlock", Kind::DaylightDetector),
             ("BasePressurePlateBlock", Kind::PressurePlate),
             ("LightningRodBlock", Kind::LightningRod),
+            ("LecternBlock", Kind::Lectern),
         ];
         let mut by_block = HashMap::new();
         for (id, info) in registries.blocks.blocks() {
@@ -126,7 +129,7 @@ impl Kinds {
             by_block.insert(id, kind);
         }
         let id = |name: &str| registries.blocks.block_by_name(name).expect("vanilla block");
-        Self { by_block, wire: id("minecraft:redstone_wire"), comparator: id("minecraft:comparator"), redstone_block: id("minecraft:redstone_block") }
+        Self { by_block, wire: id("minecraft:redstone_wire"), comparator: id("minecraft:comparator"), redstone_block: id("minecraft:redstone_block"), trapped_chest: id("minecraft:trapped_chest") }
     }
 
     pub fn get(&self, block: BlockId) -> Option<Kind> {
@@ -274,7 +277,7 @@ impl Level<'_> {
                     0
                 }
             }
-            Some(Kind::Lever | Kind::Button(_) | Kind::Observer | Kind::LightningRod) => {
+            Some(Kind::Lever | Kind::Button(_) | Kind::Observer | Kind::LightningRod | Kind::Lectern) => {
                 if self.flag(state, "powered") {
                     15
                 } else {
@@ -284,7 +287,29 @@ impl Level<'_> {
             Some(Kind::RedstoneBlock) => 15,
             Some(Kind::DaylightDetector) => self.int_prop(state, "power"),
             Some(Kind::PressurePlate) => self.plate_signal(state),
+            Some(Kind::Container) => self.trapped_chest_signal(state, pos),
             _ => 0,
+        }
+    }
+
+    fn trapped_chest_signal(&self, state: BlockStateId, pos: BlockPos) -> i32 {
+        if self.block_id(state) == self.kinds.trapped_chest {
+            self.chest_openers.get(&pos).copied().unwrap_or(0).clamp(0, 15)
+        } else {
+            0
+        }
+    }
+
+    pub fn set_chest_openers(&mut self, pos: BlockPos, count: i32) {
+        let count = count.max(0);
+        let old = if count > 0 { self.chest_openers.insert(pos, count) } else { self.chest_openers.remove(&pos) };
+        if old.unwrap_or(0) == count {
+            return;
+        }
+        let block = self.block_id(self.block(pos));
+        if block == self.kinds.trapped_chest {
+            self.update_neighbors_at(pos, block);
+            self.update_neighbors_at(pos.below(), block);
         }
     }
 
@@ -359,6 +384,8 @@ impl Level<'_> {
                     0
                 }
             }
+            Some(Kind::Container) if direction == Direction::Up => self.trapped_chest_signal(state, pos),
+            Some(Kind::Lectern) if direction == Direction::Up => self.own_signal(state, pos),
             Some(Kind::Lever | Kind::Button(_)) => {
                 let towards = connected_direction(self.prop(state, "face"), self.facing(state));
                 if self.flag(state, "powered") && towards == direction {
@@ -455,6 +482,9 @@ impl Level<'_> {
             };
             return Some(self.container_signal(container));
         }
+        if self.redstone_kind(state) == Some(Kind::Lectern) {
+            return Some(self.lectern_signal(pos));
+        }
         self.state_analog_output(state)
     }
 
@@ -521,8 +551,26 @@ impl Level<'_> {
         }
     }
 
+    fn frame_output(&self, pos: BlockPos, direction: Direction) -> Option<i32> {
+        let mut facing = self.frame_outputs.get(&pos)?.iter().filter(|(facing, _)| *facing == direction);
+        let (_, output) = facing.next()?;
+        facing.next().is_none().then_some(*output)
+    }
+
+    pub fn set_frame_outputs(&mut self, pos: BlockPos, outputs: Vec<(Direction, i32)>, notify: bool) {
+        if outputs.is_empty() {
+            self.frame_outputs.remove(&pos);
+        } else {
+            self.frame_outputs.insert(pos, outputs);
+        }
+        if notify {
+            let air = self.registries().blocks.block_of(BlockStateId::AIR);
+            self.update_neighbour_for_output_signal(pos, air);
+        }
+    }
+
     pub(super) fn has_analog_output(&self, state: BlockStateId) -> bool {
-        self.store_of(state).is_some() || self.state_analog_output(state).is_some()
+        self.store_of(state).is_some() || self.state_analog_output(state).is_some() || self.redstone_kind(state) == Some(Kind::Lectern)
     }
 
     // ---- block hooks --------------------------------------------------------
@@ -591,6 +639,7 @@ impl Level<'_> {
             Kind::PistonHead => self.piston_head_after_removal(state, pos),
             Kind::Rail { .. } => self.rail_after_removal(state, pos, moved),
             Kind::LightningRod if self.flag(state, "powered") => self.lightning_rod_update(state, pos),
+            Kind::Lectern if self.flag(state, "powered") => self.update_neighbors_at(pos.below(), block),
             Kind::PressurePlate if !moved && self.plate_signal(state) > 0 => {
                 self.update_neighbors_at(pos, block);
                 self.update_neighbors_at(pos.below(), block);
@@ -733,6 +782,10 @@ impl Level<'_> {
                 }
             }
             Kind::Comparator => self.comparator_refresh(pos, state),
+            Kind::Lectern => {
+                self.set_block_and_update(pos, self.with_bool(state, "powered", false));
+                self.update_neighbors_at(pos.below(), block);
+            }
             Kind::LightningRod => {
                 self.set_block_and_update(pos, self.with_bool(state, "powered", false));
                 self.lightning_rod_update(state, pos);
@@ -1104,9 +1157,8 @@ impl Level<'_> {
         if let Some(analog) = self.analog_output(target_state, target) {
             analog
         } else if input < 15 && self.is_conductor(target_state) {
-            // Item frames are not simulated yet.
             let behind = target.relative(direction, 1);
-            self.analog_output(self.block(behind), behind).unwrap_or(input)
+            self.frame_output(behind, direction).into_iter().chain(self.analog_output(self.block(behind), behind)).max().unwrap_or(input)
         } else {
             input
         }

@@ -54,6 +54,8 @@ pub mod piglin_brain;
 pub mod potion;
 pub mod projectile;
 pub mod sheep;
+pub mod shulker;
+pub mod shulker_bullet;
 pub mod skeleton;
 pub mod sight;
 pub mod skeleton_bow;

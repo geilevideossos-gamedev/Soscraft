@@ -42,8 +42,12 @@ mod piglins;
 pub use piglins::{BarterThrow, PICKUP_DELAY as BARTER_PICKUP_DELAY, PiglinConversion, PiglinEntity};
 mod riding;
 pub use riding::Rider;
+mod shulkers;
+mod shulker_bullets;
 pub use ghasts::GhastEntity;
+pub use shulker_bullets::{BulletPuff, BulletPuffKind, ShulkerBulletEntity};
 pub use blazes::BlazeEntity;
+pub use shulkers::ShulkerEntity;
 pub use fireballs::{FireballBlast, FireballEntity};
 use living::{breathe, dying_travel, fall_damage};
 pub use endermen::EndermanEntity;
@@ -591,6 +595,7 @@ pub enum PlayerHitKind {
     Explosion { knockback: DVec3 },
     Fireball { velocity: DVec3, ignite_ticks: i32 },
     BadRespawnPoint { knockback: DVec3 },
+    ShulkerBullet { velocity: DVec3 },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,
@@ -1909,6 +1914,8 @@ enum EntityKey {
     Strider(u64),
     Hoglin(u64),
     Piglin(u64),
+    Shulker(u64),
+    ShulkerBullet(u64),
 }
 
 impl EntityKey {
@@ -1936,7 +1943,9 @@ impl EntityKey {
             | Self::Blaze(id)
             | Self::Strider(id)
             | Self::Hoglin(id)
-            | Self::Piglin(id) => id,
+            | Self::Piglin(id)
+            | Self::Shulker(id)
+            | Self::ShulkerBullet(id) => id,
         }
     }
 }
@@ -1964,13 +1973,14 @@ pub enum MobHit {
     Strider(u64),
     Hoglin(u64),
     Piglin(u64),
+    Shulker(u64),
 }
 
 impl MobHit {
     /// The hit mob's entity ID.
     pub fn id(self) -> u64 {
         match self {
-            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) => id,
+            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) => id,
         }
     }
 }
@@ -2304,6 +2314,10 @@ pub struct EntityWorld {
     piglins: Vec<PiglinEntity>,
     dimension: String,
     player_controls: Vec<crate::controls::PlayerControls>,
+    shulkers: Vec<ShulkerEntity>,
+    shulker_teleports: Vec<(minecraftoss_player::Pos, minecraftoss_player::Pos)>,
+    shulker_bullets: Vec<ShulkerBulletEntity>,
+    bullet_puffs: Vec<BulletPuff>,
     fireball_fires: Vec<(i32, i32, i32)>,
     /// Where the players look, for endermen.
     player_views: Vec<(u64, crate::enderman::PlayerView)>,
@@ -2422,6 +2436,10 @@ impl Default for EntityWorld {
             piglins: Vec::new(),
             dimension: "minecraft:overworld".to_owned(),
             player_controls: Vec::new(),
+            shulkers: Vec::new(),
+            shulker_teleports: Vec::new(),
+            shulker_bullets: Vec::new(),
+            bullet_puffs: Vec::new(),
             fireball_fires: Vec::new(),
             player_views: Vec::new(),
             player_vitals: Vec::new(),
@@ -2705,7 +2723,11 @@ impl EntityWorld {
                 let e = self.piglins.iter().find(|e| e.id == id)?;
                 (e.piglin.body.clone(), e.piglin.eye_height())
             }
-            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => return None,
+            EntityKey::Shulker(id) => {
+                let e = self.shulkers.iter().find(|e| e.id == id)?;
+                (e.shulker.body.clone(), e.shulker.eye_height())
+            }
+            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => return None,
         })
     }
 
@@ -2736,9 +2758,12 @@ impl EntityWorld {
             EntityKey::Strider(id) => self.striders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.strider.body)),
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.hoglin.body)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.piglin.body)),
-            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
+            EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.shulker.body)),
+            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
         }?;
-        body.velocity += push;
+        if !matches!(key, EntityKey::Shulker(_)) {
+            body.velocity += push;
+        }
         if let (true, EntityKey::Villager(id), Some(attacker)) = (result.applied, key, blaster.villager_attacker()) {
             self.villager_hurt_by(id, attacker);
         }
@@ -2820,6 +2845,11 @@ impl EntityWorld {
             }
             EntityKey::Blaze(id) => {
                 if let Some(e) = self.blazes.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Shulker(id) => {
+                if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
                     e.ai.state.hurt_by = Some((target, e.tick_count));
                 }
             }
@@ -3038,7 +3068,15 @@ impl EntityWorld {
                         let entity = self.piglins.iter().find(|entity| entity.id == id)?;
                         (id, &entity.piglin.body, entity.piglin.health)
                     }
-                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => return None,
+                    EntityKey::Shulker(id) => {
+                        let entity = self.shulkers.iter().find(|entity| entity.id == id)?;
+                        if id == owner_id || entity.shulker.health <= 0.0 {
+                            return None;
+                        }
+                        let (min, max) = entity.shulker.bounding_box();
+                        return Some(ArrowTarget { id, min, max });
+                    }
+                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => return None,
                 };
                 if id == owner_id || health <= 0.0 {
                     return None;
@@ -3252,6 +3290,16 @@ impl EntityWorld {
             outcome = Some(result);
             if result.applied {
                 projectile_knockback(&mut entity.piglin.body, &mut entity.random, hit.velocity);
+            }
+        } else if let Some(entity) = self.shulkers.iter_mut().find(|entity| entity.id == id) {
+            let result = if entity.refuses_arrows() {
+                DamageResult { applied: false, dealt: 0.0, died: false, full: false }
+            } else {
+                entity.hurt_armored(hit.damage)
+            };
+            outcome = Some(result);
+            if result.applied {
+                entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
             }
         }
         if resisted_knockback {
@@ -3623,6 +3671,9 @@ impl EntityWorld {
         for e in &self.piglins {
             add(e.id, e.piglin.kind.type_id(), &e.piglin.body, e.piglin.eye_height(), e.piglin.health > 0.0, e.piglin.is_baby());
         }
+        for e in &self.shulkers {
+            add(e.id, "minecraft:shulker", &e.shulker.body, e.shulker.eye_height(), e.shulker.health > 0.0, false);
+        }
         out
     }
 
@@ -3719,6 +3770,12 @@ impl EntityWorld {
             (e.hurt(damage), false)
         } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == victim) {
             (e.hurt_armored(damage), false)
+        } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == victim) {
+            let hit = e.hurt_armored(damage);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            (hit, true)
         } else {
             let e = self.blazes.iter_mut().find(|e| e.id == victim)?;
             let hit = e.hurt(damage);
@@ -4076,6 +4133,13 @@ impl EntityWorld {
             }
             deaths.push((order, death));
         }
+        for e in &mut self.shulkers {
+            let Some((order, mut death)) = death_of(e.id, &mut e.shulker.damage, "minecraft:shulker", Some("minecraft:shulker"), plain) else { continue };
+            if earns(&death, true) {
+                death.experience = crate::shulker::EXPERIENCE;
+            }
+            deaths.push((order, death));
+        }
         deaths.sort_by_key(|&(order, _)| order);
         if !mob_drops {
             return Vec::new();
@@ -4151,8 +4215,14 @@ impl EntityWorld {
         if let Some(e) = self.piglins.iter().find(|e| e.id == id) {
             return Some(e.piglin.kind.type_id());
         }
+        if self.shulkers.iter().any(|e| e.id == id) {
+            return Some("minecraft:shulker");
+        }
         if let Some(e) = self.fireballs.iter().find(|e| e.id == id) {
             return Some(e.fireball.kind.type_id());
+        }
+        if self.shulker_bullets.iter().any(|e| e.id == id) {
+            return Some("minecraft:shulker_bullet");
         }
         None
     }
@@ -4179,6 +4249,7 @@ impl EntityWorld {
             .chain(self.striders.iter_mut().map(|e| &mut e.strider.body))
             .chain(self.hoglins.iter_mut().map(|e| &mut e.hoglin.body))
             .chain(self.piglins.iter_mut().map(|e| &mut e.piglin.body))
+            .chain(self.shulkers.iter_mut().map(|e| &mut e.shulker.body))
     }
 
     /// A mob's body, by ID (a loaded entity's motion and ground contact).
@@ -4223,6 +4294,8 @@ impl EntityWorld {
             Some(&mut e.hoglin.body)
         } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
             Some(&mut e.piglin.body)
+        } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.shulker.body)
         } else {
             None
         }
@@ -4250,6 +4323,7 @@ impl EntityWorld {
             .or_else(|| self.striders.iter().find(|e| e.id == id).map(|e| &e.strider.damage))
             .or_else(|| self.hoglins.iter().find(|e| e.id == id).map(|e| &e.hoglin.damage))
             .or_else(|| self.piglins.iter().find(|e| e.id == id).map(|e| &e.piglin.damage))
+            .or_else(|| self.shulkers.iter().find(|e| e.id == id).map(|e| &e.shulker.damage))
     }
 
     /// A mob's damage state, by ID.
@@ -4294,6 +4368,8 @@ impl EntityWorld {
             Some(&mut e.hoglin.damage)
         } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
             Some(&mut e.piglin.damage)
+        } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.shulker.damage)
         } else {
             None
         }
@@ -4346,6 +4422,9 @@ impl EntityWorld {
         }
         for e in &mut self.piglins {
             resolve_voices(&mut out, &mut e.voices, e.piglin.kind.family(), 1.0, "hostile_volume");
+        }
+        for e in &mut self.shulkers {
+            resolve_voices(&mut out, &mut e.voices, "shulker", 1.0, "hostile_volume");
         }
         for e in &mut self.villagers {
             resolve_voices(&mut out, &mut e.voices, "villager", 1.0, "friendly_volume");
@@ -4402,7 +4481,7 @@ impl EntityWorld {
 
     /// Every living entity's ID, in world order (arrows excluded).
     pub fn mob_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.order.iter().filter(|key| !matches!(key, EntityKey::Arrow(_) | EntityKey::Fireball(_))).map(|key| key.id())
+        self.order.iter().filter(|key| !matches!(key, EntityKey::Arrow(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_))).map(|key| key.id())
     }
     pub fn set_recipe_book(&mut self, recipes: Arc<RecipeBook>) {
         self.recipes = Some(recipes);
@@ -4708,6 +4787,8 @@ impl EntityWorld {
             .chain(self.striders.iter().map(|e| (e.id, e.strider.body.position)))
             .chain(self.hoglins.iter().map(|e| (e.id, e.hoglin.body.position)))
             .chain(self.piglins.iter().map(|e| (e.id, e.piglin.body.position)))
+            .chain(self.shulkers.iter().map(|e| (e.id, e.shulker.body.position)))
+            .chain(self.shulker_bullets.iter().map(|e| (e.id, e.bullet.position)))
     }
 
     /// The burning mobs (`displayFireAnimation`), for their flames: where
@@ -4737,6 +4818,7 @@ impl EntityWorld {
         self.ghasts.iter().for_each(|e| add(e.previous_position, &e.ghast.body));
         self.hoglins.iter().filter(|e| !e.hoglin.fire_immune()).for_each(|e| add(e.previous_position, &e.hoglin.body));
         self.piglins.iter().for_each(|e| add(e.previous_position, &e.piglin.body));
+        self.shulkers.iter().for_each(|e| add(e.previous_position, &e.shulker.body));
         for e in &self.blazes {
             if e.blaze.charged || e.blaze.body.fire_ticks > 0 {
                 out.push((e.previous_position, e.blaze.body.position, e.blaze.body.width, e.blaze.body.height));
@@ -4775,6 +4857,8 @@ impl EntityWorld {
         let striders: Vec<StriderEntity> = self.striders.iter().filter(|e| keep(e.strider.body.position)).cloned().collect();
         let hoglins: Vec<HoglinEntity> = self.hoglins.iter().filter(|e| keep(e.hoglin.body.position)).cloned().collect();
         let piglins: Vec<PiglinEntity> = self.piglins.iter().filter(|e| keep(e.piglin.body.position)).cloned().collect();
+        let shulkers: Vec<ShulkerEntity> = self.shulkers.iter().filter(|e| keep(e.shulker.body.position)).cloned().collect();
+        let shulker_bullets: Vec<ShulkerBulletEntity> = self.shulker_bullets.iter().filter(|e| keep(e.bullet.position)).cloned().collect();
         let mut copy = Self {
             bats,
             zombies,
@@ -4795,6 +4879,10 @@ impl EntityWorld {
             piglins,
             dimension: self.dimension.clone(),
             player_controls: self.player_controls.clone(),
+            shulkers,
+            shulker_teleports: Vec::new(),
+            shulker_bullets,
+            bullet_puffs: Vec::new(),
             fireball_fires: Vec::new(),
             player_views: self.player_views.clone(),
             player_vitals: self.player_vitals.clone(),
@@ -4913,6 +5001,7 @@ impl EntityWorld {
         out.extend(self.striders.iter().map(|e| entry(e.id, "minecraft:strider", &e.strider.body, e.strider.persistence_required)));
         out.extend(self.hoglins.iter().map(|e| entry(e.id, e.hoglin.kind.type_id(), &e.hoglin.body, e.hoglin.persistence_required)));
         out.extend(self.piglins.iter().map(|e| entry(e.id, e.piglin.kind.type_id(), &e.piglin.body, e.piglin.persistence_required)));
+        out.extend(self.shulkers.iter().map(|e| entry(e.id, "minecraft:shulker", &e.shulker.body, e.shulker.persistence_required)));
         out
     }
 
@@ -4976,6 +5065,8 @@ impl EntityWorld {
         self.striders.retain_mut(|e| !check(e.id, e.strider.body.position, e.strider.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
         self.hoglins.retain_mut(|e| !check(e.id, e.hoglin.body.position, e.hoglin.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.piglins.retain_mut(|e| !check(e.id, e.piglin.body.position, e.piglin.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.shulkers.retain_mut(|e| !check(e.id, e.shulker.body.position, e.shulker.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
+        self.shulker_bullets.retain(|e| !(peaceful && listed(e.bullet.position)));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
         self.prune_riding();
@@ -5009,6 +5100,8 @@ impl EntityWorld {
         self.striders.retain(|e| !remove(e.strider.body.position));
         self.hoglins.retain(|e| !remove(e.hoglin.body.position));
         self.piglins.retain(|e| !remove(e.piglin.body.position));
+        self.shulkers.retain(|e| !remove(e.shulker.body.position));
+        self.shulker_bullets.retain(|e| !remove(e.bullet.position));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
         self.prune_riding();
@@ -5082,6 +5175,7 @@ impl EntityWorld {
                             _ => {}
                         }
                     }
+                    entity.bat.body.float_from(&entity.effects);
                     if entity.bat.health > 0.0 {
                         if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                             entity.ambient_sound_time = -80;
@@ -5160,6 +5254,7 @@ impl EntityWorld {
                                 _ => {}
                             }
                         }
+                        entity.zombie.body.float_from(&entity.effects);
                         if entity.zombie.health > 0.0 {
                             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                                 entity.ambient_sound_time = -80;
@@ -5369,6 +5464,7 @@ impl EntityWorld {
                                 _ => {}
                             }
                         }
+                        entity.skeleton.body.float_from(&entity.effects);
                         if entity.skeleton.health > 0.0 {
                             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                                 entity.ambient_sound_time = -80;
@@ -5485,6 +5581,7 @@ impl EntityWorld {
                                     _ => {}
                                 }
                             }
+                            entity.creeper.body.float_from(&entity.effects);
                             if entity.creeper.health > 0.0 {
                                 // `Creeper` has no ambient sound, so `makeSound`
                                 // draws no pitch.
@@ -5553,6 +5650,7 @@ impl EntityWorld {
                                 _ => {}
                             }
                         }
+                        entity.spider.body.float_from(&entity.effects);
                         if entity.spider.health > 0.0 {
                             if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                                 entity.ambient_sound_time = -80;
@@ -5642,6 +5740,14 @@ impl EntityWorld {
                 }
                 EntityKey::Piglin(id) => {
                     self.tick_piglin(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::Shulker(id) => {
+                    self.tick_shulker(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::ShulkerBullet(id) => {
+                    self.tick_shulker_bullet(id, world, players);
                     continue;
                 }
                 EntityKey::Arrow(id) => {
@@ -5739,6 +5845,7 @@ impl EntityWorld {
                             _ => {}
                         }
                     }
+                    entity.chicken.body.float_from(&entity.effects);
                     if entity.chicken.health > 0.0 {
                         if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                             entity.ambient_sound_time = -120;
@@ -6015,6 +6122,7 @@ impl EntityWorld {
                             _ => {}
                         }
                     }
+                    entity.pig.body.float_from(&entity.effects);
                     if entity.pig.health > 0.0 {
                         if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                             entity.ambient_sound_time = -120;
@@ -6282,6 +6390,7 @@ impl EntityWorld {
                             _ => {}
                         }
                     }
+                    entity.body.float_from(&entity.effects);
                     if entity.health > 0.0 {
                         if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
                             entity.ambient_sound_time = -120;
@@ -6623,6 +6732,7 @@ impl EntityWorld {
                     _ => {}
                 }
             }
+            entity.cow.body.float_from(&entity.effects);
             // Mob.baseTick consumes its ambient-sound trial while alive.
             if entity.cow.health > 0.0 {
                 if (entity.random.next_int(1000) as i32) < entity.ambient_sound_time {
@@ -7003,6 +7113,8 @@ impl EntityWorld {
         self.striders.retain(|entity| entity.strider.damage.death_ticks < 20);
         self.hoglins.retain(|entity| entity.hoglin.damage.death_ticks < 20);
         self.piglins.retain(|entity| entity.piglin.damage.death_ticks < 20);
+        self.shulkers.retain(|entity| entity.shulker.damage.death_ticks < 20);
+        self.shulker_bullets.retain(|entity| entity.bullet.alive);
         let alive_ids: HashSet<_> = self
             .bats
             .iter()
@@ -7029,6 +7141,8 @@ impl EntityWorld {
             .chain(self.striders.iter().map(|entity| entity.id))
             .chain(self.hoglins.iter().map(|entity| entity.id))
             .chain(self.piglins.iter().map(|entity| entity.id))
+            .chain(self.shulkers.iter().map(|entity| entity.id))
+            .chain(self.shulker_bullets.iter().map(|entity| entity.id))
             .collect();
         self.sections.retain_mobs(|id| alive_ids.contains(&id));
         self.order.retain(|key| match key {
@@ -7054,7 +7168,9 @@ impl EntityWorld {
             | EntityKey::Blaze(id)
             | EntityKey::Strider(id)
             | EntityKey::Hoglin(id)
-            | EntityKey::Piglin(id) => alive_ids.contains(id),
+            | EntityKey::Piglin(id)
+            | EntityKey::Shulker(id)
+            | EntityKey::ShulkerBullet(id) => alive_ids.contains(id),
         });
         self.prune_riding();
     }
@@ -7182,7 +7298,7 @@ impl EntityWorld {
                     }
                     (MobHit::Wolf(id), &entity.wolf.body)
                 }
-                EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => continue,
+                EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => continue,
                 EntityKey::Ghast(id) => {
                     let Some(entity) = self.ghasts.iter().find(|entity| entity.id == id) else {
                         continue;
@@ -7227,6 +7343,21 @@ impl EntityWorld {
                         continue;
                     }
                     (MobHit::Piglin(id), &entity.piglin.body)
+                }
+                EntityKey::Shulker(id) => {
+                    let Some(entity) = self.shulkers.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.shulker.health <= 0.0 {
+                        continue;
+                    }
+                    let (min, max) = entity.shulker.bounding_box();
+                    if let Some(distance) = ray_box(eye, look, min, max, reach) {
+                        if nearest.is_none_or(|(_, best)| distance < best) {
+                            nearest = Some((MobHit::Shulker(id), distance));
+                        }
+                    }
+                    continue;
                 }
                 EntityKey::Villager(id) => {
                     let Some(entity) = self.villagers.iter().find(|entity| entity.id == id) else {
@@ -7841,5 +7972,36 @@ mod tests {
         assert!(!deaths[0].context.killed_by_player);
         assert_eq!(deaths[0].experience, 0);
         assert!(world.player_blast(Some(7), 999, 40.0, DVec3::ZERO, 1.0).is_none());
+    }
+
+    #[test]
+    fn levitation_lifts_a_zombie_and_slow_falling_lets_it_down_unhurt() {
+        let mut world = EntityWorld::default();
+        let floater = world.spawn_zombie_active(Zombie::new(DVec3::new(0.5, 1.0, 0.5)), 0.0);
+        assert!(world.add_mob_effect(floater, crate::effects::EffectInstance::new(MobEffect::Levitation, 300, 0)));
+        let sinker = world.spawn_zombie_active(Zombie::new(DVec3::new(20.5, 300.0, 0.5)), 0.0);
+        assert!(world.add_mob_effect(sinker, crate::effects::EffectInstance::new(MobEffect::SlowFalling, 9000, 0)));
+        let faller = world.spawn_zombie_active(Zombie::new(DVec3::new(40.5, 30.0, 0.5)), 0.0);
+        let zombie = |world: &EntityWorld, id: u64| world.zombies().iter().find(|e| e.id == id).map(|e| (e.zombie.body.position.y, e.zombie.body.velocity.y, e.zombie.health));
+        for _ in 0..200 {
+            world.tick(&mut Floor);
+        }
+        let risen = zombie(&world, floater).unwrap().0 - 1.0;
+        assert!((risen - 8.864).abs() < 0.01, "{risen}");
+        for _ in 0..400 {
+            world.tick(&mut Floor);
+            let (_, velocity, _) = zombie(&world, sinker).unwrap();
+            assert!(velocity >= -0.4901, "{velocity}");
+        }
+        let (y, _, health) = zombie(&world, sinker).unwrap();
+        assert!(y < 300.0 - 150.0, "{y}");
+        assert_eq!(health, 20.0);
+        for _ in 0..400 {
+            world.tick(&mut Floor);
+        }
+        let (y, _, health) = zombie(&world, sinker).unwrap();
+        assert!((y - 1.0).abs() < 1e-6, "{y}");
+        assert_eq!(health, 20.0);
+        assert!(zombie(&world, faller).is_none_or(|(_, _, health)| health < 20.0), "a plain fall from 29 blocks hurts");
     }
 }

@@ -52,6 +52,7 @@ pub enum MonsterKind {
     WitherSkeleton,
     Ghast,
     Blaze,
+    Shulker,
 }
 
 impl MonsterKind {
@@ -71,6 +72,7 @@ impl MonsterKind {
             Self::WitherSkeleton => &WITHER_SKELETON_GOAL_NAMES,
             Self::Ghast => &GHAST_GOAL_NAMES,
             Self::Blaze => &BLAZE_GOAL_NAMES,
+            Self::Shulker => &SHULKER_GOAL_NAMES,
         }
     }
 
@@ -89,6 +91,7 @@ impl MonsterKind {
             Self::WitherSkeleton => &WITHER_SKELETON_TARGET_NAMES,
             Self::Ghast => &GHAST_TARGET_NAMES,
             Self::Blaze => &BLAZE_TARGET_NAMES,
+            Self::Shulker => &SHULKER_TARGET_NAMES,
         }
     }
 }
@@ -145,6 +148,8 @@ pub const GHAST_GOAL_NAMES: [&str; 3] = ["RandomFloatAroundGoal", "GhastLookGoal
 pub const GHAST_TARGET_NAMES: [&str; 1] = ["NearestAttackableTargetGoal"];
 pub const BLAZE_GOAL_NAMES: [&str; 5] = ["BlazeAttackGoal", "MoveTowardsRestrictionGoal", "WaterAvoidingRandomStrollGoal", "LookAtPlayerGoal", "RandomLookAroundGoal"];
 pub const BLAZE_TARGET_NAMES: [&str; 2] = ["HurtByTargetGoal", "NearestAttackableTargetGoal"];
+pub const SHULKER_GOAL_NAMES: [&str; 4] = ["LookAtPlayerGoal", "ShulkerAttackGoal", "ShulkerPeekGoal", "RandomLookAroundGoal"];
+pub const SHULKER_TARGET_NAMES: [&str; 2] = ["HurtByTargetGoal", "ShulkerNearestAttackGoal"];
 pub const WITHER_SKELETON_TARGET_NAMES: [&str; 5] =
     ["NearestAttackableTargetGoal", "HurtByTargetGoal", "NearestAttackableTargetGoal", "NearestAttackableTargetGoal", "NearestAttackableTargetGoal"];
 
@@ -349,6 +354,7 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:zoglin"
             | "minecraft:piglin"
             | "minecraft:piglin_brute"
+            | "minecraft:shulker"
     )
 }
 
@@ -513,6 +519,7 @@ pub struct MonsterGoalContext {
     pub can_break_doors: bool,
     pub ghast: GhastState,
     pub blaze: BlazeState,
+    pub shulker: ShulkerState,
 }
 
 impl MonsterGoalContext {
@@ -713,7 +720,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -786,6 +793,7 @@ impl MonsterAi {
             MonsterKind::Wolf => crate::wolf::FOLLOW_RANGE,
             MonsterKind::Ghast => crate::ghast::FOLLOW_RANGE,
             MonsterKind::Blaze => crate::blaze::FOLLOW_RANGE,
+            MonsterKind::Shulker => FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -824,6 +832,7 @@ impl MonsterAi {
             MonsterKind::WitherSkeleton => (wither_skeleton_goals(), wither_skeleton_targets(), 2.1),
             MonsterKind::Ghast => (ghast_goals(), ghast_targets(), crate::ghast::EYE_HEIGHT),
             MonsterKind::Blaze => (blaze_goals(), blaze_targets(), crate::blaze::EYE_HEIGHT),
+            MonsterKind::Shulker => (shulker_goals(), shulker_targets(), crate::shulker::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -891,6 +900,7 @@ impl MonsterAi {
                 can_break_doors: false,
                 ghast: GhastState::default(),
                 blaze: BlazeState::default(),
+                shulker: ShulkerState::default(),
             },
             move_control: MoveControl::default(),
             body_rotation: BodyRotation::new(yaw),
@@ -1404,6 +1414,149 @@ impl Goal<MonsterGoalContext> for BlazeAttackGoal {
         } else if ctx.blaze.last_seen < 5 {
             ctx.blaze.wanted = Some(target.position);
         }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ShulkerState {
+    pub can_stay: bool,
+    pub peeks: Vec<i32>,
+    pub shots: Vec<(Target, f32)>,
+}
+
+pub fn shulker_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(1, ShulkerLookAtPlayerGoal { inner: LookAtPlayerGoal { range: 8.0 } });
+    selector.add(4, ShulkerAttackGoal { attack_time: 0 });
+    selector.add(7, ShulkerPeekGoal { peek_time: 0 });
+    selector.add(8, RandomLookGoal);
+    selector
+}
+
+pub fn shulker_targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: false });
+    selector.add(2, ShulkerTargetGoal { inner: NearestTargetGoal::every(Prey::Player, true, 5) });
+    selector
+}
+
+#[derive(Clone)]
+struct ShulkerLookAtPlayerGoal {
+    inner: LookAtPlayerGoal,
+}
+impl Goal<MonsterGoalContext> for ShulkerLookAtPlayerGoal {
+    fn controls(&self) -> Controls {
+        self.inner.controls()
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.inner.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.inner.can_continue(ctx, world)
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.inner.start(ctx);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.inner.stop(ctx);
+    }
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(target) = ctx.look_at_player.tick(&ctx.players) {
+            let level = DVec3::new(target.x, ctx.eye().y, target.z);
+            ctx.look_control.set_look_at_with_limits(level, 10.0, 180.0);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ShulkerAttackGoal {
+    attack_time: i32,
+}
+impl Goal<MonsterGoalContext> for ShulkerAttackGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Look])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.target().is_some_and(|target| target.alive) && ctx.difficulty != 0
+    }
+    fn every_tick(&self) -> bool {
+        true
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.attack_time = 20;
+        ctx.shulker.peeks.push(100);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.shulker.peeks.push(0);
+    }
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        if ctx.difficulty == 0 {
+            return;
+        }
+        self.attack_time -= 1;
+        let Some(target) = ctx.target() else { return };
+        let eye = target.position + DVec3::new(0.0, f64::from(target.eye_height), 0.0);
+        ctx.look_control.set_look_at_with_limits(eye, 180.0, 180.0);
+        if ctx.body.position.distance_squared(target.position) < 400.0 {
+            if self.attack_time <= 0 {
+                self.attack_time = 20 + ctx.random.next_int(10) as i32 * 20 / 2;
+                let pitch = (ctx.random.next_float() - ctx.random.next_float()) * 0.2 + 1.0;
+                ctx.shulker.shots.push((target.target, pitch));
+            }
+        } else {
+            ctx.clear_target();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ShulkerPeekGoal {
+    peek_time: i32,
+}
+impl Goal<MonsterGoalContext> for ShulkerPeekGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.target().is_none() && ctx.random.next_int(20) == 0 && ctx.shulker.can_stay
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.target().is_none() && self.peek_time > 0
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        let delay = 20 * (1 + ctx.random.next_int(3) as i32);
+        self.peek_time = (delay + 1) / 2;
+        ctx.shulker.peeks.push(30);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        if ctx.target().is_none() {
+            ctx.shulker.peeks.push(0);
+        }
+    }
+    fn tick(&mut self, _ctx: &mut MonsterGoalContext) {
+        self.peek_time -= 1;
+    }
+}
+
+#[derive(Clone)]
+struct ShulkerTargetGoal {
+    inner: NearestTargetGoal,
+}
+impl Goal<MonsterGoalContext> for ShulkerTargetGoal {
+    fn controls(&self) -> Controls {
+        self.inner.controls()
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        ctx.difficulty != 0 && self.inner.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.inner.can_continue(ctx, world)
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.inner.start(ctx);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.inner.stop(ctx);
     }
 }
 

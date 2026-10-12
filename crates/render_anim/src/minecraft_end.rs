@@ -274,7 +274,7 @@ fn show_boss_bar(ui: &mut MinecraftUi, progress: Option<f32>, seconds: f64) {
             .get(DRAGON_NAME)
             .cloned()
             .unwrap_or_else(|| DRAGON_NAME.to_owned());
-        ui.boss_bars.push(McBossBar::new(name, progress, true));
+        ui.boss_bars.push(McBossBar::new(name, progress, true, true));
     }
     for bar in &mut ui.boss_bars {
         bar.set_progress(progress);
