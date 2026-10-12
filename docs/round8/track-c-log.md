@@ -1129,3 +1129,26 @@ Previous commit: 76c4be1a
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:torch*64
 ```
+
+### 45. A gliding MW2 body looks ahead and stretches its legs like vanilla
+
+Previous commit: 00cbca7c
+
+- **Changed:** `render_anim` `anim/minecraft_glide.rs` `apply_glide_limbs`, run in the pose closure before the root tilt (`apply_glide` now does both). It composes the pose once to read each bone's model-space rotation `W` and turns a bone by a rotation `R` given in the body frame as `local' = local · W⁻¹ · R · W`, which keeps the joint where it is and needs no assumption about the MW2 bone axes (control bones are left alone, since `compose` drops their own rotation).
+  - Head: `j_neck` turns back by 45 degrees times the fall-flying scale about the body's left axis (vanilla `HumanoidModel.setupAnim` sets `head.xRot = -π/4` while fall flying), so the face looks ahead along the flight instead of at the ground.
+  - Legs: each hip turns by the arc from its hip-to-knee direction to the body's down axis, then (after a second compose) each knee by the arc from knee to ankle, each eased from no turn by the scale, so the legs trail straight like vanilla's, whose swing is divided by the flight speed.
+  - The arms keep MW2's grip (the gun or the Minecraft item), as on the ground.
+- **Tests:** `minecraft_glide`: `the_head_tilts_back_45_degrees_from_the_spine_at_full_scale` (from a bent synthetic pose: the neck stays, the head swings back exactly 45 degrees about the body's left axis, 22.5 at half scale, the spine is untouched), `the_legs_trail_straight_down_the_body_at_full_scale` (hip to knee and knee to ankle along body -Z within 1e-3 on both sides, the hips stay; with the full glide at pitch 20 the legs follow the tilted long axis), `nothing_moves_at_scale_zero` (also with a roll alone).
+- **Decisions:**
+  - This is its own commit because it is the most calibration-sensitive part: if the screenshots show it wrong, it can be reverted without losing commits 41 to 44.
+  - The turns use the bones' posed rotations, so they work on top of whatever the MW2 in-air anim does with the legs.
+- **Test steps:** (survival; kit below)
+  1. Put the elytra in the chest slot, press F5 twice for the front view, `/tp ~ ~40 ~` and press jump in the air. While gliding the head looks ahead along the flight and the legs trail straight behind the body (**1**).
+  2. Back view (F5 once more): the legs hang straight from the hips, not bent at the knees as in a jump (**2**).
+  3. Land: the head and legs are back to normal at once.
+  4. Say if the head bends too far or the legs cross, split or stick out sideways.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:cobblestone*64
+```

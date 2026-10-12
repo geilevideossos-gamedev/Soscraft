@@ -168,7 +168,74 @@ pub fn apply_glide_root(locals: &mut [Local], pose: GlidePose) {
     root.rotation = turned.normalize().to_array();
 }
 
-pub fn apply_glide(_dobj: &xmodel_runtime::DObj, locals: &mut [Local], pose: GlidePose) {
+const HEAD_BACK_DEG: f32 = -45.0;
+const NECK: &str = "j_neck";
+const LEGS: [[&str; 3]; 2] = [
+    ["j_hip_ri", "j_knee_ri", "j_ankle_ri"],
+    ["j_hip_le", "j_knee_le", "j_ankle_le"],
+];
+
+fn turn_bone(locals: &mut [Local], world: &[Mat4], bone: usize, turn: Quat) {
+    let (Some(local), Some(posed)) = (locals.get_mut(bone), world.get(bone)) else {
+        return;
+    };
+    if local.control {
+        return;
+    }
+    let [x, y, z, w] = local.rotation;
+    let own = Quat::from_xyzw(x, y, z, w);
+    let rotation = posed.to_scale_rotation_translation().1;
+    local.rotation = (own * rotation.inverse() * turn * rotation)
+        .normalize()
+        .to_array();
+}
+
+fn straighten(
+    dobj: &xmodel_runtime::DObj,
+    locals: &mut [Local],
+    joints: [usize; 2],
+    down: Vec3,
+    scale: f32,
+) {
+    let world = dobj.compose(locals, Mat4::IDENTITY);
+    let at = |bone: usize| world.get(bone).map(|posed| posed.w_axis.truncate());
+    let (Some(from), Some(to)) = (at(joints[0]), at(joints[1])) else {
+        return;
+    };
+    let Some(along) = (to - from).try_normalize() else {
+        return;
+    };
+    let arc = Quat::from_rotation_arc(along, down);
+    turn_bone(locals, &world, joints[0], Quat::IDENTITY.slerp(arc, scale));
+}
+
+pub fn apply_glide_limbs(dobj: &xmodel_runtime::DObj, locals: &mut [Local], pose: GlidePose) {
+    if pose.scale <= 0.0 || locals.is_empty() {
+        return;
+    }
+    let world = dobj.compose(locals, Mat4::IDENTITY);
+    let body = world[0].to_scale_rotation_translation().1;
+    if let Some(neck) = dobj.find(NECK) {
+        let back = (HEAD_BACK_DEG * pose.scale).to_radians();
+        turn_bone(
+            locals,
+            &world,
+            neck,
+            Quat::from_axis_angle(body * Vec3::Y, back),
+        );
+    }
+    let down = body * Vec3::NEG_Z;
+    for leg in LEGS {
+        let [Some(hip), Some(knee), Some(ankle)] = leg.map(|name| dobj.find(name)) else {
+            continue;
+        };
+        straighten(dobj, locals, [hip, knee], down, pose.scale);
+        straighten(dobj, locals, [knee, ankle], down, pose.scale);
+    }
+}
+
+pub fn apply_glide(dobj: &xmodel_runtime::DObj, locals: &mut [Local], pose: GlidePose) {
+    apply_glide_limbs(dobj, locals, pose);
     apply_glide_root(locals, pose);
 }
 
@@ -448,5 +515,96 @@ mod tests {
         let spine = at(&world, &dobj, "j_spine4");
         let want = Vec3::new(45f32.to_radians().sin(), 0.0, 45f32.to_radians().cos()) * 60.0;
         assert!(spine.abs_diff_eq(want, 1e-3), "{spine}");
+    }
+
+    fn bent() -> (xmodel_runtime::DObj, Vec<Local>) {
+        let dobj = body();
+        let mut locals = dobj.bind_locals();
+        let world = dobj.compose(&locals, Mat4::IDENTITY);
+        for (name, turn) in [
+            ("j_hip_ri", Quat::from_rotation_y(0.6)),
+            ("j_knee_ri", Quat::from_rotation_y(-1.6)),
+            ("j_hip_le", Quat::from_rotation_x(0.3)),
+            ("j_knee_le", Quat::from_rotation_y(-0.4)),
+            ("j_neck", Quat::from_rotation_y(0.2)),
+        ] {
+            turn_bone(&mut locals, &world, dobj.find(name).unwrap(), turn);
+        }
+        (dobj, locals)
+    }
+
+    #[test]
+    fn the_head_tilts_back_45_degrees_from_the_spine_at_full_scale() {
+        let (dobj, before) = bent();
+        let mut after = before.clone();
+        apply_glide_limbs(&dobj, &mut after, flying(1.0, 0.0, None));
+        let (was, now) = (
+            dobj.compose(&before, Mat4::IDENTITY),
+            dobj.compose(&after, Mat4::IDENTITY),
+        );
+        let neck = at(&was, &dobj, "j_neck");
+        assert!(at(&now, &dobj, "j_neck").abs_diff_eq(neck, 1e-4));
+        let face = |world: &[Mat4]| at(world, &dobj, "j_head") - neck;
+        let back = Quat::from_rotation_y(-45f32.to_radians()) * face(&was);
+        assert!(face(&now).abs_diff_eq(back, 1e-3), "{}", face(&now));
+        assert!(
+            face(&now).x < face(&was).x,
+            "the face turns from the ground toward the flight"
+        );
+        let spine = at(&now, &dobj, "j_spine4");
+        assert!(spine.abs_diff_eq(at(&was, &dobj, "j_spine4"), 1e-4));
+        let mut half = before.clone();
+        apply_glide_limbs(&dobj, &mut half, flying(0.5, 0.0, None));
+        let halfway = dobj.compose(&half, Mat4::IDENTITY);
+        let turned = face(&halfway).angle_between(face(&was)).to_degrees();
+        assert!((turned - 22.5).abs() < 1e-2, "{turned}");
+    }
+
+    #[test]
+    fn the_legs_trail_straight_down_the_body_at_full_scale() {
+        let (dobj, mut locals) = bent();
+        let world = dobj.compose(&locals, Mat4::IDENTITY);
+        let along = |world: &[Mat4], a: &str, b: &str| {
+            (at(world, &dobj, b) - at(world, &dobj, a)).normalize()
+        };
+        assert!(along(&world, "j_knee_ri", "j_ankle_ri").dot(Vec3::NEG_Z) < 0.9);
+        apply_glide_limbs(&dobj, &mut locals, flying(1.0, 0.0, None));
+        let world = dobj.compose(&locals, Mat4::IDENTITY);
+        for side in ["ri", "le"] {
+            let (hip, knee, ankle) = (
+                format!("j_hip_{side}"),
+                format!("j_knee_{side}"),
+                format!("j_ankle_{side}"),
+            );
+            assert!(
+                along(&world, hip.as_str(), knee.as_str()).abs_diff_eq(Vec3::NEG_Z, 1e-3),
+                "{side}"
+            );
+            assert!(
+                along(&world, knee.as_str(), ankle.as_str()).abs_diff_eq(Vec3::NEG_Z, 1e-3),
+                "{side}"
+            );
+            assert!(at(&world, &dobj, &hip).abs_diff_eq(
+                at(&dobj.compose(&bent().1, Mat4::IDENTITY), &dobj, &hip),
+                1e-4
+            ));
+        }
+        let (_, mut tilted) = bent();
+        let pose = flying(1.0, 20.0, None);
+        apply_glide(&dobj, &mut tilted, pose);
+        let world = dobj.compose(&tilted, Mat4::IDENTITY);
+        let tail = -(glide_root(pose.scale, pose.pitch_deg, None) * Vec3::Z);
+        assert!(along(&world, "j_knee_le", "j_ankle_le").abs_diff_eq(tail, 1e-3));
+    }
+
+    #[test]
+    fn nothing_moves_at_scale_zero() {
+        let (dobj, before) = bent();
+        let mut after = before.clone();
+        apply_glide(&dobj, &mut after, flying(0.0, 30.0, None));
+        assert_eq!(after, before);
+        let rolled = flying(0.0, 30.0, Some(0.4));
+        apply_glide_limbs(&dobj, &mut after, rolled);
+        assert_eq!(after, before, "a roll alone leaves the limbs");
     }
 }
