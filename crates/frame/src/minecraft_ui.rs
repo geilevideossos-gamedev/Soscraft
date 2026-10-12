@@ -253,6 +253,19 @@ pub struct McSleep {
     pub timer: i32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct McSleepCamera {
+    pub eye: [f32; 3],
+    pub origin: [f32; 3],
+    pub angles: [f32; 3],
+}
+
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct McSleepers {
+    pub bodies: Vec<(u32, Mat4)>,
+    pub camera: Option<McSleepCamera>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct McOverlayMessage {
     pub text: String,

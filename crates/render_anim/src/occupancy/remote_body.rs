@@ -325,7 +325,11 @@ fn occupy_remote_scene_ents(
 
 fn sync_remote_bodies(
     skate: Res<frame::SkateMode>,
-    (puppet, mc_camera): (Option<Res<frame::InventoryPuppet>>, Option<Res<frame::McCamera>>),
+    (puppet, mc_camera, sleepers): (
+        Option<Res<frame::InventoryPuppet>>,
+        Option<Res<frame::McCamera>>,
+        Option<Res<frame::McSleepers>>,
+    ),
     mut commands: Commands,
     local: Res<LocalPresentClient>,
     presented: Res<PresentedSnapshot>,
@@ -438,6 +442,12 @@ fn sync_remote_bodies(
         }
         if let Some(puppet) = puppet.as_ref().filter(|p| p.active && client.0 == p.client) {
             pose = Transform::from_matrix(puppet.root);
+        } else if !is_corpse
+            && let Some((_, root)) = sleepers
+                .as_ref()
+                .and_then(|sleepers| sleepers.bodies.iter().find(|(id, _)| *id == client.0))
+        {
+            pose = Transform::from_matrix(*root);
         }
         let marker = RemotePlayer {
             is_bot: meta.is_some_and(|m| {

@@ -891,3 +891,38 @@ After 423283a9.
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:blue_bed,minecraft:straw_bed,minecraft:clock
 ```
+
+## Group b4-sleep-2
+
+Brief `b4-sleeping.md`, groups 4 to 6.
+
+### b4.4. Sleeping players lie on the bed, seen from the pillow or from outside
+
+After f6235ce0.
+
+- **Changed:**
+  - `minecraft_survival/src/sleep.rs`: `Sleeping.height` (the top of the bed shape the sleeper lies on) and `Sleeping::feet()` / `bed_feet(head, height)`, which `lie_down` now uses too.
+  - `frame`: the resource `McSleepers { bodies: Vec<(client, root)>, camera: Option<McSleepCamera { eye, origin, angles }> }`.
+  - New `render_anim/src/minecraft_sleep.rs`: `sleep_camera` (the eye 0.2 above the feet, the first-person camera 0.15 higher, as `Camera.alignWithEntity` moves it, checked with javap; yaw `facing.toYRot() - 180`, so it looks down the bed towards the foot; pitch 0) and `lying_root` (`LivingEntityRenderer`'s sleeping transform in MW2 axes: the body's feet `standing eye height - 0.1` = 1.52 blocks from the head's centre towards the foot, its up axis along the bed towards the pillow, its face to the sky).
+  - `render_anim/src/minecraft_world.rs`: while the local player sleeps the MW2 player is pinned at the vanilla feet with b3's `SimWorld::ride` (no move, jump or gravity) and cleared on waking unless a strider holds the pin; `McSleepers` is filled each frame for the local player. The held Minecraft item is not drawn in bed, and the world is culled from the bed camera.
+  - `occupancy/view_kick.rs`: in first person the bed camera replaces the MW2 eye; the detached F5 camera orbits the sleeping eye.
+  - `occupancy/remote_body.rs`: a sleeper's body root is the lying root, in its own block after the inventory puppet (the puppet still wins while the inventory is open).
+  - `occupancy/fpv_present.rs`: the MW2 view model is not drawn in bed.
+- **Tests:** `render_anim::minecraft_sleep`: `the_sleep_camera_looks_down_the_bed_from_the_pillow` (all four facings, and the Minecraft yaw 180 for a bed facing south), `the_lying_body_runs_from_the_pillow_towards_the_foot` (feet 1.52 towards the foot, the 72-unit body's top 0.48 past the head's centre, level at the sleep height, face up), `a_straw_bed_lies_lower` (0.3125 lower).
+- **Decisions:**
+  - The brief's checks on input: the bed chat is open whenever the local player sleeps, and an open Minecraft chat already captures every MW2 key and the mouse (`console` plugin `modal_captured`), so no new gate was needed for movement, firing or skating (the skate toggle also waits for a closed chat).
+  - The sleep height is kept on `Sleeping`, so the camera, body and pin use the same feet as `lie_down` (the bed's real collision top) instead of fixed 9/16 and 4/16.
+  - The MW2 hull is pinned at the vanilla feet (head + sleep height + 0.125), so the camera, body and hull agree; the pin runs no collision, so it doesn't settle onto the bed top.
+  - The MW2 body keeps its standing idle animation, rotated as vanilla rotates the model (no sleeping animation).
+  - Only the local player is filled in for now. **[E]** Track E adds every player of the level that it reports asleep to `McSleepers.bodies`.
+- **Test steps (Overworld, survival):**
+  1. `/time set 12600`, place the red bed and right-click it holding the diamond sword: the view sits on the pillow and looks straight down the bed towards its foot (**7**). No gun and no sword are in view. Moving the mouse or pressing W, Space or the fire button does nothing.
+  2. Press F5: your MW2 body lies on its back on the bed, head on the pillow, feet towards the foot (**8**). Press F5 again: the front view looks at the sleeper from the other side. Press F5 once more to get back to first person.
+  3. Click "Leave Bed": you stand beside the bed and can walk, jump and shoot again.
+  4. Place the straw bed and sleep in it at night: the view is lower than on the red bed (**9**).
+  5. Sleep in the red bed, place a bed in each of the four directions and check that the view always looks from the pillow to the foot.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed*4,minecraft:straw_bed,minecraft:diamond_sword,minecraft:clock
+```

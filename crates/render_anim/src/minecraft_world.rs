@@ -119,6 +119,7 @@ struct Runtime {
     refused_air: Option<u32>,
     bed_request: Option<minecraft_survival::respawn_block::Bed>,
     sleep_ticks: u32,
+    in_bed: bool,
 }
 
 impl Drop for Runtime {
@@ -201,6 +202,7 @@ pub(crate) fn register(app: &mut App) {
     app.init_resource::<MinecraftWorldView>()
         .init_resource::<frame::MinecraftUi>()
         .init_resource::<frame::InventoryPuppet>()
+        .init_resource::<frame::McSleepers>()
         .insert_non_send(Runtime::default())
         .add_systems(
             Update,
@@ -419,12 +421,15 @@ fn update(
         Query<&bevy::input::gamepad::Gamepad>,
         Option<Res<frame::ActivePad>>,
     ),
-    (hud_input, settings): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>),
+    (hud_input, settings, mut sleepers): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>, ResMut<frame::McSleepers>),
     real_time: Res<Time<Real>>,
     mc_camera: Option<Res<frame::McCamera>>,
     mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
 ) {
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
+    if *sleepers != frame::McSleepers::default() {
+        *sleepers = frame::McSleepers::default();
+    }
     for _ in torn_down.read() {
         stop(&mut runtime, &mut view);
         ui.chat.clear_messages();
@@ -598,6 +603,7 @@ fn update(
         refused_air,
         bed_request,
         sleep_ticks,
+        in_bed,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -626,6 +632,16 @@ fn update(
     let local_messages: Vec<_> = slept.messages.into_iter().filter(|(uuid, _)| uuid == local_uuid).map(|(_, message)| message).collect();
     crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &local_messages);
     if let Some(player) = players.get(local_uuid) {
+        let lying = player.sleeping.filter(|_| !player.dead);
+        if let Some(sleeping) = lying {
+            let feet = sleeping.feet();
+            authority.0.ride(local.0, Some(sim::voxel::to_map(origin, feet)));
+            sleepers.bodies.push((local.0.0, crate::minecraft_sleep::lying_root(origin, feet, sleeping.facing)));
+            sleepers.camera = Some(crate::minecraft_sleep::sleep_camera(origin, feet, sleeping.facing));
+        } else if *in_bed && player.riding.is_none() {
+            authority.0.ride(local.0, None);
+        }
+        *in_bed = lying.is_some();
         ui.sleep = (player.sleep_timer > 0).then_some(frame::minecraft_ui::McSleep { timer: player.sleep_timer });
         let blocked = ui.inventory_open || hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
         if player.sleeping.is_none() {
@@ -1681,7 +1697,7 @@ fn update(
     // Culled from the camera that draws: the player's eye, or while
     // skating the Skate camera (a frame behind, so with room to spare).
     let mc_detached = mc_camera.as_ref().is_some_and(|c| c.detached);
-    let skate_camera = cameras.iter().next().filter(|_| skate.active || mc_detached).map(|t| {
+    let skate_camera = cameras.iter().next().filter(|_| skate.active || mc_detached || sleepers.camera.is_some()).map(|t| {
         let at = sim::voxel::to_block(origin, t.translation.to_array());
         let ahead = t.rotation * Vec3::NEG_Z;
         (
@@ -2195,7 +2211,7 @@ fn update(
         ui.hand_swing = if hand.swing_offhand { 0.0 } else { swing };
         let main_stack = inventory.slots[*selected].clone().filter(|_| ui.holding_item);
         let offhand_stack = offhand_stack.filter(|_| ui.holding_item || ui.offhand_busy);
-        if !puppet.active && !mc_detached && (main_stack.is_some() || offhand_stack.is_some()) {
+        if !puppet.active && !mc_detached && sleepers.camera.is_none() && (main_stack.is_some() || offhand_stack.is_some()) {
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
             let mut posed = Vec::new();
             for (slot, stack, arm) in [(*selected, main_stack, 1.0), (minecraft_survival::offhand::OFFHAND, offhand_stack, -1.0)] {

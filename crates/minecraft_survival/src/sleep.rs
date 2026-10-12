@@ -126,12 +126,27 @@ impl SleepStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sleeping {
     pub head: Pos,
     pub facing: (i32, i32),
     pub straw: bool,
     pub hurts: u64,
+    pub height: f64,
+}
+
+impl Sleeping {
+    pub fn feet(&self) -> [f64; 3] {
+        bed_feet(self.head, self.height)
+    }
+}
+
+pub fn bed_feet((x, y, z): Pos, height: f64) -> [f64; 3] {
+    [
+        f64::from(x) + 0.5,
+        f64::from(y) + height + 0.125,
+        f64::from(z) + 0.5,
+    ]
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -228,12 +243,7 @@ pub fn lie_down(
         return false;
     };
     mark_occupied(room, registries, bed.head, true);
-    let (x, y, z) = bed.head;
-    let feet = [
-        f64::from(x) + 0.5,
-        f64::from(y) + height + 0.125,
-        f64::from(z) + 0.5,
-    ];
+    let feet = bed_feet(bed.head, height);
     let (yaw, pitch) = player
         .place
         .map_or((0.0, 0.0), |place| (place.yaw, place.pitch));
@@ -243,6 +253,7 @@ pub fn lie_down(
         facing: bed.facing,
         straw: bed.straw,
         hurts: player.survival.hurts(),
+        height,
     });
     player.sleep_timer = 0;
     player.time_since_rest = 0;
@@ -962,6 +973,7 @@ mod night_tests {
                 facing: (0, 1),
                 straw: false,
                 hurts: 0,
+                height: 0.5625,
             })
         );
         assert_eq!((steve.sleep_timer, steve.time_since_rest), (0, 0));
