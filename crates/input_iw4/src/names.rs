@@ -1,4 +1,4 @@
-pub const INPUT_COMMAND_NAMES: [&str; 84] = [
+pub const INPUT_COMMAND_NAMES: [&str; 85] = [
     "",
     "+attack",
     "-attack",
@@ -83,6 +83,7 @@ pub const INPUT_COMMAND_NAMES: [&str; 84] = [
     "mc_chat",
     "mc_command",
     "mc_perspective",
+    "mc_skate",
 ];
 
 pub const HOLD_PAIR_LIMIT: u32 = 0x41;
@@ -165,14 +166,22 @@ mod minecraft_command_tests {
         assert_eq!(command_id_lookup("MC_SwapHands"), Some(80));
         assert_eq!(command_name(81), Some("mc_chat"));
         assert!(!is_minecraft_command(77));
-        assert!((78..=83).all(is_minecraft_command));
-        assert!(!is_minecraft_command(84));
+        assert!((78..=84).all(is_minecraft_command));
+        assert!(!is_minecraft_command(85));
         assert!(!is_minecraft_command(0));
     }
 
     #[test]
+    fn mc_skate_is_command_84() {
+        assert_eq!(command_id_lookup("mc_skate"), Some(84));
+        assert_eq!(command_name(84), Some("mc_skate"));
+        assert!(is_minecraft_command(84));
+        assert_eq!(INPUT_COMMAND_NAMES.len(), 85);
+    }
+
+    #[test]
     fn minecraft_commands_do_nothing_to_mw2_input() {
-        for id in 78..=83 {
+        for id in 78..=84 {
             assert_eq!(key_up_command_id(id), None);
             let mut client = ClientInput::default();
             let before = alloc::format!("{client:?}");

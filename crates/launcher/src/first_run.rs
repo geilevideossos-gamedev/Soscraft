@@ -28,7 +28,9 @@ pub fn prepare() -> Result<(), String> {
         env.write(&env_path)?;
     }
 
-    if env.get(SKATE_SWITCH) == Some("off") {
+    let wanted = std::fs::read_to_string(settings_file(&root, &env))
+        .is_ok_and(|text| skating_wanted(&text));
+    if env.get(SKATE_SWITCH) == Some("off") && !wanted {
         return Ok(());
     }
     let assets = match env
@@ -37,9 +39,10 @@ pub fn prepare() -> Result<(), String> {
         .filter(|path| skate_ready(path))
     {
         Some(assets) => assets,
-        None => match convert_skate(&root)? {
+        None => match convert_skate(&root, wanted)? {
             Some(assets) => {
                 env.set("IW4L_SKATE_ASSETS", &assets);
+                env.remove(SKATE_SWITCH);
                 env.write(&env_path)?;
                 assets
             }
@@ -61,6 +64,22 @@ pub fn fail(message: &str) -> ! {
         .set_description(message)
         .show();
     std::process::exit(2);
+}
+
+fn settings_file(root: &Path, env: &EnvFile) -> PathBuf {
+    std::env::var_os("IW4L_SETTINGS_PATH")
+        .map(PathBuf::from)
+        .or_else(|| env.get("IW4L_SETTINGS_PATH").map(PathBuf::from))
+        .unwrap_or_else(|| root.join("iw4l-artifacts").join("settings.cfg"))
+}
+
+fn skating_wanted(text: &str) -> bool {
+    text.lines()
+        .filter_map(|line| line.trim().split_once('='))
+        .filter(|(key, _)| *key == "skating")
+        .filter_map(|(_, value)| value.parse::<bool>().ok())
+        .next_back()
+        .unwrap_or(false)
 }
 
 fn mw2_ready(path: &Path) -> bool {
@@ -145,7 +164,7 @@ fn skate_ready(assets: &Path) -> bool {
 }
 
 /// The converted Skate 3 data, or none when the player plays without it.
-fn convert_skate(root: &Path) -> Result<Option<PathBuf>, String> {
+fn convert_skate(root: &Path, wanted: bool) -> Result<Option<PathBuf>, String> {
     let converter = root.join("skate").join("iw4l-skate-convert.exe");
     if !converter.is_file() {
         return Err(format!(
@@ -153,15 +172,20 @@ fn convert_skate(root: &Path) -> Result<Option<PathBuf>, String> {
             converter.display()
         ));
     }
+    let stop_asking = if wanted {
+        "\n\nTo stop this question, set Skating to Disabled in Options > Controls > Minecraft."
+    } else {
+        ""
+    };
     let answer = MessageDialog::new()
         .set_title(TITLE)
-        .set_description(
+        .set_description(format!(
             "Do you have Skate 3 (Xbox 360)?\n\n\
              Skate mode needs your extracted Skate 3 default.xex, with the game's \
              data folder beside it. ISO files do not work.\n\n\
              Choose No to play MW2 and the Minecraft world without skating. \
-             Delete the .env file beside iw4l.exe to be asked again.",
-        )
+             Delete the .env file beside iw4l.exe to be asked again.{stop_asking}",
+        ))
         .set_buttons(MessageButtons::YesNo)
         .show();
     if answer != MessageDialogResult::Yes {
@@ -265,10 +289,53 @@ impl EnvFile {
         self.lines.push(format!("{key}={value}"));
     }
 
+    fn remove(&mut self, key: &str) {
+        self.lines.retain(|line| {
+            line.split_once('=')
+                .is_none_or(|(name, _)| name.trim() != key)
+        });
+    }
+
     fn write(&self, path: &Path) -> Result<(), String> {
         let mut text = self.lines.join("\n");
         text.push('\n');
         std::fs::write(path, text)
             .map_err(|error| format!("cannot write {}: {error}", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skating_wanted_reads_only_a_true_skating_line() {
+        assert!(skating_wanted(
+            "// IW4L user settings v5\nshow_blood=true\nskating=true\nunbindall\n"
+        ));
+        assert!(skating_wanted("  skating=true  \r\n"));
+        assert!(!skating_wanted("// IW4L user settings v5\nskating=false\n"));
+        assert!(!skating_wanted(
+            "// IW4L user settings v4\nshow_blood=true\nunbindall\n"
+        ));
+        assert!(!skating_wanted(""));
+        assert!(!skating_wanted("// skating=true\n"));
+        assert!(!skating_wanted("unbindall\nbind k skating=true\n"));
+        assert!(!skating_wanted("skating=true\nskating=false\n"));
+    }
+
+    #[test]
+    fn a_finished_conversion_drops_the_declined_line() {
+        let mut env = EnvFile {
+            lines: vec!["IW4L_GAMES=\"C:/Games\"".into(), "IW4L_SKATE=off".into()],
+        };
+        env.set("IW4L_SKATE_ASSETS", Path::new("C:/Games/skate-data/assets"));
+        env.remove(SKATE_SWITCH);
+        assert_eq!(env.get(SKATE_SWITCH), None);
+        assert_eq!(env.get("IW4L_GAMES"), Some("C:/Games"));
+        assert_eq!(
+            env.get("IW4L_SKATE_ASSETS"),
+            Some("C:/Games/skate-data/assets")
+        );
     }
 }

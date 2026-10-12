@@ -194,13 +194,14 @@ fn add_minecraft_controls_link(menu: &mut asset_game::MenuDef) {
 mod settings_menu_tests {
     use asset_game::{MenuCatalog, MenuDef, MenuEvent, MenuItem};
 
-    const MINECRAFT_KEYS: [(&str, &str); 6] = [
+    const MINECRAFT_KEYS: [(&str, &str); 7] = [
         ("mc_inventory", "Open/Close Inventory"),
         ("mc_drop", "Drop Selected Item"),
         ("mc_swaphands", "Swap Item With Off Hand"),
         ("mc_chat", "Open Chat"),
         ("mc_command", "Open Command"),
         ("mc_perspective", "Toggle Perspective"),
+        ("mc_skate", "Skateboard Down/Up"),
     ];
 
     fn item(name: &str, text_key: &str, dvar: &str, item_type: i32) -> MenuItem {
@@ -341,7 +342,7 @@ mod settings_menu_tests {
     }
 
     #[test]
-    fn the_minecraft_page_lists_the_six_minecraft_keys() {
+    fn the_minecraft_page_lists_the_seven_minecraft_keys() {
         let catalog = settings_catalog();
         let page = catalog.get("pc_options_minecraft").expect("minecraft page");
         let rows: Vec<&MenuItem> = page
@@ -368,8 +369,36 @@ mod settings_menu_tests {
         }
         let mut lines: Vec<f32> = rows.iter().map(|row| row.rect.y).collect();
         lines.dedup();
-        assert_eq!(lines, vec![28.0, 48.0, 68.0, 88.0, 108.0, 128.0]);
+        assert_eq!(lines, vec![28.0, 48.0, 68.0, 88.0, 108.0, 128.0, 168.0]);
         assert_eq!(named(page, "video_title").text_key, "Minecraft");
+    }
+
+    #[test]
+    fn the_minecraft_page_offers_a_skating_switch() {
+        let catalog = settings_catalog();
+        let page = catalog.get("pc_options_minecraft").expect("minecraft page");
+        let row = named(page, "ui_skating");
+        assert_eq!(row.dvar, "ui_skating");
+        assert_eq!(row.item_type, 12);
+        assert_eq!(row.vis_exp, "1");
+        assert_eq!(row.disabled_exp, "0");
+        assert_eq!(row.rect.y, 148.0);
+        assert_eq!(
+            row.choices,
+            vec![
+                ("@MENU_DISABLED".to_owned(), "0".to_owned()),
+                ("@MENU_ENABLED".to_owned(), "1".to_owned())
+            ]
+        );
+        let labels: Vec<&MenuItem> = page
+            .items
+            .iter()
+            .filter(|item| item.vis_exp != "0" && item.rect.y == row.rect.y)
+            .filter(|item| item.name != row.name)
+            .collect();
+        assert_eq!(labels.len(), 1, "the Skating line is shared");
+        assert_eq!(labels[0].text_key, "Skating");
+        assert_eq!(labels[0].item_type, 0);
     }
 
     #[test]

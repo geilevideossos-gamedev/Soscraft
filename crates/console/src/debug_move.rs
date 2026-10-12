@@ -46,7 +46,7 @@ pub(crate) fn spawn_showpos_hud(commands: &mut Commands, font: Handle<Font>) {
 }
 
 pub(crate) fn register_debug_move_commands(registry: &mut ConsoleRegistry) {
-    registry.register(crate::CommandSpec::new("skate").usage("skate [on|off|status] - local Skate gameplay (J toggles)"));
+    registry.register(crate::CommandSpec::new("skate").usage("skate [on|off|status] - local Skate gameplay (the Skateboard Down/Up key toggles)"));
     if registry.resolve("showpos").is_none() {
         registry.register(
             crate::CommandSpec::new("showpos")
@@ -812,13 +812,16 @@ fn parse_force_spawn(args: &[String]) -> Result<SpawnPick, String> {
     }
 }
 
-pub(crate) fn update_skate_overlay(mode:Res<frame::SkateMode>,mut hud:Query<(&mut Text,&mut Visibility),With<SkateHud>>) {
+pub(crate) fn update_skate_overlay(mode:Res<frame::SkateMode>,binds:Res<crate::KeyBinds>,minecraft:Option<Res<frame::MinecraftUi>>,mut hud:Query<(&mut Text,&mut Visibility),With<SkateHud>>) {
+    let key = binds.skate_key_label();
+    let leave = if minecraft.is_some_and(|ui| ui.active) {"pick up"} else {"return to MW2"};
     for (mut text,mut visibility) in &mut hud {
         let failed = !mode.preloaded && !mode.preload_pending && !mode.status.is_empty();
         *visibility=if mode.active || mode.entering || failed {Visibility::Visible}else{Visibility::Hidden};
         **text=if failed {format!("Skate unavailable: {}", mode.status)}
-        else if mode.entering && !mode.preloaded {"Skate is finishing map preparation... | J: cancel".into()}
-        else if mode.controller.is_none() {"SKATE | Connect a controller | J: return to MW2".into()}
-        else {"SKATE | Original controller controls | Start: pause | J: return to MW2".into()};
+        else if mode.entering && !mode.preloaded {format!("Skate is finishing map preparation... | {key}: cancel")}
+        else if mode.keyboard {format!("SKATE | Keyboard: WASD steer, mouse flick, Space push | {key}: {leave}")}
+        else if mode.controller.is_none() {format!("SKATE | Connect a controller | {key}: {leave}")}
+        else {format!("SKATE | Original controller controls | Start: pause | {key}: {leave}")};
     }
 }

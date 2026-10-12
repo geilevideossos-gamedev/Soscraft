@@ -46,6 +46,7 @@ pub struct Motion {
     pub in_rain: bool,
     pub crouching: bool,
     pub height: f32,
+    pub riding: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -314,7 +315,7 @@ impl Survival {
             DamageCause::Magic
         };
         self.record(before, cause, 0.0);
-        if let Some(last) = self.last_feet {
+        if let Some(last) = self.last_feet.filter(|_| !motion.riding) {
             let d: [f64; 3] = std::array::from_fn(|k| motion.feet[k] - last[k]);
             let horizontal = d[0].hypot(d[2]);
             let full = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
@@ -336,7 +337,7 @@ impl Survival {
             }
         }
         self.last_feet = Some(motion.feet);
-        if motion.jumping && !self.jumping {
+        if motion.jumping && !self.jumping && !motion.riding {
             let cost = if motion.sprinting {
                 SPRINT_JUMP_EXHAUSTION
             } else {
@@ -1412,6 +1413,48 @@ mod tests {
         assert!((fighter.status.food.exhaustion - 0.205).abs() < 1e-6);
         fighter.observe(80, 100);
         assert!((fighter.status.food.exhaustion - 0.305).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_rider_spends_no_food_on_movement() {
+        let mut rider = fresh();
+        for i in 0..1000 {
+            rider.tick(&Motion {
+                feet: [f64::from(i) * 0.25, 0.0, 0.0],
+                on_ground: true,
+                sprinting: true,
+                jumping: i % 2 == 0,
+                riding: true,
+                ..Motion::default()
+            });
+        }
+        for i in 0..100 {
+            rider.tick(&Motion {
+                feet: [f64::from(i) * 0.2, 0.0, 0.0],
+                in_water: true,
+                riding: true,
+                ..Motion::default()
+            });
+        }
+        assert_eq!(rider.status.food.exhaustion, 0.0);
+        assert_eq!(rider.status.food.saturation, 5.0);
+        assert_eq!(rider.status.food.level, 20);
+    }
+
+    #[test]
+    fn a_rider_still_loses_air_under_water() {
+        let mut rider = fresh();
+        let air = rider.status.air;
+        for _ in 0..20 {
+            rider.tick(&Motion {
+                in_water: true,
+                eye_in_water: true,
+                riding: true,
+                ..Motion::default()
+            });
+        }
+        assert!(rider.status.air < air);
+        assert!(rider.vitals().eye_in_water);
     }
 
     fn drink(survival: &mut Survival, potion: &str) {
