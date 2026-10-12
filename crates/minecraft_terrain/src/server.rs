@@ -2245,7 +2245,7 @@ impl ServerSim {
         }
         let cells: std::collections::BTreeSet<minecraftoss_core::BlockPos> = wanted.keys().chain(self.level.frame_outputs.keys()).copied().collect();
         for cell in cells {
-            let now = wanted.remove(&cell).unwrap_or_default();
+            let now = std::mem::take(wanted.entry(cell).or_default());
             if self.level.frame_outputs.get(&cell).map_or(now.is_empty(), |old| *old == now) {
                 continue;
             }
@@ -7047,7 +7047,7 @@ mod tests {
         let armor = saved.get("attributes").and_then(Tag::as_list).unwrap().iter().find(|a| a.get("id").and_then(Tag::as_str) == Some("minecraft:armor")).unwrap();
         assert_eq!(armor.get("modifiers"), None, "an open shell saves no covered modifier");
         let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
-        assert_eq!(fields(&loaded, back).3, false);
+        assert!(!fields(&loaded, back).3);
     }
 
     #[test]
@@ -8487,7 +8487,7 @@ mod tests {
         let outputs = handle.poll();
         let uses: Vec<bool> = outputs.iter().flat_map(|out| out.item_uses.iter().copied()).collect();
         assert_eq!(uses, [true, false], "the second book finds the lectern taken");
-        let shown = outputs.iter().flat_map(|out| out.changes.iter()).filter(|(pos, _)| *pos == LECTERN).last().and_then(|(_, block)| block.clone());
+        let shown = outputs.iter().flat_map(|out| out.changes.iter()).rfind(|(pos, _)| *pos == LECTERN).and_then(|(_, block)| block.clone());
         assert_eq!(shown.as_ref().and_then(|block| block.properties.get("has_book")).map(String::as_str), Some("true"));
         let Some((mut server, _)) = reader_world() else { return };
         assert_eq!(comparator_reads(&mut server), 0, "an empty lectern gives nothing");

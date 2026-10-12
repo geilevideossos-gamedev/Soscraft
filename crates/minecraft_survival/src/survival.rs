@@ -610,7 +610,7 @@ impl Survival {
         if !(self.in_powder_snow && self.can_freeze()) {
             self.ticks_frozen = (self.ticks_frozen - THAW_PER_TICK).max(0);
         }
-        if self.tick % FREEZE_INTERVAL == 0 && self.ticks_frozen >= TICKS_TO_FREEZE && self.can_freeze() && self.status.health > 0.0 {
+        if self.tick.is_multiple_of(FREEZE_INTERVAL) && self.ticks_frozen >= TICKS_TO_FREEZE && self.can_freeze() && self.status.health > 0.0 {
             self.hurt_aloud(Hazard::Freeze, FREEZE_DAMAGE, armor, &mut random, &mut heard);
         }
         heard

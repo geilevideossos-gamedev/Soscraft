@@ -33,17 +33,14 @@ pub fn is_lectern(block: &crate::scene::Block) -> bool {
 pub fn pages_text(components: Option<&Value>) -> Vec<String> {
     components
         .and_then(minecraftoss_world::book::pages)
-        .map(|pages| {
-            pages
-                .iter()
-                .map(|page| {
-                    let mut text = String::new();
-                    flatten(minecraftoss_world::book::raw_page(page), &mut text);
-                    text
-                })
-                .collect()
+        .into_iter()
+        .flatten()
+        .map(|page| {
+            let mut text = String::new();
+            flatten(minecraftoss_world::book::raw_page(page), &mut text);
+            text
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 fn flatten(component: &Value, out: &mut String) {

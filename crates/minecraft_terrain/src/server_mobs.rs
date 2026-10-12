@@ -1516,7 +1516,7 @@ fn has_modifier(tag: &Tag, attribute: &str, modifier: &str) -> bool {
 }
 
 fn with_modifier(original: Option<&Tag>, attribute: &str, modifier: &str, amount: Option<f64>) -> Tag {
-    let mut list = original.and_then(|t| t.get("attributes")).and_then(Tag::as_list).map(<[Tag]>::to_vec).unwrap_or_default();
+    let mut list = original.and_then(|t| t.get("attributes")).and_then(Tag::as_list).map_or_else(Vec::new, <[Tag]>::to_vec);
     let index = match list.iter().position(|a| a.get("id").and_then(Tag::as_str) == Some(attribute)) {
         Some(index) => index,
         None if amount.is_none() => return Tag::List(list),
@@ -1527,7 +1527,7 @@ fn with_modifier(original: Option<&Tag>, attribute: &str, modifier: &str, amount
         }
     };
     if let Some(Tag::Compound(entry)) = list.get_mut(index) {
-        let mut modifiers = entry.get("modifiers").and_then(Tag::as_list).map(<[Tag]>::to_vec).unwrap_or_default();
+        let mut modifiers = entry.get("modifiers").and_then(Tag::as_list).map_or_else(Vec::new, <[Tag]>::to_vec);
         modifiers.retain(|m| m.get("id").and_then(Tag::as_str) != Some(modifier));
         if let Some(amount) = amount {
             let added: std::collections::BTreeMap<String, Tag> = [

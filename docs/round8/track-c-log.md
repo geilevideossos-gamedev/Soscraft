@@ -392,6 +392,7 @@ Previous commit: 69bf8539
 - **Changed:** `docs/MINECRAFT-SURVIVAL.md`: shulkers and shulker bullets join the simulated mobs; a Shulkers part under The End (clinging, peeking, teleports, the shell, loot, bullets, levitation and slow falling); X6 no longer lists shulkers or levitation; a Shulkers limitation (not solid to the MW2 player, no push of players by an opening lid, no Looting, skeleton arrows and blasts don't pop bullets, no effect icons); `/effect` knows eleven simulated effects; shulkers leave the dormant list. `docs/NETHER-END.md`: the shulker row is done.
 - **Tests:** none (docs only).
 - **Test steps:** none.
+- **Kit:** none.
 
 ### Group c1-shulkers-2, combined kit
 
@@ -603,6 +604,7 @@ Previous commit: 1680fa64
   - `docs/NETHER-END.md`: the end city and item frames are done; the dormant list notes that shulkers, end crystals and item frames are live.
 - **Tests:** none (docs only).
 - **Test steps:** none.
+- **Kit:** none.
 
 ### Group c2-frames, combined kit
 
@@ -1205,4 +1207,34 @@ Previous commit: 1824a842
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket*16,minecraft:cobweb*8,minecraft:dirt*64
+```
+
+## Final verification of track C
+
+### 49. Track C's new code passes clippy without new warnings
+
+Previous commit: 5b355fc9
+
+- **Changed:** clippy on the 19 touched crates (`assets`, `audio`, `frame`, `hud`, `minecraft_commands`, `minecraft_survival`, `minecraft_terrain`, `movement_iw4`, `net`, `playerstate_iw4`, `render`, `render_anim`, `render_gpu`, `sim` and the five minecraftoss crates, `--all-targets`) warned on 15 lines this track added. All are fixed without behaviour changes; the older warnings stay.
+  - `hud` `minecraft_book.rs`: the Back and Forward buttons use `then_some`, and a test compares with `std::slice::from_ref` instead of a clone.
+  - `minecraft_survival` `entities.rs`: the hit tuple with its effect is the `Hit` type (`Hits` is `Vec<Hit>`), and `blast`, which gained the creative flag, allows `too_many_arguments` like the other wide methods there. `survival.rs`: the freeze damage interval uses `is_multiple_of`.
+  - `minecraft_terrain`: `lectern::pages_text` flattens the optional pages instead of `unwrap_or_default` (disallowed by `clippy.toml`), `sync_frame_outputs` takes the wanted outputs out of the map with `std::mem::take`, the shulker armour attribute edits use `map_or_else(Vec::new, ..)`, and two tests use `assert!` and `rfind`.
+  - `render_anim` `minecraft_world.rs`: `update`, whose grouped parameters grew with the music, the totem draw and the glide state, allows `type_complexity` next to `too_many_arguments`.
+- **Tests:** none new. `test -p` on every touched crate passes (see the summary below).
+- **Log:** entries 14 and 23 (docs only) now say their kit is none.
+- **Decisions:** none.
+- **Test steps:** none; no behaviour changes.
+- **Kit:** none.
+- **Verification summary:**
+  - Clippy: no warnings left on lines added since 0bcbfb17 (the warnings in `render_anim` `remote_body.rs` `pose_remote_bodies` predate the track, which only added one parameter there).
+  - Tests: `assets` 7, `audio` 2, `frame` 23, `hud` 144, `minecraft_commands` 120, `minecraft_survival` 362 + 1 (`vanilla_world`), `minecraft_terrain` 957 (4 ignored), `movement_iw4` 60, `net` 1, `render_anim` 100, `render_gpu` 36, `sim` 85, `playerstate_iw4` and `render` have none; `minecraftoss-core` 26, `minecraftoss-entities` 122, `minecraftoss-generator` 30, `minecraftoss-player` 187, `minecraftoss-world` 68. All pass.
+  - `minecraftoss-player` needs the two empty stand-in files under `third_party/scenarios/survival/` to build its tests, as `scripts/full-suite.ps1` makes them; they were made for the run and removed afterwards.
+  - Every new `.rs` file of the track passes `rustfmt --check` on its committed content with its crate's edition (`minecraftoss-world` is 2024, `minecraftoss-entities` 2021).
+
+## Track C, combined kit
+
+One kit for a session through the whole track (27 stacks): shulkers and their bullets, levitation and slow falling, powder snow and cobwebs, ladders, item frames and comparators, trapped chests, lecterns and the book screen, totems, the dragon fight in diamond gear, and the elytra on the body. End cities need no items (creative flight and their generated chests); `/effect` gives levitation and clears effects.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:shulker_spawn_egg*16,minecraft:zombie_spawn_egg*4,minecraft:end_stone*64,minecraft:purpur_block*64,minecraft:potion@slow_falling,minecraft:splash_potion@slow_falling,minecraft:elytra+unbreaking=3,minecraft:firework_rocket*64,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:cobweb*8,minecraft:ladder*16,minecraft:item_frame*16,minecraft:glow_item_frame*8,minecraft:comparator*4,minecraft:redstone*64,minecraft:redstone_lamp*8,minecraft:trapped_chest*4,minecraft:lectern*2,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:totem_of_undying,minecraft:diamond_sword+sharpness=5,minecraft:diamond_chestplate,minecraft:diamond_pickaxe,minecraft:shield,minecraft:golden_apple*16,minecraft:cobblestone*64
 ```

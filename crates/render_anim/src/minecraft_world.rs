@@ -410,7 +410,7 @@ fn pad_trigger(pad: Option<&bevy::input::gamepad::Gamepad>, button: GamepadButto
     pad.is_some_and(|pad| if just { pad.just_pressed(button) } else { pad.pressed(button) })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn update(
     time: Res<Time>,
     mut installed: MessageReader<frame::MatchInstalled>,

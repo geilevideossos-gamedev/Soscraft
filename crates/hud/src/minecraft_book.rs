@@ -82,8 +82,8 @@ pub(crate) fn control_at(book: &McBook, width: i32, mouse: [f64; 2]) -> Option<C
     let l = layout(width, book.take);
     let (back, forward) = visible(book);
     [
-        (Control::Back, Some(l.back).filter(|_| back)),
-        (Control::Forward, Some(l.forward).filter(|_| forward)),
+        (Control::Back, back.then_some(l.back)),
+        (Control::Forward, forward.then_some(l.forward)),
         (Control::Done, Some(l.done)),
         (Control::Take, l.take),
     ]
@@ -321,7 +321,10 @@ mod tests {
         let lines = page_lines(&font, "aaaaaaaaaa bbbbbbbbbb");
         assert_eq!(lines, ["aaaaaaaaaa", "bbbbbbbbbb"]);
         let nineteen = "a".repeat(19);
-        assert_eq!(page_lines(&font, &nineteen), [nineteen.clone()]);
+        assert_eq!(
+            page_lines(&font, &nineteen),
+            std::slice::from_ref(&nineteen)
+        );
         let twenty = "a".repeat(20);
         assert_eq!(page_lines(&font, &twenty), [nineteen, "a".to_owned()]);
         let long = vec!["word"; 200].join(" ");

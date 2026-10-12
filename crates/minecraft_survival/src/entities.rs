@@ -39,7 +39,8 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
-type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, Option<(EffectKind, u32)>)>;
+type Hit = (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, Option<(EffectKind, u32)>);
+type Hits = Vec<Hit>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 type Picked = (i32, [f64; 3], String, i32, Option<String>);
 
@@ -890,6 +891,7 @@ impl Entities {
             .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32, creative: bool) {
         if let Some(id) = frame_of(key) {
             self.server.frame_action(id, FrameAction::Blast { infinite: by_player && creative });
@@ -1437,7 +1439,7 @@ impl Entities {
     }
 }
 
-fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, Option<(EffectKind, u32)>) {
+fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> Hit {
     let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
     (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, None)
 }
@@ -1447,7 +1449,7 @@ fn mob_hit(
     feet: [f64; 3],
     difficulty: i32,
     type_id: Option<&'static str>,
-) -> Option<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, Option<(EffectKind, u32)>)> {
+) -> Option<Hit> {
     let from = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
         _ => None,
