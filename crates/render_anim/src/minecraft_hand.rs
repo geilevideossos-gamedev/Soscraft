@@ -4,6 +4,39 @@
 //! Vertices are in view space: x right, y up, z back.
 use glam::{Mat4, Vec3};
 
+const TOTEM: &str = "minecraft:totem_of_undying";
+const FULL_BRIGHT: f32 = 15.0;
+
+pub(crate) fn append_totem(
+    mesh: &mut minecraft_terrain::mesh::ChunkMesh,
+    view: &mut minecraft_survival::entity_view::EntityView,
+    pose: Mat4,
+    light_at: Vec3,
+    (packs, atlas, light): (&minecraft_terrain::pack::PackStack, &minecraft_terrain::mesh::Atlas, &minecraft_terrain::lighting::SkyLight),
+) {
+    let display = minecraft_terrain::pack::ResourceId::parse(TOTEM)
+        .ok()
+        .and_then(|id| minecraft_terrain::model::item_display_transform(packs, &id, "fixed").ok())
+        .unwrap_or(Mat4::IDENTITY);
+    let start = mesh.vertices.len() as u32;
+    let totem = view.held_item_mesh(&[(pose * display, TOTEM.to_owned(), false)], light_at, packs, atlas, light);
+    mesh.vertices.extend(totem.vertices.into_iter().map(|vertex| minecraft_terrain::mesh::Vertex { sky_light: FULL_BRIGHT, block_light: FULL_BRIGHT, ..vertex }));
+    mesh.indices.extend(totem.indices.into_iter().map(|index| index + start));
+    mesh.faces += totem.faces;
+}
+
+pub(crate) fn hand_clip(aspect: f32) -> [f32; 16] {
+    let f = 1.0 / (35.0f32.to_radians()).tan();
+    let near = 0.05;
+    Mat4::from_cols(
+        glam::Vec4::new(f / aspect, 0.0, 0.0, 0.0),
+        glam::Vec4::new(0.0, f, 0.0, 0.0),
+        glam::Vec4::new(0.0, 0.0, 0.0, -1.0),
+        glam::Vec4::new(0.0, 0.0, near, 0.0),
+    )
+    .to_cols_array()
+}
+
 /// Ticks of a swing (`LivingEntity.getCurrentSwingDuration`).
 pub(crate) const SWING_TICKS: f32 = minecraft_survival::actions::SWING_TICKS;
 

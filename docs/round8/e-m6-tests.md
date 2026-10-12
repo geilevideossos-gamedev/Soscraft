@@ -54,3 +54,16 @@ White snowflakes rise from powder snow around anyone who moves inside it, in bot
 ```
 IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:cobblestone*64
 ```
+
+## A friend sees their own totem rise in first person
+
+When a totem of undying saves the friend, the friend's own screen now shows the vanilla animation: the totem flies up in front of the view, spins and drops away over 2 seconds. The other window still shows the totem's green and yellow particles around the saved player.
+
+1. Both windows hold the totem: Friend window, select the totem in the hotbar (or put it in the offhand with F).
+2. Friend window: `/tp @s ~ ~40 ~` and fall (survival mode, no water below). The fall would kill; the totem pops instead: the friend's screen shows the totem rising, spinning and falling back, with the totem sound, and the friend keeps a little health. Screenshot the friend window during the spin. **S12**
+3. Host window, at the same time: the friend's soldier is wrapped in green and yellow particles; no totem shows on the host's screen.
+4. Host window: do the same fall with the host's totem: the host sees its own animation as before, and the friend window shows only the particles around the host. The friend does not see the host's totem on their own screen. **S13**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:totem_of_undying
+```

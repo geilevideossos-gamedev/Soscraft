@@ -164,6 +164,8 @@ pub(crate) struct Friend {
     boss_bars: BTreeMap<u64, frame::minecraft_ui::McBossBar>,
     credits_due: bool,
     flakes: Flakes,
+    activation: crate::minecraft_hand::ItemActivation,
+    activation_tick: u64,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -326,10 +328,11 @@ pub(crate) fn friend(
     mut prediction: Option<ResMut<net::ClientPredictionState>>,
     (local, presented): (Res<net::LocalPresentClient>, Res<net::PresentedSnapshot>),
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    (skate, cameras, mc_camera): (
+    (skate, cameras, mc_camera, ui_draw): (
         Res<frame::SkateMode>,
         Query<&Transform, With<render_scene::FlyCamera>>,
         Option<Res<frame::McCamera>>,
+        Option<Res<frame::UiDraw>>,
     ),
     mut ui: ResMut<frame::MinecraftUi>,
     mut view: ResMut<MinecraftWorldView>,
@@ -482,6 +485,7 @@ pub(crate) fn friend(
     let shown_ui = (
         ui.boss_bars.iter().any(|bar| bar.world_fog),
         ui.credits.is_some(),
+        ui_draw.as_deref().is_none_or(|draw| draw.0),
     );
     present(
         friend,
@@ -587,11 +591,13 @@ fn show_effects(
         mining,
         cracks,
         credits_due,
+        activation,
         ..
     } = friend
     else {
         return;
     };
+    let own = remote.login.as_ref().map(|login| login.client);
     for effect in remote.take_effects() {
         match effect {
             ToClient::Crack {
@@ -630,12 +636,21 @@ fn show_effects(
             } => killed_by(ui, killer),
             ToClient::Credits => *credits_due = true,
             effect => {
+                if own_totem(&effect, own) {
+                    let level = remote.level.as_mut();
+                    let mut random = level.map(|level| &mut level.view);
+                    activation.activate(|| random.as_mut().map_or(0.5, |view| view.random_float()));
+                }
                 if let Some(level) = remote.level.as_mut() {
                     show_heard(level, effect, presented);
                 }
             }
         }
     }
+}
+
+fn own_totem(effect: &ToClient, own: Option<u32>) -> bool {
+    matches!(effect, ToClient::PlayerEvent { client, event } if *event == TOTEM_EVENT && Some(*client) == own)
 }
 
 fn follow_boss_bars(
@@ -1071,7 +1086,7 @@ fn present(
     player: Option<&playerstate_iw4::PlayerState>,
     drawn_from: Option<&Transform>,
     aspect: f32,
-    (dt, (world_fog, credits)): (f64, (bool, bool)),
+    (dt, (world_fog, credits, ui_shown)): (f64, (bool, bool, bool)),
     now_ms: u64,
 ) {
     let Friend {
@@ -1094,6 +1109,8 @@ fn present(
         sounds,
         dimension,
         switch_screen,
+        activation,
+        activation_tick,
         ..
     } = friend
     else {
@@ -1329,6 +1346,23 @@ fn present(
         ),
         (sounds.as_mut(), mining, weather[0]),
     );
+    let now = level.view.ticks();
+    let ticks = now.saturating_sub(*activation_tick);
+    *activation_tick = now;
+    activation.tick(u32::try_from(ticks).unwrap_or(u32::MAX));
+    let pose = activation
+        .pose(level.view.partial(), aspect)
+        .filter(|_| ui_shown);
+    view.hand = Default::default();
+    if let Some(pose) = pose {
+        let mut mesh = minecraft_terrain::mesh::ChunkMesh::default();
+        let light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
+        let look = (&prepared.look.packs, &*prepared.look.atlas, &*light);
+        crate::minecraft_hand::append_totem(&mut mesh, &mut level.view, pose, light_at, look);
+        let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
+        view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
+        view.hand_clip = crate::minecraft_hand::hand_clip(aspect);
+    }
 }
 
 fn level_switch(
@@ -1458,6 +1492,27 @@ mod tests {
             !host_silent(ready, late * 10, true),
             "a host that acknowledges the hello is loading its world"
         );
+    }
+
+    #[test]
+    fn only_the_friends_own_totem_rises_in_their_view() {
+        let pop = |client| ToClient::PlayerEvent {
+            client,
+            event: TOTEM_EVENT,
+        };
+        assert!(own_totem(&pop(2), Some(2)));
+        assert!(!own_totem(&pop(3), Some(2)), "another player's totem");
+        assert!(!own_totem(&pop(2), None), "before the login");
+        let other = ToClient::PlayerEvent {
+            client: 2,
+            event: TOTEM_EVENT + 1,
+        };
+        assert!(!own_totem(&other, Some(2)));
+        let mut activation = crate::minecraft_hand::ItemActivation::default();
+        activation.activate(|| 0.5);
+        assert!(activation.pose(0.0, 1.5).is_some());
+        activation.tick(crate::minecraft_hand::ACTIVATION_TICKS);
+        assert!(activation.pose(0.0, 1.5).is_none(), "it ends after two seconds");
     }
 
     #[test]

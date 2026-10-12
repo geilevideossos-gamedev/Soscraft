@@ -675,15 +675,7 @@ impl Entities {
         atlas: &Atlas,
         light: &SkyLight,
     ) -> ChunkMesh {
-        let mut mesh = ChunkMesh::default();
-        for (pose, id, glint) in posed {
-            let start = mesh.vertices.len() as u32;
-            let _ = self.view.items.append_posed_items(&mut mesh, &[(*pose, light_at, id.clone())], packs, atlas, light);
-            if *glint {
-                mesh.glint.push(start..mesh.vertices.len() as u32);
-            }
-        }
-        mesh
+        self.view.held_item_mesh(posed, light_at, packs, atlas, light)
     }
 
     #[allow(clippy::too_many_arguments)]

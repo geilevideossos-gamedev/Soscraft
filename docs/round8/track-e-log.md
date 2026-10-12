@@ -1347,12 +1347,31 @@ Commit: see `git log` ("Friends see snowflakes around every player in powder sno
 IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket,minecraft:cobblestone*64
 ```
 
+### Leftover: a friend sees their own totem rise in first person
+
+Commit: see `git log` ("A friend sees their own totem rise in first person"). The previous commit is `a1a6dc3f` (snowflakes).
+
+- **Changed:**
+  - `minecraft_survival/src/entity_view.rs`: `held_item_mesh` moved here from `Entities` unchanged (`Entities` keeps a call to it), and `random_float`.
+  - `render_anim/src/minecraft_hand.rs`: `append_totem` and `hand_clip`, the host frame's totem mesh (the item's `fixed` display under the activation pose, full bright) and first-person projection, moved here unchanged so both games use them; `TOTEM` and `FULL_BRIGHT` moved with them.
+  - `render_anim/src/minecraft_remote.rs`: the friend's game starts its own `ItemActivation` when the host's totem player event (vanilla's entity event 35) names the friend's own client, ticks it on its client ticks, and draws it as the first-person hand mesh, hidden with the HUD as on the host.
+- **Tests:** `render_anim` `minecraft_remote::tests::only_the_friends_own_totem_rises_in_their_view`.
+- **Decisions:**
+  - **Vanilla's client plays the activation on entity event 35 for its own player** (`ClientPacketListener.handleEntityEvent` calls `GameRenderer.displayItemActivation` for the local player only), so the friend's game reacts to the event the host already sends; nothing new goes over the wire. Other players' totems keep showing as particles on their body.
+  - **The friend's first-person hand shows only the totem.** The friend's game draws no other held item in first person yet (E12's list); that is older than this commit and stays in the limitations.
+- **Test steps:** `docs/round8/e-m6-tests.md`, section "A friend sees their own totem rise in first person".
+- **Kit:** `minecraft:totem_of_undying` x1.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:totem_of_undying
+```
+
 ## Combined kit for every test in this track
 
 This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
 
-`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1 (16 stacks).
+`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:totem_of_undying` x1 (17 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots
+IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:totem_of_undying
 ```

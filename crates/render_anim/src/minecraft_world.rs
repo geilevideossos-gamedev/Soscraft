@@ -26,8 +26,6 @@ pub(crate) const RECENT_PLACE_SECONDS: f64 = minecraft_survival::actions::RECENT
 pub const LIGHT_VOLUME: i32 = 64;
 /// Chunk sections fade in over this long, as the viewer's default option.
 const FADE_MILLIS: u64 = 750;
-const TOTEM: &str = "minecraft:totem_of_undying";
-const FULL_BRIGHT: f32 = 15.0;
 
 /// What the renderer takes from the world each frame.
 #[derive(Resource, Default)]
@@ -1412,28 +1410,11 @@ fn update(
             }
             let mut mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
             if let Some(pose) = activation {
-                let display = minecraft_terrain::pack::ResourceId::parse(TOTEM)
-                    .ok()
-                    .and_then(|id| minecraft_terrain::model::item_display_transform(&world.packs, &id, "fixed").ok())
-                    .unwrap_or(glam::Mat4::IDENTITY);
-                let start = mesh.vertices.len() as u32;
-                let totem = entities.held_item_mesh(&[(pose * display, TOTEM.to_owned(), false)], eye_light_at, &world.packs, &world.atlas, light);
-                mesh.vertices.extend(totem.vertices.into_iter().map(|vertex| minecraft_terrain::mesh::Vertex { sky_light: FULL_BRIGHT, block_light: FULL_BRIGHT, ..vertex }));
-                mesh.indices.extend(totem.indices.into_iter().map(|index| index + start));
-                mesh.faces += totem.faces;
+                crate::minecraft_hand::append_totem(&mut mesh, &mut entities.view, pose, eye_light_at, (&world.packs, &world.atlas, light));
             }
             let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
             view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
-            // Reverse-Z with no far plane, as the scene's; 70 degrees up.
-            let f = 1.0 / (35.0f32.to_radians()).tan();
-            let near = 0.05;
-            view.hand_clip = Mat4::from_cols(
-                Vec4::new(f / aspect, 0.0, 0.0, 0.0),
-                Vec4::new(0.0, f, 0.0, 0.0),
-                Vec4::new(0.0, 0.0, 0.0, -1.0),
-                Vec4::new(0.0, 0.0, near, 0.0),
-            )
-            .to_cols_array();
+            view.hand_clip = crate::minecraft_hand::hand_clip(aspect);
         }
 
         sim::voxel::set_mob_boxes(band, entities.shot_boxes(player.riding.map(|ride| ride.vehicle)));

@@ -348,6 +348,28 @@ impl EntityView {
         self.ambient.totem_emitter(key, body);
     }
 
+    pub fn held_item_mesh(
+        &mut self,
+        posed: &[(glam::Mat4, String, bool)],
+        light_at: glam::Vec3,
+        packs: &PackStack,
+        atlas: &Atlas,
+        light: &SkyLight,
+    ) -> minecraft_terrain::mesh::ChunkMesh {
+        let mut mesh = minecraft_terrain::mesh::ChunkMesh::default();
+        for (pose, id, glint) in posed {
+            let start = mesh.vertices.len() as u32;
+            let at = [(*pose, light_at, id.clone())];
+            let _ = self
+                .items
+                .append_posed_items(&mut mesh, &at, packs, atlas, light);
+            if *glint {
+                mesh.glint.push(start..mesh.vertices.len() as u32);
+            }
+        }
+        mesh
+    }
+
     pub fn powder_snow_flake(&mut self, feet: [f64; 3], block_y: i32) {
         let mut across = || f64::from((self.random.next_float() * 2.0 - 1.0) * 0.083_333_336);
         let motion = DVec3::new(across(), f64::from(0.05_f32), across());
@@ -407,6 +429,10 @@ impl EntityView {
         self.world
             .mob_on_ray_except(eye, look, reach, None)
             .map(|(hit, distance)| (hit.id(), distance))
+    }
+
+    pub fn random_float(&mut self) -> f32 {
+        self.random.next_float()
     }
 
     pub fn partial(&self) -> f32 {
