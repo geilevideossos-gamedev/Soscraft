@@ -3,6 +3,7 @@ use glam::{Mat4, Vec3};
 
 use crate::armor_render::{ArmorRig, append_armor_on_rig};
 use crate::body_gear::BodyGear;
+use crate::elytra_render::{WingAngles, append_elytra, wings_texture};
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh, HeldDisplay, HeldItem, ItemVisuals};
 use crate::pack::PackStack;
@@ -14,6 +15,7 @@ pub struct BodyRig {
     pub hands: [Option<Mat4>; 2],
     pub armor: ArmorRig,
     pub light: Vec3,
+    pub wings: Option<WingAngles>,
 }
 
 pub fn held_items(rig: &BodyRig, gear: &BodyGear) -> Vec<(HeldItem, bool)> {
@@ -50,6 +52,13 @@ pub fn append_body_gear(
         f32::from(light.get_block((cell.x, cell.y, cell.z))),
     );
     append_armor_on_rig(mesh, atlas, &rig.armor, &gear.armor, sky, block);
+    let elytra = gear.armor[1]
+        .as_ref()
+        .filter(|item| wings_texture(&item.id).is_some());
+    if let (Some(item), Some(body)) = (elytra, rig.armor.body) {
+        let wings = rig.wings.unwrap_or(WingAngles::REST);
+        append_elytra(mesh, atlas, body.upper, wings, item.glint, sky, block);
+    }
     for (held, glint) in held_items(rig, gear) {
         let start = mesh.vertices.len() as u32;
         items.append_held_items(mesh, std::slice::from_ref(&held), packs, atlas, light)?;
@@ -284,5 +293,74 @@ mod tests {
         assert!(mesh.glint.is_empty());
         assert_eq!(mesh.armor_glint.len(), 1);
         assert_eq!(mesh.armor_glint[0], 0..mesh.vertices.len() as u32);
+    }
+
+    #[test]
+    fn a_worn_elytra_is_drawn_on_the_back_and_shimmers_when_enchanted() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(
+            root.join("pack.mcmeta"),
+            r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        let texture = root.join("assets/minecraft/textures/entity/equipment/wings/elytra.png");
+        std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(64, 32, image::Rgba([150, 150, 160, 255]))
+            .save(texture)
+            .unwrap();
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let id = ResourceId::parse(crate::elytra_render::WINGS_TEXTURE).unwrap();
+        let atlas = crate::mesh::make_atlas(&packs, vec![id]).unwrap();
+        let light = SkyLight::from_levels((0, 64, 0), (1, 1, 1), vec![12], vec![5]);
+        let back = Mat4::from_translation(Vec3::new(0.5, 65.5, 0.5))
+            * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
+        let rig = BodyRig {
+            armor: crate::armor_render::ArmorRig {
+                body: Some(crate::armor_render::SplitPart::whole(back)),
+                ..Default::default()
+            },
+            light: Vec3::new(0.5, 64.5, 0.5),
+            ..BodyRig::default()
+        };
+        let wearing = |slot: usize, glint: bool| {
+            let mut gear = BodyGear::default();
+            gear.armor[slot] = item("minecraft:elytra", glint);
+            gear
+        };
+        let draw = |rig: &BodyRig, gear: &BodyGear| {
+            let mut mesh = ChunkMesh::default();
+            let mut items = ItemVisuals::default();
+            append_body_gear(&mut mesh, &mut items, rig, gear, &packs, &atlas, &light).unwrap();
+            mesh
+        };
+        let mesh = draw(&rig, &wearing(1, true));
+        assert_eq!(mesh.faces, 12);
+        assert_eq!(mesh.armor_glint, vec![0..mesh.vertices.len() as u32]);
+        assert!(
+            mesh.vertices
+                .iter()
+                .all(|vertex| (vertex.sky_light, vertex.block_light) == (12.0, 5.0))
+        );
+        let mut alone = ChunkMesh::default();
+        append_elytra(&mut alone, &atlas, back, WingAngles::REST, true, 12.0, 5.0);
+        assert_eq!(
+            alone.vertices, mesh.vertices,
+            "folded at rest without wing angles"
+        );
+        let spread = BodyRig {
+            wings: Some(WingAngles::SPREAD),
+            ..rig
+        };
+        let open = draw(&spread, &wearing(1, false));
+        assert_eq!(open.faces, 12);
+        assert_ne!(open.vertices, mesh.vertices);
+        assert!(open.armor_glint.is_empty());
+        let no_back = BodyRig {
+            armor: Default::default(),
+            ..rig
+        };
+        assert_eq!(draw(&no_back, &wearing(1, true)).faces, 0);
+        assert_eq!(draw(&rig, &wearing(0, true)).faces, 0);
     }
 }

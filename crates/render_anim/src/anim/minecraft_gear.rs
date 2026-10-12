@@ -470,6 +470,7 @@ pub fn body_rig(joints: &[Option<PosedJoint>; JOINTS], origin: [f64; 3], fit: &G
             .map(|side| hand_frame(joints, side, fit).map(|hand| to_terrain(to_block * hand))),
         armor: bound_armor(joints, fit).posed(to_block),
         light: glam::Vec3::from_array(lit_at.to_array()),
+        wings: None,
     }
 }
 

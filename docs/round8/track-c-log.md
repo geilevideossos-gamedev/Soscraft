@@ -1049,3 +1049,26 @@ Previous commit: 237ef4c9
   - Frame times are summed in ticks with a 1e-4 tick slack, so 30 + 20 ms frames make a whole tick despite float rounding; at most 100 ticks run in one frame (the ease has long settled by then).
 - **Test steps:** none in game yet; nothing is drawn until the next commit.
 - **Kit:** none.
+
+### 42. A worn Minecraft elytra is drawn on the MW2 body's back
+
+Previous commit: 05b42261
+
+- **Changed:**
+  - `minecraft_terrain` `body_render.rs`: `BodyRig.wings` (the wing angles, `None` draws them folded at rest). `append_body_gear` draws an elytra worn in the chest slot (`armor[1]`) on the torso's upper frame, the one the chestplate uses (from the neck, riding `j_spine4`, fitted to the MW2 torso by `GEAR_FIT`), with the armour's light, after the armour, and shimmering with the armour glint when enchanted. `armor_render.rs` is unchanged: the elytra stays outside `armor_asset`.
+  - `render_anim` `minecraft_gear.rs`: `body_rig` leaves `wings` empty for now.
+- **Tests:** `body_render`: `a_worn_elytra_is_drawn_on_the_back_and_shimmers_when_enchanted` (an enchanted elytra on a rig with a torso frame gives 12 faces, all in `armor_glint` and lit where the body is, the same as the wings at rest; spread angles move it; no torso frame or an elytra in the head slot draws nothing).
+- **Decisions:**
+  - `BodyRig` gets no `crouching` field (the brief had one): nothing in the drawing reads it, since vanilla's crouch drop of 3 pixels is left out (the MW2 spine already lowers) and the crouch angles come with the wing angles.
+  - The wings use only the torso's upper frame, so they hang straight past the lower back as vanilla's do from the model root, rather than bending at the spine split.
+- **Test steps:** (survival, `iw4l-survival.exe map minecraft:overworld`; kit below)
+  1. Put the plain elytra in the chest armour slot and press F5. Back view: two grey wings folded on the back, from the shoulders to about the knees, slightly open at the bottom (**1**). F5 again for the front view: the wing edges show behind the arms (**2**).
+  2. Open the inventory (E): the character in the box wears the wings (**3**).
+  3. Swap in the Unbreaking III elytra: the wings shimmer with the broad armour glint. Put the diamond chestplate on instead: the wings are gone and the chestplate shows. Put the plain elytra back.
+  4. Crouch and glide: nothing changes yet (the wings stay folded, the body upright); that comes with the next commits.
+  5. For anything floating off the back, sunk into it, too big or turned wrongly, say which and by about how much.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+unbreaking=3,minecraft:diamond_chestplate
+```
