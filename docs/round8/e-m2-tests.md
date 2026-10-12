@@ -145,7 +145,7 @@ A bullet now names its shooter. A mob shot by the friend counts the friend as it
 
 The host's own hand runs through the moved rules. Nothing should look or sound different from before; this is a single-player check in the host window.
 
-1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-e13b -Fresh`. Spawn in both. Use only the host window.
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-e13b -Fresh -HostSound` (the host window keeps its sound). Spawn in both. Use only the host window.
 2. Place cobblestone on the ground and on a wall: each one appears where you look, with the stone place sound. Hold the right button: blocks keep coming about five a second.
 3. Break one with the stone pickaxe: the cracks grow, the hit sounds and particles show, and the block drops.
 4. Place the oak door, then right click it: it opens with the wooden door sound; right click again: it closes.
@@ -157,4 +157,28 @@ The host's own hand runs through the moved rules. Nothing should look or sound d
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*32,minecraft:oak_door*2,minecraft:cooked_beef*8,minecraft:water_bucket,minecraft:white_bed,minecraft:snowball*16,minecraft:stone_pickaxe
+```
+
+## E13c. Friends break, place and use blocks and items
+
+The friend now has a Minecraft hand: placing, mining by hand or with bullets, using blocks and items, swapping hands and dropping items all run on the host for the friend. A placed or broken block shows up in the friend window after one round trip. Opening a crafting table or a chest is not for friends yet (E14).
+
+Put the kit below in the `.env` next to the exe before the first start: both players get it on their first join.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-e13c -Fresh -HostSound` (the host window keeps its sound, so it can hear the friend). Spawn in both. Host window: `/time set day`, then `/op Friend`. Stand the two players about 6 blocks apart, facing each other.
+2. Friend window: select the cobblestone and place three blocks on the ground in front of the friend, then one on top of another. Each appears in the friend window a moment after the click and in the host window too. Host window: the stone place sound comes from where the friend builds.
+3. Friend window: select the stone pickaxe and hold the left button on one of the cobblestones. The crack grows in the friend window and in the host window. Screenshot both windows while it is half cracked. **S15** (host) **S16** (friend). The block breaks with stone particles in both windows and the cobblestone drop flies to the friend.
+4. Friend window: let go of the left button halfway through breaking another block: the crack disappears in both windows.
+5. Friend window: place the 4 coal ore, then shoot one with a pistol until it breaks. The bullet cracks show in both windows, the coal drops and the orbs go to the friend's XP bar.
+6. Friend window: place the oak door and right click it: it opens in both windows, and the host window hears the door. Right click again: it closes.
+7. Friend window: type `/effect give @s minecraft:hunger 10 10` and wait until the food bar is down by three drumsticks. Hold the right button with the cooked beef: after about 1.6 seconds the bar refills. Host window: the chewing is heard from the friend.
+8. Friend window: use the water bucket on the ground: water flows in both windows and the friend's bucket is empty. Use it on the water source: it fills again.
+9. Friend window: throw a few snowballs at the host: they fly in both windows.
+10. Friend window: select the cobblestone, press F: it goes to the offhand. Press F again: it comes back. Press Q: one cobblestone drops in front of the friend, in both windows.
+11. Friend window: hold the left button on a block, press T to open the chat while still holding: the digging stops. Close the chat.
+12. Friend window: `/gamemode creative`. Left click blocks: each breaks at once with no drop. `/gamemode survival`.
+13. Close both windows (type `quit` in the script's console).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*32,minecraft:stone_pickaxe,minecraft:oak_door*2,minecraft:cooked_beef*8,minecraft:water_bucket,minecraft:snowball*16,minecraft:coal_ore*4
 ```

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bevy::input::gamepad::GamepadButton;
 use bevy::prelude::*;
+use minecraft_net::messages::{HandEvent, HandEventKind, HandState, Target};
 use minecraft_survival::actions::{Effect, Hands};
 use minecraft_terrain::mesh::Atlas;
 use minecraft_terrain::pack::PackStack;
@@ -45,6 +46,86 @@ fn pad_trigger(
             pad.pressed(button)
         }
     })
+}
+
+const STATE_EVERY: f64 = 0.05;
+
+#[derive(Default)]
+pub(crate) struct HandSampler {
+    seq: u32,
+    tick: u32,
+    attack: bool,
+    using: bool,
+    sent_at: Option<f64>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Sampled {
+    pub(crate) events: Vec<HandEvent>,
+    pub(crate) state: Option<HandState>,
+}
+
+impl HandSampler {
+    pub(crate) fn sample(
+        &mut self,
+        hands: Hands,
+        swap: bool,
+        drop: Option<bool>,
+        target: Target,
+        seconds: f64,
+    ) -> Sampled {
+        let live = !hands.captured;
+        let mut kinds = Vec::new();
+        if live && hands.attack_pressed {
+            kinds.push(HandEventKind::AttackPressed);
+            self.attack = true;
+        }
+        if self.attack && !(live && hands.attack_held) {
+            kinds.push(HandEventKind::AttackReleased);
+            self.attack = false;
+        }
+        if live && hands.use_pressed {
+            kinds.push(HandEventKind::UsePressed);
+            self.using = true;
+        }
+        if self.using && !(live && hands.use_held) {
+            kinds.push(HandEventKind::UseReleased);
+            self.using = false;
+        }
+        if live && swap {
+            kinds.push(HandEventKind::SwapHands);
+        }
+        if let Some(whole_stack) = drop.filter(|_| live) {
+            kinds.push(HandEventKind::Drop { whole_stack });
+        }
+        let events = kinds
+            .into_iter()
+            .map(|kind| {
+                self.seq = self.seq.wrapping_add(1);
+                HandEvent {
+                    seq: self.seq,
+                    kind,
+                    target,
+                }
+            })
+            .collect();
+        let holding = self.attack || self.using;
+        if !holding {
+            self.sent_at = None;
+        }
+        let due = holding && self.sent_at.is_none_or(|at| seconds - at >= STATE_EVERY);
+        let state = due.then(|| {
+            self.sent_at = Some(seconds);
+            self.tick = self.tick.wrapping_add(1);
+            HandState {
+                tick: self.tick,
+                attack: self.attack,
+                use_item: self.using,
+                target,
+            }
+        });
+        Sampled { events, state }
+    }
 }
 
 pub(crate) struct Presenter<'a> {
@@ -106,7 +187,23 @@ pub(crate) fn play(effects: Vec<Effect>, presenter: &mut Presenter<'_>) {
                     );
                 }
             }
-            Effect::HitParticle { pos, face, block } => {
+            Effect::Dig {
+                pos,
+                face,
+                block,
+                sound,
+            } => {
+                if let (Some(sounds), Some((event, volume, pitch))) =
+                    (presenter.sounds.as_deref_mut(), sound)
+                {
+                    let centre = [
+                        f64::from(pos.0) + 0.5,
+                        f64::from(pos.1) + 0.5,
+                        f64::from(pos.2) + 0.5,
+                    ];
+                    let at = Vec3::from_array(sim::voxel::to_map(presenter.origin, centre));
+                    sounds.play(presenter.packs, &event, Some(at), volume, pitch);
+                }
                 presenter.mining.hit_particle(
                     presenter.packs,
                     presenter.scene,
@@ -137,5 +234,78 @@ fn language<'a>(
         None => loaded.get_or_insert_with(|| {
             minecraft_terrain::item_icons::language(packs).unwrap_or_else(|_| HashMap::new())
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(sampled: &Sampled) -> Vec<HandEventKind> {
+        sampled.events.iter().map(|event| event.kind).collect()
+    }
+
+    #[test]
+    fn a_click_sends_a_press_and_a_release_and_a_hold_keeps_its_state_coming() {
+        let mut sampler = HandSampler::default();
+        let click = Hands {
+            attack_pressed: true,
+            ..Hands::default()
+        };
+        let clicked = sampler.sample(click, false, None, Target::Miss, 0.0);
+        assert_eq!(
+            kinds(&clicked),
+            [HandEventKind::AttackPressed, HandEventKind::AttackReleased]
+        );
+        assert_eq!(clicked.state, None);
+        let press = Hands {
+            use_pressed: true,
+            use_held: true,
+            ..Hands::default()
+        };
+        let held = Hands {
+            use_held: true,
+            ..Hands::default()
+        };
+        let pressed = sampler.sample(press, false, None, Target::Miss, 1.0);
+        assert_eq!(kinds(&pressed), [HandEventKind::UsePressed]);
+        assert!(
+            pressed
+                .state
+                .is_some_and(|state| state.use_item && !state.attack)
+        );
+        assert_eq!(
+            sampler.sample(held, false, None, Target::Miss, 1.01).state,
+            None
+        );
+        let later = sampler.sample(held, false, None, Target::Miss, 1.06);
+        assert!(later.events.is_empty());
+        assert!(
+            later
+                .state
+                .is_some_and(|state| state.tick > pressed.state.unwrap().tick)
+        );
+        let chatting = Hands {
+            captured: true,
+            ..held
+        };
+        let opened = sampler.sample(chatting, true, Some(true), Target::Miss, 1.2);
+        assert_eq!(kinds(&opened), [HandEventKind::UseReleased]);
+        let seqs: Vec<u32> = clicked
+            .events
+            .iter()
+            .chain(&pressed.events)
+            .chain(&opened.events)
+            .map(|event| event.seq)
+            .collect();
+        assert_eq!(seqs, [1, 2, 3, 4]);
+        let swapped = sampler.sample(Hands::default(), true, Some(false), Target::Miss, 2.0);
+        assert_eq!(
+            kinds(&swapped),
+            [
+                HandEventKind::SwapHands,
+                HandEventKind::Drop { whole_stack: false }
+            ]
+        );
     }
 }

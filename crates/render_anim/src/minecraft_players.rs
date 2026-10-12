@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use bevy::prelude::*;
 use minecraft_commands::Clientbound;
 use minecraft_net::{Dimension, PlayerUuid};
-use minecraft_survival::actions::{Actor, Body, Moved};
+use minecraft_survival::actions::{Actor, Body, Effect, Moved};
 use minecraft_survival::entities::{Entities, TickActor};
 use minecraft_survival::level::{Level, Terrain};
 use minecraft_survival::player::Player;
 use minecraft_survival::server::Globals;
+use minecraft_survival::session::{HandQueue, HandTake};
 use minecraft_survival::switch::Switch;
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::BlockPos;
@@ -942,7 +943,13 @@ pub(crate) struct FriendWorld<'a> {
     pub(crate) shape_ids: &'a mut ShapeIds,
     pub(crate) language: Option<&'a HashMap<String, String>>,
     pub(crate) packs: &'a PackStack,
+    pub(crate) atlas: &'a minecraft_terrain::mesh::Atlas,
+    pub(crate) mining: &'a mut crate::minecraft_mining::Mining,
+    pub(crate) sounds: Option<&'a mut Sounds>,
+    pub(crate) light: Option<&'a minecraft_terrain::lighting::SkyLight>,
     pub(crate) dt: f64,
+    pub(crate) now: f64,
+    pub(crate) instant: std::time::Instant,
 }
 
 pub(crate) fn step_friend(
@@ -951,11 +958,25 @@ pub(crate) fn step_friend(
     client: sim::ClientId,
     origin: [f64; 3],
     selected: Option<u8>,
+    hands: &mut HandQueue,
 ) -> Stepped {
     let mut stepped = Stepped::default();
     let Some(ps) = world.authority.player(client).copied() else {
+        hands.take(world.instant, |_| false);
         return stepped;
     };
+    let eye = sim::voxel::to_block(
+        origin,
+        [
+            ps.origin[0],
+            ps.origin[1],
+            ps.origin[2] + ps.view_height_current,
+        ],
+    );
+    let mode = player.mode;
+    let taken = hands.take(world.instant, |target| {
+        minecraft_survival::actions::allows(target, eye, &mode, |_| None)
+    });
     if let Some(slot) = selected {
         player.selected = usize::from(slot).min(minecraft_survival::guns::HOTBAR - 1);
     }
@@ -999,7 +1020,7 @@ pub(crate) fn step_friend(
         &ps,
         world.queues,
     );
-    movement(
+    let moved = movement(
         player,
         world.globals,
         terrain,
@@ -1015,14 +1036,6 @@ pub(crate) fn step_friend(
         world.packs,
     );
     let feet = sim::voxel::to_block(origin, ps.origin);
-    let eye = sim::voxel::to_block(
-        origin,
-        [
-            ps.origin[0],
-            ps.origin[1],
-            ps.origin[2] + ps.view_height_current,
-        ],
-    );
     player
         .death_watch
         .stood(minecraft_survival::death::DeathSpot { feet, eye });
@@ -1062,6 +1075,38 @@ pub(crate) fn step_friend(
         } = player;
         drop_on_death(death_watch, inventory, hand, entities);
     }
+    let effects = friend_hand(
+        player, world, client, origin, &ps, &moved, taken, life.alive,
+    );
+    let heard_at = Some(eye);
+    for effect in effects {
+        match effect {
+            Effect::Sound {
+                event,
+                at,
+                volume,
+                pitch,
+                spread,
+            } => {
+                let at = at.or(heard_at);
+                if let (Some(sounds), Some(at)) = (world.sounds.as_deref_mut(), at) {
+                    let pitch = if spread == 0.0 {
+                        pitch
+                    } else {
+                        pitch + sounds.random() * spread
+                    };
+                    let at = Vec3::from_array(sim::voxel::to_map(origin, at));
+                    sounds.play(world.packs, &event, Some(at), volume, pitch);
+                }
+            }
+            Effect::Chat(line) => stepped.lines.push(line),
+            Effect::Overlay(key) => stepped.lines.push(Clientbound::System {
+                text: minecraft_commands::Text::translate(&key, Vec::new()),
+                overlay: true,
+            }),
+            Effect::Crumbs { .. } | Effect::Dig { .. } => {}
+        }
+    }
     let owned = owned_weapons(&ps, world.authority);
     let Player {
         survival,
@@ -1077,6 +1122,104 @@ pub(crate) fn step_friend(
         && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some();
     sim::voxel::set_death_protected(client.0, protected);
     stepped
+}
+
+#[allow(clippy::too_many_arguments)]
+fn friend_hand(
+    player: &mut Player,
+    world: &mut FriendWorld<'_>,
+    client: sim::ClientId,
+    origin: [f64; 3],
+    ps: &PlayerState,
+    moved: &Moved,
+    taken: HandTake,
+    alive: bool,
+) -> Vec<Effect> {
+    let Some(level) = world.levels.get_mut(&player.dimension) else {
+        return Vec::new();
+    };
+    let interacts = alive && player.mode.interacts();
+    if interacts
+        && taken.swap
+        && minecraft_survival::offhand::swap_hands(&mut player.inventory, player.selected)
+    {
+        player.survival.stop_eating();
+        player.hand.blocking = None;
+    }
+    let actor = actor(ps, origin, alive);
+    if let Some(entities) = level.entities.as_mut().filter(|_| interacts) {
+        for whole in taken.drops {
+            let selected = player.selected;
+            let Some(stack) = player.inventory.drop_selected(selected, whole) else {
+                continue;
+            };
+            if minecraft_survival::guns::weapon_of(&stack).is_some() {
+                if let Some(back) = player.inventory.add_item(stack, selected) {
+                    player.inventory.cursor = Some(back);
+                }
+            } else {
+                let eye = glam::DVec3::from_array(actor.eye);
+                entities
+                    .world_items
+                    .toss(stack, eye, actor.yaw, actor.pitch);
+            }
+        }
+    }
+    let mut body = MwBody {
+        authority: &mut *world.authority,
+        client,
+        ps,
+        registries: &world.globals.registries,
+        shapes: &mut *world.shapes,
+        shape_ids: &mut *world.shape_ids,
+    };
+    let acted = minecraft_survival::actions::act(
+        player,
+        level,
+        world.globals,
+        &mut body,
+        &actor,
+        taken.hands,
+        moved,
+        world.light,
+        world.now,
+    );
+    let mut effects = acted.effects;
+    let mut refs = crate::minecraft_mining::WorldRefs {
+        stream: &mut level.terrain.stream,
+        scene: &mut level.terrain.scene,
+        packs: world.packs,
+        atlas: world.atlas,
+        registries: &world.globals.registries,
+    };
+    let broken = world
+        .mining
+        .break_now(&acted.creative_broken, &mut level.shots, &mut refs);
+    let dug = world
+        .mining
+        .break_now(&acted.hand_broken, &mut level.shots, &mut refs);
+    for (pos, block, _) in broken.iter().chain(&dug) {
+        if let Some(kind) = level.terrain.scene.sound_type(block) {
+            let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
+            effects.push(Effect::Sound {
+                event: kind.break_sound.to_string(),
+                at: Some(centre),
+                volume: (kind.volume + 1.0) / 2.0,
+                pitch: kind.pitch * 0.8,
+                spread: 0.0,
+            });
+        }
+    }
+    let harvest = minecraft_survival::actions::harvest(
+        player,
+        level,
+        world.globals,
+        broken,
+        dug,
+        &acted.hand_mined,
+    );
+    effects.extend(harvest.effects);
+    effects
 }
 
 fn finish_item_use(

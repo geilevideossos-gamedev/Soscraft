@@ -813,8 +813,8 @@ fn update(
     let actor = crate::minecraft_players::actor(ps, origin, alive);
     let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids };
     let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, .. } = &mut *player;
-    let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, .. } = &mut *level;
+    let player_mode = player.mode;
+    let minecraft_survival::level::Level { entities, terrain, shots, .. } = &mut *level;
     crate::minecraft_input::play(effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
 
     // Shots and explosions from the authoritative game: bullets that met a
@@ -896,15 +896,21 @@ fn update(
         atlas: &world.atlas,
         registries: &globals.registries,
     };
-    let mut broken = mining.apply(events, &mut refs, time.elapsed_secs_f64());
-    broken.extend(mining.break_now(&creative_broken, &mut refs));
-    let dug = mining.break_now(&hand_broken, &mut refs);
-    let dug_blocks: Vec<_> = dug.iter().map(|(pos, block, _)| (*pos, minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() })).collect();
-    let wrong_tool = minecraft_survival::digging::wrong_tool(globals.data.mining.as_deref(), &*terrain.stream.states, &dug_blocks, inventory.slots[*selected].as_ref());
-    let worn: Vec<f32> = dug.iter().map(|(_, block, _)| terrain.stream.states.state_of(block).map_or(-1.0, |state| globals.registries.blocks.state(state).destroy_speed)).collect();
-    broken.extend(dug);
+    let mut broken = Vec::new();
+    let mut friends_broken: Vec<(u64, Vec<crate::minecraft_mining::Mined>)> = Vec::new();
+    for (mined, attacker) in mining.apply(events, shots, &mut refs, time.elapsed_secs_f64()) {
+        match credit(attacker).filter(|&id| id != host_id) {
+            Some(id) => match friends_broken.iter_mut().find(|(friend, _)| *friend == id) {
+                Some((_, by_friend)) => by_friend.push(mined),
+                None => friends_broken.push((id, vec![mined])),
+            },
+            None => broken.push(mined),
+        }
+    }
+    broken.extend(mining.break_now(&creative_broken, shots, &mut refs));
+    let dug = mining.break_now(&hand_broken, shots, &mut refs);
     if let Some(sounds) = sounds.as_mut() {
-        for (pos, block, blast) in &broken {
+        for (pos, block, blast) in broken.iter().chain(&dug).chain(friends_broken.iter().flat_map(|(_, mined)| mined)) {
             if blast.is_some() {
                 continue;
             }
@@ -914,37 +920,18 @@ fn update(
             }
         }
     }
-    survival.exhaust(minecraft_survival::survival::MINE_EXHAUSTION * broken.iter().filter(|(pos, _, blast)| blast.is_none() && !wrong_tool.contains(pos)).count() as f32);
-    if let Some(entities) = entities.as_mut() {
-        let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
-        entities.mined(inventory.slots[*selected].as_ref(), &broken, &hand_mined, !player_mode.drops_from_breaking());
-        let kept: HashMap<_, _> = broken
-            .iter()
-            .filter(|(_, block, _)| minecraft_terrain::containers::Station::of(block) == Some(minecraft_terrain::containers::Station::Shulker))
-            .filter_map(|(pos, ..)| containers.take_shulker(*pos).map(|components| (*pos, components)))
-            .collect();
-        let dropping: Vec<_> = broken
-            .iter()
-            .filter(|(pos, _, blast)| player_mode.drops_from_breaking() || blast.is_some() || kept.get(pos).is_some_and(|components| components.get(minecraft_terrain::containers::CONTAINER).is_some()))
-            .filter(|(pos, ..)| !wrong_tool.contains(pos))
-            .cloned()
-            .collect();
-        entities.award_block_experience(inventory.slots[*selected].as_ref(), &dropping, &hand_mined);
-        entities.drop_blocks(inventory.slots[*selected].as_ref(), &dropping, kept, &hand_mined);
-        for &pos in &positions {
-            openers.removed(pos);
-            minecraft_survival::level::spill(containers, entities, pos);
-        }
-        for hardness in worn {
-            if let Some(item) = minecraft_survival::digging::wear_after_break(inventory, *selected, hardness, || entities.random_float()) {
-                entities.broken_items.push(item);
-                let sound = minecraft_terrain::flint::break_sound(entities.random_float());
-                if let Some(sounds) = sounds.as_mut() {
-                    sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
-                }
-            }
+    let harvest = minecraft_survival::actions::harvest(player, level, globals, broken, dug, &hand_mined);
+    for (id, mined) in friends_broken {
+        if let Some(friend) = friends.iter_mut().find(|friend| u64::from(friend.id.0) == id) {
+            let _ = minecraft_survival::actions::harvest(friend, level, globals, mined, Vec::new(), &[]);
         }
     }
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, .. } = &mut *player;
+    let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, shots, .. } = &mut *level;
+    if let Some(entities) = entities.as_mut() {
+        entities.broken_items.extend(harvest.worn_out);
+    }
+    crate::minecraft_input::play(harvest.effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
 
     let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
     death_watch.stood(minecraft_survival::death::DeathSpot { feet, eye });
@@ -1410,7 +1397,10 @@ fn update(
     } else {
         body_gear.remove(local.0.0);
     }
-    view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs, hand.dig.crack());
+    let mut cracks = minecraft_survival::level::shot_cracks(shots);
+    cracks.extend(hand.dig.crack());
+    cracks.extend(friends.iter().filter(|friend| friend.dimension == *dimension).filter_map(|friend| friend.hand.dig.crack()));
+    view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs, &cracks);
     let lava = (alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current)).then(|| {
         let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
         (player_mode.mode == minecraftoss_player::GameMode::Spectator, fire_resistant)
@@ -1751,12 +1741,17 @@ pub(crate) struct HostView<'a> {
     pub(crate) shapes: &'a mut HashMap<BlockStateId, u16>,
     pub(crate) shape_ids: &'a mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     pub(crate) packs: &'a PackStack,
+    pub(crate) atlas: &'a Atlas,
     pub(crate) language: Option<&'a HashMap<String, String>>,
+    pub(crate) mining: &'a mut crate::minecraft_mining::Mining,
+    pub(crate) sounds: Option<&'a mut crate::minecraft_sounds::Sounds>,
+    pub(crate) light: Option<&'a SkyLight>,
 }
 
 pub(crate) fn host_view(runtime: &mut Runtime) -> Option<HostView<'_>> {
-    let Runtime { server, local, origins, shown, queues, shapes, shape_ids, world, inventory_ui, .. } = runtime;
-    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown, queues, shapes, shape_ids, packs: &world.as_ref()?.packs, language: inventory_ui.language() })
+    let Runtime { server, local, origins, shown, queues, shapes, shape_ids, world, inventory_ui, mining, sounds, light, .. } = runtime;
+    let world = world.as_ref()?;
+    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown, queues, shapes, shape_ids, packs: &world.packs, atlas: &world.atlas, language: inventory_ui.language(), mining, sounds: sounds.as_mut(), light: light.as_ref() })
 }
 
 pub(crate) fn show_lines(runtime: &Runtime, chat: &mut frame::McChat, lines: &[minecraft_commands::Clientbound]) {

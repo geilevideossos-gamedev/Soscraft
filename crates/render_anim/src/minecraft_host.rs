@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use bevy::prelude::*;
 use minecraft_commands::{Outgoing, Recipient, Serverbound};
+use minecraft_net::messages::HandState;
 use minecraft_net::{Lane, PlayerUuid, ToClient, ToServer};
 use minecraft_survival::session::{BatchJob, EncodedBatch, Hello, JoinContext, Sessions};
 use minecraftoss_core::Registries;
@@ -122,6 +123,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
                     host.selects.insert(client, slot);
                 }
             }
+            Ok(ToServer::Hand(events)) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    session.hands.push(events);
+                }
+            }
             Ok(_) => {}
             Err(error) => {
                 diag::warn!(
@@ -130,6 +136,13 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
                 );
                 wire.bad_message(client, now);
             }
+        }
+    }
+    for (client, bytes) in wire.take_state() {
+        if let Ok(state) = minecraft_net::decode::<HandState>(Lane::State, &bytes)
+            && let Some(session) = host.sessions.sessions.get_mut(&client)
+        {
+            session.hands.state(state, now);
         }
     }
 }
@@ -294,23 +307,38 @@ pub(crate) fn host(
             shape_ids: view.shape_ids,
             language: view.language,
             packs: view.packs,
+            atlas: view.atlas,
+            mining: view.mining,
+            sounds: view.sounds,
+            light: view.light,
             dt: time.delta_secs_f64(),
+            now: time.elapsed_secs_f64(),
+            instant: now,
         };
         let mut told = Vec::new();
         for session in host.sessions.sessions.values_mut() {
             let Some(player) = players.get_mut(&session.uuid) else {
+                session.hands.take(now, |_| false);
                 continue;
             };
             let Some(&origin) = view.origins.get(&player.dimension) else {
+                session.hands.take(now, |_| false);
                 continue;
             };
             if view.shown != Some(player.dimension) {
+                session.hands.take(now, |_| false);
                 continue;
             }
             let selected = host.selects.remove(&session.client);
             let id = sim::ClientId(session.client);
-            let stepped =
-                crate::minecraft_players::step_friend(player, &mut world, id, origin, selected);
+            let stepped = crate::minecraft_players::step_friend(
+                player,
+                &mut world,
+                id,
+                origin,
+                selected,
+                &mut session.hands,
+            );
             session
                 .outbox
                 .extend(stepped.lines.into_iter().map(ToClient::Chat));
@@ -349,6 +377,7 @@ pub(crate) fn host(
         wire.send_batch(client, seq, Arc::new(batch.blob));
     }
     host.sessions.fan_out(&mut server.levels);
+    host.sessions.send_cracks(&server.players, &server.levels);
     if host.sessions.is_empty() {
         host.time_at = None;
     } else if host

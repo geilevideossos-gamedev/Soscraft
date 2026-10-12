@@ -80,10 +80,11 @@ pub enum Effect {
         pitch: f32,
         count: u32,
     },
-    HitParticle {
+    Dig {
         pos: BlockPos,
         face: Face,
         block: Block,
+        sound: Option<(String, f32, f32)>,
     },
     Chat(Clientbound),
     Overlay(String),
@@ -159,6 +160,17 @@ pub fn allows(
             mob_box(id).is_some_and(|bounds| reaches_box(eye, bounds, mode.entity_reach()))
         }
         minecraft_net::messages::Target::Player { .. } => false,
+    }
+}
+
+pub fn face_index(face: Face) -> u8 {
+    match face {
+        Face::Down => 0,
+        Face::Up => 1,
+        Face::North => 2,
+        Face::South => 3,
+        Face::West => 4,
+        Face::East => 5,
     }
 }
 
@@ -523,19 +535,21 @@ pub fn act(
                     let Some(block) = Scene::block(&terrain.scene, pos) else {
                         continue;
                     };
-                    if heard && let Some(kind) = terrain.scene.sound_type(block) {
-                        let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
-                        effects.push(sound(
-                            &kind.hit,
-                            Some(centre),
-                            (kind.volume + 1.0) / 8.0,
-                            kind.pitch * 0.5,
-                        ));
-                    }
-                    effects.push(Effect::HitParticle {
+                    let hit = heard
+                        .then(|| terrain.scene.sound_type(block))
+                        .flatten()
+                        .map(|kind| {
+                            (
+                                kind.hit.to_string(),
+                                (kind.volume + 1.0) / 8.0,
+                                kind.pitch * 0.5,
+                            )
+                        });
+                    effects.push(Effect::Dig {
                         pos,
                         face,
                         block: block.clone(),
+                        sound: hit,
                     });
                 }
                 if dug.swing && hand.swing.is_none_or(|t| t >= SWING_TICKS * 0.5) {
@@ -1333,6 +1347,135 @@ pub fn act(
     }
 }
 
+pub type Broken = (BlockPos, Block, Option<f32>);
+
+#[derive(Default)]
+pub struct Harvest {
+    pub worn_out: Vec<String>,
+    pub effects: Vec<Effect>,
+}
+
+pub fn harvest(
+    player: &mut Player,
+    level: &mut Level,
+    globals: &Globals,
+    mut broken: Vec<Broken>,
+    dug: Vec<Broken>,
+    hand_mined: &[BlockPos],
+) -> Harvest {
+    let mut harvest = Harvest::default();
+    let Player {
+        survival,
+        mode: player_mode,
+        inventory,
+        selected,
+        ..
+    } = player;
+    let Level {
+        entities,
+        containers,
+        terrain,
+        openers,
+        ..
+    } = level;
+    let dug_blocks: Vec<_> = dug
+        .iter()
+        .map(|(pos, block, _)| {
+            let block = minecraftoss_player::Block {
+                id: block.id.key(),
+                properties: block.properties.clone(),
+            };
+            (*pos, block)
+        })
+        .collect();
+    let wrong_tool = crate::digging::wrong_tool(
+        globals.data.mining.as_deref(),
+        &*terrain.stream.states,
+        &dug_blocks,
+        inventory.slots[*selected].as_ref(),
+    );
+    let worn: Vec<f32> = dug
+        .iter()
+        .map(|(_, block, _)| {
+            terrain.stream.states.state_of(block).map_or(-1.0, |state| {
+                globals.registries.blocks.state(state).destroy_speed
+            })
+        })
+        .collect();
+    broken.extend(dug);
+    if let Some(breaks) = terrain.friend_breaks.as_mut() {
+        breaks.extend(
+            broken
+                .iter()
+                .filter(|(_, _, blast)| blast.is_none())
+                .filter_map(|(pos, block, _)| {
+                    let state = terrain.stream.states.state_of(block)?;
+                    Some(([pos.0, pos.1, pos.2], u32::from(state.0)))
+                }),
+        );
+    }
+    let mined = broken
+        .iter()
+        .filter(|(pos, _, blast)| blast.is_none() && !wrong_tool.contains(pos))
+        .count();
+    survival.exhaust(crate::survival::MINE_EXHAUSTION * mined as f32);
+    let Some(entities) = entities.as_mut() else {
+        return harvest;
+    };
+    let held = inventory.slots[*selected].clone();
+    let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
+    entities.mined(
+        held.as_ref(),
+        &broken,
+        hand_mined,
+        !player_mode.drops_from_breaking(),
+    );
+    let kept: std::collections::HashMap<_, _> = broken
+        .iter()
+        .filter(|(_, block, _)| {
+            minecraft_terrain::containers::Station::of(block)
+                == Some(minecraft_terrain::containers::Station::Shulker)
+        })
+        .filter_map(|(pos, ..)| {
+            containers
+                .take_shulker(*pos)
+                .map(|components| (*pos, components))
+        })
+        .collect();
+    let dropping: Vec<_> = broken
+        .iter()
+        .filter(|(pos, _, blast)| {
+            player_mode.drops_from_breaking()
+                || blast.is_some()
+                || kept.get(pos).is_some_and(|components| {
+                    components
+                        .get(minecraft_terrain::containers::CONTAINER)
+                        .is_some()
+                })
+        })
+        .filter(|(pos, ..)| !wrong_tool.contains(pos))
+        .cloned()
+        .collect();
+    entities.award_block_experience(held.as_ref(), &dropping, hand_mined);
+    entities.drop_blocks(held.as_ref(), &dropping, kept, hand_mined);
+    for &pos in &positions {
+        openers.removed(pos);
+        crate::level::spill(containers, entities, pos);
+    }
+    for hardness in worn {
+        if let Some(item) = crate::digging::wear_after_break(inventory, *selected, hardness, || {
+            entities.random_float()
+        }) {
+            harvest.worn_out.push(item);
+            let broke = minecraft_terrain::flint::break_sound(entities.random_float());
+            harvest
+                .effects
+                .push(sound(broke.event, None, broke.volume, broke.pitch));
+        }
+    }
+    harvest
+}
+
 struct SceneView<'a>(&'a Terrain);
 
 impl BlockView for SceneView<'_> {
@@ -1498,14 +1641,14 @@ fn finish_respawn_use(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::entities::{PlayerView, TickActor};
     use minecraft_net::messages::Target;
     use minecraft_terrain::game_mode::{GameMode, PlayerMode};
     use minecraftoss_player::inventory::ItemStack;
 
-    const FEET: [f64; 3] = [4.5, 201.0, 4.5];
+    pub(crate) const FEET: [f64; 3] = [4.5, 201.0, 4.5];
 
     #[test]
     fn reach_is_refused_beyond_five_and_a_half_blocks() {
@@ -1563,7 +1706,7 @@ mod tests {
         assert!(!allows(&target([3.5, 66.5, 3.5]), eye, &mode, |_| None));
     }
 
-    struct Flat;
+    pub(crate) struct Flat;
 
     impl Body for Flat {
         fn write_blocks(
@@ -1593,7 +1736,7 @@ mod tests {
         }
     }
 
-    fn level_and_globals() -> Option<(Level, Globals)> {
+    pub(crate) fn level_and_globals() -> Option<(Level, Globals)> {
         let mut level =
             crate::commands::tests::test_stream().and_then(crate::commands::tests::test_level)?;
         let registries = level.terrain.stream.states.registries().clone();
@@ -1628,7 +1771,7 @@ mod tests {
         Some((level, globals))
     }
 
-    fn actor(yaw: f32, pitch: f32) -> Actor {
+    pub(crate) fn actor(yaw: f32, pitch: f32) -> Actor {
         Actor {
             alive: true,
             feet: FEET,
@@ -1645,7 +1788,7 @@ mod tests {
         }
     }
 
-    fn moved() -> Moved {
+    pub(crate) fn moved() -> Moved {
         Moved {
             on_ground: true,
             hand_ticks: 1,
@@ -1655,18 +1798,18 @@ mod tests {
         }
     }
 
-    fn pitch_to(eye: [f64; 3], at: [f64; 3]) -> f32 {
+    pub(crate) fn pitch_to(eye: [f64; 3], at: [f64; 3]) -> f32 {
         let across = (at[0] - eye[0]).hypot(at[2] - eye[2]);
         (eye[1] - at[1]).atan2(across).to_degrees() as f32
     }
 
-    fn holding(id: &str, count: u8) -> Player {
+    pub(crate) fn holding(id: &str, count: u8) -> Player {
         let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
         player.inventory.slots[0] = Some(ItemStack::new(id, count));
         player
     }
 
-    fn count(player: &Player) -> Option<u8> {
+    pub(crate) fn count(player: &Player) -> Option<u8> {
         player.inventory.slots[0].as_ref().map(|stack| stack.count)
     }
 

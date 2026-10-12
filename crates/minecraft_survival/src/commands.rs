@@ -1751,11 +1751,13 @@ pub(crate) mod tests {
                 environment,
                 rules,
                 friend_changes: None,
+                friend_breaks: None,
             },
             openers: Default::default(),
             empty_ticks: 0,
             dragon_fight: None,
             container_ticks: 0,
+            shots: Default::default(),
         })
     }
 

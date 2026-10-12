@@ -1,14 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use minecraft_commands::{Clientbound, Serverbound, Text};
-use minecraft_net::messages::GameMode;
+use minecraft_net::messages::{GameMode, Target};
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
 use minecraft_survival::guns::{Follow, weapon_of};
 use minecraft_survival::remote::{DecodeJob, RemoteWorld};
+use minecraft_survival::session::BREAK_EVENT;
 use minecraft_survival::views::{HudClock, Selection, view_stack};
 use minecraft_terrain::containers::Containers;
 use minecraft_terrain::lighting::SkyLight;
@@ -145,6 +146,9 @@ pub(crate) struct Friend {
     selection: Selection,
     follow: Follow,
     fire_frames: Option<(Handle<Image>, u32)>,
+    mining: crate::minecraft_mining::Mining,
+    cracks: BTreeMap<(u32, [i32; 3]), u8>,
+    hand: crate::minecraft_input::HandSampler,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -250,7 +254,6 @@ fn exchange(
         send(wire, &ToServer::ChunkBatchReceived { seq });
     }
     let mut lines = remote.take_chat();
-    remote.take_effects();
     if let Some(reason) = wire.failed.clone()
         && remote.failed.is_none()
     {
@@ -299,6 +302,12 @@ pub(crate) fn friend(
     mut view: ResMut<MinecraftWorldView>,
     mut friend: NonSendMut<Friend>,
     mut images: ResMut<Assets<Image>>,
+    (buttons, gamepads, active_pad, hud_input): (
+        Res<ButtonInput<MouseButton>>,
+        Query<&bevy::input::gamepad::Gamepad>,
+        Option<Res<frame::ActivePad>>,
+        Option<Res<frame::HudInputView>>,
+    ),
 ) {
     if *role != frame::RuntimeRole::Client {
         if ui.chat_only {
@@ -367,7 +376,9 @@ pub(crate) fn friend(
         let lines = exchange(friend, wire, now, now_ms);
         if let Some(prepared) = friend.prepared.as_ref().filter(|_| !lines.is_empty()) {
             crate::minecraft_chat::show(&mut ui.chat, &lines, &prepared.language);
+            show_overlays(&mut ui, &lines, &prepared.language);
         }
+        show_effects(friend);
         if friend
             .remote
             .as_ref()
@@ -412,11 +423,136 @@ pub(crate) fn friend(
     );
     let seconds = real_time.elapsed_secs_f64();
     let shown = (dt, seconds, now_ms);
+    let swap = std::mem::take(&mut ui.swap_hands);
+    let drop = ui.drop_selected.take();
     let picked = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
+    crate::minecraft_respawn::fade_overlay(&mut ui, dt);
     if let (Some(wire), Some(slot)) = (wire.as_mut(), picked) {
         send(wire, &ToServer::SelectSlot(slot));
     }
+    let logged_in = friend
+        .remote
+        .as_ref()
+        .is_some_and(|remote| remote.login.is_some());
+    if let Some(wire) = wire.as_mut().filter(|_| logged_in) {
+        let pad = active_pad
+            .and_then(|active| active.0)
+            .and_then(|entity| gamepads.get(entity).ok());
+        let mut hands =
+            crate::minecraft_input::host_hands(&ui, hud_input.as_deref(), &buttons, pad);
+        hands.captured |= !ui.active;
+        let target = aim(friend, player.as_ref());
+        let sampled = friend.hand.sample(hands, swap, drop, target, seconds);
+        if !sampled.events.is_empty() {
+            send(wire, &ToServer::Hand(sampled.events));
+        }
+        if let Some(state) = sampled.state {
+            match minecraft_net::encode(Lane::State, &state) {
+                Ok(bytes) => {
+                    wire.send_state(HOST, &bytes);
+                }
+                Err(error) => diag::warn!(World, "Minecraft hand state not sent: {error}"),
+            }
+        }
+    }
     ui.loading_world = friend.holding(now_ms);
+}
+
+fn show_overlays(
+    ui: &mut frame::MinecraftUi,
+    lines: &[Clientbound],
+    language: &HashMap<String, String>,
+) {
+    let lang = |key: &str| language.get(key).cloned();
+    for line in lines {
+        if let Clientbound::System {
+            text,
+            overlay: true,
+        } = line
+        {
+            ui.overlay_message = Some(frame::minecraft_ui::McOverlayMessage {
+                text: text.resolve(&lang).text,
+                ticks: frame::minecraft_ui::McOverlayMessage::TICKS,
+            });
+        }
+    }
+}
+
+fn show_effects(friend: &mut Friend) {
+    let Friend {
+        prepared: Some(prepared),
+        remote: Some(remote),
+        mining,
+        cracks,
+        ..
+    } = friend
+    else {
+        return;
+    };
+    for effect in remote.take_effects() {
+        match effect {
+            ToClient::Crack {
+                breaker,
+                pos,
+                stage,
+            } => match u8::try_from(stage).ok().filter(|stage| *stage <= 9) {
+                Some(stage) => {
+                    cracks.insert((breaker, pos), stage);
+                }
+                None => {
+                    cracks.remove(&(breaker, pos));
+                }
+            },
+            ToClient::LevelEvent {
+                event: BREAK_EVENT,
+                pos,
+                data,
+            } => {
+                if let Some(level) = remote.level.as_ref()
+                    && let Ok(state) = u16::try_from(data)
+                    && let Some(block) = level.terrain.stream.states.block(BlockStateId(state))
+                {
+                    mining.burst(
+                        &prepared.look.packs,
+                        &level.terrain.scene,
+                        &prepared.look.atlas,
+                        (pos[0], pos[1], pos[2]),
+                        &block.clone(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn aim(friend: &Friend, ps: Option<&playerstate_iw4::PlayerState>) -> Target {
+    let Some(remote) = friend.remote.as_ref() else {
+        return Target::Miss;
+    };
+    let (Some(level), Some(view), Some(ps)) = (remote.level.as_ref(), remote.player.as_ref(), ps)
+    else {
+        return Target::Miss;
+    };
+    let feet = sim::voxel::to_block(level.origin, ps.origin);
+    let mut aim = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
+    aim.yaw = f64::from(crate::minecraft_world::minecraft_yaw(ps.viewangles[1]));
+    aim.pitch = f64::from(ps.viewangles[0]);
+    aim.crouching =
+        ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
+    aim.swimming = ps.view_height_current < crate::minecraft_world::CRAWLING_BELOW_VIEW_HEIGHT;
+    let reach = if view.game_mode == GameMode::Creative {
+        minecraft_terrain::game_mode::CREATIVE_BLOCK_REACH
+    } else {
+        minecraft_terrain::game_mode::BLOCK_REACH
+    };
+    let outlined = minecraft_terrain::doors::Outlined(&level.terrain.scene);
+    aim.target(&outlined, reach)
+        .map_or(Target::Miss, |hit| Target::Block {
+            pos: [hit.pos.0, hit.pos.1, hit.pos.2],
+            face: minecraft_survival::actions::face_index(hit.face),
+            hit: hit.point.as_vec3().to_array(),
+        })
 }
 
 fn mc_game_mode(mode: GameMode) -> frame::McGameMode {
@@ -534,6 +670,8 @@ fn present(
         atlas_animation,
         animation_clock,
         spawn_gate,
+        mining,
+        cracks,
         ..
     } = friend
     else {
@@ -577,6 +715,8 @@ fn present(
         *environment_accumulator = 0.0;
         *environment_primed = false;
         *weather = remote.weather;
+        *mining = crate::minecraft_mining::Mining::default();
+        cracks.clear();
         spawn_gate.start(now_ms);
     }
     crate::minecraft_world::apply_streamed(
@@ -644,6 +784,18 @@ fn present(
     for (chunk, column) in lights {
         light.set_chunk_column(chunk, column);
     }
+    let partial = mining.tick(&level.terrain.scene, dt);
+    view.particles = mining.particle_mesh(&prepared.look.atlas, forward, partial, light);
+    let shown_cracks: Vec<_> = cracks
+        .iter()
+        .map(|(&(_, pos), &stage)| ((pos[0], pos[1], pos[2]), stage))
+        .collect();
+    view.cracks = mining.crack_mesh(
+        &level.terrain.scene,
+        &level.terrain.stream.states,
+        &prepared.look.packs,
+        &shown_cracks,
+    );
     let step = (dt * 0.2) as f32;
     for (shown, target) in weather.iter_mut().zip(remote.weather) {
         *shown += (target - *shown).clamp(-step, step);

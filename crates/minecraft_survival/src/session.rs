@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,7 +6,8 @@ use minecraft_commands::text::YELLOW;
 use minecraft_commands::{Clientbound, CommandServer, Outgoing, PlayerId, Text};
 use minecraft_net::codec::{BATCH_CUT, BULK_LIMIT};
 use minecraft_net::messages::{
-    ChunkBlob, HelloRefusal, Login, Nbt, PlayerView, Rules, check_hello,
+    ChunkBlob, HandEvent, HandEventKind, HandState, HelloRefusal, Login, Nbt, PlayerView, Rules,
+    Target, check_hello,
 };
 use minecraft_net::{ChunkBatchBlob, Dimension, PROTOCOL, PlayerUuid, ToClient};
 use minecraft_terrain::game_rules::GameRules;
@@ -14,6 +15,7 @@ use minecraft_terrain::server::{OVERWORLD_CLOCK, THE_END_CLOCK};
 use minecraft_terrain::view::{MIN_VIEW_DISTANCE, TrackingView};
 use minecraftoss_core::{BlockStateId, Chunk, ChunkPos, Registries};
 
+use crate::actions::Hands;
 use crate::level::{Level, Terrain};
 use crate::player::Player;
 use crate::server::{Globals, Left, Server};
@@ -26,6 +28,11 @@ pub const RETIRE_AFTER: Duration = Duration::from_secs(1);
 pub const NAME_TAKEN: &str = "A player with that name is already in the world";
 pub const TRAVEL_OFF: &str = "Dimension travel is off while friends are online (not built yet)";
 pub const TIME_EVERY: Duration = Duration::from_secs(1);
+pub const HELD_FOR: Duration = Duration::from_millis(500);
+pub const HAND_EVENTS: usize = 256;
+pub const BULLETS: u32 = u32::MAX;
+pub const CRACK_RANGE: f64 = 32.0;
+pub const BREAK_EVENT: i32 = 2001;
 
 #[derive(Debug, Default)]
 pub struct ChunkSender {
@@ -151,8 +158,10 @@ pub struct Session {
     pub name: String,
     pub chunks: ChunkSender,
     pub outbox: Vec<ToClient>,
+    pub hands: HandQueue,
     command_level: Option<u8>,
     view: Option<PlayerView>,
+    cracks: BTreeMap<(u32, BlockPos), u8>,
 }
 
 impl Session {
@@ -163,8 +172,48 @@ impl Session {
             name: name.to_owned(),
             chunks: ChunkSender::new(view_distance),
             outbox: Vec::new(),
+            hands: HandQueue::default(),
             command_level: None,
             view: None,
+            cracks: BTreeMap::new(),
+        }
+    }
+
+    pub fn send_cracks(&mut self, cracks: BTreeMap<(u32, BlockPos), u8>) {
+        let cracks: BTreeMap<_, _> = cracks
+            .into_iter()
+            .filter(|((_, pos), _)| self.chunks.has((pos.0 >> 4, pos.2 >> 4)))
+            .collect();
+        for (&(breaker, pos), &stage) in &cracks {
+            if self.cracks.get(&(breaker, pos)) != Some(&stage) {
+                self.outbox.push(ToClient::Crack {
+                    breaker,
+                    pos: [pos.0, pos.1, pos.2],
+                    stage: i8::try_from(stage).unwrap_or(9),
+                });
+            }
+        }
+        for &(breaker, pos) in self.cracks.keys() {
+            if !cracks.contains_key(&(breaker, pos)) {
+                self.outbox.push(ToClient::Crack {
+                    breaker,
+                    pos: [pos.0, pos.1, pos.2],
+                    stage: -1,
+                });
+            }
+        }
+        self.cracks = cracks;
+    }
+
+    pub fn send_breaks(&mut self, breaks: &[([i32; 3], u32)]) {
+        for &(pos, state) in breaks {
+            if self.chunks.has((pos[0] >> 4, pos[2] >> 4)) {
+                self.outbox.push(ToClient::LevelEvent {
+                    event: BREAK_EVENT,
+                    pos,
+                    data: i32::try_from(state).unwrap_or_default(),
+                });
+            }
         }
     }
 
@@ -199,6 +248,134 @@ impl Session {
             self.outbox.push(ToClient::BlockEntity { pos, tag });
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Held {
+    down: bool,
+    heard: Option<Instant>,
+}
+
+impl Held {
+    fn press(&mut self, now: Instant) {
+        self.down = true;
+        self.heard = Some(now);
+    }
+
+    fn release(&mut self) {
+        self.down = false;
+        self.heard = None;
+    }
+
+    fn keep(&mut self, now: Instant) {
+        if self.down {
+            self.heard = Some(now);
+        }
+    }
+
+    fn held(&self, now: Instant) -> bool {
+        self.down
+            && self
+                .heard
+                .is_some_and(|at| now.saturating_duration_since(at) < HELD_FOR)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct HandQueue {
+    events: VecDeque<HandEvent>,
+    last_seq: Option<u32>,
+    state_tick: Option<u32>,
+    attack: Held,
+    using: Held,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HandTake {
+    pub hands: Hands,
+    pub swap: bool,
+    pub drops: Vec<bool>,
+}
+
+impl HandQueue {
+    pub fn push(&mut self, events: Vec<HandEvent>) {
+        for event in events {
+            if self.last_seq.is_some_and(|last| event.seq <= last) {
+                continue;
+            }
+            self.last_seq = Some(event.seq);
+            self.events.push_back(event);
+            if self.events.len() > HAND_EVENTS {
+                self.events.pop_front();
+            }
+        }
+    }
+
+    pub fn state(&mut self, state: HandState, now: Instant) {
+        if self.state_tick.is_some_and(|tick| state.tick <= tick) {
+            return;
+        }
+        self.state_tick = Some(state.tick);
+        if state.attack {
+            self.attack.keep(now);
+        }
+        if state.use_item {
+            self.using.keep(now);
+        }
+    }
+
+    pub fn take(&mut self, now: Instant, allowed: impl Fn(&Target) -> bool) -> HandTake {
+        let mut taken = HandTake::default();
+        for event in self.events.drain(..) {
+            match event.kind {
+                HandEventKind::AttackPressed if allowed(&event.target) => {
+                    taken.hands.attack_pressed = true;
+                    self.attack.press(now);
+                }
+                HandEventKind::UsePressed if allowed(&event.target) => {
+                    taken.hands.use_pressed = true;
+                    self.using.press(now);
+                }
+                HandEventKind::AttackPressed | HandEventKind::UsePressed => {}
+                HandEventKind::AttackReleased => self.attack.release(),
+                HandEventKind::UseReleased => self.using.release(),
+                HandEventKind::SwapHands => taken.swap = true,
+                HandEventKind::Drop { whole_stack } => taken.drops.push(whole_stack),
+            }
+        }
+        taken.hands.attack_held = self.attack.held(now);
+        taken.hands.use_held = self.using.held(now);
+        taken
+    }
+}
+
+pub fn level_cracks(
+    dimension: Dimension,
+    level: &Level,
+    players: &BTreeMap<PlayerUuid, Player>,
+) -> BTreeMap<(u32, BlockPos), u8> {
+    let mut cracks: BTreeMap<_, _> = crate::level::shot_cracks(&level.shots)
+        .into_iter()
+        .map(|(pos, stage)| ((BULLETS, pos), stage))
+        .collect();
+    for player in players
+        .values()
+        .filter(|player| player.dimension == dimension)
+    {
+        if let Some((pos, stage)) = player.hand.dig.crack() {
+            cracks.insert((player.id.0, pos), stage);
+        }
+    }
+    cracks
+}
+
+fn near(feet: [f64; 3], pos: BlockPos, range: f64) -> bool {
+    let centre = [
+        f64::from(pos.0) + 0.5,
+        f64::from(pos.1) + 0.5,
+        f64::from(pos.2) + 0.5,
+    ];
+    (0..3).map(|k| (centre[k] - feet[k]).powi(2)).sum::<f64>() < range * range
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -637,7 +814,18 @@ impl Sessions {
                 .any(|session| session.chunks.level == Some(dimension));
             if !watched {
                 level.terrain.friend_changes = None;
+                level.terrain.friend_breaks = None;
                 continue;
+            }
+            let breaks = level
+                .terrain
+                .friend_breaks
+                .replace(Vec::new())
+                .unwrap_or_default();
+            for session in self.sessions.values_mut() {
+                if session.chunks.level == Some(dimension) {
+                    session.send_breaks(&breaks);
+                }
             }
             let Some(changed) = level.terrain.friend_changes.replace(Vec::new()) else {
                 continue;
@@ -673,6 +861,7 @@ impl Sessions {
                 continue;
             };
             level.terrain.friend_changes.get_or_insert_with(Vec::new);
+            level.terrain.friend_breaks.get_or_insert_with(Vec::new);
             let scene = &level.terrain.scene;
             let Some((seq, positions)) = session.chunks.next_batch(
                 |pos| scene.generated_chunk(pos).is_some(),
@@ -696,6 +885,32 @@ impl Sessions {
             });
         }
         jobs
+    }
+
+    pub fn send_cracks(
+        &mut self,
+        players: &BTreeMap<PlayerUuid, Player>,
+        levels: &BTreeMap<Dimension, Level>,
+    ) {
+        for session in self.sessions.values_mut() {
+            let feet = players.get(&session.uuid).and_then(|player| {
+                player
+                    .place
+                    .filter(|place| place.dimension == player.dimension)
+                    .map(|place| (player.dimension, place.feet))
+            });
+            let cracks = match (session.chunks.level, feet) {
+                (Some(dimension), Some((standing, feet))) if dimension == standing => levels
+                    .get(&dimension)
+                    .map(|level| level_cracks(dimension, level, players))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|((_, pos), _)| near(feet, *pos, CRACK_RANGE))
+                    .collect(),
+                _ => BTreeMap::new(),
+            };
+            session.send_cracks(cracks);
+        }
     }
 
     pub fn send_views(&mut self, players: &BTreeMap<PlayerUuid, Player>) {
@@ -1450,5 +1665,181 @@ mod tests {
         let fingerprint = registry_fingerprint(&registries);
         assert_eq!(fingerprint, registry_fingerprint(&registries));
         assert_ne!(fingerprint, 0xcbf2_9ce4_8422_2325);
+    }
+
+    fn hand(seq: u32, kind: HandEventKind) -> HandEvent {
+        HandEvent {
+            seq,
+            kind,
+            target: Target::Miss,
+        }
+    }
+
+    fn held_state(tick: u32) -> HandState {
+        HandState {
+            tick,
+            attack: false,
+            use_item: true,
+            target: Target::Miss,
+        }
+    }
+
+    #[test]
+    fn a_press_and_a_release_in_one_host_frame_both_act() {
+        let now = Instant::now();
+        let mut queue = HandQueue::default();
+        queue.push(vec![
+            hand(1, HandEventKind::UsePressed),
+            hand(2, HandEventKind::UseReleased),
+            hand(3, HandEventKind::AttackPressed),
+            hand(4, HandEventKind::AttackReleased),
+            hand(5, HandEventKind::SwapHands),
+            hand(6, HandEventKind::Drop { whole_stack: true }),
+        ]);
+        let taken = queue.take(now, |_| true);
+        assert!(taken.hands.use_pressed && !taken.hands.use_held);
+        assert!(taken.hands.attack_pressed && !taken.hands.attack_held);
+        assert!(taken.swap);
+        assert_eq!(taken.drops, [true]);
+        let Some((mut level, globals)) = crate::actions::tests::level_and_globals() else {
+            return;
+        };
+        use crate::actions::tests::{Flat, actor, count, holding, moved, pitch_to};
+        let mut player = holding("minecraft:cobblestone", 32);
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, [4.5, 201.0, 6.5]));
+        queue.push(vec![
+            hand(7, HandEventKind::UsePressed),
+            hand(8, HandEventKind::UseReleased),
+        ]);
+        for frame in 0..3 {
+            let taken = queue.take(now, |_| true);
+            assert_eq!(taken.hands.use_pressed, frame == 0);
+            let _ = crate::actions::act(
+                &mut player,
+                &mut level,
+                &globals,
+                &mut Flat,
+                &looking,
+                taken.hands,
+                &moved(),
+                None,
+                0.0,
+            );
+        }
+        let placed = minecraft_terrain::scene::Scene::block(&level.terrain.scene, (4, 201, 6))
+            .map(|b| b.id.key());
+        assert_eq!(placed.as_deref(), Some("minecraft:cobblestone"));
+        assert_eq!(count(&player), Some(31), "the click placed one block");
+    }
+
+    #[test]
+    fn a_press_is_used_once_however_many_host_frames_pass() {
+        let start = Instant::now();
+        let mut queue = HandQueue::default();
+        queue.push(vec![hand(1, HandEventKind::AttackPressed)]);
+        queue.push(vec![hand(1, HandEventKind::AttackPressed)]);
+        let first = queue.take(start, |_| true);
+        assert!(first.hands.attack_pressed && first.hands.attack_held);
+        for frame in 1..10 {
+            let later = start + Duration::from_millis(frame * 10);
+            let taken = queue.take(later, |_| true);
+            assert!(!taken.hands.attack_pressed, "frame {frame}");
+            assert!(taken.hands.attack_held, "frame {frame}");
+        }
+        queue.push(vec![hand(2, HandEventKind::AttackReleased)]);
+        let released = queue.take(start + Duration::from_millis(100), |_| true);
+        assert!(!released.hands.attack_pressed && !released.hands.attack_held);
+    }
+
+    #[test]
+    fn a_held_use_without_a_fresh_hand_state_for_half_a_second_stops() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut queue = HandQueue::default();
+        queue.push(vec![hand(1, HandEventKind::UsePressed)]);
+        assert!(queue.take(start, |_| true).hands.use_held);
+        queue.state(held_state(1), at(300));
+        queue.state(held_state(1), at(600));
+        assert!(queue.take(at(700), |_| true).hands.use_held);
+        assert!(
+            !queue.take(at(801), |_| true).hands.use_held,
+            "a repeated tick is not a fresh state"
+        );
+        queue.state(held_state(2), at(900));
+        assert!(queue.take(at(1300), |_| true).hands.use_held);
+        assert!(!queue.take(at(1400), |_| true).hands.use_held);
+        queue.push(vec![hand(2, HandEventKind::UseReleased)]);
+        queue.state(held_state(3), at(1500));
+        assert!(
+            !queue.take(at(1500), |_| true).hands.use_held,
+            "a state after the release does not hold the button again"
+        );
+    }
+
+    #[test]
+    fn a_press_at_a_target_out_of_reach_is_refused() {
+        let now = Instant::now();
+        let mut queue = HandQueue::default();
+        queue.push(vec![
+            hand(1, HandEventKind::UsePressed),
+            hand(2, HandEventKind::AttackPressed),
+        ]);
+        let taken = queue.take(now, |_| false);
+        assert_eq!(taken, HandTake::default());
+        queue.state(held_state(1), now);
+        assert!(!queue.take(now, |_| true).hands.use_held);
+    }
+
+    #[test]
+    fn cracks_and_breaks_reach_a_friend_once_for_chunks_they_have() {
+        let mut session = session_with(1, Dimension::Overworld);
+        let cracks = |entries: &[(u32, BlockPos, u8)]| {
+            entries
+                .iter()
+                .map(|&(breaker, pos, stage)| ((breaker, pos), stage))
+                .collect::<BTreeMap<_, _>>()
+        };
+        session.send_cracks(cracks(&[(BULLETS, (1, 64, 1), 3), (5, (40, 64, 40), 2)]));
+        assert_eq!(
+            session.outbox,
+            vec![ToClient::Crack {
+                breaker: BULLETS,
+                pos: [1, 64, 1],
+                stage: 3
+            }]
+        );
+        session.outbox.clear();
+        session.send_cracks(cracks(&[(BULLETS, (1, 64, 1), 3)]));
+        assert!(
+            session.outbox.is_empty(),
+            "an unchanged crack is not sent again"
+        );
+        session.send_cracks(cracks(&[(BULLETS, (1, 64, 1), 5), (2, (3, 64, 3), 0)]));
+        session.send_cracks(cracks(&[(2, (3, 64, 3), 0)]));
+        let crack = |breaker, pos, stage| ToClient::Crack {
+            breaker,
+            pos,
+            stage,
+        };
+        assert_eq!(
+            session.outbox,
+            vec![
+                crack(2, [3, 64, 3], 0),
+                crack(BULLETS, [1, 64, 1], 5),
+                crack(BULLETS, [1, 64, 1], -1),
+            ]
+        );
+        session.outbox.clear();
+        session.send_breaks(&[([1, 64, 1], 7), ([40, 64, 40], 9)]);
+        assert_eq!(
+            session.outbox,
+            vec![ToClient::LevelEvent {
+                event: BREAK_EVENT,
+                pos: [1, 64, 1],
+                data: 7
+            }]
+        );
+        assert!(near([0.5, 64.0, 0.5], (20, 64, 20), CRACK_RANGE));
+        assert!(!near([0.5, 64.0, 0.5], (30, 64, 30), CRACK_RANGE));
     }
 }

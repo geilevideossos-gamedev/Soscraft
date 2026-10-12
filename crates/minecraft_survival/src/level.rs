@@ -25,6 +25,18 @@ pub struct Level {
     pub empty_ticks: u32,
     pub dragon_fight: Option<crate::the_end::dragon_fight::DragonFight>,
     pub container_ticks: u32,
+    pub shots: Shots,
+}
+
+pub type Shots = std::collections::HashMap<(i32, i32, i32), (f32, f64)>;
+
+pub fn shot_cracks(shots: &Shots) -> Vec<((i32, i32, i32), u8)> {
+    let mut cracks: Vec<_> = shots
+        .iter()
+        .map(|(&pos, &(progress, _))| (pos, ((progress * 10.0) as i32).clamp(0, 9) as u8))
+        .collect();
+    cracks.sort_unstable();
+    cracks
 }
 
 pub struct Terrain {
@@ -33,6 +45,7 @@ pub struct Terrain {
     pub environment: DimensionEnvironment,
     pub rules: DimensionRules,
     pub friend_changes: Option<Vec<(i32, i32, i32)>>,
+    pub friend_breaks: Option<Vec<([i32; 3], u32)>>,
 }
 
 impl Level {
@@ -46,6 +59,7 @@ impl Level {
             empty_ticks: 0,
             dragon_fight: None,
             container_ticks: 0,
+            shots: Shots::new(),
         }
     }
 }
@@ -80,6 +94,7 @@ impl Terrain {
             environment,
             rules,
             friend_changes: None,
+            friend_breaks: None,
         })
     }
 
@@ -100,6 +115,7 @@ impl Terrain {
             environment,
             rules,
             friend_changes: None,
+            friend_breaks: None,
         })
     }
 }
