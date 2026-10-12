@@ -201,6 +201,7 @@ pub struct MinecraftUi {
     pub fire_frames: Option<(Handle<Image>, u32)>,
     pub killed_by: Option<(u32, String)>,
     pub chat: crate::McChat,
+    pub chat_only: bool,
     pub creative: crate::McCreative,
     pub level_loading: Option<McLevelLoading>,
     pub portal_frames: Option<(Handle<Image>, u32)>,
@@ -212,6 +213,16 @@ pub struct MinecraftUi {
     pub credits: Option<crate::minecraft_credits::McCredits>,
     pub book: Option<McBook>,
     pub ui_sounds: Vec<&'static str>,
+}
+
+impl MinecraftUi {
+    pub fn chat_usable(&self) -> bool {
+        self.active || self.chat_only
+    }
+
+    pub fn typing(&self) -> bool {
+        self.chat_usable() && self.chat.open
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

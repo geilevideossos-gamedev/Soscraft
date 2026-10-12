@@ -382,7 +382,8 @@ pub(crate) fn route(
                             .args
                             .first()
                             .filter(|id| id.is_ascii())
-                            .ok_or("usage: ui_join_lobby_id <hex ID>")?
+                            .ok_or("usage: ui_join_lobby_id <hex ID>")?;
+                        let advert_id = net::join_code(advert_id)
                             .parse()
                             .map_err(|_| "Invalid lobby ID")?;
                         let (map, mode) = selected_game(&dvars, &maps)?;

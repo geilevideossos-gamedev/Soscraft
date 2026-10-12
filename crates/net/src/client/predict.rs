@@ -277,6 +277,10 @@ impl ClientPrediction {
         &self.world
     }
 
+    pub fn set_minecraft_move_scale(&mut self, scale: f32) -> bool {
+        self.world.set_minecraft_move_scale(self.local, scale)
+    }
+
     pub fn history(&self) -> &MoveHistory {
         &self.history
     }

@@ -1021,6 +1021,8 @@ pub(crate) mod tests {
             "command.context.here" => "<--[HERE]",
             "commands.seed.success" => "Seed: %s",
             "commands.help.failed" => "Unknown command or insufficient permissions",
+            "commands.message.display.incoming" => "%s whispers to you: %s",
+            "commands.message.display.outgoing" => "You whisper to %s: %s",
             "commands.op.success" => "Made %s a server operator",
             "commands.op.failed" => "Nothing changed. The player is already an operator",
             "commands.deop.success" => "Made %s no longer a server operator",

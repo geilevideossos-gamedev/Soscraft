@@ -516,18 +516,16 @@ pub fn pearl_landing(level: &mut Level, gateway: Pos) -> Option<[f64; 3]> {
     })
 }
 
-pub fn pearls_through(level: &mut Level) -> Vec<(Pos, Option<[f64; 3]>)> {
+pub fn pearls_through(level: &mut Level, player: u64) -> Vec<(Pos, Option<[f64; 3]>)> {
     let gateways = match level.entities.as_mut() {
-        Some(entities) => std::mem::take(&mut entities.pearl_gateways),
+        Some(entities) => entities.take_pearl_gateways(player),
         None => Vec::new(),
     };
     let mut trips = Vec::new();
     for gateway in gateways {
         let landing = pearl_landing(level, gateway);
         if let (Some(landing), Some(entities)) = (landing, level.entities.as_mut()) {
-            entities
-                .pearl_landings
-                .push(glam::DVec3::from_array(landing));
+            entities.land_pearl(player, glam::DVec3::from_array(landing));
         }
         trips.push((gateway, landing));
     }
@@ -1120,20 +1118,20 @@ mod tests {
         }
         write(&mut level, &[(gateway, portal)], &[(gateway, Some(exact))]);
         if let Some(entities) = level.entities.as_mut() {
-            entities.pearl_gateways.push(gateway);
+            entities.queue(0).pearl_gateways.push(gateway);
         }
-        let trips = pearls_through(&mut level);
+        let trips = pearls_through(&mut level, 0);
         let landing = trips
             .first()
             .and_then(|&(at, landing)| (at == gateway).then_some(landing).flatten())
             .expect("the pearl lands");
         assert_eq!((landing[0], landing[2]), (20.5, 0.5));
-        let entities = level.entities.as_ref().expect("entities");
+        let entities = level.entities.as_mut().expect("entities");
         assert_eq!(
-            entities.pearl_landings,
+            entities.take_player_outputs(0).pearl_landings,
             vec![glam::DVec3::from_array(landing)]
         );
-        assert!(entities.pearl_gateways.is_empty());
+        assert!(entities.take_pearl_gateways(0).is_empty());
         let mut world = ChunkWorld::new(&mut level.terrain.stream);
         let mut ground = landing[1].floor() as i32;
         while !world.full_block((20, ground, 0)) {
@@ -1174,7 +1172,9 @@ mod tests {
                 "the far chunk never left"
             );
             let terrain = &mut level.terrain;
-            terrain.stream.server_tick((0, 64, 0), &mut terrain.scene);
+            terrain
+                .stream
+                .server_tick(&[(0, 64, 0)], Some((0, 64, 0)), &mut terrain.scene);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let chunk = level.terrain.stream.load_chunk_now(pos);

@@ -243,7 +243,7 @@ pub(crate) fn ground_spawn(world: &FrameWorld, feet: [f32; 3]) -> Result<[f32; 3
     // spawn points may be buried in its terrain.
     if crate::voxel::active() {
         let _ = feet;
-        return Ok([0.0, 0.0, 0.0]);
+        return Ok(crate::voxel::spawn_point());
     }
     let up_end = [feet[0], feet[1], feet[2] + PLACE_SPAWN_UP];
     let up = world.trace_clip(feet, up_end, PLAYER_MINS, PLAYER_MAXS, MASK_PLAYER_SOLID);

@@ -1,6 +1,6 @@
 # Multiplayer: the first playable version
 
-Round 8, track E. This is the design and the build plan. Nothing in it is built yet. Every file and line reference was read at `e2313625`. Line numbers move as other tracks land, so check each one before relying on it.
+Round 8, track E. This is the design and the build plan. All of it was built in round 8 (milestones M1 to M6, `docs/round8/track-e-log.md`); section 23 lists what was built differently from this design, section 20 what was left for later, and `docs/round8/track-e-tests.md` is the owner's test. Every file and line reference was read at `e2313625`. Line numbers move as other tracks land, so check each one before relying on it.
 
 This version was revised after three reviews. Every point the reviews raised was checked against the code; section 22 lists what changed.
 
@@ -131,7 +131,7 @@ Every game byte goes through the `iw4l-master` QUIC relay as a star. The host is
    - **Friend side.** `uni_ingress` hands an `"MC"` stream to its own reading task with its own bounded queue to the game. A slow or broken `"MC"` stream is dropped with a warning, never a `TransportFault`, and never delays a `"BS"` stream. The host's resend covers the loss.
 5. **Ordering across lanes.** Uni streams are not ordered with the control stream. The host puts a `ChunkBatch { seq }` marker in the reliable stream at the point where the batch belongs, and the friend applies the reliable stream strictly in order, pausing at a marker until that batch is decoded (section 11.2).
 6. **Admission.** `UdpAuthorityHub::ingress` drops a relay peer's packets until it is `PeerAdmission::Committed` (`udp_session.rs:472-479`, `admits_gameplay` at `:257-262`). `Minecraft` and `MinecraftState` packets are instead accepted from any enrolled peer once the `peers[conn]==from` check passes, so `Hello` and `Login` flow while the friend is still loading. The friend also resends `Hello` every 2 s until `Login` or `Rejected` arrives (section 5.1).
-7. **Protocol versions.** Adding the tags bumps `net::PROTOCOL_VERSION` from 94 to 95 (`crates/net/src/lib.rs:172`). A build without them is then refused at the MW2 handshake. `minecraft_net::PROTOCOL` (new, starting at 1) is checked again in `Hello`.
+7. **Protocol versions.** Adding the tags bumps `net::PROTOCOL_VERSION` from 94 to 95 (`crates/net/src/lib.rs:172`). A build without them is then refused at the MW2 handshake of a direct match. A relay match compares only the map, weapon and class digests, so there the check that counts is `minecraft_net::PROTOCOL` (new, starting at 1) in `Hello` (track log, E3).
 
 ### 3.3 Bandwidth budget
 
@@ -159,7 +159,7 @@ It still has no transport and no game logic.
 Some types are owned by `minecraft_terrain`: `ServerMob`, `EntitySnapshot`, `MobLook` and the view structs. Those travel as `Blob(Vec<u8>)` fields, encoded by `minecraft_survival::wire`, so `minecraft_net` does not depend on `minecraft_terrain`. The same goes for vanilla NBT: `Nbt(Vec<u8>)` holds uncompressed binary NBT, and `ChunkBlob` holds a region-format compressed chunk.
 
 ```rust
-pub const PROTOCOL: u16 = 1;
+pub const PROTOCOL: u16 = 3;
 
 pub struct ToServerFrame { pub frame: u32, pub ack: u32, pub messages: Vec<ToServer> }
 pub struct ToClientFrame { pub frame: u32, pub ack: u32, pub messages: Vec<ToClient> }
@@ -175,13 +175,16 @@ pub enum ToServer {
     CloseMenu { menu: u8 },
     Chat(minecraft_commands::protocol::Serverbound),
     CreditsDone,
+    Lectern { pos: [i32; 3], button: Option<i32> },
+    LeaveBed,
 }
 
 pub struct HandState { pub tick: u32, pub attack: bool, pub use_item: bool, pub target: Target }
 pub struct HandEvent { pub seq: u32, pub kind: HandEventKind, pub target: Target }
 pub enum HandEventKind { AttackPressed, AttackReleased, UsePressed, UseReleased, SwapHands, Drop { whole_stack: bool } }
 pub enum Target { Miss, Block { pos: [i32; 3], face: u8, hit: [f32; 3] }, Mob { id: u64 }, Player { client: u32 } }
-pub struct Click { pub menu: u8, pub state: u16, pub slot: i16, pub button: u8, pub mode: ClickMode }
+pub struct Click { pub menu: u8, pub state: u16, pub action: MenuAction }
+pub enum MenuAction { Slot { slot, right, shift }, Outside { right }, Gather { slot, right }, Swap { slot, hotbar }, Spread { slots, right }, Throw { slot, whole }, Choose(u16) }
 
 pub enum ToClient {
     Login(Login),
@@ -194,7 +197,7 @@ pub enum ToClient {
     Crack { breaker: u32, pos: [i32; 3], stage: i8 },
     LevelEvent { event: i32, pos: [i32; 3], data: i32 },
     Sound { event: String, pos: [f64; 3], volume: f32, pitch: f32, seed: i64 },
-    Explosion { center: [f64; 3], power: f32, blocks: Vec<[i32; 3]> },
+    Explosion { center: [f64; 3], radius: f32, blocks: u32, interacts: bool },
     MobAdd { id: u64, tag: Nbt },
     MobLook { id: u64, look: Blob },
     MobRemove { ids: Vec<u64> },
@@ -211,7 +214,14 @@ pub enum ToClient {
     BossBar(BossBarUpdate),
     KilledBy { killer: Option<String>, line: Text },
     Credits,
+    PlayerEvent { client: u32, event: u8 },
+    Bursts { entities: Blob },
+    Lectern(Option<BookView>),
+    Sleeping { client: u32, bed: Option<Lying>, timer: i32 },
 }
+
+pub struct BookView { pub pos: [i32; 3], pub pages: Vec<String>, pub page: u32, pub take: bool }
+pub struct Lying { pub feet: [f64; 3], pub facing: [i32; 2] }
 
 pub struct Login {
     pub client: u32, pub uuid: PlayerUuid, pub seed: i64, pub dimension: Dimension,
@@ -227,7 +237,7 @@ pub struct StateFrame { pub tick: u32, pub epoch: u32, pub mobs: Blob, pub entit
 - **The held state is `HandState`,** sent every tick on the friend-to-host datagram lane while anything is held, newest wins. The host reads it for mining progress and for holding use (eating, drawing a bow, blocking with a shield). A `HandState` older than the last one is ignored. If none has arrived for 500 ms, the host treats the buttons as released.
 
 **`PlayerView`** holds what the HUD and hand need:
-- health, max health, absorption, food, saturation, air, fire ticks, armour points;
+- health, max health, absorption, food, saturation, air, fire ticks, ticks frozen (vanilla's synced `TICKS_FROZEN`: the frozen hearts, the frost outline and the friend's own frost slowdown), armour points;
 - XP level, progress and total;
 - game mode and abilities;
 - active effects (kind, amplifier, duration, ambient);
@@ -237,6 +247,10 @@ pub struct StateFrame { pub tick: u32, pub epoch: u32, pub mobs: Blob, pub entit
 - `menu` (the container id, 1..=100, vanilla's `containerCounter % 100 + 1`);
 - `kind` (`InventoryUi`'s screens: inventory, crafting table, chest of N rows, furnace, smoker, blast furnace, brewing stand, enchanting, anvil, grindstone, smithing, stonecutter, loom, cartography, ender chest, shulker box, hopper, dispenser, dropper, beacon later);
 - `title: Text`, `state: u16`, `slots`, `carried`, `data`, and kind-specific extras (enchant seeds and costs, anvil cost and name).
+
+**The lectern's book screen** is vanilla's `LecternMenu` cut to what the screen shows. `Lectern(Some(BookView))` opens the screen or shows a turned page (the pages as plain text, the page, and whether the Take Book button shows: the player may build); `Lectern(None)` closes it. The friend's `Lectern { pos, button }` is a button (1 previous page, 2 next page, 3 take the book, 100 + n go to page n; vanilla's `ServerboundContainerButtonClickPacket`) or, with no button, the screen closing (`ServerboundContainerClosePacket`). The host keeps which lectern each friend has open, drops buttons for any other one, refuses Take Book to a player who may not build (vanilla `LecternMenu.clickMenuButton`), and closes the screen when the friend is out of reach (vanilla `stillValid`) or leaves the level.
+
+**Sleeping** follows vanilla's synced `SLEEPING_POS` and pose: `Sleeping { client, bed: Some(Lying) }` tells every friend in that level that a player lies in a bed (the feet on the pillow and the bed's facing, from which each game draws the body lying and, for its own player, the camera on the pillow); `bed: None` that they got up. `timer` is the friend's own sleep timer when the message is about them (0 when lying down, 100 or 0 when getting up); the friend's game counts it on by itself, as vanilla's client counts `sleepCounter`, for the darkening and the wake-up fade. `LeaveBed` is vanilla's `ServerboundPlayerCommandPacket` `STOP_SLEEPING`, from the Leave Bed button. A friend's bed use goes through the same rules as the host's; the host lies them down, pins their MW2 player on the pillow until they get up, and counts them for the night.
 
 **`RenameItem`** is vanilla's `ServerboundRenameItemPacket`: the anvil's name field (`Bench`'s name, `minecraft_terrain/src/stations.rs:472`), at most 50 characters, accepted only while an anvil menu is open.
 
@@ -261,8 +275,9 @@ The registry fingerprint (`registry`) hashes the block state count and every blo
 
 1. **The host opens the world to friends.** This is the existing MW2 hosting path. Either the env path, `IW4L_MASTER_HOST_NAME=<room name>` with `map minecraft:overworld`, or the menu (Host, then the Minecraft map).
    - The Minecraft map always runs the `dm` game type (section 13.4).
-   - When the room is created, the host's Minecraft chat shows the join code, the room's `AdvertId` in hex. `IW4L_MASTER_STATUS_FILE` also writes it as `room=`.
-2. **The friend joins.** Either `IW4L_MASTER_JOIN=<code>` with `map minecraft:overworld`, the console command `ui_join_lobby_id <code>`, or the server browser.
+   - When the room is created, the host's Minecraft chat shows the join code, the room's `AdvertId` in hex: "Friends join with the code [<code>]", the code in green brackets like vanilla's `/seed`. Only the host sees it, once per room, as soon as their world is shown. `IW4L_MASTER_STATUS_FILE` also writes it as `room=`.
+2. **The friend joins.** Either `IW4L_MASTER_JOIN=<code>` with `map minecraft:overworld` (what `Join Minecraft World.bat` asks for), the console command `ui_join_lobby_id <code>`, or the server browser.
+   - Both typed ways read the code with `net::join_code`, which drops spaces, dashes and the chat's brackets; capitals are fine. The console splits its arguments at spaces, so there a code typed with spaces goes in quotes (`ui_join_lobby_id "0123abcd 4567ef01 ..."`).
    - MW2 runs its handshake, bootstrap and `EnterMatch` as for any match.
 3. **The friend's game sees the Minecraft map installed** (`assets::minecraft_map::is_minecraft`).
    - In the `Client` role it **does not** start `load()`. Today it does (`minecraft_world.rs:432-450`), and that opens a world folder.
@@ -318,6 +333,8 @@ Until bands (E19) and per-player levels (E20) land, the host's collision holds o
 - **While a friend is online, portal and End travel are refused for everyone,** with the chat line "Dimension travel is off while friends are online (not built yet)". This covers nether portals, the End portal, the exit portal, end gateways and `/execute in … run tp`.
 - **A joining friend is placed in the host's dimension**, at that level's spawn if they were saved elsewhere.
 - E20 removes both rules.
+
+**E20 result (round 8):** both rules are gone. A friend travels through every portal and by `/execute in` while others stay, and joins in the dimension their file has. Every dimension with a player in it streams and ticks on the one server clock (`minecraft_levels::tick_levels` for every level the host's own frame does not tick), and a friend's trip sends `Dimension` once their place in the new level is known.
 
 ## 6. The host: one server tick for every player
 
@@ -432,7 +449,7 @@ The events stay `Center`, `Load` and `Forget`, but now for the **server's loaded
 
 That way the host never meshes or draws the area around a far-away friend. `level::stream_tick` (`level.rs:185`) takes the players' block positions and returns `(loaded, forgotten)` for the level thread and containers, as now.
 
-Until this lands (E9, early in M2), the chunk map loads only around the host, and a friend gets chunks only where the host's view has them. The M1 owner test keeps the friend near the host.
+E9 built this. Before it, the chunk map loaded only around the host, and a friend got chunks only where the host's view had them, so the M1 owner test keeps the friend near the host. The generation queue is built per player square and merged, so two players far apart never make one dense grid spanning both, and the nearest-first order uses the nearest player. Ticketed chunks outside the host's own view are loaded but no longer drawn on the host, as a vanilla client is only sent its own view.
 
 ### 7.2 Sending: one sender per friend
 
@@ -504,6 +521,9 @@ MW2 is Z-up, and one block is 36 units (`voxel.rs:15`). Map z = (block y − ori
 - **`bands::check()`** asserts at startup, and in a unit test, that every level's wall range lies inside its band and that the bands do not overlap.
 - **The origins are fixed per world**, computed from the world spawn by `minecraft_survival::bands::origin(dimension, world_spawn)`. They replace the lazy `runtime.origins` (`minecraft_world.rs:116, 2796-2800`) and go to friends in `Login.origins`.
 - **Precision:** f32 at |z| ≤ 60,000 resolves about 0.004 units, a ten-thousandth of a block. MW2's `PlayerState.origin` is replicated as exact floats (`netfields.rs:246`). No bounds clamp was found in `sim` or `net`; E4 tests it.
+- **E4 result (round 8): the bands hold.** `crates/sim/src/damage/height_bands.rs` runs the same block world with its floor at map z 0, +45,000 and -45,000. Walking into a wall, jumping and landing give the same path in every band to within 0.05 units; a bullet hits a player and a block; a frag hurts a player in the open by the same amount in every band and a wall shields one behind it; a lethal hit gives the obituary; a player stands still for two minutes without being moved, hurt, unlinked or left out of the snapshot. Two things to keep in mind:
+  - **The sim spawns every player at map origin.** `voxel::spawn_origin` and `spawn_clear_of` ignore the band, so a respawn lands in the overworld's band at map z 0 (or a free block near the overworld origin). The host already teleports after a spawn (`place_player`, `minecraft_respawn.rs`); with bands that teleport must use the origin of the player's own level, and the gate must not let a player act in the overworld band first.
+  - **The stand-in map's bounds do not matter.** The area-entity world sorts by x and y only, so players far above or below the map's world model are still linked, found by blast queries and kept in the snapshot.
 - **A wall at each band's edge:** outside a level's wall range, a trace hits a solid wall. Nothing can cross into the next band.
 - **Falling into the void.** Vanilla's void damage starts at `min_y − 64` and does 4 damage every 10 ticks (`survival.rs:603`), but a player falling off an End island reaches y −64 at about 74 blocks/s (MW2 gravity 800 u/s², about 22 blocks/s²) and would hit the wall at `min_y − 128` about 0.9 s later, after one or two hits. So:
   - **a player whose feet reach the bottom wall is killed with the out-of-world cause** (`death.attack.outOfWorld`, "fell out of the world"), as vanilla's void would have done a little lower;
@@ -585,7 +605,8 @@ The fight already takes every player (`tick_level(players.values())`). The drago
 Per player:
 - a `BossBar` message for every player in the End within the fight's range. `minecraft_end::tick_fight` only shows it for `local` today (`minecraft_end.rs:120-124`);
 - `Credits` when a player first enters the exit portal (`seenCredits` per player; `minecraft_world.rs:619` is local only today). The player is held in the travel switch while the credits roll (`holding_for_credits`, `minecraft_world.rs:679`). Today only the host's UI ends it (`credits_done`, `minecraft_end.rs:205-216`). A friend's game ends it with `ToServer::CreditsDone`, vanilla's `PERFORM_RESPAWN` after the win screen. A friend who leaves during the credits is released by the leave flow;
-- the dragon's hits, breath and wing knock-back reach each player through the keyed `player_hits` and `players_pushed`.
+- the dragon's hits, breath and wing knock-back reach each player through the keyed `player_hits` and `players_pushed`;
+- the one-shot effects of a level snapshot (the breath bursts of dragon fireballs, the dragon's mouth breath, its explosions and wall bursts, and shattered eyes of ender) travel as `Bursts` on the reliable stream, filtered like the state frame, never in the droppable `StateFrame`. The host keeps them across level outputs until they are sent (built in E22).
 
 ## 10. Player actions and menus
 
@@ -723,6 +744,12 @@ This comes early (E8), because every later owner test uses `/op`, `/give`, `/tp`
 - **Routing.** `pump` (`commands.rs:891-911`) stops keeping only what reaches the sender. It returns every `Outgoing`. The host shows those that reach player 0 and sends the rest to the session whose `PlayerId` they reach (`Recipient::reaches`, `protocol.rs:62-77`). `chat.type.text` is broadcast.
 - **Permissions.** The host is the owner through `CommandServer.host` (section 6.5). Everyone else's level comes from `ops.json` by UUID, as today. A friend has level 0 until `/op <name>`.
 - **Suggestions.** `CommandHints` are not sent to friends in this round. A friend's chat has no tab suggestions (deferred).
+- **As built in E8:**
+  - Friends' commands run in the host system (`render_anim/src/minecraft_host.rs`), after the host's own in `minecraft_world::update`. The host's output and its teleports of other players reach the host system through `Runtime.relayed`. `Sessions::deliver` sends every line to each session it reaches.
+  - `/msg <targets> <message>`, with `/tell` and `/w` redirecting to it, works as vanilla's `MsgCommand` at level 0. The sender sees "You whisper to %s: %s" and each target "%s whispers to you: %s", both gray and italic.
+  - Each friend gets their command level (`Clientbound::Commands`) on joining and whenever it changes, as vanilla sends the permission level. Their chat's suggestions then offer the commands they may run, without names or positions.
+  - A command's teleport of any player moves that player's MW2 body. `/summon` answers go to the player who summoned.
+  - A friend's game draws and types the Minecraft chat while the rest of its Minecraft HUD is off (`MinecraftUi.chat_only`). Only the chat and command keys are taken from MW2 there.
 
 ### 13.2 Death messages and the kill card
 
@@ -752,8 +779,8 @@ This comes early (E8), because every later owner test uses `/op`, `/give`, `/tp`
   - pvp is off.
 
   That covers bullets, MW2 grenades and killstreaks. Self-damage, mobs and the world still hurt.
-- **Minecraft hits.** Thrown items and tridents hitting players (`players_struck`, now keyed) honour the same rule.
-- **Not covered.** Minecraft melee against another player (a sword) is deferred. `entities.punch` reaches mobs only, and a player target needs a damage path through `survival.hurt` with armour.
+- **Minecraft hits.** Thrown items and tridents hitting players (`players_struck`, now keyed) honour the same rule. So does the harm of a splash or lingering potion a player threw (vanilla's `indirectMagic` source names the thrower, and `ServerPlayer.canHarmPlayer` refuses it); its other effects, such as poison, still land, as in vanilla.
+- **Not covered.** Minecraft melee against another player (a sword) is deferred. `entities.punch` reaches mobs only, and a player target needs a damage path through `survival.hurt` with armour. TNT lit by a player still hurts other players with pvp off: the vendored level's primed TNT keeps no igniter (vanilla's `PrimedTnt.owner`), so its blast cannot name one.
 - **Armour.** MW2 bullet damage ignores Minecraft armour, shields and Protection (`survival.rs:275-293`, the test at `:1182`). That stays. It is listed as a known difference.
 
 ## 14. Saving
@@ -806,8 +833,8 @@ The trust model is **friends only.** The room should have a password (`IW4L_MAST
 **One working folder per role.** On Windows the launcher changes into the exe's own folder at start (`launcher/src/main.rs:34-49`), so a working folder is set by where the exe is, not by the process's current directory. The script therefore makes `iw4l-artifacts\mp-local\host\` and `...\friend\`, each with:
 - a **hard link** to the game exe (`New-Item -ItemType HardLink`, same drive, no admin), so no copy of the exe is made;
 - **directory junctions** (`mklink /J`, no admin) for `iw4l-artifacts\cache` and `iw4l-artifacts\minecraft-26.3` to the game folder's own;
-- its own `settings.cfg`, logs, `latest.log`, `command_history.txt` (`hud/src/minecraft_chat.rs:29`), creative hotbars, `profile\` and screenshots, which today two games in one folder would share;
-- no `.env`: the game finds the game folder's `.env` by walking up from its folder (`asset_transport/src/discover.rs:21-45`), so `IW4L_GAMES` and the kit still apply. The script passes everything else per process.
+- its own `settings.cfg`, logs, `latest.log`, `command_history.txt` (`hud/src/minecraft_chat.rs:29`), creative hotbars, `profile\` (copied once from the game folder's) and screenshots, which today two games in one folder would share;
+- its own `.env`, rewritten on every run from the game folder's `.env` without `IW4L_MASTER_HOST_NAME`, `IW4L_MASTER_JOIN` and `IW4L_MINECRAFT_WORLD`, with relative paths made absolute and `IW4L_SKATE=off` added when skating was never set up. A role folder needs one: the launcher's first-run check reads only the `.env` beside the exe (`launcher/src/first_run.rs:17-29`), and without it would ask for the MW2 folder and offer the Skate 3 conversion in each role folder. `IW4L_GAMES`, the password and the kit therefore still apply. The script passes everything else per process.
 
 The host's saves are in its role folder, so the owner's main world is never touched.
 
@@ -828,7 +855,7 @@ The steps:
    IW4L_MINECRAFT_WORLD=<world>
    IW4L_CONSOLE_STDIN=1
    ```
-   `settings.cfg` is a copy of `iw4l-artifacts\settings.cfg` with `fullscreen=false`, `resolution=1280x720` and, unless `-HostSound` is given, `master_volume=0` (`console/src/user_settings.rs:210`), so the owner hears only the friend window.
+   `settings.cfg` is a copy of `iw4l-artifacts\settings.cfg`, made again on every run, with `fullscreen=false`, `resolution=1280x720` (960x540 when the main screen is narrower than 2560, or `-Resolution`) and, unless `-HostSound` is given, `master_volume=0` (`console/src/user_settings.rs:210`), so the owner hears only the friend window.
 5. **Wait** for `state=hosting` and a `room=` line in the host's `master.status`. This takes up to 90 s.
 6. **The friend window:** `mp-local\friend\<exe> map <map>` with the same first three variables and `IW4L_CONSOLE_STDIN=1`, plus:
    ```
@@ -838,8 +865,8 @@ The steps:
    ```
    Its `settings.cfg` is the same copy with `player_name=Friend` and full volume. A different name means a different UUID and player file.
 7. **Wait** until the host's status shows `members>=2`.
-8. **Console control.** The script keeps both games' stdin open (`IW4L_CONSOLE_STDIN`, as `xtask duo` does) and reads lines from its own console: `h <command>` goes to the host's MW2 console, `f <command>` to the friend's. That lets the owner run MW2 console commands in the window that does not have focus. Minecraft chat commands are typed in the window itself.
-9. **Shutting down.** The script waits until both games have exited, then stops the relay and releases the cargo slots.
+8. **Console control.** The script keeps both games' stdin open (`IW4L_CONSOLE_STDIN`, as `xtask duo` does; each game runs under a hidden `cmd /c` that writes its stdout and stderr to `game.out.log` and `game.err.log` in the role folder) and reads lines from its own console: `h <command>` goes to the host's MW2 console, `f <command>` to the friend's, and `quit` sends `quit !` to both. That lets the owner run MW2 console commands in the window that does not have focus. Minecraft chat commands are typed in the window itself.
+9. **Shutting down.** The script waits until both games have exited, then stops the relay and releases the cargo slots. It prints the peak working set of each window and the relay and appends it to `mp-local\memory.log`. A relay that was already running when the script started is used and left running.
 
 **Parameters:**
 - `-Exe` defaults to the newest `iw4l-mp-*.exe` in the game folder (section 19), never `iw4l-survival.exe` unless named;
@@ -849,8 +876,9 @@ The steps:
 - `-HostSound` keeps the host's sound on;
 - `-FriendOnly` starts only the friend window against the room in the host's `master.status`, for a rejoin while the host keeps running (it does not take the cargo slots, which the first run still holds);
 - `-CertsOnly` makes the certificates and stops;
-- `-FriendKit` builds the friend's zip (section 18.2) and stops;
-- `-Bats` writes `Host Minecraft World.bat` and `Join Minecraft World.bat` into the game folder (section 18) and stops.
+- `-FriendKit` builds the friend's zip (section 18.2) as `mp-local\friend-kit-<exe name>.zip` and stops; `-PublicAddress <ip>` fills the host's address into its `.env`;
+- `-Bats` writes `Host Minecraft World.bat` and `Join Minecraft World.bat` into the game folder (section 18) and stops. These and the kit's join `.bat` start the map given with `-Map`, so `-Map iw4:mp_rust` makes them for the plain MW2 check;
+- `-GameDir` (default `C:\Games\Mashup\2010-Rust-Rewrite-Mashup`), `-Relay` (default `iw4l-master.exe` in the game folder), `-Port` (default 4433) and `-Resolution` (for example `960x540`).
 
 ### 17.2 Rules for the two-window setup
 
@@ -869,7 +897,7 @@ The steps:
 
 1. Make the certificates with the five OpenSSL commands in the script.
 2. Start `iw4l-master.exe serve ...`.
-3. Make the two role folders with the exe hard link and the two junctions (section 17.1).
+3. Make the two role folders with the exe hard link, the two junctions and a copy of the game folder's `.env` (section 17.1).
 4. Start the host from its folder with the variables above in a PowerShell window (`$env:NAME = "value"`, then `& .\iw4l-mp-m1.exe map minecraft:overworld`).
 5. Read the room from the host's `master.status`, or from the host's chat line.
 6. Start the friend from its folder in a second PowerShell window with its variables.
@@ -877,6 +905,8 @@ The steps:
 ## 18. What a friend installs and how they join
 
 The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because it does not depend on any Minecraft code.
+
+**As built:** the steps for the host and the friend, checked against the launcher, relay and setup code, with a troubleshooting table, are `docs/round8/friend-install.md`. It replaces this section where they differ.
 
 ### 18.1 The host (the owner) once
 
@@ -886,7 +916,7 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
    - Allow it through the Windows firewall for UDP on private and public networks.
    - Forward **UDP 4433** on the router to the PC.
    - Alternatively run the master on a VPS (`docs/MASTER.md`), with the patched build.
-4. **Host:** the `.env` gets `IW4L_MASTER_ADDR=127.0.0.1:4433`, `IW4L_MASTER_SERVER_NAME=iw4l-prod`, `IW4L_MASTER_CA_CERT=iw4l-artifacts\mp-local\certs\iw4l-ca.pem` and `IW4L_MASTER_PASSWORD=<room password>`. Start a world with `IW4L_MASTER_HOST_NAME` set, from `Host Minecraft World.bat` (`-Bats`), or host from the menu.
+4. **Host:** the `.env` gets `IW4L_MASTER_PASSWORD=<room password>`. Start the world from `Host Minecraft World.bat` (`-Bats`). It sets `IW4L_MASTER_HOST_NAME`, `IW4L_MASTER_MAX_PLAYERS=4`, `IW4L_MASTER_ADDR=127.0.0.1:4433`, `IW4L_MASTER_SERVER_NAME=iw4l-prod`, `IW4L_MASTER_CA_CERT` and `IW4L_MASTER_STATUS_FILE=iw4l-artifacts\master.status` (its `room=` line is the join code) itself, and starts `iw4l-master.exe serve --bind 0.0.0.0:4433` minimised when no relay is running, so step 3 is done by the `.bat`. To host from the menu instead, put the three `IW4L_MASTER_ADDR`, `_SERVER_NAME` and `_CA_CERT` lines in `.env`.
 5. **Tell the friend** the public IP address, the room password and the join code from the chat.
 
 ### 18.2 The friend once
@@ -897,32 +927,34 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
    - `iw4l-ca.pem`;
    - `Join Minecraft World.bat`;
    - a `.env` template with the lines below;
+   - `How to join.txt` with these steps;
    - an empty `iw4l-artifacts\` folder.
 
    It never holds Mojang's files (`iw4l-artifacts\minecraft-26.3`), MW2 content (`iw4l-artifacts\cache`), the owner's saves, settings, logs, `profile\`, `command_history.txt`, `skate\`, `.env` or certificate keys. The friend's game makes its own copies from the friend's MW2 and from Mojang.
-2. **Have their own copy of MW2**, and set `IW4L_GAMES` in `.env` to it, as for any install of this game.
-3. **Fill in `.env`:**
+2. **Have their own copy of MW2.** `IW4L_GAMES` is empty in the template, so the first start finds or asks for the MW2 folder and writes it, as for any install of this game.
+3. **Check `.env`.** The script fills in the address from `-PublicAddress` and the password from the host's `.env`; otherwise the friend fills them in:
    ```
-   IW4L_GAMES=<their MW2 folder>
+   IW4L_GAMES=
+   IW4L_SKATE=off
    IW4L_MASTER_ADDR=<host's public IP>:4433
    IW4L_MASTER_SERVER_NAME=iw4l-prod
    IW4L_MASTER_CA_CERT=iw4l-ca.pem
    IW4L_MASTER_PASSWORD=<room password>
    ```
+   `IW4L_SKATE=off` is needed because the kit has no Skate 3 converter, and the first-run check fails without it when skating was never set up.
 4. **Set their own player name** in the game's settings. It decides their UUID and player file in the host's world.
 5. **Start the game once to the menu** and leave it there until `iw4l-artifacts\minecraft-26.3\.complete` exists (the log says "Minecraft files ready", `minecraft_setup.rs:98`). The first start converts their MW2 files and, from startup (`assets/src/plugin.rs:13`), downloads the Minecraft 26.3 files from Mojang (`crates/assets/src/minecraft_setup.rs`). It needs internet access and a few minutes. A first start straight into `minecraft:overworld` waits only 90 s for Mojang's files and then fails the load (`assets/src/minecraft_map.rs:96-103`).
 
 ### 18.3 Joining
 
 - Run `Join Minecraft World.bat`. It checks for `iw4l-artifacts\minecraft-26.3\.complete` first (`minecraft_setup.rs:77`) and, if it is missing, says to start the game once to the menu. Then it asks for the code and starts the game with `IW4L_MASTER_JOIN=<code>` and `map minecraft:overworld`.
-- Or start normally, open the server browser and pick the host's room.
-- Or type `ui_join_lobby_id <code>` in the console.
-- Joining in the middle of a match is allowed while the room is open.
+- The master lets a friend join in the middle of a match while the room is open.
+- **As built, the `.bat` (or `IW4L_MASTER_JOIN`) is the only way in.** The server browser refuses a room that is already in a match ("Match already in progress", `console/src/frontend.rs`), and a hosted Minecraft world always is. `ui_join_lobby_id <code>` joins with the map picked in the Create Game menu and an empty password, so it fails on a room with a password. Both are recorded in section 20.
 
 ## 19. Implementation plan
 
 **How to run it:**
-- Each milestone is one `track-runner` run on branch `track-e8`, with worktree `C:\Dev\mc-wt\track-e8` and target `D:\iw4l-wt\track-e8`. Each run continues from the previous one's commits.
+- Each milestone is one `track-runner` run on branch `track-e8`, with worktree `C:\Dev\mc-wt\track-e8` and target `D:\iw4l-wt\track-e8`. Each run continues from the previous one's commits. **As built:** the branch was `track-e` (worktree `C:\Dev\mc-wt\track-e`, target `D:\iw4l-wt\track-e`), the steps of each milestone went to `docs/round8/e-m<N>-tests.md`, and E24 put them together in `docs/round8/track-e-tests.md`.
 - The owner tests after each milestone with a `--profile play` build, output `D:\iw4l-wt\track-e8\play\iw4l.exe`. **The last step of each milestone copies it to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-mp-m<N>.exe`**, which the script uses by default. `iw4l-survival.exe` is never overwritten by this track. Steps and kit lines go to `docs/round8/track-e8-tests.md`.
 - Each group is one commit with a plain-English subject. Where a group moves code, the move is its own group (marked "pure move"): host only, no behaviour change, with the single-player tests and `check -p launcher` as the gate. Friend support follows in the next group.
 - Every group follows the fork rules: no comments, no rustfmt on existing files, new files `rustfmt --check` clean, and cargo only through `scripts\cargo-slot.ps1`. It runs `check -p` and `test -p` on the crates it changed, and `check -p launcher` before a commit that touches game code.
@@ -1252,18 +1284,30 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
   - `CLAUDE.md` (roadmap 1.4 status);
   - this doc (anything built differently);
   - `docs/round8/track-e8-tests.md` (all milestone steps and one kit line).
+  - **As built:** `docs/round8/track-e-tests.md` (all milestone steps in one two-window run, then the internet test, with one kit line) and `docs/round8/friend-install.md` (what a friend installs and runs, and the host's preparation).
 - **Owner test M6** (`-World mp-m6 -Fresh`):
   1. Host window: `/op Friend`, then `/execute in minecraft:the_end run tp @a 0 70 0`.
   2. Both fight the dragon, alternating windows. Both see the boss bar, crystals and breath.
   3. After the kill, each walks into the exit portal in turn and sees the credits; the other window keeps running meanwhile.
   4. A friend on another PC joins the Minecraft world over the internet with section 18.
 
+**Per-player leftovers of M2 to M5, done in M6** (each its own commit; the owner's steps are in `docs/round8/e-m6-tests.md`):
+- friends freeze in powder snow like the host: the frost slowdown on their own prediction and on the host, the powder snow walker, and the frozen hearts and frost outline from `PlayerView.frozen`;
+- every game makes the snowflakes around every player in powder snow;
+- a friend's own totem activation in first person, from the totem player event;
+- spawner cages on the friend's game, from the streamed chunks and the host's spawner data;
+- the lectern's book screen for friends, with the Take Book check on the host;
+- friends lie down in beds, count for the night and are drawn lying for everyone;
+- with pvp off, a player's harming potion hurts no player.
+
+Skating for friends, the friend's first-person hand, trading screens and Minecraft melee between players stay in section 20.
+
 ### Kit for the multiplayer tests (27 stacks)
 
 Both players get it on their first join to a fresh world:
 
 ```
-IW4L_MINECRAFT_KIT=diamond_sword,diamond_pickaxe,shield,bow,arrow*64,cooked_beef*32,snowball*16,oak_planks*64,crafting_table,chest*2,furnace,coal*16,raw_iron*16,iron_helmet,iron_chestplate,iron_leggings,iron_boots,elytra,flint_and_steel,obsidian*14,ender_pearl*16,eye_of_ender*12,zombie_spawn_egg*2,cow_spawn_egg*2,water_bucket,tnt*4,white_bed
+IW4L_MINECRAFT_KIT=diamond_sword,diamond_pickaxe,shield,bow,arrow*64,cooked_beef*32,snowball*16,oak_planks*64,crafting_table,chest*2,furnace,coal*16,raw_iron*16,iron_helmet,iron_chestplate,iron_leggings,iron_boots,elytra,flint_and_steel,obsidian*14,ender_pearl*16,ender_eye*12,zombie_spawn_egg*2,cow_spawn_egg*2,water_bucket,tnt*4,white_bed
 ```
 
 M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper_spawn_egg` after `/op Friend`.
@@ -1275,7 +1319,12 @@ M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper
 - **Chunk pacing:** vanilla's adaptive `chunks_per_tick` quota. The ack window paces the stream.
 - **PvP without guns:**
   - Minecraft melee against players: swords and axes on another player, with armour and shields;
-  - MW2 damage through Minecraft armour.
+  - MW2 damage through Minecraft armour;
+  - TNT lit by a player honouring `pvp`: the vendored level's primed TNT keeps no igniter (vanilla's `PrimedTnt.owner`), so its blast names nobody;
+  - a gun hit waking a sleeping player: MW2 damage only lowers the health the survival state follows, and only a Minecraft hurt wakes a sleeper (vanilla wakes on any damage). The host is no different.
+- **Skating for friends:** a friend's game has no `AuthorityWorld`, so its skate worker cannot move the friend's MW2 player. It needs a client-reported origin checked by the host (an external-motion command), the skating bits per player in the Minecraft rules (`Motion.riding`, the landing and the action gate, today the host's own `Skating`), and the skater's pose and board sent to the other games every frame, which track D's brief left out of round 8 (`docs/round8/d-skate.md` section 6). Until then a friend presses the skate key and nothing happens, and the host's board shows only on the host's own screen.
+- **The friend's first-person hand:** the held item, its swing, eating, blocking and the trident's charge on the friend's own screen. The friend sees only the totem's activation there; other players see the friend's held item on their body (E15).
+- **Music on the friend's game** (any music; the host's game plays it as before).
 - **Chat:** command suggestions (`CommandHints`) for friends, signed chat, narration.
 - **Languages:** a language setting; every game shows English this round.
 - **Creative inventory for friends** (`ServerboundSetCreativeModeSlotPacket`).
@@ -1292,13 +1341,20 @@ M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper
   - a dedicated headless host;
   - automatic reconnect.
 - **Joining:** Discord join (skycraft's precedent), NAT traversal without a forwarded port.
+  - **Found in E23 and E24:** the server browser refuses a room in a match, and a hosted Minecraft world always is in its match; `ui_join_lobby_id` joins with the menu's selected map and no password; a code still wrong after `net::join_code` makes `MasterLaunchIntent::from_env_for_map` fail, and the game then starts the map without the relay, as a world of the friend's own. All three are MW2 launch and menu code older than track E. The join code `.bat` works around them.
+  - **A friend is not told why the world closed** when the host quits (section 15 planned "The host closed the world"): the friend's game goes back to the menu like after any ended MW2 match.
 - **Missing visuals and sounds:**
   - mob flags that neither the NBT, `MobLook` nor the extra `ServerMob` fields carry (each one found goes into the limitations list);
-  - sounds that only the host's local presentation makes and that E17 did not classify.
+  - sounds that only the host's local presentation makes and that E17 did not classify;
+  - on the friend's game (E16, E17, E20): the item flying into the player who picks it up (only its sound is sent; vanilla's `ClientboundTakeItemEntityPacket`), particles that are neither level events nor explosions (snowball and egg crumbs, the ender pearl's particles, the dragon egg's teleport trail, MW2 bullet puffs on mobs, the friend's own dig-hit, eating and broken-tool particles), lightning and thunder, campfire smoke, and the purple portal overlay (vanilla computes it on the client; the friend hears the trigger sound).
+- **The tick state for friends:** vanilla's `ClientboundTickingStatePacket` and step packet. Under `/tick freeze` or `/tick rate` a friend's clocks run at 20 ticks a second and are corrected by the host's `Time` once a second.
+- **Death lines after a gun hit:** MW2 damage never enters the Minecraft combat tracker (E18), so a gun hit followed by a fall or lava is told as a plain fall or lava death, not vanilla's "doomed to fall by <player>".
+- **The enchanting seed** is per player since E14 but not saved (vanilla's `XpSeed`), so a table offers new enchantments after a restart.
+- **Friends' own view distance:** every player gets the server's view distance of 8 chunks (E9); a friend has no setting of their own that the host would clamp, as vanilla does.
 
 ## 21. Risks and what to check first
 
-1. **MW2 at large map z.** E4 checks it in `sim` before anything depends on it: pmove, traces, blasts, obituaries and spawns at z ±45,000. If something fails, shrink the bands before E13a. The void wall leaves room for bands about half as far apart.
+1. **MW2 at large map z.** E4 checks it in `sim` before anything depends on it: pmove, traces, blasts, obituaries and spawns at z ±45,000. If something fails, shrink the bands before E13a. The void wall leaves room for bands about half as far apart. **Checked in round 8 (E4): nothing failed, the bands stay as in section 8.2** (see the E4 result there).
 2. **The relay's caps.** Section 3.1 lists every queue that is fatal when full. E3's window, budget, mailbox and bulk tests must pass before E6 sends real chunks, and the master patch is a safety net, not the plan.
 3. **Admission order.** The friend's MW2 admission waits on `ui.loading_world`, and the host drops relay packets from uncommitted peers. E3 lets Minecraft packets through before `Committed`, and the friend resends `Hello`. E7c checks it end to end.
 4. **Size of the `update()` refactor.** `minecraft_world.rs` is 2,936 lines, and the per-player code is about 1,000 of them, with host UI and sound calls inside the rules (section 6.1). The pure moves (E7a, E10a, E13b) come before the behaviour changes, each gated by the single-player tests. The owner's single-player steps run in M2's test.
@@ -1348,3 +1404,30 @@ M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper
 - "Put Minecraft deaths in the MW2 kill feed": the owner asked in round 7 for the opposite (`docs/round7/a2-chat.md`). Recorded in section 1 for the owner to overrule.
 - "Move the End origin to −1200 or lower": that pushes the top wall further past the band. Fixed with −1140 instead.
 - "Send `MobData` on known changes instead of hashing": the cost came from hashing the whole tag. Comparing a small `MobLook` every 10 ticks is cheap and needs no hooks.
+
+## 23. What was built differently
+
+Round 8 built this design in track E. Where the build differs from the sections above, the build is right; the track log (`docs/round8/track-e-log.md`) has the reason for each under the step named.
+
+**Transport and messages**
+- The frame number and acknowledgement live in `net::minecraft_wire`, which treats every Minecraft message as opaque bytes; `ToServerFrame`, `ToClientFrame` and `ToServer::Ack` stay in `minecraft_net` unused (E3). Minecraft packets carry no MW2 `PacketHeader`: the host knows the sender by the relay's `MemberId` of an enrolled peer (E3).
+- A chunk batch is sent again 3 s after the egress reported the last copy written or failed, not 3 s after the send, so one copy per batch is in flight (E3). A gap in frame numbers drops the friend with "Lost the world stream" (E3).
+- Nothing in a relay match compares `net::PROTOCOL_VERSION`; `minecraft_net::PROTOCOL` in `Hello` is the check that counts, and it is 3 (E3, E14, E22). A friend's game that hears nothing from the host for 30 s says the host may run a different build, but waits as long as the host answers on the wire (E7c and its review fix).
+- Chunks travel as the region file's zlib body of vanilla's chunk NBT, light included (E5).
+- `Click` carries the HUD's own menu actions, not vanilla's slot number, button and mode; the `state` check is vanilla's (E14). The friend works out station outputs itself from the cells the host sends; taking an output always runs on the host (E14).
+- `Equipment` carries a player's whole gear (E15).
+- `MobLook` carries the mob's whole tag (without the values that change all the time), and the friend spawns it again in place, instead of a small look struct (E16). Moves go every tick (E16).
+- `Explosion` carries the radius, a block count and `interacts` like the 26.x packet, not block positions; `PlayerEvent` is new (E17). The dragon's one-shot effects go as `Bursts` on the reliable lane (E22). Lecterns, sleeping and the frozen ticks have their own messages (M6 leftovers).
+
+**The host**
+- The host's own HUD keeps its direct path (`survival.vitals()` and `InventoryUi`) instead of being built from its own `PlayerView`; only the friends' HUDs are built from views (E10b).
+- Friends' commands run in the host system after the bodies are placed, not in `minecraft_world::update`; `/msg`, `/tell` and `/w` were added; the command level is sent like vanilla's permission level (E8).
+- Names are compared ignoring capitals; a new friend joins in the world's default game mode with the host's kit (E6).
+- Sounds are recorded where the host plays them instead of every rule returning its sounds; a friend hears their own place and break sounds after one round trip (E17). Nothing heard crosses levels, so the dragon's death sound reaches the End only (E17).
+- There is no `DamageCause::Player`: a gun kill's line is built from the sim's death, with the MW2 gun's name in brackets (E18). The friend's sim is not told the `pvp` rule (E18).
+- The band table is written twice, in `sim::voxel::BANDS` and `minecraft_survival::bands`, pinned together by a `render_anim` test; teleports are kept inside the walls; the bottom wall kills in every game mode (E19).
+- The host's own level keeps its frame code; every other occupied level runs in `minecraft_levels::tick_levels` (E20). `Dimension` is sent once the friend's place in the new level is known (E20).
+- A friend's credits hold keeps their body at the arrival, hidden by the trip, until `CreditsDone`; the boss bar's id is the constant 1 (E22).
+- The join code is the 32-character hex `AdvertId` in a literal English line; it cannot be clicked to copy (E23).
+
+**Not built as planned** (also in section 20): "The host closed the world" on the friend's game (section 15), the server browser and `ui_join_lobby_id` as ways into a running Minecraft world (section 18.3), and music on the friend's game.

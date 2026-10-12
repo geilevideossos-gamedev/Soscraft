@@ -11,10 +11,13 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use frame::{McChoice, McClick, McOven, McScreen, McSlot, McStack, MinecraftUi};
 use glam::DVec3;
-use minecraft_survival::guns::{WEAPON_PREFIX, weapon_item, weapon_of};
+use minecraft_net::messages::{MenuAction, MenuSlot};
+use minecraft_survival::guns::{WEAPON_PREFIX, weapon_of};
+use minecraft_survival::menus::{Books, Clicked, Menu, Open, Screen};
+use minecraft_survival::player::Player;
 use minecraft_terrain::containers::{Containers, Opened, Station};
-use minecraft_terrain::stations::{Bench, Context, StationBook, Taken, Workshop};
-use minecraft_terrain::crafting::{self, Grid, Spot};
+use minecraft_terrain::stations::{Bench, Context, StationBook, Workshop};
+use minecraft_terrain::crafting::{self, Grid};
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::BlockPos;
 use minecraftoss_player::crafting::CookingKind;
@@ -32,19 +35,7 @@ pub(crate) struct InventoryUi {
     failed: HashSet<String>,
     language: Option<HashMap<String, String>>,
     dirty: bool,
-    /// The gun last asked for, until the player state holds it.
-    pending_weapon: Option<u32>,
-    last_selected: Option<usize>,
-    table: Option<BlockPos>,
-    block: Option<Opened>,
-    experience: u32,
-    bench: Option<(BlockPos, Bench)>,
-    pub(crate) level: u32,
-    pub(crate) shelves: i32,
-    seed: i32,
-    spent: u32,
-    pub(crate) used: Vec<(&'static str, BlockPos)>,
-    pub(crate) anvil_used: Option<BlockPos>,
+    follow: minecraft_survival::guns::Follow,
     book: std::sync::Arc<StationBook>,
     enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
     gui: Option<crate::minecraft_gui::GuiAssets>,
@@ -154,66 +145,21 @@ impl InventoryUi {
     /// is one item, placed on the first free hotbar slot when it arrives, and
     /// a gun the player no longer has leaves.
     pub(crate) fn sync_weapons(&mut self, inventory: &mut Inventory, owned: &[u32]) {
-        let keep = |stack: &Option<ItemStack>| {
-            stack.as_ref().is_none_or(|s| weapon_of(s).is_none_or(|w| owned.contains(&w)))
-        };
-        for slot in inventory.slots.iter_mut().chain(inventory.crafting.iter_mut()).chain(inventory.workbench.iter_mut()) {
-            if !keep(slot) {
-                *slot = None;
-            }
-        }
-        if !keep(&inventory.cursor) {
-            inventory.cursor = None;
-        }
-        let held: HashSet<u32> = inventory
-            .slots
-            .iter()
-            .chain(inventory.crafting.iter())
-            .chain(inventory.workbench.iter())
-            .chain(std::iter::once(&inventory.cursor))
-            .filter_map(|s| s.as_ref().and_then(weapon_of))
-            .collect();
-        for &weapon in owned {
-            if held.contains(&weapon) {
-                continue;
-            }
-            let free = (0..frame::minecraft_ui::MC_HOTBAR)
-                .chain(frame::minecraft_ui::MC_HOTBAR..36)
-                .find(|&i| inventory.slots[i].is_none());
-            if let Some(i) = free {
-                inventory.slots[i] = Some(weapon_item(weapon));
-            }
-        }
+        minecraft_survival::guns::sync_weapons(inventory, owned);
     }
 
-    pub(crate) fn table(&self) -> Option<BlockPos> {
-        self.table
-    }
-
-    pub(crate) fn open_table(&mut self, ui: &mut MinecraftUi, pos: BlockPos) {
-        if ui.inventory_open {
-            return;
+    pub(crate) fn show_menu(&mut self, ui: &mut MinecraftUi, menu: &Menu) {
+        ui.screen = screen_for(Some(&menu.open));
+        if !matches!(menu.open, Open::Table(_)) {
+            ui.screen_title = self.resolve(&menu.title);
         }
-        self.table = Some(pos);
-        ui.inventory_open = true;
-        ui.screen = McScreen::CraftingTable;
-        ui.screen_opened = true;
-    }
-
-    pub(crate) fn block(&self) -> Option<&Opened> {
-        self.block.as_ref()
-    }
-
-    pub(crate) fn open_block(&mut self, ui: &mut MinecraftUi, opened: Opened) -> bool {
-        if ui.inventory_open {
-            return false;
-        }
-        ui.screen = screen_of(&opened);
-        ui.screen_title = self.text(station_title(&opened));
-        self.block = Some(opened);
         ui.inventory_open = true;
         ui.screen_opened = true;
-        true
+    }
+
+    pub(crate) fn resolve(&self, text: &minecraft_commands::Text) -> String {
+        let lang = |key: &str| self.language.as_ref().and_then(|language| language.get(key).cloned());
+        text.resolve(&lang).text
     }
 
     pub(crate) fn lectern(&self) -> Option<BlockPos> {
@@ -246,177 +192,50 @@ impl InventoryUi {
         std::mem::take(&mut self.lectern_actions)
     }
 
+    pub(crate) fn lectern_clicks(&mut self, ui: &mut MinecraftUi) -> bool {
+        let Some(pos) = self.lectern else {
+            return false;
+        };
+        for click in std::mem::take(&mut ui.clicks) {
+            match click {
+                McClick::Choose(button) => self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Button(button as i32))),
+                McClick::Close => ui.inventory_open = false,
+                _ => {}
+            }
+        }
+        if !ui.inventory_open {
+            self.lectern = None;
+            ui.book = None;
+            self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Close));
+        } else {
+            ui.screen = McScreen::Lectern;
+        }
+        true
+    }
+
     pub(crate) fn language(&self) -> Option<&HashMap<String, String>> {
         self.language.as_ref()
-    }
-
-    fn text(&self, key: &str) -> String {
-        self.language.as_ref().and_then(|language| language.get(key).cloned()).unwrap_or_else(|| key.to_owned())
-    }
-
-    pub(crate) fn take_experience(&mut self) -> u32 {
-        std::mem::take(&mut self.experience)
-    }
-
-    pub(crate) fn take_spent_levels(&mut self) -> u32 {
-        std::mem::take(&mut self.spent)
     }
 
     pub(crate) fn set_station_data(
         &mut self,
         book: std::sync::Arc<StationBook>,
         enchantments: Option<std::sync::Arc<minecraftoss_entities::enchant::Enchantments>>,
-        seed: i32,
     ) {
         self.book = book;
         self.enchantments = enchantments;
-        self.seed = seed;
     }
 
-    pub(crate) fn bench(&self) -> Option<(BlockPos, Workshop)> {
-        self.bench.as_ref().map(|(pos, bench)| (*pos, bench.kind))
-    }
-
-    pub(crate) fn open_bench(&mut self, ui: &mut MinecraftUi, pos: BlockPos, kind: Workshop) -> bool {
-        if ui.inventory_open {
-            return false;
-        }
-        self.bench = Some((pos, Bench::new(kind)));
-        ui.screen = bench_screen(kind);
-        ui.screen_title = self.text(bench_title(kind));
-        ui.inventory_open = true;
-        ui.screen_opened = true;
-        true
-    }
-
-    fn context<'a>(&'a self, recipes: &'a minecraftoss_player::crafting::RecipeBook) -> Context<'a> {
-        Context {
-            recipes,
-            book: &self.book,
-            enchantments: self.enchantments.as_deref(),
-            bookshelves: self.shelves,
-            seed: self.seed,
-            level: self.level,
-        }
-    }
-
-    fn taken(&mut self, pos: BlockPos, kind: Workshop, taken: Taken, roll: f32) {
-        self.spent += taken.levels;
-        self.level = self.level.saturating_sub(taken.levels);
-        self.experience += taken.experience;
-        if !taken.sound.is_empty() && kind != Workshop::Anvil {
-            self.used.push((taken.sound, pos));
-        }
-        if taken.new_seed {
-            self.seed = (roll * i32::MAX as f32) as i32;
-        }
-        if kind == Workshop::Anvil {
-            self.anvil_used = Some(pos);
-        }
-    }
-
-    fn bench_click(
-        &mut self,
-        click: &McClick,
-        inventory: &mut Inventory,
-        roll: &mut dyn FnMut() -> f32,
-        thrown: &mut Vec<ItemStack>,
-    ) -> bool {
-        let Some((pos, mut bench)) = self.bench.take() else {
-            return false;
-        };
-        let recipes = inventory.recipes.clone();
-        let kind = bench.kind;
-        let mut handled = true;
-        let mut taken: Option<Taken> = None;
-        {
-            let ctx = self.context(&recipes);
-            match click {
-                McClick::Throw { slot: McSlot::Container(index), whole } => {
-                    if inventory.cursor.is_none() {
-                        thrown.extend(bench.throw(*index, *whole));
-                    }
-                }
-                McClick::Throw { slot: McSlot::Output, whole } => {
-                    let first = bench.offer(&ctx).result;
-                    while inventory.cursor.is_none() {
-                        let mut random = minecraftoss_player::rng::LegacyRandom::new((roll() * u32::MAX as f32) as u64);
-                        let Some(step) = bench.take(false, inventory, &ctx, &mut random) else { break };
-                        thrown.extend(inventory.cursor.take());
-                        let total = taken.get_or_insert_with(Taken::default);
-                        total.levels += step.levels;
-                        total.experience += step.experience;
-                        total.sound = step.sound;
-                        total.new_seed |= step.new_seed;
-                        let next = bench.offer(&ctx).result;
-                        if !*whole || next.as_ref().zip(first.as_ref()).is_none_or(|(next, first)| !next.same_item(first)) {
-                            break;
-                        }
-                    }
-                }
-                McClick::Gather { .. } => bench.gather(inventory, false),
-                McClick::Slot { slot: McSlot::Inventory(index), shift: true, .. } => {
-                    bench.quick_move_from_player(*index, inventory, &ctx);
-                }
-                McClick::Slot { slot: McSlot::Container(index), right, shift } => {
-                    bench.click(*index, *right, *shift, inventory, &ctx);
-                }
-                McClick::Slot { slot: McSlot::Output, shift, .. } => {
-                    let mut random = minecraftoss_player::rng::LegacyRandom::new((roll() * u32::MAX as f32) as u64);
-                    taken = bench.take(*shift, inventory, &ctx, &mut random);
-                }
-                McClick::Choose(index) => taken = bench.choose(*index, inventory, &ctx),
-                McClick::Rename(name) => {
-                    let default = bench.cells[0].as_ref().map(|s| {
-                        self.language.as_ref().map_or_else(|| s.id.clone(), |language| minecraft_terrain::item_icons::item_name(language, &s.id))
-                    });
-                    let named = bench.cells[0].as_ref().and_then(minecraft_terrain::stations::custom_name);
-                    if named.is_none() && default.as_deref() == Some(name.as_str()) {
-                        bench.name = None;
-                    } else {
-                        bench.rename(name);
-                    }
-                }
-                McClick::Swap { slot: McSlot::Container(index), hotbar } => bench.swap(*index, *hotbar, inventory, &ctx),
-                McClick::Spread { slots, right } => {
-                    let players: Vec<usize> = slots.iter().filter_map(|slot| if let McSlot::Inventory(i) = slot { Some(*i) } else { None }).collect();
-                    let cells: Vec<usize> = slots.iter().filter_map(|slot| if let McSlot::Container(i) = slot { Some(*i) } else { None }).collect();
-                    bench.spread(&players, &cells, *right, inventory, &ctx);
-                }
-                _ => handled = false,
-            }
-        }
-        if let Some(taken) = taken {
-            self.taken(pos, kind, taken, roll());
-        }
-        self.bench = Some((pos, bench));
-        handled
-    }
-
-    fn close_bench(&mut self, inventory: &mut Inventory, selected: usize) -> Vec<ItemStack> {
-        let Some((_, mut bench)) = self.bench.take() else {
-            return Vec::new();
-        };
-        bench.close().into_iter().filter_map(|stack| inventory.add_item(stack, selected)).collect()
-    }
-
-    /// Applies the HUD's clicks, selection and drops with vanilla's rules.
-    /// Stacks thrown out of the inventory are returned, except guns, which
-    /// stay.
     pub(crate) fn apply_input(
         &mut self,
         ui: &mut MinecraftUi,
-        inventory: &mut Inventory,
-        selected: &mut usize,
+        player: &mut Player,
         containers: &mut Containers,
-        roll: &mut dyn FnMut() -> f32,
-    ) -> Vec<ItemStack> {
-        let mut thrown = Vec::new();
+        books: Books<'_>,
+        roll: f32,
+    ) -> Clicked {
+        let mut clicked = Clicked::default();
         for click in std::mem::take(&mut ui.clicks) {
-            let grid = if self.table.is_some() { Grid::Table } else { Grid::Inventory };
-            if keeps_gun(ui, &click) {
-                continue;
-            }
             if let Some(pos) = self.lectern {
                 match &click {
                     McClick::Choose(button) => {
@@ -431,133 +250,29 @@ impl InventoryUi {
                     _ => continue,
                 }
             }
-            if self.bench.is_some() {
-                if click == McClick::Close {
-                    thrown.extend(self.close_bench(inventory, *selected));
-                } else if self.bench_click(&click, inventory, roll, &mut thrown) {
-                    continue;
-                }
-            }
-            if let Some(opened) = self.block.clone() {
-                let cell = |slot: McSlot| match slot {
-                    McSlot::Container(index) => Some(index),
-                    McSlot::Output => Some(2),
-                    _ => None,
-                };
-                match &click {
-                    McClick::Slot { slot: McSlot::Inventory(index), right: _, shift: true } => {
-                        containers.quick_move_from_player(&opened, inventory, *index);
-                        continue;
-                    }
-                    McClick::Slot { slot, right, shift } if cell(*slot).is_some() => {
-                        let index = cell(*slot).unwrap_or(0);
-                        self.experience += containers.click(&opened, inventory, index, *right, *shift, roll()).experience;
-                        continue;
-                    }
-                    McClick::Gather { right, .. } => {
-                        containers.gather(&opened, inventory, *right);
-                        continue;
-                    }
-                    McClick::Swap { slot, hotbar } if cell(*slot).is_some() => {
-                        let index = cell(*slot).unwrap_or(0);
-                        self.experience += containers.swap(&opened, inventory, index, *hotbar, roll()).experience;
-                        continue;
-                    }
-                    McClick::Throw { slot, whole } if cell(*slot).is_some() => {
-                        if inventory.cursor.is_none() {
-                            let (stack, changed) = containers.throw(&opened, inventory, cell(*slot).unwrap_or(0), *whole, roll());
-                            thrown.extend(stack);
-                            self.experience += changed.experience;
-                        }
-                        continue;
-                    }
-                    McClick::Spread { slots, right } => {
-                        let players: Vec<usize> = slots.iter().filter_map(|slot| if let McSlot::Inventory(i) = slot { Some(*i) } else { None }).collect();
-                        let cells: Vec<usize> = slots.iter().filter_map(|slot| cell(*slot)).collect();
-                        containers.spread(&opened, inventory, &players, &cells, *right);
-                        continue;
-                    }
-                    McClick::Close => self.block = None,
-                    _ => {}
-                }
-            }
             match click {
-                McClick::Slot { slot: McSlot::Inventory(index), right, shift } => {
-                    if shift && grid == Grid::Table {
-                        crafting::quick_move_into_table(inventory, index);
-                    } else if let Some(stack) = inventory.click(Some(index), right, shift) {
-                        thrown.push(stack);
+                McClick::Close => clicked.thrown.extend(minecraft_survival::menus::close(player)),
+                McClick::Rename(name) => minecraft_survival::menus::rename(player, &name, self.language.as_ref()),
+                other => {
+                    if let Some(action) = action_of(&other) {
+                        clicked.add(minecraft_survival::menus::apply(player, containers, books, &action, roll));
                     }
-                }
-                McClick::Slot { slot, right, shift } => match spot(slot, grid) {
-                    Some(Spot::Grid(cell)) => crafting::click_cell(inventory, grid, cell, right, shift),
-                    Some(Spot::Result) => {
-                        crafting::click_result(inventory, grid, shift);
-                    }
-                    _ => {}
-                },
-                McClick::Outside { right } => {
-                    if let Some(stack) = inventory.click(None, right, false) {
-                        thrown.push(stack);
-                    }
-                }
-                McClick::Gather { slot, right } => {
-                    if let Some(target) = spot(slot, grid) {
-                        crafting::gather(inventory, grid, target, right);
-                    }
-                }
-                McClick::Swap { slot: McSlot::Inventory(index), hotbar } => inventory.number_swap(index, hotbar),
-                McClick::Swap { slot, hotbar } => {
-                    match spot(slot, grid) {
-                        Some(Spot::Grid(cell)) => crafting::swap(inventory, grid, Some(cell), hotbar),
-                        Some(Spot::Result) => crafting::swap(inventory, grid, None, hotbar),
-                        _ => false,
-                    };
-                }
-                McClick::Spread { slots, right } => {
-                    let spots: Vec<Spot> = slots.into_iter().filter_map(|slot| spot(slot, grid)).collect();
-                    crafting::spread(inventory, grid, &spots, right);
-                }
-                McClick::Throw { slot, whole } => {
-                    if inventory.cursor.is_some() {
-                        continue;
-                    }
-                    match spot(slot, grid) {
-                        Some(Spot::Player(index)) => thrown.extend(throw_slot(inventory, index, whole)),
-                        Some(Spot::Grid(cell)) => thrown.extend(crafting::throw_cell(inventory, grid, cell, whole)),
-                        Some(Spot::Result) => thrown.extend(crafting::throw_result(inventory, grid, whole)),
-                        None => {}
-                    }
-                }
-                McClick::Choose(_) | McClick::Rename(_) | McClick::Clone(_) => {}
-                McClick::Close => {
-                    self.table = None;
-                    thrown.extend(crafting::close(inventory, *selected));
                 }
             }
         }
         if !ui.inventory_open {
-            self.table = None;
-            self.block = None;
-            thrown.extend(self.close_bench(inventory, *selected));
+            clicked.thrown.extend(minecraft_survival::menus::close(player));
             if let Some(pos) = self.lectern.take() {
                 ui.book = None;
                 self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Close));
             }
-            if crafting::has_loose_items(inventory) {
-                thrown.extend(crafting::close(inventory, *selected));
-            }
         }
-        ui.screen = match (&self.table, &self.block, &self.bench) {
-            (Some(_), _, _) => McScreen::CraftingTable,
-            (None, Some(opened), _) => screen_of(opened),
-            (None, None, Some((_, bench))) => bench_screen(bench.kind),
-            (None, None, None) => McScreen::Inventory,
-        };
+        ui.screen = screen_for(player.menus.open.as_ref().map(|menu| &menu.open));
         if self.lectern.is_some() {
             ui.screen = McScreen::Lectern;
         }
-        thrown.extend(inventory.take_pending_drops());
+        let Player { inventory, selected, .. } = player;
+        clicked.thrown.extend(inventory.take_pending_drops());
         let _ = inventory.take_stat_events();
         if let Some(slot) = ui.select.take() {
             *selected = slot.min(frame::minecraft_ui::MC_HOTBAR - 1);
@@ -565,20 +280,10 @@ impl InventoryUi {
         if let Some(whole) = ui.drop_selected.take()
             && let Some(stack) = inventory.drop_selected(*selected, whole)
         {
-            thrown.push(stack);
+            clicked.thrown.push(stack);
         }
-        // A gun never leaves the inventory.
-        let mut out = Vec::new();
-        for stack in thrown {
-            if weapon_of(&stack).is_some() {
-                if let Some(back) = inventory.add_item(stack, *selected) {
-                    inventory.cursor = Some(back);
-                }
-            } else {
-                out.push(stack);
-            }
-        }
-        out
+        clicked.thrown = minecraft_survival::menus::keep_guns(inventory, *selected, std::mem::take(&mut clicked.thrown));
+        clicked
     }
 
     /// The gun the hotbar selection asks for, if the player holds another;
@@ -589,26 +294,7 @@ impl InventoryUi {
         selected: &mut usize,
         held: u32,
     ) -> Option<u32> {
-        let selected_gun = inventory.slots[*selected].as_ref().and_then(weapon_of);
-        let changed = self.last_selected != Some(*selected);
-        self.last_selected = Some(*selected);
-        if self.pending_weapon == Some(held) {
-            self.pending_weapon = None;
-        }
-        if changed {
-            if let Some(gun) = selected_gun.filter(|&gun| gun != held) {
-                self.pending_weapon = Some(gun);
-            }
-        } else if self.pending_weapon.is_none()
-            && selected_gun.is_some_and(|gun| gun != held)
-            && let Some(slot) = (0..frame::minecraft_ui::MC_HOTBAR)
-                .find(|&i| inventory.slots[i].as_ref().and_then(weapon_of) == Some(held))
-        {
-            // MW2 changed weapons (out of ammo, a pickup): the hotbar follows.
-            *selected = slot;
-            self.last_selected = Some(slot);
-        }
-        self.pending_weapon
+        self.follow.request(inventory, selected, held)
     }
 
     /// Publishes the inventory for the HUD, with icons for every item in it.
@@ -619,7 +305,7 @@ impl InventoryUi {
         selected: usize,
         packs: &PackStack,
         images: &mut Assets<Image>,
-        containers: &mut Containers,
+        (screen, level, containers): (&Screen, u32, &Containers),
     ) {
         if self.language.is_none() {
             self.language = Some(minecraft_terrain::item_icons::language(packs).unwrap_or_else(|_| HashMap::new()));
@@ -675,29 +361,36 @@ impl InventoryUi {
             })
         };
         ui.slots = inventory.slots.iter().take(frame::minecraft_ui::MC_INVENTORY_SLOTS).map(&mut convert).collect();
-        let table_open = ui.inventory_open && self.table.is_some();
-        let small_open = ui.inventory_open && self.table.is_none();
+        let table = matches!(screen.open, Some(Open::Table(_)));
+        let table_open = ui.inventory_open && table;
+        let small_open = ui.inventory_open && !table;
         ui.crafting = std::array::from_fn(|i| convert(&inventory.crafting[i]));
         ui.result = if small_open { convert(&crafting::output(inventory, Grid::Inventory)) } else { None };
         ui.workbench = std::array::from_fn(|i| convert(&inventory.workbench[i]));
         ui.workbench_result = if table_open { convert(&crafting::output(inventory, Grid::Table)) } else { None };
-        let opened = self.block.clone().filter(|_| ui.inventory_open);
+        let opened = match &screen.open {
+            Some(Open::Block(opened)) if ui.inventory_open => Some(opened.clone()),
+            _ => None,
+        };
         let (mut choices, mut chosen, mut cost, mut name) = (Vec::new(), None, None, None);
-        let bench = self.bench.as_ref().filter(|_| ui.inventory_open).map(|(_, bench)| bench);
+        let bench = match &screen.open {
+            Some(Open::Bench(_, bench)) if ui.inventory_open => Some(bench),
+            _ => None,
+        };
         let ctx = Context {
             recipes: &inventory.recipes,
             book: &self.book,
             enchantments: self.enchantments.as_deref(),
-            bookshelves: self.shelves,
-            seed: self.seed,
-            level: self.level,
+            bookshelves: screen.shelves,
+            seed: screen.seed,
+            level,
         };
         let (container, output, data) = match (opened.as_ref(), bench) {
             (None, Some(bench)) => {
                 let offer = bench.offer(&ctx);
                 let costs: Vec<u32> = offer.choices.iter().map(|choice| choice.cost).collect();
                 let runes = match (bench.kind, self.gui.as_ref()) {
-                    (Workshop::Enchanting, Some(gui)) => crate::minecraft_gui::enchanting_runes(&gui.words, &gui.gui, self.seed, &costs),
+                    (Workshop::Enchanting, Some(gui)) => crate::minecraft_gui::enchanting_runes(&gui.words, &gui.gui, screen.seed, &costs),
                     _ => Vec::new(),
                 };
                 choices = offer
@@ -723,14 +416,10 @@ impl InventoryUi {
                 (bench.cells.iter().map(&mut convert).collect(), convert(&offer.result), [0; 4])
             }
             (Some(opened), _) => {
-                let cells = containers.cells(opened);
+                let cells = &screen.cells;
                 match opened.station {
-                    Station::Brewer => (cells.iter().map(&mut convert).collect(), None, containers.brewer(opened.cells[0]).map_or([0; 4], |brewer| brewer.data())),
-                    Station::Oven(_) => (
-                        cells[..2].iter().map(&mut convert).collect(),
-                        convert(&cells[2]),
-                        containers.oven(opened.cells[0]).map_or([0; 4], |oven| oven.data()),
-                    ),
+                    Station::Brewer => (cells.iter().map(&mut convert).collect(), None, screen.data),
+                    Station::Oven(_) if cells.len() >= 3 => (cells[..2].iter().map(&mut convert).collect(), convert(&cells[2]), screen.data),
                     _ => (cells.iter().map(&mut convert).collect(), None, [0; 4]),
                 }
             }
@@ -886,6 +575,41 @@ fn stack_limit(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &Item
     }
 }
 
+pub(crate) fn screen_for(open: Option<&Open>) -> McScreen {
+    match open {
+        Some(Open::Table(_)) => McScreen::CraftingTable,
+        Some(Open::Block(opened)) => screen_of(opened),
+        Some(Open::Bench(_, bench)) => bench_screen(bench.kind),
+        Some(Open::Inventory) | None => McScreen::Inventory,
+    }
+}
+
+fn menu_slot(slot: McSlot) -> Option<MenuSlot> {
+    Some(match slot {
+        McSlot::Inventory(index) => MenuSlot::Inventory(u8::try_from(index).ok()?),
+        McSlot::Crafting(index) => MenuSlot::Crafting(u8::try_from(index).ok()?),
+        McSlot::Result => MenuSlot::Result,
+        McSlot::Workbench(index) => MenuSlot::Workbench(u8::try_from(index).ok()?),
+        McSlot::WorkbenchResult => MenuSlot::WorkbenchResult,
+        McSlot::Container(index) => MenuSlot::Container(u16::try_from(index).ok()?),
+        McSlot::Output => MenuSlot::Output,
+        McSlot::Creative(_) | McSlot::Trash => return None,
+    })
+}
+
+pub(crate) fn action_of(click: &McClick) -> Option<MenuAction> {
+    Some(match click {
+        McClick::Slot { slot, right, shift } => MenuAction::Slot { slot: menu_slot(*slot)?, right: *right, shift: *shift },
+        McClick::Outside { right } => MenuAction::Outside { right: *right },
+        McClick::Gather { slot, right } => MenuAction::Gather { slot: menu_slot(*slot)?, right: *right },
+        McClick::Swap { slot, hotbar } => MenuAction::Swap { slot: menu_slot(*slot)?, hotbar: u8::try_from(*hotbar).ok()? },
+        McClick::Spread { slots, right } => MenuAction::Spread { slots: slots.iter().filter_map(|slot| menu_slot(*slot)).collect(), right: *right },
+        McClick::Throw { slot, whole } => MenuAction::Throw { slot: menu_slot(*slot)?, whole: *whole },
+        McClick::Choose(index) => MenuAction::Choose(u16::try_from(*index).ok()?),
+        McClick::Close | McClick::Rename(_) | McClick::Clone(_) => return None,
+    })
+}
+
 fn armor_slot(index: usize) -> Option<&'static str> {
     match index {
         36 => Some("feet"),
@@ -950,57 +674,6 @@ fn droppable(
     out
 }
 
-fn throw_slot(inventory: &mut Inventory, index: usize, whole: bool) -> Option<ItemStack> {
-    let slot = inventory.slots.get_mut(index)?;
-    let stack = slot.as_mut()?;
-    let count = if whole { stack.count } else { 1 };
-    let thrown = ItemStack { count, ..stack.clone() };
-    stack.count -= count;
-    if stack.count == 0 {
-        *slot = None;
-    }
-    Some(thrown)
-}
-
-fn published(ui: &MinecraftUi, slot: McSlot) -> Option<&McStack> {
-    match slot {
-        McSlot::Inventory(i) => ui.slots.get(i)?.as_ref(),
-        McSlot::Crafting(i) => ui.crafting.get(i)?.as_ref(),
-        McSlot::Result => ui.result.as_ref(),
-        McSlot::Workbench(i) => ui.workbench.get(i)?.as_ref(),
-        McSlot::WorkbenchResult => ui.workbench_result.as_ref(),
-        McSlot::Container(i) => ui.container.get(i)?.as_ref(),
-        McSlot::Output => ui.output.as_ref(),
-        McSlot::Creative(i) => ui.creative.items.get(i)?.as_ref(),
-        McSlot::Trash => None,
-    }
-}
-
-fn keeps_gun(ui: &MinecraftUi, click: &McClick) -> bool {
-    let gun = |stack: Option<&McStack>| stack.is_some_and(|stack| stack.weapon.is_some());
-    match click {
-        McClick::Swap { slot, hotbar: OFFHAND } => gun(published(ui, *slot)),
-        McClick::Swap { slot: McSlot::Inventory(OFFHAND), hotbar } => gun(ui.slots.get(*hotbar).and_then(Option::as_ref)),
-        McClick::Slot { slot: McSlot::Inventory(OFFHAND), shift: false, .. } => gun(ui.cursor.as_ref()),
-        McClick::Throw { slot, .. } => gun(published(ui, *slot)),
-        _ => false,
-    }
-}
-
-fn station_title(opened: &Opened) -> &'static str {
-    match opened.station {
-        Station::Chest if opened.cells.len() > 1 => "container.chestDouble",
-        Station::Chest => "container.chest",
-        Station::Barrel => "container.barrel",
-        Station::Oven(CookingKind::Furnace) => "container.furnace",
-        Station::Oven(CookingKind::Smoker) => "container.smoker",
-        Station::Oven(CookingKind::BlastFurnace) => "container.blast_furnace",
-        Station::Brewer => "container.brewing",
-        Station::Ender => "container.enderchest",
-        Station::Shulker => "container.shulkerBox",
-    }
-}
-
 const SHOWN_CONTENTS: usize = 5;
 
 fn stored_in_order(stack: &ItemStack) -> Vec<ItemStack> {
@@ -1028,16 +701,6 @@ fn contents_lines(language: &HashMap<String, String>, stack: &ItemStack) -> Vec<
 fn more_line(language: &HashMap<String, String>, stack: &ItemStack) -> Option<String> {
     let rest = stored_in_order(stack).len().checked_sub(SHOWN_CONTENTS).filter(|rest| *rest > 0)?;
     Some(translated(language, ["item.container.more_items", "container.shulkerBox.more"], "and %s more...", &[rest.to_string()]))
-}
-
-fn bench_title(kind: Workshop) -> &'static str {
-    match kind {
-        Workshop::Stonecutter => "container.stonecutter",
-        Workshop::Smithing => "container.upgrade",
-        Workshop::Grindstone => "container.grindstone_title",
-        Workshop::Anvil => "container.repair",
-        Workshop::Enchanting => "container.enchant",
-    }
 }
 
 fn main_hand_attack(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &ItemStack) -> Option<[f32; 2]> {
@@ -1081,17 +744,6 @@ fn screen_of(opened: &Opened) -> McScreen {
     }
 }
 
-fn spot(slot: McSlot, grid: Grid) -> Option<Spot> {
-    match slot {
-        McSlot::Inventory(index) => Some(Spot::Player(index)),
-        McSlot::Crafting(cell) if grid == Grid::Inventory => Some(Spot::Grid(cell)),
-        McSlot::Result if grid == Grid::Inventory => Some(Spot::Result),
-        McSlot::Workbench(cell) if grid == Grid::Table => Some(Spot::Grid(cell)),
-        McSlot::WorkbenchResult if grid == Grid::Table => Some(Spot::Result),
-        _ => None,
-    }
-}
-
 /// Throws stacks from the player's eye, as `Player.drop` does.
 pub(crate) fn throw(items: &mut minecraftoss_player::items::WorldItems, stacks: Vec<ItemStack>, thrower: &Thrower) {
     for stack in stacks {
@@ -1102,6 +754,24 @@ pub(crate) fn throw(items: &mut minecraftoss_player::items::WorldItems, stacks: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_clicks_become_menu_actions_and_the_rest_stay_on_the_screen() {
+        let spread = McClick::Spread { slots: vec![McSlot::Inventory(3), McSlot::Creative(2), McSlot::Container(40)], right: true };
+        assert_eq!(action_of(&spread), Some(MenuAction::Spread { slots: vec![MenuSlot::Inventory(3), MenuSlot::Container(40)], right: true }));
+        let swap = McClick::Swap { slot: McSlot::Workbench(8), hotbar: 40 };
+        assert_eq!(action_of(&swap), Some(MenuAction::Swap { slot: MenuSlot::Workbench(8), hotbar: 40 }));
+        assert_eq!(action_of(&McClick::Choose(2)), Some(MenuAction::Choose(2)));
+        let output = McClick::Throw { slot: McSlot::Output, whole: true };
+        assert_eq!(action_of(&output), Some(MenuAction::Throw { slot: MenuSlot::Output, whole: true }));
+        for kept in [McClick::Close, McClick::Rename("Blade".to_owned()), McClick::Clone(McSlot::Inventory(0)), McClick::Slot { slot: McSlot::Creative(5), right: false, shift: false }] {
+            assert_eq!(action_of(&kept), None, "{kept:?}");
+        }
+        assert_eq!(screen_for(None), McScreen::Inventory);
+        assert_eq!(screen_for(Some(&Open::Table((0, 0, 0)))), McScreen::CraftingTable);
+        let chest = Opened { station: Station::Chest, cells: vec![(0, 0, 0), (1, 0, 0)] };
+        assert_eq!(screen_for(Some(&Open::Block(chest))), McScreen::Chest { rows: 6 });
+    }
 
     #[test]
     fn a_shulker_box_tooltip_names_five_stacks_in_slot_order_and_counts_the_rest() {
@@ -1124,20 +794,41 @@ mod tests {
     }
 
     #[test]
+    fn a_friends_lectern_screen_sends_its_buttons_and_closes_once() {
+        use minecraft_terrain::lectern::LecternAction;
+        let mut inventory_ui = InventoryUi::default();
+        let mut ui = MinecraftUi::default();
+        assert!(!inventory_ui.lectern_clicks(&mut ui), "no lectern open");
+        let pos = (4, 64, -2);
+        let book = frame::McBook { pages: vec!["one".to_owned()], page: 0, take: false };
+        assert!(inventory_ui.show_lectern(&mut ui, pos, book));
+        ui.clicks = vec![McClick::Choose(2), McClick::Choose(101)];
+        assert!(inventory_ui.lectern_clicks(&mut ui));
+        assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Button(2)), (pos, LecternAction::Button(101))]);
+        assert_eq!(ui.screen, McScreen::Lectern);
+        ui.clicks = vec![McClick::Close];
+        assert!(inventory_ui.lectern_clicks(&mut ui));
+        assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Close)]);
+        assert!(!ui.inventory_open && ui.book.is_none() && inventory_ui.lectern().is_none());
+        assert!(!inventory_ui.lectern_clicks(&mut ui));
+    }
+
+    #[test]
     fn a_lectern_screen_sends_its_buttons_and_closes_once() {
         use minecraft_terrain::lectern::LecternAction;
         let mut inventory_ui = InventoryUi::default();
         let mut ui = MinecraftUi::default();
-        let mut inventory = Inventory::default();
+        let profile = minecraft_commands::server::Profile { id: minecraft_commands::PlayerId(0), name: "Steve".to_owned(), uuid: "00000000-0000-0000-0000-000000000001".to_owned() };
+        let mut player = Player::new(&profile, Default::default(), Default::default(), Inventory::default());
         let mut containers = Containers::default();
-        let mut selected = 0;
+        let data = minecraft_survival::data::GameData::default();
         let pos = (4, 64, -2);
         let book = |page: usize| frame::McBook { pages: vec!["one".to_owned(), "two".to_owned()], page, take: true };
         assert!(inventory_ui.show_lectern(&mut ui, pos, book(0)));
         assert!(ui.inventory_open && ui.screen_opened);
         assert_eq!(ui.screen, McScreen::Lectern);
         ui.clicks = vec![McClick::Choose(2), McClick::Slot { slot: McSlot::Inventory(0), right: false, shift: false }, McClick::Choose(3)];
-        inventory_ui.apply_input(&mut ui, &mut inventory, &mut selected, &mut containers, &mut || 0.5);
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
         assert_eq!(ui.screen, McScreen::Lectern);
         assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Button(2)), (pos, LecternAction::Button(3))]);
         ui.screen_opened = false;
@@ -1147,18 +838,18 @@ mod tests {
         assert!(!inventory_ui.show_lectern(&mut ui, (0, 0, 0), book(0)));
         ui.inventory_open = false;
         ui.clicks = vec![McClick::Close];
-        inventory_ui.apply_input(&mut ui, &mut inventory, &mut selected, &mut containers, &mut || 0.5);
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
         assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Close)]);
         assert_eq!(ui.screen, McScreen::Inventory);
         assert!(ui.book.is_none() && inventory_ui.lectern().is_none());
         assert!(inventory_ui.show_lectern(&mut ui, pos, book(0)));
         inventory_ui.lectern_closed(&mut ui, pos);
         assert!(!ui.inventory_open && ui.book.is_none());
-        inventory_ui.apply_input(&mut ui, &mut inventory, &mut selected, &mut containers, &mut || 0.5);
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
         assert!(inventory_ui.take_lectern_actions().is_empty());
         assert!(inventory_ui.show_lectern(&mut ui, pos, book(0)));
         ui.inventory_open = false;
-        inventory_ui.apply_input(&mut ui, &mut inventory, &mut selected, &mut containers, &mut || 0.5);
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
         assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Close)]);
     }
 }

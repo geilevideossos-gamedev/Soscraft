@@ -259,6 +259,10 @@ impl EntityWorld {
         &self.potions
     }
 
+    pub fn potion_mut(&mut self, id: u64) -> Option<&mut PotionEntity> {
+        self.potions.iter_mut().find(|e| e.id == id)
+    }
+
     /// A potion already in flight (a saved one).
     pub fn spawn_potion(&mut self, potion: ThrownPotion) -> u64 {
         self.next_id += 1;

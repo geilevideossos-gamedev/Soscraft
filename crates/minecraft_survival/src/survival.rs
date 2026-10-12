@@ -34,8 +34,8 @@ const SWIM_EXHAUSTION: f32 = 0.01;
 const SPRINT_FOOD: u8 = 6;
 const SAFE_FALL: f64 = 3.0;
 const MAX_STRIDE: f64 = 2.0;
-const DAMAGE_BLINK: u64 = 20;
-const SETTLE_DISPLAY: u64 = 20;
+pub(crate) const DAMAGE_BLINK: u64 = 20;
+pub(crate) const SETTLE_DISPLAY: u64 = 20;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Motion {
@@ -130,6 +130,7 @@ pub struct Survival {
     pub score: i32,
     pub rules: SurvivalRules,
     killed: bool,
+    death_told: bool,
     pub eye_in_water: bool,
     eye_in_lava: bool,
     stuck: bool,
@@ -505,6 +506,10 @@ impl Survival {
         self.combat.death_line(language, present)
     }
 
+    pub fn death_text(&self, victim: &str, present: impl Fn(u64) -> bool) -> minecraft_commands::Text {
+        self.combat.death_text(victim, present)
+    }
+
     pub fn last_feet(&self) -> Option<[f64; 3]> {
         self.last_feet
     }
@@ -531,6 +536,9 @@ impl Survival {
         }
         if motion.feet[1] < f64::from(world.min_y() - OUT_OF_WORLD_DEPTH) {
             self.fall_out_of_world(&mut random, &mut heard);
+        }
+        if crate::bands::at_bottom_wall(world.min_y(), motion.feet[1]) && !self.killed {
+            self.kill(DamageCause::OutOfWorld);
         }
         let stride = (0..3)
             .map(|k| (motion.feet[k] - from[k]).powi(2))
@@ -783,6 +791,10 @@ impl Survival {
 
     pub fn killed(&self) -> bool {
         self.killed
+    }
+
+    pub fn tell_death(&mut self) -> bool {
+        !std::mem::replace(&mut self.death_told, true)
     }
 
     pub fn hurt_blocked(&mut self, cause: DamageCause) {
@@ -1075,6 +1087,18 @@ pub fn breaks_fall(block: &str) -> bool {
 
 pub fn frost_move_scale(percent_frozen: f32) -> f32 {
     1.0 - 0.5 * percent_frozen.clamp(0.0, 1.0)
+}
+
+pub fn percent_frozen(ticks_frozen: i32) -> f32 {
+    ticks_frozen.clamp(0, TICKS_TO_FREEZE) as f32 / TICKS_TO_FREEZE as f32
+}
+
+pub fn frost_scale(ticks_frozen: i32, on_block: bool) -> f32 {
+    if ticks_frozen > 0 && on_block {
+        frost_move_scale(percent_frozen(ticks_frozen))
+    } else {
+        1.0
+    }
 }
 
 pub fn freeze_immune(inventory: &Inventory) -> bool {
@@ -2369,6 +2393,19 @@ mod tests {
     }
 
     #[test]
+    fn the_frost_slows_only_a_player_standing_on_a_block_and_any_game_reads_it_from_the_ticks() {
+        assert_eq!(frost_scale(0, true), 1.0);
+        assert_eq!(frost_scale(TICKS_TO_FREEZE, false), 1.0, "in the air the frost does not slow");
+        assert!((frost_scale(TICKS_TO_FREEZE, true) - 0.5).abs() < 1e-6);
+        assert!((frost_scale(70, true) - 0.75).abs() < 1e-6);
+        assert!((frost_scale(1000, true) - 0.5).abs() < 1e-6);
+        assert_eq!(percent_frozen(-5), 0.0);
+        let mut survival = unfed();
+        live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 50);
+        assert_eq!(percent_frozen(survival.ticks_frozen()), survival.percent_frozen());
+    }
+
+    #[test]
     fn seven_seconds_in_powder_snow_freeze_a_player() {
         let mut survival = unfed();
         assert!(!survival.in_powder_snow());
@@ -3215,7 +3252,7 @@ mod tests {
             survival.set_game_mode(&PlayerMode::new(mode));
             let mut inventory = Inventory::default();
             inventory.slots[40] = Some(ItemStack::new("minecraft:totem_of_undying", 1));
-            let heard = falling(&mut survival, &Floor(-64), -200.0, Armor::default(), 41);
+            let heard = falling(&mut survival, &Floor(-64), -191.0, Armor::default(), 41);
             assert_eq!(survival.status.health, 0.0, "{mode:?}");
             assert_eq!(count(&heard, "minecraft:entity.player.hurt"), 4);
             assert!(survival.killed());
@@ -3226,6 +3263,27 @@ mod tests {
                 said("%1$s fell out of the world", "fell out of the world")
             );
             assert_eq!(survival.settle(100, 100).damage, Some((100, None)));
+        }
+    }
+
+    #[test]
+    fn a_player_who_reaches_the_bottom_wall_falls_out_of_the_world_at_once() {
+        use minecraft_terrain::game_mode::PlayerMode;
+        for mode in [GameMode::Survival, GameMode::Creative] {
+            let mut survival = unfed();
+            survival.set_game_mode(&PlayerMode::new(mode));
+            survival.status.add_effect(EffectKind::Resistance, 400, 4);
+            falling(&mut survival, &Floor(0), -128.0, Armor::default(), 1);
+            assert!(survival.killed(), "{mode:?}");
+            assert_eq!(survival.status.health, 0.0, "{mode:?}");
+            assert_eq!(
+                death(&survival),
+                said("%1$s fell out of the world", "fell out of the world")
+            );
+            let mut above = unfed();
+            above.set_game_mode(&PlayerMode::new(mode));
+            falling(&mut above, &Floor(0), -127.0, Armor::default(), 1);
+            assert!(!above.killed(), "{mode:?}");
         }
     }
 

@@ -1,0 +1,853 @@
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use glam::DVec3;
+use minecraftoss_core::nbt::Tag;
+use minecraftoss_entities::movement::Body;
+use minecraftoss_entities::piglin::ArmPose;
+use minecraftoss_entities::world::EntityWorld;
+use serde::{Deserialize, Serialize};
+
+use crate::client_mobs::{ServerMob, server_mobs};
+
+pub const LOOK_TICKS: u64 = 10;
+pub const DEFAULT_RANGE: i32 = 5;
+
+const VOLATILE: [&str; 26] = [
+    "Pos",
+    "Motion",
+    "Rotation",
+    "OnGround",
+    "fall_distance",
+    "Fire",
+    "Health",
+    "Air",
+    "AbsorptionAmount",
+    "HurtTime",
+    "HurtByTimestamp",
+    "DeathTime",
+    "anger_end_time",
+    "Age",
+    "InLove",
+    "EggLayTime",
+    "wasOnGround",
+    "TimeInOverworld",
+    "Peek",
+    "LastRestock",
+    "RestocksToday",
+    "Gossips",
+    "LastGossipDecay",
+    "FoodLevel",
+    "active_effects",
+    "Brain",
+];
+
+const ARM_POSES: [ArmPose; 6] = [
+    ArmPose::Default,
+    ArmPose::Dancing,
+    ArmPose::AdmiringItem,
+    ArmPose::AttackingWithMeleeWeapon,
+    ArmPose::CrossbowCharge,
+    ArmPose::CrossbowHold,
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MobShow {
+    pub fire: bool,
+    pub aggressive: bool,
+    pub angry: bool,
+    pub charging: bool,
+    pub converting: bool,
+    pub swell: [i32; 2],
+    pub peek: [f32; 2],
+    pub arm_pose: u8,
+    pub using_item: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Watcher {
+    pub id: u64,
+    pub feet: [f64; 3],
+    pub view_distance: i32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MobEvent {
+    Add(u64, Tag),
+    Look(u64, Tag),
+    Remove(Vec<u64>),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Tracked {
+    pub events: Vec<(u64, MobEvent)>,
+    pub moves: Vec<(u64, Vec<ServerMob>)>,
+}
+
+impl Tracked {
+    pub fn merge(&mut self, later: Tracked) {
+        self.events.extend(later.events);
+        self.moves
+            .retain(|(player, _)| later.moves.iter().all(|(newer, _)| newer != player));
+        self.moves.extend(later.moves);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty() && self.moves.is_empty()
+    }
+
+    pub fn events_of(&self, player: u64) -> impl Iterator<Item = &MobEvent> {
+        self.events
+            .iter()
+            .filter(move |(to, _)| *to == player)
+            .map(|(_, event)| event)
+    }
+
+    pub fn moves_of(&self, player: u64) -> Option<&[ServerMob]> {
+        self.moves
+            .iter()
+            .find(|(to, _)| *to == player)
+            .map(|(_, moves)| moves.as_slice())
+    }
+}
+
+#[derive(Default)]
+pub struct Trackers {
+    players: HashMap<u64, HashMap<u64, Tag>>,
+    ticks: u64,
+    looked: u64,
+}
+
+impl Trackers {
+    pub fn tick(&mut self) {
+        self.ticks += 1;
+    }
+
+    pub fn forget(&mut self, player: u64) {
+        self.players.remove(&player);
+    }
+
+    pub fn tracks(&self, player: u64, mob: u64) -> bool {
+        self.players
+            .get(&player)
+            .is_some_and(|known| known.contains_key(&mob))
+    }
+
+    pub fn update(
+        &mut self,
+        world: &EntityWorld,
+        originals: &HashMap<u64, Tag>,
+        watchers: &[Watcher],
+    ) -> Tracked {
+        let mut out = Tracked::default();
+        let left: Vec<u64> = self
+            .players
+            .keys()
+            .copied()
+            .filter(|id| watchers.iter().all(|watcher| watcher.id != *id))
+            .collect();
+        for player in left {
+            let Some(known) = self.players.remove(&player) else {
+                continue;
+            };
+            let mut gone: Vec<u64> = known.into_keys().collect();
+            gone.sort_unstable();
+            if !gone.is_empty() {
+                out.events.push((player, MobEvent::Remove(gone)));
+            }
+        }
+        if watchers.is_empty() {
+            return out;
+        }
+        let look_due = self.ticks >= self.looked + LOOK_TICKS;
+        if look_due {
+            self.looked = self.ticks;
+        }
+        let mut mobs = server_mobs(world);
+        let flying = projectiles(world);
+        let flying_ids: HashSet<u64> = flying.iter().map(|mob| mob.id).collect();
+        mobs.extend(flying);
+        let ranges: HashMap<u64, i32> = mobs
+            .iter()
+            .map(|mob| {
+                let range = world
+                    .entity_type(mob.id)
+                    .map_or(DEFAULT_RANGE, tracking_range);
+                (mob.id, range)
+            })
+            .collect();
+        let mut near_each = Vec::new();
+        let mut wanted = HashSet::new();
+        for watcher in watchers {
+            let known = self.players.entry(watcher.id).or_default();
+            let near: BTreeSet<u64> = mobs
+                .iter()
+                .filter(|mob| !mob.dead || known.contains_key(&mob.id))
+                .filter(|mob| {
+                    let range = ranges.get(&mob.id).copied().unwrap_or(DEFAULT_RANGE);
+                    tracks(range, watcher.view_distance, watcher.feet, mob.position)
+                })
+                .map(|mob| mob.id)
+                .collect();
+            wanted.extend(
+                near.iter()
+                    .copied()
+                    .filter(|id| (look_due && !flying_ids.contains(id)) || !known.contains_key(id)),
+            );
+            near_each.push((watcher.id, near));
+        }
+        let tags: HashMap<u64, Tag> = if wanted.is_empty() {
+            HashMap::new()
+        } else {
+            crate::server_mobs::mob_tags_where(
+                world,
+                |id, _| wanted.contains(&id),
+                originals,
+                false,
+            )
+            .into_iter()
+            .collect()
+        };
+        let looks: HashMap<u64, Tag> = tags.iter().map(|(&id, tag)| (id, look(tag))).collect();
+        for (player, near) in near_each {
+            let known = self.players.entry(player).or_default();
+            let mut gone: Vec<u64> = known
+                .keys()
+                .copied()
+                .filter(|id| !near.contains(id))
+                .collect();
+            gone.sort_unstable();
+            for id in &gone {
+                known.remove(id);
+            }
+            if !gone.is_empty() {
+                out.events.push((player, MobEvent::Remove(gone)));
+            }
+            for id in near {
+                let (Some(tag), Some(seen)) = (tags.get(&id), looks.get(&id)) else {
+                    continue;
+                };
+                match known.get(&id) {
+                    None => {
+                        known.insert(id, seen.clone());
+                        out.events.push((player, MobEvent::Add(id, tag.clone())));
+                    }
+                    Some(sent) if sent != seen => {
+                        known.insert(id, seen.clone());
+                        out.events.push((player, MobEvent::Look(id, tag.clone())));
+                    }
+                    Some(_) => {}
+                }
+            }
+            let moves = mobs
+                .iter()
+                .filter(|mob| known.contains_key(&mob.id))
+                .copied()
+                .collect();
+            out.moves.push((player, moves));
+        }
+        out
+    }
+}
+
+pub fn tracking_range(kind: &str) -> i32 {
+    match kind.strip_prefix("minecraft:").unwrap_or(kind) {
+        "player" => 32,
+        "end_crystal" => 16,
+        "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf"
+        | "villager" | "iron_golem" | "ghast" | "slime" | "strider" | "shulker"
+        | "ender_dragon" | "tnt" | "falling_block" | "item_frame" | "glow_item_frame"
+        | "area_effect_cloud" => 10,
+        "zombie" | "husk" | "drowned" | "zombie_villager" | "zombified_piglin" | "skeleton"
+        | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
+        | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
+        | "piglin" | "piglin_brute" | "shulker_bullet" => 8,
+        "item" | "experience_orb" => 6,
+        "arrow" | "spectral_arrow" | "snowball" | "egg" | "ender_pearl" | "eye_of_ender"
+        | "trident" | "fireball" | "small_fireball" | "dragon_fireball" | "splash_potion"
+        | "lingering_potion" | "experience_bottle" | "firework_rocket" | "wither_skull"
+        | "wind_charge" => 4,
+        _ => DEFAULT_RANGE,
+    }
+}
+
+pub fn tracks(range: i32, view_distance: i32, feet: [f64; 3], at: DVec3) -> bool {
+    let reach = f64::from(range.min(view_distance).max(0) * 16);
+    let (dx, dz) = (at.x - feet[0], at.z - feet[2]);
+    dx * dx + dz * dz <= reach * reach
+}
+
+pub fn look(tag: &Tag) -> Tag {
+    let Tag::Compound(map) = tag else {
+        return tag.clone();
+    };
+    let mut map = map.clone();
+    let baby = map
+        .get("Age")
+        .and_then(Tag::as_i64)
+        .is_some_and(|age| age < 0);
+    for key in VOLATILE {
+        map.remove(key);
+    }
+    map.insert("Baby".to_owned(), Tag::Byte(i8::from(baby)));
+    Tag::Compound(map)
+}
+
+pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
+    let mut out = HashMap::new();
+    let mut put = |id: u64, show: MobShow| {
+        out.insert(id, show);
+    };
+    for e in world.zombies() {
+        put(
+            e.id,
+            MobShow {
+                aggressive: e.aggressive,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.skeletons() {
+        put(
+            e.id,
+            MobShow {
+                aggressive: e.bow.aggressive,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.creepers() {
+        put(
+            e.id,
+            MobShow {
+                swell: [e.creeper.old_swell, e.creeper.swell],
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.endermen() {
+        put(
+            e.id,
+            MobShow {
+                angry: e.creepy(),
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.wolves() {
+        put(
+            e.id,
+            MobShow {
+                angry: e.angry(world.game_time()),
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.ghasts() {
+        put(
+            e.id,
+            MobShow {
+                charging: e.ghast.charging,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.shulkers() {
+        put(
+            e.id,
+            MobShow {
+                peek: [e.shulker.peek_o, e.shulker.peek],
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.hoglins() {
+        put(
+            e.id,
+            MobShow {
+                converting: e.hoglin.converting,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.piglins() {
+        let arm_pose = ARM_POSES
+            .iter()
+            .position(|pose| *pose == e.arm_pose)
+            .unwrap_or(0);
+        put(
+            e.id,
+            MobShow {
+                aggressive: e.piglin.aggressive,
+                converting: e.piglin.converting,
+                arm_pose: arm_pose as u8,
+                using_item: e.using_item,
+                ..MobShow::default()
+            },
+        );
+    }
+    out
+}
+
+pub fn projectiles(world: &EntityWorld) -> Vec<ServerMob> {
+    let mut out = Vec::new();
+    let mut push = |id: u64, position: DVec3, turn: (f32, f32), size: f64| {
+        out.push(ServerMob {
+            id,
+            position,
+            y_rot: turn.0,
+            x_rot: turn.1,
+            y_head_rot: turn.0,
+            on_ground: false,
+            baby: false,
+            eye_height: 0.0,
+            max_head_y_rot: 0.0,
+            update_interval: 1,
+            sync: Default::default(),
+            resting: false,
+            hurts: 0,
+            dead: false,
+            swings: 0,
+            size: (size as f32, size as f32),
+            vehicle: None,
+            show: MobShow::default(),
+        });
+    };
+    for e in world.fireballs().iter().filter(|e| e.fireball.alive) {
+        let size = e.fireball.kind.size();
+        push(e.id, e.fireball.position, (0.0, 0.0), size);
+    }
+    for e in world.shulker_bullets().iter().filter(|e| e.bullet.alive) {
+        let turn = (e.bullet.yaw, e.bullet.pitch);
+        push(e.id, e.bullet.position, turn, 0.3125);
+    }
+    for e in world.potions().iter().filter(|e| e.potion.alive) {
+        push(e.id, e.potion.position, (0.0, 0.0), 0.25);
+    }
+    out
+}
+
+pub fn is_projectile(world: &EntityWorld, id: u64) -> bool {
+    world.fireballs().iter().any(|e| e.id == id)
+        || world.shulker_bullets().iter().any(|e| e.id == id)
+        || world.potions().iter().any(|e| e.id == id)
+}
+
+fn place(previous: &mut DVec3, body: &mut Body, mob: &ServerMob) {
+    *previous = body.position;
+    body.position = mob.position;
+    body.on_ground = mob.on_ground;
+    body.fire_ticks = i32::from(mob.show.fire);
+}
+
+pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
+    let (id, show) = (mob.id, mob.show);
+    if let Some(e) = world.cow_mut(id) {
+        place(&mut e.previous_position, &mut e.cow.body, mob);
+    }
+    if let Some(e) = world.sheep_mut(id) {
+        place(&mut e.previous_position, &mut e.body, mob);
+    }
+    if let Some(e) = world.pig_mut(id) {
+        place(&mut e.previous_position, &mut e.pig.body, mob);
+    }
+    if let Some(e) = world.chicken_mut(id) {
+        place(&mut e.previous_position, &mut e.chicken.body, mob);
+    }
+    if let Some(e) = world.bat_mut(id) {
+        place(&mut e.previous_position, &mut e.bat.body, mob);
+        e.bat.resting = mob.resting;
+    }
+    if let Some(e) = world.zombie_mut(id) {
+        place(&mut e.previous_position, &mut e.zombie.body, mob);
+        e.aggressive = show.aggressive;
+    }
+    if let Some(e) = world.skeleton_mut(id) {
+        place(&mut e.previous_position, &mut e.skeleton.body, mob);
+        e.bow.aggressive = show.aggressive;
+    }
+    if let Some(e) = world.spider_mut(id) {
+        place(&mut e.previous_position, &mut e.spider.body, mob);
+    }
+    if let Some(e) = world.creeper_mut(id) {
+        place(&mut e.previous_position, &mut e.creeper.body, mob);
+        [e.creeper.old_swell, e.creeper.swell] = show.swell;
+    }
+    if let Some(e) = world.villager_mut(id) {
+        place(&mut e.previous_position, &mut e.villager.body, mob);
+    }
+    if let Some(e) = world.slime_mut(id) {
+        place(&mut e.previous_position, &mut e.slime.body, mob);
+    }
+    if let Some(e) = world.enderman_mut(id) {
+        place(&mut e.previous_position, &mut e.enderman.body, mob);
+        e.ai.state.enderman.creepy = show.angry;
+    }
+    if let Some(e) = world.witch_mut(id) {
+        place(&mut e.previous_position, &mut e.witch.body, mob);
+    }
+    if let Some(e) = world.iron_golem_mut(id) {
+        place(&mut e.previous_position, &mut e.golem.body, mob);
+    }
+    if let Some(e) = world.wolf_mut(id) {
+        place(&mut e.previous_position, &mut e.wolf.body, mob);
+        e.ai.state.enderman.anger_end_time = if show.angry { i64::MAX } else { i64::MIN };
+    }
+    if let Some(e) = world.ghast_mut(id) {
+        place(&mut e.previous_position, &mut e.ghast.body, mob);
+        e.ghast.charging = show.charging;
+    }
+    if let Some(e) = world.blaze_mut(id) {
+        place(&mut e.previous_position, &mut e.blaze.body, mob);
+    }
+    if let Some(e) = world.strider_mut(id) {
+        place(&mut e.previous_position, &mut e.strider.body, mob);
+    }
+    if let Some(e) = world.hoglin_mut(id) {
+        place(&mut e.previous_position, &mut e.hoglin.body, mob);
+        e.hoglin.converting = show.converting;
+    }
+    if let Some(e) = world.piglin_mut(id) {
+        place(&mut e.previous_position, &mut e.piglin.body, mob);
+        e.piglin.aggressive = show.aggressive;
+        e.piglin.converting = show.converting;
+        e.arm_pose = ARM_POSES
+            .get(usize::from(show.arm_pose))
+            .copied()
+            .unwrap_or(ArmPose::Default);
+        e.using_item = show.using_item;
+    }
+    if let Some(e) = world.shulker_mut(id) {
+        place(&mut e.previous_position, &mut e.shulker.body, mob);
+        [e.shulker.peek_o, e.shulker.peek] = show.peek;
+    }
+    if let Some(e) = world.fireball_mut(id) {
+        e.previous_position = e.fireball.position;
+        e.fireball.position = mob.position;
+    }
+    if let Some(e) = world.shulker_bullet_mut(id) {
+        e.previous_position = e.bullet.position;
+        e.bullet.position = mob.position;
+        e.bullet.yaw_o = e.bullet.yaw;
+        e.bullet.pitch_o = e.bullet.pitch;
+        e.bullet.yaw = mob.y_rot;
+        e.bullet.pitch = mob.x_rot;
+        e.bullet.tick_count += 1;
+    }
+    if let Some(e) = world.potion_mut(id) {
+        e.previous_position = e.potion.position;
+        e.potion.position = mob.position;
+    }
+}
+
+pub fn spawn_tracked(world: &mut EntityWorld, id: u64, tag: &Tag) -> bool {
+    if id == 0 {
+        return false;
+    }
+    world.remove_mobs(&[id]);
+    world.set_next_entity_id(id);
+    match crate::server_mobs::spawn_saved(world, tag) {
+        Some(spawned) if spawned == id => true,
+        Some(other) => {
+            world.remove_mobs(&[other]);
+            false
+        }
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(text: &str) -> Tag {
+        minecraftoss_core::snbt::parse_compound(text).expect("the tag")
+    }
+
+    fn spawn(world: &mut EntityWorld, text: &str) -> (u64, Tag) {
+        let tag = saved(text);
+        let id = crate::server_mobs::spawn_saved(world, &tag).expect("the mob spawns");
+        (id, tag)
+    }
+
+    fn watcher(id: u64, x: f64) -> Watcher {
+        Watcher {
+            id,
+            feet: [x, 64.0, 0.5],
+            view_distance: 8,
+        }
+    }
+
+    fn update(trackers: &mut Trackers, world: &EntityWorld, watchers: &[Watcher]) -> Tracked {
+        trackers.tick();
+        trackers.update(world, &HashMap::new(), watchers)
+    }
+
+    #[test]
+    fn the_tracking_range_is_vanillas_per_kind_and_the_view_distance_caps_it() {
+        assert_eq!(tracking_range("minecraft:zombie"), 8);
+        assert_eq!(tracking_range("minecraft:magma_cube"), 8);
+        assert_eq!(tracking_range("minecraft:cow"), 10);
+        assert_eq!(tracking_range("minecraft:slime"), 10);
+        assert_eq!(tracking_range("minecraft:bat"), 5);
+        assert_eq!(tracking_range("minecraft:end_crystal"), 16);
+        assert_eq!(tracking_range("minecraft:player"), 32);
+        assert_eq!(tracking_range("minecraft:item"), 6);
+        assert_eq!(tracking_range("minecraft:snowball"), 4);
+        assert_eq!(tracking_range("minecraft:not_a_mob"), DEFAULT_RANGE);
+        let feet = [0.0, 64.0, 0.0];
+        assert!(tracks(8, 8, feet, DVec3::new(128.0, 64.0, 0.0)));
+        assert!(!tracks(8, 8, feet, DVec3::new(128.1, 64.0, 0.0)));
+        assert!(tracks(8, 8, feet, DVec3::new(90.0, 300.0, 90.0)));
+        assert!(!tracks(10, 8, feet, DVec3::new(140.0, 64.0, 0.0)));
+        assert!(tracks(10, 12, feet, DVec3::new(140.0, 64.0, 0.0)));
+        assert!(!tracks(5, 8, feet, DVec3::new(0.0, 64.0, 81.0)));
+    }
+
+    #[test]
+    fn a_mob_is_added_moved_and_removed_as_a_watcher_comes_and_goes() {
+        let mut world = EntityWorld::default();
+        let (cow, _) = spawn(
+            &mut world,
+            "{id:\"minecraft:cow\",Pos:[100.5d,64.0d,0.5d],NoAI:1b}",
+        );
+        let (bat, _) = spawn(
+            &mut world,
+            "{id:\"minecraft:bat\",Pos:[100.5d,70.0d,0.5d],NoAI:1b}",
+        );
+        let mut trackers = Trackers::default();
+        let first = update(&mut trackers, &world, &[watcher(5, 0.5)]);
+        assert_eq!(first.events.len(), 1, "{:?}", first.events);
+        let MobEvent::Add(added, tag) = &first.events[0].1 else {
+            panic!("{:?}", first.events);
+        };
+        assert_eq!((first.events[0].0, *added), (5, cow));
+        assert_eq!(tag.get("id").and_then(Tag::as_str), Some("minecraft:cow"));
+        let moves: Vec<u64> = first
+            .moves_of(5)
+            .unwrap()
+            .iter()
+            .map(|mob| mob.id)
+            .collect();
+        assert_eq!(moves, vec![cow], "the bat is beyond its 5 chunks");
+        assert!(trackers.tracks(5, cow));
+        let second = update(&mut trackers, &world, &[watcher(5, 0.5)]);
+        assert!(second.events.is_empty());
+        assert_eq!(second.moves_of(5).map(<[ServerMob]>::len), Some(1));
+        let near = update(&mut trackers, &world, &[watcher(5, 60.5)]);
+        assert_eq!(near.events.len(), 1);
+        assert!(matches!(&near.events[0].1, MobEvent::Add(id, _) if *id == bat));
+        let gone = update(&mut trackers, &world, &[watcher(5, 400.5)]);
+        let MobEvent::Remove(ids) = &gone.events[0].1 else {
+            panic!("{:?}", gone.events);
+        };
+        let mut both = vec![cow, bat];
+        both.sort_unstable();
+        assert_eq!(ids, &both);
+        assert_eq!(gone.moves_of(5).map(<[ServerMob]>::len), Some(0));
+        let left = update(&mut trackers, &world, &[]);
+        assert!(left.is_empty());
+        assert!(!trackers.tracks(5, cow));
+    }
+
+    #[test]
+    fn a_watcher_who_stops_watching_is_told_to_remove_what_they_had() {
+        let mut world = EntityWorld::default();
+        let (cow, _) = spawn(
+            &mut world,
+            "{id:\"minecraft:cow\",Pos:[4.5d,64.0d,0.5d],NoAI:1b}",
+        );
+        let mut trackers = Trackers::default();
+        let both = [watcher(5, 0.5), watcher(6, 0.5)];
+        assert_eq!(update(&mut trackers, &world, &both).events.len(), 2);
+        let after = update(&mut trackers, &world, &both[..1]);
+        assert_eq!(after.events.len(), 1, "{:?}", after.events);
+        assert_eq!(after.events[0], (6, MobEvent::Remove(vec![cow])));
+        assert!(trackers.tracks(5, cow) && !trackers.tracks(6, cow));
+        let back = update(&mut trackers, &world, &both);
+        assert!(matches!(&back.events[..], [(6, MobEvent::Add(id, _))] if *id == cow));
+    }
+
+    #[test]
+    fn projectiles_are_tracked_moved_and_never_resent_as_looks() {
+        let mut host = EntityWorld::default();
+        let (fireball, _) = spawn(
+            &mut host,
+            "{id:\"minecraft:small_fireball\",Pos:[3.5d,66.0d,0.5d],Motion:[0.5d,0.0d,0.0d]}",
+        );
+        let (bullet, _) = spawn(
+            &mut host,
+            "{id:\"minecraft:shulker_bullet\",Pos:[5.5d,66.0d,0.5d],Motion:[0.0d,0.1d,0.0d]}",
+        );
+        let (far, _) = spawn(
+            &mut host,
+            "{id:\"minecraft:small_fireball\",Pos:[90.5d,66.0d,0.5d],Motion:[0.5d,0.0d,0.0d]}",
+        );
+        let mut trackers = Trackers::default();
+        let watchers = [watcher(2, 0.5)];
+        let first = update(&mut trackers, &host, &watchers);
+        let mut added: Vec<u64> = first
+            .events_of(2)
+            .map(|event| match event {
+                MobEvent::Add(id, _) => *id,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        added.sort_unstable();
+        assert_eq!(added, vec![fireball, bullet], "a fireball goes 4 chunks");
+        assert!(!trackers.tracks(2, far));
+        let mut friend = EntityWorld::default();
+        for event in first.events_of(2) {
+            let MobEvent::Add(id, tag) = event else {
+                unreachable!();
+            };
+            assert!(spawn_tracked(&mut friend, *id, tag), "{tag:?}");
+        }
+        host.fireball_mut(fireball).unwrap().fireball.position = DVec3::new(4.0, 66.0, 0.5);
+        host.shulker_bullet_mut(bullet).unwrap().bullet.yaw = 90.0;
+        let mut later = Vec::new();
+        for _ in 0..LOOK_TICKS * 2 {
+            let tracked = update(&mut trackers, &host, &watchers);
+            for mob in tracked.moves_of(2).unwrap() {
+                show_on(&mut friend, mob);
+            }
+            later.extend(tracked.events);
+        }
+        assert!(later.is_empty(), "{later:?}");
+        let shown = &friend.fireballs()[0];
+        assert_eq!(shown.fireball.position, DVec3::new(4.0, 66.0, 0.5));
+        assert_eq!(shown.previous_position, DVec3::new(4.0, 66.0, 0.5));
+        assert!(is_projectile(&friend, fireball) && is_projectile(&friend, bullet));
+        assert_eq!(friend.shulker_bullets()[0].bullet.yaw, 90.0);
+        host.remove_mobs(&[fireball]);
+        let gone = update(&mut trackers, &host, &watchers);
+        assert_eq!(gone.events, vec![(2, MobEvent::Remove(vec![fireball]))]);
+        friend.remove_mobs(&[fireball]);
+        assert!(friend.fireballs().is_empty());
+    }
+
+    #[test]
+    fn a_look_change_is_sent_once_and_a_health_change_is_not() {
+        let mut world = EntityWorld::default();
+        let (pig, _) = spawn(
+            &mut world,
+            "{id:\"minecraft:pig\",Pos:[10.5d,64.0d,0.5d],NoAI:1b}",
+        );
+        let mut trackers = Trackers::default();
+        let watchers = [watcher(3, 0.5)];
+        assert_eq!(update(&mut trackers, &world, &watchers).events.len(), 1);
+        world.pig_mut(pig).unwrap().pig.health -= 3.0;
+        for _ in 0..LOOK_TICKS {
+            assert!(update(&mut trackers, &world, &watchers).events.is_empty());
+        }
+        world.pig_mut(pig).unwrap().pig.saddled = true;
+        let mut looks = Vec::new();
+        for _ in 0..LOOK_TICKS * 3 {
+            looks.extend(update(&mut trackers, &world, &watchers).events);
+        }
+        assert_eq!(looks.len(), 1, "{looks:?}");
+        let MobEvent::Look(id, tag) = &looks[0].1 else {
+            panic!("{looks:?}");
+        };
+        assert_eq!(*id, pig);
+        let saddle = tag
+            .get("equipment")
+            .and_then(|equipment| equipment.get("saddle"))
+            .and_then(|saddle| saddle.get("id"))
+            .and_then(Tag::as_str);
+        assert_eq!(saddle, Some("minecraft:saddle"));
+    }
+
+    #[test]
+    fn an_added_tag_keeps_equipment_profession_and_the_hosts_id() {
+        let mut world = EntityWorld::default();
+        world.set_next_entity_id(4000);
+        let villager_text = "{id:\"minecraft:villager\",Pos:[4.5d,64.0d,0.5d],NoAI:1b,VillagerData:{type:\"minecraft:desert\",profession:\"minecraft:farmer\",level:3}}";
+        let zombie_text = "{id:\"minecraft:zombie\",Pos:[6.5d,64.0d,0.5d],NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1}}}";
+        let (villager, villager_tag) = spawn(&mut world, villager_text);
+        let (zombie, zombie_tag) = spawn(&mut world, zombie_text);
+        let originals: HashMap<u64, Tag> = [(villager, villager_tag), (zombie, zombie_tag)]
+            .into_iter()
+            .collect();
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let tracked = trackers.update(&world, &originals, &[watcher(9, 0.5)]);
+        assert_eq!(tracked.events.len(), 2);
+        let mut friend = EntityWorld::default();
+        for (_, event) in &tracked.events {
+            let MobEvent::Add(id, tag) = event else {
+                panic!("{event:?}");
+            };
+            assert!(spawn_tracked(&mut friend, *id, tag), "{tag:?}");
+        }
+        let shown = &friend.villagers()[0];
+        assert_eq!(shown.id, villager);
+        assert_eq!(shown.villager.profession.id(), "minecraft:farmer");
+        assert_eq!(shown.villager.level, 3);
+        assert_eq!(shown.villager.kind, "minecraft:desert");
+        let shown = &friend.zombies()[0];
+        assert_eq!(shown.id, zombie);
+        assert_eq!(
+            shown.zombie.main_hand.as_deref(),
+            Some("minecraft:iron_sword")
+        );
+        assert!(spawn_tracked(&mut friend, zombie, &saved(zombie_text)));
+        assert_eq!(friend.zombies().len(), 1, "a second add replaces the mob");
+    }
+
+    #[test]
+    fn a_loaded_strider_and_its_rider_are_added_as_two_mobs_the_friend_can_spawn() {
+        let mut host = EntityWorld::default();
+        let jockey = saved(
+            "{id:\"minecraft:strider\",Pos:[3.5d,64.0d,0.5d],NoAI:1b,Passengers:[{id:\"minecraft:zombified_piglin\",Pos:[3.5d,65.0d,0.5d],NoAI:1b}]}",
+        );
+        let spawned = crate::server_mobs::spawn_saved_all(&mut host, &jockey);
+        assert_eq!(spawned.len(), 2);
+        let originals: HashMap<u64, Tag> = spawned.into_iter().collect();
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let tracked = trackers.update(&host, &originals, &[watcher(4, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(4) {
+            let MobEvent::Add(id, tag) = event else {
+                panic!("{event:?}");
+            };
+            assert!(tag.get("Passengers").is_none(), "{tag:?}");
+            assert!(spawn_tracked(&mut friend, *id, tag), "{tag:?}");
+        }
+        assert_eq!(friend.striders().len(), 1);
+        assert_eq!(friend.zombies().len(), 1);
+    }
+
+    #[test]
+    fn the_mirror_moves_and_shows_what_the_host_sends() {
+        let mut host = EntityWorld::default();
+        let (creeper, creeper_tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:creeper\",Pos:[2.5d,64.0d,0.5d],NoAI:1b}",
+        );
+        let (zombie, zombie_tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:zombie\",Pos:[4.5d,64.0d,0.5d],NoAI:1b}",
+        );
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, creeper, &creeper_tag));
+        assert!(spawn_tracked(&mut friend, zombie, &zombie_tag));
+        {
+            let e = host.creeper_mut(creeper).unwrap();
+            e.creeper.old_swell = 4;
+            e.creeper.swell = 5;
+            e.creeper.body.position = DVec3::new(3.0, 65.0, 1.0);
+            e.creeper.body.fire_ticks = 40;
+        }
+        host.zombie_mut(zombie).unwrap().aggressive = true;
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let shown = &friend.creepers()[0];
+        assert_eq!((shown.creeper.old_swell, shown.creeper.swell), (4, 5));
+        assert_eq!(shown.creeper.body.position, DVec3::new(3.0, 65.0, 1.0));
+        assert_eq!(shown.previous_position, DVec3::new(2.5, 64.0, 0.5));
+        assert_eq!(friend.burning().len(), 1, "the burning creeper's flames");
+        assert!(friend.zombies()[0].aggressive, "the zombie raises its arms");
+    }
+}

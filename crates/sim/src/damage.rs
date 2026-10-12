@@ -39,6 +39,7 @@ pub enum DamageRefusal {
     TargetNotAlive,
     StaleLife,
     Invulnerable,
+    PvpDisabled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -898,6 +899,10 @@ pub(crate) fn apply_damage_attempt(
     if minecraft_invulnerable(world, intent.target) {
         return DamageOutcome::Refused(DamageRefusal::Invulnerable);
     }
+    let by_player = world.client_meta(intent.attacker).is_some();
+    if pvp_refuses(crate::voxel::active(), crate::voxel::pvp(), by_player, intent.attacker, intent.target) {
+        return DamageOutcome::Refused(DamageRefusal::PvpDisabled);
+    }
     let mut amount = intent.amount;
     if intent.hitloc != crate::shield::HITLOC
         && !matches!(intent.source, crate::DamageSource::Melee)
@@ -912,6 +917,10 @@ pub(crate) fn apply_damage_attempt(
         return DamageOutcome::Refused(DamageRefusal::NonPositive);
     }
     crate::script_player::damage(world, tick, intent, amount)
+}
+
+fn pvp_refuses(voxel: bool, pvp: bool, by_player: bool, attacker: ClientId, target: ClientId) -> bool {
+    voxel && !pvp && by_player && attacker != target
 }
 
 fn minecraft_invulnerable(world: &FrameWorld, target: ClientId) -> bool {
@@ -1030,6 +1039,9 @@ fn anim_script_damagetype(
         crate::DamageSource::Melee => 0,
     }
 }
+
+#[cfg(test)]
+mod height_bands;
 
 #[cfg(test)]
 mod tests {
@@ -1220,6 +1232,46 @@ mod tests {
         let flags = playerstate_iw4::pm_flags::MC_INVULNERABLE | playerstate_iw4::pm_flags::SPRINTING;
         assert_eq!(knifed(flags), (DamageOutcome::Refused(DamageRefusal::Invulnerable), 100));
         let (outcome, _) = knifed(playerstate_iw4::pm_flags::SPRINTING);
+        assert!(!matches!(outcome, DamageOutcome::Refused(_)), "{outcome:?}");
+    }
+
+    #[test]
+    fn with_pvp_off_players_cannot_hurt_each_other_but_still_hurt_themselves_and_the_world_hurts_them() {
+        let (shooter, friend) = (ClientId(3), ClientId(2));
+        assert!(pvp_refuses(true, false, true, shooter, friend));
+        assert!(!pvp_refuses(true, false, true, friend, friend), "a player's own grenade");
+        assert!(!pvp_refuses(true, false, false, ClientId(1022), friend), "the world");
+        assert!(!pvp_refuses(true, true, true, shooter, friend), "pvp on");
+        assert!(!pvp_refuses(false, false, true, shooter, friend), "an MW2 map");
+    }
+
+    #[test]
+    fn with_pvp_on_one_player_knifes_another() {
+        let mut sim = crate::SimWorld::default();
+        let (attacker, target) = (ClientId(3), ClientId(2));
+        let mut world = sim.frame();
+        for (id, life) in [(attacker, LifeSequence(1)), (target, LifeSequence(4))] {
+            world.ensure_player(id).health = 100;
+            let meta = world.client_meta_mut(id);
+            meta.lifecycle = ClientLifecycle::Alive;
+            meta.life_sequence = life;
+        }
+        let attempt = DamageAttempt {
+            splash: false,
+            source: DamageSource::Melee,
+            pellet: PelletId(0),
+            attacker,
+            attacker_life: LifeSequence(1),
+            target,
+            target_life: LifeSequence(4),
+            weapon: 0,
+            amount: 40,
+            killcam_entity_start_time: 0,
+            inflictor_origin: None,
+            hitloc: 0,
+        };
+        assert!(world.client_meta(attacker).is_some());
+        let outcome = apply_damage_attempt(&mut world, Tick(1), &attempt);
         assert!(!matches!(outcome, DamageOutcome::Refused(_)), "{outcome:?}");
     }
 }

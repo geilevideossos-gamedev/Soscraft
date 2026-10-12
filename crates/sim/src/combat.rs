@@ -1243,7 +1243,7 @@ pub(crate) fn phase_trace(
                 // its multiplier for where on the body it struck.
                 let scale = facts.location_scale(crate::voxel::mob_hitloc(up));
                 let damage = bullet_damage_at_distance(&facts, dist).max(0) as f32 * scale;
-                crate::voxel::push_mob_shot(key, damage, em.origin);
+                crate::voxel::push_mob_shot(key, damage, em.origin, Some(em.attacker.0));
                 mob_shot = true;
                 let length = {
                     let d: [f32; 3] = std::array::from_fn(|k| first_surface[k] - em.origin[k]);
@@ -1252,7 +1252,7 @@ pub(crate) fn phase_trace(
                 stop = std::array::from_fn(|k| em.origin[k] + (first_surface[k] - em.origin[k]) * (dist / length));
             }
             let ray_damage = bullet_damage_at_distance(&facts, 0.0).max(0) as f32;
-            crate::voxel::push_ray(em.origin, stop, ray_damage);
+            crate::voxel::push_ray(em.origin, stop, ray_damage, Some(em.attacker.0));
         }
         for segment in &segments {
             let exit = segment.surface_flags & fx_iw4::FX_IMPACT_EXIT_SURFACE_FLAG != 0;
@@ -1357,7 +1357,12 @@ pub(crate) fn phase_trace(
                 && crate::voxel::active()
             {
                 let body = facts.location_scale(4).max(1.0);
-                crate::voxel::push_shot(segment.end, segment.normal, scaled.max(0) as f32 * body);
+                crate::voxel::push_shot(
+                    segment.end,
+                    segment.normal,
+                    scaled.max(0) as f32 * body,
+                    Some(em.attacker.0),
+                );
             }
             if bullet_process_on_hit(segment.collider) {
                 if let Some(world_event) = entity_iw4::bullet_hit_event(
@@ -1583,7 +1588,7 @@ fn fire_weapon_melee(
         && world.publishes_snapshot()
         && crate::voxel::active()
     {
-        crate::voxel::push_shot(segment.end, segment.normal, amount as f32);
+        crate::voxel::push_shot(segment.end, segment.normal, amount as f32, Some(attacker.0));
     }
     let (kind, other) = match segment.collider {
         Some(ColliderId::Player { client, .. }) => {

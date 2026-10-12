@@ -73,7 +73,7 @@ pub struct EndCrystal {
     pub tag: Tag,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CrystalView {
     pub id: u64,
     pub position: DVec3,

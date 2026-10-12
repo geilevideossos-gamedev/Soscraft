@@ -89,7 +89,7 @@ fn short(tag: &Tag, key: &str, default: i32) -> i32 {
         .map_or(default, |v| v as i32)
 }
 
-fn is_spawner(tag: &Tag) -> bool {
+pub fn is_spawner(tag: &Tag) -> bool {
     tag.get("id").and_then(Tag::as_str) == Some(SPAWNER)
 }
 

@@ -10,20 +10,20 @@ pub(crate) fn step(
     steps: &mut Steps,
     entities: &mut Entities,
     authority: &mut sim::SimWorld,
-    id: sim::ClientId,
+    (id, player): (sim::ClientId, u64),
     origin: [f64; 3],
     present: bool,
 ) {
-    for vehicle in entities.take_mounts() {
+    for vehicle in entities.take_mounts(player) {
         let uuid = entities.vehicle_uuid(vehicle);
         *riding = Some(Riding { vehicle, uuid });
     }
-    for (vehicle, spot) in entities.take_dismounts() {
+    for (vehicle, spot) in entities.take_dismounts(player) {
         if riding.is_none_or(|ride| ride.vehicle != vehicle) {
             continue;
         }
         *riding = None;
-        entities.leave_seat();
+        entities.leave_seat(player);
         authority.ride(id, None);
         if let Some(spot) = spot {
             authority.teleport(id, sim::voxel::to_map(origin, spot.to_array()));
@@ -31,12 +31,12 @@ pub(crate) fn step(
         steps.air_peak = None;
     }
     if !present {
-        dismount(riding, Some(entities), authority, id);
+        dismount(riding, Some(entities), authority, (id, player));
     } else if let Some(root) = reattach.take() {
-        entities.reattach(root);
+        entities.reattach(player, root);
     }
     if let Some(ride) = *riding
-        && let Some(seat) = entities.ride_seat(ride.vehicle)
+        && let Some(seat) = entities.ride_seat(player, ride.vehicle)
     {
         authority.ride(id, Some(sim::voxel::to_map(origin, seat.to_array())));
         steps.air_peak = None;
@@ -47,13 +47,13 @@ pub(crate) fn dismount(
     riding: &mut Option<Riding>,
     entities: Option<&mut Entities>,
     authority: &mut sim::SimWorld,
-    id: sim::ClientId,
+    (id, player): (sim::ClientId, u64),
 ) {
     if riding.take().is_none() {
         return;
     }
     if let Some(entities) = entities {
-        entities.dismount();
+        entities.dismount(player);
     }
     authority.ride(id, None);
 }
@@ -77,7 +77,7 @@ mod tests {
             uuid: 9,
         });
         let mut authority = sim::SimWorld::default();
-        dismount(&mut riding, None, &mut authority, sim::ClientId(1));
+        dismount(&mut riding, None, &mut authority, (sim::ClientId(1), 1));
         assert_eq!(riding, None);
     }
 }

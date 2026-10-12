@@ -429,6 +429,12 @@ fn run_players_system(ecs: &mut World) {
                     mantle.as_ref(),
                     mantle.as_ref(),
                 );
+                if ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP != 0
+                    && let Some(z) = crate::voxel::kept_in_walls(moved_from, ps.origin[2], hull_maxs[2])
+                {
+                    ps.origin[2] = z;
+                    ps.velocity[2] = 0.0;
+                }
                 let pml = result.pml;
                 let anim_movetype = pml.mantle_movetype.or_else(|| {
                     footsteps_anim_move_type(

@@ -692,6 +692,10 @@ impl Sections {
         self.empty_sections.contains(&pos)
     }
 
+    pub fn has_chunk(&self, chunk: ChunkPos) -> bool {
+        self.loaded_chunks.contains(&chunk)
+    }
+
     /// Graph state for diagnostics.
     pub fn diag(&self) -> String {
         let sections = || self.sections.iter().flatten();

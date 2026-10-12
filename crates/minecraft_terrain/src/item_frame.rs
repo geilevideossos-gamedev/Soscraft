@@ -143,7 +143,7 @@ pub struct FrameOutcome {
     pub removed: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FrameView {
     pub id: u64,
     pub glow: bool,

@@ -193,7 +193,7 @@ mod tests {
 }
 
 /// The six axis directions in vanilla `Direction` order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     Down,
     Up,

@@ -1292,6 +1292,21 @@ mod tests {
     }
 
     #[test]
+    fn a_predicting_game_keeps_its_own_frost_through_the_hosts_snapshots() {
+        let mut host = crate::SimWorld::default();
+        let id = ClientId(5);
+        host.frame().ensure_player(id);
+        assert!(host.set_minecraft_move_scale(id, 0.75));
+        let mut friend = crate::SimWorld::default();
+        friend.adopt_prediction_snapshot(&host.snapshot(crate::Tick(1)), id);
+        let slowdown = |sim: &mut crate::SimWorld| sim.frame().client_meta(id).map_or(0.0, |meta| meta.minecraft_slowdown);
+        assert_eq!(slowdown(&mut friend), 0.0, "the host's frost is not in its snapshot");
+        assert!(friend.set_minecraft_move_scale(id, 0.5));
+        friend.adopt_prediction_snapshot(&host.snapshot(crate::Tick(2)), id);
+        assert_eq!(slowdown(&mut friend), 0.5);
+    }
+
+    #[test]
     fn leather_boots_mark_a_powder_snow_walker() {
         use playerstate_iw4::pm_flags::{LAST_STAND, MC_GLIDING, MC_MAY_GLIDE, MC_NO_SKY, MC_POWDER_WALKER};
         let mut sim = crate::SimWorld::default();

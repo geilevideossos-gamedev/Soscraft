@@ -350,6 +350,16 @@ pub(crate) fn kill(
             killcam_entity_start_time: commit.map_or(0, |c| c.killcam_entity_start_time),
         },
     );
+    if let Some(attacker) = attacker.filter(|&a| a != victim && world.client_meta(a).is_some())
+        && world.publishes_snapshot()
+        && crate::voxel::active()
+    {
+        crate::voxel::push_pvp_death(crate::voxel::PvpDeath {
+            victim: victim.0,
+            attacker: attacker.0,
+            weapon: commit.map_or(0, |c| c.weapon),
+        });
+    }
 }
 
 pub(crate) fn obituary(

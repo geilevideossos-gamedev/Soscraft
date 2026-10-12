@@ -9,7 +9,7 @@ use crate::players::game_mode_key;
 use crate::protocol::PlayerId;
 use crate::reader::{CommandError, literal};
 use crate::server::{Ctx, SEND_COMMAND_FEEDBACK, Weather, registered, system};
-use crate::text::{GREEN, Text};
+use crate::text::{GRAY, GREEN, Text};
 use crate::tree::{Node, Redirect, parse, smart_usage, smart_usages, sorted};
 
 pub const CLOCK: &str = "minecraft:overworld";
@@ -98,6 +98,12 @@ fn build() -> Vec<Node> {
             .executes(help)
             .then(Node::argument("command", ArgKind::Greedy).executes(help_command)),
         Node::literal("seed").executes(seed),
+        Node::literal("msg").then(
+            Node::argument("targets", players)
+                .then(Node::argument("message", ArgKind::Greedy).executes(message)),
+        ),
+        Node::literal("tell").redirect(Redirect::Command("msg")),
+        Node::literal("w").redirect(Redirect::Command("msg")),
         Node::literal("op")
             .requires(ADMINS)
             .then(Node::argument("targets", players).executes(op)),
@@ -228,6 +234,28 @@ fn seed(ctx: &mut Ctx) -> Result<i32, CommandError> {
         false,
     );
     Ok(seed as i32)
+}
+
+fn message(ctx: &mut Ctx) -> Result<i32, CommandError> {
+    let Some(Arg::Text(message)) = ctx.arg("message").cloned() else {
+        return Err(CommandError::new("command.unknown.argument", Vec::new()));
+    };
+    let targets = ctx.targets("targets")?;
+    let sender = ctx.display_name(ctx.source);
+    for &target in &targets {
+        let outgoing = Text::translate(
+            "commands.message.display.outgoing",
+            vec![ctx.display_name(target), Text::literal(message.clone())],
+        );
+        ctx.out
+            .push(system(ctx.source, outgoing.color(GRAY).italic()));
+        let incoming = Text::translate(
+            "commands.message.display.incoming",
+            vec![sender.clone(), Text::literal(message.clone())],
+        );
+        ctx.out.push(system(target, incoming.color(GRAY).italic()));
+    }
+    Ok(targets.len() as i32)
 }
 
 fn op(ctx: &mut Ctx) -> Result<i32, CommandError> {
@@ -877,7 +905,7 @@ mod tests {
     use crate::server::Clock;
     use crate::server::CommandWorld;
     use crate::server::tests::{FRIEND, FakeWorld, HOST, run, server, texts};
-    use crate::text::RED;
+    use crate::text::{GRAY, RED};
     use minecraftoss_player::GameMode;
 
     #[test]
@@ -886,7 +914,16 @@ mod tests {
         server.join(FRIEND, "Alex");
         let mut world = FakeWorld::default();
         let out = run(&mut server, &mut world, FRIEND, "help");
-        assert_eq!(texts(&out), vec!["/help [<command>]", "/seed"]);
+        assert_eq!(
+            texts(&out),
+            vec![
+                "/help [<command>]",
+                "/msg <targets> <message>",
+                "/seed",
+                "/tell -> msg",
+                "/w -> msg",
+            ]
+        );
         let out = run(&mut server, &mut world, FRIEND, "seed");
         assert_eq!(texts(&out), vec!["Seed: [-4172144997902289642]"]);
         let out = run(&mut server, &mut world, FRIEND, "help kill");
@@ -895,6 +932,66 @@ mod tests {
             vec!["Unknown command or insufficient permissions"]
         );
         assert_eq!(out[0].2, RED);
+    }
+
+    #[test]
+    fn tell_whispers_to_the_named_player_only() {
+        let mut server = server();
+        server.join(FRIEND, "Alex");
+        server.join(PlayerId(2), "Sam");
+        let mut world = FakeWorld::default();
+        for command in [
+            "msg alex see you there",
+            "tell Alex see you there",
+            "w Alex see you there",
+        ] {
+            let out = run(&mut server, &mut world, FRIEND, command);
+            assert_eq!(
+                out,
+                vec![
+                    (
+                        Recipient::Player(FRIEND),
+                        "You whisper to Alex: see you there".to_owned(),
+                        GRAY
+                    ),
+                    (
+                        Recipient::Player(FRIEND),
+                        "Alex whispers to you: see you there".to_owned(),
+                        GRAY
+                    ),
+                ],
+                "{command}"
+            );
+        }
+        let out = run(&mut server, &mut world, FRIEND, "tell Steve hi");
+        assert_eq!(
+            out,
+            vec![
+                (
+                    Recipient::Player(FRIEND),
+                    "You whisper to Steve: hi".to_owned(),
+                    GRAY
+                ),
+                (
+                    Recipient::Player(HOST),
+                    "Alex whispers to you: hi".to_owned(),
+                    GRAY
+                ),
+            ]
+        );
+        let out = run(&mut server, &mut world, HOST, "msg Nobody hi");
+        assert_eq!(texts(&out), vec!["No player was found"]);
+        let out = run(&mut server, &mut world, HOST, "tell @a hi");
+        assert_eq!(out.len(), 6);
+        let reached: Vec<_> = out.iter().skip(1).step_by(2).map(|line| line.0).collect();
+        assert_eq!(
+            reached,
+            vec![
+                Recipient::Player(HOST),
+                Recipient::Player(FRIEND),
+                Recipient::Player(PlayerId(2))
+            ]
+        );
     }
 
     #[test]
@@ -920,15 +1017,18 @@ mod tests {
                 "/kill [<targets>]",
                 "/kit [<targets>]",
                 "/locate (biome|poi|structure)",
+                "/msg <targets> <message>",
                 "/op <targets>",
                 "/seed",
                 "/setblock <pos> <block> [destroy|keep|replace|strict]",
                 "/spawnpoint [<targets>]",
                 "/summon <entity> [<pos>]",
                 "/teleport (<destination>|<location>|<targets>)",
+                "/tell -> msg",
                 "/tick (freeze|query|rate|sprint|step|unfreeze)",
                 "/time (add|pause|query|resume|set)",
                 "/tp -> teleport",
+                "/w -> msg",
                 "/weather (clear|rain|thunder)",
                 "/xp -> experience",
             ]

@@ -26,6 +26,16 @@ pub(crate) struct Sounds {
     unresolved: std::collections::HashSet<String>,
     /// Requests for the audio system this frame.
     pub(crate) queued: Vec<audio::McSoundRequest>,
+    recording: Option<Vec<Played>>,
+    silent: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Played {
+    pub(crate) event: String,
+    pub(crate) at: Option<Vec3>,
+    pub(crate) volume: f32,
+    pub(crate) pitch: f32,
 }
 
 impl Sounds {
@@ -73,7 +83,38 @@ impl Sounds {
             rng: 0x9e37_79b9_7f4a_7c15,
             unresolved: std::collections::HashSet::new(),
             queued: Vec::new(),
+            recording: None,
+            silent: false,
         }
+    }
+
+    pub(crate) fn recorder() -> Self {
+        Self {
+            events: HashMap::new(),
+            files: HashMap::new(),
+            rng: 0x9e37_79b9_7f4a_7c15,
+            unresolved: std::collections::HashSet::new(),
+            queued: Vec::new(),
+            recording: Some(Vec::new()),
+            silent: true,
+        }
+    }
+
+    pub(crate) fn record(&mut self) {
+        self.recording = Some(Vec::new());
+    }
+
+    pub(crate) fn take_recorded(&mut self) -> Vec<Played> {
+        let Some(played) = self.recording.take() else {
+            return Vec::new();
+        };
+        played
+    }
+
+    pub(crate) fn play_local(&mut self, packs: &PackStack, event: &str, position: Option<Vec3>, volume: f32, pitch: f32) {
+        let recording = self.recording.take();
+        self.play(packs, event, position, volume, pitch);
+        self.recording = recording;
     }
 
     pub(crate) fn random(&mut self) -> f32 {
@@ -86,7 +127,12 @@ impl Sounds {
     /// Plays `event` at a map point (or at the listener), picking one of its
     /// variants by weight.
     pub(crate) fn play(&mut self, packs: &PackStack, event: &str, position: Option<Vec3>, volume: f32, pitch: f32) {
-        self.play_depth(packs, event, position, volume, pitch, 0);
+        if let Some(recording) = self.recording.as_mut() {
+            recording.push(Played { event: event.to_owned(), at: position, volume, pitch });
+        }
+        if !self.silent {
+            self.play_depth(packs, event, position, volume, pitch, 0);
+        }
     }
 
     pub(crate) fn play_without_falloff(&mut self, packs: &PackStack, event: &str, position: Option<Vec3>, volume: f32, pitch: f32) {
@@ -184,6 +230,24 @@ mod tests {
         sounds.play(&packs, "minecraft:block.stone.break", Some(Vec3::ZERO), 1.0, 1.0);
         let reach: Vec<f32> = sounds.queued.iter().map(|request| request.attenuation).collect();
         assert_eq!(reach, [10.0, 16.0]);
+    }
+
+    #[test]
+    fn a_recorder_keeps_what_was_played_and_a_local_sound_is_not_kept() {
+        let packs = PackStack::open(Vec::new()).unwrap();
+        let mut recorder = Sounds::recorder();
+        recorder.play(&packs, "minecraft:entity.player.hurt", None, 1.0, 0.9);
+        recorder.play_local(&packs, "minecraft:ui.button.click", None, 1.0, 1.0);
+        recorder.play(&packs, "minecraft:block.stone.step", Some(Vec3::X), 0.15, 1.0);
+        assert!(recorder.queued.is_empty(), "a recorder plays nothing");
+        let played = recorder.take_recorded();
+        let heard: Vec<(&str, Option<Vec3>)> = played.iter().map(|played| (played.event.as_str(), played.at)).collect();
+        assert_eq!(heard, [("minecraft:entity.player.hurt", None), ("minecraft:block.stone.step", Some(Vec3::X))]);
+        recorder.play(&packs, "minecraft:entity.player.hurt", None, 1.0, 1.0);
+        assert!(recorder.take_recorded().is_empty(), "taking stops the recording");
+        recorder.record();
+        recorder.play(&packs, "minecraft:entity.player.hurt", None, 1.0, 1.0);
+        assert_eq!(recorder.take_recorded().len(), 1);
     }
 
     #[test]

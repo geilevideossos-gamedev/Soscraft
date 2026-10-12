@@ -27,6 +27,19 @@ impl Cooldowns {
         self.items.is_empty()
     }
 
+    pub fn entries(&self) -> Vec<(String, u32, u32)> {
+        self.items
+            .iter()
+            .map(|(id, start, end)| {
+                (
+                    id.clone(),
+                    end.saturating_sub(self.tick),
+                    end.saturating_sub(*start),
+                )
+            })
+            .collect()
+    }
+
     pub fn shown(&self, partial: f32) -> Vec<(String, f32)> {
         let now = self.tick as f32 + partial;
         self.items

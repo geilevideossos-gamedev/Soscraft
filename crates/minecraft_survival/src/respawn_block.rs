@@ -1215,12 +1215,12 @@ fn deplete(level: &mut Level, pos: Pos, state: BlockStateId) {
         Some(entities) => {
             crate::level::write_blocks(terrain, entities, vec![(pos, block)]);
             let center = centre(pos);
-            entities.sounds.push((
-                ANCHOR_DEPLETE_SOUND.to_owned(),
+            entities.sound(
+                ANCHOR_DEPLETE_SOUND,
                 glam::DVec3::from_array(center),
                 1.0,
                 1.0,
-            ));
+            );
         }
         None => {
             terrain.scene.set(pos, block);

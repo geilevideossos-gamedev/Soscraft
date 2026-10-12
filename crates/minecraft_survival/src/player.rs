@@ -42,6 +42,9 @@ pub struct Player {
     pub remote: bool,
     pub held: Option<Switch>,
     pub portal: crate::portal::Portal,
+    pub follow: crate::guns::Follow,
+    pub menus: crate::menus::Menus,
+    pub enchantment_seed: i32,
     pub riding: Option<crate::riding::Riding>,
     pub saved_vehicle: Option<minecraftoss_core::nbt::Tag>,
     pub reattach: Option<minecraftoss_core::nbt::Tag>,
@@ -114,6 +117,9 @@ impl Player {
             remote: false,
             held: None,
             portal: crate::portal::Portal::default(),
+            follow: crate::guns::Follow::default(),
+            menus: crate::menus::Menus::default(),
+            enchantment_seed: crate::level::opener_key(&PlayerUuid(profile.uuid.clone())) as i32,
             riding: None,
             saved_vehicle: None,
             reattach: None,
@@ -122,6 +128,10 @@ impl Player {
             time_since_rest: 0,
             saved_in_bed: None,
         }
+    }
+
+    pub fn close_menu(&mut self) -> Vec<ItemStack> {
+        crate::menus::close(self)
     }
 
     pub fn arrive(&mut self, place: Place) {
@@ -215,13 +225,20 @@ impl Player {
 
     pub fn data(&self) -> PlayerData {
         let mut inventory = self.inventory.clone();
-        let loose: Vec<ItemStack> = inventory
+        let mut loose: Vec<ItemStack> = inventory
             .crafting
             .iter_mut()
             .chain(inventory.workbench.iter_mut())
             .chain(std::iter::once(&mut inventory.cursor))
             .filter_map(Option::take)
             .collect();
+        if let Some(crate::menus::Menu {
+            open: crate::menus::Open::Bench(_, bench),
+            ..
+        }) = self.menus.open.as_ref()
+        {
+            loose.extend(bench.cells.iter().flatten().cloned());
+        }
         for stack in loose {
             let _ = inventory.add_item(stack, self.selected);
         }

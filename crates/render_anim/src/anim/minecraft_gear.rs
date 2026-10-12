@@ -225,6 +225,22 @@ impl McBodyGear {
         self.corpses.clear();
     }
 
+    pub fn follow(&mut self, client: u32, pm_type: Option<i32>, gear: Option<BodyGear>) {
+        match pm_type {
+            Some(0) => match gear {
+                Some(gear) => self.set(client, gear),
+                None => self.remove(client),
+            },
+            Some(
+                playerstate_iw4::PM_TYPE_SPECTATOR
+                | playerstate_iw4::PM_TYPE_INTERMISSION
+                | playerstate_iw4::PM_TYPE_DEAD
+                | playerstate_iw4::PM_TYPE_DEAD_LINKED,
+            ) => self.died(client),
+            _ => self.remove(client),
+        }
+    }
+
     pub fn get(&self, client: u32) -> Option<&BodyGear> {
         self.by_client.get(&client)
     }
@@ -489,9 +505,17 @@ pub fn gear_rigs<'a>(
     glide: &McGlide,
     origin: [f64; 3],
     puppet: Option<u32>,
+    viewer: Option<f32>,
 ) -> Vec<GearRig<'a>> {
     posed
         .iter()
+        .filter(|body| {
+            body.joints
+                .iter()
+                .flatten()
+                .next()
+                .is_none_or(|joint| sim::voxel::shown_to(viewer, joint.posed.w_axis.z))
+        })
         .filter_map(|body| {
             let worn = gear.get(body.client).filter(|worn| !worn.is_bare())?;
             Some(GearRig {
@@ -520,13 +544,14 @@ pub fn gear_meshes(
     glide: &McGlide,
     origin: [f64; 3],
     puppet: Option<u32>,
+    viewer: Option<f32>,
     items: &mut ItemVisuals,
     packs: &PackStack,
     atlas: &Atlas,
     light: &SkyLight,
 ) -> GearMeshes {
     let mut meshes = GearMeshes::default();
-    for body in gear_rigs(posed, gear, glide, origin, puppet) {
+    for body in gear_rigs(posed, gear, glide, origin, puppet, viewer) {
         let mesh = if body.puppet {
             &mut meshes.puppet
         } else {
@@ -812,6 +837,39 @@ mod tests {
     }
 
     #[test]
+    fn the_corpse_rule_follows_each_client_on_its_own() {
+        let mut gear = McBodyGear::default();
+        let holding = |hides_gun| {
+            Some(BodyGear {
+                hides_gun,
+                ..BodyGear::default()
+            })
+        };
+        let dead = Some(playerstate_iw4::PM_TYPE_DEAD);
+        gear.follow(1, Some(0), holding(true));
+        gear.follow(2, Some(0), holding(false));
+        gear.follow(1, dead, holding(true));
+        gear.follow(2, Some(0), holding(false));
+        assert_eq!(gear.shown_weapon(Some(1), true, 7), 0);
+        assert_eq!(gear.shown_weapon(Some(2), false, 7), 7);
+        assert!(gear.get(1).is_none() && gear.get(2).is_some());
+        gear.follow(1, dead, holding(false));
+        assert_eq!(
+            gear.shown_weapon(Some(1), true, 7),
+            0,
+            "the gear at the death decides"
+        );
+        gear.follow(2, dead, holding(false));
+        assert_eq!(gear.shown_weapon(Some(2), true, 7), 7);
+        assert_eq!(gear.shown_weapon(Some(1), true, 7), 0);
+        gear.follow(1, Some(0), holding(false));
+        assert_eq!(gear.shown_weapon(Some(1), false, 7), 7);
+        gear.follow(3, Some(0), None);
+        gear.follow(3, None, holding(true));
+        assert!(gear.get(3).is_none(), "no body, no gear");
+    }
+
+    #[test]
     fn only_bodies_with_gear_get_a_rig_and_the_puppet_is_kept_apart() {
         let mut posed = PosedGearFrame::default();
         for client in [1, 2, 3] {
@@ -832,7 +890,7 @@ mod tests {
         gear.set(1, torch.clone());
         gear.set(2, torch);
         gear.set(3, BodyGear::default());
-        let rigs = gear_rigs(&posed, &gear, &McGlide::default(), [0.0; 3], Some(2));
+        let rigs = gear_rigs(&posed, &gear, &McGlide::default(), [0.0; 3], Some(2), None);
         assert_eq!(
             rigs.iter()
                 .map(|rig| (rig.client, rig.puppet))
@@ -874,7 +932,7 @@ mod tests {
         for _ in 0..3 {
             glide.step(0.05, [(1, flying)]);
         }
-        let rigs = gear_rigs(&posed, &gear, &glide, [0.0; 3], None);
+        let rigs = gear_rigs(&posed, &gear, &glide, [0.0; 3], None, None);
         let wings = |client: u32| {
             rigs.iter()
                 .find(|rig| rig.client == client)
@@ -884,6 +942,45 @@ mod tests {
         assert_eq!(wings(1), Some(glide.pose(1).unwrap().wings));
         assert!(wings(1).unwrap().z < -0.3);
         assert_eq!(wings(2), None);
+    }
+
+    #[test]
+    fn gear_is_drawn_only_on_bodies_in_the_viewers_band() {
+        let mut posed = PosedGearFrame::default();
+        let mut gear = McBodyGear::default();
+        let torch = BodyGear {
+            off: Some(minecraft_terrain::body_gear::GearItem {
+                id: "minecraft:torch".to_owned(),
+                glint: false,
+                dye: None,
+            }),
+            ..BodyGear::default()
+        };
+        let moved = |z: f32| {
+            standing().map(|joint| {
+                joint.map(|joint| PosedJoint {
+                    posed: Mat4::from_translation(Vec3::new(0.0, 0.0, z)) * joint.posed,
+                    bind: joint.bind,
+                })
+            })
+        };
+        for (client, z) in [(1, 2_000.0), (2, -47_000.0), (3, 40_000.0)] {
+            posed.publish(PosedGear {
+                client,
+                joints: moved(z),
+            });
+            gear.set(client, torch.clone());
+        }
+        let shown = |viewer: Option<f32>| {
+            gear_rigs(&posed, &gear, &McGlide::default(), [0.0; 3], None, viewer)
+                .iter()
+                .map(|rig| rig.client)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(Some(1_000.0)), [1]);
+        assert_eq!(shown(Some(-50_000.0)), [2]);
+        assert_eq!(shown(Some(30_000.0)), [3]);
+        assert_eq!(shown(None), [1, 2, 3]);
     }
 
     fn standing() -> [Option<PosedJoint>; JOINTS] {

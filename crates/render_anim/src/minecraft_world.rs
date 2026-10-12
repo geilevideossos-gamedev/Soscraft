@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
 
-use bevy::input::gamepad::GamepadButton;
 use bevy::prelude::*;
 use minecraft_terrain::clouds::CloudMask;
 use minecraft_terrain::day_cycle::{DayCycle, Skybox};
@@ -19,17 +18,14 @@ use minecraft_terrain::terrain::Dimension;
 use minecraftoss_core::BlockStateId;
 use minecraftoss_core::registries::{DataPaths, Registries};
 
-const VIEW_DISTANCE: i32 = 8;
-const TICK_SECONDS: f64 = 1.0 / 20.0;
-const CRAWLING_BELOW_VIEW_HEIGHT: f32 = 30.0;
-const RECENT_PLACE_SECONDS: f64 = 1.0;
+pub(crate) const VIEW_DISTANCE: i32 = 8;
+pub(crate) const TICK_SECONDS: f64 = 1.0 / 20.0;
+pub(crate) const CRAWLING_BELOW_VIEW_HEIGHT: f32 = 30.0;
+pub(crate) const RECENT_PLACE_SECONDS: f64 = minecraft_survival::actions::RECENT_PLACE_SECONDS;
 /// Blocks on a side of the light volume MW2 models are lit from.
 pub const LIGHT_VOLUME: i32 = 64;
 /// Chunk sections fade in over this long, as the viewer's default option.
 const FADE_MILLIS: u64 = 750;
-const PLAYER_WIDTH: f64 = 0.6;
-const TOTEM: &str = "minecraft:totem_of_undying";
-const FULL_BRIGHT: f32 = 15.0;
 
 /// What the renderer takes from the world each frame.
 #[derive(Resource, Default)]
@@ -78,9 +74,9 @@ pub struct MinecraftWorldView {
     pub weather_texture: Option<Arc<image::RgbaImage>>,
 }
 
-struct Loaded {
-    packs: PackStack,
-    atlas: Arc<Atlas>,
+pub(crate) struct Loaded {
+    pub(crate) packs: PackStack,
+    pub(crate) atlas: Arc<Atlas>,
     celestial: Arc<image::RgbaImage>,
     cloud_mask: Option<CloudMask>,
     crack_texture: Arc<image::RgbaImage>,
@@ -91,7 +87,7 @@ struct Loaded {
 }
 
 #[derive(Default)]
-struct Runtime {
+pub(crate) struct Runtime {
     loading: Option<mpsc::Receiver<Result<(Loaded, minecraft_survival::server::Server), String>>>,
     world: Option<Loaded>,
     server: Option<minecraft_survival::server::Server>,
@@ -123,10 +119,17 @@ struct Runtime {
     switch_screen: Option<minecraft_survival::switch::LoadingReason>,
     loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
     refused_air: Option<u32>,
+    queues: crate::minecraft_players::VoxelQueues,
+    pub(crate) relayed: minecraft_survival::commands::Handled,
     bed_request: Option<minecraft_survival::respawn_block::Bed>,
     in_bed: bool,
+    pub(crate) friend_beds: Vec<(minecraft_net::PlayerUuid, minecraft_survival::sleep::BedAction)>,
+    friends_in_bed: std::collections::BTreeSet<u32>,
     music: crate::minecraft_music::MusicManager,
     item_activation: crate::minecraft_hand::ItemActivation,
+    ticked: Option<Dimension>,
+    events: Vec<sim::voxel::VoxelEvent>,
+    minings: HashMap<Dimension, crate::minecraft_mining::Mining>,
 }
 
 impl Drop for Runtime {
@@ -211,6 +214,8 @@ pub(crate) fn register(app: &mut App) {
         .init_resource::<frame::InventoryPuppet>()
         .init_resource::<frame::McSleepers>()
         .insert_non_send(Runtime::default())
+        .insert_non_send(crate::minecraft_host::HostSessions::default())
+        .insert_non_send(crate::minecraft_remote::Friend::default())
         .add_systems(
             Update,
             update
@@ -219,8 +224,27 @@ pub(crate) fn register(app: &mut App) {
         )
         .add_systems(
             Update,
+            crate::minecraft_host::host
+                .after(update)
+                .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
+            crate::minecraft_remote::friend
+                .after(update)
+                .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
+            crate::minecraft_host::show_join_code
+                .after(update)
+                .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
             draw_body_gear
                 .after(update)
+                .after(crate::minecraft_remote::friend)
                 .after(frame::WorkerCmdSet::SkinModel)
                 .in_set(frame::ClientSet::Present),
         )
@@ -273,29 +297,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     {
         diag::warn!(World, "Minecraft ops.json unreadable, no operators loaded: {error}");
     }
-    let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
-        .map_err(|e| e.to_string())?;
-    let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
-    let cloud_mask = CloudMask::from_pack(&packs).ok();
-    let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
-    let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
-    let armor_glint_texture = minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new);
-    let end_look = Arc::new(crate::minecraft_end_look::EndLook::load(&packs));
-    let weather_texture = minecraft_terrain::weather::weather_texture(&packs).unwrap_or_else(|error| {
-        diag::warn!(World, "Minecraft rain and snow textures unavailable: {error:#}");
-        None
-    }).map(Arc::new);
-    let loaded = Loaded {
-        packs,
-        atlas: build.atlas,
-        celestial,
-        cloud_mask,
-        crack_texture,
-        glint_texture,
-        armor_glint_texture,
-        end_look,
-        weather_texture,
-    };
+    let loaded = load_look(packs)?;
     let mut day = DayCycle::default();
     if let Some(ticks) = opened.day_ticks {
         day.set(ticks);
@@ -315,7 +317,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         forced_weather: std::env::var("IW4L_MINECRAFT_WEATHER").ok(),
         chat,
         data: Default::default(),
-        level_writer: None,
+        writer: Default::default(),
         autosave_due: false,
         level_ticks: 0,
         closing: Vec::new(),
@@ -323,7 +325,33 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         tick_rate: Default::default(),
     };
     let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
-    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), pending_batch: None, published: false }))
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), published: false }))
+}
+
+pub(crate) fn load_look(packs: PackStack) -> Result<Loaded, String> {
+    let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
+        .map_err(|e| e.to_string())?;
+    let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
+    let cloud_mask = CloudMask::from_pack(&packs).ok();
+    let crack_texture = Arc::new(crate::minecraft_mining::crack_strip(&packs).map_err(|e| e.to_string())?);
+    let glint_texture = minecraft_terrain::glint::glint_texture(&packs).ok().flatten().map(Arc::new);
+    let armor_glint_texture = minecraft_terrain::glint::armor_glint_texture(&packs).ok().flatten().map(Arc::new);
+    let end_look = Arc::new(crate::minecraft_end_look::EndLook::load(&packs));
+    let weather_texture = minecraft_terrain::weather::weather_texture(&packs).unwrap_or_else(|error| {
+        diag::warn!(World, "Minecraft rain and snow textures unavailable: {error:#}");
+        None
+    }).map(Arc::new);
+    Ok(Loaded {
+        packs,
+        atlas: build.atlas,
+        celestial,
+        cloud_mask,
+        crack_texture,
+        glint_texture,
+        armor_glint_texture,
+        end_look,
+        weather_texture,
+    })
 }
 
 pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
@@ -350,6 +378,17 @@ const CELESTIAL_TILE: u32 = 64;
 const CELESTIAL_SLOTS: u32 = 10;
 
 /// The sky's sun and moon phases, laid out as MinecraftOSS lays them out.
+pub(crate) fn show_look(view: &mut MinecraftWorldView, world: &Loaded) {
+    view.atlas = Some(world.atlas.clone());
+    view.atlas_patches.clear();
+    view.celestial = Some(world.celestial.clone());
+    view.crack_texture = Some(world.crack_texture.clone());
+    view.glint_texture = world.glint_texture.clone();
+    view.armor_glint_texture = world.armor_glint_texture.clone();
+    view.end_look.look = Some(world.end_look.clone());
+    view.weather_texture = world.weather_texture.clone();
+}
+
 fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
     let mut celestial = image::RgbaImage::new(CELESTIAL_TILE * CELESTIAL_SLOTS, CELESTIAL_TILE);
     let names = [
@@ -377,7 +416,7 @@ fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
     Ok(celestial)
 }
 
-fn fire_frames(packs: &PackStack) -> Option<(Image, u32)> {
+pub(crate) fn fire_frames(packs: &PackStack) -> Option<(Image, u32)> {
     let id = minecraft_terrain::pack::ResourceId::parse("minecraft:block/fire_1").ok()?;
     let bytes = packs.texture(&id).ok()??;
     let strip = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()?.to_rgba8();
@@ -396,7 +435,7 @@ fn fire_frames(packs: &PackStack) -> Option<(Image, u32)> {
     Some((image, frames))
 }
 
-fn minecraft_yaw(mw2_yaw: f32) -> f32 {
+pub(crate) fn minecraft_yaw(mw2_yaw: f32) -> f32 {
     let yaw_rad = mw2_yaw.to_radians();
     (-yaw_rad.cos()).atan2(-yaw_rad.sin()).to_degrees()
 }
@@ -408,13 +447,7 @@ fn show_chat(chat: &mut frame::McChat, inventory_ui: &crate::minecraft_inventory
     }
 }
 
-/// A controller trigger, held or just pressed: with a block or an empty hand
-/// the right trigger mines and the left places, as the mouse buttons do.
-fn pad_trigger(pad: Option<&bevy::input::gamepad::Gamepad>, button: GamepadButton, just: bool) -> bool {
-    pad.is_some_and(|pad| if just { pad.just_pressed(button) } else { pad.pressed(button) })
-}
-
-fn skate_on_ground(skating: bool, airborne: bool, ground_entity: i32) -> bool {
+pub(crate) fn skate_on_ground(skating: bool, airborne: bool, ground_entity: i32) -> bool {
     if skating { !airborne } else { ground_entity != playerstate_iw4::ENTITYNUM_NONE }
 }
 
@@ -451,12 +484,19 @@ fn update(
         Query<&bevy::input::gamepad::Gamepad>,
         Option<Res<frame::ActivePad>>,
     ),
-    (hud_input, settings, mut sleepers, ui_draw): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>, ResMut<frame::McSleepers>, Option<Res<frame::UiDraw>>),
+    (hud_input, settings, role, mut sleepers, ui_draw): (Option<Res<frame::HudInputView>>, Option<Res<frame::GameSettings>>, Res<frame::RuntimeRole>, ResMut<frame::McSleepers>, Option<Res<frame::UiDraw>>),
     real_time: Res<Time<Real>>,
     mc_camera: Option<Res<frame::McCamera>>,
     (mut body_gear, mut body_glide): (ResMut<crate::anim::minecraft_gear::McBodyGear>, ResMut<crate::anim::minecraft_glide::McGlide>),
+    weapon_names: (Option<Res<assets::PreparedWeapons>>, Option<Res<assets::PreparedLocalizedStrings>>),
 ) {
+    if *role == frame::RuntimeRole::Client {
+        for _ in installed.read() {}
+        for _ in torn_down.read() {}
+        return;
+    }
     let pad = active_pad.and_then(|active| active.0).and_then(|entity| gamepads.get(entity).ok());
+    runtime.ticked = None;
     if *sleepers != frame::McSleepers::default() {
         *sleepers = frame::McSleepers::default();
     }
@@ -526,23 +566,21 @@ fn update(
                     return;
                 };
                 let (x, y, z) = level.terrain.stream.player_spawn;
-                view.origin = [x, y, z];
-                view.atlas = Some(world.atlas.clone());
-                view.atlas_patches.clear();
+                let spawn = [x, y, z];
+                if let Err(error) = minecraft_survival::bands::check(spawn) {
+                    diag::warn!(World, "{error}");
+                }
+                let origins: HashMap<Dimension, [f64; 3]> = minecraft_survival::bands::origins(spawn).into_iter().collect();
+                view.origin = minecraft_survival::bands::origin(Dimension::Overworld, spawn);
+                show_look(&mut view, &world);
                 runtime.atlas_animation = AtlasAnimation::new(&world.atlas);
                 runtime.animation_clock = 0.0;
-                view.celestial = Some(world.celestial.clone());
-                view.crack_texture = Some(world.crack_texture.clone());
-                view.glint_texture = world.glint_texture.clone();
-                view.armor_glint_texture = world.armor_glint_texture.clone();
-                view.end_look.look = Some(world.end_look.clone());
-                view.weather_texture = world.weather_texture.clone();
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
                 minecraft_survival::server::start_level(globals, level);
-                runtime.inventory_ui.set_station_data(globals.data.stations.clone(), globals.data.enchantments.clone(), globals.seed as i32);
+                runtime.inventory_ui.set_station_data(globals.data.stations.clone(), globals.data.enchantments.clone());
                 globals.chat.registries_mut().enchantments = globals.data.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
                 // Game ticks since sunrise to start at: 6000 noon, 13000
                 // dusk, 18000 midnight.
@@ -560,11 +598,11 @@ fn update(
                 }
                 let chosen_mode = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok();
                 let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
-                let joining = minecraft_survival::server::Joining { profile: &profile, spawn: view.origin, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
+                let joining = minecraft_survival::server::Joining { profile: &profile, spawn, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
                 let mut player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
                 match minecraft_survival::server::debug_dimension(std::env::var("IW4L_MINECRAFT_DIMENSION").as_deref().unwrap_or("")) {
                     Ok(Some(dimension)) => {
-                        minecraft_survival::server::start_in(&mut player, dimension, view.origin);
+                        minecraft_survival::server::start_in(&mut player, dimension, spawn);
                         diag::info!(World, "Minecraft player starts in {} from IW4L_MINECRAFT_DIMENSION", dimension.dimension_type());
                     }
                     Ok(None) => {}
@@ -572,7 +610,7 @@ fn update(
                 }
                 let uuid = player.uuid.clone();
                 if let Some(entities) = level.entities.as_mut() {
-                    entities.set_player_uuid(&uuid);
+                    entities.set_players(&[(u64::from(player.id.0), uuid.clone())]);
                 }
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
@@ -581,11 +619,9 @@ fn update(
                 runtime.light_volume_at = None;
                 runtime.cloud_center = None;
                 view.generation += 1;
-                sim::voxel::activate(
-                    authority.0.content().clip_brushes(),
-                    view.origin,
-                    vec![Vec::new()],
-                );
+                sim::voxel::activate(authority.0.content().clip_brushes(), vec![Vec::new()]);
+                set_collision_level(Dimension::Overworld, view.origin);
+                sim::voxel::set_spawn(sim::voxel::to_map(view.origin, spawn));
                 diag::info!(
                     World,
                     "Minecraft world ready: seed {} spawn {:?}",
@@ -603,7 +639,7 @@ fn update(
                 runtime.shape_ids.clear();
                 runtime.spawn_gate.start(now_ms);
                 runtime.shown = Some(Dimension::Overworld);
-                runtime.origins = HashMap::from([(Dimension::Overworld, view.origin)]);
+                runtime.origins = origins;
             }
             Err(error) => {
                 diag::warn!(World, "Minecraft world failed to load: {error}");
@@ -637,10 +673,17 @@ fn update(
         shown,
         switch_screen,
         refused_air,
+        origins,
+        relayed,
+        queues,
         bed_request,
         in_bed,
+        friend_beds,
+        friends_in_bed,
         music,
         item_activation,
+        ticked,
+        events: stashed_events,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -649,26 +692,43 @@ fn update(
         puppet.active = false;
         return;
     };
-    let ticking: Vec<Dimension> = server.players.get(local_uuid).filter(|player| player.switching.is_none()).map(|player| player.dimension).into_iter().collect();
+    let ticking: Vec<Dimension> = server.players.values().filter(|player| player.switching.is_none()).map(|player| player.dimension).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
     let planned = server.plan_ticks(std::time::Instant::now(), &ticking);
-    let minecraft_survival::server::Server { globals, levels, players, pending_batch, published, .. } = server;
+    let minecraft_survival::server::Server { globals, levels, players, published, .. } = server;
     if std::mem::take(&mut globals.autosave_due) {
         minecraft_survival::server::autosave(globals, levels, players);
+    }
+    let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
+    let clients: Vec<u32> = players.values().filter(|player| &player.uuid != local_uuid).map(|player| player.id.0).chain([local.0.0]).collect();
+    queues.drain(|client| clients.contains(&client));
+    sim::voxel::set_pvp(globals.game_rules.bool("pvp"));
+    let weapon_name = |weapon: u32| {
+        let key = weapon_names.0.as_deref()?.0.display_name_key_of(weapon)?;
+        weapon_names.1.as_deref()?.0.text(key).map(str::to_owned)
+    };
+    let pvp_told = crate::minecraft_players::tell_pvp_deaths(sim::voxel::take_pvp_deaths(), players, (&globals.game_rules, &globals.chat), (local_uuid, local.0.0), weapon_name);
+    if !pvp_told.is_empty() {
+        show_chat(&mut ui.chat, inventory_ui, &world.packs, &pvp_told);
+        relayed.delivered.extend(pvp_told.into_iter().map(|message| minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message }));
     }
     if bed_request.is_some()
         && let Some(player) = players.get_mut(local_uuid)
         && player.riding.is_some()
     {
-        crate::minecraft_riding::dismount(&mut player.riding, levels.get_mut(&player.dimension).and_then(|level| level.entities.as_mut()), &mut authority.0, local.0);
+        let rider = (local.0, u64::from(player.id.0));
+        crate::minecraft_riding::dismount(&mut player.riding, levels.get_mut(&player.dimension).and_then(|level| level.entities.as_mut()), &mut authority.0, rider);
     }
     let leave_bed = std::mem::take(&mut ui.chat.leave_bed);
     let bed_action = bed_request.take().map(minecraft_survival::sleep::BedAction::Lie).or(leave_bed.then_some(minecraft_survival::sleep::BedAction::Leave));
+    let mut bed_messages = crate::minecraft_players::friend_beds((globals, levels, players), *published, &mut authority.0, std::mem::take(friend_beds), (shapes, shape_ids));
     let slept = minecraft_survival::sleep::serve(globals, levels, players, local_uuid, bed_action, planned.len() as u32, *published);
     if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
-        refresh_shapes(&level.terrain, &globals.registries, shapes, shape_ids, &slept.written);
+        refresh_shapes(&level.terrain, &globals.registries, (shapes, shape_ids, minecraft_survival::bands::level(level.dimension)), &slept.written);
     }
-    let local_messages: Vec<_> = slept.messages.into_iter().filter(|(uuid, _)| uuid == local_uuid).map(|(_, message)| message).collect();
+    bed_messages.extend(slept.messages);
+    let local_messages = relay_messages(players, local_uuid, bed_messages, relayed);
     crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &local_messages);
+    crate::minecraft_end::tick_fight(levels, players, globals, f64::from(planned.normal_count()) * minecraft_survival::the_end::dragon_fight::TICK_SECONDS, local_uuid, &mut ui);
     if let Some(player) = players.get(local_uuid) {
         let lying = player.sleeping.filter(|_| !player.dead);
         if let Some(sleeping) = lying {
@@ -680,6 +740,7 @@ fn update(
             authority.0.ride(local.0, None);
         }
         *in_bed = lying.is_some();
+        crate::minecraft_players::lay_friends(players, (local_uuid, Some(player.dimension)), &mut authority.0, origins, friends_in_bed, &mut sleepers.bodies);
         ui.sleep = (player.sleep_timer > 0).then_some(frame::minecraft_ui::McSleep { timer: player.sleep_timer });
         let blocked = ui.inventory_open || hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
         if player.sleeping.is_none() {
@@ -698,92 +759,54 @@ fn update(
         player.held = None;
     }
     crate::minecraft_end::credits(player, &mut ui, &world.packs, &mut images);
-    player.set_remote(in_remote_killstreak(&presented, local.0));
     if player.switching.is_some() {
         for (dimension, error) in &failed {
             show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::switch::failed_message(*dimension, error)]);
         }
     }
-    if let Some(switch) = player.switching.filter(|switch| !switch.left) {
-        if let Some(switching) = player.switching.as_mut() {
-            switching.left = true;
-        }
-        *switch_screen = Some(switch.reason);
-        if let Some(level) = levels.get_mut(&switch.from) {
-            crate::minecraft_riding::dismount(&mut player.riding, level.entities.as_mut(), &mut authority.0, local.0);
-            leave_level(level, player, &mut ui, inventory_ui);
-        }
-        sim::voxel::switch_level(origin);
-        *shown = None;
-        authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
-        diag::info!(World, "Minecraft player leaves {} for {}", switch.from.dimension_type(), switch.to.dimension_type());
-        ui.active = false;
-        ui.inventory_open = false;
-        puppet.active = false;
-        return;
+    let mut begun_lines = Vec::new();
+    if let Some(sounds) = sounds.as_mut() {
+        sounds.record();
     }
-    let Some(level) = levels.get_mut(&player.dimension) else {
-        ui.active = false;
-        ui.inventory_open = false;
-        puppet.active = false;
-        return;
-    };
-    if player.switching.is_some() {
-        if player.switching.is_some_and(|switch| switch.respawn) {
-            let consume = player.switching.is_some_and(|switch| !switch.keep_charge);
-            if let Some(switch) = player.switching.as_mut() {
-                switch.respawn = false;
-            }
-            if minecraft_survival::respawn_block::return_to_block(globals, level, player, consume) {
-                show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
-            }
-            if player.switching.is_some_and(|switch| !switch.left) {
-                ui.active = false;
-                ui.inventory_open = false;
-                puppet.active = false;
-                return;
-            }
-        }
-        if player.arrival.is_none() && player.place.is_none_or(|place| place.dimension != player.dimension) {
-            player.arrival = Some(minecraft_survival::respawn::level_spawn(&globals.spawn, level));
-        }
-        crate::minecraft_portal::arriving(player, sounds.as_mut(), &world.packs);
-        let ps = presented.player(local.0).filter(|ps| ps.pm_type == 0);
-        if let Some(ps) = ps.filter(|_| player.arrival.is_some()) {
-            place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
-        }
-        authority.0.set_minecraft_abilities(local.0, ability_bits(&player.mode) | sky_bits(&level.terrain.environment) | playerstate_iw4::pm_flags::MC_INVULNERABLE);
-        crate::minecraft_end::arriving(player, level);
-        let at = player.place.filter(|place| place.dimension == player.dimension).map_or(origin, |place| place.feet);
-        let minecraft_survival::level::Level { entities, containers, terrain, .. } = level;
-        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, at, aspect, now_ms);
-        if ps.is_some() && player.arrival.is_none() && !spawn_gate.waiting() && !minecraft_survival::the_end::holding_for_credits(player) {
-            player.switching = None;
-            diag::info!(World, "Minecraft player arrived in {} at {:?}", player.dimension.dimension_type(), at);
-        }
-        ui.active = false;
-        ui.inventory_open = false;
-        puppet.active = false;
-        return;
+    let begun = crate::minecraft_players::begin(player, levels, globals, &mut authority.0, local.0, origin, presented.player(local.0), in_remote_killstreak(&presented, local.0), Some(spawn_gate), now_ms, time.delta_secs_f64(), sounds, &world.packs, &mut begun_lines);
+    if !begun_lines.is_empty() {
+        show_chat(&mut ui.chat, inventory_ui, &world.packs, &begun_lines);
     }
-    if let Some(ps) = presented.player(local.0) {
-        if player.observe_life(ps.pm_type) {
-            if minecraft_survival::respawn::respawn(globals, level, player) {
-                show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::player::missing_respawn_message()]);
+    match begun {
+        crate::minecraft_players::Begun::Live => {}
+        crate::minecraft_players::Begun::Left(switch) => {
+            *switch_screen = Some(switch.reason);
+            if let Some(level) = levels.get_mut(&switch.from) {
+                leave_level(level, player, &mut ui, inventory_ui, minecraft_survival::menus::Books::of(&globals.data));
             }
-            if player.switching.is_some() {
-                ui.active = false;
-                ui.inventory_open = false;
-                puppet.active = false;
-                return;
-            }
+            sim::voxel::set_mob_boxes(minecraft_survival::bands::level(switch.from), Vec::new());
+            *shown = None;
+            ui.active = false;
+            ui.inventory_open = false;
+            puppet.active = false;
+            return;
         }
-        if ps.pm_type == 0 {
-            place_player(player, &mut authority.0, local.0, ps, origin, spawn_gate, now_ms);
+        crate::minecraft_players::Begun::Arriving { at, standing } => {
+            if let Some(level) = levels.get_mut(&player.dimension) {
+                let minecraft_survival::level::Level { entities, containers, terrain, dimension, .. } = level;
+                stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, (*dimension, at), &minecraft_survival::level::blocks_in(&others, *dimension), aspect, now_ms);
+            }
+            if standing && player.arrival.is_none() && !spawn_gate.waiting() && !minecraft_survival::the_end::holding_for_credits(player) {
+                player.switching = None;
+                diag::info!(World, "Minecraft player arrived in {} at {:?}", player.dimension.dimension_type(), at);
+            }
+            ui.active = false;
+            ui.inventory_open = false;
+            puppet.active = false;
+            return;
+        }
+        crate::minecraft_players::Begun::Hidden => {
+            ui.active = false;
+            ui.inventory_open = false;
+            puppet.active = false;
+            return;
         }
     }
-    crate::minecraft_end::step(player, levels);
-    crate::minecraft_elytra::step(player, &mut authority.0, local.0, origin, time.delta_secs_f64(), sounds.as_mut(), &world.packs);
     authority.0.set_powder_snow_walker(local.0, minecraft_survival::survival::walks_on_powder_snow(&player.inventory));
     let arriving_at = player.arrival.map(|place| place.feet);
     let host_alive = presented.player(local.0).is_some_and(|ps| ps.pm_type == 0);
@@ -792,25 +815,44 @@ fn update(
         .filter(|_| host_alive)
         .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
         .or_else(|| player.survival.last_feet().map(|feet| minecraft_commands::Pose { feet, yaw: 0.0, pitch: 0.0 }));
-    let presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
-    let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, &mut ui.chat.sent, presence);
+    let mut presence = vec![(local_uuid.clone(), minecraft_survival::commands::Presence { pose: host_pose, alive: host_alive })];
+    presence.extend(friends_presence(players, &authority.0, origins, local_uuid));
+    let lines = minecraft_survival::commands::take_lines(&mut ui.chat.sent);
+    let minecraft_survival::commands::Handled { delivered, teleports } = minecraft_survival::commands::run(globals, levels, players, local_uuid, lines, presence);
+    let delivered_here = minecraft_survival::commands::reaching(&globals.chat, &delivered, minecraft_survival::commands::HOST);
+    relayed.delivered.extend(delivered);
+    relayed.teleports.extend(teleports.iter().filter(|(uuid, _)| uuid != local_uuid).cloned());
+    let delivered = delivered_here;
     let teleported: Vec<_> = teleports.iter().map(|(uuid, _)| uuid.clone()).collect();
     let woke = minecraft_survival::sleep::wake_teleported(globals, levels, players, &teleported, *published);
     if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
-        refresh_shapes(&level.terrain, &globals.registries, shapes, shape_ids, &woke.written);
+        refresh_shapes(&level.terrain, &globals.registries, (shapes, shape_ids, minecraft_survival::bands::level(level.dimension)), &woke.written);
     }
-    let woke_messages: Vec<_> = woke.messages.into_iter().filter(|(uuid, _)| uuid == local_uuid).map(|(_, message)| message).collect();
+    let woke_messages = relay_messages(players, local_uuid, woke.messages, relayed);
     crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &woke_messages);
     ui.chat.command_level = players.get(local_uuid).map_or(0, |player| globals.chat.level(player.id));
-    crate::minecraft_end::tick_fight(levels, players, globals, f64::from(planned.normal_count()) * minecraft_survival::the_end::dragon_fight::TICK_SECONDS, local_uuid, &mut ui);
-    let Some(player) = players.get_mut(local_uuid) else {
+    let mut friends = Vec::new();
+    let mut host = None;
+    for (uuid, each) in players.iter_mut() {
+        if uuid == local_uuid {
+            host = Some(each);
+        } else {
+            friends.push(each);
+        }
+    }
+    let Some(player) = host else {
         ui.active = false;
         ui.inventory_open = false;
         puppet.active = false;
         return;
     };
-    crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, &mut ui);
+    let host_id = u64::from(player.id.0);
+    let friend_ids: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension).map(|friend| u64::from(friend.id.0)).collect();
+    let friend_builds: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension && friend.mode.may_build()).map(|friend| u64::from(friend.id.0)).collect();
+    let infinite: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension && !friend.mode.consumes_items()).map(|friend| u64::from(friend.id.0)).chain((!player.mode.consumes_items()).then_some(host_id)).collect();
+    crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, Some(&mut ui));
     crate::minecraft_end::pearls_through(player, levels);
+    let credit = |attacker: Option<u32>| attacker.and_then(|client| if client == local.0.0 { Some(host_id) } else { friend_ids.contains(&u64::from(client)).then_some(u64::from(client)) });
     if player.switching.is_some_and(|switch| !switch.left) {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
         ui.active = false;
@@ -824,23 +866,15 @@ fn update(
         puppet.active = false;
         return;
     };
-    let dark_outside = level.dark_outside(globals);
-    let sleeper = u64::from(player.id.0);
+    let band = minecraft_survival::bands::level(player.dimension);
     let asleep = player.sleeping.is_some();
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, steps, arrived, ender, respawn, riding, reattach, .. } = player;
-    let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, container_ticks, .. } = level;
+    let minecraft_survival::level::Level { entities, containers, terrain, dimension, container_ticks, .. } = &mut *level;
     minecraft_terrain::cow_render::set_nether_entity_lighting(terrain.rules.nether_cardinal_light);
     if !delivered.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &delivered);
     }
-    *animation_clock += time.delta_secs_f64();
     crate::minecraft_respawn::fade_overlay(&mut ui, time.delta_secs_f64());
-    if *animation_clock >= TICK_SECONDS {
-        *animation_clock %= TICK_SECONDS;
-        let patches = atlas_animation.tick(&world.atlas);
-        view.atlas_patches.retain(|queued| patches.iter().all(|patch| patch.origin != queued.origin));
-        view.atlas_patches.extend(patches);
-    }
+    animate_atlas(&mut view, atlas_animation, animation_clock, time.delta_secs_f64(), &world.atlas);
     let aspect = windows
         .single()
         .map(|w| w.width() / w.height().max(1.0))
@@ -848,42 +882,13 @@ fn update(
     let Some(ps) = presented.player(local.0) else {
         ui.active = false;
         puppet.active = false;
-        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, arriving_at.unwrap_or(origin), aspect, now_ms);
+        stream_around_spawn(world, terrain, &globals.registries, shapes, shape_ids, entities, containers, light, spawn_gate, &mut view, (*dimension, arriving_at.unwrap_or(origin)), &minecraft_survival::level::blocks_in(&others, *dimension), aspect, now_ms);
         return;
     };
 
-    let alive = ps.pm_type == 0;
-    let dead = matches!(
-        ps.pm_type,
-        playerstate_iw4::PM_TYPE_SPECTATOR | playerstate_iw4::PM_TYPE_INTERMISSION | playerstate_iw4::PM_TYPE_DEAD | playerstate_iw4::PM_TYPE_DEAD_LINKED
-    );
-    let (in_world, died) = minecraft_survival::death::life_state(ps.pm_type);
-    if sim::voxel::take_team_switches().contains(&local.0.0) {
-        death_watch.switch_teams();
-    }
-    let keep_inventory = minecraft_survival::death::keeps_belongings(globals.game_rules.keep_inventory(), player_mode.mode);
-    survival.rules = minecraft_survival::survival::SurvivalRules::of(&globals.game_rules, globals.difficulty);
-    survival.set_game_mode(player_mode);
-    authority.0.set_minecraft_abilities(local.0, ability_bits(player_mode) | sky_bits(&terrain.environment));
-    if alive && player_mode.abilities.may_fly {
-        player_mode.abilities.flying = authority.0.player(local.0).is_some_and(|p| p.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0);
-    }
-    ui.game_mode = ui_game_mode(player_mode.mode);
-    death_watch.observe(in_world, died, survival.status.experience_level, keep_inventory);
-    if dead && *arrived {
-        if keep_inventory || death_watch.switched_teams() {
-            survival.respawn_keeping_experience();
-        } else {
-            survival.respawn();
-        }
-    } else if !dead
-        && !sim::voxel::player_damage_pending()
-        && let Some(health) = authority.0.player(local.0).map(|p| (p.health, p.max_health))
-    {
-        survival.observe(health.0, health.1);
-    }
-    let totem_popped = sim::voxel::take_totem_pops().contains(&local.0.0);
-    for (_, killer) in sim::voxel::take_minecraft_deaths().into_iter().filter(|(client, _)| *client == local.0.0) {
+    let crate::minecraft_players::Life { alive, dead, totem_popped, killers } = crate::minecraft_players::life(player, globals, terrain, &mut authority.0, local.0, ps, queues);
+    ui.game_mode = ui_game_mode(player.mode.mode);
+    for killer in killers {
         let seq = ui.killed_by.as_ref().map_or(0, |(seq, _)| seq.wrapping_add(1));
         ui.killed_by = Some((seq, killer));
     }
@@ -894,8 +899,9 @@ fn update(
         feet[1].floor() as i32,
         feet[2].floor() as i32,
     );
-    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, block);
-    apply_streamed(&globals.registries, shapes, shape_ids, streamed);
+    let here: Vec<(i32, i32, i32)> = std::iter::once(block).chain(minecraft_survival::level::blocks_in(&others, *dimension)).collect();
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, &here, Some(block));
+    apply_streamed(&globals.registries, (shapes, shape_ids, band), streamed);
 
     // Minecraft's yaw: 0 facing +Z (map -Y), turning towards -X.
     let mc_yaw = minecraft_yaw(ps.viewangles[1]);
@@ -905,212 +911,25 @@ fn update(
         aim.yaw = f64::from(mc_yaw);
         aim.pitch = f64::from(ps.viewangles[0]);
         aim.crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
-        aim.target(&minecraft_terrain::doors::Outlined(&terrain.scene), player_mode.block_reach())
+        aim.target(&minecraft_terrain::doors::Outlined(&terrain.scene), player.mode.block_reach())
     };
     minecraft_survival::commands::refresh_hints(&mut ui.chat.hints, &globals.chat, minecraft_survival::switch::DIMENSIONS.into_iter(), aim.map(|hit| (hit.point.to_array(), [hit.pos.0, hit.pos.1, hit.pos.2])));
     if ui.chat.language.is_empty() && let Some(language) = inventory_ui.language() {
         ui.chat.language = std::sync::Arc::new(language.clone());
     }
-    let all_events = sim::voxel::take_events();
-    let mut hand_mined = Vec::new();
-    let mut creative_broken = Vec::new();
-    let mut hand_broken = Vec::new();
-    let mut digging = false;
-
-    // The hand, when no gun is selected: vanilla's left click mines by hand
-    // (with the hand's break speed) or punches, its right click places the
-    // held block (`Player.place_selected`, vanilla's placement states).
-    // Footsteps (`Entity.applyMovementEmissionAndPlaySound`): the walked
-    // distance grows by 0.6 of each horizontal move on the ground, and past
-    // the next step the block under the feet sounds its step at 0.15 of its
-    // volume. A fall of more than three blocks lands with the block's fall
-    // sound and the player's (`LivingEntity.causeFallDamage`).
-    let on_ground = alive && skate_on_ground(skate.active, skate.airborne, ps.ground_entity_num);
-    let (hull_mins, hull_maxs) = sim::voxel::player_hull(ps);
-    let water = sim::voxel::water(ps.origin, hull_mins, hull_maxs, ps.view_height_current);
-    if water.wet() {
-        steps.air_peak = None;
+    let (all_events, elsewhere): (Vec<_>, Vec<_>) = sim::voxel::take_events().into_iter().partition(|event| event_level(event) == band);
+    *stashed_events = elsewhere;
+    let mut moved = crate::minecraft_players::movement(player, globals, terrain, entities, (shapes, shape_ids), &authority.0, local.0, origin, ps, (alive, crate::minecraft_players::Skating { active: skate.active, airborne: skate.airborne }), time.delta_secs_f64(), sounds, &world.packs);
+    ui.holding_item = moved.holding_item;
+    ui.empty_hand = moved.empty_hand;
+    ui.cooldowns = std::mem::take(&mut moved.cooldowns);
+    item_activation.tick(moved.hand_ticks);
+    if moved.totem_popped
+        && let Some(entities) = entities.as_mut()
+    {
+        item_activation.activate(|| entities.random_float());
     }
-    if let Some(last) = steps.last.filter(|_| crate::minecraft_riding::counts_steps(alive, player_mode.noclip(), riding.is_some())) {
-        let climbing = sim::voxel::climb(ps.origin).on;
-        let horizontal = ((feet[0] - last[0]).hypot(feet[2] - last[2]).hypot(if climbing { feet[1] - last[1] } else { 0.0 }) * 0.6) as f32;
-        let block_at = |dy: f64| {
-            let pos = (feet[0].floor() as i32, (feet[1] - dy).floor() as i32, feet[2].floor() as i32);
-            minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned().map(|b| (pos, b))
-        };
-        let under = block_at(0.2);
-        if climbing {
-            survival.set_climbable(Some(block_at(0.0).map_or(minecraft_survival::death::FallLocation::OtherClimbable, |(_, b)| minecraft_survival::death::FallLocation::of_climbable(&b.id.key()))));
-        }
-        let centre = |pos: (i32, i32, i32)| {
-            Vec3::from_array(sim::voxel::to_map(origin, [pos.0 as f64 + 0.5, pos.1 as f64 + 1.0, pos.2 as f64 + 0.5]))
-        };
-        if (on_ground || climbing) && horizontal < 2.0 && !skate.active {
-            steps.move_dist += horizontal;
-            if steps.move_dist > steps.next_step
-                && let Some((pos, block)) = under.as_ref()
-            {
-                steps.next_step = steps.move_dist as i32 as f32 + 1.0;
-                let sounding = on_ground
-                    || block.id.path == "powder_snow"
-                    || terrain.stream.states.state_of(block).is_some_and(|state| {
-                        globals.registries.block_tags.id("minecraft:climbable").is_some_and(|tag| globals.registries.block_in_tag(state, tag))
-                    });
-                // Snow layers and carpets sound instead of what they lie on.
-                let inside = block_at(-0.01).filter(|(_, b)| {
-                    let p = b.id.path.as_str();
-                    p == "snow" || p.ends_with("_carpet") || p == "moss_carpet"
-                });
-                let (pos, block) = inside.as_ref().map_or((*pos, block), |(p, b)| (*p, b));
-                if sounding && let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(block)) {
-                    sounds.play(&world.packs, &kind.step, Some(centre(pos)), kind.volume * 0.15, kind.pitch);
-                }
-            }
-        }
-        let caught = [-0.01, -1.0]
-            .into_iter()
-            .any(|dy| block_at(dy).is_some_and(|(_, b)| minecraft_survival::survival::breaks_fall(&b.id.key())));
-        let powder_snow = |found: Option<&((i32, i32, i32), minecraft_terrain::scene::Block)>| found.is_some_and(|(_, b)| b.id.key() == "minecraft:powder_snow");
-        if (powder_snow(block_at(-0.01).as_ref()) || (on_ground && powder_snow(under.as_ref())))
-            && let Some(peak) = steps.air_peak
-            && let Some(sound) = minecraft_survival::survival::powder_snow_landing(peak - feet[1])
-            && let Some(sounds) = sounds.as_mut()
-        {
-            sounds.play(&world.packs, sound, None, 1.0, 1.0);
-        }
-        if on_ground {
-            if let Some(peak) = steps.air_peak.take().filter(|_| !caught) {
-                let fall = survival.impulse_fall(peak - feet[1], feet[1]);
-                let landed_on = under.as_ref().map(|(_, b)| b.id.key());
-                let crouching = !skate.active && ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
-                let damage = survival.fall(fall, landed_on.as_deref(), crouching);
-                if damage > 0
-                    && let Some(sounds) = sounds.as_mut()
-                {
-                    sounds.play(&world.packs, minecraft_survival::survival::fall_sound(damage), None, 1.0, 1.0);
-                    let voice = (sounds.random() - sounds.random()) * 0.2 + 1.0;
-                    if survival.status.health > 0.0 {
-                        sounds.play(&world.packs, "minecraft:entity.player.hurt", None, 1.0, voice);
-                    }
-                    if let Some((pos, block)) = under.as_ref()
-                        && let Some(kind) = terrain.scene.sound_type(block)
-                    {
-                        sounds.play(&world.packs, &kind.fall, Some(centre(*pos)), kind.volume * 0.5, kind.pitch * 0.75);
-                    }
-                }
-            }
-            survival.set_climbable(None);
-        } else if caught || ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING != 0 || minecraft_survival::elytra::floating(&survival.status) || (climbing && sim::voxel::lava(ps.origin, hull_mins, hull_maxs) <= 0.0) {
-            steps.air_peak = Some(feet[1]);
-        } else {
-            steps.air_peak = Some(steps.air_peak.map_or(feet[1], |p| p.max(feet[1])));
-        }
-    } else {
-        steps.air_peak = None;
-    }
-    steps.last = alive.then_some(feet);
-
-    let dt_hand = time.delta_secs_f64();
-    if let Some(ticks) = hand.swing.as_mut() {
-        *ticks += (dt_hand * 20.0) as f32;
-        if *ticks >= crate::minecraft_hand::SWING_TICKS {
-            hand.swing = None;
-        }
-    }
-    let holding = entities.as_ref().is_some_and(|_| {
-        inventory.slots[*selected].as_ref().is_none_or(|s| minecraft_survival::guns::weapon_of(s).is_none())
-    });
-    ui.holding_item = alive && holding && player_mode.interacts();
-    ui.empty_hand = ui.holding_item
-        && entities.as_ref().is_some_and(|_| inventory.slots[*selected].is_none());
-    hand.clock += dt_hand;
-    let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
-    hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
-    hand.cooldowns.tick(hand_ticks);
-    item_activation.tick(hand_ticks);
-    ui.cooldowns = hand.cooldowns.shown((hand.clock / TICK_SECONDS) as f32);
-    hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
-    hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
-    let main_hand = entities.as_ref().and_then(|_| inventory.slots[*selected].as_ref().map(|s| s.id.clone()));
-    if hand.attack_item != main_hand {
-        hand.attack_item = main_hand;
-        hand.attack_ticks = 0;
-    }
-    if alive {
-        let motion = minecraft_survival::survival::Motion {
-            feet,
-            on_ground,
-            sprinting: ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0,
-            jumping: ps.pm_flags & playerstate_iw4::pm_flags::JUMPING != 0,
-            in_water: water.wet(),
-            eye_in_water: water.eye,
-            in_lava: sim::voxel::lava(ps.origin, hull_mins, hull_maxs) > 0.0,
-            eye_in_lava: sim::voxel::eye_in_lava(ps.origin, ps.view_height_current),
-            in_rain: entities.as_ref().is_some_and(|e| e.weather.player_in_rain),
-            crouching: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
-            height: hull_maxs[2] / sim::voxel::BLOCK,
-            riding: skate.active,
-        };
-        let armor = entities.as_ref().map_or_else(minecraftoss_player::survival::Armor::default, |_| minecraft_survival::survival::armor(inventory));
-        survival.wear(minecraft_terrain::protection::Protection::worn(globals.data.protection.clone(), inventory));
-        survival.set_freeze_immune(minecraft_survival::survival::freeze_immune(inventory));
-        for _ in 0..hand_ticks {
-            let from = survival.last_feet().unwrap_or(feet);
-            let breath = survival.tick(&motion);
-            if let Some(sounds) = sounds.as_mut() {
-                if breath.drowned && survival.status.health > 0.0 {
-                    sounds.play(&world.packs, "minecraft:entity.player.hurt_drown", None, 1.0, 1.0);
-                }
-                if let Some(popped) = breath.popped {
-                    let (volume, pitch) = minecraft_survival::survival::pop_sound(popped);
-                    sounds.play(&world.packs, "minecraft:ui.hud.bubble_pop", None, volume, pitch);
-                }
-            }
-            if motion.in_lava {
-                steps.air_peak = steps.air_peak.map(|peak| feet[1] + (peak - feet[1]) * 0.5);
-            }
-            let heard = survival.hazards(&terrain.scene, &motion, from, armor, || entities.as_mut().map_or(0.5, |e| e.random_float()));
-            if (feet[0] != from[0] || feet[2] != from[2])
-                && let Some(entities) = entities.as_mut()
-            {
-                for block_y in minecraft_survival::survival::powder_snow_flakes(&terrain.scene, feet, motion.height) {
-                    if entities.random_float() < 0.5 {
-                        entities.powder_snow_flake(feet, block_y);
-                    }
-                }
-            }
-            let bodies = entities.as_ref().map_or_else(Vec::new, |e| obstacles(ps, &authority.0, local.0, e));
-            let frozen = survival.location_changed(motion.feet, motion.on_ground, &minecraft_terrain::doors::Outlined(&terrain.scene), &*terrain.stream.states, &|pos| !minecraft_terrain::placing::obstructed(pos, &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]], &bodies));
-            if let Some(entities) = entities.as_mut().filter(|_| !frozen.is_empty()) {
-                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, frozen.into_iter().map(|(pos, block)| (pos, scene_block(&block))).collect());
-            }
-            let melted = survival.take_melted();
-            if let Some(entities) = entities.as_mut().filter(|_| !melted.is_empty()) {
-                let gone: Vec<_> = melted
-                    .into_iter()
-                    .filter_map(|pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).filter(|b| b.id.key() == "minecraft:powder_snow").cloned().map(|b| (pos, b)))
-                    .collect();
-                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, gone.iter().map(|(pos, _)| (*pos, None)).collect());
-                entities.destroyed.extend(gone);
-            }
-            if let Some(entities) = entities.as_mut()
-                && hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, false)
-            {
-                pop_totem(entities, item_activation, local_uuid, feet, f64::from(motion.height));
-            }
-            if survival.stuck() {
-                steps.air_peak = steps.air_peak.map(|_| feet[1]);
-            }
-            if let Some(sounds) = sounds.as_mut() {
-                for sound in heard {
-                    sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
-                }
-            }
-        }
-    }
-    let on_block = minecraft_terrain::scene::Scene::block(&terrain.scene, (feet[0].floor() as i32, (feet[1] - 0.2).floor() as i32, feet[2].floor() as i32))
-        .is_some_and(|b| !(b.id.namespace == "minecraft" && matches!(b.id.path.as_str(), "air" | "cave_air" | "void_air")));
-    let frost = if alive && survival.ticks_frozen() > 0 && on_block { minecraft_survival::survival::frost_move_scale(survival.percent_frozen()) } else { 1.0 };
+    let frost = crate::minecraft_players::frost_scale(&terrain.scene, feet, player.survival.ticks_frozen(), alive);
     authority.0.set_minecraft_move_scale(local.0, frost);
     if let Some(entities) = entities.as_mut() {
         let (writes, brewed) = minecraft_survival::level::tick_containers(containers, entities, terrain, std::mem::take(container_ticks));
@@ -1121,657 +940,20 @@ fn update(
             }
         }
         if !writes.is_empty() {
-            write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, writes);
+            write_blocks(terrain, &globals.registries, (shapes, shape_ids, band), entities, writes);
         }
     }
-    let game_mode = *player_mode;
-    let menu_captured = ui.chat.open || hud_input.as_deref().is_some_and(|input| input.console_open || input.script_menu_open);
-    let use_held = !skate.active && (buttons.pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, false));
-    let offhand_key = alive && !holding && !skate.active && ui.offhand_key == Some(true);
-    let use_live = !ui.inventory_open && !menu_captured && if hand.use_by_key { offhand_key } else { use_held && ui.holding_item };
-    if survival.eating().is_some() && !use_live {
-        survival.stop_eating();
+    let hands = crate::minecraft_input::host_hands(&ui, hud_input.as_deref(), &buttons, pad);
+    let mut actor = crate::minecraft_players::actor(ps, origin, alive);
+    actor.skating = skate.active;
+    let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids, level: band };
+    let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects, bed } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
+    if bed.is_some() {
+        *bed_request = bed;
     }
-    let shield_held = entities.as_ref().is_some_and(|_| hand.blocking.is_some_and(|blocking| blocking.holds_shield(inventory, *selected)));
-    if !use_live || !shield_held {
-        hand.blocking = None;
-    }
-    let (charging, released) = minecraft_survival::trident::released(hand.charging, use_live, alive && !skate.active, inventory, *selected);
-    hand.charging = charging;
-    if let (Some(released), Some(entities)) = (released, entities.as_mut()) {
-        let wet = water.wet() || entities.weather.player_in_rain;
-        let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
-        let motion = glam::DVec3::new(f64::from(ps.velocity[0]), f64::from(ps.velocity[2]), -f64::from(ps.velocity[1])) / (f64::from(sim::voxel::BLOCK) * 20.0);
-        let release = entities.release_trident(inventory, released, !game_mode.consumes_items(), wet, glam::DVec3::from_array(eye), mc_yaw, ps.viewangles[0], motion, on_ground);
-        let thrown = match &release {
-            minecraft_terrain::trident::Release::Throw(stack) => Some(minecraft_terrain::trident::throw_sound(stack)),
-            minecraft_terrain::trident::Release::Riptide { strength, sound } => {
-                let push = minecraft_terrain::trident::riptide_push(mc_yaw, ps.viewangles[0], *strength);
-                let launch = minecraft_survival::impulse::riptide_velocity(push, on_ground, f64::from(ps.gravity) / f64::from(sim::voxel::BLOCK)) * f64::from(sim::voxel::BLOCK);
-                authority.0.push_velocity(local.0, [launch.x as f32, -launch.z as f32, launch.y as f32]);
-                Some(*sound)
-            }
-            minecraft_terrain::trident::Release::Nothing => None,
-        };
-        if let (Some(sound), Some(sounds)) = (thrown, sounds.as_mut()) {
-            sounds.play(&world.packs, sound, None, 1.0, 1.0);
-        }
-    }
-    let mut open_table = None;
-    let mut open_block = None;
-    let mut open_bench = None;
-    if let Some(entities) = entities.as_mut()
-        && (ui.holding_item || offhand_key || survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some())
-        && !ui.inventory_open
-        && !menu_captured
-        && game_mode.interacts()
-    {
-        let mut player = minecraftoss_player::Player::new(glam::DVec3::from_array(feet));
-        player.yaw = f64::from(mc_yaw);
-        player.pitch = f64::from(ps.viewangles[0]);
-        player.selected = *selected;
-        player.crouching = ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0;
-        player.swimming = ps.view_height_current < CRAWLING_BELOW_VIEW_HEIGHT;
-        let eye_block = player.eye();
-        let look = {
-            let (yaw, pitch) = (f64::from(mc_yaw).to_radians(), f64::from(ps.viewangles[0]).to_radians());
-            glam::DVec3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos())
-        };
-        let attack_held = !skate.active && (buttons.pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, false));
-        if !attack_held {
-            hand.miss_time = 0;
-        }
-        let mw2_offhand = (weapon_iw4::WeaponState::OffhandInit as i32..=weapon_iw4::WeaponState::OffhandEnd as i32).contains(&ps.weaponstate_primary);
-        let busy = survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.miss_time > 0 || mw2_offhand;
-        let mut block_press = false;
-        let mut punched = false;
-        if ui.holding_item && !skate.active && (buttons.just_pressed(MouseButton::Left) || pad_trigger(pad, GamepadButton::RightTrigger2, true)) && !busy {
-            hand.swing = Some(0.0);
-            hand.swing_offhand = false;
-            let held = inventory.slots[*selected].clone();
-            let (damage, speed) = entities.recipes.attack_attributes(held.as_ref());
-            let speed = (speed * survival.status.attack_speed_multiplier()).clamp(0.0, 1024.0);
-            let damage = (damage + survival.status.attack_damage_modifier()).max(0.0);
-            let strength = minecraft_survival::survival::attack_strength(hand.attack_ticks, speed);
-            let sprinting = ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0;
-            let falling = steps.air_peak.is_some_and(|peak| peak > feet[1]);
-            let blow = minecraft_survival::entities::Blow {
-                sprinting,
-                can_critical: falling && !on_ground && !water.wet() && !sprinting,
-                can_sweep: on_ground && !sprinting && held.as_ref().is_some_and(|s| s.id.ends_with("_sword")),
-                reach: game_mode.entity_reach(),
-                block: player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach()).map(|hit| hit.distance),
-                creative: !game_mode.consumes_items(),
-            };
-            if entities.punch(inventory, *selected, eye_block, look, mc_yaw, damage, strength, blow) {
-                punched = true;
-                hand.attack_ticks = 0;
-                survival.exhaust(minecraft_survival::survival::ATTACK_EXHAUSTION);
-            } else if player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach()).is_none() {
-                hand.attack_ticks = 0;
-                hand.miss_time = if game_mode.instant_break() { 0 } else { 10 };
-            } else {
-                block_press = true;
-                hand.dig.press();
-            }
-        }
-        for _ in 0..hand_ticks {
-            let Some((drinking, crumbs, item)) = survival.eating().map(|eating| (eating.info.animation.eq_ignore_ascii_case("drink"), eating.info.particles, eating.stack.id.clone())) else {
-                break;
-            };
-            let roll = entities.random_float();
-            let bite = survival.chew(inventory, *selected, || roll);
-            let (sound, finished) = match bite {
-                minecraft_survival::survival::Bite::Nothing => continue,
-                minecraft_survival::survival::Bite::Chew(sound) => (sound, None),
-                minecraft_survival::survival::Bite::Done { sound, overflow, fed } => (sound, Some((overflow, fed))),
-            };
-            if crumbs
-                && let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
-                    .ok()
-                    .and_then(|id| minecraft_terrain::model::item_particle_texture(&world.packs, &id).ok().flatten())
-                    .filter(|texture| world.atlas.contains(texture))
-            {
-                let count = if finished.is_some() { 16 } else { 5 };
-                mining.eat_burst(&world.packs, eye_block.as_vec3(), mc_yaw, ps.viewangles[0], count, &texture);
-            }
-            let (r1, r2) = (entities.random_float(), entities.random_float());
-            if let Some(sounds) = sounds.as_mut() {
-                let (volume, pitch) = if drinking { (0.5, r1 * 0.1 + 0.9) } else { (if r1 < 0.5 { 0.5 } else { 1.0 }, (r1 - r2) * 0.2 + 1.0) };
-                sounds.play(&world.packs, &sound, None, volume, pitch);
-            }
-            if let Some((overflow, fed)) = finished {
-                if let Some(sounds) = sounds.as_mut().filter(|_| fed) {
-                    sounds.play(&world.packs, "minecraft:entity.player.burp", None, 0.5, r2 * 0.1 + 0.9);
-                }
-                if let Some(stack) = overflow {
-                    entities.world_items.toss(stack, eye_block, mc_yaw, ps.viewangles[0]);
-                }
-            }
-        }
-        if ui.holding_item && attack_held && !busy && game_mode.may_build() && game_mode.instant_break() {
-            let held = inventory.slots[*selected].as_ref().map(|stack| stack.id.as_str());
-            if let Some(hit) = player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach())
-                && !punched
-                && entities.mob_distance(eye_block, look, game_mode.entity_reach()).is_none_or(|distance| distance > hit.distance)
-                && minecraft_terrain::game_mode::can_destroy_in_creative(held)
-                && minecraft_terrain::game_mode::creative_breaks(&mut hand.creative_delay, block_press, attack_held, hand_ticks) > 0
-            {
-                creative_broken.push(hit.pos);
-                hand_mined.push(hit.pos);
-                if hand.swing.is_none_or(|t| t >= crate::minecraft_hand::SWING_TICKS * 0.5) {
-                    hand.swing = Some(0.0);
-                    hand.swing_offhand = false;
-                }
-            }
-        } else if ui.holding_item && (attack_held || hand.dig.pressed) && !busy && game_mode.may_build() {
-            digging = true;
-            let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
-            let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
-            let mob = entities.mob_distance(eye_block, look, game_mode.entity_reach());
-            let digger = minecraft_survival::digging::digger(inventory, *selected, &survival.status, water.eye, on_ground);
-            let progress = |block: &minecraftoss_player::Block| {
-                let hardness = scene_block(block).and_then(|block| terrain.stream.states.state_of(&block)).map_or(-1.0, |state| globals.registries.blocks.state(state).destroy_speed);
-                minecraft_terrain::mining_speed::destroy_progress(globals.data.mining.as_deref(), &*terrain.stream.states, block, hardness, &digger)
-            };
-            for _ in 0..hand_ticks {
-                let hit = player.target(&staged, game_mode.block_reach()).filter(|hit| mob.is_none_or(|distance| distance > hit.distance));
-                let block = hit.as_ref().and_then(|hit| minecraftoss_player::World::block(&staged, hit.pos));
-                let clicked = hand.dig.take_press();
-                let dug = hand.dig.tick(minecraft_survival::digging::DigInput {
-                    target: hit.as_ref().zip(block.as_ref()).map(|(hit, block)| (hit.pos, hit.face, block)),
-                    held: inventory.slots[*selected].as_ref(),
-                    clicked,
-                    held_down: attack_held,
-                    progress: &progress,
-                });
-                if dug.stopped {
-                    hand.attack_ticks = 0;
-                }
-                for event in dug.events {
-                    use minecraft_survival::digging::DigEvent;
-                    let (pos, face, sound) = match event {
-                        DigEvent::Attacked(pos) => {
-                            entities.attack_block(&terrain.scene, pos);
-                            continue;
-                        }
-                        DigEvent::Broke { pos, .. } => {
-                            minecraftoss_player::World::set_block(&mut staged, pos, None);
-                            hand_broken.push(pos);
-                            hand_mined.push(pos);
-                            continue;
-                        }
-                        DigEvent::Aborted(_) => continue,
-                        DigEvent::Started { pos, face } => (pos, face, true),
-                        DigEvent::Hit { pos, face, sound } => (pos, face, sound),
-                    };
-                    let Some(block) = minecraft_terrain::scene::Scene::block(&terrain.scene, pos) else {
-                        continue;
-                    };
-                    if sound
-                        && let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(block))
-                    {
-                        let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
-                        sounds.play(&world.packs, &kind.hit, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), (kind.volume + 1.0) / 8.0, kind.pitch * 0.5);
-                    }
-                    mining.hit_particle(&world.packs, &terrain.scene, &world.atlas, (pos, face), block);
-                }
-                if dug.swing && hand.swing.is_none_or(|t| t >= crate::minecraft_hand::SWING_TICKS * 0.5) {
-                    hand.swing = Some(0.0);
-                    hand.swing_offhand = false;
-                }
-            }
-        }
-        if let Some(blocking) = hand.blocking.as_mut() {
-            blocking.ticks = blocking.ticks.saturating_add(hand_ticks);
-        }
-        if let Some(charging) = hand.charging.as_mut() {
-            charging.ticks = charging.ticks.saturating_add(hand_ticks);
-        }
-        hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
-        let idle = survival.eating().is_none() && hand.blocking.is_none() && hand.charging.is_none() && !mw2_offhand;
-        let (use_pressed, use_down) = if ui.holding_item {
-            (!skate.active && (buttons.just_pressed(MouseButton::Right) || pad_trigger(pad, GamepadButton::LeftTrigger2, true)), use_held)
-        } else {
-            (offhand_key && !hand.offhand_key_was, offhand_key)
-        };
-        let use_pressed = idle && use_pressed;
-        if !minecraft_survival::offhand::eye_held(hand, use_down, *selected) {
-            hand.using_eye = None;
-        }
-        let place = use_pressed || (idle && use_down && hand.place_delay == 0 && hand.using_eye.is_none());
-        let hands = if place {
-            hand.place_delay = 4;
-            hand.use_by_key = !ui.holding_item;
-            minecraft_survival::offhand::hand_slots(*selected, !ui.holding_item)
-        } else {
-            Vec::new()
-        };
-        let has_item = inventory.slots[*selected].is_some() || inventory.slots[minecraft_survival::offhand::OFFHAND].is_some();
-        let framed = entities.frame_on_ray(eye_block, look, game_mode.entity_reach(), player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach()).map(|hit| hit.distance));
-        let used = minecraft_survival::offhand::use_hands(&hands, |slot| {
-            use minecraft_survival::offhand::HandUse;
-            let main = slot != minecraft_survival::offhand::OFFHAND;
-            player.selected = slot;
-            let held = inventory.slots[slot].clone();
-            if let Some(frame) = framed {
-                let sent = held.as_ref().map(|stack| minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome: minecraft_terrain::item_frame::frame_item_use(frame) });
-                if !entities.use_frame(frame, held.as_ref(), !game_mode.consumes_items(), sent) {
-                    return HandUse::Passed;
-                }
-                hand.swing = Some(0.0);
-                return HandUse::Consumed;
-            }
-            let block_distance = player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), game_mode.block_reach()).map(|hit| hit.distance);
-            if entities.use_on_mob(eye_block, look, game_mode.entity_reach(), block_distance, inventory, slot, !game_mode.consumes_items()) {
-                hand.swing = Some(0.0);
-                return HandUse::Consumed;
-            }
-            let table = player
-                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
-                .map(|hit| hit.pos)
-                .filter(|&pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table))
-                .filter(|_| main && minecraft_terrain::crafting::opens_table(player.crouching, has_item));
-            let station = player
-                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
-                .map(|hit| hit.pos)
-                .filter(|_| main && table.is_none() && minecraft_terrain::crafting::opens_table(player.crouching, has_item))
-                .and_then(|pos| {
-                    let block = minecraft_terrain::scene::Scene::block(&terrain.scene, pos)?;
-                    let partner = minecraft_terrain::containers::chest_partner(pos, block).and_then(|at| minecraft_terrain::scene::Scene::block(&terrain.scene, at));
-                    minecraft_terrain::containers::Opened::new(pos, block, partner)
-                });
-            let workshop = player
-                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
-                .map(|hit| hit.pos)
-                .filter(|_| main && table.is_none() && station.is_none() && minecraft_terrain::crafting::opens_table(player.crouching, has_item))
-                .and_then(|pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::stations::Workshop::of).map(|kind| (pos, kind)));
-            let campfire = player
-                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
-                .map(|hit| hit.pos)
-                .filter(|&pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::campfire::is_campfire))
-                .filter(|_| !(player.crouching && has_item));
-            let lectern = player
-                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
-                .map(|hit| hit.pos)
-                .filter(|_| !(player.crouching && has_item))
-                .and_then(|pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).filter(|block| minecraft_terrain::lectern::is_lectern(block)).map(|block| (pos, minecraft_terrain::lectern::has_book(block))))
-                .filter(|&(_, has_book)| if has_book { main } else { held.as_ref().is_some_and(|stack| minecraft_terrain::lectern::is_lectern_book(&stack.id)) });
-            let placeable = held.as_ref().is_some_and(|stack| {
-                let id = if stack.id == "minecraft:redstone" { "minecraft:redstone_wire" } else { stack.id.as_str() };
-                minecraft_terrain::pack::ResourceId::parse(id).is_ok_and(|id| {
-                    terrain.stream.states.state_of(&minecraft_terrain::scene::Block { id, properties: Default::default() }).is_some()
-                })
-            });
-            let used = if main && table.is_none() && station.is_none() && workshop.is_none() && !(player.crouching && has_item) {
-                let facing = minecraft_terrain::doors::facing(f64::from(mc_yaw));
-                player
-                    .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
-                    .map(|hit| hit.pos)
-                    .filter(|&pos| !minecraftoss_player::World::block(&terrain.scene, pos).is_some_and(|block| minecraft_terrain::berries::bone_meal_passes(&block, held.as_ref())))
-                    .filter(|&pos| entities.use_block(&terrain.scene, pos, facing))
-            } else {
-                None
-            };
-            if let Some(pos) = table {
-                if use_pressed {
-                    open_table = Some(pos);
-                    hand.swing = Some(0.0);
-                }
-                HandUse::Consumed
-            } else if let Some(bench) = workshop {
-                if use_pressed {
-                    open_bench = Some(bench);
-                    hand.swing = Some(0.0);
-                }
-                HandUse::Consumed
-            } else if let Some(opened) = station {
-                if use_pressed {
-                    let conductor = |(x, y, z): (i32, i32, i32)| {
-                        minecraft_terrain::scene::Scene::block(&terrain.scene, (x, y + 1, z))
-                            .and_then(|b| terrain.stream.states.state_of(b))
-                            .is_some_and(|state| globals.registries.blocks.is(state, minecraftoss_core::block::flags::REDSTONE_CONDUCTOR))
-                    };
-                    let blocked = match opened.station {
-                        minecraft_terrain::containers::Station::Chest | minecraft_terrain::containers::Station::Ender => opened.cells.iter().any(|&pos| conductor(pos)),
-                        minecraft_terrain::containers::Station::Shulker => {
-                            let facing = minecraft_terrain::scene::Scene::block(&terrain.scene, opened.cells[0]).and_then(|b| b.properties.get("facing").cloned()).unwrap_or_else(|| "up".to_owned());
-                            entities.lids.lid_closed(opened.cells[0]) && minecraft_terrain::containers::lid_obstructed(opened.cells[0], &facing, |at| minecraftoss_player::World::collision_boxes(&terrain.scene, at))
-                        }
-                        _ => false,
-                    };
-                    if !blocked {
-                        open_block = Some(opened);
-                    }
-                    hand.swing = Some(0.0);
-                }
-                HandUse::Consumed
-            } else if let Some((pos, has_book)) = lectern {
-                if has_book {
-                    if use_pressed {
-                        entities.lectern(pos, minecraft_terrain::lectern::LecternAction::Open, None);
-                        hand.swing = Some(0.0);
-                    }
-                } else if let Some(stack) = held.as_ref()
-                    && !entities.awaits_item_use()
-                {
-                    let book = minecraft_terrain::lectern::BookStack { id: stack.id.clone(), components: stack.components.as_ref().map(|components| components.to_string()) };
-                    let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome: minecraft_terrain::lectern::book_item_use(pos) };
-                    entities.lectern(pos, minecraft_terrain::lectern::LecternAction::PlaceBook(book), Some(sent));
-                    hand.swing = Some(0.0);
-                }
-                HandUse::Consumed
-            } else if let Some(pos) = campfire
-                && let Some(stack) = held.as_ref()
-                && let Some(placed) = containers.place_food(pos, stack, &entities.recipes)
-            {
-                if placed {
-                    let slot = &mut inventory.slots[slot];
-                    if let Some(left) = slot.as_mut().filter(|_| game_mode.consumes_items()) {
-                        left.count -= 1;
-                        if left.count == 0 {
-                            *slot = None;
-                        }
-                    }
-                    hand.swing = Some(0.0);
-                }
-                HandUse::Consumed
-            } else if let Some(respawn_use) = (!(player.crouching && has_item)).then(|| crate::minecraft_respawn::use_block(&player, terrain, &globals.registries, *dimension, crate::minecraft_respawn::Hand { main, held: held.as_ref().map(|stack| stack.id.as_str()), offhand: inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().map(|stack| stack.id.as_str()) }, crate::minecraft_respawn::Night { dark: dark_outside, creative: game_mode.mode == minecraft_terrain::game_mode::GameMode::Creative, monsters: &|area| entities.monster_near(area, sleeper) })).flatten() {
-                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, respawn_use.writes.clone());
-                if let Some(bed) = crate::minecraft_respawn::finish(respawn_use, entities, respawn, inventory, slot, game_mode.consumes_items(), sounds.as_mut(), &world.packs, origin, &mut ui, inventory_ui) {
-                    *bed_request = Some(bed);
-                }
-                hand.swing = Some(0.0);
-                HandUse::Consumed
-            } else if let Some(pos) = used {
-                hand.swing = Some(0.0);
-                if let Some(block) = minecraftoss_player::World::block(&terrain.scene, pos)
-                    && minecraft_terrain::doors::note_plays(&block, minecraftoss_player::World::block(&terrain.scene, (pos.0, pos.1 + 1, pos.2)).as_ref())
-                    && let Some(sound) = minecraft_terrain::doors::toggle_sound(&block)
-                    && let Some(sounds) = sounds.as_mut()
-                {
-                    let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
-                    let pitch = sound.pitch + sounds.random() * sound.pitch_spread;
-                    sounds.play(&world.packs, &sound.event, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), sound.volume, pitch);
-                }
-                HandUse::Consumed
-            } else if let Some(stack) = held.as_ref().filter(|stack| stack.id == minecraft_terrain::durability::STEERING_ITEM)
-                && let Some(vehicle) = riding.as_ref().map(|ride| ride.vehicle)
-                && entities.can_boost(vehicle)
-            {
-                entities.boost(slot, stack.id.clone());
-                HandUse::Consumed
-            } else if let Some(stack) = held.as_ref()
-                && let Some(outcome) = minecraft_terrain::bottle::bottle_use(&player, &terrain.scene, stack, !entities.awaits_item_use() && entities.dragon_breath_near(player.pos, if player.crouching { 1.5 } else { 1.8 }))
-            {
-                use minecraft_terrain::bottle::{self, BottleUse};
-                hand.swing = Some(0.0);
-                let (result, heard) = match outcome {
-                    BottleUse::Block { pos, block, result, sounds: events } => {
-                        write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(pos, block.and_then(|b| scene_block(&b)))]);
-                        let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
-                        (Some(result), events.into_iter().map(|event| (event, Some(centre))).collect())
-                    }
-                    BottleUse::Fill { result } => (Some(result), vec![(bottle::FILL_SOUND, None)]),
-                    BottleUse::Breath(outcome) => {
-                        let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
-                        entities.bottle_breath(player.pos, if player.crouching { 1.5 } else { 1.8 }, sent);
-                        (None, Vec::new())
-                    }
-                    BottleUse::Drink => {
-                        hand.swing = None;
-                        survival.start_using(bottle::drink(slot, stack));
-                        (None, Vec::new())
-                    }
-                };
-                if let Some(result) = result
-                    && let Some(rest) = bottle::filled_result(inventory, slot, result)
-                {
-                    entities.world_items.toss(rest, eye_block, mc_yaw, ps.viewangles[0]);
-                }
-                if let Some(sounds) = sounds.as_mut() {
-                    for (event, at) in heard {
-                        sounds.play(&world.packs, event, at.map(|centre| Vec3::from_array(sim::voxel::to_map(origin, centre))), 1.0, 1.0);
-                    }
-                }
-                HandUse::Consumed
-            } else if let Some(stack) = held.as_ref()
-                && !entities.awaits_item_use()
-                && game_mode.may_build()
-                && let Some(outcome) = {
-                    let catalog = minecraft_terrain::bucket::Catalog { states: &terrain.stream.states, water_evaporates: terrain.environment.water_evaporates() };
-                    let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
-                    minecraft_terrain::bucket::bucket_use(&player, &outlined, &catalog, stack, || entities.random_float())
-                        .or_else(|| minecraft_terrain::flint::flint_use(&player, &outlined, &catalog, stack, || entities.random_float()))
-                        .or_else(|| minecraft_terrain::flint::fire_charge_use(&player, &outlined, &catalog, stack, || entities.random_float()))
-                        .or_else(|| minecraft_terrain::berries::bone_meal_use(&player, &outlined, stack))
-                        .or_else(|| minecraft_terrain::campfire::douse_use(&player, &outlined, entities.recipes.item_in_tag(minecraft_terrain::campfire::DOUSES_CAMPFIRES, &stack.id), || entities.random_float()))
-                        .or_else(|| globals.data.transforms.as_ref()?.transform_use(|tag| entities.recipes.item_in_tag(tag, &stack.id), &player, &outlined, &*terrain.stream.states, main && !player.crouching && inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().is_some_and(|shield| shield.id == minecraft_survival::offhand::SHIELD)))
-                        .or_else(|| minecraft_terrain::ender_eye::frame_use(&player, &outlined, stack))
-                        .or_else(|| minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack))
-                        .or_else(|| minecraft_terrain::item_frame::frame_use(&player, &outlined, stack))
-                        .or_else(|| minecraft_terrain::firework::rocket_use(stack, ps.pm_flags & playerstate_iw4::pm_flags::MC_GLIDING != 0, || entities.random_float()))
-                }
-            {
-                if !outcome.consumed || matches!(outcome.change, minecraft_terrain::bucket::Change::Set(..)) {
-                    hand.swing = Some(0.0);
-                }
-                if let Some((pos, signal)) = minecraft_terrain::campfire::doused(&terrain.scene, &outcome) {
-                    entities.campfire_douse(pos, signal);
-                }
-                let change = outcome.change.clone();
-                let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
-                match change {
-                    minecraft_terrain::bucket::Change::Set(pos, block) => {
-                        write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(pos, scene_block(&block))]);
-                        finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items());
-                    }
-                    minecraft_terrain::bucket::Change::Server(pos, action) => entities.item_on_block(pos, action, sent),
-                    minecraft_terrain::bucket::Change::ThrowEye(throw) => entities.throw_eye(throw, sent),
-                    minecraft_terrain::bucket::Change::Rocket(boost_ticks) => crate::minecraft_elytra::launch_rocket(&mut authority.0, local.0, boost_ticks, &mut hand.swing, || finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, sent, game_mode.consumes_items())),
-                    minecraft_terrain::bucket::Change::Breath => entities.bottle_breath(player.pos, if player.crouching { 1.5 } else { 1.8 }, sent),
-                    minecraft_terrain::bucket::Change::Frame(_) | minecraft_terrain::bucket::Change::Lectern(_) => {}
-                }
-                HandUse::Consumed
-            } else if let Some(stack) = held.as_ref()
-                && !entities.awaits_item_use()
-                && game_mode.interacts()
-                && let Some(outcome) = minecraft_terrain::ender_eye::throw_use(&player, &minecraft_terrain::doors::Outlined(&terrain.scene), stack)
-                && let minecraft_terrain::bucket::Change::ThrowEye(throw) = outcome.change.clone()
-            {
-                hand.using_eye = Some(slot);
-                let sent = minecraft_survival::entities::SentItemUse { slot, held: stack.id.clone(), eye: eye_block, yaw: mc_yaw, pitch: ps.viewangles[0], outcome };
-                entities.throw_eye(throw, sent);
-                HandUse::Consumed
-            } else if let Some(stack) = held.as_ref()
-                && game_mode.may_build()
-                && let Some(egg) = minecraft_terrain::spawn_egg::egg_use(&player, &minecraft_terrain::doors::Outlined(&terrain.scene), &stack.id)
-            {
-                match egg {
-                    minecraft_terrain::spawn_egg::EggUse::Spawn { kind, position } => {
-                        entities.hatch_egg(inventory, slot, kind, position, game_mode.consumes_items());
-                    }
-                    minecraft_terrain::spawn_egg::EggUse::Spawner(pos) => {
-                        if let Some(kind) = minecraft_terrain::spawn_egg::spawned_kind(&stack.id) {
-                            entities.egg_on_spawner(inventory, slot, kind, pos, game_mode.consumes_items());
-                        }
-                    }
-                }
-                hand.swing = Some(0.0);
-                HandUse::Consumed
-            } else if held.as_ref().is_some_and(|stack| stack.id == minecraft_terrain::trident::ITEM) {
-                match minecraft_survival::trident::Charging::start(inventory, slot, water.wet() || entities.weather.player_in_rain) {
-                    Some(charging) => {
-                        hand.charging = Some(charging);
-                        HandUse::Consumed
-                    }
-                    None => HandUse::Failed,
-                }
-            } else if let Some((stack, kind)) = held.as_ref().and_then(|s| minecraft_terrain::thrown::Throwable::of(&s.id).map(|k| (s, k))) {
-                let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
-                let motion = glam::DVec3::new(f64::from(ps.velocity[0]), f64::from(ps.velocity[2]), -f64::from(ps.velocity[1]))
-                    / (f64::from(sim::voxel::BLOCK) * 20.0);
-                if !hand.cooldowns.active(&stack.id)
-                    && entities.throw(stack, glam::DVec3::from_array(eye), mc_yaw, ps.viewangles[0], motion, on_ground)
-                {
-                    let slot = &mut inventory.slots[slot];
-                    if let Some(left) = slot.as_mut().filter(|_| game_mode.consumes_items()) {
-                        left.count -= 1;
-                        if left.count == 0 {
-                            *slot = None;
-                        }
-                    }
-                    if let Some(ticks) = kind.cooldown() {
-                        hand.cooldowns.start(&stack.id, ticks);
-                    }
-                    hand.swing = Some(0.0);
-                    let pitch = minecraft_terrain::thrown::throw_pitch(entities.random_float());
-                    if let Some(sounds) = sounds.as_mut() {
-                        sounds.play(&world.packs, kind.sound(), None, 0.5, pitch);
-                    }
-                    HandUse::Consumed
-                } else {
-                    HandUse::Passed
-                }
-            } else if let Some((pos, writes)) = held.as_ref().filter(|_| game_mode.may_build()).and_then(|stack| {
-                let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
-                let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
-                let soil = minecraft_terrain::berries::Ground { states: &terrain.stream.states };
-                let pos = minecraft_terrain::berries::plant(&player, &mut staged, &stack.id, &soil, || entities.random_float())?;
-                Some((pos, staged.into_writes()))
-            }) {
-                let slot = &mut inventory.slots[slot];
-                if let Some(left) = slot.as_mut().filter(|_| game_mode.consumes_items()) {
-                    left.count -= 1;
-                    if left.count == 0 {
-                        *slot = None;
-                    }
-                }
-                let writes = writes.into_iter().map(|(at, block)| (at, block.and_then(|b| scene_block(&b)))).collect();
-                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, writes);
-                hand.swing = Some(0.0);
-                if let Some(block) = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned()
-                    && let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block))
-                {
-                    let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
-                    sounds.play(&world.packs, &kind.place, Some(Vec3::from_array(sim::voxel::to_map(origin, centre))), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
-                }
-                HandUse::Consumed
-            } else if let Some(stack) = held.as_ref().filter(|s| !placeable && minecraftoss_player::food::catalog().contains_key(&s.id)) {
-                if survival.start_eating(slot, stack) { HandUse::Consumed } else { HandUse::Passed }
-            } else if let Some(stack) = held.as_ref().filter(|s| s.id == minecraft_terrain::bottle::MILK_BUCKET) {
-                survival.start_using(minecraft_terrain::bottle::drink_milk(slot, stack));
-                HandUse::Consumed
-            } else if held.as_ref().is_some_and(|stack| stack.id == minecraft_survival::offhand::SHIELD) && !hand.cooldowns.active(minecraft_survival::offhand::SHIELD) {
-                hand.blocking = Some(minecraft_survival::offhand::Blocking::start(slot));
-                HandUse::Consumed
-            } else if placeable {
-                let outlined = minecraft_terrain::doors::Outlined(&terrain.scene);
-                let mut staged = minecraft_terrain::placing::Staged::new(&outlined);
-                let opening = held.as_ref().filter(|stack| minecraft_terrain::doors::Opening::of(&stack.id).is_some());
-                let sturdy = |below: (i32, i32, i32)| {
-                    minecraft_terrain::scene::Scene::block(&terrain.scene, below)
-                        .and_then(|b| terrain.stream.states.state_of(b))
-                        .is_some_and(|state| {
-                            globals.registries.blocks.is_face_sturdy(state, minecraftoss_core::pos::Direction::Up, minecraftoss_core::SupportType::Full)
-                        })
-                };
-                let placed = match opening {
-                    _ if !game_mode.may_build() && (opening.is_some() || held.as_ref().is_some_and(|s| s.id == minecraft_terrain::scaffolding::SCAFFOLDING)) => None,
-                    Some(stack) => minecraft_terrain::doors::place(&player, &mut staged, &stack.id, &sturdy).inspect(|_| {
-                        let slot = &mut inventory.slots[slot];
-                        if let Some(left) = slot.as_mut() {
-                            left.count -= 1;
-                            if left.count == 0 {
-                                *slot = None;
-                            }
-                        }
-                    }),
-                    None if held.as_ref().is_some_and(|s| s.id == minecraft_terrain::scaffolding::SCAFFOLDING) => minecraft_terrain::scaffolding::place(
-                        &player,
-                        &mut staged,
-                        inventory,
-                        ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
-                        &sturdy,
-                        &|block: Option<&minecraftoss_player::Block>| {
-                            block.is_none_or(|b| {
-                                scene_block(b)
-                                    .and_then(|b| terrain.stream.states.state_of(&b))
-                                    .is_some_and(|state| globals.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
-                            })
-                        },
-                    ),
-                    None => player.place_selected(&mut staged, inventory, game_mode.mode),
-                };
-                let writes: Vec<_> = staged
-                    .into_writes()
-                    .into_iter()
-                    .map(|(pos, block)| (pos, block.and_then(|b| scene_block(&b)).map(|b| minecraft_terrain::placing::base_if_covered(&terrain.scene, pos, b))))
-                    .collect();
-                if std::env::var_os("MINECRAFTOSS_DEBUG_SERVER").is_some() && writes.iter().any(|(_, b)| b.as_ref().is_some_and(|b| b.id.path.ends_with("chest"))) {
-                    eprintln!("chest placement: crouching {} pm_flags {:#x} view height {} yaw {} placed {:?} writes {:?}", player.crouching, ps.pm_flags, ps.view_height_current, player.yaw, placed, writes);
-                }
-                let bodies = obstacles(ps, &authority.0, local.0, entities);
-                let blocked = writes.iter().any(|(pos, block)| {
-                    let boxes = block
-                        .as_ref()
-                        .filter(|b| b.id.key() != minecraft_terrain::scaffolding::SCAFFOLDING)
-                        .and_then(|b| terrain.stream.states.state_of(b))
-                        .map_or_else(Vec::new, |state| globals.registries.blocks.collision_boxes(state));
-                    minecraft_terrain::placing::obstructed(*pos, &boxes, &bodies)
-                });
-                let survives = placed.is_none_or(|pos| {
-                    writes.iter().find(|(at, _)| *at == pos).and_then(|(_, block)| block.as_ref()).is_none_or(|block| {
-                        let view = minecraft_terrain::placing::SurviveView::new(&terrain.scene, light.as_ref());
-                        minecraft_terrain::placing::may_place(&terrain.stream.world_gen().library, &view, pos, block)
-                    })
-                });
-                if let Some(pos) = placed.filter(|_| !blocked && survives) {
-                    let now = time.elapsed_secs_f64();
-                    hand.recent.retain(|(_, _, at)| now - at < RECENT_PLACE_SECONDS);
-                    let written: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
-                    write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, writes);
-                    if let Some(stack) = held.as_ref().filter(|stack| minecraft_terrain::containers::is_shulker_box(&stack.id))
-                        && minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::containers::Station::of) == Some(minecraft_terrain::containers::Station::Shulker)
-                    {
-                        containers.place_shulker(pos, stack, &entities.recipes);
-                    }
-                    if !game_mode.consumes_items() {
-                        inventory.slots[slot].clone_from(&held);
-                    }
-                    hand.recent.extend(written.into_iter().filter_map(|p| minecraftoss_player::World::block(&terrain.scene, p).map(|b| (p, b, now))));
-                    hand.swing = Some(0.0);
-                    if let Some(block) = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned()
-                        && let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block))
-                    {
-                        let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
-                        let at = Vec3::from_array(sim::voxel::to_map(origin, centre));
-                        sounds.play(&world.packs, &kind.place, Some(at), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
-                    }
-                    HandUse::Consumed
-                } else {
-                    inventory.slots[slot] = held;
-                    hand.place_delay = 0;
-                    if player.target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0).is_some() { HandUse::Failed } else { HandUse::Passed }
-                }
-            } else {
-                HandUse::Passed
-            }
-        });
-        hand.place_delay = minecraft_survival::offhand::repeat_delay(used, hand.place_delay);
-        if let Some((slot, minecraft_survival::offhand::HandUse::Consumed)) = used
-            && hand.swing == Some(0.0)
-        {
-            hand.swing_offhand = slot == minecraft_survival::offhand::OFFHAND;
-        }
-    }
-    hand.offhand_key_was = offhand_key;
-    if !digging {
-        hand.dig.pressed = false;
-        if hand.dig.stop() {
-            hand.attack_ticks = 0;
-        }
-    }
+    let player_mode = player.mode;
+    let minecraft_survival::level::Level { entities, terrain, shots, .. } = &mut *level;
+    crate::minecraft_input::play(effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
 
     // Shots and explosions from the authoritative game: bullets that met a
     // mob hurt it, the rest mine.
@@ -1780,7 +962,14 @@ fn update(
         .partition(|event| matches!(event, sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::MobBlast { .. }));
     let events: Vec<_> = events
         .into_iter()
-        .filter(|event| player_mode.may_build() || !matches!(event, sim::voxel::VoxelEvent::Shot { .. } | sim::voxel::VoxelEvent::Ray { .. }))
+        .filter(|event| match *event {
+            sim::voxel::VoxelEvent::Shot { attacker, .. } | sim::voxel::VoxelEvent::Ray { attacker, .. } => match credit(attacker) {
+                Some(id) if id == host_id => player_mode.may_build(),
+                Some(id) => friend_builds.contains(&id),
+                None => false,
+            },
+            _ => true,
+        })
         .filter(|event| match *event {
             sim::voxel::VoxelEvent::Shot { block, .. } => {
                 let pos = (block[0], block[1], block[2]);
@@ -1796,15 +985,20 @@ fn update(
     if let Some(entities) = entities.as_mut() {
         for shot in mob_shots {
             match shot {
-                sim::voxel::VoxelEvent::MobShot { key, damage, from } => entities.shoot(key, damage, from, mc_yaw, !player_mode.consumes_items()),
-                sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks } => {
-                    entities.blast(key, damage, center, impact, attacker == Some(local.0.0), slow_ticks, !player_mode.consumes_items());
+                sim::voxel::VoxelEvent::MobShot { key, damage, from, attacker, .. } => {
+                    if let (Some(id), Some(client)) = (credit(attacker), attacker) {
+                        let yaw = if id == host_id { mc_yaw } else { authority.0.player(sim::ClientId(client)).map_or(mc_yaw, |ps| minecraft_yaw(ps.viewangles[1])) };
+                        entities.shoot(id, key, damage, from, yaw, infinite.contains(&id));
+                    }
+                }
+                sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks, .. } => {
+                    entities.blast(key, damage, center, impact, credit(attacker), slow_ticks, credit(attacker).is_some_and(|id| infinite.contains(&id)));
                 }
                 _ => {}
             }
         }
         for event in &events {
-            if let sim::voxel::VoxelEvent::Explosion { center, power } = *event {
+            if let sim::voxel::VoxelEvent::Explosion { center, power, .. } = *event {
                 entities.weapon_blast(center, power);
             }
         }
@@ -1839,16 +1033,23 @@ fn update(
         packs: &world.packs,
         atlas: &world.atlas,
         registries: &globals.registries,
+        level: band,
     };
-    let mut broken = mining.apply(events, &mut refs, time.elapsed_secs_f64());
-    broken.extend(mining.break_now(&creative_broken, &mut refs));
-    let dug = mining.break_now(&hand_broken, &mut refs);
-    let dug_blocks: Vec<_> = dug.iter().map(|(pos, block, _)| (*pos, minecraftoss_player::Block { id: block.id.key(), properties: block.properties.clone() })).collect();
-    let wrong_tool = minecraft_survival::digging::wrong_tool(globals.data.mining.as_deref(), &*terrain.stream.states, &dug_blocks, inventory.slots[*selected].as_ref());
-    let worn: Vec<f32> = dug.iter().map(|(_, block, _)| terrain.stream.states.state_of(block).map_or(-1.0, |state| globals.registries.blocks.state(state).destroy_speed)).collect();
-    broken.extend(dug);
+    let mut broken = Vec::new();
+    let mut friends_broken: Vec<(u64, Vec<crate::minecraft_mining::Mined>)> = Vec::new();
+    for (mined, attacker) in mining.apply(events, shots, &mut refs, time.elapsed_secs_f64()) {
+        match credit(attacker).filter(|&id| id != host_id) {
+            Some(id) => match friends_broken.iter_mut().find(|(friend, _)| *friend == id) {
+                Some((_, by_friend)) => by_friend.push(mined),
+                None => friends_broken.push((id, vec![mined])),
+            },
+            None => broken.push(mined),
+        }
+    }
+    broken.extend(mining.break_now(&creative_broken, shots, &mut refs));
+    let dug = mining.break_now(&hand_broken, shots, &mut refs);
     if let Some(sounds) = sounds.as_mut() {
-        for (pos, block, blast) in &broken {
+        for (pos, block, blast) in broken.iter().chain(&dug).chain(friends_broken.iter().flat_map(|(_, mined)| mined)) {
             if blast.is_some() {
                 continue;
             }
@@ -1858,75 +1059,32 @@ fn update(
             }
         }
     }
-    survival.exhaust(minecraft_survival::survival::MINE_EXHAUSTION * broken.iter().filter(|(pos, _, blast)| blast.is_none() && !wrong_tool.contains(pos)).count() as f32);
-    if let Some(entities) = entities.as_mut() {
-        let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
-        entities.mined(inventory.slots[*selected].as_ref(), &broken, &hand_mined, !player_mode.drops_from_breaking());
-        entities.guard_mined(&terrain.stream.states, &broken, feet);
-        let kept: HashMap<_, _> = broken
-            .iter()
-            .filter(|(_, block, _)| minecraft_terrain::containers::Station::of(block) == Some(minecraft_terrain::containers::Station::Shulker))
-            .filter_map(|(pos, ..)| containers.take_shulker(*pos).map(|components| (*pos, components)))
-            .collect();
-        let dropping: Vec<_> = broken
-            .iter()
-            .filter(|(pos, _, blast)| player_mode.drops_from_breaking() || blast.is_some() || kept.get(pos).is_some_and(|components| components.get(minecraft_terrain::containers::CONTAINER).is_some()))
-            .filter(|(pos, ..)| !wrong_tool.contains(pos))
-            .cloned()
-            .collect();
-        entities.award_block_experience(inventory.slots[*selected].as_ref(), &dropping, &hand_mined);
-        entities.drop_blocks(inventory.slots[*selected].as_ref(), &dropping, kept, &hand_mined);
-        for &pos in &positions {
-            openers.removed(pos);
-            minecraft_survival::level::spill(containers, entities, pos);
-        }
-        for hardness in worn {
-            if let Some(item) = minecraft_survival::digging::wear_after_break(inventory, *selected, hardness, || entities.random_float()) {
-                entities.broken_items.push(item);
-                let sound = minecraft_terrain::flint::break_sound(entities.random_float());
-                if let Some(sounds) = sounds.as_mut() {
-                    sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
-                }
-            }
+    let harvest = minecraft_survival::actions::harvest(player, level, globals, (broken, dug), &hand_mined, feet);
+    for (id, mined) in friends_broken {
+        if let Some(friend) = friends.iter_mut().find(|friend| u64::from(friend.id.0) == id) {
+            let at = authority.0.player(sim::ClientId(friend.id.0)).map_or(feet, |ps| sim::voxel::to_block(origin, ps.origin));
+            let _ = minecraft_survival::actions::harvest(friend, level, globals, (mined, Vec::new()), &[], at);
         }
     }
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, .. } = &mut *player;
+    let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, shots, pending_batch, .. } = &mut *level;
+    if let Some(entities) = entities.as_mut() {
+        entities.broken_items.extend(harvest.worn_out);
+    }
+    crate::minecraft_input::play(harvest.effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
 
     let eye = sim::voxel::to_block(origin, [ps.origin[0], ps.origin[1], ps.origin[2] + ps.view_height_current]);
     death_watch.stood(minecraft_survival::death::DeathSpot { feet, eye });
-    let (pitch, yaw) = (ps.viewangles[0].to_radians(), ps.viewangles[1].to_radians());
-    let map_forward = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin()];
-    let forward = glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1]);
-    // Culled from the camera that draws: the player's eye, or while
-    // skating the Skate camera (a frame behind, so with room to spare).
+    let forward = view_forward(ps.viewangles);
     let mc_detached = mc_camera.as_ref().is_some_and(|c| c.detached);
-    let skate_camera = cameras.iter().next().filter(|_| skate.active || mc_detached || sleepers.camera.is_some()).map(|t| {
-        let at = sim::voxel::to_block(origin, t.translation.to_array());
-        let ahead = t.rotation * Vec3::NEG_Z;
-        (
-            glam::DVec3::new(at[0], at[1], at[2]),
-            glam::Vec3::new(ahead.x, ahead.z, -ahead.y).normalize_or(forward),
-        )
-    });
-    let (cull_at, cull_forward) = skate_camera.unwrap_or((glam::DVec3::new(eye[0], eye[1], eye[2]), forward));
-    let camera = CullCamera {
-        position: cull_at,
-        forward: cull_forward,
-        fov_degrees: if skate_camera.is_some() { 120.0 } else { 90.0 },
-        aspect,
-        yaw_degrees: (-cull_forward.x).atan2(cull_forward.z).to_degrees(),
-        pitch_degrees: (-cull_forward.y).asin().to_degrees(),
-    };
-    let update = terrain
-        .stream
-        .frame(&terrain.scene, &camera, FADE_MILLIS, &world.atlas, &world.packs);
-    view.uploads.extend(update.uploads);
-    view.removed.extend(update.removed);
-    view.visible = update.visible;
-    observe_spawn(terrain, spawn_gate, feet, cull_at, now_ms);
+    let drawn_from = cameras.iter().next().filter(|_| skate.active || mc_detached || sleepers.camera.is_some());
+    let camera = cull_camera(drawn_from, origin, eye, forward, aspect);
+    let lights = terrain_frame(terrain, world, &mut view, &camera);
+    observe_spawn(terrain, spawn_gate, (band, feet), camera.position, now_ms);
     let Some(light) = light.as_mut() else {
         return;
     };
-    for (chunk, column) in update.lights {
+    for (chunk, column) in lights {
         light.set_chunk_column(chunk, column);
     }
 
@@ -1953,7 +1111,7 @@ fn update(
     // The mobs: a server tick when due, the blocks it changed, its hits on
     // the player, the mobs' boxes for bullets and their meshes.
     if let Some(entities) = entities.as_mut() {
-        let player = minecraft_survival::entities::PlayerView {
+        let viewer = minecraft_survival::entities::PlayerView {
             feet,
             alive,
             attackable: alive && player_mode.attackable_by_mobs(),
@@ -1970,20 +1128,40 @@ fn update(
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
         let ticks_before = entities.client_ticks();
         let batch = pending_batch.take().unwrap_or(minecraft_survival::tick_rate::TickBatch { normal: Vec::new(), overload: None });
-        let (changes, hits) = entities.tick(inventory, *selected, dt, &batch, globals.tick_rate.client_timing(), globals.clock_ticks(), bright_outside, &player);
+        *ticked = Some(*dimension);
+        let mut present = vec![(host_id, local_uuid.clone())];
+        let mut actors = vec![minecraft_survival::entities::TickActor { id: host_id, view: viewer, inventory: &mut *inventory, selected: *selected }];
+        let watchers = friends
+            .iter()
+            .filter_map(|friend| {
+                let place = friend.arrival.or(friend.place).filter(|place| friend.dimension == *dimension && place.dimension == *dimension)?;
+                Some(minecraft_terrain::mob_tracking::Watcher { id: u64::from(friend.id.0), feet: place.feet, view_distance: VIEW_DISTANCE })
+            })
+            .collect();
+        entities.set_watchers(watchers, VIEW_DISTANCE);
+        for friend in friends.iter_mut().filter(|friend| friend.dimension == *dimension) {
+            if let Some((actor, uuid)) = crate::minecraft_players::tick_actor(friend, &authority.0, origin) {
+                present.push((actor.id, uuid));
+                actors.push(actor);
+            }
+        }
+        entities.set_players(&present);
+        let changes = entities.tick(&mut actors, dt, &batch, globals.tick_rate.client_timing(), globals.clock_ticks(), bright_outside);
+        drop(actors);
         entities.present_level_events(&terrain.scene);
         globals.weather = entities.weather_data.or(globals.weather);
         let summoned = std::mem::take(&mut entities.command_summons);
         if !summoned.is_empty() {
             let answers = minecraft_survival::commands::summon_answers(&globals.chat, &globals.game_rules, summoned);
-            show_chat(&mut ui.chat, inventory_ui, &world.packs, &answers);
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, &minecraft_survival::commands::reaching(&globals.chat, &answers, minecraft_survival::commands::HOST));
+            relayed.delivered.extend(answers);
         }
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         for _ in 0..mob_ticks {
             let rain = entities.rain_tick(&terrain.scene, eye);
             for sound in entities.animate_tick(&terrain.scene, feet).into_iter().chain(rain) {
                 if let Some(sounds) = sounds.as_mut() {
-                    sounds.play(&world.packs, sound.event, Some(at(sound.at)), sound.volume, sound.pitch);
+                    sounds.play_local(&world.packs, sound.event, Some(at(sound.at)), sound.volume, sound.pitch);
                 }
             }
             entities.campfire_tick(&terrain.scene, |pos| containers.campfire_food(pos));
@@ -1994,7 +1172,7 @@ fn update(
             for (pos, block) in changes {
                 let state = block.as_ref().and_then(|b| terrain.stream.states.state_of(b));
                 let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
-                sim::voxel::set_block_shape(pos.0, pos.1, pos.2, shape);
+                sim::voxel::set_block_shape(band, pos.0, pos.1, pos.2, shape);
                 let before = minecraftoss_player::World::block(&terrain.scene, pos);
                 let shulker_before = minecraft_terrain::scene::Scene::block(&terrain.scene, pos)
                     .filter(|b| minecraft_terrain::containers::Station::of(b) == Some(minecraft_terrain::containers::Station::Shulker))
@@ -2035,166 +1213,38 @@ fn update(
             terrain.stream.record_edits(&terrain.scene, &positions);
             terrain.stream.mark_edited(&terrain.scene, &positions);
         }
-        for (item, at, velocities) in std::mem::take(&mut entities.item_crumbs) {
-            if let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
-                .ok()
-                .and_then(|id| minecraft_terrain::model::item_particle_texture(&world.packs, &id).ok().flatten())
-                .filter(|texture| world.atlas.contains(texture))
-            {
-                mining.item_crumbs(&world.packs, at.as_vec3(), &velocities, &texture);
-            }
-        }
-        let potion_crumbs = std::mem::take(&mut entities.potion_crumbs);
-        if !potion_crumbs.is_empty()
-            && let Some(texture) = minecraft_terrain::pack::ResourceId::parse(minecraft_terrain::thrown::SPLASH_POTION)
-                .ok()
-                .and_then(|id| minecraft_terrain::model::item_particle_texture(&world.packs, &id).ok().flatten())
-                .filter(|texture| world.atlas.contains(texture))
-        {
-            for center in potion_crumbs {
-                mining.potion_crumbs(&world.packs, center.as_vec3(), &texture);
-            }
-        }
+        present_crumbs(&mut entities.view, &mut *mining, &world.packs, &world.atlas);
         for (pos, block) in std::mem::take(&mut entities.destroyed) {
             mining.burst(&world.packs, &terrain.scene, &world.atlas, pos, &block);
+            if let Some(state) = terrain.stream.states.state_of(&block) {
+                let data = i32::from(state.0);
+                entities.hear(minecraft_survival::heard::Said::all(minecraft_survival::heard::Heard::Event { event: minecraft_survival::session::BREAK_EVENT, pos: [pos.0, pos.1, pos.2], data }));
+            }
             if let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block)) {
                 let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                 sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
             }
         }
-        let armor = minecraft_survival::survival::armor(inventory);
-        let knockback_resistance = inventory.armor_toughness().1;
-        for (amount, from, toward, cause, push, effect) in hits.into_iter().filter(|_| !player_mode.invulnerable()) {
-            let blocked = hand.blocking.filter(|blocking| blocking.raised()).map_or(0.0, |_| minecraft_survival::offhand::blocked_damage(mc_yaw, toward, amount));
-            if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
-                if inventory.wear_tool(blocking.slot, minecraft_survival::offhand::shield_wear(blocked)) {
-                    hand.blocking = None;
-                    entities.broken_items.push(minecraft_survival::offhand::SHIELD.to_owned());
-                    let pitch = 0.8 + entities.random_float() * 0.4;
-                    if let Some(sounds) = sounds.as_mut() {
-                        sounds.play(&world.packs, minecraft_survival::offhand::BREAK_SOUND, None, 0.8, pitch);
-                    }
-                }
-                let pitch = 0.8 + entities.random_float() * 0.4;
-                if let Some(sounds) = sounds.as_mut() {
-                    sounds.play(&world.packs, minecraft_survival::offhand::BLOCK_SOUND, None, 1.0, pitch);
-                }
-                if push.disable_shield_ticks > 0 {
-                    hand.cooldowns.start(minecraft_survival::offhand::SHIELD, push.disable_shield_ticks);
-                    hand.blocking = None;
-                    let pitch = 0.8 + entities.random_float() * 0.4;
-                    if let Some(sounds) = sounds.as_mut() {
-                        sounds.play(&world.packs, minecraft_survival::offhand::BREAK_SOUND, None, 0.8, pitch);
-                    }
-                }
-            }
-            let hurt = survival.struck(amount, blocked, armor, from, cause, effect);
-            if let Some(push) = push.landing(hurt, blocked > 0.0, knockback_resistance) {
-                entities.player_pushes.push(push);
-            }
-        }
-        for (slot, held) in std::mem::take(&mut entities.boosts_done) {
-            hand.swing = Some(0.0);
-            hand.swing_offhand = slot == minecraft_survival::offhand::OFFHAND;
-            if inventory.slots[slot].as_ref().is_some_and(|stack| stack.id == held)
-                && let Some(sound) = entities.spend_boost(inventory, slot, !player_mode.consumes_items())
-                && let Some(sounds) = sounds.as_mut()
-            {
-                sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
-            }
-        }
-        for used in std::mem::take(&mut entities.item_uses_done) {
-            if used.outcome.consumed {
-                hand.swing = Some(0.0);
-                hand.swing_offhand = used.slot == minecraft_survival::offhand::OFFHAND;
-            }
-            finish_item_use(entities, inventory, sounds.as_mut(), &world.packs, origin, used, player_mode.consumes_items());
-        }
+        crate::minecraft_players::struck(player, entities, &mut authority.0, local.0, origin, ps, alive, &teleports, sounds, &world.packs);
         for item in std::mem::take(&mut entities.broken_items) {
             mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }
-        let present = alive && player_mode.mode != minecraftoss_player::GameMode::Spectator;
-        crate::minecraft_riding::step(riding, reattach, steps, entities, &mut authority.0, local.0, origin, present);
-        for to in teleports.iter().filter(|(uuid, _)| alive && uuid == local_uuid).map(|(_, to)| to) {
-            crate::minecraft_riding::dismount(riding, Some(&mut *entities), &mut authority.0, local.0);
-            authority.0.teleport(local.0, sim::voxel::to_map(origin, *to));
-            steps.air_peak = None;
+        let settled = crate::minecraft_players::settle(player, entities, globals, &mut authority.0, local.0, origin, alive, totem_popped, inventory_ui.language(), sounds, &world.packs);
+        if settled.popped {
+            item_activation.activate(|| entities.random_float());
         }
-        for landing in std::mem::take(&mut entities.pearl_landings) {
-            if !alive {
-                continue;
-            }
-            crate::minecraft_riding::dismount(riding, Some(&mut *entities), &mut authority.0, local.0);
-            authority.0.teleport(local.0, sim::voxel::to_map(origin, landing.to_array()));
-            survival.hurt(minecraft_terrain::thrown::PEARL_DAMAGE, minecraftoss_player::survival::Armor::default(), None, minecraft_survival::death::DamageCause::EnderPearl);
-            steps.air_peak = None;
-            if let Some(sounds) = sounds.as_mut() {
-                sounds.play(&world.packs, "minecraft:entity.player.teleport", Some(at(landing.to_array())), 1.0, 1.0);
-            }
+        if let Some(told) = settled.told {
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, std::slice::from_ref(&told));
+            relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
-        let pushed = alive && player_mode.mode != minecraftoss_player::GameMode::Spectator && ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING == 0;
-        for push in std::mem::take(&mut entities.player_pushes).into_iter().filter(|_| pushed) {
-            let launch = minecraft_survival::impulse::launch_velocity(push, f64::from(ps.gravity) / f64::from(sim::voxel::BLOCK)) * f64::from(sim::voxel::BLOCK);
-            authority.0.push_velocity(local.0, [launch.x as f32, -launch.z as f32, launch.y as f32]);
-            survival.start_impulse(feet[1]);
-        }
-        for hit in std::mem::take(&mut entities.player_potions).into_iter().filter(|_| alive) {
-            if let Some(sound) = survival.take_potion(&hit.potion, Some(hit.at.to_array()), || entities.random_float())
-                && let Some(sounds) = sounds.as_mut()
-            {
-                sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
-            }
-        }
-        if hold_off_death(survival, inventory, *selected, sounds.as_mut(), &world.packs, totem_popped) {
-            pop_totem(entities, item_activation, local_uuid, feet, f64::from(hull_maxs[2] / sim::voxel::BLOCK));
-        }
-        if alive
-            && !sim::voxel::player_damage_pending()
-            && let Some(player) = authority.0.player(local.0).copied()
-        {
-            let settle = survival.settle(player.health, player.max_health);
-            if let Some(health) = settle.set {
-                authority.0.set_health(local.0, health);
-            }
-            if let Some((amount, from)) = settle.damage {
-                let death = (survival.status.health <= 0.0).then(|| {
-                    let line = match inventory_ui.language() {
-                        Some(language) => survival.death_line(language, |id| entities.mob_present(id)),
-                        None => survival.death_line(&minecraft_terrain::item_icons::language(&world.packs).unwrap_or_else(|_| HashMap::new()), |id| entities.mob_present(id)),
-                    };
-                    sim::voxel::MinecraftDeath { message: line.message, killer: line.killer }
-                });
-                if death.is_some()
-                    && let Some(sounds) = sounds.as_mut()
-                {
-                    let sound = minecraft_survival::survival::death_sound(|| entities.random_float());
-                    sounds.play(&world.packs, sound.event, None, sound.volume, sound.pitch);
-                }
-                if let Some(death) = &death
-                    && globals.game_rules.bool("show_death_messages")
-                {
-                    let name = globals.chat.name(minecraft_survival::commands::HOST).unwrap_or("Player");
-                    crate::minecraft_chat::show(&mut ui.chat, &[minecraft_survival::commands::death_message(death.line(name))], &HashMap::new());
-                }
-                sim::voxel::push_player_damage(local.0.0, amount, from.map(|b| sim::voxel::to_map(origin, b)), death);
-            }
-            if let Some(blocked) = survival.sprint_change(player.pm_flags & playerstate_iw4::pm_flags::SPRINT_BLOCKED != 0) {
-                authority.0.set_sprint_blocked(local.0, blocked);
-            }
-        }
+        let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
         // gun, and what the HUD shows.
-        let owned: Vec<u32> = ps
-            .weapons
-            .iter()
-            .filter(|&&w| w > 0)
-            .map(|&w| w as u32)
-            .filter(|&w| authority.0.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
-            .collect();
+        let owned = crate::minecraft_players::owned_weapons(ps, &authority.0);
         ui.active = alive;
-        ui.board_allowed = board_allowed(alive, player_mode.mode == minecraftoss_player::GameMode::Spectator, ps.pm_flags, water.eye, asleep, survival.in_powder_snow());
+        ui.board_allowed = board_allowed(alive, player_mode.mode == minecraftoss_player::GameMode::Spectator, ps.pm_flags, moved.eye_in_water, asleep, survival.in_powder_snow());
         if !alive {
             ui.inventory_open = false;
             ui.chat.close();
@@ -2205,24 +1255,7 @@ fn update(
             ui.drop_selected = None;
             ui.swap_hands = false;
         }
-        if inventory_ui.table().is_some_and(|pos| {
-            !minecraft_terrain::crafting::within_table_reach(eye, pos)
-                || !minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::crafting::is_crafting_table)
-        }) {
-            ui.inventory_open = false;
-        }
-        if inventory_ui.block().is_some_and(|opened| {
-            opened.cells.iter().any(|&pos| {
-                !minecraft_terrain::crafting::within_table_reach(eye, pos)
-                    || minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::containers::Station::of) != Some(opened.station)
-            })
-        }) {
-            ui.inventory_open = false;
-        }
-        if inventory_ui.bench().is_some_and(|(pos, kind)| {
-            !minecraft_terrain::crafting::within_table_reach(eye, pos)
-                || minecraft_terrain::scene::Scene::block(&terrain.scene, pos).and_then(minecraft_terrain::stations::Workshop::of) != Some(kind)
-        }) {
+        if menus.open.as_ref().is_some_and(|menu| !minecraft_survival::menus::still_valid(menu, &terrain.scene, eye)) {
             ui.inventory_open = false;
         }
         if inventory_ui.lectern().is_some_and(|pos| {
@@ -2231,13 +1264,12 @@ fn update(
         }) {
             ui.inventory_open = false;
         }
-        inventory_ui.level = survival.status.experience_level;
         inventory_ui.sync_weapons(inventory, &owned);
         if std::mem::take(&mut ui.swap_hands) && alive && minecraft_survival::offhand::swap_hands(inventory, *selected) {
             survival.stop_eating();
             hand.blocking = None;
         }
-        let was_open = inventory_ui.block().cloned();
+        let was_open = menus.block().cloned();
         let roll = entities.random_float();
         let operator = ui.chat.command_level >= 2 && settings.as_deref().is_some_and(|settings| settings.minecraft_operator_items);
         inventory_ui.creative.prepare(!player_mode.consumes_items(), operator);
@@ -2245,98 +1277,38 @@ fn update(
         let known = |id: &str| globals.chat.registries().items.iter().any(|item| item == id);
         let creative_thrown = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known);
         inventory_ui.creative.hotbar_key(&mut ui, player_mode, inventory, &known);
-        let thrown: Vec<_> = creative_thrown.into_iter().chain(containers.with_ender(ender, |containers| inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll))).collect();
+        let player_mode = *player_mode;
+        let books = minecraft_survival::menus::Books::of(&globals.data);
+        let clicked = inventory_ui.apply_input(&mut ui, player, containers, books, roll);
         for (pos, action) in inventory_ui.take_lectern_actions() {
-            entities.lectern(pos, action, None);
+            entities.lectern(host_id, pos, action, None);
         }
         for event in std::mem::take(&mut ui.ui_sounds) {
             if let Some(sounds) = sounds.as_mut() {
-                sounds.play(&world.packs, event, None, 1.0, 1.0);
+                sounds.play_local(&world.packs, event, None, 1.0, 1.0);
             }
         }
-        if let Some(pos) = open_table {
-            inventory_ui.open_table(&mut ui, pos);
+        let thrown: Vec<_> = creative_thrown.into_iter().chain(clicked.thrown).collect();
+        if !ui.inventory_open
+            && minecraft_survival::menus::open_station(player, containers, terrain, globals, &entities.recipes, open_table, open_block.take(), open_bench.take())
+            && let Some(menu) = player.menus.open.as_ref()
+        {
+            inventory_ui.show_menu(&mut ui, menu);
         }
-        if let Some(opened) = open_block.take() {
-            let storage = matches!(opened.station, minecraft_terrain::containers::Station::Chest | minecraft_terrain::containers::Station::Barrel);
-            for &pos in opened.cells.iter().filter(|_| storage) {
-                if containers.is_new(pos)
-                    && let Some(chunk) = terrain.scene.generated_chunk((pos.0.div_euclid(16), pos.2.div_euclid(16)))
-                    && let Some(entity) = chunk.block_entities.entities.get(&pos).or_else(|| chunk.block_entities.pending.get(&pos))
-                    && let Some((items, seed)) = minecraft_terrain::containers::structure_loot(&globals.registries, entity, pos, globals.seed, &entities.recipes, globals.data.enchantments.clone())
-                {
-                    containers.fill(pos, items, seed);
-                }
-            }
-            let named = containers.custom_name(opened.cells[0]);
-            if inventory_ui.open_block(&mut ui, opened)
-                && let Some(name) = named
-            {
-                ui.screen_title = name;
-            }
-        }
-        if let Some((pos, kind)) = open_bench.take() {
-            if kind == minecraft_terrain::stations::Workshop::Enchanting {
-                let block_at = |at: (i32, i32, i32)| minecraft_terrain::scene::Scene::block(&terrain.scene, at);
-                inventory_ui.shelves = minecraft_terrain::stations::bookshelves(
-                    pos,
-                    |at| block_at(at).is_some_and(|b| b.id.key() == "minecraft:bookshelf"),
-                    |at| {
-                        block_at(at).is_none_or(|b| {
-                            terrain.stream.states.state_of(b).is_some_and(|state| globals.registries.blocks.is(state, minecraftoss_core::block::flags::REPLACEABLE))
-                        })
-                    },
-                );
-            }
-            inventory_ui.open_bench(&mut ui, pos, kind);
-        }
-        survival.spend_levels(inventory_ui.take_spent_levels());
-        for (event, pos) in std::mem::take(&mut inventory_ui.used) {
-            let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
-            let pitch = entities.random_float() * 0.1 + 0.9;
-            if let Some(sounds) = sounds.as_mut() {
-                sounds.play(&world.packs, event, Some(at(centre)), 1.0, pitch);
-            }
-        }
-        if let Some(pos) = inventory_ui.anvil_used.take() {
-            let block = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).cloned();
-            let worn = entities.random_float() < 0.12;
-            let next = block.as_ref().filter(|_| worn).map(|b| match b.id.key().as_str() {
-                "minecraft:anvil" => Some("minecraft:chipped_anvil"),
-                "minecraft:chipped_anvil" => Some("minecraft:damaged_anvil"),
-                _ => None,
-            });
-            let event = if next == Some(None) { "minecraft:block.anvil.destroy" } else { "minecraft:block.anvil.use" };
-            if let Some(next) = next {
-                let state = next.map(|id| {
-                    let mut worn = minecraft_terrain::scene::Block::new(id);
-                    worn.properties = block.as_ref().map_or_else(Default::default, |b| b.properties.clone());
-                    worn
-                });
-                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(pos, state)]);
-            }
-            let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
-            let pitch = entities.random_float() * 0.1 + 0.9;
-            if let Some(sounds) = sounds.as_mut() {
-                sounds.play(&world.packs, event, Some(at(centre)), 1.0, pitch);
-            }
-        }
-        let now_open = inventory_ui.block().cloned();
+        let now_open = player.menus.block().cloned();
         let spectator = player_mode.mode == minecraftoss_player::GameMode::Spectator;
-        let mut opener_events = Vec::new();
-        for (opened, open) in [(was_open.clone().filter(|o| now_open.as_ref() != Some(o)), false), (now_open.filter(|o| was_open.as_ref() != Some(o)), true)] {
-            let Some(opened) = opened else { continue };
-            if open && opened.cells.iter().any(|&pos| minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::openers::Openers::counted)) {
-                entities.anger_piglins(feet, true);
-            }
-            opener_events.extend(minecraft_survival::level::toggle_openers(openers, &terrain.scene, &opened.cells, local_uuid, open, spectator));
-        }
-        if entities.ticks() % minecraft_terrain::openers::RECHECK_TICKS == 0 {
-            let key = minecraft_survival::level::opener_key(local_uuid);
-            let open_cells = inventory_ui.block().map_or_else(Vec::new, |opened| opened.cells.clone());
-            opener_events.extend(openers.recheck(|player, pos| player != key || open_cells.contains(&pos)));
-        }
-        for view in std::mem::take(&mut entities.lecterns) {
+        let open_cells: Vec<OpenCells> = std::iter::once(&*player)
+            .chain(friends.iter().map(|friend| &**friend).filter(|friend| friend.dimension == *dimension))
+            .map(|each| (minecraft_survival::level::opener_key(&each.uuid), each.menus.block().map_or_else(Vec::new, |opened| opened.cells.clone())))
+            .collect();
+        let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids, level: band };
+        let mut menu_effects = minecraft_survival::menus::finish(entities, terrain, &mut body, clicked.used, clicked.anvil);
+        menu_effects.extend(minecraft_survival::menus::lids(minecraft_survival::menus::Lids { entities, terrain, openers, body: &mut body }, (local_uuid, host_id, feet), was_open.as_ref(), now_open.as_ref(), spectator));
+        menu_effects.extend(minecraft_survival::menus::recheck_lids(minecraft_survival::menus::Lids { entities, terrain, openers, body: &mut body }, |key| open_cells.iter().find(|(each, _)| *each == key).map(|(_, cells)| cells.clone())));
+        crate::minecraft_input::play(menu_effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
+        let screen = minecraft_survival::menus::screen(player, containers);
+        let minecraft_survival::player::Player { survival, death_watch, inventory, selected, hand, .. } = &mut *player;
+        for view in entities.take_lecterns(host_id) {
             if let Some(book) = view.taken {
                 let stack = entities.book_stack(&book);
                 let (dropped, _) = minecraft_survival::commands::give_stacks(inventory, *selected, &stack, 1);
@@ -2350,29 +1322,11 @@ fn update(
                 let components = book.components.as_deref().and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
                 let shown = frame::McBook { pages: minecraft_terrain::lectern::pages_text(components.as_ref()), page: view.page.max(0) as usize, take: player_mode.may_build() };
                 if !inventory_ui.show_lectern(&mut ui, view.pos, shown) {
-                    entities.lectern(view.pos, minecraft_terrain::lectern::LecternAction::Close, None);
+                    entities.lectern(host_id, view.pos, minecraft_terrain::lectern::LecternAction::Close, None);
                 }
             }
         }
-        for event in opener_events {
-            let outcome = minecraft_survival::level::opener_outcome(&terrain.scene, &event);
-            let (cell, id, count) = outcome.block_event;
-            entities.lids.block_event(&terrain.scene, cell, id, count);
-            if let Some((pos, viewers)) = outcome.trapped {
-                entities.chest_openers(pos, viewers);
-            }
-            if let Some(sound) = outcome.sound {
-                let pitch = minecraft_terrain::openers::pitch(entities.random_float());
-                if let Some(sounds) = sounds.as_mut() {
-                    sounds.play(&world.packs, sound.event, Some(at(sound.position)), sound.volume, pitch);
-                }
-            }
-            if let Some((cell, state)) = outcome.state {
-                write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, vec![(cell, Some(state))]);
-            }
-        }
-        entities.experience_found += inventory_ui.take_experience() as f32;
-        let found = std::mem::take(&mut entities.experience_found);
+        let found = entities.take_experience(host_id).saturating_add(clicked.experience) as f32;
         let points = found.floor() as u32 + u32::from(found.fract() > 0.0 && entities.random_float() < found.fract());
         if points > 0 {
             let (r1, r2) = (entities.random_float(), entities.random_float());
@@ -2389,16 +1343,8 @@ fn update(
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
         };
-        if let Some(death) = death_watch.take()
-            && !death.keep_inventory
-        {
-            for stack in minecraft_survival::death::death_drops(inventory, |stack| minecraft_survival::guns::weapon_of(stack).is_some()) {
-                entities.world_items.drop_on_death(stack, glam::DVec3::from_array(death.spot.eye));
-            }
-            entities.award_experience(death.spot.feet, death.experience);
-            hand.blocking = None;
-        }
-        crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+        crate::minecraft_players::drop_on_death(death_watch, inventory, hand, entities);
+        crate::minecraft_inventory::throw(&mut entities.view.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(inventory, selected, ps.weapon).filter(|_| player_mode.interacts());
         let refused = ui.weapon_request.filter(|&weapon| sky_bits(&terrain.environment) != 0 && sim::voxel::needs_sky(authority.0.weapon_script_name(weapon)));
         if refused.is_some() && *refused_air != refused {
@@ -2409,10 +1355,14 @@ fn update(
             ui.weapon_request = None;
         }
         inventory_ui.animation_tick = atlas_animation.ticks();
-        containers.with_ender(ender, |containers| inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, containers));
+        inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, (&screen, survival.status.experience_level, containers));
 
         if let Some(sounds) = sounds.as_mut() {
-            for (event, position, volume, pitch) in std::mem::take(&mut entities.sounds) {
+            for played in sounds.take_recorded() {
+                let from = played.at.map(|at| sim::voxel::to_block(origin, at.to_array()));
+                entities.hear(minecraft_survival::heard::played(&played.event, from, (played.volume, played.pitch), local.0.0, eye));
+            }
+            for (event, position, volume, pitch) in std::mem::take(&mut entities.view.sounds) {
                 sounds.play(&world.packs, &event, Some(at(position.to_array())), volume, pitch);
             }
         }
@@ -2430,11 +1380,11 @@ fn update(
                 && aim.target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0).is_some_and(|hit| minecraft_terrain::scene::Scene::block(&terrain.scene, hit.pos).is_some_and(minecraft_terrain::campfire::is_campfire))
         };
         ui.offhand_usable = alive
-            && !holding
+            && !moved.holding
             && offhand_stack.as_ref().is_some_and(|stack| {
                 minecraft_survival::offhand::has_use(stack, placeable(stack), &survival.status.food, player_mode.mode) || (containers.cooks_on_campfire(stack, &entities.recipes) && aims_at_campfire())
             });
-        ui.offhand_busy = alive && !holding && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some());
+        ui.offhand_busy = alive && !moved.holding && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some());
         ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some());
         sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
         // The held item in view; an empty hand is MW2's own hands.
@@ -2473,33 +1423,16 @@ fn update(
             }
             let mut mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
             if let Some(pose) = activation {
-                let display = minecraft_terrain::pack::ResourceId::parse(TOTEM)
-                    .ok()
-                    .and_then(|id| minecraft_terrain::model::item_display_transform(&world.packs, &id, "fixed").ok())
-                    .unwrap_or(glam::Mat4::IDENTITY);
-                let start = mesh.vertices.len() as u32;
-                let totem = entities.held_item_mesh(&[(pose * display, TOTEM.to_owned(), false)], eye_light_at, &world.packs, &world.atlas, light);
-                mesh.vertices.extend(totem.vertices.into_iter().map(|vertex| minecraft_terrain::mesh::Vertex { sky_light: FULL_BRIGHT, block_light: FULL_BRIGHT, ..vertex }));
-                mesh.indices.extend(totem.indices.into_iter().map(|index| index + start));
-                mesh.faces += totem.faces;
+                crate::minecraft_hand::append_totem(&mut mesh, &mut entities.view, pose, eye_light_at, (&world.packs, &world.atlas, light));
             }
             let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
             view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
-            // Reverse-Z with no far plane, as the scene's; 70 degrees up.
-            let f = 1.0 / (35.0f32.to_radians()).tan();
-            let near = 0.05;
-            view.hand_clip = Mat4::from_cols(
-                Vec4::new(f / aspect, 0.0, 0.0, 0.0),
-                Vec4::new(0.0, f, 0.0, 0.0),
-                Vec4::new(0.0, 0.0, 0.0, -1.0),
-                Vec4::new(0.0, 0.0, near, 0.0),
-            )
-            .to_cols_array();
+            view.hand_clip = crate::minecraft_hand::hand_clip(aspect);
         }
 
-        sim::voxel::set_mob_boxes(entities.shot_boxes(riding.map(|ride| ride.vehicle)));
-        entities.track_body(minecraft_survival::level::opener_key(local_uuid), feet, PLAYER_WIDTH, f64::from(hull_maxs[2] / sim::voxel::BLOCK));
-        entities.tick_scene(&terrain.scene, mob_ticks);
+        sim::voxel::set_mob_boxes(band, entities.shot_boxes(player.riding.map(|ride| ride.vehicle)));
+        crate::minecraft_players::track_body(entities, local_uuid, ps, origin);
+        entities.view.tick_scene(&terrain.scene, mob_ticks);
         let sky_darken = (15.0 - terrain.environment.sky_light_level()).clamp(0.0, 15.0) as u8;
         let campfire_items: Vec<_> = containers
             .campfires()
@@ -2510,7 +1443,7 @@ fn update(
             })
             .flatten()
             .collect();
-        let meshes = entities.meshes(
+        let meshes = entities.view.meshes(
             &terrain.scene,
             &world.packs,
             &world.atlas,
@@ -2521,7 +1454,7 @@ fn update(
             &|pos| terrain.stream.cell_settled(pos),
             &campfire_items,
         );
-        for (pos, apart) in entities.lids.take_apart_changes() {
+        for (pos, apart) in entities.view.lids.take_apart_changes() {
             terrain.stream.draw_apart(pos, apart);
         }
         let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
@@ -2540,6 +1473,7 @@ fn update(
         bytes.extend_from_slice(bytemuck::cast_slice(&vertices));
         indices.extend(mesh.indices.iter().map(|i| i + base));
     }
+    let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, .. } = &mut *player;
     if alive {
         match minecraft_survival::gear::body_gear(inventory, *selected, player_mode) {
             Some(gear) => body_gear.set(local.0.0, board_gear(gear, skate.active)),
@@ -2550,73 +1484,145 @@ fn update(
     } else {
         body_gear.remove(local.0.0);
     }
-    view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs, hand.dig.crack());
-    let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
-    view.eye_light = [
-        f32::from(light.get(eye_block)),
-        f32::from(light.get_block(eye_block)),
-    ];
+    let mut cracks = minecraft_survival::level::shot_cracks(shots);
+    cracks.extend(hand.dig.crack());
+    cracks.extend(friends.iter().filter(|friend| friend.dimension == *dimension).filter_map(|friend| friend.hand.dig.crack()));
+    view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs, &cracks);
+    let lava = (alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current)).then(|| {
+        let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
+        (player_mode.mode == minecraftoss_player::GameMode::Spectator, fire_resistant)
+    });
     let weather = entities.as_ref().map_or_else(minecraft_terrain::server::WeatherView::default, |e| e.weather);
     view.weather = match entities.as_ref() {
         Some(entities) if world.weather_texture.is_some() => entities.weather_mesh(&terrain.scene, eye, light),
         _ => Default::default(),
     };
-    let rains_here = terrain
-        .scene
-        .noise_biome((eye_block.0 >> 2, eye_block.1 >> 2, eye_block.2 >> 2))
-        .is_some_and(|biome| globals.registries.biomes.get(biome).has_precipitation);
-    terrain
-        .environment
-        .update_rain_fog(weather.rain_level, light.get(eye_block), rains_here, (dt * 20.0) as f32);
-    *environment_accumulator += dt;
-    if !*environment_primed || *environment_accumulator >= TICK_SECONDS {
-        *environment_accumulator = (*environment_accumulator % TICK_SECONDS).min(TICK_SECONDS);
-        let scene = &terrain.scene;
-        let flash_sound = terrain.environment.tick(
-            globals.default_clock_ticks(*dimension),
-            weather.rain_level,
-            weather.thunder_level,
-            eye,
-            |x, y, z| scene.noise_biome((x, y, z)).map_or(0, |id| id.0),
-            !*environment_primed,
-            ui.credits.is_some(),
-        );
-        if let (Some((x_angle, y_angle)), Some(sounds)) = (flash_sound, sounds.as_mut()) {
-            let toward = minecraft_terrain::end_flash::direction_from_rotation(x_angle, y_angle) * 10.0;
-            let source = [eye[0] + toward.x, eye[1] + toward.y, eye[2] + toward.z];
-            sounds.play_without_falloff(&world.packs, "minecraft:weather.end_flash", Some(at(source)), 1.0, 1.0);
-        }
+    let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
+    let powder_snow = (alive && lava.is_none() && minecraft_terrain::scene::Scene::block(&terrain.scene, eye_block).is_some_and(|b| b.id.key() == "minecraft:powder_snow")).then_some(player_mode.mode == minecraftoss_player::GameMode::Spectator);
+    let inputs = SkyInputs {
+        eye,
+        forward,
+        aspect,
+        dt,
+        clock_ticks: globals.default_clock_ticks(*dimension),
+        game_time: globals.day.ticks,
+        rain_level: weather.rain_level,
+        thunder_level: weather.thunder_level,
+        lava,
+        powder_snow,
+        world_fog: ui.boss_bars.iter().any(|bar| bar.world_fog),
+        credits: ui.credits.is_some(),
+    };
+    let sky_ticked = present_sky(&mut view, terrain, &globals.registries, light, (environment_accumulator, environment_primed), &inputs);
+    if let (Some((x_angle, y_angle)), Some(sounds)) = (sky_ticked.flash, sounds.as_mut()) {
+        let toward = minecraft_terrain::end_flash::direction_from_rotation(x_angle, y_angle) * 10.0;
+        let source = [eye[0] + toward.x, eye[1] + toward.y, eye[2] + toward.z];
+        sounds.play_without_falloff(&world.packs, "minecraft:weather.end_flash", Some(at(source)), 1.0, 1.0);
+    }
+    if sky_ticked.ticked {
         let music_input = crate::minecraft_music::MusicInput { dimension: *dimension, credits_open: ui.credits.is_some(), boss_music: ui.boss_bars.iter().any(|bar| bar.music), finished: mc_music.finished.as_deref(), loading: ui.loading_world };
         if let Some(action) = music.update(music_input) {
             crate::minecraft_music::apply(action, sounds.as_mut(), &world.packs, &mut mc_music);
         }
-        *environment_primed = true;
     }
-    let partial_tick = (*environment_accumulator / TICK_SECONDS).clamp(0.0, 1.0) as f32;
+    present_clouds(&mut view, world, cloud_center, eye, globals.day.ticks);
+    present_light_volume(&mut view, light, block, light_volume_at, light_volume_age);
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SkyInputs {
+    pub(crate) eye: [f64; 3],
+    pub(crate) forward: glam::Vec3,
+    pub(crate) aspect: f32,
+    pub(crate) dt: f64,
+    pub(crate) clock_ticks: i64,
+    pub(crate) game_time: f64,
+    pub(crate) rain_level: f32,
+    pub(crate) thunder_level: f32,
+    pub(crate) lava: Option<(bool, bool)>,
+    pub(crate) powder_snow: Option<bool>,
+    pub(crate) world_fog: bool,
+    pub(crate) credits: bool,
+}
+
+pub(crate) fn present_crumbs(view: &mut minecraft_survival::entity_view::EntityView, mining: &mut crate::minecraft_mining::Mining, packs: &PackStack, atlas: &Atlas) {
+    for (item, at, velocities) in std::mem::take(&mut view.item_crumbs) {
+        if let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
+            .ok()
+            .and_then(|id| minecraft_terrain::model::item_particle_texture(packs, &id).ok().flatten())
+            .filter(|texture| atlas.contains(texture))
+        {
+            mining.item_crumbs(packs, at.as_vec3(), &velocities, &texture);
+        }
+    }
+    let potion_crumbs = std::mem::take(&mut view.potion_crumbs);
+    if !potion_crumbs.is_empty()
+        && let Some(texture) = minecraft_terrain::pack::ResourceId::parse(minecraft_terrain::thrown::SPLASH_POTION)
+            .ok()
+            .and_then(|id| minecraft_terrain::model::item_particle_texture(packs, &id).ok().flatten())
+            .filter(|texture| atlas.contains(texture))
+    {
+        for center in potion_crumbs {
+            mining.potion_crumbs(packs, center.as_vec3(), &texture);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SkyTicked {
+    pub(crate) ticked: bool,
+    pub(crate) flash: Option<(f32, f32)>,
+}
+
+pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft_survival::level::Terrain, registries: &Registries, light: &SkyLight, (accumulator, primed): (&mut f64, &mut bool), inputs: &SkyInputs) -> SkyTicked {
+    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, powder_snow, world_fog, credits } = *inputs;
+    let mut ticked = SkyTicked::default();
+    let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
+    view.eye_light = [
+        f32::from(light.get(eye_block)),
+        f32::from(light.get_block(eye_block)),
+    ];
+    let rains_here = terrain
+        .scene
+        .noise_biome((eye_block.0 >> 2, eye_block.1 >> 2, eye_block.2 >> 2))
+        .is_some_and(|biome| registries.biomes.get(biome).has_precipitation);
+    terrain
+        .environment
+        .update_rain_fog(rain_level, light.get(eye_block), rains_here, (dt * 20.0) as f32);
+    *accumulator += dt;
+    if !*primed || *accumulator >= TICK_SECONDS {
+        *accumulator = (*accumulator % TICK_SECONDS).min(TICK_SECONDS);
+        let scene = &terrain.scene;
+        let flash = terrain.environment.tick(
+            clock_ticks,
+            rain_level,
+            thunder_level,
+            eye,
+            |x, y, z| scene.noise_biome((x, y, z)).map_or(0, |id| id.0),
+            !*primed,
+            credits,
+        );
+        *primed = true;
+        ticked = SkyTicked { ticked: true, flash };
+    }
+    let partial_tick = (*accumulator / TICK_SECONDS).clamp(0.0, 1.0) as f32;
     let sky = terrain.environment.sky_state(&View {
         partial_tick,
         forward,
         camera_y: eye[1] as f32,
         render_distance: VIEW_DISTANCE as u32,
-        rain_level: weather.rain_level,
-        thunder_level: weather.thunder_level,
+        rain_level,
+        thunder_level,
     });
     let render_distance = VIEW_DISTANCE as f32 * 16.0;
-    let spectating = player_mode.mode == minecraftoss_player::GameMode::Spectator;
-    let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
-    let sky = if alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current) {
-        let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
-        minecraft_terrain::lava_fog::in_lava(sky, spectating, fire_resistant, render_distance)
-    } else if alive && minecraft_terrain::scene::Scene::block(&terrain.scene, eye_block).is_some_and(|b| b.id.key() == "minecraft:powder_snow") {
-        minecraft_terrain::lava_fog::in_powder_snow(sky, spectating, render_distance)
-    } else {
-        sky
+    let sky = match (lava, powder_snow) {
+        (Some((spectator, fire_resistant)), _) => minecraft_terrain::lava_fog::in_lava(sky, spectator, fire_resistant, render_distance),
+        (None, Some(spectator)) => minecraft_terrain::lava_fog::in_powder_snow(sky, spectator, render_distance),
+        (None, None) => sky,
     };
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];
-    let game_time = globals.day.ticks;
-    let world_fog = ui.boss_bars.iter().any(|bar| bar.world_fog);
     view.environment = [
         put(forward),
         put(right),
@@ -2663,7 +1669,10 @@ fn update(
     ];
     view.end_look.portal_time = crate::minecraft_end_look::portal_time(game_time);
     view.end_look.end_flash = sky.end_flash;
+    ticked
+}
 
+pub(crate) fn present_clouds(view: &mut MinecraftWorldView, world: &Loaded, cloud_center: &mut Option<(i32, i32)>, eye: [f64; 3], game_time: f64) {
     // Clouds, rebuilt when the camera crosses a cloud cell.
     if let Some(mask) = &world.cloud_mask {
         let center = mask.center(eye[0] as f32, eye[2] as f32, game_time);
@@ -2673,7 +1682,9 @@ fn update(
             view.clouds = Some(Arc::new((mesh.vertices, mesh.indices)));
         }
     }
+}
 
+pub(crate) fn present_light_volume(view: &mut MinecraftWorldView, light: &SkyLight, block: (i32, i32, i32), light_volume_at: &mut Option<[i32; 3]>, light_volume_age: &mut u32) {
     // The light MW2 models stand in, around the player.
     *light_volume_age += 1;
     let half = LIGHT_VOLUME / 2;
@@ -2731,10 +1742,63 @@ fn update(
     }
 }
 
-fn apply_streamed(
+pub(crate) fn view_forward(viewangles: [f32; 3]) -> glam::Vec3 {
+    let (pitch, yaw) = (viewangles[0].to_radians(), viewangles[1].to_radians());
+    let map_forward = [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin()];
+    glam::Vec3::new(map_forward[0], map_forward[2], -map_forward[1])
+}
+
+pub(crate) fn cull_camera(drawn_from: Option<&Transform>, origin: [f64; 3], eye: [f64; 3], forward: glam::Vec3, aspect: f32) -> CullCamera {
+    // Culled from the camera that draws: the player's eye, or while
+    // skating the Skate camera (a frame behind, so with room to spare).
+    let skate_camera = drawn_from.map(|t| {
+        let at = sim::voxel::to_block(origin, t.translation.to_array());
+        let ahead = t.rotation * Vec3::NEG_Z;
+        (
+            glam::DVec3::new(at[0], at[1], at[2]),
+            glam::Vec3::new(ahead.x, ahead.z, -ahead.y).normalize_or(forward),
+        )
+    });
+    let (cull_at, cull_forward) = skate_camera.unwrap_or((glam::DVec3::new(eye[0], eye[1], eye[2]), forward));
+    CullCamera {
+        position: cull_at,
+        forward: cull_forward,
+        fov_degrees: if skate_camera.is_some() { 120.0 } else { 90.0 },
+        aspect,
+        yaw_degrees: (-cull_forward.x).atan2(cull_forward.z).to_degrees(),
+        pitch_degrees: (-cull_forward.y).asin().to_degrees(),
+    }
+}
+
+type ColumnLights = Vec<((i32, i32), Option<Arc<SkyLight>>)>;
+
+type OpenCells = (u128, Vec<(i32, i32, i32)>);
+
+type ShapeTables<'a> = (&'a mut HashMap<BlockStateId, u16>, &'a mut HashMap<(Vec<[u32; 6]>, u16), u16>, u8);
+
+pub(crate) fn terrain_frame(terrain: &mut minecraft_survival::level::Terrain, world: &Loaded, view: &mut MinecraftWorldView, camera: &CullCamera) -> ColumnLights {
+    let update = terrain
+        .stream
+        .frame(&terrain.scene, camera, FADE_MILLIS, &world.atlas, &world.packs);
+    view.uploads.extend(update.uploads);
+    view.removed.extend(update.removed);
+    view.visible = update.visible;
+    update.lights
+}
+
+pub(crate) fn animate_atlas(view: &mut MinecraftWorldView, animation: &mut AtlasAnimation, clock: &mut f64, dt: f64, atlas: &Atlas) {
+    *clock += dt;
+    if *clock >= TICK_SECONDS {
+        *clock %= TICK_SECONDS;
+        let patches = animation.tick(atlas);
+        view.atlas_patches.retain(|queued| patches.iter().all(|patch| patch.origin != queued.origin));
+        view.atlas_patches.extend(patches);
+    }
+}
+
+pub(crate) fn apply_streamed(
     registries: &Registries,
-    shapes: &mut HashMap<BlockStateId, u16>,
-    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    (shapes, shape_ids, level): ShapeTables<'_>,
     (loaded, forgotten): (Vec<Arc<minecraftoss_core::Chunk>>, Vec<minecraftoss_core::ChunkPos>),
 ) {
     for chunk in loaded {
@@ -2758,6 +1822,7 @@ fn apply_streamed(
             }
         }
         sim::voxel::set_chunk(
+            level,
             chunk.pos.x,
             chunk.pos.z,
             sim::voxel::VoxelChunk {
@@ -2768,7 +1833,7 @@ fn apply_streamed(
         );
     }
     for pos in forgotten {
-        sim::voxel::remove_chunk(pos.x, pos.z);
+        sim::voxel::remove_chunk(level, pos.x, pos.z);
     }
 }
 
@@ -2784,14 +1849,17 @@ fn stream_around_spawn(
     light: &mut Option<SkyLight>,
     gate: &mut crate::minecraft_spawn_gate::SpawnGate,
     view: &mut MinecraftWorldView,
-    at: [f64; 3],
+    (dimension, at): (Dimension, [f64; 3]),
+    others: &[(i32, i32, i32)],
     aspect: f32,
     now_ms: u64,
 ) {
     let [x, y, z] = at;
     let spawn_block = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, spawn_block);
-    apply_streamed(registries, shapes, shape_ids, streamed);
+    let here: Vec<(i32, i32, i32)> = std::iter::once(spawn_block).chain(others.iter().copied()).collect();
+    let streamed = minecraft_survival::level::stream_tick(terrain, entities, containers, &here, Some(spawn_block));
+    let level = minecraft_survival::bands::level(dimension);
+    apply_streamed(registries, (shapes, shape_ids, level), streamed);
     let camera = CullCamera {
         position: glam::DVec3::new(x, y + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, z),
         forward: glam::Vec3::Z,
@@ -2809,10 +1877,72 @@ fn stream_around_spawn(
             light.set_chunk_column(chunk, column);
         }
     }
-    observe_spawn(terrain, gate, at, camera.position, now_ms);
+    observe_spawn(terrain, gate, (level, at), camera.position, now_ms);
 }
 
-fn place_player(
+pub(crate) struct HostView<'a> {
+    pub(crate) server: &'a mut minecraft_survival::server::Server,
+    pub(crate) local: &'a minecraft_net::PlayerUuid,
+    pub(crate) origins: &'a HashMap<Dimension, [f64; 3]>,
+    pub(crate) shown: Option<Dimension>,
+    pub(crate) queues: &'a mut crate::minecraft_players::VoxelQueues,
+    pub(crate) shapes: &'a mut HashMap<BlockStateId, u16>,
+    pub(crate) shape_ids: &'a mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    pub(crate) packs: &'a PackStack,
+    pub(crate) atlas: &'a Atlas,
+    pub(crate) language: Option<&'a HashMap<String, String>>,
+    pub(crate) mining: &'a mut crate::minecraft_mining::Mining,
+    pub(crate) sounds: Option<&'a mut crate::minecraft_sounds::Sounds>,
+    pub(crate) light: Option<&'a SkyLight>,
+    pub(crate) ticked: Option<Dimension>,
+    pub(crate) events: &'a mut Vec<sim::voxel::VoxelEvent>,
+    pub(crate) minings: &'a mut HashMap<Dimension, crate::minecraft_mining::Mining>,
+}
+
+pub(crate) fn host_view(runtime: &mut Runtime) -> Option<HostView<'_>> {
+    let Runtime { server, local, origins, shown, queues, shapes, shape_ids, world, inventory_ui, mining, sounds, light, ticked, events, minings, .. } = runtime;
+    let world = world.as_ref()?;
+    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown, queues, shapes, shape_ids, packs: &world.packs, atlas: &world.atlas, language: inventory_ui.language(), mining, sounds: sounds.as_mut(), light: light.as_ref(), ticked: *ticked, events, minings })
+}
+
+pub(crate) fn show_lines(runtime: &Runtime, chat: &mut frame::McChat, lines: &[minecraft_commands::Clientbound]) -> bool {
+    if let Some(world) = runtime.world.as_ref().filter(|_| !lines.is_empty()) {
+        show_chat(chat, &runtime.inventory_ui, &world.packs, lines);
+    }
+    runtime.world.is_some()
+}
+
+pub(crate) fn presence_of(player: &minecraft_survival::player::Player, ps: Option<&playerstate_iw4::PlayerState>, origin: [f64; 3]) -> minecraft_survival::commands::Presence {
+    let alive = ps.is_some_and(|ps| ps.pm_type == 0) && player.arrival.is_none();
+    let pose = ps
+        .filter(|_| alive)
+        .map(|ps| minecraft_commands::Pose { feet: sim::voxel::to_block(origin, ps.origin), yaw: minecraft_yaw(ps.viewangles[1]), pitch: ps.viewangles[0] })
+        .or_else(|| player.place.filter(|place| place.dimension == player.dimension).map(|place| minecraft_commands::Pose { feet: place.feet, yaw: place.yaw, pitch: place.pitch }));
+    minecraft_survival::commands::Presence { pose, alive }
+}
+
+pub(crate) fn friends_presence(players: &std::collections::BTreeMap<minecraft_net::PlayerUuid, minecraft_survival::player::Player>, authority: &sim::SimWorld, origins: &HashMap<Dimension, [f64; 3]>, host: &minecraft_net::PlayerUuid) -> Vec<(minecraft_net::PlayerUuid, minecraft_survival::commands::Presence)> {
+    players
+        .iter()
+        .filter(|(uuid, _)| *uuid != host)
+        .filter_map(|(uuid, player)| {
+            let origin = *origins.get(&player.dimension)?;
+            Some((uuid.clone(), presence_of(player, authority.player(sim::ClientId(player.id.0)), origin)))
+        })
+        .collect()
+}
+
+pub(crate) fn place_friend(player: &mut minecraft_survival::player::Player, authority: &mut sim::SimWorld, id: sim::ClientId, ps: &playerstate_iw4::PlayerState, origin: [f64; 3]) {
+    let chunk = |block: f64| (block.floor() as i32) >> 4;
+    if let Some(place) = player.arrival
+        && !sim::voxel::chunks_ready_around(minecraft_survival::bands::level(place.dimension), chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS)
+    {
+        return;
+    }
+    place_player(player, authority, id, ps, origin, &mut crate::minecraft_spawn_gate::SpawnGate::default(), 0);
+}
+
+pub(crate) fn place_player(
     player: &mut minecraft_survival::player::Player,
     authority: &mut sim::SimWorld,
     id: sim::ClientId,
@@ -2834,7 +1964,8 @@ fn place_player(
         });
         return;
     };
-    authority.teleport_facing(id, sim::voxel::to_map(origin, place.feet), [place.pitch, minecraft_yaw(place.yaw), 0.0]);
+    let feet = minecraft_survival::bands::kept_in_walls(place.dimension, place.feet);
+    authority.teleport_facing(id, sim::voxel::to_map(origin, feet), [place.pitch, minecraft_yaw(place.yaw), 0.0]);
     authority.push_velocity(id, arrival_velocity(place.motion));
     if player.mode.abilities.flying {
         authority.set_minecraft_abilities(id, ability_bits(&player.mode) | playerstate_iw4::pm_flags::MC_FLYING);
@@ -2843,7 +1974,7 @@ fn place_player(
     player.portal.last_feet = None;
     player.steps.air_peak = (place.fall_distance > 0.0).then_some(place.feet[1] + place.fall_distance);
     let chunk = |block: f64| (block.floor() as i32) >> 4;
-    if !gate.waiting() && !sim::voxel::chunks_ready_around(chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS) {
+    if !gate.waiting() && !sim::voxel::chunks_ready_around(minecraft_survival::bands::level(place.dimension), chunk(place.feet[0]), chunk(place.feet[2]), crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS) {
         gate.start(now_ms);
     }
     player.place = Some(place);
@@ -2857,18 +1988,18 @@ fn arrival_velocity(motion: [f64; 3]) -> [f32; 3] {
     sim::voxel::to_map([0.0; 3], motion.map(|v| v / TICK_SECONDS))
 }
 
-fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, origin: [f64; 3], eye: glam::DVec3, now_ms: u64) {
+pub(crate) fn observe_spawn(terrain: &minecraft_survival::level::Terrain, gate: &mut crate::minecraft_spawn_gate::SpawnGate, (level, origin): (u8, [f64; 3]), eye: glam::DVec3, now_ms: u64) {
     if !gate.waiting() {
         return;
     }
     let spawn_chunk = ((origin[0].floor() as i32) >> 4, (origin[2].floor() as i32) >> 4);
-    let chunks_ready = sim::voxel::chunks_ready_around(spawn_chunk.0, spawn_chunk.1, crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS);
+    let chunks_ready = sim::voxel::chunks_ready_around(level, spawn_chunk.0, spawn_chunk.1, crate::minecraft_spawn_gate::SPAWN_CHUNK_RADIUS);
     let eye = eye.floor();
     let section_visible = terrain.stream.section_compiled_and_visible((eye.x as i32, eye.y as i32, eye.z as i32), FADE_MILLIS);
     gate.observe(now_ms, chunks_ready, section_visible);
 }
 
-fn shape_id(
+pub(crate) fn shape_id(
     shapes: &mut HashMap<BlockStateId, u16>,
     shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
     registries: &Registries,
@@ -2910,105 +2041,35 @@ fn shape_id(
     })
 }
 
-fn write_blocks(
+pub(crate) fn write_blocks(
     terrain: &mut minecraft_survival::level::Terrain,
     registries: &Registries,
-    shapes: &mut HashMap<BlockStateId, u16>,
-    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    (shapes, shape_ids, level): ShapeTables<'_>,
     entities: &mut minecraft_survival::entities::Entities,
     writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
 ) {
     for (at, block) in &writes {
         let state = block.as_ref().and_then(|b| terrain.stream.states.state_of(b));
         let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
-        sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
+        sim::voxel::set_block_shape(level, at.0, at.1, at.2, shape);
     }
     minecraft_survival::level::write_blocks(terrain, entities, writes);
 }
 
-fn refresh_shapes(
+pub(crate) fn refresh_shapes(
     terrain: &minecraft_survival::level::Terrain,
     registries: &Registries,
-    shapes: &mut HashMap<BlockStateId, u16>,
-    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    (shapes, shape_ids, level): ShapeTables<'_>,
     written: &[(i32, i32, i32)],
 ) {
     for &(x, y, z) in written {
         let state = minecraft_terrain::scene::Scene::block(&terrain.scene, (x, y, z)).and_then(|b| terrain.stream.states.state_of(b));
         let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
-        sim::voxel::set_block_shape(x, y, z, shape);
+        sim::voxel::set_block_shape(level, x, y, z, shape);
     }
 }
 
-fn finish_item_use(
-    entities: &mut minecraft_survival::entities::Entities,
-    inventory: &mut minecraftoss_player::inventory::Inventory,
-    sounds: Option<&mut crate::minecraft_sounds::Sounds>,
-    packs: &PackStack,
-    origin: [f64; 3],
-    used: minecraft_survival::entities::SentItemUse,
-    consumes: bool,
-) {
-    let heard = minecraft_survival::level::finish_item_use(entities, inventory, used, consumes);
-    if let Some(sounds) = sounds {
-        for sound in heard {
-            sounds.play(packs, sound.event, sound.at.map(|at| Vec3::from_array(sim::voxel::to_map(origin, at))), sound.volume, sound.pitch);
-        }
-    }
-}
-
-fn hold_off_death(
-    survival: &mut minecraft_survival::survival::Survival,
-    inventory: &mut minecraftoss_player::inventory::Inventory,
-    selected: usize,
-    sounds: Option<&mut crate::minecraft_sounds::Sounds>,
-    packs: &PackStack,
-    struck: bool,
-) -> bool {
-    let popped = minecraft_survival::player::hold_off_death(survival, inventory, selected, struck);
-    if popped && let Some(sounds) = sounds {
-        sounds.play(packs, minecraft_survival::offhand::TOTEM_SOUND, None, 1.0, 1.0);
-    }
-    popped
-}
-
-fn pop_totem(entities: &mut minecraft_survival::entities::Entities, activation: &mut crate::minecraft_hand::ItemActivation, player: &minecraft_net::PlayerUuid, feet: [f64; 3], height: f64) {
-    activation.activate(|| entities.random_float());
-    entities.totem_pop(minecraft_survival::level::opener_key(player), feet, PLAYER_WIDTH, height);
-}
-
-fn scene_block(block: &minecraftoss_player::Block) -> Option<minecraft_terrain::scene::Block> {
-    Some(minecraft_terrain::scene::Block {
-        id: minecraft_terrain::pack::ResourceId::parse(&block.id).ok()?,
-        properties: block.properties.clone(),
-    })
-}
-
-fn obstacles(
-    predicted: &playerstate_iw4::PlayerState,
-    authority: &sim::SimWorld,
-    local: sim::ClientId,
-    entities: &minecraft_survival::entities::Entities,
-) -> Vec<[f64; 6]> {
-    let hull = |ps: &playerstate_iw4::PlayerState| {
-        let (mins, maxs) = sim::voxel::player_hull(ps);
-        sim::voxel::body_box(ps.origin, mins, maxs)
-    };
-    let mut out: Vec<[f64; 6]> = authority.player(local).map_or_else(|| hull(predicted), hull).into_iter().collect();
-    authority.visit_players(|id, ps| {
-        let standing = matches!(
-            ps.pm_type,
-            0 | playerstate_iw4::PM_TYPE_NORMAL_LINKED | playerstate_iw4::PM_TYPE_LAST_STAND
-        );
-        if id != local && standing {
-            out.extend(hull(ps));
-        }
-    });
-    out.extend(entities.boxes().into_iter().map(|(_, b)| b));
-    out
-}
-
-fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
+pub(crate) fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
     use playerstate_iw4::pm_flags::{MC_INVULNERABLE, MC_MAY_FLY, MC_NOCLIP};
     [(mode.abilities.invulnerable, MC_INVULNERABLE), (mode.abilities.may_fly, MC_MAY_FLY), (mode.noclip(), MC_NOCLIP)]
         .into_iter()
@@ -3016,8 +2077,18 @@ fn ability_bits(mode: &minecraft_terrain::game_mode::PlayerMode) -> u32 {
         .fold(0, |bits, (_, bit)| bits | bit)
 }
 
-fn sky_bits(environment: &minecraft_terrain::environment::DimensionEnvironment) -> u32 {
+pub(crate) fn sky_bits(environment: &minecraft_terrain::environment::DimensionEnvironment) -> u32 {
     if environment.presentation.has_ceiling { playerstate_iw4::pm_flags::MC_NO_SKY } else { 0 }
+}
+
+pub(crate) fn event_level(event: &sim::voxel::VoxelEvent) -> u8 {
+    match *event {
+        sim::voxel::VoxelEvent::Shot { level, .. }
+        | sim::voxel::VoxelEvent::Explosion { level, .. }
+        | sim::voxel::VoxelEvent::MobShot { level, .. }
+        | sim::voxel::VoxelEvent::MobBlast { level, .. }
+        | sim::voxel::VoxelEvent::Ray { level, .. } => level,
+    }
 }
 
 fn in_remote_killstreak(presented: &net::PresentedSnapshot, local: sim::ClientId) -> bool {
@@ -3025,7 +2096,7 @@ fn in_remote_killstreak(presented: &net::PresentedSnapshot, local: sim::ClientId
     missile || presented.player(local).is_some_and(|ps| remote_view(ps.pm_type, ps.other_flags))
 }
 
-fn remote_view(pm_type: i32, other_flags: u32) -> bool {
+pub(crate) fn remote_view(pm_type: i32, other_flags: u32) -> bool {
     pm_type == playerstate_iw4::PM_TYPE_NORMAL_LINKED || other_flags & playerstate_iw4::other_flags::AC130 != 0
 }
 
@@ -3038,7 +2109,7 @@ fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
     }
 }
 
-fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
+pub(crate) fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
     frame::McVitals {
         air: vitals.air,
         max_air: vitals.max_air,
@@ -3067,16 +2138,24 @@ fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
 fn draw_body_gear(
     mut view: ResMut<MinecraftWorldView>,
     mut runtime: NonSendMut<Runtime>,
+    mut friend: NonSendMut<crate::minecraft_remote::Friend>,
     posed: Res<crate::anim::minecraft_gear::PosedGearFrame>,
     gear: Res<crate::anim::minecraft_gear::McBodyGear>,
     glide: Res<crate::anim::minecraft_glide::McGlide>,
     puppet: Res<frame::InventoryPuppet>,
+    local: Res<net::LocalPresentClient>,
+    presented: Res<net::PresentedSnapshot>,
 ) {
     view.puppet_gear = Default::default();
-    let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime else {
+    let puppet_client = puppet.active.then_some(puppet.client);
+    let viewer = sim::voxel::viewer_z(presented.player(local.0).map(|ps| ps.origin[2]));
+    let meshes = if let Runtime { world: Some(world), light: Some(light), gear_items, .. } = &mut *runtime {
+        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet_client, viewer, gear_items, &world.packs, &world.atlas, light)
+    } else if let Some((look, light, gear_items)) = friend.gear_look() {
+        crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet_client, viewer, gear_items, &look.packs, &look.atlas, light)
+    } else {
         return;
     };
-    let meshes = crate::anim::minecraft_gear::gear_meshes(&posed, &gear, &glide, view.origin, puppet.active.then_some(puppet.client), gear_items, &world.packs, &world.atlas, light);
     let (bytes, indices) = &mut view.particles;
     let base = (bytes.len() / std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>()) as u32;
     bytes.extend_from_slice(bytemuck::cast_slice(&minecraft_terrain::mesh::section_vertices(&meshes.world)));
@@ -3103,6 +2182,11 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     runtime.switch_screen = None;
     runtime.loading_backgrounds = None;
     runtime.refused_air = None;
+    runtime.queues = Default::default();
+    runtime.relayed = Default::default();
+    runtime.ticked = None;
+    runtime.events.clear();
+    runtime.minings.clear();
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref())
         && server.globals.save.is_none()
         && let Some(player) = server.players.get_mut(local)
@@ -3174,11 +2258,21 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     let ticks = std::mem::take(&mut server.globals.level_ticks);
     server.follow_weather_commands();
     for closed in server.close_empty_levels(ticks) {
-        runtime.origins.remove(&closed);
+        sim::voxel::drop_level(minecraft_survival::bands::level(closed));
     }
     server.prepare_respawns();
     server.open_levels(VIEW_DISTANCE);
-    let failed: Vec<(Dimension, String)> = server.finish_opening().into_iter().filter_map(|(dimension, opened)| opened.err().map(|error| (dimension, error))).collect();
+    let mut failed = Vec::new();
+    for (dimension, opened) in server.finish_opening() {
+        match opened {
+            Ok(()) => {
+                if let Some(&origin) = runtime.origins.get(&dimension) {
+                    set_collision_level(dimension, origin);
+                }
+            }
+            Err(error) => failed.push((dimension, error)),
+        }
+    }
     minecraft_survival::portal_forcer::arrive_through_portals(server);
     let Some(player) = server.players.get(local) else {
         return failed;
@@ -3187,16 +2281,16 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     let Some(level) = server.levels.get_mut(&dimension).filter(|_| runtime.shown != Some(dimension)) else {
         return failed;
     };
-    let (x, y, z) = level.terrain.stream.player_spawn;
-    let arrived = player.arrival.or(player.place).filter(|place| place.dimension == dimension).map(|place| place.feet);
-    let origin = *runtime.origins.entry(dimension).or_insert_with(|| match dimension {
-        Dimension::Overworld => [x, y, z],
-        _ => arrived.unwrap_or([x, y, z]),
-    });
+    let Some(&origin) = runtime.origins.get(&dimension) else {
+        return failed;
+    };
     if let Some(entities) = level.entities.as_mut() {
-        entities.set_player_uuid(local);
+        entities.set_players(&[(u64::from(player.id.0), local.clone())]);
     }
-    sim::voxel::switch_level(origin);
+    let band = minecraft_survival::bands::level(dimension);
+    if !sim::voxel::has_level(band) {
+        set_collision_level(dimension, origin);
+    }
     view.origin = origin;
     view.generation += 1;
     view.uploads.clear();
@@ -3208,10 +2302,8 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     view.weather = Default::default();
     view.clouds = None;
     view.light_volume = None;
-    runtime.shapes.clear();
-    runtime.shape_ids.clear();
     let chunks = level.terrain.stream.reshow(&level.terrain.scene);
-    apply_streamed(&server.globals.registries, &mut runtime.shapes, &mut runtime.shape_ids, (chunks, Vec::new()));
+    apply_streamed(&server.globals.registries, (&mut runtime.shapes, &mut runtime.shape_ids, band), (chunks, Vec::new()));
     runtime.light = Some(SkyLight::streamed());
     runtime.light_volume_at = None;
     runtime.cloud_center = None;
@@ -3223,6 +2315,28 @@ fn follow_levels(runtime: &mut Runtime, view: &mut MinecraftWorldView, now_ms: u
     runtime.shown = Some(dimension);
     diag::info!(World, "Minecraft level shown: {} with {:?} at map origin", dimension.dimension_type(), origin);
     failed
+}
+
+fn set_collision_level(dimension: Dimension, origin: [f64; 3]) {
+    let (min_y, height) = minecraft_survival::bands::heights(dimension);
+    sim::voxel::set_level(minecraft_survival::bands::level(dimension), origin, min_y, height);
+}
+
+fn relay_messages(
+    players: &std::collections::BTreeMap<minecraft_net::PlayerUuid, minecraft_survival::player::Player>,
+    local: &minecraft_net::PlayerUuid,
+    messages: Vec<(minecraft_net::PlayerUuid, minecraft_commands::Clientbound)>,
+    relayed: &mut minecraft_survival::commands::Handled,
+) -> Vec<minecraft_commands::Clientbound> {
+    let mut here = Vec::new();
+    for (uuid, message) in messages {
+        if &uuid == local {
+            here.push(message);
+        } else if let Some(player) = players.get(&uuid) {
+            relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::Player(player.id), message });
+        }
+    }
+    here
 }
 
 fn local_switching(runtime: &Runtime) -> bool {
@@ -3237,15 +2351,19 @@ fn leave_level(
     player: &mut minecraft_survival::player::Player,
     ui: &mut frame::MinecraftUi,
     inventory_ui: &mut crate::minecraft_inventory::InventoryUi,
+    books: minecraft_survival::menus::Books<'_>,
 ) {
-    let minecraft_survival::player::Player { uuid, inventory, selected, ender, survival, hand, steps, place, .. } = player;
     ui.inventory_open = false;
     if let Some(entities) = level.entities.as_mut() {
-        entities.leave(inventory, *selected, place.map(|place| place.feet));
+        let experience = entities.leave(u64::from(player.id.0), &mut player.inventory, player.selected, player.place.map(|place| place.feet));
+        let _ = player.survival.gain_experience(experience);
         let roll = entities.random_float();
-        let thrown = level.containers.with_ender(ender, |containers| inventory_ui.apply_input(ui, inventory, selected, containers, &mut || roll));
+        let clicked = inventory_ui.apply_input(ui, player, &mut level.containers, books, roll);
+        let _ = player.survival.gain_experience(clicked.experience);
+        let thrown = clicked.thrown;
+        let minecraft_survival::player::Player { uuid, place, .. } = &*player;
         for (pos, action) in inventory_ui.take_lectern_actions() {
-            entities.lectern(pos, action, None);
+            entities.lectern(u64::from(player.id.0), pos, action, None);
         }
         if let Some(place) = place.as_ref() {
             let thrower = crate::minecraft_inventory::Thrower {
@@ -3253,13 +2371,13 @@ fn leave_level(
                 yaw: place.yaw,
                 pitch: place.pitch,
             };
-            crate::minecraft_inventory::throw(&mut entities.world_items, thrown, &thrower);
+            crate::minecraft_inventory::throw(&mut entities.view.world_items, thrown, &thrower);
         }
         let mut writes = Vec::new();
         for event in level.openers.leave(minecraft_survival::level::opener_key(uuid)) {
             let outcome = minecraft_survival::level::opener_outcome(&level.terrain.scene, &event);
             let (cell, id, count) = outcome.block_event;
-            entities.lids.block_event(&level.terrain.scene, cell, id, count);
+            entities.view.lids.block_event(&level.terrain.scene, cell, id, count);
             if let Some((pos, viewers)) = outcome.trapped {
                 entities.chest_openers(pos, viewers);
             }
@@ -3269,6 +2387,7 @@ fn leave_level(
             minecraft_survival::level::write_blocks(&mut level.terrain, entities, writes);
         }
     }
+    let minecraft_survival::player::Player { survival, hand, steps, .. } = player;
     survival.stop_eating();
     hand.blocking = None;
     hand.charging = None;
@@ -3284,28 +2403,32 @@ fn stop(runtime: &mut Runtime, view: &mut MinecraftWorldView) {
     if close_world(runtime, false) || view.active {
         sim::voxel::deactivate();
         runtime.spawn_gate = Default::default();
-        view.active = false;
-        view.atlas = None;
-        view.atlas_patches.clear();
-        view.uploads.clear();
-        view.removed.clear();
-        view.visible.clear();
-        view.celestial = None;
-        view.crack_texture = None;
-        view.glint_texture = None;
-        view.armor_glint_texture = None;
-        view.end_look = Default::default();
-        view.weather = Default::default();
-        view.weather_texture = None;
-        view.particles = Default::default();
-        view.puppet_gear = Default::default();
-        view.entity_meshes = Default::default();
-        view.hand = Default::default();
-        view.cracks = Default::default();
-        view.clouds = None;
-        view.light_volume = None;
-        view.generation += 1;
+        clear_view(view);
     }
+}
+
+pub(crate) fn clear_view(view: &mut MinecraftWorldView) {
+    view.active = false;
+    view.atlas = None;
+    view.atlas_patches.clear();
+    view.uploads.clear();
+    view.removed.clear();
+    view.visible.clear();
+    view.celestial = None;
+    view.crack_texture = None;
+    view.glint_texture = None;
+    view.armor_glint_texture = None;
+    view.end_look = Default::default();
+    view.weather = Default::default();
+    view.weather_texture = None;
+    view.particles = Default::default();
+    view.puppet_gear = Default::default();
+    view.entity_meshes = Default::default();
+    view.hand = Default::default();
+    view.cracks = Default::default();
+    view.clouds = None;
+    view.light_volume = None;
+    view.generation += 1;
 }
 
 #[cfg(test)]
@@ -3438,5 +2561,33 @@ mod arrival_tests {
     fn no_motion_leaves_the_player_still() {
         assert_eq!(arrival_velocity([0.0; 3]), [0.0; 3]);
         assert_eq!(player_motion([0.0; 3]), [0.0; 3]);
+    }
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::event_level;
+    use minecraft_net::Dimension;
+    use minecraft_survival::bands;
+    use sim::voxel::VoxelEvent;
+
+    #[test]
+    fn the_collision_bands_are_the_ones_each_dimension_is_given() {
+        for dimension in bands::DIMENSIONS {
+            let index = usize::from(bands::level(dimension));
+            assert_eq!(sim::voxel::BANDS[index].map(f64::from), bands::band(dimension), "{dimension:?}");
+            let origin = bands::origin(dimension, [8.5, 64.0, 8.5]);
+            let middle = sim::voxel::to_map(origin, [8.5, 64.0, 8.5]);
+            assert_eq!(sim::voxel::band_of(middle[2]), Some(index), "{dimension:?}");
+        }
+        assert_eq!((sim::voxel::WALL_BELOW, sim::voxel::WALL_ABOVE), (bands::WALL_BELOW, bands::WALL_ABOVE));
+        assert_eq!(f64::from(sim::voxel::BLOCK), bands::BLOCK);
+    }
+
+    #[test]
+    fn the_host_reads_each_events_level() {
+        let shot = VoxelEvent::Shot { level: 1, block: [0; 3], damage: 1.0, attacker: None };
+        let blast = VoxelEvent::MobBlast { level: 2, key: 0, damage: 1.0, center: [0.0; 3], impact: 0.0, attacker: None, slow_ticks: 0 };
+        assert_eq!((event_level(&shot), event_level(&blast)), (bands::level(Dimension::Nether), bands::level(Dimension::End)));
     }
 }

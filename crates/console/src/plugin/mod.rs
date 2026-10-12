@@ -353,7 +353,8 @@ fn publish_client_action_input(
     }
     let script_menu = script_menus.is_some_and(|menus| menus.captures_input());
     let minecraft_map = minecraft.as_ref().is_some_and(|ui| ui.active);
-    let chat_open = minecraft.as_ref().is_some_and(|ui| ui.active && ui.chat.open);
+    let chat_open = minecraft.as_ref().is_some_and(|ui| ui.typing());
+    let chat_only = minecraft.as_ref().is_some_and(|ui| !ui.active && ui.chat_only);
     let inventory_open = minecraft.is_some_and(|ui| ui.active && ui.inventory_open);
     skate.input_blocked = console.open || script_menu;
     let modal_captured = console.open
@@ -376,6 +377,7 @@ fn publish_client_action_input(
         &binds,
         crate::binds::MinecraftKeyState {
             active: minecraft_map,
+            chat_only,
             use_hint: presented.player(local.0).is_some_and(|ps| ps.cursor_hint > 0),
             screen_open: inventory_open,
         },
@@ -621,7 +623,7 @@ fn sync_cursor_grab(
     returned |= entered.read().count() > 0;
 
     let menu_open = script_menus.is_some_and(|m| m.captures_input())
-        || minecraft.is_some_and(|ui| ui.active && (ui.inventory_open || ui.chat.open));
+        || minecraft.is_some_and(|ui| (ui.active && ui.inventory_open) || ui.typing());
     let in_game = screen
         .as_ref()
         .is_some_and(|s| matches!(**s, AppScreen::InGame));
@@ -1204,7 +1206,7 @@ fn handle_console_input(
     minecraft: Option<Res<frame::MinecraftUi>>,
 ) {
     let prompt_entity = prompt.map(|p| p.0);
-    let chat_open = minecraft.is_some_and(|ui| ui.active && ui.chat.open);
+    let chat_open = minecraft.is_some_and(|ui| ui.typing());
     if keys.just_pressed(KeyCode::Backquote) && !chat_open {
         state.open = !state.open;
         if let Some(entity) = prompt_entity

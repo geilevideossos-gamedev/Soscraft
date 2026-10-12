@@ -213,6 +213,13 @@ pub fn valid_player(feet: [f64; 3], alive: bool) -> bool {
     alive && distance <= PLAYER_RANGE * PLAYER_RANGE
 }
 
+pub fn shown_bar(fight: Option<&DragonFight>, player: &Player) -> Option<f32> {
+    if player.dimension != Dimension::End || player.switching.is_some() {
+        return None;
+    }
+    fight?.boss_bar(&player.uuid)
+}
+
 pub fn arena_loaded(loaded: impl Fn((i32, i32)) -> bool) -> bool {
     let (x, _, z) = FIGHT_ORIGIN;
     let (cx, cz) = (x.div_euclid(16), z.div_euclid(16));
@@ -971,7 +978,7 @@ mod tests {
                 containers,
                 ..
             } = level;
-            crate::level::stream_tick(terrain, entities, containers, at);
+            crate::level::stream_tick(terrain, entities, containers, &[at], Some(at));
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
@@ -1075,7 +1082,13 @@ mod tests {
                     containers,
                     ..
                 } = &mut level;
-                crate::level::stream_tick(terrain, entities, containers, (100, 49, 0));
+                crate::level::stream_tick(
+                    terrain,
+                    entities,
+                    containers,
+                    &[(100, 49, 0)],
+                    Some((100, 49, 0)),
+                );
             }
             let events = tick_level(&mut level, [&steve].into_iter(), Some(&save), 0, 0.05);
             if let Some(scan) = events.scanned {
@@ -1124,26 +1137,29 @@ mod tests {
                     overload: None,
                 };
                 let _ = entities.tick(
-                    &mut minecraftoss_player::inventory::Inventory::default(),
-                    0,
+                    &mut [crate::entities::TickActor {
+                        id: 0,
+                        view: crate::entities::PlayerView {
+                            feet: [100.5, 49.0, 0.5],
+                            alive: true,
+                            attackable: true,
+                            spectator: false,
+                            picks_up: false,
+                            health: 20.0,
+                            yaw: 0.0,
+                            pitch: 0.0,
+                            main_hand: None,
+                            offhand: None,
+                            sneaking: false,
+                        },
+                        inventory: &mut minecraftoss_player::inventory::Inventory::default(),
+                        selected: 0,
+                    }],
                     0.05,
                     &batch,
                     crate::tick_rate::ClientTiming::default(),
                     minecraft_terrain::server::ClockTicks::default(),
                     false,
-                    &crate::entities::PlayerView {
-                        feet: [100.5, 49.0, 0.5],
-                        alive: true,
-                        attackable: true,
-                        spectator: false,
-                        picks_up: false,
-                        health: 20.0,
-                        yaw: 0.0,
-                        pitch: 0.0,
-                        main_hand: None,
-                        offhand: None,
-                        sneaking: false,
-                    },
                 );
             }
             if level

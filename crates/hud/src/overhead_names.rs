@@ -184,10 +184,12 @@ fn update_overhead_names(
     let eye = transform.translation();
     let forward = *transform.forward();
     let mut candidates = Vec::new();
+    let viewer = sim::voxel::viewer_z(Some(ps.origin[2]));
     for (identity, runtime) in &players {
         if !runtime.in_next_snap()
             || runtime.next_state.e_type != entity_iw4::ET_PLAYER
             || (runtime.next_state.e_flags & (0x20 | 0x20000)) != 0
+            || !sim::voxel::shown_to(viewer, runtime.origin[2])
         {
             continue;
         }

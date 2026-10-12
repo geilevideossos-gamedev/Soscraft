@@ -22,7 +22,7 @@ pub struct Gateway {
     pub exact: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GatewayView {
     pub pos: Pos,
     pub age: i64,

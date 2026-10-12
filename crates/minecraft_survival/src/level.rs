@@ -25,7 +25,20 @@ pub struct Level {
     pub empty_ticks: u32,
     pub dragon_fight: Option<crate::the_end::dragon_fight::DragonFight>,
     pub container_ticks: u32,
+    pub pending_batch: Option<crate::tick_rate::TickBatch>,
+    pub shots: Shots,
     pub sleep_status: crate::sleep::SleepStatus,
+}
+
+pub type Shots = std::collections::HashMap<(i32, i32, i32), (f32, f64)>;
+
+pub fn shot_cracks(shots: &Shots) -> Vec<((i32, i32, i32), u8)> {
+    let mut cracks: Vec<_> = shots
+        .iter()
+        .map(|(&pos, &(progress, _))| (pos, ((progress * 10.0) as i32).clamp(0, 9) as u8))
+        .collect();
+    cracks.sort_unstable();
+    cracks
 }
 
 pub struct Terrain {
@@ -33,6 +46,8 @@ pub struct Terrain {
     pub scene: HandcraftedScene,
     pub environment: DimensionEnvironment,
     pub rules: DimensionRules,
+    pub friend_changes: Option<Vec<(i32, i32, i32)>>,
+    pub friend_breaks: Option<Vec<([i32; 3], u32)>>,
 }
 
 impl Level {
@@ -46,6 +61,8 @@ impl Level {
             empty_ticks: 0,
             dragon_fight: None,
             container_ticks: 0,
+            pending_batch: None,
+            shots: Shots::new(),
             sleep_status: crate::sleep::SleepStatus::default(),
         }
     }
@@ -89,6 +106,29 @@ impl Terrain {
             scene,
             environment,
             rules,
+            friend_changes: None,
+            friend_breaks: None,
+        })
+    }
+
+    pub fn remote(
+        registries: Arc<Registries>,
+        seed: i64,
+        view_distance: i32,
+        dimension: Dimension,
+    ) -> Result<Self, String> {
+        let stream = TerrainStream::remote(registries.clone(), seed, dimension, view_distance)
+            .map_err(|error| error.to_string())?;
+        let scene = HandcraftedScene::streamed(stream.states.clone());
+        let environment = DimensionEnvironment::load(&registries, dimension.dimension_type())?;
+        let rules = DimensionRules::load(&registries, dimension)?;
+        Ok(Self {
+            stream,
+            scene,
+            environment,
+            rules,
+            friend_changes: None,
+            friend_breaks: None,
         })
     }
 }
@@ -113,9 +153,20 @@ pub fn open_for_respawn(
 pub fn spill(containers: &mut Containers, entities: &mut Entities, pos: (i32, i32, i32)) {
     let (items, experience) = containers.remove(pos, &entities.recipes);
     for stack in items {
-        entities.world_items.drop_item_stack(stack, pos);
+        entities.view.world_items.drop_item_stack(stack, pos);
     }
-    entities.experience_found += experience;
+    let mut points = experience.floor() as i32;
+    if experience.fract() > 0.0 && entities.random_float() < experience.fract() {
+        points += 1;
+    }
+    if points > 0 {
+        let centre = [
+            f64::from(pos.0) + 0.5,
+            f64::from(pos.1) + 0.5,
+            f64::from(pos.2) + 0.5,
+        ];
+        entities.award_experience(centre, points);
+    }
 }
 
 pub fn write_blocks(terrain: &mut Terrain, entities: &mut Entities, writes: Writes) {
@@ -166,7 +217,7 @@ pub fn finish_item_use(
                 minecraft_terrain::bottle::filled_result(inventory, used.slot, result)
         {
             entities
-                .world_items
+                .view.world_items
                 .toss(rest, used.eye, used.yaw, used.pitch);
         }
         if spends && inventory.wear_tool(used.slot, used.outcome.wear) {
@@ -195,17 +246,52 @@ pub fn save_server_block_entities(entities: &mut Entities, terrain: &mut Terrain
     terrain.stream.record_block_entities(&changes);
 }
 
+pub fn player_blocks<'a>(
+    players: impl IntoIterator<Item = &'a crate::player::Player>,
+) -> Vec<(Dimension, (i32, i32, i32))> {
+    players
+        .into_iter()
+        .filter_map(|player| {
+            let place = player
+                .arrival
+                .or(player.place)
+                .filter(|place| place.dimension == player.dimension)?;
+            let [x, y, z] = place.feet.map(|v| v.floor() as i32);
+            Some((player.dimension, (x, y, z)))
+        })
+        .collect()
+}
+
+pub fn blocks_in(
+    players: &[(Dimension, (i32, i32, i32))],
+    dimension: Dimension,
+) -> Vec<(i32, i32, i32)> {
+    players
+        .iter()
+        .filter(|(at, _)| *at == dimension)
+        .map(|&(_, block)| block)
+        .collect()
+}
+
 pub fn stream_tick(
     terrain: &mut Terrain,
     entities: &mut Option<Entities>,
     containers: &mut Containers,
-    block: (i32, i32, i32),
+    players: &[(i32, i32, i32)],
+    local: Option<(i32, i32, i32)>,
 ) -> (Vec<Arc<Chunk>>, Vec<ChunkPos>) {
+    let changed = terrain.scene.take_changed();
+    terrain.stream.record_edits(&terrain.scene, &changed);
+    if let Some(friend_changes) = terrain.friend_changes.as_mut() {
+        friend_changes.extend_from_slice(&changed);
+    }
     save_block_entities(containers, terrain);
     if let Some(entities) = entities.as_mut() {
         save_server_block_entities(entities, terrain, false);
     }
-    let (loaded, forgotten) = terrain.stream.server_tick(block, &mut terrain.scene);
+    let (loaded, forgotten) = terrain
+        .stream
+        .server_tick(players, local, &mut terrain.scene);
     for pos in &forgotten {
         containers.forget_chunk((pos.x, pos.z));
     }
@@ -234,11 +320,11 @@ pub fn tick_containers(
         props.extend(ticked.props);
         brewed.extend(ticked.brewed);
         for (pos, stack) in ticked.drops {
-            entities.world_items.spawn_block_drop(stack, pos);
+            entities.view.world_items.spawn_block_drop(stack, pos);
         }
         let lit = |pos| Scene::block(&terrain.scene, pos).map(minecraft_terrain::campfire::is_lit);
         for (pos, stack) in containers.cook(lit, &entities.recipes) {
-            entities.world_items.drop_item_stack(stack, pos);
+            entities.view.world_items.drop_item_stack(stack, pos);
         }
     }
     (prop_writes(&terrain.scene, props), brewed)
@@ -314,7 +400,24 @@ pub fn leave_containers(
 }
 
 pub fn leave(level: &mut Level, player: &PlayerUuid) {
-    let writes = leave_containers(&mut level.openers, &level.terrain.scene, player);
+    let events = level.openers.leave(opener_key(player));
+    let mut writes: Writes = Vec::new();
+    for event in &events {
+        let outcome = opener_outcome(&level.terrain.scene, event);
+        if let Some(entities) = level.entities.as_mut() {
+            let (cell, id, count) = outcome.block_event;
+            entities.lid_event(&level.terrain.scene, cell, id, count);
+            if let Some((pos, viewers)) = outcome.trapped {
+                entities.chest_openers(pos, viewers);
+            }
+            if let Some(sound) = outcome.sound {
+                let pitch = minecraft_terrain::openers::pitch(entities.random_float());
+                let at = glam::DVec3::from_array(sound.position);
+                entities.sound(sound.event, at, sound.volume, pitch);
+            }
+        }
+        writes.extend(outcome.state.map(|(pos, block)| (pos, Some(block))));
+    }
     let positions: Vec<_> = writes.iter().map(|(pos, _)| *pos).collect();
     for (pos, block) in writes {
         level.terrain.scene.set(pos, block);
@@ -349,6 +452,55 @@ fn prop_writes(scene: &HandcraftedScene, props: Vec<((i32, i32, i32), &str, bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chunk_map_follows_every_player_standing_in_the_level() {
+        use crate::player_nbt::Place;
+        let mut chat = minecraft_commands::CommandServer::new(crate::commands::HOST);
+        let player = |chat: &mut minecraft_commands::CommandServer, id: u32, name: &str| {
+            let id = minecraft_commands::PlayerId(id);
+            chat.join(id, name);
+            crate::player::Player::new(
+                chat.profile(id).unwrap(),
+                minecraft_terrain::game_mode::PlayerMode::new(
+                    minecraft_terrain::game_mode::GameMode::Survival,
+                ),
+                crate::survival::Survival::default(),
+                Inventory::default(),
+            )
+        };
+        let at = |dimension, feet| Some(Place::standing(dimension, feet, 0.0, 0.0));
+        let mut host = player(&mut chat, 0, "Steve");
+        host.dimension = Dimension::End;
+        host.place = at(Dimension::End, [100.5, 49.0, -0.5]);
+        let mut arriving = player(&mut chat, 1, "Alex");
+        arriving.dimension = Dimension::End;
+        arriving.place = at(Dimension::Overworld, [8.0, 70.0, 8.0]);
+        arriving.arrival = at(Dimension::End, [1700.2, 50.9, 3.7]);
+        let mut left_behind = player(&mut chat, 2, "Noor");
+        left_behind.dimension = Dimension::End;
+        left_behind.place = at(Dimension::Overworld, [8.0, 70.0, 8.0]);
+        let mut elsewhere = player(&mut chat, 3, "Kai");
+        elsewhere.place = at(Dimension::Overworld, [-30.0, 64.0, 2.0]);
+        let everyone = player_blocks([&host, &arriving, &left_behind, &elsewhere]);
+        assert_eq!(
+            everyone,
+            vec![
+                (Dimension::End, (100, 49, -1)),
+                (Dimension::End, (1700, 50, 3)),
+                (Dimension::Overworld, (-30, 64, 2)),
+            ]
+        );
+        assert_eq!(
+            blocks_in(&everyone, Dimension::End),
+            vec![(100, 49, -1), (1700, 50, 3)]
+        );
+        assert_eq!(
+            blocks_in(&everyone, Dimension::Overworld),
+            vec![(-30, 64, 2)]
+        );
+        assert!(blocks_in(&everyone, Dimension::Nether).is_empty());
+    }
 
     #[test]
     fn a_furnace_lights_and_goes_out_through_its_lit_property() {
@@ -542,6 +694,69 @@ mod tests {
     }
 
     #[test]
+    fn a_chest_lid_closes_when_its_last_player_leaves_the_world() {
+        let Some(mut level) =
+            crate::commands::tests::test_stream().and_then(crate::commands::tests::test_level)
+        else {
+            return;
+        };
+        level.entities = Some(Entities::new(
+            &level.terrain.stream,
+            Dimension::Overworld,
+            0,
+            &crate::data::GameData::default(),
+            None,
+            None,
+        ));
+        level.terrain.scene = HandcraftedScene::default();
+        let chest = (3, 64, 3);
+        let block = Block::new("minecraft:chest")
+            .with("facing", "north")
+            .with("type", "single");
+        level.terrain.scene.set(chest, Some(block));
+        for player in [host(), friend()] {
+            let opened = toggle_openers(
+                &mut level.openers,
+                &level.terrain.scene,
+                &[chest],
+                &player,
+                true,
+                false,
+            );
+            let entities = level.entities.as_mut().unwrap();
+            for event in opened {
+                let (cell, id, count) = event.block_event();
+                entities
+                    .view.lids
+                    .block_event(&level.terrain.scene, cell, id, count);
+            }
+        }
+        let settle = |level: &mut Level| {
+            let entities = level.entities.as_mut().unwrap();
+            for _ in 0..20 {
+                let _ = entities.view.lids.take_apart_changes();
+                entities.view.lids.settle(&level.terrain.scene, |_| true);
+                entities.view.lids.tick();
+            }
+            entities.view.lids.lid_closed(chest)
+        };
+        assert!(!settle(&mut level), "both players opened it");
+        leave(&mut level, &friend());
+        assert!(!settle(&mut level), "the host still has it open");
+        leave(&mut level, &host());
+        assert!(settle(&mut level), "the last player left");
+        let heard: Vec<&str> = level
+            .entities
+            .as_ref()
+            .unwrap()
+            .view.sounds
+            .iter()
+            .map(|sound| sound.0.as_str())
+            .collect();
+        assert_eq!(heard, ["minecraft:block.chest.close"]);
+    }
+
+    #[test]
     fn blocks_without_the_property_and_empty_cells_are_left_alone() {
         let mut scene = HandcraftedScene::default();
         scene.set((5, 64, 5), Some(Block::new("minecraft:cobblestone")));
@@ -550,6 +765,135 @@ mod tests {
             vec![((5, 64, 5), "lit", true), ((6, 64, 5), "lit", true)],
         );
         assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn a_chunk_sent_after_edits_from_every_source_matches_the_scene() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = Registries::load(&paths) else {
+            return;
+        };
+        let mut terrain =
+            Terrain::open(Arc::new(registries), 0, 2, Dimension::End, None, None).unwrap();
+        let (mut entities, mut containers) = (None, Containers::default());
+        let started = std::time::Instant::now();
+        while [(6, 0), (6, 1), (7, 0), (7, 1)]
+            .iter()
+            .any(|&chunk| terrain.scene.generated_chunk(chunk).is_none())
+        {
+            assert!(
+                started.elapsed().as_secs() < 600,
+                "no chunks near the platform"
+            );
+            stream_tick(
+                &mut terrain,
+                &mut entities,
+                &mut containers,
+                &[(100, 49, 0)],
+                Some((100, 49, 0)),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(terrain.scene.take_changed().is_empty());
+        let solid = (96..112)
+            .flat_map(|x| (0..256).rev().map(move |y| (x, y, 0)))
+            .find(|&pos| {
+                terrain
+                    .scene
+                    .state_at(pos)
+                    .is_some_and(|state| state != minecraftoss_core::BlockStateId::AIR)
+            })
+            .expect("End stone near the platform");
+        let placed = (101, 50, 1);
+        minecraftoss_player::World::set_block(
+            &mut terrain.scene,
+            placed,
+            Some(minecraftoss_player::Block::new("minecraft:oak_planks")),
+        );
+        minecraftoss_player::World::set_block(&mut terrain.scene, solid, None);
+        terrain.scene.set(
+            (102, 51, 2),
+            Some(
+                Block::new("minecraft:chest")
+                    .with("facing", "north")
+                    .with("type", "single")
+                    .with("waterlogged", "false"),
+            ),
+        );
+        let crater = (solid.0, solid.1 - 3, solid.2 + 4);
+        for dx in -2..=2 {
+            for dy in -2..=2 {
+                for dz in -2..=2 {
+                    if dx * dx + dy * dy + dz * dz <= 4 {
+                        terrain
+                            .scene
+                            .set((crater.0 + dx, crater.1 + dy, crater.2 + dz), None);
+                    }
+                }
+            }
+        }
+        for (x, level) in [(104, "0"), (105, "1"), (106, "2")] {
+            terrain.scene.set(
+                (x, 52, 4),
+                Some(Block::new("minecraft:water").with("level", level)),
+            );
+        }
+        for x in 110..114 {
+            for y in 55..58 {
+                for z in 14..18 {
+                    terrain
+                        .scene
+                        .set((x, y, z), Some(Block::new("minecraft:stone")));
+                }
+            }
+        }
+        let sent = |terrain: &mut Terrain, (x, z): (i32, i32)| {
+            let chunk = terrain
+                .stream
+                .loaded_chunk(ChunkPos::new(x, z))
+                .expect("a chunk the friend was sent");
+            let blob = minecraft_terrain::chunk_wire::encode_chunk(
+                &chunk,
+                terrain.stream.states.registries(),
+            );
+            minecraft_terrain::chunk_wire::decode_chunk([x, z], &blob, &terrain.stream.states)
+                .unwrap()
+        };
+        let planks = terrain.scene.state_at(placed);
+        let before = sent(&mut terrain, (6, 0));
+        assert_ne!(
+            Some(before.block(5, 50, 1)),
+            planks,
+            "nothing told the chunk map yet"
+        );
+        stream_tick(
+            &mut terrain,
+            &mut entities,
+            &mut containers,
+            &[(100, 49, 0)],
+            Some((100, 49, 0)),
+        );
+        assert!(
+            terrain.scene.take_changed().is_empty(),
+            "the tick drained the log"
+        );
+        for (cx, cz) in [(6, 0), (6, 1), (7, 0), (7, 1)] {
+            let chunk = sent(&mut terrain, (cx, cz));
+            for y in 0..256 {
+                for z in 0..16 {
+                    for x in 0..16 {
+                        let pos = (cx * 16 + x, y, cz * 16 + z);
+                        assert_eq!(
+                            Some(chunk.block(x as usize, y, z as usize)),
+                            terrain.scene.state_at(pos),
+                            "{pos:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn tick_until(
@@ -570,26 +914,29 @@ mod tests {
                 overload: None,
             };
             let _ = entities.tick(
-                inventory,
-                0,
+                &mut [crate::entities::TickActor {
+                    id: 0,
+                    view: crate::entities::PlayerView {
+                        feet: feet.to_array(),
+                        alive: true,
+                        attackable: true,
+                        spectator: false,
+                        picks_up: false,
+                        health: 20.0,
+                        yaw: 0.0,
+                        pitch: -90.0,
+                        main_hand: None,
+                        offhand: None,
+                        sneaking: false,
+                    },
+                    inventory: &mut *inventory,
+                    selected: 0,
+                }],
                 0.05,
                 &batch,
                 crate::tick_rate::ClientTiming::default(),
                 minecraft_terrain::server::ClockTicks::default(),
                 true,
-                &crate::entities::PlayerView {
-                    feet: feet.to_array(),
-                    alive: true,
-                    attackable: true,
-                    spectator: false,
-                    picks_up: false,
-                    health: 20.0,
-                    yaw: 0.0,
-                    pitch: -90.0,
-                    main_hand: None,
-                    offhand: None,
-                    sneaking: false,
-                },
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -645,13 +992,15 @@ mod tests {
             pitch: -90.0,
             outcome: used,
         };
-        entities.throw_eye(throw, sent);
-        assert!(entities.awaits_item_use());
+        entities.throw_eye(0, throw, sent);
+        assert!(entities.awaits_item_use(0));
         tick_until(&mut entities, &mut inventory, feet, |entities| {
-            !entities.item_uses_done.is_empty()
+            entities
+                .player_outputs(0)
+                .is_some_and(|outputs| !outputs.item_uses_done.is_empty())
         });
-        assert!(!entities.awaits_item_use());
-        let done = std::mem::take(&mut entities.item_uses_done);
+        assert!(!entities.awaits_item_use(0));
+        let done = entities.take_player_outputs(0).item_uses_done;
         assert_eq!(done.len(), 1);
         for used in done {
             let heard = finish_item_use(&mut entities, &mut inventory, used, true);

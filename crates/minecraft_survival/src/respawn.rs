@@ -169,4 +169,58 @@ mod tests {
         let slept = respawn_target(&spawn, Some(&bed), |_| Some(true), |_| Some(beside));
         assert_eq!(slept.place, Some(beside));
     }
+
+    fn player(chat: &mut minecraft_commands::CommandServer, id: u32, name: &str) -> Player {
+        let id = minecraft_commands::PlayerId(id);
+        chat.join(id, name);
+        Player::new(
+            chat.profile(id).unwrap(),
+            minecraft_terrain::game_mode::PlayerMode::default(),
+            crate::survival::Survival::default(),
+            minecraftoss_player::inventory::Inventory::default(),
+        )
+    }
+
+    fn level_and_globals() -> Option<(Level, Globals)> {
+        let level =
+            crate::commands::tests::test_stream().and_then(crate::commands::tests::test_level)?;
+        let registries = level.terrain.stream.states.registries().clone();
+        Some((level, crate::server::tests::test_globals(registries, None)))
+    }
+
+    #[test]
+    fn each_player_respawns_at_their_own_point() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut chat = minecraft_commands::CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        let mut friend = player(&mut chat, 1, "Alex");
+        host.respawn = Some(point(Dimension::Overworld, (40, 70, 40), true));
+        friend.respawn = Some(point(Dimension::Overworld, (-30, 80, 12), true));
+        assert!(!respawn(&globals, &mut level, &mut friend));
+        assert!(!respawn(&globals, &mut level, &mut host));
+        let feet = |player: &Player| player.arrival.map(|place| place.feet);
+        assert_eq!(feet(&host), Some([40.5, 70.0, 40.5]));
+        assert_eq!(feet(&friend), Some([-29.5, 80.0, 12.5]));
+        assert!(host.switching.is_none() && friend.switching.is_none());
+    }
+
+    #[test]
+    fn a_friends_respawn_in_another_dimension_sets_off_their_own_switch() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut chat = minecraft_commands::CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        let mut friend = player(&mut chat, 1, "Alex");
+        friend.respawn = Some(point(Dimension::Nether, (10, 70, 10), true));
+        assert!(!respawn(&globals, &mut level, &mut host));
+        assert!(host.switching.is_none(), "the host respawns in this level");
+        assert!(!respawn(&globals, &mut level, &mut friend));
+        assert_eq!(
+            friend.switching.map(|switch| (switch.to, switch.respawn)),
+            Some((Dimension::Nether, true))
+        );
+    }
 }

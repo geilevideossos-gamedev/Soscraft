@@ -689,11 +689,27 @@ async fn run_connection(
                     ControlFrame::Relay(bytes) => {
                         let relay = decode_relay_stream(&bytes)?;
                         let current = state.lock().await;
-                        let (target, outgoing) = current.route_target_stream(connection_id, &relay)?;
-                        let peer = current.peers.values().find(|peer| peer.connection.stable_id() == target.stable_id()).ok_or(ServiceError::NotMember)?;
-                        if peer.control_tx.try_send(ControlFrame::Relay(outgoing)).is_err() {
-                            target.close(0_u8.into(), b"control queue exhausted");
-                            break Err("control queue exhausted".into());
+                        let sender_is_host = current.host_of(connection_id).is_ok();
+                        let routed = current.route_target_stream(connection_id, &relay).and_then(|(target, outgoing)| {
+                            let peer = current.peers.values().find(|peer| peer.connection.stable_id() == target.stable_id()).ok_or(ServiceError::NotMember)?;
+                            Ok((target, outgoing, peer.control_tx.clone()))
+                        });
+                        let (target, outgoing, target_tx) = match routed {
+                            Ok(routed) => routed,
+                            Err(error) if sender_is_host => {
+                                let _ = writeln!(std::io::stderr(), "connection {connection_id} relay frame dropped: {error}");
+                                continue;
+                            }
+                            Err(error) => break Err(error),
+                        };
+                        if target_tx.try_send(ControlFrame::Relay(outgoing)).is_err() {
+                            match full_queue_victim(sender_is_host) {
+                                QueueVictim::Target => {
+                                    let _ = writeln!(std::io::stderr(), "connection {connection_id} relay target queue full: closing the member");
+                                    target.close(0_u8.into(), b"control queue exhausted");
+                                }
+                                QueueVictim::Sender => break Err("control queue exhausted".into()),
+                            }
                         }
                     }
                     ControlFrame::Hello(_) => break Err("duplicate Hello".into()),
@@ -741,6 +757,20 @@ async fn run_connection(
     children.abort_all();
     while children.join_next().await.is_some() {}
     outcome
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueVictim {
+    Target,
+    Sender,
+}
+
+fn full_queue_victim(sender_is_host: bool) -> QueueVictim {
+    if sender_is_host {
+        QueueVictim::Target
+    } else {
+        QueueVictim::Sender
+    }
 }
 
 async fn dispatch_publishes(state: &Mutex<ServiceState>, publishes: Vec<(u64, ControlFrame)>) {
@@ -1527,5 +1557,16 @@ fn normalize_player_name(name: &str) -> String {
         "Player".into()
     } else {
         name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_queue_closes_the_friend_and_keeps_the_host() {
+        assert_eq!(full_queue_victim(true), QueueVictim::Target);
+        assert_eq!(full_queue_victim(false), QueueVictim::Sender);
     }
 }

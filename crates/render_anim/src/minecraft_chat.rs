@@ -208,9 +208,11 @@ mod tests {
     }
 
     #[test]
-    fn death_messages_are_plain_system_lines() {
+    fn death_messages_are_white_system_lines_each_game_reads_in_its_language() {
         let mut chat = McChat::default();
-        show(&mut chat, &[death_message("Steve was killed".into())], &HashMap::new());
+        let killed = minecraft_commands::Text::translate("death.attack.genericKill", vec![minecraft_commands::Text::literal("Steve")]);
+        let language: HashMap<String, String> = [("death.attack.genericKill".to_owned(), "%1$s was killed".to_owned())].into();
+        show(&mut chat, &[death_message(killed)], &language);
         assert_eq!(chat.received[0].text, "Steve was killed");
         assert_eq!(chat.received[0].color, minecraft_commands::text::WHITE);
     }
@@ -220,7 +222,8 @@ mod tests {
         let mut server = CommandServer::new(HOST);
         server.join(HOST, "Steve");
         let mut rules = GameRules::default();
-        let answers = summon_answers(&server, &rules, vec![Ok("minecraft:cow".into()), Err("You can not summon a monster in peaceful mode".into()), Err("Unable to summon minecraft:fox".into())]);
+        let answers = summon_answers(&server, &rules, vec![(HOST, Ok("minecraft:cow".into())), (HOST, Err("You can not summon a monster in peaceful mode".into())), (HOST, Err("Unable to summon minecraft:fox".into()))]);
+        let answers: Vec<_> = answers.into_iter().map(|out| out.message).collect();
         let language: HashMap<String, String> = [("commands.summon.success", "Summoned new %s"), ("entity.minecraft.cow", "Cow"), ("commands.summon.failed.peaceful", "Monsters cannot be summoned in Peaceful difficulty"), ("commands.summon.failed", "Unable to summon entity")]
             .into_iter()
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
@@ -237,6 +240,8 @@ mod tests {
             ]
         );
         rules.set("send_command_feedback", "false").unwrap();
-        assert_eq!(summon_answers(&server, &rules, vec![Ok("minecraft:cow".into()), Err("x".into())]).len(), 1);
+        assert_eq!(summon_answers(&server, &rules, vec![(HOST, Ok("minecraft:cow".into())), (HOST, Err("x".into()))]).len(), 1);
+        let friend = summon_answers(&server, &rules, vec![(PlayerId(1), Err("x".into()))]);
+        assert_eq!(friend[0].to, minecraft_commands::Recipient::Player(PlayerId(1)));
     }
 }

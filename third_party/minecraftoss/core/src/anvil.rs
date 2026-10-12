@@ -33,6 +33,14 @@ impl StoredChunk {
         Self { kind: 2, body: encoder.finish().expect("writing to memory").into() }
     }
 
+    pub fn from_zlib(body: &[u8]) -> Self {
+        Self { kind: 2, body: body.into() }
+    }
+
+    pub fn zlib(&self) -> Option<&[u8]> {
+        (self.kind == 2).then_some(&*self.body)
+    }
+
     /// The uncompressed NBT payload.
     pub fn decompress(&self) -> Result<Vec<u8>, String> {
         let mut out = Vec::new();

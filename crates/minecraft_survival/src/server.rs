@@ -30,7 +30,6 @@ pub struct Server {
     pub levels: BTreeMap<Dimension, Level>,
     pub opening: BTreeMap<Dimension, LevelLoader>,
     pub players: BTreeMap<PlayerUuid, Player>,
-    pub pending_batch: Option<TickBatch>,
     pub published: bool,
 }
 
@@ -48,7 +47,7 @@ pub struct Globals {
     pub forced_weather: Option<String>,
     pub chat: CommandServer,
     pub data: GameData,
-    pub level_writer: Option<JoinHandle<()>>,
+    pub writer: SaveWriter,
     pub autosave_due: bool,
     pub level_ticks: u32,
     pub closing: Vec<(Dimension, JoinHandle<()>)>,
@@ -369,15 +368,15 @@ impl Server {
         let mut ready = true;
         let mut finished: Vec<u64> = Vec::new();
         for dimension in ticking {
-            let Some(entities) = self
-                .levels
-                .get_mut(dimension)
-                .and_then(|level| level.entities.as_mut())
-            else {
+            let Some(level) = self.levels.get_mut(dimension) else {
+                continue;
+            };
+            let waiting = level.pending_batch.is_none();
+            let Some(entities) = level.entities.as_mut() else {
                 continue;
             };
             holders.push(*dimension);
-            ready &= entities.ready_for_ticks();
+            ready &= entities.ready_for_ticks() && waiting;
             for (index, nanos) in entities.take_finished_ticks().into_iter().enumerate() {
                 match finished.get_mut(index) {
                     Some(slowest) => *slowest = (*slowest).max(nanos),
@@ -385,14 +384,13 @@ impl Server {
                 }
             }
         }
-        if holders.is_empty() {
-            self.pending_batch = None;
+        for (dimension, level) in &mut self.levels {
+            if !holders.contains(dimension) {
+                level.pending_batch = None;
+            }
         }
         self.globals.tick_rate.record(&finished);
-        let batch = self
-            .globals
-            .tick_rate
-            .plan(now, ready && self.pending_batch.is_none());
+        let batch = self.globals.tick_rate.plan(now, ready);
         let normal = batch.normal_count();
         self.globals.advance_clocks(normal);
         self.globals.advance_weather(ticking, normal);
@@ -404,18 +402,21 @@ impl Server {
             for dimension in &holders {
                 if let Some(level) = self.levels.get_mut(dimension) {
                     level.container_ticks = level.container_ticks.saturating_add(normal);
+                    level.pending_batch = Some(batch.clone());
                 }
             }
-            self.pending_batch = Some(batch.clone());
         }
         batch
     }
 
-    pub fn take_batch(&mut self) -> TickBatch {
-        self.pending_batch.take().unwrap_or(TickBatch {
-            normal: Vec::new(),
-            overload: None,
-        })
+    pub fn take_batch(&mut self, dimension: Dimension) -> TickBatch {
+        self.levels
+            .get_mut(&dimension)
+            .and_then(|level| level.pending_batch.take())
+            .unwrap_or(TickBatch {
+                normal: Vec::new(),
+                overload: None,
+            })
     }
 
     pub fn known_spawn(&self, dimension: Dimension, arrival: Option<Place>) -> Option<(i32, i32, i32)> {
@@ -633,9 +634,7 @@ impl Server {
     pub fn save_and_close(mut self, started: Instant) {
         self.take_vehicles();
         let save = self.globals.save.take();
-        if let Some(writer) = self.globals.level_writer.take() {
-            let _ = writer.join();
-        }
+        self.globals.writer.finish();
         for (_, closing) in self.globals.closing.drain(..) {
             let _ = closing.join();
         }
@@ -658,6 +657,106 @@ impl Server {
             save.path().display()
         );
     }
+
+    pub fn join_friend(
+        &mut self,
+        id: PlayerId,
+        name: &str,
+        kit: Option<&str>,
+    ) -> Option<PlayerUuid> {
+        self.globals.chat.join(id, name);
+        let profile = self.globals.chat.profile(id)?.clone();
+        let uuid = PlayerUuid(profile.uuid.clone());
+        let spawn = match self.levels.get(&Dimension::Overworld) {
+            Some(level) => {
+                let (x, y, z) = level.terrain.stream.player_spawn;
+                [x, y, z]
+            }
+            None => spawn_place(&self.globals.spawn).feet,
+        };
+        let joining = Joining {
+            profile: &profile,
+            spawn,
+            chosen_mode: None,
+            kit,
+            carried: None,
+        };
+        let globals = &mut self.globals;
+        let mut player = match globals.writer.recently_left(&uuid) {
+            Some(saved) => join_from(
+                saved,
+                globals.save.as_ref(),
+                &globals.data.recipes,
+                &globals.game_rules,
+                joining,
+            ),
+            None => join(
+                globals.save.as_ref(),
+                &globals.data.recipes,
+                &globals.game_rules,
+                joining,
+            ),
+        };
+        if player.arrival.is_none() {
+            player.arrival = player
+                .place
+                .filter(|place| place.dimension == player.dimension);
+        }
+        self.players.insert(uuid.clone(), player);
+        Some(uuid)
+    }
+
+    pub fn leave(&mut self, uuid: &PlayerUuid) -> Option<Left> {
+        let mut player = self.players.remove(uuid)?;
+        crate::the_end::credits_done(&mut player);
+        let woke = match self.levels.get_mut(&player.dimension) {
+            Some(level) => crate::sleep::wake_leaving(&self.globals, level, &mut player),
+            None => Vec::new(),
+        };
+        let feet = player
+            .place
+            .filter(|place| place.dimension == player.dimension)
+            .map(|place| place.feet);
+        let level = self.levels.get_mut(&player.dimension);
+        let dropped = match level {
+            Some(level) => {
+                if let Some(entities) = level.entities.as_mut() {
+                    if player.riding.is_some() {
+                        player.saved_vehicle = entities.root_vehicle(u64::from(player.id.0), true);
+                    }
+                    let experience = entities.leave(
+                        u64::from(player.id.0),
+                        &mut player.inventory,
+                        player.selected,
+                        feet,
+                    );
+                    let _ = player.survival.gain_experience(experience);
+                }
+                let dropped = player.close_menu();
+                if let (Some(entities), Some(feet)) = (level.entities.as_mut(), feet) {
+                    for stack in &dropped {
+                        entities.drop_given(stack, feet);
+                    }
+                }
+                crate::level::leave(level, uuid);
+                dropped
+            }
+            None => player.close_menu(),
+        };
+        self.globals.chat.leave(player.id);
+        save_leaving(&mut self.globals, &player);
+        Some(Left {
+            player,
+            dropped,
+            woke,
+        })
+    }
+}
+
+pub struct Left {
+    pub player: Player,
+    pub dropped: Vec<minecraftoss_player::inventory::ItemStack>,
+    pub woke: Vec<(i32, i32, i32)>,
 }
 
 pub fn starting_game_mode(saved: Option<PlayerMode>, chosen: Option<&str>) -> PlayerMode {
@@ -704,6 +803,35 @@ pub fn join(
         }
         Some(Ok(None)) | None => PlayerData::default(),
     };
+    join_from(
+        saved,
+        save,
+        recipes,
+        rules,
+        Joining {
+            profile,
+            spawn,
+            chosen_mode,
+            kit,
+            carried,
+        },
+    )
+}
+
+pub fn join_from(
+    saved: PlayerData,
+    save: Option<&WorldSave>,
+    recipes: &Arc<RecipeBook>,
+    rules: &GameRules,
+    joining: Joining,
+) -> Player {
+    let Joining {
+        profile,
+        spawn,
+        chosen_mode,
+        kit,
+        carried,
+    } = joining;
     let mode = starting_game_mode(
         saved.mode.or_else(|| save.map(WorldSave::default_mode)),
         chosen_mode,
@@ -829,15 +957,110 @@ pub fn save_player(globals: &mut Globals, player: &Player) {
     let Some(save) = globals.save.clone() else {
         return;
     };
-    if let Some(previous) = globals.level_writer.take() {
-        let _ = previous.join();
-    }
     let file = [(player.uuid.0.clone(), player.data())];
-    globals.level_writer = std::thread::Builder::new()
-        .name("minecraft-player-save".into())
-        .spawn(move || write_players(&save, &file, "Minecraft player file not written"))
-        .map_err(|error| diag::warn!(World, "Minecraft player file thread not started: {error}"))
-        .ok();
+    globals
+        .writer
+        .queue(move || write_players(&save, &file, "Minecraft player file not written"));
+}
+
+pub fn save_leaving(globals: &mut Globals, player: &Player) {
+    let data = player.data();
+    let Some(save) = globals.save.clone() else {
+        globals.writer.keep_left(player.uuid.clone(), 0, data);
+        return;
+    };
+    let file = [(player.uuid.0.clone(), data.clone())];
+    let ticket = globals
+        .writer
+        .queue(move || write_players(&save, &file, "Minecraft player file not written"));
+    globals.writer.keep_left(player.uuid.clone(), ticket, data);
+}
+
+type SaveJob = Box<dyn FnOnce() + Send>;
+
+#[derive(Default)]
+pub struct SaveWriter {
+    jobs: Option<mpsc::Sender<(u64, SaveJob)>>,
+    written: Option<mpsc::Receiver<u64>>,
+    thread: Option<JoinHandle<()>>,
+    queued: u64,
+    done: u64,
+    recently_left: BTreeMap<PlayerUuid, (u64, PlayerData)>,
+}
+
+impl SaveWriter {
+    fn start(&mut self) {
+        let (jobs, receive) = mpsc::channel::<(u64, SaveJob)>();
+        let (report, written) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("minecraft-world-save".into())
+            .spawn(move || {
+                for (ticket, job) in receive {
+                    job();
+                    let _ = report.send(ticket);
+                }
+            });
+        match thread {
+            Ok(thread) => {
+                self.jobs = Some(jobs);
+                self.written = Some(written);
+                self.thread = Some(thread);
+            }
+            Err(error) => diag::warn!(World, "Minecraft save thread not started: {error}"),
+        }
+    }
+
+    pub fn queue(&mut self, job: impl FnOnce() + Send + 'static) -> u64 {
+        self.queued += 1;
+        let ticket = self.queued;
+        if self.jobs.is_none() {
+            self.start();
+        }
+        let job: SaveJob = Box::new(job);
+        let refused = match self.jobs.as_ref() {
+            Some(jobs) => jobs.send((ticket, job)).err().map(|refused| refused.0.1),
+            None => Some(job),
+        };
+        if let Some(job) = refused {
+            job();
+            self.done = self.done.max(ticket);
+        }
+        ticket
+    }
+
+    pub fn poll(&mut self) {
+        if let Some(written) = self.written.as_ref() {
+            while let Ok(ticket) = written.try_recv() {
+                self.done = self.done.max(ticket);
+            }
+        }
+        let done = self.done;
+        self.recently_left
+            .retain(|_, (ticket, _)| *ticket == 0 || *ticket > done);
+    }
+
+    pub fn written(&mut self, ticket: u64) -> bool {
+        self.poll();
+        ticket <= self.done
+    }
+
+    pub fn keep_left(&mut self, uuid: PlayerUuid, ticket: u64, data: PlayerData) {
+        self.recently_left.insert(uuid, (ticket, data));
+    }
+
+    pub fn recently_left(&mut self, uuid: &PlayerUuid) -> Option<PlayerData> {
+        self.poll();
+        self.recently_left.get(uuid).map(|(_, data)| data.clone())
+    }
+
+    pub fn finish(&mut self) {
+        drop(self.jobs.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.poll();
+        self.written = None;
+    }
 }
 
 pub fn refresh_vehicles(
@@ -850,7 +1073,7 @@ pub fn refresh_vehicles(
             .get_mut(&player.dimension)
             .and_then(|level| level.entities.as_mut())
         {
-            player.saved_vehicle = entities.root_vehicle(remove);
+            player.saved_vehicle = entities.root_vehicle(u64::from(player.id.0), remove);
         }
     }
 }
@@ -872,21 +1095,11 @@ pub fn autosave(
             level.terrain.stream.queue_save()
         })
         .sum();
-    if let Some(previous) = globals.level_writer.take() {
-        let _ = previous.join();
-    }
     let path = save.path().display().to_string();
     let files = WorldFiles::of(globals, players);
-    globals.level_writer = std::thread::Builder::new()
-        .name("minecraft-level-save".into())
-        .spawn(move || files.write(&save, "Minecraft autosave:"))
-        .map_err(|error| {
-            diag::warn!(
-                World,
-                "Minecraft autosave: level.dat thread not started: {error}"
-            )
-        })
-        .ok();
+    globals
+        .writer
+        .queue(move || files.write(&save, "Minecraft autosave:"));
     diag::info!(
         World,
         "Minecraft autosave: {chunks} chunks queued for {path} in {:.1} ms",
@@ -895,7 +1108,7 @@ pub fn autosave(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use minecraftoss_player::inventory::ItemStack;
     use minecraftoss_player::survival::EffectKind;
@@ -934,7 +1147,7 @@ mod tests {
         assert_eq!(same, PlayerMode::new(GameMode::Creative));
     }
 
-    struct TestDir(std::path::PathBuf);
+    pub(crate) struct TestDir(std::path::PathBuf);
 
     impl Drop for TestDir {
         fn drop(&mut self) {
@@ -942,7 +1155,7 @@ mod tests {
         }
     }
 
-    fn world(name: &str) -> (TestDir, WorldSave) {
+    pub(crate) fn world(name: &str) -> (TestDir, WorldSave) {
         let dir = std::env::temp_dir().join(format!(
             "minecraft_survival-server-{name}-{}",
             std::process::id()
@@ -1285,12 +1498,12 @@ mod tests {
         assert_eq!(held(&player, 9), Some(("minecraft:dirt", 1)));
     }
 
-    fn registries() -> Option<Arc<Registries>> {
+    pub(crate) fn registries() -> Option<Arc<Registries>> {
         let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
         Registries::load(&paths).ok().map(Arc::new)
     }
 
-    fn test_globals(registries: Arc<Registries>, save: Option<WorldSave>) -> Globals {
+    pub(crate) fn test_globals(registries: Arc<Registries>, save: Option<WorldSave>) -> Globals {
         Globals {
             seed: 1,
             registries,
@@ -1305,13 +1518,188 @@ mod tests {
             forced_weather: None,
             chat: CommandServer::new(crate::commands::HOST),
             data: GameData::default(),
-            level_writer: None,
+            writer: SaveWriter::default(),
             autosave_due: false,
             level_ticks: 0,
             closing: Vec::new(),
             waiting_locates: Vec::new(),
             tick_rate: TickRate::default(),
         }
+    }
+
+    fn friend_server(name: &str) -> Option<(TestDir, WorldSave, Server, mpsc::Sender<()>)> {
+        let registries = registries()?;
+        let (dir, save) = world(name);
+        let mut server = Server {
+            globals: test_globals(registries, Some(save.clone())),
+            levels: BTreeMap::new(),
+            opening: BTreeMap::new(),
+            players: BTreeMap::new(),
+            published: false,
+        };
+        let (open, gate) = mpsc::channel::<()>();
+        server.globals.writer.queue(move || {
+            let _ = gate.recv_timeout(std::time::Duration::from_secs(60));
+        });
+        Some((dir, save, server, open))
+    }
+
+    #[test]
+    fn a_leaving_friend_folds_their_menu_back_drops_the_rest_and_saves_off_the_main_thread() {
+        let Some((_dir, save, mut server, open)) = friend_server("friend-leave") else {
+            return;
+        };
+        let alex = PlayerId(1);
+        let uuid = server
+            .join_friend(alex, "Alex", None)
+            .unwrap();
+        let player = server.players.get_mut(&uuid).unwrap();
+        for slot in 0..35 {
+            player.inventory.slots[slot] = Some(ItemStack::new("minecraft:stone", 64));
+        }
+        player.inventory.crafting[0] = Some(ItemStack::new("minecraft:stick", 1));
+        player.inventory.cursor = Some(ItemStack::new("minecraft:diamond", 2));
+        let started = Instant::now();
+        let left = server.leave(&uuid).expect("Alex was in the world");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the leave never waits for the writer"
+        );
+        let dropped: Vec<_> = left
+            .dropped
+            .iter()
+            .map(|stack| (stack.id.as_str(), stack.count))
+            .collect();
+        assert_eq!(dropped, vec![("minecraft:stick", 1)]);
+        assert_eq!(held(&left.player, 35), Some(("minecraft:diamond", 2)));
+        assert!(server.players.is_empty());
+        assert!(server.globals.chat.profile(alex).is_none());
+        let recipes = server.globals.data.recipes.clone();
+        assert_eq!(
+            save.read_player(&uuid.0, &recipes).unwrap(),
+            None,
+            "the file waits behind the writer"
+        );
+        open.send(()).unwrap();
+        server.globals.writer.finish();
+        let saved = save
+            .read_player(&uuid.0, &recipes)
+            .unwrap()
+            .expect("the leave wrote the file");
+        let slots = saved.inventory.unwrap();
+        assert_eq!(slots[35].as_ref().map(|stack| stack.count), Some(2));
+        assert!(server.globals.writer.recently_left(&uuid).is_none());
+    }
+
+    #[test]
+    fn a_friend_who_quits_in_bed_gets_up_at_once_and_frees_the_bed() {
+        let Some((_dir, _save, mut server, open)) = friend_server("friend-bed-leave") else {
+            return;
+        };
+        let registries = server.globals.registries.clone();
+        let Ok(terrain) = Terrain::open(registries.clone(), 0, 2, Dimension::Overworld, None, None)
+        else {
+            return;
+        };
+        let mut level = Level::new(Dimension::Overworld, terrain);
+        let (foot, head) = ((0, 64, 0), (0, 64, 1));
+        for (pos, part) in [(foot, "foot"), (head, "head")] {
+            let text = format!("minecraft:red_bed[facing=south,part={part},occupied=false]");
+            let state = registries.blocks.parse_state(&text).unwrap();
+            let block = level.terrain.stream.states.block(state).cloned();
+            level.terrain.scene.set(pos, block);
+        }
+        server.levels.insert(Dimension::Overworld, level);
+        let uuid = server.join_friend(PlayerId(1), "Alex", None).unwrap();
+        let bed = crate::respawn_block::Bed {
+            head,
+            facing: (0, 1),
+            occupied: false,
+            straw: false,
+        };
+        let level = server.levels.get_mut(&Dimension::Overworld).unwrap();
+        crate::sleep::start(&server.globals, level, &mut server.players, &uuid, &bed, false);
+        let occupied = |server: &Server, pos| {
+            let level = &server.levels[&Dimension::Overworld];
+            let block = minecraft_terrain::scene::Scene::block(&level.terrain.scene, pos)?;
+            let state = level.terrain.stream.states.state_of(block)?;
+            registries.blocks.property(state, "occupied").map(str::to_owned)
+        };
+        assert!(server.players[&uuid].sleeping.is_some());
+        assert_eq!(occupied(&server, head).as_deref(), Some("true"));
+        let left = server.leave(&uuid).expect("Alex was in the world");
+        assert!(left.player.sleeping.is_none(), "saved awake, as vanilla's disconnect");
+        assert_eq!(left.player.sleep_timer, 0, "woken at once");
+        assert_eq!(occupied(&server, head).as_deref(), Some("false"));
+        assert_eq!(occupied(&server, foot).as_deref(), Some("false"));
+        assert!(left.woke.contains(&head) && left.woke.contains(&foot));
+        let feet = left.player.place.unwrap().feet;
+        assert!(feet[1] >= 64.0, "standing beside or on the bed: {feet:?}");
+        open.send(()).unwrap();
+        server.globals.writer.finish();
+    }
+
+    #[test]
+    fn a_quick_rejoin_reads_the_player_the_writer_has_not_written_yet() {
+        let Some((_dir, save, mut server, open)) = friend_server("friend-rejoin") else {
+            return;
+        };
+        let uuid = server
+            .join_friend(PlayerId(1), "Alex", None)
+            .unwrap();
+        let place = Place::standing(Dimension::Overworld, [30.5, 71.0, -9.5], 90.0, 0.0);
+        let player = server.players.get_mut(&uuid).unwrap();
+        player.inventory.slots[0] = Some(ItemStack::new("minecraft:diamond", 5));
+        player.place = Some(place);
+        server.leave(&uuid).unwrap();
+        let again = server
+            .join_friend(PlayerId(2), "Alex", Some("dirt"))
+            .unwrap();
+        assert_eq!(again, uuid);
+        let alex = &server.players[&again];
+        assert_eq!(alex.id, PlayerId(2));
+        assert_eq!(held(alex, 0), Some(("minecraft:diamond", 5)));
+        assert_eq!(held(alex, 9), None, "no kit for a player who has a file");
+        assert_eq!(alex.arrival, Some(place));
+        let recipes = server.globals.data.recipes.clone();
+        assert_eq!(save.read_player(&uuid.0, &recipes).unwrap(), None);
+        open.send(()).unwrap();
+        server.globals.writer.finish();
+        assert!(server.globals.writer.recently_left(&uuid).is_none());
+        let saved = save.read_player(&uuid.0, &recipes).unwrap().unwrap();
+        assert_eq!(saved.place, Some(place));
+    }
+
+    #[test]
+    fn a_friend_saved_in_another_dimension_joins_there() {
+        let Some((_dir, save, mut server, open)) = friend_server("friend-elsewhere") else {
+            return;
+        };
+        let profile = {
+            server.globals.chat.join(PlayerId(1), "Alex");
+            server.globals.chat.profile(PlayerId(1)).unwrap().clone()
+        };
+        let nether = PlayerData {
+            place: Some(Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], 0.0, 0.0)),
+            ..PlayerData::default()
+        };
+        save.write_player(&profile.uuid, &nether).unwrap();
+        let uuid = server.join_friend(PlayerId(1), "Alex", None).unwrap();
+        let alex = &server.players[&uuid];
+        assert_eq!(alex.dimension, Dimension::Nether);
+        assert_eq!(
+            alex.arrival.map(|place| (place.dimension, place.feet)),
+            Some((Dimension::Nether, [5.5, 70.0, 5.5]))
+        );
+        assert!(!server.levels.contains_key(&Dimension::Nether));
+        server.open_levels(8);
+        assert!(server.opening.contains_key(&Dimension::Nether), "the friend's level opens for them");
+        server.leave(&uuid).unwrap();
+        open.send(()).unwrap();
+        server.globals.writer.finish();
+        let uuid = server.join_friend(PlayerId(2), "Alex", None).unwrap();
+        let alex = &server.players[&uuid];
+        assert_eq!(alex.dimension, Dimension::Nether, "a rejoin comes back where they left");
     }
 
     #[test]
@@ -1442,7 +1830,6 @@ mod tests {
             levels: BTreeMap::new(),
             opening: BTreeMap::new(),
             players: BTreeMap::from([(uuid.clone(), player)]),
-            pending_batch: None,
             published: false,
         };
         server.save_and_close(Instant::now());
@@ -1507,7 +1894,6 @@ mod tests {
                 .into_iter()
                 .map(|player| (player.uuid.clone(), player))
                 .collect(),
-            pending_batch: None,
             published: false,
         }
     }
@@ -1862,7 +2248,7 @@ mod tests {
                 containers,
                 ..
             } = level;
-            crate::level::stream_tick(terrain, entities, containers, block);
+            crate::level::stream_tick(terrain, entities, containers, &[block], Some(block));
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
@@ -2430,21 +2816,93 @@ mod tests {
             levels: BTreeMap::from([(Dimension::Overworld, level)]),
             opening: BTreeMap::new(),
             players: BTreeMap::new(),
-            pending_batch: None,
             published: false,
         };
         let base = Instant::now();
         let after = |millis| base + std::time::Duration::from_millis(millis);
         assert_eq!(server.plan_ticks(base, &[]).len(), 1);
-        assert!(server.pending_batch.is_none(), "no ticking level holds it");
+        assert!(
+            server.levels[&Dimension::Overworld].pending_batch.is_none(),
+            "no ticking level holds it"
+        );
         let planned = server.plan_ticks(after(150), &[Dimension::Overworld]);
         assert_eq!(planned.len(), 3);
         assert_eq!(server.levels[&Dimension::Overworld].container_ticks, 3);
         assert!(server.plan_ticks(after(300), &[Dimension::Overworld]).is_empty());
         assert_eq!(server.levels[&Dimension::Overworld].container_ticks, 3);
-        assert_eq!(server.take_batch(), planned);
-        assert!(server.take_batch().is_empty());
+        assert_eq!(server.take_batch(Dimension::Overworld), planned);
+        assert!(server.take_batch(Dimension::Overworld).is_empty());
         assert_eq!(server.plan_ticks(after(300), &[Dimension::Overworld]).len(), 3);
+        assert_eq!(server.plan_ticks(after(450), &[]).len(), 3);
+        assert!(
+            server.levels[&Dimension::Overworld].pending_batch.is_none(),
+            "a level nobody ticks any more lets its batch go"
+        );
+    }
+
+    #[test]
+    fn two_levels_each_tick_once_per_server_tick_and_the_clocks_advance_once() {
+        let Some((overworld, nether)) = crate::commands::tests::test_stream()
+            .and_then(crate::commands::tests::test_level)
+            .zip(
+                crate::commands::tests::test_stream()
+                    .and_then(crate::commands::tests::test_level),
+            )
+        else {
+            return;
+        };
+        let registries = overworld.terrain.stream.states.registries().clone();
+        let mut levels = BTreeMap::new();
+        for (dimension, mut level) in [(Dimension::Overworld, overworld), (Dimension::Nether, nether)] {
+            level.dimension = dimension;
+            level.entities = Some(Entities::new(
+                &level.terrain.stream,
+                dimension,
+                0,
+                &GameData::default(),
+                None,
+                None,
+            ));
+            levels.insert(dimension, level);
+        }
+        let mut server = Server {
+            globals: test_globals(registries, None),
+            levels,
+            opening: BTreeMap::new(),
+            players: BTreeMap::new(),
+            published: false,
+        };
+        let base = Instant::now();
+        let after = |millis| base + std::time::Duration::from_millis(millis);
+        let both = [Dimension::Overworld, Dimension::Nether];
+        server.plan_ticks(base, &both);
+        let _ = (server.take_batch(Dimension::Overworld), server.take_batch(Dimension::Nether));
+        let clocks = server.globals.clock_ticks();
+        let ticks = server.globals.level_ticks;
+        let planned = server.plan_ticks(after(150), &both);
+        assert_eq!(planned.normal_count(), 3);
+        for dimension in both {
+            assert_eq!(server.levels[&dimension].pending_batch.as_ref(), Some(&planned), "{dimension:?}");
+            assert_eq!(server.levels[&dimension].container_ticks, 4, "{dimension:?}");
+        }
+        assert_eq!(
+            server.globals.clock_ticks(),
+            ClockTicks {
+                overworld: clocks.overworld + 3,
+                the_end: clocks.the_end + 3,
+            },
+            "the clocks advance once for both levels"
+        );
+        assert_eq!(server.globals.level_ticks, ticks + 3);
+        assert!(
+            server.plan_ticks(after(300), &both).is_empty(),
+            "no new ticks while a level still holds its batch"
+        );
+        assert_eq!(server.take_batch(Dimension::Nether), planned);
+        assert!(server.plan_ticks(after(300), &both).is_empty());
+        assert_eq!(server.take_batch(Dimension::Overworld), planned);
+        assert_eq!(server.plan_ticks(after(300), &both).normal_count(), 3);
+        assert_eq!(server.globals.clock_ticks().overworld, clocks.overworld + 6);
     }
 
     #[test]
@@ -2465,7 +2923,6 @@ mod tests {
             levels: BTreeMap::new(),
             opening: BTreeMap::new(),
             players: BTreeMap::new(),
-            pending_batch: None,
             published: false,
         };
         let base = Instant::now();

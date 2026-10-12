@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use minecraft_commands::{
     Answer, BlockEdit, Clientbound, Clock, CommandData, CommandHints, CommandRegistries,
     CommandServer, CommandWorld, Enchanted, EnchantmentInfo, Experience, ItemArg, ItemFilter,
-    Loaded, LocateKind, LocateRequest, Located, PlayerId, Pose, Serverbound, SprintReport, Text,
-    TickQuery, Weather,
+    Loaded, LocateKind, LocateRequest, Located, Outgoing, PlayerId, Pose, Serverbound,
+    SprintReport, Text, TickQuery, Weather,
 };
 use minecraft_net::{Dimension, PlayerUuid};
 use minecraft_terrain::day_cycle::DayCycle;
@@ -216,14 +216,13 @@ fn nbt_error(error: &str) -> Text {
 pub fn summon_answers(
     server: &CommandServer,
     rules: &GameRules,
-    answers: Vec<Result<String, String>>,
-) -> Vec<Clientbound> {
-    let level = server.level(HOST);
+    answers: Vec<(PlayerId, Result<String, String>)>,
+) -> Vec<Outgoing> {
     answers
         .into_iter()
-        .flat_map(|answer| match answer {
+        .flat_map(|(source, answer)| match answer {
             Ok(kind) => server.feedback(
-                HOST,
+                source,
                 Text::translate("commands.summon.success", vec![Text::entity(kind)]),
                 true,
                 rules,
@@ -237,13 +236,11 @@ pub fn summon_answers(
                     "commands.summon.failed"
                 };
                 vec![minecraft_commands::error_line(
-                    HOST,
+                    source,
                     Text::translate(key, Vec::new()),
                 )]
             }
         })
-        .filter(|out| out.to.reaches(HOST, level))
-        .map(|out| out.message)
         .collect()
 }
 
@@ -386,12 +383,12 @@ impl CommandWorld for Host<'_> {
             }
             for _ in 0..added {
                 let pitch = ((entities.random_float() - entities.random_float()) * 0.7 + 1.0) * 2.0;
-                entities.sounds.push((
-                    "minecraft:entity.item.pickup".to_owned(),
+                entities.sound(
+                    "minecraft:entity.item.pickup",
                     glam::DVec3::from_array(feet),
                     0.2,
                     pitch,
-                ));
+                );
             }
         }
         true
@@ -498,7 +495,7 @@ impl CommandWorld for Host<'_> {
         let Some(entities) = self.entities_of(source) else {
             return Err(Text::translate("commands.summon.failed", Vec::new()));
         };
-        entities.summon(kind.to_owned(), position, tag);
+        entities.summon(source, kind.to_owned(), position, tag);
         Ok(())
     }
 
@@ -740,12 +737,7 @@ impl CommandWorld for Host<'_> {
         };
         let chime = player.survival.level_up_chime();
         if let (Some(volume), Some(entities), Some(feet)) = (chime, entities, feet) {
-            entities.sounds.push((
-                LEVEL_UP_SOUND.to_owned(),
-                glam::DVec3::from_array(feet),
-                volume,
-                1.0,
-            ));
+            entities.sound(LEVEL_UP_SOUND, glam::DVec3::from_array(feet), volume, 1.0);
         }
     }
 }
@@ -917,27 +909,51 @@ pub fn command_data(stream: &TerrainStream) -> CommandData {
     }
 }
 
+pub fn take_lines(sent: &mut Vec<String>) -> Vec<Serverbound> {
+    std::mem::take(sent)
+        .iter()
+        .filter_map(|line| Serverbound::from_input(line))
+        .collect()
+}
+
+pub fn from_friend(message: Serverbound) -> Option<Serverbound> {
+    match message {
+        Serverbound::Chat(line) => {
+            let line = minecraft_commands::normalize_chat(&line);
+            (!line.is_empty()).then_some(Serverbound::Chat(line))
+        }
+        Serverbound::Command(command) => Serverbound::from_input(&format!("/{command}")),
+    }
+}
+
+pub fn reaching(server: &CommandServer, out: &[Outgoing], to: PlayerId) -> Vec<Clientbound> {
+    let level = server.level(to);
+    out.iter()
+        .filter(|out| out.to.reaches(to, level))
+        .map(|out| out.message.clone())
+        .collect()
+}
+
+pub fn handle_all(
+    from: PlayerId,
+    lines: Vec<Serverbound>,
+    server: &mut CommandServer,
+    world: &mut dyn CommandWorld,
+) -> Vec<Outgoing> {
+    lines
+        .into_iter()
+        .flat_map(|message| server.handle(from, message, world))
+        .collect()
+}
+
 pub fn pump(
     from: PlayerId,
     sent: &mut Vec<String>,
     server: &mut CommandServer,
     world: &mut dyn CommandWorld,
 ) -> Vec<Clientbound> {
-    let mut delivered = Vec::new();
-    for line in std::mem::take(sent) {
-        let Some(message) = Serverbound::from_input(&line) else {
-            continue;
-        };
-        let level = server.level(from);
-        delivered.extend(
-            server
-                .handle(from, message, world)
-                .into_iter()
-                .filter(|out| out.to.reaches(from, level))
-                .map(|out| out.message),
-        );
-    }
-    delivered
+    let out = handle_all(from, take_lines(sent), server, world);
+    reaching(server, &out, from)
 }
 
 pub fn take_jobs_of(
@@ -961,7 +977,14 @@ pub fn answer_jobs(
     to: PlayerId,
     finished: Vec<Box<dyn Any + Send>>,
 ) -> Vec<Clientbound> {
-    let level = chat.level(to);
+    reaching(chat, &job_answers(chat, rules, finished), to)
+}
+
+pub fn job_answers(
+    chat: &CommandServer,
+    rules: &GameRules,
+    finished: Vec<Box<dyn Any + Send>>,
+) -> Vec<Outgoing> {
     let mut delivered = Vec::new();
     for job in finished {
         let Ok(job) = job.downcast::<CommandJob>() else {
@@ -988,11 +1011,7 @@ pub fn answer_jobs(
                 chat.reply(source, answer.map(|(text, _)| text), false, rules)
             }
         };
-        delivered.extend(
-            out.into_iter()
-                .filter(|out| out.to.reaches(to, level))
-                .map(|out| out.message),
-        );
+        delivered.extend(out);
     }
     delivered
 }
@@ -1016,7 +1035,7 @@ pub fn report_sprints(
 
 #[derive(Default)]
 pub struct Handled {
-    pub delivered: Vec<Clientbound>,
+    pub delivered: Vec<Outgoing>,
     pub teleports: Vec<(PlayerUuid, [f64; 3])>,
 }
 
@@ -1025,7 +1044,7 @@ pub fn run(
     levels: &mut BTreeMap<Dimension, Level>,
     players: &mut BTreeMap<PlayerUuid, Player>,
     from: &PlayerUuid,
-    sent: &mut Vec<String>,
+    lines: Vec<Serverbound>,
     presence: Vec<(PlayerUuid, Presence)>,
 ) -> Handled {
     let Some(id) = players.get(from).map(|player| player.id) else {
@@ -1044,14 +1063,14 @@ pub fn run(
         waiting_locates: &mut globals.waiting_locates,
         players: &mut *players,
         presence,
-        env_file: if sent.is_empty() { None } else { env_file() },
+        env_file: if lines.is_empty() { None } else { env_file() },
         rules_changed: false,
         mode_changed: Vec::new(),
         respawn_changed: Vec::new(),
         teleports: Vec::new(),
         tick_rate: &mut globals.tick_rate,
     };
-    let mut delivered = pump(id, sent, &mut globals.chat, &mut host);
+    let mut delivered = handle_all(id, lines, &mut globals.chat, &mut host);
     let rules_changed = host.rules_changed;
     let mode_changed = std::mem::take(&mut host.mode_changed);
     let respawn_changed = std::mem::take(&mut host.respawn_changed);
@@ -1062,9 +1081,11 @@ pub fn run(
         entities.poll_jobs();
         finished.extend(take_jobs_of(&mut entities.command_jobs, id));
     }
-    delivered.extend(answer_jobs(&globals.chat, &globals.game_rules, id, finished));
-    let reports = globals.tick_rate.take_reports();
-    delivered.extend(report_sprints(&globals.chat, &globals.game_rules, id, reports));
+    delivered.extend(job_answers(&globals.chat, &globals.game_rules, finished));
+    for report in globals.tick_rate.take_reports() {
+        let text = minecraft_commands::tick::sprint_report(report);
+        delivered.extend(globals.chat.server_feedback(text, &globals.game_rules));
+    }
     if rules_changed {
         for entities in levels.values_mut().filter_map(|level| level.entities.as_mut()) {
             entities.set_game_rules(&globals.game_rules);
@@ -1092,11 +1113,20 @@ pub fn run(
     }
 }
 
-pub fn death_message(line: String) -> Clientbound {
+pub fn death_message(text: Text) -> Clientbound {
     Clientbound::System {
-        text: Text::literal(line),
+        text,
         overlay: false,
     }
+}
+
+pub fn tell_death(
+    rules: &GameRules,
+    survival: &mut crate::survival::Survival,
+    text: Text,
+) -> Option<Clientbound> {
+    let first = survival.tell_death();
+    (first && rules.bool("show_death_messages")).then(|| death_message(text))
 }
 
 #[cfg(test)]
@@ -1726,11 +1756,15 @@ pub(crate) mod tests {
                 scene,
                 environment,
                 rules,
+                friend_changes: None,
+                friend_breaks: None,
             },
             openers: Default::default(),
             empty_ticks: 0,
             dragon_fight: None,
             container_ticks: 0,
+            pending_batch: None,
+            shots: Default::default(),
             sleep_status: Default::default(),
         })
     }
@@ -2486,5 +2520,39 @@ pub(crate) mod tests {
         assert!(status.effect(EffectKind::SlowFalling).is_none());
         assert_eq!(effect_kind("minecraft:levitation"), Some(EffectKind::Levitation));
         assert_eq!(effect_kind("minecraft:slow_falling"), Some(EffectKind::SlowFalling));
+    }
+
+    #[test]
+    fn a_pvp_death_is_told_once_with_the_killers_gun_and_only_with_death_messages_on() {
+        let language: HashMap<String, String> = [
+            ("death.attack.player", "%1$s was slain by %2$s"),
+            (
+                "death.attack.player.item",
+                "%1$s was slain by %2$s using %3$s",
+            ),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+        let lang = |key: &str| language.get(key).cloned();
+        let shot = crate::death::player_kill_text("Friend", "Steve", Some("M4A1"));
+        assert_eq!(
+            shot.resolve(&lang).text,
+            "Friend was slain by Steve using [M4A1]"
+        );
+        let killed = crate::death::player_kill_text("Friend", "Steve", None);
+        assert_eq!(killed.resolve(&lang).text, "Friend was slain by Steve");
+        let mut rules = GameRules::default();
+        let mut survival = crate::survival::Survival::default();
+        assert_eq!(
+            tell_death(&rules, &mut survival, shot.clone()),
+            Some(death_message(shot.clone()))
+        );
+        assert_eq!(tell_death(&rules, &mut survival, shot.clone()), None);
+        survival.respawn();
+        rules.set("show_death_messages", "false").unwrap();
+        assert_eq!(tell_death(&rules, &mut survival, shot.clone()), None);
+        rules.set("show_death_messages", "true").unwrap();
+        assert_eq!(tell_death(&rules, &mut survival, shot), None);
     }
 }

@@ -27,7 +27,7 @@ use glam::DVec3;
 use std::collections::{HashMap, VecDeque};
 
 /// One mob as the server has it at the end of a tick.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ServerMob {
     pub id: u64,
     pub position: DVec3,
@@ -56,10 +56,11 @@ pub struct ServerMob {
     /// Its bounding box's width and height.
     pub size: (f32, f32),
     pub vehicle: Option<(u64, f64)>,
+    pub show: crate::mob_tracking::MobShow,
 }
 
 /// The entity flags `ServerEntity.sendChanges` reads besides its interval.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SyncFlags {
     /// `Entity.needsSync`: set by jumps and pushes, sends at once.
     pub needs_sync: bool,
@@ -1027,7 +1028,7 @@ mod tests {
     use super::*;
 
     fn mob(id: u64, x: f64, yaw: f32) -> ServerMob {
-        ServerMob { id, position: DVec3::new(x, 64.0, 0.0), y_rot: yaw, x_rot: 0.0, y_head_rot: yaw, on_ground: true, baby: false, eye_height: 1.74, max_head_y_rot: 75.0, update_interval: 3, sync: SyncFlags::default(), resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8), vehicle: None }
+        ServerMob { id, position: DVec3::new(x, 64.0, 0.0), y_rot: yaw, x_rot: 0.0, y_head_rot: yaw, on_ground: true, baby: false, eye_height: 1.74, max_head_y_rot: 75.0, update_interval: 3, sync: SyncFlags::default(), resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8), vehicle: None, show: Default::default() }
     }
 
     #[test]
@@ -1147,7 +1148,7 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     let mut out = Vec::new();
     let mut push = |id: u64, y_rot: f32, look: &minecraftoss_entities::look::LookControl, body: &minecraftoss_entities::movement::Body, baby: bool, eye_height: f32| {
         let sync = SyncFlags { needs_sync: body.needs_sync, ..SyncFlags::default() };
-        out.push(ServerMob { id, position: body.position, y_rot, x_rot: look.pitch, y_head_rot: look.head_yaw, on_ground: body.on_ground, baby, eye_height, max_head_y_rot: 75.0, update_interval: 3, sync, resting: false, hurts: 0, dead: false, swings: 0, size: (body.width, body.height), vehicle: None });
+        out.push(ServerMob { id, position: body.position, y_rot, x_rot: look.pitch, y_head_rot: look.head_yaw, on_ground: body.on_ground, baby, eye_height, max_head_y_rot: 75.0, update_interval: 3, sync, resting: false, hurts: 0, dead: false, swings: 0, size: (body.width, body.height), vehicle: None, show: crate::mob_tracking::MobShow { fire: body.fire_ticks > 0, ..Default::default() } });
     };
     for e in world.cows() {
         let baby = e.cow.age.baby();
@@ -1236,7 +1237,11 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         push(e.id, 0.0, &e.ai.state.look_control, &e.shulker.body, false, e.shulker.eye_height());
     }
     let shulkers: std::collections::HashSet<u64> = world.shulkers().iter().map(|e| e.id).collect();
+    let shows = crate::mob_tracking::shows(world);
     for mob in &mut out {
+        if let Some(show) = shows.get(&mob.id) {
+            mob.show = crate::mob_tracking::MobShow { fire: mob.show.fire, ..*show };
+        }
         mob.vehicle = world.seat_offset(minecraftoss_entities::world::Rider::Mob(mob.id));
         if shulkers.contains(&mob.id) {
             mob.max_head_y_rot = 180.0;
@@ -1335,7 +1340,7 @@ impl ClientMob {
     /// A client mob made from a traced `ClientboundAddEntityPacket`.
     #[allow(clippy::too_many_arguments)]
     pub fn from_add_packet(position: DVec3, y_rot: f32, x_rot: f32, y_head_rot: f32, baby: bool, eye_height: f32, max_head_y_rot: f32, update_interval: i32) -> Self {
-        let server = ServerMob { id: 0, position, y_rot, x_rot, y_head_rot, on_ground: false, baby, eye_height, max_head_y_rot, update_interval, sync: SyncFlags::default(), resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8), vehicle: None };
+        let server = ServerMob { id: 0, position, y_rot, x_rot, y_head_rot, on_ground: false, baby, eye_height, max_head_y_rot, update_interval, sync: SyncFlags::default(), resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8), vehicle: None, show: Default::default() };
         let mut mob = Self::spawn(&server);
         mob.y_rot = y_rot;
         mob.y_rot_o = y_rot;
@@ -1411,7 +1416,7 @@ impl TraceTracker {
     }
 
     fn mob(position: DVec3, y_rot: f32, x_rot: f32, y_head_rot: f32, on_ground: bool, sync: SyncFlags) -> ServerMob {
-        ServerMob { id: 0, position, y_rot, x_rot, y_head_rot, on_ground, baby: false, eye_height: 1.0, max_head_y_rot: 75.0, update_interval: 3, sync, resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8), vehicle: None }
+        ServerMob { id: 0, position, y_rot, x_rot, y_head_rot, on_ground, baby: false, eye_height: 1.0, max_head_y_rot: 75.0, update_interval: 3, sync, resting: false, hurts: 0, dead: false, swings: 0, size: (0.6, 1.8), vehicle: None, show: Default::default() }
     }
 
     /// One `sendChanges` with the mob in this state: the packets, as the

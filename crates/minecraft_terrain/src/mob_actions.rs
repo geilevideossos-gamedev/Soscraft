@@ -47,13 +47,13 @@ impl MobOutcome {
 
 /// The player acting on a mob.
 pub struct Actor<'a> {
+    pub player: u64,
     pub inventory: &'a mut Inventory,
     pub selected: usize,
     /// Creative mode: held items are not used up or worn.
     pub infinite: bool,
     pub entity_loot: Option<&'a mut EntityLootBook>,
     pub shearing_loot: Option<&'a mut ShearingLootBook>,
-    pub player: u64,
 }
 
 

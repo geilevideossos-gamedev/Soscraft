@@ -15,6 +15,8 @@ use minecraftoss_core::BlockStateId;
 use minecraftoss_core::registries::Registries;
 
 type BlockPos = (i32, i32, i32);
+type Shots = minecraft_survival::level::Shots;
+pub(crate) type Mined = (BlockPos, minecraft_terrain::scene::Block, Option<f32>);
 
 /// Bullet damage that mines a block of hardness 1 in four shots: a 40-damage
 /// bullet (an ACR up close) breaks dirt, of hardness 0.5, on the second.
@@ -25,8 +27,6 @@ const TICK_SECONDS: f64 = 1.0 / 20.0;
 const BREAK_PARTICLES: u32 = 5;
 
 pub(crate) struct Mining {
-    /// Progress in 0..1 of each block being shot, and when it was last hit.
-    progress: HashMap<BlockPos, (f32, f64)>,
     particles: Option<BlockParticles>,
     tick_clock: f64,
     models: HashMap<BlockStateId, Option<Vec<(ResolvedModel, u32)>>>,
@@ -35,7 +35,6 @@ pub(crate) struct Mining {
 impl Default for Mining {
     fn default() -> Self {
         Self {
-            progress: HashMap::new(),
             particles: None,
             tick_clock: 0.0,
             models: HashMap::new(),
@@ -50,6 +49,7 @@ pub(crate) struct WorldRefs<'a> {
     pub packs: &'a PackStack,
     pub atlas: &'a Atlas,
     pub registries: &'a Registries,
+    pub level: u8,
 }
 
 impl Mining {
@@ -58,20 +58,22 @@ impl Mining {
     pub(crate) fn apply(
         &mut self,
         events: Vec<sim::voxel::VoxelEvent>,
+        progress: &mut Shots,
         world: &mut WorldRefs<'_>,
         now: f64,
-    ) -> Vec<(BlockPos, minecraft_terrain::scene::Block, Option<f32>)> {
+    ) -> Vec<(Mined, Option<u32>)> {
         if self.particles.is_none() {
             self.particles = BlockParticles::new(world.packs).ok();
         }
         let mut broken: Vec<(BlockPos, Option<f32>)> = Vec::new();
+        let mut breakers: HashMap<BlockPos, Option<u32>> = HashMap::new();
         // Blocks broken by this batch: the rest of a shotgun's pellets into
         // one pass through, rather than starting a crack on a block that is
         // about to go.
         let mut gone = std::collections::HashSet::new();
         for event in events {
             match event {
-                sim::voxel::VoxelEvent::Shot { block, damage } => {
+                sim::voxel::VoxelEvent::Shot { block, damage, attacker, .. } => {
                     let pos = (block[0], block[1], block[2]);
                     if gone.contains(&pos) {
                         continue;
@@ -79,21 +81,22 @@ impl Mining {
                     let Some(hardness) = hardness(world, pos) else {
                         continue;
                     };
-                    let entry = self.progress.entry(pos).or_insert((0.0, now));
+                    let entry = progress.entry(pos).or_insert((0.0, now));
                     entry.0 += if hardness <= 0.0 { 1.0 } else { damage / DAMAGE_PER_HARDNESS / hardness };
                     entry.1 = now;
                     if entry.0 >= 1.0 {
-                        self.progress.remove(&pos);
+                        progress.remove(&pos);
                         if let Some(block) = Scene::block(&*world.scene, pos).cloned()
                             && let Some(particles) = self.particles.as_mut()
                         {
                             let _ = particles.spawn(world.packs, &*world.scene, pos, &block, world.atlas);
                         }
                         broken.push((pos, None));
+                        breakers.insert(pos, attacker);
                         gone.insert(pos);
                     }
                 }
-                sim::voxel::VoxelEvent::Ray { from, to, damage } => {
+                sim::voxel::VoxelEvent::Ray { from, to, damage, attacker, .. } => {
                     // Blocks without collision the bullet passed through.
                     for pos in blocks_on_segment(from, to) {
                         if gone.contains(&pos) || !passable(world, pos) {
@@ -102,17 +105,18 @@ impl Mining {
                         let Some(hardness) = hardness(world, pos) else {
                             continue;
                         };
-                        let entry = self.progress.entry(pos).or_insert((0.0, now));
+                        let entry = progress.entry(pos).or_insert((0.0, now));
                         entry.0 += if hardness <= 0.0 { 1.0 } else { damage / DAMAGE_PER_HARDNESS / hardness };
                         entry.1 = now;
                         if entry.0 >= 1.0 {
-                            self.progress.remove(&pos);
+                            progress.remove(&pos);
                             if let Some(block) = Scene::block(&*world.scene, pos).cloned()
                                 && let Some(particles) = self.particles.as_mut()
                             {
                                 let _ = particles.spawn(world.packs, &*world.scene, pos, &block, world.atlas);
                             }
                             broken.push((pos, None));
+                            breakers.insert(pos, attacker);
                             gone.insert(pos);
                         }
                     }
@@ -121,18 +125,17 @@ impl Mining {
             }
         }
         // No crack outlives its block, however it went.
-        self.progress
-            .retain(|pos, (_, at)| now - *at < PROGRESS_SECONDS && !gone.contains(pos) && Scene::block(&*world.scene, *pos).is_some());
-        remove_broken(broken, world)
+        progress.retain(|pos, (_, at)| now - *at < PROGRESS_SECONDS && !gone.contains(pos) && Scene::block(&*world.scene, *pos).is_some());
+        remove_broken(broken, world).into_iter().map(|mined| (mined.clone(), breakers.get(&mined.0).copied().flatten())).collect()
     }
 
-    pub(crate) fn break_now(&mut self, positions: &[BlockPos], world: &mut WorldRefs<'_>) -> Vec<(BlockPos, minecraft_terrain::scene::Block, Option<f32>)> {
+    pub(crate) fn break_now(&mut self, positions: &[BlockPos], progress: &mut Shots, world: &mut WorldRefs<'_>) -> Vec<Mined> {
         if self.particles.is_none() {
             self.particles = BlockParticles::new(world.packs).ok();
         }
         let breakable = breakable_now(&*world.scene, positions);
         for &pos in &breakable {
-            self.progress.remove(&pos);
+            progress.remove(&pos);
             if let Some(block) = Scene::block(&*world.scene, pos).cloned()
                 && let Some(particles) = self.particles.as_mut()
             {
@@ -229,10 +232,10 @@ impl Mining {
         (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices)
     }
 
-    pub(crate) fn crack_mesh(&mut self, scene: &HandcraftedScene, states: &BlockStates, packs: &PackStack, dig: Option<(BlockPos, u8)>) -> (Vec<[f32; 6]>, Vec<u32>) {
+    pub(crate) fn crack_mesh(&mut self, scene: &HandcraftedScene, states: &BlockStates, packs: &PackStack, cracks: &[(BlockPos, u8)]) -> (Vec<[f32; 6]>, Vec<u32>) {
         let (mut vertices, mut indices) = (Vec::new(), Vec::new());
-        let cracks: Vec<(BlockPos, f32)> = self.progress.iter().map(|(&pos, &(progress, _))| (pos, ((progress * 10.0) as i32).clamp(0, 9) as f32)).chain(dig.map(|(pos, stage)| (pos, f32::from(stage)))).collect();
-        for (pos, stage) in cracks {
+        for &(pos, stage) in cracks {
+            let stage = f32::from(stage);
             let Some(block) = Scene::block(scene, pos) else {
                 continue;
             };
@@ -271,7 +274,7 @@ fn remove_broken(mut broken: Vec<(BlockPos, Option<f32>)>, world: &mut WorldRefs
             out.push((pos, block, blast));
         }
         world.scene.set(pos, None);
-        sim::voxel::set_block_shape(pos.0, pos.1, pos.2, 0);
+        sim::voxel::set_block_shape(world.level, pos.0, pos.1, pos.2, 0);
     }
     let positions: Vec<BlockPos> = broken.iter().map(|(pos, _)| *pos).collect();
     world.stream.record_edits(world.scene, &positions);
@@ -406,12 +409,14 @@ mod tests {
             None,
         ];
         let mut mining = Mining::default();
+        let mut shots = Shots::new();
         for (stage, block) in blocks.into_iter().enumerate() {
             let pos = (stage as i32 * 2, 100, 0);
             scene.set(pos, block);
-            mining.progress.insert(pos, (0.05 + stage as f32 * 0.1, 0.0));
+            shots.insert(pos, (0.05 + stage as f32 * 0.1, 0.0));
         }
-        let (vertices, indices) = mining.crack_mesh(&scene, &states, &packs, None);
+        let cracks = minecraft_survival::level::shot_cracks(&shots);
+        let (vertices, indices) = mining.crack_mesh(&scene, &states, &packs, &cracks);
         assert_eq!(indices.len() * 4, vertices.len() * 6);
         let local = |stage: usize| -> Vec<[f32; 3]> {
             vertices.iter().filter(|vertex| vertex[5] == stage as f32).map(|vertex| [vertex[0] - stage as f32 * 2.0, vertex[1] - 100.0, vertex[2]]).collect()

@@ -149,6 +149,16 @@ pub fn bed_feet((x, y, z): Pos, height: f64) -> [f64; 3] {
     ]
 }
 
+pub fn next_sleep_timer(timer: i32, sleeping: bool) -> i32 {
+    if sleeping {
+        (timer + 1).min(DEEP_SLEEP_TICKS)
+    } else if timer > 0 && timer + 1 < WAKE_UP_TICKS {
+        timer + 1
+    } else {
+        0
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub struct SleepEvents {
     pub messages: Vec<(PlayerUuid, Clientbound)>,
@@ -526,9 +536,7 @@ impl Bedroom for LevelRoom<'_> {
 
     fn sound(&mut self, event: &'static str, at: [f64; 3]) {
         if let Some(entities) = self.entities.as_deref_mut() {
-            entities
-                .sounds
-                .push((event.to_owned(), glam::DVec3::from_array(at), 1.0, 1.0));
+            entities.sound(event, glam::DVec3::from_array(at), 1.0, 1.0);
         }
     }
 }
@@ -563,7 +571,7 @@ pub fn start(
     if player.riding.take().is_some()
         && let Some(entities) = entities.as_mut()
     {
-        entities.dismount();
+        entities.dismount(u64::from(player.id.0));
     }
     let mut room = LevelRoom {
         terrain,
@@ -616,6 +624,23 @@ pub fn stop(
     let sleepers = in_level(players, *dimension);
     update_status(sleep_status, &sleepers, percentage, published, &mut events);
     events
+}
+
+pub fn wake_leaving(globals: &Globals, level: &mut Level, player: &mut Player) -> Vec<Pos> {
+    let mut written = Vec::new();
+    if player.sleeping.is_none() {
+        return written;
+    }
+    let Level {
+        terrain, entities, ..
+    } = level;
+    let mut room = LevelRoom {
+        terrain,
+        entities: entities.as_mut(),
+        written: &mut written,
+    };
+    get_up(&mut room, &globals.registries, player, true);
+    written
 }
 
 pub fn wake_teleported(
@@ -765,6 +790,16 @@ mod tests {
     fn registries() -> Option<Registries> {
         let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
         Registries::load(&paths).ok()
+    }
+
+    #[test]
+    fn the_sleep_timer_deepens_to_a_hundred_and_the_wake_up_fades_out_by_a_hundred_and_ten() {
+        assert_eq!(next_sleep_timer(0, true), 1);
+        assert_eq!(next_sleep_timer(DEEP_SLEEP_TICKS, true), DEEP_SLEEP_TICKS);
+        assert_eq!(next_sleep_timer(DEEP_SLEEP_TICKS, false), DEEP_SLEEP_TICKS + 1);
+        assert_eq!(next_sleep_timer(WAKE_UP_TICKS - 2, false), WAKE_UP_TICKS - 1);
+        assert_eq!(next_sleep_timer(WAKE_UP_TICKS - 1, false), 0);
+        assert_eq!(next_sleep_timer(0, false), 0);
     }
 
     #[test]

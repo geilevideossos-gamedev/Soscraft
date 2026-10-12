@@ -74,16 +74,3 @@ fn against_wall(ps: &PlayerState) -> bool {
     let (mins, maxs) = sim::voxel::player_hull(ps);
     sim::voxel::touches_wall(ps.origin, mins, maxs)
 }
-
-pub(crate) fn launch_rocket(
-    authority: &mut sim::SimWorld,
-    id: sim::ClientId,
-    boost_ticks: i32,
-    swing: &mut Option<f32>,
-    spend: impl FnOnce(),
-) {
-    if authority.launch_rocket(id, boost_ticks) {
-        *swing = Some(0.0);
-        spend();
-    }
-}

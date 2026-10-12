@@ -246,6 +246,10 @@ pub enum ClientPacket {
         header: PacketHeader,
         snapshot_seq: u32,
     },
+
+    Minecraft(Vec<u8>),
+
+    MinecraftState(Vec<u8>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -268,15 +272,37 @@ pub enum ServerPacket {
 
         payload: Vec<u8>,
     },
+    Minecraft(Vec<u8>),
+    MinecraftState(Vec<u8>),
 }
 
 const TAG_CLIENT_CONNECT: u8 = 1;
 const TAG_CLIENT_COMMANDS: u8 = 2;
 const TAG_CLIENT_SNAP_ACK: u8 = 3;
+pub const TAG_CLIENT_MINECRAFT: u8 = 4;
+pub const TAG_CLIENT_MINECRAFT_STATE: u8 = 5;
 const TAG_SERVER_ACCEPT: u8 = 10;
 const TAG_SERVER_REJECT: u8 = 11;
 const TAG_SERVER_SNAPSHOT: u8 = 12;
 const TAG_SERVER_COMPRESSED_SNAPSHOT: u8 = 14;
+pub const TAG_SERVER_MINECRAFT: u8 = 15;
+pub const TAG_SERVER_MINECRAFT_STATE: u8 = 16;
+
+fn put_opaque(out: &mut WireWriter, tag: u8, payload: &[u8]) {
+    out.put_u8(tag);
+    out.put_u32(payload.len() as u32);
+    out.put_bytes(payload);
+}
+
+fn get_opaque(input: &mut WireReader<'_>) -> Result<Vec<u8>, WireError> {
+    let len = input.get_u32()? as usize;
+    if len > MAX_PACKET_BYTES as usize || len > input.remaining() {
+        return Err(WireError::Malformed("invalid minecraft payload length"));
+    }
+    let mut payload = vec![0u8; len];
+    input.get_bytes(&mut payload)?;
+    Ok(payload)
+}
 
 fn encode_shot_sample(out: &mut WireWriter, sample: &sim::ShotSampleProvenance) {
     out.put_u32(sample.left.0);
@@ -487,6 +513,8 @@ impl ClientPacket {
                 put_header(out, header);
                 out.put_u32(*snapshot_seq);
             }
+            Self::Minecraft(payload) => put_opaque(out, TAG_CLIENT_MINECRAFT, payload),
+            Self::MinecraftState(payload) => put_opaque(out, TAG_CLIENT_MINECRAFT_STATE, payload),
         }
     }
 
@@ -527,6 +555,8 @@ impl ClientPacket {
                 header: get_header(input)?,
                 snapshot_seq: input.get_u32()?,
             }),
+            TAG_CLIENT_MINECRAFT => Ok(Self::Minecraft(get_opaque(input)?)),
+            TAG_CLIENT_MINECRAFT_STATE => Ok(Self::MinecraftState(get_opaque(input)?)),
             _ => Err(WireError::Malformed("unknown ClientPacket tag")),
         }
     }
@@ -597,6 +627,8 @@ impl ServerPacket {
                 out.put_u32(payload.len() as u32);
                 out.put_bytes(payload);
             }
+            Self::Minecraft(payload) => put_opaque(out, TAG_SERVER_MINECRAFT, payload),
+            Self::MinecraftState(payload) => put_opaque(out, TAG_SERVER_MINECRAFT_STATE, payload),
         }
     }
 
@@ -649,6 +681,8 @@ impl ServerPacket {
                     payload,
                 })
             }
+            TAG_SERVER_MINECRAFT => Ok(Self::Minecraft(get_opaque(input)?)),
+            TAG_SERVER_MINECRAFT_STATE => Ok(Self::MinecraftState(get_opaque(input)?)),
             _ => Err(WireError::Malformed("unknown ServerPacket tag")),
         }
     }
