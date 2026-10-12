@@ -193,8 +193,9 @@ pub enum ToClient {
     },
     Explosion {
         center: [f64; 3],
-        power: f32,
-        blocks: Vec<[i32; 3]>,
+        radius: f32,
+        blocks: u32,
+        interacts: bool,
     },
     MobAdd {
         id: u64,
@@ -248,6 +249,10 @@ pub enum ToClient {
         line: Text,
     },
     Credits,
+    PlayerEvent {
+        client: u32,
+        event: u8,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

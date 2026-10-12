@@ -383,12 +383,12 @@ impl CommandWorld for Host<'_> {
             }
             for _ in 0..added {
                 let pitch = ((entities.random_float() - entities.random_float()) * 0.7 + 1.0) * 2.0;
-                entities.view.sounds.push((
-                    "minecraft:entity.item.pickup".to_owned(),
+                entities.sound(
+                    "minecraft:entity.item.pickup",
                     glam::DVec3::from_array(feet),
                     0.2,
                     pitch,
-                ));
+                );
             }
         }
         true
@@ -740,12 +740,7 @@ impl CommandWorld for Host<'_> {
         };
         let chime = player.survival.level_up_chime();
         if let (Some(volume), Some(entities), Some(feet)) = (chime, entities, feet) {
-            entities.view.sounds.push((
-                LEVEL_UP_SOUND.to_owned(),
-                glam::DVec3::from_array(feet),
-                volume,
-                1.0,
-            ));
+            entities.sound(LEVEL_UP_SOUND, glam::DVec3::from_array(feet), volume, 1.0);
         }
     }
 }

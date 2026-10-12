@@ -1018,6 +1018,50 @@ impl Sessions {
         frames
     }
 
+    pub fn send_heard(
+        &mut self,
+        players: &BTreeMap<PlayerUuid, Player>,
+        levels: &mut BTreeMap<Dimension, Level>,
+    ) {
+        for (&dimension, level) in levels.iter_mut() {
+            let Some(entities) = level.entities.as_mut() else {
+                continue;
+            };
+            let watched = self
+                .sessions
+                .values()
+                .any(|session| session.chunks.level == Some(dimension));
+            let said = entities.heard.listen(watched);
+            self.tell(dimension, &said, |uuid| {
+                let player = players.get(uuid)?;
+                let place = player.arrival.or(player.place)?;
+                (place.dimension == dimension).then_some(place.feet)
+            });
+        }
+    }
+
+    pub fn tell(
+        &mut self,
+        dimension: Dimension,
+        said: &[crate::heard::Said],
+        feet_of: impl Fn(&PlayerUuid) -> Option<[f64; 3]>,
+    ) {
+        for session in self.sessions.values_mut() {
+            if session.chunks.level != Some(dimension) {
+                continue;
+            }
+            let Some(feet) = feet_of(&session.uuid) else {
+                continue;
+            };
+            let (client, view_distance) = (session.client, session.chunks.view_distance);
+            session.outbox.extend(
+                said.iter()
+                    .filter(|said| said.reaches(client, feet, view_distance))
+                    .map(|said| said.heard.message()),
+            );
+        }
+    }
+
     pub fn take_outgoing(&mut self) -> Vec<(u32, ToClient)> {
         let mut out = std::mem::take(&mut self.refused);
         for session in self.sessions.values_mut() {
@@ -1163,6 +1207,56 @@ mod tests {
             .unwrap();
         session.outbox.clear();
         session
+    }
+
+    #[test]
+    fn what_is_heard_reaches_friends_in_range_in_that_level_and_never_across_levels() {
+        use crate::heard::{Heard, Said};
+        let mut sessions = Sessions::default();
+        let levels = [
+            (1, Dimension::Overworld),
+            (2, Dimension::Overworld),
+            (3, Dimension::Nether),
+            (4, Dimension::Overworld),
+        ];
+        for (client, level) in levels {
+            sessions
+                .sessions
+                .insert(client, session_with(client, level));
+        }
+        let chest = Heard::sound("minecraft:block.chest.open", [0.5, 64.5, 0.5], 0.5, 1.0);
+        let fizz = Heard::Event {
+            event: 1501,
+            pos: [40, 64, 0],
+            data: 0,
+        };
+        let dig = Heard::sound("minecraft:block.stone.hit", [0.5, 64.5, 0.5], 0.25, 0.5);
+        let said = vec![
+            Said::all(chest.clone()),
+            Said::all(fizz.clone()),
+            Said::to(2, dig.clone()),
+        ];
+        let feet = |uuid: &PlayerUuid| match uuid.0.as_str() {
+            "friend-1" => Some([-30.0, 64.0, 0.0]),
+            "friend-2" => Some([10.0, 64.0, 0.0]),
+            "friend-3" => Some([0.0, 64.0, 0.0]),
+            _ => None,
+        };
+        sessions.tell(Dimension::Overworld, &said, feet);
+        let heard = |client| sessions.sessions[&client].outbox.clone();
+        assert!(
+            heard(1).is_empty(),
+            "30 blocks from the chest, 70 from the fizz"
+        );
+        assert_eq!(
+            heard(2),
+            vec![chest.message(), fizz.message(), dig.message()]
+        );
+        assert!(heard(3).is_empty(), "another level hears nothing");
+        assert!(
+            heard(4).is_empty(),
+            "a friend with no place yet hears nothing"
+        );
     }
 
     #[test]

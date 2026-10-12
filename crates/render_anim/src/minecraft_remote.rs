@@ -10,6 +10,7 @@ use minecraft_net::messages::{GameMode, Target};
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
 use minecraft_survival::data::GameData;
 use minecraft_survival::guns::{Follow, weapon_of};
+use minecraft_survival::heard::TOTEM_EVENT;
 use minecraft_survival::menus::Open;
 use minecraft_survival::remote::{DecodeJob, RemoteWorld};
 use minecraft_survival::session::BREAK_EVENT;
@@ -26,6 +27,7 @@ use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::Inventory;
 use net::minecraft_wire::HOST;
 
+use crate::minecraft_sounds::Sounds;
 use crate::minecraft_spawn_gate::{CLIENT_WAIT_TIMEOUT_MS, SPAWN_EYE_HEIGHT, SpawnGate};
 use crate::minecraft_world::{Loaded, MinecraftWorldView, SkyInputs};
 
@@ -148,6 +150,7 @@ pub(crate) struct Friend {
     shown_menu: Option<u8>,
     screen_open: bool,
     gear_items: ItemVisuals,
+    sounds: Option<Sounds>,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -322,7 +325,10 @@ pub(crate) fn friend(
         Option<Res<frame::ActivePad>>,
         Option<Res<frame::HudInputView>>,
     ),
-    mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
+    (mut body_gear, mut sound_queue): (
+        ResMut<crate::anim::minecraft_gear::McBodyGear>,
+        ResMut<audio::McSoundQueue>,
+    ),
 ) {
     if *role != frame::RuntimeRole::Client {
         if ui.chat_only {
@@ -378,6 +384,7 @@ pub(crate) fn friend(
                 friend
                     .inventory_ui
                     .set_station_data(prepared.stations.clone(), prepared.enchantments.clone());
+                friend.sounds = Some(Sounds::load(&prepared.look.packs));
                 friend.prepared = Some(prepared);
                 diag::info!(World, "Minecraft look loaded: waiting for the host's world");
             }
@@ -397,7 +404,8 @@ pub(crate) fn friend(
             crate::minecraft_chat::show(&mut ui.chat, &lines, &prepared.language);
             show_overlays(&mut ui, &lines, &prepared.language);
         }
-        show_effects(friend);
+        show_effects(friend, &presented);
+        track_bodies(friend, &presented);
         if friend
             .remote
             .as_ref()
@@ -455,6 +463,12 @@ pub(crate) fn friend(
     let swap = std::mem::take(&mut ui.swap_hands);
     let drop = ui.drop_selected.take();
     let messages = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
+    if let (Some(sounds), Some(prepared)) = (friend.sounds.as_mut(), friend.prepared.as_ref()) {
+        for event in std::mem::take(&mut ui.ui_sounds) {
+            sounds.play(&prepared.look.packs, event, None, 1.0, 1.0);
+        }
+        sound_queue.0.append(&mut sounds.queued);
+    }
     crate::minecraft_respawn::fade_overlay(&mut ui, dt);
     if let Some(wire) = wire.as_mut() {
         for message in &messages {
@@ -509,7 +523,7 @@ fn show_overlays(
     }
 }
 
-fn show_effects(friend: &mut Friend) {
+fn show_effects(friend: &mut Friend, presented: &net::PresentedSnapshot) {
     let Friend {
         prepared: Some(prepared),
         remote: Some(remote),
@@ -552,7 +566,91 @@ fn show_effects(friend: &mut Friend) {
                     );
                 }
             }
-            _ => {}
+            effect => {
+                if let Some(level) = remote.level.as_mut() {
+                    show_heard(level, effect, presented);
+                }
+            }
+        }
+    }
+}
+
+fn show_heard(
+    level: &mut minecraft_survival::remote::RemoteLevel,
+    effect: ToClient,
+    presented: &net::PresentedSnapshot,
+) {
+    match effect {
+        ToClient::LevelEvent { event, pos, data } => {
+            let pos = (pos[0], pos[1], pos[2]);
+            level
+                .view
+                .level_event(&level.terrain.scene, event, pos, data);
+        }
+        ToClient::Sound {
+            event,
+            pos,
+            volume,
+            pitch,
+            ..
+        } => {
+            let at = glam::DVec3::from_array(pos);
+            level.view.sounds.push((event, at, volume, pitch));
+        }
+        ToClient::Explosion {
+            center,
+            radius,
+            blocks,
+            interacts,
+        } => {
+            let center = glam::DVec3::from_array(center);
+            let blocks = usize::try_from(blocks).unwrap_or(usize::MAX);
+            level.view.explosion(center, radius, blocks, interacts);
+        }
+        ToClient::BlockEvent { pos, kind, param } => {
+            let pos = (pos[0], pos[1], pos[2]);
+            let count = u32::try_from(param).unwrap_or(0);
+            level
+                .view
+                .lids
+                .block_event(&level.terrain.scene, pos, kind, count);
+        }
+        ToClient::PlayerEvent { client, event } if event == TOTEM_EVENT => {
+            if let Some((feet, height)) = body_of(presented, client, level.origin) {
+                let width = crate::minecraft_players::PLAYER_WIDTH;
+                level
+                    .view
+                    .totem_pop(u128::from(client), feet, width, height);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn body_of(
+    presented: &net::PresentedSnapshot,
+    client: u32,
+    origin: [f64; 3],
+) -> Option<([f64; 3], f64)> {
+    let ps = presented.player(sim::ClientId(client))?;
+    let (_, maxs) = sim::voxel::player_hull(ps);
+    let feet = sim::voxel::to_block(origin, ps.origin);
+    Some((feet, f64::from(maxs[2] / sim::voxel::BLOCK)))
+}
+
+fn track_bodies(friend: &mut Friend, presented: &net::PresentedSnapshot) {
+    let Some(remote) = friend.remote.as_mut() else {
+        return;
+    };
+    let Some(level) = remote.level.as_mut() else {
+        return;
+    };
+    let width = crate::minecraft_players::PLAYER_WIDTH;
+    for &client in remote.players.keys() {
+        if let Some((feet, height)) = body_of(presented, client, level.origin) {
+            level
+                .view
+                .track_body(u128::from(client), feet, width, height);
         }
     }
 }
@@ -816,6 +914,7 @@ fn present(
         spawn_gate,
         mining,
         cracks,
+        sounds,
         ..
     } = friend
     else {
@@ -986,7 +1085,15 @@ fn present(
         world_fog: false,
         credits: false,
     };
-    let _ = crate::minecraft_world::present_sky(
+    view.weather = if view.weather_texture.is_some() {
+        let rain = (weather[0], level.view.partial());
+        level
+            .view
+            .weather_mesh(&level.terrain.scene, eye, light, rain)
+    } else {
+        Default::default()
+    };
+    let sky = crate::minecraft_world::present_sky(
         view,
         &mut level.terrain,
         &prepared.registries,
@@ -994,6 +1101,13 @@ fn present(
         (environment_accumulator, environment_primed),
         &inputs,
     );
+    if let (Some((x_angle, y_angle)), Some(sounds)) = (sky.flash, sounds.as_mut()) {
+        let toward = minecraft_terrain::end_flash::direction_from_rotation(x_angle, y_angle) * 10.0;
+        let source = [eye[0] + toward.x, eye[1] + toward.y, eye[2] + toward.z];
+        let at = Vec3::from_array(sim::voxel::to_map(origin, source));
+        let flash = "minecraft:weather.end_flash";
+        sounds.play_without_falloff(&prepared.look.packs, flash, Some(at), 1.0, 1.0);
+    }
     crate::minecraft_world::present_clouds(
         view,
         &prepared.look,
@@ -1024,6 +1138,7 @@ fn present(
             remote.game_time,
             standing.is_some_and(|ps| ps.pm_type == 0),
         ),
+        (sounds.as_mut(), mining, weather[0]),
     );
 }
 
@@ -1034,6 +1149,11 @@ fn present_entities(
     light: &SkyLight,
     (feet, eye, forward): ([f64; 3], [f64; 3], glam::Vec3),
     (dt, game_time, alive): (f64, i64, bool),
+    (sounds, mining, rain_level): (
+        Option<&mut Sounds>,
+        &mut crate::minecraft_mining::Mining,
+        f32,
+    ),
 ) {
     let feet = glam::DVec3::from_array(feet);
     let near: Vec<glam::DVec3> = alive.then_some(feet).into_iter().collect();
@@ -1044,9 +1164,29 @@ fn present_entities(
     entities.advance(dt, timing, &near, feet + glam::DVec3::Y * 0.81);
     let ticks = u32::try_from(entities.ticks() - before).unwrap_or(u32::MAX);
     entities.tick_scene(&level.terrain.scene, ticks);
-    entities.sounds.clear();
-    entities.item_crumbs.clear();
-    entities.potion_crumbs.clear();
+    for _ in 0..ticks {
+        let rain = entities.rain_tick(&level.terrain.scene, eye, rain_level);
+        let ambient = entities.animate_tick(&level.terrain.scene, feet.to_array());
+        for sound in ambient.into_iter().chain(rain) {
+            let at = glam::DVec3::from_array(sound.at);
+            let event = sound.event.to_owned();
+            entities.sounds.push((event, at, sound.volume, sound.pitch));
+        }
+    }
+    for (pos, apart) in entities.lids.take_apart_changes() {
+        level.terrain.stream.draw_apart(pos, apart);
+    }
+    let (packs, atlas) = (&prepared.look.packs, &prepared.look.atlas);
+    crate::minecraft_world::present_crumbs(entities, mining, packs, atlas);
+    let heard = std::mem::take(&mut entities.sounds);
+    if let Some(sounds) = sounds {
+        let camera = glam::DVec3::from_array(eye);
+        for (event, at, volume, pitch) in heard {
+            let at = minecraft_terrain::ender_dragon::heard_at(&event, at, camera);
+            let at = Vec3::from_array(sim::voxel::to_map(level.origin, at.to_array()));
+            sounds.play(packs, &event, Some(at), volume, pitch);
+        }
+    }
     let sky_light = level.terrain.environment.sky_light_level();
     let sky_darken = (15.0 - sky_light).clamp(0.0, 15.0) as u8;
     let stream = &level.terrain.stream;

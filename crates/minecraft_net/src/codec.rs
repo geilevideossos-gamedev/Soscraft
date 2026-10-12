@@ -244,6 +244,7 @@ mod tests {
             ToClient::BossBar(_) => 24,
             ToClient::KilledBy { .. } => 25,
             ToClient::Credits => 26,
+            ToClient::PlayerEvent { .. } => 27,
         }
     }
 
@@ -410,8 +411,9 @@ mod tests {
             },
             ToClient::Explosion {
                 center: [1.0, 2.0, 3.0],
-                power: 4.0,
-                blocks: vec![[1, 2, 3], [1, 1, 3]],
+                radius: 4.0,
+                blocks: 12,
+                interacts: true,
             },
             ToClient::MobAdd {
                 id: 9,
@@ -527,6 +529,10 @@ mod tests {
                 ),
             },
             ToClient::Credits,
+            ToClient::PlayerEvent {
+                client: 2,
+                event: 35,
+            },
         ]
     }
 
@@ -560,7 +566,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 27];
+        let mut seen = [false; 28];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);

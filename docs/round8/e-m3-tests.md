@@ -70,3 +70,30 @@ Put the kit below in the `.env` next to the exe before the first start (with `-F
 ```
 IW4L_MINECRAFT_KIT=minecraft:cow_spawn_egg*5,minecraft:pig_spawn_egg,minecraft:saddle,minecraft:snowball*16,minecraft:ender_pearl*4,minecraft:shulker_spawn_egg,minecraft:item_frame,minecraft:iron_sword,minecraft:cobblestone*32
 ```
+
+## E17. Friends hear and see what happens around them
+
+This is also the owner test of milestone M3. The friend's window now plays the sounds of the world around the friend (mobs, blocks placed and broken, doors, chests, explosions, footsteps, hurts and eating of the other players, item and XP pickups, the friend's own actions), shows explosions, chest lids, lava fizz, bone meal and potion breaks, rain and snow with their sounds, and the totem's particles on any player's body. The host now also hears the friend's footsteps, falls, hurts, eating and pickups. A friend hears their own placing and breaking a moment after the click (one round trip), because the friend's game does not predict blocks.
+
+Put the kit below in the `.env` next to the exe before the first start (with `-Fresh` both players get it on their first join). Unmute both windows for this test (the host window is usually muted): each step says which window to listen to.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m3 -Fresh`. Spawn in both. Host window: `/time set day`, `/op Friend`, `/difficulty normal`. Stand next to each other on flat ground.
+2. **The friend's own actions.** Friend window, listening to the friend window:
+   1. Place a few cobblestone blocks and break them with the iron sword or a gun: each place and break is heard.
+   2. Eat the beef: the eating sounds and the burp are heard.
+   3. Place the chest and open it: the lid opens with its sound; close it: it shuts with its sound. Host window: the lid opens and shuts there too.
+3. **The host's actions.** Host window: walk around the friend, place and break a block next to them, open and close the friend's chest. Friend window: the host's footsteps, the place and break sounds and the chest are heard, and the lid moves. Then the host walks 30 blocks away and places a block: the friend no longer hears it.
+4. **Mobs.** Host window: `/time set night`. Friend window: use the cow spawn egg three times nearby: the cows moo now and then. Shoot one until it dies: its hurt and death sounds are heard in the friend window, its drops lie on the ground, and picking them up pops; the friend gets the XP with the orb's chime. Host window: the friend's pickup pop is heard there too.
+5. **TNT.** Host window: place the TNT 6 blocks from the friend and light it with the flint and steel, then step back. Friend window: the fuse hisses, the TNT blinks, then the explosion is heard and its smoke and flash are seen, and the crater is the same as in the host window. Screenshot the explosion from the friend window. **S1**
+6. **Weather and time.** Host window: `/weather rain`. Friend window: within a few seconds the sky darkens, rain streaks fall around the friend and the rain is heard on the ground. Screenshot. **S2** Host window: `/time set night`, then `/weather clear`: the friend's sky turns to night and the rain stops.
+7. **Level events.** Friend window: empty the lava bucket on the ground, then pour the water bucket next to it: where the water meets the lava it hisses and smokes, and the cobblestone or obsidian appears. Use the bone meal on a grass block: green sparkles rise with their sound.
+8. **Totem.** Friend window: hold the totem in the offhand (F swaps hands). Host window: `/kill Friend`. Friend window: the totem sound plays and the totem's green and yellow particles burst around the friend's body (look down or press F5 if the camera allows). Host window: the same burst shows around the friend. Screenshot the host window. **S3**
+9. **Projectiles** (the brief's M3 step 5). Friend window: throw snowballs and an ender pearl. Host window: they fly, and the friend lands where the pearl hit, with the pearl's teleport sound heard in the friend window.
+10. **Range.** Friend window: `/tp Friend ~100 ~ ~`. Host window: place and break blocks and walk around: nothing of it is heard in the friend window. Friend window: `/tp Friend <you>`.
+11. Close both windows (type `quit` in the script's console).
+
+Not yet on the friend's side (see the track log): the item flying into the picker, snowball and pearl hit particles, snowflakes around other players in powder snow, the friend's own first-person totem, lightning.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*4,minecraft:flint_and_steel,minecraft:cow_spawn_egg*3,minecraft:cooked_beef*8,minecraft:chest,minecraft:cobblestone*32,minecraft:water_bucket,minecraft:lava_bucket,minecraft:bone_meal*8,minecraft:totem_of_undying,minecraft:snowball*16,minecraft:ender_pearl*4,minecraft:iron_sword
+```

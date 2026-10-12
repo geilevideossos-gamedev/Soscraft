@@ -202,7 +202,7 @@ pub(crate) fn play(effects: Vec<Effect>, presenter: &mut Presenter<'_>) {
                         f64::from(pos.2) + 0.5,
                     ];
                     let at = Vec3::from_array(sim::voxel::to_map(presenter.origin, centre));
-                    sounds.play(presenter.packs, &event, Some(at), volume, pitch);
+                    sounds.play_local(presenter.packs, &event, Some(at), volume, pitch);
                 }
                 presenter.mining.hit_particle(
                     presenter.packs,

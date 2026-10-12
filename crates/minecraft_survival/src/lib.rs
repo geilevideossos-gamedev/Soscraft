@@ -12,6 +12,7 @@ pub mod entities;
 pub mod entity_view;
 pub mod gear;
 pub mod guns;
+pub mod heard;
 pub mod impulse;
 pub mod level;
 pub mod menus;

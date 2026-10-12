@@ -457,6 +457,8 @@ pub(crate) fn host(
         &mut server.levels,
         crate::minecraft_world::VIEW_DISTANCE,
     );
+    host.sessions
+        .send_heard(&server.players, &mut server.levels);
     for (client, frame) in frames {
         match minecraft_net::encode(Lane::State, &frame) {
             Ok(bytes) => {

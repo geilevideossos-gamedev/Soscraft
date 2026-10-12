@@ -733,6 +733,9 @@ fn update(
         }
     }
     let mut begun_lines = Vec::new();
+    if let Some(sounds) = sounds.as_mut() {
+        sounds.record();
+    }
     let begun = crate::minecraft_players::begin(player, levels, globals, &mut authority.0, local.0, origin, presented.player(local.0), in_remote_killstreak(&presented, local.0), Some(spawn_gate), now_ms, time.delta_secs_f64(), sounds, &world.packs, &mut begun_lines);
     if !begun_lines.is_empty() {
         show_chat(&mut ui.chat, inventory_ui, &world.packs, &begun_lines);
@@ -1125,7 +1128,7 @@ fn update(
             let rain = entities.rain_tick(&terrain.scene, eye);
             for sound in entities.animate_tick(&terrain.scene, feet).into_iter().chain(rain) {
                 if let Some(sounds) = sounds.as_mut() {
-                    sounds.play(&world.packs, sound.event, Some(at(sound.at)), sound.volume, sound.pitch);
+                    sounds.play_local(&world.packs, sound.event, Some(at(sound.at)), sound.volume, sound.pitch);
                 }
             }
             entities.campfire_tick(&terrain.scene, |pos| containers.campfire_food(pos));
@@ -1177,28 +1180,13 @@ fn update(
             terrain.stream.record_edits(&terrain.scene, &positions);
             terrain.stream.mark_edited(&terrain.scene, &positions);
         }
-        for (item, at, velocities) in std::mem::take(&mut entities.view.item_crumbs) {
-            if let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
-                .ok()
-                .and_then(|id| minecraft_terrain::model::item_particle_texture(&world.packs, &id).ok().flatten())
-                .filter(|texture| world.atlas.contains(texture))
-            {
-                mining.item_crumbs(&world.packs, at.as_vec3(), &velocities, &texture);
-            }
-        }
-        let potion_crumbs = std::mem::take(&mut entities.view.potion_crumbs);
-        if !potion_crumbs.is_empty()
-            && let Some(texture) = minecraft_terrain::pack::ResourceId::parse(minecraft_terrain::thrown::SPLASH_POTION)
-                .ok()
-                .and_then(|id| minecraft_terrain::model::item_particle_texture(&world.packs, &id).ok().flatten())
-                .filter(|texture| world.atlas.contains(texture))
-        {
-            for center in potion_crumbs {
-                mining.potion_crumbs(&world.packs, center.as_vec3(), &texture);
-            }
-        }
+        present_crumbs(&mut entities.view, &mut *mining, &world.packs, &world.atlas);
         for (pos, block) in std::mem::take(&mut entities.destroyed) {
             mining.burst(&world.packs, &terrain.scene, &world.atlas, pos, &block);
+            if let Some(state) = terrain.stream.states.state_of(&block) {
+                let data = i32::from(state.0);
+                entities.hear(minecraft_survival::heard::Said::all(minecraft_survival::heard::Heard::Event { event: minecraft_survival::session::BREAK_EVENT, pos: [pos.0, pos.1, pos.2], data }));
+            }
             if let (Some(sounds), Some(kind)) = (sounds.as_mut(), terrain.scene.sound_type(&block)) {
                 let centre = [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5];
                 sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
@@ -1264,7 +1252,7 @@ fn update(
         }
         for event in std::mem::take(&mut ui.ui_sounds) {
             if let Some(sounds) = sounds.as_mut() {
-                sounds.play(&world.packs, event, None, 1.0, 1.0);
+                sounds.play_local(&world.packs, event, None, 1.0, 1.0);
             }
         }
         let thrown: Vec<_> = creative_thrown.into_iter().chain(clicked.thrown).collect();
@@ -1337,6 +1325,10 @@ fn update(
         inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, (&screen, survival.status.experience_level, containers));
 
         if let Some(sounds) = sounds.as_mut() {
+            for played in sounds.take_recorded() {
+                let from = played.at.map(|at| sim::voxel::to_block(origin, at.to_array()));
+                entities.hear(minecraft_survival::heard::played(&played.event, from, (played.volume, played.pitch), local.0.0, eye));
+            }
             for (event, position, volume, pitch) in std::mem::take(&mut entities.view.sounds) {
                 sounds.play(&world.packs, &event, Some(at(position.to_array())), volume, pitch);
             }
@@ -1535,6 +1527,29 @@ pub(crate) struct SkyInputs {
     pub(crate) powder_snow: Option<bool>,
     pub(crate) world_fog: bool,
     pub(crate) credits: bool,
+}
+
+pub(crate) fn present_crumbs(view: &mut minecraft_survival::entity_view::EntityView, mining: &mut crate::minecraft_mining::Mining, packs: &PackStack, atlas: &Atlas) {
+    for (item, at, velocities) in std::mem::take(&mut view.item_crumbs) {
+        if let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
+            .ok()
+            .and_then(|id| minecraft_terrain::model::item_particle_texture(packs, &id).ok().flatten())
+            .filter(|texture| atlas.contains(texture))
+        {
+            mining.item_crumbs(packs, at.as_vec3(), &velocities, &texture);
+        }
+    }
+    let potion_crumbs = std::mem::take(&mut view.potion_crumbs);
+    if !potion_crumbs.is_empty()
+        && let Some(texture) = minecraft_terrain::pack::ResourceId::parse(minecraft_terrain::thrown::SPLASH_POTION)
+            .ok()
+            .and_then(|id| minecraft_terrain::model::item_particle_texture(packs, &id).ok().flatten())
+            .filter(|texture| atlas.contains(texture))
+    {
+        for center in potion_crumbs {
+            mining.potion_crumbs(packs, center.as_vec3(), &texture);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]

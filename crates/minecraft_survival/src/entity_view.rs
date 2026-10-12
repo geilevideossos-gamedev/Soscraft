@@ -256,6 +256,126 @@ impl EntityView {
         self.ticks
     }
 
+    pub fn animate_tick<S: Scene + ?Sized>(
+        &mut self,
+        scene: &S,
+        feet: [f64; 3],
+    ) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
+        let at = (
+            feet[0].floor() as i32,
+            feet[1].floor() as i32,
+            feet[2].floor() as i32,
+        );
+        let tick = minecraft_terrain::display_ticks::animate_tick(scene, at, &mut self.random);
+        for (start, motion) in tick.portal_particles {
+            self.portal.emit(start, motion);
+        }
+        for (kind, start, motion) in tick.particles {
+            self.ambient.add(kind, start, motion);
+        }
+        tick.sounds
+    }
+
+    pub(crate) fn present(&mut self, effects: minecraft_terrain::display_ticks::DisplayTick) {
+        for sound in effects.sounds {
+            self.sounds.push((
+                sound.event.to_owned(),
+                DVec3::from_array(sound.at),
+                sound.volume,
+                sound.pitch,
+            ));
+        }
+        for (kind, at, motion) in effects.particles {
+            self.ambient.add(kind, at, motion);
+        }
+    }
+
+    pub fn level_event(
+        &mut self,
+        scene: &HandcraftedScene,
+        id: i32,
+        pos: (i32, i32, i32),
+        data: i32,
+    ) {
+        use crate::heard::{INSTANT_POTION_EVENT, SPLASH_POTION_EVENT};
+        if id == SPLASH_POTION_EVENT || id == INSTANT_POTION_EVENT {
+            let at = DVec3::new(
+                f64::from(pos.0) + 0.5,
+                f64::from(pos.1),
+                f64::from(pos.2) + 0.5,
+            );
+            self.spell
+                .burst(at, data as u32, id == INSTANT_POTION_EVENT);
+            self.potion_crumbs
+                .push(minecraft_terrain::spell_particles::break_center(at));
+            return;
+        }
+        let is_a = minecraft_terrain::level_events::class_test(scene);
+        let effects = minecraft_terrain::level_events::level_event(
+            id,
+            pos,
+            data,
+            scene,
+            &is_a,
+            &mut self.random,
+        );
+        self.present(effects);
+    }
+
+    pub fn explosion(&mut self, center: DVec3, radius: f32, blocks: usize, interacts: bool) {
+        self.ambient.explosion(center, radius, blocks, interacts);
+    }
+
+    pub fn track_body(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
+        let feet = DVec3::from_array(feet);
+        let body = minecraft_terrain::ambient_particles::Body {
+            feet,
+            width,
+            height,
+        };
+        self.bodies.insert(key, body);
+    }
+
+    pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
+        self.track_body(key, feet, width, height);
+        let body = self.bodies[&key];
+        self.ambient.totem_emitter(key, body);
+    }
+
+    pub fn rain_tick(
+        &mut self,
+        scene: &HandcraftedScene,
+        camera: [f64; 3],
+        rain_level: f32,
+    ) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
+        self.ambient
+            .rain_tick(scene, DVec3::from_array(camera), rain_level)
+    }
+
+    pub fn weather_mesh(
+        &self,
+        scene: &HandcraftedScene,
+        camera: [f64; 3],
+        light: &SkyLight,
+        (rain_level, partial): (f32, f32),
+    ) -> (Vec<minecraft_terrain::weather::WeatherVertex>, Vec<u32>) {
+        if rain_level <= 0.0 {
+            return Default::default();
+        }
+        let camera = DVec3::from_array(camera);
+        let radius = minecraft_terrain::rain::WEATHER_RADIUS;
+        let columns = minecraft_terrain::weather::columns(
+            camera,
+            radius,
+            self.ticks as i64,
+            partial,
+            |x, z| minecraft_terrain::rain::motion_blocking_height(scene, x, z),
+            |pos| self.ambient.precipitation_at(scene, pos),
+            |pos| (light.get(pos), light.get_block(pos)),
+        );
+        minecraft_terrain::weather::mesh(&columns, camera, radius, rain_level)
+    }
+
     pub fn mob_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(u64, f64)> {
         self.world
             .mob_on_ray_except(eye, look, reach, None)

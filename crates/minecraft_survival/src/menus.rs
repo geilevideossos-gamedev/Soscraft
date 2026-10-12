@@ -1209,7 +1209,7 @@ fn lid_effects(
     for event in events {
         let outcome = crate::level::opener_outcome(&terrain.scene, &event);
         let (cell, id, count) = outcome.block_event;
-        entities.view.lids.block_event(&terrain.scene, cell, id, count);
+        entities.lid_event(&terrain.scene, cell, id, count);
         if let Some((pos, viewers)) = outcome.trapped {
             entities.chest_openers(pos, viewers);
         }

@@ -73,7 +73,7 @@ impl VoxelQueues {
     }
 }
 
-const PLAYER_WIDTH: f64 = 0.6;
+pub(crate) const PLAYER_WIDTH: f64 = 0.6;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Skating {
@@ -608,7 +608,7 @@ pub(crate) fn movement(
                 )
             {
                 let height = f64::from(motion.height);
-                pop_totem(entities, uuid, feet, height);
+                pop_totem(entities, (uuid, client.0), feet, height);
                 totem_popped = true;
             }
             if survival.stuck() {
@@ -924,7 +924,12 @@ pub(crate) fn settle(
     if popped && let Some(ps) = authority.player(client) {
         let (_, maxs) = sim::voxel::player_hull(ps);
         let feet = sim::voxel::to_block(origin, ps.origin);
-        pop_totem(entities, uuid, feet, f64::from(maxs[2] / sim::voxel::BLOCK));
+        pop_totem(
+            entities,
+            (uuid, client.0),
+            feet,
+            f64::from(maxs[2] / sim::voxel::BLOCK),
+        );
     }
     if alive
         && !sim::voxel::player_damage_pending(client.0)
@@ -984,9 +989,21 @@ pub(crate) struct Settled {
     pub(crate) popped: bool,
 }
 
-pub(crate) fn pop_totem(entities: &mut Entities, uuid: &PlayerUuid, feet: [f64; 3], height: f64) {
+pub(crate) fn pop_totem(
+    entities: &mut Entities,
+    (uuid, client): (&PlayerUuid, u32),
+    feet: [f64; 3],
+    height: f64,
+) {
     let key = minecraft_survival::level::opener_key(uuid);
     entities.totem_pop(key, feet, PLAYER_WIDTH, height);
+    let event = minecraft_survival::heard::TOTEM_EVENT;
+    let heard = minecraft_survival::heard::Heard::Player {
+        client,
+        event,
+        at: feet,
+    };
+    entities.hear(minecraft_survival::heard::Said::all(heard));
 }
 
 pub(crate) fn track_body(
@@ -1158,7 +1175,7 @@ pub(crate) fn step_friend(
     if player.dead {
         player.held = None;
     }
-    let mut sounds = None;
+    let mut sounds = Some(Sounds::recorder());
     let remote = crate::minecraft_world::remote_view(ps.pm_type, ps.other_flags);
     let begun = begin(
         player,
@@ -1244,7 +1261,19 @@ pub(crate) fn step_friend(
             world.packs,
         );
         let found = entities.take_experience(u64::from(player.id.0));
-        let _ = player.survival.gain_experience(found);
+        let chime = player.survival.gain_experience(found);
+        if let Some(sounds) = sounds.as_mut() {
+            if found > 0 {
+                let (r1, r2) = (entities.random_float(), entities.random_float());
+                let pitch = (r1 - r2) * 0.35 + 0.9;
+                let orb = minecraft_survival::heard::ORB_PICKUP_SOUND;
+                sounds.play(world.packs, orb, None, 0.1, pitch);
+            }
+            if let Some(volume) = chime {
+                let chime = minecraft_survival::heard::LEVEL_UP_SOUND;
+                sounds.play(world.packs, chime, None, volume, 1.0);
+            }
+        }
         track_body(entities, &player.uuid, &ps, origin);
         stepped.told = settle(
             player,
@@ -1309,6 +1338,16 @@ pub(crate) fn step_friend(
             bench,
         );
     }
+    if let Some(entities) = world
+        .levels
+        .get_mut(&player.dimension)
+        .and_then(|level| level.entities.as_mut())
+    {
+        let random = || entities.random_float();
+        for said in minecraft_survival::heard::of_effects(&effects, client.0, eye, random) {
+            entities.hear(said);
+        }
+    }
     hear(
         world.sounds.as_deref_mut(),
         world.packs,
@@ -1321,6 +1360,15 @@ pub(crate) fn step_friend(
         .get_mut(&player.dimension)
         .and_then(|level| level.entities.as_mut())
     {
+        let recorded = sounds.as_mut().map_or_else(Vec::new, Sounds::take_recorded);
+        let host = world.sounds.as_deref_mut();
+        retell(
+            recorded,
+            host,
+            world.packs,
+            entities,
+            (client.0, origin, eye),
+        );
         let from = broken_before.min(entities.broken_items.len());
         let at = glam::DVec3::from_array(eye).as_vec3();
         let yaw = minecraft_yaw(ps.viewangles[1]);
@@ -1450,6 +1498,30 @@ fn friend_hand(
         effects,
         (acted.open_table, acted.open_block, acted.open_bench),
     )
+}
+
+fn retell(
+    recorded: Vec<crate::minecraft_sounds::Played>,
+    mut host: Option<&mut Sounds>,
+    packs: &PackStack,
+    entities: &mut Entities,
+    (client, origin, eye): (u32, [f64; 3], [f64; 3]),
+) {
+    for played in recorded {
+        let from = played
+            .at
+            .map(|at| sim::voxel::to_block(origin, at.to_array()));
+        let volume_pitch = (played.volume, played.pitch);
+        let said =
+            minecraft_survival::heard::played(&played.event, from, volume_pitch, client, eye);
+        if let Some(sounds) = host.as_deref_mut().filter(|_| said.only.is_none()) {
+            let at = played
+                .at
+                .unwrap_or_else(|| Vec3::from_array(sim::voxel::to_map(origin, eye)));
+            sounds.play(packs, &played.event, Some(at), played.volume, played.pitch);
+        }
+        entities.hear(said);
+    }
 }
 
 type Opens = (
@@ -1589,6 +1661,10 @@ pub(crate) fn friend_menus(
         now.as_ref(),
         spectator,
     ));
+    let random = || entities.random_float();
+    for said in minecraft_survival::heard::of_effects(&effects, client.0, eye, random) {
+        entities.hear(said);
+    }
     hear(
         world.sounds.as_deref_mut(),
         world.packs,

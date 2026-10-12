@@ -404,18 +404,14 @@ pub fn leave(level: &mut Level, player: &PlayerUuid) {
         let outcome = opener_outcome(&level.terrain.scene, event);
         if let Some(entities) = level.entities.as_mut() {
             let (cell, id, count) = outcome.block_event;
-            entities
-                .view.lids
-                .block_event(&level.terrain.scene, cell, id, count);
+            entities.lid_event(&level.terrain.scene, cell, id, count);
             if let Some((pos, viewers)) = outcome.trapped {
                 entities.chest_openers(pos, viewers);
             }
             if let Some(sound) = outcome.sound {
                 let pitch = minecraft_terrain::openers::pitch(entities.random_float());
                 let at = glam::DVec3::from_array(sound.position);
-                entities
-                    .view.sounds
-                    .push((sound.event.to_owned(), at, sound.volume, pitch));
+                entities.sound(sound.event, at, sound.volume, pitch);
             }
         }
         writes.extend(outcome.state.map(|(pos, block)| (pos, Some(block))));

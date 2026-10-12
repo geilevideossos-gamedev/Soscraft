@@ -96,6 +96,7 @@ pub struct Entities {
     view_distance: i32,
     tracked: Tracked,
     friend_snapshot: Option<EntitySnapshot>,
+    pub heard: crate::heard::HeardLog,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -376,6 +377,7 @@ impl Entities {
             view_distance: HOST_VIEW_DISTANCE,
             tracked: Tracked::default(),
             friend_snapshot: None,
+            heard: Default::default(),
         }
     }
 
@@ -431,6 +433,21 @@ impl Entities {
 
     pub fn take_friend_snapshot(&mut self) -> Option<EntitySnapshot> {
         self.friend_snapshot.take()
+    }
+
+    pub fn hear(&mut self, said: crate::heard::Said) {
+        self.heard.push(said);
+    }
+
+    pub fn sound(&mut self, event: &str, at: DVec3, volume: f32, pitch: f32) {
+        self.view.sounds.push((event.to_owned(), at, volume, pitch));
+        self.heard.push(crate::heard::Said::all(crate::heard::Heard::sound(event, at.to_array(), volume, pitch)));
+    }
+
+    pub fn lid_event(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), id: u8, count: u32) {
+        self.view.lids.block_event(scene, pos, id, count);
+        let param = i32::try_from(count).unwrap_or(i32::MAX);
+        self.heard.push(crate::heard::Said::all(crate::heard::Heard::Block { pos: [pos.0, pos.1, pos.2], kind: id, param }));
     }
 
     pub fn mob_box(&self, id: u64) -> Option<[f64; 6]> {
@@ -691,7 +708,7 @@ impl Entities {
         {
             self.server.deflect_fireball(fireball, look.normalize_or_zero().to_array(), player, true);
             let feet = eye - DVec3::Y * f64::from(EYE_HEIGHT);
-            self.view.sounds.push(("minecraft:entity.player.attack.nodamage".to_owned(), feet, 1.0, 1.0));
+            self.sound("minecraft:entity.player.attack.nodamage", feet, 1.0, 1.0);
             return true;
         }
         let Some((hit, _)) = mob else {
@@ -999,37 +1016,18 @@ impl Entities {
     }
 
     pub fn animate_tick<S: minecraft_terrain::scene::Scene + ?Sized>(&mut self, scene: &S, feet: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
-        let at = (feet[0].floor() as i32, feet[1].floor() as i32, feet[2].floor() as i32);
-        let tick = minecraft_terrain::display_ticks::animate_tick(scene, at, &mut self.view.random);
-        for (start, motion) in tick.portal_particles {
-            self.view.portal.emit(start, motion);
-        }
-        for (kind, start, motion) in tick.particles {
-            self.view.ambient.add(kind, start, motion);
-        }
-        tick.sounds
-    }
-
-    fn present(&mut self, effects: minecraft_terrain::display_ticks::DisplayTick) {
-        for sound in effects.sounds {
-            self.view.sounds.push((sound.event.to_owned(), DVec3::from_array(sound.at), sound.volume, sound.pitch));
-        }
-        for (kind, at, motion) in effects.particles {
-            self.view.ambient.add(kind, at, motion);
-        }
+        self.view.animate_tick(scene, feet)
     }
 
     pub fn present_level_events(&mut self, scene: &HandcraftedScene) {
-        let is_a = minecraft_terrain::level_events::class_test(scene);
         for (id, pos, data) in std::mem::take(&mut self.level_events) {
-            let effects = minecraft_terrain::level_events::level_event(id, pos, data, scene, &is_a, &mut self.view.random);
-            self.present(effects);
+            self.view.level_event(scene, id, pos, data);
         }
     }
 
     pub fn evaporation_smoke(&mut self, pos: (i32, i32, i32)) {
         let effects = minecraft_terrain::level_events::evaporation(pos, &mut self.view.random);
-        self.present(effects);
+        self.view.present(effects);
     }
 
     pub fn powder_snow_flake(&mut self, feet: [f64; 3], block_y: i32) {
@@ -1040,13 +1038,11 @@ impl Entities {
     }
 
     pub fn track_body(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
-        self.view.bodies.insert(key, minecraft_terrain::ambient_particles::Body { feet: DVec3::from_array(feet), width, height });
+        self.view.track_body(key, feet, width, height);
     }
 
     pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
-        self.track_body(key, feet, width, height);
-        let body = self.view.bodies[&key];
-        self.view.ambient.totem_emitter(key, body);
+        self.view.totem_pop(key, feet, width, height);
     }
 
     pub fn lectern(&mut self, player: u64, pos: (i32, i32, i32), action: minecraft_terrain::lectern::LecternAction, sent: Option<SentItemUse>) {
@@ -1071,7 +1067,7 @@ impl Entities {
     }
 
     pub fn rain_tick(&mut self, scene: &HandcraftedScene, camera: [f64; 3]) -> Vec<minecraft_terrain::display_ticks::AmbientSound> {
-        self.view.ambient.rain_tick(scene, DVec3::from_array(camera), self.weather.rain_level)
+        self.view.rain_tick(scene, camera, self.weather.rain_level)
     }
 
     pub fn partial_tick(&self) -> f32 {
@@ -1079,22 +1075,7 @@ impl Entities {
     }
 
     pub fn weather_mesh(&self, scene: &HandcraftedScene, camera: [f64; 3], light: &minecraft_terrain::lighting::SkyLight) -> (Vec<minecraft_terrain::weather::WeatherVertex>, Vec<u32>) {
-        let rain_level = self.weather.rain_level;
-        if rain_level <= 0.0 {
-            return Default::default();
-        }
-        let camera = DVec3::from_array(camera);
-        let radius = minecraft_terrain::rain::WEATHER_RADIUS;
-        let columns = minecraft_terrain::weather::columns(
-            camera,
-            radius,
-            self.view.ticks as i64,
-            self.partial_tick(),
-            |x, z| minecraft_terrain::rain::motion_blocking_height(scene, x, z),
-            |pos| self.view.ambient.precipitation_at(scene, pos),
-            |pos| (light.get(pos), light.get_block(pos)),
-        );
-        minecraft_terrain::weather::mesh(&columns, camera, radius, rain_level)
+        self.view.weather_mesh(scene, camera, light, (self.weather.rain_level, self.partial_tick()))
     }
 
     pub fn campfire_tick(&mut self, scene: &HandcraftedScene, food: impl Fn((i32, i32, i32)) -> [bool; 4]) {
@@ -1303,6 +1284,17 @@ impl Entities {
                 self.server_snapshot = Some(snapshot);
             }
             let difficulty = self.difficulty;
+            for &(player, (_, position, ..)) in &output.picked {
+                let by_friend = Some(player) != presenter;
+                if !by_friend && !self.heard.listening() {
+                    continue;
+                }
+                let pitch = ((self.view.random.next_float() - self.view.random.next_float()) * 0.7 + 1.0) * 2.0;
+                if by_friend {
+                    self.view.sounds.push((crate::heard::ITEM_PICKUP_SOUND.to_owned(), DVec3::from_array(position), 0.2, pitch));
+                }
+                self.heard.push(crate::heard::Said::all(crate::heard::Heard::sound(crate::heard::ITEM_PICKUP_SOUND, position, 0.2, pitch)));
+            }
             let mobs = output.mobs.take();
             let unclaimed = {
                 let world = mobs.as_deref().unwrap_or(&self.view.world);
@@ -1319,6 +1311,9 @@ impl Entities {
             for broken in &output.potion_breaks {
                 self.view.spell.burst(broken.position, broken.color, broken.instant);
                 self.view.potion_crumbs.push(minecraft_terrain::spell_particles::break_center(broken.position));
+                let event = if broken.instant { crate::heard::INSTANT_POTION_EVENT } else { crate::heard::SPLASH_POTION_EVENT };
+                let pos = broken.position.floor().as_ivec3().to_array();
+                self.heard.push(crate::heard::Said::all(crate::heard::Heard::Event { event, pos, data: broken.color as i32 }));
             }
             for (from, to) in output.egg_teleports {
                 for (start, motion) in minecraft_terrain::dragon_egg::teleport_particles(from, to, &mut self.view.random) {
@@ -1362,18 +1357,25 @@ impl Entities {
             for sound in &output.mob_sounds {
                 let heard = minecraft_terrain::ender_dragon::heard_at(&sound.event, sound.position, camera);
                 self.view.sounds.push((sound.event.clone(), heard, sound.volume, sound.pitch));
+                self.heard.push(crate::heard::Said::all(crate::heard::Heard::sound(&sound.event, sound.position.to_array(), sound.volume, sound.pitch)));
             }
             for sound in output.mob_results.iter().flat_map(|(_, result)| result.sounds.iter()) {
-                self.view.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
+                self.sound(&sound.event, sound.position, sound.volume, sound.pitch);
             }
             // `ServerExplosion`'s sound: loud, pitched down.
             for blast in &output.explosions {
                 let pitch = (1.0 + (self.view.random.next_float() - self.view.random.next_float()) * 0.2) * 0.7;
-                self.view.sounds.push(("minecraft:entity.generic.explode".to_owned(), blast.position, 4.0, pitch));
+                self.sound("minecraft:entity.generic.explode", blast.position, 4.0, pitch);
+            }
+            for &(event, (x, y, z), data) in &output.level_events {
+                self.heard.push(crate::heard::Said::all(crate::heard::Heard::Event { event, pos: [x, y, z], data }));
             }
             self.level_events.extend(output.level_events);
             for effect in &output.explosion_effects {
                 self.view.ambient.explosion(DVec3::from_array(effect.center), effect.radius, effect.blocks, effect.interacts);
+                let blocks = u32::try_from(effect.blocks).unwrap_or(u32::MAX);
+                let heard = crate::heard::Heard::Explosion { center: effect.center, radius: effect.radius, blocks, interacts: effect.interacts };
+                self.heard.push(crate::heard::Said::all(heard));
             }
             for puff in &output.bullet_puffs {
                 self.view.ambient.puffs(bullet_puff_particle(puff.kind), puff.position, puff.kind.count(), 0.2);
@@ -2540,6 +2542,39 @@ mod tests {
         assert_eq!(entities.leave(FRIEND, &mut friend, 0, feet), 0);
         assert!(entities.player_outputs(FRIEND).is_none(), "the friend's queues are gone");
         assert!(entities.player_outputs(HOST).is_some(), "the host's stay");
+    }
+
+    #[test]
+    fn a_friends_pickup_is_heard_by_all_and_the_mirrors_own_sounds_are_not_sent() {
+        use crate::heard::{Heard, ITEM_PICKUP_SOUND, Said};
+        let Some(mut entities) = friend_world() else {
+            return;
+        };
+        assert!(entities.heard.listen(true).is_empty());
+        let (mut host, mut friend) = (Inventory::default(), Inventory::default());
+        entities.view.world_items.spawn(ItemStack::new("minecraft:cobblestone", 3), DVec3::new(12.5, 201.5, 12.5));
+        let started = std::time::Instant::now();
+        let mut said = Vec::new();
+        while count(&friend, "minecraft:cobblestone") < 3 {
+            assert!(started.elapsed().as_secs() < 300, "the friend never picked up the host's drop");
+            tick_both(&mut entities, &mut host, &mut friend);
+            said.extend(entities.heard.listen(true));
+        }
+        let pops: Vec<&Said> = said.iter().filter(|said| matches!(&said.heard, Heard::Sound { event, .. } if event == ITEM_PICKUP_SOUND)).collect();
+        assert_eq!(pops.len(), 1, "{said:?}");
+        assert_eq!(pops[0].only, None, "everyone near hears it");
+        let Heard::Sound { at, volume, .. } = &pops[0].heard else {
+            unreachable!();
+        };
+        assert!((at[0] - 12.5).abs() < 1.0 && (at[2] - 12.5).abs() < 1.0, "from the item: {at:?}");
+        assert_eq!(*volume, 0.2);
+        assert!(entities.view.sounds.iter().any(|(event, ..)| event == ITEM_PICKUP_SOUND), "the host hears the friend's pickup");
+        entities.view.sounds.push(("minecraft:entity.blaze.burn".to_owned(), DVec3::new(12.5, 201.0, 12.5), 1.0, 1.0));
+        entities.sound("minecraft:block.chest.open", DVec3::new(12.5, 201.5, 12.5), 0.5, 1.0);
+        let chest = Heard::sound("minecraft:block.chest.open", [12.5, 201.5, 12.5], 0.5, 1.0);
+        assert_eq!(entities.heard.listen(false), vec![Said::all(chest)], "only the level's own sound is sent");
+        entities.sound("minecraft:block.chest.close", DVec3::new(12.5, 201.5, 12.5), 0.5, 1.0);
+        assert!(entities.heard.listen(true).is_empty(), "nothing is kept while no friend listens");
     }
 
     #[test]

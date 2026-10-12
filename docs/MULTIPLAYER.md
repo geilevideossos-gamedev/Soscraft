@@ -195,7 +195,7 @@ pub enum ToClient {
     Crack { breaker: u32, pos: [i32; 3], stage: i8 },
     LevelEvent { event: i32, pos: [i32; 3], data: i32 },
     Sound { event: String, pos: [f64; 3], volume: f32, pitch: f32, seed: i64 },
-    Explosion { center: [f64; 3], power: f32, blocks: Vec<[i32; 3]> },
+    Explosion { center: [f64; 3], radius: f32, blocks: u32, interacts: bool },
     MobAdd { id: u64, tag: Nbt },
     MobLook { id: u64, look: Blob },
     MobRemove { ids: Vec<u64> },
@@ -212,6 +212,7 @@ pub enum ToClient {
     BossBar(BossBarUpdate),
     KilledBy { killer: Option<String>, line: Text },
     Credits,
+    PlayerEvent { client: u32, event: u8 },
 }
 
 pub struct Login {
