@@ -1281,7 +1281,11 @@ impl Entities {
             }
             if let Some(mut snapshot) = output.entities.take() {
                 if !self.watchers.is_empty() {
-                    self.friend_snapshot = Some(snapshot.clone());
+                    let mut kept = snapshot.clone();
+                    if let Some(mut older) = self.friend_snapshot.take() {
+                        crate::mob_sender::keep_bursts(&mut older, &mut kept);
+                    }
+                    self.friend_snapshot = Some(kept);
                 }
                 self.view.receive(&mut snapshot, &output.changes);
                 self.server_snapshot = Some(snapshot);

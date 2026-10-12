@@ -12,7 +12,7 @@ use minecraft_survival::data::GameData;
 use minecraft_survival::guns::{Follow, weapon_of};
 use minecraft_survival::heard::TOTEM_EVENT;
 use minecraft_survival::menus::Open;
-use minecraft_survival::remote::{DecodeJob, RemoteWorld};
+use minecraft_survival::remote::{BossBar, DecodeJob, RemoteWorld};
 use minecraft_survival::session::BREAK_EVENT;
 use minecraft_survival::switch::LoadingReason;
 use minecraft_survival::views::{HudClock, Selection, view_stack};
@@ -155,6 +155,8 @@ pub(crate) struct Friend {
     dimension: Option<minecraft_net::Dimension>,
     switch_screen: Option<LoadingReason>,
     loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
+    boss_bars: BTreeMap<u64, frame::minecraft_ui::McBossBar>,
+    credits_due: bool,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -196,6 +198,8 @@ fn stop(friend: &mut Friend, view: &mut MinecraftWorldView, ui: &mut frame::Mine
     ui.loading_world = false;
     ui.level_loading = None;
     ui.chat_only = false;
+    ui.credits = None;
+    ui.boss_bars.clear();
 }
 
 fn send(wire: &mut net::MinecraftWire, message: &ToServer) {
@@ -417,6 +421,9 @@ pub(crate) fn friend(
         }
         show_effects(friend, &presented, &mut ui);
         track_bodies(friend, &presented);
+        if show_credits(friend, &mut ui, &mut images) {
+            send(wire, &ToServer::CreditsDone);
+        }
         if friend
             .remote
             .as_ref()
@@ -459,6 +466,16 @@ pub(crate) fn friend(
         .iter()
         .next()
         .filter(|_| skate.active || mc_detached);
+    if let (Some(prepared), Some(remote)) = (friend.prepared.as_ref(), friend.remote.as_ref()) {
+        let lang = |key: &str| prepared.language.get(key).cloned();
+        let name = |text: &Text| text.resolve(&lang).text;
+        let bars = (&mut friend.boss_bars, &remote.boss_bars);
+        ui.boss_bars = follow_boss_bars(bars, name, dt as f32);
+    }
+    let shown_ui = (
+        ui.boss_bars.iter().any(|bar| bar.world_fog),
+        ui.credits.is_some(),
+    );
     present(
         friend,
         &mut view,
@@ -466,7 +483,7 @@ pub(crate) fn friend(
         player.as_ref(),
         drawn_from,
         aspect,
-        dt,
+        (dt, shown_ui),
         now_ms,
     );
     let seconds = real_time.elapsed_secs_f64();
@@ -556,6 +573,7 @@ fn show_effects(
         remote: Some(remote),
         mining,
         cracks,
+        credits_due,
         ..
     } = friend
     else {
@@ -597,6 +615,7 @@ fn show_effects(
                 killer: Some(killer),
                 ..
             } => killed_by(ui, killer),
+            ToClient::Credits => *credits_due = true,
             effect => {
                 if let Some(level) = remote.level.as_mut() {
                     show_heard(level, effect, presented);
@@ -604,6 +623,52 @@ fn show_effects(
             }
         }
     }
+}
+
+fn follow_boss_bars(
+    (shown, bars): (
+        &mut BTreeMap<u64, frame::minecraft_ui::McBossBar>,
+        &BTreeMap<u64, BossBar>,
+    ),
+    name: impl Fn(&Text) -> String,
+    seconds: f32,
+) -> Vec<frame::minecraft_ui::McBossBar> {
+    shown.retain(|id, _| bars.contains_key(id));
+    for (id, bar) in bars {
+        let (fog, music) = (bar.flags.create_world_fog, bar.flags.play_music);
+        let shown = shown.entry(*id).or_insert_with(|| {
+            frame::minecraft_ui::McBossBar::new(name(&bar.name), bar.progress, fog, music)
+        });
+        shown.name = name(&bar.name);
+        (shown.world_fog, shown.music) = (fog, music);
+        shown.set_progress(bar.progress);
+        shown.advance(seconds);
+    }
+    shown.values().cloned().collect()
+}
+
+fn show_credits(
+    friend: &mut Friend,
+    ui: &mut frame::MinecraftUi,
+    images: &mut Assets<Image>,
+) -> bool {
+    if ui.credits.as_ref().is_some_and(|credits| credits.finished) {
+        ui.credits = None;
+        diag::info!(World, "Minecraft credits closed");
+        return true;
+    }
+    if !std::mem::take(&mut friend.credits_due) || ui.credits.is_some() {
+        return false;
+    }
+    let (Some(prepared), Some(remote)) = (friend.prepared.as_ref(), friend.remote.as_ref()) else {
+        return true;
+    };
+    let name = remote
+        .login
+        .as_ref()
+        .and_then(|login| remote.players.get(&login.client))
+        .map_or("Player", |(name, _)| name.as_str());
+    !crate::minecraft_end::roll(name, ui, &prepared.look.packs, images)
 }
 
 fn killed_by(ui: &mut frame::MinecraftUi, killer: String) {
@@ -788,7 +853,7 @@ fn show_player(
     let interacts = view.game_mode != GameMode::Spectator;
     ui.game_mode = mc_game_mode(view.game_mode);
     let alive = ps.filter(|ps| ps.pm_type == 0 && !spawn_gate.holding(now_ms));
-    ui.active = alive.is_some();
+    ui.active = alive.is_some() && ui.credits.is_none();
     if alive.is_none() || !interacts {
         ui.inventory_open = false;
     }
@@ -933,7 +998,7 @@ fn present(
     player: Option<&playerstate_iw4::PlayerState>,
     drawn_from: Option<&Transform>,
     aspect: f32,
-    dt: f64,
+    (dt, (world_fog, credits)): (f64, (bool, bool)),
     now_ms: u64,
 ) {
     let Friend {
@@ -1133,8 +1198,8 @@ fn present(
                     .as_ref()
                     .is_some_and(|view| view.game_mode == GameMode::Spectator)
             }),
-        world_fog: false,
-        credits: false,
+        world_fog,
+        credits,
     };
     view.weather = if view.weather_texture.is_some() {
         let rain = (weather[0], level.view.partial());
@@ -1320,5 +1385,40 @@ mod tests {
             !host_silent(ready, late * 10, true),
             "a host that acknowledges the hello is loading its world"
         );
+    }
+
+    #[test]
+    fn the_friends_boss_bars_follow_the_hosts_and_slide_to_a_new_health() {
+        use minecraft_net::messages::{BossBarColor, BossBarFlags, BossBarOverlay};
+        let dragon = minecraft_survival::session::DRAGON_NAME;
+        let bar = |progress| BossBar {
+            name: Text::translate(dragon, Vec::new()),
+            progress,
+            color: BossBarColor::Pink,
+            overlay: BossBarOverlay::Progress,
+            flags: BossBarFlags {
+                darken_screen: false,
+                play_music: true,
+                create_world_fog: true,
+            },
+        };
+        let lang = |key: &str| (key == dragon).then(|| "Ender Dragon".to_owned());
+        let name = |text: &Text| text.resolve(&lang).text;
+        let mut shown = BTreeMap::new();
+        let mut bars = BTreeMap::from([(1, bar(1.0))]);
+        let ui = follow_boss_bars((&mut shown, &bars), name, 0.05);
+        assert_eq!(ui.len(), 1);
+        assert_eq!(ui[0].name, "Ender Dragon");
+        assert!(ui[0].world_fog && ui[0].music);
+        assert_eq!(ui[0].progress(), 1.0);
+        bars.insert(1, bar(0.5));
+        let ui = follow_boss_bars((&mut shown, &bars), name, 0.05);
+        let halfway = (ui[0].progress() - 0.75).abs() < 1.0e-4;
+        assert!(halfway, "it slides over a tenth of a second");
+        let ui = follow_boss_bars((&mut shown, &bars), name, 0.1);
+        assert_eq!(ui[0].progress(), 0.5);
+        bars.clear();
+        assert!(follow_boss_bars((&mut shown, &bars), name, 0.05).is_empty());
+        assert!(shown.is_empty());
     }
 }

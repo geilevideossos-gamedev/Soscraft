@@ -6,8 +6,9 @@ use minecraft_commands::text::YELLOW;
 use minecraft_commands::{Clientbound, CommandServer, Outgoing, PlayerId, Text};
 use minecraft_net::codec::{BATCH_CUT, BULK_LIMIT};
 use minecraft_net::messages::{
-    ChunkBlob, GearView, HandEvent, HandEventKind, HandState, HelloRefusal, Login, Nbt, PlayerView,
-    Rules, Target, check_hello,
+    BossBarColor, BossBarFlags, BossBarOperation, BossBarOverlay, BossBarUpdate, ChunkBlob,
+    GearView, HandEvent, HandEventKind, HandState, HelloRefusal, Login, Nbt, PlayerView, Rules,
+    Target, check_hello,
 };
 use minecraft_net::{ChunkBatchBlob, Dimension, PROTOCOL, PlayerUuid, StateFrame, ToClient};
 use minecraft_terrain::game_rules::GameRules;
@@ -19,6 +20,7 @@ use crate::actions::Hands;
 use crate::level::{Level, Terrain};
 use crate::player::Player;
 use crate::server::{Globals, Left, Server};
+use crate::the_end::dragon_fight::DragonFight;
 
 pub type ChunkXz = (i32, i32);
 type BlockPos = (i32, i32, i32);
@@ -32,6 +34,8 @@ pub const HAND_EVENTS: usize = 256;
 pub const BULLETS: u32 = u32::MAX;
 pub const CRACK_RANGE: f64 = 32.0;
 pub const BREAK_EVENT: i32 = 2001;
+pub const DRAGON_BAR: u64 = 1;
+pub const DRAGON_NAME: &str = "entity.minecraft.ender_dragon";
 
 #[derive(Debug, Default)]
 pub struct ChunkSender {
@@ -166,6 +170,8 @@ pub struct Session {
     command_level: Option<u8>,
     view: Option<PlayerView>,
     cracks: BTreeMap<(u32, BlockPos), u8>,
+    boss_bar: Option<f32>,
+    credits: bool,
 }
 
 impl Session {
@@ -185,7 +191,32 @@ impl Session {
             command_level: None,
             view: None,
             cracks: BTreeMap::new(),
+            boss_bar: None,
+            credits: false,
         }
+    }
+
+    pub fn send_boss_bar(&mut self, bar: Option<f32>) {
+        let operation = match (self.boss_bar, bar) {
+            (None, Some(progress)) => dragon_bar(progress),
+            (Some(shown), Some(progress)) if shown != progress => {
+                BossBarOperation::Progress(progress)
+            }
+            (Some(_), None) => BossBarOperation::Remove,
+            _ => return,
+        };
+        self.boss_bar = bar;
+        self.outbox.push(ToClient::BossBar(BossBarUpdate {
+            id: DRAGON_BAR,
+            operation,
+        }));
+    }
+
+    pub fn send_credits(&mut self, holding: bool) {
+        if holding && !self.credits {
+            self.outbox.push(ToClient::Credits);
+        }
+        self.credits = holding;
     }
 
     pub fn send_cracks(&mut self, cracks: BTreeMap<(u32, BlockPos), u8>) {
@@ -629,6 +660,20 @@ pub fn left_line(name: &str) -> Clientbound {
     system_line(Text::translate("multiplayer.player.left", vec![Text::literal(name)]).color(YELLOW))
 }
 
+pub fn dragon_bar(progress: f32) -> BossBarOperation {
+    BossBarOperation::Add {
+        name: Text::translate(DRAGON_NAME, Vec::new()),
+        progress,
+        color: BossBarColor::Pink,
+        overlay: BossBarOverlay::Progress,
+        flags: BossBarFlags {
+            darken_screen: false,
+            play_music: true,
+            create_world_fog: true,
+        },
+    }
+}
+
 fn listed(player: &Player) -> (u32, String, PlayerUuid) {
     (player.id.0, player.name.clone(), player.uuid.clone())
 }
@@ -988,6 +1033,51 @@ impl Sessions {
         }
     }
 
+    pub fn send_boss_bars(
+        &mut self,
+        players: &BTreeMap<PlayerUuid, Player>,
+        fight: Option<&DragonFight>,
+    ) {
+        for session in self.sessions.values_mut() {
+            let bar = players.get(&session.uuid).and_then(|player| {
+                crate::the_end::dragon_fight::shown_bar(fight, player)
+            });
+            session.send_boss_bar(bar);
+        }
+    }
+
+    pub fn send_credits(&mut self, players: &BTreeMap<PlayerUuid, Player>) {
+        for session in self.sessions.values_mut() {
+            let holding = players
+                .get(&session.uuid)
+                .is_some_and(crate::the_end::holding_for_credits);
+            session.send_credits(holding);
+        }
+    }
+
+    pub fn credits_done(
+        &mut self,
+        players: &mut BTreeMap<PlayerUuid, Player>,
+        client: u32,
+    ) -> bool {
+        let Some(session) = self.sessions.get(&client) else {
+            return false;
+        };
+        let Some(player) = players
+            .get_mut(&session.uuid)
+            .filter(|player| crate::the_end::holding_for_credits(player))
+        else {
+            return false;
+        };
+        crate::the_end::credits_done(player);
+        diag::info!(
+            World,
+            "Minecraft credits closed for {} (client {client})",
+            session.name
+        );
+        true
+    }
+
     pub fn send_menus(
         &mut self,
         players: &mut BTreeMap<PlayerUuid, Player>,
@@ -1018,7 +1108,8 @@ impl Sessions {
                 continue;
             };
             let tracked = entities.take_tracked();
-            let snapshot = entities.take_friend_snapshot();
+            let mut snapshot = entities.take_friend_snapshot();
+            let bursts = snapshot.as_mut().map(crate::mob_sender::take_bursts);
             for session in self.sessions.values_mut() {
                 session.mobs.follow(session.chunks.level);
                 if session.chunks.level != Some(dimension) {
@@ -1045,6 +1136,10 @@ impl Sessions {
                     continue;
                 };
                 let (around, has) = ((feet, view_distance), |pos| chunks.has(pos));
+                let near = bursts.as_ref().and_then(|bursts| {
+                    crate::mob_sender::bursts_message(bursts, around, has)
+                });
+                session.outbox.extend(near);
                 let epoch = session.epoch;
                 let frame = session.mobs.frame(epoch, moves, snapshot.as_ref(), around, has);
                 if let Some(frame) = frame {
@@ -1470,6 +1565,123 @@ mod tests {
         );
     }
 
+    fn named(client: u32, name: &str, dimension: Dimension) -> Player {
+        let mut chat = CommandServer::new(HOST);
+        chat.join(PlayerId(client), name);
+        let mut player = Player::new(
+            chat.profile(PlayerId(client)).unwrap(),
+            minecraft_terrain::game_mode::PlayerMode::default(),
+            crate::survival::Survival::default(),
+            minecraftoss_player::inventory::Inventory::default(),
+        );
+        player.dimension = dimension;
+        player
+    }
+
+    fn sessions_of(players: &BTreeMap<PlayerUuid, Player>) -> Sessions {
+        let mut sessions = Sessions::default();
+        for player in players.values() {
+            let (client, uuid) = (player.id.0, player.uuid.clone());
+            let session = Session::new(client, uuid, &player.name, 2);
+            sessions.sessions.insert(client, session);
+        }
+        sessions
+    }
+
+    fn bars(sessions: &mut Sessions) -> Vec<(u32, BossBarOperation)> {
+        sessions
+            .take_outgoing()
+            .into_iter()
+            .filter_map(|(client, message)| match message {
+                ToClient::BossBar(update) if update.id == DRAGON_BAR => {
+                    Some((client, update.operation))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_dragon_bar_reaches_only_the_players_near_the_fight_and_follows_its_health() {
+        let near = named(1, "Alex", Dimension::End);
+        let far = named(2, "Bo", Dimension::End);
+        let home = named(3, "Cy", Dimension::Overworld);
+        let mut fight = DragonFight::default();
+        fight.players = vec![near.uuid.clone(), home.uuid.clone()];
+        let mut players: BTreeMap<PlayerUuid, Player> = [near, far, home]
+            .into_iter()
+            .map(|player| (player.uuid.clone(), player))
+            .collect();
+        let mut sessions = sessions_of(&players);
+        sessions.send_boss_bars(&players, Some(&fight));
+        assert_eq!(bars(&mut sessions), vec![(1, dragon_bar(1.0))]);
+        sessions.send_boss_bars(&players, Some(&fight));
+        assert!(bars(&mut sessions).is_empty(), "nothing changed");
+        fight.update_dragon(150.0);
+        sessions.send_boss_bars(&players, Some(&fight));
+        sessions.send_boss_bars(&players, Some(&fight));
+        assert_eq!(
+            bars(&mut sessions),
+            vec![(1, BossBarOperation::Progress(0.75))]
+        );
+        let alex = players.values_mut().find(|player| player.id.0 == 1).unwrap();
+        alex.switch_to(Dimension::Overworld, None, crate::switch::LoadingReason::EndPortal);
+        sessions.send_boss_bars(&players, Some(&fight));
+        assert_eq!(bars(&mut sessions), vec![(1, BossBarOperation::Remove)]);
+        sessions.send_boss_bars(&players, None);
+        assert!(bars(&mut sessions).is_empty(), "removed once");
+        let BossBarOperation::Add { name, flags, .. } = dragon_bar(1.0) else {
+            panic!("the dragon bar is added");
+        };
+        assert_eq!(name, Text::translate(DRAGON_NAME, Vec::new()));
+        assert!(flags.play_music && flags.create_world_fog && !flags.darken_screen);
+    }
+
+    #[test]
+    fn the_credits_roll_once_per_player_and_credits_done_releases_only_that_player() {
+        let mut players: BTreeMap<PlayerUuid, Player> = [
+            named(1, "Alex", Dimension::Overworld),
+            named(2, "Bo", Dimension::Overworld),
+            named(3, "Cy", Dimension::Overworld),
+        ]
+        .into_iter()
+        .map(|player| (player.uuid.clone(), player))
+        .collect();
+        let mut sessions = sessions_of(&players);
+        let credits = |sessions: &mut Sessions| {
+            sessions
+                .take_outgoing()
+                .into_iter()
+                .filter(|(_, message)| *message == ToClient::Credits)
+                .map(|(client, _)| client)
+                .collect::<Vec<_>>()
+        };
+        for player in players.values_mut().filter(|player| player.id.0 != 3) {
+            assert!(crate::the_end::show_credits(player));
+        }
+        sessions.send_credits(&players);
+        sessions.send_credits(&players);
+        assert_eq!(credits(&mut sessions), vec![1, 2], "once each");
+        assert!(!sessions.credits_done(&mut players, 3), "Cy has no credits to close");
+        assert!(!sessions.credits_done(&mut players, 9), "not a session");
+        assert!(sessions.credits_done(&mut players, 1));
+        assert!(!sessions.credits_done(&mut players, 1), "closed once");
+        let holding = |players: &BTreeMap<PlayerUuid, Player>, client: u32| {
+            players
+                .values()
+                .find(|player| player.id.0 == client)
+                .is_some_and(crate::the_end::holding_for_credits)
+        };
+        assert!(!holding(&players, 1));
+        assert!(holding(&players, 2), "Bo still watches");
+        sessions.send_credits(&players);
+        assert!(credits(&mut sessions).is_empty());
+        let alex = players.values_mut().find(|player| player.id.0 == 1).unwrap();
+        assert!(!crate::the_end::show_credits(alex), "seen once, never again");
+        sessions.send_credits(&players);
+        assert!(credits(&mut sessions).is_empty());
+    }
+
     fn host_server(name: &str) -> Option<(TestDir, Server)> {
         let registries = registries()?;
         let (dir, save) = world(name);
@@ -1623,6 +1835,34 @@ mod tests {
                 (2, ToClient::Chat(left_line("Alex"))),
             ]
         );
+        server.globals.writer.finish();
+    }
+
+    #[test]
+    fn a_friend_leaving_during_the_credits_is_released_and_saved_as_having_seen_them() {
+        let Some((_dir, mut server)) = host_server("session-credits-leave") else {
+            return;
+        };
+        let origins = [];
+        let mut sessions = Sessions::default();
+        let now = Instant::now();
+        sessions.hello(&mut server, 1, "Alex", HELLO, &context(&origins), now);
+        sessions.hello(&mut server, 2, "Bob", HELLO, &context(&origins), now);
+        for player in server.players.values_mut() {
+            crate::the_end::show_credits(player);
+        }
+        sessions.send_credits(&server.players);
+        sessions.take_outgoing();
+        let left = sessions.leave(&mut server, 1).expect("Alex was in the world");
+        assert!(!crate::the_end::holding_for_credits(&left.player));
+        assert_eq!(left.player.data().seen_credits, Some(true));
+        assert!(!sessions.credits_done(&mut server.players, 1), "no session any more");
+        let bob = server
+            .players
+            .values()
+            .find(|player| player.id.0 == 2)
+            .unwrap();
+        assert!(crate::the_end::holding_for_credits(bob), "Bob still watches");
         server.globals.writer.finish();
     }
 

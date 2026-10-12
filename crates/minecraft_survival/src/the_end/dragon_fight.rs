@@ -213,6 +213,13 @@ pub fn valid_player(feet: [f64; 3], alive: bool) -> bool {
     alive && distance <= PLAYER_RANGE * PLAYER_RANGE
 }
 
+pub fn shown_bar(fight: Option<&DragonFight>, player: &Player) -> Option<f32> {
+    if player.dimension != Dimension::End || player.switching.is_some() {
+        return None;
+    }
+    fight?.boss_bar(&player.uuid)
+}
+
 pub fn arena_loaded(loaded: impl Fn((i32, i32)) -> bool) -> bool {
     let (x, _, z) = FIGHT_ORIGIN;
     let (cx, cz) = (x.div_euclid(16), z.div_euclid(16));

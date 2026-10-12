@@ -245,6 +245,7 @@ mod tests {
             ToClient::KilledBy { .. } => 25,
             ToClient::Credits => 26,
             ToClient::PlayerEvent { .. } => 27,
+            ToClient::Bursts { .. } => 28,
         }
     }
 
@@ -533,6 +534,9 @@ mod tests {
                 client: 2,
                 event: 35,
             },
+            ToClient::Bursts {
+                entities: Blob(vec![4, 5, 6]),
+            },
         ]
     }
 
@@ -566,7 +570,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 28];
+        let mut seen = [false; 29];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);

@@ -416,7 +416,16 @@ impl EyeTrails {
         crumbs: &mut Vec<Crumbs>,
     ) {
         self.views = snapshot.views;
-        for block in snapshot.shattered {
+        self.shatter(snapshot.shattered, portal, crumbs);
+    }
+
+    pub fn shatter(
+        &mut self,
+        shattered: Vec<[i32; 3]>,
+        portal: &mut PortalParticles,
+        crumbs: &mut Vec<Crumbs>,
+    ) {
+        for block in shattered {
             crumbs.push(shatter_crumbs(block, &mut self.random));
             for (start, motion) in shatter_ring(block) {
                 portal.emit(start, motion);

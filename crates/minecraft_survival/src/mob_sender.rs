@@ -197,6 +197,52 @@ pub fn near(
     }
 }
 
+pub fn take_bursts(snapshot: &mut EntitySnapshot) -> EntitySnapshot {
+    let mut bursts = EntitySnapshot {
+        breath_bursts: std::mem::take(&mut snapshot.breath_bursts),
+        dragon_breath: std::mem::take(&mut snapshot.dragon_breath),
+        dragon_explosions: std::mem::take(&mut snapshot.dragon_explosions),
+        ..EntitySnapshot::default()
+    };
+    bursts.eyes.shattered = std::mem::take(&mut snapshot.eyes.shattered);
+    bursts
+}
+
+fn add_bursts(into: &mut EntitySnapshot, from: EntitySnapshot) {
+    into.eyes.shattered.extend(from.eyes.shattered);
+    into.breath_bursts.extend(from.breath_bursts);
+    into.dragon_breath.extend(from.dragon_breath);
+    into.dragon_explosions.extend(from.dragon_explosions);
+}
+
+pub fn keep_bursts(older: &mut EntitySnapshot, newer: &mut EntitySnapshot) {
+    let mut kept = take_bursts(older);
+    add_bursts(&mut kept, take_bursts(newer));
+    add_bursts(newer, kept);
+}
+
+pub fn has_bursts(snapshot: &EntitySnapshot) -> bool {
+    !(snapshot.eyes.shattered.is_empty()
+        && snapshot.breath_bursts.is_empty()
+        && snapshot.dragon_breath.is_empty()
+        && snapshot.dragon_explosions.is_empty())
+}
+
+pub fn bursts_message(
+    bursts: &EntitySnapshot,
+    around: (DVec3, i32),
+    has_chunk: impl Fn(ChunkXz) -> bool,
+) -> Option<ToClient> {
+    let near = near(bursts, around, has_chunk);
+    if !has_bursts(&near) {
+        return None;
+    }
+    let entities = minecraft_net::encode(Lane::Reliable, &near).ok()?;
+    Some(ToClient::Bursts {
+        entities: Blob(entities),
+    })
+}
+
 fn filtered<T: Clone>(all: &[T], keep: impl Fn(&T) -> bool) -> Vec<T> {
     all.iter().filter(|value| keep(value)).cloned().collect()
 }
@@ -397,5 +443,42 @@ mod tests {
             .expect("a frame");
         assert!(next.tick > first);
         assert!(next.entities.0.is_empty());
+    }
+
+    #[test]
+    fn the_dragons_one_shot_effects_leave_the_state_frame_and_are_kept_until_sent() {
+        let mut older = EntitySnapshot::default();
+        older.breath_bursts.push(DVec3::new(1.0, 60.0, 1.0));
+        older.eyes.shattered.push([0, 64, 0]);
+        let mut newer = EntitySnapshot::default();
+        newer.breath_bursts.push(DVec3::new(2.0, 60.0, 2.0));
+        newer.dragon_explosions.push((DVec3::new(0.0, 70.0, 0.0), true));
+        keep_bursts(&mut older, &mut newer);
+        assert!(!has_bursts(&older));
+        assert_eq!(
+            newer.breath_bursts,
+            vec![DVec3::new(1.0, 60.0, 1.0), DVec3::new(2.0, 60.0, 2.0)],
+            "an earlier tick's bursts are not lost to a later snapshot"
+        );
+        let bursts = take_bursts(&mut newer);
+        assert!(!has_bursts(&newer), "the droppable state frame carries none");
+        let here = (DVec3::new(0.0, 64.0, 0.0), 8);
+        let Some(ToClient::Bursts { entities }) = bursts_message(&bursts, here, |_| true) else {
+            panic!("the bursts go on the reliable stream");
+        };
+        let sent: EntitySnapshot = minecraft_net::decode(Lane::Reliable, &entities.0).unwrap();
+        assert_eq!(sent.breath_bursts.len(), 2);
+        assert_eq!(sent.dragon_explosions.len(), 1);
+        assert_eq!(sent.eyes.shattered, vec![[0, 64, 0]]);
+        let far = (DVec3::new(5000.0, 64.0, 0.0), 8);
+        let Some(ToClient::Bursts { entities }) = bursts_message(&bursts, far, |_| true) else {
+            panic!("the dragon's effects reach the whole End");
+        };
+        let sent: EntitySnapshot = minecraft_net::decode(Lane::Reliable, &entities.0).unwrap();
+        assert!(sent.eyes.shattered.is_empty(), "a far eye is not");
+        let mut eye = EntitySnapshot::default();
+        eye.eyes.shattered.push([0, 64, 0]);
+        assert_eq!(bursts_message(&eye, far, |_| true), None);
+        assert_eq!(bursts_message(&eye, here, |_| false), None, "not before its chunk");
     }
 }

@@ -155,10 +155,10 @@ pub(crate) fn tick_fight(
     if let Some(Err(error)) = events.saved {
         diag::warn!(World, "Minecraft End dragon fight not saved: {error}");
     }
-    let shown = players
-        .get(local)
-        .filter(|player| player.dimension == Dimension::End && player.switching.is_none())
-        .and_then(|_| level.dragon_fight.as_ref()?.boss_bar(local));
+    let fight = level.dragon_fight.as_ref();
+    let shown = players.get(local).and_then(|player| {
+        minecraft_survival::the_end::dragon_fight::shown_bar(fight, player)
+    });
     show_boss_bar(ui, shown, seconds);
 }
 
@@ -248,13 +248,23 @@ pub(crate) fn credits(
     if ui.credits.is_some() {
         return;
     }
-    let Some(font) = ui.gui.as_ref().map(|gui| gui.font.clone()) else {
+    if !roll(&player.name, ui, packs, images) {
         minecraft_survival::the_end::credits_done(player);
+    }
+}
+
+pub(crate) fn roll(
+    name: &str,
+    ui: &mut MinecraftUi,
+    packs: &PackStack,
+    images: &mut Assets<Image>,
+) -> bool {
+    let Some(font) = ui.gui.as_ref().map(|gui| gui.font.clone()) else {
         diag::warn!(World, "Minecraft credits skipped: no GUI font");
-        return;
+        return false;
     };
     let text = credits_text(packs, images);
-    let credits = McCredits::new(&text, &player.name, &font);
+    let credits = McCredits::new(&text, name, &font);
     diag::info!(
         World,
         "Minecraft credits roll: {} lines, {} sections",
@@ -262,6 +272,7 @@ pub(crate) fn credits(
         text.sections.len()
     );
     ui.credits = Some(credits);
+    true
 }
 
 fn show_boss_bar(ui: &mut MinecraftUi, progress: Option<f32>, seconds: f64) {

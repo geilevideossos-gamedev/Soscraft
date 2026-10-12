@@ -79,6 +79,7 @@ pub(crate) struct HostSessions {
     time_at: Option<Instant>,
     chat: BTreeMap<u32, Vec<Serverbound>>,
     selects: BTreeMap<u32, u8>,
+    credits_done: Vec<u32>,
 }
 
 impl HostSessions {
@@ -88,6 +89,7 @@ impl HostSessions {
             && self.worker.is_none()
             && self.chat.is_empty()
             && self.selects.is_empty()
+            && self.credits_done.is_empty()
     }
 }
 
@@ -142,6 +144,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
             Ok(ToServer::CloseMenu { menu }) => {
                 if let Some(session) = host.sessions.sessions.get_mut(&client) {
                     session.push_menu(MenuInput::Close(menu));
+                }
+            }
+            Ok(ToServer::CreditsDone) => {
+                if host.sessions.sessions.contains_key(&client) {
+                    host.credits_done.push(client);
                 }
             }
             Ok(_) => {}
@@ -287,6 +294,7 @@ pub(crate) fn host(
         host.waiting.remove(client);
         host.chat.remove(client);
         host.selects.remove(client);
+        host.credits_done.retain(|done| done != client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
     }
@@ -305,6 +313,9 @@ pub(crate) fn host(
     }
     for client in left {
         host.sessions.leave(server, client);
+    }
+    for client in std::mem::take(&mut host.credits_done) {
+        host.sessions.credits_done(&mut server.players, client);
     }
     let host_here = server.players.contains_key(view.local);
     if let Some(authority) = authority.as_ref().filter(|_| host_here)
@@ -462,6 +473,12 @@ pub(crate) fn host(
         .map(|(dimension, origin)| (*dimension, *origin))
         .collect();
     host.sessions.follow_levels(&server.players, &origins);
+    host.sessions.send_credits(&server.players);
+    let fight = server
+        .levels
+        .get(&minecraft_net::Dimension::End)
+        .and_then(|level| level.dragon_fight.as_ref());
+    host.sessions.send_boss_bars(&server.players, fight);
     host.sessions.send_views(&server.players);
     let gears: Vec<_> = server
         .players

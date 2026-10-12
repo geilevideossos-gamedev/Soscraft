@@ -708,6 +708,7 @@ impl Server {
 
     pub fn leave(&mut self, uuid: &PlayerUuid) -> Option<Left> {
         let mut player = self.players.remove(uuid)?;
+        crate::the_end::credits_done(&mut player);
         let feet = player
             .place
             .filter(|place| place.dimension == player.dimension)

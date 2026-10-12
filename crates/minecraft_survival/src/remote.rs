@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use minecraft_commands::{Clientbound, Text};
-use minecraft_net::messages::{GearView, Login, MenuView, Nbt, PlayerView, Rules};
+use minecraft_net::messages::{
+    BossBarColor, BossBarFlags, BossBarOperation, BossBarOverlay, BossBarUpdate, GearView, Login,
+    MenuView, Nbt, PlayerView, Rules,
+};
 use minecraft_net::{ChunkBatchBlob, Dimension, Lane, PlayerUuid, StateFrame, ToClient};
 use minecraft_terrain::ChunkEvent;
 use minecraft_terrain::client_mobs::ServerMob;
@@ -65,6 +68,15 @@ impl RemoteLevel {
                 .show_items(std::mem::take(&mut snapshot.items), recipes);
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BossBar {
+    pub name: Text,
+    pub progress: f32,
+    pub color: BossBarColor,
+    pub overlay: BossBarOverlay,
+    pub flags: BossBarFlags,
 }
 
 #[derive(Default)]
@@ -156,6 +168,7 @@ pub struct RemoteWorld {
     pub game_time: i64,
     pub clocks: Clocks,
     pub weather: [f32; 2],
+    pub boss_bars: BTreeMap<u64, BossBar>,
     pub effects: Vec<ToClient>,
     pub state: Option<StateFrame>,
     pub recipes: Arc<RecipeBook>,
@@ -186,6 +199,7 @@ impl RemoteWorld {
             game_time: 0,
             clocks: Clocks::default(),
             weather: [0.0; 2],
+            boss_bars: BTreeMap::new(),
             effects: Vec::new(),
             state: None,
             recipes: Arc::new(RecipeBook::default()),
@@ -451,9 +465,57 @@ impl RemoteWorld {
                 origin,
                 feet,
             } => self.open_level(dimension, epoch, origin, feet),
+            ToClient::BossBar(update) => self.boss_bar(update),
+            ToClient::Bursts { entities } => {
+                let bursts = minecraft_net::decode::<EntitySnapshot>(Lane::Reliable, &entities.0);
+                if let (Some(level), Ok(mut bursts)) = (self.level.as_mut(), bursts) {
+                    level.view.bursts(&mut bursts);
+                }
+            }
             other => self.effects.push(other),
         }
         None
+    }
+
+    fn boss_bar(&mut self, update: BossBarUpdate) {
+        let BossBarUpdate { id, operation } = update;
+        let operation = match operation {
+            BossBarOperation::Add {
+                name,
+                progress,
+                color,
+                overlay,
+                flags,
+            } => {
+                let bar = BossBar {
+                    name,
+                    progress,
+                    color,
+                    overlay,
+                    flags,
+                };
+                self.boss_bars.insert(id, bar);
+                return;
+            }
+            BossBarOperation::Remove => {
+                self.boss_bars.remove(&id);
+                return;
+            }
+            operation => operation,
+        };
+        let Some(bar) = self.boss_bars.get_mut(&id) else {
+            return;
+        };
+        match operation {
+            BossBarOperation::Progress(progress) => bar.progress = progress,
+            BossBarOperation::Name(name) => bar.name = name,
+            BossBarOperation::Style { color, overlay } => {
+                bar.color = color;
+                bar.overlay = overlay;
+            }
+            BossBarOperation::Flags(flags) => bar.flags = flags,
+            BossBarOperation::Add { .. } | BossBarOperation::Remove => {}
+        }
     }
 
     fn start(&mut self, login: Login) {
@@ -1078,6 +1140,34 @@ mod tests {
         assert_eq!((friend.game_time, friend.weather), (500, [1.0, 0.5]));
         friend.apply(ToClient::Credits);
         assert_eq!(friend.take_effects(), vec![ToClient::Credits]);
+    }
+
+    #[test]
+    fn the_boss_bar_follows_the_host_and_the_dragons_bursts_show_in_the_level() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut friend = RemoteWorld::new(registries);
+        friend.apply(ToClient::Login(login(Dimension::End)));
+        let bar = |operation| ToClient::BossBar(BossBarUpdate { id: 1, operation });
+        friend.apply(bar(BossBarOperation::Progress(0.5)));
+        assert!(friend.boss_bars.is_empty(), "no bar to move yet");
+        friend.apply(bar(crate::session::dragon_bar(1.0)));
+        friend.apply(bar(BossBarOperation::Progress(0.25)));
+        assert_eq!(friend.boss_bars[&1].progress, 0.25);
+        assert_eq!(friend.boss_bars[&1].color, BossBarColor::Pink);
+        assert!(friend.boss_bars[&1].flags.create_world_fog);
+        friend.apply(bar(BossBarOperation::Remove));
+        assert!(friend.boss_bars.is_empty());
+        assert!(friend.take_effects().is_empty(), "bars are not effects");
+        let mut bursts = EntitySnapshot::default();
+        bursts.eyes.shattered.push([0, 64, 0]);
+        let entities = minecraft_net::encode(Lane::Reliable, &bursts).unwrap();
+        friend.apply(ToClient::Bursts {
+            entities: minecraft_net::messages::Blob(entities),
+        });
+        let level = friend.level.as_ref().unwrap();
+        assert_eq!(level.view.item_crumbs.len(), 1, "the shattered eye's crumbs");
     }
 
     #[test]

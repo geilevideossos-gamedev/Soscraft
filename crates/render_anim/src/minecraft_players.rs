@@ -1270,10 +1270,6 @@ pub(crate) fn step_friend(
     if player.dead {
         player.held = None;
     }
-    if minecraft_survival::the_end::holding_for_credits(player) {
-        minecraft_survival::the_end::credits_done(player);
-        player.seen_credits = false;
-    }
     let mut sounds = Some(Sounds::recorder());
     let remote = crate::minecraft_world::remote_view(ps.pm_type, ps.other_flags);
     let begun = begin(
@@ -1298,7 +1294,10 @@ pub(crate) fn step_friend(
                 leave_level(player, level);
             }
         }
-        Begun::Arriving { standing: true, .. } if player.arrival.is_none() => {
+        Begun::Arriving { standing: true, .. }
+            if player.arrival.is_none()
+                && !minecraft_survival::the_end::holding_for_credits(player) =>
+        {
             player.switching = None;
             diag::info!(
                 World,

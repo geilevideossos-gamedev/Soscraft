@@ -1257,12 +1257,57 @@ Commit: see `git log` ("Multiplayer M5 passes clippy"). The previous commit is `
 - **Test steps:** none new; `docs/round8/e-m5-tests.md` (E19 for the mob boxes, E19 and E20 for the streamed chunks and block writes) covers these lines.
 - **Kit:** none needed.
 
-## Combined kit for every test in this track
+## Milestone M6: the End and finishing
 
-This line covers the M5 owner tests: E19, E20, E21 and the review fixes in `docs/round8/e-m5-tests.md`. The M1 to M4 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m4-tests.md`; the M3 and M4 combined line is in the git history of this file at `6571e5db`, and the M2 combined line (E11 to E15) at `bf0a3a47`.
+This run builds E22, E23 and E24 and the per-player leftovers, the last run of the track before its merge and release build 2. The owner's two-window steps are collected in `docs/round8/e-m6-tests.md`.
 
-`minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:iron_pickaxe` x1, `minecraft:iron_sword` x1, `minecraft:cobblestone` x32, `minecraft:cow_spawn_egg` x2, `minecraft:white_bed` x1, `minecraft:cooked_beef` x8, `minecraft:iron_helmet` x1, `minecraft:iron_chestplate` x1, `minecraft:torch` x16, `minecraft:chest` x1 (12 stacks).
+### E22. The dragon fight and the credits work for every player
+
+Commit: see `git log` ("The Minecraft dragon fight and the credits work for every player"). The previous commit is `beb54197` (M5 passes clippy).
+
+- **Changed:**
+  - `crates/minecraft_net`: `ToClient::Bursts { entities: Blob }` (the one-shot effects of a level snapshot, as an `EntitySnapshot` holding only them) and `PROTOCOL` 2 to 3, so a friend on an older build is refused at `Hello`. Design sections 4 and 9.4 follow.
+  - `minecraft_survival/src/the_end/dragon_fight.rs`: `shown_bar(fight, player)`, the one rule for whose screen shows the dragon's bar: a player in the End, not switching, whom the fight's scan counted (vanilla's `EndDragonFight.updatePlayers`: alive and within 192 blocks of 0, 128, 0). The host's own bar (`minecraft_end::tick_fight`) uses it too.
+  - `minecraft_survival/src/session.rs`:
+    - `Session.send_boss_bar` sends vanilla's boss event operations for the dragon's bar (`DRAGON_BAR`, id 1): `Add` (name `entity.minecraft.ender_dragon`, pink, progress overlay, boss music and world fog, as vanilla's `ServerBossEvent` for the dragon) when the bar appears for that player, `Progress` when the health changes, `Remove` when the player leaves the range or the End, or starts a trip. `Sessions::send_boss_bars(players, fight)`.
+    - `Session.send_credits` sends `Credits` once when that player's credits hold starts (`the_end::holding_for_credits`); `Sessions::send_credits(players)`.
+    - `Sessions::credits_done(players, client)`: a friend's `CreditsDone` (vanilla's `PERFORM_RESPAWN` after the win screen) ends that friend's hold only, and only while they are held.
+    - `send_mobs` takes the one-shot effects out of the level's friend snapshot before the state frames are built, and sends each friend in that level the ones in their range as `Bursts` on the reliable stream (the dragon's always, a shattered eye within the thrown range and in a chunk they have).
+  - `minecraft_survival/src/mob_sender.rs`: `take_bursts`, `keep_bursts`, `has_bursts`, `bursts_message`.
+  - `minecraft_survival/src/entities.rs`: when the level thread hands out several outputs in one host frame, the friend snapshot keeps the one-shot effects of the earlier ones (`keep_bursts`) instead of losing them to the newest.
+  - `minecraft_survival/src/entity_view.rs`: `EntityView::bursts` presents the one-shot effects (breath bursts, mouth breath, dragon explosions, shattered eyes); `receive` calls it, so the host draws them exactly as before. `minecraft_terrain/src/eye_of_ender.rs`: `EyeTrails::shatter`, taken out of `receive`.
+  - `minecraft_survival/src/remote.rs`: `RemoteWorld.boss_bars` (`BossBar`), kept by the boss event operations (`Add`, `Remove`, `Progress`, `Name`, `Style`, `Flags`; an operation for an unknown bar is ignored, as vanilla's `BossHealthOverlay` does); `Bursts` is presented in the friend's level in stream order.
+  - `minecraft_survival/src/server.rs`: `Server::leave` ends a credits hold (design 5.2 step 7).
+  - `render_anim/src/minecraft_players.rs`: a friend's exit portal trip is no longer cut short. Their credits hold keeps them in their arrival (invulnerable, no input) like the host's, until `CreditsDone`; the E20 stopgap that skipped the credits and reset `seenCredits` is gone.
+  - `render_anim/src/minecraft_host.rs`: reads `CreditsDone` and applies it after the leaves; sends the credits and the boss bars after `follow_levels`.
+  - `render_anim/src/minecraft_end.rs`: `roll(name, ui, packs, images)`, the credits screen shared by the host and the friend.
+  - `render_anim/src/minecraft_remote.rs`: the friend's game draws the host's boss bars (`follow_boss_bars`: the name in the friend's language, sliding to each new value), uses their world fog and the open credits for its sky (the End flash sound waits while the credits roll, as on the host), rolls the credits on `Credits` with the friend's own name, takes their input away while they roll, sends `CreditsDone` when they end or are skipped (at once if the GUI font is missing, like the host's skip), and clears the credits and bars when the match ends.
+- **Tests:**
+  - `minecraft_survival` `session::tests`: `the_dragon_bar_reaches_only_the_players_near_the_fight_and_follows_its_health` (a player near the fight gets `Add` once, `Progress` once per change, `Remove` when their trip starts and nothing after; a player in the End out of range and a player counted by the fight but in the overworld get nothing; the bar's name and flags), `the_credits_roll_once_per_player_and_credits_done_releases_only_that_player`, `a_friend_leaving_during_the_credits_is_released_and_saved_as_having_seen_them` (real 26.3 data: the leaving friend's hold ends, their saved data keeps `seenCredits`, the other friend still watches).
+  - `minecraft_survival` `mob_sender::tests::the_dragons_one_shot_effects_leave_the_state_frame_and_are_kept_until_sent`; `remote::tests::the_boss_bar_follows_the_host_and_the_dragons_bursts_show_in_the_level`.
+  - `render_anim` `minecraft_remote::tests::the_friends_boss_bars_follow_the_hosts_and_slide_to_a_new_health`.
+  - `minecraft_net` `codec::tests` cover `Bursts`.
+  - Results on the real 26.3 data: `test -p minecraft_net` 15, `minecraft_survival` 575 + 1, `minecraft_terrain --lib` 1111 (3 ignored), `render_anim --lib` 142; `check -p launcher` green.
+- **Decisions:**
+  - **The one-shot effects travel as a new `Bursts` message** rather than as vanilla's separate particle and level-event packets: they are already shaped as part of `EntitySnapshot`, the friend presents them with the host's own code, and one message keeps them in the reliable order with the `Dimension` they belong to. The protocol number goes to 3 for it.
+  - **A friend's credits hold behaves like the host's:** they stay in their trip at the respawn point, invulnerable and without input, until their credits end. Vanilla removes the player from every level during the win screen; here the friend's body waits at the arrival, hidden by the trip.
+  - **Leaving during the credits** ends the hold in `Server::leave`; `seenCredits` was already set when the credits started, as vanilla sets it when it sends the win screen. A friend who left before their arrival was placed comes back at the exit portal in the End (vanilla saves the player there too) and goes home without the credits; one who left after it comes back at their spawn.
+  - **The bar's id is a constant (1):** there is one dragon fight per world. Vanilla gives the dragon's `ServerBossEvent` a random UUID; nothing on the friend's side reads it.
+  - **The friend's game has no music**, so it plays neither the boss music nor the credits music. That is older than E22 (the friend's game has no music system at all) and goes to the limitations.
+- **Left for later:** music on the friend's game (any music).
+- **Test steps:** `docs/round8/e-m6-tests.md`, section E22.
+- **Kit:** `minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:iron_sword,minecraft:cobblestone*32,minecraft:cow_spawn_egg*2,minecraft:white_bed,minecraft:cooked_beef*8,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:torch*16,minecraft:chest
+IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket
+```
+
+## Combined kit for every test in this track
+
+This line covers the M6 owner tests in `docs/round8/e-m6-tests.md` (E22 so far). The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
+
+`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1 (14 stacks).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket
 ```

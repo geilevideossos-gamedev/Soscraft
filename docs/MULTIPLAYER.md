@@ -213,6 +213,7 @@ pub enum ToClient {
     KilledBy { killer: Option<String>, line: Text },
     Credits,
     PlayerEvent { client: u32, event: u8 },
+    Bursts { entities: Blob },
 }
 
 pub struct Login {
@@ -592,7 +593,8 @@ The fight already takes every player (`tick_level(players.values())`). The drago
 Per player:
 - a `BossBar` message for every player in the End within the fight's range. `minecraft_end::tick_fight` only shows it for `local` today (`minecraft_end.rs:120-124`);
 - `Credits` when a player first enters the exit portal (`seenCredits` per player; `minecraft_world.rs:619` is local only today). The player is held in the travel switch while the credits roll (`holding_for_credits`, `minecraft_world.rs:679`). Today only the host's UI ends it (`credits_done`, `minecraft_end.rs:205-216`). A friend's game ends it with `ToServer::CreditsDone`, vanilla's `PERFORM_RESPAWN` after the win screen. A friend who leaves during the credits is released by the leave flow;
-- the dragon's hits, breath and wing knock-back reach each player through the keyed `player_hits` and `players_pushed`.
+- the dragon's hits, breath and wing knock-back reach each player through the keyed `player_hits` and `players_pushed`;
+- the one-shot effects of a level snapshot (the breath bursts of dragon fireballs, the dragon's mouth breath, its explosions and wall bursts, and shattered eyes of ender) travel as `Bursts` on the reliable stream, filtered like the state frame, never in the droppable `StateFrame`. The host keeps them across level outputs until they are sent (built in E22).
 
 ## 10. Player actions and menus
 

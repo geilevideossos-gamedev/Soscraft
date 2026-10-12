@@ -169,6 +169,25 @@ impl EntityView {
         ticked
     }
 
+    pub fn bursts(&mut self, snapshot: &mut EntitySnapshot) {
+        let shattered = std::mem::take(&mut snapshot.eyes.shattered);
+        self.eyes.shatter(shattered, &mut self.portal, &mut self.item_crumbs);
+        for at in std::mem::take(&mut snapshot.breath_bursts) {
+            self.ambient.breath_burst(at);
+        }
+        for breath in std::mem::take(&mut snapshot.dragon_breath) {
+            self.ambient.mouth_breath(&breath);
+        }
+        for (at, emitter) in std::mem::take(&mut snapshot.dragon_explosions) {
+            let kind = if emitter {
+                minecraft_terrain::ambient_particles::Kind::ExplosionEmitter
+            } else {
+                minecraft_terrain::ambient_particles::Kind::Explosion
+            };
+            self.ambient.add(kind, at, DVec3::ZERO);
+        }
+    }
+
     pub fn receive(
         &mut self,
         snapshot: &mut EntitySnapshot,
@@ -191,20 +210,7 @@ impl EntityView {
             self.ambient.breath_trail(fireball.position);
         }
         self.frames = std::mem::take(&mut snapshot.frames);
-        for at in std::mem::take(&mut snapshot.breath_bursts) {
-            self.ambient.breath_burst(at);
-        }
-        for breath in std::mem::take(&mut snapshot.dragon_breath) {
-            self.ambient.mouth_breath(&breath);
-        }
-        for (at, emitter) in std::mem::take(&mut snapshot.dragon_explosions) {
-            let kind = if emitter {
-                minecraft_terrain::ambient_particles::Kind::ExplosionEmitter
-            } else {
-                minecraft_terrain::ambient_particles::Kind::Explosion
-            };
-            self.ambient.add(kind, at, DVec3::ZERO);
-        }
+        self.bursts(snapshot);
         self.dragon_voices();
         self.orbs = snapshot.orbs.clone();
         self.falling.receive(

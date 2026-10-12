@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 2;
+pub const PROTOCOL: u16 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -252,6 +252,9 @@ pub enum ToClient {
     PlayerEvent {
         client: u32,
         event: u8,
+    },
+    Bursts {
+        entities: Blob,
     },
 }
 
