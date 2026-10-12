@@ -1057,6 +1057,16 @@ Merge commit 75dd9d5e (`minecraft-survival` at 08de9c28, with tracks A and D, an
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:lava_bucket*4,minecraft:red_bed
 ```
 
+### M2. Monster spawners show striders, hoglins, zoglins, piglins and brutes
+
+- **Changed:** track A's spawner display (`minecraft_terrain/src/spawner_display.rs`) only draws the kinds it lists, so B's mobs showed an empty cage. `minecraft:strider`, `hoglin`, `zoglin`, `piglin` and `piglin_brute` are added to `DRAWN_KINDS` and drawn by B's renderers (the hoglin renderer draws zoglins, the piglin renderer brutes). Hoglins and piglins already turned through `MobPose::body_rotation`, which carries the spawner's turn; the strider's root now multiplies `pose.turn` in front of its body yaw, so it spins and tilts in the cage. As in vanilla the display mob comes from `SpawnData` alone, so a piglin in a spawner holds nothing.
+- **Tests:** `a_zombie_a_blaze_and_the_nether_mobs_sit_inside_their_cage` (A's cage test, renamed, with the five mobs: each draws, stays inside its cell at 0, 90 and 200 degrees and moves with the turn; the hoglin and zoglin get 0.1 of margin instead of 0.05, as their snout and tusks reach past their box like vanilla's).
+- **Test steps:** Place a spawner (creative, or `/setblock ~ ~ ~2 minecraft:spawner`), use a strider spawn egg on it: a small strider turns slowly inside the cage, tilted forward (**M2a**). Do the same with a hoglin, zoglin, piglin and piglin brute egg on four more spawners: each spins in its cage, the piglins empty-handed (**M2b**).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner*5,minecraft:strider_spawn_egg,minecraft:hoglin_spawn_egg,minecraft:zoglin_spawn_egg,minecraft:piglin_spawn_egg,minecraft:piglin_brute_spawn_egg
+```
+
 ## Combined kit for the whole track
 
 27 stacks for the main checks of b3 (striders and riding), b2 (hoglins and zoglins), b1 (piglins, brutes, bartering and gold) and b4 (sleeping). Each entry above keeps its own kit for the rest (spawn eggs of other mobs, respawn anchors, soul fire, more beds).

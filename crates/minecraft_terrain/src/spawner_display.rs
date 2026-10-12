@@ -26,6 +26,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:donkey",
     "minecraft:enderman",
     "minecraft:ghast",
+    "minecraft:hoglin",
     "minecraft:horse",
     "minecraft:husk",
     "minecraft:iron_golem",
@@ -33,15 +34,19 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:mooshroom",
     "minecraft:parched",
     "minecraft:pig",
+    "minecraft:piglin",
+    "minecraft:piglin_brute",
     "minecraft:sheep",
     "minecraft:skeleton",
     "minecraft:slime",
     "minecraft:spider",
     "minecraft:stray",
+    "minecraft:strider",
     "minecraft:villager",
     "minecraft:witch",
     "minecraft:wither_skeleton",
     "minecraft:wolf",
+    "minecraft:zoglin",
     "minecraft:zombie",
     "minecraft:zombie_villager",
     "minecraft:zombified_piglin",
@@ -330,6 +335,32 @@ impl Shown {
                 partial,
                 0,
             ),
+            "minecraft:strider" => strider_render::append_striders(
+                models,
+                w.striders().iter(),
+                poses,
+                atlas,
+                light,
+                partial,
+            ),
+            "minecraft:hoglin" | "minecraft:zoglin" => hoglin_render::append_hoglins(
+                models,
+                w.hoglins().iter(),
+                poses,
+                atlas,
+                light,
+                partial,
+            ),
+            "minecraft:piglin" | "minecraft:piglin_brute" => {
+                piglin_render::append_piglins(
+                    models,
+                    w.piglins().iter(),
+                    poses,
+                    atlas,
+                    light,
+                    partial,
+                );
+            }
             _ => {}
         }
     }
@@ -810,8 +841,16 @@ mod tests {
     }
 
     #[test]
-    fn a_zombie_and_a_blaze_sit_inside_their_cage() {
-        for mob in ["minecraft:zombie", "minecraft:blaze"] {
+    fn a_zombie_a_blaze_and_the_nether_mobs_sit_inside_their_cage() {
+        for (mob, margin) in [
+            ("minecraft:zombie", 0.05),
+            ("minecraft:blaze", 0.05),
+            ("minecraft:strider", 0.05),
+            ("minecraft:hoglin", 0.1),
+            ("minecraft:zoglin", 0.1),
+            ("minecraft:piglin", 0.05),
+            ("minecraft:piglin_brute", 0.05),
+        ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);
             let scene = spawners(&[pos]);
@@ -824,7 +863,7 @@ mod tests {
                 let (lo, hi) = bounds(&mesh);
                 let cell = Vec3::new(10.0, 70.0, -3.0);
                 assert!(
-                    lo.cmpge(cell - 0.05).all() && hi.cmple(cell + 1.05).all(),
+                    lo.cmpge(cell - margin).all() && hi.cmple(cell + 1.0 + margin).all(),
                     "{mob} at {spin}: {lo} {hi}"
                 );
                 seen.push(mesh.vertices.iter().map(|v| v.position).collect::<Vec<_>>());

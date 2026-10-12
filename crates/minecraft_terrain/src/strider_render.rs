@@ -135,7 +135,7 @@ pub fn strider_pose(
 
 fn root(pose: &MobPose, cold: bool) -> Mat4 {
     let body_rot = pose.body_rot + shake_degrees(pose.age_in_ticks, cold);
-    let turn = Quat::from_rotation_y((180.0 - body_rot).to_radians());
+    let turn = pose.turn * Quat::from_rotation_y((180.0 - body_rot).to_radians());
     Mat4::from_translation(pose.feet.as_vec3())
         * Mat4::from_quat(turn)
         * Mat4::from_translation(Vec3::new(0.0, 24.016 / 16.0, 0.0))
