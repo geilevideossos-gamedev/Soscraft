@@ -37,6 +37,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:piglin",
     "minecraft:piglin_brute",
     "minecraft:sheep",
+    "minecraft:shulker",
     "minecraft:skeleton",
     "minecraft:slime",
     "minecraft:spider",
@@ -131,6 +132,9 @@ impl Shown {
         );
         let mut world = EntityWorld::default();
         let id = crate::server_mobs::spawn_saved(&mut world, &tag)?;
+        if let Some(body) = world.body_mut(id) {
+            body.position = feet;
+        }
         let tracked = server_mobs(&world);
         let size = if cave {
             (0.7, 0.5)
@@ -361,6 +365,14 @@ impl Shown {
                     partial,
                 );
             }
+            "minecraft:shulker" => shulker_render::append_shulkers(
+                models,
+                w.shulkers().iter(),
+                poses,
+                atlas,
+                light,
+                partial,
+            ),
             _ => {}
         }
     }
@@ -841,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zombie_a_blaze_and_the_nether_mobs_sit_inside_their_cage() {
+    fn a_zombie_a_blaze_the_nether_mobs_and_a_shulker_sit_inside_their_cage() {
         for (mob, margin) in [
             ("minecraft:zombie", 0.05),
             ("minecraft:blaze", 0.05),
@@ -850,6 +862,7 @@ mod tests {
             ("minecraft:zoglin", 0.1),
             ("minecraft:piglin", 0.05),
             ("minecraft:piglin_brute", 0.05),
+            ("minecraft:shulker", 0.1),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);

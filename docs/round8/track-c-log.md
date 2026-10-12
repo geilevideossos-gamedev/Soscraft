@@ -1254,6 +1254,16 @@ Merge commit f294bfe5 (`minecraft-survival` at 24918b62, with tracks A, D and B,
 IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*4,minecraft:piglin_spawn_egg*2,minecraft:splash_potion@slow_falling*4,minecraft:netherrack*64
 ```
 
+### M2. Monster spawners show shulkers turning in the cage
+
+- **Changed:** track A's spawner display (`minecraft_terrain/src/spawner_display.rs`) only draws the kinds it lists, so a shulker spawner showed an empty cage. `minecraft:shulker` is added to `DRAWN_KINDS` and drawn by C's `shulker_render::append_shulkers`, whose `ShulkerPose` gains the spawner's `turn` (vanilla's `SpawnerRenderer` turns the whole entity, so it goes in front of the shell's attach-face rotation; identity for a live shulker). A shulker snaps to its block when it is placed, so the display mob is now set back to the display feet (0.2 above the cage floor, as vanilla draws every display mob); every other kind already stood there.
+- **Tests:** `a_zombie_a_blaze_the_nether_mobs_and_a_shulker_sit_inside_their_cage` (M2 of track B renamed, with the shulker: it draws, stays in its cell at 0, 90 and 200 degrees and moves with the turn; it gets 0.1 of margin like the hoglin, as the corners of a tilted full-block box reach 0.06 past the cage, as in vanilla).
+- **Test steps:** Place a spawner (`/setblock ~ ~ ~2 minecraft:spawner`) and use a shulker spawn egg on it: a small closed purple shulker turns slowly inside the cage, tilted forward (**M2**).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner*2,minecraft:shulker_spawn_egg*2
+```
+
 ## Track C, combined kit
 
 One kit for a session through the whole track (27 stacks): shulkers and their bullets, levitation and slow falling, powder snow and cobwebs, ladders, item frames and comparators, trapped chests, lecterns and the book screen, totems, the dragon fight in diamond gear, and the elytra on the body. End cities need no items (creative flight and their generated chests); `/effect` gives levitation and clears effects.

@@ -94,6 +94,7 @@ pub struct ShulkerPose {
     pub age_in_ticks: f32,
     pub head_yaw: f32,
     pub death_time: f32,
+    pub turn: Quat,
 }
 
 pub fn append_shulker(
@@ -103,7 +104,7 @@ pub fn append_shulker(
     sky: f32,
     block: f32,
 ) {
-    let body = death_flip(pose.death_time);
+    let body = pose.turn * death_flip(pose.death_time);
     let face = face_rotation(pose.opening);
     let feet = pose.feet + (body * (PIVOT - face * PIVOT)).as_dvec3();
     let rotation = body * face;
@@ -171,6 +172,7 @@ pub fn append_shulkers<'a>(
             age_in_ticks: mob.age_in_ticks,
             head_yaw: mob.body_rot + mob.head_yaw,
             death_time: mob.death_time,
+            turn: mob.turn,
         };
         append_shulker(mesh, &pose, region, sky, block);
     }
@@ -273,6 +275,7 @@ mod tests {
             age_in_ticks: 0.0,
             head_yaw,
             death_time: 0.0,
+            turn: Quat::IDENTITY,
         }
     }
 
