@@ -795,6 +795,30 @@ mod tests {
     }
 
     #[test]
+    fn a_loaded_strider_and_its_rider_are_added_as_two_mobs_the_friend_can_spawn() {
+        let mut host = EntityWorld::default();
+        let jockey = saved(
+            "{id:\"minecraft:strider\",Pos:[3.5d,64.0d,0.5d],NoAI:1b,Passengers:[{id:\"minecraft:zombified_piglin\",Pos:[3.5d,65.0d,0.5d],NoAI:1b}]}",
+        );
+        let spawned = crate::server_mobs::spawn_saved_all(&mut host, &jockey);
+        assert_eq!(spawned.len(), 2);
+        let originals: HashMap<u64, Tag> = spawned.into_iter().collect();
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let tracked = trackers.update(&host, &originals, &[watcher(4, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(4) {
+            let MobEvent::Add(id, tag) = event else {
+                panic!("{event:?}");
+            };
+            assert!(tag.get("Passengers").is_none(), "{tag:?}");
+            assert!(spawn_tracked(&mut friend, *id, tag), "{tag:?}");
+        }
+        assert_eq!(friend.striders().len(), 1);
+        assert_eq!(friend.zombies().len(), 1);
+    }
+
+    #[test]
     fn the_mirror_moves_and_shows_what_the_host_sends() {
         let mut host = EntityWorld::default();
         let (creeper, creeper_tag) = spawn(

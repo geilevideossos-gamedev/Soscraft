@@ -1053,6 +1053,20 @@ Commit: see `git log` ("MW2 guns hurt other players unless pvp is off, and every
 IW4L_MINECRAFT_KIT=minecraft:creeper_spawn_egg*2,minecraft:trident,minecraft:wind_charge*8,minecraft:cooked_beef*8,minecraft:cobblestone*32
 ```
 
+## Adversarial review of M3 and M4
+
+The review covers every commit from `03f1bc8d` (the merge of tracks B, C and D, E16, E17 and E18). Each fix below is its own commit.
+
+### Review fix: friends see striders and other mobs that were loaded with riders
+
+Commit: see `git log` ("Friends see striders and other mobs that were loaded with riders"). The previous commit is `04f9321b` (E18).
+
+- **Defect:** a mob's tracked tag starts from the tag it was loaded with (`mob_tags_where` copies `originals`). A vehicle loaded with riders (`spawn_saved_all`: a strider jockey from a chunk, `/summon` with `Passengers`, a reattached root vehicle) keeps its whole loaded tag there, `Passengers` included. With `nest` off nothing took that list out, so the friend's `MobAdd` carried it, and `spawn_saved` refuses a strider, piglin, zombie, skeleton or spider whose tag has `Passengers` (those go through `spawn_saved_all`). Every ridden strider in the Nether (and every spider jockey) stayed invisible on the friend's game, even after its rider got off, with "Minecraft mob N from the host not shown" in the friend's log.
+- **Fix:** `mob_tags_where` with `nest` off drops `Passengers` from every tag, as the E16 decision says (a rider is its own tracked mob, and the moves carry its seat). Saving (`nest` on) is unchanged.
+- **Test:** `mob_tracking::tests::a_loaded_strider_and_its_rider_are_added_as_two_mobs_the_friend_can_spawn` (a strider loaded with a zombified piglin on it is added as two mobs, neither tag has `Passengers`, and the friend's world spawns both).
+- **Test steps:** `docs/round8/e-m3-tests.md`, section "Review fixes", step 1.
+- **Kit:** none.
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers E11 to E15 and the M2 owner test; the earlier sections keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`.

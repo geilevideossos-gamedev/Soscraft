@@ -97,3 +97,9 @@ Not yet on the friend's side (see the track log): the item flying into the picke
 ```
 IW4L_MINECRAFT_KIT=minecraft:tnt*4,minecraft:flint_and_steel,minecraft:cow_spawn_egg*3,minecraft:cooked_beef*8,minecraft:chest,minecraft:cobblestone*32,minecraft:water_bucket,minecraft:lava_bucket,minecraft:bone_meal*8,minecraft:totem_of_undying,minecraft:snowball*16,minecraft:ender_pearl*4,minecraft:iron_sword
 ```
+
+## Review fixes
+
+No kit is needed. Run these in the same two windows as E16 or E17 (any world), with the friend standing next to the host.
+
+1. **Mobs that came with riders.** Host window: `/summon minecraft:strider ~4 ~ ~ {Passengers:[{id:"minecraft:zombified_piglin"}]}` and `/summon minecraft:spider ~ ~ ~4 {Passengers:[{id:"minecraft:skeleton"}]}`. Friend window: the strider stands there with the zombified piglin sitting on it, and the spider carries the skeleton, as in the host window. Screenshot the friend window. **R1**

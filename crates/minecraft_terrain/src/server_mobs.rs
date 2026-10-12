@@ -1523,6 +1523,12 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
     }
     if nest {
         nest_passengers(world, &mut out);
+    } else {
+        for (_, tag) in &mut out {
+            if let Tag::Compound(map) = tag {
+                map.remove("Passengers");
+            }
+        }
     }
     for f in world.fireballs() {
         let fireball = &f.fireball;
