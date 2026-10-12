@@ -38,7 +38,7 @@ Nothing new to see: the host's own survival code moved into its own file so the 
 4. Place the crafting table and the chest and open each with right click. Put something in the chest, close it and open it again.
 5. Hold the shield in the offhand (F swaps hands). Use the skeleton spawn egg on the ground a few blocks away, then hold right click towards it: its arrows clang off the shield.
 6. Throw an ender pearl: you land where it lands and lose a little health.
-7. Hold the totem in the offhand, then type `/kill`: the totem pops and you live. Screenshot. **S2**
+7. Hold the totem in the offhand, then type `/tp @s ~ ~40 ~` and fall: the totem pops on landing and you live (not `/kill`: vanilla's `/kill` goes past a totem). Screenshot. **S2**
 8. Place the bed and sleep in it once (right click) at night (`/time set night`), then type `/kill`. You respawn at the bed, and your items drop where you died.
 9. Build a nether portal with the obsidian and light it with the flint and steel. Walk in: the Nether loads. Walk back through: the Overworld loads where you left.
 10. Wear the elytra, `/tp ~ ~40 ~`, jump while falling to glide, and use a rocket: it boosts you.

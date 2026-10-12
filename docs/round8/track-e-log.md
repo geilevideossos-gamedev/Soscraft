@@ -1067,6 +1067,16 @@ Commit: see `git log` ("Friends see striders and other mobs that were loaded wit
 - **Test steps:** `docs/round8/e-m3-tests.md`, section "Review fixes", step 1.
 - **Kit:** none.
 
+### Review fix: the totem steps use a fall, not `/kill`
+
+Commit: see `git log` ("The owner's totem steps use a fall, since /kill goes past a totem"). The previous commit is `599f2024` (the riders fix).
+
+- **Defect:** the owner's totem steps (`e-m3-tests.md` merge step 10 and E17 step 8, `e-m2-tests.md` E10a step 7) said to pop the totem with `/kill`. Vanilla's `/kill` deals `generic_kill`, which is in `bypasses_invulnerability`, and `LivingEntity.checkTotemDeathProtection` gives up for that tag; the game does the same (`survival::tests::generic_kill_has_the_vanilla_message_and_bypasses_the_totem`). So the player would just die and the steps would read as a failure.
+- **Fix (docs only):** the steps drop the player 40 blocks with `/tp` instead (37 fall damage), which the totem stops.
+- **Also corrected:** the riders fix's step R1 no longer summons a spider jockey. Only a strider carries riders through `spawn_saved_all` (`carries`), so a summoned spider with `Passengers` never spawns on the host either; the defect text above should say "a strider" where it says "every spider jockey".
+- **Test:** none (docs).
+- **Kit:** the totem is in the E17 kit and the merge kit.
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers E11 to E15 and the M2 owner test; the earlier sections keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`.
