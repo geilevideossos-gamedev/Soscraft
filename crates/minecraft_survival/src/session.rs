@@ -1890,8 +1890,10 @@ mod tests {
         let near = named(1, "Alex", Dimension::End);
         let far = named(2, "Bo", Dimension::End);
         let home = named(3, "Cy", Dimension::Overworld);
-        let mut fight = DragonFight::default();
-        fight.players = vec![near.uuid.clone(), home.uuid.clone()];
+        let mut fight = DragonFight {
+            players: vec![near.uuid.clone(), home.uuid.clone()],
+            ..Default::default()
+        };
         let mut players: BTreeMap<PlayerUuid, Player> = [near, far, home]
             .into_iter()
             .map(|player| (player.uuid.clone(), player))
