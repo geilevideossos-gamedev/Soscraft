@@ -1559,6 +1559,15 @@ Commit: see `git log` ("The join code docs say the console needs quotes around a
 - **Test steps:** none new.
 - **Kit:** none.
 
+### Final verification of the track: clippy on the track's own lines
+
+Commits: `f3de5c1e` ("The dragon bar test builds its fight in one expression"), and this log entry in its own commit ("The track E log records the final verification"), because `f3de5c1e` went in without it and commits are never amended. The previous commit before them is `99d6f4a6` (the join code docs).
+
+- **Changed:** clippy (`clippy -p console -p minecraft_net -p minecraft_survival -p minecraft_terrain -p net -p render_anim -p sim --locked --all-targets`, `approx_constant` allowed) over every crate the track touched since `beb54197`, checked against the lines the track added. One finding: `field_reassign_with_default` in the E22 test `the_dragon_bar_reaches_only_the_players_near_the_fight_and_follows_its_health` (`session.rs`), which now builds its `DragonFight` with the players in one struct expression. Every other warning is on older lines and stays.
+- **Tests:** `test -p` on the touched crates with the real 26.3 data: `console` 45, `minecraft_net` 15, `minecraft_survival` 587 + 1 (`vanilla_world`), `minecraft_terrain` 1111 (3 ignored), `net` 16, `render_anim` 146, `sim` 117; all pass.
+- **Test steps:** none new (a test-only change).
+- **Kit:** none; the combined kit line below covers the track.
+
 ## Combined kit for every test in this track
 
 This line covers `docs/round8/track-e-tests.md`, the one run of every track E test (27 stacks; the rest of the items come from its `/give @a` lines). The per-milestone tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m6-tests.md`; the M6 combined line is in the git history of this file at `3cc89dfb` (with `eye_of_ender`, which should read `ender_eye`), the M5 line at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
