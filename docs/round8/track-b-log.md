@@ -830,3 +830,37 @@ After 11dde7f8.
 ```
 IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:zombie_spawn_egg*4,minecraft:slime_spawn_egg*2,minecraft:zombified_piglin_spawn_egg*2,minecraft:cobblestone*64,minecraft:diamond_sword
 ```
+
+### b4.2. Minecraft players lie down in beds and the night passes when enough of them sleep
+
+After f4d14bdc.
+
+- **Changed:**
+  - `sleep.rs`: `Sleeping { head, facing, straw, hurts }`; `lie_down` (`LivingEntity.startSleeping`: dismount first, `occupied=true` on both halves, the feet at the head's centre and `sleep height + 0.125` with zero motion, the timer and `time_since_rest` back to 0); `get_up` (`stopSleeping`: `occupied=false`, a straw bed with `destroy_on_leave` breaks with `block.straw_bed.break_leave`, then `findStandUpPosition` or the head + (0.5, 1.1, 0.5), facing the head, pitch 0; the timer to 0 or 100); `tick_sleepers` (`ServerLevel.tick`'s skip, then each player's `Player.tick`: the timer to 100 and the fade to 110, waking when it gets light, when the bed is gone, when hurt or dead, and `time_since_rest`); `start`, `stop`, `tick` and `serve` over the level and the players map; `Server::tick_sleep(dimension)` for track E. The announcements `sleep.players_sleeping` and `sleep.skipping_night` go to every player of the level when the count changes, only while `Server.published` is set and the percentage is at most 100; `sleep.not_possible` always shows above 100.
+  - The skip: `ticks_to_marker(total, 0)` through the new `Globals::set_clock` (shared with `/time set` so `save.shift_day` stays in step), every sleeper wakes with the fade, and with `advance_weather` while the rain level is above 0.2 `Entities::reset_weather_cycle` sends rain and thunder times 0 and both flags off (the clear-weather time stays) and mirrors it into `Globals.weather`.
+  - `Player.sleeping`, `sleep_timer`, `time_since_rest`; `Level.sleep_status`; `Server.published` (false until track E); `Survival::hurts()` counts landed hurts.
+  - An occupied bed: `Entities::wake_villager_in(head)` checks the mirror for a sleeping villager in the head block and sends `Command::WakeVillagerIn`; the vendored `EntityWorld::wake_villager_in` sets its `wake_pending`. Only when none sleeps there does "This bed is occupied" show.
+  - `render_anim`: a bed that passes every check becomes `Runtime.bed_request`; at the start of the next frame `sleep::serve` lies the player down (dismounting a strider rider first) and runs one sleep tick for each server tick of the last frame. The written blocks get their MW2 collision shapes back and the local player's overlay lines are shown. The move onto the bed and off it goes through `Player.arrival`, as a respawn does.
+- **Tests:** `sleep`: `lying_down_marks_the_bed_occupied_and_puts_the_feet_on_it` (red bed 64.6875, straw bed 64.375), `the_sleep_timer_counts_to_100_and_the_wake_fade_to_110`, `the_night_skips_to_the_next_morning_once_everyone_has_slept_100_ticks` (13000 + 48000 to 72000 on the 101st tick, never before; `advance_time` off keeps the clock but wakes), `a_skip_clears_rain_and_thunder_only_when_it_rains`, `half_the_players_are_enough_at_fifty_percent_and_none_at_101` (also the announcements), `leaving_the_bed_stands_up_beside_it_facing_it`, `a_straw_bed_breaks_when_left`, `a_broken_bed_or_daylight_or_a_hit_wakes_the_sleeper`, `time_since_rest_counts_while_awake_and_resets_on_sleep_and_death`, `an_occupied_bed_with_a_sleeping_villager_wakes_the_villager_instead_of_complaining`.
+- **Decisions:**
+  - The bed request and the sleep ticks wait for the start of the next frame, where the adapter holds the whole server (the use chain only sees the player and level in pieces). That is one frame late. Track E turns the request into a client action.
+  - The skip comes in the level part of the tick and the players' part follows in the same tick, as in vanilla, so a woken sleeper's timer reads 101 after that tick.
+  - The sleep count is refreshed at the start of every sleep tick, which also catches players joining, leaving or turning spectator (vanilla refreshes on those events). Several wake-ups in one tick give one announcement.
+  - A hurt wakes the sleeper when it lowers health (`Survival::hurts`); vanilla also wakes on a hit that its checks let through but that does no damage.
+  - A dead sleeper frees the bed but is not moved, so a stale stand-up place can't follow the respawn.
+  - The villager gets up on its own next tick (`wake_pending`), one tick after vanilla's `kickVillagerOutOfBed`.
+  - The sleep height is the top of the bed's collision box, which is the same as its outline for beds and straw beds. `occupied` is written on both halves at once, as `BedBlock.updateShape` copies it to the foot.
+  - Until group 3 there is no Leave Bed button: waking needs the morning, daylight, a hit or a broken bed.
+- **Test steps (Overworld, survival, a cleared flat area, `/difficulty normal`):**
+  1. `/time set 12400`, wait about 7 seconds, right-click the red bed: you are put onto the bed (**2**). Stay put. About 5 seconds later the sky jumps to sunrise and you stand beside the bed facing it (**3**). `/time query daytime` gives a few ticks past 0.
+  2. `/time set night`, `/weather thunder`, lie down: after the skip the rain and thunder stop (the rain fades over a few seconds).
+  3. `/gamerule players_sleeping_percentage 101`, `/time set night`, lie down: "No amount of rest can pass this night" (**4**). Wait 10 seconds: nothing happens. `/time set day`: you get up. `/gamerule players_sleeping_percentage 100`.
+  4. `/time set night`, lie down, press T and type `/effect give @s minecraft:poison 5`: you get up at the first poison hit.
+  5. `/time set night`, place the straw bed, lie down and wait for the morning: you get up and the straw bed breaks with its rustle. It never said "Respawn point set".
+  6. `/time set night`, lie down, press T and type `/setblock ~ ~ ~ minecraft:air` (the pillow block you lie on): you get up at once.
+  7. Villager: by day place the blue bed and use a villager egg next to it. `/time set 13000` and wait until the villager lies down in the bed. Right-click the bed: the villager gets up and no message shows.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:red_bed,minecraft:blue_bed,minecraft:straw_bed,minecraft:villager_spawn_egg*2,minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:clock
+```

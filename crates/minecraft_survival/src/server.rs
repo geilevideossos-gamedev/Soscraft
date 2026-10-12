@@ -29,6 +29,7 @@ pub struct Server {
     pub levels: BTreeMap<Dimension, Level>,
     pub opening: BTreeMap<Dimension, LevelLoader>,
     pub players: BTreeMap<PlayerUuid, Player>,
+    pub published: bool,
 }
 
 pub struct Globals {
@@ -107,6 +108,10 @@ impl Globals {
         }
     }
 
+    pub fn set_clock(&mut self, clock: &str, total: i64) {
+        set_clock(&mut self.day, &mut self.end_clock, self.save.as_mut(), clock, total);
+    }
+
     pub fn advance_clocks(&mut self, seconds: f64) {
         let advancing = self.game_rules.bool("advance_time");
         if advancing && !self.day.paused {
@@ -121,6 +126,24 @@ impl Globals {
 }
 
 pub const EMPTY_TIME: u32 = 300;
+
+pub fn set_clock(
+    day: &mut DayCycle,
+    end_clock: &mut DayCycle,
+    save: Option<&mut WorldSave>,
+    clock: &str,
+    total: i64,
+) {
+    if clock == THE_END_CLOCK {
+        end_clock.set(total as f64);
+        return;
+    }
+    let ticks = total as f64;
+    if let Some(save) = save {
+        save.shift_day(ticks - day.ticks);
+    }
+    day.set(ticks);
+}
 
 const NEW_WORLD_WEATHER: WeatherData = WeatherData {
     clear_weather_time: 0,
@@ -1314,6 +1337,7 @@ mod tests {
             levels: BTreeMap::new(),
             opening: BTreeMap::new(),
             players: BTreeMap::from([(uuid.clone(), player)]),
+            published: false,
         };
         server.save_and_close(Instant::now());
         let opened = crate::save::open_world(&dir.0, None, None, 2);
@@ -1377,6 +1401,7 @@ mod tests {
                 .into_iter()
                 .map(|player| (player.uuid.clone(), player))
                 .collect(),
+            published: false,
         }
     }
 

@@ -9,7 +9,7 @@ use minecraft_survival::level::Terrain;
 use minecraft_survival::player_nbt::Respawn;
 use minecraft_survival::respawn_block::{
     self, ANCHOR_CHARGE_SOUND, ANCHOR_SET_SPAWN_SOUND, AnchorUse, BAD_RESPAWN_POINT_POWER, BedUse,
-    BlockView, Fuel, GLOWSTONE, OCCUPIED, Outcome, Pos, SPAWN_SET, Sleeper,
+    Bed, BlockView, Fuel, GLOWSTONE, OCCUPIED, Outcome, Pos, SPAWN_SET, Sleeper,
 };
 use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::{Block, Scene};
@@ -55,6 +55,8 @@ pub(crate) struct RespawnBlockUse {
     respawn: Option<(Respawn, Option<[f64; 3]>)>,
     overlay: Option<String>,
     spends: bool,
+    occupied: Option<Pos>,
+    sleep: Option<Bed>,
 }
 
 fn bad_respawn_point(center: [f64; 3]) -> Blast {
@@ -107,7 +109,7 @@ pub(crate) fn use_block(
             used.sounds.extend(sound.map(|event| (event, head)));
             used.overlay = message;
         }
-        BedUse::Occupied(_) => used.overlay = Some(OCCUPIED.to_owned()),
+        BedUse::Occupied(head) => used.occupied = Some(head),
         BedUse::Sleep(bed) => {
             let sleeper = Sleeper {
                 feet: aim.pos.to_array(),
@@ -126,8 +128,9 @@ pub(crate) fn use_block(
                 night.monsters,
             );
             used.respawn = rest.respawn.map(|point| (point, None));
-            if let Outcome::Problem(problem) = rest.outcome {
-                used.overlay = problem;
+            match rest.outcome {
+                Outcome::Problem(problem) => used.overlay = problem,
+                Outcome::Sleep => used.sleep = Some(bed),
             }
         }
         BedUse::Incomplete => {}
@@ -171,7 +174,7 @@ pub(crate) fn finish(
     origin: [f64; 3],
     ui: &mut MinecraftUi,
     inventory_ui: &InventoryUi,
-) {
+) -> Option<Bed> {
     if let Some((blast, shield)) = used.blast {
         entities.explode_respawn_point(blast, shield);
     }
@@ -208,10 +211,49 @@ pub(crate) fn finish(
     if let Some(key) = used.overlay {
         show_overlay(ui, language, &key);
     }
+    if let Some(head) = used.occupied
+        && !entities.wake_villager_in(head)
+    {
+        show_overlay(ui, language, OCCUPIED);
+    }
     if let Some(sounds) = sounds {
         for (event, at) in heard {
             let at = Vec3::from_array(sim::voxel::to_map(origin, at));
             sounds.play(packs, event, Some(at), 1.0, 1.0);
+        }
+    }
+    used.sleep
+}
+
+pub(crate) fn show_messages(
+    ui: &mut MinecraftUi,
+    inventory_ui: &InventoryUi,
+    packs: &PackStack,
+    messages: &[Clientbound],
+) {
+    if messages.is_empty() {
+        return;
+    }
+    let loaded;
+    let language = match inventory_ui.language() {
+        Some(language) => language,
+        None => {
+            loaded =
+                minecraft_terrain::item_icons::language(packs).unwrap_or_else(|_| HashMap::new());
+            &loaded
+        }
+    };
+    let lang = |key: &str| language.get(key).cloned();
+    for message in messages {
+        if let Clientbound::System {
+            text,
+            overlay: true,
+        } = message
+        {
+            ui.overlay_message = Some(McOverlayMessage {
+                text: text.resolve(&lang).text,
+                ticks: McOverlayMessage::TICKS,
+            });
         }
     }
 }

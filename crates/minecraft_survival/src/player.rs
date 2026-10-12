@@ -45,6 +45,9 @@ pub struct Player {
     pub riding: Option<crate::riding::Riding>,
     pub saved_vehicle: Option<minecraftoss_core::nbt::Tag>,
     pub reattach: Option<minecraftoss_core::nbt::Tag>,
+    pub sleeping: Option<crate::sleep::Sleeping>,
+    pub sleep_timer: i32,
+    pub time_since_rest: i32,
 }
 
 #[derive(Default)]
@@ -111,6 +114,9 @@ impl Player {
             riding: None,
             saved_vehicle: None,
             reattach: None,
+            sleeping: None,
+            sleep_timer: 0,
+            time_since_rest: 0,
         }
     }
 

@@ -117,6 +117,8 @@ struct Runtime {
     switch_screen: Option<minecraft_survival::switch::LoadingReason>,
     loading_backgrounds: Option<crate::minecraft_loading::LoadingBackgrounds>,
     refused_air: Option<u32>,
+    bed_request: Option<minecraft_survival::respawn_block::Bed>,
+    sleep_ticks: u32,
 }
 
 impl Drop for Runtime {
@@ -306,7 +308,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         waiting_locates: Vec::new(),
     };
     let level = minecraft_survival::level::Level::new(Dimension::Overworld, terrain);
-    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new() }))
+    Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), published: false }))
 }
 
 pub(crate) fn data_jar() -> Option<std::path::PathBuf> {
@@ -594,6 +596,8 @@ fn update(
         shown,
         switch_screen,
         refused_air,
+        bed_request,
+        sleep_ticks,
         ..
     } = &mut *runtime;
     let (Some(world), Some(server), Some(local_uuid)) = (world.as_mut(), server.as_mut(), local_uuid.as_ref()) else {
@@ -602,11 +606,23 @@ fn update(
         puppet.active = false;
         return;
     };
-    let minecraft_survival::server::Server { globals, levels, players, .. } = server;
+    let minecraft_survival::server::Server { globals, levels, players, published, .. } = server;
     if globals.autosave_ticks >= minecraft_survival::save::AUTOSAVE_TICKS {
         globals.autosave_ticks = 0;
         minecraft_survival::server::autosave(globals, levels, players);
     }
+    if bed_request.is_some()
+        && let Some(player) = players.get_mut(local_uuid)
+        && player.riding.is_some()
+    {
+        crate::minecraft_riding::dismount(&mut player.riding, levels.get_mut(&player.dimension).and_then(|level| level.entities.as_mut()), &mut authority.0, local.0);
+    }
+    let slept = minecraft_survival::sleep::serve(globals, levels, players, local_uuid, bed_request.take(), std::mem::take(sleep_ticks), *published);
+    if let Some(level) = players.get(local_uuid).and_then(|player| levels.get(&player.dimension)) {
+        refresh_shapes(&level.terrain, &globals.registries, shapes, shape_ids, &slept.written);
+    }
+    let local_messages: Vec<_> = slept.messages.into_iter().filter(|(uuid, _)| uuid == local_uuid).map(|(_, message)| message).collect();
+    crate::minecraft_respawn::show_messages(&mut ui, inventory_ui, &world.packs, &local_messages);
     let Some(player) = players.get_mut(local_uuid) else {
         ui.active = false;
         ui.inventory_open = false;
@@ -1273,7 +1289,9 @@ fn update(
                 HandUse::Consumed
             } else if let Some(respawn_use) = (!(player.crouching && has_item)).then(|| crate::minecraft_respawn::use_block(&player, terrain, &globals.registries, *dimension, crate::minecraft_respawn::Hand { main, held: held.as_ref().map(|stack| stack.id.as_str()), offhand: inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().map(|stack| stack.id.as_str()) }, crate::minecraft_respawn::Night { dark: dark_outside, creative: game_mode.mode == minecraft_terrain::game_mode::GameMode::Creative, monsters: &|area| entities.monster_near(area, sleeper) })).flatten() {
                 write_blocks(terrain, &globals.registries, shapes, shape_ids, entities, respawn_use.writes.clone());
-                crate::minecraft_respawn::finish(respawn_use, entities, respawn, inventory, slot, game_mode.consumes_items(), sounds.as_mut(), &world.packs, origin, &mut ui, inventory_ui);
+                if let Some(bed) = crate::minecraft_respawn::finish(respawn_use, entities, respawn, inventory, slot, game_mode.consumes_items(), sounds.as_mut(), &world.packs, origin, &mut ui, inventory_ui) {
+                    *bed_request = Some(bed);
+                }
                 hand.swing = Some(0.0);
                 HandUse::Consumed
             } else if let Some(pos) = used {
@@ -1733,6 +1751,7 @@ fn update(
         let mob_ticks = (entities.client_ticks() - ticks_before) as u32;
         globals.autosave_ticks += mob_ticks;
         globals.level_ticks += mob_ticks;
+        *sleep_ticks += mob_ticks;
         globals.advance_weather(&[*dimension], mob_ticks);
         for _ in 0..mob_ticks {
             let rain = entities.rain_tick(&terrain.scene, eye);
@@ -2601,6 +2620,20 @@ fn write_blocks(
         sim::voxel::set_block_shape(at.0, at.1, at.2, shape);
     }
     minecraft_survival::level::write_blocks(terrain, entities, writes);
+}
+
+fn refresh_shapes(
+    terrain: &minecraft_survival::level::Terrain,
+    registries: &Registries,
+    shapes: &mut HashMap<BlockStateId, u16>,
+    shape_ids: &mut HashMap<(Vec<[u32; 6]>, u16), u16>,
+    written: &[(i32, i32, i32)],
+) {
+    for &(x, y, z) in written {
+        let state = minecraft_terrain::scene::Scene::block(&terrain.scene, (x, y, z)).and_then(|b| terrain.stream.states.state_of(b));
+        let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
+        sim::voxel::set_block_shape(x, y, z, shape);
+    }
 }
 
 fn finish_item_use(

@@ -2338,6 +2338,7 @@ pub enum Command {
     GameRules(Box<crate::game_rules::GameRules>),
     PlayerUuid { player: u64, uuid: u128 },
     Dismount { player: u64 },
+    WakeVillagerIn(BlockPos),
     AngerPiglins { player: u64, feet: [f64; 3], sight: bool },
     Boost { player: u64 },
     RootVehicle { player: u64, remove: bool },
@@ -2706,6 +2707,10 @@ impl ServerHandle {
         self.send(Command::WeatherData(data));
     }
 
+    pub fn wake_villager_in(&mut self, pos: BlockPos) {
+        self.send(Command::WakeVillagerIn(pos));
+    }
+
     pub fn hatch_egg(&mut self, kind: String, position: [f64; 3], y_rot: f32) {
         self.send(Command::HatchEgg { kind, position, y_rot });
     }
@@ -2874,6 +2879,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::PlayerUuid { player, uuid } => sim.set_player_uuid(player, uuid),
                 Command::Dismount { player } => sim.dismount(player),
+                Command::WakeVillagerIn(pos) => {
+                    sim.mobs.wake_villager_in(pos);
+                }
                 Command::AngerPiglins { player, feet, sight } => sim.mobs.anger_nearby_piglins(player, glam::DVec3::from_array(feet), sight),
                 Command::Boost { player } => out.boosts.push((player, sim.mobs.boost_ride(player))),
                 Command::RootVehicle { player, remove } => out.root_vehicles.push((player, sim.root_vehicle(player, remove))),

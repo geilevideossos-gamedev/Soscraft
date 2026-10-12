@@ -314,6 +314,20 @@ impl Entities {
         self.weather_data = Some(data);
     }
 
+    pub fn reset_weather_cycle(&mut self) -> Option<WeatherData> {
+        let data = crate::sleep::cleared_weather(self.weather_data?);
+        self.set_weather_data(data);
+        Some(data)
+    }
+
+    pub fn wake_villager_in(&mut self, head: (i32, i32, i32)) -> bool {
+        let asleep = villager_asleep_in(&self.world, head);
+        if asleep {
+            self.server.wake_villager_in(head);
+        }
+        asleep
+    }
+
     pub fn set_player_uuid(&mut self, uuid: &minecraft_net::PlayerUuid) {
         self.server.set_player_uuid(PLAYER, crate::level::opener_key(uuid));
     }
@@ -1456,6 +1470,16 @@ impl Entities {
         }
         out
     }
+}
+
+pub(crate) fn villager_asleep_in(world: &EntityWorld, (x, y, z): (i32, i32, i32)) -> bool {
+    let block = [f64::from(x), f64::from(y), f64::from(z), f64::from(x) + 1.0, f64::from(y) + 1.0, f64::from(z) + 1.0];
+    world.villagers().iter().filter(|e| e.sleeping.is_some()).any(|e| {
+        let body = &e.villager.body;
+        let half = f64::from(body.width) * 0.5;
+        let p = body.position;
+        crate::sleep::intersects([p.x - half, p.y, p.z - half, p.x + half, p.y + f64::from(body.height), p.z + half], block)
+    })
 }
 
 fn resting_monsters(w: &EntityWorld, sleeper: u64) -> Vec<(&'static str, bool, [f64; 6])> {

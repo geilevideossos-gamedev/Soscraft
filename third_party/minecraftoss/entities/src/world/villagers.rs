@@ -102,6 +102,22 @@ fn seen_of(kind: &'static str, category: &'static str, body: &Body, eye_height: 
 }
 
 impl EntityWorld {
+    pub fn wake_villager_in(&mut self, (x, y, z): (i32, i32, i32)) -> bool {
+        let block = [f64::from(x), f64::from(y), f64::from(z), f64::from(x) + 1.0, f64::from(y) + 1.0, f64::from(z) + 1.0];
+        let inside = |entity: &&mut VillagerEntity| {
+            let body = &entity.villager.body;
+            let half = f64::from(body.width) * 0.5;
+            let p = body.position;
+            let bounds = [p.x - half, p.y, p.z - half, p.x + half, p.y + f64::from(body.height), p.z + half];
+            (0..3).all(|i| bounds[i] < block[i + 3] && bounds[i + 3] > block[i])
+        };
+        let Some(entity) = self.villagers.iter_mut().filter(|e| e.sleeping.is_some()).find(inside) else {
+            return false;
+        };
+        entity.wake_pending = true;
+        true
+    }
+
     /// A villager with its brain, facing `yaw`.
     pub fn spawn_villager_active(&mut self, villager: Villager, yaw: f32) -> u64 {
         let id = self.spawn_villager(villager, true);
