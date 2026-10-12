@@ -71,7 +71,7 @@ impl Mining {
         let mut gone = std::collections::HashSet::new();
         for event in events {
             match event {
-                sim::voxel::VoxelEvent::Shot { block, damage } => {
+                sim::voxel::VoxelEvent::Shot { block, damage, .. } => {
                     let pos = (block[0], block[1], block[2]);
                     if gone.contains(&pos) {
                         continue;
@@ -93,7 +93,7 @@ impl Mining {
                         gone.insert(pos);
                     }
                 }
-                sim::voxel::VoxelEvent::Ray { from, to, damage } => {
+                sim::voxel::VoxelEvent::Ray { from, to, damage, .. } => {
                     // Blocks without collision the bullet passed through.
                     for pos in blocks_on_segment(from, to) {
                         if gone.contains(&pos) || !passable(world, pos) {

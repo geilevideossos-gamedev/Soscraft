@@ -674,6 +674,25 @@ Commit: see `git log` ("Mobs, items and XP treat every player alike"). The previ
 - **Test steps:** `docs/round8/e-m2-tests.md`, section E12 (two windows: the friend picks up a block the host broke, takes the orbs of thrown bottles, gets a grenade kill's loot and XP, and is shot by a skeleton while the host stays unhurt).
 - **Kit:** `minecraft:stone_pickaxe` x1, `minecraft:cobblestone` x32, `minecraft:experience_bottle` x8.
 
+### E13a. Voxel events say which level and which player they belong to
+
+Commit: see `git log` ("Voxel events say which level and which player they belong to"). The previous commit is `0582018d` (E12).
+
+- **Changed:**
+  - `crates/sim/src/voxel.rs`: every `VoxelEvent` carries `level: u8` (`ONLY_LEVEL`, 0, until the bands of E19). `Shot`, `MobShot` and `Ray` carry the `attacker` client. The events are built by `VoxelWorld::shot`, `explosion`, `ray`, `mob_shot` and `mob_blast`, which the `push_*` functions call with the global world, so a test can build them from its own world.
+  - `crates/sim/src/combat.rs`: bullets pass their shooter to `push_mob_shot`, `push_ray` and `push_shot`, and the melee hit passes its attacker to `push_shot`.
+  - `crates/render_anim/src/minecraft_world.rs`:
+    - A `MobShot` credits its attacker, the host or a friend in this level, with that player's own yaw for the knock-back, through the same `credit` as `MobBlast`. A shot by nobody in this level (a bot) hurts no mob.
+    - A `Shot` or `Ray` mines only when its attacker is a player in this level who may build. Before, the host's game mode decided for every bullet, so a host in adventure mode also stopped a friend from mining.
+  - `crates/render_anim/src/minecraft_mining.rs`: the readers take the new fields with `..`. Mining progress, drops and block XP still go through the host; the attacker decides them in E13c.
+- **Tests:** `sim` `voxel::tests::a_voxel_shot_carries_its_attacker_and_every_event_its_level` (a shot, a melee hit, a mob shot and a bullet's ray carry their attacker; all five kinds carry level 0; the shot's block is the one behind the struck face). `test -p sim` 80, `test -p render_anim --lib` 78, `check -p launcher` green.
+- **Decisions:**
+  - **`Ray` carries its attacker too,** not only `Shot` and `MobShot` as the design lists: a bullet's ray breaks grass and flowers, so it needs the same game-mode check and, in E13c, the same drops by the shooter.
+  - **`Explosion` keeps no attacker.** MW2 blasts on blocks are level-wide (vanilla's explosion loot has no tool); the blast on a mob already credits its thrower through `MobBlast`.
+  - **A bullet from a client with no Minecraft player in this level does nothing to mobs or blocks.** Bots are not a goal (section 8.4), and a friend in another level cannot shoot into this one once bands land.
+- **Test steps:** `docs/round8/e-m2-tests.md`, section E13a.
+- **Kit:** none needed.
+
 ## Combined kit for every test in this track
 
 `minecraft:obsidian` x10, `minecraft:flint_and_steel` x1, `minecraft:chest` x1, `minecraft:cobblestone` x32, `minecraft:lava_bucket` x1, `minecraft:torch` x16, `minecraft:cooked_beef` x8, `minecraft:crafting_table` x1, `minecraft:shield` x1, `minecraft:skeleton_spawn_egg` x1, `minecraft:ender_pearl` x4, `minecraft:totem_of_undying` x1, `minecraft:white_bed` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8, `minecraft:stone_pickaxe` x1, `minecraft:ender_eye` x4, `minecraft:experience_bottle` x8, `minecraft:wolf_spawn_egg` x1, `minecraft:bone` x8, `minecraft:dirt` x4, `minecraft:wooden_hoe` x1, `minecraft:wheat_seeds` x4 (23 stacks).

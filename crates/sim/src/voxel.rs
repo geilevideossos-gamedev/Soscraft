@@ -111,35 +111,34 @@ pub fn revision() -> u64 {
 pub enum VoxelEvent {
     /// A bullet struck this block, with the damage it would have done: the
     /// weapon's, at that range, after penetration.
-    Shot { block: [i32; 3], damage: f32 },
+    Shot { level: u8, block: [i32; 3], damage: f32, attacker: Option<u32> },
     /// An explosion went off here, in blocks.
-    Explosion { center: [f64; 3], power: f32 },
+    Explosion { level: u8, center: [f64; 3], power: f32 },
     /// A bullet struck the mob with this key, with the damage it would have
     /// done at that range, from this block point.
-    MobShot { key: u64, damage: f32, from: [f64; 3] },
-    MobBlast { key: u64, damage: f32, center: [f64; 3], impact: f32, attacker: Option<u32>, slow_ticks: i32 },
+    MobShot { level: u8, key: u64, damage: f32, from: [f64; 3], attacker: Option<u32> },
+    MobBlast { level: u8, key: u64, damage: f32, center: [f64; 3], impact: f32, attacker: Option<u32>, slow_ticks: i32 },
     /// A bullet's path through the air, in blocks, up to what stopped it:
     /// blocks without collision on it (grass, flowers) take its damage.
-    Ray { from: [f64; 3], to: [f64; 3], damage: f32 },
+    Ray { level: u8, from: [f64; 3], to: [f64; 3], damage: f32, attacker: Option<u32> },
 }
+
+pub const ONLY_LEVEL: u8 = 0;
 
 static EVENTS: std::sync::Mutex<Vec<VoxelEvent>> = std::sync::Mutex::new(Vec::new());
 
 /// A bullet impact at map point `end` on a surface facing `normal`: the
 /// block behind the surface.
-pub fn push_shot(end: [f32; 3], normal: [f32; 3], damage: f32) {
+pub fn push_shot(end: [f32; 3], normal: [f32; 3], damage: f32, attacker: Option<u32>) {
     let Ok(world) = WORLD.read() else {
         return;
     };
     let Some(world) = world.as_ref() else {
         return;
     };
-    let p = to_block(world.origin, end);
-    // Into the surface, past the trace's pull-back.
-    let n = [f64::from(normal[0]), f64::from(normal[2]), -f64::from(normal[1])];
-    let block = std::array::from_fn(|k| (p[k] - n[k] * 0.05).floor() as i32);
+    let event = world.shot(end, normal, damage, attacker);
     if let Ok(mut events) = EVENTS.lock() {
-        events.push(VoxelEvent::Shot { block, damage });
+        events.push(event);
     }
 }
 
@@ -151,9 +150,9 @@ pub fn push_explosion(origin: [f32; 3], power: f32) {
     let Some(world) = world.as_ref() else {
         return;
     };
-    let center = to_block(world.origin, origin);
+    let event = world.explosion(origin, power);
     if let Ok(mut events) = EVENTS.lock() {
-        events.push(VoxelEvent::Explosion { center, power });
+        events.push(event);
     }
 }
 
@@ -217,16 +216,16 @@ pub(crate) fn hit_height(key: u64, up: f32) -> f32 {
 }
 
 /// A bullet's path from map point `start` to `end`.
-pub(crate) fn push_ray(start: [f32; 3], end: [f32; 3], damage: f32) {
+pub(crate) fn push_ray(start: [f32; 3], end: [f32; 3], damage: f32, attacker: Option<u32>) {
     let Ok(world) = WORLD.read() else {
         return;
     };
     let Some(world) = world.as_ref() else {
         return;
     };
-    let (from, to) = (to_block(world.origin, start), to_block(world.origin, end));
+    let event = world.ray(start, end, damage, attacker);
     if let Ok(mut events) = EVENTS.lock() {
-        events.push(VoxelEvent::Ray { from, to, damage });
+        events.push(event);
     }
 }
 
@@ -268,16 +267,43 @@ pub fn mob_targets() -> Vec<(u64, [f32; 3], [f32; 3])> {
         .collect()
 }
 
-pub(crate) fn push_mob_shot(key: u64, damage: f32, from: [f32; 3]) {
+pub(crate) fn push_mob_shot(key: u64, damage: f32, from: [f32; 3], attacker: Option<u32>) {
     let Ok(world) = WORLD.read() else {
         return;
     };
     let Some(world) = world.as_ref() else {
         return;
     };
-    let from = to_block(world.origin, from);
+    let event = world.mob_shot(key, damage, from, attacker);
     if let Ok(mut events) = EVENTS.lock() {
-        events.push(VoxelEvent::MobShot { key, damage, from });
+        events.push(event);
+    }
+}
+
+impl VoxelWorld {
+    fn shot(&self, end: [f32; 3], normal: [f32; 3], damage: f32, attacker: Option<u32>) -> VoxelEvent {
+        let p = to_block(self.origin, end);
+        let n = [f64::from(normal[0]), f64::from(normal[2]), -f64::from(normal[1])];
+        let block = std::array::from_fn(|k| (p[k] - n[k] * 0.05).floor() as i32);
+        VoxelEvent::Shot { level: ONLY_LEVEL, block, damage, attacker }
+    }
+
+    fn explosion(&self, origin: [f32; 3], power: f32) -> VoxelEvent {
+        VoxelEvent::Explosion { level: ONLY_LEVEL, center: to_block(self.origin, origin), power }
+    }
+
+    fn ray(&self, start: [f32; 3], end: [f32; 3], damage: f32, attacker: Option<u32>) -> VoxelEvent {
+        let (from, to) = (to_block(self.origin, start), to_block(self.origin, end));
+        VoxelEvent::Ray { level: ONLY_LEVEL, from, to, damage, attacker }
+    }
+
+    fn mob_shot(&self, key: u64, damage: f32, from: [f32; 3], attacker: Option<u32>) -> VoxelEvent {
+        VoxelEvent::MobShot { level: ONLY_LEVEL, key, damage, from: to_block(self.origin, from), attacker }
+    }
+
+    fn mob_blast(&self, key: u64, damage: f32, origin: [f32; 3], impact: f32, attacker: Option<u32>, slow_ticks: i32) -> VoxelEvent {
+        let center = to_block(self.origin, origin);
+        VoxelEvent::MobBlast { level: ONLY_LEVEL, key, damage, center, impact, attacker, slow_ticks }
     }
 }
 
@@ -288,9 +314,9 @@ pub(crate) fn push_mob_blast(key: u64, damage: f32, origin: [f32; 3], impact: f3
     let Some(world) = world.as_ref() else {
         return;
     };
-    let center = to_block(world.origin, origin);
+    let event = world.mob_blast(key, damage, origin, impact, attacker, slow_ticks);
     if let Ok(mut events) = EVENTS.lock() {
-        events.push(VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks });
+        events.push(event);
     }
 }
 
@@ -1365,6 +1391,30 @@ mod tests {
 
     const SOURCE: u16 = 3;
     const FLOWING: u16 = 4;
+
+    #[test]
+    fn a_voxel_shot_carries_its_attacker_and_every_event_its_level() {
+        let mut w = world(&[]);
+        w.origin = [0.5, 64.0, 0.5];
+        let end = [54.0, -18.0, 72.0];
+        let shot = w.shot(end, [-1.0, 0.0, 0.0], 30.0, Some(3));
+        assert!(matches!(shot, VoxelEvent::Shot { level: 0, block: [2, 66, 1], attacker: Some(3), .. }), "{shot:?}");
+        let melee = w.shot(end, [-1.0, 0.0, 0.0], 50.0, None);
+        assert!(matches!(melee, VoxelEvent::Shot { level: 0, attacker: None, .. }), "{melee:?}");
+        let mob = w.mob_shot(9, 12.0, [0.0; 3], Some(1));
+        assert!(matches!(mob, VoxelEvent::MobShot { level: 0, key: 9, attacker: Some(1), .. }), "{mob:?}");
+        let ray = w.ray([0.0; 3], end, 20.0, Some(2));
+        assert!(matches!(ray, VoxelEvent::Ray { level: 0, attacker: Some(2), .. }), "{ray:?}");
+        let events = [shot, melee, mob, ray, w.explosion(end, 4.0), w.mob_blast(9, 40.0, end, 1.0, Some(1), 0)];
+        let level = |event: &VoxelEvent| match *event {
+            VoxelEvent::Shot { level, .. }
+            | VoxelEvent::Explosion { level, .. }
+            | VoxelEvent::MobShot { level, .. }
+            | VoxelEvent::MobBlast { level, .. }
+            | VoxelEvent::Ray { level, .. } => level,
+        };
+        assert!(events.iter().all(|event| level(event) == ONLY_LEVEL), "{events:?}");
+    }
 
     #[test]
     fn a_level_switch_drops_the_old_level_and_waits_for_ground_at_the_new_origin() {

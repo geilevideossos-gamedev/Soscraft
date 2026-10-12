@@ -129,3 +129,15 @@ Put the kit below in the `.env` next to the exe before the first start: both pla
 ```
 IW4L_MINECRAFT_KIT=minecraft:stone_pickaxe,minecraft:cobblestone*32,minecraft:experience_bottle*8
 ```
+
+## E13a. Voxel events say which level and which player they belong to
+
+A bullet now names its shooter. A mob shot by the friend counts the friend as its attacker, and whether a bullet breaks blocks depends on the shooter's game mode, not the host's.
+
+1. Start both windows: `& scripts\mp-local.ps1 -World mp-m2-e13a -Fresh`. Spawn in both. Host window: `/time set day`, then `/op Friend`.
+2. Friend window: `/summon minecraft:wolf ~5 ~ ~`. Shoot the wolf once with a pistol. The wolf turns angry and runs at the friend, not at the host. Screenshot the friend window while the wolf bites. **S13** Then kill it.
+3. Friend window: `/summon minecraft:cow ~4 ~ ~` and kill it with bullets. Orbs drop where it died; walk over them and the friend's XP bar fills.
+4. Host window: `/gamemode adventure`. Shoot the ground in front of you: no crack shows and no block breaks.
+5. Friend window: shoot the ground in front of the friend until a block breaks. Host window: the block is gone there too. Host window: `/gamemode survival`.
+6. Close both windows (type `quit` in the script's console).
+

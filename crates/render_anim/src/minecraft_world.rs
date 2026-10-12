@@ -726,6 +726,7 @@ fn update(
     };
     let host_id = u64::from(player.id.0);
     let friend_ids: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension).map(|friend| u64::from(friend.id.0)).collect();
+    let friend_builds: Vec<u64> = friends.iter().filter(|friend| friend.dimension == player.dimension && friend.mode.may_build()).map(|friend| u64::from(friend.id.0)).collect();
     crate::minecraft_portal::step(player, levels, globals, presented.player(local.0).filter(|ps| ps.pm_type == 0).map(|ps| sim::voxel::to_block(origin, ps.origin)), time.delta_secs_f64(), sounds.as_mut(), &world.packs, &mut ui);
     crate::minecraft_end::pearls_through(player, levels);
     let credit = |attacker: Option<u32>| attacker.and_then(|client| if client == local.0.0 { Some(host_id) } else { friend_ids.contains(&u64::from(client)).then_some(u64::from(client)) });
@@ -820,7 +821,14 @@ fn update(
         .partition(|event| matches!(event, sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::MobBlast { .. }));
     let events: Vec<_> = events
         .into_iter()
-        .filter(|event| player_mode.may_build() || !matches!(event, sim::voxel::VoxelEvent::Shot { .. } | sim::voxel::VoxelEvent::Ray { .. }))
+        .filter(|event| match *event {
+            sim::voxel::VoxelEvent::Shot { attacker, .. } | sim::voxel::VoxelEvent::Ray { attacker, .. } => match credit(attacker) {
+                Some(id) if id == host_id => player_mode.may_build(),
+                Some(id) => friend_builds.contains(&id),
+                None => false,
+            },
+            _ => true,
+        })
         .filter(|event| match *event {
             sim::voxel::VoxelEvent::Shot { block, .. } => {
                 let pos = (block[0], block[1], block[2]);
@@ -836,15 +844,20 @@ fn update(
     if let Some(entities) = entities.as_mut() {
         for shot in mob_shots {
             match shot {
-                sim::voxel::VoxelEvent::MobShot { key, damage, from } => entities.shoot(host_id, key, damage, from, mc_yaw),
-                sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks } => {
+                sim::voxel::VoxelEvent::MobShot { key, damage, from, attacker, .. } => {
+                    if let (Some(id), Some(client)) = (credit(attacker), attacker) {
+                        let yaw = if id == host_id { mc_yaw } else { authority.0.player(sim::ClientId(client)).map_or(mc_yaw, |ps| minecraft_yaw(ps.viewangles[1])) };
+                        entities.shoot(id, key, damage, from, yaw);
+                    }
+                }
+                sim::voxel::VoxelEvent::MobBlast { key, damage, center, impact, attacker, slow_ticks, .. } => {
                     entities.blast(key, damage, center, impact, credit(attacker), slow_ticks);
                 }
                 _ => {}
             }
         }
         for event in &events {
-            if let sim::voxel::VoxelEvent::Explosion { center, power } = *event {
+            if let sim::voxel::VoxelEvent::Explosion { center, power, .. } = *event {
                 entities.weapon_blast(center, power);
             }
         }
