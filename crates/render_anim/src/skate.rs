@@ -126,7 +126,7 @@ fn block_collision(
         started.elapsed().as_millis(),
     );
     map_triangles.extend(ramps.into_iter().map(|t| t.map(Vec3::from_array)));
-    let (found, census) = rails::find(&map_triangles);
+    let (found, census) = rails::find(&map_triangles, rails::Limits::BLOCKS);
     diag::debug!(
         World,
         "Skate block rails: {} walkable edges, {} lips, {} runs, {} rails",
@@ -724,11 +724,121 @@ mod tests {
             );
             tris.extend(fillets.into_iter().map(|t| t.map(to_map)));
         }
-        let (found, _) = rails::find(&tris);
+        let (found, _) = rails::find(&tris, rails::Limits::BLOCKS);
         found
             .iter()
             .filter(|rail| rail.iter().any(|p| p.x.abs() < 80. && p.y.abs() < 80.))
             .count()
+    }
+
+    fn rails_over(blocks: &[([i32; 3], &[[f32; 6]])], limits: rails::Limits) -> Vec<Vec<Vec3>> {
+        let full = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let mut world: std::collections::HashMap<[i32; 3], Vec<[f32; 6]>> =
+            std::collections::HashMap::new();
+        for x in -4..=4 {
+            for z in -4..=6 {
+                world.insert([x, -1, z], vec![full]);
+            }
+        }
+        let ground = [
+            Vec3::new(-300., -300., 0.),
+            Vec3::new(300., -300., 0.),
+            Vec3::new(300., 300., 0.),
+            Vec3::new(-300., 300., 0.),
+        ];
+        let mut tris = vec![
+            [ground[0], ground[1], ground[2]],
+            [ground[0], ground[2], ground[3]],
+        ];
+        for &(at, boxes) in blocks {
+            world.insert(at, boxes.to_vec());
+            for b in boxes {
+                let [x, y, z] = at.map(|v| v as f32);
+                tris.extend(box_triangles([
+                    b[0] + x,
+                    b[1] + y,
+                    b[2] + z,
+                    b[3] + x,
+                    b[4] + y,
+                    b[5] + z,
+                ]));
+            }
+        }
+        let fillets = sim::voxel::riser_fillets(
+            |x, y, z| world.get(&[x, y, z]).map_or(&[][..], Vec::as_slice),
+            [-3, -1, -3],
+            [3, 4, 5],
+        );
+        tris.extend(fillets.into_iter().map(|t| t.map(to_map)));
+        rails::find(&tris, limits)
+            .0
+            .into_iter()
+            .filter(|rail| rail.iter().all(|p| p.x.abs() < 250. && p.y.abs() < 250.))
+            .collect()
+    }
+
+    fn turned(blocks: &[([i32; 3], Vec<[f32; 6]>)]) -> Vec<([i32; 3], Vec<[f32; 6]>)> {
+        blocks
+            .iter()
+            .map(|([x, y, z], boxes)| {
+                let boxes = boxes
+                    .iter()
+                    .map(|b| [1.0 - b[5], b[1], b[0], 1.0 - b[2], b[4], b[3]])
+                    .collect();
+                ([-z - 1, *y, *x], boxes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_sides_of_a_stair_ramp_grind_like_a_hubba() {
+        let full = vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+        let stair = vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0], [0.0, 0.5, 0.5, 1.0, 1.0, 1.0]];
+        let mut staircase = vec![
+            ([0, 0, 0], stair.clone()),
+            ([0, 0, 1], full.clone()),
+            ([0, 1, 1], stair.clone()),
+            ([0, 0, 2], full.clone()),
+            ([0, 1, 2], full.clone()),
+            ([0, 2, 2], stair),
+        ];
+        for facing in 0..4 {
+            let blocks: Vec<([i32; 3], &[[f32; 6]])> =
+                staircase.iter().map(|(at, b)| (*at, b.as_slice())).collect();
+            let sloped = |limits: rails::Limits| -> Vec<Vec<Vec3>> {
+                rails_over(&blocks, limits)
+                    .into_iter()
+                    .filter(|rail| (rail[0].z - rail[rail.len() - 1].z).abs() > 9.)
+                    .collect()
+            };
+            assert!(sloped(rails::Limits::MW2).is_empty(), "{facing}");
+            let hubbas = sloped(rails::Limits::BLOCKS);
+            assert_eq!(hubbas.len(), 2, "{facing}: {hubbas:?}");
+            for rail in &hubbas {
+                let side = |k: usize| rail.iter().all(|p| (p[k] - rail[0][k]).abs() < 0.01);
+                assert!(side(0) || side(1), "{facing}: {rail:?}");
+                let len = rail.windows(2).map(|w| w[0].distance(w[1])).sum::<f32>();
+                assert!(len > 2.5 * 36. * std::f32::consts::SQRT_2, "{facing}: {len}");
+            }
+            if facing == 0 {
+                let mut sides: Vec<f32> = hubbas.iter().map(|rail| rail[0].x).collect();
+                sides.sort_by(f32::total_cmp);
+                assert!(sides[0].abs() < 0.01 && (sides[1] - 36.).abs() < 0.01, "{sides:?}");
+            }
+            staircase = turned(&staircase);
+        }
+    }
+
+    #[test]
+    fn a_fence_line_is_one_rail_down_its_middle() {
+        let fence = [[0.375, 0.0, 0.375, 0.625, 1.5, 0.625], [0.0, 0.0, 0.375, 1.0, 1.5, 0.625]];
+        let line: Vec<([i32; 3], &[[f32; 6]])> = (0..6).map(|x| ([x, 0, 0], &fence[..])).collect();
+        let rails: Vec<Vec<Vec3>> = rails_over(&line, rails::Limits::BLOCKS)
+            .into_iter()
+            .filter(|rail| rail.iter().all(|p| (p.z - 54.).abs() < 0.01))
+            .collect();
+        assert_eq!(rails.len(), 1, "{rails:?}");
+        assert!(rails[0].iter().all(|p| (p.y + 18.).abs() < 0.01), "{rails:?}");
     }
 
     #[test]

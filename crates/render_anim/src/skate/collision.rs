@@ -108,7 +108,7 @@ pub fn extract(clip: &asset_world::ClipCollision) -> World {
         k.sort();
         seen.insert(k)
     });
-    let (found, census) = super::rails::find(&out);
+    let (found, census) = super::rails::find(&out, super::rails::Limits::MW2);
     diag::info!(
         World,
         "skate rails: {} walkable edges, {} lips, {} runs, {} rails",

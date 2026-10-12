@@ -31,6 +31,27 @@ const MAX_SLOPE: f32 = 0.7;
 const MIN_TURN_COS: f32 = 0.82;
 /// The skate engine counts rails in a u16.
 const MAX_RAILS: usize = u16::MAX as usize;
+const RIDGE_WIDTH: f32 = 18.25;
+const RIDGE_HEIGHT: f32 = 0.5;
+const RIDGE_MIN_OVERLAP: f32 = 1.0;
+const MIN_STEEP_RISE: f32 = 18.5;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Limits {
+    pub max_slope: f32,
+    pub merge_ridges: bool,
+}
+
+impl Limits {
+    pub const MW2: Limits = Limits {
+        max_slope: MAX_SLOPE,
+        merge_ridges: false,
+    };
+    pub const BLOCKS: Limits = Limits {
+        max_slope: 1.01,
+        merge_ridges: true,
+    };
+}
 
 pub struct RailCensus {
     pub candidates: usize,
@@ -40,7 +61,7 @@ pub struct RailCensus {
 }
 
 /// Rails over `tris` (map units, z up), each a polyline of two or more points.
-pub fn find(tris: &[[Vec3; 3]]) -> (Vec<Vec<Vec3>>, RailCensus) {
+pub fn find(tris: &[[Vec3; 3]], limits: Limits) -> (Vec<Vec<Vec3>>, RailCensus) {
     let grid = Grid::build(tris);
     let mut probe = Probe {
         tris,
@@ -72,7 +93,7 @@ pub fn find(tris: &[[Vec3; 3]]) -> (Vec<Vec<Vec3>>, RailCensus) {
     for (a, b, normal, centroid) in edges.into_values() {
         let along = b - a;
         let len = along.length();
-        if len < 1. || along.z.abs() > MAX_SLOPE * len {
+        if len < 1. || along.z.abs() > limits.max_slope * len {
             continue;
         }
         let mid = (a + b) * 0.5;
@@ -91,15 +112,19 @@ pub fn find(tris: &[[Vec3; 3]]) -> (Vec<Vec<Vec3>>, RailCensus) {
             .filter(|&&s| probe.is_lip(a + along * s, out, rise))
             .count();
         if passing * 3 >= samples.len() * 2 {
-            lips.push((a, b));
+            lips.push((a, b, out));
         }
     }
     let lip_count = lips.len();
 
-    let runs = merge_collinear(lips);
+    let runs = if limits.merge_ridges {
+        merge_ridges(lips)
+    } else {
+        merge_collinear(lips.into_iter().map(|(a, b, _)| (a, b)).collect())
+    };
     let run_count = runs.len();
     let mut rails = chain(runs);
-    rails.retain(|rail| polyline_len(rail) >= MIN_RAIL);
+    rails.retain(|rail| polyline_len(rail) >= MIN_RAIL && !short_and_steep(rail));
     if rails.len() > MAX_RAILS {
         rails.sort_by(|a, b| polyline_len(b).total_cmp(&polyline_len(a)));
         rails.truncate(MAX_RAILS);
@@ -115,6 +140,16 @@ pub fn find(tris: &[[Vec3; 3]]) -> (Vec<Vec<Vec3>>, RailCensus) {
 
 fn polyline_len(points: &[Vec3]) -> f32 {
     points.windows(2).map(|w| w[0].distance(w[1])).sum()
+}
+
+fn short_and_steep(points: &[Vec3]) -> bool {
+    let steep = points
+        .windows(2)
+        .any(|w| (w[1].z - w[0].z).abs() > MAX_SLOPE * w[0].distance(w[1]));
+    let (low, high) = points
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(low, high), p| (low.min(p.z), high.max(p.z)));
+    steep && high - low < MIN_STEEP_RISE
 }
 
 struct Grid {
@@ -255,6 +290,123 @@ fn merge_collinear(lips: Vec<(Vec3, Vec3)>) -> Vec<(Vec3, Vec3)> {
     runs
 }
 
+fn merge_ridges(lips: Vec<(Vec3, Vec3, Vec3)>) -> Vec<(Vec3, Vec3)> {
+    let mut sides: HashMap<[i32; 2], (Vec3, Vec<(Vec3, Vec3)>)> = HashMap::new();
+    for (a, b, out) in lips {
+        let key = [out.x, out.y].map(|v| (v * 64.).round() as i32);
+        sides.entry(key).or_insert((out, Vec::new())).1.push((a, b));
+    }
+    let mut runs = Vec::new();
+    for (out, side) in sides.into_values() {
+        runs.extend(
+            merge_collinear(side)
+                .into_iter()
+                .map(|(a, b)| (a, b, out)),
+        );
+    }
+
+    let mut lines: HashMap<[i32; 3], Vec<(f32, usize)>> = HashMap::new();
+    for (index, &(a, b, _)) in runs.iter().enumerate() {
+        let d = (b - a).normalize_or_zero();
+        let across = Vec3::new(-d.y, d.x, 0.).normalize_or_zero();
+        let key = d.to_array().map(|v| (v * 64.).round() as i32);
+        lines.entry(key).or_default().push((a.dot(across), index));
+    }
+    let mut ridges = Vec::new();
+    for mut line in lines.into_values() {
+        line.sort_by(|x, y| x.0.total_cmp(&y.0));
+        for (k, &(offset, i)) in line.iter().enumerate() {
+            for &(other, j) in &line[k + 1..] {
+                if other - offset > RIDGE_WIDTH {
+                    break;
+                }
+                if let Some(ridge) = ridge(runs[i], runs[j]) {
+                    ridges.push((i, j, ridge));
+                }
+            }
+        }
+    }
+    ridges.sort_by(|x, y| x.2.width.total_cmp(&y.2.width));
+
+    let mut covered: Vec<Vec<(f32, f32)>> = vec![Vec::new(); runs.len()];
+    let clashes = |spans: &[(f32, f32)], lo: f32, hi: f32| {
+        spans
+            .iter()
+            .any(|&(s0, s1)| s1.min(hi) - s0.max(lo) > RIDGE_MIN_OVERLAP)
+    };
+    let mut merged = Vec::new();
+    for (i, j, ridge) in ridges {
+        let ((i0, i1), (j0, j1)) = (ridge.first, ridge.second);
+        if clashes(&covered[i], i0, i1) || clashes(&covered[j], j0, j1) {
+            continue;
+        }
+        covered[i].push(ridge.first);
+        covered[j].push(ridge.second);
+        merged.push((ridge.start, ridge.end));
+    }
+    for (&(a, b, _), mut spans) in runs.iter().zip(covered) {
+        let d = (b - a).normalize_or_zero();
+        let base = a.dot(d);
+        let at = |t: f32| a + d * (t - base);
+        spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut from = base;
+        for (s0, s1) in spans {
+            if s0 - from >= RIDGE_MIN_OVERLAP {
+                merged.push((at(from), at(s0)));
+            }
+            from = from.max(s1);
+        }
+        if b.dot(d) - from >= RIDGE_MIN_OVERLAP {
+            merged.push((at(from), b));
+        }
+    }
+    merge_collinear(merged)
+}
+
+struct Ridge {
+    width: f32,
+    first: (f32, f32),
+    second: (f32, f32),
+    start: Vec3,
+    end: Vec3,
+}
+
+fn ridge(first: (Vec3, Vec3, Vec3), second: (Vec3, Vec3, Vec3)) -> Option<Ridge> {
+    let (a, b, out) = first;
+    let (c, e, other_out) = second;
+    if out.dot(other_out) > -0.99 {
+        return None;
+    }
+    let d = (b - a).normalize_or_zero();
+    let other_d = (e - c).normalize_or_zero();
+    if d.dot(other_d) < 0.999 {
+        return None;
+    }
+    let gap = c - a;
+    let w = gap - d * gap.dot(d);
+    if w.z.abs() > RIDGE_HEIGHT
+        || w.length() > RIDGE_WIDTH
+        || w.dot(out) >= 0.
+        || w.dot(other_out) <= 0.
+    {
+        return None;
+    }
+    let lo = a.dot(d).max(c.dot(d));
+    let hi = b.dot(d).min(e.dot(d));
+    if hi - lo < RIDGE_MIN_OVERLAP {
+        return None;
+    }
+    let base = a.dot(d);
+    let (near, far) = (a + d * (lo - base), a + d * (hi - base));
+    Some(Ridge {
+        width: w.length(),
+        first: (lo, hi),
+        second: ((near + w).dot(other_d), (far + w).dot(other_d)),
+        start: near + w * 0.5,
+        end: far + w * 0.5,
+    })
+}
+
 /// Runs joined end to end into polylines through joints where exactly two
 /// runs meet at a gentle turn.
 fn chain(runs: Vec<(Vec3, Vec3)>) -> Vec<Vec<Vec3>> {
@@ -313,6 +465,30 @@ fn chain(runs: Vec<(Vec3, Vec3)>) -> Vec<Vec<Vec3>> {
 mod tests {
     use super::*;
 
+    fn cuboid(min: Vec3, max: Vec3) -> Vec<[Vec3; 3]> {
+        let (lo, hi) = (min.to_array(), max.to_array());
+        let mut tris = Vec::new();
+        for axis in 0..3 {
+            let (u, v) = [(1, 2), (2, 0), (0, 1)][axis];
+            for high in [false, true] {
+                let corner = |a: usize, c: usize| {
+                    let mut p = [0.0; 3];
+                    p[axis] = if high { hi[axis] } else { lo[axis] };
+                    p[u] = [lo[u], hi[u]][a];
+                    p[v] = [lo[v], hi[v]][c];
+                    Vec3::from_array(p)
+                };
+                let mut quad = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+                if !high {
+                    quad.reverse();
+                }
+                tris.push([quad[0], quad[1], quad[2]]);
+                tris.push([quad[0], quad[2], quad[3]]);
+            }
+        }
+        tris
+    }
+
     fn ground() -> Vec<[Vec3; 3]> {
         let corners = [
             Vec3::new(-400., -400., 0.),
@@ -324,6 +500,69 @@ mod tests {
             [corners[0], corners[1], corners[2]],
             [corners[0], corners[2], corners[3]],
         ]
+    }
+
+    fn wall(width: f32, height: f32) -> Vec<[Vec3; 3]> {
+        let mut tris = ground();
+        tris.extend(cuboid(
+            Vec3::new(0., -width / 2., 0.),
+            Vec3::new(360., width / 2., height),
+        ));
+        tris
+    }
+
+    fn long_rails(tris: &[[Vec3; 3]], limits: Limits) -> Vec<Vec<Vec3>> {
+        let (found, _) = find(tris, limits);
+        found
+            .into_iter()
+            .filter(|rail| polyline_len(rail) > 300.)
+            .filter(|rail| rail.iter().all(|p| p.y.abs() < 100. && p.x > -50. && p.x < 410.))
+            .collect()
+    }
+
+    #[test]
+    fn two_close_parallel_lips_become_one_centre_rail() {
+        for (width, height) in [(4.5, 36.), (9., 54.), (13.5, 54.), (18., 54.)] {
+            let tris = wall(width, height);
+            assert_eq!(long_rails(&tris, Limits::MW2).len(), 2, "{width}");
+            let rails = long_rails(&tris, Limits::BLOCKS);
+            assert_eq!(rails.len(), 1, "{width}");
+            for p in &rails[0] {
+                assert!(p.y.abs() < 0.01 && (p.z - height).abs() < 0.01, "{width}: {p}");
+            }
+            assert!((polyline_len(&rails[0]) - 360.).abs() < 0.5, "{width}");
+        }
+    }
+
+    #[test]
+    fn a_wall_post_and_its_sides_make_one_centre_rail() {
+        let mut tris = wall(13.5, 54.);
+        tris.extend(cuboid(
+            Vec3::new(171., -9., 0.),
+            Vec3::new(189., 9., 54.),
+        ));
+        let rails = long_rails(&tris, Limits::BLOCKS);
+        assert_eq!(rails.len(), 1);
+        assert!(rails[0].iter().all(|p| p.y.abs() < 0.01));
+    }
+
+    #[test]
+    fn a_one_block_wall_keeps_two_rails() {
+        let rails = long_rails(&wall(36., 36.), Limits::BLOCKS);
+        assert_eq!(rails.len(), 2);
+        let mut sides: Vec<f32> = rails.iter().map(|rail| rail[0].y).collect();
+        sides.sort_by(f32::total_cmp);
+        assert!((sides[0] + 18.).abs() < 0.01 && (sides[1] - 18.).abs() < 0.01);
+    }
+
+    #[test]
+    fn lips_facing_each_other_across_a_gap_stay_apart() {
+        let mut tris = ground();
+        tris.extend(cuboid(Vec3::new(0., -40.5, 0.), Vec3::new(360., -4.5, 36.)));
+        tris.extend(cuboid(Vec3::new(0., 4.5, 0.), Vec3::new(360., 40.5, 36.)));
+        let rails = long_rails(&tris, Limits::BLOCKS);
+        assert_eq!(rails.len(), 4);
+        assert!(rails.iter().all(|rail| rail[0].y.abs() > 4.));
     }
 
     fn ramp(rise: f32) -> Vec<[Vec3; 3]> {
@@ -356,15 +595,36 @@ mod tests {
         tris
     }
 
+    fn sloped_rails(tris: &[[Vec3; 3]], limits: Limits) -> usize {
+        let (found, _) = find(tris, limits);
+        found
+            .iter()
+            .filter(|rail| (rail[0].z - rail[rail.len() - 1].z).abs() > 9.)
+            .count()
+    }
+
     #[test]
     fn the_middle_of_a_sloped_face_is_no_lip() {
         for rise in [18., 36., 72.] {
             let tris = ramp(rise);
-            let (found, _) = find(&tris);
+            let (found, _) = find(&tris, Limits::MW2);
             assert!(
                 found.iter().all(|rail| rail.iter().all(|p| p.z.abs() < 0.01 || (p.z - rise).abs() < 0.01)),
                 "{rise}: {found:?}"
             );
         }
+    }
+
+    #[test]
+    fn mw2_limits_drop_a_45_degree_edge_and_block_limits_keep_it() {
+        let tris = ramp(72.);
+        assert_eq!(sloped_rails(&tris, Limits::MW2), 0);
+        assert_eq!(sloped_rails(&tris, Limits::BLOCKS), 2);
+    }
+
+    #[test]
+    fn a_45_degree_edge_rising_half_a_block_is_no_rail() {
+        assert_eq!(sloped_rails(&ramp(18.), Limits::BLOCKS), 0);
+        assert_eq!(sloped_rails(&ramp(36.), Limits::BLOCKS), 2);
     }
 }

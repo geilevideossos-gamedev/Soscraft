@@ -184,6 +184,31 @@ Commit: the one after `d602c978` (group 4). Found while building group 5a.
 - **Owner's test steps:** covered by group 5a step 4 (the stair ramp has rails only on its two sides).
 - **Kit:** none beyond group 5a.
 
+## Group 5a. Fences, walls, iron bars and the sides of stair ramps are grind rails
+
+Commit: the one after `1d739aac` (the lip probe fix).
+
+- **Changed:**
+  - `render_anim/src/skate/rails.rs`:
+    - `find` takes `Limits { max_slope, merge_ridges }`. `Limits::MW2` (max slope 0.7, no ridge merge) keeps MW2 maps as they were; `Limits::BLOCKS` (max slope 1.01, ridge merge) is for the block world.
+    - Ridge merge: the lips are merged along their lines per facing side first. Then two parallel lips at the same height (within half a unit), at most 18 map units apart (18.25, so a wall post's exactly 18 passes), facing away from each other and overlapping by at least one unit become one rail on their centre line over the overlap. The narrowest pairs go first, and a stretch of a lip is used once. Whatever is left of a lip outside its pairs stays a lip. The centre rails and the leftovers are merged along their lines again.
+    - A rail with a segment steeper than the MW2 limit is dropped unless it rises more than half a block (18.5 units), so a slab's toe corners (half a block high) are not rails while a single stair's sides (one block) and a staircase's are.
+  - `render_anim/src/skate.rs`: `block_collision` uses `Limits::BLOCKS`. `render_anim/src/skate/collision.rs`: MW2 clip collision uses `Limits::MW2`.
+  - `docs/MINECRAFT-SURVIVAL.md`: the Skating bullet describes the new rails.
+- **Tests:**
+  - `render_anim` (`rails.rs`): `two_close_parallel_lips_become_one_centre_rail` (tops 4.5, 9, 13.5 and 18 units wide: one centre rail with block limits, two with MW2 limits), `a_wall_post_and_its_sides_make_one_centre_rail`, `a_one_block_wall_keeps_two_rails`, `lips_facing_each_other_across_a_gap_stay_apart`, `mw2_limits_drop_a_45_degree_edge_and_block_limits_keep_it`, `a_45_degree_edge_rising_half_a_block_is_no_rail`.
+  - `render_anim` (`skate.rs`, on real stair boxes with their group 4 ramps): `the_sides_of_a_stair_ramp_grind_like_a_hubba` (a three-stair staircase in all four facings: no sloped rail with MW2 limits, exactly two with block limits, each on one side of the ramp and as long as it) and `a_fence_line_is_one_rail_down_its_middle` (six fence blocks: one rail at 1.5 blocks over the fence's centre line).
+- **Decisions:**
+  - Two lips only merge when they face away from each other (each has the other on its inner side). The brief's rule (parallel, same height, within half a block, overlapping) would also merge two ledges facing each other across a half-block gap, for example a block and a stair step with the slab between them, into a rail floating over the gap.
+  - The sloped-rail minimum (more than half a block of rise) is new. Without it, the side edges of every group 4 toe (a slab on the ground, the sideways wedge beside a stair's slab) became 25-unit rails at the slab's corners, against group 4's "a slab on the ground no longer grinds".
+  - Fences and walls grind at their collision top, 1.5 blocks, as the brief decided; iron bars and glass panes at 1 block.
+- **Owner's test steps** (brief section 5, steps 10, 11 and 13):
+  1. A one-block cobblestone ledge: grind along its edge (screenshot). A one-block-wide cobblestone wall two blocks high (a row of cobblestone): you can grind either edge, not the middle.
+  2. Build a 10-block oak fence line with an oak stair in front of it as a kicker. Launch off the stair, land on the fence and grind along its middle (screenshot). Repeat with a cobblestone wall line (with a post at each end) and an iron bar line.
+  3. Ride the side edge of the 5-step stair ramp from group 4 step 1: it grinds like a hubba, on both sides. Riding up the middle of the ramp never snaps you into a grind.
+  4. Ride over the corners of a stone slab on the ground: no grind starts there.
+- **Kit:** `minecraft:cobblestone*64` (twice), `minecraft:oak_stairs*64`, `minecraft:oak_fence*64`, `minecraft:cobblestone_wall*64`, `minecraft:iron_bars*64`, `minecraft:stone_slab*64`.
+
 ## The whole track's owner test, one kit
 
 Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6. Groups 1 and 2 need no items. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, and 4 the cobblestone, stairs, slabs, carpet and snow.
