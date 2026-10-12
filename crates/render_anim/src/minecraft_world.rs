@@ -2020,6 +2020,12 @@ fn update(
         }) {
             ui.inventory_open = false;
         }
+        if inventory_ui.lectern().is_some_and(|pos| {
+            !minecraft_terrain::crafting::within_table_reach(eye, pos)
+                || !minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(|block| minecraft_terrain::lectern::is_lectern(block) && minecraft_terrain::lectern::has_book(block))
+        }) {
+            ui.inventory_open = false;
+        }
         inventory_ui.level = survival.status.experience_level;
         inventory_ui.sync_weapons(inventory, &owned);
         if std::mem::take(&mut ui.swap_hands) && alive && minecraft_survival::offhand::swap_hands(inventory, *selected) {
@@ -2035,6 +2041,14 @@ fn update(
         let creative_thrown = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known);
         inventory_ui.creative.hotbar_key(&mut ui, player_mode, inventory, &known);
         let thrown: Vec<_> = creative_thrown.into_iter().chain(containers.with_ender(ender, |containers| inventory_ui.apply_input(&mut ui, inventory, selected, containers, &mut || roll))).collect();
+        for (pos, action) in inventory_ui.take_lectern_actions() {
+            entities.lectern(pos, action, None);
+        }
+        for event in std::mem::take(&mut ui.ui_sounds) {
+            if let Some(sounds) = sounds.as_mut() {
+                sounds.play(&world.packs, event, None, 1.0, 1.0);
+            }
+        }
         if let Some(pos) = open_table {
             inventory_ui.open_table(&mut ui, pos);
         }
@@ -2120,6 +2134,15 @@ fn update(
                 let (dropped, _) = minecraft_survival::commands::give_stacks(inventory, *selected, &stack, 1);
                 for stack in &dropped {
                     entities.drop_given(stack, feet);
+                }
+            }
+            if view.closed {
+                inventory_ui.lectern_closed(&mut ui, view.pos);
+            } else if let Some(book) = view.book.as_ref() {
+                let components = book.components.as_deref().and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+                let shown = frame::McBook { pages: minecraft_terrain::lectern::pages_text(components.as_ref()), page: view.page.max(0) as usize, take: player_mode.may_build() };
+                if !inventory_ui.show_lectern(&mut ui, view.pos, shown) {
+                    entities.lectern(view.pos, minecraft_terrain::lectern::LecternAction::Close, None);
                 }
             }
         }
@@ -2981,6 +3004,9 @@ fn leave_level(
         entities.leave(inventory, *selected, place.map(|place| place.feet));
         let roll = entities.random_float();
         let thrown = level.containers.with_ender(ender, |containers| inventory_ui.apply_input(ui, inventory, selected, containers, &mut || roll));
+        for (pos, action) in inventory_ui.take_lectern_actions() {
+            entities.lectern(pos, action, None);
+        }
         if let Some(place) = place.as_ref() {
             let thrower = crate::minecraft_inventory::Thrower {
                 eye: glam::DVec3::new(place.feet[0], place.feet[1] + crate::minecraft_spawn_gate::SPAWN_EYE_HEIGHT, place.feet[2]),

@@ -37,7 +37,7 @@ pub use ui::{
 pub mod skate;
 pub use skate::SkateMode;
 pub mod minecraft_ui;
-pub use minecraft_ui::{InventoryPuppet, McAction, McActionInput, McCamera, McCameraType, McChoice, McClick, McGameMode, McLevelLoading, McLoadingReason, McOven, McScreen, McSlot, McStack, McVitals, MinecraftUi};
+pub use minecraft_ui::{InventoryPuppet, McAction, McActionInput, McCamera, McCameraType, McBook, McChoice, McClick, McGameMode, McLevelLoading, McLoadingReason, McOven, McScreen, McSlot, McStack, McVitals, MinecraftUi};
 pub mod minecraft_credits;
 pub mod minecraft_gui;
 pub use minecraft_gui::{McFont, McGlyph, McGui, McScaling, McSprite};

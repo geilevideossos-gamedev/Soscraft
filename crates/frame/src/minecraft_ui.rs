@@ -78,6 +78,7 @@ pub enum McScreen {
     Anvil,
     Enchanting,
     Creative(crate::McTabKind),
+    Lectern,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -86,6 +87,13 @@ pub enum McOven {
     Furnace,
     Smoker,
     BlastFurnace,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McBook {
+    pub pages: Vec<String>,
+    pub page: usize,
+    pub take: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -200,6 +208,8 @@ pub struct MinecraftUi {
     pub overlay_message: Option<McOverlayMessage>,
     pub boss_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
+    pub book: Option<McBook>,
+    pub ui_sounds: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

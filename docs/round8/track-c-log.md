@@ -943,3 +943,38 @@ IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",aut
 ```
 IW4L_MINECRAFT_KIT=minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:trapped_chest*4,minecraft:redstone_lamp*8,minecraft:redstone*64,minecraft:comparator*4,minecraft:cobblestone*64,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book,minecraft:lectern*2
 ```
+
+## Group c5-rest-2: the lectern book screen, rain and snow streaks, docs (c5 groups 9-11)
+
+### 38. Minecraft lecterns open vanilla's book screen with page turning and Take Book
+
+Previous commit: 268fac68
+
+- **Changed:**
+  - `frame` `minecraft_ui.rs`: `McScreen::Lectern`, `McBook { pages, page, take }` in `MinecraftUi.book`, and `MinecraftUi.ui_sounds` (UI sounds the HUD asks the world to play).
+  - New `hud` `minecraft_book.rs`, vanilla `BookViewScreen` and `LecternScreen` (javap of 26.3): `textures/gui/book.png` (192 x 192) at left (width − 192)/2, top 2; page text from (left + 36, top + 30), split at 114 pixels with the gui font's word wrap (`McFont::split`), at most 128/9 = 14 lines of 9, black without shadow; `book.pageIndicator` ("Page %1$s of %2$s", page + 1 of at least 1) right-aligned at (left + 148, top + 16), black; the page buttons 23 x 13 at (left + 43, top + 157) back and (left + 116, top + 157) forward with `widget/page_backward`, `widget/page_forward` and their `_highlighted` sprites on hover, back only after page 0 and forward only before the last page; "Done" and "Take Book" 98 wide at (width/2 − 100, 196) and (width/2 + 2, 196), or one 200-wide "Done" for a player who may not build, drawn with `widget/button` (nine-slice) and `widget/button_highlighted`, white centred labels with shadow. A click on a page button presses vanilla's menu button 1 or 2 and plays `item.book.page_turn` as a UI sound; Page Up and Page Down (and the pad's shoulder buttons) press the same buttons without a sound, as vanilla's `keyPressed` does; "Take Book" is button 3 with `ui.button.click`; "Done" closes. `hud` `minecraft_inventory.rs` draws this screen instead of the slot screens while it is open; Esc closes it, the inventory key does not (vanilla's book screen is not a container screen).
+  - `render_anim` `minecraft_gui.rs`: the atlas loads `gui/book.png` as the `book` sheet, the four page sprites and `widget/button`, `widget/button_highlighted`, `widget/button_disabled`, and the `book.`, `lectern.` and `gui.done` texts.
+  - `render_anim` `minecraft_inventory.rs`: `InventoryUi` keeps the open lectern; `show_lectern` opens or refreshes the screen from a server view, `lectern_closed` closes it, the HUD's `Choose(n)` become `LecternAction::Button(n)` and closing sends `LecternAction::Close` once (`take_lectern_actions`).
+  - `render_anim` `minecraft_world.rs`: the server's lectern views open the screen (`take` = the player's mode may build), refresh its page for every viewer when the page turns, and close it when the book is taken or the lectern loses its book; the screen also closes beyond reach or when the block is no longer a lectern with a book; the HUD's UI sounds are played; leaving a level sends the close.
+- **Tests:**
+  - `hud` `minecraft_book`: `book_layout_matches_vanilla` (gui size 427 x 240: the book at 117, 2, text at 153, 32, the indicator's right edge at 265, 18, back 160, 159, forward 233, 159, Done 113, 196 and Take Book 215, 196 at 98 wide, or Done 113, 196 at 200 wide), `page_buttons_hide_at_the_ends`, `clicks_and_page_keys_press_the_vanilla_menu_buttons`, `pages_wrap_at_114_pixels_and_14_lines`.
+  - `render_anim` `minecraft_gui`: `the_book_sheet_and_page_sprites_load` (real 26.3 pack: the 256 sheet in the atlas, the 23 x 13 page sprites, the button's 200 x 20 nine-slice with border 3, the texts); `minecraft_inventory`: `a_lectern_screen_sends_its_buttons_and_closes_once`.
+- **Decisions:**
+  - The page shown is the server's: a click sends the button and the page changes when the server's view comes back, as vanilla's `LecternScreen` waits for the menu data.
+  - The inventory key (E) does not close the book screen, because vanilla's `BookViewScreen` only closes on Esc (the brief said E too).
+  - A view that arrives while another screen is open is refused and the server is told the screen closed.
+  - "Take Book" shows for players whose game mode may build (survival and creative), as vanilla's `mayBuild`; the server still trusts the client on it **[E]**.
+- **Test steps:** (survival; kit below)
+  1. Place a lectern, put a comparator on the ground facing away from its side and 15 redstone dust in a line from the comparator, and a redstone lamp right beside the lectern on another side. Right-click the lectern with the written book: it lies on the lectern and the dust shows 1 lit.
+  2. Right-click the lectern: the book screen opens with "Page one text.", "Page 1 of 3" at the top right, the forward arrow at the bottom right of the page and the Done and Take Book buttons under the book; the world keeps running behind it (**1**).
+  3. Click the forward arrow: a page sound, page 2, the lamp flashes and the dust shows 8 lit. Click it again: page 3, the forward arrow is gone and 15 dust are lit (**2**, page 2 with the dust). Press Page Up: back to page 2, without a sound.
+  4. Press E: the screen stays open. Press Esc: it closes. Open it again and click Done: it closes.
+  5. Open it again and click Take Book: the screen closes, the written book is back in your inventory, the lectern is empty and the dust is dark.
+  6. Put the book and quill on the second lectern and open it: "Page 1 of 1", an empty page and no arrows.
+  7. `/gamemode adventure`, open the second lectern: only one wide Done button. `/gamemode survival`.
+  8. Open a lectern and walk away from it: the screen closes about 8 blocks away, like a chest's.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book,minecraft:lectern*2,minecraft:comparator*2,minecraft:redstone*32,minecraft:redstone_lamp*2
+```
