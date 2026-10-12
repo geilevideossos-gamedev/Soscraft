@@ -8004,4 +8004,32 @@ mod tests {
         assert_eq!(health, 20.0);
         assert!(zombie(&world, faller).is_none_or(|(_, _, health)| health < 20.0), "a plain fall from 29 blocks hurts");
     }
+
+    #[test]
+    fn levitation_lifts_striders_hoglins_and_piglins_and_slow_falling_lets_them_down() {
+        let mut world = EntityWorld::default();
+        let strider = world.spawn_strider(crate::strider::Strider::new(DVec3::new(0.5, 1.0, 0.5)), false);
+        let hoglin = world.spawn_hoglin(crate::hoglin::Hoglin::new(crate::hoglin::HoglinKind::Hoglin, DVec3::new(20.5, 1.0, 0.5)), false);
+        let piglin = world.spawn_piglin(crate::piglin::Piglin::new(crate::piglin::PiglinKind::Piglin, DVec3::new(40.5, 1.0, 0.5)), false);
+        let brute = world.spawn_piglin(crate::piglin::Piglin::new(crate::piglin::PiglinKind::Brute, DVec3::new(60.5, 300.0, 0.5)), false);
+        for id in [strider, hoglin, piglin] {
+            assert!(world.add_mob_effect(id, crate::effects::EffectInstance::new(MobEffect::Levitation, 300, 0)));
+        }
+        assert!(world.add_mob_effect(brute, crate::effects::EffectInstance::new(MobEffect::SlowFalling, 9000, 0)));
+        let height = |world: &EntityWorld, id: u64| {
+            let strider = world.striders().iter().find(|e| e.id == id).map(|e| (e.strider.body.position.y, e.strider.body.velocity.y));
+            let hoglin = world.hoglins().iter().find(|e| e.id == id).map(|e| (e.hoglin.body.position.y, e.hoglin.body.velocity.y));
+            let piglin = world.piglins().iter().find(|e| e.id == id).map(|e| (e.piglin.body.position.y, e.piglin.body.velocity.y));
+            strider.or(hoglin).or(piglin).unwrap()
+        };
+        for _ in 0..200 {
+            world.tick(&mut Floor);
+            assert!(height(&world, brute).1 >= -0.4901, "{:?}", height(&world, brute));
+        }
+        for id in [strider, hoglin, piglin] {
+            let risen = height(&world, id).0 - 1.0;
+            assert!((risen - 8.864).abs() < 0.05, "{id}: {risen}");
+        }
+        assert!(height(&world, brute).0 < 300.0 - 50.0, "{:?}", height(&world, brute));
+    }
 }

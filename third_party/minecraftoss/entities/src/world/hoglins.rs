@@ -275,6 +275,7 @@ impl HoglinEntity {
                 _ => {}
             }
         }
+        self.hoglin.body.float_from(&self.effects);
         if self.hoglin.health > 0.0 {
             if (self.random.next_int(1000) as i32) < self.ambient_sound_time {
                 self.ambient_sound_time = -hoglin::AMBIENT_INTERVAL;

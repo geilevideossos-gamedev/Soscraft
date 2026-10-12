@@ -1231,6 +1231,29 @@ Previous commit: 5b355fc9
   - `minecraftoss-player` needs the two empty stand-in files under `third_party/scenarios/survival/` to build its tests, as `scripts/full-suite.ps1` makes them; they were made for the run and removed afterwards.
   - Every new `.rs` file of the track passes `rustfmt --check` on its committed content with its crate's edition (`minecraftoss-world` is 2024, `minecraftoss-entities` 2021).
 
+## Merge into minecraft-survival (after tracks A, D and B)
+
+### M0. The merge
+
+Merge commit f294bfe5 (`minecraft-survival` at 24918b62, with tracks A, D and B, and `track-c` at ced721a2).
+
+- **Server tick:** track A runs the per-tick body of the level thread in `run_tick`, once for every tick of a batch, and builds the snapshot in `finish_batch`. C's additions moved there: the item frame sounds, `break_blasted_frames` after the explosions, the shulker teleports and bullet puffs after the mob sounds, all on every tick like the other outputs; the shulker and bullet ticks are part of `tick_mobs`, so they only run on normal ticks and a frozen game holds them. The snapshot in `finish_batch` takes the frames and the dragon's breath and wall bursts gathered over the whole batch. The trident and thrown item hits on frames stay in `tick_thrown` beside A's pearl gateways.
+- **Mobs:** every list over mob kinds in the entity world (keys, hits, bodies, damage, deaths, census, despawn, removal, pushing, hazards, effects, combat, the arrow and ray targets) has B's striders, hoglins and piglins and C's shulkers and bullets. The census and despawn rules take B's mob id; C's shulker census and despawn lines got it too, and its health bar entry B's baby flag (false).
+- **Hits on the player:** B's `MeleePush` and C's effect both became part of the hit (`Hit` is damage, from, toward, cause, push, effect). `mob_hit` (C) fills B's push, and the hit loop in `minecraft_world.rs` lands the hurt through C's `Survival::struck` and then B's knockback with its result.
+- **Effects:** `EffectKind` is A's twelve plus C's levitation and slow falling (15, `ALL` in index order, A's test checks it); `MobEffect` has B's nausea and C's two (13). Saves use the vanilla names (`player_nbt::EFFECTS`, `MobEffect::id`), so the order is not saved. `/effect` and potion names know all of them.
+- **Smaller joins:** the frame use comes before B's mob use on a right click (a frame is only picked when it is nearer than any mob); the totem activation is hidden in the sleep camera like the hands; `shape_id` gives powder snow its flag before D's rail flags; `OWNED` player keys 25, `LOOSE_SPRITES` 11 and `TEXT_PREFIXES` 11; both sides' particles (A's flame and C's crit, glitter and dragon breath sprites); the state doc keeps both sides (the X6 line is gone: A did the gateways and C the rest; 14 simulated effects in the commands line).
+- **Tests:** the touched crates and the five minecraftoss crates pass on the merge.
+
+### M1. Minecraft striders, hoglins and piglins float with levitation and fall slowly with slow falling
+
+- **Changed:** C's levitation and slow falling reach a mob through `Body::float_from`, which each mob's tick calls after its effects tick; B's striders, hoglins and zoglins, and piglins and brutes were written without it, so a splash potion, a tipped arrow or a shulker bullet gave them the effect without any float. Their `tick_body` now calls it in the same place.
+- **Tests:** `levitation_lifts_striders_hoglins_and_piglins_and_slow_falling_lets_them_down` (`minecraftoss-entities` `world.rs`: a strider, a hoglin and a piglin with levitation I rise 8.864 blocks in 10 s like C's zombie; a brute with slow falling never sinks faster than 0.49 a tick).
+- **Test steps:** (survival, in the Nether) 1. Build a 2 x 2 netherrack platform 12 blocks up and use a hoglin and a piglin egg on it. Throw a splash potion of slow falling on them, then punch each off the edge: they drift down slowly and land unhurt (**M1a**). 2. Spawn another hoglin up there without the potion and punch it off: it drops fast and is hurt. Levitation has no vanilla potion; in the End a shulker bullet that hits a mob in its path lifts it (optional).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*4,minecraft:piglin_spawn_egg*2,minecraft:splash_potion@slow_falling*4,minecraft:netherrack*64
+```
+
 ## Track C, combined kit
 
 One kit for a session through the whole track (27 stacks): shulkers and their bullets, levitation and slow falling, powder snow and cobwebs, ladders, item frames and comparators, trapped chests, lecterns and the book screen, totems, the dragon fight in diamond gear, and the elytra on the body. End cities need no items (creative flight and their generated chests); `/effect` gives levitation and clears effects.

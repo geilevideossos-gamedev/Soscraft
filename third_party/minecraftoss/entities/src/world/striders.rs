@@ -337,6 +337,7 @@ impl StriderEntity {
                 _ => {}
             }
         }
+        self.strider.body.float_from(&self.effects);
         if self.strider.health > 0.0 {
             if (self.random.next_int(1000) as i32) < self.ambient_sound_time {
                 self.ambient_sound_time = -120;
