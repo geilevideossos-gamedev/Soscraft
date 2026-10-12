@@ -113,3 +113,16 @@ A friend can now sleep: their view goes to the pillow, the screen darkens, the c
 ```
 IW4L_MINECRAFT_KIT=minecraft:white_bed
 ```
+
+## With pvp off, a player's harming potion hurts no player
+
+With the `pvp` game rule off, a splash potion of harming thrown by a player no longer hurts the other player (nor the thrower). Other potion effects still land, as in vanilla.
+
+1. Host window: `/gamerule pvp false`. Stand next to each other.
+2. Friend window: throw the splash potion of harming at the host's feet (select it, right click at the ground). Both windows show the purple burst. Neither player loses health. Screenshot the host window with full hearts. **S18**
+3. Friend window: throw the splash potion of poison the same way: both players get poisoned (green hearts) and lose health down to half a heart at most, as in vanilla.
+4. Host window: `/gamerule pvp true`. Repeat step 2 with the host's own harming potion thrown at the friend: now the friend loses 3 hearts (and the host too if it stood in the splash).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:splash_potion@harming,minecraft:splash_potion@poison
+```

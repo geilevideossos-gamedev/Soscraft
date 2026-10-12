@@ -1440,12 +1440,28 @@ Commit: see `git log` ("Friends lie down in beds and count for the night"). The 
 IW4L_MINECRAFT_KIT=minecraft:white_bed
 ```
 
+### Leftover: with pvp off, a player's harming potion hurts no player
+
+Commit: see `git log` ("With pvp off, a player's harming potion hurts no player"). The previous commit is `7b90520f` (sleeping).
+
+- **Changed:** `minecraft_survival/src/entities.rs`: `unharmed_by_potions_without_pvp`, next to E18's `unharmed_without_pvp`: with the `pvp` rule off, the instant harm of a splash or lingering potion whose thrower is a player in the level reaches no player (the thrower included, as vanilla's `canHarmPlayer` has no exception for oneself). Its other effects (poison, slowness, weakness) still land, and a witch's potion still harms. Design section 13.4 follows.
+- **Tests:** `minecraft_survival` `entities::tests::with_pvp_off_a_players_harming_potion_spares_every_player_but_other_effects_land`.
+- **Decisions:**
+  - **Only the harm is refused,** as vanilla refuses the hurt (`ServerPlayer.hurtServer` with an `indirectMagic` source whose entity is the thrower) but adds the other effects with no pvp check.
+  - **TNT lit by a player is not covered:** the vendored level's primed TNT keeps no igniter (vanilla's `PrimedTnt.owner`), so nothing names the player behind its blast; it stays in the design's "Not covered" and in section 20. Minecraft melee between players stays deferred too (it does not exist yet, pvp or not).
+- **Test steps:** `docs/round8/e-m6-tests.md`, section "With pvp off, a player's harming potion hurts no player".
+- **Kit:** `minecraft:splash_potion@harming` x1, `minecraft:splash_potion@poison` x1.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:splash_potion@harming,minecraft:splash_potion@poison
+```
+
 ## Combined kit for every test in this track
 
 This line covers the M6 owner tests in `docs/round8/e-m6-tests.md`. The M1 to M5 tests keep their own kit lines in `docs/round8/e-m1-tests.md` to `docs/round8/e-m5-tests.md`; the M5 combined line is in the git history of this file at `beb54197`, the M3 and M4 line at `6571e5db`, and the M2 line (E11 to E15) at `bf0a3a47`.
 
-`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:totem_of_undying` x1, `minecraft:spawner` x1, `minecraft:zombie_spawn_egg` x1, `minecraft:lectern` x1, `minecraft:written_book` x1 with three pages, `minecraft:white_bed` x1 (22 stacks).
+`minecraft:bow` x1, `minecraft:arrow` x64, `minecraft:diamond_sword` x1, `minecraft:diamond_helmet` x1, `minecraft:diamond_chestplate` x1, `minecraft:diamond_leggings` x1, `minecraft:diamond_boots` x1, `minecraft:golden_apple` x8, `minecraft:cooked_beef` x32, `minecraft:cobblestone` x64, `minecraft:snowball` x16, `minecraft:ender_pearl` x16, `minecraft:eye_of_ender` x12, `minecraft:water_bucket` x1, `minecraft:powder_snow_bucket` x1, `minecraft:leather_boots` x1, `minecraft:totem_of_undying` x1, `minecraft:spawner` x1, `minecraft:zombie_spawn_egg` x1, `minecraft:lectern` x1, `minecraft:written_book` x1 with three pages, `minecraft:white_bed` x1, `minecraft:splash_potion@harming` x1, `minecraft:splash_potion@poison` x1 (24 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:totem_of_undying,minecraft:spawner,minecraft:zombie_spawn_egg,minecraft:lectern,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:white_bed
+IW4L_MINECRAFT_KIT=minecraft:bow,minecraft:arrow*64,minecraft:diamond_sword,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:ender_pearl*16,minecraft:eye_of_ender*12,minecraft:water_bucket,minecraft:powder_snow_bucket,minecraft:leather_boots,minecraft:totem_of_undying,minecraft:spawner,minecraft:zombie_spawn_egg,minecraft:lectern,minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:white_bed,minecraft:splash_potion@harming,minecraft:splash_potion@poison
 ```

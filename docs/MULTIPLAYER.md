@@ -778,8 +778,8 @@ This comes early (E8), because every later owner test uses `/op`, `/give`, `/tp`
   - pvp is off.
 
   That covers bullets, MW2 grenades and killstreaks. Self-damage, mobs and the world still hurt.
-- **Minecraft hits.** Thrown items and tridents hitting players (`players_struck`, now keyed) honour the same rule.
-- **Not covered.** Minecraft melee against another player (a sword) is deferred. `entities.punch` reaches mobs only, and a player target needs a damage path through `survival.hurt` with armour.
+- **Minecraft hits.** Thrown items and tridents hitting players (`players_struck`, now keyed) honour the same rule. So does the harm of a splash or lingering potion a player threw (vanilla's `indirectMagic` source names the thrower, and `ServerPlayer.canHarmPlayer` refuses it); its other effects, such as poison, still land, as in vanilla.
+- **Not covered.** Minecraft melee against another player (a sword) is deferred. `entities.punch` reaches mobs only, and a player target needs a damage path through `survival.hurt` with armour. TNT lit by a player still hurts other players with pvp off: the vendored level's primed TNT keeps no igniter (vanilla's `PrimedTnt.owner`), so its blast cannot name one.
 - **Armour.** MW2 bullet damage ignores Minecraft armour, shields and Protection (`survival.rs:275-293`, the test at `:1182`). That stays. It is listed as a known difference.
 
 ## 14. Saving

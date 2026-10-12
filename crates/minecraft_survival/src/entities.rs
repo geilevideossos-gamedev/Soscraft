@@ -1291,7 +1291,9 @@ impl Entities {
             }
             let mobs = output.mobs.take();
             let players = &self.players;
-            unharmed_without_pvp(&mut output.players_struck, self.pvp, |id| players.0.contains_key(&id));
+            let is_player = |id: u64| players.0.contains_key(&id);
+            unharmed_without_pvp(&mut output.players_struck, self.pvp, is_player);
+            unharmed_by_potions_without_pvp(&mut output.player_potions, self.pvp, is_player);
             let unclaimed = {
                 let world = mobs.as_deref().unwrap_or(&self.view.world);
                 let dragons = &self.view.dragons;
@@ -1551,6 +1553,12 @@ fn mob_to_use(world: &EntityWorld, player: u64, eye: DVec3, look: DVec3, reach: 
 fn unharmed_without_pvp(struck: &mut Vec<minecraft_terrain::thrown::PlayerStruck>, pvp: bool, is_player: impl Fn(u64) -> bool) {
     if !pvp {
         struck.retain(|struck| !is_player(struck.by));
+    }
+}
+
+fn unharmed_by_potions_without_pvp(hits: &mut Vec<minecraft_terrain::potions::PlayerPotionHit>, pvp: bool, is_player: impl Fn(u64) -> bool) {
+    if !pvp {
+        hits.retain(|hit| !matches!(hit.potion, minecraft_terrain::potions::PlayerPotion::Harm { by: Some(by), .. } if is_player(by)));
     }
 }
 
@@ -2627,5 +2635,21 @@ mod tests {
         assert_eq!(kept.len(), 3, "pvp on");
         unharmed_without_pvp(&mut kept, false, is_player);
         assert_eq!(kept.iter().map(|s| (s.player, s.by)).collect::<Vec<_>>(), [(FRIEND, 77)]);
+    }
+
+    #[test]
+    fn with_pvp_off_a_players_harming_potion_spares_every_player_but_other_effects_land() {
+        use minecraft_terrain::potions::{PlayerPotion, PlayerPotionHit, PotionEffect};
+        let queues = two_queues();
+        let hit = |player: u64, potion: PlayerPotion| PlayerPotionHit { player, potion, at: DVec3::ZERO };
+        let harm = |by| PlayerPotion::Harm { amount: 6.0, by };
+        let poison = PlayerPotion::Effect(PotionEffect::new("minecraft:poison", 100, 0));
+        let all = vec![hit(HOST, harm(Some(FRIEND))), hit(FRIEND, harm(Some(FRIEND))), hit(FRIEND, harm(Some(77))), hit(FRIEND, harm(None)), hit(HOST, poison.clone())];
+        let is_player = |id: u64| queues.0.contains_key(&id);
+        let mut kept = all.clone();
+        unharmed_by_potions_without_pvp(&mut kept, true, is_player);
+        assert_eq!(kept, all, "pvp on");
+        unharmed_by_potions_without_pvp(&mut kept, false, is_player);
+        assert_eq!(kept, vec![hit(FRIEND, harm(Some(77))), hit(FRIEND, harm(None)), hit(HOST, poison)], "a witch's potion and a poison still land");
     }
 }
