@@ -59,7 +59,7 @@ pub(crate) fn unticked<L>(
 ) -> Vec<Dimension> {
     players
         .values()
-        .filter(|player| player.switching.is_none())
+        .filter(|player| player.switching.is_none_or(|switch| switch.left))
         .map(|player| player.dimension)
         .filter(|dimension| Some(*dimension) != ticked && levels.contains_key(dimension))
         .collect::<BTreeSet<_>>()
@@ -602,6 +602,44 @@ mod tests {
         assert!(
             ticking(&players, Some(Dimension::Overworld)).is_empty(),
             "players on the way are in no level"
+        );
+    }
+
+    #[test]
+    fn a_friend_arriving_alone_keeps_their_new_level_streaming() {
+        let mut chat = CommandServer::new(minecraft_survival::commands::HOST);
+        let mut players = Players::new();
+        for (id, name) in [(0, "Steve"), (1, "Alex")] {
+            let player = player(&mut chat, id, name, Dimension::Overworld);
+            players.insert(player.uuid.clone(), player);
+        }
+        let levels: BTreeMap<Dimension, ()> = [Dimension::Overworld, Dimension::Nether]
+            .into_iter()
+            .map(|dimension| (dimension, ()))
+            .collect();
+        let alex = players
+            .values_mut()
+            .find(|player| player.name == "Alex")
+            .unwrap();
+        alex.switch_to(
+            Dimension::Nether,
+            None,
+            minecraft_survival::switch::LoadingReason::NetherPortal,
+        );
+        assert!(
+            unticked(&players, &levels, Some(Dimension::Overworld)).is_empty(),
+            "a player who has not left yet is in no level"
+        );
+        if let Some(switch) = players
+            .values_mut()
+            .find_map(|player| player.switching.as_mut())
+        {
+            switch.left = true;
+        }
+        assert_eq!(
+            unticked(&players, &levels, Some(Dimension::Overworld)),
+            vec![Dimension::Nether],
+            "the Nether streams around the friend's arrival, or their chunks never come"
         );
     }
 }

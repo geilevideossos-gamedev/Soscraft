@@ -1218,6 +1218,21 @@ Commit: see `git log` ("Players in another Minecraft dimension are not drawn"). 
 IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_pickaxe,minecraft:cobblestone*32,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:torch*16,minecraft:cooked_beef*8
 ```
 
+## Adversarial review of M5
+
+The review covers every commit from `38c7339b` (E19, E20 and E21). Each fix below is its own commit. The owner's steps are in `docs/round8/e-m5-tests.md`, section "Review fixes".
+
+### Review fix: a friend arriving alone in a dimension gets its chunks
+
+Commit: see `git log` ("A friend arriving alone in a Minecraft dimension gets its chunks"). The previous commit is `d2bc0e76` (E21).
+
+- **Defect:** `minecraft_levels::unticked` left out every player with a switch, so a level whose only player was a friend on the way in (through a portal, `/execute in` or a respawn in another dimension) was never run. Nothing streamed around their arrival: no chunk came into the level's collision band, so `place_friend` waited for `chunks_ready_around` for ever, and no chunk was generated for the friend's chunk sender either. The friend stayed on the loading screen, invulnerable and frozen, until another player came into that dimension. This is E20's own step 2 (a friend going into the Nether alone) and step 10 (`/execute in` while the host stays in the overworld); the host's own trips were not hit, since the host frame streams its arrival itself (`stream_around_spawn`).
+- **Fix:** a player whose switch has left the old level (`Switch.left`) counts for the level they are arriving in, so that level streams around their arrival, applies the chunks to its band and ticks (with no batch of its own, as before, since the server clock still plans only for players who are not switching). A player who set off this frame and has not left yet still counts for no level.
+- **Test:** `minecraft_levels::tests::a_friend_arriving_alone_keeps_their_new_level_streaming` (a friend set off for the Nether counts nowhere until they have left, then the Nether runs for them while the host's overworld is left to the host frame).
+- **Results:** `test -p render_anim --lib` green on the real 26.3 data; `check -p launcher` green.
+- **Test steps:** `docs/round8/e-m5-tests.md`, section "Review fixes", step R1.
+- **Kit:** the E20 kit.
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers the M3 and M4 owner tests: the merge of tracks B, C and D, E16, E17 and the review fixes in `docs/round8/e-m3-tests.md`, and E18 in `docs/round8/e-m4-tests.md`. It leaves out six items of the merge section's steps 7 to 9 (lectern, trapped chest and piglins); give them from the host window before those steps: `/give @a minecraft:lectern`, `/give @a minecraft:writable_book`, `/give @a minecraft:trapped_chest`, `/give @a minecraft:redstone_lamp`, `/give @a minecraft:gold_block 4`, `/give @a minecraft:stone_pickaxe`. The M1 and M2 tests keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`; the M2 combined line (E11 to E15) is in the git history of this file at `bf0a3a47`.
