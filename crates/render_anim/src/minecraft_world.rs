@@ -422,8 +422,8 @@ fn board_gear(gear: minecraft_terrain::body_gear::BodyGear, skating: bool) -> mi
     if skating { minecraft_terrain::body_gear::BodyGear { main: None, off: None, ..gear } } else { gear }
 }
 
-fn board_allowed(alive: bool, spectator: bool, pm_flags: u32, eye_in_water: bool, asleep: bool) -> bool {
-    alive && !spectator && pm_flags & (playerstate_iw4::pm_flags::MC_FLYING | playerstate_iw4::pm_flags::MC_GLIDING | playerstate_iw4::pm_flags::MC_RIDING) == 0 && !eye_in_water && !asleep
+fn board_allowed(alive: bool, spectator: bool, pm_flags: u32, eye_in_water: bool, asleep: bool, in_powder_snow: bool) -> bool {
+    alive && !spectator && pm_flags & (playerstate_iw4::pm_flags::MC_FLYING | playerstate_iw4::pm_flags::MC_GLIDING | playerstate_iw4::pm_flags::MC_RIDING) == 0 && !eye_in_water && !asleep && !in_powder_snow
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -2194,7 +2194,7 @@ fn update(
             .filter(|&w| authority.0.weapon_combat_row(w).is_some_and(|facts| facts.inventory_type == 0))
             .collect();
         ui.active = alive;
-        ui.board_allowed = board_allowed(alive, player_mode.mode == minecraftoss_player::GameMode::Spectator, ps.pm_flags, water.eye, asleep);
+        ui.board_allowed = board_allowed(alive, player_mode.mode == minecraftoss_player::GameMode::Spectator, ps.pm_flags, water.eye, asleep, survival.in_powder_snow());
         if !alive {
             ui.inventory_open = false;
             ui.chat.close();
@@ -3348,17 +3348,18 @@ mod skate_tests {
     }
 
     #[test]
-    fn the_board_is_refused_flying_gliding_dead_spectating_under_water_riding_or_asleep() {
-        assert!(board_allowed(true, false, 0, false, false));
-        assert!(board_allowed(true, false, SPRINTING | CROUCH, false, false));
-        assert!(!board_allowed(false, false, 0, false, false));
-        assert!(!board_allowed(true, true, 0, false, false));
-        assert!(!board_allowed(true, false, MC_FLYING, false, false));
-        assert!(!board_allowed(true, false, MC_GLIDING, false, false));
-        assert!(!board_allowed(true, false, 0, true, false));
-        assert!(!board_allowed(true, false, MC_RIDING, false, false), "on a strider");
-        assert!(!board_allowed(true, false, MC_RIDING | CROUCH, false, false));
-        assert!(!board_allowed(true, false, 0, false, true), "in a bed");
+    fn the_board_is_refused_flying_gliding_dead_spectating_under_water_riding_asleep_or_in_powder_snow() {
+        assert!(board_allowed(true, false, 0, false, false, false));
+        assert!(board_allowed(true, false, SPRINTING | CROUCH, false, false, false));
+        assert!(!board_allowed(false, false, 0, false, false, false));
+        assert!(!board_allowed(true, true, 0, false, false, false));
+        assert!(!board_allowed(true, false, MC_FLYING, false, false, false));
+        assert!(!board_allowed(true, false, MC_GLIDING, false, false, false));
+        assert!(!board_allowed(true, false, 0, true, false, false));
+        assert!(!board_allowed(true, false, MC_RIDING, false, false, false), "on a strider");
+        assert!(!board_allowed(true, false, MC_RIDING | CROUCH, false, false, false));
+        assert!(!board_allowed(true, false, 0, false, true, false), "in a bed");
+        assert!(!board_allowed(true, false, 0, false, false, true), "held in powder snow");
     }
 }
 

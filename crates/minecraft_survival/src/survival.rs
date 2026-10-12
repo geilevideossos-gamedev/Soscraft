@@ -242,6 +242,10 @@ impl Survival {
         self.ticks_frozen
     }
 
+    pub fn in_powder_snow(&self) -> bool {
+        self.in_powder_snow
+    }
+
     pub fn percent_frozen(&self) -> f32 {
         self.ticks_frozen.min(TICKS_TO_FREEZE) as f32 / TICKS_TO_FREEZE as f32
     }
@@ -2367,7 +2371,9 @@ mod tests {
     #[test]
     fn seven_seconds_in_powder_snow_freeze_a_player() {
         let mut survival = unfed();
+        assert!(!survival.in_powder_snow());
         live(&mut survival, &snow_pit(), &in_snow(), Armor::default(), 139);
+        assert!(survival.in_powder_snow());
         assert_eq!(survival.ticks_frozen(), 139);
         assert!(!survival.vitals().fully_frozen);
         assert!((survival.vitals().frozen - 139.0 / 140.0).abs() < 1e-6);

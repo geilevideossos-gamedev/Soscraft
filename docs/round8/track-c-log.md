@@ -1264,6 +1264,19 @@ IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*4,minecraft:piglin_spawn_egg*2,min
 IW4L_MINECRAFT_KIT=minecraft:spawner*2,minecraft:shulker_spawn_egg*2
 ```
 
+### M3. The skateboard can't go down in powder snow and is picked up when the skater sinks into it
+
+- **Decision (track D's group 3a with C's powder snow and levitation):** D refuses the board, and picks it up while riding, in the cases where vanilla refuses or ends riding (flying, gliding, dead, spectator, eyes under water as `dismountsUnderwater`, riding, asleep).
+  - **Powder snow: refused and picked up.** Vanilla's `PowderSnowBlock.entityInside` holds any entity in it (`makeStuckInBlock`), vehicles included, so a ridden boat or horse crawls. The skate physics has no powder snow surface and can't be held, so a skater would sink into the snow and roll on at full speed while freezing. Picking the board up hands the player to the MW2 movement, which holds and sinks them and freezes them like any player in powder snow.
+  - **Levitation and slow falling: no change.** A vanilla passenger is not moved by its own levitation or slow falling (only the vehicle's travel moves it, and mounting is not refused), so the board keeps rolling; the effect keeps counting down and lifts or slows the player once the board is picked up.
+- **Changed:** `minecraft_survival` `survival.rs`: `Survival::in_powder_snow` (C's flag, set while the player's box is inside powder snow). `render_anim` `minecraft_world.rs`: `board_allowed` takes it and refuses the board while it is set; D's `skate.rs` already picks the board up the frame `board_allowed` turns false. The state doc's skating line says so.
+- **Tests:** `the_board_is_refused_flying_gliding_dead_spectating_under_water_riding_asleep_or_in_powder_snow` (B's M1 test, renamed, with the powder snow case); `seven_seconds_in_powder_snow_freeze_a_player` also checks the flag before and inside the snow.
+- **Test steps:** (Skating on, Skate 3 data converted.) 1. Dig a pit 2 deep and 3 long, fill it with powder snow from the buckets, and skate into it: the board is picked up as you sink in, you are held and start to freeze (**M3a**). 2. Standing in the snow, press J: the board does not go down. Climb out and press J: it does. 3. `/effect give @s minecraft:levitation 5 0`, then press J: the board goes down and you keep rolling on the ground while the effect counts down (**M3b**).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket*6,minecraft:diamond_shovel,minecraft:dirt*64
+```
+
 ## Track C, combined kit
 
 One kit for a session through the whole track (27 stacks): shulkers and their bullets, levitation and slow falling, powder snow and cobwebs, ladders, item frames and comparators, trapped chests, lecterns and the book screen, totems, the dragon fight in diamond gear, and the elytra on the body. End cities need no items (creative flight and their generated chests); `/effect` gives levitation and clears effects.
