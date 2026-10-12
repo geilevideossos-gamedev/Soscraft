@@ -282,6 +282,7 @@ fn check_player_file(path: &Path) {
             ("Rotation", "list"),
             ("Score", "int"),
             ("SelectedItemSlot", "int"),
+            ("SleepTimer", "short"),
             ("UUID", "int array"),
             ("XpLevel", "int"),
             ("XpP", "float"),

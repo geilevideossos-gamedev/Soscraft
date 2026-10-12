@@ -284,6 +284,10 @@ impl Portal {
     }
 }
 
+pub fn may_use_portals(player: &Player) -> bool {
+    !player.dead && !player.remote && player.riding.is_none()
+}
+
 pub fn step(
     player: &mut Player,
     terrain: &Terrain,
@@ -293,7 +297,7 @@ pub fn step(
     mut enter_gateway: impl FnMut((i32, i32, i32)) -> bool,
 ) -> Stepped {
     let ticks = player.portal.ticks(seconds);
-    let can_use = feet.is_some() && !player.dead && !player.remote;
+    let can_use = feet.is_some() && may_use_portals(player);
     let invulnerable = player.mode.invulnerable();
     let blocks_touch = player.mode.mode != GameMode::Spectator;
     let mut sweep_from = feet.map(|feet| sweep_start(player.portal.last_feet, feet));

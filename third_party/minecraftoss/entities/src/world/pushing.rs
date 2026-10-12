@@ -175,6 +175,9 @@ impl EntityWorld {
             EntityKey::Chicken(id) => self.chickens.iter_mut().find(|e| e.id == id).map(|e| (&mut e.chicken.body, e.chicken.health > 0.0)),
             EntityKey::Ghast(id) => self.ghasts.iter_mut().find(|e| e.id == id).map(|e| (&mut e.ghast.body, e.ghast.health > 0.0)),
             EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| (&mut e.blaze.body, e.blaze.health > 0.0)),
+            EntityKey::Strider(id) => self.striders.iter_mut().find(|e| e.id == id).map(|e| (&mut e.strider.body, e.strider.health > 0.0)),
+            EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (&mut e.hoglin.body, e.hoglin.health > 0.0)),
+            EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (&mut e.piglin.body, e.piglin.health > 0.0)),
             EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
         }
     }
@@ -198,6 +201,9 @@ impl EntityWorld {
             EntityKey::Chicken(id) => self.chickens.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Ghast(id) => self.ghasts.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Strider(id) => self.striders.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
         }
     }
@@ -289,7 +295,7 @@ impl EntityWorld {
             let (min, max) = (player.position - DVec3::new(half, 0.0, half), player.position + DVec3::new(half, f64::from(player.height), half));
             for (other, other_position) in self.pushable_around(SectionEntry::Player(player.id), min, max, ticks) {
                 let SectionEntry::Mob(key) = other else { continue };
-                if self.sleeping(key) {
+                if self.sleeping(key) || self.vehicle_of(Rider::Player(player.id)) == Some(key.id()) {
                     continue;
                 }
                 if let Some((xa, za)) = push_step(player.position, other_position) {
@@ -329,6 +335,9 @@ impl EntityWorld {
                 EntityKey::Chicken(id) => self.chickens.iter().find(|e| e.id == id).map(|e| &e.chicken.body),
                 EntityKey::Ghast(id) => self.ghasts.iter().find(|e| e.id == id).map(|e| &e.ghast.body),
                 EntityKey::Blaze(id) => self.blazes.iter().find(|e| e.id == id).map(|e| &e.blaze.body),
+                EntityKey::Strider(id) => self.striders.iter().find(|e| e.id == id).map(|e| &e.strider.body),
+                EntityKey::Hoglin(id) => self.hoglins.iter().find(|e| e.id == id).map(|e| &e.hoglin.body),
+                EntityKey::Piglin(id) => self.piglins.iter().find(|e| e.id == id).map(|e| &e.piglin.body),
                 EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) => None,
             };
             let Some(body) = body else { continue };
@@ -387,7 +396,7 @@ impl EntityWorld {
             // `other.push(pusher)`: a player's own motion is its client's,
             // and a sleeper pushes back nothing (`LivingEntity.push`).
             if let SectionEntry::Mob(other) = other {
-                if self.sleeping(other) {
+                if self.sleeping(other) || self.rides_together(key.id(), other.id()) {
                     continue;
                 }
             }

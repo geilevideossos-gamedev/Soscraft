@@ -299,6 +299,10 @@ impl SimWorld {
         self.frame().launch_rocket(id, boost_ticks)
     }
 
+    pub fn ride(&mut self, id: ClientId, seat: Option<[f32; 3]>) -> bool {
+        self.frame().ride(id, seat)
+    }
+
     pub fn set_sprint_blocked(&mut self, id: ClientId, blocked: bool) -> bool {
         self.frame().set_sprint_blocked(id, blocked)
     }

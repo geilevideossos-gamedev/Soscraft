@@ -50,14 +50,16 @@ const SPRITE_FOLDERS: [&str; 13] = [
     "tooltip/",
 ];
 
-const LOOSE_SPRITES: [&str; 4] = [
+const LOOSE_SPRITES: [&str; 6] = [
     "container/slot_highlight_back",
     "container/slot_highlight_front",
     "boss_bar/pink_background",
     "boss_bar/pink_progress",
+    "widget/button",
+    "widget/button_highlighted",
 ];
 
-const TEXT_PREFIXES: [&str; 7] = [
+const TEXT_PREFIXES: [&str; 8] = [
     "container.",
     "itemGroup.",
     "inventory.",
@@ -65,6 +67,7 @@ const TEXT_PREFIXES: [&str; 7] = [
     "gui.experience.",
     "item.minecraft.smithing_template.",
     "multiplayer.downloadingTerrain",
+    "multiplayer.stopSleeping",
 ];
 
 pub(crate) const PUPPET_HEIGHT: f32 = 60.0 / 70.0;
@@ -591,6 +594,7 @@ mod tests {
         let mut language = HashMap::new();
         language.insert("container.crafting".to_owned(), "Crafting".to_owned());
         language.insert("block.minecraft.stone".to_owned(), "Stone".to_owned());
+        language.insert("multiplayer.stopSleeping".to_owned(), "Leave Bed".to_owned());
         let (atlas, gui) = build_atlas(&packs, &language).unwrap();
         assert_eq!(atlas.width(), ATLAS_WIDTH);
         assert!(atlas.height() <= 2048);
@@ -609,6 +613,18 @@ mod tests {
                 stretch_inner: true
             }
         );
+        for button in ["widget/button", "widget/button_highlighted"] {
+            assert_eq!(
+                gui.sprites[button].scaling,
+                McScaling::NineSlice {
+                    width: 200,
+                    height: 20,
+                    border: [3; 4],
+                    stretch_inner: false
+                }
+            );
+        }
+        assert_eq!(gui.text("multiplayer.stopSleeping"), "Leave Bed");
         assert!(gui.sprites.contains_key("container/slot/shield"));
         assert!(gui.sprites.contains_key("hud/heart/full"));
         assert_eq!(gui.font.advance('A'), 6.0);

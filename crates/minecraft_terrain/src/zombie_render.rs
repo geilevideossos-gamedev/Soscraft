@@ -92,7 +92,7 @@ pub fn append_zombies<'a>(
         let head = Quat::from_euler(EulerRot::ZYX, 0.0, pose.head_yaw.to_radians(), pose.head_pitch.to_radians());
         let parts = if zombie.baby { &BABY } else { &ADULT };
         let rest = [(parts[3].3[0], parts[3].3[2]), (parts[4].3[0], parts[4].3[2])];
-        let pose_limbs = limb_rotations(pose.walk_position, pose.walk_speed, pose.age_in_ticks, entity.aggressive, pose.swing, if zombie.baby { 0.5 } else { 1.0 }, rest);
+        let pose_limbs = limb_rotations(pose.walk_position, pose.walk_speed, pose.age_in_ticks, entity.aggressive, pose.swing, if zombie.baby { 0.5 } else { 1.0 }, rest).seated(pose.riding);
         let limbs = pose_limbs.limbs;
         let arm_pivot = |arm: usize| {
             let (x, z) = pose_limbs.arm_pivots[arm];
@@ -179,6 +179,16 @@ pub struct ZombieLimbs {
     pub body_yaw: f32,
     pub arm_pivots: [(f32, f32); 2],
     pub limbs: [Quat; 4],
+}
+
+impl ZombieLimbs {
+    pub fn seated(mut self, riding: bool) -> Self {
+        if riding {
+            self.limbs[2] = Quat::from_euler(EulerRot::ZYX, 0.078_539_82, 0.314_159_27, -1.413_716_7);
+            self.limbs[3] = Quat::from_euler(EulerRot::ZYX, -0.078_539_82, -0.314_159_27, -1.413_716_7);
+        }
+        self
+    }
 }
 
 /// `HumanoidModel.setupAnim` for a zombie:
@@ -300,5 +310,25 @@ fn append_zombie_villager(mesh: &mut ChunkMesh, entity: &ZombieEntity, pose: &Mo
             };
             crate::cow_render::cube_scaled(mesh, feet, rotation, glam::Vec3::ONE, region, sky, block, from, to, uv, pivot, part_rotation, [1.0; 3], [64., 64.], dims, mirror);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_riding_zombie_lifts_its_legs_by_1_4137() {
+        let rest = [(-5.0, 0.0), (5.0, 0.0)];
+        let standing = limb_rotations(0.0, 0.0, 0.0, false, None, 1.0, rest);
+        let arms = standing.limbs[0];
+        let seated = limb_rotations(0.0, 0.0, 0.0, false, None, 1.0, rest).seated(true);
+        let (z, y, x) = seated.limbs[2].to_euler(EulerRot::ZYX);
+        assert!((x + 1.413_716_7).abs() < 1.0e-5 && (y - 0.314_159_27).abs() < 1.0e-5 && (z - 0.078_539_82).abs() < 1.0e-5, "{x} {y} {z}");
+        let (z, y, x) = seated.limbs[3].to_euler(EulerRot::ZYX);
+        assert!((x + 1.413_716_7).abs() < 1.0e-5 && (y + 0.314_159_27).abs() < 1.0e-5 && (z + 0.078_539_82).abs() < 1.0e-5, "{x} {y} {z}");
+        assert_eq!(seated.limbs[0], arms, "zombie arms stay held out");
+        let unchanged = limb_rotations(0.0, 0.0, 0.0, false, None, 1.0, rest).seated(false);
+        assert_eq!(unchanged.limbs, standing.limbs);
     }
 }

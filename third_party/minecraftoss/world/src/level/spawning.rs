@@ -125,6 +125,7 @@ impl SpawnInputs {
         in_loaded: &'a dyn Fn(ChunkPos) -> bool,
         slime_chance: &'a dyn Fn(BiomeId) -> f32,
         structures: &'a dyn Fn(BlockPos) -> Vec<StructureHere>,
+        spawning_monsters: bool,
     ) -> SpawnContext<'a> {
         let mut obstacles: Vec<[f64; 6]> = census.iter().map(|m| m.bb).collect();
         obstacles.extend(self.feet.iter().map(|p| [p[0] - 0.3, p[1], p[2] - 0.3, p[0] + 0.3, p[1] + 1.8, p[2] + 0.3]));
@@ -144,6 +145,7 @@ impl SpawnInputs {
             obstacles,
             chickens,
             structures,
+            spawning_monsters,
         }
     }
 }
@@ -176,7 +178,7 @@ impl Level<'_> {
         let in_simulation = |c: ChunkPos| simulation.contains(&c);
         let finder = natural.structures.clone();
         let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
-        let mut context = inputs.context(natural.respawn, &census, &in_loaded, &slime_chance, &structures);
+        let mut context = inputs.context(natural.respawn, &census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
         let mut input = TickInput {
             counter: &mut natural.counter,
             players: &players,
@@ -215,7 +217,7 @@ impl Level<'_> {
         let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
         let finder = natural.structures.clone();
         let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
-        let mut context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures);
+        let mut context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
         let spawns = natural.spawns.clone();
         let result = spawns.summon(self, &mut context, kind, at, nbt, y_rot);
         self.natural_spawning = Some(natural);
@@ -356,7 +358,7 @@ impl Level<'_> {
         let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
         let finder = natural.structures.clone();
         let structures = |at: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(at));
-        let mut context = inputs.context(natural.respawn, census, &in_loaded, &slime_chance, &structures);
+        let mut context = inputs.context(natural.respawn, census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
         let spawns = natural.spawns.clone();
         let mut spawned = false;
         for _ in 0..spawner.count {

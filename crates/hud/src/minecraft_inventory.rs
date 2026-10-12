@@ -354,7 +354,14 @@ pub(crate) fn update_minecraft_hud(
             None => input.overlay = None,
         }
     }
+    crate::minecraft_sleep::draw_overlay(&mut painter, ui.sleep);
     crate::minecraft_chat::draw(&mut painter, &ui.chat, now);
+    if ui.chat.in_bed {
+        let mouse = window.physical_cursor_position().map(|m| space.mouse([m.x, m.y]));
+        if crate::minecraft_sleep::draw_button(&mut painter, mouse) && buttons.just_pressed(MouseButton::Left) {
+            ui.chat.leave_bed = true;
+        }
+    }
 
     if ui.inventory_open {
         let layout = match ui.screen {

@@ -148,6 +148,7 @@ pub struct Survival {
     impulse_grace: u32,
     protection: minecraft_terrain::protection::Protection,
     last_block: Option<(i32, i32, i32)>,
+    hurts: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -440,12 +441,17 @@ impl Survival {
     fn record(&mut self, before: f32, cause: DamageCause, fall_distance: f32) {
         let dealt = before - self.status.health;
         if dealt > 0.0 {
+            self.hurts += 1;
             let location = self
                 .climbable
                 .or(self.in_water.then_some(FallLocation::Water));
             self.combat
                 .record(self.tick, cause, dealt, location, fall_distance);
         }
+    }
+
+    pub fn hurts(&self) -> u64 {
+        self.hurts
     }
 
     pub fn set_climbable(&mut self, climbable: Option<FallLocation>) {

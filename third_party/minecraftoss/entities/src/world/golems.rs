@@ -299,7 +299,7 @@ impl EntityWorld {
         let villagers: Vec<MobCandidate> = self
             .villagers
             .iter()
-            .map(|v| MobCandidate { id: v.id, position: v.villager.body.position, eye_height: v.eye_height(), width: v.villager.body.width, height: v.villager.body.height, alive: v.villager.health > 0.0, kind: "minecraft:villager" })
+            .map(|v| MobCandidate { id: v.id, position: v.villager.body.position, eye_height: v.eye_height(), width: v.villager.body.width, height: v.villager.body.height, alive: v.villager.health > 0.0, kind: "minecraft:villager", baby: v.villager.age.baby() })
             .collect();
         let pois = std::mem::take(&mut self.pois);
         let level_random = std::mem::take(&mut self.level_random);
@@ -372,7 +372,7 @@ impl EntityWorld {
                     self.mob_hits_mob(id, victim, damage, from, f64::from(0.4_f32));
                 }
                 crate::monster_ai::Target::Player(player_id) => {
-                    self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker: from, hunger_ticks: 0, lift: 0.4 }, source: Some(id) });
+                    self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker: from, hunger_ticks: 0, lift: 0.4, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
                 }
                 crate::monster_ai::Target::Villager(victim) => {
                     self.mob_hits_mob(id, victim, damage, from, f64::from(0.4_f32));

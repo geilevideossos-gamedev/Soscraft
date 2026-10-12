@@ -12,7 +12,7 @@ use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{Atlas, ChunkMesh};
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{HowBroken, PlayerEdit, ServerHandle, ServerSim, TickInput};
-use minecraft_terrain::terrain::TerrainStream;
+use minecraft_terrain::terrain::{BlockStates, TerrainStream};
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
 use minecraft_terrain::mesh::ItemVisuals;
 use minecraft_terrain::server::{EntitySnapshot, ServerItem, ServerOrb};
@@ -37,7 +37,8 @@ const PLAYER: u64 = 0;
 /// `Player.getEyeHeight` standing.
 const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
-type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause)>;
+const GUARDED_BY_PIGLINS: &str = "minecraft:guarded_by_piglins";
+type Hits = Vec<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush)>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 type Picked = (i32, [f64; 3], String, i32, Option<String>);
 
@@ -132,6 +133,10 @@ pub struct Entities {
     pub difficulty: i32,
     spawn_mobs: bool,
     block_drops: bool,
+    mounts: Vec<u64>,
+    dismounts: Vec<(u64, Option<DVec3>)>,
+    boost_waiting: Option<(usize, String)>,
+    pub boosts_done: Vec<(usize, String)>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -162,6 +167,21 @@ pub struct PlayerView {
     pub health: f32,
     pub yaw: f32,
     pub pitch: f32,
+    pub main_hand: Option<String>,
+    pub offhand: Option<String>,
+    pub sneaking: bool,
+}
+
+fn player_controls(player: &PlayerView, inventory: &Inventory) -> minecraftoss_entities::controls::PlayerControls {
+    minecraftoss_entities::controls::PlayerControls {
+        id: PLAYER,
+        yaw: player.yaw,
+        pitch: player.pitch,
+        main_hand: player.main_hand.clone(),
+        offhand: player.offhand.clone(),
+        sneaking: player.sneaking,
+        armor: [36, 37, 38, 39].map(|slot| inventory.slots[slot].as_ref().map(|stack| stack.id.clone())),
+    }
 }
 
 fn player_candidate(player: &PlayerView) -> PlayerCandidate {
@@ -281,6 +301,10 @@ impl Entities {
             difficulty: 2,
             spawn_mobs: true,
             block_drops: true,
+            mounts: Vec::new(),
+            dismounts: Vec::new(),
+            boost_waiting: None,
+            boosts_done: Vec::new(),
         }
     }
 
@@ -298,6 +322,20 @@ impl Entities {
     pub fn set_weather_data(&mut self, data: WeatherData) {
         self.server.set_weather_data(data);
         self.weather_data = Some(data);
+    }
+
+    pub fn reset_weather_cycle(&mut self) -> Option<WeatherData> {
+        let data = crate::sleep::cleared_weather(self.weather_data?);
+        self.set_weather_data(data);
+        Some(data)
+    }
+
+    pub fn wake_villager_in(&mut self, head: (i32, i32, i32)) -> bool {
+        let asleep = villager_asleep_in(&self.world, head);
+        if asleep {
+            self.server.wake_villager_in(head);
+        }
+        asleep
     }
 
     pub fn set_player_uuid(&mut self, uuid: &minecraft_net::PlayerUuid) {
@@ -522,7 +560,7 @@ impl Entities {
 
     #[allow(clippy::too_many_arguments)]
     pub fn punch(&mut self, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: Blow) -> bool {
-        let mob = self.world.mob_on_ray(eye, look, blow.reach);
+        let mob = mob_on_ray(&self.world, eye, look, blow.reach);
         if let Some((target, distance)) = self.end_on_ray(eye, look, blow.reach)
             && mob.is_none_or(|(_, nearest)| distance < nearest)
         {
@@ -551,15 +589,30 @@ impl Entities {
             can_critical: blow.can_critical,
             can_sweep: blow.can_sweep,
         };
-        self.server.mob_action(hit, Some(attack), inventory, selected, false);
+        self.server.mob_action(hit, Some(attack), inventory, selected, false, PLAYER);
         true
     }
 
     pub fn mob_distance(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
-        let mob = self.world.mob_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        let mob = mob_on_ray(&self.world, eye, look, reach).map(|(_, distance)| distance);
         let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
         let end = self.end_on_ray(eye, look, reach).map(|(_, distance)| distance);
         [mob, fireball, end].into_iter().flatten().min_by(f64::total_cmp)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn use_on_mob(&mut self, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>, inventory: &Inventory, slot: usize, infinite: bool) -> bool {
+        let fireball = self.world.fireball_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        let end = self.end_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        let others = fireball.into_iter().chain(end).min_by(f64::total_cmp);
+        let Some(hit) = mob_to_use(&self.world, eye, look, reach, block, others) else {
+            return false;
+        };
+        if !minecraft_terrain::mob_actions::would_interact(&self.world, hit, inventory, slot, infinite, PLAYER) {
+            return false;
+        }
+        self.server.mob_action(hit, None, inventory, slot, infinite, PLAYER);
+        true
     }
 
     fn end_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(EndTarget, f64)> {
@@ -613,6 +666,80 @@ impl Entities {
         self.item_use_waiting.is_some()
     }
 
+    pub fn take_mounts(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.mounts)
+    }
+
+    pub fn take_dismounts(&mut self) -> Vec<(u64, Option<DVec3>)> {
+        std::mem::take(&mut self.dismounts)
+    }
+
+    pub fn vehicle_uuid(&self, vehicle: u64) -> u128 {
+        self.world.uuid_of(vehicle)
+    }
+
+    pub fn ride_seat(&mut self, vehicle: u64) -> Option<DVec3> {
+        self.client.set_own_vehicle(Some(vehicle));
+        let mob = self.client.get(vehicle)?;
+        let partial = (self.clock / self.tick_seconds).clamp(0.0, 1.0);
+        let pose = mob.pose(partial as f32);
+        let baby = self.world.striders().iter().any(|e| e.id == vehicle && e.strider.age.baby());
+        let attachment = minecraftoss_entities::strider::Strider::riding_attachment(baby);
+        let bob = crate::riding::bob(pose.walk_position, pose.walk_speed);
+        Some(crate::riding::seat(mob.old_position, mob.position, partial, attachment, bob))
+    }
+
+    pub fn dismount(&mut self) {
+        self.server.dismount(PLAYER);
+        self.client.set_own_vehicle(None);
+    }
+
+    pub fn reattach(&mut self, root: minecraftoss_core::nbt::Tag) {
+        self.server.reattach(PLAYER, root);
+    }
+
+    pub fn root_vehicle(&mut self, remove: bool) -> Option<minecraftoss_core::nbt::Tag> {
+        self.server.root_vehicle(PLAYER, remove);
+        self.server.wait_idle();
+        let mut found = None;
+        for mut output in self.server.poll() {
+            for (player, root) in output.root_vehicles.drain(..) {
+                if player == PLAYER {
+                    found = root;
+                }
+            }
+            self.unread.push(output);
+        }
+        if remove {
+            self.client.set_own_vehicle(None);
+        }
+        found
+    }
+
+    pub fn leave_seat(&mut self) {
+        self.client.set_own_vehicle(None);
+    }
+
+    pub fn can_boost(&self, vehicle: u64) -> bool {
+        self.boost_waiting.is_none()
+            && self.world.controlling_player(vehicle) == Some(PLAYER)
+            && self.world.striders().iter().any(|e| e.id == vehicle && !e.strider.steering.boosting)
+    }
+
+    pub fn boost(&mut self, slot: usize, held: String) {
+        self.server.boost(PLAYER);
+        self.boost_waiting = Some((slot, held));
+    }
+
+    pub fn spend_boost(&mut self, inventory: &mut Inventory, slot: usize, infinite: bool) -> Option<minecraft_terrain::bucket::Sound> {
+        let random = &mut self.random;
+        if !minecraft_terrain::durability::spend_boost(inventory, slot, infinite, || random.next_float()) {
+            return None;
+        }
+        self.broken_items.push(minecraft_terrain::durability::STEERING_ITEM.to_owned());
+        Some(minecraft_terrain::flint::break_sound(self.random.next_float()))
+    }
+
     pub fn leave(&mut self, inventory: &mut Inventory, selected: usize, feet: Option<[f64; 3]>) {
         let picked = std::mem::take(&mut self.server_picked);
         for rest in take_picked(inventory, selected, picked) {
@@ -625,6 +752,9 @@ impl Entities {
         self.pearl_gateways.clear();
         self.player_potions.clear();
         self.player_pushes.clear();
+        self.mounts.clear();
+        self.dismounts.clear();
+        self.boost_waiting = None;
     }
 
     pub fn hatch_egg(&mut self, inventory: &Inventory, slot: usize, kind: String, position: [f64; 3], spends: bool) {
@@ -769,6 +899,16 @@ impl Entities {
         self.server.player_mines(&how);
     }
 
+    pub fn anger_piglins(&mut self, feet: [f64; 3], sight: bool) {
+        self.server.anger_piglins(PLAYER, feet, sight);
+    }
+
+    pub fn guard_mined(&mut self, states: &BlockStates, broken: &[BrokenBlock], feet: [f64; 3]) {
+        if mining_angers_piglins(states, broken) {
+            self.anger_piglins(feet, false);
+        }
+    }
+
     fn hand_enchantments(held: Option<&ItemStack>) -> Option<serde_json::Value> {
         held?.components.as_ref()?.get("minecraft:enchantments").cloned()
     }
@@ -806,7 +946,7 @@ impl Entities {
             can_sweep: false,
         };
         self.server
-            .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);
+            .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false, PLAYER);
     }
 
     pub fn blast(&mut self, key: u64, damage: f32, center: [f64; 3], impact: f32, by_player: bool, slow_ticks: i32) {
@@ -928,6 +1068,7 @@ impl Entities {
                 tracking: (player.feet, 160.0),
                 player_hurts: Vec::new(),
                 spawn_mobs: self.spawn_mobs,
+                controls: if player.alive { vec![player_controls(player, inventory)] } else { Vec::new() },
             }, batch.normal.clone());
         }
         let mut changes = Vec::new();
@@ -1024,6 +1165,20 @@ impl Entities {
             for sound in output.mob_results.iter().flat_map(|result| result.sounds.iter()) {
                 self.sounds.push((sound.event.clone(), sound.position, sound.volume, sound.pitch));
             }
+            for result in &output.mob_results {
+                apply_mob_result(inventory, result);
+                self.broken_items.extend(result.broken.iter().cloned());
+                self.mounts.extend(result.mounted);
+            }
+            for (_, vehicle, spot) in output.dismounts.iter().filter(|(player, _, _)| *player == PLAYER) {
+                self.dismounts.push((*vehicle, spot.map(DVec3::from_array)));
+            }
+            self.mounts.extend(output.mounts.iter().filter(|(player, _)| *player == PLAYER).map(|(_, vehicle)| *vehicle));
+            for &(_, boosted) in output.boosts.iter().filter(|(player, _)| *player == PLAYER) {
+                if let Some(sent) = self.boost_waiting.take().filter(|_| boosted) {
+                    self.boosts_done.push(sent);
+                }
+            }
             // `ServerExplosion`'s sound: loud, pitched down.
             for blast in &output.explosions {
                 let pitch = (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
@@ -1064,7 +1219,7 @@ impl Entities {
                 let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
                 let damage = difficulty_scaled(hit.damage, self.difficulty, scales);
                 if damage > 0.0 {
-                    hits.push((damage, from, Some(toward), cause));
+                    hits.push((damage, from, Some(toward), cause, melee_push(&hit.kind)));
                 }
             }
         }
@@ -1214,6 +1369,15 @@ impl Entities {
         for e in w.blazes().iter().filter(|e| e.blaze.health > 0.0) {
             add(MobHit::Blaze(e.id), &e.blaze.body);
         }
+        for e in w.striders().iter().filter(|e| e.strider.health > 0.0) {
+            add(MobHit::Strider(e.id), &e.strider.body);
+        }
+        for e in w.hoglins().iter().filter(|e| e.hoglin.health > 0.0) {
+            add(MobHit::Hoglin(e.id), &e.hoglin.body);
+        }
+        for e in w.piglins().iter().filter(|e| e.piglin.health > 0.0) {
+            add(MobHit::Piglin(e.id), &e.piglin.body);
+        }
         for crystal in &self.crystals {
             let (low, high) = minecraft_terrain::end_crystal::pick_box(crystal.position);
             out.push((CRYSTAL_KEY | (crystal.id & ((1 << 56) - 1)), [low.x, low.y, low.z, high.x, high.y, high.z]));
@@ -1221,8 +1385,13 @@ impl Entities {
         out
     }
 
-    pub fn shot_boxes(&self) -> Vec<(u64, [f64; 6])> {
+    pub fn monster_near(&self, area: [f64; 6], sleeper: u64) -> bool {
+        crate::sleep::monster_in(area, resting_monsters(&self.world, sleeper))
+    }
+
+    pub fn shot_boxes(&self, riding: Option<u64>) -> Vec<(u64, [f64; 6])> {
         let mut out = self.boxes();
+        out.retain(|(key, _)| riding.is_none() || decode(*key).map(|hit| hit.id()) != riding);
         for e in self.world.fireballs().iter().filter(|e| e.fireball.alive && e.fireball.kind.redirectable()) {
             let (min, max) = minecraftoss_entities::fireball::pick_box(e.fireball.kind, e.fireball.position);
             out.push((FIREBALL_KEY | (e.id & ((1 << 56) - 1)), [min.x, min.y, min.z, max.x, max.y, max.z]));
@@ -1306,6 +1475,9 @@ impl Entities {
         end_gateway_render::append_beams(&mut out.models, &mut out.translucent, self.gateways.views(), atlas, camera, scene.vertical_range().end - 1, w.game_time(), partial);
         blaze_render::append_blazes(&mut out.models, w.blazes().iter(), poses, atlas, light, partial);
         self.spawners.append(&mut out.models, &mut out.culled, &mut out.translucent, scene, atlas, light, camera, partial);
+        strider_render::append_striders(&mut out.models, w.striders().iter(), poses, atlas, light, partial);
+        hoglin_render::append_hoglins(&mut out.models, w.hoglins().iter(), poses, atlas, light, partial);
+        let piglin_items = piglin_render::append_piglins(&mut out.models, w.piglins().iter(), poses, atlas, light, partial);
         let poppies = golem_render::append_iron_golems(&mut out.models, w.iron_golems().iter(), poses, atlas, light, partial);
         wolf_render::append_wolves(&mut out.models, w.wolves().iter(), poses, atlas, light, partial, w.game_time());
         flame_render::append_flames(
@@ -1356,7 +1528,7 @@ impl Entities {
         self.portal.append_mesh(&mut out.items, atlas, forward, partial, light);
         self.spell.append_mesh(&mut out.translucent, atlas, forward, partial, light);
         let held: Vec<_> =
-            skeleton_items.into_iter().chain(zombie_items).chain(villager_items).chain(witch_items).chain(placed_items.iter().cloned()).collect();
+            skeleton_items.into_iter().chain(zombie_items).chain(villager_items).chain(witch_items).chain(piglin_items).chain(placed_items.iter().cloned()).collect();
         let _ = self.items.append_held_items(&mut out.items, &held, packs, atlas, light);
         let carried: Vec<_> = carried.into_iter().chain(poppies).collect();
         let _ = self.items.append_posed_blocks(&mut out.items, &carried, packs, atlas, light);
@@ -1372,9 +1544,84 @@ impl Entities {
     }
 }
 
-fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause) {
+pub(crate) fn villager_asleep_in(world: &EntityWorld, (x, y, z): (i32, i32, i32)) -> bool {
+    let block = [f64::from(x), f64::from(y), f64::from(z), f64::from(x) + 1.0, f64::from(y) + 1.0, f64::from(z) + 1.0];
+    world.villagers().iter().filter(|e| e.sleeping.is_some()).any(|e| {
+        let body = &e.villager.body;
+        let half = f64::from(body.width) * 0.5;
+        let p = body.position;
+        crate::sleep::intersects([p.x - half, p.y, p.z - half, p.x + half, p.y + f64::from(body.height), p.z + half], block)
+    })
+}
+
+fn resting_monsters(w: &EntityWorld, sleeper: u64) -> Vec<(&'static str, bool, [f64; 6])> {
+    let bounds = |body: &minecraftoss_entities::movement::Body| {
+        let p = body.position;
+        let half = f64::from(body.width) * 0.5;
+        [p.x - half, p.y, p.z - half, p.x + half, p.y + f64::from(body.height), p.z + half]
+    };
+    let mut out = Vec::new();
+    for e in w.zombies().iter().filter(|e| e.zombie.health > 0.0) {
+        let angry = e.ai.as_ref().is_some_and(|ai| ai.state.enderman.anger_target == Some(minecraftoss_entities::monster_ai::Target::Player(sleeper)));
+        out.push((e.zombie.kind.type_id(), angry, bounds(&e.zombie.body)));
+    }
+    for e in w.skeletons().iter().filter(|e| e.skeleton.health > 0.0) {
+        out.push((e.skeleton.kind.type_id(), false, bounds(&e.skeleton.body)));
+    }
+    for e in w.creepers().iter().filter(|e| e.creeper.health > 0.0 && !e.creeper.exploded) {
+        out.push(("minecraft:creeper", false, bounds(&e.creeper.body)));
+    }
+    for e in w.spiders().iter().filter(|e| e.spider.health > 0.0) {
+        out.push(("minecraft:spider", false, bounds(&e.spider.body)));
+    }
+    for e in w.endermen().iter().filter(|e| e.enderman.health > 0.0) {
+        out.push(("minecraft:enderman", false, bounds(&e.enderman.body)));
+    }
+    for e in w.witches().iter().filter(|e| e.witch.health > 0.0) {
+        out.push(("minecraft:witch", false, bounds(&e.witch.body)));
+    }
+    for e in w.blazes().iter().filter(|e| e.blaze.health > 0.0) {
+        out.push(("minecraft:blaze", false, bounds(&e.blaze.body)));
+    }
+    for e in w.slimes().iter().filter(|e| e.slime.health > 0.0) {
+        out.push((e.slime.type_id(), false, bounds(&e.slime.body)));
+    }
+    for e in w.hoglins().iter().filter(|e| e.hoglin.health > 0.0) {
+        out.push((e.hoglin.kind.type_id(), false, bounds(&e.hoglin.body)));
+    }
+    for e in w.piglins().iter().filter(|e| e.piglin.health > 0.0) {
+        out.push((e.piglin.kind.type_id(), false, bounds(&e.piglin.body)));
+    }
+    out
+}
+
+fn mob_on_ray(world: &EntityWorld, eye: DVec3, look: DVec3, reach: f64) -> Option<(MobHit, f64)> {
+    world.mob_on_ray_except(eye, look, reach, world.vehicle_of(minecraftoss_entities::world::Rider::Player(PLAYER)))
+}
+
+fn mob_to_use(world: &EntityWorld, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>, others: Option<f64>) -> Option<MobHit> {
+    let (hit, distance) = mob_on_ray(world, eye, look, reach)?;
+    (block.is_none_or(|block| distance < block) && others.is_none_or(|other| distance <= other)).then_some(hit)
+}
+
+fn apply_mob_result(inventory: &mut Inventory, result: &minecraft_terrain::server::MobResult) {
+    for (slot, stack) in &result.slots {
+        if let Some(held) = inventory.slots.get_mut(*slot) {
+            *held = stack.clone();
+        }
+    }
+}
+
+fn struck_hit(feet: [f64; 3],struck: &minecraft_terrain::thrown::PlayerStruck) -> (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush) {
     let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
-    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic)
+    (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, Default::default())
+}
+
+fn melee_push(kind: &PlayerHitKind) -> crate::impulse::MeleePush {
+    match *kind {
+        PlayerHitKind::Melee { throw, lift, disable_shield_seconds, .. } => crate::impulse::MeleePush { throw, lift: f64::from(lift), disable_shield_ticks: crate::offhand::disable_ticks(disable_shield_seconds) },
+        _ => Default::default(),
+    }
 }
 
 fn difficulty_scaled(damage: f32, difficulty: i32, scales: bool) -> f32 {
@@ -1400,6 +1647,18 @@ fn how_broken(pos: (i32, i32, i32), blast: Option<f32>, by_hand: &[(i32, i32, i3
         None if silk_touch && by_hand.contains(&pos) => HowBroken::SilkTouched,
         None => HowBroken::Mined,
     }
+}
+
+pub fn guarded_by_piglins(states: &BlockStates, block: &Block) -> bool {
+    let registries = states.registries();
+    match (states.state_of(block), registries.block_tags.id(GUARDED_BY_PIGLINS)) {
+        (Some(state), Some(tag)) => registries.block_in_tag(state, tag),
+        _ => false,
+    }
+}
+
+fn mining_angers_piglins(states: &BlockStates, broken: &[BrokenBlock]) -> bool {
+    broken.iter().any(|(_, block, blast)| blast.is_none() && guarded_by_piglins(states, block))
 }
 
 fn has_silk_touch(enchantments: Option<&serde_json::Value>) -> bool {
@@ -1433,6 +1692,9 @@ fn encode(hit: MobHit) -> u64 {
         MobHit::Chicken(_) => 15,
         MobHit::Ghast(_) => 16,
         MobHit::Blaze(_) => 18,
+        MobHit::Strider(_) => STRIDER_KEY,
+        MobHit::Hoglin(_) => HOGLIN_KEY,
+        MobHit::Piglin(_) => PIGLIN_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1458,6 +1720,9 @@ fn decode(key: u64) -> Option<MobHit> {
         15 => MobHit::Chicken(id),
         16 => MobHit::Ghast(id),
         18 => MobHit::Blaze(id),
+        STRIDER_KEY => MobHit::Strider(id),
+        HOGLIN_KEY => MobHit::Hoglin(id),
+        PIGLIN_KEY => MobHit::Piglin(id),
         _ => return None,
     })
 }
@@ -1465,6 +1730,9 @@ fn decode(key: u64) -> Option<MobHit> {
 const FIREBALL_KEY: u64 = 17 << 56;
 const CRYSTAL_KEY: u64 = 19 << 56;
 const DRAGON_KEY: u64 = 20 << 56;
+const STRIDER_KEY: u64 = 23;
+const HOGLIN_KEY: u64 = 22;
+const PIGLIN_KEY: u64 = 21;
 pub const FLAT_HIT: u64 = 1 << 55;
 
 fn dragon_part_key(id: u64, part: usize) -> u64 {
@@ -1538,6 +1806,9 @@ mod tests {
             health: 20.0,
             yaw: 0.0,
             pitch: 0.0,
+            main_hand: None,
+            offhand: None,
+            sneaking: false,
         };
         let survival = player_candidate(&view(true, false));
         assert!(survival.alive && survival.attackable && !survival.spectator);
@@ -1546,6 +1817,131 @@ mod tests {
         assert!(creative.alive && !creative.attackable && !creative.spectator);
         let spectator = player_candidate(&view(false, true));
         assert!(spectator.alive && !spectator.attackable && spectator.spectator);
+    }
+
+    fn pig_ahead(distance: f64) -> (EntityWorld, u64) {
+        let mut world = EntityWorld::default();
+        let pig = world.spawn_pig_no_ai(minecraftoss_entities::pig::Pig::new(DVec3::new(0.5, 64.0, 0.5 + distance)));
+        (world, pig)
+    }
+
+    const EYE: DVec3 = DVec3::new(0.5, 64.5, 0.5);
+
+    #[test]
+    fn the_bed_check_sees_zombies_zoglins_and_piglins_and_only_angry_zombified_piglins() {
+        use minecraftoss_entities::zombie::{Zombie, ZombieKind};
+        let area = crate::sleep::monster_box((0, 64, 0));
+        let mut world = EntityWorld::default();
+        world.spawn_slime(minecraftoss_entities::slime::Slime::new(DVec3::new(2.5, 64.0, 0.5), 2), true);
+        world.spawn_hoglin(minecraftoss_entities::hoglin::Hoglin::new(minecraftoss_entities::hoglin::HoglinKind::Hoglin, DVec3::new(-2.5, 64.0, 0.5)), true);
+        world.spawn_strider(minecraftoss_entities::strider::Strider::new(DVec3::new(0.5, 64.0, 3.5)), true);
+        let mut piglin = Zombie::new(DVec3::new(0.5, 64.0, -3.5));
+        piglin.kind = ZombieKind::ZombifiedPiglin;
+        let calm = world.spawn_zombie_active(piglin, 0.0);
+        assert!(!monsters_in(&world, area, 7));
+        world.zombie_mut(calm).unwrap().ai.as_mut().unwrap().state.enderman.anger_target = Some(minecraftoss_entities::monster_ai::Target::Player(3));
+        assert!(!monsters_in(&world, area, 7), "angry at someone else");
+        assert!(monsters_in(&world, area, 3));
+        let mut world = EntityWorld::default();
+        world.spawn_zombie(Zombie::new(DVec3::new(8.7, 64.0, 0.5)), true);
+        assert!(monsters_in(&world, area, 7));
+        let mut world = EntityWorld::default();
+        world.spawn_zombie(Zombie::new(DVec3::new(8.9, 64.0, 0.5)), true);
+        assert!(!monsters_in(&world, area, 7));
+        let mut world = EntityWorld::default();
+        world.spawn_hoglin(minecraftoss_entities::hoglin::Hoglin::new(minecraftoss_entities::hoglin::HoglinKind::Zoglin, DVec3::new(-2.5, 64.0, 0.5)), true);
+        assert!(monsters_in(&world, area, 7));
+        let mut world = EntityWorld::default();
+        world.spawn_piglin(minecraftoss_entities::piglin::Piglin::new(minecraftoss_entities::piglin::PiglinKind::Brute, DVec3::new(-2.5, 60.0, 0.5)), true);
+        assert!(monsters_in(&world, area, 7));
+    }
+
+    fn monsters_in(world: &EntityWorld, area: [f64; 6], sleeper: u64) -> bool {
+        crate::sleep::monster_in(area, resting_monsters(world, sleeper))
+    }
+
+    #[test]
+    fn a_mob_behind_a_block_is_not_used() {
+        let (world, pig) = pig_ahead(2.0);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, Some(1.0), None), None);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, Some(2.5), None), Some(MobHit::Pig(pig)));
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, None, None), Some(MobHit::Pig(pig)));
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, 3.0, None, Some(1.0)), None, "a fireball or crystal in front takes the click");
+        assert_eq!(mob_to_use(&world, EYE, -DVec3::Z, 3.0, None, None), None);
+    }
+
+    #[test]
+    fn the_players_own_strider_is_never_picked_but_a_mob_behind_it_is() {
+        use minecraftoss_entities::world::Rider;
+        let (mut world, pig) = pig_ahead(2.0);
+        let strider = world.spawn_strider(minecraftoss_entities::strider::Strider::new(DVec3::new(0.5, 64.0, 1.0)), true);
+        let eye = DVec3::new(0.5, 64.5, -0.5);
+        assert_eq!(mob_to_use(&world, eye, DVec3::Z, 5.0, None, None), Some(MobHit::Strider(strider)));
+        assert!(world.force_riding(Rider::Player(PLAYER + 1), strider));
+        assert_eq!(mob_on_ray(&world, eye, DVec3::Z, 5.0).map(|(hit, _)| hit), Some(MobHit::Strider(strider)), "someone else's strider");
+        world.drop_player(PLAYER + 1);
+        assert!(world.force_riding(Rider::Player(PLAYER), strider));
+        assert_eq!(mob_to_use(&world, eye, DVec3::Z, 5.0, None, None), Some(MobHit::Pig(pig)));
+        assert_eq!(mob_on_ray(&world, eye, DVec3::Z, 5.0).map(|(hit, _)| hit), Some(MobHit::Pig(pig)));
+        let seat_eye = DVec3::new(0.5, 66.72, 1.0);
+        assert_eq!(world.mob_on_ray(seat_eye, -DVec3::Y, 3.0).map(|(hit, _)| hit), Some(MobHit::Strider(strider)));
+        assert_eq!(mob_on_ray(&world, seat_eye, -DVec3::Y, 3.0), None, "looking down at it");
+    }
+
+    #[test]
+    fn creative_reaches_mobs_at_five_blocks_and_survival_at_three() {
+        let survival = minecraft_terrain::game_mode::PlayerMode::new(minecraft_terrain::game_mode::GameMode::Survival).entity_reach();
+        let creative = minecraft_terrain::game_mode::PlayerMode::new(minecraft_terrain::game_mode::GameMode::Creative).entity_reach();
+        assert_eq!((survival, creative), (3.0, 5.0));
+        let (world, pig) = pig_ahead(3.8);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, survival, None, None), None);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, creative, None, None), Some(MobHit::Pig(pig)));
+        let (world, pig) = pig_ahead(2.9);
+        assert_eq!(mob_to_use(&world, EYE, DVec3::Z, survival, None, None), Some(MobHit::Pig(pig)));
+    }
+
+    #[test]
+    fn a_saddle_used_on_a_pig_leaves_the_inventory_and_saddles_it() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = std::sync::Arc::new(registries);
+        let Ok(terrain) = crate::level::Terrain::open(registries, 0, 2, minecraft_net::Dimension::Overworld, None, None) else {
+            return;
+        };
+        let data = crate::data::GameData::default();
+        let mut entities = Entities::new(&terrain.stream, minecraft_net::Dimension::Overworld, 0, &data, None, None);
+        let nbt = minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap();
+        entities.summon("minecraft:pig".to_owned(), [0.5, 200.0, 2.5], Some(nbt));
+        let mut inventory = Inventory::default();
+        inventory.slots[3] = Some(ItemStack::new("minecraft:saddle", 1));
+        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false };
+        let started = std::time::Instant::now();
+        let tick = |entities: &mut Entities, inventory: &mut Inventory| {
+            assert!(started.elapsed().as_secs() < 60, "the server answers");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let batch = crate::tick_rate::TickBatch { normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() }, overload: None };
+            entities.tick(inventory, 3, TICK_SECONDS, &batch, Default::default(), Default::default(), true, &view);
+        };
+        while entities.world.pigs().is_empty() {
+            tick(&mut entities, &mut inventory);
+        }
+        let eye = entities.world.pigs()[0].pig.body.position + DVec3::new(0.0, 0.5, -2.0);
+        assert!(!entities.use_on_mob(eye, DVec3::Z, 3.0, None, &inventory, 0, false), "an empty hand does nothing to a pig");
+        assert!(entities.use_on_mob(eye, DVec3::Z, 3.0, None, &inventory, 3, false));
+        while inventory.slots[3].is_some() {
+            tick(&mut entities, &mut inventory);
+        }
+        while !entities.world.pigs()[0].pig.saddled {
+            tick(&mut entities, &mut inventory);
+        }
+        assert!(!entities.use_on_mob(eye, DVec3::Z, 3.0, None, &inventory, 3, false), "a saddled pig takes no second saddle");
     }
 
     #[test]
@@ -1569,6 +1965,64 @@ mod tests {
         }
         assert_eq!(end_target_of(CRYSTAL_KEY | 9), Some(EndTarget::Crystal(9)));
         assert_eq!(end_target_of(encode(MobHit::Zombie(9))), None);
+    }
+
+    #[test]
+    fn piglin_keys_round_trip() {
+        let key = encode(MobHit::Piglin(77));
+        assert_eq!(key >> 56, 21);
+        assert_eq!(decode(key), Some(MobHit::Piglin(77)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
+    fn a_hoglin_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Hoglin(77));
+        assert_eq!(key >> 56, 22);
+        assert_eq!(decode(key), Some(MobHit::Hoglin(77)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
+    fn a_hoglin_throw_reaches_the_player_hit_list() {
+        let throw = DVec3::new(0.1, 0.4, -0.2);
+        let melee = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.0, throw, disable_shield_seconds: 0.0 };
+        assert_eq!(melee_push(&melee), crate::impulse::MeleePush { throw, lift: 0.0, disable_shield_ticks: 0 });
+        let golem = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.4, throw: DVec3::ZERO, disable_shield_seconds: 0.0 };
+        assert_eq!(melee_push(&golem).lift, f64::from(0.4_f32));
+        let arrow = PlayerHitKind::Arrow { velocity: DVec3::X, effect: None };
+        assert_eq!(melee_push(&arrow), crate::impulse::MeleePush::default());
+    }
+
+    #[test]
+    fn a_brute_s_axe_hit_carries_a_hundred_ticks_of_shield_cooldown() {
+        let axe = PlayerHitKind::Melee { attacker: DVec3::ZERO, hunger_ticks: 0, lift: 0.0, throw: DVec3::ZERO, disable_shield_seconds: 5.0 };
+        assert_eq!(melee_push(&axe).disable_shield_ticks, 100);
+        assert_eq!(melee_push(&axe).landing(false, true, 0.0), None);
+    }
+
+    #[test]
+    fn the_worn_armour_reaches_the_mobs_feet_first() {
+        let mut inventory = Inventory::default();
+        inventory.slots[36] = Some(ItemStack::new("minecraft:golden_boots", 1));
+        inventory.slots[39] = Some(ItemStack::new("minecraft:chainmail_helmet", 1));
+        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false };
+        let controls = player_controls(&view, &inventory);
+        assert_eq!(controls.armor, [Some("minecraft:golden_boots".to_owned()), None, None, Some("minecraft:chainmail_helmet".to_owned())]);
+    }
+
+    #[test]
+    fn a_strider_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Strider(77));
+        assert_eq!(key >> 56, 23);
+        assert_eq!(decode(key), Some(MobHit::Strider(77)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
     }
 
     #[test]
@@ -1597,7 +2051,7 @@ mod tests {
             kind: minecraft_terrain::trident::DAMAGE_TYPE,
             velocity: DVec3::new(2.0, 0.0, 0.0),
         };
-        let (damage, from, toward, cause) = struck_hit([10.0, 64.0, 5.0], &struck);
+        let (damage, from, toward, cause, _) = struck_hit([10.0, 64.0, 5.0], &struck);
         assert_eq!(damage, 8.0);
         assert_eq!(from, Some([9.0, 64.0, 5.0]));
         assert_eq!(toward, Some([-2.0, -0.0]));
@@ -1670,5 +2124,33 @@ mod tests {
         assert_eq!(rests.len(), 1, "the part that did not fit is not lost");
         assert_eq!((rests[0].id.as_str(), rests[0].count), ("minecraft:dirt", 10));
         assert_eq!(rests[0].components, Some(serde_json::json!({ "minecraft:custom_name": "x" })));
+    }
+
+    #[test]
+    fn only_guarded_blocks_send_anger() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        let Ok(states) = BlockStates::new(std::sync::Arc::new(registries), 0, -64, 384) else {
+            return;
+        };
+        let guarded = [
+            "gold_block", "raw_gold_block", "gilded_blackstone", "gold_ore", "deepslate_gold_ore", "nether_gold_ore",
+            "chest", "trapped_chest", "copper_chest", "barrel", "ender_chest", "shulker_box", "red_shulker_box",
+        ];
+        for id in guarded {
+            let block = Block::new(&format!("minecraft:{id}"));
+            assert!(guarded_by_piglins(&states, &block), "{id}");
+            assert!(mining_angers_piglins(&states, &[((0, 64, 0), block.clone(), None)]), "{id}");
+            assert!(!mining_angers_piglins(&states, &[((0, 64, 0), block, Some(4.0))]), "a blast angers nobody: {id}");
+        }
+        for id in ["stone", "iron_block", "netherrack", "furnace"] {
+            let block = Block::new(&format!("minecraft:{id}"));
+            assert!(!guarded_by_piglins(&states, &block), "{id}");
+            assert!(!mining_angers_piglins(&states, &[((0, 64, 0), block, None)]), "{id}");
+        }
     }
 }

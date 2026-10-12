@@ -19,6 +19,8 @@ pub const DEFAULT_WORLD: &str = "world";
 pub const TEMPORARY_WORLD: &str = "temp";
 const OVERWORLD: &str = "minecraft:overworld";
 const THE_END: &str = "minecraft:the_end";
+pub const TIME_SINCE_REST: &str = "minecraft:time_since_rest";
+const CUSTOM_STATS: &str = "minecraft:custom";
 
 #[derive(Clone, Copy, Debug)]
 pub struct WorldClocks {
@@ -114,12 +116,43 @@ impl WorldSave {
     }
 
     pub fn read_player(&self, uuid: &str, recipes: &RecipeBook) -> Result<Option<PlayerData>, String> {
-        Ok(self.storage.read_player_data(uuid)?.map(|tag| PlayerData::read(&tag, recipes)))
+        let Some(mut data) = self.storage.read_player_data(uuid)?.map(|tag| PlayerData::read(&tag, recipes)) else {
+            return Ok(None);
+        };
+        data.time_since_rest = self.read_stats(uuid).ok().flatten().as_ref().and_then(time_since_rest);
+        Ok(Some(data))
     }
 
     pub fn write_player(&self, uuid: &str, data: &PlayerData) -> Result<(), String> {
         let previous = self.storage.read_player_data(uuid).ok().flatten();
-        self.storage.write_player_data(uuid, &data.merged(previous))
+        self.storage.write_player_data(uuid, &data.merged(previous))?;
+        match data.time_since_rest {
+            Some(ticks) => self.write_stats(uuid, ticks),
+            None => Ok(()),
+        }
+    }
+
+    pub fn stats_path(&self, uuid: &str) -> PathBuf {
+        self.path().join("players").join("stats").join(format!("{uuid}.json"))
+    }
+
+    pub fn read_stats(&self, uuid: &str) -> Result<Option<serde_json::Value>, String> {
+        let path = self.stats_path(uuid);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| format!("{}: {e}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
+    pub fn write_stats(&self, uuid: &str, time_since_rest: i32) -> Result<(), String> {
+        let stats = with_time_since_rest(self.read_stats(uuid).ok().flatten(), time_since_rest);
+        let path = self.stats_path(uuid);
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let temp = path.with_extension("json.tmp");
+        std::fs::write(&temp, stats.to_string()).map_err(|e| format!("{}: {e}", temp.display()))?;
+        std::fs::rename(&temp, &path).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     pub fn shift_day(&mut self, by: f64) {
@@ -183,6 +216,33 @@ impl WorldSave {
     pub fn write_weather(&self, weather: &WeatherData) -> Result<(), String> {
         self.storage.write_weather(weather)
     }
+}
+
+pub fn time_since_rest(stats: &serde_json::Value) -> Option<i32> {
+    let ticks = stats.get("stats")?.get(CUSTOM_STATS)?.get(TIME_SINCE_REST)?.as_i64()?;
+    Some(ticks.clamp(i32::MIN.into(), i32::MAX.into()) as i32)
+}
+
+fn object_at<'a>(map: &'a mut serde_json::Map<String, serde_json::Value>, key: &str) -> &'a mut serde_json::Map<String, serde_json::Value> {
+    let entry = map.entry(key).or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !entry.is_object() {
+        *entry = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let serde_json::Value::Object(inner) = entry else {
+        unreachable!();
+    };
+    inner
+}
+
+pub fn with_time_since_rest(previous: Option<serde_json::Value>, ticks: i32) -> serde_json::Value {
+    let mut root = match previous {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    root.entry("DataVersion").or_insert_with(|| minecraftoss_core::chunk_nbt::DATA_VERSION.into());
+    let custom = object_at(object_at(&mut root, "stats"), CUSTOM_STATS);
+    custom.insert(TIME_SINCE_REST.to_owned(), ticks.into());
+    serde_json::Value::Object(root)
 }
 
 pub fn world_spawn(dimension: Dimension, pos: (i32, i32, i32)) -> RespawnData {
@@ -793,5 +853,36 @@ mod tests {
         assert_eq!(bad.seed, 9);
         assert_eq!(bad.warnings.len(), 1);
         assert!(!dir.0.exists());
+    }
+
+    #[test]
+    fn the_stats_file_keeps_unknown_stats_and_updates_time_since_rest() {
+        let dir = saves();
+        let save = open_world(&dir.0, None, Some("7"), 9).save.unwrap();
+        let steve = minecraft_commands::offline_uuid("Steve");
+        let path = dir.0.join("world").join("players").join("stats").join(format!("{steve}.json"));
+        assert_eq!(save.stats_path(&steve), path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let vanilla = r#"{"stats":{"minecraft:custom":{"minecraft:jump":12,"minecraft:time_since_rest":50},"minecraft:mined":{"minecraft:stone":3}},"DataVersion":4000}"#;
+        std::fs::write(&path, vanilla).unwrap();
+        let data = PlayerData { mode: Some(PlayerMode::default()), time_since_rest: Some(1234), ..PlayerData::default() };
+        save.write_player(&steve, &data).unwrap();
+        let stats: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stats["DataVersion"], 4000);
+        assert_eq!(stats["stats"]["minecraft:custom"]["minecraft:jump"], 12);
+        assert_eq!(stats["stats"]["minecraft:custom"][TIME_SINCE_REST], 1234);
+        assert_eq!(stats["stats"]["minecraft:mined"]["minecraft:stone"], 3);
+        assert_eq!(save.read_player(&steve, &RecipeBook::default()).unwrap().unwrap().time_since_rest, Some(1234));
+        let alex = minecraft_commands::offline_uuid("Alex");
+        save.write_player(&alex, &PlayerData { mode: Some(PlayerMode::default()), ..PlayerData::default() }).unwrap();
+        assert!(!save.stats_path(&alex).exists(), "no stats, no file");
+        assert_eq!(save.read_player(&alex, &RecipeBook::default()).unwrap().unwrap().time_since_rest, None);
+        save.write_player(&alex, &PlayerData { mode: Some(PlayerMode::default()), time_since_rest: Some(7), ..PlayerData::default() }).unwrap();
+        let fresh: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(save.stats_path(&alex)).unwrap()).unwrap();
+        assert_eq!(fresh, serde_json::json!({"stats": {"minecraft:custom": {TIME_SINCE_REST: 7}}, "DataVersion": minecraftoss_core::chunk_nbt::DATA_VERSION}));
+        std::fs::write(save.stats_path(&alex), "not json").unwrap();
+        assert_eq!(save.read_player(&alex, &RecipeBook::default()).unwrap().unwrap().time_since_rest, None);
+        save.write_player(&alex, &PlayerData { mode: Some(PlayerMode::default()), time_since_rest: Some(8), ..PlayerData::default() }).unwrap();
+        assert_eq!(save.read_player(&alex, &RecipeBook::default()).unwrap().unwrap().time_since_rest, Some(8));
     }
 }

@@ -287,15 +287,13 @@ impl CommandWorld for Host<'_> {
     }
 
     fn set_time(&mut self, clock: &str, total: i64) {
-        if clock == THE_END_CLOCK {
-            self.end_clock.set(total as f64);
-            return;
-        }
-        let ticks = total as f64;
-        if let Some(save) = self.save.as_mut() {
-            save.shift_day(ticks - self.day.ticks);
-        }
-        self.day.set(ticks);
+        crate::server::set_clock(
+            self.day,
+            self.end_clock,
+            self.save.as_deref_mut(),
+            clock,
+            total,
+        );
     }
 
     fn set_time_paused(&mut self, clock: &str, paused: bool) {
@@ -1726,6 +1724,7 @@ pub(crate) mod tests {
             empty_ticks: 0,
             dragon_fight: None,
             container_ticks: 0,
+            sleep_status: Default::default(),
         })
     }
 

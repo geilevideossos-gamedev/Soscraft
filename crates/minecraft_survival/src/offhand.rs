@@ -149,6 +149,14 @@ pub fn shield_wear(blocked: f32) -> u32 {
     }
 }
 
+pub fn disable_ticks(seconds: f32) -> u32 {
+    if seconds > 0.0 {
+        (seconds * 20.0).round() as u32
+    } else {
+        0
+    }
+}
+
 pub fn totem_slot(inventory: &Inventory, selected: usize) -> Option<usize> {
     [selected, OFFHAND].into_iter().find(|&slot| {
         inventory
@@ -187,6 +195,13 @@ mod tests {
             inventory.slots[slot] = Some(ItemStack::new(id, 1));
         }
         inventory
+    }
+
+    #[test]
+    fn an_axe_takes_the_shield_away_for_five_seconds() {
+        assert_eq!(disable_ticks(5.0), 100);
+        assert_eq!(disable_ticks(0.0), 0);
+        assert_eq!(disable_ticks(-1.0), 0);
     }
 
     #[test]

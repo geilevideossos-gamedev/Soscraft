@@ -310,6 +310,7 @@ pub struct MobCandidate {
     pub alive: bool,
     /// Its entity type (`minecraft:villager` for the villager list).
     pub kind: &'static str,
+    pub baby: bool,
 }
 
 /// A monster's target.
@@ -344,6 +345,10 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:wither_skeleton"
             | "minecraft:ghast"
             | "minecraft:blaze"
+            | "minecraft:hoglin"
+            | "minecraft:zoglin"
+            | "minecraft:piglin"
+            | "minecraft:piglin_brute"
     )
 }
 
@@ -378,6 +383,7 @@ pub(crate) enum Prey {
     WolfPrey,
     /// `AbstractSkeleton`s.
     Skeleton,
+    Piglin,
 }
 
 /// `MeleeAttackGoal`'s state (and `ZombieAttackGoal`'s raised arms).
@@ -1183,7 +1189,7 @@ pub fn wither_skeleton_goals() -> GoalSelector<MonsterGoalContext> {
 
 pub fn wither_skeleton_targets() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
-    selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Absent, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Piglin, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
     selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: false });
     selector.add(2, NearestTargetGoal { interval: 5, prey: Prey::Player, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
     selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Golem, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
@@ -2635,6 +2641,7 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
             Prey::AngryPlayer => ctx.players.iter().map(|p| Target::Player(p.id)).filter(|&t| ctx.enderman.anger_target == Some(t)).collect(),
             Prey::WolfPrey => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:sheep" | "minecraft:rabbit" | "minecraft:fox")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Skeleton => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton")).map(|m| Target::Mob(m.id)).collect(),
+            Prey::Piglin => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:piglin" | "minecraft:piglin_brute")).map(|m| Target::Mob(m.id)).collect(),
         };
         let mut best: Option<(f64, Target)> = None;
         for target in candidates {

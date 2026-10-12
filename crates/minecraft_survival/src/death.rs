@@ -658,6 +658,8 @@ mod tests {
             ("entity.minecraft.creeper", "Creeper"),
             ("entity.minecraft.ghast", "Ghast"),
             ("entity.minecraft.blaze", "Blaze"),
+            ("entity.minecraft.piglin", "Piglin"),
+            ("entity.minecraft.piglin_brute", "Piglin Brute"),
             ("death.attack.fireball", "%1$s was fireballed by %2$s"),
             ("entity.minecraft.arrow", "Arrow"),
             ("block.minecraft.magma_block", "Magma Block"),
@@ -780,6 +782,21 @@ mod tests {
         assert_eq!(
             line(&tracker),
             says("%1$s was shot by Skeleton", "Skeleton")
+        );
+    }
+
+    #[test]
+    fn a_piglin_shoots_and_a_brute_slays_by_name() {
+        let mut tracker = CombatTracker::default();
+        let bolt = DamageCause::mob(MobAttack::Arrow, Some(3), Some("minecraft:piglin"));
+        tracker.record(1, bolt, 4.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was shot by Piglin", "Piglin"));
+        let mut tracker = CombatTracker::default();
+        let axe = DamageCause::mob(MobAttack::Melee, Some(4), Some("minecraft:piglin_brute"));
+        tracker.record(1, axe, 13.0, None, 0.0);
+        assert_eq!(
+            line(&tracker),
+            says("%1$s was slain by Piglin Brute", "Piglin Brute")
         );
     }
 

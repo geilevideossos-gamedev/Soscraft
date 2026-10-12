@@ -42,6 +42,13 @@ pub struct Player {
     pub remote: bool,
     pub held: Option<Switch>,
     pub portal: crate::portal::Portal,
+    pub riding: Option<crate::riding::Riding>,
+    pub saved_vehicle: Option<minecraftoss_core::nbt::Tag>,
+    pub reattach: Option<minecraftoss_core::nbt::Tag>,
+    pub sleeping: Option<crate::sleep::Sleeping>,
+    pub sleep_timer: i32,
+    pub time_since_rest: i32,
+    pub saved_in_bed: Option<(i32, i32, i32)>,
 }
 
 #[derive(Default)]
@@ -107,6 +114,13 @@ impl Player {
             remote: false,
             held: None,
             portal: crate::portal::Portal::default(),
+            riding: None,
+            saved_vehicle: None,
+            reattach: None,
+            sleeping: None,
+            sleep_timer: 0,
+            time_since_rest: 0,
+            saved_in_bed: None,
         }
     }
 
@@ -231,6 +245,17 @@ impl Player {
             last_death: self.last_death,
             portal_cooldown: Some(self.portal_cooldown),
             seen_credits: Some(self.seen_credits),
+            root_vehicle: crate::riding::root_vehicle(
+                self.riding.is_some(),
+                self.saved_vehicle.as_ref(),
+                self.reattach.as_ref(),
+            ),
+            sleep_timer: Some(self.sleep_timer),
+            sleeping_pos: self
+                .sleeping
+                .map(|sleeping| sleeping.head)
+                .or(self.saved_in_bed),
+            time_since_rest: Some(self.time_since_rest),
         }
     }
 }
@@ -422,6 +447,20 @@ mod tests {
                 .map(|stack| (stack.id.as_str(), stack.count)),
             Some(("minecraft:dirt", 3))
         );
+    }
+
+    #[test]
+    fn a_rider_never_uses_a_portal() {
+        let mut player = steve();
+        assert!(crate::portal::may_use_portals(&player));
+        player.riding = Some(crate::riding::Riding {
+            vehicle: 3,
+            uuid: 7,
+        });
+        assert!(!crate::portal::may_use_portals(&player));
+        player.riding = None;
+        player.dead = true;
+        assert!(!crate::portal::may_use_portals(&player));
     }
 
     fn steve() -> Player {

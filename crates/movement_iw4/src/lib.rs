@@ -29,6 +29,7 @@ pub mod mantle;
 mod melee_charge;
 mod pml;
 mod pmove;
+mod ride;
 mod single;
 mod slide;
 mod snap;

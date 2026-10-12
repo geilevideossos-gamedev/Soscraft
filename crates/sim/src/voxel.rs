@@ -2275,6 +2275,56 @@ mod tests {
         path
     }
 
+    fn ride_frame(pond: &Pond, ps: &mut playerstate_iw4::PlayerState, buttons: u32, forwardmove: i8, yaw: i32, old_buttons: u32) {
+        let context = crate::step::pmove_context(old_buttons, (1.0, 1.0, 1.0), false, false, 0.005, 0.005, 0, false, true, false, 0, 0, 0, false, false);
+        let context = movement_iw4::PmoveSingleContext { bounds: move_bounds(context.bounds), ..context };
+        let mut cmd = playerstate_iw4::UserCmd { server_time: ps.command_time + 50, buttons, forwardmove, angles: [0, yaw, 0], ..playerstate_iw4::UserCmd::default() };
+        movement_iw4::pmove(ps, &mut cmd, context, pond, &movement_iw4::FlatMantleAnimLength::default(), &movement_iw4::ZeroMantleRootDelta);
+    }
+
+    #[test]
+    fn a_riding_player_turns_but_never_moves_jumps_or_sprints() {
+        use playerstate_iw4::{buttons, pm_flags};
+        let pond = pond(SOURCE, 1, 1);
+        let mut ps = swimmer([14.5, 4.0, 8.5]);
+        ps.pm_flags |= pm_flags::MC_RIDING;
+        let seat = ps.origin;
+        let held = buttons::JUMP | buttons::SPRINT;
+        for frame in 0..40 {
+            ride_frame(&pond, &mut ps, held, 127, frame * 400, if frame == 0 { 0 } else { held });
+            assert_eq!(ps.origin, seat, "frame {frame}");
+            assert_eq!(ps.velocity, [0.0; 3]);
+            assert_eq!(ps.pm_flags & (pm_flags::SPRINTING | pm_flags::JUMPING | pm_flags::PRONE | pm_flags::CROUCH), 0);
+        }
+        assert!(ps.viewangles[1].abs() > 1.0, "the view still turns: {:?}", ps.viewangles);
+    }
+
+    #[test]
+    fn the_next_pmove_after_riding_is_normal() {
+        use playerstate_iw4::{buttons, pm_flags};
+        let pond = pond(SOURCE, 1, 1);
+        let mut ps = swimmer([14.5, 4.0, 8.5]);
+        ps.pm_flags |= pm_flags::MC_RIDING;
+        for _ in 0..10 {
+            ride_frame(&pond, &mut ps, buttons::CROUCH, 0, 0, buttons::CROUCH);
+        }
+        assert_ne!(ps.pm_flags & pm_flags::CROUCH, 0, "the sneak shows in the crouch flag");
+        ps.pm_flags &= !pm_flags::MC_RIDING;
+        let mut path = Vec::new();
+        for _ in 0..40 {
+            ride_frame(&pond, &mut ps, 0, 0, 0, 0);
+            path.push(to_block([0.0; 3], ps.origin));
+        }
+        let landed = path.last().unwrap();
+        assert!((landed[1] - 1.0).abs() < 0.01, "it falls to the floor: {landed:?}");
+        assert_eq!(ps.pm_flags & (pm_flags::CROUCH | pm_flags::PRONE), 0, "and stands up");
+        for _ in 0..40 {
+            ride_frame(&pond, &mut ps, 0, 127, 0, 0);
+        }
+        let walked = to_block([0.0; 3], ps.origin);
+        assert!((walked[0] - landed[0]).hypot(walked[2] - landed[2]) > 1.0, "and walks again: {walked:?}");
+    }
+
     #[test]
     fn holding_jump_lifts_a_swimmer_off_the_floor_of_deep_water_or_lava_to_float_at_the_surface() {
         for fluid in [SOURCE, LAVA_POOL] {

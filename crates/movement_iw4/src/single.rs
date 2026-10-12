@@ -105,6 +105,17 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
 
     mantle::clear_hint(ps);
 
+    if crate::ride::riding(ps) {
+        crate::ride::seat(ps, cmd);
+        drop_timers(ps, &pml);
+        return PmoveResult {
+            pml,
+            bounds: context.bounds,
+            stance_event: None,
+            reset_torso: false,
+        };
+    }
+
     let _ads = update_ads_intent(ps, cmd, context.old_buttons, context.ads_intent);
     let water = collision.water(
         ps.origin,

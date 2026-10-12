@@ -161,6 +161,9 @@ pub trait World {
     fn floatable_fluid(&self, pos: Pos) -> bool {
         self.block(pos).is_some_and(|b| b.id == "minecraft:water" || b.property("waterlogged") == Some("true"))
     }
+    fn fluid_is_lava(&self, pos: Pos) -> bool {
+        self.block(pos).is_some_and(|b| b.id == "minecraft:lava")
+    }
     /// `BlockState.isSolid`. By default, blocks with a full collision cube.
     fn solid(&self, pos: Pos) -> bool {
         self.block(pos).is_some_and(|b| authored_collision_boxes(&b) == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]])
@@ -1018,6 +1021,15 @@ pub fn authored_block_in_tag(block: &Block, tag: &str, collision: &[[f64; 6]]) -
     let id = block.id.as_str();
     match tag {
         "minecraft:blocks_motion" | "minecraft:entities_can_teleport_to" => !collision.is_empty(),
+        "minecraft:strider_warm_blocks" => id == "minecraft:lava",
+        "minecraft:hoglin_repellents" => matches!(
+            id,
+            "minecraft:warped_fungus" | "minecraft:potted_warped_fungus" | "minecraft:nether_portal" | "minecraft:respawn_anchor"
+        ),
+        "minecraft:piglin_repellents" => matches!(
+            id,
+            "minecraft:soul_fire" | "minecraft:soul_torch" | "minecraft:soul_lantern" | "minecraft:soul_wall_torch" | "minecraft:soul_campfire"
+        ),
         "minecraft:enderman_holdable" => matches!(
             id,
             // `#small_flowers`

@@ -34,6 +34,27 @@ pub fn launch_velocity(push: DVec3, gravity: f64) -> DVec3 {
     DVec3::new(across.x, up, across.z)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MeleePush {
+    pub throw: DVec3,
+    pub lift: f64,
+    pub disable_shield_ticks: u32,
+}
+
+impl MeleePush {
+    pub fn landing(self, hurt: bool, shielded: bool, resistance: f64) -> Option<DVec3> {
+        let scale = (1.0 - resistance).max(0.0);
+        let mut push = DVec3::ZERO;
+        if hurt || shielded {
+            push += self.throw * scale;
+        }
+        if hurt {
+            push.y += self.lift * scale;
+        }
+        (push != DVec3::ZERO).then_some(push)
+    }
+}
+
 pub fn riptide_velocity(push: DVec3, on_ground: bool, gravity: f64) -> DVec3 {
     let launch = launch_velocity(push, gravity);
     if !on_ground || gravity <= 0.0 || launch.y < 0.0 {
@@ -48,6 +69,24 @@ mod tests {
     use super::*;
 
     const MW2_GRAVITY: f64 = 800.0 / 36.0;
+
+    #[test]
+    fn a_shield_still_gets_thrown_by_an_adult() {
+        let push = MeleePush { throw: DVec3::new(0.3, 0.4, 0.0), lift: 0.0, disable_shield_ticks: 0 };
+        assert_eq!(push.landing(false, true, 0.0), Some(DVec3::new(0.3, 0.4, 0.0)));
+        assert_eq!(push.landing(false, false, 0.0), None);
+        let thrown = push.landing(true, false, 0.2).unwrap();
+        assert!((thrown - DVec3::new(0.24, 0.32, 0.0)).length() < 1.0e-12);
+        assert_eq!(push.landing(true, false, 1.0), None);
+    }
+
+    #[test]
+    fn an_iron_golem_lifts_only_a_hit_that_lands() {
+        let lift = MeleePush { throw: DVec3::ZERO, lift: f64::from(0.4_f32), disable_shield_ticks: 0 };
+        assert_eq!(lift.landing(false, true, 0.0), None);
+        let up = lift.landing(true, false, 0.4).unwrap();
+        assert!((up.y - f64::from(0.4_f32) * 0.6).abs() < 1.0e-12 && up.x == 0.0);
+    }
 
     #[test]
     fn a_push_up_reaches_the_vanilla_height_under_mw2_gravity() {

@@ -675,6 +675,7 @@ mod tests {
             tracking: (feet.to_array(), 64.0),
             player_hurts: Vec::new(),
             spawn_mobs: false,
+            controls: Vec::new(),
         }
     }
 

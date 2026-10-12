@@ -25,6 +25,7 @@ pub struct Level {
     pub empty_ticks: u32,
     pub dragon_fight: Option<crate::the_end::dragon_fight::DragonFight>,
     pub container_ticks: u32,
+    pub sleep_status: crate::sleep::SleepStatus,
 }
 
 pub struct Terrain {
@@ -45,7 +46,17 @@ impl Level {
             empty_ticks: 0,
             dragon_fight: None,
             container_ticks: 0,
+            sleep_status: crate::sleep::SleepStatus::default(),
         }
+    }
+
+    pub fn dark_outside(&self, globals: &crate::server::Globals) -> bool {
+        let (rain, thunder) = self.entities.as_ref().map_or((0.0, 0.0), |entities| {
+            (entities.weather.rain_level, entities.weather.thunder_level)
+        });
+        let ticks = globals.default_clock_ticks(self.dimension);
+        let light = self.terrain.environment.level_sky_light(ticks, rain, thunder);
+        crate::sleep::dark_outside(light, self.terrain.rules.has_fixed_time)
     }
 }
 
@@ -539,6 +550,9 @@ mod tests {
                     health: 20.0,
                     yaw: 0.0,
                     pitch: -90.0,
+                    main_hand: None,
+                    offhand: None,
+                    sneaking: false,
                 },
             );
             std::thread::sleep(std::time::Duration::from_millis(5));

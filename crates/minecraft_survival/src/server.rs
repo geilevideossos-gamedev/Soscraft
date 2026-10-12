@@ -31,6 +31,7 @@ pub struct Server {
     pub opening: BTreeMap<Dimension, LevelLoader>,
     pub players: BTreeMap<PlayerUuid, Player>,
     pub pending_batch: Option<TickBatch>,
+    pub published: bool,
 }
 
 pub struct Globals {
@@ -110,6 +111,10 @@ impl Globals {
         }
     }
 
+    pub fn set_clock(&mut self, clock: &str, total: i64) {
+        set_clock(&mut self.day, &mut self.end_clock, self.save.as_mut(), clock, total);
+    }
+
     pub fn advance_clocks(&mut self, ticks: u32) {
         if ticks == 0 {
             return;
@@ -127,6 +132,24 @@ impl Globals {
 }
 
 pub const EMPTY_TIME: u32 = 300;
+
+pub fn set_clock(
+    day: &mut DayCycle,
+    end_clock: &mut DayCycle,
+    save: Option<&mut WorldSave>,
+    clock: &str,
+    total: i64,
+) {
+    if clock == THE_END_CLOCK {
+        end_clock.set(total as f64);
+        return;
+    }
+    let ticks = total as f64;
+    if let Some(save) = save {
+        save.shift_day(ticks - day.ticks);
+    }
+    day.set(ticks);
+}
 
 const NEW_WORLD_WEATHER: WeatherData = WeatherData {
     clear_weather_time: 0,
@@ -603,7 +626,12 @@ impl Server {
         closing
     }
 
+    pub fn take_vehicles(&mut self) {
+        refresh_vehicles(&mut self.levels, &mut self.players, true);
+    }
+
     pub fn save_and_close(mut self, started: Instant) {
+        self.take_vehicles();
         let save = self.globals.save.take();
         if let Some(writer) = self.globals.level_writer.take() {
             let _ = writer.join();
@@ -707,6 +735,10 @@ pub fn join(
     player.last_death = saved.last_death;
     player.portal_cooldown = saved.portal_cooldown.unwrap_or(0);
     player.seen_credits = saved.seen_credits.unwrap_or(false);
+    player.reattach = saved.root_vehicle.filter(|_| !dead);
+    player.sleep_timer = saved.sleep_timer.unwrap_or(0);
+    player.time_since_rest = saved.time_since_rest.unwrap_or(0);
+    player.saved_in_bed = saved.sleeping_pos;
     player.dead = dead;
     player.place = Some(Place::standing(Dimension::Overworld, spawn, 0.0, 0.0));
     match saved.place {
@@ -808,14 +840,30 @@ pub fn save_player(globals: &mut Globals, player: &Player) {
         .ok();
 }
 
+pub fn refresh_vehicles(
+    levels: &mut BTreeMap<Dimension, Level>,
+    players: &mut BTreeMap<PlayerUuid, Player>,
+    remove: bool,
+) {
+    for player in players.values_mut().filter(|player| player.riding.is_some()) {
+        if let Some(entities) = levels
+            .get_mut(&player.dimension)
+            .and_then(|level| level.entities.as_mut())
+        {
+            player.saved_vehicle = entities.root_vehicle(remove);
+        }
+    }
+}
+
 pub fn autosave(
     globals: &mut Globals,
     levels: &mut BTreeMap<Dimension, Level>,
-    players: &BTreeMap<PlayerUuid, Player>,
+    players: &mut BTreeMap<PlayerUuid, Player>,
 ) {
     let Some(save) = globals.save.clone() else {
         return;
     };
+    refresh_vehicles(levels, players, false);
     let started = Instant::now();
     let chunks: usize = levels
         .values_mut()
@@ -969,6 +1017,24 @@ mod tests {
         );
         assert_eq!(alex.mode.mode, GameMode::Adventure);
         assert!(alex.inventory.slots.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn a_saved_sleeper_joins_with_its_bed_timer_and_time_since_rest() {
+        let (_dir, save) = world("sleeper");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = profile("Steve");
+        let mut player = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert_eq!((player.sleep_timer, player.time_since_rest, player.saved_in_bed), (0, 0, None));
+        player.saved_in_bed = Some((4, 70, -9));
+        player.sleep_timer = 100;
+        player.time_since_rest = 72_001;
+        save.write_player(&steve.uuid, &player.data()).unwrap();
+        let again = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert_eq!(again.saved_in_bed, Some((4, 70, -9)));
+        assert!(again.sleeping.is_none(), "it stands up once its bed's chunk is in");
+        assert_eq!((again.sleep_timer, again.time_since_rest), (100, 72_001));
     }
 
     #[test]
@@ -1377,6 +1443,7 @@ mod tests {
             opening: BTreeMap::new(),
             players: BTreeMap::from([(uuid.clone(), player)]),
             pending_batch: None,
+            published: false,
         };
         server.save_and_close(Instant::now());
         let opened = crate::save::open_world(&dir.0, None, None, 2);
@@ -1441,6 +1508,7 @@ mod tests {
                 .map(|player| (player.uuid.clone(), player))
                 .collect(),
             pending_batch: None,
+            published: false,
         }
     }
 
@@ -2363,6 +2431,7 @@ mod tests {
             opening: BTreeMap::new(),
             players: BTreeMap::new(),
             pending_batch: None,
+            published: false,
         };
         let base = Instant::now();
         let after = |millis| base + std::time::Duration::from_millis(millis);
@@ -2397,6 +2466,7 @@ mod tests {
             opening: BTreeMap::new(),
             players: BTreeMap::new(),
             pending_batch: None,
+            published: false,
         };
         let base = Instant::now();
         let after = |millis| base + std::time::Duration::from_millis(millis);

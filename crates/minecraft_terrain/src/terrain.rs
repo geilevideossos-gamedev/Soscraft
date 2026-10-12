@@ -2604,7 +2604,7 @@ mod tests {
             if structure == "minecraft:bastion_remnant" {
                 assert!(kinds.contains(&("minecraft:piglin", true)) && kinds.contains(&("minecraft:piglin_brute", true)), "a bastion holds piglins and brutes: {kinds:?}");
             }
-            assert!(kinds.iter().all(|(_, persistent)| *persistent), "the {structure}'s mobs never despawn: {kinds:?}");
+            assert!(kinds.iter().filter(|(kind, _)| *kind != "minecraft:strider").all(|(_, persistent)| *persistent), "the {structure}'s mobs never despawn: {kinds:?}");
             found.push((structure, at));
         }
         sim.set_clocks(crate::server::ClockTicks { overworld: 6000, the_end: 0 });
@@ -2612,6 +2612,89 @@ mod tests {
             sim.tick();
         }
         assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn a_bastion_s_piglins_wake_up() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + std::time::Duration::from_secs(300);
+        let mut sim = crate::server::ServerSim::new(gen.clone(), stream.states.clone(), "minecraft:the_nether");
+        let at = match crate::locate::nearest_structure(&gen, &["minecraft:bastion_remnant".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no bastion near the origin of seed 77: {other:?}"),
+        };
+        let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+        let mut piglins = Vec::new();
+        for x in cx - 3..=cx + 3 {
+            for z in cz - 3..=cz + 3 {
+                let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+                piglins.extend(chunk.generation.entities.iter().flat_map(minecraftoss_world::natural_spawner::tick::census_of).filter(|mob| matches!(mob.kind.as_str(), "minecraft:piglin" | "minecraft:piglin_brute")));
+                sim.load_chunk(&chunk);
+            }
+        }
+        assert!(!piglins.is_empty(), "the bastion holds piglins");
+        let alive = sim.tracked_mobs([f64::from(at[0]), f64::from(at[1]), f64::from(at[2])], 112.0);
+        assert_eq!(alive.piglins().len(), piglins.len(), "every bastion piglin and brute comes alive");
+        assert!(alive.piglins().iter().all(|e| e.piglin.persistence_required));
+        assert!(alive.piglins().iter().any(|e| e.piglin.kind == minecraftoss_entities::piglin::PiglinKind::Brute));
+        for brute in alive.piglins().iter().filter(|e| e.piglin.is_brute()) {
+            assert_eq!(brute.piglin.main_hand.as_ref().map(|s| s.id.as_str()), Some("minecraft:golden_axe"));
+            let home = brute.brain.memories.home.get().expect("a bastion brute has a home");
+            assert_eq!(home.dimension, "minecraft:the_nether");
+            let (x, y, z) = home.pos;
+            assert!(brute.position().distance(glam::DVec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5)) < 2.0);
+        }
+        for _ in 0..20 {
+            sim.tick();
+        }
+    }
+
+    #[test]
+    fn bastion_hoglins_come_alive_and_stay_persistent() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Nether, Some(level.root()), Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + std::time::Duration::from_secs(300);
+        let mut sim = crate::server::ServerSim::new(gen.clone(), stream.states.clone(), "minecraft:the_nether");
+        let mut seen = Vec::new();
+        for (ox, oz) in [(0, 0), (1500, 0), (0, 1500), (-1500, 0), (0, -1500), (1500, 1500), (-1500, -1500), (1500, -1500), (-1500, 1500)] {
+            let at = match crate::locate::nearest_structure(&gen, &["minecraft:bastion_remnant".to_owned()], [ox, 64, oz], crate::locate::STRUCTURE_RADIUS, deadline) {
+                crate::locate::Search::Found(at, _) => at,
+                _ => continue,
+            };
+            if seen.contains(&at) {
+                continue;
+            }
+            seen.push(at);
+            let (cx, cz) = (at[0] >> 4, at[2] >> 4);
+            let mut hoglins = Vec::new();
+            for x in cx - 3..=cx + 3 {
+                for z in cz - 3..=cz + 3 {
+                    let chunk = stream.server.load_now(minecraftoss_core::ChunkPos::new(x, z));
+                    hoglins.extend(chunk.generation.entities.iter().flat_map(minecraftoss_world::natural_spawner::tick::census_of).filter(|mob| mob.kind == "minecraft:hoglin"));
+                    sim.load_chunk(&chunk);
+                }
+            }
+            if hoglins.is_empty() {
+                continue;
+            }
+            assert!(hoglins.iter().all(|mob| mob.persistent), "{hoglins:?}");
+            let alive = sim.tracked_mobs([f64::from(at[0]), f64::from(at[1]), f64::from(at[2])], 96.0);
+            assert_eq!(alive.hoglins().len(), hoglins.len(), "every stable hoglin comes alive");
+            assert!(alive.hoglins().iter().all(|e| e.hoglin.persistence_required && e.hoglin.kind == minecraftoss_entities::hoglin::HoglinKind::Hoglin));
+            return;
+        }
+        panic!("no hoglin stables among the bastions of seed 77 at {seen:?}");
     }
 
     #[test]

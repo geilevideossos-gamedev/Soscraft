@@ -16,7 +16,7 @@ use super::{place, set, set_attribute_base, spawn_aabb, type_info, CreatureSpawn
 use minecraftoss_core::block::flags;
 use minecraftoss_core::entity_data::finalize_mob;
 use minecraftoss_core::nbt::Tag;
-use minecraftoss_core::random::LegacyRandom;
+use minecraftoss_core::random::{LegacyRandom, RandomSource};
 use minecraftoss_core::{BiomeId, BlockPos, ChunkPos};
 use std::collections::BTreeMap;
 
@@ -189,6 +189,7 @@ pub struct SpawnContext<'a> {
     /// Boxes of chickens nobody rides (a baby zombie's jockey search).
     pub chickens: Vec<[f64; 6]>,
     pub structures: &'a dyn Fn(BlockPos) -> Vec<StructureHere>,
+    pub spawning_monsters: bool,
 }
 
 /// `SpawnState`'s tests around one spawn: the spawn potential (`canSpawn`)
@@ -219,6 +220,52 @@ enum MonsterGroup {
 
 fn byte(value: bool) -> Tag {
     Tag::Byte(i8::from(value))
+}
+
+fn hoglin_spawns_as_baby(random: &mut dyn RandomSource, group: &mut MonsterGroup) -> bool {
+    let baby = random.next_f32() < 0.2;
+    if matches!(group, MonsterGroup::None) {
+        *group = MonsterGroup::Ageable { should_spawn_baby: true, chance: 0.05, size: 0 };
+    }
+    let MonsterGroup::Ageable { should_spawn_baby, chance, size } = group else { return baby };
+    let grouped = *should_spawn_baby && *size > 0 && random.next_f32() <= *chance;
+    *size += 1;
+    baby || grouped
+}
+
+pub(super) struct PiglinSpawn {
+    pub(super) baby: bool,
+    pub(super) weapon: Option<&'static str>,
+    pub(super) hunted: i32,
+    pub(super) armor: [Option<(&'static str, &'static str)>; 4],
+}
+
+pub(super) fn piglin_spawn(level: &mut dyn RandomSource, own: &mut impl RandomSource) -> PiglinSpawn {
+    let baby = level.next_f32() < 0.2;
+    let weapon = if baby {
+        None
+    } else if f64::from(own.next_f32()) < 0.5 {
+        Some("minecraft:crossbow")
+    } else if own.next_i32_bound(10) == 0 {
+        Some("minecraft:golden_spear")
+    } else {
+        Some("minecraft:golden_sword")
+    };
+    let hunted = level.next_i32_bound(2400 - 600 + 1) + 600;
+    let mut armor = [None; 4];
+    if !baby {
+        let pieces = [("head", "minecraft:golden_helmet"), ("chest", "minecraft:golden_chestplate"), ("legs", "minecraft:golden_leggings"), ("feet", "minecraft:golden_boots")];
+        for (cell, piece) in armor.iter_mut().zip(pieces) {
+            if level.next_f32() < 0.1 {
+                *cell = Some(piece);
+            }
+        }
+    }
+    PiglinSpawn { baby, weapon, hunted, armor }
+}
+
+pub(super) fn piglin_may_stand_on(below: &str) -> bool {
+    below != "minecraft:nether_wart_block"
 }
 
 /// An equipment slot holding one item (`setItemSlot(slot, new ItemStack(item))`).
@@ -277,6 +324,7 @@ fn follow_range_base(kind: &str) -> f64 {
         "minecraft:enderman" => 64.0,
         "minecraft:ghast" => 100.0,
         "minecraft:blaze" => 48.0,
+        "minecraft:piglin_brute" => 12.0,
         _ => 16.0,
     }
 }
@@ -472,7 +520,9 @@ impl CreatureSpawns {
                     continue;
                 }
                 let difficulty = Self::difficulty_at(level, context, pos);
-                let root = if info.rules.creature() {
+                let root = if info.rules == Rules::Strider {
+                    self.finalize_strider(level, context, tag, pos, difficulty)
+                } else if info.rules.creature() {
                     self.finalize_spawn(level, &data.kind, &mut tag, pos, &mut animal_group);
                     tag
                 } else {
@@ -626,6 +676,9 @@ impl CreatureSpawns {
                 let water = self.registries.blocks.block(self.registries.blocks.block_of(state)).name.as_str() == "minecraft:water";
                 pos.y <= level.sea_level() - 33 && level.raw_brightness(pos, 0) == 0 && water
             }
+            Rules::Strider => self.strider_spawn_rules(level, pos),
+            Rules::Hoglin => self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() != "minecraft:nether_wart_block",
+            Rules::Piglin => piglin_may_stand_on(self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str()),
             Rules::Other => {
                 level.note_unsupported(&format!("spawn rules of {kind}"));
                 false
@@ -744,7 +797,8 @@ impl CreatureSpawns {
         // constructor set it).
         if let Tag::Compound(map) = &mut tag {
             if map.contains_key("CanPickUpLoot") {
-                map.insert("CanPickUpLoot".to_owned(), Tag::Byte(0));
+                let piglin = matches!(kind, "minecraft:piglin" | "minecraft:piglin_brute");
+                map.insert("CanPickUpLoot".to_owned(), Tag::Byte(i8::from(piglin)));
             }
         }
         if let Some(Tag::Compound(nbt)) = nbt {
@@ -759,6 +813,10 @@ impl CreatureSpawns {
         }
         let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
         match type_info(kind) {
+            Some(info) if info.rules == Rules::Strider => {
+                let difficulty = Self::difficulty_at(level, context, pos);
+                Ok(self.finalize_strider(level, context, tag, pos, difficulty))
+            }
             Some(info) if info.rules.creature() => {
                 self.finalize_spawn(level, kind, &mut tag, pos, &mut Group::None);
                 Ok(tag)
@@ -956,6 +1014,37 @@ impl CreatureSpawns {
                 Self::ageable_monster(level, &mut tag, group);
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
+            "minecraft:hoglin" => {
+                if hoglin_spawns_as_baby(level.random(), group) {
+                    set(&mut tag, "Age", Tag::Int(-24000));
+                }
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:zoglin" => {
+                if level.random().next_f32() < 0.2 {
+                    set(&mut tag, "IsBaby", byte(true));
+                }
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:piglin" => {
+                let spawn = piglin_spawn(level.random(), &mut own);
+                if spawn.baby {
+                    set(&mut tag, "IsBaby", byte(true));
+                }
+                if let Some(weapon) = spawn.weapon {
+                    equip(&mut tag, "mainhand", weapon);
+                }
+                minecraftoss_core::entity_data::set_brain_memory(&mut tag, "minecraft:hunted_recently", Tag::Byte(1), Some(i64::from(spawn.hunted)));
+                for (slot, item) in spawn.armor.into_iter().flatten() {
+                    equip(&mut tag, slot, item);
+                }
+                Self::roll_enchantments(level, &tag, difficulty);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:piglin_brute" => {
+                minecraftoss_core::entity_data::finalize_piglin_brute(&mut tag, &self.dimension, [pos.x, pos.y, pos.z]);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
             "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" | "minecraft:ghast" | "minecraft:blaze" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
             _ => {
                 level.note_unsupported(&format!("finalizeSpawn of {kind}"));
@@ -1145,6 +1234,40 @@ impl CreatureSpawns {
         camel
     }
 
+    fn finalize_strider(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, mut tag: Tag, pos: BlockPos, difficulty: DifficultyInstance) -> Tag {
+        let baby = tag.get("Age").and_then(Tag::as_i64).is_some_and(|age| age < 0);
+        let mut rider = None;
+        if !baby {
+            let catalog = self.registries.entities.as_ref();
+            if level.random().next_i32_bound(30) == 0 && context.spawning_monsters {
+                if let Some(mut piglin) = catalog.and_then(|c| c.default_tag("minecraft:zombified_piglin")) {
+                    let uuid = level.next_uuid();
+                    let mut group = MonsterGroup::Zombie { baby: level.random().next_f32() < 0.05, can_spawn_jockey: false };
+                    place(&mut piglin, Self::position(&tag), Self::y_rot(&tag), 0.0, uuid);
+                    let mut piglin = self.finalize_monster(level, context, "minecraft:zombified_piglin", piglin, pos, difficulty, &mut group, false);
+                    equip(&mut piglin, "mainhand", "minecraft:warped_fungus_on_a_stick");
+                    equip(&mut tag, "saddle", "minecraft:saddle");
+                    let chances = [("saddle".to_owned(), Tag::Float(2.0))].into_iter().collect();
+                    set(&mut tag, "drop_chances", Tag::Compound(chances));
+                    rider = Some(piglin);
+                }
+            } else if level.random().next_i32_bound(10) == 0
+                && let Some(mut child) = catalog.and_then(|c| c.default_tag("minecraft:strider"))
+            {
+                let uuid = level.next_uuid();
+                set(&mut child, "Age", Tag::Int(-24000));
+                place(&mut child, Self::position(&tag), Self::y_rot(&tag), 0.0, uuid);
+                self.finalize_spawn(level, "minecraft:strider", &mut child, pos, &mut Group::None);
+                rider = Some(child);
+            }
+        }
+        self.finalize_spawn(level, "minecraft:strider", &mut tag, pos, &mut Group::None);
+        if let Some(rider) = rider {
+            set(&mut tag, "Passengers", Tag::List(vec![rider]));
+        }
+        tag
+    }
+
     /// A chicken jockey's new chicken at the zombie, finalized as a spawn
     /// of its own.
     fn jockey_chicken(&self, level: &mut dyn SpawnLevel, zombie: &Tag, pos: BlockPos) -> Option<Tag> {
@@ -1192,6 +1315,86 @@ impl CreatureSpawns {
 #[cfg(test)]
 mod tests {
     use super::MobCategory;
+
+    #[test]
+    fn a_hoglin_group_rolls_one_in_five_babies_and_a_further_twentieth_after_the_first() {
+        let mut random = minecraftoss_core::random::LegacyRandom::new(42);
+        let groups = 20_000;
+        let (mut first, mut later) = (0, 0);
+        for _ in 0..groups {
+            let mut group = super::MonsterGroup::None;
+            for member in 0..4 {
+                if super::hoglin_spawns_as_baby(&mut random, &mut group) {
+                    if member == 0 {
+                        first += 1;
+                    } else {
+                        later += 1;
+                    }
+                }
+            }
+        }
+        let first = f64::from(first) / f64::from(groups);
+        let later = f64::from(later) / f64::from(groups * 3);
+        assert!((first - 0.2).abs() < 0.01, "{first}");
+        assert!((later - 0.24).abs() < 0.01, "{later}");
+        let info = super::type_info("minecraft:hoglin").unwrap();
+        assert_eq!((info.width, info.height, info.cluster, info.fire_immune, info.remove_far), (1.396_484_4, 1.4, 4, false, true));
+        assert_eq!(info.rules, super::Rules::Hoglin);
+        let zoglin = super::type_info("minecraft:zoglin").unwrap();
+        assert_eq!((zoglin.fire_immune, zoglin.remove_far, zoglin.rules), (true, true, super::Rules::AnyLightMonster));
+    }
+
+    #[test]
+    fn a_piglin_spawn_rolls_a_baby_one_in_five_and_a_crossbow_for_half_the_adults() {
+        let mut level = minecraftoss_core::random::LegacyRandom::new(11);
+        let mut own = minecraftoss_core::random::LegacyRandom::new(12);
+        let rolls = 10_000;
+        let (mut babies, mut crossbows, mut spears, mut swords) = (0, 0, 0, 0);
+        let mut pieces = [0; 4];
+        for _ in 0..rolls {
+            let spawn = super::piglin_spawn(&mut level, &mut own);
+            assert!((600..=2400).contains(&spawn.hunted));
+            if spawn.baby {
+                babies += 1;
+                assert!(spawn.weapon.is_none() && spawn.armor.iter().all(Option::is_none));
+                continue;
+            }
+            match spawn.weapon {
+                Some("minecraft:crossbow") => crossbows += 1,
+                Some("minecraft:golden_spear") => spears += 1,
+                Some("minecraft:golden_sword") => swords += 1,
+                other => panic!("{other:?}"),
+            }
+            for (count, piece) in pieces.iter_mut().zip(spawn.armor) {
+                if piece.is_some() {
+                    *count += 1;
+                }
+            }
+        }
+        let adults = f64::from(rolls - babies);
+        let share = |n: i32, of: f64| f64::from(n) / of;
+        assert!((share(babies, f64::from(rolls)) - 0.2).abs() < 0.015, "{babies}");
+        assert!((share(crossbows, adults) - 0.5).abs() < 0.02, "{crossbows}");
+        assert!((share(spears, adults) - 0.05).abs() < 0.01, "{spears}");
+        assert!((share(swords, adults) - 0.45).abs() < 0.02, "{swords}");
+        for count in pieces {
+            assert!((share(count, adults) - 0.1).abs() < 0.015, "{pieces:?}");
+        }
+        let info = super::type_info("minecraft:piglin").unwrap();
+        assert_eq!((info.width, info.height, info.fire_immune, info.remove_far, info.rules), (0.6, 1.95, false, true, super::Rules::Piglin));
+        assert_eq!(super::follow_range_base("minecraft:piglin_brute"), 12.0);
+        assert_eq!(super::follow_range_base("minecraft:piglin"), 16.0);
+    }
+
+    #[test]
+    fn piglins_do_not_spawn_on_nether_wart_blocks() {
+        assert!(!super::piglin_may_stand_on("minecraft:nether_wart_block"));
+        for floor in ["minecraft:netherrack", "minecraft:crimson_nylium", "minecraft:warped_wart_block", "minecraft:soul_sand"] {
+            assert!(super::piglin_may_stand_on(floor), "{floor}");
+        }
+        let brute = super::type_info("minecraft:piglin_brute").unwrap();
+        assert_eq!((brute.rules, brute.remove_far), (super::Rules::Other, true));
+    }
 
     #[test]
     fn every_nether_monster_has_the_monster_category() {

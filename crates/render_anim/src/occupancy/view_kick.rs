@@ -237,7 +237,11 @@ pub fn tick_session_view_kick(
 }
 
 pub fn sync_camera_from_presented(
-    (skate, mc_camera): (Res<frame::SkateMode>, Option<Res<frame::McCamera>>),
+    (skate, mc_camera, sleepers): (
+        Res<frame::SkateMode>,
+        Option<Res<frame::McCamera>>,
+        Option<Res<frame::McSleepers>>,
+    ),
     mut killcam: Local<super::killcam::KillcamCamera>,
     clock: Res<FrameClock>,
     presented: Res<PresentedSnapshot>,
@@ -337,6 +341,7 @@ pub fn sync_camera_from_presented(
         kick.horiz_fov_deg = horiz;
         return;
     }
+    let sleep_camera = sleepers.as_deref().and_then(|sleepers| sleepers.camera);
     if let Some(camera) = mc_camera.as_deref().filter(|camera| camera.detached) {
         stamp_damage_feedback(
             &mut kick,
@@ -362,6 +367,7 @@ pub fn sync_camera_from_presented(
             ps.origin[1] + offset[1],
             ps.origin[2] + offset[2] + ps.view_height_current,
         ];
+        let eye = sleep_camera.map_or(eye, |sleep| sleep.eye);
         let pose = crate::minecraft_camera::third_person_pose(
             eye,
             ps.viewangles,
@@ -415,6 +421,34 @@ pub fn sync_camera_from_presented(
             false,
             actions.as_deref_mut(),
         );
+        return;
+    }
+    if let Some(sleep) = sleep_camera {
+        let pose = WorldCameraPose {
+            origin: sleep.origin,
+            angles: sleep.angles,
+        };
+        kick.refdef_vieworg = pose.origin;
+        kick.refdef_view_angles = pose.angles;
+        let eye = transform_from_iw_view(pose);
+        for mut transform in &mut q {
+            transform.translation = eye.translation;
+            transform.rotation = eye.rotation;
+        }
+        if let Some(horiz) = apply_fpv_lens_fov(
+            &mut lenses,
+            settings.fov,
+            ps.pm_type,
+            ps.link_flags,
+            ps.e_flags,
+            0.0,
+            viewmodel,
+            weapons.as_ref().and_then(|w| w.0.facts_of(viewmodel)),
+            false,
+            actions.as_deref_mut(),
+        ) {
+            kick.horiz_fov_deg = horiz;
+        }
         return;
     }
     let offset = presented.view_offset();
