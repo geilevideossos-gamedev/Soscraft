@@ -264,7 +264,9 @@ impl PlayerQueues {
     }
 }
 
-fn mob_hit(feet: [f64; 3], hit: &minecraftoss_entities::world::PlayerHit, difficulty: i32, entity_type: impl Fn(u64) -> Option<&'static str>) -> Option<(f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause)> {
+type MobHitTaken = (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause);
+
+fn mob_hit(feet: [f64; 3], hit: &minecraftoss_entities::world::PlayerHit, difficulty: i32, entity_type: impl Fn(u64) -> Option<&'static str>) -> Option<MobHitTaken> {
     let from = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
         _ => None,
@@ -456,6 +458,7 @@ impl Entities {
         self.players.queue(player)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn throw(&mut self, player: u64, stack: &ItemStack, eye: DVec3, yaw: f32, pitch: f32, motion: DVec3, on_ground: bool) -> bool {
         let throw = minecraft_terrain::thrown::Throw { owner: player, item: &stack.id, components: stack.components.as_ref(), eye, yaw, pitch, motion, on_ground };
         let Some(thrown) = minecraft_terrain::thrown::Thrown::launch(&throw, &mut self.random) else {

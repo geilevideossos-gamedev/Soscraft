@@ -8411,7 +8411,7 @@ mod tests {
     }
 
     fn held(player: &TickPlayer) -> Vec<(String, u8)> {
-        player.pickup.as_ref().map(|(inventory, _)| inventory.slots.iter().flatten().map(|stack| (stack.id.clone(), stack.count)).collect()).unwrap_or_default()
+        player.pickup.as_ref().map_or_else(Vec::new, |(inventory, _)| inventory.slots.iter().flatten().map(|stack| (stack.id.clone(), stack.count)).collect())
     }
 
     #[test]

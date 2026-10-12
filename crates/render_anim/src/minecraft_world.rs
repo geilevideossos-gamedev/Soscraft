@@ -1142,7 +1142,7 @@ fn update(
         }
         let now_open = player.menus.block().cloned();
         let spectator = player_mode.mode == minecraftoss_player::GameMode::Spectator;
-        let open_cells: Vec<(u128, Vec<(i32, i32, i32)>)> = std::iter::once(&*player)
+        let open_cells: Vec<OpenCells> = std::iter::once(&*player)
             .chain(friends.iter().map(|friend| &**friend).filter(|friend| friend.dimension == *dimension))
             .map(|each| (minecraft_survival::level::opener_key(&each.uuid), each.menus.block().map_or_else(Vec::new, |opened| opened.cells.clone())))
             .collect();
@@ -1540,6 +1540,8 @@ pub(crate) fn cull_camera(drawn_from: Option<&Transform>, origin: [f64; 3], eye:
 }
 
 type ColumnLights = Vec<((i32, i32), Option<Arc<SkyLight>>)>;
+
+type OpenCells = (u128, Vec<(i32, i32, i32)>);
 
 pub(crate) fn terrain_frame(terrain: &mut minecraft_survival::level::Terrain, world: &Loaded, view: &mut MinecraftWorldView, camera: &CullCamera) -> ColumnLights {
     let update = terrain

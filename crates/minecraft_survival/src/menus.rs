@@ -1182,7 +1182,7 @@ pub fn recheck_lids(
     lids: Lids<'_>,
     open_cells: impl Fn(u128) -> Option<Vec<BlockPos>>,
 ) -> Vec<Effect> {
-    if lids.entities.ticks() % RECHECK_TICKS != 0 {
+    if !lids.entities.ticks().is_multiple_of(RECHECK_TICKS) {
         return Vec::new();
     }
     let events = lids

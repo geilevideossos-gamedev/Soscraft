@@ -849,6 +849,22 @@ Commit: see `git log` ("A chest lid closes when a friend leaves with it open"). 
 - **Test steps:** `docs/round8/e-m2-tests.md`, section "Review fixes" (this commit also adds the step for the furnace fix there).
 - **Kit:** the E14 kit.
 
+### Final verification of M2: clippy on the track's own lines
+
+Commit: see `git log` ("Multiplayer M2 passes clippy"). The previous commit is `374561a7` (the chest lid fix).
+
+- **Clippy** on the crates touched since `79ba1549` (`minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `sim`, `minecraftoss-entities`, `minecraftoss-world`) with `--all-targets -A clippy::approx_constant`. Eight warnings were on lines the track added (E11 to E14); older warnings stay.
+- **Changed (no behaviour change):**
+  - `minecraft_survival::entities`: `mob_hit` returns `Option<MobHitTaken>`, a type alias for its tuple (`type_complexity`), and `Entities::throw` allows `too_many_arguments`, as the other entity calls do.
+  - `minecraft_survival::menus::recheck_lids` uses `is_multiple_of` (`manual_is_multiple_of`).
+  - `minecraft_survival::session`: the break event's data is `unwrap_or(0)`, the friend breaks `unwrap_or_else(Vec::new)` and the level cracks `map_or_else(BTreeMap::new, ...)`, in place of `unwrap_or_default()`, which the workspace `clippy.toml` refuses.
+  - `minecraft_terrain::server` tests: `held` uses `map_or_else(Vec::new, ...)` for the same reason.
+  - `render_anim::minecraft_world`: the open cells use a `type OpenCells` alias (`type_complexity`).
+- **Tests:** none new. `test -p` of each touched crate is green on the real 26.3 data: `minecraft_net` 15, `sim` 80, `minecraftoss-entities` 83, `minecraftoss-world` 66, `minecraft_survival` 471 + 1, `minecraft_terrain` 928 (3 ignored), `render_anim` 81. `check -p launcher` is green.
+- **Combined kit:** the line below now names the items with their `minecraft:` ids, as the section kits do.
+- **Test steps:** none new; the sections of `docs/round8/e-m2-tests.md` cover these lines (E12 for the mob hits and throws, E13c for the cracks and break events, E14 for the chest lids).
+- **Kit:** none needed.
+
 ## Combined kit for every test in this track
 
 27 stacks no longer hold every test's kit. This line covers E11 to E15 and the M2 owner test; the earlier sections keep their own kit lines in `docs/round8/e-m1-tests.md` and `docs/round8/e-m2-tests.md`.
@@ -856,5 +872,5 @@ Commit: see `git log` ("A chest lid closes when a friend leaves with it open"). 
 `minecraft:stone_pickaxe` x1, `minecraft:oak_log` x4, `minecraft:furnace` x1, `minecraft:raw_iron` x3, `minecraft:coal` x6, `minecraft:cooked_beef` x8, `minecraft:chest` x1, `minecraft:iron_helmet` x1, `minecraft:iron_chestplate` x1, `minecraft:iron_leggings` x1, `minecraft:iron_boots` x1, `minecraft:iron_sword` x1, `minecraft:elytra` x1, `minecraft:firework_rocket` x8, `minecraft:white_bed` x1, `minecraft:anvil` x1, `minecraft:cobblestone` x32, `minecraft:oak_door` x2, `minecraft:water_bucket` x1, `minecraft:snowball` x16, `minecraft:coal_ore` x4, `minecraft:experience_bottle` x8, `minecraft:wolf_spawn_egg` x1, `minecraft:bone` x8, `minecraft:dirt` x4, `minecraft:wheat_seeds` x4, `minecraft:wooden_hoe` x1 (27 stacks).
 
 ```
-IW4L_MINECRAFT_KIT=stone_pickaxe,oak_log*4,furnace,raw_iron*3,coal*6,cooked_beef*8,chest,iron_helmet,iron_chestplate,iron_leggings,iron_boots,iron_sword,elytra,firework_rocket*8,white_bed,anvil,cobblestone*32,oak_door*2,water_bucket,snowball*16,coal_ore*4,experience_bottle*8,wolf_spawn_egg,bone*8,dirt*4,wheat_seeds*4,wooden_hoe
+IW4L_MINECRAFT_KIT=minecraft:stone_pickaxe,minecraft:oak_log*4,minecraft:furnace,minecraft:raw_iron*3,minecraft:coal*6,minecraft:cooked_beef*8,minecraft:chest,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:iron_sword,minecraft:elytra,minecraft:firework_rocket*8,minecraft:white_bed,minecraft:anvil,minecraft:cobblestone*32,minecraft:oak_door*2,minecraft:water_bucket,minecraft:snowball*16,minecraft:coal_ore*4,minecraft:experience_bottle*8,minecraft:wolf_spawn_egg,minecraft:bone*8,minecraft:dirt*4,minecraft:wheat_seeds*4,minecraft:wooden_hoe
 ```

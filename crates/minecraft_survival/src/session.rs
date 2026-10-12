@@ -215,7 +215,7 @@ impl Session {
                 self.outbox.push(ToClient::LevelEvent {
                     event: BREAK_EVENT,
                     pos,
-                    data: i32::try_from(state).unwrap_or_default(),
+                    data: i32::try_from(state).unwrap_or(0),
                 });
             }
         }
@@ -845,7 +845,7 @@ impl Sessions {
                 .terrain
                 .friend_breaks
                 .replace(Vec::new())
-                .unwrap_or_default();
+                .unwrap_or_else(Vec::new);
             for session in self.sessions.values_mut() {
                 if session.chunks.level == Some(dimension) {
                     session.send_breaks(&breaks);
@@ -926,8 +926,7 @@ impl Sessions {
             let cracks = match (session.chunks.level, feet) {
                 (Some(dimension), Some((standing, feet))) if dimension == standing => levels
                     .get(&dimension)
-                    .map(|level| level_cracks(dimension, level, players))
-                    .unwrap_or_default()
+                    .map_or_else(BTreeMap::new, |level| level_cracks(dimension, level, players))
                     .into_iter()
                     .filter(|((_, pos), _)| near(feet, *pos, CRACK_RANGE))
                     .collect(),
