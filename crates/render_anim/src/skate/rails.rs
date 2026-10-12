@@ -80,6 +80,7 @@ pub fn find(tris: &[[Vec3; 3]]) -> (Vec<Vec<Vec3>>, RailCensus) {
         if out.dot(centroid - mid) > 0. {
             out = -out;
         }
+        let rise = -(normal.x * out.x + normal.y * out.y) / normal.z;
         let samples: &[f32] = if len < 12. {
             &[0.5]
         } else {
@@ -87,7 +88,7 @@ pub fn find(tris: &[[Vec3; 3]]) -> (Vec<Vec<Vec3>>, RailCensus) {
         };
         let passing = samples
             .iter()
-            .filter(|&&s| probe.is_lip(a + along * s, out))
+            .filter(|&&s| probe.is_lip(a + along * s, out, rise))
             .count();
         if passing * 3 >= samples.len() * 2 {
             lips.push((a, b));
@@ -150,9 +151,10 @@ struct Probe<'a> {
 
 impl Probe<'_> {
     /// Past `p` along `out` the ground falls away and nothing rises.
-    fn is_lip(&mut self, p: Vec3, out: Vec3) -> bool {
-        let down_from = p + out * PROBE_OUT + Vec3::Z;
-        if self.hit(down_from, -Vec3::Z, 1. + MIN_DROP) {
+    fn is_lip(&mut self, p: Vec3, out: Vec3, rise: f32) -> bool {
+        let lift = 1. + (rise * PROBE_OUT).max(0.);
+        let down_from = p + out * PROBE_OUT + Vec3::Z * lift;
+        if self.hit(down_from, -Vec3::Z, lift + MIN_DROP) {
             return false;
         }
         let across_from = p - out + Vec3::Z * WALL_PROBE_UP;
@@ -305,4 +307,64 @@ fn chain(runs: Vec<(Vec3, Vec3)>) -> Vec<Vec<Vec3>> {
         rails.push(points.into_iter().collect());
     }
     rails
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ground() -> Vec<[Vec3; 3]> {
+        let corners = [
+            Vec3::new(-400., -400., 0.),
+            Vec3::new(800., -400., 0.),
+            Vec3::new(800., 400., 0.),
+            Vec3::new(-400., 400., 0.),
+        ];
+        vec![
+            [corners[0], corners[1], corners[2]],
+            [corners[0], corners[2], corners[3]],
+        ]
+    }
+
+    fn ramp(rise: f32) -> Vec<[Vec3; 3]> {
+        let mut tris = ground();
+        let ramp = [
+            Vec3::new(0., 0., 0.),
+            Vec3::new(72., 0., 0.),
+            Vec3::new(72., rise, rise),
+            Vec3::new(0., rise, rise),
+        ];
+        tris.push([ramp[0], ramp[1], ramp[2]]);
+        tris.push([ramp[0], ramp[2], ramp[3]]);
+        for x in [0., 72.] {
+            tris.push([
+                Vec3::new(x, 0., 0.),
+                Vec3::new(x, rise, 0.),
+                Vec3::new(x, rise, rise),
+            ]);
+        }
+        tris.push([
+            Vec3::new(0., rise, 0.),
+            Vec3::new(72., rise, 0.),
+            Vec3::new(72., rise, rise),
+        ]);
+        tris.push([
+            Vec3::new(0., rise, 0.),
+            Vec3::new(72., rise, rise),
+            Vec3::new(0., rise, rise),
+        ]);
+        tris
+    }
+
+    #[test]
+    fn the_middle_of_a_sloped_face_is_no_lip() {
+        for rise in [18., 36., 72.] {
+            let tris = ramp(rise);
+            let (found, _) = find(&tris);
+            assert!(
+                found.iter().all(|rail| rail.iter().all(|p| p.z.abs() < 0.01 || (p.z - rise).abs() < 0.01)),
+                "{rise}: {found:?}"
+            );
+        }
+    }
 }

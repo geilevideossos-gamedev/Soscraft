@@ -174,6 +174,16 @@ Commit: the one after `006d0a4c` (group 3b).
   6. Optional: add `IW4L_LOG_LEVEL=debug` to the `.env` next to the exe and skate near a village or a snowy forest. Every skate collision rebuild writes "Skate block ramps: N triangles in M ms" to the newest log in `iw4l-artifacts\logs`. Send the largest M, then remove the line again.
 - **Kit:** `minecraft:cobblestone*64` (twice), `minecraft:oak_stairs*64`, `minecraft:stone_slab*64`, `minecraft:cobblestone_slab*64`, `minecraft:white_carpet*64`, `minecraft:snow*64`.
 
+## Fix. Skate grind rails no longer run across the middle of sloped faces
+
+Commit: the one after `d602c978` (group 4). Found while building group 5a.
+
+- **Changed:** `render_anim/src/skate/rails.rs`. Group 4 made the lip probe look out horizontally. On an edge inside a sloped face (the diagonal of a ramp's quad, or of a group 4 wedge), when the probe looked out on the uphill side the face rose more than one unit within the probe's two units, so the drop probe started under the face, missed it and saw a drop: the diagonal became a grind rail across the ramp. Whether it did depended on which of the two triangles came first. The drop probe now starts above the face's own continuation (`rise`, the face's climb per unit along the probe) and reaches as far below the edge as before, so a real lip still needs the same 3-unit drop. Toes, flat edges and the side edges of slopes probe exactly as before.
+- **Tests:** `render_anim`: `the_middle_of_a_sloped_face_is_no_lip` (`rails.rs`, ramps rising half a block, one block and two blocks over two blocks of width: no rail between the ground and the top edge).
+- **Decisions:** the fix also applies to MW2 maps, where it only removes rails across the middle of steep sloped faces (the same defect group 4 introduced there).
+- **Owner's test steps:** covered by group 5a step 4 (the stair ramp has rails only on its two sides).
+- **Kit:** none beyond group 5a.
+
 ## The whole track's owner test, one kit
 
 Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6. Groups 1 and 2 need no items. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, and 4 the cobblestone, stairs, slabs, carpet and snow.
