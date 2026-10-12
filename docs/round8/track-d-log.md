@@ -233,6 +233,14 @@ Commit: the one after `af560fec` (group 5a).
   3. Optional: with `IW4L_LOG_LEVEL=debug` in `.env`, the newest log in `iw4l-artifacts\logs` shows "Skate block rails: ... N track rails" with N above 0 near the track.
 - **Kit:** `minecraft:rail*64`, `minecraft:powered_rail*16`, `minecraft:cobblestone*64`.
 
+## Clippy. Track D rail code passes clippy without new warnings
+
+Commit: the one after `09e57cea` (group 5b).
+
+- **Changed:** `render_anim/src/skate/rails.rs`: `merge_ridges` groups the lips by side in a plain `HashMap<[i32; 2], Vec<lip>>` (clippy's `type_complexity` flagged the tuple map from group 5a). No behaviour change. The remaining `type_complexity` warnings in `rails.rs` and the ones in `skate.rs` are upstream's.
+- **Tests:** none new; `render_anim` passes (91).
+- **Owner's test steps:** none. **Kit:** none.
+
 ## The whole track's owner test, one kit
 
 Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6, group 5a steps 1-4, group 5b steps 1-3. Groups 1 and 2 need no items. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, 4 the cobblestone, stairs, slabs, carpet and snow, 5a the fence, wall and iron bars, and 5b the rails.

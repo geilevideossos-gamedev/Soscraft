@@ -291,13 +291,15 @@ fn merge_collinear(lips: Vec<(Vec3, Vec3)>) -> Vec<(Vec3, Vec3)> {
 }
 
 fn merge_ridges(lips: Vec<(Vec3, Vec3, Vec3)>) -> Vec<(Vec3, Vec3)> {
-    let mut sides: HashMap<[i32; 2], (Vec3, Vec<(Vec3, Vec3)>)> = HashMap::new();
-    for (a, b, out) in lips {
-        let key = [out.x, out.y].map(|v| (v * 64.).round() as i32);
-        sides.entry(key).or_insert((out, Vec::new())).1.push((a, b));
+    let mut sides: HashMap<[i32; 2], Vec<(Vec3, Vec3, Vec3)>> = HashMap::new();
+    for lip in lips {
+        let key = [lip.2.x, lip.2.y].map(|v| (v * 64.).round() as i32);
+        sides.entry(key).or_default().push(lip);
     }
     let mut runs = Vec::new();
-    for (out, side) in sides.into_values() {
+    for side in sides.into_values() {
+        let out = side[0].2;
+        let side = side.into_iter().map(|(a, b, _)| (a, b)).collect();
         runs.extend(
             merge_collinear(side)
                 .into_iter()
