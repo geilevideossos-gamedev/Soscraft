@@ -126,14 +126,21 @@ fn block_collision(
         started.elapsed().as_millis(),
     );
     map_triangles.extend(ramps.into_iter().map(|t| t.map(Vec3::from_array)));
-    let (found, census) = rails::find(&map_triangles, rails::Limits::BLOCKS);
+    let (mut found, census) = rails::find(&map_triangles, rails::Limits::BLOCKS);
+    let track = sim::voxel::track_rails(centre.to_array(), BLOCK_RADIUS, BLOCK_DEPTH);
     diag::debug!(
         World,
-        "Skate block rails: {} walkable edges, {} lips, {} runs, {} rails",
+        "Skate block rails: {} walkable edges, {} lips, {} runs, {} rails, {} track rails",
         census.candidates,
         census.lips,
         census.runs,
         census.rails,
+        track.len(),
+    );
+    found.extend(
+        track
+            .into_iter()
+            .map(|rail| rail.into_iter().map(Vec3::from_array).collect()),
     );
     let triangles: Vec<[[f32; 3]; 3]> = map_triangles
         .iter()

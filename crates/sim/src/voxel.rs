@@ -555,6 +555,28 @@ pub const STUCK_BERRY_BUSH: u16 = 0x200;
 pub const STUCK_COBWEB: u16 = 0x400;
 const BERRY_BUSH_SLOWDOWN: [f32; 3] = [0.8, 0.8, 0.75];
 const COBWEB_SLOWDOWN: [f32; 3] = [0.25, 0.25, 0.05];
+pub const RAIL_SHAPE: u16 = 0x7800;
+const RAIL_SHAPE_SHIFT: u32 = 11;
+const RAIL_SHAPES: [&str; 10] = [
+    "north_south",
+    "east_west",
+    "ascending_east",
+    "ascending_west",
+    "ascending_north",
+    "ascending_south",
+    "south_east",
+    "south_west",
+    "north_west",
+    "north_east",
+];
+const RAIL_BLOCKS: [&str; 4] = ["minecraft:rail", "minecraft:powered_rail", "minecraft:detector_rail", "minecraft:activator_rail"];
+
+pub fn rail_flags(block: &str, shape: Option<&str>) -> u16 {
+    if !RAIL_BLOCKS.contains(&block) {
+        return 0;
+    }
+    shape.and_then(|shape| RAIL_SHAPES.iter().position(|s| *s == shape)).map_or(0, |i| (i as u16 + 1) << RAIL_SHAPE_SHIFT)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mover {
@@ -862,6 +884,112 @@ fn overlaps<'a>(shape_at: &impl Fn(i32, i32, i32) -> &'a [[f32; 6]], min: [f64; 
     })
 }
 
+const RAIL_HEIGHT: f64 = 2.0 / 16.0;
+const RAIL_JOIN: f64 = 32.0;
+const RAIL_ARC_STEPS: usize = 4;
+
+pub fn track_rails(centre: [f32; 3], radius: i32, depth: i32) -> Vec<Vec<[f32; 3]>> {
+    let Ok(world) = WORLD.read() else {
+        return Vec::new();
+    };
+    let Some(world) = world.as_ref() else {
+        return Vec::new();
+    };
+    let c = to_block(world.origin, centre).map(|v| v.floor() as i32);
+    let lo = [c[0] - radius, c[1] - depth, c[2] - radius];
+    let hi = [c[0] + radius, c[1] + depth, c[2] + radius];
+    rail_polylines(|x, y, z| world.fluid_at(x, y, z), lo, hi)
+        .into_iter()
+        .map(|line| line.into_iter().map(|p| to_map(world.origin, p)).collect())
+        .collect()
+}
+
+pub fn rail_polylines(flags_at: impl Fn(i32, i32, i32) -> u16, lo: [i32; 3], hi: [i32; 3]) -> Vec<Vec<[f64; 3]>> {
+    let mut pieces = Vec::new();
+    for x in lo[0]..=hi[0] {
+        for z in lo[2]..=hi[2] {
+            for y in lo[1]..=hi[1] {
+                let shape = (flags_at(x, y, z) & RAIL_SHAPE) >> RAIL_SHAPE_SHIFT;
+                if let Some(piece) = rail_piece(shape, [f64::from(x), f64::from(y), f64::from(z)]) {
+                    pieces.push(piece);
+                }
+            }
+        }
+    }
+    chain_rails(pieces)
+}
+
+fn rail_piece(shape: u16, base: [f64; 3]) -> Option<Vec<[f64; 3]>> {
+    let at = |x: f64, up: f64, z: f64| [base[0] + x, base[1] + RAIL_HEIGHT + up, base[2] + z];
+    let line = |from: [f64; 3], to: [f64; 3]| Some(vec![from, to]);
+    let curve = |corner: [f64; 2], from: [f64; 2], to: [f64; 2]| {
+        let (a, b) = ([from[0] - corner[0], from[1] - corner[1]], [to[0] - corner[0], to[1] - corner[1]]);
+        Some(
+            (0..=RAIL_ARC_STEPS)
+                .map(|step| {
+                    let angle = std::f64::consts::FRAC_PI_2 * step as f64 / RAIL_ARC_STEPS as f64;
+                    let (cos, sin) = match step {
+                        0 => (1.0, 0.0),
+                        RAIL_ARC_STEPS => (0.0, 1.0),
+                        _ => (angle.cos(), angle.sin()),
+                    };
+                    at(corner[0] + a[0] * cos + b[0] * sin, 0.0, corner[1] + a[1] * cos + b[1] * sin)
+                })
+                .collect(),
+        )
+    };
+    match shape {
+        1 => line(at(0.5, 0.0, 0.0), at(0.5, 0.0, 1.0)),
+        2 => line(at(0.0, 0.0, 0.5), at(1.0, 0.0, 0.5)),
+        3 => line(at(0.0, 0.0, 0.5), at(1.0, 1.0, 0.5)),
+        4 => line(at(1.0, 0.0, 0.5), at(0.0, 1.0, 0.5)),
+        5 => line(at(0.5, 0.0, 1.0), at(0.5, 1.0, 0.0)),
+        6 => line(at(0.5, 0.0, 0.0), at(0.5, 1.0, 1.0)),
+        7 => curve([1.0, 1.0], [0.5, 1.0], [1.0, 0.5]),
+        8 => curve([0.0, 1.0], [0.5, 1.0], [0.0, 0.5]),
+        9 => curve([0.0, 0.0], [0.5, 0.0], [0.0, 0.5]),
+        10 => curve([1.0, 0.0], [0.5, 0.0], [1.0, 0.5]),
+        _ => None,
+    }
+}
+
+fn chain_rails(pieces: Vec<Vec<[f64; 3]>>) -> Vec<Vec<[f64; 3]>> {
+    let key = |p: [f64; 3]| p.map(|v| (v * RAIL_JOIN).round() as i64);
+    let mut ends: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        ends.entry(key(piece[0])).or_default().push(index);
+        ends.entry(key(piece[piece.len() - 1])).or_default().push(index);
+    }
+    let mut used = vec![false; pieces.len()];
+    let next = |tip: [f64; 3], used: &mut [bool]| -> Option<Vec<[f64; 3]>> {
+        let index = ends.get(&key(tip))?.iter().copied().find(|&i| !used[i])?;
+        used[index] = true;
+        let mut piece = pieces[index].clone();
+        if key(piece[0]) != key(tip) {
+            piece.reverse();
+        }
+        Some(piece)
+    };
+    let mut rails = Vec::new();
+    for start in 0..pieces.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let mut line = std::collections::VecDeque::from(pieces[start].clone());
+        while let Some(piece) = next(line[line.len() - 1], &mut used) {
+            line.extend(piece.into_iter().skip(1));
+        }
+        while let Some(piece) = next(line[0], &mut used) {
+            for p in piece.into_iter().skip(1) {
+                line.push_front(p);
+            }
+        }
+        rails.push(line.into_iter().collect());
+    }
+    rails
+}
+
 /// Whether traces against `brushes` go to the block world.
 pub(crate) fn active_for(brushes: &[SimBrush]) -> bool {
     WORLD
@@ -954,7 +1082,7 @@ impl VoxelWorld {
                 let feet = [f64::from(x) + 0.5, f64::from(y) + f64::from(top), f64::from(z) + 0.5];
                 let spot = to_map(self.origin, feet);
                 let clear = trace_in(self, spot, spot, mins, maxs, None).startsolid == 0;
-                let wet = (0..2).any(|up| self.fluid_at(x, feet[1].floor() as i32 + up, z) != 0);
+                let wet = (0..2).any(|up| self.fluid_at(x, feet[1].floor() as i32 + up, z) & !RAIL_SHAPE != 0);
                 (clear && !wet && !taken(spot)).then_some(spot)
             })
     }
@@ -2546,5 +2674,112 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn rails_of(blocks: &[([i32; 3], &str)]) -> Vec<Vec<[f64; 3]>> {
+        let flags: HashMap<[i32; 3], u16> = blocks.iter().map(|&(at, shape)| (at, rail_flags("minecraft:rail", Some(shape)))).collect();
+        rail_polylines(|x, y, z| flags.get(&[x, y, z]).copied().unwrap_or(0), [-4, -2, -4], [4, 4, 4])
+    }
+
+    fn near(a: [f64; 3], b: [f64; 3]) -> bool {
+        (0..3).all(|k| (a[k] - b[k]).abs() < 1e-9)
+    }
+
+    fn ends_are(line: &[[f64; 3]], a: [f64; 3], b: [f64; 3]) -> bool {
+        let (first, last) = (line[0], line[line.len() - 1]);
+        (near(first, a) && near(last, b)) || (near(first, b) && near(last, a))
+    }
+
+    #[test]
+    fn track_rails_follow_straight_ascending_and_curved_shapes() {
+        let h = 0.125;
+        for (shape, a, b) in [
+            ("north_south", [0.5, h, 0.0], [0.5, h, 1.0]),
+            ("east_west", [0.0, h, 0.5], [1.0, h, 0.5]),
+            ("ascending_east", [0.0, h, 0.5], [1.0, 1.0 + h, 0.5]),
+            ("ascending_west", [1.0, h, 0.5], [0.0, 1.0 + h, 0.5]),
+            ("ascending_north", [0.5, h, 1.0], [0.5, 1.0 + h, 0.0]),
+            ("ascending_south", [0.5, h, 0.0], [0.5, 1.0 + h, 1.0]),
+        ] {
+            let rails = rails_of(&[([0, 0, 0], shape)]);
+            assert_eq!(rails.len(), 1, "{shape}");
+            assert_eq!(rails[0].len(), 2, "{shape}");
+            assert!(ends_are(&rails[0], a, b), "{shape}: {:?}", rails[0]);
+        }
+        for (shape, corner, a, b) in [
+            ("south_east", [1.0, 1.0], [0.5, h, 1.0], [1.0, h, 0.5]),
+            ("south_west", [0.0, 1.0], [0.5, h, 1.0], [0.0, h, 0.5]),
+            ("north_west", [0.0, 0.0], [0.5, h, 0.0], [0.0, h, 0.5]),
+            ("north_east", [1.0, 0.0], [0.5, h, 0.0], [1.0, h, 0.5]),
+        ] {
+            let rails = rails_of(&[([2, 1, -3], shape)]);
+            assert_eq!(rails.len(), 1, "{shape}");
+            let line: Vec<[f64; 3]> = rails[0].iter().map(|p| [p[0] - 2.0, p[1] - 1.0, p[2] + 3.0]).collect();
+            assert_eq!(line.len(), 5, "{shape}");
+            assert!(ends_are(&line, a, b), "{shape}: {line:?}");
+            for p in &line {
+                let r = ((p[0] - corner[0]).powi(2) + (p[2] - corner[1]).powi(2)).sqrt();
+                assert!((r - 0.5).abs() < 1e-9 && (p[1] - h).abs() < 1e-9, "{shape}: {p:?}");
+            }
+        }
+        assert!(rails_of(&[]).is_empty());
+    }
+
+    #[test]
+    fn three_straight_rails_chain_into_one() {
+        let rails = rails_of(&[([0, 0, 0], "north_south"), ([0, 0, 2], "north_south"), ([0, 0, 1], "north_south")]);
+        assert_eq!(rails.len(), 1, "{rails:?}");
+        assert_eq!(rails[0].len(), 4);
+        assert!(ends_are(&rails[0], [0.5, 0.125, 0.0], [0.5, 0.125, 3.0]));
+
+        let track = rails_of(&[
+            ([0, 0, 0], "north_south"),
+            ([0, 0, 1], "ascending_south"),
+            ([0, 1, 2], "north_south"),
+            ([0, 1, 3], "north_east"),
+            ([1, 1, 3], "east_west"),
+        ]);
+        assert_eq!(track.len(), 1, "{track:?}");
+        assert!(ends_are(&track[0], [0.5, 0.125, 0.0], [2.0, 1.125, 3.5]), "{track:?}");
+        assert_eq!(track[0].len(), 2 + 1 + 1 + 4 + 1);
+
+        let apart = rails_of(&[([0, 0, 0], "north_south"), ([1, 0, 0], "north_south"), ([0, 1, 1], "north_south")]);
+        assert_eq!(apart.len(), 3, "side by side or a block higher, rails don't join");
+    }
+
+    #[test]
+    fn rail_shapes_get_their_own_shape_ids() {
+        let flags: Vec<u16> = RAIL_SHAPES.iter().map(|shape| rail_flags("minecraft:rail", Some(shape))).collect();
+        for (i, f) in flags.iter().enumerate() {
+            assert_ne!(*f, 0);
+            assert_eq!(f & !RAIL_SHAPE, 0);
+            assert!(!flags[..i].contains(f), "{}", RAIL_SHAPES[i]);
+        }
+        for block in ["minecraft:powered_rail", "minecraft:detector_rail", "minecraft:activator_rail"] {
+            assert_eq!(rail_flags(block, Some("ascending_west")), flags[3], "{block}");
+        }
+        assert_eq!(rail_flags("minecraft:oak_stairs", Some("straight")), 0);
+        assert_eq!(rail_flags("minecraft:stone", None), 0);
+        assert_eq!(rail_flags("minecraft:rail", None), 0);
+        assert_eq!(rail_flags("minecraft:rail", Some("sideways")), 0);
+        let others = WATER | LAVA | FLUID_AMOUNT | CLIMBABLE | SCAFFOLDING | SCAFFOLDING_BOTTOM | STUCK_BERRY_BUSH | STUCK_COBWEB;
+        assert_eq!(RAIL_SHAPE & others, 0);
+    }
+
+    #[test]
+    fn a_rail_does_not_make_a_respawn_spot_wet() {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 10, z], 1));
+            }
+        }
+        blocks.push(([6, 11, 6], 5));
+        let mut w = world(&blocks);
+        w.shapes.push(Vec::new());
+        w.fluids.push(rail_flags("minecraft:rail", Some("north_south")));
+        w.origin = [7.5, 11.0, 7.5];
+        let spot = w.free_spawn_spot(&|_: [f32; 3]| false).unwrap();
+        assert_eq!([spot[0], spot[1]], [-36.0, 36.0]);
     }
 }

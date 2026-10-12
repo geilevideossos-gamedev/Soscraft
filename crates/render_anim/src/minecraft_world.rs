@@ -2625,7 +2625,7 @@ fn shape_id(
         }) | match blocks.block(blocks.block_of(state)).name.as_str() {
             "minecraft:sweet_berry_bush" => sim::voxel::STUCK_BERRY_BUSH,
             "minecraft:cobweb" => sim::voxel::STUCK_COBWEB,
-            _ => 0,
+            name => sim::voxel::rail_flags(name, blocks.property(state, "shape")),
         };
         let scaffolding = blocks.block(blocks.block_of(state)).name.as_str() == minecraft_terrain::scaffolding::SCAFFOLDING;
         let climbable = registries.block_tags.id("minecraft:climbable").is_some_and(|tag| registries.block_in_tag(state, tag));

@@ -209,10 +209,34 @@ Commit: the one after `1d739aac` (the lip probe fix).
   4. Ride over the corners of a stone slab on the ground: no grind starts there.
 - **Kit:** `minecraft:cobblestone*64` (twice), `minecraft:oak_stairs*64`, `minecraft:oak_fence*64`, `minecraft:cobblestone_wall*64`, `minecraft:iron_bars*64`, `minecraft:stone_slab*64`.
 
+## Group 5b. Minecraft rails are grind rails for the skateboard
+
+Commit: the one after `af560fec` (group 5a).
+
+- **Changed:**
+  - `sim/src/voxel.rs`:
+    - `RAIL_SHAPE = 0x7800` in the per-shape flags: values 1-10 for the ten vanilla `RailShape`s in their enum order (`north_south`, `east_west`, the four `ascending_*`, then `south_east`, `south_west`, `north_west`, `north_east`), 0 for none. The pure `rail_flags(block, shape)` gives them for `minecraft:rail`, `powered_rail`, `detector_rail` and `activator_rail`, and 0 for anything else.
+    - `free_spawn_spot` masks the rail bits out of its "wet" test, so a respawn spot on a rail is not refused. The other flag readers only test their own bits.
+    - `track_rails(centre, radius, depth)` and the pure `rail_polylines(flags_at, lo, hi)`: per rail block a polyline 2/16 above its floor: straight across the block centre; ascending from the low edge at 2/16 to the high edge at 1 + 2/16; a curve as a quarter arc of radius 0.5 around its corner, between the two edge midpoints, in 4 segments. Polylines whose ends meet (within 1/32 block) are joined into one.
+  - `render_anim/src/minecraft_world.rs` (`shape_id`): the four rail blocks OR their `rail_flags` into the shape's flags. A shape with flags and no boxes already gets its own id, so each rail shape is its own shape id.
+  - `render_anim/src/skate.rs`: `block_collision` adds `track_rails` to the rails found on the block faces, and the debug line counts them.
+  - `docs/MINECRAFT-SURVIVAL.md`: the Skating bullet mentions track rails.
+- **Tests:**
+  - `sim` (`voxel.rs`): `track_rails_follow_straight_ascending_and_curved_shapes` (all ten shapes: ends, heights, arc radius), `three_straight_rails_chain_into_one` (three straight rails; a straight, an ascending, a straight, a curve and a straight rail join into one line; side-by-side rails and rails a block apart in height stay apart), `rail_shapes_get_their_own_shape_ids` (ten distinct non-zero values inside `RAIL_SHAPE`, the same for all four rail blocks, 0 for other blocks and unknown shapes, no overlap with the other flags), `a_rail_does_not_make_a_respawn_spot_wet`.
+- **Decisions:**
+  - The chaining lives in `sim` (`chain_rails`), not in `render_anim/src/skate/rails.rs` as the brief suggested: `sim` can't depend on `render_anim`, and the brief's chaining tests sit in `voxel.rs`. It joins rails at any angle, not only up to the 35 degrees of the lip chaining, because only two rail blocks ever meet at a point and Minecraft itself connects them there; so a track runs as one grind over the 45-degree bend onto an ascending rail.
+  - Track rails are added after `rails::find` and are not shortened, merged or filtered: a single rail block (36 units) is longer than the shortest lip rail anyway.
+  - Track C takes `0x8000` in the same flags for powder snow; whichever of C and D merges second adds its bits beside the other's (the u16 is then full).
+- **Owner's test steps** (brief section 5, step 12):
+  1. Lay 10 straight rails on flat ground, then an ascending rail onto a cobblestone block, two more rails on top, and a curve. Ollie onto the track and grind it: up the slope and through the curve without dropping off (screenshot).
+  2. Do the same with powered rails.
+  3. Optional: with `IW4L_LOG_LEVEL=debug` in `.env`, the newest log in `iw4l-artifacts\logs` shows "Skate block rails: ... N track rails" with N above 0 near the track.
+- **Kit:** `minecraft:rail*64`, `minecraft:powered_rail*16`, `minecraft:cobblestone*64`.
+
 ## The whole track's owner test, one kit
 
-Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6. Groups 1 and 2 need no items. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, and 4 the cobblestone, stairs, slabs, carpet and snow.
+Steps in order: group 1 steps 1-4, group 2 steps 1-4, group 3a steps 1-3, group 3b steps 1-5, group 4 steps 1-6, group 5a steps 1-4, group 5b steps 1-3. Groups 1 and 2 need no items. 3a needs the water bucket and the ender pearls, 3b the cobblestone, hay bales and helmet, 4 the cobblestone, stairs, slabs, carpet and snow, 5a the fence, wall and iron bars, and 5b the rails.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:hay_block*16,minecraft:iron_helmet,minecraft:water_bucket,minecraft:ender_pearl*16,minecraft:oak_stairs*64,minecraft:stone_slab*64,minecraft:cobblestone_slab*64,minecraft:white_carpet*64,minecraft:snow*64
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:hay_block*16,minecraft:iron_helmet,minecraft:water_bucket,minecraft:ender_pearl*16,minecraft:oak_stairs*64,minecraft:stone_slab*64,minecraft:cobblestone_slab*64,minecraft:white_carpet*64,minecraft:snow*64,minecraft:oak_fence*64,minecraft:cobblestone_wall*64,minecraft:iron_bars*64,minecraft:rail*64,minecraft:powered_rail*16
 ```
