@@ -2384,4 +2384,53 @@ mod tests {
         let path = drive(&floor(), &mut ps, 0, 0, 16, 120);
         assert!(path.iter().all(|p| (p[1] - 1.5).abs() < 1e-3), "{:?}", path.last());
     }
+
+    struct Snowed(VoxelWorld);
+
+    impl movement_iw4::CollisionBackend for Snowed {
+        fn trace(&self, input: movement_iw4::GroundTraceInput) -> trace_iw4::Trace {
+            trace_in(&self.0, input.start, input.end, input.mins, input.maxs, None)
+        }
+
+        fn stuck(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<[f32; 3]> {
+            let (lo, hi) = block_bounds(mins, maxs);
+            self.0.stuck_in(to_block(self.0.origin, origin), lo, hi)
+        }
+
+        fn ground_within(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3], drop: f32) -> Option<bool> {
+            Some(ground_in(&self.0, origin, mins, maxs, drop, None))
+        }
+    }
+
+    #[test]
+    fn levitation_lifts_and_slow_falling_sinks_slowly_through_powder_snow() {
+        let mut blocks = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                blocks.push(([x, 0, z], 1));
+                for y in 1..=5 {
+                    blocks.push(([x, y, z], SNOW));
+                }
+            }
+        }
+        let snow = Snowed(powder_snow(&blocks));
+        let run = |feet: f64, levitation: Option<u8>, slow_falling: bool| {
+            let mut ps = floater([8.5, feet, 8.5], levitation, slow_falling);
+            ps.jump_time = -10_000;
+            for _ in 0..20 {
+                let context = crate::step::pmove_context(0, (1.0, 1.0, 1.0), false, false, 0.005, 0.005, 0, false, true, false, 0, 0, 0, false, false);
+                let context = movement_iw4::PmoveSingleContext { bounds: move_bounds(context.bounds), ..context };
+                let mut cmd = playerstate_iw4::UserCmd { server_time: ps.command_time + 50, ..playerstate_iw4::UserCmd::default() };
+                movement_iw4::pmove(&mut ps, &mut cmd, context, &snow, &movement_iw4::FlatMantleAnimLength::default(), &movement_iw4::ZeroMantleRootDelta);
+            }
+            to_block([0.0; 3], ps.origin)[1]
+        };
+        let rise = 0.0098 * 1.5 * 20.0;
+        let lifted = run(1.0, Some(0), false);
+        assert!((lifted - (1.0 + rise)).abs() < 0.02, "{lifted}");
+        assert!((run(1.0, None, false) - 1.0).abs() < 1e-3);
+        let floated = run(4.0, None, true);
+        assert!((floated - (4.0 - rise)).abs() < 0.02, "{floated}");
+        assert!(run(4.0, None, false) < 4.0 - 4.0 * rise);
+    }
 }

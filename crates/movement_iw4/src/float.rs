@@ -47,6 +47,15 @@ pub fn glide_gravity(ps: &PlayerState, vertical: f64, gravity: f64) -> f64 {
     }
 }
 
+#[must_use]
+pub fn stuck_fall(ps: &PlayerState) -> Option<f32> {
+    match levitation(ps) {
+        Some(level) => Some((RISE_PUSH * level) as f32),
+        None if slow_falling(ps) => Some((-DRAG * SLOW_GRAVITY) as f32),
+        None => None,
+    }
+}
+
 fn settle(v: f64, keep: f64, push: f64, ticks: f64) -> (f64, f64) {
     let target = push / (1.0 - keep);
     let decay = libm::pow(keep, ticks);

@@ -307,6 +307,9 @@ pub fn pmove<C: CollisionBackend, L: MantleXAnimLength, R: MantleRootDelta>(
             );
         } else if let Some(multiplier) = stuck {
             let stuck = crate::Stuck { multiplier, fluid_sink: crate::swim::fluid_sink(ps, water, lava), climb: crate::climb::climbing(ps, climb).then_some(climb) };
+            if levitating && stuck.fluid_sink.is_none() {
+                crate::float::leave_ground(ps, &mut pml);
+            }
             crate::stuck_move(ps, &mut pml, cmd, stuck, context.walk, bounds, collision);
             swam = true;
         } else if water.wet() {

@@ -92,7 +92,7 @@ pub fn stuck_move<C: CollisionBackend>(
         _ if climb_rising => CLIMB_RISE / PER_TICK,
         _ if pml.walking != 0 && rising_ms == 0 => 0.0,
         Some(sink) => lift - sink,
-        None => -GRAVITY * VERTICAL_DRAG,
+        None => crate::float::stuck_fall(ps).unwrap_or(-GRAVITY * VERTICAL_DRAG),
     };
     step[2] = JUMP_POWER * rise + fall * (1.0 - rise);
     let mut velocity = step.map(|v| v * PER_TICK);
@@ -528,6 +528,37 @@ mod tests {
         let mut ps = standing();
         let walked = moved(&mut ps, ahead(0), POWDER, &[50], true);
         assert!((walked[0] - 0.098 * 0.9).abs() < 1e-5, "{walked:?}");
+    }
+
+    #[test]
+    fn levitation_lifts_and_slow_falling_sinks_slowly_while_stuck() {
+        let cases = [
+            (crate::float::encode(Some(0), false), 0.0098),
+            (crate::float::encode(Some(2), true), 0.0294),
+            (crate::float::SLOW_FALLING, -0.0098),
+        ];
+        for (float, per_tick) in cases {
+            for (multiplier, frames) in [(POWDER, &[50; 20][..]), (POWDER, &[10; 100]), (WEB, &[25; 40])] {
+                let mut ps = airborne();
+                ps.mc_float = float;
+                let shifted = moved(&mut ps, UserCmd::default(), multiplier, frames, false);
+                let expected = per_tick * multiplier[2] * 20.0;
+                assert!(
+                    (shifted[2] - expected).abs() < expected.abs() * 0.02,
+                    "{float:x} {frames:?} {shifted:?} {expected}"
+                );
+            }
+        }
+        let mut ps = airborne();
+        ps.mc_float = crate::float::encode(Some(0), false);
+        let mut cmd = UserCmd::default();
+        let snow = Stuck {
+            multiplier: POWDER,
+            fluid_sink: Some(0.0),
+            climb: None,
+        };
+        stuck_move(&mut ps, &mut frame(50, false), &mut cmd, snow, context(), BOUNDS, &Open);
+        assert!(ps.origin[2] <= 0.0, "{:?}", ps.origin);
     }
 
     #[test]

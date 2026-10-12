@@ -1185,3 +1185,24 @@ Previous commit: 30a794ca
 - **Test steps:** none.
 - **Kit:** none.
 - **Review note:** the log entry for commit 2 (1aeb79a9) names 53ecf14a as its previous commit; the commit right before it is 899ca39e (the cargo-slot change brought in from minecraft-survival).
+
+### 48. Minecraft levitation and slow falling work in powder snow and cobwebs
+
+Previous commit: 1824a842
+
+- **Defect:** a player held by powder snow, a cobweb or a berry bush ignored levitation and slow falling. `stuck_move` always used plain gravity, so a levitating player sank through powder snow and a slow-falling one sank at the full rate (0.1176 blocks a tick instead of 0.0147). Vanilla's `Entity.move` zeroes the motion after a stuck move, and `LivingEntity.travelInAir` then adds the levitation term `(0.05 (amplifier + 1) - 0) * 0.2` or the slow-falling gravity `min(0.08, 0.01)` (the motion is 0, so slow falling applies), both times 0.98. The next tick's stuck move scales that by the block's multiplier.
+- **Changed:**
+  - `movement_iw4` `float.rs`: `stuck_fall` gives the stuck step's vertical part for a floating player: `0.0098 × level` with levitation, `-0.0098` with slow falling only, `None` otherwise.
+  - `stuck.rs`: the step without a fluid uses `stuck_fall` before plain gravity. In water or lava (a cobweb under water) nothing changes, since vanilla's fluid travel has no levitation.
+  - `single.rs`: a levitating player in a stuck block leaves the ground first, as the air branch already does, unless it is in a fluid.
+- **Tests:** `movement_iw4` `stuck`: `levitation_lifts_and_slow_falling_sinks_slowly_while_stuck` (levitation I and III, slow falling, in powder snow at 50 and 10 ms frames and in a cobweb at 25 ms; nothing in a fluid). `sim` `voxel`: `levitation_lifts_and_slow_falling_sinks_slowly_through_powder_snow` (the full pmove through a voxel world of powder snow: levitation rises 0.294 blocks in 20 ticks from the floor, a plain player stays, slow falling sinks 0.294 from y 4, a plain fall sinks far more).
+- **Decisions:** none beyond following vanilla.
+- **Test steps:** (survival; kit below)
+  1. Place powder snow 3 high in a pit, step in without leather boots, `/effect give @s minecraft:levitation 10 0`: you rise slowly through the snow (about a third of a block a second) and out of the top (**1**).
+  2. `/effect clear @s`, climb back on top, `/effect give @s minecraft:slow_falling 30 0`, step in again: you sink about eight times slower than without the effect (**2**).
+  3. Place a cobweb in the air at head height, stand in it with levitation: you rise very slowly through it (**3**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:powder_snow_bucket*16,minecraft:cobweb*8,minecraft:dirt*64
+```
