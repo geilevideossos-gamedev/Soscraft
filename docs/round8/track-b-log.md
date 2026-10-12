@@ -1014,3 +1014,14 @@ After c5af8882.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:diamond_sword,minecraft:warped_fungus*8,minecraft:lava_bucket*4
 ```
+
+## Final verification
+
+### R4. The vanilla world test expects the player file's SleepTimer
+
+After 5344cdfc.
+
+- **Defect:** `minecraft_survival`'s `tests/vanilla_world.rs` (`a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types`) failed: since b4.5 the player file has `SleepTimer`, and the test's list of the player file's keys did not. Vanilla `Player.addAdditionalSaveData` always writes `SleepTimer` as a short (checked with javap), so the save is right and the test was out of date.
+- **Changed:** the test expects `("SleepTimer", "short")` in the player file.
+- **Tests:** the vanilla world test passes again.
+- **Test steps:** none (test only).
