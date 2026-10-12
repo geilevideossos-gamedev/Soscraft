@@ -1152,3 +1152,23 @@ Previous commit: 00cbca7c
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:cobblestone*64
 ```
+
+### 46. The Minecraft state doc draws the elytra and the glide pose on the MW2 body
+
+Previous commit: d0f3c06a
+
+- **Changed:** `docs/MINECRAFT-SURVIVAL.md`: the elytra line under Implemented now says the elytra is drawn on the body's back with the glint, its wings ease like vanilla's and a gliding body lies along the flight, rolls into turns, looks ahead and trails its legs, from replicated state per body; "the elytra and its glide pose are not drawn" is dropped from the End gaps and "the elytra" from the third-person not-drawn list, which gains the glide pose's limits (bullets hit the upright pose, culling assumes an upright body, the pivot at the feet with the MW2 eye standing, no rocket or wind particles).
+- **Tests:** none (docs only).
+- **Decisions:** none.
+- **Test steps:** none; read the changed lines.
+- **Kit:** none.
+
+### Group c4-elytra, combined kit
+
+The steps of commits 42 to 45 in one session (the brief's section 5: 7 stacks).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:elytra+unbreaking=3,minecraft:firework_rocket*64,minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:torch*64,minecraft:diamond_chestplate
+```
+
+Later, once track E is merged: a friend with an elytra shows the same wings and pose on your screen.
