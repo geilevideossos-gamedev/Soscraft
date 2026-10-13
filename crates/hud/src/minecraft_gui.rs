@@ -1082,6 +1082,7 @@ mod tests {
             more: None,
             glint: false,
             icon: "minecraft:dirt".into(),
+            lore: Vec::new(),
         };
         let mut ui = MinecraftUi::default();
         painter.decorations(&ui, &stack, [0, 0], Some(("ab".into(), YELLOW)));
@@ -1142,6 +1143,7 @@ mod tests {
             more: None,
             glint,
             icon: id.into(),
+            lore: Vec::new(),
         }
     }
 

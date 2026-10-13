@@ -187,6 +187,27 @@ Decisions:
 - The friend reads the book from its last `PlayerView`, not from the message, as vanilla's client reads its own stack.
 - **Not vanilla (small):** the 1024-character page limit and the 32-character title limit count Unicode characters; vanilla counts UTF-16 units (`String.length()`), so only characters outside the BMP (emoji) differ: vanilla allows 512 of them per page, we allow 1024.
 
+### B8.5 Written books show their title, author and generation like vanilla
+
+Base: 59036371 (B8.4).
+
+What changed:
+- `frame`: `McStack.lore: Vec<String>`. Every literal gained `lore: Vec::new()` (hud `minecraft_clicks.rs`, `minecraft_creative.rs`, `minecraft_gui.rs` twice, `minecraft_inventory.rs`, `minecraft_screens.rs`).
+- `render_anim/src/minecraft_inventory.rs`:
+  - `display_name`: after `custom_name`, a stack with `minecraft:written_book_content` and a non-blank title (`raw`, or a plain string) is named by the title (vanilla `ItemStack.getCustomName`). `named` still comes only from `custom_name`, so the title is not italic (vanilla `getStyledHoverName` checks `CUSTOM_NAME`). The hotbar name, the tooltip and a shulker box's contents lines all use it.
+  - New `book_lines` fills `lore`: `book.byAuthor` ("by %1$s", resolved through `minecraft_commands::Text`) only when the author is not blank, then always `book.generation.N` (0 "Original" to 3 "Tattered"), as vanilla's `WrittenBookContent.addToTooltip`. Both fall back to the English text when the language has no key.
+- hud `tooltip_lines`: `lore` is drawn in gray after the container contents and their "and N more" line, before the enchantments (vanilla's tooltip order: container, then written book content, then enchantments).
+
+Tests added:
+- render_anim `a_written_book_is_named_by_its_title_with_author_and_generation_lines` (title as the name and not a custom name, "by Alex"/"Original", a plain-string title with a blank author and generation 2, a blank title keeping the item name with "Tattered", a custom name winning over the title, the English fallback with no language, a book and quill with no name and no lines).
+- hud `a_written_book_tooltip_shows_its_lore_in_gray_after_the_name`.
+
+Checked with javap (26.3): `WrittenBookContent.addToTooltip` adds `book.byAuthor` in GRAY when `StringUtil.isBlank(author)` is false, then `book.generation.<n>` in GRAY; `ItemStack.getCustomName` returns the custom name, else the written book title as a literal; `getStyledHoverName` makes the name italic only for `CUSTOM_NAME`. en_us: `book.byAuthor` is "by %1$s".
+
+Decisions:
+- A generation outside 0-3 (only possible from a hand-edited save, which vanilla refuses to load) is clamped for the tooltip line.
+- Blank means empty or only whitespace (Rust `trim`), like Java's `isBlank`.
+
 ## Owner's test steps (B9.1)
 
 1. **Inventory (E).** Each bottle has its own liquid colour:
@@ -249,7 +270,7 @@ IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*8,minecraft:cactus*4,minecraft:mag
 
 ## Owner's test steps (B8)
 
-Numbered as in the brief's B8 steps. Step 2 (the tooltip) comes with the next commit (B8.5); until it lands, the signed book's name and "by"/"Original" lines in step 4 are not shown yet. B8.2 (`edit_book`) is tested through steps 3-5.
+Numbered as in the brief's B8 steps. B8.2 (`edit_book`) is tested through steps 3-5, B8.4 (friends) through step 9 and B8.5 (the name and tooltip) through steps 2 and 4.
 
 1. **Reading from the hand.** Hold "Test" and right-click at the sky.
    - "Page 1 of 3" opens, with only the forward arrow and one wide Done button (no Take Book).
@@ -257,6 +278,10 @@ Numbered as in the brief's B8 steps. Step 2 (the tooltip) comes with the next co
    - Done and Esc close it.
    - Press F to move it to the offhand, select an empty hotbar slot and right-click: it opens again.
    - Holding right-click does not reopen it after Done.
+2. **Tooltip.** Open the inventory (E) and hover over "Test".
+   - The name is "Test" (not italic), then gray "by Owner" and gray "Original".
+   - Select it in the hotbar: the name above the hotbar is "Test".
+   - A book and quill shows only "Book and Quill".
 3. **Writing.** Right-click an empty book and quill.
    - The book opens with a blinking `_` cursor, "Page 1 of 1", only the forward arrow, and the Sign and Done buttons.
    - Type two sentences and press Enter (also keypad Enter) for a new line. Text wraps at the right edge of the page. E, Q and the number keys type letters and do not close the book.
@@ -270,6 +295,7 @@ Numbered as in the brief's B8 steps. Step 2 (the tooltip) comes with the next co
    - "Sign and Close" is grey and does nothing until there is a title; the title stops at 15 characters.
    - Type "Diary", click Cancel: the edit screen is back. Click Sign again: "Diary" is still there.
    - Click "Sign and Close". The quill becomes a written book in the same slot, and right-clicking it reads both pages.
+   - Hover over it: the name is "Diary", then gray "by <your name>" and "Original".
 5. **Crafting.** Craft a book and quill from a book, an ink sac and a feather at the crafting table, then write in it and sign it (Enter in the title box also signs).
 6. **Lecterns.**
    - Place a lectern and right-click it with "Test": the book goes onto the lectern instead of opening in the hand.
@@ -302,3 +328,8 @@ IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",aut
 `docs/MINECRAFT-SURVIVAL.md` line 437 (books), after B8.1 and B8.2: replace "and a book can't be read from the hand." with "A written book is read from the hand (main hand or offhand) on vanilla's book screen with one wide Done button; page turns are local." Keep "Books can't be written or signed in game" until the B8.3 group lands, and add: "The host already stores a book and quill's pages and signs it into an original written book (`books::edit_book`, vanilla's `handleEditBook` limits)."
 
 After B8.3, replace "Books can't be written or signed in game" with: "The host writes in a book and quill on vanilla's edit screen (14 lines and 1024 characters a page, up to 100 pages; Done keeps the pages, Esc discards them) and signs it on vanilla's sign screen into an original written book. Not vanilla: a text selection is a plain blue box (vanilla uses an inverting highlight). Friends cannot write yet (B8.4)."
+
+After B8.4 and B8.5 (the final wording; this fixes the limitation at `docs/MINECRAFT-SURVIVAL.md:437`), replace the whole books line with:
+"Books work like vanilla for the host and for friends: a written book is read from the hand (main hand or offhand) with local page turns; a book and quill is written on vanilla's edit screen (14 lines and 1024 characters a page, up to 100 pages; Done keeps the pages, Esc discards them) and signed on vanilla's sign screen into an original written book (`books::edit_book`, vanilla's `handleEditBook` limits); a friend's edit goes to the host as `EditBook`. A written book is named by its title and its tooltip shows "by <author>" and its generation. Open limits: no book cloning (the special crafting recipe is missing); pages are plain text, without colours, styles, click or hover events, and `resolveForItem` (selectors, scores and nbt components in pages) is not done; the `minecraft:used` statistic is not counted for books; page and title limits count Unicode characters, not UTF-16 units (only emoji differ); a text selection is a plain blue box (vanilla uses an inverting highlight); and `PlayerView` resends all 41 slots on every change, so a friend carrying a full 100-page book receives about 100-300 KB each time (measured: 103,364 bytes for ASCII pages, 308,164 for three-byte characters)."
+
+`docs/MULTIPLAYER.md` message listing (B8.4): after `LeaveBed,` add `EditBook { slot: u8, pages: Vec<String>, title: Option<String> },` (index 12) and after `Sleeping { .. },` add `OpenBook { slot: u8 },` (index 31). New paragraph after the lectern paragraph (line 251): "**Books in the hand** follow vanilla's `ClientboundOpenBookPacket` and `ServerboundEditBookPacket`. When a friend's use on the host opens a book, the host sends `OpenBook { slot }` (the selected slot or 40 for the offhand; for a book and quill too, since the use runs on the host); the friend reads the stack from its last `PlayerView` and opens the read-only book or the edit screen. Done and Sign send `EditBook { slot, pages, title }` (no title for Done); the host applies it with `books::edit_book` under vanilla's limits (slot 0-8 or 40, 100 pages, 1024 characters a page, a 32-character title, a book and quill in the slot) before the friend's next step, and the next `PlayerView` carries the new book. `PROTOCOL` stays 4 (the two messages were added in the same round as the bump)." Section 20 leftovers: add "`PlayerView` resends all 41 slot NBTs on every change; with a full 100-page book that is 100-300 KB per change (round 9 track B measurement). Slot diffs are left for later."

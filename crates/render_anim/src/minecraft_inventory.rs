@@ -444,6 +444,7 @@ impl InventoryUi {
                     more: more_line(lang, s),
                     glint: minecraft_terrain::glint::has_glint(s),
                     icon,
+                    lore: book_lines(lang, s),
                 }
             })
         };
@@ -810,10 +811,34 @@ fn display_name(language: &HashMap<String, String>, stack: &ItemStack) -> Option
     if let Some(name) = minecraft_terrain::stations::custom_name(stack) {
         return Some(name);
     }
+    let title = written_content(stack).and_then(|content| content.get("title"));
+    if let Some(title) = title.map(|title| title.get("raw").unwrap_or(title)).and_then(serde_json::Value::as_str).filter(|title| !title.trim().is_empty()) {
+        return Some(title.to_owned());
+    }
     let potion = minecraft_terrain::stations::potion_of(stack)?;
     let effect = potion.rsplit(':').next()?.trim_start_matches("long_").trim_start_matches("strong_");
     let item = stack.id.rsplit(':').next()?;
     language.get(&format!("item.minecraft.{item}.effect.{effect}")).cloned()
+}
+
+fn written_content(stack: &ItemStack) -> Option<&serde_json::Value> {
+    stack.components.as_ref()?.get(minecraft_survival::books::WRITTEN_BOOK_CONTENT)
+}
+
+fn book_lines(language: &HashMap<String, String>, stack: &ItemStack) -> Vec<String> {
+    let Some(content) = written_content(stack) else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    if let Some(author) = content.get("author").and_then(serde_json::Value::as_str).filter(|author| !author.trim().is_empty()) {
+        let lang = |key: &str| Some(language.get(key).map_or("by %1$s", String::as_str).to_owned());
+        let by = minecraft_commands::Text::translate("book.byAuthor", vec![minecraft_commands::Text::literal(author)]);
+        lines.push(by.resolve(&lang).text);
+    }
+    let generation = content.get("generation").and_then(serde_json::Value::as_i64).unwrap_or(0).clamp(0, 3) as usize;
+    let fallback = ["Original", "Copy of original", "Copy of a copy", "Tattered"][generation];
+    lines.push(language.get(&format!("book.generation.{generation}")).map_or(fallback, String::as_str).to_owned());
+    lines
 }
 
 fn bench_screen(kind: Workshop) -> McScreen {
@@ -864,6 +889,46 @@ mod tests {
         assert_eq!(screen_for(Some(&Open::Table((0, 0, 0)))), McScreen::CraftingTable);
         let chest = Opened { station: Station::Chest, cells: vec![(0, 0, 0), (1, 0, 0)] };
         assert_eq!(screen_for(Some(&Open::Block(chest))), McScreen::Chest { rows: 6 });
+    }
+
+    #[test]
+    fn a_written_book_is_named_by_its_title_with_author_and_generation_lines() {
+        use minecraft_survival::books::{WRITABLE_BOOK, WRITTEN_BOOK, WRITTEN_BOOK_CONTENT};
+        let language: HashMap<String, String> = [
+            ("book.byAuthor", "by %1$s"),
+            ("book.generation.0", "Original"),
+            ("book.generation.1", "Copy of original"),
+            ("book.generation.2", "Copy of a copy"),
+            ("book.generation.3", "Tattered"),
+        ]
+        .into_iter()
+        .map(|(key, text)| (key.to_owned(), text.to_owned()))
+        .collect();
+        let book = |content: serde_json::Value| {
+            let mut stack = ItemStack::new(WRITTEN_BOOK, 1);
+            stack.components = Some(serde_json::json!({WRITTEN_BOOK_CONTENT: content}));
+            stack
+        };
+        let signed = book(serde_json::json!({"title": {"raw": "Diary"}, "author": "Alex", "pages": [{"raw": "a"}], "resolved": true}));
+        assert_eq!(display_name(&language, &signed).as_deref(), Some("Diary"));
+        assert!(minecraft_terrain::stations::custom_name(&signed).is_none(), "the title is not a custom name, so it is not italic");
+        assert_eq!(book_lines(&language, &signed), ["by Alex", "Original"]);
+        let copied = book(serde_json::json!({"title": "Plain", "author": "  ", "generation": 2}));
+        assert_eq!(display_name(&language, &copied).as_deref(), Some("Plain"));
+        assert_eq!(book_lines(&language, &copied), ["Copy of a copy"]);
+        let tattered = book(serde_json::json!({"title": {"raw": " "}, "author": "Owner", "generation": 3}));
+        assert_eq!(display_name(&language, &tattered), None, "a blank title keeps the item name");
+        assert_eq!(book_lines(&language, &tattered), ["by Owner", "Tattered"]);
+        let mut renamed = signed.clone();
+        renamed.components.as_mut().unwrap()["minecraft:custom_name"] = serde_json::json!("Secret");
+        assert_eq!(display_name(&language, &renamed).as_deref(), Some("Secret"));
+        assert_eq!(book_lines(&HashMap::new(), &copied), ["Copy of a copy"]);
+        assert_eq!(book_lines(&HashMap::new(), &signed), ["by Alex", "Original"]);
+        let mut quill = ItemStack::new(WRITABLE_BOOK, 1);
+        assert!(book_lines(&language, &quill).is_empty());
+        quill.components = Some(serde_json::json!({"minecraft:writable_book_content": {"pages": [{"raw": "x"}]}}));
+        assert_eq!(display_name(&language, &quill), None);
+        assert!(book_lines(&language, &quill).is_empty());
     }
 
     #[test]

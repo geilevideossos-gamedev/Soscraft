@@ -779,6 +779,7 @@ fn tooltip_lines(
     let mut lines = vec![TextLine { italic: stack.named, ..TextLine::new(name, crate::minecraft_hotbar::name_color(Some(stack))) }];
     lines.extend(stack.contents.iter().map(|line| TextLine::new(line.clone(), WHITE)));
     lines.extend(stack.more.iter().map(|line| TextLine { italic: true, ..TextLine::new(line.clone(), WHITE) }));
+    lines.extend(stack.lore.iter().map(|line| TextLine::new(line.clone(), GRAY)));
     lines.extend(stack.enchantments.iter().map(|name| TextLine::new(name.clone(), GRAY)));
     let extra = match (stack.weapon, stack.attack) {
         (Some(weapon), _) => weapons
@@ -989,6 +990,7 @@ mod tests {
             more: Some("and 2 more...".to_owned()),
             glint: false,
             icon: "minecraft:shulker_box".to_owned(),
+            lore: Vec::new(),
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool)> = lines.iter().map(|line| (line.text.as_str(), line.italic)).collect();
@@ -1006,5 +1008,29 @@ mod tests {
             ]
         );
         assert!(lines[1..7].iter().all(|line| line.color == WHITE));
+    }
+
+    #[test]
+    fn a_written_book_tooltip_shows_its_lore_in_gray_after_the_name() {
+        let stack = McStack {
+            id: "minecraft:written_book".to_owned(),
+            count: 1,
+            weapon: None,
+            damage: None,
+            max: 16,
+            named: false,
+            name: Some("Diary".to_owned()),
+            attack: None,
+            enchantments: Vec::new(),
+            contents: Vec::new(),
+            more: None,
+            glint: true,
+            icon: "minecraft:written_book".to_owned(),
+            lore: vec!["by Alex".to_owned(), "Original".to_owned()],
+        };
+        let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
+        let shown: Vec<(&str, bool, u32)> = lines.iter().map(|line| (line.text.as_str(), line.italic, line.color)).collect();
+        assert_eq!(shown[1..], [("by Alex", false, GRAY), ("Original", false, GRAY)]);
+        assert_eq!((shown[0].0, shown[0].1), ("Diary", false));
     }
 }
