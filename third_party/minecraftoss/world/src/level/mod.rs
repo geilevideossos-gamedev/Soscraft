@@ -17,6 +17,7 @@ pub mod entity;
 pub mod explosion;
 pub mod falling;
 pub mod fire;
+pub mod golem_build;
 pub mod grow;
 pub mod ice;
 pub mod lectern;
@@ -696,6 +697,8 @@ impl<'a> Level<'a> {
             self.schedule_block_tick_priority(pos, block, 1, redstone::priority::NORMAL);
         } else if self.is_a(state, "FrostedIceBlock") {
             self.frosted_ice_on_place(state, pos);
+        } else if golem_build::is_pumpkin(self.name(state)) && self.block_id(old) != self.block_id(state) {
+            self.carved_pumpkin_on_place(pos);
         }
     }
 

@@ -5611,6 +5611,49 @@ mod tests {
     }
 
     #[test]
+    fn a_carved_pumpkin_on_an_iron_t_builds_a_player_made_iron_golem() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let iron = || Block::new("minecraft:iron_block");
+        place(&mut server, &mut scene, (8, 200, 8), iron());
+        for x in 7..=9 {
+            place(&mut server, &mut scene, (x, 201, 8), iron());
+        }
+        server.take_changes();
+        server.take_destroyed();
+        place(&mut server, &mut scene, (8, 202, 8), Block::new("minecraft:carved_pumpkin").with("facing", "south"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for pos in [(8, 200, 8), (7, 201, 8), (8, 201, 8), (9, 201, 8), (8, 202, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?} is cleared");
+        }
+        let mut destroyed: Vec<_> = server.take_destroyed().into_iter().map(|(pos, block)| (pos, block.id.key())).collect();
+        destroyed.sort();
+        assert_eq!(destroyed.len(), 5, "each block breaks with its particles and sound: {destroyed:?}");
+        assert!(destroyed.contains(&((8, 202, 8), "minecraft:carved_pumpkin".to_owned())));
+        assert!(server.mobs.iron_golems().is_empty(), "the golem joins with the spawned mobs");
+        server.take_spawned();
+        let golems = server.mobs.iron_golems();
+        assert_eq!(golems.len(), 1);
+        assert!(golems[0].golem.player_created, "built by a player");
+        assert_eq!(golems[0].position(), glam::DVec3::new(8.5, 200.05, 8.5));
+        assert_eq!(golems[0].golem.yaw, 0.0);
+    }
+
+    #[test]
+    fn a_carved_pumpkin_on_an_incomplete_t_stays_a_pumpkin() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:iron_block"));
+        place(&mut server, &mut scene, (7, 201, 8), Block::new("minecraft:iron_block"));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:iron_block"));
+        place(&mut server, &mut scene, (9, 201, 8), Block::new("minecraft:gold_block"));
+        server.take_changes();
+        place(&mut server, &mut scene, (8, 202, 8), Block::new("minecraft:jack_o_lantern").with("facing", "north"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert!(!changes.contains_key(&(8, 200, 8)), "nothing is cleared");
+        server.take_spawned();
+        assert!(server.mobs.iron_golems().is_empty());
+    }
+
+    #[test]
     fn columns_break_block_by_block_when_their_ground_goes() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:sand"));
