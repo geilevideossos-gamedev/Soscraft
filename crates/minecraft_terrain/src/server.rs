@@ -93,6 +93,7 @@ pub struct ServerSim {
     end_random: minecraftoss_player::rng::LegacyRandom,
     end_sounds: Vec<minecraftoss_entities::world::MobSound>,
     end_hits: Vec<minecraftoss_entities::world::PlayerHit>,
+    mob_trident_hits: Vec<minecraftoss_entities::world::PlayerHit>,
     dragons_killed: Vec<[i32; 4]>,
     egg_teleports: Vec<(BlockPos, BlockPos)>,
     fight: FightLink,
@@ -357,6 +358,7 @@ impl ServerSim {
             end_random: minecraftoss_player::rng::LegacyRandom::new(0x00D2_A60E_5EED),
             end_sounds: Vec::new(),
             end_hits: Vec::new(),
+            mob_trident_hits: Vec::new(),
             dragons_killed: Vec::new(),
             egg_teleports: Vec::new(),
             fight: FightLink::default(),
@@ -811,6 +813,7 @@ impl ServerSim {
         self.mobs.set_bright_outside(bright_outside);
         self.mobs.set_monsters_burn(self.level.monsters_burn());
         self.mobs.set_piglins_zombify(self.level.piglins_zombify());
+        self.mobs.set_sea_level(self.level.sea_level);
         let Self { level, states, mobs, mob_tables, .. } = self;
         let mut world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
         let ticks = |p: glam::DVec3| ticking.contains(&ChunkPos::new((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4));
@@ -848,10 +851,27 @@ impl ServerSim {
             self.mob_tags.insert(conversion.zombified, crate::piglin_save::converted_tag(&conversion));
         }
         self.carry_zombie_conversions();
+        self.throw_mob_tridents();
         self.explode_creepers();
         self.explode_fireballs();
         self.explode_blasts(players);
         self.sound_potion_breaks();
+    }
+
+    fn throw_mob_tridents(&mut self) {
+        for throw in self.mobs.take_trident_throws() {
+            let uuid = self.mobs.uuid_of(throw.owner);
+            self.throw_trident(crate::trident::ThrownTrident::thrown_by_mob(throw.owner, uuid, &throw.item, throw.position, throw.velocity));
+        }
+    }
+
+    fn mob_trident_struck(&mut self, mob: u64, target: u64, velocity: glam::DVec3) {
+        match crate::thrown::struck_player(target) {
+            Some(player_id) => self.mob_trident_hits.push(minecraftoss_entities::world::PlayerHit { player_id, damage: crate::trident::DAMAGE, kind: minecraftoss_entities::world::PlayerHitKind::Trident { velocity }, source: Some(mob) }),
+            None => {
+                self.mobs.mob_shot_mob(mob, target, crate::trident::DAMAGE, velocity);
+            }
+        }
     }
 
     fn carry_zombie_conversions(&mut self) {
@@ -1256,7 +1276,11 @@ impl ServerSim {
             let mut targets = mob_targets.clone();
             targets.extend(crate::thrown::player_targets(players, trident.owner));
             targets.extend(self.frames.targets());
-            let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of);
+            let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of).or_else(|| {
+                let thrower = targets.iter_mut().find(|t| Some(t.id) == trident.mob_owner)?;
+                thrower.owner = true;
+                Some(crate::trident::TridentOwner { eye: (thrower.min + thrower.max) / 2.0, alive: true, spectator: false, bounds: (thrower.min, thrower.max) })
+            });
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -1269,6 +1293,7 @@ impl ServerSim {
                             self.frame_action(frame, crate::item_frame::FrameAction::Shot { infinite: false });
                         }
                     }
+                    TridentEvent::Struck { target, velocity } if trident.mob_owner.is_some() => self.mob_trident_struck(trident.mob_owner.unwrap_or_default(), target, velocity),
                     TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
                         Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
                         None => {
@@ -3468,6 +3493,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     }
     out.dismounts.extend(sim.take_vehicle_losses());
     out.player_hits.extend(sim.take_end_hits());
+    out.player_hits.append(&mut sim.mob_trident_hits);
     out.mob_sounds.extend(sim.take_end_sounds());
     out.mob_sounds.extend(sim.take_frame_sounds());
     out.dragons_killed.extend(sim.take_dragons_killed());
@@ -6009,6 +6035,61 @@ mod tests {
         let picked = server.pickup_tridents(&full, &[stranger, full], |_| true);
         assert_eq!(picked.iter().map(|p| (p.0, p.2.as_str(), p.3)).collect::<Vec<_>>(), vec![(TRIDENT_IDS, crate::trident::ITEM, 1)]);
         assert!(server.trident_views().is_empty());
+    }
+
+    #[test]
+    fn a_drowned_throws_its_trident_at_a_player_and_it_hits_them_for_the_drowned() {
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=20 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        server.take_changes();
+        server.set_players(&[[8.5, 201.0, 16.5]], 2);
+        server.set_simulation_area((0, 0), 4);
+        server.set_time(18000);
+        let nbt = minecraftoss_core::snbt::parse_compound(r#"{equipment:{mainhand:{id:"minecraft:trident",count:1}}}"#).unwrap();
+        server.summon("minecraft:drowned", [8.5, 201.0, 8.5], Some(&nbt), 0.0).unwrap();
+        let drowned = server.mobs.zombies().last().expect("a drowned").id;
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(8.5, 201.0, 16.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let body = player_at(0, [8.5, 201.0, 16.5], true);
+        let mut hits = Vec::new();
+        let mut thrown = 0;
+        for _ in 0..200 {
+            server.tick_mobs(&[player], false);
+            thrown = thrown.max(server.trident_views().len());
+            server.tick_tridents(&[body]);
+            hits.append(&mut server.mob_trident_hits);
+        }
+        assert!(thrown > 0 && !hits.is_empty(), "{thrown} thrown, {} hits", hits.len());
+        for hit in &hits {
+            assert_eq!((hit.player_id, hit.damage, hit.source), (0, crate::trident::DAMAGE, Some(drowned)));
+            assert!(matches!(hit.kind, minecraftoss_entities::world::PlayerHitKind::Trident { velocity } if velocity.z > 0.5), "{:?}", hit.kind);
+        }
+        assert_eq!(server.mobs.zombies().iter().find(|e| e.id == drowned).map(|e| e.zombie.health), Some(20.0), "its own trident leaves it alone");
+        assert!(server.pickup_tridents(&body, &[body], |_| true).is_empty(), "nobody picks up a drowned's trident");
+        let tags: Vec<_> = server.tridents.iter().map(|t| t.to_tag(t.owner_uuid)).collect();
+        assert!(tags.iter().all(|tag| tag.get("pickup") == Some(&minecraftoss_core::nbt::Tag::Byte(0))));
     }
 
     #[test]

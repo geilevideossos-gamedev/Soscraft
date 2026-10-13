@@ -744,7 +744,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             if let Some(health) = health {
                 zombie.health = health;
             }
-            let id = if no_ai { world.spawn_zombie(zombie, true) } else if zombie.kind == ZombieKind::Drowned { world.spawn_drowned_pursuit(zombie) } else { world.spawn_zombie_active(zombie, yaw) };
+            let id = if no_ai { world.spawn_zombie(zombie, true) } else if zombie.kind == ZombieKind::Drowned { world.spawn_drowned(zombie) } else { world.spawn_zombie_active(zombie, yaw) };
             let entity = world.zombie_mut(id)?;
             entity.random = random;
             // `Entity.load` turns the body and head to the saved yaw.
@@ -2072,6 +2072,7 @@ mod tests {
         assert_eq!(e.zombie.armor[0].as_deref(), Some("minecraft:iron_helmet"));
         assert_eq!(e.zombie.body.step_height, 1.0);
         assert!(e.attack_only && e.ai.is_none() && !e.no_ai, "a loaded drowned fights with its attack goal");
+        assert!(e.drowned.is_some(), "and has its water, beach and trident goals");
     }
 
     #[test]

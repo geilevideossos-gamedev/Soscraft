@@ -309,6 +309,7 @@ pub struct ZombieEntity {
     /// The zombie's goal and target selectors (`Zombie.registerGoals`), for
     /// zombies on the goal framework.
     pub ai: Option<Box<MonsterAi>>,
+    pub drowned: Option<crate::drowned_ai::DrownedGoals>,
 }
 
 #[derive(Clone)]
@@ -597,6 +598,7 @@ pub enum PlayerHitKind {
     Fireball { velocity: DVec3, ignite_ticks: i32 },
     BadRespawnPoint { knockback: DVec3 },
     ShulkerBullet { velocity: DVec3 },
+    Trident { velocity: DVec3 },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,
@@ -1507,6 +1509,33 @@ impl ZombieEntity {
         play_movement(&mut self.zombie.body, self.tick_count, &mut self.random, &mut self.voices, sounds);
     }
 
+    fn swim_to(&mut self, world: &impl World, target: DVec3) -> Option<bool> {
+        navigate_amphibious_to_with_accuracy(&self.zombie.body, &mut self.navigation, &MeasuredWaterFloorTerrain(world), target, 1.0, 1)
+    }
+
+    fn drowned_profile(&self) -> WalkProfile {
+        let mut profile = monster_profile(&self.zombie.body, 35.0, self.zombie.health, 20.0, false);
+        profile.set_malus(PathType::Water, 0.0);
+        profile.walk_target = crate::walk_path::WalkTarget::Monster;
+        profile
+    }
+
+    fn stop_melee(&mut self) {
+        if self.attack_goal_running {
+            self.attack_goal_running = false;
+            self.aggressive = false;
+            self.navigation.stop();
+        }
+    }
+
+    fn stop_drowned_move(&mut self, goals: &mut crate::drowned_ai::DrownedGoals) {
+        if goals.running == crate::drowned_ai::DrownedMove::Trident {
+            goals.stop_trident();
+            self.aggressive = false;
+        }
+        goals.running = crate::drowned_ai::DrownedMove::None;
+    }
+
     /// Source: 26.3 NearestAttackableTargetGoal, MeleeAttackGoal, ZombieAttackGoal,
     /// DrownedAttackGoal, and Mob.serverAiStep. The caller isolates the relevant
     /// melee action goal while leaving the target selector registered.
@@ -1518,6 +1547,8 @@ impl ZombieEntity {
         game_time: i64,
         bright_outside: bool,
     ) {
+        use crate::drowned_ai::DrownedMove;
+        let mut drowned = self.drowned.take();
         let position = self.zombie.body.position;
         if players.iter().any(|player| {
             player.alive
@@ -1628,6 +1659,38 @@ impl ZombieEntity {
         });
         let can_attack_target = target.is_some()
             && (self.zombie.kind != ZombieKind::Drowned || !bright_outside || target_in_water);
+        let wet = FluidFrame::sample(world, position, self.zombie.body.width, self.zombie.body.height).in_water();
+        let trident = self.zombie.main_hand.as_deref() == Some("minecraft:trident");
+        if let Some(goals) = drowned.as_mut().filter(|_| full_goal_tick) {
+            let stop = match goals.running {
+                DrownedMove::Water | DrownedMove::Stroll => self.navigation.is_done(),
+                DrownedMove::Trident => target.is_none() && self.navigation.is_done(),
+                DrownedMove::Beach => !goals.beach_continues(world),
+                DrownedMove::None => false,
+            };
+            if stop {
+                self.stop_drowned_move(goals);
+            }
+            if goals.swim_up.is_some_and(|stuck| stuck || !goals.swim_up_can_use(bright_outside, wet, position.y)) {
+                goals.swim_up = None;
+                goals.searching_for_land = false;
+            }
+            if goals.running != DrownedMove::Water && bright_outside && !wet {
+                if let Some(water) = crate::drowned_ai::water_position(world, position, &mut self.random) {
+                    self.stop_drowned_move(goals);
+                    self.stop_melee();
+                    goals.running = DrownedMove::Water;
+                    let _ = self.swim_to(world, water);
+                }
+            }
+            let idle = matches!(goals.running, DrownedMove::None | DrownedMove::Beach | DrownedMove::Stroll) && !self.attack_goal_running;
+            if idle && target.is_some() && trident {
+                self.stop_drowned_move(goals);
+                goals.running = DrownedMove::Trident;
+                self.aggressive = true;
+                self.pathed_target = DVec3::ZERO;
+            }
+        }
         if full_goal_tick
             && self.attack_goal_running
             && (!can_attack_target || self.navigation.is_done())
@@ -1636,11 +1699,14 @@ impl ZombieEntity {
             self.aggressive = false;
             self.navigation.stop();
         }
-        if full_goal_tick && !self.attack_goal_running && game_time - self.last_can_use_check >= 20
+        if full_goal_tick && !self.attack_goal_running && drowned.as_ref().is_none_or(|goals| matches!(goals.running, DrownedMove::None | DrownedMove::Beach | DrownedMove::Stroll)) && game_time - self.last_can_use_check >= 20
         {
             self.last_can_use_check = game_time;
             if let Some(target) = target.filter(|_| can_attack_target) {
                 if self.navigate_to_pursuit_target(world, target.position) == Some(true) {
+                    if let Some(goals) = drowned.as_mut() {
+                        self.stop_drowned_move(goals);
+                    }
                     self.attack_goal_running = true;
                     self.ticks_until_next_path_recalculation = 0;
                     self.ticks_until_next_attack = 0;
@@ -1678,6 +1744,72 @@ impl ZombieEntity {
                 self.aggressive = self.raise_arm_ticks >= 5 && self.ticks_until_next_attack < 10;
             }
         }
+        if let Some(goals) = drowned.as_mut() {
+            if full_goal_tick {
+                let profile = self.drowned_profile();
+                let open = matches!(goals.running, DrownedMove::None | DrownedMove::Stroll) && !self.attack_goal_running;
+                if open && goals.beach_can_use(world, position, bright_outside, wet, &mut self.random) {
+                    self.stop_drowned_move(goals);
+                    if let Some(goal) = goals.start_beach(&mut self.random) {
+                        let _ = self.swim_to(world, goal);
+                    }
+                }
+                if goals.swim_up.is_none() && goals.swim_up_can_use(bright_outside, wet, position.y) {
+                    goals.swim_up = Some(false);
+                    goals.searching_for_land = true;
+                }
+                if goals.running == DrownedMove::None && !self.attack_goal_running && self.no_action_time < 100 && self.random.next_int(60) == 0 {
+                    if let Some(wanted) = crate::stroll::amphibious_random_position(world, &profile, position, 10, 7, &mut self.random) {
+                        goals.running = DrownedMove::Stroll;
+                        let _ = self.swim_to(world, wanted);
+                    }
+                }
+                if goals.swim_up == Some(false) && position.y < f64::from(goals.sea_level - 1) {
+                    let close = self.navigation.path_target.is_some_and(|(x, y, z)| position.distance_squared(DVec3::new(f64::from(x), f64::from(y), f64::from(z))) < 4.0);
+                    if self.navigation.is_done() || close {
+                        let towards = DVec3::new(position.x, f64::from(goals.sea_level - 1), position.z);
+                        match crate::stroll::amphibious_random_position_towards(world, &profile, position, 4, 8, towards, std::f32::consts::FRAC_PI_2, &mut self.random) {
+                            Some(wanted) => {
+                                let _ = self.swim_to(world, wanted);
+                            }
+                            None => goals.swim_up = Some(true),
+                        }
+                    }
+                }
+            }
+            match goals.running {
+                DrownedMove::Trident => {
+                    if let Some(target) = target {
+                        let eye = position + DVec3::Y * f64::from(self.zombie.eye_height());
+                        let target_eye = target.position + DVec3::Y * f64::from(target.eye_height);
+                        let sees = crate::sight::line_of_sight(world, eye, target_eye);
+                        let (near, power) = goals.tick_trident(position.distance_squared(target.position), sees);
+                        if near {
+                            self.navigation.stop();
+                        } else if self.navigation.is_done() || target.position.distance_squared(self.pathed_target) >= 1.0 {
+                            self.pathed_target = target.position;
+                            let _ = self.navigate_to_pursuit_target(world, target.position);
+                        }
+                        self.look_control.set_look_at_with_limits(target_eye, 30.0, 30.0);
+                        if power.is_some() {
+                            let seed = position.x.to_bits() ^ position.z.to_bits().rotate_left(17) ^ (self.tick_count as u64).rotate_left(40);
+                            let shot = Arrow::skeleton_shot(position, self.zombie.eye_height(), target.position, target.height, crate::drowned_ai::uncertainty(goals.difficulty), &mut LegacyRandom::new(seed));
+                            goals.throw = Some((shot.position, shot.velocity));
+                            let pitch = crate::drowned_ai::shoot_pitch(&mut self.random);
+                            self.voices.push((Voice::Event(crate::drowned_ai::SHOOT_SOUND, 1.0, pitch), position));
+                        }
+                    }
+                }
+                DrownedMove::Beach => {
+                    if let Some(goal) = goals.tick_beach(position) {
+                        let _ = self.swim_to(world, goal);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let swim = drowned.as_ref().map_or(target_in_water, |goals| goals.wants_to_swim(target_in_water));
+        let searching = drowned.as_ref().is_some_and(|goals| goals.searching_for_land);
         let in_water = FluidFrame::sample(
             world,
             self.zombie.body.position,
@@ -1711,12 +1843,12 @@ impl ZombieEntity {
         // delegating to MoveControl whenever the drowned is airborne on land.
         if self.zombie.kind == ZombieKind::Drowned
             && !self.zombie.body.on_ground
-            && !(target_in_water && in_water && self.underwater_last_tick)
+            && !(swim && in_water && self.underwater_last_tick)
         {
             self.zombie.body.velocity.y -= 0.008;
         }
         let swimming_control = self.zombie.kind == ZombieKind::Drowned
-            && target_in_water
+            && swim
             && in_water
             && self.underwater_last_tick;
         let control = if swimming_control {
@@ -1727,7 +1859,7 @@ impl ZombieEntity {
                 self.sideways,
                 self.effects.movement_speed(0.23_f32 as f64),
                 self.navigation.is_done(),
-                target.is_some_and(|target| target.position.y > position.y),
+                searching || target.is_some_and(|target| target.position.y > position.y),
                 &mut self.zombie.body.velocity,
             )
         } else {
@@ -1758,13 +1890,14 @@ impl ZombieEntity {
             self.body_rotation.body_yaw,
             !self.navigation.is_done(),
         );
-        self.travel_controlled(world, target_in_water);
+        self.travel_controlled(world, swim);
         self.body_rotation.tick(
             self.yaw,
             &mut self.look_control,
             self.previous_position,
             self.zombie.body.position,
         );
+        self.drowned = drowned;
     }
 
     fn within_melee_range(&self, target: PursuitTarget) -> bool {
@@ -2362,6 +2495,8 @@ pub struct EntityWorld {
     piglin_angers: Vec<piglins::PiglinAnger>,
     piglin_conversions: Vec<piglins::PiglinConversion>,
     zombie_conversions: Vec<(u64, u64)>,
+    trident_throws: Vec<crate::drowned_ai::TridentThrow>,
+    sea_level: i32,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
@@ -2475,6 +2610,8 @@ impl Default for EntityWorld {
             piglin_angers: Vec::new(),
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
+            trident_throws: Vec::new(),
+            sea_level: 63,
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: true,
@@ -3379,6 +3516,7 @@ impl EntityWorld {
             pathed_target: DVec3::ZERO,
             raise_arm_ticks: 0,
             ai: None,
+            drowned: None,
         });
         self.order.push(EntityKey::Zombie(id));
         self.file_in_section(EntityKey::Zombie(id));
@@ -3451,6 +3589,25 @@ impl EntityWorld {
         std::mem::take(&mut self.zombie_conversions)
     }
 
+    pub fn take_trident_throws(&mut self) -> Vec<crate::drowned_ai::TridentThrow> {
+        std::mem::take(&mut self.trident_throws)
+    }
+
+    pub fn set_sea_level(&mut self, sea_level: i32) {
+        self.sea_level = sea_level;
+    }
+
+    pub fn spawn_drowned(&mut self, drowned: Zombie) -> u64 {
+        let id = self.spawn_drowned_pursuit(drowned);
+        self.zombie_mut(id).unwrap().drowned = Some(crate::drowned_ai::DrownedGoals::default());
+        id
+    }
+
+    pub fn mob_shot_mob(&mut self, attacker: u64, victim: u64, damage: f32, velocity: DVec3) -> bool {
+        let Some(from) = self.mob_body(victim).map(|(body, _)| body.position - velocity) else { return false };
+        self.mob_hits_mob(attacker, victim, damage, from, 0.0).is_some_and(|hit| hit.applied)
+    }
+
     pub fn convert_zombie_to_drowned(&mut self, old_id: u64) -> u64 {
         let index = self
             .zombies
@@ -3477,6 +3634,9 @@ impl EntityWorld {
         drowned.hand_drop_chances = old.zombie.hand_drop_chances;
         drowned.armor = old.zombie.armor.clone();
         let id = self.spawn_zombie_internal(drowned, old.no_ai, old.ai.is_some());
+        if old.ai.is_some() {
+            self.zombie_mut(id).unwrap().drowned = Some(crate::drowned_ai::DrownedGoals::default());
+        }
         self.zombie_conversions.push((old_id, id));
         id
     }
@@ -4975,6 +5135,8 @@ impl EntityWorld {
             piglin_angers: Vec::new(),
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
+            trident_throws: Vec::new(),
+            sea_level: self.sea_level,
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: self.mob_drops,
@@ -5281,6 +5443,7 @@ impl EntityWorld {
                         })
                         .collect();
                     let bright_outside = self.bright_outside;
+                    let sea_level = self.sea_level;
                     let monsters_burn = self.monsters_burn;
                     let (difficulty, mob_griefing) = (self.difficulty, self.mob_griefing);
                     let mobs = self.mob_candidates();
@@ -5405,6 +5568,10 @@ impl EntityWorld {
                                     entity.hurt(damage);
                                 }
                             } else if entity.zombie.health > 0.0 && !entity.no_ai {
+                                if let Some(goals) = entity.drowned.as_mut() {
+                                    goals.sea_level = sea_level;
+                                    goals.difficulty = difficulty;
+                                }
                                 if entity.attack_only {
                                     entity.tick_pursuit(
                                         world,
@@ -5432,6 +5599,11 @@ impl EntityWorld {
                             entity.zombie.tick_drowning(eye_in_water, entity.no_ai);
                         (entity.pending_attack_villager.take(), entity.pending_attack_player.take(), conversion_due, !removed)
                     };
+                    let throw = self.zombie_mut(id).and_then(|e| Some((e.drowned.as_mut()?.throw.take()?, e.zombie.main_hand.clone())));
+                    if let Some(((position, velocity), item)) = throw {
+                        let item = item.unwrap_or_else(|| "minecraft:trident".to_owned());
+                        self.trident_throws.push(crate::drowned_ai::TridentThrow { owner: id, position, velocity, item });
+                    }
                     if let Some((player_id, attacker)) = pending_player {
                         // `Zombie.createAttributes`: 3 attack damage; an
                         // empty-handed husk's bite adds 140 ticks of hunger
@@ -7795,6 +7967,80 @@ mod tests {
             }
         }
         assert!(tridents > 10 && kept > 200, "{tridents} dropped, {kept} kept");
+    }
+
+    #[test]
+    fn a_drowned_with_a_trident_throws_it_from_range() {
+        let mut world = EntityWorld::default();
+        world.set_bright_outside(false);
+        let mut armed = Zombie::new(DVec3::new(0.5, 1.0, 0.5));
+        armed.main_hand = Some("minecraft:trident".to_owned());
+        let id = world.spawn_drowned(armed);
+        world.zombie_mut(id).unwrap().set_random_seed(5);
+        let bare = world.spawn_drowned(Zombie::new(DVec3::new(0.5, 1.0, 30.5)));
+        let player = candidate(7, DVec3::new(8.5, 1.0, 0.5));
+        let mut throws = Vec::new();
+        let mut aggressive = false;
+        for tick in 0..240 {
+            world.tick_with_players(&mut Floor, &[player]);
+            throws.extend(world.take_trident_throws().into_iter().map(|throw| (tick, throw)));
+            aggressive |= world.zombies().iter().any(|e| e.id == id && e.aggressive);
+        }
+        assert!(throws.len() >= 3, "{}", throws.len());
+        assert!(aggressive, "it raises the trident while its goal runs");
+        assert!(throws.iter().all(|(_, throw)| throw.owner == id && throw.item == "minecraft:trident"), "{bare} never throws");
+        for pair in throws.windows(2) {
+            assert_eq!(pair[1].0 - pair[0].0, crate::drowned_ai::TRIDENT_INTERVAL);
+        }
+        let (_, first) = &throws[0];
+        let from = world.zombies().iter().find(|e| e.id == id).unwrap().position();
+        assert!((first.position.y - (from.y + 1.74 - f64::from(0.1_f32))).abs() < 1.0e-6, "{:?}", first.position);
+        assert!(first.velocity.x > 1.4 && (first.velocity.length() - 1.6).abs() < 0.2, "{:?}", first.velocity);
+        let voices: Vec<_> = world.take_sounds().into_iter().filter(|s| s.event == crate::drowned_ai::SHOOT_SOUND).collect();
+        assert_eq!(voices.len(), throws.len());
+    }
+
+    struct ShoreWorld;
+    impl World for ShoreWorld {
+        fn block(&self, (x, y, _): minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            if y < 1 || (x >= 5 && y <= 1) {
+                Some(minecraftoss_player::Block::new("minecraft:stone"))
+            } else if y == 1 {
+                Some(minecraftoss_player::Block::new("minecraft:water").with("level", "0"))
+            } else {
+                None
+            }
+        }
+        fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    #[test]
+    fn a_drowned_heads_for_water_by_day_and_the_beach_by_night() {
+        let mut world = EntityWorld::default();
+        world.set_sea_level(3);
+        world.set_bright_outside(true);
+        let id = world.spawn_drowned(Zombie::new(DVec3::new(9.5, 2.0, 0.5)));
+        world.zombie_mut(id).unwrap().set_random_seed(11);
+        let running = |world: &EntityWorld| world.zombies().iter().find(|e| e.id == id).and_then(|e| e.drowned.as_ref()).map(|goals| goals.running);
+        let mut watered = false;
+        for _ in 0..400 {
+            world.tick_with_players(&mut ShoreWorld, &[]);
+            watered |= running(&world) == Some(crate::drowned_ai::DrownedMove::Water);
+        }
+        assert!(watered);
+        let by_day = world.zombie_mut(id).unwrap().position();
+        assert!(by_day.x < 5.0 && by_day.y < 2.0, "by day it walks into the water: {by_day}");
+        world.set_bright_outside(false);
+        let mut beached = false;
+        for _ in 0..400 {
+            world.tick_with_players(&mut ShoreWorld, &[]);
+            beached |= running(&world) == Some(crate::drowned_ai::DrownedMove::Beach);
+        }
+        assert!(beached);
+        let entity = world.zombie_mut(id).unwrap();
+        let by_night = entity.position();
+        assert!(by_night.x >= 5.0 && by_night.y >= 2.0, "by night it climbs onto the beach: {by_night}");
+        assert_eq!(entity.drowned.as_ref().map(|goals| goals.searching_for_land), Some(false));
     }
 
     #[test]

@@ -93,7 +93,10 @@ pub fn append_zombies<'a>(
         let parts = if zombie.baby { &BABY } else { &ADULT };
         let rest = [(parts[3].3[0], parts[3].3[2]), (parts[4].3[0], parts[4].3[2])];
         let pose_limbs = limb_rotations(pose.walk_position, pose.walk_speed, pose.age_in_ticks, entity.aggressive, pose.swing, if zombie.baby { 0.5 } else { 1.0 }, rest).seated(pose.riding);
-        let limbs = pose_limbs.limbs;
+        let mut limbs = pose_limbs.limbs;
+        if raises_trident(entity) {
+            limbs[0] = trident_arm(pose.walk_position, pose.walk_speed, pose.age_in_ticks);
+        }
         let arm_pivot = |arm: usize| {
             let (x, z) = pose_limbs.arm_pivots[arm];
             [x, parts[3 + arm].3[1], z]
@@ -174,6 +177,18 @@ pub fn append_zombies<'a>(
     }
     crate::cow_render::apply_overlays(mesh, &marks);
     held
+}
+
+pub fn raises_trident(entity: &ZombieEntity) -> bool {
+    entity.zombie.kind == ZombieKind::Drowned && entity.aggressive && entity.zombie.main_hand.as_deref() == Some("minecraft:trident")
+}
+
+pub fn trident_arm(walk_position: f32, walk_speed: f32, age: f32) -> Quat {
+    use minecraftoss_player::mth;
+    let walk = mth::cos(f64::from(walk_position * 0.6662 + std::f32::consts::PI)) * walk_speed;
+    let bob_z = mth::cos(f64::from(age * 0.09)) * 0.05 + 0.05;
+    let bob_x = mth::sin(f64::from(age * 0.067)) * 0.05;
+    Quat::from_euler(EulerRot::ZYX, bob_z, 0.0, walk * 0.5 - std::f32::consts::PI + bob_x)
 }
 
 /// A humanoid zombie's pose: the body's twist, the arms' pivots (x, z in
@@ -334,5 +349,23 @@ mod tests {
         assert_eq!(seated.limbs[0], arms, "zombie arms stay held out");
         let unchanged = limb_rotations(0.0, 0.0, 0.0, false, None, 1.0, rest).seated(false);
         assert_eq!(unchanged.limbs, standing.limbs);
+    }
+
+    #[test]
+    fn a_drowned_raises_its_trident_over_its_head_while_it_aims() {
+        let raised = Quat::from_euler(EulerRot::ZYX, 0.1, 0.0, -std::f32::consts::PI);
+        assert!((trident_arm(0.0, 0.0, 0.0).dot(raised).abs() - 1.0).abs() < 1.0e-6);
+        let walking = Quat::from_euler(EulerRot::ZYX, 0.1, 0.0, -std::f32::consts::PI - 0.25);
+        assert!((trident_arm(0.0, 0.5, 0.0).dot(walking).abs() - 1.0).abs() < 1.0e-6, "half the walk swing");
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let mut drowned = minecraftoss_entities::zombie::Zombie::new(glam::DVec3::ZERO);
+        drowned.main_hand = Some("minecraft:trident".to_owned());
+        let id = world.spawn_drowned(drowned);
+        let entity = world.zombie_mut(id).unwrap();
+        assert!(!raises_trident(entity), "only while aggressive");
+        entity.aggressive = true;
+        assert!(raises_trident(entity));
+        entity.zombie.main_hand = Some("minecraft:fishing_rod".to_owned());
+        assert!(!raises_trident(entity), "a rod is not raised");
     }
 }

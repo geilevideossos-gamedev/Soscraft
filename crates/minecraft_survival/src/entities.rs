@@ -1586,7 +1586,7 @@ fn mob_hit(
     };
     let toward = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
-        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } => [-velocity.x, -velocity.z],
+        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } => [-velocity.x, -velocity.z],
         PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
     };
     let attack = match hit.kind {
@@ -1596,6 +1596,7 @@ fn mob_hit(
         PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
         PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
         PlayerHitKind::ShulkerBullet { .. } => crate::death::MobAttack::MobProjectile,
+        PlayerHitKind::Trident { .. } => crate::death::MobAttack::Trident,
     };
     let cause = match hit.kind {
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,

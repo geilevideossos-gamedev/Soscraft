@@ -827,6 +827,29 @@ mod tests {
     }
 
     #[test]
+    fn a_friend_sees_a_drowned_raise_its_trident() {
+        let mut host = EntityWorld::default();
+        let (drowned, tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:drowned\",Pos:[2.5d,64.0d,0.5d],equipment:{mainhand:{id:\"minecraft:trident\",count:1}}}",
+        );
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, drowned, &tag));
+        assert!(!crate::zombie_render::raises_trident(friend.zombie_mut(drowned).unwrap()));
+        host.zombie_mut(drowned).unwrap().aggressive = true;
+        assert!(shows(&host)[&drowned].aggressive);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(crate::zombie_render::raises_trident(friend.zombie_mut(drowned).unwrap()));
+        host.zombie_mut(drowned).unwrap().aggressive = false;
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(!crate::zombie_render::raises_trident(friend.zombie_mut(drowned).unwrap()));
+    }
+
+    #[test]
     fn a_loaded_strider_and_its_rider_are_added_as_two_mobs_the_friend_can_spawn() {
         let mut host = EntityWorld::default();
         let jockey = saved(
