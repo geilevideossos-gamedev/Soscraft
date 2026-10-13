@@ -548,6 +548,7 @@ The class menu offers it, so it is an item with a recipe. In a Minecraft world i
   - melee: MOD_MELEE, MOD_IMPACT.
 - The location multiplier for headshots is applied before (`damage.rs:907-915`), so headshots still matter. GSC perks (Stopping Power, Danger Close) multiply the result, and GSC keeps its minimum of 1.
 - **Inputs:** each frame, after settle, the host mirrors each player's armour into the sim with `set_gun_guard(client, GunGuard { armor, toughness, epf_bullet, epf_blast, epf_melee, resistance, totem_grace })`, next to `set_death_protected`, for itself (`minecraft_world.rs:1391`) and each friend (`minecraft_players.rs:1638`). The EPF values come from the existing enchantment code with `minecraft:arrow` for bullets (`#is_projectile`), `minecraft:player_explosion` for blasts and `minecraft:player_attack` for the knife.
+- **Built:** the rule is `sim::gun_damage` (`gun_hit`, `gun_damage_to_player`, `verdict`); the Minecraft side is `Survival::gun_armor` and render_anim's `mirror_gun_guard`. A victim that never published a guard (a bot, an MW2 map) keeps MW2's amount. A hit the formula takes to 0 (Resistance V) is refused before GSC, so it shows no hit marker. A friend who leaves has the guard removed (`forget_gun_guard`).
 - **Pierce** comes from a `weapon index -> pierce` table pushed once per match (`sim::voxel::set_pierce_table`), built from the gun's class and its `fmj` attachment.
 
 ### 11.2 Formula
@@ -570,28 +571,33 @@ Constants, one place each in the sim: `GUN_PLAYER_SCALE = 0.5`, `GUN_ARMOR_FACTO
 
 ### 11.3 Results
 
-MW2 points per hit (100 = full health = 10 hearts, so 10 points = 1 heart), with the hits to kill from full health in brackets. No enchantments. Copper armour is 10 points (2, 4, 3, 1 in the 26.3 catalog). Gun damage values are MW2 base damage from memory; the real values come from the owner's data (section 18).
+MW2 points per hit (100 = full health = 10 hearts, so 10 points = 1 heart), with the hits to kill from full health in brackets. No enchantments. Copper armour is 10 points (2, 4, 3, 1 in the 26.3 catalog).
+
+The damage values are the owner's MW2 data (`common_mp.ff`, read with the fork's own zone loader in round 9; the earlier values from memory were wrong for snipers, the frag and the rocket): M4A1 30 close (20 far), USP .45 40 (25), Desert Eagle 50 (30), RPD, L86 LSW and AUG HBAR 40, MG4 and M240 30, Intervention, Barrett .50cal and WA2000 70 with x1.5 on the head, neck and upper torso (105) and x1.1 on the lower torso (77), the M21 EBR 70 with x1.1 on the torso, frag 150 at the centre to 55 at the edge, semtex, C4 and claymore 200, RPG-7 blast 160, AT4 and Stinger 155, the knife 135. Other guns take x1.4 on the head and neck. A result of exactly x.5 rounds up (52.5 is 53).
 
 | Hit (MW2 points) | Pierce | None | Leather | Copper | Gold | Chain | Iron | Diamond | Netherite |
 |---|---|---|---|---|---|---|---|---|---|
 | M4A1 body, close (30) | 0 | 15 (7) | 8 (13) | 5 (20) | 4 (25) | 3 (34) | 3 (34) | 3 (34) | 3 (34) |
 | M4A1 + FMJ (30) | 0.25 | 15 (7) | 10 (10) | 7 (15) | 6 (17) | 6 (17) | 6 (17) | 6 (17) | 6 (17) |
 | USP .45 close (40) | 0 | 20 (5) | 12 (9) | 7 (15) | 6 (17) | 4 (25) | 4 (25) | 4 (25) | 4 (25) |
-| Desert Eagle (50) | 0 | 25 (4) | 16 (7) | 10 (10) | 8 (13) | 6 (17) | 5 (20) | 5 (20) | 5 (20) |
-| LMG (40) | 0.25 | 20 (5) | 14 (8) | 10 (10) | 9 (12) | 8 (13) | 8 (13) | 8 (13) | 8 (13) |
-| LMG + FMJ (40) | 0.5 | 20 (5) | 16 (7) | 14 (8) | 13 (8) | 12 (9) | 12 (9) | 12 (9) | 12 (9) |
-| Intervention body (98) | 0.5 | 49 (3) | 45 (3) | 39 (3) | 37 (3) | 35 (3) | 29 (4) | 29 (4) | 29 (4) |
-| Intervention + FMJ (98) | 0.75 | 49 (3) | 47 (3) | 44 (3) | 43 (3) | 42 (3) | 39 (3) | 39 (3) | 39 (3) |
-| Frag, centre (130) | 0 | 65 (2) | 58 (2) | 47 (3) | 42 (3) | 36 (3) | 21 (5) | 13 (8) | 13 (8) |
-| Rocket, direct (150) | 0 | 75 (2) | 67 (2) | 60 (2) | 54 (2) | 48 (3) | 30 (4) | 15 (7) | 15 (7) |
+| Desert Eagle close (50) | 0 | 25 (4) | 16 (7) | 10 (10) | 8 (13) | 6 (17) | 5 (20) | 5 (20) | 5 (20) |
+| RPD, L86, AUG HBAR (40) | 0.25 | 20 (5) | 14 (8) | 10 (10) | 9 (12) | 8 (13) | 8 (13) | 8 (13) | 8 (13) |
+| RPD + FMJ (40) | 0.5 | 20 (5) | 16 (7) | 14 (8) | 13 (8) | 12 (9) | 12 (9) | 12 (9) | 12 (9) |
+| MG4, M240 (30) | 0.25 | 15 (7) | 10 (10) | 7 (15) | 6 (17) | 6 (17) | 6 (17) | 6 (17) | 6 (17) |
+| Intervention or Barrett, chest (105) | 0.5 | 53 (2) | 49 (3) | 43 (3) | 40 (3) | 38 (3) | 32 (4) | 32 (4) | 32 (4) |
+| Intervention + FMJ, chest (105) | 0.75 | 53 (2) | 51 (2) | 48 (3) | 46 (3) | 45 (3) | 42 (3) | 42 (3) | 42 (3) |
+| Frag, centre (150) | 0 | 75 (2) | 67 (2) | 60 (2) | 54 (2) | 48 (3) | 30 (4) | 15 (7) | 15 (7) |
+| Semtex or C4, centre (200) | 0 | 100 (1) | 89 (2) | 84 (2) | 82 (2) | 81 (2) | 60 (2) | 20 (5) | 20 (5) |
+| RPG-7 blast, centre (160) | 0 | 80 (2) | 71 (2) | 67 (2) | 61 (2) | 54 (2) | 35 (3) | 16 (7) | 16 (7) |
+| Knife (135) | 0 | 68 (2) | 60 (2) | 50 (2) | 45 (3) | 39 (3) | 23 (5) | 13 (8) | 13 (8) |
 
-With Protection IV on all four pieces, an M4A1 hit on an unarmoured-equivalent player drops from 15 to 5 and a frag from 65 to 23. Blast Protection IV on four pieces takes every frag to 13.
+With Protection IV on all four pieces, an M4A1 hit on an unarmoured-equivalent player drops from 15 to 5 and a frag from 75 to 27. Blast Protection IV on four pieces takes every frag to 15. A rocket's direct impact (1000) still kills through any armour.
 
 What this means in play:
 - **Unarmoured players** take about twice MW2's hits: 7 M4A1 body shots instead of 4, about half a second. An ambush still works, and a frag no longer kills from full health.
 - **Leather, copper and gold help a lot.** From chainmail up, armour reaches the 80 % ceiling against light rounds, so iron, diamond and netherite are equal against an M4A1 (34 hits, more than one magazine, about 2.6 s of continuous hits). Vanilla iron-sword PvP against iron armour takes 4-5 s, so guns stay stronger than swords but are not instant.
-- **Gun choice matters against armour.** FMJ halves an M4A1's hits to 17, an LMG needs 13 and a sniper 3-4. The late guns are the late answer.
-- **Diamond and netherite pull ahead of iron against explosions** (a frag does 13 against 21) and against Minecraft melee and mobs, where armour is unchanged.
+- **Gun choice matters against armour.** FMJ halves an M4A1's hits to 17, an LMG needs 13 and a sniper 4 chest hits (2 unarmoured). The late guns are the late answer.
+- **Diamond and netherite pull ahead of iron against explosions** (a frag does 15 against 30) and against Minecraft melee and mobs, where armour is unchanged.
 - **Shotguns** still one-shot an unarmoured player up close, as in MW2. Each pellet is armoured on its own, so armour hurts them most.
 - **The knife** is halved and armoured like the rest. MW2's lunge (135) takes 2 hits unarmoured.
 
@@ -786,7 +792,7 @@ IW4L_MINECRAFT_KIT=iw4l:barrett, iw4l:usp, iw4l:usp, iw4l:sniper_rounds*16, iw4l
 | 32 | Two copies of one gun | A fast reload by switching, accepted | a forced raise animation |
 
 **Not verified** (the implementer checks these):
-- MW2 damage numbers (M4A1 30, USP 40, Desert Eagle 50, LMG 40, Intervention 98, knife 135, rocket 150) are from memory. Only the frag (130) is confirmed by a sim test constant. The tables in 11.3 and the test must be recomputed from the owner's data.
+- ~~MW2 damage numbers are from memory.~~ Checked in round 9 against the owner's `common_mp.ff` (section 11.3): snipers are 70 with x1.5 on the chest (105, not 98), the frag 150 (130 was a sim test's stand-in), the RPG-7 blast 160. The table in 11.3 and the test use the real values.
 - That MW2's death weapon drop and weapon pickups can be switched off per client on Minecraft maps without GSC errors.
 - That an empty primary set (weapon 0) does not upset GSC or the first-person view.
 - That `inventory_add_weapon` adds a gun's alt mode by itself for `_gl_` and `_shotgun_` variants.

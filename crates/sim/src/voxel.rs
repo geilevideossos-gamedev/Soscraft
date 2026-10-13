@@ -478,6 +478,38 @@ pub fn take_totem_pops() -> Vec<u32> {
     TOTEM_POPS.lock().map_or_else(|_| Vec::new(), |mut pops| std::mem::take(&mut *pops))
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GunGuard {
+    pub armor: f32,
+    pub toughness: f32,
+    pub epf_bullet: f32,
+    pub epf_blast: f32,
+    pub epf_melee: f32,
+    pub resistance: u8,
+    pub totem_grace: bool,
+}
+
+static GUN_GUARDS: std::sync::Mutex<Vec<(u32, GunGuard)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_gun_guard(client: u32, guard: GunGuard) {
+    if let Ok(mut guards) = GUN_GUARDS.lock() {
+        match guards.iter_mut().find(|(c, _)| *c == client) {
+            Some((_, kept)) => *kept = guard,
+            None => guards.push((client, guard)),
+        }
+    }
+}
+
+pub fn forget_gun_guard(client: u32) {
+    if let Ok(mut guards) = GUN_GUARDS.lock() {
+        guards.retain(|(c, _)| *c != client);
+    }
+}
+
+pub(crate) fn gun_guard(client: u32) -> Option<GunGuard> {
+    GUN_GUARDS.lock().ok()?.iter().find(|(c, _)| *c == client).map(|(_, guard)| *guard)
+}
+
 pub const AMMO_TYPES: usize = 8;
 pub const NO_AMMO: u8 = u8::MAX;
 
@@ -876,6 +908,9 @@ pub fn deactivate() {
     let _ = take_team_switches();
     if let Ok(mut clients) = DEATH_PROTECTED.lock() {
         clients.clear();
+    }
+    if let Ok(mut guards) = GUN_GUARDS.lock() {
+        guards.clear();
     }
     if let Ok(mut published) = ARSENALS.lock() {
         published.clear();

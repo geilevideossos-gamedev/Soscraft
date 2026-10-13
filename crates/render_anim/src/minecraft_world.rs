@@ -1428,6 +1428,7 @@ fn update(
         ui.scoping = alive && hand.scoping.is_some();
         ui.camera_overlay = alive && minecraft_terrain::body_gear::camera_overlay(&inventory.slots);
         sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
+        crate::minecraft_fork_items::mirror_gun_guard(local.0.0, survival, inventory);
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
         let swing = hand.swing.map_or(0.0, |t| (t / crate::minecraft_hand::SWING_TICKS).clamp(0.0, 1.0));

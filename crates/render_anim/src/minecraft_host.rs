@@ -351,6 +351,7 @@ pub(crate) fn host(
         host.edit_books.remove(client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
+        sim::voxel::forget_gun_guard(*client);
         sim::voxel::forget_arsenal(*client);
     }
     read_inbox(&mut host, &mut wire, now);

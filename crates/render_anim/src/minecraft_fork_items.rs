@@ -67,6 +67,26 @@ impl GunContent for RegistryGuns<'_> {
     }
 }
 
+pub(crate) fn mirror_gun_guard(
+    client: u32,
+    survival: &minecraft_survival::survival::Survival,
+    inventory: &Inventory,
+) {
+    let worn = survival.gun_armor(inventory);
+    sim::voxel::set_gun_guard(
+        client,
+        sim::voxel::GunGuard {
+            armor: worn.armor,
+            toughness: worn.toughness,
+            epf_bullet: worn.epf_bullet,
+            epf_blast: worn.epf_blast,
+            epf_melee: worn.epf_melee,
+            resistance: worn.resistance,
+            totem_grace: worn.totem_grace,
+        },
+    );
+}
+
 pub(crate) struct ForkRules(Arc<WeaponRegistry>);
 
 impl GunRules for ForkRules {

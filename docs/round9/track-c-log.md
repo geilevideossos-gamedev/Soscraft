@@ -1153,6 +1153,44 @@ IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64
 IW4L_MINECRAFT_KIT=minecraft:white_bed,iw4l:tactical_insertion*4,iw4l:frag_grenade*16,minecraft:cobblestone*64,minecraft:obsidian*10,minecraft:flint_and_steel,iw4l:m4,iw4l:rifle_ammo*64
 ```
 
+## C13 Guns against players' armour
+
+### 1. Guns do half damage to players in Minecraft worlds and worn armour takes twice vanilla's share of it
+
+Commit: the one after `43b4e0df`. **Not vanilla** (WEAPONS.md 11).
+
+- **Changed:**
+  - `sim/src/gun_damage.rs` (new, edition 2024, rustfmt-clean): `GunHit { Bullet, Explosion, Melee }`; `gun_hit(means)` with WEAPONS.md 11.1's means lists (Minecraft's `MOD_TRIGGER_HURT`, falls, suicide, crush and unknown are none); `gun_damage_to_player(amount, max_health, guard, pierce, kind)`, the WEAPONS.md 11.2 formula with the named constants `GUN_PLAYER_SCALE` 0.5, `GUN_ARMOR_FACTOR` 2.0 and `GUN_PROTECTION_CAP` 0.8 (vanilla's `CombatRules.getDamageAfterAbsorb` on the halved hit, Protection EPF at 4 % a point capped at 20, both under the 80 % ceiling, then Resistance at 20 % a level); `pierce(lmg, sniper, fmj)` and the pierce constants for the next commit; `verdict(minecraft, means, amount, pierce, victim)`, which says unchanged, refused or a new amount.
+  - `sim/src/voxel.rs`: `GunGuard { armor, toughness, epf_bullet, epf_blast, epf_melee, resistance, totem_grace }`, `set_gun_guard`, `forget_gun_guard` and the crate's `gun_guard`, cleared in `deactivate`.
+  - `sim/src/script/host/players.rs` `player_damage`: before GSC `Callback_PlayerDamage`, when `voxel::active()` and the hit is not a Minecraft hit, `gun_verdict` reads the victim's `ps.max_health` (100 when absent) and guard. A new amount goes to GSC and `current_hit` as a copy of the hit with `amount` and `commit.amount` changed; a refused hit (0, Resistance V) returns before GSC.
+  - `minecraft_survival/src/survival.rs`: `GunArmor` (the same fields) and `Survival::gun_armor(inventory)`, which reads `survival::armor(inventory)`, the worn enchantments' EPF through the existing `Protection::against` with `minecraft:arrow` (bullets, `#is_projectile`), `minecraft:player_explosion` (blasts, `#is_explosion`) and `minecraft:player_attack` (the knife), and the Resistance level.
+  - `render_anim/src/minecraft_fork_items.rs`: `mirror_gun_guard(client, survival, inventory)`, called next to `set_death_protected` for the host (`minecraft_world.rs`) and in the shared friend step (`minecraft_players.rs`); `minecraft_host.rs` forgets a leaving friend's guard.
+  - `docs/WEAPONS.md` 11.1 (what was built), 11.3 (the table recomputed from the owner's data) and the "not verified" line.
+- **The owner's damage values (checked):** a throwaway probe (not committed) walked the owner's `common_mp.ff` with the fork's own `fastfile_iw4` zone loader and printed each weapon's damage and hit-location table. M4A1 30/20, USP .45 40/25, Desert Eagle 50/30, RPD, L86 and AUG HBAR 40, MG4 and M240 30 and the knife 135 match the memory values. Wrong in WEAPONS.md: the Intervention and Barrett are 70 with x1.5 on the upper torso (105, not 98); the frag is 150 at the centre (the 130 was a sim test's stand-in); the RPG-7's blast is 160 (its direct impact is 1000). WEAPONS.md 11.3 now uses them and adds semtex or C4 (200) and the knife.
+- **Tests:**
+  - `sim` `gun_damage::tests::gun_hits_are_bullets_explosions_or_melee`; `guns_do_half_damage_to_an_unarmoured_player` (30 -> 15, 98 -> 49, 130 -> 65, 1 -> 1 for every kind, the same with 400 max health); `armour_takes_twice_vanilla_s_share_up_to_four_fifths` (the WEAPONS.md 11.3 rows without pierce and without an x.5 cell: M4A1, USP, Desert Eagle, frag, RPG-7, semtex; the ceiling with Protection on netherite; a 1000 blast through diamond); `protection_and_resistance_count_under_the_same_ceiling` (Protection IV on four pieces 15 -> 5 and a frag 75 -> 27, Blast Protection IV a frag -> 15 and no help against bullets, Resistance III, Resistance V refuses); `mw2_maps_pass_the_amount_through` (inactive world, no guard, Minecraft and fall means, a 0 hit); `mob_damage_is_unchanged` (only `players.rs` applies the rule; `damage.rs`, `voxel.rs`, `script_player.rs` and `combat.rs`, where `MobShot` and `MobBlast` are made, do not).
+  - `minecraft_survival` `survival::tests::guns_meet_the_worn_armour_its_protection_and_resistance` (needs the 26.3 data, gated like its neighbours): a diamond set with Protection IV, Projectile Protection IV and Blast Protection IV reads 20 armour, 8 toughness, EPF 12 for bullets, 12 for blasts and 4 for the knife, and Resistance II as 2.
+  - No existing sim test runs GSC damage with a block world active: only `damage/height_bands.rs` activates one, and it calls `finish_damage` directly. The `damage.rs` tests that run `apply_damage_attempt` publish no guard, so they keep MW2's amount even if another test has a block world active. `test -p sim` (149) and `test -p minecraft_survival` green, `check -p launcher` green.
+- **Decisions:**
+  - **Only players with a published guard are changed.** Every Minecraft player, host and friend, publishes one each frame; a client that never does (a bot, any MW2 map) keeps MW2's amount, like the track's rule for clients without an arsenal.
+  - **A hit taken to 0 is refused before GSC** (no health change, no hit marker), since GSC would raise it to 1. Only Resistance V does this.
+  - **Rounding** is Rust's `round` (half away from zero) in f64. The table's x.5 cells (the sniper unarmoured and in diamond or netherite, the knife unarmoured and in diamond or netherite) round up and are left out of the test.
+  - The `DeathCommit` that `script_player::damage` returns for a kill keeps MW2's amount; only the copy GSC and `finishplayerdamage` see is changed.
+  - MW2's location multipliers (headshots, the sniper chest) are applied before the rule, as before.
+- **Owner's test steps** (two windows with `scripts\mp-local.ps1`, a survival world, `/difficulty normal`, pvp on; host H and friend F, both with the kit below; full health before each step):
+  1. H unarmoured. F shoots H once in the chest with the M4A1 from about 5 blocks: H loses 1.5 hearts (before: 3). **Screenshot 1.**
+  2. H puts on the leather set: one M4A1 chest hit takes under 1 heart (0.8). H puts on the iron set instead: about a third of a heart. **Screenshot 2.**
+  3. F fires the Barrett into H's chest: unarmoured H dies on the second hit. In iron, H takes about 9 chest hits for now (the Barrett's armour pierce comes in the next commit).
+  4. H in the diamond set throws a frag (G) at H's own feet: H loses 1.5 hearts at most. Unarmoured, a frag at the feet takes about 7.5 hearts and no longer kills from full health. **Screenshot 3.**
+  5. H swaps the plain diamond chestplate for the Protection IV one: the frag at the feet takes a little less.
+  6. `/summon minecraft:zombie ~ ~ ~5`: the M4A1 kills it in about 4 body hits, as before. **Screenshot 4.**
+  7. Swap roles: H shoots F; F's own window shows the same losses.
+- **Kit** (24 stacks, for each player):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:fmj,iw4l:barrett,iw4l:sniper_rounds*16,iw4l:frag_grenade*16,minecraft:crafting_table,minecraft:leather_helmet,minecraft:leather_chestplate,minecraft:leather_leggings,minecraft:leather_boots,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:diamond_helmet,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:zombie_spawn_egg*2,minecraft:cooked_beef*32
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none.
@@ -1205,3 +1243,6 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `decisions.md` (Not vanilla): "The tactical insertion's flare is a one-use respawn point ahead of the bed, kept on the host and never saved; only MW2 blasts destroy it."
 - `MINECRAFT-SURVIVAL.md`, the guns section: "In a Minecraft world the class editor changes the perks and the deathstreak only: a click on a weapon or grenade row opens nothing and shows "Guns and grenades are items in Minecraft worlds" (also the editor's status line), and Reset keeps the class's guns and grenades. One Man Army and Bling change no item. MW2 maps and the main menu are unchanged."
 - `MULTIPLAYER.md` (what a friend sees): "A friend's class editor follows the same rule while the friend is in the host's Minecraft world."
+- `MINECRAFT-SURVIVAL.md` line 374 (MW2 damage through armour deferred), replaced by: "In a Minecraft world every MW2 weapon hit on a player (bullets, grenades, launchers, killstreaks, the knife, a player's own explosives) is halved and then reduced by the player's Minecraft armour at twice vanilla's armour share; armour and Protection, Projectile Protection (bullets) or Blast Protection (explosions) together take at most 80 %, and Resistance applies after that like vanilla (level V blocks every gun). Damage to mobs and Minecraft damage to players are unchanged. Not vanilla."
+- `MULTIPLAYER.md` section 13 (MW2 damage ignores Minecraft armour), replaced by: "Gun hits between players run on the host through one rule for everyone: each frame the host mirrors every player's armour, enchantment protection and Resistance into the sim, and the victim's own armour reduces the hit before MW2's scripts see it."
+- `decisions.md` (Not vanilla): "MW2 weapon damage to players in Minecraft worlds is halved and armour takes twice vanilla's share (armour and Protection together at most 80 %, Resistance after), so iron, diamond and netherite all reach the ceiling against light rounds; bots and MW2 maps are unchanged."

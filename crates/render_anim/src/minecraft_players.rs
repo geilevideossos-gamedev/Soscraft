@@ -1686,6 +1686,7 @@ pub(crate) fn step_friend(
         && !survival.killed()
         && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some();
     sim::voxel::set_death_protected(client.0, protected);
+    crate::minecraft_fork_items::mirror_gun_guard(client.0, survival, inventory);
     stepped
 }
 
