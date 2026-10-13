@@ -618,14 +618,14 @@ What this means in play:
   - Minecraft `#minecraft:is_explosion` damage (explosion, player_explosion, bad_respawn_point, fireworks): TNT, creepers, end crystals, beds and anchors.
 - The pop itself is unchanged: health 1, Regeneration II, Absorption II, Fire Resistance, the rising totem and the particles.
 - **Not covered:** the MW2 knife and impacts, Minecraft melee, arrows, fire, falls, the void and `/kill`.
-- Explosion knockback still pushes the player, as vanilla pushes an entity whose hurt is refused.
+- No push either: explosions, MW2 or Minecraft, push no player in the fork at all (only wind charges and the dragon do), so a refused blast does nothing. Vanilla would still push an entity whose hurt is refused; that waits for explosion pushes on players.
 - Refused hits change no health and show no hit marker.
 - **Two clocks, one rule:**
   - Sim side: `spend_death_protection(client, tick)` (`voxel.rs:465`) also records `tick + 80` (80 sim ticks of 50 ms, `MATCH_TICK_MS`). `finish_damage` gains the tick and passes it on (callers: `natives/player.rs:485` and the two `height_bands` tests). So the remaining pellets of the same shotgun blast and grenades in the same tick are refused at once.
   - Minecraft side: `Survival::protect` sets `totem_grace_until = tick + 80`, and `hurt` refuses explosions while it runs. It is mirrored to the sim through `GunGuard.totem_grace`. `respawn` clears it.
   - Under `/tick freeze` the Minecraft clock stops while the sim clock runs on. That is accepted.
 - This is a fork rule: vanilla has only the hurt cooldown. It goes into `docs/round9/decisions.md`.
-- **Built:** the sim keeps `voxel::TOTEM_GRACE` per client (`spend_death_protection(client, tick)`, `totem_grace(client, tick)`, cleared in `deactivate`), and `gun_damage::verdict` refuses Bullet and Explosion gun hits while it or the mirrored `GunGuard.totem_grace` runs, before the halving and before GSC. The Minecraft side is `Survival::totem_grace()` with `TOTEM_GRACE_TICKS` (80), refused in `hurt` through `DamageCause::is_explosion()` (`death::IS_EXPLOSION`, the jar's `#minecraft:is_explosion` tag). Explosion pushes come through the level's `players_pushed`, separate from the hurt, so a refused blast still pushes.
+- **Built:** the sim keeps `voxel::TOTEM_GRACE` per client (`spend_death_protection(client, tick)`, `totem_grace(client, tick)`, cleared in `deactivate`), and `gun_damage::verdict` refuses Bullet and Explosion gun hits while it or the mirrored `GunGuard.totem_grace` runs, before the halving and before GSC. The Minecraft side is `Survival::totem_grace()` with `TOTEM_GRACE_TICKS` (80), refused in `hurt` through `DamageCause::is_explosion()` (`death::IS_EXPLOSION`, the jar's `#minecraft:is_explosion` tag). The level's `players_pushed` carries only wind bursts and the dragon, and a blast's `PlayerHitKind::Explosion` knockback is used only as the shield direction, so no explosion pushes a player, refused or not.
 - **Sourceless blasts:** TNT and end crystal blasts reach a player with no source entity, which the fork told as `DamageCause::Generic` ("<name> died"). They are now `DamageCause::Explosion` (`minecraft:explosion`, "<name> blew up", like vanilla's `explosion(null, null)`), so the grace covers them and Blast Protection now softens them, as in vanilla.
 
 ## 13. Recipe book and creative
@@ -745,7 +745,7 @@ Setup:
 11. **Totem.**
     1. H holds a totem in the offhand at low health. F holds the trigger and the totem pops.
     2. For about 4 s H's hearts don't drop and F sees no hit markers. **Screenshot 10.**
-    3. Repeat with a frag at H's feet just after a pop: no damage, but a push.
+    3. Repeat with a frag at H's feet just after a pop: no damage (and no push: explosions push no player in the fork).
     4. A knife hit still hurts during the 4 s.
 12. **The friend.**
     1. F's first join gives F their own class guns and 32 + 32 grenades.
@@ -793,7 +793,7 @@ IW4L_MINECRAFT_KIT=iw4l:barrett, iw4l:usp, iw4l:usp, iw4l:sniper_rounds*16, iw4l
 | 28 | Protection and Resistance | Count at vanilla rates under the same ceiling; Resistance after it | left out |
 | 29 | Armour pierce | LMG 0.25, sniper 0.5, FMJ +0.25 (at most 0.75) | none (iron, diamond and netherite equal against every gun) |
 | 30 | Halving scope | All MW2 weapon damage to players, the knife and own grenades included | bullets only (one line) |
-| 31 | Totem grace | Bullets and explosions, MW2 and Minecraft, 80 ticks, knockback kept | everything for 4 s |
+| 31 | Totem grace | Bullets and explosions, MW2 and Minecraft, 80 ticks; explosions push no player in the fork | everything for 4 s |
 | 32 | Two copies of one gun | A fast reload by switching, accepted | a forced raise animation |
 
 **Not verified** (the implementer checks these):

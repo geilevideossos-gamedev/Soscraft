@@ -1227,7 +1227,7 @@ Commit: the one after `415a85cb`. **Not vanilla** (WEAPONS.md 12).
   - `sim/src/voxel.rs`: `spend_death_protection(client, tick)` also records the grace until `tick + TOTEM_GRACE_TICKS` (80 sim ticks of 50 ms) in `TOTEM_GRACE`; the crate's `totem_grace(client, tick)`; cleared in `deactivate`.
   - `sim/src/script_player.rs`: `finish_damage` takes the tick and passes it to `spend_death_protection`; its callers `script/host/natives/player.rs` (`finishplayerdamage`) and the two `damage/height_bands.rs` tests pass theirs (the band tests' assertions are unchanged).
   - `sim/src/gun_damage.rs`: `GunHit::turned_by_totem` (bullets and explosions); `Victim.totem_grace`; `verdict` refuses a bullet or explosion gun hit while the sim grace or the mirrored `GunGuard.totem_grace` runs, so GSC is not called, health does not change and no hit marker shows. The knife and impacts are not covered. `script/host/players.rs` `gun_verdict` reads the sim grace at the hit's tick.
-  - `minecraft_survival/src/survival.rs`: `Survival.totem_grace_until`, set by `protect` to the Minecraft tick + `TOTEM_GRACE_TICKS` (80); `totem_grace()`; `hurt` refuses a `DamageCause::is_explosion()` hit while it runs (knockback still comes through the level's `players_pushed`); `respawn` clears it (it rebuilds the state); `/kill` and the void use their own paths and are unaffected. `gun_armor` mirrors it as `GunGuard.totem_grace`.
+  - `minecraft_survival/src/survival.rs`: `Survival.totem_grace_until`, set by `protect` to the Minecraft tick + `TOTEM_GRACE_TICKS` (80); `totem_grace()`; `hurt` refuses a `DamageCause::is_explosion()` hit while it runs (no push either: the level's `players_pushed` carries only wind bursts and the dragon, so explosions push no player in the fork, with or without the grace; corrected in the second review); `respawn` clears it (it rebuilds the state); `/kill` and the void use their own paths and are unaffected. `gun_armor` mirrors it as `GunGuard.totem_grace`.
   - `minecraft_survival/src/death.rs`: `IS_EXPLOSION` (the 26.3 jar's `#minecraft:is_explosion` tag: fireworks, explosion, player_explosion, bad_respawn_point, read from the jar) and `DamageCause::is_explosion`; a new `DamageCause::Explosion` (`minecraft:explosion`, message `explosion`) for a blast with no source entity.
   - `docs/WEAPONS.md` 12: what was built and the sourceless blast change.
 - **Found:** TNT and end crystal blasts reach a player with no source entity, and `DamageCause::mob` turned them into `Generic`, so they were not explosions at all ("<name> died", only plain Protection). They are now `DamageCause::Explosion`, vanilla's `explosion(null, null)`: the grace covers them, the death message is vanilla's "<name> blew up", and Blast Protection softens them like vanilla. A creeper (with a source) stays `explosion.player`, a bed or anchor `badRespawnPoint`.
@@ -1242,9 +1242,9 @@ Commit: the one after `415a85cb`. **Not vanilla** (WEAPONS.md 12).
   - **Sourceless blasts are vanilla's `explosion`** (above). A TNT lit by a player is told as "blew up" too: the vendored level keeps no igniter.
 - **Owner's test steps** (two windows with `scripts\mp-local.ps1`, survival, pvp on; host H and friend F, both with the kit below):
   1. H unarmoured with a totem in the offhand. F shoots H down to 2-3 hearts, then holds the trigger on H: the totem pops (it rises, glitter, sound), and for about 4 s H's hearts do not drop and F sees no hit markers. Then the absorption hearts go first. **Screenshot 1** (during the 4 s, F visibly firing).
-  2. H takes a new totem into the offhand and stands next to TNT, F lights it (flint and steel) and shoots H down just before it explodes: H is pushed but loses no hearts. **Screenshot 2.**
+  2. H takes a new totem into the offhand and stands next to TNT, F lights it (flint and steel) and shoots H down just before it explodes: H loses no hearts (and is not pushed: explosions push no player in the fork). **Screenshot 2.**
   3. Right after a pop, F knifes H (melee): H takes damage.
-  4. Right after a pop, F throws a frag at H's feet: no damage, the blast still pushes.
+  4. Right after a pop, F throws a frag at H's feet: no damage.
   5. Swap roles: F's totem protects F the same way. **Screenshot 3** (F's window).
   6. Without a totem, H stands next to TNT that explodes: the death message is "H blew up".
 - **Kit** (12 stacks, for each player):
@@ -1401,6 +1401,16 @@ Commit: the one after the class insertion fix. Fixes `54504900`.
 - **Owner's test steps:** none. Each changed cell moves by one point (0.1 heart), below what the heart bar shows, and the knife still kills diamond and netherite in 8 hits; the unit test covers it.
 - **Kit:** none.
 
+### 7. The totem steps no longer promise an explosion push
+
+Commit: the one after the rounding fix. Fixes the docs of `7660486d`.
+
+- **Defect:** C14's log, its owner steps 2 and 4, WEAPONS.md 12 and 17 step 11.3 and the queued state doc text said a blast refused by the totem grace still pushes, through the level's `players_pushed`. That list carries only wind bursts and the dragon; a creeper, TNT or crystal blast reaches a player only as `PlayerHitKind::Explosion { knockback }`, whose knockback is used as the shield direction, and the sim has no damage knockback. So no explosion pushes a player in the fork, with or without the grace (round 7's track B log says so too), and the steps would have reported a bug that does not exist.
+- **Changed:** docs only. The C14 entry and its steps 2 and 4, `docs/WEAPONS.md` 12 (the push line and "Built"), 17 step 11.3 and the table row 31, and the queued `MINECRAFT-SURVIVAL.md` and `decisions.md` text no longer promise a push; a new queued limitation says explosions push no player. Pushing players with explosions is a separate feature, left for later.
+- **Tests:** none (no code change).
+- **Owner's test steps:** the corrected C14 steps 2 and 4 above (no push expected).
+- **Kit:** C14's kit.
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.
@@ -1466,11 +1476,12 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `decisions.md` (Not vanilla): "MW2 weapon damage to players in Minecraft worlds is halved and armour takes twice vanilla's share (armour and Protection together at most 80 %, Resistance after), so iron, diamond and netherite all reach the ceiling against light rounds; bots and MW2 maps are unchanged."
 - `MINECRAFT-SURVIVAL.md`, after the gun damage sentence: "LMGs pierce a quarter of that protection, snipers half, and the FMJ attachment adds a quarter (at most three quarters), so heavy guns stay the answer to diamond and netherite."
 - `decisions.md` (Not vanilla): "LMGs (0.25), snipers (0.5) and FMJ (+0.25, at most 0.75) pierce part of a player's armour and enchantment protection against guns."
-- `MINECRAFT-SURVIVAL.md` line 55 (the totem's activation), added: "A popped totem, from Minecraft or MW2 damage, also turns away MW2 bullets and explosions and Minecraft explosions (TNT, creepers, end crystals, fireworks, beds and anchors) for 4 s: no hearts are lost and the shooter sees no hit marker, and a blast still pushes. The knife, Minecraft melee, arrows, fire, falls, the void and `/kill` still hurt. Respawning ends it. Not vanilla."
+- `MINECRAFT-SURVIVAL.md` line 55 (the totem's activation), added: "A popped totem, from Minecraft or MW2 damage, also turns away MW2 bullets and explosions and Minecraft explosions (TNT, creepers, end crystals, fireworks, beds and anchors) for 4 s: no hearts are lost and the shooter sees no hit marker. The knife, Minecraft melee, arrows, fire, falls, the void and `/kill` still hurt. Respawning ends it. Not vanilla."
+- `MINECRAFT-SURVIVAL.md`, the limitations (For everyone): "Explosions, MW2 or Minecraft, push no player (mobs and items are pushed); only wind charges and the dragon push players."
 - `MINECRAFT-SURVIVAL.md`, the death messages line: "A blast with no source entity (TNT, end crystals) is vanilla's `minecraft:explosion`: \"<name> blew up\", softened by Blast Protection."
 - `MULTIPLAYER.md` section 13, after the gun damage sentence: "Each player's totem grace is mirrored the same way, so a friend's popped totem turns the host's bullets and grenades away for 4 s and the other way round."
 - `MULTIPLAYER.md` section 20, "PvP without guns": drop "MW2 damage through Minecraft armour" (built in round 9).
-- `decisions.md` (Not vanilla): "A popped totem of undying turns MW2 bullets and explosions and Minecraft explosions away for 80 ticks (4 s), on the sim clock and the Minecraft clock; knockback stays, the knife and other damage still hurt. Vanilla has only the 20-tick hurt cooldown."
+- `decisions.md` (Not vanilla): "A popped totem of undying turns MW2 bullets and explosions and Minecraft explosions away for 80 ticks (4 s), on the sim clock and the Minecraft clock; the knife and other damage still hurt. Explosions push no player in the fork, so a refused blast does nothing (vanilla would still push). Vanilla has only the 20-tick hurt cooldown."
 - Correction (review of C11.9 to C14), replacing the wording above wherever it names the tactical insertion: the grenade slot sentence reads "43 takes only lethal grenades (frag, semtex, throwing knife, claymore, C4, tactical insertion) and 44 only tactical ones (flash, stun, smoke)", and the respawn sentence begins "A planted tactical insertion (G with it in the lethal slot, where MW2 keeps it as equipment)".
 
 ### By line, as the brief names them
