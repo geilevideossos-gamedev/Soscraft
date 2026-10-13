@@ -1294,6 +1294,11 @@ impl SimState {
             .filter(|facts| facts.is_offhand())
     }
 
+    pub fn offhand_class(&self, weapon: u32) -> i32 {
+        self.offhand_loadout_row(weapon)
+            .map_or(0, |facts| facts.offhand_class)
+    }
+
     pub(crate) fn missile_launch_facts(&self, weapon: u32) -> Option<EquipmentRuntimeFacts> {
         self.content
             .data

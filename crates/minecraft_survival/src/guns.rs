@@ -194,6 +194,8 @@ pub struct Arsenal {
     pub guns: Vec<Gun>,
     pub selected: Option<u32>,
     pub stock: [i32; AMMO_TYPES],
+    pub lethal: Option<(u32, i32)>,
+    pub tactical: Option<(u32, i32)>,
     pub endless: bool,
 }
 
@@ -249,6 +251,7 @@ pub struct Settled {
     pub arsenal: Arsenal,
     pub guns: [Option<u32>; HOTBAR],
     pub too_many: bool,
+    pub dropped: Vec<ItemStack>,
 }
 
 const CLIP_KEYS: [&str; 3] = ["clip", "clip_left", "alt_clip"];
@@ -333,6 +336,100 @@ fn take_rounds(inventory: &mut Inventory, selected: usize, ammo: u8, rounds: i32
     }
 }
 
+fn grenade_item<C: GunContent>(
+    names: &mut GunNames,
+    content: &C,
+    weapon: u32,
+) -> Option<&'static str> {
+    let (id, _) = names.item(content, weapon)?;
+    let row = fork_items::get(id)?;
+    match row.kind {
+        Kind::Lethal | Kind::Tactical => Some(row.id),
+        Kind::Gun => row.ammo.filter(|&ammo| ammo == fork_items::THROWING_KNIFE),
+        _ => None,
+    }
+}
+
+fn holds(inventory: &Inventory, slot: usize, id: &str) -> bool {
+    inventory
+        .slots
+        .get(slot)
+        .and_then(Option::as_ref)
+        .is_some_and(|stack| stack.id == id)
+}
+
+fn take_grenade(inventory: &mut Inventory, slot: usize, id: &str) {
+    let from = [slot]
+        .into_iter()
+        .chain(0..36)
+        .chain(std::iter::once(crate::offhand::OFFHAND))
+        .find(|&each| holds(inventory, each, id));
+    let Some(from) = from else {
+        return;
+    };
+    let cell = &mut inventory.slots[from];
+    if let Some(stack) = cell.as_mut() {
+        stack.count = stack.count.saturating_sub(1);
+        if stack.count == 0 {
+            *cell = None;
+        }
+    }
+}
+
+fn refill_grenades(inventory: &mut Inventory, slot: usize, id: &str) {
+    if let Some(from) = (0..36).find(|&each| holds(inventory, each, id)) {
+        inventory.slots[slot] = inventory.slots[from].take();
+    }
+}
+
+fn give_grenade(inventory: &mut Inventory, slot: usize, id: &str, selected: usize) -> Option<ItemStack> {
+    let max = fork_items::get(id)
+        .map_or(GRENADE_STACK, |row| row.max_stack)
+        .clamp(1, GRENADE_STACK);
+    match &mut inventory.slots[slot] {
+        Some(held) if held.id == id && held.count < held.max.min(max) => {
+            held.count += 1;
+            None
+        }
+        empty @ None => {
+            let mut stack = ItemStack::new(id, 1);
+            stack.max = max;
+            *empty = Some(stack);
+            None
+        }
+        _ => {
+            let mut stack = ItemStack::new(id, 1);
+            stack.max = max;
+            inventory.add_item(stack, selected)
+        }
+    }
+}
+
+pub fn spend_grenades(
+    inventory: &mut Inventory,
+    id: &str,
+    delta: i32,
+    selected: usize,
+) -> Vec<ItemStack> {
+    let Some(slot) = fork_items::grenade_slot(id) else {
+        return Vec::new();
+    };
+    let mut dropped = Vec::new();
+    if delta < 0 {
+        let had = holds(inventory, slot, id);
+        for _ in 0..delta.unsigned_abs() {
+            take_grenade(inventory, slot, id);
+        }
+        if had && inventory.slots[slot].is_none() {
+            refill_grenades(inventory, slot, id);
+        }
+    }
+    for _ in 0..delta.max(0) {
+        dropped.extend(give_grenade(inventory, slot, id, selected));
+    }
+    dropped
+}
+
 pub fn settle_arsenal<C: GunContent>(
     inventory: &mut Inventory,
     mode: &PlayerMode,
@@ -345,6 +442,15 @@ pub fn settle_arsenal<C: GunContent>(
         room,
         binding,
     } = hotbar;
+    let mut dropped = Vec::new();
+    for spent in &spent {
+        if let Spent::Grenade { weapon, delta } = *spent
+            && mode.consumes_items()
+            && let Some(id) = grenade_item(names, content, weapon)
+        {
+            dropped.extend(spend_grenades(inventory, id, delta, selected));
+        }
+    }
     let mut weapon_at = |inventory: &Inventory, slot: usize| {
         inventory.slots[slot]
             .as_ref()
@@ -468,6 +574,15 @@ pub fn settle_arsenal<C: GunContent>(
             arsenal.stock[usize::from(index)] += i32::from(stack.count);
         }
     }
+    for (slot, published) in [
+        (LETHAL_SLOT, &mut arsenal.lethal),
+        (TACTICAL_SLOT, &mut arsenal.tactical),
+    ] {
+        *published = inventory.slots[slot]
+            .as_ref()
+            .filter(|stack| fork_items::grenade_slot(&stack.id) == Some(slot))
+            .and_then(|stack| Some((names.weapon_of(content, stack)?, i32::from(stack.count))));
+    }
     let inert_selected = inert.contains(&selected);
     let too_many = inert_selected && !binding.inert_selected;
     *binding = Binding {
@@ -479,6 +594,7 @@ pub fn settle_arsenal<C: GunContent>(
         arsenal,
         guns,
         too_many,
+        dropped,
     }
 }
 
@@ -524,6 +640,17 @@ mod tests {
     const USP_AKIMBO: u32 = 4;
     const M4_GL: u32 = 5;
     const KNIFE: u32 = 6;
+    const FRAG: u32 = 7;
+    const SEMTEX: u32 = 8;
+    const FLASH: u32 = 9;
+    const THROWING_KNIFE: u32 = 10;
+    const GRENADES: [(u32, &str); 5] = [
+        (FRAG, "iw4:weapon/frag_grenade_mp"),
+        (SEMTEX, "iw4:weapon/semtex_mp"),
+        (FLASH, "iw4:weapon/flash_grenade_mp"),
+        (THROWING_KNIFE, "iw4:weapon/throwingknife_mp"),
+        (KNIFE, "t5:weapon/knife_ballistic_mp"),
+    ];
 
     struct Fake;
 
@@ -537,12 +664,19 @@ mod tests {
                 ("iw4:weapon/usp_mp", ["akimbo"]) => Some(USP_AKIMBO),
                 ("iw4:weapon/ak47_mp", []) => Some(AK),
                 ("t5:weapon/knife_ballistic_mp", []) => Some(KNIFE),
+                (key, []) => GRENADES
+                    .iter()
+                    .find(|(_, each)| *each == key)
+                    .map(|(index, _)| *index),
                 _ => None,
             }
         }
 
-        fn selection(&self, _: u32) -> Option<(String, Vec<String>)> {
-            None
+        fn selection(&self, index: u32) -> Option<(String, Vec<String>)> {
+            GRENADES
+                .iter()
+                .find(|(each, _)| *each == index)
+                .map(|(_, key)| (key.to_string(), Vec::new()))
         }
 
         fn clip_size(&self, index: u32) -> Option<i32> {
@@ -1043,5 +1177,145 @@ mod tests {
         assert_eq!(friend_settled.arsenal.stock[index], 12);
         assert_eq!(friend_settled.arsenal.guns[0].clip, 2);
         assert_eq!((count(&host, 9), count(&friend, 9)), (64, 12));
+    }
+
+    fn grenade(id: &str, count: u8) -> Option<ItemStack> {
+        let mut stack = ItemStack::new(id, count);
+        stack.max = GRENADE_STACK;
+        Some(stack)
+    }
+
+    fn thrown(weapon: u32, delta: i32) -> Spent {
+        Spent::Grenade { weapon, delta }
+    }
+
+    #[test]
+    fn a_throw_takes_one_from_its_slot() {
+        let mut inventory = Inventory::default();
+        inventory.slots[LETHAL_SLOT] = grenade("iw4l:frag_grenade", 3);
+        inventory.slots[TACTICAL_SLOT] = grenade("iw4l:flash_grenade", 2);
+        inventory.slots[12] = grenade("iw4l:frag_grenade", 10);
+        let (mut names, mut binding) = (GunNames::default(), Binding::default());
+        let before = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (0, 13),
+            Vec::new(),
+        );
+        assert_eq!(before.arsenal.lethal, Some((FRAG, 3)));
+        assert_eq!(before.arsenal.tactical, Some((FLASH, 2)));
+        let after = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (0, 13),
+            vec![thrown(FRAG, -1), thrown(FLASH, -1)],
+        );
+        assert_eq!(count(&inventory, LETHAL_SLOT), 2);
+        assert_eq!(count(&inventory, TACTICAL_SLOT), 1);
+        assert_eq!(count(&inventory, 12), 10, "the backpack stays");
+        assert_eq!(after.arsenal.lethal, Some((FRAG, 2)));
+        assert_eq!(after.arsenal.tactical, Some((FLASH, 1)));
+        assert!(after.dropped.is_empty());
+        inventory.slots[LETHAL_SLOT] = grenade("iw4l:semtex", 4);
+        settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (0, 13),
+            vec![thrown(FRAG, -1)],
+        );
+        assert_eq!(
+            (count(&inventory, LETHAL_SLOT), count(&inventory, 12)),
+            (4, 9),
+            "a frag thrown before the slot changed comes out of the backpack"
+        );
+    }
+
+    #[test]
+    fn an_emptied_slot_refills_with_the_same_grenade_only() {
+        let mut inventory = Inventory::default();
+        inventory.slots[LETHAL_SLOT] = grenade("iw4l:frag_grenade", 1);
+        inventory.slots[10] = grenade("iw4l:semtex", 16);
+        inventory.slots[20] = grenade("iw4l:frag_grenade", 5);
+        let (mut names, mut binding) = (GunNames::default(), Binding::default());
+        let settled = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (0, 13),
+            vec![thrown(FRAG, -1)],
+        );
+        assert_eq!(count(&inventory, LETHAL_SLOT), 5);
+        assert!(inventory.slots[20].is_none());
+        assert_eq!(settled.arsenal.lethal, Some((FRAG, 5)));
+        inventory.slots[LETHAL_SLOT] = grenade("iw4l:frag_grenade", 1);
+        let settled = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (0, 13),
+            vec![thrown(FRAG, -1)],
+        );
+        assert!(inventory.slots[LETHAL_SLOT].is_none(), "never semtex");
+        assert_eq!(count(&inventory, 10), 16);
+        assert_eq!(settled.arsenal.lethal, None);
+    }
+
+    #[test]
+    fn creative_keeps_the_stack() {
+        let mut inventory = Inventory::default();
+        inventory.slots[LETHAL_SLOT] = grenade("iw4l:frag_grenade", 3);
+        let (mut names, mut binding) = (GunNames::default(), Binding::default());
+        let hotbar = Hotbar {
+            selected: 0,
+            room: 13,
+            binding: &mut binding,
+        };
+        let creative = PlayerMode::new(minecraftoss_player::GameMode::Creative);
+        let settled = settle_arsenal(
+            &mut inventory,
+            &creative,
+            vec![thrown(FRAG, -1)],
+            (&mut names, &Fake),
+            hotbar,
+        );
+        assert_eq!(count(&inventory, LETHAL_SLOT), 3);
+        assert_eq!(settled.arsenal.lethal, Some((FRAG, 3)));
+    }
+
+    #[test]
+    fn a_picked_up_knife_comes_back_and_overflows_like_a_pickup() {
+        let mut inventory = Inventory::default();
+        inventory.slots[LETHAL_SLOT] = grenade(fork_items::THROWING_KNIFE, 63);
+        let (mut names, mut binding) = (GunNames::default(), Binding::default());
+        let picked = vec![thrown(THROWING_KNIFE, 1), thrown(KNIFE, 1)];
+        let settled = settle(&mut inventory, &mut names, &mut binding, (0, 13), picked);
+        assert_eq!(count(&inventory, LETHAL_SLOT), 64);
+        let elsewhere: u8 = inventory.slots[..36]
+            .iter()
+            .flatten()
+            .filter(|stack| stack.id == fork_items::THROWING_KNIFE)
+            .map(|stack| stack.count)
+            .sum();
+        assert_eq!(elsewhere, 1, "a full slot sends the knife on");
+        assert!(settled.dropped.is_empty());
+        for slot in 0..36 {
+            inventory.slots[slot] = Some(ItemStack::new("minecraft:dirt", 64));
+        }
+        let settled = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (0, 13),
+            vec![thrown(THROWING_KNIFE, 1)],
+        );
+        let dropped: Vec<(&str, u8)> = settled
+            .dropped
+            .iter()
+            .map(|stack| (stack.id.as_str(), stack.count))
+            .collect();
+        assert_eq!(dropped, vec![(fork_items::THROWING_KNIFE, 1)]);
     }
 }

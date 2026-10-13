@@ -1654,6 +1654,7 @@ pub(crate) fn step_friend(
         follow,
         mode,
         arsenal,
+        dimension,
         ..
     } = player;
     minecraft_survival::guns::sync_weapons(inventory, &owned);
@@ -1663,6 +1664,15 @@ pub(crate) fn step_friend(
         binding: &mut *arsenal,
     };
     let settled = world.guns.settle(inventory, mode, client.0, hotbar);
+    if let Some(entities) = world
+        .levels
+        .get_mut(dimension)
+        .and_then(|level| level.entities.as_mut())
+    {
+        for stack in settled.iter().flat_map(|settled| &settled.dropped) {
+            entities.drop_given(stack, feet);
+        }
+    }
     if settled.is_some_and(|settled| settled.too_many) {
         stepped.lines.push(minecraft_commands::Clientbound::System {
             text: minecraft_commands::Text::literal(minecraft_survival::guns::TOO_MANY_GUNS),

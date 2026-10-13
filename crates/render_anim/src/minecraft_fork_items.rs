@@ -508,8 +508,8 @@ fn published(arsenal: &guns::Arsenal) -> sim::voxel::Arsenal {
             .collect(),
         selected: arsenal.selected,
         stock: arsenal.stock,
-        lethal: None,
-        tactical: None,
+        lethal: arsenal.lethal,
+        tactical: arsenal.tactical,
         endless: arsenal.endless,
     }
 }

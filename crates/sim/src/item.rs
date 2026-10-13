@@ -317,6 +317,7 @@ fn follow_arsenal(
         arsenal,
         held: last_held,
         scripted,
+        offhands,
     } = published;
     let scripted = std::mem::take(scripted);
     let wanted: Vec<u32> = arsenal.guns.iter().map(|gun| gun.weapon).collect();
@@ -461,14 +462,84 @@ fn follow_arsenal(
             (stored.clip, stored.clip_left, stored.alt_clip) = now;
         }
     }
+    follow_grenades(world, id, ps, arsenal, offhands, queued);
     for weapon in ps.weapons {
-        let kept =
-            u32::try_from(weapon).is_ok_and(|w| !wanted.contains(&w) && !alternates.contains(&w));
+        let kept = u32::try_from(weapon).is_ok_and(|w| {
+            !wanted.contains(&w) && !alternates.contains(&w) && !is_grenade(world, w)
+        });
         if kept {
             refill(world, id, ps, weapon);
         }
     }
     spent
+}
+
+fn is_grenade(world: &FrameWorld, weapon: u32) -> bool {
+    crate::step::offhand_slot(world.offhand_class(weapon)).is_some()
+        && !crate::voxel::kept_by_mw2(world.weapon_script_name(weapon))
+}
+
+fn queued_grenades(queued: &[(u32, crate::voxel::Spent)], client: u32, weapon: u32) -> i32 {
+    queued
+        .iter()
+        .filter_map(|(c, spent)| match spent {
+            crate::voxel::Spent::Grenade { weapon: w, delta } if *c == client && *w == weapon => {
+                Some(*delta)
+            }
+            _ => None,
+        })
+        .sum()
+}
+
+fn put_grenades(world: &mut FrameWorld, id: ClientId, ps: &mut PlayerState, weapon: u32, count: i32) {
+    set_ammo_on_ps(world, ps, weapon, count, 0, 0);
+    world.client_meta_mut(id).set_ammo(weapon, count, 0);
+}
+
+fn follow_grenades(
+    world: &mut FrameWorld,
+    id: ClientId,
+    ps: &mut PlayerState,
+    arsenal: &crate::voxel::Arsenal,
+    offhands: &mut [u32; 2],
+    queued: &[(u32, crate::voxel::Spent)],
+) {
+    for (slot, published) in [arsenal.lethal, arsenal.tactical].into_iter().enumerate() {
+        let chosen = published.filter(|&(weapon, _)| {
+            crate::step::offhand_slot(world.offhand_class(weapon)) == Some(slot)
+        });
+        let (weapon, count) = match chosen {
+            Some((weapon, count)) => (weapon, count + queued_grenades(queued, id.0, weapon)),
+            None => (offhands[slot], 0),
+        };
+        if weapon != 0 {
+            let class = world.offhand_class(weapon);
+            let before = ps.weapons;
+            crate::step::only_offhand_of_its_slot(world, ps, weapon, class, |w| {
+                crate::voxel::kept_by_mw2(world.weapon_script_name(w))
+            });
+            if !ps.weapons.contains(&(weapon as i32)) {
+                continue;
+            }
+            offhands[slot] = weapon;
+            let meta = world.client_meta_mut(id);
+            meta.ammo_by_weapon.retain(|row| {
+                ps.weapons.contains(&(row.0 as i32)) || !before.contains(&(row.0 as i32))
+            });
+            crate::step::set_loadout_offhand(meta.loadout.as_mut(), class, weapon);
+            put_grenades(world, id, ps, weapon, count.max(0));
+            continue;
+        }
+        for other in ps.weapons {
+            let Ok(other) = u32::try_from(other) else {
+                continue;
+            };
+            let class = world.offhand_class(other);
+            if crate::step::offhand_slot(class) == Some(slot) && is_grenade(world, other) {
+                put_grenades(world, id, ps, other, 0);
+            }
+        }
+    }
 }
 
 fn add_ammo_on_ps(
@@ -1040,14 +1111,15 @@ fn projectile_pickup_ammo(
         return None;
     }
     let (clip, left, stock) = ammo_from_ps(world, ps, weapon);
+    let items = facts.is_retrievable_knife() && crate::voxel::publishes_arsenal(walker.0);
     if facts.ballistic_blade {
         if ps.weapon != weapon && clip == 0 {
             return Some((1, left, stock));
         }
         let combat = world.combat_facts_for(weapon)?;
-        (stock < combat.max_ammo).then_some((clip, left, stock + 1))
+        (stock < combat.max_ammo || items).then_some((clip, left, stock + 1))
     } else {
-        (clip < facts.clip_size.max(1)).then_some((clip + 1, left, stock))
+        (clip < facts.clip_size.max(1) || items).then_some((clip + 1, left, stock))
     }
 }
 
@@ -1073,6 +1145,9 @@ fn grab_projectile(world: &mut FrameWorld, walker: ClientId, number: i32, tick: 
     meta.mirror_held_ammo(ps.weapon);
     world.remove_projectile_by_number(number);
     world.free_dynamic_entity_number(number);
+    if world.publishes_snapshot() && crate::voxel::active() {
+        crate::voxel::spend_grenade(walker.0, weapon, 1);
+    }
     world.item_pickups_mut().push(ItemPickupRecord {
         picker: walker.0 as i32,
         weapon,

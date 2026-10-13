@@ -1278,7 +1278,11 @@ fn update(
         }
         inventory_ui.sync_weapons(inventory, &owned);
         let hotbar = minecraft_survival::guns::Hotbar { selected: *selected, room: crate::minecraft_fork_items::gun_room(ps, &authority.0), binding: &mut *arsenal };
-        if inventory_ui.fork.settle(inventory, player_mode, local.0.0, hotbar).is_some_and(|settled| settled.too_many) {
+        let settled = inventory_ui.fork.settle(inventory, player_mode, local.0.0, hotbar);
+        for stack in settled.iter().flat_map(|settled| &settled.dropped) {
+            entities.drop_given(stack, feet);
+        }
+        if settled.is_some_and(|settled| settled.too_many) {
             ui.overlay_message = Some(frame::minecraft_ui::McOverlayMessage { text: minecraft_survival::guns::TOO_MANY_GUNS.to_owned(), ticks: frame::minecraft_ui::McOverlayMessage::TICKS });
         }
         if std::mem::take(&mut ui.swap_hands) && alive && minecraft_survival::offhand::swap_hands(inventory, *selected) {

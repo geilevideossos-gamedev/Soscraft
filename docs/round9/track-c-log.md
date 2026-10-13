@@ -960,6 +960,61 @@ IW4L_MINECRAFT_KIT=iw4l:frag_grenade*16,iw4l:semtex*16,iw4l:flash_grenade*8,iw4l
 IW4L_MINECRAFT_KIT=iw4l:frag_grenade*16,iw4l:semtex*16,iw4l:flash_grenade*8,iw4l:smoke_grenade*4,minecraft:cobblestone*64
 ```
 
+## C12.2 Throwing from the slots
+
+### 1. The grenade slots decide what G and Shift+G throw, and each throw uses one up
+
+Commit: the one after `3b6a9ed3`.
+
+- **Changed:**
+  - `sim/src/step.rs`: `offhand_slot(class)` (1, 4, 5 lethal; 2, 3 tactical), `only_offhand_of_its_slot` (removes the other offhands of the same slot, adds the weapon, sets `offhand_primary` or `offhand_secondary`) and `set_loadout_offhand` (`loadout.lethal` or `tactical`), factored out of `apply_give_offhand`, which now calls them and behaves as before.
+  - `sim/src/world.rs`: public `offhand_class(weapon)` on the sim state (0 when the weapon is no offhand).
+  - `sim/src/voxel.rs`: `Published.offhands` (the last lethal and tactical weapon per client) and `spend_grenade(client, weapon, delta)`. A `-1` is queued only for a publishing client in survival and only for its published (or last) lethal or tactical weapon, so an airdrop marker or a bot queues nothing; a `+1` for any weapon of a publishing client in survival.
+  - `sim/src/combat.rs`: the two identical spend blocks of `OffhandUsed` and `OffhandCookedOff` are one function, `use_offhand_round(world, id, weapon, minecraft)`, which also queues `Grenade { delta: -1 }` when `minecraft` (the host, `publishes_snapshot`, in a Minecraft world, `voxel::active()`). A frag cooked until it blows in the hand spends one like a throw.
+  - `sim/src/item.rs`:
+    - `apply_arsenal` (`follow_grenades`): the published lethal and tactical (weapon, count) make that weapon the only offhand of its slot (killstreak and AC-130 weapons are kept), with `loadout.lethal`/`tactical` following, so the client runtime and the friend's replicated loadout send the right `off_hand_index` unchanged. The ledger and `ps.ammoclip` hold the count plus the `Grenade` deltas still queued for that weapon. A weapon whose class does not fit the slot is ignored.
+    - An empty slot keeps the last weapon of that slot with 0, so the MW2 icon stays and a placed C4 can still be detonated; with no last weapon, the class offhands of that slot get 0.
+    - The transitional grenade refill is gone for publishing clients: offhands of classes 1-5 are no longer refilled. Killstreak weapons still are, and clients that never published (bots, MW2 maps) keep the full refill.
+    - `grab_projectile` (walking over a thrown knife, the only pickup site of thrown projectiles) queues `+1`. For a publishing client a thrown knife or a Ballistic Knife blade is picked up even when MW2's clip has no room, because the item count is the truth.
+  - `minecraft_survival/src/guns.rs`:
+    - `Arsenal.lethal` and `tactical` from slots 43 and 44 through `GunNames` (`weapon_of` already covers lethal and tactical rows), with the stack count.
+    - `spend_grenades(inventory, id, delta, selected)`: a `-1` takes one from the grenade's slot, or, if the slot no longer holds that grenade, from slots 0-35 and then the offhand. When a throw empties the slot it refills from the first stack of the same grenade in slots 0-35 (the whole stack), never another type. A `+1` tops up the slot (up to 64) or fills it when empty, otherwise it goes through `add_item` (the pickup rules) and what does not fit is returned.
+    - `settle_arsenal` applies `Grenade` deltas first (survival and adventure only; creative changes nothing). The weapon is turned into its item with `GunNames::item`: a lethal or tactical row is its own item, the Ballistic Knife gives a throwing knife. `Settled.dropped` holds what did not fit.
+  - `render_anim`: `minecraft_fork_items::published` passes `lethal` and `tactical` to the sim; the host (`minecraft_world.rs`) and each friend (`minecraft_players.rs` `step_friend`) drop `Settled.dropped` at their feet. Both go through the same `ForkLook::settle`, so each friend's throws take the friend's own grenades.
+  - `docs/WEAPONS.md` 5.1 and 10.4: where the count lives, the creative line, the throw and pickup sites, the knife pickup without clip room and the overflow drop.
+- **Tests:**
+  - `sim` `item::arsenal_tests` (the test content now has semtex, throwing knife, claymore, C4, flash, smoke and an airdrop marker with their offhand classes):
+    - `a_published_grenade_count_limits_throws`: frag 2; each round applies the arsenal with the queued deltas and throws when the ledger has one; two throws, the third finds nothing, two `Grenade { delta: -1 }` queued.
+    - `pending_throws_are_subtracted_until_taken`: frag 5 with two of its own throws queued (another client's and a rounds entry ignored) gives 3 on the ledger and on the player state; the flash likewise; once taken, the slot count alone; 40 frags stay 40 although `maxAmmo` is 1.
+    - `the_lethal_item_replaces_the_class_lethal`: semtex replaces frag and smoke replaces flash (`offhand_primary` 1, `offhand_secondary` 2, `loadout.lethal`/`tactical` follow; the airdrop marker stays); throwing knife gives class 4, claymore class 5; a flash published as the lethal is refused and the claymore stays with 0.
+    - `an_empty_slot_keeps_the_c4_detonator`: C4 1, then an empty slot: C4 stays with 0, is not refilled, `offhand_primary` stays 5, and a frag added by a spawn is removed again.
+    - `a_client_that_never_published_keeps_unlimited_grenades`: five throws by a client that never published refill to full and queue nothing.
+    - `creative_throws_and_knife_pickups_queue_nothing`: creative queues nothing; in survival a knife throw and pickup are queued and an airdrop marker is not.
+  - `minecraft_survival` `guns::tests`: `a_throw_takes_one_from_its_slot` (frag 3 and flash 2 become 2 and 1 and are published; a frag thrown after the slot changed to semtex comes out of the backpack), `an_emptied_slot_refills_with_the_same_grenade_only` (the 5 frags of slot 20 move into the slot, the semtex never does), `creative_keeps_the_stack`, `a_picked_up_knife_comes_back_and_overflows_like_a_pickup` (63 knives become 64, a Ballistic Knife blade becomes a throwing knife in the backpack, with a full inventory it is dropped).
+  - `test -p sim -p minecraft_survival` green (sim 141, the MW2-map tests included); `check -p launcher` green.
+- **Decisions:**
+  - **The ps stock setter does not clamp** (`set_ammo_not_in_clip` and `set_clip_for_hand` write the value as given; only GSC's `setWeaponAmmoClip`/`setWeaponAmmoStock` clamp). The count goes into the clip, as `apply_give_offhand` seeds offhands (`spawn_clip_count`, more than the clip size for a frag); the HUD and the weapon tick read clip plus stock, so 32 or 64 show and throw correctly.
+  - **The throw site is one shared function** (`combat::use_offhand_round`) for throws and cook-offs, with the Minecraft gate passed in, so the unit test runs it without a block world.
+  - **Knife pickup:** the site is `item::grab_projectile`. A publishing client picks a thrown knife up even with a full MW2 clip (otherwise a player with knives left could never pick one up), and the `+1` goes through the slot and pickup rules on the host; a Ballistic Knife blade gives back a throwing knife, as that gun reloads from throwing knives. What does not fit is dropped at the feet, since MW2 already removed the knife.
+  - **A `-1` for a grenade that left its slot** (the stack was moved while the throw was on its way) is taken from slots 0-35, then the offhand; if none is left, nothing is taken.
+  - **Refill takes the first stack of the same grenade in slots 0-35** (hotbar first, like vanilla's projectile search order), the whole stack, and only after a throw emptied the slot.
+  - **A published weapon in the wrong slot** (class not lethal for 43 or not tactical for 44) is ignored and the last weapon stays with 0; `fits` already keeps such items out of the slots.
+  - Transitional until the next commits: the two slots are not drawn yet, and new players do not get their 32 + 32 yet.
+- **Owner's test steps** (survival, a new world `IW4L_MINECRAFT_WORLD=r9-grenade-throws`, a class with Frag and Flash, kit below; the slots are drawn from the next commit, so this commit is checked with MW2's grenade icons at the bottom right and `/clear ... 0`, which counts without removing):
+  1. Join and open the inventory. Shift-click the stack of 2 frags and the flash stack: both vanish into the hidden slots. Close it: MW2's grenade icons show 2 frags and 8 flashes. **Screenshot 1.**
+  2. Press G: a frag is thrown, 1. Press Shift+G: a flash, 7. Press G again: the slot empties and refills from the backpack's 16 frags, the icon shows 16. Hold G until the frag blows up in your hand: 15. `/clear @s iw4l:frag_grenade 0` finds 15 (no frag is left in the backpack). **Screenshot 2.**
+  3. Open the inventory, shift-click the semtex stack: it goes to the hotbar, because the lethal slot holds frags. `/clear @s iw4l:frag_grenade`, then shift-click the semtex stack: it vanishes into the lethal slot, and G throws semtex (its icon shows).
+  4. `/clear @s iw4l:semtex`, shift-click the C4: G places C4 four times; with the slot empty the C4 icon stays with 0, and G detonates the placed C4. **Screenshot 3.**
+  5. Shift-click the throwing knives (8) into the empty lethal slot: throw one at a wall (7), walk over it: 8 again.
+  6. `/clear @s iw4l:flash_grenade`, shift-click the stun grenades: Shift+G throws a stun grenade. `/clear @s iw4l:concussion_grenade`, shift-click the smoke grenades: Shift+G throws smoke.
+  7. `/gamemode creative`: G throws and the count stays. `/gamemode survival`.
+  8. Two windows (`scripts\mp-local.ps1`), the friend with the same kit: the friend repeats steps 1 and 2 in their window with their own kit; the host sees the friend's grenades, and the host's counts are unchanged. **Screenshot 4** (friend window).
+- **Kit** (11 stacks):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:frag_grenade*2,iw4l:frag_grenade*16,iw4l:semtex*16,iw4l:c4*4,iw4l:throwing_knife*8,iw4l:flash_grenade*8,iw4l:concussion_grenade*8,iw4l:smoke_grenade*8,minecraft:cobblestone*64,minecraft:torch*16,minecraft:cooked_beef*16
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none.
@@ -1003,3 +1058,5 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `MINECRAFT-SURVIVAL.md`, the death and `/clear` lines: "The grenade slots drop after the saddle on death unless `keep_inventory` is on; `/clear` covers them, and like vanilla also the (normally empty) body and saddle slots."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's grenade slots live on the host in the friend's inventory and player file; the friend's view carries all 45 slots, and the host checks the friend's clicks on 43 and 44 with the same rules as the host's."
 - `decisions.md` (Not vanilla): "Two fork inventory slots, 43 lethal and 44 tactical, saved under the top-level key `iw4l_grenades`, never inside `equipment`."
+- `MINECRAFT-SURVIVAL.md`, the guns section: "G throws the grenade in the lethal slot and Shift+G the one in the tactical slot, whatever is held; each throw, and a frag that blows up in the hand, uses one item, and when a throw empties the slot it refills from the inventory with the same grenade. MW2's grenade icons show the slot counts. An empty slot keeps the last grenade's icon with 0, so placed C4 can still be detonated. Picking a thrown knife up gives the item back. In creative throws use nothing. Bots keep unlimited grenades."
+- `MULTIPLAYER.md` (per-player state on the host): "Each friend's throws take the friend's own grenade items on the host, through the same function as the host's."

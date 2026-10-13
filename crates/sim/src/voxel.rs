@@ -515,6 +515,7 @@ pub(crate) struct Published {
     pub(crate) arsenal: Arsenal,
     pub(crate) held: u32,
     pub(crate) scripted: bool,
+    pub(crate) offhands: [u32; 2],
 }
 
 static ARSENALS: std::sync::Mutex<Vec<(u32, Published)>> = std::sync::Mutex::new(Vec::new());
@@ -589,6 +590,24 @@ pub(crate) fn spend_rounds(client: u32, weapon: u32, rounds: i32, alternate: imp
         && let Ok(mut spent) = SPENT.lock()
     {
         spent.push((client, Spent::Rounds { ammo, rounds }));
+    }
+}
+
+pub(crate) fn spend_grenade(client: u32, weapon: u32, delta: i32) {
+    if delta == 0 || weapon == 0 {
+        return;
+    }
+    let counted = ARSENALS.lock().ok().is_some_and(|published| {
+        published.iter().find(|(c, _)| *c == client).is_some_and(|(_, held)| {
+            let slots = [held.arsenal.lethal, held.arsenal.tactical];
+            !held.arsenal.endless
+                && (delta > 0
+                    || held.offhands.contains(&weapon)
+                    || slots.iter().flatten().any(|(w, _)| *w == weapon))
+        })
+    });
+    if counted && let Ok(mut spent) = SPENT.lock() {
+        spent.push((client, Spent::Grenade { weapon, delta }));
     }
 }
 

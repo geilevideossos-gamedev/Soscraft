@@ -1,4 +1,5 @@
 use super::*;
+use crate::equipment::EquipmentRuntimeFacts;
 use crate::voxel::{AMMO_TYPES, Arsenal, GunSpec, NO_AMMO, Published, Spent};
 use weapon_iw4::WeaponCombatFacts;
 
@@ -12,6 +13,13 @@ const SPAS: u32 = 7;
 const UMP: u32 = 8;
 const AK: u32 = 9;
 const AC130_GUN: u32 = 10;
+const SEMTEX: u32 = 11;
+const KNIFE: u32 = 12;
+const CLAYMORE: u32 = 13;
+const C4: u32 = 14;
+const FLASH: u32 = 15;
+const SMOKE: u32 = 16;
+const MARKER: u32 = 17;
 const ME: ClientId = ClientId(7);
 
 fn facts(clip: i32, max_ammo: i32, inventory_type: i32) -> WeaponCombatFacts {
@@ -39,6 +47,13 @@ fn sim() -> crate::SimWorld {
         "ump45_mp",
         "ak47_mp",
         "ac130_105mm_mp",
+        "semtex_mp",
+        "throwingknife_mp",
+        "claymore_mp",
+        "c4_mp",
+        "flash_grenade_mp",
+        "smoke_grenade_mp",
+        "airdrop_marker_mp",
     ];
     let mut rows = vec![
         WeaponCombatFacts::none(),
@@ -53,9 +68,30 @@ fn sim() -> crate::SimWorld {
     ];
     rows.extend([facts(5, 20, 0), facts(8, 32, 0), facts(32, 128, 0)]);
     rows.extend([facts(30, 120, 0), facts(1, 99, 0)]);
+    rows.extend([SEMTEX, KNIFE, CLAYMORE, C4, FLASH, SMOKE, MARKER].map(|_| facts(1, 1, 1)));
+    let mut equipment = vec![EquipmentRuntimeFacts::default(); rows.len()];
+    for (weapon, class) in [
+        (FRAG, 1),
+        (SEMTEX, 1),
+        (KNIFE, 4),
+        (CLAYMORE, 5),
+        (C4, 5),
+        (FLASH, 3),
+        (SMOKE, 2),
+        (MARKER, 2),
+    ] {
+        equipment[weapon as usize] = EquipmentRuntimeFacts {
+            offhand_class: class,
+            projectile_speed: 1,
+            fuse_time_ms: 1,
+            has_detonator: weapon == C4,
+            ..EquipmentRuntimeFacts::default()
+        };
+    }
     let mut builder = crate::SimContentBuilder::default();
     builder.set_weapon_script_names(names.iter().map(|name| name.to_string()).collect());
     builder.set_weapon_combat_table(rows);
+    builder.set_equipment_runtime_table(equipment);
     let mut sim = crate::SimWorld::default();
     sim.install_content(builder.finish());
     sim
@@ -448,4 +484,231 @@ fn a_reload_queues_rounds_of_the_gun_s_ammo_type() {
         ]
     );
     assert!(creative.is_empty(), "creative takes no items");
+}
+
+fn grenades(lethal: Option<(u32, i32)>, tactical: Option<(u32, i32)>) -> Arsenal {
+    Arsenal {
+        lethal,
+        tactical,
+        ..Arsenal::default()
+    }
+}
+
+fn armed(arsenal: Arsenal) -> Vec<(u32, Published)> {
+    vec![(
+        ME.0,
+        Published {
+            arsenal,
+            ..Published::default()
+        },
+    )]
+}
+
+fn left(sim: &mut crate::SimWorld, weapon: u32) -> (i32, i32) {
+    let frame = sim.frame();
+    let (clip, stock) = frame.client_meta(ME).expect("the player").ammo_for(weapon);
+    let ps = *frame.player(ME).expect("the player");
+    let (on_ps, _, ps_stock) = ammo_from_ps(&frame, &ps, weapon);
+    (clip + stock, on_ps + ps_stock)
+}
+
+fn thrown(weapon: u32, delta: i32) -> Spent {
+    Spent::Grenade { weapon, delta }
+}
+
+fn sorted(mut weapons: Vec<u32>) -> Vec<u32> {
+    weapons.sort_unstable();
+    weapons
+}
+
+#[test]
+fn a_published_grenade_count_limits_throws() {
+    let client = ClientId(4251);
+    let lethal = grenades(Some((FRAG, 2)), None);
+    crate::voxel::set_arsenal(client.0, lethal.clone());
+    let mut sim = sim();
+    {
+        let mut frame = sim.frame();
+        let ps = frame.ensure_player(client);
+        for weapon in [M4, FRAG] {
+            inventory_add_weapon(ps, weapon, false);
+        }
+        ps.weapon = M4;
+        ps.weapon_primary = M4;
+        frame.client_meta_mut(client).lifecycle = ClientLifecycle::Alive;
+    }
+    let mut published = vec![(
+        client.0,
+        Published {
+            arsenal: lethal,
+            ..Published::default()
+        },
+    )];
+    let mut throws = 0;
+    for _ in 0..3 {
+        let mut frame = sim.frame();
+        let queued = crate::voxel::queued_spent();
+        apply_arsenal_with(&mut frame, &mut published, &queued);
+        let (clip, stock) = frame
+            .client_meta(client)
+            .expect("the player")
+            .ammo_for(FRAG);
+        if clip + stock > 0 {
+            crate::combat::use_offhand_round(&mut frame, client, FRAG, true);
+            throws += 1;
+        }
+    }
+    let spent = crate::voxel::take_spent(client.0);
+    crate::voxel::forget_arsenal(client.0);
+    assert_eq!(throws, 2, "the third throw finds no frag");
+    assert_eq!(spent, vec![thrown(FRAG, -1), thrown(FRAG, -1)]);
+}
+
+#[test]
+fn pending_throws_are_subtracted_until_taken() {
+    let mut sim = sim();
+    carrying(&mut sim, &[M4, FRAG, FLASH], M4);
+    let mut published = armed(grenades(Some((FRAG, 5)), Some((FLASH, 2))));
+    let queued = [
+        (ME.0, thrown(FRAG, -1)),
+        (ME.0, thrown(FRAG, -1)),
+        (ME.0 + 1, thrown(FRAG, -1)),
+        (ME.0, thrown(FLASH, -1)),
+        rounds(ME, RIFLE, 4),
+    ];
+    step_with(&mut sim, &mut published, &queued);
+    assert_eq!(left(&mut sim, FRAG), (3, 3), "the ledger and the HUD agree");
+    assert_eq!(left(&mut sim, FLASH), (1, 1));
+    published[0].1.arsenal = grenades(Some((FRAG, 3)), Some((FLASH, 1)));
+    step(&mut sim, &mut published);
+    assert_eq!(left(&mut sim, FRAG), (3, 3), "taken: the slot count alone");
+    published[0].1.arsenal.lethal = Some((FRAG, 40));
+    step(&mut sim, &mut published);
+    assert_eq!(
+        left(&mut sim, FRAG),
+        (40, 40),
+        "more than MW2's maxAmmo stays on the ledger and the player state"
+    );
+}
+
+fn offhands(sim: &mut crate::SimWorld) -> (i32, i32, u32, u32) {
+    let frame = sim.frame();
+    let ps = frame.player(ME).expect("the player");
+    let loadout = frame
+        .client_meta(ME)
+        .and_then(|meta| meta.loadout.clone())
+        .expect("a class");
+    (
+        ps.offhand_primary,
+        ps.offhand_secondary,
+        loadout.lethal,
+        loadout.tactical,
+    )
+}
+
+#[test]
+fn the_lethal_item_replaces_the_class_lethal() {
+    let mut sim = sim();
+    carrying(&mut sim, &[M4, FRAG, FLASH, MARKER], M4);
+    sim.frame().client_meta_mut(ME).loadout = Some(crate::match_state::LoadoutSpec {
+        lethal: FRAG,
+        tactical: FLASH,
+        ..crate::match_state::LoadoutSpec::default()
+    });
+    let mut published = armed(grenades(Some((SEMTEX, 4)), Some((SMOKE, 2))));
+    step(&mut sim, &mut published);
+    assert_eq!(
+        weapons(&mut sim),
+        vec![SEMTEX, SMOKE, MARKER],
+        "the killstreak marker stays"
+    );
+    assert_eq!(offhands(&mut sim), (1, 2, SEMTEX, SMOKE));
+    assert_eq!(left(&mut sim, SEMTEX), (4, 4));
+    assert_eq!(left(&mut sim, SMOKE), (2, 2));
+    for (weapon, class) in [(KNIFE, 4), (CLAYMORE, 5)] {
+        published[0].1.arsenal.lethal = Some((weapon, 3));
+        step(&mut sim, &mut published);
+        assert_eq!(weapons(&mut sim), sorted(vec![SMOKE, MARKER, weapon]));
+        assert_eq!(offhands(&mut sim), (class, 2, weapon, SMOKE));
+        assert_eq!(left(&mut sim, weapon), (3, 3));
+    }
+    published[0].1.arsenal.lethal = Some((FLASH, 3));
+    step(&mut sim, &mut published);
+    assert_eq!(
+        weapons(&mut sim),
+        sorted(vec![SMOKE, MARKER, CLAYMORE]),
+        "a tactical published as the lethal is refused, the last lethal stays"
+    );
+    assert_eq!(left(&mut sim, CLAYMORE), (0, 0));
+}
+
+#[test]
+fn an_empty_slot_keeps_the_c4_detonator() {
+    let mut sim = sim();
+    carrying(&mut sim, &[M4, FRAG], M4);
+    let mut published = armed(grenades(Some((C4, 1)), None));
+    step(&mut sim, &mut published);
+    assert_eq!(left(&mut sim, C4), (1, 1));
+    published[0].1.arsenal.lethal = None;
+    step(&mut sim, &mut published);
+    step(&mut sim, &mut published);
+    assert_eq!(weapons(&mut sim), vec![C4], "the detonator stays");
+    assert_eq!(left(&mut sim, C4), (0, 0), "and is not refilled");
+    assert_eq!(
+        sim.frame().player(ME).expect("the player").offhand_primary,
+        5
+    );
+    {
+        let mut frame = sim.frame();
+        let ps = frame.player_mut(ME).expect("the player");
+        inventory_add_weapon(ps, FRAG, false);
+    }
+    step(&mut sim, &mut published);
+    assert_eq!(
+        weapons(&mut sim),
+        vec![C4],
+        "a spawn's class lethal does not come back"
+    );
+}
+
+#[test]
+fn a_client_that_never_published_keeps_unlimited_grenades() {
+    let client = ClientId(4252);
+    let mut sim = sim();
+    carrying(&mut sim, &[M4, FRAG, FLASH], M4);
+    for _ in 0..5 {
+        crate::combat::use_offhand_round(&mut sim.frame(), ME, FRAG, true);
+        crate::combat::use_offhand_round(&mut sim.frame(), client, FRAG, true);
+        step(&mut sim, &mut Vec::new());
+        assert_eq!(ammo(&mut sim, FRAG).0, 1, "refilled like on an MW2 map");
+    }
+    assert!(crate::voxel::take_spent(client.0).is_empty());
+    assert!(crate::voxel::take_spent(ME.0).is_empty());
+}
+
+#[test]
+fn creative_throws_and_knife_pickups_queue_nothing() {
+    let client = 4253;
+    crate::voxel::set_arsenal(
+        client,
+        Arsenal {
+            endless: true,
+            ..grenades(Some((KNIFE, 2)), None)
+        },
+    );
+    crate::voxel::spend_grenade(client, KNIFE, -1);
+    crate::voxel::spend_grenade(client, KNIFE, 1);
+    let creative = crate::voxel::take_spent(client);
+    crate::voxel::set_arsenal(client, grenades(Some((KNIFE, 2)), None));
+    crate::voxel::spend_grenade(client, KNIFE, -1);
+    crate::voxel::spend_grenade(client, MARKER, -1);
+    crate::voxel::spend_grenade(client, KNIFE, 1);
+    let survival = crate::voxel::take_spent(client);
+    crate::voxel::forget_arsenal(client);
+    assert!(creative.is_empty());
+    assert_eq!(
+        survival,
+        vec![thrown(KNIFE, -1), thrown(KNIFE, 1)],
+        "a killstreak marker is not a grenade"
+    );
 }

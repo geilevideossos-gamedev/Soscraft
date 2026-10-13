@@ -165,12 +165,12 @@ pub fn take_spent(client: u32) -> Vec<Spent>
    - If the held weapon was removed, it switches to `selected`, or to weapon 0 (`none`, which the sim already supports: `item.rs:97`).
 2. **Clips.** A gun that is not held gets its clips from its spec. The held gun keeps its live clips, and the sim queues `Clip` when they differ from the spec. With `rebind`, the spec clip is written even into the held gun.
 3. **Stock.** The stock of each gun's MW2 ammo index is `min(stock[ammo] - rounds not yet taken, the weapon's full stock)`, and its alt mode's is the same with `alt_ammo`. The full stock is what MW2 refills to today: maxAmmo, or startAmmo when a def's is larger. `AMMO_TYPES` is 8: the 7 ammo items, then `iw4l:throwing_knife` for the Ballistic Knife. A gun with no ammo type (the riot shield) keeps the full stock.
-4. **Grenades:** section 9.4.
-5. **Endless.** With `endless` set (creative), the stock is full and no `Rounds` are queued. Clips work as in survival: they empty and reload (section 8.2). Grenades refill as today until the grenade slots. Clients that never published (bots) keep today's full refill.
+4. **Grenades:** section 10.4. The count is written into the grenade's clip on the ledger and in `ps.ammoclip`, as MW2's own spawn does (a frag's start ammo 2 sits in a clip of 1); neither setter clamps, so 32 or 64 grenades are kept although `maxAmmo` is small.
+5. **Endless.** With `endless` set (creative), the stock is full and no `Rounds` are queued. Clips work as in survival: they empty and reload (section 8.2). Grenades follow the slot count, and throws queue nothing. Clients that never published (bots) keep today's full refill.
 
 The sim queues spending **only at the sites that really spend**, never by comparing numbers:
 - A finished reload queues `Rounds` with the rounds moved from stock into the clip. A partial reload queues only the missing rounds. The site is `weapon_iw4::reload_clip`: it adds the rounds it moves to the hand's `loaded`, and `advance_weapon_command` queues the sum over both akimbo hands for the held weapon's ammo type (`alt_ammo` for an alt mode), on the host and only in Minecraft worlds.
-- A throw or a cook-off (`combat.rs:763/808`) queues `Grenade { delta: -1 }`. Picking a thrown knife up again queues `+1`.
+- A throw or a cook-off (`combat::use_offhand_round`, called for `OffhandUsed` and `OffhandCookedOff`) queues `Grenade { delta: -1 }`. Picking a thrown knife up again (`item::grab_projectile`) queues `+1`; for a publishing client the pickup no longer needs room in MW2's clip, and a Ballistic Knife blade gives back a throwing knife.
 - A planted tactical insertion queues `Flare` (section 9.6).
 - Everything else that MW2 does to ammo is overwritten by the published values at the next step: GSC `giveLoadout` at a spawn, Scavenger, One Man Army and ammo pickups. So none of them can create items.
   - The stock is overwritten every step. A clip only through the held gun, whose live clip the sim keeps: so a script that gives a weapon or sets a clip (`giveWeapon`, `setWeaponAmmoClip`, `giveStartAmmo`, an offhand's `giveMaxAmmo`) marks the client, and the next step caps the held gun's live clips at the last clips it knew. A spawn refill cannot grow a clip, and rounds fired before the script call stay spent.
@@ -508,7 +508,7 @@ Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's
 - G throws from slot 43 and Shift+G from slot 44. The keys, settings v6 and the client runtime (`net/src/client/runtime.rs:1133-1142`) are unchanged.
 - **The slots decide the offhands.** The arsenal's `lethal` and `tactical` (weapon and count) make that weapon the only offhand of its bucket. This reuses the same-bucket replace code factored out of `apply_give_offhand` (`step.rs:1550-1591`): it sets `offhand_primary` or `offhand_secondary` and `meta.loadout.lethal` or `tactical`, so the friend's replicated loadout follows unchanged. The ledger and ps ammo are the count minus throws not yet taken.
 - **An empty slot** keeps the last weapon with no ammo, so the MW2 icon stays and placed C4 can still be detonated.
-- **A throw or a cook-off spends one,** a frag that blows up in the hand included. Picking a thrown knife up again gives one back. Creative throws spend nothing.
+- **A throw or a cook-off spends one,** a frag that blows up in the hand included. Picking a thrown knife up again gives one back (into the slot, or by the pickup rules when it is full; dropped at the feet when nothing has room). Creative throws spend nothing.
 - **Placed claymores and C4** are MW2 entities. They are not saved and vanish when the host quits; the item was already spent.
 - Holding a grenade item in the hotbar and pressing G changes nothing: only the slots are thrown.
 

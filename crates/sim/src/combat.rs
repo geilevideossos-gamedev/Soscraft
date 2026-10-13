@@ -775,21 +775,8 @@ pub(crate) fn advance_weapon_command(
                     weapon,
                     remaining_fuse_ms,
                 } => {
-                    let combat = world.weapon_combat_row(weapon);
-                    let meta = world.client_meta_mut(*id);
-                    let (clip, stock) = meta.ammo_for(weapon);
-                    if clip + stock > 0 {
-                        if clip > 0 {
-                            meta.set_ammo(weapon, clip - 1, stock);
-                        } else {
-                            meta.set_ammo(weapon, 0, stock - 1);
-                        }
-                    }
-                    if let Some(facts) = combat {
-                        if let Some(ps) = world.player_mut(*id) {
-                            spend_ps_offhand_round(ps, weapon, facts);
-                        }
-                    }
+                    let minecraft = world.publishes_snapshot() && crate::voxel::active();
+                    use_offhand_round(world, *id, weapon, minecraft);
                     if crate::equipment::spawn_offhand_projectile(
                         world,
                         *id,
@@ -819,21 +806,8 @@ pub(crate) fn advance_weapon_command(
                     }
                 }
                 WeaponTickEvent::OffhandCookedOff { weapon } => {
-                    let combat = world.weapon_combat_row(weapon);
-                    let meta = world.client_meta_mut(*id);
-                    let (clip, stock) = meta.ammo_for(weapon);
-                    if clip + stock > 0 {
-                        if clip > 0 {
-                            meta.set_ammo(weapon, clip - 1, stock);
-                        } else {
-                            meta.set_ammo(weapon, 0, stock - 1);
-                        }
-                    }
-                    if let Some(facts) = combat {
-                        if let Some(ps) = world.player_mut(*id) {
-                            spend_ps_offhand_round(ps, weapon, facts);
-                        }
-                    }
+                    let minecraft = world.publishes_snapshot() && crate::voxel::active();
+                    use_offhand_round(world, *id, weapon, minecraft);
                     crate::equipment::explode_offhand_in_hand(world, *id, weapon, tick);
                 }
                 WeaponTickEvent::ReloadStarted => {
@@ -1800,6 +1774,27 @@ fn shot_collision_geometry(
 
 pub(crate) fn bullet_process_on_hit(collider: Option<ColliderId>) -> bool {
     collider.is_some()
+}
+
+pub(crate) fn use_offhand_round(world: &mut FrameWorld, id: ClientId, weapon: u32, minecraft: bool) {
+    let combat = world.weapon_combat_row(weapon);
+    let meta = world.client_meta_mut(id);
+    let (clip, stock) = meta.ammo_for(weapon);
+    if clip + stock > 0 {
+        if clip > 0 {
+            meta.set_ammo(weapon, clip - 1, stock);
+        } else {
+            meta.set_ammo(weapon, 0, stock - 1);
+        }
+    }
+    if let Some(facts) = combat {
+        if let Some(ps) = world.player_mut(id) {
+            spend_ps_offhand_round(ps, weapon, facts);
+        }
+    }
+    if minecraft {
+        crate::voxel::spend_grenade(id.0, weapon, -1);
+    }
 }
 
 fn spend_ps_offhand_round(ps: &mut PlayerState, weapon: u32, facts: weapon_iw4::WeaponCombatFacts) {
