@@ -59,15 +59,24 @@ pub fn level_spawn(globals: &Globals, level: &mut Level) -> Place {
         .save
         .as_ref()
         .is_some_and(|save| save.default_mode().mode == GameMode::Adventure);
-    let (x, y, z) = if home && !adventure && !level.terrain.stream.is_remote() {
-        level
-            .terrain
-            .stream
-            .respawn_position(globals.game_rules.int("respawn_radius"))
-    } else {
-        level.terrain.stream.player_spawn
-    };
+    let radius = globals.game_rules.int("respawn_radius");
+    let (x, y, z) = spawn_position(&mut level.terrain.stream, home, adventure, radius);
     Place::standing(level.dimension, [x, y, z], yaw, pitch)
+}
+
+fn spawn_position(
+    stream: &mut minecraft_terrain::terrain::TerrainStream,
+    home: bool,
+    adventure: bool,
+    radius: i32,
+) -> (f64, f64, f64) {
+    if !home || stream.is_remote() {
+        stream.player_spawn
+    } else if adventure {
+        stream.exact_spawn_position()
+    } else {
+        stream.respawn_position(radius)
+    }
 }
 
 pub fn respawn_point(player: &Player) -> Option<Respawn> {
@@ -263,6 +272,23 @@ mod tests {
         let column = |player: &Player| player.arrival.map(|place| (place.feet[0], place.feet[2]));
         assert_eq!(column(&steve), Some(spawn_column(&level)));
         assert_eq!(column(&alex), Some(spawn_column(&level)));
+    }
+
+    #[test]
+    fn adventure_worlds_respawn_on_the_spawn_column_whatever_the_radius() {
+        let Some((mut level, _)) = level_and_globals() else {
+            return;
+        };
+        let (x, z) = spawn_column(&level);
+        let stream = &mut level.terrain.stream;
+        let exact = stream.exact_spawn_position();
+        assert_eq!((exact.0, exact.2), (x, z));
+        for _ in 0..4 {
+            assert_eq!(spawn_position(stream, true, true, 10), exact);
+        }
+        assert_eq!(spawn_position(stream, false, true, 10), stream.player_spawn);
+        let spread = spawn_position(stream, true, false, 10);
+        assert!((spread.0 - x).abs() <= 10.0 && (spread.2 - z).abs() <= 10.0);
     }
 
     #[test]

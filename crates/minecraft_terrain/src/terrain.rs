@@ -1183,6 +1183,10 @@ impl TerrainStream {
         spawn::player_spawn(self.server.as_mut().expect(HOST_ONLY), self.world_spawn, radius.max(0), offset)
     }
 
+    pub fn exact_spawn_position(&mut self) -> (f64, f64, f64) {
+        spawn::fixup_spawn_height(self.server.as_mut().expect(HOST_ONLY), self.world_spawn)
+    }
+
     pub fn reshow(&mut self, scene: &HandcraftedScene) -> Vec<Arc<Chunk>> {
         let (min_section, max_section) = self.states.section_range();
         self.sections = Sections::new(self.sections.view_distance(), min_section, max_section);
@@ -2436,6 +2440,13 @@ mod tests {
         }
         let (x, _, z) = stream.respawn_position(10);
         assert!((x - 40.5).abs() <= 10.0 && (z + 23.5).abs() <= 10.0);
+        let (x, y, z) = stream.exact_spawn_position();
+        assert_eq!((x, z), (40.5, -23.5), "the exact spawn is the spawn column");
+        assert_eq!(stream.exact_spawn_position(), (x, y, z));
+        let (bx, by, bz) = (40, y as i32, -24);
+        let chunk = stream.server.as_mut().unwrap().load_now(minecraftoss_core::ChunkPos::new(bx >> 4, bz >> 4));
+        let at = |y: i32| chunk.block((bx & 15) as usize, y, (bz & 15) as usize);
+        assert!(registries.blocks.is_air(at(by)) && !registries.blocks.is_air(at(by - 1)), "on the ground at {:?}", (x, y, z));
     }
 
     fn count_blocks(registries: &Registries, chunk: &Chunk, counts: &mut HashMap<String, u32>) {
