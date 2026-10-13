@@ -1175,8 +1175,12 @@ impl TerrainStream {
     }
 
     /// `PlayerSpawnFinder.findSpawn` again, for a respawn.
-    pub fn respawn_position(&mut self) -> (f64, f64, f64) {
-        spawn::player_spawn(self.server.as_mut().expect(HOST_ONLY), self.world_spawn, spawn::DEFAULT_RESPAWN_RADIUS, unseeded())
+    pub fn respawn_position(&mut self, radius: i32) -> (f64, f64, f64) {
+        self.respawn_position_at(radius, unseeded())
+    }
+
+    pub fn respawn_position_at(&mut self, radius: i32, offset: u32) -> (f64, f64, f64) {
+        spawn::player_spawn(self.server.as_mut().expect(HOST_ONLY), self.world_spawn, radius.max(0), offset)
     }
 
     pub fn reshow(&mut self, scene: &HandcraftedScene) -> Vec<Arc<Chunk>> {
@@ -2400,6 +2404,38 @@ mod tests {
         let reopened = level.chunk_storage("minecraft:overworld", registries, -64, 384).load(column).unwrap().unwrap();
         assert_eq!(reopened.block(8, 300, 8), gold);
         assert!(dir.path().join("dimensions/minecraft/overworld/region/r.0.-1.mca").is_file());
+    }
+
+    #[test]
+    fn respawn_positions_spread_over_the_radius() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let level = crate::level_storage::LevelStorage::open(dir.path()).unwrap();
+        let spawn = (40, 90, -24);
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Overworld, Some(level.root()), Some(spawn)).unwrap();
+        let mut columns = Vec::new();
+        for offset in [0, 57, 123, 250, 391] {
+            let (x, y, z) = stream.respawn_position_at(10, offset);
+            assert!((x - 40.5).abs() <= 10.0 && (z + 23.5).abs() <= 10.0, "within the radius: {:?}", (x, y, z));
+            let (bx, by, bz) = (x.floor() as i32, y as i32, z.floor() as i32);
+            let chunk = stream.server.as_mut().unwrap().load_now(minecraftoss_core::ChunkPos::new(bx >> 4, bz >> 4));
+            let at = |y: i32| chunk.block((bx & 15) as usize, y, (bz & 15) as usize);
+            assert!(registries.blocks.is_air(at(by)) && registries.blocks.is_air(at(by + 1)), "room to stand at {:?}", (x, y, z));
+            let below = at(by - 1);
+            assert!(!registries.blocks.is_air(below) && registries.blocks.state(below).fluid.is_none(), "on the ground at {:?}", (x, y, z));
+            if !columns.contains(&(bx, bz)) {
+                columns.push((bx, bz));
+            }
+        }
+        assert!(columns.len() >= 3, "different offsets give different columns: {columns:?}");
+        for offset in [0, 99] {
+            let (x, _, z) = stream.respawn_position_at(0, offset);
+            assert_eq!((x, z), (40.5, -23.5), "radius 0 is the spawn column");
+        }
+        let (x, _, z) = stream.respawn_position(10);
+        assert!((x - 40.5).abs() <= 10.0 && (z + 23.5).abs() <= 10.0);
     }
 
     fn count_blocks(registries: &Registries, chunk: &Chunk, counts: &mut HashMap<String, u32>) {

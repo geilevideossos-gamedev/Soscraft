@@ -152,7 +152,7 @@ pub(crate) fn begin(
                 .is_none_or(|place| place.dimension != player.dimension)
         {
             player.arrival = Some(minecraft_survival::respawn::level_spawn(
-                &globals.spawn,
+                globals,
                 level,
             ));
         }
