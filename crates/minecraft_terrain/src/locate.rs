@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use minecraftoss_core::ChunkPos;
+use minecraftoss_core::datapack::DataPack;
 use minecraftoss_core::ident::Identifier;
 use minecraftoss_generator::structure::StructureId;
 use minecraftoss_generator::structure::placement::{Kind, Placement};
@@ -48,7 +49,10 @@ pub fn biome_names(gen: &WorldGen) -> Vec<String> {
 }
 
 pub fn tags(gen: &WorldGen, registry: &str) -> BTreeMap<String, Vec<String>> {
-    let pack = &gen.terrain.registries.datapack;
+    datapack_tags(&gen.terrain.registries.datapack, registry)
+}
+
+pub fn datapack_tags(pack: &DataPack, registry: &str) -> BTreeMap<String, Vec<String>> {
     let kind = format!("tags/{registry}");
     let mut raw = BTreeMap::new();
     for id in pack.list(&kind).unwrap_or_else(|_| Vec::new()) {
@@ -531,6 +535,14 @@ mod tests {
         let registries = Arc::new(Registries::load(&paths).ok()?);
         let terrain = Arc::new(TerrainGenerator::overworld(registries, 4986579828511054607).ok()?);
         WorldGen::for_dimension(terrain, "minecraft:overworld").ok()
+    }
+
+    #[test]
+    fn datapack_tags_are_the_tags_of_the_world_generator() {
+        let Some(gen) = overworld() else { return };
+        let items = datapack_tags(&gen.terrain.registries.datapack, "item");
+        assert_eq!(items, tags(&gen, "item"));
+        assert!(items["minecraft:logs"].contains(&"minecraft:oak_log".to_owned()));
     }
 
     #[test]
