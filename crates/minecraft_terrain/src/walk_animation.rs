@@ -7,7 +7,7 @@
 use glam::DVec3;
 use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WalkAnimation {
     speed_old: f32,
     speed: f32,

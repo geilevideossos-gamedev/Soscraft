@@ -4,6 +4,7 @@ use serde_json::Value;
 pub const OFFHAND: usize = 40;
 pub const ARMOR_SLOTS: [usize; 4] = [39, 38, 37, 36];
 const DYED_COLOR: &str = "minecraft:dyed_color";
+const CARVED_PUMPKIN: &str = "minecraft:carved_pumpkin";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GearItem {
@@ -55,6 +56,13 @@ pub fn body_gear(
         armor: ARMOR_SLOTS.map(worn),
         hides_gun,
     }
+}
+
+pub fn camera_overlay(slots: &[Option<ItemStack>]) -> bool {
+    slots
+        .get(ARMOR_SLOTS[0])
+        .and_then(Option::as_ref)
+        .is_some_and(|stack| stack.id == CARVED_PUMPKIN)
 }
 
 pub fn dyed_color(stack: &ItemStack) -> Option<u32> {
@@ -209,5 +217,24 @@ mod tests {
         assert_eq!(gear.off.as_ref().unwrap().potion, None);
         let sword = body_gear(&inventory, 1, is_gun);
         assert_eq!(sword.main.as_ref().unwrap().potion, None);
+    }
+
+    #[test]
+    fn only_a_carved_pumpkin_on_the_head_blurs_the_view() {
+        let pumpkin = || stack("minecraft:carved_pumpkin", None);
+        assert!(camera_overlay(&slots(&[(39, pumpkin())])));
+        for slot in [36, 37, 38, 40, 0] {
+            assert!(!camera_overlay(&slots(&[(slot, pumpkin())])), "{slot}");
+        }
+        for id in [
+            "minecraft:pumpkin",
+            "minecraft:jack_o_lantern",
+            "minecraft:dragon_head",
+            "minecraft:diamond_helmet",
+        ] {
+            assert!(!camera_overlay(&slots(&[(39, stack(id, None))])), "{id}");
+        }
+        assert!(!camera_overlay(&slots(&[])));
+        assert!(!camera_overlay(&[]));
     }
 }

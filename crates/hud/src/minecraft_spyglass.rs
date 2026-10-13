@@ -7,6 +7,7 @@ use crate::gpu_list::{HudTessGpuFrame, HudTessPass, TessBody, TessJob, apply_tes
 use crate::images::{HUD_CHROME_NAMESPACE, HudImages};
 
 const MATERIAL: &str = "mc_spyglass_scope";
+const BLUR_MATERIAL: &str = "mc_pumpkin_blur";
 const BLACK_MATERIAL: &str = "white";
 const RESET_SCALE: f32 = 0.5;
 const FULL_SCALE: f32 = 1.125;
@@ -14,6 +15,31 @@ const TICKS_PER_SECOND: f32 = 20.0;
 
 #[derive(Component)]
 pub(crate) struct MinecraftSpyglassRaster;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CameraOverlay {
+    None,
+    Scope,
+    PumpkinBlur,
+}
+
+pub(crate) fn overlay_job(
+    active: bool,
+    scoping: bool,
+    first_person: bool,
+    wearing: bool,
+    has_texture: bool,
+) -> CameraOverlay {
+    if !active || !first_person {
+        CameraOverlay::None
+    } else if scoping {
+        CameraOverlay::Scope
+    } else if wearing && has_texture {
+        CameraOverlay::PumpkinBlur
+    } else {
+        CameraOverlay::None
+    }
+}
 
 pub(crate) struct ScopeScale(f32);
 
@@ -70,6 +96,10 @@ pub(crate) fn overlay(size: [f32; 2], scale: f32) -> Vec<Draw2dQuad> {
     quads
 }
 
+pub(crate) fn camera_overlay_quad(size: [f32; 2]) -> Draw2dQuad {
+    quad([0.0, 0.0, size[0], size[1]], BLUR_MATERIAL, [1.0; 4])
+}
+
 pub(crate) fn update(
     surface: Res<crate::surface::Hud2dSurface>,
     clock: Res<FrameClock>,
@@ -86,10 +116,26 @@ pub(crate) fn update(
         return;
     };
     let first_person = !camera.is_some_and(|camera| camera.detached);
+    let job = overlay_job(
+        ui.active,
+        ui.scoping,
+        first_person,
+        ui.camera_overlay,
+        ui.pumpkin_blur.is_some(),
+    );
+    if let (CameraOverlay::PumpkinBlur, Some(blur)) = (job, ui.pumpkin_blur.as_ref()) {
+        scale.0 = RESET_SCALE;
+        if surface.is_ready() {
+            hud_images.insert_runtime(BLUR_MATERIAL, blur.clone());
+            let size = [surface.width(), surface.height()];
+            pass.minecraft_spyglass = TessJob::Quads(vec![camera_overlay_quad(size)]);
+        }
+        return;
+    }
     let Some(texture) = ui
         .spyglass_scope
         .as_ref()
-        .filter(|_| ui.active && ui.scoping && first_person)
+        .filter(|_| job == CameraOverlay::Scope)
     else {
         scale.0 = RESET_SCALE;
         return;
@@ -156,6 +202,45 @@ mod tests {
             ]
         );
         assert!(quads[1..].iter().all(|q| q.color == [0.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn the_pumpkin_blur_covers_the_screen_only_in_first_person_and_not_while_scoping() {
+        assert_eq!(
+            overlay_job(true, false, true, true, true),
+            CameraOverlay::PumpkinBlur
+        );
+        assert_eq!(
+            overlay_job(true, true, true, true, true),
+            CameraOverlay::Scope
+        );
+        assert_eq!(
+            overlay_job(true, true, true, false, false),
+            CameraOverlay::Scope
+        );
+        for (active, first_person, wearing, has_texture) in [
+            (true, false, true, true),
+            (false, true, true, true),
+            (true, true, false, true),
+            (true, true, true, false),
+        ] {
+            assert_eq!(
+                overlay_job(active, false, first_person, wearing, has_texture),
+                CameraOverlay::None
+            );
+        }
+        assert_eq!(
+            overlay_job(true, true, false, true, true),
+            CameraOverlay::None
+        );
+        let quad = camera_overlay_quad([1920.0, 1080.0]);
+        assert_eq!(quad.material, BLUR_MATERIAL);
+        assert_eq!(
+            quad.xy,
+            [[0.0, 0.0], [1920.0, 0.0], [1920.0, 1080.0], [0.0, 1080.0]]
+        );
+        assert_eq!(quad.st, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        assert_eq!(quad.color, [1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]

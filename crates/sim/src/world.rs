@@ -256,6 +256,8 @@ pub(crate) struct PredictionRemoteBody {
     pub origin: [f32; 3],
     pub life_sequence: crate::LifeSequence,
     pub noclip: bool,
+    pub height: f32,
+    pub riding: bool,
 }
 
 /// Immutable definitions shared by independently mutable simulations.
@@ -3212,6 +3214,8 @@ impl SimState {
                                 origin: ps.origin,
                                 life_sequence: meta.life_sequence,
                                 noclip: ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP != 0,
+                                height: crate::voxel::player_hull(ps).1[2],
+                                riding: ps.pm_flags & playerstate_iw4::pm_flags::MC_RIDING != 0,
                             },
                         )
                     }),

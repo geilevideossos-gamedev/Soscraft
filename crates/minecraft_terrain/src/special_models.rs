@@ -108,7 +108,7 @@ impl Sheet {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Head {
+pub(crate) enum Head {
     Skeleton,
     WitherSkeleton,
     Zombie,
@@ -288,7 +288,7 @@ pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
                 * Mat4::from_rotation_y((-segment_degrees(property("rotation"))).to_radians())
                 * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
         };
-        push_head(&mut elements, head, None, pose)?;
+        push_head(&mut elements, head, None, pose, 0.0)?;
     } else if path == "shulker_box" || path.ends_with("_shulker_box") {
         elements = shulker_box_model(block, 0.0)?.elements;
     } else if banner_dye(block).is_some() {
@@ -391,9 +391,9 @@ pub(crate) fn item_model(special: &Value) -> Result<Option<ResolvedModel>> {
             let texture = field("texture")
                 .map(|texture| sheet_id(texture, "entity"))
                 .transpose()?;
-            push_head(&mut elements, head, texture, Mat4::IDENTITY)?;
+            push_head(&mut elements, head, texture, Mat4::IDENTITY, 0.0)?;
         }
-        "minecraft:player_head" => push_head(&mut elements, Head::Player, None, Mat4::IDENTITY)?,
+        "minecraft:player_head" => push_head(&mut elements, Head::Player, None, Mat4::IDENTITY, 0.0)?,
         "minecraft:banner" => {
             let standing = field("attachment") != Some("wall");
             push_banner(&mut elements, standing, Mat4::IDENTITY)?;
@@ -405,6 +405,26 @@ pub(crate) fn item_model(special: &Value) -> Result<Option<ResolvedModel>> {
         _ => return Ok(None),
     }
     Ok(Some(ResolvedModel { elements }))
+}
+
+pub(crate) fn worn_skull(item_id: &str) -> Option<Head> {
+    Some(match item_id.strip_prefix("minecraft:")? {
+        "skeleton_skull" => Head::Skeleton,
+        "wither_skeleton_skull" => Head::WitherSkeleton,
+        "zombie_head" => Head::Zombie,
+        "creeper_head" => Head::Creeper,
+        "dragon_head" => Head::Dragon,
+        "piglin_head" => Head::Piglin,
+        "player_head" => Head::Player,
+        _ => return None,
+    })
+}
+
+pub(crate) fn worn_head_model(head: Head, animation: f32) -> Result<ResolvedModel> {
+    let mut elements = Vec::new();
+    let pose = Mat4::from_scale(Vec3::splat(crate::worn_head::SKULL_SCALE));
+    push_head(&mut elements, head, None, pose, animation)?;
+    Ok(ResolvedModel { elements })
 }
 
 pub(crate) fn special_tints(model: &Value) -> Vec<[u8; 3]> {
@@ -847,6 +867,7 @@ fn push_head(
     head: Head,
     texture: Option<ResourceId>,
     pose: Mat4,
+    animation: f32,
 ) -> Result<()> {
     let texture = match texture {
         Some(texture) => texture,
@@ -873,7 +894,7 @@ fn push_head(
             ] {
                 push_cube(elements, &sheet, cube, head_pose, &ALL_FACES);
             }
-            let jaw = head_pose * part([0.0, 4.0, -8.0], [(0.0f32.sin() + 1.0) * 0.2, 0.0, 0.0]);
+            let jaw = head_pose * part([0.0, 4.0, -8.0], [((animation * PI * 0.2).sin() + 1.0) * 0.2, 0.0, 0.0]);
             let jaw_cube = Cube::new([176.0, 65.0], [-6.0, 0.0, -16.0], [12.0, 4.0, 16.0]);
             push_cube(elements, &sheet, jaw_cube, jaw, &ALL_FACES);
         }
@@ -887,11 +908,12 @@ fn push_head(
             ] {
                 push_cube(elements, &sheet, cube, pose, &ALL_FACES);
             }
-            let ear = (0.0f32.cos() + 2.5) * 0.2;
+            let left_ear = -((animation * PI * 0.2 * 1.2).cos() + 2.5) * 0.2;
+            let right_ear = ((animation * PI * 0.2).cos() + 2.5) * 0.2;
             let left = Cube::new([51.0, 6.0], [0.0, 0.0, -2.0], [1.0, 5.0, 4.0]);
             let right = Cube::new([39.0, 6.0], [-1.0, 0.0, -2.0], [1.0, 5.0, 4.0]);
-            let left_pose = pose * part([4.5, -6.0, 0.0], [0.0, 0.0, -ear]);
-            let right_pose = pose * part([-4.5, -6.0, 0.0], [0.0, 0.0, ear]);
+            let left_pose = pose * part([4.5, -6.0, 0.0], [0.0, 0.0, left_ear]);
+            let right_pose = pose * part([-4.5, -6.0, 0.0], [0.0, 0.0, right_ear]);
             push_cube(elements, &sheet, left, left_pose, &ALL_FACES);
             push_cube(elements, &sheet, right, right_pose, &ALL_FACES);
         }
@@ -1597,5 +1619,80 @@ mod tests {
             lowest > 1.0 && lowest < 1.3,
             "it bobs above the ground: {lowest}"
         );
+    }
+
+    fn linear(element: &Element) -> Mat3 {
+        Mat3::from_cols_array_2d(&element.rotation.unwrap().matrix)
+    }
+
+    fn turn_from_first(model: &ResolvedModel, index: usize) -> Mat3 {
+        linear(&model.elements[0]).inverse() * linear(&model.elements[index])
+    }
+
+    fn jaw_angle(model: &ResolvedModel) -> f32 {
+        let turn = turn_from_first(model, model.elements.len() - 1);
+        turn.y_axis.z.atan2(turn.y_axis.y)
+    }
+
+    fn ear_angles(model: &ResolvedModel) -> (f32, f32) {
+        let angle = |index: usize| {
+            let turn = turn_from_first(model, index);
+            turn.x_axis.y.atan2(turn.x_axis.x)
+        };
+        (angle(4), angle(5))
+    }
+
+    #[test]
+    fn worn_skulls_are_the_seven_heads_and_not_pumpkins_or_helmets() {
+        for (id, head) in [
+            ("minecraft:skeleton_skull", Head::Skeleton),
+            ("minecraft:wither_skeleton_skull", Head::WitherSkeleton),
+            ("minecraft:zombie_head", Head::Zombie),
+            ("minecraft:creeper_head", Head::Creeper),
+            ("minecraft:dragon_head", Head::Dragon),
+            ("minecraft:piglin_head", Head::Piglin),
+            ("minecraft:player_head", Head::Player),
+        ] {
+            assert_eq!(worn_skull(id), Some(head), "{id}");
+        }
+        for id in [
+            "minecraft:carved_pumpkin",
+            "minecraft:diamond_helmet",
+            "minecraft:turtle_helmet",
+            "minecraft:skeleton_wall_skull",
+            "minecraft:dragon_wall_head",
+            "skeleton_skull",
+            "test:zombie_head",
+        ] {
+            assert_eq!(worn_skull(id), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_dragon_jaw_follows_the_walk_and_rests_where_the_block_does() {
+        let placed = Block::new("minecraft:dragon_head").with("rotation", "0");
+        let placed = block_model(&placed).unwrap().unwrap();
+        let resting = worn_head_model(Head::Dragon, 0.0).unwrap();
+        assert_eq!(resting.elements.len(), 7);
+        assert!((jaw_angle(&placed) - 0.2).abs() < 1e-5);
+        assert!((jaw_angle(&resting) - jaw_angle(&placed)).abs() < 1e-5);
+        let open = worn_head_model(Head::Dragon, 2.5).unwrap();
+        assert!((jaw_angle(&open) - 0.4).abs() < 1e-5, "{}", jaw_angle(&open));
+        let shut = worn_head_model(Head::Dragon, 7.5).unwrap();
+        assert!(jaw_angle(&shut).abs() < 1e-5, "{}", jaw_angle(&shut));
+    }
+
+    #[test]
+    fn piglin_ears_flap_at_their_own_rates() {
+        let (left, right) = ear_angles(&worn_head_model(Head::Piglin, 0.0).unwrap());
+        assert!((left + 0.7).abs() < 1e-5 && (right - 0.7).abs() < 1e-5, "{left} {right}");
+        let placed = Block::new("minecraft:piglin_head").with("rotation", "0");
+        let (placed_left, placed_right) = ear_angles(&block_model(&placed).unwrap().unwrap());
+        assert!((placed_left - left).abs() < 1e-5 && (placed_right - right).abs() < 1e-5);
+        let (left, right) = ear_angles(&worn_head_model(Head::Piglin, 5.0).unwrap());
+        assert!((right - 0.3).abs() < 1e-5, "{right}");
+        let expected = -((1.2 * PI).cos() + 2.5) * 0.2;
+        assert!((left - expected).abs() < 1e-5, "{left} {expected}");
+        assert!((left + right).abs() > 0.03, "the ears are out of step");
     }
 }

@@ -162,7 +162,7 @@ pub fn holding_for_credits(player: &Player) -> bool {
     player.end.credits
 }
 
-pub fn travel(globals: &Globals, level: &Level, player: &mut Player) -> Trip {
+pub fn travel(globals: &Globals, level: &mut Level, player: &mut Player) -> Trip {
     if level.dimension != Dimension::End {
         enter_the_end(player);
         return Trip::IntoTheEnd;

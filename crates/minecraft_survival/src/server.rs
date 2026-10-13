@@ -667,11 +667,8 @@ impl Server {
         self.globals.chat.join(id, name);
         let profile = self.globals.chat.profile(id)?.clone();
         let uuid = PlayerUuid(profile.uuid.clone());
-        let spawn = match self.levels.get(&Dimension::Overworld) {
-            Some(level) => {
-                let (x, y, z) = level.terrain.stream.player_spawn;
-                [x, y, z]
-            }
+        let spawn = match self.levels.get_mut(&Dimension::Overworld) {
+            Some(level) => crate::respawn::level_spawn(&self.globals, level).feet,
             None => spawn_place(&self.globals.spawn).feet,
         };
         let joining = Joining {
@@ -1703,6 +1700,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_new_friend_arrives_within_the_radius_and_a_returning_one_where_they_left() {
+        let Some((_dir, _save, mut server, open)) = friend_server("friend-spread") else {
+            return;
+        };
+        let registries = server.globals.registries.clone();
+        let Ok(terrain) = Terrain::open(registries, 0, 2, Dimension::Overworld, None, None) else {
+            return;
+        };
+        server.levels.insert(Dimension::Overworld, Level::new(Dimension::Overworld, terrain));
+        let (x, _, z) = server.levels[&Dimension::Overworld].terrain.stream.world_spawn;
+        let (x, z) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
+        let uuid = server.join_friend(PlayerId(1), "Alex", None).unwrap();
+        let arrival = server.players[&uuid].arrival.expect("a new friend arrives at the spawn");
+        assert_eq!(arrival.dimension, Dimension::Overworld);
+        assert!(
+            (arrival.feet[0] - x).abs() <= 10.0 && (arrival.feet[2] - z).abs() <= 10.0,
+            "within the respawn radius of the world spawn: {arrival:?}"
+        );
+        let left_at = Place::standing(Dimension::Overworld, [x + 30.0, 80.0, z - 7.0], 45.0, 0.0);
+        server.players.get_mut(&uuid).unwrap().place = Some(left_at);
+        server.leave(&uuid).unwrap();
+        let again = server.join_friend(PlayerId(2), "Alex", None).unwrap();
+        assert_eq!(server.players[&again].arrival, Some(left_at), "a returning friend comes back exactly where they left");
+        server.globals.game_rules.set("respawn_radius", "0").unwrap();
+        let steve = server.join_friend(PlayerId(3), "Steve", None).unwrap();
+        let feet = server.players[&steve].arrival.map(|place| (place.feet[0], place.feet[2]));
+        assert_eq!(feet, Some((x, z)), "radius 0 is the spawn column");
+        open.send(()).unwrap();
+        server.globals.writer.finish();
+    }
+
+    #[test]
     fn the_weather_keeps_changing_while_no_level_that_has_weather_ticks() {
         assert!(has_weather(Dimension::Overworld));
         assert!(!has_weather(Dimension::Nether));
@@ -2516,12 +2545,17 @@ pub(crate) mod tests {
             (switch.from, switch.to, switch.reason, switch.respawn, switch.arrival),
             (Dimension::Nether, Dimension::Overworld, LoadingReason::Other, true, None)
         );
-        assert!(!respawn_in(&server.globals, &server.levels[&Dimension::Overworld], steve, |_| None));
-        let (x, y, z) = server.levels[&Dimension::Overworld].terrain.stream.player_spawn;
+        assert!(!respawn_in(&server.globals, server.levels.get_mut(&Dimension::Overworld).unwrap(), steve, |_| None));
+        let (x, _, z) = server.levels[&Dimension::Overworld].terrain.stream.world_spawn;
+        let arrival = steve.arrival.expect("a bedless respawn arrives at the world spawn");
         assert_eq!(
-            steve.arrival,
-            Some(Place::standing(Dimension::Overworld, [x, y, z], 90.0, 0.0)),
-            "the world spawn is the overworld's own spawn, facing the spawn angle"
+            (arrival.dimension, arrival.yaw, arrival.pitch),
+            (Dimension::Overworld, 90.0, 0.0),
+            "the world spawn is in the overworld, facing the spawn angle"
+        );
+        assert!(
+            (arrival.feet[0] - f64::from(x) - 0.5).abs() <= 10.0 && (arrival.feet[2] - f64::from(z) - 0.5).abs() <= 10.0,
+            "within the respawn radius of the world spawn: {arrival:?}"
         );
 
         let anchor = crate::player_nbt::Respawn {
@@ -2539,7 +2573,7 @@ pub(crate) mod tests {
         assert!(steve.observe_life(0));
         assert!(!respawn(&server.globals, server.levels.get_mut(&Dimension::Overworld).unwrap(), steve));
         assert_eq!(steve.switching.map(|switch| (switch.to, switch.respawn)), Some((Dimension::Nether, true)));
-        assert!(!respawn_in(&server.globals, &server.levels[&Dimension::Nether], steve, |_| None));
+        assert!(!respawn_in(&server.globals, server.levels.get_mut(&Dimension::Nether).unwrap(), steve, |_| None));
         assert_eq!(
             steve.arrival,
             Some(Place::standing(Dimension::Nether, [5.5, 70.0, 5.5], -90.0, 0.0))
@@ -2556,7 +2590,7 @@ pub(crate) mod tests {
             ..anchor
         }));
         assert!(
-            respawn_in(&server.globals, &server.levels[&Dimension::Nether], steve, |_| None),
+            respawn_in(&server.globals, server.levels.get_mut(&Dimension::Nether).unwrap(), steve, |_| None),
             "a point in the bedrock floor is missing"
         );
         assert_eq!(steve.respawn, None);

@@ -152,7 +152,7 @@ pub(crate) fn begin(
                 .is_none_or(|place| place.dimension != player.dimension)
         {
             player.arrival = Some(minecraft_survival::respawn::level_spawn(
-                &globals.spawn,
+                globals,
                 level,
             ));
         }
@@ -314,6 +314,7 @@ pub(crate) fn movement(
         hand,
         steps,
         riding,
+        drop_throttle,
         ..
     } = player;
     let feet = sim::voxel::to_block(origin, ps.origin);
@@ -483,6 +484,7 @@ pub(crate) fn movement(
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     hand.cooldowns.tick(hand_ticks);
+    drop_throttle.tick(hand_ticks);
     let cooldowns = hand.cooldowns.shown((hand.clock / TICK_SECONDS) as f32);
     hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
     hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
@@ -1853,12 +1855,15 @@ pub(crate) fn friend_menus(
         return lines;
     };
     let books = minecraft_survival::menus::Books::of(&world.globals.data);
+    let globals = world.globals;
+    let known = |id: &str| globals.chat.registries().items.iter().any(|item| item == id);
     let mut clicked = minecraft_survival::menus::take_inputs(
         player,
         containers,
         books,
         inputs,
         world.language,
+        &known,
         || entities.random_float(),
     );
     let Some(ps) = ps else {

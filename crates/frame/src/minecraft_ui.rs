@@ -234,6 +234,8 @@ pub struct MinecraftUi {
     pub book: Option<McBook>,
     pub book_edit: Option<McBookEdit>,
     pub ui_sounds: Vec<&'static str>,
+    pub pumpkin_blur: Option<Handle<Image>>,
+    pub camera_overlay: bool,
 }
 
 impl MinecraftUi {

@@ -59,6 +59,17 @@ pub enum ToServer {
         pages: Vec<String>,
         title: Option<String>,
     },
+    CreativeSlot {
+        slot: CreativeTarget,
+        stack: Option<Nbt>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CreativeTarget {
+    Menu(u8),
+    Carried,
+    Drop,
 }
 
 impl ToServer {

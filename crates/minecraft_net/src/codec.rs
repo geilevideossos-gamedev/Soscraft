@@ -215,6 +215,7 @@ mod tests {
             ToServer::Lectern { .. } => 10,
             ToServer::LeaveBed => 11,
             ToServer::EditBook { .. } => 12,
+            ToServer::CreativeSlot { .. } => 13,
         }
     }
 
@@ -323,6 +324,18 @@ mod tests {
                 slot: 0,
                 pages: Vec::new(),
                 title: None,
+            },
+            ToServer::CreativeSlot {
+                slot: CreativeTarget::Menu(36),
+                stack: Some(Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0])),
+            },
+            ToServer::CreativeSlot {
+                slot: CreativeTarget::Carried,
+                stack: None,
+            },
+            ToServer::CreativeSlot {
+                slot: CreativeTarget::Drop,
+                stack: Some(Nbt(vec![10, 0, 0, 0])),
             },
         ]
     }

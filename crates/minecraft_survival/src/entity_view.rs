@@ -16,7 +16,7 @@ use minecraftoss_player::items::{ItemEntity, WorldItems};
 
 use crate::entities::{
     CRYSTAL_KEY, FIREBALL_KEY, FRAME_KEY, MobMeshes, SHULKER_BULLET_KEY, TICK_SECONDS, bob_offset,
-    decode, dragon_flapping, dragon_part_key, encode, mirrored,
+    decode, dragon_part_key, encode, mirrored,
 };
 
 const FLAME_RANGE: f64 = 160.0;
@@ -44,6 +44,8 @@ pub struct EntityView {
     pub(crate) gateways: minecraft_terrain::end_gateway::ClientGateways,
     pub(crate) dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     pub(crate) dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
+    drawn_dragons: minecraft_terrain::client_dragon::ClientDragons,
+    drawn_fireballs: minecraft_terrain::client_dragon::ClientFireballs,
     pub(crate) frames: Vec<minecraft_terrain::item_frame::FrameView>,
     pub(crate) growls: HashMap<u64, i32>,
     pub(crate) orbs: Vec<ServerOrb>,
@@ -85,6 +87,8 @@ impl EntityView {
             gateways: Default::default(),
             dragons: Vec::new(),
             dragon_fireballs: Vec::new(),
+            drawn_dragons: Default::default(),
+            drawn_fireballs: Default::default(),
             frames: Vec::new(),
             growls: HashMap::new(),
             orbs: Vec::new(),
@@ -129,6 +133,9 @@ impl EntityView {
             self.lids.tick();
             self.spawners.tick(near, &mut self.ambient);
             self.client.tick();
+            let flaps = self.drawn_dragons.tick();
+            self.dragon_voices(&flaps);
+            self.drawn_fireballs.tick();
             for enderman in self.world.endermen() {
                 if let Some(mob) = self.client.get(enderman.id) {
                     self.portal.emit_enderman(mob.position, 0.6, 2.9);
@@ -211,13 +218,14 @@ impl EntityView {
         self.gateways
             .receive(std::mem::take(&mut snapshot.gateways), self.ticks);
         self.dragons = std::mem::take(&mut snapshot.dragons);
+        self.drawn_dragons.receive(&self.dragons);
         self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
+        self.drawn_fireballs.receive(&self.dragon_fireballs);
         for fireball in &self.dragon_fireballs {
             self.ambient.breath_trail(fireball.position);
         }
         self.frames = std::mem::take(&mut snapshot.frames);
         self.bursts(snapshot);
-        self.dragon_voices();
         self.orbs = snapshot.orbs.clone();
         self.falling.receive(
             std::mem::take(&mut snapshot.falling),
@@ -445,12 +453,20 @@ impl EntityView {
         (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32
     }
 
-    fn dragon_voices(&mut self) {
+    pub fn drawn_dragons(&self) -> Vec<minecraft_terrain::ender_dragon::DragonView> {
+        self.drawn_dragons.views()
+    }
+
+    fn dragon_voices(&mut self, flaps: &[(u64, DVec3, bool)]) {
         use minecraft_terrain::ender_dragon::{FLAP_SOUND, GROWL_SOUND, SOUND_VOLUME};
+        let drawn = self.drawn_dragons.views();
         self.growls
-            .retain(|id, _| self.dragons.iter().any(|dragon| dragon.id == *id));
-        for dragon in &self.dragons {
-            if dragon_flapping(dragon.o_flap_time, dragon.flap_time) {
+            .retain(|id, _| drawn.iter().any(|dragon| dragon.id == *id));
+        for dragon in &drawn {
+            let Some(&(_, _, flapped)) = flaps.iter().find(|&&(id, _, _)| id == dragon.id) else {
+                continue;
+            };
+            if flapped {
                 let pitch = 0.8 + self.random.next_float() * 0.3;
                 self.sounds
                     .push((FLAP_SOUND.to_owned(), dragon.position, SOUND_VOLUME, pitch));
@@ -812,16 +828,17 @@ impl EntityView {
             partial,
         );
         end_crystal_render::append_crystals(&mut out.models, &self.crystals, atlas, light, partial);
-        dragon_render::append_dragons(&mut out.models, &self.dragons, atlas, light, partial);
+        let drawn_dragons = self.drawn_dragons.views();
+        dragon_render::append_dragons(&mut out.models, &drawn_dragons, atlas, light, partial);
         dragon_render::append_beams(
             &mut out.models,
-            &self.dragons,
+            &drawn_dragons,
             &self.crystals,
             atlas,
             light,
             partial,
         );
-        dragon_render::append_rays(&mut out.translucent, &self.dragons, atlas, partial);
+        dragon_render::append_rays(&mut out.translucent, &drawn_dragons, atlas, partial);
         end_gateway_render::append_beams(
             &mut out.models,
             &mut out.translucent,
@@ -946,7 +963,7 @@ impl EntityView {
         );
         minecraft_terrain::dragon_fireball::append_fireballs(
             &mut out.items,
-            &self.dragon_fireballs,
+            &self.drawn_fireballs.views(),
             atlas,
             forward,
             partial,
@@ -1071,5 +1088,60 @@ impl EntityView {
             out.shadows = shadows;
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minecraft_terrain::ender_dragon::{DragonView, FLAP_SOUND, GROWL_SOUND};
+
+    fn dragon(tick_count: i32) -> DragonView {
+        let flap_time = tick_count as f32 * 0.1;
+        DragonView {
+            id: 3,
+            uuid: [0; 4],
+            position: DVec3::new(0.0, 80.0, 0.0),
+            previous_position: DVec3::new(0.0, 80.0, 0.0),
+            y_rot: 0.0,
+            flap_time,
+            o_flap_time: flap_time - 0.1,
+            history: Vec::new(),
+            health: 200.0,
+            hurt_time: 0,
+            death_time: 0,
+            sitting: false,
+            phase: 0,
+            parts: [DVec3::new(0.0, 80.0, 0.0); 8],
+            tick_count,
+            nearest_crystal: None,
+        }
+    }
+
+    fn voices(frozen: bool) -> usize {
+        let mut view = EntityView::new(7);
+        for tick in 0..400 {
+            let mut snapshot = EntitySnapshot {
+                dragons: vec![dragon(if frozen { 0 } else { tick })],
+                ..Default::default()
+            };
+            view.receive(&mut snapshot, &[]);
+            view.advance(
+                0.05,
+                crate::tick_rate::ClientTiming::default(),
+                &[],
+                DVec3::ZERO,
+            );
+        }
+        view.sounds
+            .iter()
+            .filter(|(sound, ..)| sound == FLAP_SOUND || sound == GROWL_SOUND)
+            .count()
+    }
+
+    #[test]
+    fn a_dragon_frozen_on_the_host_makes_no_flap_or_growl_on_the_client() {
+        assert!(voices(false) > 0);
+        assert_eq!(voices(true), 0);
     }
 }

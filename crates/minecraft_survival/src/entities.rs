@@ -1749,12 +1749,6 @@ fn end_target_of(key: u64) -> Option<EndTarget> {
     })
 }
 
-pub(crate) fn dragon_flapping(o_flap_time: f32, flap_time: f32) -> bool {
-    let before = minecraftoss_player::mth::cos(f64::from(o_flap_time * std::f32::consts::TAU));
-    let now = minecraftoss_player::mth::cos(f64::from(flap_time * std::f32::consts::TAU));
-    before <= -0.3 && now >= -0.3
-}
-
 fn crystal_of(key: u64) -> Option<u64> {
     (key >> 56 == CRYSTAL_KEY >> 56).then_some(key & ((1 << 56) - 1))
 }
@@ -2005,6 +1999,7 @@ mod tests {
 
     #[test]
     fn a_dragon_flaps_when_its_wings_pass_the_top_of_their_beat() {
+        use minecraft_terrain::client_dragon::flapping as dragon_flapping;
         assert!(dragon_flapping(0.69, 0.71), "cos rises through -0.3 late in the beat");
         assert!(!dragon_flapping(0.1, 0.2));
         assert!(!dragon_flapping(0.55, 0.6));

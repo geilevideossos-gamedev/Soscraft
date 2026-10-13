@@ -30,7 +30,7 @@ pub(crate) fn step(player: &mut Player, levels: &mut BTreeMap<Dimension, Level>)
 
 pub(crate) fn travel(
     player: &mut Player,
-    level: &Level,
+    level: &mut Level,
     globals: &Globals,
     entry: (i32, i32, i32),
 ) {

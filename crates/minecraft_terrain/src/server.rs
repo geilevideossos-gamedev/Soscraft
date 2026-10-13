@@ -9038,6 +9038,44 @@ mod tests {
         assert_eq!(growls, 9 + 4 + 20);
     }
 
+    fn place_rim_crystals(server: &mut ServerSim, at: BlockPos, spots: &[(i32, i32)]) {
+        for &(dx, dz) in spots {
+            let (x, y, z) = (at.0 + dx, at.1, at.2 + dz);
+            assert_eq!(block_named(server, (x, y, z)), "minecraft:bedrock", "the rim at {dx} {dz}");
+            assert!(server.item_on_block((x, y, z), ItemOnBlock::EndCrystal), "a crystal on the rim at {dx} {dz}");
+        }
+    }
+
+    #[test]
+    fn only_crystals_touching_the_four_side_cells_of_the_exit_portal_start_a_respawn() {
+        let Some((mut server, at)) = respawn_world() else { return };
+        let corners = [(2, -2), (2, 2), (-2, 2), (-2, -2)];
+        place_rim_crystals(&mut server, at, &corners);
+        assert!(server.respawn.is_none(), "the four corner crystals miss the side cells");
+        assert!(server.take_fight_reports().is_empty());
+        assert!(!server.item_on_block((at.0 + 1, at.1, at.2 - 3), ItemOnBlock::EndCrystal), "a corner crystal's box still fills the rim block beside it");
+        let cornered = |position: glam::DVec3| corners.iter().any(|&(dx, dz)| position.x.floor() as i32 == at.0 + dx && position.z.floor() as i32 == at.2 + dz && position.y.floor() as i32 == at.1 + 1);
+        server.crystals.remove_where(cornered);
+        place_rim_crystals(&mut server, at, &[(1, -3), (3, 1), (-1, 3)]);
+        assert!(server.respawn.is_none(), "three sides are not enough");
+        assert!(server.take_fight_reports().is_empty());
+        place_rim_crystals(&mut server, at, &[(-3, -1)]);
+        let reports = server.take_fight_reports();
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        let FightReport::Respawning { stage, crystals, exit_portal } = &reports[0] else { panic!("{reports:?}") };
+        assert_eq!((*stage, crystals.len(), *exit_portal), ("start", 4, at));
+        assert!(server.respawn.is_some());
+
+        let Some((mut server, at)) = respawn_world() else { return };
+        let obsidian = server.level.registries().blocks.parse_state(crate::end_crystal::OBSIDIAN).unwrap();
+        let (x, y, z) = crate::dragon_respawn::crystal_cells(at)[0];
+        server.level.set_block(minecraftoss_core::BlockPos::new(x, y, z), obsidian, update::CLIENTS, update::LIMIT);
+        assert!(server.item_on_block((x, y, z), ItemOnBlock::EndCrystal), "a crystal on obsidian over the rim");
+        place_rim_crystals(&mut server, at, &[(3, 0), (0, 3), (-3, 0)]);
+        assert!(server.respawn.is_none(), "a crystal raised a block misses its cell");
+        assert!(server.take_fight_reports().is_empty());
+    }
+
     #[test]
     fn breaking_a_respawn_crystal_stops_the_respawn_and_lights_the_portal_again() {
         use crate::end_crystal::{EndDamage, EndTarget};

@@ -632,6 +632,7 @@ fn update(
                 ui.portal_frames = crate::minecraft_portal::frames(&world.packs, &mut images);
                 ui.freeze_outline = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::FREEZE_OUTLINE).map(|(image, _)| image);
                 ui.spyglass_scope = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::SPYGLASS_SCOPE).map(|(image, _)| image);
+                ui.pumpkin_blur = crate::minecraft_portal::blurred(&world.packs, &mut images, crate::minecraft_portal::PUMPKIN_BLUR);
                 runtime.loading_backgrounds = Some(crate::minecraft_loading::LoadingBackgrounds::load(&world.packs, &mut images));
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
@@ -1239,7 +1240,7 @@ fn update(
             show_chat(&mut ui.chat, inventory_ui, &world.packs, std::slice::from_ref(&told));
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
-        let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, .. } = &mut *player;
+        let minecraft_survival::player::Player { name: player_name, survival, mode: player_mode, inventory, selected, hand, menus, drop_throttle, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
@@ -1277,7 +1278,7 @@ fn update(
         inventory_ui.creative.prepare(!player_mode.consumes_items(), operator);
         inventory_ui.creative.set_item_tags(&globals.chat.data().item_tags);
         let known = |id: &str| globals.chat.registries().items.iter().any(|item| item == id);
-        let creative_thrown = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known);
+        let creative_thrown: Vec<_> = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known).into_iter().filter(|_| drop_throttle.allow(player_name)).collect();
         inventory_ui.creative.hotbar_key(&mut ui, player_mode, inventory, &known);
         let player_mode = *player_mode;
         let books = minecraft_survival::menus::Books::of(&globals.data);
@@ -1402,6 +1403,7 @@ fn update(
         ui.offhand_busy = alive && !moved.holding && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.scoping.is_some());
         ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.scoping.is_some());
         ui.scoping = alive && hand.scoping.is_some();
+        ui.camera_overlay = alive && minecraft_terrain::body_gear::camera_overlay(&inventory.slots);
         sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
