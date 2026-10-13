@@ -218,6 +218,27 @@ Commit: "Dragon fireballs fly smoothly for every player", the one after `5155547
   1. Shoot crystals and wait until the dragon flies at a player and shoots a fireball (it strafes the player it targets). Watch it from the other window too: the purple fireball flies in a smooth line and speeds up, with no back-and-forth. **Screenshot 1** of a fireball in flight from the friend window.
   2. Stand where it lands: the breath cloud appears where the fireball hits, in both windows.
 
+## A6. The creative inventory for a friend in creative mode
+
+### Commit 1: creative slot sets on the wire
+
+Commit: "Friends' creative slot changes reach the host and are checked like vanilla", the one after `6ef71048` (A3 commit 2).
+
+- **Cause** (as in the brief, re-checked at `6ef71048`): a friend had no way to send a creative slot change. `ToServer` had nothing like vanilla's `ServerboundSetCreativeModeSlotPacket`, and `read_inbox` (`render_anim/src/minecraft_host.rs`) and `MenuInput` (`minecraft_survival/src/menus.rs`) had no creative input. The server-side check already existed (`minecraft_survival::creative::set_slot`).
+- **Vanilla 26.3** (`handleSetCreativeModeSlot`): nothing unless the player has infinite materials (`abilities.instabuild`); slot 1..=45 of the inventory menu; the stack empty or at most its max stack size; a known, enabled item; a drop is slot -1. No op check.
+- **Changed:**
+  - `minecraft_net/src/messages.rs`: `pub enum CreativeTarget { Menu(u8), Carried, Drop }` and `ToServer::CreativeSlot { slot, stack: Option<Nbt> }`, appended at the end of `ToServer`. **`PROTOCOL` 3 -> 4** (the only bump in this track; track B bumps 3 -> 4 too, so the second merge takes 5 and renumbers its codec test index). An older friend is refused with the usual version message.
+  - `minecraft_survival/src/menus.rs`: `MenuInput::Creative { slot, stack }`, in the same per-friend queue as clicks, renames and closes, so a creative set and a click sent in one host tick apply in the order sent. `take_inputs` gains `known: &dyn Fn(&str) -> bool`. A creative input (`creative_set`) is ignored while the player is dead; the Nbt is decoded with `views::view_stack` against the player's recipe book, and an Nbt that does not decode is ignored (never turned into a clear); then `creative::set_slot` on that friend's `Player` checks game mode, slot, item and count. `Ok(Some(drop))` goes to `clicked.thrown`, which `friend_menus` already tosses from the friend's eye. A refusal writes one debug line and changes nothing.
+  - `render_anim/src/minecraft_players.rs` `friend_menus`: passes `known`, the same closure as the host's (`globals.chat.registries().items`).
+  - `render_anim/src/minecraft_host.rs` `read_inbox`: `ToServer::CreativeSlot` pushes `MenuInput::Creative` to that friend's session (`MENU_INPUTS = 256` caps the queue).
+  - Replication back needs nothing new: slots 0-40 go out in `PlayerView.slots`, the cursor and the 2x2 grid in the inventory menu's `MenuSlots`.
+- **Tests:**
+  - `minecraft_net` `codec::tests::every_message_to_the_server_round_trips`: index 12, `seen = [false; 13]`, samples `Menu(36)` with a stack, `Carried` with none, `Drop` with a stack.
+  - `minecraft_survival` `menus::tests`: `a_creative_friends_slot_set_reaches_their_inventory` (Menu(36) stone x64 lands in slot 0, Menu(5) a diamond helmet in slot 39, a Carried set goes out as the inventory menu's new carried), `a_survival_or_spectator_friends_creative_sets_are_refused` (survival, adventure, spectator), `creative_sets_refuse_unknown_items_bad_slots_and_overfull_stacks` (unknown id, Menu(0), Menu(46), 65 stone, 2 swords with `max_stack_size` 1, an `iw4:weapon/` stack refused by `known`, undecodable Nbt never clears a slot), `a_creative_drop_is_thrown_not_stored`, `creative_sets_and_clicks_apply_in_the_order_sent` (Carried torch x16, then a click on slot 3: the torch is in slot 3 and the cursor is empty), `a_dead_friends_creative_set_is_ignored`.
+  - Run: `test -p minecraft_net --locked` (15 passed), `test -p minecraft_survival --locked` (600 passed), `check -p launcher --locked`.
+- **Owner's test steps:** nothing visible yet; the friend's game sends creative sets from commit 2. Both windows must run this build (protocol 4): an older build on either side is refused at join with the version message. A friend in survival plays exactly as before.
+- **For track C:** the friend path checks items with the same `known` closure as the host, built in `friend_menus` from `globals.chat.registries().items`. When guns become real items, change `known` in both places (`minecraft_world.rs` near `creative.prepare` and `minecraft_players.rs` `friend_menus`).
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
@@ -230,6 +251,8 @@ Commit: "Dragon fireballs fly smoothly for every player", the one after `5155547
 
 - **A3 dragon:** every window draws the dragon from its own client copy (vanilla's tracker and 3-step interpolation on the client's ticks), while the hit boxes, `end_on_ray` and the entity lookups stay on the host's newest view. So the drawn dragon trails the host's hit boxes by about 1.5 to 3 ticks, the same rule as every other mob in the fork. That is not vanilla, where the client's parts follow the client's body; it is kept because hits are judged on the host. `DragonView.history` is still sent (the drawn dragon uses it only until its first client tick), so there is no protocol bump. The flap sound and the growls follow the client ticks, as in vanilla's client `aiStep`, and no longer the received snapshots.
 - **A3 fireballs:** the drawn fireball is moved by vanilla's own motion step (acceleration 0.1 along its velocity, inertia 0.95) from the host's last velocity, not by the last velocity alone as the brief said, because the dragon's fireballs accelerate from 0.1 to almost 1.9 blocks a tick and a constant velocity would fall behind. It snaps to the host only when the host is more than a block off its track within two ticks of travel, not when it is more than a block from the drawn point: a fast fireball is up to 1.9 blocks from the host's point just from the frame timing, and snapping on that would bring the stutter back. When the host's fireball hits something, the drawn one can fly on for a tick or two until the next frame removes it.
+
+- **A6 wire:** the creative target has a `Carried` variant, which vanilla does not have (vanilla keeps the creative cursor on the client). The fork keeps every cursor on the server (`inventory.cursor`), so the friend sets its creative cursor on the host like any other slot. A refused or undecodable set changes nothing and is not answered, as in vanilla (which only logs); the friend's screen shows the host's state on the next change. **Protocol: 4** in this track; the second of tracks A and B to merge takes 5.
 
 ## State doc changes
 

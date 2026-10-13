@@ -1839,12 +1839,15 @@ pub(crate) fn friend_menus(
         return lines;
     };
     let books = minecraft_survival::menus::Books::of(&world.globals.data);
+    let globals = world.globals;
+    let known = |id: &str| globals.chat.registries().items.iter().any(|item| item == id);
     let mut clicked = minecraft_survival::menus::take_inputs(
         player,
         containers,
         books,
         inputs,
         world.language,
+        &known,
         || entities.random_float(),
     );
     let Some(ps) = ps else {

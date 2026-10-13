@@ -214,6 +214,7 @@ mod tests {
             ToServer::CreditsDone => 9,
             ToServer::Lectern { .. } => 10,
             ToServer::LeaveBed => 11,
+            ToServer::CreativeSlot { .. } => 12,
         }
     }
 
@@ -300,6 +301,18 @@ mod tests {
                 button: None,
             },
             ToServer::LeaveBed,
+            ToServer::CreativeSlot {
+                slot: CreativeTarget::Menu(36),
+                stack: Some(Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0])),
+            },
+            ToServer::CreativeSlot {
+                slot: CreativeTarget::Carried,
+                stack: None,
+            },
+            ToServer::CreativeSlot {
+                slot: CreativeTarget::Drop,
+                stack: Some(Nbt(vec![10, 0, 0, 0])),
+            },
         ]
     }
 
@@ -585,7 +598,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 12];
+        let mut seen = [false; 13];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);

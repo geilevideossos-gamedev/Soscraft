@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 3;
+pub const PROTOCOL: u16 = 4;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -54,6 +54,17 @@ pub enum ToServer {
         button: Option<i32>,
     },
     LeaveBed,
+    CreativeSlot {
+        slot: CreativeTarget,
+        stack: Option<Nbt>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CreativeTarget {
+    Menu(u8),
+    Carried,
+    Drop,
 }
 
 impl ToServer {

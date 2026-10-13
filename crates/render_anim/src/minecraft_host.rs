@@ -168,6 +168,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
                     host.leave_beds.push(client);
                 }
             }
+            Ok(ToServer::CreativeSlot { slot, stack }) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    session.push_menu(MenuInput::Creative { slot, stack });
+                }
+            }
             Ok(_) => {}
             Err(error) => {
                 diag::warn!(
