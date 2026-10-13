@@ -167,6 +167,44 @@ fn sword(data: &GameData) -> ItemStack {
     sword
 }
 
+fn gun(data: &GameData) -> ItemStack {
+    let mut gun = stack(data, "iw4l:m4", 1);
+    gun.components = Some(json!({
+        "minecraft:custom_data": {"iw4l": {"attachments": ["reflex"], "clip": 27}}
+    }));
+    gun
+}
+
+fn check_gun_kinds(item: &Tag, what: &str) {
+    assert_eq!(
+        item.get("id").and_then(Tag::as_str),
+        Some("minecraft:carrot_on_a_stick"),
+        "{what}"
+    );
+    let components = item.get("components").unwrap();
+    expect_kinds(
+        components,
+        &[
+            ("minecraft:custom_data", "compound"),
+            ("minecraft:item_name", "compound"),
+        ],
+        what,
+    );
+    expect_kinds(
+        components
+            .get("minecraft:custom_data")
+            .and_then(|custom| custom.get("iw4l"))
+            .unwrap(),
+        &[("attachments", "list"), ("clip", "int"), ("id", "string")],
+        what,
+    );
+    expect_kinds(
+        components.get("minecraft:item_name").unwrap(),
+        &[("fallback", "string"), ("translate", "string")],
+        what,
+    );
+}
+
 fn held(slots: &[Option<ItemStack>]) -> Vec<(usize, String, u8)> {
     slots
         .iter()
@@ -182,6 +220,8 @@ fn fill_player(player: &mut Player, data: &GameData) {
     let slots = &mut player.inventory.slots;
     slots.fill(None);
     slots[0] = Some(sword(data));
+    slots[1] = Some(gun(data));
+    slots[2] = Some(stack(data, "iw4l:frag_grenade", 16));
     slots[4] = Some(stack(data, "minecraft:golden_apple", 3));
     slots[9] = Some(stack(data, "minecraft:raw_iron", 3));
     slots[10] = Some(stack(data, "minecraft:coal", 2));
@@ -324,6 +364,29 @@ fn check_player_file(path: &Path) {
             ("minecraft:enchantments", "compound"),
         ],
         "the sword's components",
+    );
+    let gun = list_kinds(file.get("Inventory").unwrap(), "Inventory")
+        .iter()
+        .find(|item| item.get("Slot") == Some(&Tag::Byte(1)))
+        .unwrap();
+    check_gun_kinds(gun, "the gun in the player file");
+    let grenades = list_kinds(file.get("Inventory").unwrap(), "Inventory")
+        .iter()
+        .find(|item| item.get("Slot") == Some(&Tag::Byte(2)))
+        .unwrap();
+    assert_eq!(
+        grenades.get("id").and_then(Tag::as_str),
+        Some("minecraft:poisonous_potato")
+    );
+    expect_kinds(
+        grenades.get("components").unwrap(),
+        &[
+            ("!minecraft:consumable", "compound"),
+            ("!minecraft:food", "compound"),
+            ("minecraft:custom_data", "compound"),
+            ("minecraft:item_name", "compound"),
+        ],
+        "the grenades' components",
     );
     let equipment = file.get("equipment").unwrap();
     let names: Vec<&str> = equipment
@@ -538,6 +601,8 @@ fn a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types() {
     containers.quick_move_from_player(&chest, &mut player.inventory, 11);
     player.inventory.cursor = Some(sword(data));
     containers.click(&chest, &mut player.inventory, 13, false, false, 0.0);
+    player.inventory.cursor = Some(gun(data));
+    containers.click(&chest, &mut player.inventory, 14, false, false, 0.0);
     player.inventory.cursor = Some(stack(data, "minecraft:bread", 6));
     containers.click(&chest, &mut player.inventory, 26, false, false, 0.0);
     containers.quick_move_from_player(&furnace, &mut player.inventory, 9);
@@ -634,6 +699,7 @@ fn a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types() {
         back.inventory.slots[0].as_ref().map(|s| &s.components),
         Some(&sword(data).components)
     );
+    assert_eq!(back.inventory.slots[1], Some(gun(data)));
     assert_eq!(back.selected, 4);
     assert_eq!(held(&back.ender), ender_slots);
     assert_eq!(back.mode, PlayerMode::new(GameMode::Survival));
@@ -655,10 +721,16 @@ fn a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types() {
     }
     let entities = &chunk.block_entities.entities;
     check_block_entities(&vanilla, &entities[&CHEST], &entities[&FURNACE]);
+    let chest_gun = list_kinds(entities[&CHEST].get("Items").unwrap(), "Items")
+        .iter()
+        .find(|item| item.get("Slot") == Some(&Tag::Byte(14)))
+        .unwrap();
+    check_gun_kinds(chest_gun, "the gun in the chest");
     let mut reloaded = Containers::default();
     reloaded.set_book(data.stations.clone());
     reloaded.load_chunk(&chunk, &data.recipes);
     assert_eq!(reloaded.cells(&chest), chest_cells);
+    assert_eq!(chest_cells[14], Some(gun(data)));
     let oven = reloaded.oven(FURNACE).unwrap();
     assert_eq!(oven.data(), cooking);
     assert_eq!(

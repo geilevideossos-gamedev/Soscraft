@@ -737,20 +737,58 @@ mod tests {
     }
 
     #[test]
-    fn guns_and_empty_stacks_are_not_saved() {
+    fn fork_items_are_saved_in_the_inventory_and_ender_chest_and_killstreak_ids_are_not() {
+        let mut gun = stack("iw4l:m4", 1);
+        gun.components = Some(json!({
+            "minecraft:custom_data": {"iw4l": {"attachments": ["reflex"], "clip": 27}}
+        }));
         let mut slots = vec![None; SLOTS];
         slots[0] = Some(crate::guns::weapon_item(7));
         slots[1] = Some(stack("minecraft:dirt", 0));
         slots[2] = Some(stack("minecraft:dirt", 2));
-        let entries = PlayerData {
+        slots[3] = Some(gun.clone());
+        slots[4] = Some(stack("iw4l:frag_grenade", 12));
+        let mut ender = vec![None; ENDER_SLOTS];
+        ender[5] = Some(stack("iw4l:rocket", 16));
+        ender[6] = Some(gun.clone());
+        let data = PlayerData {
             inventory: Some(slots),
+            ender: Some(ender),
             ..PlayerData::default()
-        }
-        .entries();
+        };
+        let entries = data.entries();
         let inventory = entries["Inventory"].as_list().unwrap();
-        assert_eq!(inventory.len(), 1);
-        assert_eq!(inventory[0].get("Slot"), Some(&Tag::Byte(2)));
+        let saved: Vec<(Option<&Tag>, Option<&str>)> = inventory
+            .iter()
+            .map(|entry| (entry.get("Slot"), entry.get("id").and_then(Tag::as_str)))
+            .collect();
+        assert_eq!(
+            saved,
+            [
+                (Some(&Tag::Byte(2)), Some("minecraft:dirt")),
+                (Some(&Tag::Byte(3)), Some("minecraft:carrot_on_a_stick")),
+                (Some(&Tag::Byte(4)), Some("minecraft:poisonous_potato")),
+            ]
+        );
         assert!(!entries.contains_key("equipment"));
+        let tag = data.merged(None);
+        let read = PlayerData::read(&tag, &RecipeBook::default());
+        let inventory = read.inventory.unwrap();
+        assert!(inventory[0].is_none(), "the killstreak mirror is not saved");
+        let back = inventory[3].as_ref().unwrap();
+        assert_eq!((&back.id, &back.components), (&gun.id, &gun.components));
+        let grenades = inventory[4].as_ref().unwrap();
+        assert_eq!(
+            (grenades.id.as_str(), grenades.count, &grenades.components),
+            ("iw4l:frag_grenade", 12, &None)
+        );
+        let ender = read.ender.unwrap();
+        let rockets = ender[5].as_ref().unwrap();
+        assert_eq!((rockets.id.as_str(), rockets.count), ("iw4l:rocket", 16));
+        assert_eq!(
+            ender[6].as_ref().map(|s| (&s.id, &s.components)),
+            Some((&gun.id, &gun.components))
+        );
     }
 
     #[test]
