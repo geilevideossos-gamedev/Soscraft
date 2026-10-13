@@ -265,6 +265,7 @@ pub(crate) enum Finish {
 
 pub(crate) fn finish_damage(
     world: &mut FrameWorld,
+    tick: Tick,
     id: ClientId,
     amount: i32,
     dir: Option<[f32; 3]>,
@@ -286,7 +287,7 @@ pub(crate) fn finish_damage(
     if ps.health > 0 {
         return Finish::Hurt;
     }
-    if authoritative && crate::voxel::spend_death_protection(id.0) {
+    if authoritative && crate::voxel::spend_death_protection(id.0, tick) {
         ps.health = 1;
         return Finish::Hurt;
     }

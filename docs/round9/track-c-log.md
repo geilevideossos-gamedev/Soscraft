@@ -1217,9 +1217,59 @@ Commit: the one after `54504900`. **Not vanilla** (WEAPONS.md 11.1, 11.2).
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:fmj*2,iw4l:barrett,iw4l:sniper_rounds*16,iw4l:rpd,iw4l:lmg_ammo*64,minecraft:crafting_table,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
 
+## C14 The totem's grace
+
+### 1. A popped totem of undying turns bullets and explosions away for four seconds
+
+Commit: the one after `415a85cb`. **Not vanilla** (WEAPONS.md 12).
+
+- **Changed:**
+  - `sim/src/voxel.rs`: `spend_death_protection(client, tick)` also records the grace until `tick + TOTEM_GRACE_TICKS` (80 sim ticks of 50 ms) in `TOTEM_GRACE`; the crate's `totem_grace(client, tick)`; cleared in `deactivate`.
+  - `sim/src/script_player.rs`: `finish_damage` takes the tick and passes it to `spend_death_protection`; its callers `script/host/natives/player.rs` (`finishplayerdamage`) and the two `damage/height_bands.rs` tests pass theirs (the band tests' assertions are unchanged).
+  - `sim/src/gun_damage.rs`: `GunHit::turned_by_totem` (bullets and explosions); `Victim.totem_grace`; `verdict` refuses a bullet or explosion gun hit while the sim grace or the mirrored `GunGuard.totem_grace` runs, so GSC is not called, health does not change and no hit marker shows. The knife and impacts are not covered. `script/host/players.rs` `gun_verdict` reads the sim grace at the hit's tick.
+  - `minecraft_survival/src/survival.rs`: `Survival.totem_grace_until`, set by `protect` to the Minecraft tick + `TOTEM_GRACE_TICKS` (80); `totem_grace()`; `hurt` refuses a `DamageCause::is_explosion()` hit while it runs (knockback still comes through the level's `players_pushed`); `respawn` clears it (it rebuilds the state); `/kill` and the void use their own paths and are unaffected. `gun_armor` mirrors it as `GunGuard.totem_grace`.
+  - `minecraft_survival/src/death.rs`: `IS_EXPLOSION` (the 26.3 jar's `#minecraft:is_explosion` tag: fireworks, explosion, player_explosion, bad_respawn_point, read from the jar) and `DamageCause::is_explosion`; a new `DamageCause::Explosion` (`minecraft:explosion`, message `explosion`) for a blast with no source entity.
+  - `docs/WEAPONS.md` 12: what was built and the sourceless blast change.
+- **Found:** TNT and end crystal blasts reach a player with no source entity, and `DamageCause::mob` turned them into `Generic`, so they were not explosions at all ("<name> died", only plain Protection). They are now `DamageCause::Explosion`, vanilla's `explosion(null, null)`: the grace covers them, the death message is vanilla's "<name> blew up", and Blast Protection softens them like vanilla. A creeper (with a source) stays `explosion.player`, a bed or anchor `badRespawnPoint`.
+- **Tests:**
+  - `sim` `gun_damage::tests::a_spent_totem_turns_guns_away_for_four_seconds` (a pop at tick 100: bullets, headshots, grenade splash and projectiles refused at 100 and 179, a hit lands at 180; another client is not covered; the mirrored flag refuses at 500; MW2 maps unchanged; one pop reported) and `a_knife_still_hurts_during_the_grace` (melee and impact land halved, a bullet is refused, Minecraft damage unchanged); `voxel::tests::a_totem_saves_one_death_and_reports_it` updated for the tick.
+  - `minecraft_survival` `survival::tests::a_popped_totem_turns_explosions_away_for_four_seconds` (a creeper, a sourceless blast and a bad respawn point refused with health and absorption kept; mob melee and a fall still hurt; still refused after 79 ticks, lands after 80; the mirrored flag follows), `the_totem_grace_ends_on_respawn`, `death::tests::explosions_are_the_vanilla_is_explosion_types`.
+  - `test -p sim` (152) and `test -p minecraft_survival` (694 and `vanilla_world`) green, `check -p launcher` green.
+- **Decisions:**
+  - **Two clocks, as designed:** the sim grace covers the rest of the same tick (the other shotgun pellets, a second grenade) before the host's next frame mirrors the Minecraft one. Under `/tick freeze` the Minecraft clock stops while the sim clock runs on, so the sim grace ends after 4 s while the mirrored one lasts until the freeze ends: accepted.
+  - **The grace is checked before the guard.** A refused gun hit needs no armour; a client with a sim grace always has a guard anyway.
+  - **A death during the grace (a knife, a fall)** respawns without the Minecraft grace; the sim grace keeps its last ticks after such a respawn, which needs a death and a respawn inside 4 s and is left as is.
+  - **Sourceless blasts are vanilla's `explosion`** (above). A TNT lit by a player is told as "blew up" too: the vendored level keeps no igniter.
+- **Owner's test steps** (two windows with `scripts\mp-local.ps1`, survival, pvp on; host H and friend F, both with the kit below):
+  1. H unarmoured with a totem in the offhand. F shoots H down to 2-3 hearts, then holds the trigger on H: the totem pops (it rises, glitter, sound), and for about 4 s H's hearts do not drop and F sees no hit markers. Then the absorption hearts go first. **Screenshot 1** (during the 4 s, F visibly firing).
+  2. H takes a new totem into the offhand and stands next to TNT, F lights it (flint and steel) and shoots H down just before it explodes: H is pushed but loses no hearts. **Screenshot 2.**
+  3. Right after a pop, F knifes H (melee): H takes damage.
+  4. Right after a pop, F throws a frag at H's feet: no damage, the blast still pushes.
+  5. Swap roles: F's totem protects F the same way. **Screenshot 3** (F's window).
+  6. Without a totem, H stands next to TNT that explodes: the death message is "H blew up".
+- **Kit** (12 stacks, for each player):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:frag_grenade*16,minecraft:totem_of_undying*4,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cooked_beef*32
+```
+
+## Combined kit for group damage-totem
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:fmj*2,iw4l:barrett,iw4l:sniper_rounds*16,iw4l:rpd,iw4l:lmg_ammo*64,iw4l:frag_grenade*16,minecraft:crafting_table,minecraft:leather_chestplate,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:diamond_helmet,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying*4,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:golden_apple*16,minecraft:zombie_spawn_egg*2,minecraft:cooked_beef*32
+```
+
+## Combined kit from the brief (C11 to C14)
+
+25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.
+
+```
+IW4L_MINECRAFT_KIT=iw4l:barrett,iw4l:usp,iw4l:usp,iw4l:sniper_rounds*16,iw4l:semtex*16,iw4l:tactical_insertion*2,iw4l:fmj,iw4l:red_dot_sight,minecraft:crafting_table,minecraft:grindstone,minecraft:chest*2,minecraft:iron_ingot*64,minecraft:iron_block*4,minecraft:copper_ingot*32,minecraft:gunpowder*64,minecraft:iron_nugget*32,minecraft:tripwire_hook*8,minecraft:redstone*16,minecraft:repeater*4,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:totem_of_undying*2,minecraft:white_bed
+```
+
 ## Vendored minecraftoss files
 
-Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none.
+Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none. Group damage-totem patched and added none.
 
 ## Protocol
 
@@ -1274,3 +1324,22 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `decisions.md` (Not vanilla): "MW2 weapon damage to players in Minecraft worlds is halved and armour takes twice vanilla's share (armour and Protection together at most 80 %, Resistance after), so iron, diamond and netherite all reach the ceiling against light rounds; bots and MW2 maps are unchanged."
 - `MINECRAFT-SURVIVAL.md`, after the gun damage sentence: "LMGs pierce a quarter of that protection, snipers half, and the FMJ attachment adds a quarter (at most three quarters), so heavy guns stay the answer to diamond and netherite."
 - `decisions.md` (Not vanilla): "LMGs (0.25), snipers (0.5) and FMJ (+0.25, at most 0.75) pierce part of a player's armour and enchantment protection against guns."
+- `MINECRAFT-SURVIVAL.md` line 55 (the totem's activation), added: "A popped totem, from Minecraft or MW2 damage, also turns away MW2 bullets and explosions and Minecraft explosions (TNT, creepers, end crystals, fireworks, beds and anchors) for 4 s: no hearts are lost and the shooter sees no hit marker, and a blast still pushes. The knife, Minecraft melee, arrows, fire, falls, the void and `/kill` still hurt. Respawning ends it. Not vanilla."
+- `MINECRAFT-SURVIVAL.md`, the death messages line: "A blast with no source entity (TNT, end crystals) is vanilla's `minecraft:explosion`: \"<name> blew up\", softened by Blast Protection."
+- `MULTIPLAYER.md` section 13, after the gun damage sentence: "Each player's totem grace is mirrored the same way, so a friend's popped totem turns the host's bullets and grenades away for 4 s and the other way round."
+- `MULTIPLAYER.md` section 20, "PvP without guns": drop "MW2 damage through Minecraft armour" (built in round 9).
+- `decisions.md` (Not vanilla): "A popped totem of undying turns MW2 bullets and explosions and Minecraft explosions away for 80 ticks (4 s), on the sim clock and the Minecraft clock; knockback stays, the knife and other damage still hurt. Vanilla has only the 20-tick hurt cooldown."
+
+### By line, as the brief names them
+
+The entries above, gathered by the lines and sections the brief names (the line numbers are those of `MINECRAFT-SURVIVAL.md` and `MULTIPLAYER.md` at `c27f9bc9`):
+
+- `MINECRAFT-SURVIVAL.md` line 55 (totem): the totem grace sentence above.
+- `MINECRAFT-SURVIVAL.md` line 59 ("MW2 guns stay in their hotbar slots"), replaced by: "Guns, ammo, attachments and grenades drop like any item, with their loaded rounds; the grenade slots drop after the saddle; `keep_inventory` keeps them. Killstreak items vanish on death."
+- `MINECRAFT-SURVIVAL.md` line 134 ("Guns sit in the hotbar with unlimited ammo"), replaced by the two guns-section entries above: MW2 holds exactly the fork guns on the hotbar, in hotbar order (the hotbar half), and a gun's reserve is its ammo items, taken on reload (the ammo half); then the gun damage sentence and its pierce sentence (round 9 group damage-totem).
+- `MINECRAFT-SURVIVAL.md` line 350 ("MW2 guns ... not saved"), replaced by the saving entry above: fork items are saved as a vanilla `carrot_on_a_stick` or uneatable `poisonous_potato` with `custom_data.iw4l`; the grenade slots under `iw4l_grenades`; killstreak items and the tactical insertion flare are never saved.
+- `MINECRAFT-SURVIVAL.md` line 374 ("For everyone"): drop "MW2 damage through Minecraft armour"; the gun damage sentence goes into the MW2 integration section after line 134.
+- `MINECRAFT-SURVIVAL.md` line 398 ("GUI gaps"): drop "recipe book"; the recipe book entry above describes it.
+- `MULTIPLAYER.md` section 10.3, replaced by: "Guns are fork items (`iw4l:` ids) in each player's inventory, saved and sent in their vanilla carrier form. The host settles every player's guns through the same function (`settle_arsenal`): MW2 holds exactly the hotbar guns, the selected slot drives the MW2 weapon through `weapon_request` for host and friends (with the \"needs sky\" refusal), reloads and throws take the player's own items, and killstreak weapons stay MW2 mirrors that are never saved. `SelectSlot` from the friend sets `selected`; the host changes it only on an MW2-initiated switch and sends it in `PlayerView`."
+- `MULTIPLAYER.md` section 13, the "Armour" bullet, replaced by the gun damage and totem grace sentences above.
+- `MULTIPLAYER.md` section 20: drop "MW2 damage through Minecraft armour" from "PvP without guns".

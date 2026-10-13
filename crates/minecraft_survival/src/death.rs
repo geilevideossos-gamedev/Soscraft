@@ -85,12 +85,20 @@ pub enum DamageCause {
     Kill,
     OutOfWorld,
     BadRespawnPoint,
+    Explosion,
     Mob {
         id: u64,
         type_id: &'static str,
         attack: MobAttack,
     },
 }
+
+pub const IS_EXPLOSION: [&str; 4] = [
+    "minecraft:fireworks",
+    "minecraft:explosion",
+    "minecraft:player_explosion",
+    "minecraft:bad_respawn_point",
+];
 
 impl DamageCause {
     pub fn mob(
@@ -114,6 +122,7 @@ impl DamageCause {
                 type_id: OWNERLESS_ARROW,
                 attack,
             },
+            (None, _) if attack == MobAttack::Explosion => Self::Explosion,
             _ => Self::Generic,
         }
     }
@@ -148,6 +157,7 @@ impl DamageCause {
             Self::Kill => "minecraft:generic_kill",
             Self::OutOfWorld => "minecraft:out_of_world",
             Self::BadRespawnPoint => "minecraft:bad_respawn_point",
+            Self::Explosion => "minecraft:explosion",
             Self::Mob { attack, .. } => match attack {
                 MobAttack::Melee => "minecraft:mob_attack",
                 MobAttack::Arrow => "minecraft:arrow",
@@ -179,6 +189,7 @@ impl DamageCause {
             Self::Kill => "genericKill",
             Self::OutOfWorld => "outOfWorld",
             Self::BadRespawnPoint => "badRespawnPoint",
+            Self::Explosion => "explosion",
             Self::Mob {
                 attack: MobAttack::Melee | MobAttack::MobProjectile,
                 ..
@@ -196,6 +207,10 @@ impl DamageCause {
                 ..
             } => "fireball",
         }
+    }
+
+    pub fn is_explosion(self) -> bool {
+        IS_EXPLOSION.contains(&self.damage_type())
     }
 
     pub fn burns(self) -> bool {
@@ -1363,5 +1378,29 @@ mod tests {
                 keep_inventory: true,
             })
         );
+    }
+
+    #[test]
+    fn explosions_are_the_vanilla_is_explosion_types() {
+        assert!(DamageCause::mob(MobAttack::Explosion, Some(7), Some("minecraft:creeper")).is_explosion());
+        let sourceless = DamageCause::mob(MobAttack::Explosion, None, None);
+        assert_eq!(sourceless, DamageCause::Explosion, "TNT and crystals");
+        assert!(sourceless.is_explosion());
+        assert_eq!((sourceless.damage_type(), sourceless.message_id()), ("minecraft:explosion", "explosion"));
+        assert_eq!(IS_EXPLOSION.len(), 4);
+        assert!(DamageCause::BadRespawnPoint.is_explosion(), "beds and anchors");
+        for cause in [
+            DamageCause::Generic,
+            DamageCause::Fall,
+            DamageCause::Kill,
+            DamageCause::OutOfWorld,
+            DamageCause::Magic,
+            DamageCause::Hazard(Hazard::Lava),
+            DamageCause::mob(MobAttack::Melee, Some(7), Some("minecraft:zombie")),
+            DamageCause::mob(MobAttack::Arrow, Some(7), Some("minecraft:skeleton")),
+            DamageCause::mob(MobAttack::Fireball, Some(7), Some("minecraft:ghast")),
+        ] {
+            assert!(!cause.is_explosion(), "{cause:?}");
+        }
     }
 }

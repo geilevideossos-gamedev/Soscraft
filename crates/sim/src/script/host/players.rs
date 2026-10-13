@@ -37,7 +37,7 @@ pub(crate) fn player_damage(world: &mut World, tick: crate::Tick, hit: &crate::s
     }
     let minecraft = crate::voxel::active() && !runtime.minecraft_hit;
     let scaled;
-    let hit = match gun_verdict(world, minecraft, hit) {
+    let hit = match gun_verdict(world, tick, minecraft, hit) {
         crate::gun_damage::Verdict::Unchanged => hit,
         crate::gun_damage::Verdict::Refused => return,
         crate::gun_damage::Verdict::Amount(amount) => {
@@ -83,6 +83,7 @@ pub(crate) fn player_damage(world: &mut World, tick: crate::Tick, hit: &crate::s
 
 fn gun_verdict(
     world: &mut World,
+    tick: crate::Tick,
     minecraft: bool,
     hit: &crate::script_player::Hit,
 ) -> crate::gun_damage::Verdict {
@@ -97,6 +98,7 @@ fn gun_verdict(
     let victim = crate::gun_damage::Victim {
         guard: crate::voxel::gun_guard(hit.victim.0),
         max_health,
+        totem_grace: crate::voxel::totem_grace(hit.victim.0, tick),
     };
     let pierce = crate::voxel::pierce(hit.weapon);
     crate::gun_damage::verdict(minecraft, hit.means, hit.amount, pierce, victim)

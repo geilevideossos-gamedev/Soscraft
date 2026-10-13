@@ -452,6 +452,9 @@ pub fn take_team_switches() -> Vec<u32> {
 
 static DEATH_PROTECTED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 static TOTEM_POPS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+static TOTEM_GRACE: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
+
+pub const TOTEM_GRACE_TICKS: u32 = 80;
 
 pub fn set_death_protected(client: u32, protected: bool) {
     if let Ok(mut clients) = DEATH_PROTECTED.lock() {
@@ -462,7 +465,7 @@ pub fn set_death_protected(client: u32, protected: bool) {
     }
 }
 
-pub(crate) fn spend_death_protection(client: u32) -> bool {
+pub(crate) fn spend_death_protection(client: u32, tick: crate::Tick) -> bool {
     let spent = DEATH_PROTECTED.lock().is_ok_and(|mut clients| {
         let before = clients.len();
         clients.retain(|&c| c != client);
@@ -471,7 +474,15 @@ pub(crate) fn spend_death_protection(client: u32) -> bool {
     if spent && let Ok(mut pops) = TOTEM_POPS.lock() {
         pops.push(client);
     }
+    if spent && let Ok(mut grace) = TOTEM_GRACE.lock() {
+        grace.retain(|(c, _)| *c != client);
+        grace.push((client, tick.0.saturating_add(TOTEM_GRACE_TICKS)));
+    }
     spent
+}
+
+pub(crate) fn totem_grace(client: u32, tick: crate::Tick) -> bool {
+    TOTEM_GRACE.lock().is_ok_and(|grace| grace.iter().any(|&(c, until)| c == client && tick.0 < until))
 }
 
 pub fn take_totem_pops() -> Vec<u32> {
@@ -923,6 +934,9 @@ pub fn deactivate() {
     }
     if let Ok(mut guards) = GUN_GUARDS.lock() {
         guards.clear();
+    }
+    if let Ok(mut grace) = TOTEM_GRACE.lock() {
+        grace.clear();
     }
     if let Ok(mut published) = ARSENALS.lock() {
         published.clear();
@@ -3080,15 +3094,16 @@ mod tests {
     #[test]
     fn a_totem_saves_one_death_and_reports_it() {
         let client = 7_000_001;
-        assert!(!spend_death_protection(client));
+        let tick = crate::Tick(10);
+        assert!(!spend_death_protection(client, tick));
         set_death_protected(client, true);
         set_death_protected(client, true);
-        assert!(spend_death_protection(client));
-        assert!(!spend_death_protection(client));
+        assert!(spend_death_protection(client, tick));
+        assert!(!spend_death_protection(client, tick));
         assert_eq!(take_totem_pops().iter().filter(|&&c| c == client).count(), 1);
         set_death_protected(client, true);
         set_death_protected(client, false);
-        assert!(!spend_death_protection(client));
+        assert!(!spend_death_protection(client, tick));
     }
 
     #[test]

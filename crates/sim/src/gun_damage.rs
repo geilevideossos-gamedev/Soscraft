@@ -24,6 +24,12 @@ pub enum GunHit {
     Melee,
 }
 
+impl GunHit {
+    pub fn turned_by_totem(self) -> bool {
+        matches!(self, Self::Bullet | Self::Explosion)
+    }
+}
+
 pub fn gun_hit(means: &str) -> Option<GunHit> {
     match means {
         "MOD_PISTOL_BULLET" | "MOD_RIFLE_BULLET" | "MOD_HEAD_SHOT" | "MOD_EXPLOSIVE_BULLET" => {
@@ -99,6 +105,7 @@ pub(crate) enum Verdict {
 pub(crate) struct Victim {
     pub(crate) guard: Option<GunGuard>,
     pub(crate) max_health: i32,
+    pub(crate) totem_grace: bool,
 }
 
 pub(crate) fn verdict(
@@ -111,7 +118,14 @@ pub(crate) fn verdict(
     if !minecraft || amount <= 0 {
         return Verdict::Unchanged;
     }
-    let (Some(kind), Some(guard)) = (gun_hit(means), victim.guard) else {
+    let Some(kind) = gun_hit(means) else {
+        return Verdict::Unchanged;
+    };
+    let guard_grace = victim.guard.is_some_and(|guard| guard.totem_grace);
+    if kind.turned_by_totem() && (victim.totem_grace || guard_grace) {
+        return Verdict::Refused;
+    }
+    let Some(guard) = victim.guard else {
         return Verdict::Unchanged;
     };
     match gun_damage_to_player(amount, victim.max_health, &guard, pierce, kind) {
@@ -155,6 +169,7 @@ mod tests {
         Victim {
             guard: Some(guard),
             max_health: 100,
+            totem_grace: false,
         }
     }
 
@@ -392,6 +407,90 @@ mod tests {
         assert_eq!(
             gun_damage_to_player(105, 100, &immune, 0.75, GunHit::Bullet),
             0
+        );
+    }
+
+    #[test]
+    fn a_spent_totem_turns_guns_away_for_four_seconds() {
+        let client = 7_000_101;
+        crate::voxel::set_death_protected(client, true);
+        assert!(crate::voxel::spend_death_protection(
+            client,
+            crate::Tick(100)
+        ));
+        let at = |tick: u32| Victim {
+            totem_grace: crate::voxel::totem_grace(client, crate::Tick(tick)),
+            ..victim(GunGuard::default())
+        };
+        for tick in [100, 179] {
+            for means in [
+                "MOD_RIFLE_BULLET",
+                "MOD_HEAD_SHOT",
+                "MOD_GRENADE_SPLASH",
+                "MOD_PROJECTILE",
+            ] {
+                assert_eq!(
+                    verdict(true, means, 30, 0.0, at(tick)),
+                    Verdict::Refused,
+                    "{tick} {means}"
+                );
+            }
+        }
+        assert_eq!(
+            verdict(true, "MOD_RIFLE_BULLET", 30, 0.0, at(180)),
+            Verdict::Amount(15)
+        );
+        assert_eq!(
+            verdict(true, "MOD_GRENADE_SPLASH", 150, 0.0, at(180)),
+            Verdict::Amount(75)
+        );
+        assert!(
+            !crate::voxel::totem_grace(7_000_102, crate::Tick(100)),
+            "only the popped player"
+        );
+        let mirrored = victim(GunGuard {
+            totem_grace: true,
+            ..GunGuard::default()
+        });
+        assert!(!crate::voxel::totem_grace(client, crate::Tick(500)));
+        assert_eq!(
+            verdict(true, "MOD_RIFLE_BULLET", 30, 0.0, mirrored),
+            Verdict::Refused
+        );
+        assert_eq!(
+            verdict(false, "MOD_RIFLE_BULLET", 30, 0.0, mirrored),
+            Verdict::Unchanged
+        );
+        assert_eq!(
+            crate::voxel::take_totem_pops()
+                .iter()
+                .filter(|&&c| c == client)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_knife_still_hurts_during_the_grace() {
+        let graced = Victim {
+            totem_grace: true,
+            ..victim(GunGuard::default())
+        };
+        assert_eq!(
+            verdict(true, "MOD_MELEE", 30, 0.0, graced),
+            Verdict::Amount(15)
+        );
+        assert_eq!(
+            verdict(true, "MOD_IMPACT", 30, 0.0, graced),
+            Verdict::Amount(15)
+        );
+        assert_eq!(
+            verdict(true, "MOD_RIFLE_BULLET", 30, 0.0, graced),
+            Verdict::Refused
+        );
+        assert_eq!(
+            verdict(true, crate::script_player::MINECRAFT_MEANS, 30, 0.0, graced),
+            Verdict::Unchanged
         );
     }
 
