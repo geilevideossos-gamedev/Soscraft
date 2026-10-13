@@ -1314,6 +1314,26 @@ Commit: the one after `7b15736d`. Final verification of the track: `clippy --all
 - `test -p` on all twelve crates green (console 52, frame 28, hud 174, minecraft_commands 140, minecraft_net 18, minecraft_survival 694 + 1, minecraft_terrain 1204 with 3 ignored, render_anim 174, sim 154, ui 9, weapon_iw4 1, minecraftoss-player 198), `check -p launcher` green.
 - No behaviour change, no new test, no owner steps or kit. The `minecraftoss-player` tests need the stand-in `third_party/scenarios/survival` files that `scripts\full-suite.ps1` creates; they were made for the run and removed again.
 
+## Second review of the whole track
+
+### 1. A thrown copy's clip is not written onto another copy of the same gun
+
+Commit: the one after `114a788b`. Fixes `settle_arsenal` from the group arsenal.
+
+- **Defect:** when a `Spent::Clip` report arrived after its bound copy had left the hotbar slot (thrown with Q while firing, moved to the cursor or a chest, or moved higher while another copy sat lower), `settle_arsenal` wrote the clip onto the first hotbar copy of the same MW2 weapon. With two M4s (thrown copy 25 rounds, other copy 0) the other copy got 23 rounds: rounds were duplicated, or lost in the reverse case.
+- **Changed:** `minecraft_survival/src/guns.rs` `settle_arsenal` falls back only to a hotbar slot whose gun still has exactly the clips last bound for that weapon (the copy that moved); otherwise the report is dropped and the next binding reloads MW2 from the copy that is still there.
+- **Tests:** `minecraft_survival` `guns::tests::a_thrown_copy_s_clip_is_not_written_onto_the_other_copy` (the copy left behind keeps 0 and is rebound with 0; a lone copy moved within the hotbar still takes its report). `test -p minecraft_survival` and `check -p launcher` green.
+- **Owner's test steps** (survival, kit below):
+  1. `/clear @s iw4l:rifle_ammo`, so nothing reloads. Put the two kit M4s on hotbar slots 1 and 2 if the loadout took those slots.
+  2. Select the first M4 and fire it empty: its item bar shows one red pixel.
+  3. Select the second M4, hold fire and press Q after a few rounds while still firing. **Screenshot 1** of the hotbar: the first M4 still shows the empty bar.
+  4. Pick the thrown M4 up and select it: its clip is the full 30 minus what was fired before the throw, and the first M4 still clicks empty. **Screenshot 2.**
+- **Kit** (2 stacks):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:m4
+```
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.

@@ -493,15 +493,17 @@ pub fn settle_arsenal<C: GunContent>(
         else {
             continue;
         };
-        let bound = binding
-            .bound
-            .iter()
-            .find(|(w, _, _)| *w == weapon)
+        let entry = binding.bound.iter().find(|(w, _, _)| *w == weapon);
+        let bound = entry
             .map(|(_, slot, _)| *slot)
             .filter(|&slot| weapon_at(inventory, slot) == Some(weapon));
-        let Some(slot) =
-            bound.or_else(|| (0..HOTBAR).find(|&slot| weapon_at(inventory, slot) == Some(weapon)))
-        else {
+        let state = entry.map(|(_, _, state)| *state);
+        let Some(slot) = bound.or_else(|| {
+            (0..HOTBAR).find(|&slot| {
+                weapon_at(inventory, slot) == Some(weapon)
+                    && inventory.slots[slot].as_ref().map(clips_of) == state
+            })
+        }) else {
             continue;
         };
         let Some(stack) = inventory.slots[slot].as_mut() else {
@@ -980,6 +982,65 @@ mod tests {
         assert!(
             swapped.arsenal.guns[0].rebind,
             "another M4 in the same slot loads its own clip"
+        );
+    }
+
+    #[test]
+    fn a_thrown_copy_s_clip_is_not_written_onto_the_other_copy() {
+        let mut inventory = Inventory::default();
+        inventory.slots[1] = Some(fork_gun("iw4l:m4", serde_json::json!({ "clip": 0 })));
+        inventory.slots[3] = Some(fork_gun("iw4l:m4", serde_json::json!({ "clip": 25 })));
+        let (mut names, mut binding) = (GunNames::default(), Binding::default());
+        settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (3, 13),
+            Vec::new(),
+        );
+        let thrown = inventory.slots[3].take();
+        assert_eq!(
+            thrown.as_ref().and_then(|stack| crate::gun_names::clip(stack, "clip")),
+            Some(25)
+        );
+        let late = Spent::Clip {
+            weapon: M4,
+            clip: 23,
+            clip_left: 0,
+            alt_clip: 0,
+        };
+        let settled = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (3, 13),
+            vec![late],
+        );
+        assert_eq!(
+            clip(&inventory, 1, "clip"),
+            Some(0),
+            "the copy left behind keeps its own clip"
+        );
+        assert_eq!(settled.arsenal.guns[0].clip, 0);
+        assert!(settled.arsenal.guns[0].rebind);
+        inventory.slots.swap(1, 4);
+        let reloaded = Spent::Clip {
+            weapon: M4,
+            clip: 30,
+            clip_left: 0,
+            alt_clip: 0,
+        };
+        settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (3, 13),
+            vec![reloaded],
+        );
+        assert_eq!(
+            clip(&inventory, 4, "clip"),
+            Some(30),
+            "a lone copy moved in the hotbar still takes its report"
         );
     }
 
