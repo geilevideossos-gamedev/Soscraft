@@ -98,7 +98,8 @@ fn gun_verdict(
         guard: crate::voxel::gun_guard(hit.victim.0),
         max_health,
     };
-    crate::gun_damage::verdict(minecraft, hit.means, hit.amount, 0.0, victim)
+    let pierce = crate::voxel::pierce(hit.weapon);
+    crate::gun_damage::verdict(minecraft, hit.means, hit.amount, pierce, victim)
 }
 
 fn with_amount(hit: &crate::script_player::Hit, amount: i32) -> crate::script_player::Hit {

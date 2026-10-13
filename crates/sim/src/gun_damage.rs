@@ -313,6 +313,89 @@ mod tests {
     }
 
     #[test]
+    fn pierce_cuts_the_protection() {
+        assert_eq!(pierce(false, false, false), 0.0);
+        assert_eq!(pierce(true, false, false), PIERCE_LMG);
+        assert_eq!(pierce(false, true, false), PIERCE_SNIPER);
+        assert_eq!(pierce(false, false, true), PIERCE_FMJ);
+        assert_eq!(pierce(true, false, true), 0.5);
+        assert_eq!(pierce(false, true, true), PIERCE_MAX);
+        let table: [(i32, f32, [Option<i32>; 8]); 6] = [
+            (
+                30,
+                pierce(false, false, true),
+                [15, 10, 7, 6, 6, 6, 6, 6].map(Some),
+            ),
+            (
+                40,
+                pierce(true, false, false),
+                [20, 14, 10, 9, 8, 8, 8, 8].map(Some),
+            ),
+            (
+                40,
+                pierce(true, false, true),
+                [20, 16, 14, 13, 12, 12, 12, 12].map(Some),
+            ),
+            (
+                30,
+                pierce(true, false, false),
+                [15, 10, 7, 6, 6, 6, 6, 6].map(Some),
+            ),
+            (
+                105,
+                pierce(false, true, false),
+                [
+                    None,
+                    Some(49),
+                    Some(43),
+                    Some(40),
+                    Some(38),
+                    Some(32),
+                    None,
+                    None,
+                ],
+            ),
+            (
+                105,
+                pierce(false, true, true),
+                [
+                    None,
+                    Some(51),
+                    Some(48),
+                    Some(46),
+                    Some(45),
+                    Some(42),
+                    Some(42),
+                    Some(42),
+                ],
+            ),
+        ];
+        for (amount, pierce, expected) in table {
+            for (got, want) in row(amount, pierce, GunHit::Bullet)
+                .into_iter()
+                .zip(expected)
+            {
+                if let Some(want) = want {
+                    assert_eq!(got, want, "{amount} pierce {pierce}");
+                }
+            }
+        }
+        let iron = worn(15.0, 0.0);
+        assert_eq!(
+            gun_damage_to_player(30, 100, &iron, 1.0, GunHit::Bullet),
+            12
+        );
+        let immune = GunGuard {
+            resistance: 5,
+            ..iron
+        };
+        assert_eq!(
+            gun_damage_to_player(105, 100, &immune, 0.75, GunHit::Bullet),
+            0
+        );
+    }
+
+    #[test]
     fn mw2_maps_pass_the_amount_through() {
         let bare = victim(GunGuard::default());
         assert_eq!(

@@ -510,6 +510,18 @@ pub(crate) fn gun_guard(client: u32) -> Option<GunGuard> {
     GUN_GUARDS.lock().ok()?.iter().find(|(c, _)| *c == client).map(|(_, guard)| *guard)
 }
 
+static PIERCE: RwLock<Vec<f32>> = RwLock::new(Vec::new());
+
+pub fn set_pierce_table(table: Vec<f32>) {
+    if let Ok(mut pierce) = PIERCE.write() {
+        *pierce = table;
+    }
+}
+
+pub(crate) fn pierce(weapon: u32) -> f32 {
+    PIERCE.read().ok().and_then(|table| table.get(weapon as usize).copied()).unwrap_or(0.0)
+}
+
 pub const AMMO_TYPES: usize = 8;
 pub const NO_AMMO: u8 = u8::MAX;
 

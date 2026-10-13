@@ -1191,6 +1191,32 @@ Commit: the one after `43b4e0df`. **Not vanilla** (WEAPONS.md 11).
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:fmj,iw4l:barrett,iw4l:sniper_rounds*16,iw4l:frag_grenade*16,minecraft:crafting_table,minecraft:leather_helmet,minecraft:leather_chestplate,minecraft:leather_leggings,minecraft:leather_boots,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:diamond_helmet,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:zombie_spawn_egg*2,minecraft:cooked_beef*32
 ```
 
+### 2. LMGs, snipers and FMJ pierce part of a player's armour
+
+Commit: the one after `54504900`. **Not vanilla** (WEAPONS.md 11.1, 11.2).
+
+- **Changed:**
+  - `sim/src/voxel.rs`: `set_pierce_table(Vec<f32>)` (weapon index -> pierce) and the crate's `pierce(weapon)`, 0 for an index outside the table.
+  - `sim/src/script/host/players.rs` `gun_verdict`: the hit's weapon's pierce goes into `gun_damage::verdict`, where `kept = 1 - (1 - kept) * (1 - pierce)` cuts the armour and enchantment protection (the formula and `pierce(lmg, sniper, fmj)` came with the previous commit: LMG 0.25, sniper 0.5, FMJ +0.25, at most 0.75).
+  - `render_anim/src/minecraft_fork_items.rs`: `pierce_table(guns, count)` builds one entry per weapon index from the `GunContent` bucket (MW2's weapon class: LMG, sniper) and an `fmj` attachment in the configuration's selection; `ForkLook::set_weapons` pushes it whenever the weapon registry changes, for the host and in a friend's game alike.
+  - `docs/WEAPONS.md` 11.1: how the table is built.
+- **Tests:** `sim` `gun_damage::tests::pierce_cuts_the_protection` (the pierce sums and the WEAPONS.md 11.3 rows M4A1 + FMJ, RPD, RPD + FMJ, MG4, Intervention and Intervention + FMJ, every cell but the x.5 ones; pierce above 0.75 is capped; Resistance V still refuses a pierced hit); `render_anim` `minecraft_fork_items::tests::lmgs_snipers_and_fmj_pierce_armour_by_weapon_index`. `test -p sim` (150), `test -p render_anim` (174) green, `check -p launcher` green.
+- **Decisions:**
+  - **The table is pushed when the weapon content changes, not per world**, and `deactivate` keeps it: it describes the weapon indices, which only change with the registry. The rule itself still only runs in a Minecraft world.
+  - **Pierce follows the hit's weapon index**, so a grenade launcher or shotgun attachment on an LMG or sniper pierces nothing, and an akimbo or FMJ configuration counts as its own index.
+  - The WEAPONS.md 11.3 pierce rows use the owner's values from the previous commit (snipers 105 on the chest, LMGs 40 or 30).
+- **Owner's test steps** (two windows with `scripts\mp-local.ps1`, survival, pvp on; host H in the iron set, full health; friend F with the kit below):
+  1. F shoots H in the chest with the bare M4A1: about a third of a heart per hit.
+  2. F puts the M4A1 and an FMJ into the inventory crafting grid and takes the M4A1 with FMJ: each chest hit now takes about 0.6 heart. **Screenshot 1.**
+  3. F fires the RPD (lmg ammo) into H: about 0.8 heart a hit.
+  4. F fires the Barrett into H's chest: about 3 hearts a hit, the fourth kills. With the second FMJ on the Barrett: about 4 hearts a hit, the third kills. **Screenshot 2** (H's hearts after one Barrett hit).
+  5. H puts on the diamond set: the bare M4A1 still takes about a third of a heart, the Barrett the same 3 hearts as against iron.
+- **Kit** (17 stacks, for each player):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:fmj*2,iw4l:barrett,iw4l:sniper_rounds*16,iw4l:rpd,iw4l:lmg_ammo*64,minecraft:crafting_table,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none.
@@ -1246,3 +1272,5 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `MINECRAFT-SURVIVAL.md` line 374 (MW2 damage through armour deferred), replaced by: "In a Minecraft world every MW2 weapon hit on a player (bullets, grenades, launchers, killstreaks, the knife, a player's own explosives) is halved and then reduced by the player's Minecraft armour at twice vanilla's armour share; armour and Protection, Projectile Protection (bullets) or Blast Protection (explosions) together take at most 80 %, and Resistance applies after that like vanilla (level V blocks every gun). Damage to mobs and Minecraft damage to players are unchanged. Not vanilla."
 - `MULTIPLAYER.md` section 13 (MW2 damage ignores Minecraft armour), replaced by: "Gun hits between players run on the host through one rule for everyone: each frame the host mirrors every player's armour, enchantment protection and Resistance into the sim, and the victim's own armour reduces the hit before MW2's scripts see it."
 - `decisions.md` (Not vanilla): "MW2 weapon damage to players in Minecraft worlds is halved and armour takes twice vanilla's share (armour and Protection together at most 80 %, Resistance after), so iron, diamond and netherite all reach the ceiling against light rounds; bots and MW2 maps are unchanged."
+- `MINECRAFT-SURVIVAL.md`, after the gun damage sentence: "LMGs pierce a quarter of that protection, snipers half, and the FMJ attachment adds a quarter (at most three quarters), so heavy guns stay the answer to diamond and netherite."
+- `decisions.md` (Not vanilla): "LMGs (0.25), snipers (0.5) and FMJ (+0.25, at most 0.75) pierce part of a player's armour and enchantment protection against guns."

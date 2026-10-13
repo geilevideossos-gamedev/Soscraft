@@ -145,6 +145,7 @@ impl ForkLook {
                         missing.join(", ")
                     );
                 }
+                sim::voxel::set_pierce_table(pierce_table(&RegistryGuns(registry), registry.len()));
             }
         }
     }
@@ -537,6 +538,18 @@ fn published(arsenal: &guns::Arsenal) -> sim::voxel::Arsenal {
     }
 }
 
+pub(crate) fn pierce_table(guns: &impl GunContent, count: usize) -> Vec<f32> {
+    (0..=u32::try_from(count).unwrap_or(0))
+        .map(|index| {
+            let bucket = guns.bucket(index);
+            let fmj = guns
+                .selection(index)
+                .is_some_and(|(_, attachments)| attachments.iter().any(|name| name == "fmj"));
+            sim::gun_damage::pierce(bucket == Some(Bucket::Lmg), bucket == Some(Bucket::Sniper), fmj)
+        })
+        .collect()
+}
+
 pub(crate) fn flare_place(
     dimension: Dimension,
     origin: [f64; 3],
@@ -652,6 +665,33 @@ pub(crate) fn fitted(image: &image::RgbaImage, size: u32) -> image::RgbaImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lmgs_snipers_and_fmj_pierce_armour_by_weapon_index() {
+        struct Guns;
+        impl GunContent for Guns {
+            fn configuration(&self, _weapon: &str, _attachments: &[String]) -> Option<u32> {
+                None
+            }
+            fn selection(&self, index: u32) -> Option<(String, Vec<String>)> {
+                let fmj = matches!(index, 2 | 4 | 6).then(|| "fmj".to_owned());
+                Some((format!("iw4:weapon/{index}"), fmj.into_iter().collect()))
+            }
+            fn clip_size(&self, _index: u32) -> Option<i32> {
+                None
+            }
+            fn bucket(&self, index: u32) -> Option<Bucket> {
+                match index {
+                    1 | 2 => Some(Bucket::AssaultRifle),
+                    3 | 4 => Some(Bucket::Lmg),
+                    5 | 6 => Some(Bucket::Sniper),
+                    7 => Some(Bucket::Launcher),
+                    _ => None,
+                }
+            }
+        }
+        assert_eq!(pierce_table(&Guns, 7), vec![0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.0]);
+    }
 
     #[test]
     fn a_tint_multiplies_the_sprite_and_keeps_alpha() {
