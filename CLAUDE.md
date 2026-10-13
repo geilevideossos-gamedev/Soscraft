@@ -8,17 +8,17 @@ Play online with 2-4 friends in one persistent Minecraft world, with MW2 weapons
 
 ## Roadmap
 
-The Minecraft side for one player is done (round 7). **Multiplayer (1.4) is built (round 8, track E); the owner's first session is next.**
+The Minecraft side for one player is done (round 7). **Multiplayer (1.4) was built in round 8 and waits for the owner's two-window and internet tests** (`docs/round8/track-e-tests.md`).
 
 1. **Multiplayer, saving and dimensions**
    1. Persistent world: **done.** Everything vanilla saves is saved in the vanilla 26.3 format: the world, all three dimensions, block entities and one player file per UUID.
    2. Crate split: **done.** `minecraft_survival` holds `Server` (world-wide state), a `Level` per dimension and a `Player` per UUID; `minecraft_net` holds the shared ids.
-   3. Dimension switch and the Nether: **done.** Left for "Finish survival": N6 (piglin and hoglin brains, piglin brutes, zoglins, striders, bartering, lodestones).
+   3. Dimension switch and the Nether: **done.** Round 8 (track B) added most of N6: piglins, brutes, bartering, hoglins, zoglins and striders. Only lodestones are left for "Finish survival".
    4. Multiplayer with 2-4 friends: **built, waiting for the owner's test.** The host owns the world and the friends join through our MW2 relay with a join code. Every player, every occupied level and the dragon fight run on the host, and each dimension has its own MW2 collision band. Design and what was left: `docs/MULTIPLAYER.md` (section 20). Owner's test: `docs/round8/track-e-tests.md`. Friend's install: `docs/round8/friend-install.md`.
-   5. The End: **done apart from X6** (gateway travel to the outer islands, item frames, shulkers, levitation), which is left for "Finish survival". It was built before multiplayer, with all state per player and per level.
-2. Finish survival: N6, X6, the open limitations in the state doc and the multiplayer leftovers (`docs/MULTIPLAYER.md` section 20)
+   5. The End: **done.** Round 8 finished X6: gateway travel to the outer islands (track A), shulkers, levitation, End cities and item frames (track C). It was built before multiplayer, with all state per player and per level.
+2. Finish survival: lodestones, trial spawners, the open limitations in the state doc and the multiplayer leftovers (`docs/MULTIPLAYER.md` section 20: skating for friends, trading screens, Minecraft melee between players, the friend's first-person hand). The open non-vanilla items are listed in `docs/PROGRESS.md` (Decisions), such as a ridden strider standing still under `/tick freeze`.
 3. One Elden Ring boss as a proof of concept
-4. Skate 3
+4. Skate 3. Skating already works in Minecraft worlds for the host (round 8, track D), but not yet for friends.
 
 **Why the crate split came before the dimension switch:** both rewrote the same code, and travel needed the split's seam (keep the player, swap the level). Multiplayer needs several dimensions loaded at once, because friends can be in different dimensions.
 
@@ -40,6 +40,7 @@ The Minecraft side for one player is done (round 7). **Multiplayer (1.4) is buil
     - It adds `-j 8`, refuses other job counts and `cargo fmt`, and sets `CARGO_TARGET_DIR` (default `D:\iw4l-target`, or `+target=D:\dir`).
     - It also puts cargo on the `Path` and sets `MINECRAFTOSS_ROOT` to the downloaded 26.3 data when it is not set, so the tests that need the real game data run.
     - It holds one of two machine-wide slots, so at most two cargo processes run at once. More have run the PC out of memory.
+    - Gentle mode while the owner plays on this PC: `%LOCALAPPDATA%\iw4l-cargo-slot.txt` with `slots=1`, `jobs=4` and `priority=low` runs one cargo at a time with `-j 4` below normal priority. Delete the file, or set `slots=2` and `jobs=8`, for full speed when the owner is away.
     - `--release`, `--workspace`, `--profile` and `+exclusive` take both slots, so a release build or the full suite runs alone.
     - If its shell is killed, cargo and rustc die with it.
     - PowerShell drops a bare `--` when calling a script, so quote it: `& scripts\cargo-slot.ps1 clippy -p x --locked '--' -A clippy::approx_constant`.
@@ -67,6 +68,7 @@ The Minecraft side for one player is done (round 7). **Multiplayer (1.4) is buil
   - `cargo-slot.ps1` keeps cargo, rustc and the linker off Windows power throttling, which otherwise moves them to the E-cores while another window (a game) is in front.
   - Output: `D:\iw4l-target\release\iw4l.exe`.
   - Copy it to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-survival.exe`, after keeping the old one as `iw4l-survival-<old commit>.exe`.
+  - When multiplayer is to be tested, add `-p iw4l-master` to the same build and copy `D:\iw4l-target\release\iw4l-master.exe` (the relay) next to the exe.
   - A mid-round test build may use `--profile play` instead (the same code at opt-level 3 without fat LTO: about 10 min clean, seconds after an edit; output `D:\iw4l-target\play\iw4l.exe`). The last build of a round is always `--release`.
 - **Test kit:** `IW4L_MINECRAFT_KIT=` in the `.env` next to the exe.
   - At most 27 stacks, because it only fills the 27 backpack slots.
@@ -102,6 +104,6 @@ AGENT.md, CONTEXT.md, README.md, CONTRIBUTING.md and docs/ come from upstream an
 - **README.md**
   - The README was already edited by the fork up to ac0c791. It has no feature notes from round 4 onward, and none of the fork goal.
   - Its "Minecraft World.bat" starts upstream's `iw4l.exe`, not `iw4l-survival.exe`.
-- **Upstream's multiplayer docs are MW2 only:** `docs/DUO.md` and `docs/MASTER.md` cover MW2 matches only. The fork's Minecraft multiplayer, through the same relay, is `docs/MULTIPLAYER.md`, and two games on one PC run with `scripts\mp-local.ps1`.
+- **Upstream's multiplayer docs are MW2 only:** `docs/DUO.md` and `docs/MASTER.md` cover MW2 matches only. The fork's Minecraft multiplayer, through the same relay, is `docs/MULTIPLAYER.md`, two games on one PC run with `scripts\mp-local.ps1`, and a friend's install is `docs/round8/friend-install.md`.
 - **Build docs:** `docs/BUILD.md` is Linux-first. This fork builds natively on Windows with MSVC.
-- **Vendored code:** `third_party/minecraftoss` is MinecraftOSS `4013a68`, and the fork has patched 53 of its files and added 14 (as of round 7). If upstream ever re-vendors a newer MinecraftOSS, diff our patches first.
+- **Vendored code:** `third_party/minecraftoss` is MinecraftOSS `4013a68`, and the fork has patched 73 of its files and added 37 (as of round 8). If upstream ever re-vendors a newer MinecraftOSS, diff our patches first.
