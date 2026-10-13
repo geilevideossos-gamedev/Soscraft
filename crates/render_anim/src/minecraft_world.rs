@@ -1241,7 +1241,7 @@ fn update(
             show_chat(&mut ui.chat, inventory_ui, &world.packs, std::slice::from_ref(&told));
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
-        let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, arsenal, .. } = &mut *player;
+        let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, arsenal, tags, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
@@ -1267,6 +1267,10 @@ fn update(
                 || !minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(|block| minecraft_terrain::lectern::is_lectern(block) && minecraft_terrain::lectern::has_book(block))
         }) {
             ui.inventory_open = false;
+        }
+        let class = crate::minecraft_fork_items::class_of(&authority.0, local.0);
+        for stack in inventory_ui.fork.first_loadout((&mut *inventory, *selected, &mut *tags), alive, class) {
+            entities.drop_given(&stack, feet);
         }
         inventory_ui.sync_weapons(inventory, &owned);
         let hotbar = minecraft_survival::guns::Hotbar { selected: *selected, room: crate::minecraft_fork_items::gun_room(ps, &authority.0), binding: &mut *arsenal };

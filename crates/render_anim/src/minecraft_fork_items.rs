@@ -4,7 +4,7 @@ use std::sync::{Arc, mpsc};
 use asset_game::{FamilyKey, LoadoutRules, WeaponRegistry, WeaponSelection};
 use minecraft_survival::gun_names::{self, GunContent, GunNames};
 use minecraft_survival::guns::{self, Hotbar, Settled, Spent};
-use minecraft_terrain::fork_items::{self, Icon, Kind};
+use minecraft_terrain::fork_items::{self, Bucket, Icon, Kind};
 use minecraft_terrain::fork_look;
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraft_terrain::item_icon::SpriteClock;
@@ -46,6 +46,19 @@ impl GunContent for RegistryGuns<'_> {
             .facts_of(index)
             .map(|facts| facts.clip_size)
             .filter(|size| *size > 0)
+    }
+
+    fn bucket(&self, index: u32) -> Option<Bucket> {
+        Some(match self.0.facts_of(index)?.weap_class {
+            0 => Bucket::AssaultRifle,
+            1 => Bucket::Sniper,
+            2 => Bucket::Lmg,
+            3 => Bucket::Smg,
+            weapon_iw4::WEAPCLASS_SPREAD => Bucket::Shotgun,
+            weapon_iw4::WEAPCLASS_PISTOL => Bucket::Pistol,
+            7 => Bucket::Launcher,
+            _ => return None,
+        })
     }
 }
 
@@ -333,6 +346,28 @@ impl ForkLook {
         self.patched = active.then_some(key);
     }
 
+    pub(crate) fn first_loadout(
+        &mut self,
+        player: (&mut Inventory, usize, &mut Vec<String>),
+        alive: bool,
+        class: Option<minecraft_survival::loadout::Class>,
+    ) -> Vec<ItemStack> {
+        let Some(registry) = self.registry.clone().filter(|_| alive) else {
+            return Vec::new();
+        };
+        let content = RegistryGuns(&registry);
+        let guns = (&mut self.names, &content);
+        let Some(given) =
+            minecraft_survival::loadout::give_first_loadout(player, class.as_ref(), guns)
+        else {
+            return Vec::new();
+        };
+        if !given.stood_in.is_empty() {
+            diag::warn!(World, "Minecraft first-join loadout: no item for {}, gave the first gun of its class", given.stood_in.join(", "));
+        }
+        given.dropped
+    }
+
     pub(crate) fn settle(
         &mut self,
         inventory: &mut Inventory,
@@ -348,6 +383,19 @@ impl ForkLook {
         sim::voxel::set_arsenal(client, published(&settled.arsenal));
         Some(settled)
     }
+}
+
+pub(crate) fn class_of(
+    authority: &sim::SimWorld,
+    client: sim::ClientId,
+) -> Option<minecraft_survival::loadout::Class> {
+    let spec = authority.client_meta(client)?.loadout.as_ref()?;
+    Some(minecraft_survival::loadout::Class {
+        primary: spec.primary,
+        secondary: spec.secondary,
+        lethal: spec.lethal,
+        tactical: spec.tactical,
+    })
 }
 
 pub(crate) fn gun_room(ps: &PlayerState, authority: &sim::SimWorld) -> usize {

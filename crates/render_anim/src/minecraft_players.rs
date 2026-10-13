@@ -1620,6 +1620,21 @@ pub(crate) fn step_friend(
             mining.break_burst(packs, atlas, at, yaw, ps.viewangles[0], &item);
         }
     }
+    let class = crate::minecraft_fork_items::class_of(world.authority, client);
+    let given = world.guns.first_loadout(
+        (&mut player.inventory, player.selected, &mut player.tags),
+        life.alive,
+        class,
+    );
+    if let Some(entities) = world
+        .levels
+        .get_mut(&player.dimension)
+        .and_then(|level| level.entities.as_mut())
+    {
+        for stack in &given {
+            entities.drop_given(stack, feet);
+        }
+    }
     let owned = owned_weapons(&ps, world.authority);
     let room = crate::minecraft_fork_items::gun_room(&ps, world.authority);
     let Player {

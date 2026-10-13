@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use minecraft_terrain::fork_items::{self, ForkItem, Kind};
+use minecraft_terrain::fork_items::{self, Bucket, ForkItem, Kind};
 use minecraftoss_player::inventory::ItemStack;
 use serde_json::Value;
 
@@ -8,6 +8,9 @@ pub trait GunContent {
     fn configuration(&self, weapon: &str, attachments: &[String]) -> Option<u32>;
     fn selection(&self, index: u32) -> Option<(String, Vec<String>)>;
     fn clip_size(&self, index: u32) -> Option<i32>;
+    fn bucket(&self, _index: u32) -> Option<Bucket> {
+        None
+    }
 }
 
 #[derive(Debug, Default)]

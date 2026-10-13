@@ -396,6 +396,51 @@ Commit: the one after `34a1697f`.
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:cheytac,iw4l:usp,iw4l:frag_grenade*8,iw4l:flash_grenade*4,iw4l:red_dot_sight,iw4l:rifle_ammo*32,iw4l:gun_barrel*2,iw4l:rapid_fire,minecraft:item_frame*4,minecraft:oak_planks*16
 ```
 
+### 3. A player gets the class guns and three magazines once, on their first join
+
+Commit: the one after `5aa90e2b`.
+
+- **Changed:**
+  - `minecraft_survival` `loadout.rs` (new, edition 2024, rustfmt-clean): `give_first_loadout((inventory, selected, tags), class, (names, content))`, the one function the host runs for itself and for every friend.
+    - It gives nothing without a class (no `LoadoutSpec`, or neither a primary nor a secondary) or when the vanilla `Tags` list already holds `iw4l_loadout_given` (`GIVEN_TAG`). Otherwise it adds the tag through `minecraft_commands::tag::add`, so other tags stay (and a player with 1024 tags gets nothing instead of a loadout every frame).
+    - The primary and the secondary come from the class's weapon indices through `GunNames::item`, which splits a variant or configured weapon with `WeaponFamilies::describe` (`describe_configuration`) into the fork id and its attachments. Each gun goes into hotbar slot 0 (primary) or 1 (secondary) when free, otherwise through vanilla's `add_item`. It carries its attachments in `custom_data.iw4l.attachments` and full clips (`with_full_clip`: `clip` -1, `clip_left` -1 with akimbo, `alt_clip` -1 with a grenade launcher or underbarrel shotgun; the settle writes the real sizes when it binds the gun).
+    - Three magazines of reserve per gun (`MAGAZINES`, from the clip size of the class's configuration, so an extended mag counts). The rounds of guns that share an ammo type add up. They go into the backpack first (merging into the same ammo, then slots 9-35, then the hotbar), in stacks of the table's size.
+    - What does not fit is returned and dropped at the player's feet with `Entities::drop_given`, the way `/give` does it.
+    - A class gun outside the fork table becomes the first table gun of its category (`stand_in`: M4A1, MP5K, RPD, M21 EBR, M1014, G18, USP .45, AT4-HS), and its MW2 name is returned in `stood_in`. A weapon whose category is unknown becomes the M4A1 (primary) or the USP .45 (secondary).
+    - `Class` already carries `lethal` and `tactical`: the grenade group (C12) adds the 32 + 32 grenades in this same function, after the ammo.
+  - `GunContent` gains `bucket(index)` (default `None`). `render_anim`'s `RegistryGuns` maps MW2's `weapClass` (rifle, sniper, MG, SMG, spread, pistol, rocket launcher) to the fork bucket.
+  - `render_anim` `minecraft_fork_items.rs`: `class_of(authority, client)` reads the client's `LoadoutSpec` (`client_meta(..).loadout`, not `ps.weapons`). `ForkLook::first_loadout` runs `give_first_loadout` with the session's `GunNames` once MW2's weapons are loaded and the player is alive, and logs a stood-in gun as a warning ("Minecraft first-join loadout: no item for ...").
+  - Host: called in `minecraft_world.rs` right before `sync_weapons` and the settle, so the guns are bound in the same frame. Each friend: in `minecraft_players.rs` `step_friend` right before the same two calls, with the friend's own inventory, tags and feet.
+- **Tests** (`minecraft_survival` `loadout::tests`, with a stand-in `GunContent`):
+  - `the_class_guns_and_three_magazines_are_given_once_and_the_tag_is_set`: the M4A1 in slot 0 (stack size 1, full clip) and the USP .45 in slot 1, 90 rifle rounds (64 + 26) and 36 pistol rounds in the backpack, the rest of the hotbar empty, the tag added after a foreign tag that stays. A second call gives nothing and changes nothing.
+  - `no_class_or_an_empty_class_gives_nothing_and_sets_no_tag`.
+  - `class_attachments_become_item_attachments_and_akimbo_fills_both_clips` (red dot and silencer on the M4A1, an akimbo USP with `clip` and `clip_left`).
+  - `shared_ammo_adds_up_and_a_taken_slot_uses_the_vanilla_add_order` (MP5K and USP: 126 pistol rounds as 64 + 62; slot 0 held dirt, so the guns go to slots 1 and 2).
+  - `what_does_not_fit_is_dropped` (a full inventory: both guns and both ammo stacks come back to be dropped, and the tag is still set).
+  - `a_gun_outside_the_table_becomes_the_first_gun_of_its_category` (an unknown shotgun becomes the M1014 with 12 shells, an unknown-category secondary the USP; every stand-in is a gun of its bucket).
+- **Decisions:**
+  - **The ammo goes into the backpack first** (WEAPONS.md 6 says "into the backpack"): vanilla's add order would put it on hotbar slots 2-8 next to the guns. Only when the backpack is full does it use the hotbar, and after that it drops.
+  - **An akimbo pair gets three magazines of one gun,** like any other gun: "three magazines per gun" counts the item, not the two hands.
+  - **The tag is added before the items** (same frame, same save), so a full tag list can never make the loadout repeat. Removing the tag with `/tag` while alive gives the loadout again at once (the rule is "alive, with a class, without the tag"), not only after the next death.
+  - **Unknown category:** a class weapon that is neither in the table nor of a known MW2 weapon class becomes the slot's default gun (M4A1 or USP .45), so the player always gets two guns.
+  - The stood-in name is logged each time a loadout is given, which is once per player.
+- **Owner's test steps** (a new world `IW4L_MINECRAFT_WORLD=r9-loadout`, survival, an MW2 class with an M4A1 with a red dot sight and a USP .45; no kit):
+  1. Join: hotbar slot 1 holds the M4A1 and slot 2 the USP .45; the backpack holds 90 rifle ammo (64 + 26) and 36 pistol ammo. No Intervention, SPAS-12 or UMP45. Hover the M4A1: "Red Dot Sight", "Clip 30/30". **Screenshot 1.**
+  2. Press 1 and fire: the M4A1 shoots. `/tag @s list` lists `iw4l_loadout_given`.
+  3. Save and quit, load again: no second loadout. **Screenshot 2.**
+  4. `/kill`: the guns and the ammo drop; the respawn gives nothing.
+  5. `/tag @s remove iw4l_loadout_given`: the loadout comes once more, right away.
+  6. Load a world played in round 8 (its player file has no tag): the class guns and ammo arrive once, next to what was there.
+  7. Pick a class with an akimbo pistol and start another new world: the pistol shows "Clip 12/12 + 12/12".
+  8. Two windows (`scripts\mp-local.ps1`): the friend's first join gives the friend's own class guns and ammo in the friend's slots, and the host's inventory is unchanged. The friend leaves and joins again: nothing new. **Screenshot 3** (friend window).
+- **Kit:** none (the loadout is the test).
+
+## Combined kit for group drops-loadout
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:ak47,iw4l:usp,iw4l:barrett,iw4l:cheytac,iw4l:riotshield,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,iw4l:frag_grenade*8,iw4l:flash_grenade*4,iw4l:red_dot_sight,iw4l:gun_barrel*2,iw4l:rapid_fire,minecraft:chest,minecraft:lava_bucket,minecraft:cobblestone*16,minecraft:item_frame*4,minecraft:oak_planks*16
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (4): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file). Added: none.
@@ -416,3 +461,5 @@ Patched by this track so far (4): `player/src/item_catalog.rs`, `core/src/item.r
 - `MINECRAFT-SURVIVAL.md`, the guns section: "Killstreak items cannot go into a chest or any other container cell, into the offhand, or be dropped with Q or from the cursor."
 - `MINECRAFT-SURVIVAL.md`, the guns section: "Guns drop with Q, go into chests and every other container, and drop on death like any item, with their loaded rounds; `keep_inventory` keeps them. Killstreak items vanish on death. No gun goes into the offhand (the riot shield included). The Barrett and the M240 are netherite and survive fire and lava on the ground."
 - `MINECRAFT-SURVIVAL.md`, the guns section: "Dropped fork items and fork items in item frames are drawn as their inventory picture, extruded like a vanilla item (16 pixels, a few pixels thick): guns as their MW2 kill icon, grenades and attachments as their class-menu picture, ammo and gun parts as tinted vanilla sprites. A grenade, ammo or an attachment held in the hand is drawn like a vanilla item. A picture the MW2 files lack is shown as a crossbow (guns) or a firework star."
+- `MINECRAFT-SURVIVAL.md`, the guns section: "On the first join (also for a player file from round 8 or earlier, and for every friend) a player who is alive with an MW2 class gets the class's primary and secondary as items with their attachments and full magazines, on hotbar slots 1 and 2 when free, and three magazines of ammo per gun in the backpack; what does not fit drops at the feet. The player is tagged `iw4l_loadout_given` (vanilla `Tags`), so it happens once per player in all dimensions; `/tag @s remove iw4l_loadout_given` gives it again. A class gun the fork has no item for becomes the first gun of its category."
+- `MULTIPLAYER.md` (per-player state on the host): "Each friend's first-join loadout is given on the host from the friend's own class, through the same function as the host's, and the tag is saved in the friend's player file."

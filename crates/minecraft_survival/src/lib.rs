@@ -17,6 +17,7 @@ pub mod gun_names;
 pub mod heard;
 pub mod impulse;
 pub mod level;
+pub mod loadout;
 pub mod menus;
 pub mod mob_sender;
 pub mod offhand;
