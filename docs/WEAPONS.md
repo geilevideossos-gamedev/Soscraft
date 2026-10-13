@@ -135,7 +135,7 @@ A stackable fork item on disk:
 - **In the hand:** a gun is drawn by MW2 (today's path). A grenade, ammo, attachment or part held in the main hand is drawn flat like a vanilla item and does nothing on right-click. Grenades are thrown only from their slots.
 - **On the ground and in item frames:** every fork item is its icon, extruded like vanilla's `item/generated` model. MW2 world models there are later polish.
 - **Icons:**
-  - Grenades use their MW2 HUD icons.
+  - Grenades use their MW2 equipment pictures, the ones the class menu shows (`weapon_fraggrenade`, `cardicon_semtex`, `cardicon_throwing_knive`, `weapon_claymore`, `weapon_c4`, `weapon_flashbang`, `weapon_concgrenade`, `weapon_smokegrenade`, `specialty_tactical_insert`). They are read from the owner's IWDs like the attachment pictures: the weapon defs' HUD icons are zone materials that only the MW2 draw path has, not pixels for the item atlas.
   - Attachments use MW2's `weapon_attachment_*` materials (`ui/src/classes/icons.rs:237-249`). Rapid fire has none and uses the vanilla repeater sprite.
   - Ammo uses a vanilla sprite tinted at runtime: `iron_nugget` tinted brass (pistol), copper (rifle), grey (LMG), gold (sniper) and red (shells); `fire_charge` tinted green (explosive round); `firework_rocket` (rocket).
   - The barrel uses the vanilla iron bars sprite and the mechanism the tripwire hook sprite.

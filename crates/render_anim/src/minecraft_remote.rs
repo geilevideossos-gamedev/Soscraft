@@ -349,10 +349,12 @@ pub(crate) fn friend(
         Option<Res<frame::ActivePad>>,
         Option<Res<frame::HudInputView>>,
     ),
-    (mut body_gear, mut sound_queue, mut sleepers): (
+    (mut body_gear, mut sound_queue, mut sleepers, weapons, strings): (
         ResMut<crate::anim::minecraft_gear::McBodyGear>,
         ResMut<audio::McSoundQueue>,
         ResMut<frame::McSleepers>,
+        Option<Res<assets::PreparedWeapons>>,
+        Option<Res<assets::PreparedLocalizedStrings>>,
     ),
 ) {
     if *role != frame::RuntimeRole::Client {
@@ -527,6 +529,7 @@ pub(crate) fn friend(
     let shown = (dt, seconds, now_ms);
     let swap = std::mem::take(&mut ui.swap_hands);
     let drop = ui.drop_selected.take();
+    friend.inventory_ui.set_weapons(&mut ui, weapons.as_deref(), strings.as_deref());
     let mut messages = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
     if leave_bed {
         messages.push(ToServer::LeaveBed);

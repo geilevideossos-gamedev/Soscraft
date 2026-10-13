@@ -48,6 +48,7 @@ pub(crate) struct InventoryUi {
     pub(crate) dials: minecraft_terrain::dials::Dials,
     lectern: Option<BlockPos>,
     lectern_actions: Vec<(BlockPos, minecraft_terrain::lectern::LecternAction)>,
+    pub(crate) fork: crate::minecraft_fork_items::ForkLook,
 }
 
 #[derive(Default)]
@@ -297,6 +298,20 @@ impl InventoryUi {
         self.follow.request(inventory, selected, held)
     }
 
+    pub(crate) fn set_weapons(
+        &mut self,
+        ui: &mut MinecraftUi,
+        weapons: Option<&assets::PreparedWeapons>,
+        strings: Option<&assets::PreparedLocalizedStrings>,
+    ) {
+        self.fork.set_weapons(weapons.map(|weapons| &weapons.0));
+        if let Some(language) = self.language.as_mut()
+            && self.fork.name_items(language, strings.map(|strings| &strings.0))
+        {
+            ui.names.retain(|id, _| !minecraft_terrain::fork_items::is_fork(id));
+        }
+    }
+
     /// Publishes the inventory for the HUD, with icons for every item in it.
     pub(crate) fn publish(
         &mut self,
@@ -333,13 +348,15 @@ impl InventoryUi {
             .unwrap_or_else(|| "Water Bottle".to_owned());
         let lang: &HashMap<String, String> = language;
         let enchant_table = self.enchantments.clone();
+        let fork = &mut self.fork;
         let mut convert = |stack: &Option<ItemStack>| {
             stack.as_ref().map(|s| {
                 stacks.push(s.id.clone());
-                McStack {
+                let weapon = weapon_of(s).or_else(|| fork.weapon(s));
+                let mut shown = McStack {
                     id: s.id.clone(),
                     count: s.count,
-                    weapon: weapon_of(s),
+                    weapon,
                     damage: inventory.recipes.durability(s),
                     max: stack_limit(&inventory.recipes, s),
                     named: minecraft_terrain::stations::custom_name(s).is_some(),
@@ -357,7 +374,9 @@ impl InventoryUi {
                     contents: contents_lines(lang, s),
                     more: more_line(lang, s),
                     glint: minecraft_terrain::glint::has_glint(s),
-                }
+                };
+                shown.enchantments.splice(0..0, fork.lines(s, weapon, lang));
+                shown
             })
         };
         ui.slots = inventory.slots.iter().take(frame::minecraft_ui::MC_INVENTORY_SLOTS).map(&mut convert).collect();
@@ -491,7 +510,13 @@ impl InventoryUi {
             if !ui.names.contains_key(&id) {
                 ui.names.insert(id.clone(), minecraft_terrain::item_icons::item_name(language, &id));
             }
+            if minecraft_terrain::fork_items::get(&id).is_some_and(|row| row.icon == minecraft_terrain::fork_items::Icon::KillIcon) {
+                continue;
+            }
             if self.cells.contains_key(&id) || self.failed.contains(&id) || self.animated.cells.contains_key(&id) {
+                continue;
+            }
+            if self.fork.waiting(&id) {
                 continue;
             }
             let cell = self.cells.len() as u32;
@@ -501,7 +526,8 @@ impl InventoryUi {
                 continue;
             }
             let clock = minecraft_terrain::item_icon::SpriteClock::at(animation_tick);
-            match minecraft_terrain::item_icons::item_icon_at(packs, self.dials.key(&id), icon as usize, &clock) {
+            let made = self.fork.icon(packs, &id, icon as usize, &clock);
+            match made.unwrap_or_else(|| minecraft_terrain::item_icons::item_icon_at(packs, self.dials.key(&id), icon as usize, &clock)) {
                 Ok(Some(rendered)) => {
                     if clock.animated() && self.animated.add(id.clone(), &image::imageops::resize(&rendered, icon, icon, image::imageops::FilterType::Nearest), icon) {
                         continue;

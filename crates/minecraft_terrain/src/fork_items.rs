@@ -41,7 +41,6 @@ pub enum Tier {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
     KillIcon,
-    HudIcon,
     Material(&'static str),
     Sprite {
         item: &'static str,
@@ -135,6 +134,7 @@ const fn grenade(
     kind: Kind,
     name: &'static str,
     tier: Tier,
+    icon: &'static str,
 ) -> ForkItem {
     ForkItem {
         id,
@@ -148,7 +148,7 @@ const fn grenade(
         max_stack: 64,
         name,
         tier,
-        icon: Icon::HudIcon,
+        icon: Icon::Material(icon),
         fire_proof: false,
         aliases: &[],
     }
@@ -824,6 +824,7 @@ static ROWS: [ForkItem; 94] = [
         Kind::Lethal,
         "Frag Grenade",
         Early,
+        "weapon_fraggrenade",
     ),
     grenade(
         "iw4l:semtex",
@@ -831,6 +832,7 @@ static ROWS: [ForkItem; 94] = [
         Kind::Lethal,
         "Semtex",
         Early,
+        "cardicon_semtex",
     ),
     grenade(
         THROWING_KNIFE,
@@ -838,6 +840,7 @@ static ROWS: [ForkItem; 94] = [
         Kind::Lethal,
         "Throwing Knife",
         Early,
+        "cardicon_throwing_knive",
     ),
     grenade(
         "iw4l:claymore",
@@ -845,14 +848,23 @@ static ROWS: [ForkItem; 94] = [
         Kind::Lethal,
         "Claymore",
         Early,
+        "weapon_claymore",
     ),
-    grenade("iw4l:c4", "iw4:weapon/c4_mp", Kind::Lethal, "C4", Early),
+    grenade(
+        "iw4l:c4",
+        "iw4:weapon/c4_mp",
+        Kind::Lethal,
+        "C4",
+        Early,
+        "weapon_c4",
+    ),
     grenade(
         "iw4l:flash_grenade",
         "iw4:weapon/flash_grenade_mp",
         Kind::Tactical,
         "Flash Grenade",
         Early,
+        "weapon_flashbang",
     ),
     grenade(
         "iw4l:concussion_grenade",
@@ -860,6 +872,7 @@ static ROWS: [ForkItem; 94] = [
         Kind::Tactical,
         "Stun Grenade",
         Early,
+        "weapon_concgrenade",
     ),
     grenade(
         "iw4l:smoke_grenade",
@@ -867,6 +880,7 @@ static ROWS: [ForkItem; 94] = [
         Kind::Tactical,
         "Smoke Grenade",
         Early,
+        "weapon_smokegrenade",
     ),
     grenade(
         "iw4l:tactical_insertion",
@@ -874,6 +888,7 @@ static ROWS: [ForkItem; 94] = [
         Kind::Tactical,
         "Tactical Insertion",
         Middle,
+        "specialty_tactical_insert",
     ),
 ];
 

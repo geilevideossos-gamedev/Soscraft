@@ -1358,6 +1358,7 @@ fn update(
             ui.weapon_request = None;
         }
         inventory_ui.animation_tick = atlas_animation.ticks();
+        inventory_ui.set_weapons(&mut ui, weapon_names.0.as_deref(), weapon_names.1.as_deref());
         inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, (&screen, survival.status.experience_level, containers));
 
         if let Some(sounds) = sounds.as_mut() {

@@ -150,9 +150,9 @@ fn stack_name(
     gaps: &mut HudPresentationGaps,
 ) -> String {
     match stack.weapon {
-        Some(weapon) => crate::weapon_name::localized_weapon_name(weapon, weapons, strings, gaps)
+        Some(weapon) if !stack.named => crate::weapon_name::localized_weapon_name(weapon, weapons, strings, gaps)
             .unwrap_or_else(|| "Weapon".to_owned()),
-        None => stack.name.clone().or_else(|| ui.names.get(&stack.id).cloned()).unwrap_or_else(|| stack.id.clone()),
+        _ => stack.name.clone().or_else(|| ui.names.get(&stack.id).cloned()).unwrap_or_else(|| stack.id.clone()),
     }
 }
 

@@ -43,6 +43,7 @@ mod minecraft_chat;
 mod minecraft_creative;
 mod minecraft_elytra;
 mod minecraft_end;
+mod minecraft_fork_items;
 pub mod minecraft_end_look;
 mod minecraft_gui;
 mod minecraft_hand;
