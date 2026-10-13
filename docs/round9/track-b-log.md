@@ -241,6 +241,14 @@ Decisions:
 - A generation outside 0-3 (only possible from a hand-edited save, which vanilla refuses to load) is clamped for the tooltip line.
 - Blank means empty or only whitespace (Rust `trim`), like Java's `isBlank`.
 
+### Review: B9.2 step 8 no longer asks for the friend's first-person hand
+
+Base: be287541 (B9.3).
+
+What changed: only this log. Owner's step 8 (B9.2) asked to check the friend's potions in the friend's first-person hand, but a friend has no first-person held item (`docs/MULTIPLAYER.md` section 20 leftover; B9.2 changed only the host's first-person key in `render_anim/src/minecraft_world.rs`). The step now checks the friend's inventory, hotbar and own body in F5.
+
+Tests added: none (documentation only).
+
 ## Owner's test steps (B9.1)
 
 1. **Inventory (E).** Each bottle has its own liquid colour:
@@ -273,7 +281,7 @@ Numbered as in the brief's B9 steps (1-3 are B9.1's, 7 and 11 come with the swir
 
 **Multiplayer** (both games must be this build: protocol 4; an older friend build is refused at the join):
 
-8. The friend's potions are coloured in their inventory, hotbar and first-person hand.
+8. The friend's potions are coloured in their inventory and hotbar, and on the friend's own body in F5. The friend has no first-person held item yet (a multiplayer leftover in `docs/MULTIPLAYER.md` section 20), so nothing is checked there.
 9. Each player sees the other's held potion in its colour: the host holds Healing (red) in the main hand and Poison (green) in the offhand, and the friend sees both; then the other way round.
 10. The friend sees the host's dropped Poison and Fire Resistance and the framed Night Vision bottle and Poison arrow in their colours.
 
