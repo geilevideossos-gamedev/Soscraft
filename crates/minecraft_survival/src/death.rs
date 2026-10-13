@@ -615,18 +615,23 @@ fn vanishes(stack: &ItemStack) -> bool {
         .is_some_and(|level| level > 0)
 }
 
+pub fn dropped_on_death(death: &Death, inventory: &mut Inventory) -> Vec<ItemStack> {
+    if death.keep_inventory {
+        return Vec::new();
+    }
+    death_drops(inventory, |stack| crate::guns::weapon_of(stack).is_some())
+}
+
 pub fn death_drops(
     inventory: &mut Inventory,
-    stays: impl Fn(&ItemStack) -> bool,
+    destroyed: impl Fn(&ItemStack) -> bool,
 ) -> Vec<ItemStack> {
     let mut drops = Vec::new();
     for slot in (0..STORAGE_SLOTS).chain(EQUIPMENT_DROP_ORDER) {
         let Some(stack) = inventory.slots.get_mut(slot).and_then(Option::take) else {
             continue;
         };
-        if stays(&stack) {
-            inventory.slots[slot] = Some(stack);
-        } else if !vanishes(&stack) {
+        if !destroyed(&stack) && !vanishes(&stack) {
             drops.push(stack);
         }
     }
@@ -641,7 +646,7 @@ pub fn death_drops(
     drops.extend(
         loose
             .into_iter()
-            .filter(|stack| !stays(stack) && !vanishes(stack)),
+            .filter(|stack| !destroyed(stack) && !vanishes(stack)),
     );
     drops
 }
@@ -1122,11 +1127,14 @@ mod tests {
     }
 
     #[test]
-    fn death_drops_follow_vanilla_order_keep_guns_and_destroy_vanishing_items() {
-        let gun = |stack: &ItemStack| stack.id.starts_with("iw4:weapon/");
+    fn death_drops_follow_vanilla_order_drop_guns_and_destroy_killstreaks_and_vanishing_items() {
+        let killstreak = |stack: &ItemStack| stack.id.starts_with("iw4:weapon/");
         let mut inventory = Inventory::default();
         inventory.slots[0] = Some(ItemStack::new("iw4:weapon/5", 1));
+        inventory.slots[1] = Some(ItemStack::new("iw4l:m4", 1));
+        inventory.slots[2] = Some(ItemStack::new("iw4l:rifle_ammo", 40));
         inventory.slots[3] = Some(ItemStack::new("minecraft:dirt", 64));
+        inventory.slots[9] = Some(ItemStack::new("iw4l:frag_grenade", 5));
         inventory.slots[20] = Some(enchanted(
             "minecraft:iron_sword",
             ENCHANTMENTS,
@@ -1138,11 +1146,14 @@ mod tests {
         inventory.crafting[1] = Some(ItemStack::new("minecraft:stick", 2));
         inventory.workbench[4] = Some(ItemStack::new("iw4:weapon/9", 1));
         inventory.cursor = Some(ItemStack::new("minecraft:apple", 3));
-        let drops = death_drops(&mut inventory, gun);
+        let drops = death_drops(&mut inventory, killstreak);
         assert_eq!(
             ids(&drops),
             [
+                "iw4l:m4",
+                "iw4l:rifle_ammo",
                 "minecraft:dirt",
+                "iw4l:frag_grenade",
                 "minecraft:shield",
                 "minecraft:iron_boots",
                 "minecraft:iron_helmet",
@@ -1150,12 +1161,8 @@ mod tests {
                 "minecraft:apple",
             ]
         );
-        assert_eq!(drops[0].count, 64);
-        assert_eq!(
-            inventory.slots[0].as_ref().map(|stack| stack.id.as_str()),
-            Some("iw4:weapon/5")
-        );
-        assert!(inventory.slots[1..].iter().all(Option::is_none));
+        assert_eq!(drops[2].count, 64);
+        assert!(inventory.slots.iter().all(Option::is_none));
         assert!(inventory.crafting.iter().all(Option::is_none));
         assert!(inventory.workbench.iter().all(Option::is_none));
         assert!(inventory.cursor.is_none());
@@ -1180,6 +1187,32 @@ mod tests {
             ["minecraft:enchanted_book", "minecraft:diamond_pickaxe"]
         );
         assert!(drops[1].components.is_some());
+    }
+
+    #[test]
+    fn keep_inventory_keeps_guns_and_killstreaks_and_a_normal_death_drops_only_the_guns() {
+        let loaded = || {
+            let mut inventory = Inventory::default();
+            let mut gun = ItemStack::new("iw4l:m4", 1);
+            gun.components = Some(serde_json::json!({"minecraft:custom_data": {"iw4l": {"clip": 17}}}));
+            inventory.slots[0] = Some(gun);
+            inventory.slots[1] = Some(ItemStack::new("iw4:weapon/12", 1));
+            inventory.slots[2] = Some(ItemStack::new("iw4l:rifle_ammo", 30));
+            inventory
+        };
+        let death = |keep_inventory| Death {
+            spot: spot(0.0),
+            experience: 0,
+            keep_inventory,
+        };
+        let mut kept = loaded();
+        assert!(dropped_on_death(&death(true), &mut kept).is_empty());
+        assert_eq!(kept.slots, loaded().slots);
+        let mut lost = loaded();
+        let drops = dropped_on_death(&death(false), &mut lost);
+        assert_eq!(ids(&drops), ["iw4l:m4", "iw4l:rifle_ammo"]);
+        assert_eq!(drops[0], loaded().slots[0].clone().unwrap());
+        assert!(lost.slots.iter().all(Option::is_none));
     }
 
     #[test]

@@ -666,7 +666,7 @@ fn droppable(
     ctx: &Context<'_>,
 ) -> Vec<(McSlot, u8)> {
     let max = stack_limit(&inventory.recipes, carried);
-    let gun = weapon_of(carried).is_some();
+    let gun = minecraft_survival::guns::is_gun(carried);
     let mut out: Vec<(McSlot, u8)> = (0..36).map(|i| (McSlot::Inventory(i), max)).collect();
     match screen {
         McScreen::Inventory => {

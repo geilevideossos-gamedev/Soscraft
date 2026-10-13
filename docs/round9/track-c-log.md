@@ -322,9 +322,46 @@ IW4L_MINECRAFT_KIT=minecraft:chest,minecraft:dirt*16,iw4l:m4,iw4l:rifle_ammo*64
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:m4,iw4l:usp,iw4l:ak47,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,minecraft:chest,minecraft:dirt*16
 ```
 
+## C11.4 Drops, look on the ground, first-join loadout
+
+### 1. Guns drop on death and with Q and go into chests like any item
+
+Commit: the one after `188c2f61`.
+
+- **Changed:**
+  - `minecraft_survival` `death.rs`: the predicate of `death_drops` now names the items that are destroyed (like Curse of Vanishing), not the ones that stay. New `dropped_on_death(death, inventory)`: nothing with `keep_inventory`, else `death_drops` with "killstreak mirrors (`iw4:weapon/`) vanish". Fork guns, ammo, attachments and grenades drop in vanilla order with their components. `render_anim` `drop_on_death` (the one function the host and every friend use) calls it.
+  - `keep_guns` and the `Throw`, container and cursor arms of `keeps_gun` (`menus.rs`) were already limited to killstreak mirrors (`weapon_of` matches only `iw4:weapon/`), so Q, the in-menu Q, a cursor drop and every container cell take fork guns like any item. No change was needed there.
+  - **The offhand ban now covers fork guns** (the riot shield too; it is a gun): the three offhand arms of `keeps_gun` use `guns::is_gun`, and a new arm refuses a drag-spread of a gun that includes the offhand; `offhand::swap_hands` (F, host and friends) uses `is_gun`; creative `set_slot` refuses a gun in menu slot 45 (the offhand) with `BadSlot`; the host's drag targets (`render_anim` `minecraft_inventory.rs` `droppable`) leave the offhand out for a fork gun. A grenade, ammo or an attachment may sit in the offhand.
+  - **Netherite guns survive fire and lava on the ground.** Vendored `minecraftoss_world` `level/burning.rs` (a fork-added file) gains `add_fire_resistant_items(ids)`, a process-wide list read after its `FIRE_RESISTANT_ITEMS`; `ServerSim::new` registers `fork_items::fire_proof_ids()` (the Barrett and the M240). A `minecraft:damage_resistant` or `!minecraft:damage_resistant` component still decides first, as in vanilla.
+- **Tests:**
+  - `minecraft_survival` `death::tests::death_drops_follow_vanilla_order_drop_guns_and_destroy_killstreaks_and_vanishing_items` (renamed from `..._keep_guns_...`): an M4A1, rifle ammo and frags drop in slot order; the killstreak mirrors in the hotbar and the crafting table vanish; the inventory ends empty.
+  - `death::tests::keep_inventory_keeps_guns_and_killstreaks_and_a_normal_death_drops_only_the_guns`: with `keep_inventory` nothing drops or changes; without it the M4A1 drops with its clip and the killstreak mirror is gone.
+  - `menus::tests::fork_guns_drop_with_q_go_into_chests_and_stay_out_of_the_offhand`: a fork gun on the cursor is refused by the offhand cell and by a spread over it, F swaps of the riot shield are refused both ways, Q (`Throw`) drops the M4A1 with its clip, a shift-click puts the USP into a chest and a cursor drop outside throws a gun.
+  - `offhand::tests::swapping_hands_trades_the_selected_slot_with_the_offhand_but_never_a_gun` also covers the M4A1 and the riot shield both ways and lets a frag swap.
+  - `creative::tests::a_gun_never_goes_into_the_creative_offhand`.
+  - `minecraft_terrain` `server::tests::a_netherite_gun_survives_lava_and_other_guns_burn` (26.3 data): the Barrett floats in lava with its clip, the M4A1 burns up.
+  - Vendored `minecraftoss_world` `level::burning::tests::added_items_resist_fire_like_netherite`.
+- **Decisions:**
+  - **Killstreak items are destroyed on death, not kept.** Before this commit they stayed in their slot. MW2 still owns the weapon while dead, so `sync_weapons` mints the mirror again on the first free hotbar slot if MW2 keeps it after the respawn (MW2's own rule for earned streaks); nothing of it ever drops.
+  - **Netherite fire resistance is a hook in the vendored burning code,** not a component added to the in-memory gun: items reach the level from many places (Q, death, broken chests, hoppers), and the hook covers them all without changing the item.
+- **Owner's test steps** (survival, a new world, kit below; the kit fills the backpack):
+  1. Move the M4A1 to hotbar slot 1 and fire a few rounds. Press Q: the M4A1 drops (no MW2 gun is held any more). Pick it up again: its tooltip shows the same clip. **Screenshot 1** (the tooltip after pickup).
+  2. Open the inventory, pick up the riot shield and click the offhand slot: it stays on the cursor. Put the USP in hotbar slot 2, select it and press F: nothing swaps. Put a frag in hotbar slot 3 and press F: the frag goes into the offhand. **Screenshot 2.**
+  3. Place a chest and shift-click the AK-47 and the USP into it: both go in. Take them out again.
+  4. Dig a hole two blocks wide, pour the lava bucket into it, and press Q on the Barrett and then the M4A1 while looking into the lava: the M4A1 burns up, the Barrett floats on the lava and does not burn. **Screenshot 3** (the Barrett on the lava).
+  5. `/kill`: the guns, the ammo and the frags drop and can be picked up (they may still look like plain items until the next commit). Respawn: no gun is given back.
+  6. `/gamerule keep_inventory true`, `/kill`: everything stays in its slot. `/gamerule keep_inventory false`.
+  7. `/gamemode creative`, open the creative inventory tab, pick up the M4A1 and click the offhand slot: it stays on the cursor. `/gamemode survival`.
+  8. Two windows: the friend repeats steps 1, 2 and 5 in their window, and the host sees the friend's dropped gun lying on the ground. **Screenshot 4** (friend window).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:ak47,iw4l:usp,iw4l:barrett,iw4l:riotshield,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,iw4l:frag_grenade*8,minecraft:chest,minecraft:lava_bucket,minecraft:cobblestone*16
+```
+
 ## Vendored minecraftoss files
 
-Patched by this track so far (3): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`. Added: none.
+Patched by this track so far (4): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file). Added: none.
 
 ## Protocol
 
@@ -340,3 +377,4 @@ Patched by this track so far (3): `player/src/item_catalog.rs`, `core/src/item.r
 - `MINECRAFT-SURVIVAL.md`, the guns section, replacing the free Intervention, SPAS-12 and UMP45 and the class guns as hotbar mirrors: "MW2 holds exactly the fork guns on the hotbar, in hotbar order, each gun once. A gun in the backpack, a chest or on the cursor is not in MW2. Selecting a hotbar gun raises it. The loaded rounds live on the item, so a gun put away and taken back keeps its clip, and two copies of one gun keep one clip each. MW2's own weapon drop and pickups are off in Minecraft worlds. For now the reserve ammo and the grenades still refill; ammo items and grenade slots come later. Killstreak weapons are still hotbar mirrors."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's guns follow their own hotbar the same way, through the same host function, and the host keeps each player's bound gun copies per UUID."
 - `MINECRAFT-SURVIVAL.md`, the guns section: "Killstreak items cannot go into a chest or any other container cell, into the offhand, or be dropped with Q or from the cursor."
+- `MINECRAFT-SURVIVAL.md`, the guns section: "Guns drop with Q, go into chests and every other container, and drop on death like any item, with their loaded rounds; `keep_inventory` keeps them. Killstreak items vanish on death. No gun goes into the offhand (the riot shield included). The Barrett and the M240 are netherite and survive fire and lava on the ground."

@@ -100,6 +100,11 @@ pub fn set_slot(
     match slot {
         CreativeSlot::Menu(index) => {
             match menu_place(index).ok_or(Refused::BadSlot(index))? {
+                Place::Slot(crate::offhand::OFFHAND)
+                    if stack.as_ref().is_some_and(crate::guns::is_gun) =>
+                {
+                    return Err(Refused::BadSlot(index));
+                }
                 Place::Slot(i) => inventory.slots[i] = stack,
                 Place::Crafting(i) => inventory.crafting[i] = stack,
             }
@@ -368,6 +373,24 @@ mod tests {
             ),
             Err(Refused::TooMany { count: 2, max: 1 })
         );
+    }
+
+    #[test]
+    fn a_gun_never_goes_into_the_creative_offhand() {
+        let mut inventory = Inventory::default();
+        for gun in ["iw4l:m4", "iw4l:riotshield"] {
+            let stack = Some(ItemStack::new(gun, 1));
+            let set = set_slot(&creative(), &mut inventory, CreativeSlot::Menu(45), stack, &any);
+            assert_eq!(set, Err(Refused::BadSlot(45)));
+            let stack = Some(ItemStack::new(gun, 1));
+            let set = set_slot(&creative(), &mut inventory, CreativeSlot::Menu(36), stack, &any);
+            assert_eq!(set, Ok(None));
+        }
+        assert!(inventory.slots[40].is_none());
+        let grenade = Some(ItemStack::new("iw4l:frag_grenade", 3));
+        let set = set_slot(&creative(), &mut inventory, CreativeSlot::Menu(45), grenade, &any);
+        assert_eq!(set, Ok(None));
+        assert_eq!(inventory.slots[40].as_ref().map(|s| s.count), Some(3));
     }
 
     #[test]

@@ -15,7 +15,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 use crate::actions::{Body, Effect};
 use crate::data::GameData;
 use crate::entities::Entities;
-use crate::guns::{HOTBAR, weapon_of};
+use crate::guns::{HOTBAR, is_gun, weapon_of};
 use crate::level::Terrain;
 use crate::offhand::OFFHAND;
 use crate::player::Player;
@@ -408,16 +408,22 @@ fn keeps_gun(
 ) -> bool {
     let offhand = MenuSlot::Inventory(OFFHAND as u8);
     let gun = |stack: Option<ItemStack>| stack.is_some_and(|stack| weapon_of(&stack).is_some());
+    let any_gun = |stack: Option<ItemStack>| stack.is_some_and(|stack| is_gun(&stack));
     match action {
         MenuAction::Swap { slot, hotbar } if usize::from(*hotbar) == OFFHAND => {
-            gun(stack_at(menu, inventory, containers, *slot))
+            any_gun(stack_at(menu, inventory, containers, *slot))
         }
         MenuAction::Swap { slot, hotbar } if *slot == offhand => {
-            gun(inventory.slots.get(usize::from(*hotbar)).cloned().flatten())
+            any_gun(inventory.slots.get(usize::from(*hotbar)).cloned().flatten())
         }
         MenuAction::Slot {
             slot, shift: false, ..
-        } if *slot == offhand => gun(inventory.cursor.clone()),
+        } if *slot == offhand => any_gun(inventory.cursor.clone()),
+        MenuAction::Spread { slots, .. }
+            if slots.contains(&offhand) && any_gun(inventory.cursor.clone()) =>
+        {
+            true
+        }
         MenuAction::Throw { slot, .. } => gun(stack_at(menu, inventory, containers, *slot)),
         MenuAction::Slot {
             slot: MenuSlot::Container(_),
@@ -1904,5 +1910,53 @@ mod tests {
         let cells = containers.cells(&chest());
         let held: Vec<&str> = cells.iter().flatten().map(|s| s.id.as_str()).collect();
         assert_eq!(held, vec!["minecraft:dirt"]);
+    }
+
+    #[test]
+    fn fork_guns_drop_with_q_go_into_chests_and_stay_out_of_the_offhand() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let mut m4 = ItemStack::new("iw4l:m4", 1);
+        m4.components = Some(serde_json::json!({"minecraft:custom_data": {"iw4l": {"clip": 17}}}));
+        let usp = ItemStack::new("iw4l:usp", 1);
+        let shield = ItemStack::new("iw4l:riotshield", 1);
+        host.inventory.slots[0] = Some(m4.clone());
+        host.inventory.slots[1] = Some(usp.clone());
+        host.inventory.slots[2] = Some(shield.clone());
+        let mut act = |host: &mut Player, action: MenuAction| {
+            apply(host, &mut containers, books(&book), &action, 0.5)
+        };
+        let offhand = MenuSlot::Inventory(OFFHAND as u8);
+        act(&mut host, slot(1, false));
+        act(&mut host, MenuAction::Slot { slot: offhand, right: false, shift: false });
+        assert_eq!(host.inventory.cursor, Some(usp.clone()));
+        let spread = MenuAction::Spread {
+            slots: vec![offhand, MenuSlot::Inventory(20)],
+            right: true,
+        };
+        act(&mut host, spread);
+        assert_eq!(host.inventory.cursor, Some(usp.clone()));
+        act(&mut host, slot(1, false));
+        act(&mut host, MenuAction::Swap { slot: MenuSlot::Inventory(2), hotbar: OFFHAND as u8 });
+        act(&mut host, MenuAction::Swap { slot: offhand, hotbar: 2 });
+        assert_eq!(host.inventory.slots[2], Some(shield));
+        assert!(host.inventory.slots[OFFHAND].is_none());
+        let thrown = act(&mut host, MenuAction::Throw { slot: MenuSlot::Inventory(0), whole: false });
+        assert_eq!(thrown.thrown, vec![m4]);
+        assert!(host.inventory.slots[0].is_none());
+        assert!(open(&mut host, Open::Block(chest()), Text::literal("Chest"), 0));
+        let mut act = |host: &mut Player, action: MenuAction| {
+            apply(host, &mut containers, books(&book), &action, 0.5)
+        };
+        act(&mut host, slot(1, true));
+        assert!(host.inventory.slots[1].is_none());
+        act(&mut host, slot(2, false));
+        let dropped = act(&mut host, MenuAction::Outside { right: false });
+        assert_eq!(dropped.thrown.len(), 1);
+        assert!(host.inventory.cursor.is_none());
+        let cells = containers.cells(&chest());
+        assert_eq!(cells.iter().flatten().cloned().collect::<Vec<_>>(), vec![usp]);
     }
 }

@@ -47,6 +47,18 @@ const ON_FIRE_DAMAGE: f32 = 1.0;
 pub const BURN_SOUND: &str = "minecraft:entity.generic.burn";
 pub const EXTINGUISH_SOUND: &str = "minecraft:entity.generic.extinguish_fire";
 
+static EXTRA_FIRE_RESISTANT: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+pub fn add_fire_resistant_items(ids: Vec<String>) {
+    let _ = EXTRA_FIRE_RESISTANT.set(ids);
+}
+
+fn extra_fire_resistant(id: &str) -> bool {
+    EXTRA_FIRE_RESISTANT
+        .get()
+        .is_some_and(|ids| ids.iter().any(|extra| extra == id))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FireDamage {
     InFire,
@@ -125,8 +137,7 @@ fn resistant_types(stack: &Stack) -> Option<Vec<String>> {
         _ => None,
     };
     patched.or_else(|| {
-        FIRE_RESISTANT_ITEMS
-            .contains(&stack.id.as_str())
+        (FIRE_RESISTANT_ITEMS.contains(&stack.id.as_str()) || extra_fire_resistant(&stack.id))
             .then(|| vec![IS_FIRE_TAG.to_owned()])
     })
 }
@@ -489,6 +500,16 @@ mod tests {
         ] {
             assert!(!fire_immune(&Stack::new(id, 1)), "{id}");
         }
+    }
+
+    #[test]
+    fn added_items_resist_fire_like_netherite() {
+        add_fire_resistant_items(vec!["test:fire_proof".to_owned()]);
+        let stack = Stack::new("test:fire_proof", 1);
+        assert!(fire_immune(&stack));
+        assert!(resists(&stack, "minecraft:lava"));
+        assert!(!resists(&stack, "minecraft:cactus"));
+        assert!(!fire_immune(&Stack::new("test:plain", 1)));
     }
 
     #[test]

@@ -1104,11 +1104,8 @@ pub(crate) fn drop_on_death(
     let Some(death) = death_watch.take().filter(|death| !death.keep_inventory) else {
         return;
     };
-    let guns = |stack: &minecraftoss_player::inventory::ItemStack| {
-        minecraft_survival::guns::weapon_of(stack).is_some()
-    };
     let eye = glam::DVec3::from_array(death.spot.eye);
-    for stack in minecraft_survival::death::death_drops(inventory, guns) {
+    for stack in minecraft_survival::death::dropped_on_death(&death, inventory) {
         entities.view.world_items.drop_on_death(stack, eye);
     }
     entities.award_experience(death.spot.feet, death.experience);

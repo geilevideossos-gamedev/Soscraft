@@ -905,6 +905,14 @@ pub fn get(id: &str) -> Option<&'static ForkItem> {
     index().get(id).copied()
 }
 
+pub fn fire_proof_ids() -> Vec<String> {
+    rows()
+        .iter()
+        .filter(|row| row.fire_proof)
+        .map(|row| row.id.to_owned())
+        .collect()
+}
+
 pub fn is_fork(id: &str) -> bool {
     get(id).is_some()
 }

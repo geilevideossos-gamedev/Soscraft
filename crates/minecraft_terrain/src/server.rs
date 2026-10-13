@@ -287,6 +287,7 @@ impl ServerSim {
         let worldgen: &'static WorldGen = leaked;
         let range = states.vertical_range();
         let mut level = Level::new(&worldgen.library, range.start, range.end - range.start);
+        minecraftoss_world::level::burning::add_fire_resistant_items(crate::fork_items::fire_proof_ids());
         level.random_sequences = minecraftoss_core::loot::RandomSequences::new(worldgen.terrain.seed);
         level.destroyed = Some(Vec::new());
         if let Err(e) = level.set_dimension(dimension_type) {
@@ -7282,6 +7283,24 @@ mod tests {
         let (low, high) = heights.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &y| (lo.min(y), hi.max(y)));
         assert!(low > 201.4 && high < 202.0 && high > 201.7, "{low} {high}");
         assert!(burn_sounds(&server).is_empty());
+    }
+
+    #[test]
+    fn a_netherite_gun_survives_lava_and_other_guns_burn() {
+        let Some((mut server, mut scene)) = burn_world() else { return };
+        lava_pool(&mut server, &mut scene, (5, 201, 5));
+        lava_pool(&mut server, &mut scene, (11, 201, 11));
+        let clip = Some(r#"{"minecraft:custom_data":{"iw4l":{"clip":5}}}"#);
+        let barrett = server.spawn_item("iw4l:barrett", 1, clip, [5.5, 202.5, 5.5], [0.0; 3], 10, 0);
+        let m4 = server.spawn_item("iw4l:m4", 1, clip, [11.5, 202.5, 11.5], [0.0; 3], 10, 0);
+        for _ in 0..300 {
+            server.tick();
+        }
+        assert!(alive(&server, m4).is_none(), "an iron gun burns up in lava");
+        let kept = alive(&server, barrett).expect("the Barrett is netherite and survives lava");
+        assert!(!kept.on_fire);
+        let components: serde_json::Value = serde_json::from_str(kept.components.as_deref().unwrap()).unwrap();
+        assert_eq!(components["minecraft:custom_data"]["iw4l"]["clip"], 5);
     }
 
     #[test]
