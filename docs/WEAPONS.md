@@ -481,7 +481,7 @@ All grenade recipes are shapeless, `category: "equipment"`, groups `iw4l_lethal`
 | Flash Grenade | `iw4l:flash_grenade` | `iw4:weapon/flash_grenade_mp` | tactical | `gunpowder`, `glowstone_dust` (the flash), `iron_nugget` | 2 |
 | Stun Grenade | `iw4l:concussion_grenade` | `iw4:weapon/concussion_grenade_mp` | tactical | `gunpowder`, `fermented_spider_eye` (vanilla's slowness reagent), `iron_nugget` | 2 |
 | Smoke Grenade | `iw4l:smoke_grenade` | `iw4:weapon/smoke_grenade_mp` | tactical | `#minecraft:coals`, `paper`, `iron_nugget` | 2 |
-| Tactical Insertion | `iw4l:tactical_insertion` | `iw4:weapon/flare_mp` | tactical | `iron_ingot`, `redstone_torch` (the flare), `crying_obsidian` (the respawn link, as in a respawn anchor) | 1 |
+| Tactical Insertion | `iw4l:tactical_insertion` | `iw4:weapon/flare_mp` | lethal | `iron_ingot`, `redstone_torch` (the flare), `crying_obsidian` (the respawn link, as in a respawn anchor) | 1 |
 
 Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's crater (power 3.6 against TNT's 4).
 
@@ -527,8 +527,9 @@ Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's
 ### 10.6 Tactical insertion
 
 The class menu offers it, so it is an item with a recipe. In a Minecraft world it does what it does in MW2, mapped onto Minecraft's respawn:
-- Shift+G plants MW2's flare. The sim queues `Flare { pos }`.
-  - MW2 plants the flare in GSC (`monitorTIUse` in `maps/mp/perks/_perkfunctions.gsc`, `common_mp.ff`), which runs only for the `specialty_tacticalinsertion` equipment perk. Our class menu offers `flare_mp` as the tactical grenade instead, so that script never runs, and MW2's spawn point (`setSpawnPoint`) is not used in Minecraft worlds either.
+- G plants MW2's flare from the lethal slot. The sim queues `Flare { pos }`.
+  - **Lethal, not tactical (checked):** in the owner's `common_mp.ff`, `flare_mp` has MW2 offhand class 5 ("other", the equipment class of C4, the claymore and semtex; frag 1, throwing knife 4, flash 3, stun and smoke 2), and the sim gives class 1, 4 and 5 to the lethal slot. MW2 itself carries the tactical insertion as equipment. So `iw4l:tactical_insertion` is a lethal item (slot 43, recipe group `iw4l_lethal`); in the tactical slot MW2 could never throw it.
+  - MW2 plants the flare in GSC (`monitorTIUse` in `maps/mp/perks/_perkfunctions.gsc`, `common_mp.ff`), which runs only for the `specialty_tacticalinsertion` equipment perk. Our class menu offers `flare_mp` as an ordinary class grenade instead, so that script never runs, and MW2's spawn point (`setSpawnPoint`) is not used in Minecraft worlds either.
   - The plant site is therefore the throw: `combat::plant_flare`, called for `OffhandUsed` next to `use_offhand_round`, on the host in a Minecraft world, for a client that publishes an arsenal. Its position is where MW2 would respawn the player (`playerSpawnPos`, the thrower's own feet on the ground): the thrower's origin, traced down to the ground below (up to 2048 units, MW2's ground search).
 - The host stores it as the player's flare respawn (level and position). The next respawn of that player is at the flare, ahead of a bed or respawn anchor. That respawn uses it up, and so does the flare being destroyed or a second flare being planted.
   - The check is `respawn::respawn_at_flare`, before the bed and anchor logic of `respawn::respawn`. Like MW2's `tiValidationCheck`, a flare whose spot is now blocked (a solid block or fluid at the feet or head) is dropped and the bed, anchor or world spawn is used. A flare in another dimension switches the player there.
@@ -735,7 +736,7 @@ Setup:
    2. Press E: the two slots are right of the offhand. An iron block is refused in the lethal slot.
    3. Take the frag stack out of the lethal slot, put one frag back and leave the rest in the backpack. Throw it: the slot refills with frags.
    4. Swap the semtex into the lethal slot and throw it with G. **Screenshot 8.**
-9. **Tactical insertion.** Put it in the tactical slot, plant it with Shift+G, walk away and `/kill`. You respawn at the flare once. The next death respawns you at your bed or the world spawn.
+9. **Tactical insertion.** Put it in the lethal slot, plant it with G, walk away and `/kill`. You respawn at the flare once. The next death respawns you at your bed or the world spawn.
 10. **Damage between players (H and F).**
     1. F shoots unarmoured H once in the chest with an M4A1: about 1.5 hearts.
     2. H puts on the iron set: an M4A1 hit takes about 0.3 heart. F puts FMJ on the M4A1: about 0.6 heart. **Screenshot 9.**

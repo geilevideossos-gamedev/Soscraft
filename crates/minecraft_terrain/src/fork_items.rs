@@ -861,6 +861,14 @@ static ROWS: [ForkItem; 94] = [
         "weapon_c4",
     ),
     grenade(
+        "iw4l:tactical_insertion",
+        "iw4:weapon/flare_mp",
+        Kind::Lethal,
+        "Tactical Insertion",
+        Middle,
+        "specialty_tactical_insert",
+    ),
+    grenade(
         "iw4l:flash_grenade",
         "iw4:weapon/flash_grenade_mp",
         Kind::Tactical,
@@ -883,14 +891,6 @@ static ROWS: [ForkItem; 94] = [
         "Smoke Grenade",
         Early,
         "weapon_smokegrenade",
-    ),
-    grenade(
-        "iw4l:tactical_insertion",
-        "iw4:weapon/flare_mp",
-        Kind::Tactical,
-        "Tactical Insertion",
-        Middle,
-        "specialty_tactical_insert",
     ),
 ];
 
@@ -1155,8 +1155,8 @@ mod tests {
         assert_eq!(count(Kind::Ammo), 7);
         assert_eq!(count(Kind::Attachment), 13);
         assert_eq!(count(Kind::Part), 2);
-        assert_eq!(count(Kind::Lethal), 5);
-        assert_eq!(count(Kind::Tactical), 4);
+        assert_eq!(count(Kind::Lethal), 6);
+        assert_eq!(count(Kind::Tactical), 3);
     }
 
     #[test]
@@ -1170,7 +1170,7 @@ mod tests {
             assert_eq!(grenade_slot(row.id), expected, "{}", row.id);
         }
         assert_eq!(grenade_slot("iw4l:semtex"), Some(43));
-        assert_eq!(grenade_slot("iw4l:tactical_insertion"), Some(44));
+        assert_eq!(grenade_slot("iw4l:tactical_insertion"), Some(43));
         assert_eq!(grenade_slot("minecraft:snowball"), None);
     }
 

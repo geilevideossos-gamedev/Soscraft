@@ -1263,6 +1263,31 @@ Commit: the one after `7660486d`. `Survival::gun_armor` (from `54504900`) used `
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:fmj*2,iw4l:barrett,iw4l:sniper_rounds*16,iw4l:rpd,iw4l:lmg_ammo*64,iw4l:frag_grenade*16,minecraft:crafting_table,minecraft:leather_chestplate,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:diamond_helmet,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying*4,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:golden_apple*16,minecraft:zombie_spawn_egg*2,minecraft:cooked_beef*32
 ```
 
+## Review of C11.9 to C14
+
+### 1. The tactical insertion goes in the lethal slot, where MW2 keeps it
+
+Commit: the one after `6c184122`. Fixes `edcd9cc5` and `d9247254`.
+
+- **Defect:** `iw4l:tactical_insertion` was a tactical item (slot 44, Shift+G), but `flare_mp` is MW2 offhand class 5 ("other"), which the sim's `step::offhand_slot` gives to the lethal slot. `item::follow_grenades` refuses a weapon whose class does not fit its slot, so a tactical insertion in slot 44 was never given to MW2 and Shift+G could not plant it in the real game. The sim tests used class 2 as a stand-in, so they passed.
+- **Checked in the owner's data:** a throwaway Python probe (not committed) inflated the owner's `common_mp.ff` and read each grenade's `WeaponDef.offhandClass` at the loader's x64 offset 104 (`fastfile_iw4` `load/weapon.rs`): frag 1, semtex 5, throwing knife 4, claymore 5, C4 5, flash 3, stun 2, smoke 2, `flare_mp` 5, M4A1 0. MW2 itself carries the tactical insertion as equipment.
+- **Changed:**
+  - `minecraft_terrain/src/fork_items.rs`: the tactical insertion row is `Kind::Lethal` and moves after C4, so the creative tab and the recipe book keep lethals before tacticals. `grenade_slot` now sends it to 43, so `fits`, shift-click, pickups and the first-join loadout (a class whose lethal is `flare_mp` now gets 32 of them instead of frags) follow.
+  - `minecraft_terrain/data/fork_recipes.json`: its recipe group is `iw4l_lethal` (the recipe itself is unchanged).
+  - `docs/WEAPONS.md` 10.1 (the table), 10.6 (G plants it, the probe's values) and the test step 9.
+- **Tests:** `sim` `item::arsenal_tests`: the test content's `flare_mp` has the real class 5, and `a_tactical_insertion_is_thrown_from_the_lethal_slot_like_mw2_equipment` (in the lethal slot it becomes the lethal offhand with class 5 and its count; published in the tactical slot it is refused and has 0). `minecraft_terrain` `fork_items::tests`: 6 lethal and 3 tactical rows, `grenade_slot` of the tactical insertion is 43. `minecraft_survival` `menus::tests`: the lethal slot accepts it, the tactical slot refuses it. `test -p minecraft_terrain -p minecraft_survival -p sim` (sim 153) and `check -p launcher` green.
+- **Decision:** follow the data (the brief's rule for a WEAPONS.md fact the data proves wrong). Making the sim treat `flare_mp` as a tactical would have needed a second class-5 offhand next to C4 in the same MW2 throw path.
+- **Owner's test steps** (survival, a new world `IW4L_MINECRAFT_WORLD=r9-insertion-lethal`, kit below; replaces steps 1 and 4-9 of "A planted tactical insertion is a one-use respawn point", which said tactical slot and Shift+G):
+  1. Place the bed and right-click it. Open the inventory and shift-click the tactical insertions: they go into the lethal slot (the left frame). Click them into the tactical slot: refused. **Screenshot 1.**
+  2. Walk 30 blocks away, face north, press G: the flare is thrown and the lethal frame shows 3. Walk 20 blocks on, `/kill`: you respawn where you threw it, facing north. **Screenshot 2.**
+  3. `/kill` again: you respawn at the bed.
+  4. Take the frags into the lethal slot instead and press G: a frag is thrown, as before.
+- **Kit** (4 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed,iw4l:tactical_insertion*4,iw4l:frag_grenade*16,minecraft:cobblestone*64
+```
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.
@@ -1333,6 +1358,7 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `MULTIPLAYER.md` section 13, after the gun damage sentence: "Each player's totem grace is mirrored the same way, so a friend's popped totem turns the host's bullets and grenades away for 4 s and the other way round."
 - `MULTIPLAYER.md` section 20, "PvP without guns": drop "MW2 damage through Minecraft armour" (built in round 9).
 - `decisions.md` (Not vanilla): "A popped totem of undying turns MW2 bullets and explosions and Minecraft explosions away for 80 ticks (4 s), on the sim clock and the Minecraft clock; knockback stays, the knife and other damage still hurt. Vanilla has only the 20-tick hurt cooldown."
+- Correction (review of C11.9 to C14), replacing the wording above wherever it names the tactical insertion: the grenade slot sentence reads "43 takes only lethal grenades (frag, semtex, throwing knife, claymore, C4, tactical insertion) and 44 only tactical ones (flash, stun, smoke)", and the respawn sentence begins "A planted tactical insertion (G with it in the lethal slot, where MW2 keeps it as equipment)".
 
 ### By line, as the brief names them
 

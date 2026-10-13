@@ -2126,7 +2126,7 @@ mod tests {
             assert_eq!(held_at(&host, 43), None, "{refused}");
             assert_eq!(carried(&host), Some((refused, 10)));
         }
-        for lethal in ["iw4l:semtex", "iw4l:throwing_knife", "iw4l:claymore", "iw4l:c4"] {
+        for lethal in ["iw4l:semtex", "iw4l:throwing_knife", "iw4l:claymore", "iw4l:c4", "iw4l:tactical_insertion"] {
             host.inventory.slots[43] = None;
             put_with_cursor(&mut host, 43, lethal);
             assert_eq!(held_at(&host, 43), Some((lethal, 10)));
@@ -2141,7 +2141,7 @@ mod tests {
     fn only_a_tactical_goes_in_the_tactical_slot() {
         let mut chat = CommandServer::new(crate::commands::HOST);
         let mut host = player(&mut chat, 0, "Steve");
-        for refused in ["minecraft:dirt", "iw4l:frag_grenade", "iw4l:rifle_ammo"] {
+        for refused in ["minecraft:dirt", "iw4l:frag_grenade", "iw4l:rifle_ammo", "iw4l:tactical_insertion"] {
             put_with_cursor(&mut host, 44, refused);
             assert_eq!(held_at(&host, 44), None, "{refused}");
             assert_eq!(carried(&host), Some((refused, 10)));
@@ -2150,7 +2150,6 @@ mod tests {
             "iw4l:flash_grenade",
             "iw4l:concussion_grenade",
             "iw4l:smoke_grenade",
-            "iw4l:tactical_insertion",
         ] {
             host.inventory.slots[44] = None;
             put_with_cursor(&mut host, 44, tactical);

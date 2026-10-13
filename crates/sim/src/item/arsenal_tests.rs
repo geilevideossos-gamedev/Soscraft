@@ -81,7 +81,7 @@ fn sim() -> crate::SimWorld {
         (FLASH, 3),
         (SMOKE, 2),
         (MARKER, 2),
-        (FLARE, 2),
+        (FLARE, 5),
     ] {
         equipment[weapon as usize] = EquipmentRuntimeFacts {
             offhand_class: class,
@@ -643,6 +643,30 @@ fn the_lethal_item_replaces_the_class_lethal() {
         "a tactical published as the lethal is refused, the last lethal stays"
     );
     assert_eq!(left(&mut sim, CLAYMORE), (0, 0));
+}
+
+#[test]
+fn a_tactical_insertion_is_thrown_from_the_lethal_slot_like_mw2_equipment() {
+    let mut sim = sim();
+    carrying(&mut sim, &[M4, FRAG, FLASH], M4);
+    sim.frame().client_meta_mut(ME).loadout = Some(crate::match_state::LoadoutSpec {
+        lethal: FRAG,
+        tactical: FLASH,
+        ..crate::match_state::LoadoutSpec::default()
+    });
+    let mut published = armed(grenades(Some((FLARE, 2)), Some((FLASH, 1))));
+    step(&mut sim, &mut published);
+    assert_eq!(weapons(&mut sim), vec![FLASH, FLARE]);
+    assert_eq!(offhands(&mut sim), (5, 3, FLARE, FLASH));
+    assert_eq!(left(&mut sim, FLARE), (2, 2));
+    published[0].1.arsenal = grenades(None, Some((FLARE, 2)));
+    step(&mut sim, &mut published);
+    assert_eq!(
+        left(&mut sim, FLARE),
+        (0, 0),
+        "flare_mp is offhand class 5, so the tactical slot cannot throw it"
+    );
+    assert_eq!(left(&mut sim, FLASH), (0, 0));
 }
 
 #[test]

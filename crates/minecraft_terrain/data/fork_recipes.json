@@ -92,5 +92,5 @@
   "iw4l:flash_grenade": {"type": "minecraft:crafting_shapeless", "category": "equipment", "group": "iw4l_tactical", "ingredients": ["minecraft:gunpowder", "minecraft:glowstone_dust", "minecraft:iron_nugget"], "result": {"id": "iw4l:flash_grenade", "count": 2}},
   "iw4l:concussion_grenade": {"type": "minecraft:crafting_shapeless", "category": "equipment", "group": "iw4l_tactical", "ingredients": ["minecraft:gunpowder", "minecraft:fermented_spider_eye", "minecraft:iron_nugget"], "result": {"id": "iw4l:concussion_grenade", "count": 2}},
   "iw4l:smoke_grenade": {"type": "minecraft:crafting_shapeless", "category": "equipment", "group": "iw4l_tactical", "ingredients": ["#minecraft:coals", "minecraft:paper", "minecraft:iron_nugget"], "result": {"id": "iw4l:smoke_grenade", "count": 2}},
-  "iw4l:tactical_insertion": {"type": "minecraft:crafting_shapeless", "category": "equipment", "group": "iw4l_tactical", "ingredients": ["minecraft:iron_ingot", "minecraft:redstone_torch", "minecraft:crying_obsidian"], "result": {"id": "iw4l:tactical_insertion"}}
+  "iw4l:tactical_insertion": {"type": "minecraft:crafting_shapeless", "category": "equipment", "group": "iw4l_lethal", "ingredients": ["minecraft:iron_ingot", "minecraft:redstone_torch", "minecraft:crying_obsidian"], "result": {"id": "iw4l:tactical_insertion"}}
 }
