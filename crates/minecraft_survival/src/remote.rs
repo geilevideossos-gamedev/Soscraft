@@ -1335,6 +1335,99 @@ mod tests {
     }
 
     #[test]
+    fn the_friend_s_dragon_glides_on_its_own_ticks_when_frames_come_late() {
+        use minecraft_terrain::ender_dragon::{DragonView, HISTORY_SENT, Sample, part_box};
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut friend = RemoteWorld::new(registries);
+        friend.apply(ToClient::Login(login(Dimension::End)));
+        let dragon = |tick: u32| {
+            let x = f64::from(tick);
+            DragonView {
+                id: minecraft_terrain::ender_dragon::FIRST_ID,
+                uuid: [0; 4],
+                position: glam::DVec3::new(x, 80.0, 0.0),
+                previous_position: glam::DVec3::new(x - 1.0, 80.0, 0.0),
+                y_rot: -90.0,
+                flap_time: tick as f32 * 0.05,
+                o_flap_time: tick as f32 * 0.05 - 0.05,
+                history: vec![
+                    Sample {
+                        y: 80.0,
+                        y_rot: -90.0
+                    };
+                    HISTORY_SENT
+                ],
+                health: 200.0,
+                hurt_time: 0,
+                death_time: 0,
+                sitting: false,
+                phase: 0,
+                parts: std::array::from_fn(|part| glam::DVec3::new(x + part as f64, 80.0, 0.0)),
+                tick_count: tick as i32,
+                nearest_crystal: None,
+            }
+        };
+        let frame = |tick: u32| {
+            let snapshot = EntitySnapshot {
+                dragons: vec![dragon(tick)],
+                ..EntitySnapshot::default()
+            };
+            StateFrame {
+                tick,
+                epoch: 0,
+                mobs: minecraft_net::messages::Blob(Vec::new()),
+                entities: minecraft_net::messages::Blob(
+                    minecraft_net::encode(Lane::State, &snapshot).unwrap(),
+                ),
+            }
+        };
+        let timing = crate::tick_rate::ClientTiming::default();
+        let mut tick = 0;
+        let mut drawn = Vec::new();
+        for frames in [1, 0, 2, 1, 1, 0, 2, 1, 1, 1].repeat(3) {
+            for _ in 0..frames {
+                tick += 1;
+                assert!(friend.apply_state(frame(tick)));
+            }
+            for _ in 0..4 {
+                let level = friend.level.as_mut().unwrap();
+                level
+                    .view
+                    .advance(timing.tick_seconds / 4.0, timing, &[], glam::DVec3::ZERO);
+                let view = level.view.drawn_dragons().remove(0);
+                drawn.push(
+                    view.previous_position
+                        .lerp(view.position, f64::from(level.view.partial()))
+                        .x,
+                );
+            }
+        }
+        for pair in drawn.windows(2) {
+            assert!(pair[1] >= pair[0], "the drawn dragon went back: {pair:?}");
+        }
+        assert!(drawn.last().unwrap() > &20.0, "it flew on");
+        let newest = dragon(tick);
+        let level = friend.level.as_ref().unwrap();
+        let parts: Vec<_> = level
+            .view
+            .shot_boxes(None)
+            .into_iter()
+            .filter(|(key, _)| crate::entities::dragon_part_key(newest.id, 0) >> 3 == key >> 3)
+            .collect();
+        assert_eq!(parts.len(), 8);
+        for (part, &feet) in newest.parts.iter().enumerate() {
+            let (low, high) = part_box(feet, part);
+            let key = crate::entities::dragon_part_key(newest.id, part);
+            assert!(
+                parts.contains(&(key, [low.x, low.y, low.z, high.x, high.y, high.z])),
+                "the host's newest box for part {part}"
+            );
+        }
+    }
+
+    #[test]
     fn chat_lines_show_and_the_command_level_is_kept() {
         let Some(registries) = registries() else {
             return;

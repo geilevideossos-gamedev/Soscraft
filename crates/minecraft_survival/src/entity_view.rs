@@ -16,7 +16,7 @@ use minecraftoss_player::items::{ItemEntity, WorldItems};
 
 use crate::entities::{
     CRYSTAL_KEY, FIREBALL_KEY, FRAME_KEY, MobMeshes, SHULKER_BULLET_KEY, TICK_SECONDS, bob_offset,
-    decode, dragon_flapping, dragon_part_key, encode, mirrored,
+    decode, dragon_part_key, encode, mirrored,
 };
 
 const FLAME_RANGE: f64 = 160.0;
@@ -43,6 +43,7 @@ pub struct EntityView {
     pub(crate) gateways: minecraft_terrain::end_gateway::ClientGateways,
     pub(crate) dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     pub(crate) dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
+    drawn_dragons: minecraft_terrain::client_dragon::ClientDragons,
     pub(crate) frames: Vec<minecraft_terrain::item_frame::FrameView>,
     pub(crate) growls: HashMap<u64, i32>,
     pub(crate) orbs: Vec<ServerOrb>,
@@ -83,6 +84,7 @@ impl EntityView {
             gateways: Default::default(),
             dragons: Vec::new(),
             dragon_fireballs: Vec::new(),
+            drawn_dragons: Default::default(),
             frames: Vec::new(),
             growls: HashMap::new(),
             orbs: Vec::new(),
@@ -127,6 +129,8 @@ impl EntityView {
             self.lids.tick();
             self.spawners.tick(near, &mut self.ambient);
             self.client.tick();
+            let flaps = self.drawn_dragons.tick();
+            self.dragon_voices(&flaps);
             for enderman in self.world.endermen() {
                 if let Some(mob) = self.client.get(enderman.id) {
                     self.portal.emit_enderman(mob.position, 0.6, 2.9);
@@ -205,13 +209,13 @@ impl EntityView {
         self.gateways
             .receive(std::mem::take(&mut snapshot.gateways), self.ticks);
         self.dragons = std::mem::take(&mut snapshot.dragons);
+        self.drawn_dragons.receive(&self.dragons);
         self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
         for fireball in &self.dragon_fireballs {
             self.ambient.breath_trail(fireball.position);
         }
         self.frames = std::mem::take(&mut snapshot.frames);
         self.bursts(snapshot);
-        self.dragon_voices();
         self.orbs = snapshot.orbs.clone();
         self.falling.receive(
             std::mem::take(&mut snapshot.falling),
@@ -439,12 +443,20 @@ impl EntityView {
         (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32
     }
 
-    fn dragon_voices(&mut self) {
+    pub fn drawn_dragons(&self) -> Vec<minecraft_terrain::ender_dragon::DragonView> {
+        self.drawn_dragons.views()
+    }
+
+    fn dragon_voices(&mut self, flaps: &[(u64, DVec3, bool)]) {
         use minecraft_terrain::ender_dragon::{FLAP_SOUND, GROWL_SOUND, SOUND_VOLUME};
+        let drawn = self.drawn_dragons.views();
         self.growls
-            .retain(|id, _| self.dragons.iter().any(|dragon| dragon.id == *id));
-        for dragon in &self.dragons {
-            if dragon_flapping(dragon.o_flap_time, dragon.flap_time) {
+            .retain(|id, _| drawn.iter().any(|dragon| dragon.id == *id));
+        for dragon in &drawn {
+            if flaps
+                .iter()
+                .any(|&(id, _, flapped)| id == dragon.id && flapped)
+            {
                 let pitch = 0.8 + self.random.next_float() * 0.3;
                 self.sounds
                     .push((FLAP_SOUND.to_owned(), dragon.position, SOUND_VOLUME, pitch));
@@ -806,16 +818,17 @@ impl EntityView {
             partial,
         );
         end_crystal_render::append_crystals(&mut out.models, &self.crystals, atlas, light, partial);
-        dragon_render::append_dragons(&mut out.models, &self.dragons, atlas, light, partial);
+        let drawn_dragons = self.drawn_dragons.views();
+        dragon_render::append_dragons(&mut out.models, &drawn_dragons, atlas, light, partial);
         dragon_render::append_beams(
             &mut out.models,
-            &self.dragons,
+            &drawn_dragons,
             &self.crystals,
             atlas,
             light,
             partial,
         );
-        dragon_render::append_rays(&mut out.translucent, &self.dragons, atlas, partial);
+        dragon_render::append_rays(&mut out.translucent, &drawn_dragons, atlas, partial);
         end_gateway_render::append_beams(
             &mut out.models,
             &mut out.translucent,
