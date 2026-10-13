@@ -992,7 +992,7 @@ impl Survival {
     }
 
     pub fn gun_armor(&self, inventory: &Inventory) -> GunArmor {
-        let (armor, toughness) = armor(inventory).value.unwrap_or_default();
+        let (armor, toughness) = armor(inventory).value.unwrap_or((0.0, 0.0));
         GunArmor {
             armor,
             toughness,

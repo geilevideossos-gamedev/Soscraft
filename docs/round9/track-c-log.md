@@ -1253,6 +1253,10 @@ Commit: the one after `415a85cb`. **Not vanilla** (WEAPONS.md 12).
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:frag_grenade*16,minecraft:totem_of_undying*4,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:golden_apple*16,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cooked_beef*32
 ```
 
+### 2. Gun armour is read without unwrap_or_default, as clippy asks
+
+Commit: the one after `7660486d`. `Survival::gun_armor` (from `54504900`) used `Option::unwrap_or_default`, which the workspace's clippy configuration disallows; it now reads `unwrap_or((0.0, 0.0))`. No behaviour change, no new test; `clippy -p sim -p minecraft_survival -p render_anim --all-targets` reports nothing in this group's code, `test -p minecraft_survival` green. No owner steps or kit.
+
 ## Combined kit for group damage-totem
 
 ```
