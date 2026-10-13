@@ -218,6 +218,15 @@ impl InventoryUi {
         self.language.as_ref()
     }
 
+    pub(crate) fn language_and_fork(
+        &mut self,
+    ) -> (
+        Option<&HashMap<String, String>>,
+        &mut crate::minecraft_fork_items::ForkLook,
+    ) {
+        (self.language.as_ref(), &mut self.fork)
+    }
+
     pub(crate) fn set_station_data(
         &mut self,
         book: std::sync::Arc<StationBook>,
@@ -292,10 +301,11 @@ impl InventoryUi {
     pub(crate) fn weapon_request(
         &mut self,
         inventory: &Inventory,
+        guns: &[Option<u32>; minecraft_survival::guns::HOTBAR],
         selected: &mut usize,
         held: u32,
     ) -> Option<u32> {
-        self.follow.request(inventory, selected, held)
+        self.follow.request_with(inventory, guns, selected, held)
     }
 
     pub(crate) fn set_weapons(

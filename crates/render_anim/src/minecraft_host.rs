@@ -316,6 +316,7 @@ pub(crate) fn host(
         host.leave_beds.retain(|leaving| leaving != client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
+        sim::voxel::forget_arsenal(*client);
     }
     read_inbox(&mut host, &mut wire, now);
     let host = &mut *host;
@@ -402,6 +403,7 @@ pub(crate) fn host(
             dt: time.delta_secs_f64(),
             now: time.elapsed_secs_f64(),
             instant: now,
+            guns: &mut *view.guns,
         };
         let mut told = Vec::new();
         let leaving = std::mem::take(&mut host.leave_beds);

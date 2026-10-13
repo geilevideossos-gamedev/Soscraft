@@ -972,6 +972,17 @@ pub fn table_hash() -> u64 {
 pub const CUSTOM_DATA: &str = "minecraft:custom_data";
 pub const FULL_CLIP: i64 = -1;
 
+pub fn has_alt_mode(attachments: &[String]) -> bool {
+    attachments.iter().any(|name| {
+        by_alias(name).is_some_and(|attachment| {
+            matches!(
+                attachment.id,
+                "iw4l:grenade_launcher" | "iw4l:underbarrel_shotgun"
+            )
+        })
+    })
+}
+
 pub fn with_full_clip(
     id: &str,
     components: Option<serde_json::Value>,
@@ -1011,14 +1022,7 @@ pub fn with_full_clip(
                 .collect()
         })
         .unwrap_or_default();
-    let alt = attachments.iter().any(|name| {
-        by_alias(name).is_some_and(|attachment| {
-            matches!(
-                attachment.id,
-                "iw4l:grenade_launcher" | "iw4l:underbarrel_shotgun"
-            )
-        })
-    });
+    let alt = has_alt_mode(&attachments);
     let mut fill = vec!["clip"];
     if attachments.iter().any(|name| name == "akimbo") {
         fill.push("clip_left");

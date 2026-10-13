@@ -314,6 +314,7 @@ pub(crate) fn movement(
         hand,
         steps,
         riding,
+        arsenal,
         ..
     } = player;
     let feet = sim::voxel::to_block(origin, ps.origin);
@@ -469,11 +470,9 @@ pub(crate) fn movement(
             hand.swing = None;
         }
     }
-    let holding = entities.as_ref().is_some_and(|_| {
-        inventory.slots[*selected]
-            .as_ref()
-            .is_none_or(|s| minecraft_survival::guns::weapon_of(s).is_none())
-    });
+    let holding = entities
+        .as_ref()
+        .is_some_and(|_| !arsenal.holds_gun(inventory, *selected));
     let holding_item = alive && holding && player_mode.interacts();
     let empty_hand = holding_item
         && entities
@@ -1125,6 +1124,7 @@ pub(crate) fn owned_weapons(ps: &PlayerState, authority: &sim::SimWorld) -> Vec<
             authority
                 .weapon_combat_row(w)
                 .is_some_and(|facts| facts.inventory_type == 0)
+                && sim::voxel::is_killstreak_weapon(authority.weapon_script_name(w))
         })
         .collect()
 }
@@ -1150,10 +1150,10 @@ pub(crate) fn tick_actor<'a>(
         pitch: ps.viewangles[0],
         main_hand: player.inventory.slots[player.selected]
             .as_ref()
-            .filter(|stack| {
+            .filter(|_| {
                 alive
                     && player.mode.interacts()
-                    && minecraft_survival::guns::weapon_of(stack).is_none()
+                    && !player.arsenal.holds_gun(&player.inventory, player.selected)
             })
             .map(|stack| stack.id.clone()),
         offhand: player.inventory.slots[minecraft_survival::offhand::OFFHAND]
@@ -1278,6 +1278,7 @@ pub(crate) struct FriendWorld<'a> {
     pub(crate) dt: f64,
     pub(crate) now: f64,
     pub(crate) instant: std::time::Instant,
+    pub(crate) guns: &'a mut crate::minecraft_fork_items::ForkLook,
 }
 
 pub(crate) fn mining_in<'m>(
@@ -1623,15 +1624,30 @@ pub(crate) fn step_friend(
         }
     }
     let owned = owned_weapons(&ps, world.authority);
+    let room = crate::minecraft_fork_items::gun_room(&ps, world.authority);
     let Player {
         survival,
         inventory,
         selected,
         follow,
+        mode,
+        arsenal,
         ..
     } = player;
     minecraft_survival::guns::sync_weapons(inventory, &owned);
-    follow.request(inventory, selected, ps.weapon);
+    let hotbar = minecraft_survival::guns::Hotbar {
+        selected: *selected,
+        room,
+        binding: &mut *arsenal,
+    };
+    let settled = world.guns.settle(inventory, mode, client.0, hotbar);
+    if settled.is_some_and(|settled| settled.too_many) {
+        stepped.lines.push(minecraft_commands::Clientbound::System {
+            text: minecraft_commands::Text::literal(minecraft_survival::guns::TOO_MANY_GUNS),
+            overlay: true,
+        });
+    }
+    follow.request_with(inventory, arsenal.guns(), selected, ps.weapon);
     let protected = life.alive
         && !survival.killed()
         && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some();

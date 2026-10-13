@@ -3,15 +3,12 @@ use minecraft_terrain::body_gear::BodyGear;
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraftoss_player::inventory::Inventory;
 
-use crate::guns::weapon_of;
+use crate::guns::is_gun;
 use crate::player::Player;
 
 pub fn body_gear(inventory: &Inventory, selected: usize, mode: &PlayerMode) -> Option<BodyGear> {
-    mode.interacts().then(|| {
-        minecraft_terrain::body_gear::body_gear(&inventory.slots, selected, |stack| {
-            weapon_of(stack).is_some()
-        })
-    })
+    mode.interacts()
+        .then(|| minecraft_terrain::body_gear::body_gear(&inventory.slots, selected, is_gun))
 }
 
 fn item_view(item: &minecraft_terrain::body_gear::GearItem) -> GearItem {

@@ -1240,7 +1240,7 @@ fn update(
             show_chat(&mut ui.chat, inventory_ui, &world.packs, std::slice::from_ref(&told));
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
-        let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, .. } = &mut *player;
+        let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, arsenal, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
@@ -1268,6 +1268,10 @@ fn update(
             ui.inventory_open = false;
         }
         inventory_ui.sync_weapons(inventory, &owned);
+        let hotbar = minecraft_survival::guns::Hotbar { selected: *selected, room: crate::minecraft_fork_items::gun_room(ps, &authority.0), binding: &mut *arsenal };
+        if inventory_ui.fork.settle(inventory, player_mode, local.0.0, hotbar).is_some_and(|settled| settled.too_many) {
+            ui.overlay_message = Some(frame::minecraft_ui::McOverlayMessage { text: minecraft_survival::guns::TOO_MANY_GUNS.to_owned(), ticks: frame::minecraft_ui::McOverlayMessage::TICKS });
+        }
         if std::mem::take(&mut ui.swap_hands) && alive && minecraft_survival::offhand::swap_hands(inventory, *selected) {
             survival.stop_eating();
             hand.blocking = None;
@@ -1310,7 +1314,7 @@ fn update(
         menu_effects.extend(minecraft_survival::menus::recheck_lids(minecraft_survival::menus::Lids { entities, terrain, openers, body: &mut body }, |key| open_cells.iter().find(|(each, _)| *each == key).map(|(_, cells)| cells.clone())));
         crate::minecraft_input::play(menu_effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
         let screen = minecraft_survival::menus::screen(player, containers);
-        let minecraft_survival::player::Player { survival, death_watch, inventory, selected, hand, .. } = &mut *player;
+        let minecraft_survival::player::Player { survival, death_watch, inventory, selected, hand, arsenal, .. } = &mut *player;
         for view in entities.take_lecterns(host_id) {
             if let Some(book) = view.taken {
                 let stack = entities.book_stack(&book);
@@ -1348,7 +1352,7 @@ fn update(
         };
         crate::minecraft_players::drop_on_death(death_watch, inventory, hand, entities);
         crate::minecraft_inventory::throw(&mut entities.view.world_items, thrown, &thrower);
-        ui.weapon_request = inventory_ui.weapon_request(inventory, selected, ps.weapon).filter(|_| player_mode.interacts());
+        ui.weapon_request = inventory_ui.weapon_request(inventory, arsenal.guns(), selected, ps.weapon).filter(|_| player_mode.interacts());
         let refused = ui.weapon_request.filter(|&weapon| sky_bits(&terrain.environment) != 0 && sim::voxel::needs_sky(authority.0.weapon_script_name(weapon)));
         if refused.is_some() && *refused_air != refused {
             show_chat(&mut ui.chat, inventory_ui, &world.packs, &[minecraft_survival::switch::air_support_unavailable()]);
@@ -1902,12 +1906,14 @@ pub(crate) struct HostView<'a> {
     pub(crate) ticked: Option<Dimension>,
     pub(crate) events: &'a mut Vec<sim::voxel::VoxelEvent>,
     pub(crate) minings: &'a mut HashMap<Dimension, crate::minecraft_mining::Mining>,
+    pub(crate) guns: &'a mut crate::minecraft_fork_items::ForkLook,
 }
 
 pub(crate) fn host_view(runtime: &mut Runtime) -> Option<HostView<'_>> {
     let Runtime { server, local, origins, shown, queues, shapes, shape_ids, world, inventory_ui, mining, sounds, light, ticked, events, minings, .. } = runtime;
     let world = world.as_ref()?;
-    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown, queues, shapes, shape_ids, packs: &world.packs, atlas: &world.atlas, language: inventory_ui.language(), mining, sounds: sounds.as_mut(), light: light.as_ref(), ticked: *ticked, events, minings })
+    let (language, guns) = inventory_ui.language_and_fork();
+    Some(HostView { server: server.as_mut()?, local: local.as_ref()?, origins, shown: *shown, queues, shapes, shape_ids, packs: &world.packs, atlas: &world.atlas, language, mining, sounds: sounds.as_mut(), light: light.as_ref(), ticked: *ticked, events, minings, guns })
 }
 
 pub(crate) fn show_lines(runtime: &Runtime, chat: &mut frame::McChat, lines: &[minecraft_commands::Clientbound]) -> bool {

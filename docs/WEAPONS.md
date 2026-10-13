@@ -161,7 +161,7 @@ pub fn take_spent(client: u32) -> Vec<Spent>
 `sustain_block_world_arsenal` (`sim/src/item.rs:152`, run at `step.rs:537`) becomes `apply_arsenal`. For each live client on a Minecraft map that has published:
 
 1. **Primaries.** The type-0 weapons in `ps.weapons` become exactly `guns[].weapon`. Missing guns are added with `inventory_add_weapon` without raising them, and others are removed with `take_player_weapon`.
-   - Kept: offhands, the alt modes of kept guns, and killstreak weapons.
+   - Kept: offhands, the alt modes of kept guns, killstreak weapons, and the weapons MW2's scripts hand out for a moment: the AC-130's `ac130_*` guns and the S&D `briefcase_bomb*` (`sim::voxel::kept_by_mw2`). Removing them would break the AC-130 and bomb planting.
    - If the held weapon was removed, it switches to `selected`, or to weapon 0 (`none`, which the sim already supports: `item.rs:97`).
 2. **Clips.** A gun that is not held gets its clips from its spec. The held gun keeps its live clips, and the sim queues `Clip` when they differ from the spec. With `rebind`, the spec clip is written even into the held gun.
 3. **Stock.** The stock of each gun's MW2 ammo index is `min(stock[ammo] - rounds not yet taken, the weapon's maxAmmo)`.
@@ -177,8 +177,10 @@ The sim queues spending **only at the sites that really spend**, never by compar
 `BLOCK_WORLD_GUNS` (the free Intervention, SPAS-12 and UMP45, `item.rs:146`) is removed, with its `give_weapon_to_ps_akimbo` raise.
 
 **MW2's own weapon drop on death and MW2 weapon pickups are switched off for clients that publish.** Otherwise a dead player's gun would exist twice: once as the Minecraft drop and once as an MW2 pickup.
+- The drop: MW2's only `dropItem` caller is `dropWeaponForDeath` (`maps/mp/gametypes/_weapons.gsc` in `common_mp.ff`, called inline from `PlayerKilled_internal` in `_damage.gsc`). For a gun it first asks `AnyAmmoForWeaponModes`, the only caller of that method, and returns when it is false; it does not check `dropItem`'s result there, so an `undefined` item would cause runtime errors. So the `anyammoforweaponmodes` native (`sim/src/script/host/natives/player.rs`) answers false for a publishing client, and `item::drop_weapon` (the `dropItem` native) returns nothing for one, which covers the riot shield branch, where the script checks `isDefined( item )`. No GSC error either way.
+- The pickups: walking over a dropped weapon (`item::try_touch_one`) and the use-key swap (`item::selected_item`) skip dropped weapons for a publishing client. Scavenger bags still work: what they give is overwritten at the next step.
 
-**The host glue** is one function, `minecraft_survival::guns::settle_arsenal(inventory, mode, spent, names) -> Arsenal`. It runs for the host next to `minecraft_world.rs:1268` and for each friend next to `minecraft_players.rs:1633`:
+**The host glue** is one function, `minecraft_survival::guns::settle_arsenal(inventory, mode, spent, (names, content), Hotbar { selected, room, binding }) -> Settled`. `Settled` holds the `Arsenal`, the hotbar slots whose gun MW2 holds (for `Follow` and for "is a gun in hand") and whether to show "Too many guns on the hotbar". `binding` is the player's `guns::Binding` (per UUID in `Player.arsenal`): which copy is bound and its clips, so a moved or swapped copy sets `rebind`. `minecraft_survival` does not depend on `sim`, so it has its own `Arsenal`, `Gun` and `Spent`, converted in `render_anim/src/minecraft_fork_items.rs` (`ForkLook::settle`, which also calls `set_arsenal`). It runs for the host next to `sync_weapons` in `minecraft_world.rs` and for each friend in `minecraft_players.rs` `step_friend`:
 
 1. Apply the drained `Spent` list:
    - `Rounds` removes items in vanilla's projectile search order: offhand, main hand, then slots 0-35.
@@ -188,6 +190,7 @@ The sim queues spending **only at the sites that really spend**, never by compar
 2. Build the gun list from hotbar slots 0-8 in slot order, each MW2 weapon once.
    - The list stops when `ps.weapons` would overflow: 15 slots, shared with the offhands, alt modes and killstreaks.
    - A gun past that point is inert. Selecting it shows "Too many guns on the hotbar" on the action bar.
+   - With 9 hotbar slots this needs at least 7 non-gun weapons in `ps.weapons`, so in play it is rare; the unit test covers it.
 3. Count `stock` per ammo type over slots 0-35 and the offhand. Containers and the grenade slots never count. Guns that share an ammo type see the same count.
 4. Call `set_arsenal`.
 

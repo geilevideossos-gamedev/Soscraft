@@ -3,10 +3,13 @@ use std::sync::{Arc, mpsc};
 
 use asset_game::{FamilyKey, LoadoutRules, WeaponRegistry, WeaponSelection};
 use minecraft_survival::gun_names::{self, GunContent, GunNames};
+use minecraft_survival::guns::{self, Hotbar, Settled, Spent};
 use minecraft_terrain::fork_items::{self, Icon, Kind};
+use minecraft_terrain::game_mode::PlayerMode;
 use minecraft_terrain::item_icon::SpriteClock;
 use minecraft_terrain::pack::PackStack;
-use minecraftoss_player::inventory::ItemStack;
+use minecraftoss_player::inventory::{Inventory, ItemStack};
+use playerstate_iw4::PlayerState;
 
 pub(crate) struct RegistryGuns<'a>(pub(crate) &'a WeaponRegistry);
 
@@ -195,6 +198,81 @@ impl ForkLook {
                 .map(|image| fitted(image, size as u32))),
         })
     }
+
+    pub(crate) fn settle(
+        &mut self,
+        inventory: &mut Inventory,
+        mode: &PlayerMode,
+        client: u32,
+        hotbar: Hotbar<'_>,
+    ) -> Option<Settled> {
+        let registry = self.registry.clone()?;
+        let spent = spent(client);
+        let content = RegistryGuns(&registry);
+        let settled =
+            guns::settle_arsenal(inventory, mode, spent, (&mut self.names, &content), hotbar);
+        sim::voxel::set_arsenal(client, published(&settled.arsenal));
+        Some(settled)
+    }
+}
+
+pub(crate) fn gun_room(ps: &PlayerState, authority: &sim::SimWorld) -> usize {
+    let taken = ps
+        .weapons
+        .iter()
+        .filter_map(|&weapon| u32::try_from(weapon).ok().filter(|&weapon| weapon != 0))
+        .filter(|&weapon| {
+            authority
+                .weapon_combat_row(weapon)
+                .is_none_or(|facts| facts.inventory_type != 0)
+                || sim::voxel::kept_by_mw2(authority.weapon_script_name(weapon))
+        })
+        .count();
+    guns::WEAPON_SLOTS.saturating_sub(taken)
+}
+
+fn published(arsenal: &guns::Arsenal) -> sim::voxel::Arsenal {
+    sim::voxel::Arsenal {
+        guns: arsenal
+            .guns
+            .iter()
+            .map(|gun| sim::voxel::GunSpec {
+                weapon: gun.weapon,
+                clip: gun.clip,
+                clip_left: gun.clip_left,
+                alt_clip: gun.alt_clip,
+                ammo: gun.ammo,
+                rebind: gun.rebind,
+            })
+            .collect(),
+        selected: arsenal.selected,
+        stock: arsenal.stock,
+        lethal: None,
+        tactical: None,
+        endless: arsenal.endless,
+    }
+}
+
+fn spent(client: u32) -> Vec<Spent> {
+    sim::voxel::take_spent(client)
+        .into_iter()
+        .map(|spent| match spent {
+            sim::voxel::Spent::Rounds { ammo, rounds } => Spent::Rounds { ammo, rounds },
+            sim::voxel::Spent::Grenade { weapon, delta } => Spent::Grenade { weapon, delta },
+            sim::voxel::Spent::Clip {
+                weapon,
+                clip,
+                clip_left,
+                alt_clip,
+            } => Spent::Clip {
+                weapon,
+                clip,
+                clip_left,
+                alt_clip,
+            },
+            sim::voxel::Spent::Flare { pos } => Spent::Flare { pos },
+        })
+        .collect()
 }
 
 fn decode(stems: &[&'static str]) -> Decoded {

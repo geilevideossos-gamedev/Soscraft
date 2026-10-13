@@ -478,6 +478,107 @@ pub fn take_totem_pops() -> Vec<u32> {
     TOTEM_POPS.lock().map_or_else(|_| Vec::new(), |mut pops| std::mem::take(&mut *pops))
 }
 
+pub const AMMO_TYPES: usize = 7;
+pub const NO_AMMO: u8 = u8::MAX;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GunSpec {
+    pub weapon: u32,
+    pub clip: i32,
+    pub clip_left: i32,
+    pub alt_clip: i32,
+    pub ammo: u8,
+    pub rebind: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Arsenal {
+    pub guns: Vec<GunSpec>,
+    pub selected: Option<u32>,
+    pub stock: [i32; AMMO_TYPES],
+    pub lethal: Option<(u32, i32)>,
+    pub tactical: Option<(u32, i32)>,
+    pub endless: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Spent {
+    Rounds { ammo: u8, rounds: i32 },
+    Grenade { weapon: u32, delta: i32 },
+    Clip { weapon: u32, clip: i32, clip_left: i32, alt_clip: i32 },
+    Flare { pos: [f32; 3] },
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Published {
+    pub(crate) arsenal: Arsenal,
+    pub(crate) held: u32,
+}
+
+static ARSENALS: std::sync::Mutex<Vec<(u32, Published)>> = std::sync::Mutex::new(Vec::new());
+static SPENT: std::sync::Mutex<Vec<(u32, Spent)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_arsenal(client: u32, arsenal: Arsenal) {
+    if let Ok(mut published) = ARSENALS.lock() {
+        match published.iter_mut().find(|(c, _)| *c == client) {
+            Some((_, held)) => held.arsenal = rebinds_kept(&held.arsenal, arsenal),
+            None => published.push((client, Published { arsenal, held: 0 })),
+        }
+    }
+}
+
+fn rebinds_kept(old: &Arsenal, mut new: Arsenal) -> Arsenal {
+    for gun in &mut new.guns {
+        gun.rebind |= old.guns.iter().any(|was| was.weapon == gun.weapon && was.rebind);
+    }
+    new
+}
+
+pub fn forget_arsenal(client: u32) {
+    if let Ok(mut published) = ARSENALS.lock() {
+        published.retain(|(c, _)| *c != client);
+    }
+    let _ = take_spent(client);
+}
+
+pub fn has_arsenal(client: u32) -> bool {
+    ARSENALS.lock().is_ok_and(|published| published.iter().any(|(c, _)| *c == client))
+}
+
+pub(crate) fn publishes_arsenal(client: u32) -> bool {
+    active() && has_arsenal(client)
+}
+
+pub fn take_spent(client: u32) -> Vec<Spent> {
+    let Ok(mut spent) = SPENT.lock() else {
+        return Vec::new();
+    };
+    let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *spent).into_iter().partition(|(c, _)| *c == client);
+    *spent = rest;
+    mine.into_iter().map(|(_, spent)| spent).collect()
+}
+
+pub(crate) fn with_arsenals<T>(run: impl FnOnce(&mut Vec<(u32, Published)>) -> (T, Vec<(u32, Spent)>)) -> Option<T> {
+    let (out, spent) = run(&mut *ARSENALS.lock().ok()?);
+    if let Ok(mut queued) = SPENT.lock() {
+        queued.extend(spent);
+    }
+    Some(out)
+}
+
+pub fn is_killstreak_weapon(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with("killstreak_") || (name.starts_with("airdrop_") && name.contains("marker"))
+}
+
+pub fn kept_by_mw2(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    is_killstreak_weapon(&lower)
+        || ["ac130_", "briefcase_bomb"]
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+}
+
 pub fn take_events() -> Vec<VoxelEvent> {
     EVENTS.lock().map(|mut events| std::mem::take(&mut *events)).unwrap_or_default()
 }
@@ -667,6 +768,12 @@ pub fn deactivate() {
     let _ = take_team_switches();
     if let Ok(mut clients) = DEATH_PROTECTED.lock() {
         clients.clear();
+    }
+    if let Ok(mut published) = ARSENALS.lock() {
+        published.clear();
+    }
+    if let Ok(mut spent) = SPENT.lock() {
+        spent.clear();
     }
     if let Ok(mut boxes) = MOB_BOXES.write() {
         boxes.iter_mut().for_each(Vec::clear);

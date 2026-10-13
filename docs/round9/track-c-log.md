@@ -203,6 +203,93 @@ IW4L_MINECRAFT_KIT=iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex","g
 IW4L_MINECRAFT_KIT=iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex","gl"]}}],iw4l:barrett,iw4l:ak47,iw4l:usp,iw4l:frag_grenade*16,iw4l:rocket*24,minecraft:chest,minecraft:ender_chest,minecraft:shulker_box,minecraft:item_frame*2,minecraft:anvil,minecraft:diamond_pickaxe,minecraft:oak_planks*16
 ```
 
+## C11.3 MW2 follows the hotbar
+
+### 1. MW2 holds only the guns on the Minecraft hotbar, so a gun put into a chest is not given again
+
+Commit: the one after `781ec027`. This is the fix for the owner's screenshot 12 (guns duplicated by a chest).
+
+- **Changed:**
+  - `sim/src/voxel.rs`: `GunSpec`, `Arsenal`, `Spent` (`Rounds`, `Grenade`, `Clip`, `Flare`), `set_arsenal(client, Arsenal)` and `take_spent(client)` as WEAPONS.md 5.1, plus `forget_arsenal`, `has_arsenal`, `is_killstreak_weapon` (`killstreak_*`, `airdrop_*marker*`) and `kept_by_mw2`. Per MW2 client id, in statics next to `DEATH_PROTECTED`, cleared in `deactivate`. A `rebind` the sim has not used yet survives the next `set_arsenal`.
+  - `sim/src/item.rs`: `sustain_block_world_arsenal` is now `apply_arsenal` (still run at `step.rs:537`). For each live client that published:
+    - Type-0 weapons not in the list are taken (`take_player_weapon`), and missing guns are added with `inventory_add_weapon` (no raise).
+    - A removed held gun switches to `selected` (no raise) or to weapon 0.
+    - Kept: offhands, alt modes, killstreak weapons and `kept_by_mw2`.
+    - Clips: a gun not held gets its spec clips (`-1` means full). The held gun keeps its live clips and queues `Spent::Clip` once when they differ from the spec. `rebind`, a switch to another gun, and creative write the spec into the held gun.
+    - Stock stays topped up for the published guns and their alt modes. Grenades and every other kept weapon keep today's full refill. Both are transitional (see Decisions).
+    - A client that never published (bots) keeps today's full refill.
+    - `BLOCK_WORLD_GUNS` (the free Intervention, SPAS-12 and UMP45) and its `give_weapon_to_ps_akimbo` raise are gone.
+  - MW2's own weapon drop and pickups are off for publishing clients:
+    - `item::drop_weapon` (the `dropItem` native) returns nothing, and the `anyammoforweaponmodes` native answers false (`sim/src/script/host/natives/player.rs`).
+    - `item::try_touch_one` (walking over a dropped weapon) and `item::selected_item` (the use-key swap) skip dropped weapons for them. Scavenger bags still work.
+  - `minecraft_survival::guns::settle_arsenal(inventory, mode, spent, (names, content), Hotbar { selected, room, binding }) -> Settled`:
+    - It writes `Spent::Clip` into the bound gun item's `custom_data.iw4l`: `clip`, `clip_left` only on akimbo, `alt_clip` only with a grenade launcher or underbarrel shotgun.
+    - It lists hotbar slots 0-8 in slot order, each MW2 weapon once. The selected copy is bound, else the first; moving or swapping the bound copy sets `rebind`. The list stops at `room`.
+    - A `-1` clip becomes the real size when the gun is bound.
+    - It counts ammo items over slots 0-35 and the offhand into `stock`, and sets `endless` in creative.
+    - A gun past `room` is inert; selecting it gives `too_many` once.
+    - `Binding` (in `Player.arsenal`, per UUID on the host) keeps the bound copies and the hotbar slots MW2 holds.
+    - Also new: `is_fork_gun`, `is_gun`, and `Follow::request_with` (the hotbar gun map; a gun arriving in the selected slot is asked for).
+  - `render_anim/src/minecraft_fork_items.rs`:
+    - `ForkLook::settle` uses the session's `GunNames` and `RegistryGuns`, drains `take_spent` and calls `set_arsenal`. `gun_room` is 15 minus the non-gun weapons in `ps.weapons`.
+    - The host calls it next to `sync_weapons` in `minecraft_world.rs`. Each friend calls it in `minecraft_players.rs` `step_friend` through `FriendWorld.guns`: the host's own `ForkLook`, split out of `InventoryUi` with `language_and_fork`, so friends and host share one table.
+    - "Too many guns on the hotbar" goes to the host's action bar, and to a friend's as an overlay `System` line.
+    - `forget_arsenal` runs when a friend leaves.
+  - `owned_weapons` keeps only killstreak weapons, so `sync_weapons` mints and deletes only killstreak mirrors.
+  - "A gun is in hand" now means a killstreak mirror or a fork gun MW2 holds (`Binding::holds_gun`). This applies to the shared `movement` (`holding_item`, so the trigger fires), to `tick_actor`'s main hand, and to `gear::body_gear` (any gun). The friend's own window builds the same hotbar map from its `ForkLook` and its `ps.weapons` for `Follow` and `holding_item` (`minecraft_remote.rs`).
+  - `fork_items::has_alt_mode` (split out of `with_full_clip`).
+  - `docs/WEAPONS.md` 5.1: the real `settle_arsenal` signature, `kept_by_mw2`, the GSC drop and pickup sites, and how rare "too many guns" is.
+- **GSC and native sites** (read from the owner's `common_mp.ff`):
+  - `dropItem` has one caller, `dropWeaponForDeath` in `maps/mp/gametypes/_weapons.gsc`, called inline from `PlayerKilled_internal` in `_damage.gsc`.
+    - For any gun but the riot shield it returns early when `AnyAmmoForWeaponModes` is false (its only caller), and it never checks `dropItem`'s result.
+    - For the riot shield it checks `isDefined( item )`.
+    - The two natives above take both paths without a runtime error.
+  - The pickups are native only (`phase_touch_items` and the use-key swap in `sim/src/item.rs`); no GSC change.
+- **Tests:**
+  - `sim` `item::arsenal_tests` (new file `crates/sim/src/item/arsenal_tests.rs`, edition 2024, rustfmt-clean):
+    - `the_published_guns_become_the_primaries`: an offhand, a grenade launcher alt mode, a killstreak weapon and the AC-130's 105mm stay. The removed held gun switches to the selected one; with nothing selected it goes to weapon 0.
+    - `no_intervention_spas_or_ump_is_added`.
+    - `a_client_that_never_published_keeps_the_full_refill`.
+    - `a_held_gun_queues_its_clip`: a full clip of unknown size is reported with its real size. The held gun keeps its live clip and queues once, and a gun not held gets its spec clip. `rebind` loads the other copy's clip, and creative keeps clips full.
+    - `test -p sim`: 121 passed, the MW2-map tests included.
+  - `minecraft_survival` `guns::tests`:
+    - `a_gun_moved_into_a_chest_is_not_given_again`: a shift-click through `menus::apply` into an open chest, then `settle_arsenal`. No gun is in the list, and there is one M4A1 in all, in the chest.
+    - `only_hotbar_guns_reach_mw2_once_each`: hotbar order, a gun in the backpack ignored, both copies mapped, stock counted over the backpack and offhand, creative is endless.
+    - `a_gun_past_the_free_weapon_slots_is_inert`, `two_copies_bind_the_selected_one`.
+    - `a_clip_spent_is_written_to_the_bound_item`: akimbo and alt clips, and `-1` replaced when bound.
+- **Decisions:**
+  - **Transitional, as planned:**
+    - Stock stays full for the published guns until the ammo group (C11.9), and grenades keep today's refill until the grenade-throws group (C12).
+    - MW2's own drop and pickups are off from now on.
+    - Death drops and Q for fork guns are unchanged until group drops-loadout.
+  - **`kept_by_mw2`:** these weapons are kept like killstreak weapons but not minted as items.
+    - The AC-130 gives its gunner `ac130_105mm_mp`, `ac130_40mm_mp` and `ac130_25mm_mp`, and S&D gives `briefcase_bomb_mp` while planting.
+    - They are type-0 weapons, so a rule that kept only `killstreak_*` would take them away mid-use.
+  - **`settle_arsenal` takes more than WEAPONS.md listed.** WEAPONS.md updated.
+    - The session table needs its `GunContent` next to `GunNames`.
+    - The binding of copies needs the selected slot and the per-player `Binding`.
+    - The room depends on `ps.weapons`, which `minecraft_survival` cannot see.
+    - It returns `Settled`: the arsenal, the hotbar gun map and `too_many`.
+    - `minecraft_survival` has its own `Arsenal`, `Gun` and `Spent` because it does not depend on `sim`; `render_anim` converts them.
+  - **A gun bound for the first time sets `rebind`,** so the item's clip goes into MW2 even when the gun is already held. After that, only a moved, swapped or changed copy sets it.
+  - **"Too many guns on the hotbar"** needs at least 7 non-gun weapons in `ps.weapons` with 9 hotbar guns, so it is rare in play; a unit test covers it.
+  - No sim test covers the drop and pickup switches: they read the process-wide arsenal statics, which parallel tests would share.
+- **Owner's test steps** (survival, a new world, kit below; the kit fills the backpack, not the hotbar):
+  1. Join. You hold no MW2 gun, and the mouse wheel and number keys raise none: the free Intervention, SPAS-12 and UMP45 are gone, and the class guns are not given. **Screenshot 1.**
+  2. Open the inventory and move the M4A1 to hotbar slot 1 and the USP to slot 2. Close it and press 1: the M4A1 is raised. Press 2: the USP. Press 1 again.
+  3. Fire 10 rounds with the M4A1 and stop. Hover it in the inventory: "Clip 20/30". MW2 still refills the reserve for now.
+  4. Place the chest, open it and shift-click the M4A1 into it. Close the chest. You no longer hold the M4A1, and pressing 1 raises nothing. The only M4A1 is the one in the chest; the inventory has no second one. **Screenshot 2** (the chest and the inventory open together).
+  5. Take the M4A1 back to slot 1 and press 1: it comes up with 20 rounds in the clip.
+  6. Put the second M4A1 into slot 4. Press 4: it has a full clip (30). Press 1: 20 again. **Screenshot 3** (the ammo counter after pressing 1).
+  7. Die (e.g. `/kill`). No MW2 gun model lies on the ground next to the Minecraft drops, and the log has no "script runtime error" line.
+  8. `/gamemode creative` and fire the M4A1: the clip stays full.
+  9. Two windows (`scripts\mp-local.ps1`): the friend repeats steps 2 to 6 in their window, and the host sees the friend holding only hotbar guns. **Screenshot 4** (friend window, step 4).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:m4,iw4l:usp,iw4l:ak47,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,minecraft:chest
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (3): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`. Added: none.
@@ -218,3 +305,5 @@ Patched by this track so far (3): `player/src/item_catalog.rs`, `core/src/item.r
 - `MINECRAFT-SURVIVAL.md`, the saving section: "Fork items (guns, ammo, grenades, attachments, gun parts) are saved in the player file, the ender chest, chests, shulker boxes and bundles as a vanilla `minecraft:carrot_on_a_stick` (guns) or an uneatable `minecraft:poisonous_potato` (everything else) with `custom_data.iw4l` (id, clip, attachments) and a translatable `item_name`, so vanilla 26.3 keeps them and our game turns them back. Killstreak items are never saved."
 - `MULTIPLAYER.md` (what a friend sees): "Fork items reach a friend's slots and menus in the same vanilla form they are saved in (a carrot on a stick or poisonous potato with `custom_data.iw4l`), and the friend's game turns them back, so a friend sees the same guns, clips, attachments and names as the host. Ground items carry the item id itself."
 - `MULTIPLAYER.md` (version checks): "The fork item table's hash is part of the registry fingerprint, so a friend whose build has another item table is refused."
+- `MINECRAFT-SURVIVAL.md`, the guns section, replacing the free Intervention, SPAS-12 and UMP45 and the class guns as hotbar mirrors: "MW2 holds exactly the fork guns on the hotbar, in hotbar order, each gun once. A gun in the backpack, a chest or on the cursor is not in MW2. Selecting a hotbar gun raises it. The loaded rounds live on the item, so a gun put away and taken back keeps its clip, and two copies of one gun keep one clip each. MW2's own weapon drop and pickups are off in Minecraft worlds. For now the reserve ammo and the grenades still refill; ammo items and grenade slots come later. Killstreak weapons are still hotbar mirrors."
+- `MULTIPLAYER.md` (per-player state on the host): "Each friend's guns follow their own hotbar the same way, through the same host function, and the host keeps each player's bound gun copies per UUID."

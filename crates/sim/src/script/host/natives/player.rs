@@ -1398,8 +1398,9 @@ fn register_inventory(registry: &mut NativeRegistry) {
         let id = client_of(world, receiver)?;
         let weapon = player_weapon(world, id, args, 0)?;
         let frame = FrameWorld::from_world(world);
-        let any = script_player::ammo_clip(&frame, id, weapon) > 0
-            || script_player::ammo_stock(&frame, id, weapon) > 0;
+        let any = (script_player::ammo_clip(&frame, id, weapon) > 0
+            || script_player::ammo_stock(&frame, id, weapon) > 0)
+            && !crate::voxel::publishes_arsenal(id.0);
         Ok(Value::Int(any.into()))
     });
     registry.register(Method, "setperk", |world, receiver, args| {

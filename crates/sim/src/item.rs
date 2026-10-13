@@ -10,7 +10,9 @@ use weapon_iw4::{
 
 use crate::bullet_collision::{MASK_PLAYER_SOLID, PLAYER_MAXS, PLAYER_MINS};
 use crate::gentity::init_item_state;
-use crate::world::{ClientId, Tick, give_weapon_to_ps_akimbo, gsc_give_weapon_is_akimbo};
+use crate::world::{
+    ClientId, Tick, give_weapon_to_ps_akimbo, gsc_give_weapon_is_akimbo, inventory_add_weapon,
+};
 use crate::{ClientLifecycle, ItemPickupRecord};
 
 pub const G_MAX_DROPPED_WEAPONS: usize = 16;
@@ -142,23 +144,21 @@ fn set_ammo_on_ps(
     }
 }
 
-/// Guns every player on a Minecraft map carries besides its class.
-const BLOCK_WORLD_GUNS: [&str; 3] = ["cheytac_mp", "spas12_mp", "ump45_mp"];
-
-/// On a Minecraft map every player also carries the Intervention, SPAS-12
-/// and UMP45, and never runs out: each weapon's clips stay full and its
-/// reserve (grenades too) at the most it holds, as MW2's
-/// `player_sustainAmmo` keeps them.
-pub(crate) fn sustain_block_world_arsenal(world: &mut FrameWorld) {
+pub(crate) fn apply_arsenal(world: &mut FrameWorld) {
     if !crate::voxel::active() || !world.publishes_snapshot() {
         return;
     }
-    let names = world.weapon_script_names();
-    let extra: Vec<u32> = BLOCK_WORLD_GUNS
-        .iter()
-        .filter_map(|name| names.iter().position(|n| n == name))
-        .filter_map(|i| u32::try_from(i).ok())
-        .collect();
+    if crate::voxel::with_arsenals(|published| ((), apply_arsenal_with(world, published))).is_none()
+    {
+        let _ = apply_arsenal_with(world, &mut Vec::new());
+    }
+}
+
+pub(crate) fn apply_arsenal_with(
+    world: &mut FrameWorld,
+    published: &mut [(u32, crate::voxel::Published)],
+) -> Vec<(u32, crate::voxel::Spent)> {
+    let mut spent = Vec::new();
     for id in world.client_ids_sorted() {
         if !world.client_meta(id).is_some_and(|m| m.lifecycle == ClientLifecycle::Alive) {
             continue;
@@ -167,32 +167,16 @@ pub(crate) fn sustain_block_world_arsenal(world: &mut FrameWorld) {
             continue;
         };
         let before = ps;
-        for &weapon in &extra {
-            if !ps.weapons.contains(&(weapon as i32)) {
-                give_weapon_to_ps_akimbo(&mut ps, weapon, false);
+        match published.iter_mut().find(|(client, _)| *client == id.0) {
+            Some((_, published)) => {
+                for queued in follow_arsenal(world, id, &mut ps, published) {
+                    spent.push((id.0, queued));
+                }
             }
-        }
-        for weapon in ps.weapons {
-            let Ok(weapon) = u32::try_from(weapon) else {
-                continue;
-            };
-            if weapon == 0 {
-                continue;
-            }
-            let Some(facts) = world.combat_facts_for(weapon) else {
-                continue;
-            };
-            let (clip_r, clip_l, stock) = ammo_from_ps(world, &ps, weapon);
-            let full_stock = facts.max_ammo.max(facts.start_ammo);
-            let full_l = if clip_l > 0 { facts.clip_size } else { 0 };
-            if clip_r < facts.clip_size || clip_l < full_l || stock < full_stock {
-                set_ammo_on_ps(world, &mut ps, weapon, facts.clip_size, full_l, full_stock);
-            }
-            // The match's own ledger, which grenades are thrown from.
-            let meta = world.client_meta_mut(id);
-            let (clip, stock) = meta.ammo_for(weapon);
-            if clip < facts.clip_size || stock < full_stock {
-                meta.set_ammo(weapon, facts.clip_size, full_stock);
+            None => {
+                for weapon in ps.weapons {
+                    refill(world, id, &mut ps, weapon);
+                }
             }
         }
         world.client_meta_mut(id).mirror_held_ammo(ps.weapon);
@@ -202,6 +186,250 @@ pub(crate) fn sustain_block_world_arsenal(world: &mut FrameWorld) {
             *slot = ps;
         }
     }
+    spent
+}
+
+fn refill(world: &mut FrameWorld, id: ClientId, ps: &mut PlayerState, weapon: i32) {
+    let Ok(weapon) = u32::try_from(weapon) else {
+        return;
+    };
+    if weapon == 0 {
+        return;
+    }
+    let Some(facts) = world.combat_facts_for(weapon) else {
+        return;
+    };
+    let (clip_r, clip_l, stock) = ammo_from_ps(world, ps, weapon);
+    let full_stock = facts.max_ammo.max(facts.start_ammo);
+    let full_l = if clip_l > 0 { facts.clip_size } else { 0 };
+    if clip_r < facts.clip_size || clip_l < full_l || stock < full_stock {
+        set_ammo_on_ps(world, ps, weapon, facts.clip_size, full_l, full_stock);
+    }
+    let meta = world.client_meta_mut(id);
+    let (clip, stock) = meta.ammo_for(weapon);
+    if clip < facts.clip_size || stock < full_stock {
+        meta.set_ammo(weapon, facts.clip_size, full_stock);
+    }
+}
+
+fn is_gun_slot(world: &FrameWorld, weapon: u32) -> bool {
+    world
+        .combat_facts_for(weapon)
+        .is_some_and(|facts| facts.inventory_type == WEAP_INVENTORY_PRIMARY)
+        && !crate::voxel::kept_by_mw2(world.weapon_script_name(weapon))
+}
+
+fn is_akimbo(world: &FrameWorld, weapon: u32) -> bool {
+    world
+        .combat_facts_for(weapon)
+        .is_some_and(|facts| facts.dual_wield)
+        || gsc_give_weapon_is_akimbo(world.weapon_script_name(weapon))
+}
+
+fn hold(world: &FrameWorld, ps: &mut PlayerState, weapon: u32) {
+    let Some(facts) = world.combat_facts_for(weapon) else {
+        return;
+    };
+    ps.weapon = weapon;
+    ps.weapon_primary = weapon;
+    ps.last_weapon_hand = weapon_iw4::num_hands_for_held(&ps.weapons, &ps.weapon_data, weapon);
+    let hand = weapon_iw4::spawn_weapon_hand(weapon, &facts);
+    ps.weaponstate_primary = hand.weaponstate;
+    ps.weapon_time = hand.weapon_time;
+    ps.weapon_delay = hand.weapon_delay;
+    ps.weap_anim = hand.weap_anim;
+    ps.weaponstate_secondary = hand.weaponstate;
+    ps.weapon_time_secondary = hand.weapon_time;
+    ps.weapon_delay_secondary = hand.weapon_delay;
+    ps.weap_anim_secondary = hand.weap_anim;
+}
+
+fn alternate(world: &FrameWorld, weapon: u32) -> u32 {
+    world
+        .combat_facts_for(weapon)
+        .map_or(0, |facts| facts.alternate_weapon)
+}
+
+fn clip_key(world: &FrameWorld, weapon: u32) -> i32 {
+    world
+        .combat_facts_for(weapon)
+        .map_or(0, |facts| clip_table_key(facts.clip_index, weapon))
+}
+
+fn filled(spec: i32, size: i32) -> i32 {
+    if spec < 0 {
+        size.max(0)
+    } else {
+        spec.min(size.max(0))
+    }
+}
+
+fn put_ammo(
+    world: &mut FrameWorld,
+    id: ClientId,
+    ps: &mut PlayerState,
+    weapon: u32,
+    clips: Option<(i32, i32)>,
+    stock: i32,
+) {
+    let (live_r, live_l, _) = ammo_from_ps(world, ps, weapon);
+    let (clip_r, clip_l) = clips.unwrap_or((live_r, live_l));
+    set_ammo_on_ps(world, ps, weapon, clip_r, clip_l, stock);
+    world.client_meta_mut(id).set_ammo(weapon, clip_r, stock);
+}
+
+fn follow_arsenal(
+    world: &mut FrameWorld,
+    id: ClientId,
+    ps: &mut PlayerState,
+    published: &mut crate::voxel::Published,
+) -> Vec<crate::voxel::Spent> {
+    let crate::voxel::Published {
+        arsenal,
+        held: last_held,
+    } = published;
+    let wanted: Vec<u32> = arsenal.guns.iter().map(|gun| gun.weapon).collect();
+    let mut lost_held = false;
+    for slot in ps.weapons {
+        let Ok(weapon) = u32::try_from(slot) else {
+            continue;
+        };
+        if weapon != 0 && !wanted.contains(&weapon) && is_gun_slot(world, weapon) {
+            lost_held |= ps.weapon == weapon || ps.weapon_primary == weapon;
+            take_player_weapon(ps, weapon);
+            world
+                .client_meta_mut(id)
+                .ammo_by_weapon
+                .retain(|row| row.0 != weapon);
+        }
+    }
+    for &weapon in &wanted {
+        if !ps.weapons.contains(&(weapon as i32)) && world.combat_facts_for(weapon).is_some() {
+            inventory_add_weapon(ps, weapon, is_akimbo(world, weapon));
+        }
+    }
+    if lost_held
+        && let Some(selected) = arsenal
+            .selected
+            .filter(|&w| ps.weapons.contains(&(w as i32)))
+    {
+        hold(world, ps, selected);
+    }
+    let alternates: Vec<u32> = wanted
+        .iter()
+        .map(|&gun| alternate(world, gun))
+        .filter(|&alt| alt != 0)
+        .collect();
+    let held = wanted
+        .iter()
+        .copied()
+        .find(|&gun| {
+            ps.weapon != 0
+                && (ps.weapon == gun
+                    || (ps.weapon_primary == gun && alternate(world, gun) == ps.weapon))
+        })
+        .unwrap_or(0);
+    let switched = held != *last_held;
+    *last_held = held;
+    let held_keys: Vec<i32> = [held, alternate(world, held)]
+        .into_iter()
+        .filter(|&w| w != 0)
+        .map(|w| clip_key(world, w))
+        .collect();
+    let mut spent = Vec::new();
+    for index in 0..arsenal.guns.len() {
+        let gun = arsenal.guns[index];
+        let Some(facts) = world.combat_facts_for(gun.weapon) else {
+            continue;
+        };
+        let alt = facts.alternate_weapon;
+        let alt_facts = world.combat_facts_for(alt).filter(|_| alt != 0);
+        let full = (
+            facts.clip_size,
+            if is_akimbo(world, gun.weapon) {
+                facts.clip_size
+            } else {
+                0
+            },
+            alt_facts.map_or(0, |f| f.clip_size),
+        );
+        let want = if arsenal.endless {
+            full
+        } else {
+            (
+                filled(gun.clip, full.0),
+                filled(gun.clip_left, full.1),
+                filled(gun.alt_clip, full.2),
+            )
+        };
+        let (live_r, live_l, _) = ammo_from_ps(world, ps, gun.weapon);
+        let live_alt = if alt_facts.is_some() {
+            ammo_from_ps(world, ps, alt).0
+        } else {
+            0
+        };
+        let write = if gun.weapon == held {
+            arsenal.endless || gun.rebind || switched
+        } else {
+            !held_keys.contains(&clip_key(world, gun.weapon))
+        };
+        let now = if write {
+            want
+        } else {
+            (live_r, live_l, live_alt)
+        };
+        let stock = facts.max_ammo.max(facts.start_ammo);
+        put_ammo(
+            world,
+            id,
+            ps,
+            gun.weapon,
+            write.then_some((want.0, want.1)),
+            stock,
+        );
+        if let Some(alt_facts) = alt_facts {
+            let alt_write =
+                write && (gun.weapon == held || !held_keys.contains(&clip_key(world, alt)));
+            let alt_stock = alt_facts.max_ammo.max(alt_facts.start_ammo);
+            put_ammo(
+                world,
+                id,
+                ps,
+                alt,
+                alt_write.then_some((want.2, 0)),
+                alt_stock,
+            );
+        }
+        let spec = (gun.clip, gun.clip_left, gun.alt_clip);
+        let unknown = spec.0 < 0 || spec.1 < 0 || spec.2 < 0;
+        let report = !arsenal.endless
+            && if write {
+                unknown
+            } else {
+                gun.weapon == held && now != spec
+            };
+        if report {
+            spent.push(crate::voxel::Spent::Clip {
+                weapon: gun.weapon,
+                clip: now.0,
+                clip_left: now.1,
+                alt_clip: now.2,
+            });
+        }
+        let stored = &mut arsenal.guns[index];
+        stored.rebind = false;
+        if !arsenal.endless && (report || write) {
+            (stored.clip, stored.clip_left, stored.alt_clip) = now;
+        }
+    }
+    for weapon in ps.weapons {
+        let kept =
+            u32::try_from(weapon).is_ok_and(|w| !wanted.contains(&w) && !alternates.contains(&w));
+        if kept {
+            refill(world, id, ps, weapon);
+        }
+    }
+    spent
 }
 
 fn add_ammo_on_ps(
@@ -379,6 +607,9 @@ pub(crate) fn drop_weapon(
     weapon: u32,
 ) -> Option<i32> {
     let ps = world.player(player).copied()?;
+    if crate::voxel::publishes_arsenal(player.0) {
+        return None;
+    }
     if !ps.weapons.contains(&(weapon as i32)) || !may_drop_weapon(world, &ps, weapon) {
         return None;
     }
@@ -483,11 +714,15 @@ fn try_touch_one(world: &mut FrameWorld, walker: ClientId) {
         return;
     }
     let candidates = world.dropped_item_numbers_sorted();
+    let published = crate::voxel::publishes_arsenal(walker.0);
     let mut hit = None;
     for number in candidates {
         let Some(item) = world.dropped_item_by_number(number) else {
             continue;
         };
+        if published && !item.scavenger {
+            continue;
+        }
         if !aabb_overlap(
             ps.origin,
             PLAYER_MINS,
@@ -839,7 +1074,12 @@ fn selected_item(world: &FrameWorld, walker: ClientId, ps: &PlayerState) -> Opti
     ];
     let (forward, _, _) = angle_vectors(ps.viewangles);
     let mut best: Option<(f32, UseItem)> = None;
-    for number in world.dropped_item_numbers_sorted() {
+    let published = crate::voxel::publishes_arsenal(walker.0);
+    for number in world
+        .dropped_item_numbers_sorted()
+        .into_iter()
+        .filter(|_| !published)
+    {
         let Some(item) = world.dropped_item_by_number(number) else {
             continue;
         };
@@ -982,3 +1222,6 @@ pub(crate) fn phase_use_items(
         }
     }
 }
+
+#[cfg(test)]
+mod arsenal_tests;

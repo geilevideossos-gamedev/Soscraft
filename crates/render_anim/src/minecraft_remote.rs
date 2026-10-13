@@ -1061,8 +1061,17 @@ fn show_player(
     let vitals = hud.vitals(view, dt, eye_in_water, eye_in_lava);
     ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));
     ui.fire_frames = fire_frames.clone();
+    let mut guns = [None; minecraft_survival::guns::HOTBAR];
+    for (gun, stack) in guns.iter_mut().zip(&inventory.slots) {
+        *gun = stack
+            .as_ref()
+            .and_then(|stack| inventory_ui.fork.weapon(stack))
+            .filter(|&weapon| ps.weapons.contains(&(weapon as i32)));
+    }
     let held = inventory.slots[selection.slot].as_ref();
-    ui.holding_item = interacts && held.is_none_or(|stack| weapon_of(stack).is_none());
+    ui.holding_item = interacts
+        && held.is_none_or(|stack| weapon_of(stack).is_none())
+        && guns.get(selection.slot).copied().flatten().is_none();
     ui.empty_hand = ui.holding_item && held.is_none();
     ui.using_item = view.using.is_some();
     ui.scoping = minecraft_survival::spyglass::seen_scoping(
@@ -1072,7 +1081,7 @@ fn show_player(
     );
     let mut selected = selection.slot;
     ui.weapon_request = follow
-        .request(&inventory, &mut selected, ps.weapon)
+        .request_with(&inventory, &guns, &mut selected, ps.weapon)
         .filter(|_| interacts);
     selection.slot = selected;
     inventory_ui.animation_tick = atlas_animation.ticks();
