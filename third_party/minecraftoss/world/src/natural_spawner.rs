@@ -242,6 +242,8 @@ enum Rules {
     Strider,
     Hoglin,
     Piglin,
+    Ocelot,
+    Unrestricted,
     /// Rules not ported yet: the type is not spawned.
     Other,
 }
@@ -249,7 +251,7 @@ enum Rules {
 impl Rules {
     /// Creatures finalize as animals (`finalize_spawn`), not as monsters.
     fn creature(self) -> bool {
-        matches!(self, Self::Animal | Self::SpawnableOn(_))
+        matches!(self, Self::Animal | Self::SpawnableOn(_) | Self::Ocelot | Self::Unrestricted)
     }
 }
 
@@ -289,6 +291,8 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "mooshroom" => (0.9, 1.4, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "strider" => (0.9, 1.7, Placement::InLava, MotionBlockingNoLeaves, true, false),
         "axolotl" => (0.75, 0.42, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "ocelot" => (0.6, 0.7, Placement::OnGround, MotionBlocking, false, false),
+        "cat" => (0.6, 0.7, Placement::NoRestrictions, MotionBlockingNoLeaves, false, false),
         // Monsters (`EntityTypes` sizes; `Monster.checkMonsterSpawnRules`).
         "zombie" | "zombie_villager" | "witch" | "husk" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "skeleton" | "stray" | "bogged" | "parched" => (0.6, 1.99, Placement::OnGround, MotionBlockingNoLeaves, false, false),
@@ -337,6 +341,8 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "glow_squid" => Rules::GlowSquid,
         "drowned" => Rules::Drowned,
         "strider" => Rules::Strider,
+        "ocelot" => Rules::Ocelot,
+        "cat" => Rules::Unrestricted,
         _ if monster => Rules::Monster,
         _ => Rules::Other,
     };
@@ -393,6 +399,7 @@ pub struct CreatureSpawns {
     chicken_sounds: Vec<String>,
     wolf_variants: VariantRegistry,
     wolf_sounds: Vec<String>,
+    cats: minecraftoss_generator::feature::entities::CatVariants,
     /// `#spawns_snow_foxes`, `#spawns_white_rabbits`, `#spawns_gold_rabbits`.
     snow_foxes: TagId,
     white_rabbits: TagId,
@@ -530,6 +537,7 @@ impl CreatureSpawns {
             chicken_sounds: sounds("chicken_sound_variant")?,
             wolf_variants: VariantRegistry::load(registries, "wolf_variant")?,
             wolf_sounds: sounds("wolf_sound_variant")?,
+            cats: minecraftoss_generator::feature::entities::CatVariants::load(pack)?,
             snow_foxes: tag(&registries.biome_tags, "minecraft:spawns_snow_foxes")?,
             white_rabbits: tag(&registries.biome_tags, "minecraft:spawns_white_rabbits")?,
             gold_rabbits: tag(&registries.biome_tags, "minecraft:spawns_gold_rabbits")?,
@@ -731,6 +739,12 @@ impl CreatureSpawns {
         if info.rules == Rules::Strider {
             return self.strider_spawn_rules(level, pos);
         }
+        if info.rules == Rules::Ocelot {
+            return level.random().next_i32_bound(3) != 0;
+        }
+        if info.rules == Rules::Unrestricted {
+            return true;
+        }
         // `Animal.checkAnimalSpawnRules` and the rules with their own block
         // tag (other creatures approximated by the animals' rules).
         let spawnable_on = match info.rules {
@@ -784,6 +798,18 @@ impl CreatureSpawns {
     fn check_spawn_obstruction(&self, level: &mut dyn SpawnLevel, info: &TypeInfo, x: f64, y: f64, z: f64) -> bool {
         if matches!(info.rules, Rules::Strider | Rules::Drowned) {
             return true;
+        }
+        if info.rules == Rules::Ocelot {
+            let pos = BlockPos::new(x.floor() as i32, y.floor() as i32, z.floor() as i32);
+            if pos.y < level.sea_level() {
+                return false;
+            }
+            let below = level.block(pos.below());
+            let registries = &*self.registries;
+            let ground = registries.blocks.block_of(below) == self.grass_block || registries.block_in_tag(below, self.leaves);
+            if !ground {
+                return false;
+            }
         }
         let half = f64::from(info.width) / 2.0;
         let (min, max) = ([x - half, y, z - half], [x + half, y + f64::from(info.height), z + half]);
@@ -969,6 +995,7 @@ impl CreatureSpawns {
             // `Armadillo`: no override (its scute timer is its own random's).
             "minecraft:armadillo" => ageable(level, tag, group, 0.05),
             "minecraft:strider" => ageable(level, tag, group, 0.05),
+            "minecraft:ocelot" => ageable(level, tag, group, 1.0),
             "minecraft:sheep" => {
                 let color = self.sheep_color(registries, biome, level.random());
                 set(tag, "Color", Tag::Byte(color));
@@ -1005,6 +1032,21 @@ impl CreatureSpawns {
             level.note_unsupported("variant conditions");
         }
         finalize_mob(tag, &mut RandomRef(level.random()));
+    }
+
+    pub fn finalize_cat(&self, level: &mut dyn SpawnLevel, tag: &mut Tag, black_cat_structure: bool, moon_brightness: f32) {
+        ageable(level, tag, &mut Group::None, 0.05);
+        finalize_mob(tag, &mut RandomRef(level.random()));
+        let candidates = self.cats.candidates(black_cat_structure, f64::from(moon_brightness));
+        if !candidates.is_empty() {
+            let variant = candidates[level.random().next_i32_bound(candidates.len() as i32) as usize].to_owned();
+            set(tag, "variant", Tag::String(variant));
+        }
+        let sounds = self.cats.sounds();
+        if !sounds.is_empty() {
+            let sound = sounds[level.random().next_i32_bound(sounds.len() as i32) as usize].clone();
+            set(tag, "sound_variant", Tag::String(sound));
+        }
     }
 
     /// `SheepColorSpawnRules.getSheepColor`: the climate's weighted colours,

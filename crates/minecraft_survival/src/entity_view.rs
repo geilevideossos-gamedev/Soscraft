@@ -520,6 +520,9 @@ impl EntityView {
         for e in w.wolves().iter().filter(|e| e.wolf.health > 0.0) {
             add(MobHit::Wolf(e.id), &e.wolf.body);
         }
+        for e in w.felines().iter().filter(|e| e.feline.health > 0.0) {
+            add(MobHit::Feline(e.id), &e.feline.body);
+        }
         for e in w.villagers().iter().filter(|e| e.villager.health > 0.0) {
             add(MobHit::Villager(e.id), &e.villager.body);
         }
@@ -902,6 +905,14 @@ impl EntityView {
             light,
             partial,
             w.game_time(),
+        );
+        cat_render::append_felines(
+            &mut out.models,
+            w.felines().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
         );
         flame_render::append_flames(
             &mut out.items,

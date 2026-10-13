@@ -64,6 +64,11 @@ pub struct MobShow {
     pub peek: [f32; 2],
     pub arm_pose: u8,
     pub using_item: Option<i32>,
+    pub sitting: bool,
+    pub lying: bool,
+    pub relaxed: bool,
+    pub crouching: bool,
+    pub sprinting: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -256,14 +261,14 @@ pub fn tracking_range(kind: &str) -> i32 {
     match kind.strip_prefix("minecraft:").unwrap_or(kind) {
         "player" => 32,
         "end_crystal" => 16,
-        "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf"
+        "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf" | "ocelot"
         | "villager" | "iron_golem" | "ghast" | "slime" | "strider" | "shulker"
         | "ender_dragon" | "tnt" | "falling_block" | "item_frame" | "glow_item_frame"
         | "area_effect_cloud" => 10,
         "zombie" | "husk" | "drowned" | "zombie_villager" | "zombified_piglin" | "skeleton"
         | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
-        | "piglin" | "piglin_brute" | "shulker_bullet" => 8,
+        | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" => 8,
         "item" | "experience_orb" => 6,
         "arrow" | "spectral_arrow" | "snowball" | "egg" | "ender_pearl" | "eye_of_ender"
         | "trident" | "fireball" | "small_fireball" | "dragon_fireball" | "splash_potion"
@@ -342,6 +347,20 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             e.id,
             MobShow {
                 angry: e.angry(world.game_time()),
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.felines() {
+        let f = &e.feline;
+        put(
+            e.id,
+            MobShow {
+                sitting: f.sitting,
+                lying: f.lying,
+                relaxed: f.relax_state_one,
+                crouching: f.crouching,
+                sprinting: f.sprinting,
                 ..MobShow::default()
             },
         );
@@ -502,6 +521,17 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.wolf_mut(id) {
         place(&mut e.previous_position, &mut e.wolf.body, mob);
         e.ai.state.enderman.anger_end_time = if show.angry { i64::MAX } else { i64::MIN };
+    }
+    if let Some(e) = world.feline_mut(id) {
+        place(&mut e.previous_position, &mut e.feline.body, mob);
+        let f = &mut e.feline;
+        f.sitting = show.sitting;
+        f.lying = show.lying;
+        f.relax_state_one = show.relaxed;
+        f.crouching = show.crouching;
+        f.sprinting = show.sprinting;
+        f.update_lie_down_amount();
+        f.update_relax_state_one_amount();
     }
     if let Some(e) = world.ghast_mut(id) {
         place(&mut e.previous_position, &mut e.ghast.body, mob);
@@ -850,6 +880,49 @@ mod tests {
         assert!(shown.zombie.baby);
         assert_eq!(shown.zombie.main_hand.as_deref(), Some("minecraft:trident"));
         assert_eq!(shown.zombie.body.step_height, 1.0);
+    }
+
+    #[test]
+    fn a_friend_sees_a_cat_and_an_ocelot_from_their_look_tags() {
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(900);
+        let (cat, cat_tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:cat\",Pos:[3.5d,64.0d,0.5d],variant:\"minecraft:calico\",sound_variant:\"minecraft:royal\",CollarColor:11b,Owner:[I;1,2,3,4],Sitting:1b,Age:-24000}",
+        );
+        let (ocelot, ocelot_tag) = spawn(&mut host, "{id:\"minecraft:ocelot\",Pos:[5.5d,64.0d,0.5d],Trusting:1b}");
+        assert_eq!((tracking_range("minecraft:cat"), tracking_range("minecraft:ocelot")), (8, 10));
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(cat, cat_tag), (ocelot, ocelot_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+        }
+        let shown = &friend.feline_mut(cat).unwrap().feline;
+        assert_eq!((shown.variant.as_str(), shown.sound_variant.as_str(), shown.collar), ("calico", "royal", 11));
+        assert!(shown.tame && shown.ordered_to_sit && shown.sitting && shown.baby() && shown.shows_collar());
+        assert!(friend.feline_mut(ocelot).unwrap().feline.trusting);
+        {
+            let f = &mut host.feline_mut(ocelot).unwrap().feline;
+            f.crouching = true;
+        }
+        {
+            let f = &mut host.feline_mut(cat).unwrap().feline;
+            f.lying = true;
+            f.relax_state_one = true;
+            f.sitting = false;
+        }
+        let seen = shows(&host);
+        assert!(seen[&cat].lying && seen[&cat].relaxed && !seen[&cat].sitting && seen[&ocelot].crouching);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let shown = &friend.feline_mut(cat).unwrap().feline;
+        assert!(shown.lying && shown.relax_state_one && !shown.sitting && shown.lie_down_amount > 0.0);
+        assert!(friend.feline_mut(ocelot).unwrap().feline.crouching);
     }
 
     #[test]

@@ -11,8 +11,8 @@ Sizes: S, M, L, XL. "Exists" lists only what goes beyond the default: a texture,
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Group key | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | Drowned | oceans, rivers, drowning zombies | `ZombieKind::Drowned`, conversion, renderer, attack goal; saved, loaded, hatched and seen by friends; natural spawns, trident, rod and nautilus shell with their drops; water, beach, swim-up and stroll goals, trident throw, raised arm | zombie nautilus jockeys (with row 38), the ocean ruin trident roll, the `trident_throwing` held model | M | `mobs-list-drowned-load`, `drowned` | 1 (zombie store) | done | "Minecraft drowned are saved, loaded and seen by friends" (after 80caed9e), "Minecraft drowned spawn in rivers and oceans with tridents and nautilus shells" (after 8fa0de3a), "Minecraft drowned go to water by day, to the beach at night and throw tridents" (after 93fe442f) |
-| 2 | Cat | villages, swamp huts | generator variant (`generator/src/feature/entities.rs:150`), villagers look at cats | `Feline` store, taming, sitting, gifts, creepers and phantoms flee, collar model, `CatSpawner` | M | `cats` | | left | |
-| 3 | Ocelot | jungles | shares `Feline` | trust by fish, scares creepers | S | `cats` | | left | |
+| 2 | Cat | villages, swamp huts | `Feline` store (`world/felines.rs`, `feline.rs`, `feline_ai.rs`): saved, loaded, hatched and seen by friends; variant and voice drawn on `/summon` and eggs (black in swamp huts), structure cats come alive; float, panic, tempt with raw cod and salmon, flee from players while wild, leap and hunt, stroll and look; `AdultCatModel`, `BabyCatModel`, the collar layer, lying and relaxing poses (`cat_render.rs`) | taming, sitting, following, lying on beds and chests, gifts, creepers and phantoms flee, breeding, `CatSpawner` | M | `cats` | 29 (feline store) | drawn | "Minecraft cats and ocelots live in the entity world and are drawn like vanilla" (after c983b378) |
+| 3 | Ocelot | jungles | shares `Feline`; spawns in jungles by its own rules (one in three, at or above sea level on grass or leaves, babies after the first of a group), tempted by raw cod and salmon, flees from players until it trusts, hunts chickens; `AdultOcelotModel`, `BabyOcelotModel` | trust by fish, scares creepers, breeding | S | `cats` | 29 (feline store) | drawn | "Minecraft cats and ocelots live in the entity world and are drawn like vanilla" (after c983b378) |
 | 4 | Mule | horse x donkey | `DonkeyModel` scaled in `horse_render.rs` | `HorseKind::Mule`, breeding result | S | `horse-family` | | left | |
 | 5 | Llama | windswept hills, savanna plateau (dormant today) | horse family | variants, carpets, chest, caravans, spit, `LlamaModel` | M | `horse-family` | | left | |
 | 6 | Trader llama | with wandering traders | horse family | `TraderLlama`, follows its trader on a lead | S | `horse-family`, `wandering-trader` | | left | |
@@ -75,7 +75,8 @@ A MW2 bullet finds a mob through one number: the kind in the top byte and the en
 
 | Byte | Store | Rows | Group |
 |---|---|---|---|
-| 29 | (next free) | | |
+| 29 | `felines` (`FelineEntity`, `MobHit::Feline`) | 2 cat, 3 ocelot | `cats` |
+| 30 | (next free) | | |
 
 ## The batching rule
 

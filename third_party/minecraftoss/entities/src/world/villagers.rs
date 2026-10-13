@@ -318,6 +318,9 @@ impl EntityWorld {
         for e in &self.wolves {
             out.push(seen_of("minecraft:wolf", "creature", &e.wolf.body, e.wolf.eye_height(), e.wolf.health > 0.0, e.wolf.baby(), e.id));
         }
+        for e in &self.felines {
+            out.push(seen_of(e.feline.kind.type_id(), "creature", &e.feline.body, e.feline.eye_height(), e.feline.health > 0.0, e.feline.baby(), e.id));
+        }
         for p in players {
             out.push(Seen {
                 id: PLAYER_TARGET + p.id,

@@ -410,6 +410,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:bat",
     "minecraft:blaze",
     "minecraft:bogged",
+    "minecraft:cat",
     "minecraft:cave_spider",
     "minecraft:chicken",
     "minecraft:cow",
@@ -428,6 +429,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:item_frame",
     "minecraft:magma_cube",
     "minecraft:mooshroom",
+    "minecraft:ocelot",
     "minecraft:parched",
     "minecraft:pig",
     "minecraft:piglin",
@@ -952,6 +954,33 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
+        "minecraft:cat" | "minecraft:ocelot" => {
+            let kind = minecraftoss_entities::feline::FelineKind::of_type(kind)?;
+            let mut feline = minecraftoss_entities::feline::Feline::new(kind, pos);
+            feline.yaw = yaw;
+            feline.persistence_required = persistent;
+            feline.set_age(age);
+            let short = |key: &str, default: &str| text(tag, key).map_or(default, |v| v.trim_start_matches("minecraft:")).to_owned();
+            feline.variant = short("variant", minecraftoss_entities::feline::DEFAULT_CAT_VARIANT);
+            feline.sound_variant = short("sound_variant", minecraftoss_entities::feline::CAT_SOUND_VARIANTS[0]);
+            feline.collar = int(tag, "CollarColor").map_or(minecraftoss_entities::feline::DEFAULT_COLLAR, |c| c as u8);
+            feline.owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+            feline.tame = kind == minecraftoss_entities::feline::FelineKind::Cat && feline.owner.is_some();
+            feline.ordered_to_sit = int(tag, "Sitting").unwrap_or(0) != 0;
+            feline.sitting = feline.ordered_to_sit;
+            feline.trusting = int(tag, "Trusting").unwrap_or(0) != 0;
+            feline.in_love = int(tag, "InLove").unwrap_or(0);
+            if let Some(health) = health {
+                feline.health = health;
+            }
+            let id = world.spawn_feline(feline, no_ai);
+            let entity = world.feline_mut(id)?;
+            entity.random = random;
+            if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
+                entity.ai.state.follow_range = range;
+            }
+            id
+        }
         "minecraft:ghast" => {
             let mut ghast = minecraftoss_entities::ghast::Ghast::new(pos);
             ghast.yaw = yaw;
@@ -1381,6 +1410,24 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
             fields.push(("Owner", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec())));
         }
         add(e.id, "minecraft:wolf", &w.body, w.yaw, w.health, w.persistence_required, fields);
+    }
+    for e in world.felines() {
+        let f = &e.feline;
+        let mut fields = age(&f.age);
+        fields.push(("InLove", Tag::Int(f.in_love)));
+        match f.kind {
+            minecraftoss_entities::feline::FelineKind::Cat => {
+                fields.push(("variant", text_tag(&format!("minecraft:{}", f.variant))));
+                fields.push(("sound_variant", text_tag(&format!("minecraft:{}", f.sound_variant))));
+                fields.push(("CollarColor", Tag::Byte(f.collar as i8)));
+                fields.push(("Sitting", Tag::Byte(i8::from(f.ordered_to_sit))));
+                if let Some(owner) = f.owner {
+                    fields.push(("Owner", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec())));
+                }
+            }
+            minecraftoss_entities::feline::FelineKind::Ocelot => fields.push(("Trusting", Tag::Byte(i8::from(f.trusting)))),
+        }
+        add(e.id, f.kind.type_id(), &f.body, f.yaw, f.health, f.persistence_required, fields);
     }
     for e in world.slimes() {
         let slime = &e.slime;
@@ -2174,6 +2221,34 @@ mod tests {
         assert_eq!(e.zombie.body.step_height, 1.0);
         assert!(e.attack_only && e.ai.is_none() && !e.no_ai, "a loaded drowned fights with its attack goal");
         assert!(e.drowned.is_some(), "and has its water, beach and trident goals");
+    }
+
+    #[test]
+    fn a_cat_and_an_ocelot_save_and_load_with_variant_collar_owner_sitting_and_trust() {
+        let cat = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cat\",Pos:[1.5d,64.0d,2.5d],UUID:[I;5,6,7,8],variant:\"minecraft:siamese\",sound_variant:\"minecraft:royal\",CollarColor:3b,Owner:[I;1,2,3,4],Sitting:1b,Health:7.0f,Age:-1200,PersistenceRequired:1b}").unwrap();
+        let ocelot = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ocelot\",Pos:[4.5d,64.0d,2.5d],Trusting:1b}").unwrap();
+        assert!(SIMULATED_KINDS.contains(&"minecraft:cat") && SIMULATED_KINDS.contains(&"minecraft:ocelot"));
+        let mut world = EntityWorld::default();
+        let cat_id = spawn_saved(&mut world, &cat).expect("cats load");
+        let ocelot_id = spawn_saved(&mut world, &ocelot).expect("ocelots load");
+        assert_eq!((world.entity_type(cat_id), world.entity_type(ocelot_id)), (Some("minecraft:cat"), Some("minecraft:ocelot")));
+        let originals: std::collections::HashMap<u64, Tag> = [(cat_id, cat), (ocelot_id, ocelot)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let tag_of = |id: u64| saved.iter().find(|(saved_id, _)| *saved_id == id).map(|(_, tag)| tag.clone()).unwrap();
+        let cat_tag = tag_of(cat_id);
+        assert_eq!((text(&cat_tag, "variant"), text(&cat_tag, "sound_variant")), (Some("minecraft:siamese"), Some("minecraft:royal")));
+        assert_eq!((int(&cat_tag, "CollarColor"), int(&cat_tag, "Sitting"), int(&cat_tag, "Age")), (Some(3), Some(1), Some(-1200)));
+        assert_eq!(cat_tag.get("Owner").and_then(Tag::as_ints), Some(vec![1, 2, 3, 4]));
+        assert_eq!(int(&tag_of(ocelot_id), "Trusting"), Some(1));
+        let mut fresh = EntityWorld::default();
+        let loaded = spawn_saved(&mut fresh, &cat_tag).expect("a saved cat loads");
+        let e = &fresh.feline_mut(loaded).unwrap().feline;
+        assert_eq!((e.variant.as_str(), e.sound_variant.as_str(), e.collar, e.health), ("siamese", "royal", 3, 7.0));
+        assert!(e.tame && e.ordered_to_sit && e.sitting && e.baby() && e.persistence_required);
+        assert_eq!(e.owner, Some(minecraftoss_entities::gossip::uuid_from_ints([1, 2, 3, 4])));
+        let loaded = spawn_saved(&mut fresh, &tag_of(ocelot_id)).expect("a saved ocelot loads");
+        let e = &fresh.feline_mut(loaded).unwrap().feline;
+        assert!(e.trusting && !e.tame && e.kind == minecraftoss_entities::feline::FelineKind::Ocelot);
     }
 
     #[test]

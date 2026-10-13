@@ -510,6 +510,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     for texture in crate::piglin_render::TEXTURES {
         textures.insert(ResourceId::parse(texture)?, ());
     }
+    for texture in crate::cat_render::textures() {
+        textures.insert(ResourceId::parse(&texture)?, ());
+    }
     textures.insert(ResourceId::parse(crate::shulker_render::SPARK)?, ());
     textures.insert(ResourceId::parse(crate::end_crystal_render::TEXTURE)?, ());
     textures.insert(ResourceId::parse(crate::end_crystal_render::BEAM_TEXTURE)?, ());

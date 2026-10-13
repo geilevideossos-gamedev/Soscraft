@@ -53,6 +53,8 @@ pub enum MonsterKind {
     Ghast,
     Blaze,
     Shulker,
+    Cat,
+    Ocelot,
 }
 
 impl MonsterKind {
@@ -73,6 +75,8 @@ impl MonsterKind {
             Self::Ghast => &GHAST_GOAL_NAMES,
             Self::Blaze => &BLAZE_GOAL_NAMES,
             Self::Shulker => &SHULKER_GOAL_NAMES,
+            Self::Cat => &crate::feline_ai::CAT_GOAL_NAMES,
+            Self::Ocelot => &crate::feline_ai::OCELOT_GOAL_NAMES,
         }
     }
 
@@ -92,6 +96,8 @@ impl MonsterKind {
             Self::Ghast => &GHAST_TARGET_NAMES,
             Self::Blaze => &BLAZE_TARGET_NAMES,
             Self::Shulker => &SHULKER_TARGET_NAMES,
+            Self::Cat => &crate::feline_ai::CAT_TARGET_NAMES,
+            Self::Ocelot => &crate::feline_ai::OCELOT_TARGET_NAMES,
         }
     }
 }
@@ -391,6 +397,7 @@ pub(crate) enum Prey {
     /// `AbstractSkeleton`s.
     Skeleton,
     Piglin,
+    Chicken,
 }
 
 /// `MeleeAttackGoal`'s state (and `ZombieAttackGoal`'s raised arms).
@@ -511,6 +518,7 @@ pub struct MonsterGoalContext {
     pub golem: crate::golem_ai::GolemState,
     /// A wolf's own state (`wolf_ai`).
     pub wolf: crate::wolf_ai::WolfState,
+    pub feline: crate::feline_ai::FelineState,
     /// The level's points of interest and random, lent while it ticks (to
     /// iron golems and zombies).
     pub pois: Option<crate::poi::PoiManager>,
@@ -603,6 +611,9 @@ impl MonsterGoalContext {
         }
         // `TamableAnimal.canAttack`: never its owner.
         if self.kind == MonsterKind::Wolf && matches!(target.target, Target::Player(id) if self.wolf.owner == Some(id)) {
+            return false;
+        }
+        if self.kind == MonsterKind::Cat && matches!(target.target, Target::Player(id) if self.feline.tame && self.feline.owner == Some(id)) {
             return false;
         }
         target.alive && target.player_ok && !(player && self.difficulty == 0)
@@ -721,7 +732,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -781,12 +792,13 @@ impl MonsterAi {
         // `Monster`: none of an animal's fire maluses; the creeper's
         // `FloatGoal` lets its navigation float; it walks towards darkness.
         let mut walk = WalkProfile::animal(body.width, body.height);
-        if kind != MonsterKind::Wolf {
+        let animal = matches!(kind, MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot);
+        if !animal {
             walk.clear_malus(PathType::FireInNeighbor);
             walk.clear_malus(PathType::Fire);
         }
         // `FloatGoal` lets the navigation float.
-        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf);
+        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot);
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::WitherSkeleton => FOLLOW_RANGE,
             MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
@@ -795,10 +807,11 @@ impl MonsterAi {
             MonsterKind::Ghast => crate::ghast::FOLLOW_RANGE,
             MonsterKind::Blaze => crate::blaze::FOLLOW_RANGE,
             MonsterKind::Shulker => FOLLOW_RANGE,
+            MonsterKind::Cat | MonsterKind::Ocelot => crate::feline::FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
-        if kind != MonsterKind::Wolf {
+        if !animal {
             walk.walk_target = WalkTarget::Monster;
         }
         if kind == MonsterKind::Wolf {
@@ -834,6 +847,8 @@ impl MonsterAi {
             MonsterKind::Ghast => (ghast_goals(), ghast_targets(), crate::ghast::EYE_HEIGHT),
             MonsterKind::Blaze => (blaze_goals(), blaze_targets(), crate::blaze::EYE_HEIGHT),
             MonsterKind::Shulker => (shulker_goals(), shulker_targets(), crate::shulker::EYE_HEIGHT),
+            MonsterKind::Cat => (crate::feline_ai::cat_goals(), crate::feline_ai::cat_targets(), crate::feline::CAT_EYE_HEIGHT),
+            MonsterKind::Ocelot => (crate::feline_ai::ocelot_goals(), crate::feline_ai::ocelot_targets(), crate::feline::OCELOT_EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -896,6 +911,7 @@ impl MonsterAi {
                 witch: WitchState::default(),
                 golem: Default::default(),
                 wolf: Default::default(),
+                feline: Default::default(),
                 pois: None,
                 level_random: None,
                 can_break_doors: false,
@@ -2776,7 +2792,7 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
         Controls::new(&[Control::Target])
     }
     fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
-        if self.wild_only && ctx.wolf.tame {
+        if self.wild_only && (ctx.wolf.tame || ctx.feline.tame) {
             return false;
         }
         if self.dark_only && ctx.in_light(world) {
@@ -2796,6 +2812,7 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
             Prey::WolfPrey => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:sheep" | "minecraft:rabbit" | "minecraft:fox")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Skeleton => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Piglin => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:piglin" | "minecraft:piglin_brute")).map(|m| Target::Mob(m.id)).collect(),
+            Prey::Chicken => ctx.mobs.iter().filter(|m| m.kind == "minecraft:chicken").map(|m| Target::Mob(m.id)).collect(),
         };
         let mut best: Option<(f64, Target)> = None;
         for target in candidates {

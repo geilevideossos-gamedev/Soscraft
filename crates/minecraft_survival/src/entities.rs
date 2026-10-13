@@ -1776,6 +1776,7 @@ pub(crate) fn encode(hit: MobHit) -> u64 {
         MobHit::Hoglin(_) => HOGLIN_KEY,
         MobHit::Piglin(_) => PIGLIN_KEY,
         MobHit::Shulker(_) => 26,
+        MobHit::Feline(_) => FELINE_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1805,6 +1806,7 @@ pub(crate) fn decode(key: u64) -> Option<MobHit> {
         HOGLIN_KEY => MobHit::Hoglin(id),
         PIGLIN_KEY => MobHit::Piglin(id),
         26 => MobHit::Shulker(id),
+        FELINE_KEY => MobHit::Feline(id),
         _ => return None,
     })
 }
@@ -1816,6 +1818,7 @@ const DRAGON_KEY: u64 = 20 << 56;
 const STRIDER_KEY: u64 = 23;
 const HOGLIN_KEY: u64 = 22;
 const PIGLIN_KEY: u64 = 21;
+const FELINE_KEY: u64 = 29;
 pub(crate) const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
@@ -2156,6 +2159,16 @@ mod tests {
         let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None };
         let controls = player_controls(HOST, &view, &inventory);
         assert_eq!(controls.armor, [Some("minecraft:golden_boots".to_owned()), None, None, Some("minecraft:chainmail_helmet".to_owned())]);
+    }
+
+    #[test]
+    fn a_cat_and_an_ocelot_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Feline(77));
+        assert_eq!(key >> 56, 29);
+        assert_eq!(decode(key), Some(MobHit::Feline(77)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
     }
 
     #[test]

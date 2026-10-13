@@ -60,7 +60,7 @@ impl CatVariants {
 
     /// `PriorityProvider.select`: the variants of the highest priority whose
     /// condition holds, in registry order.
-    fn candidates(&self, black_cat_structure: bool, moon_brightness: f64) -> Vec<&str> {
+    pub fn candidates(&self, black_cat_structure: bool, moon_brightness: f64) -> Vec<&str> {
         let mut unpacked: Vec<(&str, i32, &CatCondition)> =
             self.variants.iter().flat_map(|(id, selectors)| selectors.iter().map(move |(p, c)| (id.as_str(), *p, c))).collect();
         unpacked.sort_by(|a, b| b.1.cmp(&a.1));
@@ -81,6 +81,10 @@ impl CatVariants {
             }
         }
         out
+    }
+
+    pub fn sounds(&self) -> &[String] {
+        &self.sounds
     }
 }
 

@@ -111,6 +111,8 @@ impl MobCategory {
     }
 }
 
+pub const BLACK_CAT_STRUCTURES: [&str; 1] = ["minecraft:swamp_hut"];
+
 /// `EntityType.canSpawnFarFromPlayer`: creature (and misc) types, pillagers
 /// and shulkers.
 fn can_spawn_far_from_player(kind: &str) -> bool {
@@ -706,6 +708,8 @@ impl CreatureSpawns {
             Rules::Drowned => self.drowned_spawn_rules(level, context, pos),
             Rules::Hoglin => self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() != "minecraft:nether_wart_block",
             Rules::Piglin => piglin_may_stand_on(self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str()),
+            Rules::Ocelot => level.random().next_i32_bound(3) != 0,
+            Rules::Unrestricted => true,
             Rules::Other => {
                 level.note_unsupported(&format!("spawn rules of {kind}"));
                 false
@@ -852,6 +856,11 @@ impl CreatureSpawns {
             return Ok(tag);
         }
         let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+        if kind == "minecraft:cat" {
+            let black = (context.structures)(pos).iter().any(|s| s.in_piece && BLACK_CAT_STRUCTURES.contains(&s.name.as_str()));
+            self.finalize_cat(level, &mut tag, black, context.moon_brightness);
+            return Ok(tag);
+        }
         match type_info(kind) {
             Some(info) if info.rules == Rules::Strider => {
                 let difficulty = Self::difficulty_at(level, context, pos);
@@ -1452,6 +1461,20 @@ mod tests {
         assert_eq!(info.rules, super::Rules::Hoglin);
         let zoglin = super::type_info("minecraft:zoglin").unwrap();
         assert_eq!((zoglin.fire_immune, zoglin.remove_far, zoglin.rules), (true, true, super::Rules::AnyLightMonster));
+    }
+
+    #[test]
+    fn ocelots_spawn_by_their_own_rules_and_cats_have_none() {
+        let ocelot = super::type_info("minecraft:ocelot").unwrap();
+        assert_eq!((ocelot.width, ocelot.height, ocelot.cluster, ocelot.fire_immune, ocelot.remove_far), (0.6, 0.7, 4, false, false));
+        assert_eq!((ocelot.placement, ocelot.rules), (crate::natural_spawner::Placement::OnGround, super::Rules::Ocelot));
+        assert!(matches!(ocelot.heightmap, minecraftoss_core::chunk::HeightmapKind::MotionBlocking));
+        assert!(matches!(ocelot.walk, super::Walk::Animal) && ocelot.rules.creature());
+        let cat = super::type_info("minecraft:cat").unwrap();
+        assert_eq!((cat.width, cat.height, cat.remove_far), (0.6, 0.7, false));
+        assert_eq!((cat.placement, cat.rules), (crate::natural_spawner::Placement::NoRestrictions, super::Rules::Unrestricted));
+        assert!(cat.rules.creature());
+        assert_eq!(super::BLACK_CAT_STRUCTURES, ["minecraft:swamp_hut"]);
     }
 
     #[test]

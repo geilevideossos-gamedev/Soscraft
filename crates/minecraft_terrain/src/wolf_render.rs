@@ -19,7 +19,7 @@ use minecraftoss_entities::world::WolfEntity;
 use std::f32::consts::PI;
 
 /// `DyeColor.getTextureDiffuseColor`, by dye ID.
-const DYE_DIFFUSE: [u32; 16] = [
+pub const DYE_DIFFUSE: [u32; 16] = [
     16383998, 16351261, 13061821, 3847130, 16701501, 8439583, 15961002, 4673362, 10329495, 1481884, 8991416, 3949738, 8606770, 6192150, 11546150, 1908001,
 ];
 

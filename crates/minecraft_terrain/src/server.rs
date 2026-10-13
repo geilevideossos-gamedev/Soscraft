@@ -6636,8 +6636,8 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
-    const HATCHING_EGGS: [&str; 37] = [
-        "bat", "blaze", "bogged", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "magma_cube", "mooshroom", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
+    const HATCHING_EGGS: [&str; 39] = [
+        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "magma_cube", "mooshroom", "ocelot", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
         "villager", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
     ];
 
@@ -6672,6 +6672,22 @@ mod tests {
         }
         assert_eq!(eggs.len(), 88);
         assert_eq!(hatched, HATCHING_EGGS);
+    }
+
+    #[test]
+    fn summoned_cats_draw_their_variants_and_voices_and_summoned_ocelots_live() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        for i in 0..20 {
+            server.summon("minecraft:cat", [8.5 + f64::from(i) * 0.1, 200.0, 8.5], None, 0.0).unwrap();
+        }
+        server.summon("minecraft:ocelot", [6.5, 200.0, 8.5], None, 0.0).unwrap();
+        let cats: Vec<_> = server.mobs.felines().iter().filter(|e| e.feline.is_cat()).map(|e| e.feline.clone()).collect();
+        assert_eq!(cats.len(), 20);
+        assert!(cats.iter().all(|cat| minecraftoss_entities::feline::CAT_VARIANTS.contains(&cat.variant.as_str())));
+        assert!(cats.iter().any(|cat| cat.variant != minecraftoss_entities::feline::DEFAULT_CAT_VARIANT), "the variant is drawn");
+        assert!(cats.iter().all(|cat| minecraftoss_entities::feline::CAT_SOUND_VARIANTS.contains(&cat.sound_variant.as_str())));
+        assert!(server.mobs.felines().iter().any(|e| e.feline.kind == minecraftoss_entities::feline::FelineKind::Ocelot));
     }
 
     #[test]

@@ -20,6 +20,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:bat",
     "minecraft:blaze",
     "minecraft:bogged",
+    "minecraft:cat",
     "minecraft:chicken",
     "minecraft:cow",
     "minecraft:creeper",
@@ -32,6 +33,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:iron_golem",
     "minecraft:magma_cube",
     "minecraft:mooshroom",
+    "minecraft:ocelot",
     "minecraft:parched",
     "minecraft:pig",
     "minecraft:piglin",
@@ -338,6 +340,14 @@ impl Shown {
                 light,
                 partial,
                 0,
+            ),
+            "minecraft:cat" | "minecraft:ocelot" => crate::cat_render::append_felines(
+                models,
+                w.felines().iter(),
+                poses,
+                atlas,
+                light,
+                partial,
             ),
             "minecraft:strider" => strider_render::append_striders(
                 models,
@@ -863,6 +873,8 @@ mod tests {
             ("minecraft:piglin", 0.05),
             ("minecraft:piglin_brute", 0.05),
             ("minecraft:shulker", 0.1),
+            ("minecraft:cat", 0.1),
+            ("minecraft:ocelot", 0.25),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);

@@ -22,6 +22,8 @@ pub mod eat_block;
 pub mod effects;
 pub mod enchant;
 pub mod enderman;
+pub mod feline;
+pub mod feline_ai;
 pub mod fluid;
 pub mod fireball;
 pub mod follow_parent;
