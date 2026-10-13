@@ -22,6 +22,16 @@ Decisions:
 - An old `hit_at` is dropped once its half second is over, so a frame clock that restarts (a new map) cannot replay an old flash.
 - Client-side only, nothing on the wire: the host and each friend read their own replicated `ps.damage_event` and their own `MinecraftUi.active`, so each window flashes only for its own hits, and Show Blood is per PC.
 
+### B10.2 No MW2 pain vision on Minecraft maps
+
+Base: f7cfddd4 (B10.1).
+
+What changed (`crates/render_frontend/src/assemble/drawsurf/film_vision_view.rs`):
+- `update_film_vision_view` reads `Option<Res<frame::MinecraftUi>>`.
+- The pure `pain_wanted(health, scripted, minecraft)` is true only for a scripted pain vision at half health or less, off Minecraft maps. On a Minecraft map `pain_strength` stays 0, so the pain vision never blends in. MW2 maps keep the old rule, including the fade back down while healing.
+
+Tests added (render_frontend): `no_mw2_pain_vision_on_minecraft_maps` (`(Some(0.1), true, true)` false, `(Some(0.1), true, false)` true, `(Some(0.9), true, false)` false, plus no health and no script both false).
+
 ## Owner's test steps (B10)
 
 1. Options > Advanced Video: check that Show Blood is on.
