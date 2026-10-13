@@ -948,7 +948,7 @@ fn update(
     let mut actor = crate::minecraft_players::actor(ps, origin, alive);
     actor.skating = skate.active;
     let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids, level: band };
-    let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects, bed } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
+    let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects, bed, open_book } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
     if bed.is_some() {
         *bed_request = bed;
     }
@@ -1295,6 +1295,13 @@ fn update(
             && let Some(menu) = player.menus.open.as_ref()
         {
             inventory_ui.show_menu(&mut ui, menu);
+        }
+        if !ui.inventory_open
+            && let Some(minecraft_survival::books::OpenBook { slot, kind: minecraft_survival::books::BookUse::Read }) = open_book
+            && let Some(stack) = player.inventory.slots.get(slot).cloned().flatten()
+        {
+            let shown = frame::McBook { pages: minecraft_terrain::lectern::pages_text(stack.components.as_ref()), page: 0, take: false };
+            inventory_ui.show_held_book(&mut ui, slot, shown);
         }
         let now_open = player.menus.block().cloned();
         let spectator = player_mode.mode == minecraftoss_player::GameMode::Spectator;

@@ -123,6 +123,7 @@ pub struct Acted {
     pub hand_broken: Vec<BlockPos>,
     pub effects: Vec<Effect>,
     pub bed: Option<Bed>,
+    pub open_book: Option<crate::books::OpenBook>,
 }
 
 pub fn reaches_block(eye: [f64; 3], pos: BlockPos, range: f64) -> bool {
@@ -326,6 +327,7 @@ pub fn act(
     let mut open_table = None;
     let mut open_block = None;
     let mut open_bench = None;
+    let mut open_book = None;
     if let Some(entities) = entities.as_mut()
         && (holding_item
             || offhand_key
@@ -929,6 +931,12 @@ pub fn act(
                     });
                 }
                 HandUse::Consumed
+            } else if let Some(stack) = held.as_ref().filter(|stack| crate::books::is_book(stack)) {
+                if use_pressed {
+                    open_book = crate::books::book_use(stack).map(|kind| crate::books::OpenBook { slot, kind });
+                    hand.swing = Some(0.0);
+                }
+                HandUse::Consumed
             } else if let Some(stack) = held
                 .as_ref()
                 .filter(|stack| stack.id == minecraft_terrain::durability::STEERING_ITEM)
@@ -1501,6 +1509,7 @@ pub fn act(
         hand_broken,
         effects,
         bed,
+        open_book,
     }
 }
 
@@ -2268,5 +2277,155 @@ pub(crate) mod tests {
         let stopped = step(&mut player, Hands::default());
         assert!(heard(&stopped, crate::spyglass::STOP_SOUND));
         assert_eq!(player.hand.scoping, None, "letting go stops scoping");
+    }
+
+    fn written_book() -> ItemStack {
+        let mut stack = ItemStack::new(crate::books::WRITTEN_BOOK, 1);
+        stack.components = Some(serde_json::json!({
+            crate::books::WRITTEN_BOOK_CONTENT: {
+                "title": {"raw": "Test"},
+                "author": "Owner",
+                "pages": [{"raw": "one"}, {"raw": "two"}]
+            }
+        }));
+        stack
+    }
+
+    fn use_once(level: &mut Level, globals: &Globals, player: &mut Player, input: Hands) -> Acted {
+        act(
+            player,
+            level,
+            globals,
+            &mut Flat,
+            &actor(0.0, -30.0),
+            input,
+            &moved(),
+            None,
+            0.0,
+        )
+    }
+
+    #[test]
+    fn right_clicking_with_a_written_book_opens_it_for_that_hand() {
+        use crate::books::{BookUse, OpenBook};
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.selected = 3;
+        player.inventory.slots[3] = Some(written_book());
+        let acted = use_once(&mut level, &globals, &mut player, press());
+        assert_eq!(
+            acted.open_book,
+            Some(OpenBook {
+                slot: 3,
+                kind: BookUse::Read
+            })
+        );
+        assert_eq!(player.hand.swing, Some(0.0));
+        assert!(!player.hand.swing_offhand);
+        assert_eq!(
+            player.inventory.slots[3].as_ref().map(|stack| stack.count),
+            Some(1),
+            "reading keeps the book"
+        );
+        let mut blank = holding(crate::books::WRITTEN_BOOK, 1);
+        let acted = use_once(&mut level, &globals, &mut blank, press());
+        assert_eq!(acted.open_book, None, "a written book without content");
+        assert_eq!(blank.hand.swing, Some(0.0), "it still swings");
+    }
+
+    #[test]
+    fn a_quill_in_the_offhand_opens_the_editor_for_slot_40() {
+        use crate::books::{BookUse, OpenBook};
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.inventory.slots[crate::offhand::OFFHAND] =
+            Some(ItemStack::new(crate::books::WRITABLE_BOOK, 1));
+        let acted = use_once(&mut level, &globals, &mut player, press());
+        assert_eq!(
+            acted.open_book,
+            Some(OpenBook {
+                slot: crate::offhand::OFFHAND,
+                kind: BookUse::Write
+            })
+        );
+        assert_eq!(player.hand.swing, Some(0.0));
+        assert!(player.hand.swing_offhand, "the offhand swings");
+    }
+
+    #[test]
+    fn a_lectern_still_takes_a_held_book_before_it_opens() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let pos = (6, 201, 4);
+        let terrain = &mut level.terrain;
+        let entities = level.entities.as_mut().expect("entities");
+        let lectern = Block::new("minecraft:lectern")
+            .with("facing", "west")
+            .with("has_book", "false")
+            .with("powered", "false");
+        terrain.scene.set(pos, Some(lectern));
+        entities.placed(&terrain.scene, pos);
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.inventory.slots[0] = Some(written_book());
+        let looking = actor(-90.0, pitch_to(actor(0.0, 0.0).eye, [6.5, 201.5, 4.5]));
+        let acted = act(
+            &mut player,
+            &mut level,
+            &globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        assert_eq!(acted.open_book, None, "the lectern takes the book");
+        assert_eq!(player.hand.swing, Some(0.0));
+        let entities = level.entities.as_ref().expect("entities");
+        assert!(
+            entities.awaits_item_use(u64::from(player.id.0)),
+            "the book goes onto the lectern"
+        );
+    }
+
+    #[test]
+    fn a_spectator_does_not_open_a_book() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.mode = PlayerMode::new(GameMode::Spectator);
+        player.inventory.slots[0] = Some(written_book());
+        let acted = use_once(&mut level, &globals, &mut player, press());
+        assert_eq!(acted.open_book, None);
+        assert_eq!(player.hand.swing, None);
+        player.mode = PlayerMode::new(GameMode::Adventure);
+        let acted = use_once(&mut level, &globals, &mut player, press());
+        assert!(acted.open_book.is_some(), "adventure players read books");
+    }
+
+    #[test]
+    fn holding_use_opens_a_book_only_once() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding(crate::books::WRITABLE_BOOK, 1);
+        let first = use_once(&mut level, &globals, &mut player, press());
+        assert!(first.open_book.is_some());
+        let held = Hands {
+            use_held: true,
+            ..Hands::default()
+        };
+        for tick in 0..12 {
+            let acted = use_once(&mut level, &globals, &mut player, held);
+            assert_eq!(acted.open_book, None, "tick {tick}");
+        }
+        let again = use_once(&mut level, &globals, &mut player, press());
+        assert!(again.open_book.is_some(), "a new press opens it again");
     }
 }

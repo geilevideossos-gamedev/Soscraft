@@ -76,6 +76,27 @@ Decisions:
 - The thrown bottle, the splash burst, the area cloud and the witch's potion were already right and are untouched.
 - The held-item pose code in `body_render.rs` and the `mesh.rs` held-item append functions are track A's; only the `HeldItem.id` line and the `ItemVisuals::model` key split changed there.
 
+### B8.1 Minecraft written books are read from the hand like vanilla
+
+Base: bd7a398d (B9.2).
+
+What changed:
+- New `minecraft_survival/src/books.rs` (registered in `lib.rs`): `BookUse { Read, Write }`, `OpenBook { slot, kind }`, `is_book(stack)` (written book or book and quill) and `book_use(stack)`: a written book with `minecraft:written_book_content` reads, a book and quill writes with or without components, anything else is `None`.
+- `actions.rs`: `Acted.open_book: Option<OpenBook>`. A new arm in `use_hands` right after the `used` arm, so frames, mobs, tables, stations, lecterns, campfires, respawn blocks and doors keep priority. When the hand holds either book, a press (`use_pressed`) sets `open_book` (slot = the selected slot, or 40 for the offhand), swings that hand and the arm returns `Consumed`; a held use that repeats every 4 ticks consumes without opening again. A written book without content only swings. Spectators never reach `use_hands` (`game_mode.interacts()`); adventure players do.
+- `render_anim/src/minecraft_inventory.rs`: `lectern: Option<BlockPos>` became `book_source: Option<BookSource>` with `BookSource { Lectern(BlockPos), Held(usize) }` (named `book_source` because `InventoryUi.book` is already the station recipe book). `lectern()` still returns only the lectern case. New `show_held_book(ui, slot, McBook)` opens `McScreen::Lectern` (refused while another screen is open). For a held source `Choose(1)`/`Choose(2)` turn `ui.book.page` locally, clamped to the pages like `BookViewScreen`, `Choose(3)` is ignored and Close sends no `LecternAction`. `lectern_clicks` is renamed `book_clicks` (the friend path in `minecraft_remote.rs` keeps bypassing `show_menus` with it).
+- `minecraft_world.rs`: the host destructures `open_book`; after the station block, when no screen is open and the kind is Read, it shows the slot's pages (`lectern::pages_text`) with `page: 0, take: false`. The hud's existing `take: false` layout is vanilla's held `BookViewScreen`: one Done button 200 wide at (w/2-100, 196) and no Take Book.
+- `minecraft_players.rs`: `friend_hand` returns `acted.open_book` and `step_friend` stores it in `Stepped.open_book` (sent to the friend by a later group).
+
+Tests added:
+- minecraft_survival `books::a_written_book_reads_and_a_quill_writes`.
+- minecraft_survival `actions`: `right_clicking_with_a_written_book_opens_it_for_that_hand` (slot 3, swing, the book stays; a written book without content swings and opens nothing), `a_quill_in_the_offhand_opens_the_editor_for_slot_40` (offhand swing), `a_lectern_still_takes_a_held_book_before_it_opens` (no `open_book`, the book goes to the lectern), `a_spectator_does_not_open_a_book` (and adventure does), `holding_use_opens_a_book_only_once`.
+- render_anim `a_held_book_turns_pages_locally_and_closes_without_a_lectern_action`. The lectern tests stay green after the rename.
+
+Decisions:
+- A book and quill (`BookUse::Write`) opens nothing yet on the host: the edit screen comes with the B8.3 group. Right-clicking one swings the hand, as vanilla does before its screen opens.
+- The held view reuses `McScreen::Lectern` and `McBook`, so the lectern code and its tests are unchanged.
+- Page turns with PageUp/PageDown play no sound, as for the lectern (vanilla's `PageButton.onPress` from a key plays none either); clicking an arrow plays `item.book.page_turn`.
+
 ## Owner's test steps (B9.1)
 
 1. **Inventory (E).** Each bottle has its own liquid colour:
@@ -134,6 +155,29 @@ IW4L_MINECRAFT_KIT=minecraft:potion@healing,minecraft:potion@poison,minecraft:po
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*8,minecraft:cactus*4,minecraft:magma_block*4,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:totem_of_undying,minecraft:cobblestone*64,minecraft:ladder*32,minecraft:diamond_sword,minecraft:shield
+```
+
+## Owner's test steps (B8)
+
+Numbered as in the brief's B8 steps. Steps 2-5 and 9 (tooltip, writing, signing, crafting and the friend) come with later groups of this track.
+
+1. **Reading from the hand.** Hold "Test" and right-click at the sky.
+   - "Page 1 of 3" opens, with only the forward arrow and one wide Done button (no Take Book).
+   - The arrows and PageUp/PageDown turn the pages; clicking an arrow plays the page sound.
+   - Done and Esc close it.
+   - Press F to move it to the offhand, select an empty hotbar slot and right-click: it opens again.
+   - Holding right-click does not reopen it after Done.
+6. **Lecterns.**
+   - Place a lectern and right-click it with "Test": the book goes onto the lectern instead of opening in the hand.
+   - Put a comparator behind the lectern, redstone and a lamp after it. Page turns change the signal, and Take Book works.
+   - The book and quill with pages ("Quill page one") goes onto the second lectern and reads there.
+7. **Saving.** Save, quit and reload: the lectern books and the written book are kept.
+8. **Game modes.**
+   - `/gamemode adventure`: right-clicking "Test" reads it.
+   - `/gamemode spectator`: right-clicking with a book does nothing.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book[writable_book_content={pages:["Quill page one","Quill page two"]}],minecraft:writable_book,minecraft:writable_book,minecraft:lectern*2,minecraft:comparator,minecraft:redstone*16,minecraft:redstone_lamp,minecraft:book*2,minecraft:ink_sac*2,minecraft:feather*2,minecraft:crafting_table,minecraft:stone*32
 ```
 
 ## State doc changes

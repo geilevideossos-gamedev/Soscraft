@@ -46,8 +46,14 @@ pub(crate) struct InventoryUi {
     animated: AnimatedIcons,
     pub(crate) creative: crate::minecraft_creative::CreativeUi,
     pub(crate) dials: minecraft_terrain::dials::Dials,
-    lectern: Option<BlockPos>,
+    book_source: Option<BookSource>,
     lectern_actions: Vec<(BlockPos, minecraft_terrain::lectern::LecternAction)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BookSource {
+    Lectern(BlockPos),
+    Held(usize),
 }
 
 #[derive(Default)]
@@ -163,15 +169,55 @@ impl InventoryUi {
     }
 
     pub(crate) fn lectern(&self) -> Option<BlockPos> {
-        self.lectern
+        match self.book_source {
+            Some(BookSource::Lectern(pos)) => Some(pos),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn show_held_book(&mut self, ui: &mut MinecraftUi, slot: usize, book: frame::McBook) -> bool {
+        if ui.inventory_open {
+            return false;
+        }
+        self.book_source = Some(BookSource::Held(slot));
+        ui.screen = McScreen::Lectern;
+        ui.inventory_open = true;
+        ui.screen_opened = true;
+        ui.book = Some(book);
+        true
+    }
+
+    fn book_button(&mut self, ui: &mut MinecraftUi, source: BookSource, button: usize) {
+        match source {
+            BookSource::Lectern(pos) => self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Button(button as i32))),
+            BookSource::Held(_) => {
+                if let Some(book) = ui.book.as_mut() {
+                    let last = book.pages.len().saturating_sub(1);
+                    book.page = match button {
+                        1 => book.page.saturating_sub(1),
+                        2 => (book.page + 1).min(last),
+                        _ => book.page,
+                    };
+                }
+            }
+        }
+    }
+
+    fn close_book(&mut self, ui: &mut MinecraftUi) {
+        if let Some(source) = self.book_source.take() {
+            ui.book = None;
+            if let BookSource::Lectern(pos) = source {
+                self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Close));
+            }
+        }
     }
 
     pub(crate) fn show_lectern(&mut self, ui: &mut MinecraftUi, pos: BlockPos, book: frame::McBook) -> bool {
-        if self.lectern != Some(pos) {
+        if self.lectern() != Some(pos) {
             if ui.inventory_open {
                 return false;
             }
-            self.lectern = Some(pos);
+            self.book_source = Some(BookSource::Lectern(pos));
             ui.screen = McScreen::Lectern;
             ui.inventory_open = true;
             ui.screen_opened = true;
@@ -181,8 +227,8 @@ impl InventoryUi {
     }
 
     pub(crate) fn lectern_closed(&mut self, ui: &mut MinecraftUi, pos: BlockPos) {
-        if self.lectern == Some(pos) {
-            self.lectern = None;
+        if self.lectern() == Some(pos) {
+            self.book_source = None;
             ui.book = None;
             ui.inventory_open = false;
         }
@@ -192,21 +238,19 @@ impl InventoryUi {
         std::mem::take(&mut self.lectern_actions)
     }
 
-    pub(crate) fn lectern_clicks(&mut self, ui: &mut MinecraftUi) -> bool {
-        let Some(pos) = self.lectern else {
+    pub(crate) fn book_clicks(&mut self, ui: &mut MinecraftUi) -> bool {
+        let Some(source) = self.book_source else {
             return false;
         };
         for click in std::mem::take(&mut ui.clicks) {
             match click {
-                McClick::Choose(button) => self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Button(button as i32))),
+                McClick::Choose(button) => self.book_button(ui, source, button),
                 McClick::Close => ui.inventory_open = false,
                 _ => {}
             }
         }
         if !ui.inventory_open {
-            self.lectern = None;
-            ui.book = None;
-            self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Close));
+            self.close_book(ui);
         } else {
             ui.screen = McScreen::Lectern;
         }
@@ -236,17 +280,13 @@ impl InventoryUi {
     ) -> Clicked {
         let mut clicked = Clicked::default();
         for click in std::mem::take(&mut ui.clicks) {
-            if let Some(pos) = self.lectern {
+            if let Some(source) = self.book_source {
                 match &click {
                     McClick::Choose(button) => {
-                        self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Button(*button as i32)));
+                        self.book_button(ui, source, *button);
                         continue;
                     }
-                    McClick::Close => {
-                        self.lectern = None;
-                        ui.book = None;
-                        self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Close));
-                    }
+                    McClick::Close => self.close_book(ui),
                     _ => continue,
                 }
             }
@@ -262,13 +302,10 @@ impl InventoryUi {
         }
         if !ui.inventory_open {
             clicked.thrown.extend(minecraft_survival::menus::close(player));
-            if let Some(pos) = self.lectern.take() {
-                ui.book = None;
-                self.lectern_actions.push((pos, minecraft_terrain::lectern::LecternAction::Close));
-            }
+            self.close_book(ui);
         }
         ui.screen = screen_for(player.menus.open.as_ref().map(|menu| &menu.open));
-        if self.lectern.is_some() {
+        if self.book_source.is_some() {
             ui.screen = McScreen::Lectern;
         }
         let Player { inventory, selected, .. } = player;
@@ -823,19 +860,19 @@ mod tests {
         use minecraft_terrain::lectern::LecternAction;
         let mut inventory_ui = InventoryUi::default();
         let mut ui = MinecraftUi::default();
-        assert!(!inventory_ui.lectern_clicks(&mut ui), "no lectern open");
+        assert!(!inventory_ui.book_clicks(&mut ui), "no lectern open");
         let pos = (4, 64, -2);
         let book = frame::McBook { pages: vec!["one".to_owned()], page: 0, take: false };
         assert!(inventory_ui.show_lectern(&mut ui, pos, book));
         ui.clicks = vec![McClick::Choose(2), McClick::Choose(101)];
-        assert!(inventory_ui.lectern_clicks(&mut ui));
+        assert!(inventory_ui.book_clicks(&mut ui));
         assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Button(2)), (pos, LecternAction::Button(101))]);
         assert_eq!(ui.screen, McScreen::Lectern);
         ui.clicks = vec![McClick::Close];
-        assert!(inventory_ui.lectern_clicks(&mut ui));
+        assert!(inventory_ui.book_clicks(&mut ui));
         assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Close)]);
         assert!(!ui.inventory_open && ui.book.is_none() && inventory_ui.lectern().is_none());
-        assert!(!inventory_ui.lectern_clicks(&mut ui));
+        assert!(!inventory_ui.book_clicks(&mut ui));
     }
 
     #[test]
@@ -876,5 +913,41 @@ mod tests {
         ui.inventory_open = false;
         let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
         assert_eq!(inventory_ui.take_lectern_actions(), [(pos, LecternAction::Close)]);
+    }
+
+    #[test]
+    fn a_held_book_turns_pages_locally_and_closes_without_a_lectern_action() {
+        let mut inventory_ui = InventoryUi::default();
+        let mut ui = MinecraftUi::default();
+        let profile = minecraft_commands::server::Profile { id: minecraft_commands::PlayerId(0), name: "Steve".to_owned(), uuid: "00000000-0000-0000-0000-000000000001".to_owned() };
+        let mut player = Player::new(&profile, Default::default(), Default::default(), Inventory::default());
+        let mut containers = Containers::default();
+        let data = minecraft_survival::data::GameData::default();
+        let book = frame::McBook { pages: vec!["one".to_owned(), "two".to_owned(), "three".to_owned()], page: 0, take: false };
+        assert!(!inventory_ui.book_clicks(&mut ui), "no book open");
+        assert!(inventory_ui.show_held_book(&mut ui, OFFHAND, book.clone()));
+        assert!(ui.inventory_open && ui.screen_opened);
+        assert_eq!(ui.screen, McScreen::Lectern);
+        assert_eq!(inventory_ui.lectern(), None, "a held book is not a lectern");
+        let page = |ui: &MinecraftUi| ui.book.as_ref().map(|book| book.page);
+        ui.clicks = vec![McClick::Choose(1), McClick::Choose(2), McClick::Choose(2), McClick::Choose(2), McClick::Choose(3)];
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
+        assert_eq!(page(&ui), Some(2), "turns stop at the last page and Take Book is ignored");
+        assert_eq!(ui.screen, McScreen::Lectern);
+        assert!(inventory_ui.take_lectern_actions().is_empty());
+        ui.clicks = vec![McClick::Choose(1)];
+        assert!(inventory_ui.book_clicks(&mut ui));
+        assert_eq!(page(&ui), Some(1));
+        assert!(inventory_ui.take_lectern_actions().is_empty());
+        ui.inventory_open = false;
+        ui.clicks = vec![McClick::Close];
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
+        assert!(inventory_ui.take_lectern_actions().is_empty(), "no lectern action on close");
+        assert!(ui.book.is_none());
+        assert_eq!(ui.screen, McScreen::Inventory);
+        assert!(!inventory_ui.book_clicks(&mut ui));
+        ui.inventory_open = true;
+        assert!(!inventory_ui.show_held_book(&mut ui, 0, book), "not over another screen");
+        assert!(ui.book.is_none());
     }
 }

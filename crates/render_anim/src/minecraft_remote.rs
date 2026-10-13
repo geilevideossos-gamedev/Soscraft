@@ -1003,7 +1003,7 @@ fn show_player(
     for book in std::mem::take(&mut remote.lecterns) {
         show_book(inventory_ui, ui, book, &mut out);
     }
-    if !inventory_ui.lectern_clicks(ui) {
+    if !inventory_ui.book_clicks(ui) {
         show_menus(
             ui,
             (&mut remote.menu, remote.inventory_menu.as_ref()),
