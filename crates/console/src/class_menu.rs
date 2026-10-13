@@ -351,7 +351,7 @@ pub(crate) fn route(
             dvars.set("ui_class_status", format!("Class unavailable: {reason}"));
         }
         let note = ui::classes::setup::MINECRAFT_ITEM_ROWS;
-        let shown = dvars.get("ui_class_status").unwrap_or_default().to_owned();
+        let shown = dvars.get("ui_class_status").unwrap_or("").to_owned();
         if minecraft && shown.is_empty() {
             dvars.set("ui_class_status", note);
         } else if !minecraft && shown == note {

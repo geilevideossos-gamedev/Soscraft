@@ -1790,10 +1790,10 @@ pub(crate) fn use_offhand_round(world: &mut FrameWorld, id: ClientId, weapon: u3
             meta.set_ammo(weapon, 0, stock - 1);
         }
     }
-    if let Some(facts) = combat {
-        if let Some(ps) = world.player_mut(id) {
-            spend_ps_offhand_round(ps, weapon, facts);
-        }
+    if let Some(facts) = combat
+        && let Some(ps) = world.player_mut(id)
+    {
+        spend_ps_offhand_round(ps, weapon, facts);
     }
     if minecraft {
         crate::voxel::spend_grenade(id.0, weapon, -1);

@@ -1304,6 +1304,16 @@ Commit: the one after `bd497d69`. Fixes `415a85cb`.
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:barrett,iw4l:fmj,iw4l:sniper_rounds*16,minecraft:crafting_table,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots
 ```
 
+### 3. Grenade, test and class menu code passes clippy
+
+Commit: the one after `7b15736d`. Final verification of the track: `clippy --all-targets` on every crate the track touched (`console`, `frame`, `hud`, `minecraft_commands`, `minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `sim`, `ui`, `weapon_iw4`, `minecraftoss-player`), with the warnings matched against the lines added since `r9-c2-base`. Three were on this track's lines; older warnings stay.
+
+- `sim/src/combat.rs` (from `edcd9cc5`): the offhand round spend is one `if let ... && let ...` instead of two nested `if let`s (`collapsible_if`).
+- `console/src/class_menu.rs` (from `43b4e0df`): the class status is read with `unwrap_or("")` instead of the disallowed `unwrap_or_default`.
+- `hud/src/minecraft_creative.rs` (test from `b47be4bb`): the grenade slot tooltip test builds its `MinecraftUi` with the slots in the initializer (`field_reassign_with_default`).
+- `test -p` on all twelve crates green (console 52, frame 28, hud 174, minecraft_commands 140, minecraft_net 18, minecraft_survival 694 + 1, minecraft_terrain 1204 with 3 ignored, render_anim 174, sim 154, ui 9, weapon_iw4 1, minecraftoss-player 198), `check -p launcher` green.
+- No behaviour change, no new test, no owner steps or kit. The `minecraftoss-player` tests need the stand-in `third_party/scenarios/survival` files that `scripts\full-suite.ps1` creates; they were made for the run and removed again.
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.

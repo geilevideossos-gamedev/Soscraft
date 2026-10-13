@@ -646,9 +646,11 @@ mod tests {
             frames[0].1 + 29 <= cx - 91 - 29,
             "left of the offhand frame"
         );
-        let mut ui = MinecraftUi::default();
-        ui.slots = vec![None; 45];
-        let tip = |ui: &MinecraftUi, slot| {
+        let mut ui = MinecraftUi {
+            slots: vec![None; 45],
+            ..MinecraftUi::default()
+        };
+        let tip =|ui: &MinecraftUi, slot| {
             crate::minecraft_screens::grenade_slot_tooltip(ui, Some(McSlot::Inventory(slot)))
                 .map(|(lines, _)| lines[0].text.clone())
         };
