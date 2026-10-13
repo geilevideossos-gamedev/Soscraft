@@ -49,6 +49,7 @@ pub(crate) struct InventoryUi {
     lectern: Option<BlockPos>,
     lectern_actions: Vec<(BlockPos, minecraft_terrain::lectern::LecternAction)>,
     pub(crate) fork: crate::minecraft_fork_items::ForkLook,
+    recipe_book: crate::minecraft_recipe_book::RecipeBookUi,
 }
 
 #[derive(Default)]
@@ -464,6 +465,31 @@ impl InventoryUi {
         ui.container = container;
         ui.output = output;
         ui.data = data;
+        let book_grid = crate::minecraft_recipe_book::grid_of(ui.screen).filter(|_| ui.inventory_open);
+        if let Some(built) = self.recipe_book.build(&ui.recipe_book, inventory, book_grid, lang) {
+            let book = &mut ui.recipe_book;
+            book.tabs = built.tabs;
+            book.pages = built.pages;
+            book.buttons = built
+                .buttons
+                .into_iter()
+                .map(|choices| frame::McRecipeButton {
+                    recipes: choices
+                        .into_iter()
+                        .filter_map(|choice| {
+                            Some(frame::McRecipeOption {
+                                result: convert(&Some(choice.result))?,
+                                id: choice.id,
+                                craftable: choice.craftable,
+                                cells: choice.cells.iter().map(|cell| cell.as_ref().map(|stacks| stacks.iter().filter_map(|stack| convert(&Some(stack.clone()))).collect())).collect(),
+                            })
+                        })
+                        .collect(),
+                })
+                .collect();
+            book.ghost_cells = built.ghost.into_iter().map(|(slot, stacks)| (slot, stacks.into_iter().filter_map(|stack| convert(&Some(stack))).collect())).collect();
+            book.tab_icons = built.tab_icons.into_iter().map(|icons| icons.into_iter().filter_map(|stack| convert(&Some(stack))).collect()).collect();
+        }
         ui.cursor = convert(&inventory.cursor);
         let mut creative_converted = 0;
         if let Some(items) = self.creative.take_items() {
@@ -477,6 +503,7 @@ impl InventoryUi {
         }
         stacks.truncate(stacks.len() - creative_converted);
         stacks.extend(self.creative.icon_ids(ui));
+        stacks.extend(ui.recipe_book.icon_ids().map(str::to_owned));
         ui.armor = inventory.armor_value();
         ui.droppable = inventory.cursor.as_ref().filter(|_| ui.inventory_open).map_or_else(Vec::new, |carried| {
             droppable(ui.screen, carried, inventory, opened.as_ref(), bench, containers, &ctx)

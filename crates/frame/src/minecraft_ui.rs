@@ -204,6 +204,7 @@ pub struct MinecraftUi {
     pub chat: crate::McChat,
     pub chat_only: bool,
     pub creative: crate::McCreative,
+    pub recipe_book: crate::McRecipeBook,
     pub level_loading: Option<McLevelLoading>,
     pub portal_frames: Option<(Handle<Image>, u32)>,
     pub portal_overlay: Option<McPortalOverlay>,

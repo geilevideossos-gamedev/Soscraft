@@ -56,6 +56,7 @@ mod minecraft_mining;
 mod minecraft_music;
 mod minecraft_minimap;
 mod minecraft_players;
+mod minecraft_recipe_book;
 mod minecraft_portal;
 mod minecraft_remote;
 mod minecraft_respawn;

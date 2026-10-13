@@ -683,7 +683,20 @@ impl<'a> Painter<'a> {
         y: i32,
         color: u32,
     ) {
-        let (x, y) = (x as f32, y as f32);
+        self.item_sized(ui, weapons, stack, [x as f32, y as f32], 16.0, color);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn item_sized(
+        &mut self,
+        ui: &MinecraftUi,
+        weapons: Option<&PreparedWeapons>,
+        stack: &McStack,
+        [x, y]: [f32; 2],
+        size: f32,
+        color: u32,
+    ) {
+        let half = size * 0.5;
         if let Some(weapon) = stack.weapon {
             let Some(registry) = weapons else { return };
             let namespace = registry
@@ -704,8 +717,8 @@ impl<'a> Painter<'a> {
                 _ => 1.0,
             };
             let flip = facts.as_ref().is_some_and(|f| f.flip_kill_icon);
-            let w: f32 = 18.0;
-            let h = (w / ratio).min(16.0);
+            let w: f32 = 18.0 * size / 16.0;
+            let h = (w / ratio).min(size);
             let st = if flip {
                 [1.0, 0.0, 0.0, 1.0]
             } else {
@@ -716,10 +729,10 @@ impl<'a> Painter<'a> {
                 &icon,
                 namespace,
                 [
-                    x + 8.0 - w * 0.5,
-                    y + 8.0 - h * 0.5,
-                    x + 8.0 + w * 0.5,
-                    y + 8.0 + h * 0.5,
+                    x + half - w * 0.5,
+                    y + half - h * 0.5,
+                    x + half + w * 0.5,
+                    y + half + h * 0.5,
                 ],
                 st,
                 argb(color),
@@ -735,17 +748,17 @@ impl<'a> Painter<'a> {
             self.rect(
                 material,
                 HUD_CHROME_NAMESPACE,
-                [x, y, x + 16.0, y + 16.0],
+                [x, y, x + size, y + size],
                 st,
                 argb(color),
             );
             if stack.glint {
-                self.glint(material, x, y, st);
+                self.glint(material, x, y, st, size);
             }
         }
     }
 
-    fn glint(&mut self, material: &str, x: f32, y: f32, st: [f32; 4]) {
+    fn glint(&mut self, material: &str, x: f32, y: f32, st: [f32; 4], size: f32) {
         let cell = |lo: f32, hi: f32| (lo / (hi - lo).max(f32::EPSILON)).round();
         let cell = [cell(st[0], st[2]), cell(st[1], st[3])];
         let shift = self.glint_shift;
@@ -762,7 +775,7 @@ impl<'a> Painter<'a> {
         self.rect(
             material,
             HUD_CHROME_NAMESPACE,
-            [x, y, x + 16.0, y + 16.0],
+            [x, y, x + size, y + size],
             st,
             [1.0, 1.0, 1.0, frame::minecraft_ui::GLINT_STRENGTH],
         );

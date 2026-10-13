@@ -17,6 +17,7 @@ mod test_dir;
 pub mod class_file;
 pub mod clouds;
 pub mod creative_search;
+pub mod recipe_book;
 pub mod creative_tabs;
 pub mod creative_variants;
 pub mod day_cycle;
