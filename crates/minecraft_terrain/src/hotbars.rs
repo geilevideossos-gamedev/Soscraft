@@ -89,17 +89,15 @@ impl Hotbars {
 fn stack_tag(stack: Option<&ItemStack>) -> Tag {
     let mut out = BTreeMap::new();
     if let Some(stack) = stack {
-        out.insert("id".to_owned(), Tag::String(stack.id.clone()));
-        out.insert("count".to_owned(), Tag::Int(i32::from(stack.count)));
-        if let Some(components) = stack
+        let components = stack
             .components
             .as_ref()
-            .filter(|components| components.as_object().is_some_and(|map| !map.is_empty()))
-        {
-            out.insert(
-                "components".to_owned(),
-                crate::item_nbt::json_tag(components),
-            );
+            .and_then(crate::item_nbt::components_tag);
+        let (id, components) = crate::item_nbt::to_disk(&stack.id, components);
+        out.insert("id".to_owned(), Tag::String(id));
+        out.insert("count".to_owned(), Tag::Int(i32::from(stack.count)));
+        if let Some(components) = components {
+            out.insert("components".to_owned(), components);
         }
     }
     Tag::Compound(out)
@@ -112,8 +110,10 @@ fn stack_of(tag: &Tag) -> Option<ItemStack> {
         .and_then(Tag::as_i64)
         .unwrap_or(1)
         .clamp(1, 99) as u8;
+    let components = tag.get("components").cloned();
+    let (id, components) = crate::item_nbt::from_disk(id, components);
     let mut stack = ItemStack::new(id, count);
-    stack.components = tag.get("components").map(crate::item_nbt::tag_json);
+    stack.components = components.as_ref().map(crate::item_nbt::tag_json);
     Some(stack)
 }
 
@@ -219,5 +219,26 @@ mod tests {
         let loaded = Hotbars::from_tag(&Tag::Compound(root));
         assert!(loaded.is_empty(3));
         assert_eq!(loaded.row(4)[8], Some(ItemStack::new("minecraft:dirt", 1)));
+    }
+
+    #[test]
+    fn a_saved_hotbar_keeps_a_gun_and_rockets_through_their_carriers() {
+        let mut gun = ItemStack::new("iw4l:m4", 1);
+        gun.components = Some(serde_json::json!({
+            "minecraft:custom_data": {"iw4l": {"attachments": ["silencer"], "clip": 12}}
+        }));
+        let mut hotbars = Hotbars::default();
+        hotbars.store(1, &[Some(gun), Some(ItemStack::new("iw4l:rocket", 16))]);
+        let tag = hotbars.to_tag();
+        let row = tag.get("1").and_then(Tag::as_list).unwrap();
+        assert_eq!(
+            row[0].get("id"),
+            Some(&Tag::String("minecraft:carrot_on_a_stick".into()))
+        );
+        assert_eq!(
+            row[1].get("id"),
+            Some(&Tag::String("minecraft:poisonous_potato".into()))
+        );
+        assert_eq!(Hotbars::from_tag(&tag), hotbars);
     }
 }

@@ -321,6 +321,7 @@ mod tests {
             glint: false,
             icon: id.into(),
             lore: Vec::new(),
+            clip: None,
         }
     }
 

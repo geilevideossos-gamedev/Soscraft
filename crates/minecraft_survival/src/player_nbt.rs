@@ -12,7 +12,7 @@ use minecraftoss_player::survival::{EffectKind, SurvivalStatus};
 use crate::guns::HOTBAR;
 
 pub const STORAGE: usize = 36;
-pub const SLOTS: usize = 43;
+pub const SLOTS: usize = 45;
 pub const ENDER_SLOTS: usize = 27;
 const INFINITE: i32 = -1;
 pub const EFFECTS: [(EffectKind, &str); EffectKind::ALL.len()] = [
@@ -141,7 +141,9 @@ pub const EQUIPMENT: [(usize, &str); 7] = [
     (41, "body"),
     (42, "saddle"),
 ];
-const OWNED: [&str; 25] = [
+pub const GRENADES: &str = "iw4l_grenades";
+pub const GRENADE_SLOTS: [usize; 2] = [crate::guns::LETHAL_SLOT, crate::guns::TACTICAL_SLOT];
+const OWNED: [&str; 26] = [
     "playerGameType",
     "previousPlayerGameType",
     "abilities",
@@ -167,7 +169,15 @@ const OWNED: [&str; 25] = [
     "RootVehicle",
     "SleepTimer",
     "sleeping_pos",
+    GRENADES,
 ];
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SavedBook {
+    pub recipes: Vec<String>,
+    pub to_be_displayed: Vec<String>,
+    pub settings: [bool; 8],
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlayerData {
@@ -186,6 +196,8 @@ pub struct PlayerData {
     pub sleep_timer: Option<i32>,
     pub sleeping_pos: Option<(i32, i32, i32)>,
     pub time_since_rest: Option<i32>,
+    pub tags: Option<Vec<String>>,
+    pub recipe_book: Option<SavedBook>,
 }
 
 impl PlayerData {
@@ -198,6 +210,12 @@ impl PlayerData {
                     .get("equipment")
                     .and_then(|equipment| equipment.get(name))
                     .and_then(|stack| stack_of(stack, recipes));
+            }
+            if let Some(list) = tag.get(GRENADES) {
+                let saved = minecraft_terrain::item_nbt::slots(list, GRENADE_SLOTS.len(), recipes);
+                for (slot, stack) in GRENADE_SLOTS.into_iter().zip(saved) {
+                    slots[slot] = stack;
+                }
             }
             slots
         });
@@ -245,6 +263,13 @@ impl PlayerData {
                     _ => None,
                 }),
             time_since_rest: None,
+            tags: tag.get("Tags").and_then(Tag::as_list).map(|list| {
+                list.iter()
+                    .filter_map(Tag::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            }),
+            recipe_book: tag.get("recipeBook").map(read_book),
         }
     }
 
@@ -267,6 +292,14 @@ impl PlayerData {
                 .collect();
             if !equipment.is_empty() {
                 entries.insert("equipment".to_owned(), Tag::Compound(equipment));
+            }
+            let grenades = slot_list(
+                GRENADE_SLOTS
+                    .iter()
+                    .map(|&slot| inventory.get(slot).unwrap_or(&None)),
+            );
+            if grenades.as_list().is_some_and(|list| !list.is_empty()) {
+                entries.insert(GRENADES.to_owned(), grenades);
             }
         }
         entries.insert(
@@ -314,6 +347,13 @@ impl PlayerData {
         if let Some((x, y, z)) = self.sleeping_pos {
             entries.insert("sleeping_pos".to_owned(), Tag::IntArray(vec![x, y, z]));
         }
+        if let Some(tags) = self.tags.as_ref().filter(|tags| !tags.is_empty()) {
+            let list = tags.iter().map(|tag| Tag::String(tag.clone())).collect();
+            entries.insert("Tags".to_owned(), Tag::List(list));
+        }
+        if let Some(book) = &self.recipe_book {
+            entries.insert("recipeBook".to_owned(), book_tag(book));
+        }
         entries
     }
 
@@ -326,6 +366,9 @@ impl PlayerData {
         let attributes = merged.remove("attributes");
         for key in OWNED {
             merged.remove(key);
+        }
+        if self.tags.is_some() {
+            merged.remove("Tags");
         }
         merged.extend(self.entries());
         merged.extend(self.effect_entries(effects.as_ref(), attributes.as_ref()));
@@ -355,6 +398,37 @@ impl PlayerData {
         }
         entries
     }
+}
+
+fn read_book(tag: &Tag) -> SavedBook {
+    let ids = |key: &str| -> Vec<String> {
+        tag.get(key)
+            .and_then(Tag::as_list)
+            .map_or_else(Vec::new, |list| list.iter().filter_map(Tag::as_str).map(str::to_owned).collect())
+    };
+    let mut settings = [false; 8];
+    for (flag, key) in settings.iter_mut().zip(crate::recipe_book::SETTINGS) {
+        *flag = tag.get(key).and_then(Tag::as_i64).is_some_and(|value| value != 0);
+    }
+    SavedBook {
+        recipes: ids("recipes"),
+        to_be_displayed: ids("toBeDisplayed"),
+        settings,
+    }
+}
+
+fn book_tag(book: &SavedBook) -> Tag {
+    let list = |ids: &[String]| Tag::List(ids.iter().map(|id| Tag::String(id.clone())).collect());
+    let mut entries: BTreeMap<String, Tag> = book
+        .settings
+        .iter()
+        .zip(crate::recipe_book::SETTINGS)
+        .filter(|(flag, _)| **flag)
+        .map(|(_, key)| (key.to_owned(), Tag::Byte(1)))
+        .collect();
+    entries.insert("recipes".to_owned(), list(&book.recipes));
+    entries.insert("toBeDisplayed".to_owned(), list(&book.to_be_displayed));
+    Tag::Compound(entries)
 }
 
 fn compound(entries: Vec<(&str, Tag)>) -> Tag {
@@ -723,20 +797,137 @@ mod tests {
     }
 
     #[test]
-    fn guns_and_empty_stacks_are_not_saved() {
+    fn fork_items_are_saved_in_the_inventory_and_ender_chest_and_killstreak_ids_are_not() {
+        let mut gun = stack("iw4l:m4", 1);
+        gun.components = Some(json!({
+            "minecraft:custom_data": {"iw4l": {"attachments": ["reflex"], "clip": 27}}
+        }));
         let mut slots = vec![None; SLOTS];
         slots[0] = Some(crate::guns::weapon_item(7));
         slots[1] = Some(stack("minecraft:dirt", 0));
         slots[2] = Some(stack("minecraft:dirt", 2));
-        let entries = PlayerData {
+        slots[3] = Some(gun.clone());
+        slots[4] = Some(stack("iw4l:frag_grenade", 12));
+        let mut ender = vec![None; ENDER_SLOTS];
+        ender[5] = Some(stack("iw4l:rocket", 16));
+        ender[6] = Some(gun.clone());
+        let data = PlayerData {
             inventory: Some(slots),
+            ender: Some(ender),
+            ..PlayerData::default()
+        };
+        let entries = data.entries();
+        let inventory = entries["Inventory"].as_list().unwrap();
+        let saved: Vec<(Option<&Tag>, Option<&str>)> = inventory
+            .iter()
+            .map(|entry| (entry.get("Slot"), entry.get("id").and_then(Tag::as_str)))
+            .collect();
+        assert_eq!(
+            saved,
+            [
+                (Some(&Tag::Byte(2)), Some("minecraft:dirt")),
+                (Some(&Tag::Byte(3)), Some("minecraft:carrot_on_a_stick")),
+                (Some(&Tag::Byte(4)), Some("minecraft:poisonous_potato")),
+            ]
+        );
+        assert!(!entries.contains_key("equipment"));
+        let tag = data.merged(None);
+        let read = PlayerData::read(&tag, &RecipeBook::default());
+        let inventory = read.inventory.unwrap();
+        assert!(inventory[0].is_none(), "the killstreak mirror is not saved");
+        let back = inventory[3].as_ref().unwrap();
+        assert_eq!((&back.id, &back.components), (&gun.id, &gun.components));
+        let grenades = inventory[4].as_ref().unwrap();
+        assert_eq!(
+            (grenades.id.as_str(), grenades.count, &grenades.components),
+            ("iw4l:frag_grenade", 12, &None)
+        );
+        let ender = read.ender.unwrap();
+        let rockets = ender[5].as_ref().unwrap();
+        assert_eq!((rockets.id.as_str(), rockets.count), ("iw4l:rocket", 16));
+        assert_eq!(
+            ender[6].as_ref().map(|s| (&s.id, &s.components)),
+            Some((&gun.id, &gun.components))
+        );
+    }
+
+    #[test]
+    fn grenade_slots_are_saved_under_their_own_key_and_read_back() {
+        let mut slots = vec![None; SLOTS];
+        slots[43] = Some(stack("iw4l:semtex", 20));
+        slots[44] = Some(stack("iw4l:flash_grenade", 32));
+        let data = PlayerData {
+            inventory: Some(slots),
+            ..PlayerData::default()
+        };
+        let entries = data.entries();
+        assert_eq!(entries["Inventory"], Tag::List(Vec::new()));
+        assert!(!entries.contains_key("equipment"));
+        let grenades = entries[GRENADES].as_list().unwrap();
+        let saved: Vec<(Option<&Tag>, Option<&str>, Option<&Tag>)> = grenades
+            .iter()
+            .map(|entry| {
+                (
+                    entry.get("Slot"),
+                    entry.get("id").and_then(Tag::as_str),
+                    entry.get("count"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            saved,
+            [
+                (
+                    Some(&Tag::Byte(0)),
+                    Some("minecraft:poisonous_potato"),
+                    Some(&Tag::Int(20))
+                ),
+                (
+                    Some(&Tag::Byte(1)),
+                    Some("minecraft:poisonous_potato"),
+                    Some(&Tag::Int(32))
+                ),
+            ]
+        );
+        let read = PlayerData::read(&data.merged(None), &RecipeBook::default());
+        let inventory = read.inventory.unwrap();
+        assert_eq!(inventory.len(), SLOTS);
+        let held = |slot: usize| inventory[slot].as_ref().map(|s| (s.id.as_str(), s.count));
+        assert_eq!(held(43), Some(("iw4l:semtex", 20)));
+        assert_eq!(held(44), Some(("iw4l:flash_grenade", 32)));
+        assert!(inventory[..43].iter().all(Option::is_none));
+        let mut tactical_only = vec![None; SLOTS];
+        tactical_only[44] = Some(stack("iw4l:smoke_grenade", 3));
+        let entries = PlayerData {
+            inventory: Some(tactical_only),
             ..PlayerData::default()
         }
         .entries();
-        let inventory = entries["Inventory"].as_list().unwrap();
-        assert_eq!(inventory.len(), 1);
-        assert_eq!(inventory[0].get("Slot"), Some(&Tag::Byte(2)));
-        assert!(!entries.contains_key("equipment"));
+        let list = entries[GRENADES].as_list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].get("Slot"), Some(&Tag::Byte(1)));
+    }
+
+    #[test]
+    fn emptied_grenade_slots_leave_the_file() {
+        let mut slots = vec![None; SLOTS];
+        slots[43] = Some(stack("iw4l:frag_grenade", 32));
+        slots[44] = Some(stack("iw4l:flash_grenade", 32));
+        let full = PlayerData {
+            inventory: Some(slots),
+            ..PlayerData::default()
+        };
+        let previous = full.merged(None);
+        assert!(previous.get(GRENADES).is_some());
+        let emptied = PlayerData {
+            inventory: Some(vec![None; SLOTS]),
+            ..PlayerData::default()
+        };
+        let merged = emptied.merged(Some(previous));
+        assert_eq!(merged.get(GRENADES), None);
+        assert_eq!(merged.get("equipment"), None);
+        let read = PlayerData::read(&merged, &RecipeBook::default());
+        assert_eq!(read.inventory, Some(vec![None; SLOTS]));
     }
 
     #[test]
@@ -753,6 +944,118 @@ mod tests {
         assert_eq!(missing.inventory, None);
         assert_eq!(missing.mode, None);
         assert_eq!(missing.selected, 0);
+    }
+
+    #[test]
+    fn tags_round_trip_through_the_vanilla_tags_list() {
+        let data = PlayerData {
+            tags: Some(vec!["iw4l_loadout_given".to_owned(), "builder".to_owned()]),
+            ..PlayerData::default()
+        };
+        let tag = data.merged(None);
+        assert_eq!(
+            tag.get("Tags"),
+            Some(&Tag::List(vec![
+                Tag::String("iw4l_loadout_given".to_owned()),
+                Tag::String("builder".to_owned()),
+            ]))
+        );
+        let read = PlayerData::read(&tag, &RecipeBook::default());
+        assert_eq!(read.tags, data.tags);
+        let untagged = PlayerData::read(&compound(Vec::new()), &RecipeBook::default());
+        assert_eq!(untagged.tags, None);
+        let cleared = PlayerData {
+            tags: Some(Vec::new()),
+            ..PlayerData::default()
+        };
+        assert_eq!(cleared.merged(Some(tag)).get("Tags"), None);
+    }
+
+    #[test]
+    fn the_merge_keeps_foreign_tags_and_owns_the_list_only_when_it_has_one() {
+        let previous = compound(vec![(
+            "Tags",
+            Tag::List(vec![
+                Tag::String("vanilla_team_red".to_owned()),
+                Tag::String("other_pack".to_owned()),
+            ]),
+        )]);
+        let mut read = PlayerData::read(&previous, &RecipeBook::default());
+        let tags = read.tags.as_mut().unwrap();
+        tags.push("iw4l_loadout_given".to_owned());
+        let merged = read.merged(Some(previous.clone()));
+        let names: Vec<&str> = merged
+            .get("Tags")
+            .and_then(Tag::as_list)
+            .unwrap()
+            .iter()
+            .filter_map(Tag::as_str)
+            .collect();
+        assert_eq!(names, ["vanilla_team_red", "other_pack", "iw4l_loadout_given"]);
+        let without = PlayerData::default().merged(Some(previous.clone()));
+        assert_eq!(without.get("Tags"), previous.get("Tags"));
+    }
+
+    #[test]
+    fn the_recipe_book_is_saved_in_vanilla_s_recipe_book_compound() {
+        let data = PlayerData {
+            recipe_book: Some(SavedBook {
+                recipes: vec!["minecraft:oak_planks".to_owned(), "minecraft:stick".to_owned()],
+                to_be_displayed: vec!["minecraft:stick".to_owned()],
+                settings: [true, false, false, true, false, false, false, false],
+            }),
+            ..PlayerData::default()
+        };
+        let tag = Tag::Compound(data.entries());
+        let book = tag.get("recipeBook").unwrap();
+        assert_eq!(book.get("isGuiOpen"), Some(&Tag::Byte(1)));
+        assert_eq!(book.get("isFurnaceFilteringCraftable"), Some(&Tag::Byte(1)));
+        assert_eq!(book.get("isFilteringCraftable"), None);
+        assert_eq!(
+            book.get("recipes"),
+            Some(&Tag::List(vec![Tag::String("minecraft:oak_planks".to_owned()), Tag::String("minecraft:stick".to_owned())]))
+        );
+        assert_eq!(book.get("toBeDisplayed"), Some(&Tag::List(vec![Tag::String("minecraft:stick".to_owned())])));
+        let recipes = RecipeBook::default();
+        assert_eq!(PlayerData::read(&tag, &recipes).recipe_book, data.recipe_book);
+        let previous = compound(vec![("recipeBook", compound(vec![("isSmokerGuiOpen", Tag::Byte(1)), ("recipes", Tag::List(Vec::new()))]))]);
+        let merged = data.merged(Some(previous.clone()));
+        assert_eq!(merged.get("recipeBook"), Some(book));
+        let carried = PlayerData::default().merged(Some(previous.clone()));
+        assert_eq!(carried.get("recipeBook"), previous.get("recipeBook"));
+        let empty = compound(vec![("recipeBook", compound(vec![("isSmokerGuiOpen", Tag::Byte(1))]))]);
+        let read = PlayerData::read(&empty, &recipes).recipe_book.unwrap();
+        assert!(read.recipes.is_empty() && read.to_be_displayed.is_empty());
+        assert_eq!(read.settings, [false, false, false, false, false, false, true, false]);
+    }
+
+    #[test]
+    fn a_player_saves_its_unlocked_recipes_but_never_a_fork_recipe() {
+        let planks = serde_json::json!({"type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:oak_log"], "result": {"id": "minecraft:oak_planks", "count": 4}});
+        let ammo = serde_json::json!({"type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:gunpowder"], "result": {"id": "iw4l:rifle_ammo", "count": 16}});
+        let recipes = RecipeBook::default().with_extra(vec![("minecraft:oak_planks".to_owned(), planks), ("iw4l:rifle_ammo".to_owned(), ammo)]);
+        let tag = compound(vec![(
+            "recipeBook",
+            compound(vec![
+                ("recipes", Tag::List(vec![Tag::String("minecraft:oak_planks".to_owned()), Tag::String("minecraft:removed_long_ago".to_owned()), Tag::String("iw4l:rifle_ammo".to_owned())])),
+                ("toBeDisplayed", Tag::List(vec![Tag::String("minecraft:removed_long_ago".to_owned())])),
+                ("isFilteringCraftable", Tag::Byte(1)),
+            ]),
+        )]);
+        let read = PlayerData::read(&tag, &recipes);
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.recipes = std::sync::Arc::new(recipes);
+        let book = crate::recipe_book::Book::restore(read.recipe_book.as_ref(), &mut inventory);
+        inventory.unlocked_recipes.insert("iw4l:rifle_ammo".to_owned());
+        let saved = PlayerData {
+            recipe_book: Some(book.saved(&inventory)),
+            ..PlayerData::default()
+        };
+        let written = Tag::Compound(saved.entries());
+        let written = written.get("recipeBook").unwrap();
+        assert_eq!(written.get("recipes"), Some(&Tag::List(vec![Tag::String("minecraft:oak_planks".to_owned())])));
+        assert_eq!(written.get("toBeDisplayed"), Some(&Tag::List(Vec::new())));
+        assert_eq!(written.get("isFilteringCraftable"), Some(&Tag::Byte(1)));
     }
 
     #[test]

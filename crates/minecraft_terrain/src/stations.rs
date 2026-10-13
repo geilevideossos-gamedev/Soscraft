@@ -10,6 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::containers::pick;
 use crate::crafting::{move_into, result_order};
+use crate::gun_mods::{self, GunRules};
 use crate::scene::{Block, BlockPos};
 
 const HOTBAR: usize = 9;
@@ -442,6 +443,7 @@ pub struct Context<'a> {
     pub bookshelves: i32,
     pub seed: i32,
     pub level: u32,
+    pub guns: Option<&'a dyn GunRules>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -943,7 +945,9 @@ fn accepts(kind: Workshop, index: usize, stack: &ItemStack, ctx: &Context<'_>) -
     match (kind, index) {
         (Workshop::Smithing, slot) => ctx.book.smithing_slot(slot, &stack.id, ctx.recipes),
         (Workshop::Grindstone, _) => {
-            ctx.recipes.durability(stack).is_some() || !enchantments_of(stack).is_empty()
+            ctx.recipes.durability(stack).is_some()
+                || !enchantments_of(stack).is_empty()
+                || gun_mods::is_gun(stack)
         }
         (Workshop::Enchanting, 0) => stack.max == 1 || stack.id == "minecraft:book",
         (Workshop::Enchanting, _) => stack.id == "minecraft:lapis_lazuli",
@@ -977,7 +981,24 @@ fn without_non_curses(mut stack: ItemStack, ctx: &Context<'_>) -> ItemStack {
     stack
 }
 
+fn stripped_gun(
+    a: &Option<ItemStack>,
+    b: &Option<ItemStack>,
+    ctx: &Context<'_>,
+) -> Option<Option<(ItemStack, usize)>> {
+    let gun = [a, b].into_iter().flatten().find(|stack| gun_mods::is_gun(stack))?;
+    let alone = a.is_none() || b.is_none();
+    Some(
+        ctx.guns
+            .filter(|_| alone)
+            .and_then(|rules| gun_mods::strip(gun, rules)),
+    )
+}
+
 fn grind(a: &Option<ItemStack>, b: &Option<ItemStack>, ctx: &Context<'_>) -> Option<ItemStack> {
+    if let Some(stripped) = stripped_gun(a, b, ctx) {
+        return stripped.map(|(bare, _)| bare);
+    }
     match (a, b) {
         (None, None) => None,
         (Some(one), None) | (None, Some(one)) => {
@@ -1030,8 +1051,9 @@ fn grind_experience(
     ctx: &Context<'_>,
     random: &mut dyn LootRandom,
 ) -> u32 {
-    let Some(enchantments) = ctx.enchantments else {
-        return 0;
+    let removed = stripped_gun(a, b, ctx).map(|stripped| stripped.map_or(0, |(_, removed)| removed));
+    let Some(enchantments) = ctx.enchantments.filter(|_| removed.is_none()) else {
+        return attachment_experience(removed.unwrap_or(0), random);
     };
     let mut total = 0i32;
     for stack in [a, b].into_iter().flatten() {
@@ -1044,6 +1066,17 @@ fn grind_experience(
             }
         }
     }
+    if total <= 0 {
+        return 0;
+    }
+    let half = (total + 1) / 2;
+    (half + random.next_int(half as u32) as i32) as u32
+}
+
+const ATTACHMENT_COST: i32 = 5;
+
+fn attachment_experience(removed: usize, random: &mut dyn LootRandom) -> u32 {
+    let total = i32::try_from(removed).unwrap_or(0) * ATTACHMENT_COST;
     if total <= 0 {
         return 0;
     }
@@ -1386,6 +1419,7 @@ mod tests {
             bookshelves: 0,
             seed: 0,
             level,
+            guns: None,
         }
     }
 

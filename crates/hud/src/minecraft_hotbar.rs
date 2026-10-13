@@ -75,6 +75,13 @@ pub(crate) fn armor_sprites(armor: u8) -> [&'static str; 10] {
     })
 }
 
+pub(crate) fn grenade_frames(cx: i32, h: i32) -> [(usize, i32, i32); 2] {
+    [
+        (crate::minecraft_screens::LETHAL, cx - 91 - 29 - 29, h - 23),
+        (crate::minecraft_screens::TACTICAL, cx - 91 - 29 - 58, h - 23),
+    ]
+}
+
 pub(crate) fn draw_hud(
     p: &mut Painter<'_>,
     ui: &MinecraftUi,
@@ -99,6 +106,9 @@ pub(crate) fn draw_hud(
     if offhand.is_some() {
         p.sprite("hud/hotbar_offhand_left", cx - 91 - 29, h - 23, 29, 24);
     }
+    for (_, x, y) in grenade_frames(cx, h) {
+        p.sprite("hud/hotbar_offhand_left", x, y, 29, 24);
+    }
     let mut items: Vec<(&McStack, i32, i32)> = (0..9)
         .filter_map(|i| {
             ui.slots
@@ -109,6 +119,11 @@ pub(crate) fn draw_hud(
         .collect();
     if let Some(stack) = offhand {
         items.push((stack, cx - 91 - 26, h - 16 - 3));
+    }
+    for (slot, x, _) in grenade_frames(cx, h) {
+        if let Some(stack) = ui.slots.get(slot).and_then(Option::as_ref) {
+            items.push((stack, x + 3, h - 16 - 3));
+        }
     }
     for &(stack, x, y) in &items {
         p.item(ui, weapons, stack, x, y);

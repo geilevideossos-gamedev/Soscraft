@@ -49,6 +49,10 @@ pub(crate) struct InventoryUi {
     book_source: Option<BookSource>,
     lectern_actions: Vec<(BlockPos, minecraft_terrain::lectern::LecternAction)>,
     book_edits: Vec<(usize, Vec<String>, Option<String>)>,
+    pub(crate) fork: crate::minecraft_fork_items::ForkLook,
+    recipe_book: crate::minecraft_recipe_book::RecipeBookUi,
+    unlocked: Option<HashSet<String>>,
+    seen: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,6 +303,15 @@ impl InventoryUi {
         self.language.as_ref()
     }
 
+    pub(crate) fn language_and_fork(
+        &mut self,
+    ) -> (
+        Option<&HashMap<String, String>>,
+        &mut crate::minecraft_fork_items::ForkLook,
+    ) {
+        (self.language.as_ref(), &mut self.fork)
+    }
+
     pub(crate) fn set_station_data(
         &mut self,
         book: std::sync::Arc<StationBook>,
@@ -376,10 +389,33 @@ impl InventoryUi {
     pub(crate) fn weapon_request(
         &mut self,
         inventory: &Inventory,
+        guns: &[Option<u32>; minecraft_survival::guns::HOTBAR],
         selected: &mut usize,
         held: u32,
     ) -> Option<u32> {
-        self.follow.request(inventory, selected, held)
+        self.follow.request_with(inventory, guns, selected, held)
+    }
+
+    pub(crate) fn set_unlocked(&mut self, unlocked: HashSet<String>) {
+        self.unlocked = Some(unlocked);
+    }
+
+    pub(crate) fn take_seen(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.seen)
+    }
+
+    pub(crate) fn set_weapons(
+        &mut self,
+        ui: &mut MinecraftUi,
+        weapons: Option<&assets::PreparedWeapons>,
+        strings: Option<&assets::PreparedLocalizedStrings>,
+    ) {
+        self.fork.set_weapons(weapons.map(|weapons| &weapons.0));
+        if let Some(language) = self.language.as_mut()
+            && self.fork.name_items(language, strings.map(|strings| &strings.0))
+        {
+            ui.names.retain(|id, _| !minecraft_terrain::fork_items::is_fork(id));
+        }
     }
 
     /// Publishes the inventory for the HUD, with icons for every item in it.
@@ -418,14 +454,18 @@ impl InventoryUi {
             .unwrap_or_else(|| "Water Bottle".to_owned());
         let lang: &HashMap<String, String> = language;
         let enchant_table = self.enchantments.clone();
+        let specials = (self.fork.special(inventory, Grid::Inventory), self.fork.special(inventory, Grid::Table));
+        let gun_rules = self.fork.rules();
+        let fork = &mut self.fork;
         let mut convert = |stack: &Option<ItemStack>| {
             stack.as_ref().map(|s| {
                 let icon = minecraft_terrain::item_tint::of_stack(s);
                 stacks.push(icon.clone());
-                McStack {
+                let weapon = weapon_of(s).or_else(|| fork.weapon(s));
+                let mut shown = McStack {
                     id: s.id.clone(),
                     count: s.count,
-                    weapon: weapon_of(s),
+                    weapon,
                     damage: inventory.recipes.durability(s),
                     max: stack_limit(&inventory.recipes, s),
                     named: minecraft_terrain::stations::custom_name(s).is_some(),
@@ -445,7 +485,10 @@ impl InventoryUi {
                     glint: minecraft_terrain::glint::has_glint(s),
                     icon,
                     lore: book_lines(lang, s),
-                }
+                    clip: fork.clip_bar(s, weapon),
+                };
+                shown.enchantments.splice(0..0, fork.lines(s, weapon, lang));
+                shown
             })
         };
         ui.slots = inventory.slots.iter().take(frame::minecraft_ui::MC_INVENTORY_SLOTS).map(&mut convert).collect();
@@ -453,9 +496,9 @@ impl InventoryUi {
         let table_open = ui.inventory_open && table;
         let small_open = ui.inventory_open && !table;
         ui.crafting = std::array::from_fn(|i| convert(&inventory.crafting[i]));
-        ui.result = if small_open { convert(&crafting::output(inventory, Grid::Inventory)) } else { None };
+        ui.result = if small_open { convert(&specials.0.or_else(|| crafting::output(inventory, Grid::Inventory))) } else { None };
         ui.workbench = std::array::from_fn(|i| convert(&inventory.workbench[i]));
-        ui.workbench_result = if table_open { convert(&crafting::output(inventory, Grid::Table)) } else { None };
+        ui.workbench_result = if table_open { convert(&specials.1.or_else(|| crafting::output(inventory, Grid::Table))) } else { None };
         let opened = match &screen.open {
             Some(Open::Block(opened)) if ui.inventory_open => Some(opened.clone()),
             _ => None,
@@ -472,6 +515,7 @@ impl InventoryUi {
             bookshelves: screen.shelves,
             seed: screen.seed,
             level,
+            guns: gun_rules.as_ref().map(|rules| rules as &dyn minecraft_terrain::gun_mods::GunRules),
         };
         let (container, output, data) = match (opened.as_ref(), bench) {
             (None, Some(bench)) => {
@@ -520,6 +564,33 @@ impl InventoryUi {
         ui.container = container;
         ui.output = output;
         ui.data = data;
+        let book_grid = crate::minecraft_recipe_book::grid_of(ui.screen).filter(|_| ui.inventory_open);
+        let unlocked = self.unlocked.as_ref().unwrap_or(&inventory.unlocked_recipes);
+        if let Some(built) = self.recipe_book.build(&ui.recipe_book, inventory, unlocked, book_grid, lang) {
+            self.seen = built.buttons.iter().flatten().map(|choice| choice.id.clone()).collect();
+            let book = &mut ui.recipe_book;
+            book.tabs = built.tabs;
+            book.pages = built.pages;
+            book.buttons = built
+                .buttons
+                .into_iter()
+                .map(|choices| frame::McRecipeButton {
+                    recipes: choices
+                        .into_iter()
+                        .filter_map(|choice| {
+                            Some(frame::McRecipeOption {
+                                result: convert(&Some(choice.result))?,
+                                id: choice.id,
+                                craftable: choice.craftable,
+                                cells: choice.cells.iter().map(|cell| cell.as_ref().map(|stacks| stacks.iter().filter_map(|stack| convert(&Some(stack.clone()))).collect())).collect(),
+                            })
+                        })
+                        .collect(),
+                })
+                .collect();
+            book.ghost_cells = built.ghost.into_iter().map(|(slot, stacks)| (slot, stacks.into_iter().filter_map(|stack| convert(&Some(stack))).collect())).collect();
+            book.tab_icons = built.tab_icons.into_iter().map(|icons| icons.into_iter().filter_map(|stack| convert(&Some(stack))).collect()).collect();
+        }
         ui.cursor = convert(&inventory.cursor);
         let mut creative_converted = 0;
         if let Some(items) = self.creative.take_items() {
@@ -533,6 +604,7 @@ impl InventoryUi {
         }
         stacks.truncate(stacks.len() - creative_converted);
         stacks.extend(self.creative.icon_ids(ui));
+        stacks.extend(ui.recipe_book.icon_ids().map(str::to_owned));
         ui.armor = inventory.armor_value();
         ui.droppable = inventory.cursor.as_ref().filter(|_| ui.inventory_open).map_or_else(Vec::new, |carried| {
             droppable(ui.screen, carried, inventory, opened.as_ref(), bench, containers, &ctx)
@@ -580,7 +652,13 @@ impl InventoryUi {
             if !ui.names.contains_key(base) {
                 ui.names.insert(base.to_owned(), minecraft_terrain::item_icons::item_name(language, base));
             }
+            if minecraft_terrain::fork_items::get(&id).is_some_and(|row| row.icon == minecraft_terrain::fork_items::Icon::KillIcon) {
+                continue;
+            }
             if self.cells.contains_key(&id) || self.failed.contains(&id) || self.animated.cells.contains_key(&id) {
+                continue;
+            }
+            if self.fork.waiting(&id) {
                 continue;
             }
             let cell = self.cells.len() as u32;
@@ -590,7 +668,8 @@ impl InventoryUi {
                 continue;
             }
             let clock = minecraft_terrain::item_icon::SpriteClock::at(animation_tick);
-            match minecraft_terrain::item_icons::item_icon_at(packs, &source, icon as usize, &clock) {
+            let made = self.fork.icon(packs, &id, icon as usize, &clock);
+            match made.unwrap_or_else(|| minecraft_terrain::item_icons::item_icon_at(packs, &source, icon as usize, &clock)) {
                 Ok(Some(rendered)) => {
                     if clock.animated() && self.animated.add(id.clone(), &image::imageops::resize(&rendered, icon, icon, image::imageops::FilterType::Nearest), icon) {
                         continue;
@@ -700,6 +779,7 @@ pub(crate) fn action_of(click: &McClick) -> Option<MenuAction> {
         McClick::Spread { slots, right } => MenuAction::Spread { slots: slots.iter().filter_map(|slot| menu_slot(*slot)).collect(), right: *right },
         McClick::Throw { slot, whole } => MenuAction::Throw { slot: menu_slot(*slot)?, whole: *whole },
         McClick::Choose(index) => MenuAction::Choose(u16::try_from(*index).ok()?),
+        McClick::PlaceRecipe { recipe, all } => MenuAction::PlaceRecipe { recipe: recipe.clone(), all: *all },
         McClick::Close | McClick::Rename(_) | McClick::Clone(_) | McClick::EditBook { .. } => return None,
     })
 }
@@ -724,7 +804,7 @@ fn droppable(
     ctx: &Context<'_>,
 ) -> Vec<(McSlot, u8)> {
     let max = stack_limit(&inventory.recipes, carried);
-    let gun = weapon_of(carried).is_some();
+    let gun = minecraft_survival::guns::is_gun(carried);
     let mut out: Vec<(McSlot, u8)> = (0..36).map(|i| (McSlot::Inventory(i), max)).collect();
     match screen {
         McScreen::Inventory => {
@@ -882,6 +962,8 @@ mod tests {
         assert_eq!(action_of(&McClick::Choose(2)), Some(MenuAction::Choose(2)));
         let output = McClick::Throw { slot: McSlot::Output, whole: true };
         assert_eq!(action_of(&output), Some(MenuAction::Throw { slot: MenuSlot::Output, whole: true }));
+        let place = McClick::PlaceRecipe { recipe: "iw4l:m4".to_owned(), all: true };
+        assert_eq!(action_of(&place), Some(MenuAction::PlaceRecipe { recipe: "iw4l:m4".to_owned(), all: true }));
         for kept in [McClick::Close, McClick::Rename("Blade".to_owned()), McClick::Clone(McSlot::Inventory(0)), McClick::Slot { slot: McSlot::Creative(5), right: false, shift: false }] {
             assert_eq!(action_of(&kept), None, "{kept:?}");
         }

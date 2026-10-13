@@ -27,6 +27,11 @@ pub fn band(dimension: Dimension) -> [f64; 2] {
     }
 }
 
+pub fn holds(dimension: Dimension, map_z: f64) -> bool {
+    let [lo, hi] = band(dimension);
+    (lo..hi).contains(&map_z)
+}
+
 pub fn heights(dimension: Dimension) -> (i32, i32) {
     match dimension {
         Dimension::Overworld => (-64, 384),
@@ -106,6 +111,19 @@ mod tests {
             Ok(()),
             "far spawns move only x and z"
         );
+    }
+
+    #[test]
+    fn each_map_height_belongs_to_one_dimension() {
+        assert!(holds(Dimension::Overworld, 0.0));
+        assert!(holds(Dimension::Overworld, -20_000.0));
+        assert!(holds(Dimension::Nether, -20_000.5));
+        assert!(!holds(Dimension::Nether, -20_000.0));
+        assert!(holds(Dimension::End, 59_999.0));
+        assert!(!holds(Dimension::End, 60_000.0));
+        for z in [-50_000.0, -1.0, 1.0, 40_000.0] {
+            assert_eq!(DIMENSIONS.into_iter().filter(|&dimension| holds(dimension, z)).count(), 1);
+        }
     }
 
     #[test]

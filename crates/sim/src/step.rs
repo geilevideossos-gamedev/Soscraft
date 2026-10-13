@@ -548,7 +548,7 @@ fn run_players_system(ecs: &mut World) {
     *world.old_buttons_mut() = original_buttons;
     *world.old_cmd_angles_mut() = original_angles;
     crate::damage::apply_block_world_damage(&mut world, tick);
-    crate::item::sustain_block_world_arsenal(&mut world);
+    crate::item::apply_arsenal(&mut world);
 
     restamp_debug_move_look(&mut world, &input.actions);
 
@@ -1537,6 +1537,59 @@ fn apply_give_weapon(
     );
 }
 
+pub(crate) fn offhand_slot(class: i32) -> Option<usize> {
+    match class {
+        1 | 4 | 5 => Some(0),
+        2 | 3 => Some(1),
+        _ => None,
+    }
+}
+
+pub(crate) fn only_offhand_of_its_slot(
+    world: &FrameWorld,
+    next: &mut PlayerState,
+    weapon: u32,
+    class: i32,
+    kept: impl Fn(u32) -> bool,
+) {
+    for slot in &mut next.weapons {
+        if *slot > 0 && *slot != weapon as i32 && !kept(*slot as u32) {
+            let same_slot = world
+                .equipment_facts_for(*slot as u32)
+                .is_some_and(|other| {
+                    offhand_slot(class).is_some()
+                        && offhand_slot(class) == offhand_slot(other.offhand_class)
+                });
+            if same_slot {
+                *slot = 0;
+            }
+        }
+    }
+    inventory_add_weapon(next, weapon, false);
+    if !next.weapons.contains(&(weapon as i32)) {
+        return;
+    }
+    match offhand_slot(class) {
+        Some(0) => next.offhand_primary = class,
+        Some(_) => next.offhand_secondary = class,
+        None => {}
+    }
+}
+
+pub(crate) fn set_loadout_offhand(
+    loadout: Option<&mut crate::match_state::LoadoutSpec>,
+    class: i32,
+    weapon: u32,
+) {
+    if let Some(loadout) = loadout {
+        match offhand_slot(class) {
+            Some(0) => loadout.lethal = weapon,
+            Some(_) => loadout.tactical = weapon,
+            None => {}
+        }
+    }
+}
+
 fn apply_give_offhand(
     world: &mut FrameWorld,
     tick: Tick,
@@ -1564,30 +1617,10 @@ fn apply_give_offhand(
         reject(world, crate::GiveRejectReason::NotAlive);
         return;
     };
-    for slot in &mut next.weapons {
-        if *slot > 0 && *slot != weapon as i32 {
-            let same_slot = world
-                .equipment_facts_for(*slot as u32)
-                .is_some_and(|other| {
-                    (matches!(eq.offhand_class, 1 | 4 | 5)
-                        && matches!(other.offhand_class, 1 | 4 | 5))
-                        || (matches!(eq.offhand_class, 2 | 3)
-                            && matches!(other.offhand_class, 2 | 3))
-                });
-            if same_slot {
-                *slot = 0;
-            }
-        }
-    }
-    inventory_add_weapon(&mut next, weapon, false);
+    only_offhand_of_its_slot(world, &mut next, weapon, eq.offhand_class, |_| false);
     if !next.weapons.contains(&(weapon as i32)) {
         reject(world, crate::GiveRejectReason::InvalidWeapon);
         return;
-    }
-    match eq.offhand_class {
-        1 | 4 | 5 => next.offhand_primary = eq.offhand_class,
-        2 | 3 => next.offhand_secondary = eq.offhand_class,
-        _ => {}
     }
     let clip = eq.spawn_clip_count();
     seed_ps_ammo_tables(&mut next, weapon, facts, clip, 0, false, 0);
@@ -1597,13 +1630,7 @@ fn apply_give_offhand(
         meta.ammo_by_weapon
             .retain(|(id, _, _)| next.weapons.contains(&(*id as i32)));
         meta.set_ammo(weapon, clip, 0);
-        if let Some(loadout) = meta.loadout.as_mut() {
-            match eq.offhand_class {
-                1 | 4 | 5 => loadout.lethal = weapon,
-                2 | 3 => loadout.tactical = weapon,
-                _ => {}
-            }
-        }
+        set_loadout_offhand(meta.loadout.as_mut(), eq.offhand_class, weapon);
     }
     world.push_event(
         tick,

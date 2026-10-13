@@ -112,7 +112,7 @@ pub(crate) fn apply_explosion_blast(world: &mut FrameWorld, tick: Tick, blast: &
         ) {
             crate::voxel::push_explosion(blast.origin, power);
         }
-        push_mob_blasts(
+        push_voxel_blasts(
             world,
             &crate::t5_destructible::RadiusDamage {
                 origin: blast.origin,
@@ -278,6 +278,19 @@ fn concussion_slow_ticks(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> i3
     ((2.0 + 4.0 * scale) * TICKS_PER_SECOND).round() as i32
 }
 
+fn push_voxel_blasts(world: &FrameWorld, blast: &crate::t5_destructible::RadiusDamage, stun: bool) {
+    push_mob_blasts(world, blast, stun);
+    crate::voxel::blast_flares(|pos| flare_blast_damage(blast, pos));
+}
+
+fn flare_blast_damage(blast: &crate::t5_destructible::RadiusDamage, pos: [f32; 3]) -> i32 {
+    let dist = pos.iter().zip(blast.origin).map(|(p, o)| (p - o) * (p - o)).sum::<f32>().sqrt();
+    if blast.radius <= 0.0 || dist >= blast.radius || !cone_contains(blast.origin, blast.cone, pos) {
+        return 0;
+    }
+    radius_damage_amount(blast.inner, blast.outer, blast.radius, dist, 1.0)
+}
+
 fn push_mob_blasts(world: &FrameWorld, blast: &crate::t5_destructible::RadiusDamage, stun: bool) {
     let exclude = blast.exclude.map(crate::AuthorityModelOwner::ScriptModel);
     let mobs = crate::voxel::mob_targets();
@@ -419,7 +432,7 @@ pub(crate) fn apply_script_blast(
         ) {
             crate::voxel::push_explosion(blast.origin, power);
         }
-        push_mob_blasts(
+        push_voxel_blasts(
             world,
             &crate::t5_destructible::RadiusDamage {
                 origin: blast.origin,
@@ -1098,6 +1111,21 @@ mod tests {
         };
         let hits = mob_blast_hits(&claymore, &[mob_at(1, 100.0), mob_at(2, -100.0)], |_, _, _| 1.0);
         assert_eq!(hits.iter().map(|h| h.0).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn a_planted_flare_takes_the_blast_damage_at_its_spot() {
+        assert_eq!(flare_blast_damage(&FRAG, [0.0; 3]), 130, "at the centre");
+        let falloff = 55.0 + (1.0 - 128.0 / 256.0) * (130.0 - 55.0);
+        assert_eq!(flare_blast_damage(&FRAG, [0.0, 128.0, 0.0]), f32::round(falloff) as i32);
+        assert_eq!(flare_blast_damage(&FRAG, [256.0, 0.0, 0.0]), 0, "out of reach");
+        let claymore = crate::t5_destructible::RadiusDamage {
+            radius: 192.0,
+            cone: Some(([1.0, 0.0, 0.0], 70f32.to_radians().cos())),
+            ..FRAG
+        };
+        assert!(flare_blast_damage(&claymore, [100.0, 0.0, 0.0]) > 0);
+        assert_eq!(flare_blast_damage(&claymore, [-100.0, 0.0, 0.0]), 0, "behind a claymore");
     }
 
     #[test]

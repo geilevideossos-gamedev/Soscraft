@@ -329,7 +329,7 @@ fn a_grenade_blast_hurts_a_player_and_a_wall_shields_one_at_the_height_of_every_
         let amount = attempts[0].amount;
         assert!(amount > 55 && amount < 130, "band {feet}: {amount}");
         let mut frame = band.sim.frame();
-        let finish = crate::script_player::finish_damage(&mut frame, B, amount, None);
+        let finish = crate::script_player::finish_damage(&mut frame, Tick(band.tick), B, amount, None);
         assert_eq!(finish, crate::script_player::Finish::Hurt, "band {feet}");
         assert_eq!(band.ps(B).health, 100 - amount, "band {feet}");
         hurt.push(amount);
@@ -351,7 +351,7 @@ fn a_killed_player_gets_an_obituary_and_respawns_into_its_band() {
         band.tick += 1;
         let tick = Tick(band.tick);
         let mut frame = band.sim.frame();
-        let finish = crate::script_player::finish_damage(&mut frame, B, 1_000, None);
+        let finish = crate::script_player::finish_damage(&mut frame, tick, B, 1_000, None);
         assert_eq!(finish, crate::script_player::Finish::Killed, "band {feet}");
         crate::script_player::kill(&mut frame, tick, B, Some(A), None);
         crate::script_player::obituary(&mut frame, tick, B, Some(A), 0, "MOD_GRENADE_SPLASH");

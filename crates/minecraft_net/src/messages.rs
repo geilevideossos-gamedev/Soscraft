@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 4;
+pub const PROTOCOL: u16 = 5;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -63,6 +63,11 @@ pub enum ToServer {
         slot: CreativeTarget,
         stack: Option<Nbt>,
     },
+    RecipeBookSettings {
+        open: bool,
+        filtering: bool,
+    },
+    RecipeSeen(Vec<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +174,10 @@ pub enum MenuAction {
         whole: bool,
     },
     Choose(u16),
+    PlaceRecipe {
+        recipe: String,
+        all: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -286,6 +295,15 @@ pub enum ToClient {
     OpenBook {
         slot: u8,
     },
+    RecipeBook(RecipeBookView),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipeBookView {
+    pub recipes: Vec<String>,
+    pub highlight: Vec<String>,
+    pub open: bool,
+    pub filtering: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -408,7 +426,7 @@ pub struct UsingView {
     pub ticks: i32,
 }
 
-pub const PLAYER_SLOTS: usize = 41;
+pub const PLAYER_SLOTS: usize = 45;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlayerView {
@@ -674,6 +692,7 @@ mod tests {
     #[test]
     fn a_new_player_view_has_every_slot() {
         let view = PlayerView::default();
+        assert_eq!(PLAYER_SLOTS, 45);
         assert_eq!(view.slots.len(), PLAYER_SLOTS);
         assert_eq!(view.health, 20.0);
         assert_eq!(view.food, 20);

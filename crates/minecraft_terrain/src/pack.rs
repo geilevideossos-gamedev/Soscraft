@@ -398,6 +398,7 @@ pub struct PackStack {
     sources: Vec<PathBuf>,
     packs: Vec<Pack>,
     cache: RefCell<HashMap<String, Option<Vec<u8>>>>,
+    overlay: HashMap<String, Vec<u8>>,
     pub generation: u64,
 }
 impl PackStack {
@@ -407,6 +408,7 @@ impl PackStack {
             sources,
             packs,
             cache: RefCell::new(HashMap::new()),
+            overlay: HashMap::new(),
             generation: 0,
         })
     }
@@ -437,6 +439,9 @@ impl PackStack {
     }
     pub fn get(&self, id: &ResourceId, path: &str) -> Result<Option<Vec<u8>>> {
         let full = format!("assets/{}/{}", id.namespace, path);
+        if let Some(bytes) = self.overlay.get(&full) {
+            return Ok(Some(bytes.clone()));
+        }
         if let Some(cached) = self.cache.borrow().get(&full) {
             return Ok(cached.clone());
         }
@@ -452,6 +457,10 @@ impl PackStack {
         }
         self.cache.borrow_mut().insert(full, None);
         Ok(None)
+    }
+    pub fn put(&mut self, path: &str, bytes: Vec<u8>) {
+        self.cache.get_mut().remove(path);
+        self.overlay.insert(path.to_owned(), bytes);
     }
     pub fn json(&self, id: &ResourceId, path: &str) -> Result<Option<Value>> {
         self.get(id, path)?

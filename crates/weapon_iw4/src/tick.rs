@@ -622,6 +622,8 @@ pub struct WeaponHandState {
     pub weapon_restrict_kick_time: i32,
 
     pub quick_reload: bool,
+
+    pub loaded: i32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1563,6 +1565,7 @@ pub fn spawn_weapon_hand(weapon: u32, facts: &WeaponCombatFacts) -> WeaponHandSt
         delayed_rechamber: false,
         weapon_restrict_kick_time: 0,
         quick_reload: facts.dual_mag.is_some(),
+        loaded: 0,
     }
 }
 

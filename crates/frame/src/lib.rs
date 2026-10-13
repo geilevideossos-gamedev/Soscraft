@@ -45,3 +45,5 @@ pub mod minecraft_chat;
 pub use minecraft_chat::{McChat, McChatLine};
 pub mod minecraft_creative;
 pub use minecraft_creative::{McCreative, McCreativeTab, McTabKind};
+pub mod minecraft_recipe_book;
+pub use minecraft_recipe_book::{McRecipeBook, McRecipeButton, McRecipeOption};

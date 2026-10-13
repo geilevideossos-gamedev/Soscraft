@@ -216,6 +216,8 @@ mod tests {
             ToServer::LeaveBed => 11,
             ToServer::EditBook { .. } => 12,
             ToServer::CreativeSlot { .. } => 13,
+            ToServer::RecipeBookSettings { .. } => 14,
+            ToServer::RecipeSeen(_) => 15,
         }
     }
 
@@ -253,6 +255,7 @@ mod tests {
             ToClient::Lectern(_) => 29,
             ToClient::Sleeping { .. } => 30,
             ToClient::OpenBook { .. } => 31,
+            ToClient::RecipeBook(_) => 32,
         }
     }
 
@@ -337,6 +340,19 @@ mod tests {
                 slot: CreativeTarget::Drop,
                 stack: Some(Nbt(vec![10, 0, 0, 0])),
             },
+            ToServer::RecipeBookSettings {
+                open: true,
+                filtering: false,
+            },
+            ToServer::RecipeSeen(vec!["minecraft:oak_planks".to_owned()]),
+            ToServer::Click(Click {
+                menu: 0,
+                state: 9,
+                action: MenuAction::PlaceRecipe {
+                    recipe: "iw4l:m4".to_owned(),
+                    all: true,
+                },
+            }),
         ]
     }
 
@@ -380,6 +396,8 @@ mod tests {
         };
         view.slots[0] = Some(Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0]));
         view.slots[40] = Some(Nbt(vec![0]));
+        view.slots[43] = Some(Nbt(vec![10, 0, 0, 0]));
+        view.slots[44] = Some(Nbt(vec![10, 1, 0, 0]));
         view
     }
 
@@ -616,6 +634,12 @@ mod tests {
                 timer: 100,
             },
             ToClient::OpenBook { slot: 40 },
+            ToClient::RecipeBook(RecipeBookView {
+                recipes: vec!["minecraft:oak_planks".to_owned(), "minecraft:stick".to_owned()],
+                highlight: vec!["minecraft:stick".to_owned()],
+                open: true,
+                filtering: true,
+            }),
         ]
     }
 
@@ -630,7 +654,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 14];
+        let mut seen = [false; 16];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -649,7 +673,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 32];
+        let mut seen = [false; 33];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -689,8 +713,8 @@ mod tests {
     }
 
     #[test]
-    fn a_held_potion_colour_round_trips_on_protocol_4() {
-        assert_eq!(crate::PROTOCOL, 4);
+    fn a_held_potion_colour_round_trips_on_protocol_5() {
+        assert_eq!(crate::PROTOCOL, 5);
         let potion = GearItem {
             id: "minecraft:splash_potion".to_string(),
             glint: false,
@@ -701,6 +725,21 @@ mod tests {
         let bytes = encode(Lane::Reliable, &potion).unwrap();
         let back: GearItem = decode(Lane::Reliable, &bytes).unwrap();
         assert_eq!(back.potion, Some(0x87A363));
+    }
+
+    #[test]
+    fn a_player_view_carries_both_grenade_slots() {
+        let view = player_view();
+        assert_eq!(view.slots.len(), crate::messages::PLAYER_SLOTS);
+        let message = ToClient::Player(Box::new(view.clone()));
+        let bytes = encode(Lane::Reliable, &message).unwrap();
+        let ToClient::Player(back) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+            panic!("not a player view");
+        };
+        assert_eq!(back.slots.len(), 45);
+        assert_eq!(back.slots[43], view.slots[43]);
+        assert_eq!(back.slots[44], view.slots[44]);
+        assert!(back.slots[43].is_some() && back.slots[44].is_some());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 /// Slots of the vanilla player inventory: 0..9 hotbar, 9..36 main, 36..40
 /// armor (feet to head), 40 offhand.
-pub const MC_INVENTORY_SLOTS: usize = 41;
+pub const MC_INVENTORY_SLOTS: usize = 45;
 pub const MC_HOTBAR: usize = 9;
 pub const GLINT_STRENGTH: f32 = 0.75;
 pub const GLINT_SPEED: f64 = 0.5;
@@ -47,6 +47,7 @@ pub struct McStack {
     pub glint: bool,
     pub icon: String,
     pub lore: Vec<String>,
+    pub clip: Option<(u32, u32)>,
 }
 
 /// A slot of the inventory screen.
@@ -143,6 +144,7 @@ pub enum McClick {
     Rename(String),
     Clone(McSlot),
     EditBook { pages: Vec<String>, title: Option<String> },
+    PlaceRecipe { recipe: String, all: bool },
 }
 
 #[derive(Resource, Default)]
@@ -222,6 +224,7 @@ pub struct MinecraftUi {
     pub chat: crate::McChat,
     pub chat_only: bool,
     pub creative: crate::McCreative,
+    pub recipe_book: crate::McRecipeBook,
     pub level_loading: Option<McLevelLoading>,
     pub portal_frames: Option<(Handle<Image>, u32)>,
     pub portal_overlay: Option<McPortalOverlay>,

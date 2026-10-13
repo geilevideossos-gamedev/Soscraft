@@ -31,7 +31,7 @@ impl Grid {
 
     pub fn player_slots(self) -> usize {
         match self {
-            Grid::Inventory => 41,
+            Grid::Inventory => 45,
             Grid::Table => STORAGE,
         }
     }
@@ -60,7 +60,9 @@ pub fn load_recipes(
     jar: &Path,
     catalog: Option<&Path>,
 ) -> Result<(RecipeBook, Option<anyhow::Error>)> {
-    let book = RecipeBook::from_jar(jar)?;
+    let book = RecipeBook::from_jar(jar)?
+        .with_extra(crate::fork_recipes::recipes())
+        .with_reserved_slots(crate::fork_items::grenade_slot);
     let Some(path) = catalog else {
         return Ok((
             book,
@@ -70,7 +72,10 @@ pub fn load_recipes(
         ));
     };
     match ItemCatalog::from_path(path) {
-        Ok(catalog) => Ok((book.with_item_catalog(Arc::new(catalog)), None)),
+        Ok(mut catalog) => {
+            crate::fork_items::load(&mut catalog);
+            Ok((book.with_item_catalog(Arc::new(catalog)), None))
+        }
         Err(error) => Ok((book, Some(error))),
     }
 }
@@ -431,7 +436,9 @@ pub fn give_kit(inventory: &mut Inventory, spec: &str) -> usize {
             let size = count.min(max);
             count -= size;
             let stack = kit_potion_stack(&inventory.recipes, id, size as u8, &enchantments, potion.as_deref());
-            inventory.slots[slot] = Some(with_components(stack, components.as_ref()));
+            let mut stack = with_components(stack, components.as_ref());
+            stack.components = crate::fork_items::with_full_clip(id, stack.components.take());
+            inventory.slots[slot] = Some(stack);
             given += 1;
         }
     }
@@ -486,6 +493,12 @@ pub fn kit_components(entry: &str) -> (&str, Option<serde_json::Value>) {
         };
         let name = name.trim();
         let name = if name.contains(':') { name.to_owned() } else { format!("minecraft:{name}") };
+        if name == crate::fork_items::CUSTOM_DATA {
+            if let Ok(tag) = minecraftoss_core::snbt::parse_compound(value.trim()) {
+                components.insert(name, crate::item_nbt::tag_json(&tag));
+            }
+            continue;
+        }
         if minecraftoss_world::book::CONTENT_COMPONENTS.contains(&name.as_str()) {
             if let Ok(content) = minecraftoss_world::book::content(&name, value.trim()) {
                 components.insert(name, content);
@@ -558,10 +571,20 @@ fn cells_mut(inventory: &mut Inventory, grid: Grid) -> &mut [Option<ItemStack>] 
 }
 
 fn take_into_cursor(inventory: &mut Inventory, grid: Grid) -> bool {
-    match grid {
+    let side = if grid == Grid::Table { 3 } else { 2 };
+    let used = inventory
+        .recipes
+        .matching_id(cells(inventory, grid), side, side)
+        .filter(|id| !crate::recipe_book::always_known(id))
+        .map(str::to_owned);
+    let taken = match grid {
         Grid::Inventory => inventory.take_crafting_output(false),
         Grid::Table => inventory.take_workbench_output(false),
+    };
+    if let Some(id) = used.filter(|_| taken) {
+        inventory.unlock_recipe(&id);
     }
+    taken
 }
 
 fn armor_slot(index: usize) -> Option<&'static str> {
@@ -574,7 +597,7 @@ fn armor_slot(index: usize) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn result_order() -> Vec<usize> {
+pub fn result_order() -> Vec<usize> {
     (0..HOTBAR).rev().chain((HOTBAR..STORAGE).rev()).collect()
 }
 
@@ -586,7 +609,7 @@ fn limit(recipes: &RecipeBook, stack: &ItemStack) -> u8 {
     }
 }
 
-pub(crate) fn move_into(
+pub fn move_into(
     cells: &mut [Option<ItemStack>],
     stack: &mut ItemStack,
     order: &[usize],
@@ -1418,6 +1441,19 @@ mod tests {
     }
 
     #[test]
+    fn the_loaded_book_sends_picked_up_grenades_to_their_slots() {
+        let mut inv = inventory();
+        inv.workbench[0] = stack(&inv, "iw4l:frag_grenade", 5);
+        inv.workbench[1] = stack(&inv, "iw4l:smoke_grenade", 2);
+        inv.workbench[2] = stack(&inv, "minecraft:oak_log", 3);
+        assert!(close(&mut inv, 0).is_empty());
+        assert_eq!(id_of(&inv.slots[43]), Some("iw4l:frag_grenade"));
+        assert_eq!(count_of(&inv.slots[43]), 5);
+        assert_eq!(id_of(&inv.slots[44]), Some("iw4l:smoke_grenade"));
+        assert_eq!(id_of(&inv.slots[0]), Some("minecraft:oak_log"));
+    }
+
+    #[test]
     fn closing_a_full_inventory_hands_back_what_does_not_fit() {
         let mut inv = inventory();
         fill(&mut inv, "minecraft:dirt");
@@ -1493,6 +1529,33 @@ mod tests {
         assert_eq!(id_of(&inv.slots[OFFHAND]), Some("minecraft:stick"));
         assert!(inv.crafting[2].is_none());
         assert!(!swap(&mut inv, Grid::Inventory, Some(2), 41));
+    }
+
+    #[test]
+    fn taking_a_result_unlocks_the_recipe_that_made_it() {
+        let mut inv = inventory();
+        put(&mut inv, Grid::Inventory, &[0], "minecraft:oak_log", 1);
+        assert!(!click_result(&mut inv, Grid::Table, false));
+        assert!(inv.unlocked_recipes.is_empty());
+        assert!(take(&mut inv, Grid::Inventory));
+        assert!(inv.unlocked_recipes.contains("minecraft:oak_planks"));
+        let planks = inv.cursor.take();
+        assert!(inv.slots.iter().all(Option::is_none), "the planks never entered the inventory");
+        inv.crafting[1] = planks.clone().map(|stack| ItemStack { count: 1, ..stack });
+        inv.crafting[3] = planks.map(|stack| ItemStack { count: 1, ..stack });
+        assert_eq!(craft_all(&mut inv, Grid::Inventory), 1);
+        assert!(inv.unlocked_recipes.contains("minecraft:stick"));
+
+        let mut inv = inventory();
+        put(&mut inv, Grid::Inventory, &[0], "minecraft:flint", 1);
+        assert_eq!(throw_result(&mut inv, Grid::Inventory, false).len(), 1);
+        assert!(inv.unlocked_recipes.contains("minecraft:flint_arrow"));
+
+        let mut inv = inventory();
+        put(&mut inv, Grid::Table, &[3, 4, 5], "minecraft:stone", 1);
+        assert!(swap(&mut inv, Grid::Table, None, 0));
+        assert!(inv.unlocked_recipes.contains("minecraft:stone_slab"));
+        assert_eq!(inv.unlocked_recipes.len(), 1);
     }
 
     #[test]

@@ -315,6 +315,7 @@ pub(crate) fn movement(
         steps,
         riding,
         drop_throttle,
+        arsenal,
         ..
     } = player;
     let feet = sim::voxel::to_block(origin, ps.origin);
@@ -470,11 +471,9 @@ pub(crate) fn movement(
             hand.swing = None;
         }
     }
-    let holding = entities.as_ref().is_some_and(|_| {
-        inventory.slots[*selected]
-            .as_ref()
-            .is_none_or(|s| minecraft_survival::guns::weapon_of(s).is_none())
-    });
+    let holding = entities
+        .as_ref()
+        .is_some_and(|_| !arsenal.holds_gun(inventory, *selected));
     let holding_item = alive && holding && player_mode.interacts();
     let empty_hand = holding_item
         && entities
@@ -1107,11 +1106,8 @@ pub(crate) fn drop_on_death(
     let Some(death) = death_watch.take().filter(|death| !death.keep_inventory) else {
         return;
     };
-    let guns = |stack: &minecraftoss_player::inventory::ItemStack| {
-        minecraft_survival::guns::weapon_of(stack).is_some()
-    };
     let eye = glam::DVec3::from_array(death.spot.eye);
-    for stack in minecraft_survival::death::death_drops(inventory, guns) {
+    for stack in minecraft_survival::death::dropped_on_death(&death, inventory) {
         entities.view.world_items.drop_on_death(stack, eye);
     }
     entities.award_experience(death.spot.feet, death.experience);
@@ -1127,6 +1123,7 @@ pub(crate) fn owned_weapons(ps: &PlayerState, authority: &sim::SimWorld) -> Vec<
             authority
                 .weapon_combat_row(w)
                 .is_some_and(|facts| facts.inventory_type == 0)
+                && sim::voxel::is_killstreak_weapon(authority.weapon_script_name(w))
         })
         .collect()
 }
@@ -1152,10 +1149,10 @@ pub(crate) fn tick_actor<'a>(
         pitch: ps.viewangles[0],
         main_hand: player.inventory.slots[player.selected]
             .as_ref()
-            .filter(|stack| {
+            .filter(|_| {
                 alive
                     && player.mode.interacts()
-                    && minecraft_survival::guns::weapon_of(stack).is_none()
+                    && !player.arsenal.holds_gun(&player.inventory, player.selected)
             })
             .map(|stack| stack.id.clone()),
         offhand: player.inventory.slots[minecraft_survival::offhand::OFFHAND]
@@ -1287,6 +1284,7 @@ pub(crate) struct FriendWorld<'a> {
     pub(crate) dt: f64,
     pub(crate) now: f64,
     pub(crate) instant: std::time::Instant,
+    pub(crate) guns: &'a mut crate::minecraft_fork_items::ForkLook,
 }
 
 pub(crate) fn mining_in<'m>(
@@ -1632,20 +1630,63 @@ pub(crate) fn step_friend(
             mining.break_burst(packs, atlas, at, yaw, ps.viewangles[0], &item);
         }
     }
+    let class = crate::minecraft_fork_items::class_of(world.authority, client);
+    let given = world.guns.first_loadout(
+        (&mut player.inventory, player.selected, &mut player.tags),
+        life.alive,
+        class,
+    );
+    if let Some(entities) = world
+        .levels
+        .get_mut(&player.dimension)
+        .and_then(|level| level.entities.as_mut())
+    {
+        for stack in &given {
+            entities.drop_given(stack, feet);
+        }
+    }
     let owned = owned_weapons(&ps, world.authority);
+    let room = crate::minecraft_fork_items::gun_room(&ps, world.authority);
     let Player {
         survival,
         inventory,
         selected,
         follow,
+        mode,
+        arsenal,
+        dimension,
         ..
     } = player;
     minecraft_survival::guns::sync_weapons(inventory, &owned);
-    follow.request(inventory, selected, ps.weapon);
+    let hotbar = minecraft_survival::guns::Hotbar {
+        selected: *selected,
+        room,
+        binding: &mut *arsenal,
+    };
+    let flare_at =
+        crate::minecraft_fork_items::flare_place(*dimension, origin, minecraft_yaw(ps.viewangles[1]));
+    let settled = world.guns.settle(inventory, mode, client.0, hotbar, flare_at);
+    if let Some(entities) = world
+        .levels
+        .get_mut(dimension)
+        .and_then(|level| level.entities.as_mut())
+    {
+        for stack in settled.iter().flat_map(|settled| &settled.dropped) {
+            entities.drop_given(stack, feet);
+        }
+    }
+    if settled.is_some_and(|settled| settled.too_many) {
+        stepped.lines.push(minecraft_commands::Clientbound::System {
+            text: minecraft_commands::Text::literal(minecraft_survival::guns::TOO_MANY_GUNS),
+            overlay: true,
+        });
+    }
+    follow.request_with(inventory, arsenal.guns(), selected, ps.weapon);
     let protected = life.alive
         && !survival.killed()
         && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some();
     sim::voxel::set_death_protected(client.0, protected);
+    crate::minecraft_fork_items::mirror_gun_guard(client.0, survival, inventory);
     stepped
 }
 
@@ -1854,7 +1895,9 @@ pub(crate) fn friend_menus(
     let Some(entities) = entities.as_mut() else {
         return lines;
     };
-    let books = minecraft_survival::menus::Books::of(&world.globals.data);
+    let guns = world.guns.rules();
+    let books = minecraft_survival::menus::Books::of(&world.globals.data)
+        .with_guns(guns.as_ref().map(|guns| guns as &dyn minecraft_terrain::gun_mods::GunRules));
     let globals = world.globals;
     let known = |id: &str| globals.chat.registries().items.iter().any(|item| item == id);
     let mut clicked = minecraft_survival::menus::take_inputs(

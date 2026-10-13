@@ -190,11 +190,12 @@ pub fn stack_of_tag(tag: &Tag) -> Option<ItemStack> {
     if count <= 0 || id == "minecraft:air" {
         return None;
     }
-    let mut stack = ItemStack::new(id, 1);
-    stack.components = tag
+    let components = tag
         .get("components")
-        .and_then(crate::item_nbt::saved_components)
-        .map(|components| crate::item_nbt::tag_json(&components));
+        .and_then(crate::item_nbt::saved_components);
+    let (id, components) = crate::item_nbt::from_disk(id, components);
+    let mut stack = ItemStack::new(id, 1);
+    stack.components = components.map(|components| crate::item_nbt::tag_json(&components));
     Some(stack)
 }
 
@@ -801,6 +802,32 @@ mod tests {
             Tag::String("minecraft:painting".to_owned()),
         )]));
         assert_eq!(Frames::default().add(&none), None);
+    }
+
+    #[test]
+    fn a_gun_in_a_frame_is_saved_as_its_carrier_and_comes_back() {
+        let mut frames = Frames::default();
+        let id = frames
+            .add(&frame_tag(false, (1, 64, 1), Direction::North))
+            .unwrap();
+        let mut frame = frames.get(id).unwrap().clone();
+        let mut gun = ItemStack::new("iw4l:m4", 1);
+        gun.components = Some(serde_json::json!({
+            "minecraft:custom_data": {"iw4l": {"attachments": ["acog"], "clip": 30}}
+        }));
+        frame.item = Some(gun.clone());
+        let saved = frame.to_tag();
+        assert_eq!(
+            saved
+                .get("Item")
+                .and_then(|i| i.get("id"))
+                .and_then(Tag::as_str),
+            Some("minecraft:carrot_on_a_stick")
+        );
+        let mut again = Frames::default();
+        let back = again.add(&saved).unwrap();
+        let loaded = again.get(back).unwrap().item.clone().unwrap();
+        assert_eq!((loaded.id, loaded.components), (gun.id, gun.components));
     }
 
     #[test]

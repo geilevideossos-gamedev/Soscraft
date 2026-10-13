@@ -39,6 +39,10 @@ impl ItemCatalog {
         self.max_stack.get(id).copied().unwrap_or(64)
     }
 
+    pub fn insert_max_stack(&mut self, id: &str, max_stack: i32) {
+        self.max_stack.insert(id.to_owned(), max_stack);
+    }
+
     /// `FuelValues.isFuel` for the default stack.
     pub fn is_fuel(&self, id: &str) -> bool {
         self.fuel.contains_key(id)
@@ -91,3 +95,19 @@ impl ItemStack {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inserted_items_have_their_max_stack() {
+        let mut catalog = ItemCatalog::default();
+        catalog.insert_max_stack("iw4l:m4", 1);
+        catalog.insert_max_stack("iw4l:rocket", 16);
+        assert_eq!(catalog.max_stack("iw4l:m4"), 1);
+        assert_eq!(catalog.max_stack("iw4l:rocket"), 16);
+        assert_eq!(catalog.max_stack("iw4l:pistol_ammo"), 64);
+        assert!(!catalog.is_fuel("iw4l:m4"));
+    }
+}

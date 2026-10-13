@@ -62,7 +62,7 @@ Every fork item has its own id in the `iw4l:` namespace. In the game (inventory,
 - Ids use MW2 script names, not session indices. No id and no saved field ever holds a session weapon index. Players see MW2's localized names (`M4A1`, `Intervention`), and creative search and `/give` find the items by name.
 - The T5 prefix keeps T5 `spas` apart from IW4 `spas12`.
 - An `iw4l:` id gets the safe default in every system keyed by id: it is not fuel, not food, not placeable, not enchantable, not compostable, in no vanilla tag and not wanted by piglins. No vanilla id-keyed rule can fire on a gun by accident.
-- **Mobs never pick up fork items.** Zombie loot pickup, allays and foxes refuse them, because mob equipment saves only the id (`server_mobs.rs:728`) and would lose a gun's state.
+- **Mobs never pick up fork items,** because mob equipment saves only the id (`server_mobs.rs:728`) and would lose a gun's state. In the fork only piglins and villagers pick items up; there is no zombie, allay or fox pickup yet. A bare-handed piglin wants any item, so `piglin_wants` refuses every `iw4l:` id. Villagers want only their food and farming items. A later zombie, allay or fox pickup must refuse them too.
 - The table lives in a new file `crates/minecraft_terrain/src/fork_items.rs` (it must pass `rustfmt --check`). Each row has: id, kind, MW2 weapon key (guns and grenades), lethal or tactical bucket, ammo type, max stack, English fallback name, tier, icon source and creative order.
 
 **The roster is fixed.** It is the 43 IW4 guns (the 42 in the class picker plus the Gold Desert Eagle), the 20 T5 and IW5 guns of the showcase classes, 8 grenades plus the tactical insertion, 7 ammo types, 13 attachments and 2 parts.
@@ -82,6 +82,7 @@ ammo, grenades, attachments, parts: no state, so equal stacks merge
 - `attachments`: 0 to 2 attachment names as the game's attachment table spells them (`reflex`, `acog`, `silencer`, `rf` for a T5 gun, and so on). `akimbo` counts as one of the two.
 - `clip`: rounds in the magazine. `clip_left` is the left gun of an akimbo pair. `alt_clip` is the grenade launcher or underbarrel shotgun.
 - **An absent clip means empty.** A crafted gun therefore needs no component on its recipe result and comes out empty, like vanilla's uncharged crossbow. The creative tab, `/give`, the kit and the first-join loadout write a full clip.
+- **`-1` means a full magazine whose size was not known when the gun was made.** `/give` and the kit (`IW4L_MINECRAFT_KIT`, the start kit and `/kit`) run in `minecraft_survival` and `minecraft_terrain`, which have no MW2 weapon data, so they write `clip: -1` (and `clip_left: -1` with `akimbo`, `alt_clip: -1` with a grenade launcher or underbarrel shotgun). The host's settle (5.1) replaces it with the real clip size the first time the gun is bound, and the tooltip shows it as full. A `/give` that names a clip keeps it.
 - **There is no durability.** Ammo is the running cost. Vanilla durability would bring repair, Mending and Unbreaking questions the owner did not ask for.
 - The MW2 weapon is worked out, never stored: the base gun plus its attachments, resolved with `WeaponFamilies::resolve(WeaponSelection::with(family, attachments), LoadoutRules { max_attachments: 2 }, ...)` (`asset_game/src/weapon_families.rs`, made public through a wrapper). It handles IW4 variant defs (`m4_reflex_mp`) and IW5's runtime binding. Results are cached per gun and attachments.
 - A session table `GunNames` (item id to weapon index and back) is built once per match where `PreparedWeapons` exists, on the host and on each friend. The relay's weapon digest check already makes both sides agree. `McStack.weapon` (icon and tooltip) comes from this table instead of `weapon_of`.
@@ -107,7 +108,7 @@ A stackable fork item on disk:
 ```
 
 - **Guns use `minecraft:carrot_on_a_stick`.** It stacks to 1, is in no item tag and appears only as its own recipe's result (checked in the jar). It is damageable, so the disk form never sets `max_stack_size`.
-- **Everything else uses `minecraft:poisonous_potato`.** It is in no recipe and no item tag. The `!` removals stop vanilla from eating it. The implementer reads the potato's default components from the catalog, so the removals match what 26.3 gives it. Rockets and explosive rounds also get `"minecraft:max_stack_size": 16`.
+- **Everything else uses `minecraft:poisonous_potato`.** It is in no recipe and no item tag. The `!` removals stop vanilla from eating it. Its only components beyond a plain item's are `minecraft:food` and `minecraft:consumable` (`Items.POISONOUS_POTATO` calls `Item.Properties.food(Foods.POISONOUS_POTATO, Consumables.POISONOUS_POTATO)`, which sets exactly those two; checked with javap, because the item catalog lists only items with non-default properties and has no row for the potato), so the removals are exactly those two. Rockets and explosive rounds also get `"minecraft:max_stack_size": 16`.
 - **Netherite guns** (Barrett, M240) also get `"minecraft:damage_resistant": {types: "#minecraft:is_fire"}` on disk and the same rule in the game: like netherite gear, they survive fire and lava on the ground.
 - No `item_model`: without a resource pack vanilla would draw the missing-model cube.
 - `from_disk` fires only when `custom_data.iw4l.id` is a known fork id. It removes exactly what `to_disk` added (`item_name`, the `!` removals, `iw4l.id`) and keeps everything else, such as an anvil `custom_name` or another pack's `custom_data` keys. An unknown id stays the plain base item, so nothing is destroyed.
@@ -123,7 +124,7 @@ A stackable fork item on disk:
 
 ### 4.4 Catalogs, names, commands
 
-- **Stack sizes.** Two small vendored patches add `insert` to `minecraftoss_player::item_catalog::ItemCatalog` and `insert_max_stack` to `minecraftoss_core::item::ItemCatalog`. Without them every fork id defaults to 64, and two guns on the ground would merge. One helper, `fork_items::load`, fills both at the two `Registries::load` sites (host `render_anim/src/minecraft_world.rs:275`, friend `minecraft_remote.rs:54`) and in `minecraft_terrain::crafting::load_recipes`.
+- **Stack sizes.** Two small vendored patches add `insert` to `minecraftoss_player::item_catalog::ItemCatalog` and `insert_max_stack` to `minecraftoss_core::item::ItemCatalog`. Without them every fork id defaults to 64, and two guns on the ground would merge. One helper, `fork_items::load`, fills both at the two `Registries::load` sites (host `render_anim/src/minecraft_world.rs:275`, friend `minecraft_remote.rs:54`) and in `minecraft_terrain::crafting::load_recipes`. Without the item catalog file the recipe book keeps no catalog (a fork-only catalog would switch off its built-in fuel table), so in that warned, degraded mode guns stack in the inventory like every item; on the ground they never merge, because the core catalog is always filled.
 - **Names.** `item_icons::item_name` uses `item.<namespace>.<path>`. The fork adds `item.iw4l.*` keys to the language map from MW2's localized names, with the table's English name as the fallback.
 - **Commands and kit.** `/give`, `/clear` and `IW4L_MINECRAFT_KIT` accept fork ids (`commands.rs:121`, `minecraft_commands` `registered()`). A given gun comes with a full clip. `/give` also takes the component syntax, e.g. `iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex"]}}]`.
 - The fork table's hash joins `registry_fingerprint` (`session.rs:701`), so a friend on another build is refused.
@@ -134,7 +135,7 @@ A stackable fork item on disk:
 - **In the hand:** a gun is drawn by MW2 (today's path). A grenade, ammo, attachment or part held in the main hand is drawn flat like a vanilla item and does nothing on right-click. Grenades are thrown only from their slots.
 - **On the ground and in item frames:** every fork item is its icon, extruded like vanilla's `item/generated` model. MW2 world models there are later polish.
 - **Icons:**
-  - Grenades use their MW2 HUD icons.
+  - Grenades use their MW2 equipment pictures, the ones the class menu shows (`weapon_fraggrenade`, `cardicon_semtex`, `cardicon_throwing_knive`, `weapon_claymore`, `weapon_c4`, `weapon_flashbang`, `weapon_concgrenade`, `weapon_smokegrenade`, `specialty_tactical_insert`). They are read from the owner's IWDs like the attachment pictures: the weapon defs' HUD icons are zone materials that only the MW2 draw path has, not pixels for the item atlas.
   - Attachments use MW2's `weapon_attachment_*` materials (`ui/src/classes/icons.rs:237-249`). Rapid fire has none and uses the vanilla repeater sprite.
   - Ammo uses a vanilla sprite tinted at runtime: `iron_nugget` tinted brass (pistol), copper (rifle), grey (LMG), gold (sniper) and red (shells); `fire_charge` tinted green (explosive round); `firework_rocket` (rocket).
   - The barrel uses the vanilla iron bars sprite and the mechanism the tripwire hook sprite.
@@ -148,11 +149,11 @@ A stackable fork item on disk:
 `sim/src/voxel.rs` gets a per-client published arsenal next to `set_death_protected` (`voxel.rs:456`), cleared in `deactivate`:
 
 ```rust
-pub struct GunSpec { pub weapon: u32, pub clip: i32, pub clip_left: i32, pub alt_clip: i32, pub ammo: u8, pub rebind: bool }
+pub struct GunSpec { pub weapon: u32, pub clip: i32, pub clip_left: i32, pub alt_clip: i32, pub ammo: u8, pub rebind: bool, pub alt_ammo: u8 }
 pub struct Arsenal { pub guns: Vec<GunSpec>, pub selected: Option<u32>, pub stock: [i32; AMMO_TYPES],
                      pub lethal: Option<(u32, i32)>, pub tactical: Option<(u32, i32)>, pub endless: bool }
 pub enum Spent { Rounds { ammo: u8, rounds: i32 }, Grenade { weapon: u32, delta: i32 },
-                 Clip { weapon: u32, clip: i32, clip_left: i32, alt_clip: i32 }, Flare { pos: [f32; 3] } }
+                 Clip { weapon: u32, clip: i32, clip_left: i32, alt_clip: i32 }, Flare { pos: [f32; 3] }, FlareGone }
 pub fn set_arsenal(client: u32, arsenal: Arsenal)
 pub fn take_spent(client: u32) -> Vec<Spent>
 ```
@@ -160,34 +161,38 @@ pub fn take_spent(client: u32) -> Vec<Spent>
 `sustain_block_world_arsenal` (`sim/src/item.rs:152`, run at `step.rs:537`) becomes `apply_arsenal`. For each live client on a Minecraft map that has published:
 
 1. **Primaries.** The type-0 weapons in `ps.weapons` become exactly `guns[].weapon`. Missing guns are added with `inventory_add_weapon` without raising them, and others are removed with `take_player_weapon`.
-   - Kept: offhands, the alt modes of kept guns, and killstreak weapons.
+   - Kept: offhands, the alt modes of kept guns, killstreak weapons, and the weapons MW2's scripts hand out for a moment: the AC-130's `ac130_*` guns and the S&D `briefcase_bomb*` (`sim::voxel::kept_by_mw2`). Removing them would break the AC-130 and bomb planting.
    - If the held weapon was removed, it switches to `selected`, or to weapon 0 (`none`, which the sim already supports: `item.rs:97`).
 2. **Clips.** A gun that is not held gets its clips from its spec. The held gun keeps its live clips, and the sim queues `Clip` when they differ from the spec. With `rebind`, the spec clip is written even into the held gun.
-3. **Stock.** The stock of each gun's MW2 ammo index is `min(stock[ammo] - rounds not yet taken, the weapon's maxAmmo)`.
-4. **Grenades:** section 9.4.
-5. **Endless.** With `endless` set (creative), stock, clips and grenades refill as today and nothing is queued. Clients that never published (bots) keep today's full refill.
+3. **Stock.** The stock of each gun's MW2 ammo index is `min(stock[ammo] - rounds not yet taken, the weapon's full stock)`, and its alt mode's is the same with `alt_ammo`. The full stock is what MW2 refills to today: maxAmmo, or startAmmo when a def's is larger. `AMMO_TYPES` is 8: the 7 ammo items, then `iw4l:throwing_knife` for the Ballistic Knife. A gun with no ammo type (the riot shield) keeps the full stock.
+4. **Grenades:** section 10.4. The count is written into the grenade's clip on the ledger and in `ps.ammoclip`, as MW2's own spawn does (a frag's start ammo 2 sits in a clip of 1); neither setter clamps, so 32 or 64 grenades are kept although `maxAmmo` is small.
+5. **Endless.** With `endless` set (creative), the stock is full and no `Rounds` are queued. Clips work as in survival: they empty and reload (section 8.2). Grenades follow the slot count, and throws queue nothing. Clients that never published (bots) keep today's full refill.
 
 The sim queues spending **only at the sites that really spend**, never by comparing numbers:
-- A finished reload queues `Rounds` with the rounds moved from stock into the clip. A partial reload queues only the missing rounds.
-- A throw or a cook-off (`combat.rs:763/808`) queues `Grenade { delta: -1 }`. Picking a thrown knife up again queues `+1`.
-- A planted tactical insertion queues `Flare` (section 9.6).
+- A finished reload queues `Rounds` with the rounds moved from stock into the clip. A partial reload queues only the missing rounds. The site is `weapon_iw4::reload_clip`: it adds the rounds it moves to the hand's `loaded`, and `advance_weapon_command` queues the sum over both akimbo hands for the held weapon's ammo type (`alt_ammo` for an alt mode), on the host and only in Minecraft worlds.
+- A throw or a cook-off (`combat::use_offhand_round`, called for `OffhandUsed` and `OffhandCookedOff`) queues `Grenade { delta: -1 }`. Picking a thrown knife up again (`item::grab_projectile`) queues `+1`; for a publishing client the pickup no longer needs room in MW2's clip, and a Ballistic Knife blade gives back a throwing knife.
+- A planted tactical insertion queues `Flare` and a blast that destroys it `FlareGone` (section 10.6).
 - Everything else that MW2 does to ammo is overwritten by the published values at the next step: GSC `giveLoadout` at a spawn, Scavenger, One Man Army and ammo pickups. So none of them can create items.
+  - The stock is overwritten every step. A clip only through the held gun, whose live clip the sim keeps: so a script that gives a weapon or sets a clip (`giveWeapon`, `setWeaponAmmoClip`, `giveStartAmmo`, an offhand's `giveMaxAmmo`) marks the client, and the next step caps the held gun's live clips at the last clips it knew. A spawn refill cannot grow a clip, and rounds fired before the script call stay spent.
 
 `BLOCK_WORLD_GUNS` (the free Intervention, SPAS-12 and UMP45, `item.rs:146`) is removed, with its `give_weapon_to_ps_akimbo` raise.
 
 **MW2's own weapon drop on death and MW2 weapon pickups are switched off for clients that publish.** Otherwise a dead player's gun would exist twice: once as the Minecraft drop and once as an MW2 pickup.
+- The drop: MW2's only `dropItem` caller is `dropWeaponForDeath` (`maps/mp/gametypes/_weapons.gsc` in `common_mp.ff`, called inline from `PlayerKilled_internal` in `_damage.gsc`). For a gun it first asks `AnyAmmoForWeaponModes`, the only caller of that method, and returns when it is false; it does not check `dropItem`'s result there, so an `undefined` item would cause runtime errors. So the `anyammoforweaponmodes` native (`sim/src/script/host/natives/player.rs`) answers false for a publishing client, and `item::drop_weapon` (the `dropItem` native) returns nothing for one, which covers the riot shield branch, where the script checks `isDefined( item )`. No GSC error either way.
+- The pickups: walking over a dropped weapon (`item::try_touch_one`) and the use-key swap (`item::selected_item`) skip dropped weapons for a publishing client. Scavenger bags still work: what they give is overwritten at the next step.
 
-**The host glue** is one function, `minecraft_survival::guns::settle_arsenal(inventory, mode, spent, names) -> Arsenal`. It runs for the host next to `minecraft_world.rs:1268` and for each friend next to `minecraft_players.rs:1633`:
+**The host glue** is one function, `minecraft_survival::guns::settle_arsenal(inventory, mode, spent, (names, content), Hotbar { selected, room, binding }) -> Settled`. `Settled` holds the `Arsenal`, the hotbar slots whose gun MW2 holds (for `Follow` and for "is a gun in hand") and whether to show "Too many guns on the hotbar". `binding` is the player's `guns::Binding` (per UUID in `Player.arsenal`): which copy is bound and its clips, so a moved or swapped copy sets `rebind`. `minecraft_survival` does not depend on `sim`, so it has its own `Arsenal`, `Gun` and `Spent`, converted in `render_anim/src/minecraft_fork_items.rs` (`ForkLook::settle`, which also calls `set_arsenal`). It runs for the host next to `sync_weapons` in `minecraft_world.rs` and for each friend in `minecraft_players.rs` `step_friend`:
 
 1. Apply the drained `Spent` list:
-   - `Rounds` removes items in vanilla's projectile search order: offhand, main hand, then slots 0-35.
+   - `Rounds` removes items in vanilla's projectile search order: offhand, main hand, then slots 0-35. In creative it removes nothing.
    - `Clip` writes the clips into the bound gun item.
    - `Grenade` changes the grenade slot (a `+1` goes through the pickup rules if the slot is full).
-   - `Flare` sets the player's flare respawn.
+   - `Flare` sets the player's flare respawn and `FlareGone` clears it. `minecraft_survival` keeps it in `guns::Binding` (per UUID in `Player.arsenal`, never saved); `ForkLook::settle` turns the MW2 position into a `Place` in the player's dimension, through that dimension's band and origin.
 2. Build the gun list from hotbar slots 0-8 in slot order, each MW2 weapon once.
    - The list stops when `ps.weapons` would overflow: 15 slots, shared with the offhands, alt modes and killstreaks.
    - A gun past that point is inert. Selecting it shows "Too many guns on the hotbar" on the action bar.
-3. Count `stock` per ammo type over slots 0-35 and the offhand. Containers and the grenade slots never count. Guns that share an ammo type see the same count.
+   - With 9 hotbar slots this needs at least 7 non-gun weapons in `ps.weapons`, so in play it is rare; the unit test covers it.
+3. Count `stock` per ammo type over slots 0-35 and the offhand. Containers and the grenade slots never count. Guns that share an ammo type see the same count. Throwing knives count for the Ballistic Knife.
 4. Call `set_arsenal`.
 
 `Follow` (`guns.rs:57-89`) keeps its job. Selecting a hotbar gun raises it through `ui.weapon_request`, and an MW2 switch (alt mode, killstreak, out of ammo) moves the selection. The client's `ps.weapons.contains(target)` check (`net/src/client/runtime.rs:1004-1015`) works unchanged.
@@ -220,6 +225,11 @@ Killstreak weapons (`killstreak_*_mp`, `airdrop_*marker*_mp`) are earned per lif
 
 On Minecraft maps the class menu changes perks and killstreaks only. Its weapon and grenade rows show the note "Guns and grenades are items in Minecraft worlds". One Man Army and Bling change nothing there.
 
+- The gate is `sim::voxel::active()`, on the host and on a friend's game alike. The main menu and MW2 maps are unchanged.
+- A click on the Primary, Secondary, Lethal or Tactical row (or its attachments) opens nothing and shows the note as the editor's status line, which also shows it whenever no error or lock reason is shown. The rows keep their labels: the class guns and grenades still make the first-join loadout (section 6).
+- Reset restores the perks and the deathstreak and keeps the guns and grenades.
+- One Man Army: its `onemanarmy_mp` bag is a primary-slot weapon that `apply_arsenal` removes like any gun not on the hotbar, and a class change through it runs GSC `giveLoadout`, which `apply_arsenal` overrides at the next step (5.1). Bling: MW2 uses it only for the class's two attachments; items never read perks (9.2). Dropping Bling still trims the class guns' second attachment, so the class passes MW2's class check; that changes only the first-join guns.
+
 ## 6. First-join loadout
 
 - **The flag** is the string `iw4l_loadout_given` in the player file's vanilla `Tags` list. `PlayerData::merged` already carries `Tags`, and the merge owns only that string and keeps any other tags. Vanilla keeps the list, so even a world saved in vanilla does not hand out a second loadout.
@@ -228,7 +238,7 @@ On Minecraft maps the class menu changes perks and killstreaks only. Its weapon 
 - **What is given:**
   1. The primary and secondary as gun items, with their attachments and a full clip (both clips for akimbo), into hotbar slots 0 and 1 if free, otherwise the vanilla add order.
   2. Three magazines of reserve per gun as ammo items into the backpack: an M4A1 gets 90 rifle rounds, an Intervention 15 sniper rounds, a Javelin 3 rockets. Guns that share an ammo type add up.
-  3. 32 of the class lethal into slot 43 and 32 of the class tactical into slot 44. The fallbacks are frag and flash.
+  3. 32 of each class grenade into its own grenade slot (10.2): the class lethal into slot 43 and the class tactical into slot 44, except the tactical insertion, which MW2 keeps as equipment and so goes into slot 43 (into the backpack when the class lethal already took it). A slot that no class grenade goes to gets 32 frags (43) or flashes (44).
   4. The flag is set. It is saved with the next save, together with the items, so a crash before saving loses both and gives both again.
   - Whatever does not fit drops at the player's feet, like `/give` (`commands::give_stacks`).
 - Killstreaks are not part of it. `IW4L_MINECRAFT_KIT` is unchanged and given on its own.
@@ -261,7 +271,7 @@ Example, the M4A1:
  "result": {"id": "iw4l:m4", "count": 1}}
 ```
 
-The recipes are our own vanilla-format JSON in `crates/minecraft_terrain/data/fork_recipes.json`, read with `include_str!` and generated from the fork table. No Mojang file is copied.
+The recipes are our own vanilla-format JSON in `crates/minecraft_terrain/data/fork_recipes.json`, read with `include_str!`: one object keyed by recipe id (the result's `iw4l:` id), written from the tables below. Tests check it against the fork table (one recipe per row, kind, group, yield) and against the 26.3 jar (every ingredient exists, no grid collides). No Mojang file is copied.
 
 ### 7.2 Gun parts
 
@@ -409,7 +419,7 @@ Yields scale with fire rate: SMGs and LMGs get more rounds per gunpowder because
 ### 8.2 How ammo is used
 
 - **The clip is on the gun** (`clip`, `clip_left`, `alt_clip`). When a gun joins `ps.weapons`, its item clip goes into MW2. Reloads, firing and switching write it back through `Clip` (section 5.1).
-- **The stock is the inventory.** MW2 sees `min(rounds of the gun's ammo type in the offhand and slots 0-35, the weapon's maxAmmo)`. If the inventory holds more, the rest waits. Containers and the grenade slots never count.
+- **The stock is the inventory.** MW2 sees `min(rounds of the gun's ammo type in the offhand and slots 0-35, the weapon's full stock)` (5.1). If the inventory holds more, the rest waits. Containers and the grenade slots never count.
 - **A reload takes items.** MW2's own reload moves rounds from the stock into the clip, with its own animation and timing. The rounds moved come back as `Rounds`, and the host removes that many items: offhand, main hand, then slots 0-35, as vanilla's projectile search does. Rounds still queued are subtracted from the published stock until they are taken. A partial reload takes only the missing rounds: reloading a 30-round clip at 12 takes 18 items.
 - **No ammo:** with an empty clip and no ammo items, MW2 clicks empty as usual. Picking up or crafting ammo makes the stock appear on the next frame.
 - **Alt modes:** the grenade launcher uses explosive rounds and the underbarrel shotgun uses shells, each with its own `alt_clip`. They are reached with MW2's attachment-toggle key, as today.
@@ -446,14 +456,14 @@ All attachment recipes are shaped, `category: "equipment"`, group `iw4l_attachme
 
 ### 9.2 Putting attachments on, akimbo, taking them off
 
-These are fork special recipes, like vanilla's shield decoration. They work in any crafting grid, the inventory's 2x2 included, and run in `minecraft_survival` where the crafting result is computed. They are not listed in the recipe book. Each attachment's tooltip says "Craft together with a gun to attach it".
+These are fork special recipes, like vanilla's shield decoration. They work in any crafting grid, the inventory's 2x2 included, and run in `minecraft_survival` (`gun_crafting.rs`). The grid result itself is computed by `minecraft_terrain::crafting`, so the special recipes are checked first: on the host for every click of the host and of each friend, and on each screen for the result it shows. The MW2 check reaches them through `minecraft_terrain::gun_mods::GunRules`; without MW2 content there is no special result. They are not listed in the recipe book. Each attachment's tooltip says "Craft together with a gun to attach it".
 
 - **Attach:** exactly one gun plus 1 or 2 attachment items, in any cells. The result is the same gun with the attachments added and every other component kept: the clip (cut to the new clip size, with the extra rounds given back as ammo items), the custom name and the other attachments.
   - The result exists only if the gun ends with at most 2 attachments and `WeaponFamilies::resolve` accepts the combination. That uses the owner's own attachment and combination tables, so no list is kept by hand. Two sights or two alt modes have no MW2 def and give no result, as vanilla shows nothing for an invalid grid.
   - Two attachments need no Bling: items do not depend on the class, and the crafting cost replaces the perk slot.
 - **Akimbo:** two copies of the same gun with the same attachments give one gun with `akimbo` added, if the gun offers akimbo. Its `clip` and `clip_left` come from the two guns.
 - **Split an akimbo pair:** an akimbo gun alone in the grid gives one gun without `akimbo`. The second gun is left in the same cell as the crafting remainder, with `clip_left` as its clip. This is vanilla's remainder mechanism (a milk bucket leaves a bucket).
-- **Strip at the grindstone:** a gun in the grindstone comes out with no attachments (akimbo excepted), keeping its clip, cut to the bare clip size. The attachments are lost, and the grindstone gives a little XP, as it does for enchantments. Swapping an attachment therefore costs a new one, which keeps attachments a sink like enchanted books.
+- **Strip at the grindstone:** a gun in the grindstone comes out with no attachments (akimbo excepted), keeping its clip, cut to the bare clip size. The attachments and the rounds above the bare clip are lost, and the grindstone gives a little XP, as it does for enchantments: vanilla's disenchanting formula with each attachment counted as cost 5 (3-5 XP for one attachment, 5-9 for two). A gun with any second item in the grindstone gives nothing. Swapping an attachment therefore costs a new one, which keeps attachments a sink like enchanted books.
 
 ## 10. Grenades and the grenade slots
 
@@ -471,7 +481,7 @@ All grenade recipes are shapeless, `category: "equipment"`, groups `iw4l_lethal`
 | Flash Grenade | `iw4l:flash_grenade` | `iw4:weapon/flash_grenade_mp` | tactical | `gunpowder`, `glowstone_dust` (the flash), `iron_nugget` | 2 |
 | Stun Grenade | `iw4l:concussion_grenade` | `iw4:weapon/concussion_grenade_mp` | tactical | `gunpowder`, `fermented_spider_eye` (vanilla's slowness reagent), `iron_nugget` | 2 |
 | Smoke Grenade | `iw4l:smoke_grenade` | `iw4:weapon/smoke_grenade_mp` | tactical | `#minecraft:coals`, `paper`, `iron_nugget` | 2 |
-| Tactical Insertion | `iw4l:tactical_insertion` | `iw4:weapon/flare_mp` | tactical | `iron_ingot`, `redstone_torch` (the flare), `crying_obsidian` (the respawn link, as in a respawn anchor) | 1 |
+| Tactical Insertion | `iw4l:tactical_insertion` | `iw4:weapon/flare_mp` | lethal | `iron_ingot`, `redstone_torch` (the flare), `crying_obsidian` (the respawn link, as in a respawn anchor) | 1 |
 
 Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's crater (power 3.6 against TNT's 4).
 
@@ -483,6 +493,10 @@ Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's
   - Slot 43 takes only lethal grenades and slot 44 only tactical ones, up to 64. Anything else is refused, as an armour slot refuses a stick.
   - Shift-click on a grenade in slots 0-35 moves it to its slot first, when that slot is empty or holds the same grenade. Shift-click out of 43 or 44 goes to 9-35, then 0-8.
 - **Pickup:** a picked-up grenade tops up a grenade slot that holds the same grenade, right after vanilla's main-hand and offhand merge. It also fills an empty grenade slot of its kind, because the slot exists only for grenades. Otherwise it goes to the backpack.
+  - The rule sits in the vendored `add_item` behind a predicate the fork hands the recipe book (`RecipeBook::with_reserved_slots(fork_items::grenade_slot)` in `crafting::load_recipes`), so the vendored crate holds no fork table. Every `add_item` caller follows it: pickups, `/give`, grid items going back when a screen closes.
+- **Body 41 and saddle 42** now travel to friends with the 45 slots, but `fits` refuses every item there, so no click can fill them.
+- **Creative menu indices:** 46 is the lethal slot and 47 the tactical slot, after vanilla's 45 (offhand), so the creative inventory tab and the trash's shift-click reach them.
+- **`/clear`** covers slots 0-44. Vanilla's player `Inventory` container is 43 slots with body and saddle (`getContainerSize`, `EQUIPMENT_SLOT_MAPPING`, checked with javap), so `/clear` now also empties body and saddle like vanilla.
 - **Refill:** when throwing empties a grenade slot, it refills from the backpack with the same grenade, as a bow finds arrows anywhere. It never switches to another type on its own.
 
 ### 10.3 Layout
@@ -492,14 +506,14 @@ Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's
   - They stay on the left even with the main arm on the left, because the MW2 weapon bar starts about 8 px right of the hotbar at 16:9 (screenshot 11).
   - The MW2 weapon bar's grenade icons stay, and their counts now come from the slots.
 - **Inventory screen:** slot 43 at (134, 62) and slot 44 at (152, 62), drawn with `container/slot`. That is the empty panel right of the recipe book button at (104, 61) and of the offhand at (77, 62). Empty slots show the tooltip "Lethal" or "Tactical".
-- **Creative inventory tab:** about (127, 20) and (145, 20), checked against `tab_inventory.png` in the implementation.
+- **Creative inventory tab:** (127, 20) and (145, 20), also drawn with `container/slot`. `tab_inventory.png` (26.3) is plain panel from x 125 to 191 and y 3 to 52 right of the leggings and boots slots, so both frames (126-161, 19-36) sit on free pixels. The inventory screen's `inventory.png` is plain from x 94 to 172 at y 56-82, so (133-168, 61-78) is free too. `container/slot` is a loose sprite (`gui/sprites/container/slot.png`, 18x18), loaded with the other GUI sprites.
 
 ### 10.4 Keys and throwing
 
 - G throws from slot 43 and Shift+G from slot 44. The keys, settings v6 and the client runtime (`net/src/client/runtime.rs:1133-1142`) are unchanged.
 - **The slots decide the offhands.** The arsenal's `lethal` and `tactical` (weapon and count) make that weapon the only offhand of its bucket. This reuses the same-bucket replace code factored out of `apply_give_offhand` (`step.rs:1550-1591`): it sets `offhand_primary` or `offhand_secondary` and `meta.loadout.lethal` or `tactical`, so the friend's replicated loadout follows unchanged. The ledger and ps ammo are the count minus throws not yet taken.
 - **An empty slot** keeps the last weapon with no ammo, so the MW2 icon stays and placed C4 can still be detonated.
-- **A throw or a cook-off spends one,** a frag that blows up in the hand included. Picking a thrown knife up again gives one back. Creative throws spend nothing.
+- **A throw or a cook-off spends one,** a frag that blows up in the hand included. Picking a thrown knife up again gives one back (into the slot, or by the pickup rules when it is full; dropped at the feet when nothing has room). Creative throws spend nothing.
 - **Placed claymores and C4** are MW2 entities. They are not saved and vanish when the host quits; the item was already spent.
 - Holding a grenade item in the hotbar and pressing G changes nothing: only the slots are thrown.
 
@@ -513,8 +527,13 @@ Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's
 ### 10.6 Tactical insertion
 
 The class menu offers it, so it is an item with a recipe. In a Minecraft world it does what it does in MW2, mapped onto Minecraft's respawn:
-- Shift+G plants MW2's flare. The sim queues `Flare { pos }`.
+- G plants MW2's flare from the lethal slot. The sim queues `Flare { pos }`.
+  - **Lethal, not tactical (checked):** in the owner's `common_mp.ff`, `flare_mp` has MW2 offhand class 5 ("other", the equipment class of C4, the claymore and semtex; frag 1, throwing knife 4, flash 3, stun and smoke 2), and the sim gives class 1, 4 and 5 to the lethal slot. MW2 itself carries the tactical insertion as equipment. So `iw4l:tactical_insertion` is a lethal item (slot 43, recipe group `iw4l_lethal`); in the tactical slot MW2 could never throw it.
+  - MW2 plants the flare in GSC (`monitorTIUse` in `maps/mp/perks/_perkfunctions.gsc`, `common_mp.ff`), which runs only for the `specialty_tacticalinsertion` equipment perk. Our class menu offers `flare_mp` as an ordinary class grenade instead, so that script never runs, and MW2's spawn point (`setSpawnPoint`) is not used in Minecraft worlds either.
+  - The plant site is therefore the throw: `combat::plant_flare`, called for `OffhandUsed` next to `use_offhand_round`, on the host in a Minecraft world, for a client that publishes an arsenal. Its position is where MW2 would respawn the player (`playerSpawnPos`, the thrower's own feet on the ground): the thrower's origin, traced down to the ground below (up to 2048 units, MW2's ground search).
 - The host stores it as the player's flare respawn (level and position). The next respawn of that player is at the flare, ahead of a bed or respawn anchor. That respawn uses it up, and so does the flare being destroyed or a second flare being planted.
+  - The check is `respawn::respawn_at_flare`, before the bed and anchor logic of `respawn::respawn`. Like MW2's `tiValidationCheck`, a flare whose spot is now blocked (a solid block or fluid at the feet or head) is dropped and the bed, anchor or world spawn is used. A flare in another dimension switches the player there.
+  - Destroyed: MW2's glowstick dies from 20 damage. The sim keeps each client's planted flare and every MW2 blast in a Minecraft world (`damage::push_voxel_blasts`, both the weapon and the script blasts) that deals 20 or more at the flare's spot, with MW2's radius falloff and the claymore cone, queues `FlareGone`. The owner's own blasts count, as in MW2.
 - It is not saved, like the MW2 flare entity. This is a fork rule.
 
 ## 11. Damage to players (item 13)
@@ -530,7 +549,10 @@ The class menu offers it, so it is an item with a recipe. In a Minecraft world i
   - melee: MOD_MELEE, MOD_IMPACT.
 - The location multiplier for headshots is applied before (`damage.rs:907-915`), so headshots still matter. GSC perks (Stopping Power, Danger Close) multiply the result, and GSC keeps its minimum of 1.
 - **Inputs:** each frame, after settle, the host mirrors each player's armour into the sim with `set_gun_guard(client, GunGuard { armor, toughness, epf_bullet, epf_blast, epf_melee, resistance, totem_grace })`, next to `set_death_protected`, for itself (`minecraft_world.rs:1391`) and each friend (`minecraft_players.rs:1638`). The EPF values come from the existing enchantment code with `minecraft:arrow` for bullets (`#is_projectile`), `minecraft:player_explosion` for blasts and `minecraft:player_attack` for the knife.
+- **Built:** the rule is `sim::gun_damage` (`gun_hit`, `gun_damage_to_player`, `verdict`); the Minecraft side is `Survival::gun_armor` and render_anim's `mirror_gun_guard`. A victim that never published a guard (a bot, an MW2 map) keeps MW2's amount. A hit the formula takes to 0 (Resistance V) is refused before GSC, so it shows no hit marker. A friend who leaves has the guard removed (`forget_gun_guard`).
 - **Pierce** comes from a `weapon index -> pierce` table pushed once per match (`sim::voxel::set_pierce_table`), built from the gun's class and its `fmj` attachment.
+- **Built:** render_anim's `ForkLook::set_weapons` pushes the table (`pierce_table`) whenever the weapon content changes: one entry per weapon index, from MW2's weapon class (LMG, sniper) and an `fmj` attachment in the configuration. Every other weapon (a grenade launcher alt mode, a shotgun attachment, explosives, killstreaks) pierces nothing. The table is not cleared when a world is left, since it describes the weapon content, not the world.
+- **Only bullets pierce.** MW2 tags a knife lunge with the held weapon's index, so `gun_damage::verdict` passes the table's pierce only for bullet means; a knife hit with an LMG or sniper in hand pierces nothing, as the knife row of 11.3 (pierce 0) says.
 
 ### 11.2 Formula
 
@@ -552,28 +574,33 @@ Constants, one place each in the sim: `GUN_PLAYER_SCALE = 0.5`, `GUN_ARMOR_FACTO
 
 ### 11.3 Results
 
-MW2 points per hit (100 = full health = 10 hearts, so 10 points = 1 heart), with the hits to kill from full health in brackets. No enchantments. Copper armour is 10 points (2, 4, 3, 1 in the 26.3 catalog). Gun damage values are MW2 base damage from memory; the real values come from the owner's data (section 18).
+MW2 points per hit (100 = full health = 10 hearts, so 10 points = 1 heart), with the hits to kill from full health in brackets. No enchantments. Copper armour is 10 points (2, 4, 3, 1 in the 26.3 catalog).
+
+The damage values are the owner's MW2 data (`common_mp.ff`, read with the fork's own zone loader in round 9; the earlier values from memory were wrong for snipers, the frag and the rocket): M4A1 30 close (20 far), USP .45 40 (25), Desert Eagle 50 (30), RPD, L86 LSW and AUG HBAR 40, MG4 and M240 30, Intervention, Barrett .50cal and WA2000 70 with x1.5 on the head, neck and upper torso (105) and x1.1 on the lower torso (77), the M21 EBR 70 with x1.1 on the torso, frag 150 at the centre to 55 at the edge, semtex, C4 and claymore 200, RPG-7 blast 160, AT4 and Stinger 155, the knife 135. Other guns take x1.4 on the head and neck. A result of exactly x.5 rounds up (52.5 is 53).
 
 | Hit (MW2 points) | Pierce | None | Leather | Copper | Gold | Chain | Iron | Diamond | Netherite |
 |---|---|---|---|---|---|---|---|---|---|
 | M4A1 body, close (30) | 0 | 15 (7) | 8 (13) | 5 (20) | 4 (25) | 3 (34) | 3 (34) | 3 (34) | 3 (34) |
 | M4A1 + FMJ (30) | 0.25 | 15 (7) | 10 (10) | 7 (15) | 6 (17) | 6 (17) | 6 (17) | 6 (17) | 6 (17) |
 | USP .45 close (40) | 0 | 20 (5) | 12 (9) | 7 (15) | 6 (17) | 4 (25) | 4 (25) | 4 (25) | 4 (25) |
-| Desert Eagle (50) | 0 | 25 (4) | 16 (7) | 10 (10) | 8 (13) | 6 (17) | 5 (20) | 5 (20) | 5 (20) |
-| LMG (40) | 0.25 | 20 (5) | 14 (8) | 10 (10) | 9 (12) | 8 (13) | 8 (13) | 8 (13) | 8 (13) |
-| LMG + FMJ (40) | 0.5 | 20 (5) | 16 (7) | 14 (8) | 13 (8) | 12 (9) | 12 (9) | 12 (9) | 12 (9) |
-| Intervention body (98) | 0.5 | 49 (3) | 45 (3) | 39 (3) | 37 (3) | 35 (3) | 29 (4) | 29 (4) | 29 (4) |
-| Intervention + FMJ (98) | 0.75 | 49 (3) | 47 (3) | 44 (3) | 43 (3) | 42 (3) | 39 (3) | 39 (3) | 39 (3) |
-| Frag, centre (130) | 0 | 65 (2) | 58 (2) | 47 (3) | 42 (3) | 36 (3) | 21 (5) | 13 (8) | 13 (8) |
-| Rocket, direct (150) | 0 | 75 (2) | 67 (2) | 60 (2) | 54 (2) | 48 (3) | 30 (4) | 15 (7) | 15 (7) |
+| Desert Eagle close (50) | 0 | 25 (4) | 16 (7) | 10 (10) | 8 (13) | 6 (17) | 5 (20) | 5 (20) | 5 (20) |
+| RPD, L86, AUG HBAR (40) | 0.25 | 20 (5) | 14 (8) | 10 (10) | 9 (12) | 8 (13) | 8 (13) | 8 (13) | 8 (13) |
+| RPD + FMJ (40) | 0.5 | 20 (5) | 16 (7) | 14 (8) | 13 (8) | 12 (9) | 12 (9) | 12 (9) | 12 (9) |
+| MG4, M240 (30) | 0.25 | 15 (7) | 10 (10) | 7 (15) | 6 (17) | 6 (17) | 6 (17) | 6 (17) | 6 (17) |
+| Intervention or Barrett, chest (105) | 0.5 | 53 (2) | 49 (3) | 43 (3) | 40 (3) | 38 (3) | 32 (4) | 32 (4) | 32 (4) |
+| Intervention + FMJ, chest (105) | 0.75 | 53 (2) | 51 (2) | 48 (3) | 46 (3) | 45 (3) | 42 (3) | 42 (3) | 42 (3) |
+| Frag, centre (150) | 0 | 75 (2) | 67 (2) | 60 (2) | 54 (2) | 48 (3) | 30 (4) | 15 (7) | 15 (7) |
+| Semtex or C4, centre (200) | 0 | 100 (1) | 89 (2) | 84 (2) | 82 (2) | 81 (2) | 60 (2) | 20 (5) | 20 (5) |
+| RPG-7 blast, centre (160) | 0 | 80 (2) | 71 (2) | 67 (2) | 61 (2) | 54 (2) | 35 (3) | 16 (7) | 16 (7) |
+| Knife (135) | 0 | 68 (2) | 60 (2) | 50 (2) | 45 (3) | 39 (3) | 23 (5) | 14 (8) | 14 (8) |
 
-With Protection IV on all four pieces, an M4A1 hit on an unarmoured-equivalent player drops from 15 to 5 and a frag from 65 to 23. Blast Protection IV on four pieces takes every frag to 13.
+With Protection IV on all four pieces, an M4A1 hit on an unarmoured-equivalent player drops from 15 to 5 and a frag from 75 to 27. Blast Protection IV on four pieces takes every frag to 15. A rocket's direct impact (1000) still kills through any armour.
 
 What this means in play:
 - **Unarmoured players** take about twice MW2's hits: 7 M4A1 body shots instead of 4, about half a second. An ambush still works, and a frag no longer kills from full health.
 - **Leather, copper and gold help a lot.** From chainmail up, armour reaches the 80 % ceiling against light rounds, so iron, diamond and netherite are equal against an M4A1 (34 hits, more than one magazine, about 2.6 s of continuous hits). Vanilla iron-sword PvP against iron armour takes 4-5 s, so guns stay stronger than swords but are not instant.
-- **Gun choice matters against armour.** FMJ halves an M4A1's hits to 17, an LMG needs 13 and a sniper 3-4. The late guns are the late answer.
-- **Diamond and netherite pull ahead of iron against explosions** (a frag does 13 against 21) and against Minecraft melee and mobs, where armour is unchanged.
+- **Gun choice matters against armour.** FMJ halves an M4A1's hits to 17, an LMG needs 13 and a sniper 4 chest hits (2 unarmoured). The late guns are the late answer.
+- **Diamond and netherite pull ahead of iron against explosions** (a frag does 15 against 30) and against Minecraft melee and mobs, where armour is unchanged.
 - **Shotguns** still one-shot an unarmoured player up close, as in MW2. Each pellet is armoured on its own, so armour hurts them most.
 - **The knife** is halved and armoured like the rest. MW2's lunge (135) takes 2 hits unarmoured.
 
@@ -591,13 +618,15 @@ What this means in play:
   - Minecraft `#minecraft:is_explosion` damage (explosion, player_explosion, bad_respawn_point, fireworks): TNT, creepers, end crystals, beds and anchors.
 - The pop itself is unchanged: health 1, Regeneration II, Absorption II, Fire Resistance, the rising totem and the particles.
 - **Not covered:** the MW2 knife and impacts, Minecraft melee, arrows, fire, falls, the void and `/kill`.
-- Explosion knockback still pushes the player, as vanilla pushes an entity whose hurt is refused.
+- No push either: explosions, MW2 or Minecraft, push no player in the fork at all (only wind charges and the dragon do), so a refused blast does nothing. Vanilla would still push an entity whose hurt is refused; that waits for explosion pushes on players.
 - Refused hits change no health and show no hit marker.
 - **Two clocks, one rule:**
   - Sim side: `spend_death_protection(client, tick)` (`voxel.rs:465`) also records `tick + 80` (80 sim ticks of 50 ms, `MATCH_TICK_MS`). `finish_damage` gains the tick and passes it on (callers: `natives/player.rs:485` and the two `height_bands` tests). So the remaining pellets of the same shotgun blast and grenades in the same tick are refused at once.
   - Minecraft side: `Survival::protect` sets `totem_grace_until = tick + 80`, and `hurt` refuses explosions while it runs. It is mirrored to the sim through `GunGuard.totem_grace`. `respawn` clears it.
   - Under `/tick freeze` the Minecraft clock stops while the sim clock runs on. That is accepted.
 - This is a fork rule: vanilla has only the hurt cooldown. It goes into `docs/round9/decisions.md`.
+- **Built:** the sim keeps `voxel::TOTEM_GRACE` per client (`spend_death_protection(client, tick)`, `totem_grace(client, tick)`, cleared in `deactivate`), and `gun_damage::verdict` refuses Bullet and Explosion gun hits while it or the mirrored `GunGuard.totem_grace` runs, before the halving and before GSC. The Minecraft side is `Survival::totem_grace()` with `TOTEM_GRACE_TICKS` (80), refused in `hurt` through `DamageCause::is_explosion()` (`death::IS_EXPLOSION`, the jar's `#minecraft:is_explosion` tag). The level's `players_pushed` carries only wind bursts and the dragon, and a blast's `PlayerHitKind::Explosion` knockback is used only as the shield direction, so no explosion pushes a player, refused or not.
+- **Sourceless blasts:** TNT and end crystal blasts reach a player with no source entity, which the fork told as `DamageCause::Generic` ("<name> died"). They are now `DamageCause::Explosion` (`minecraft:explosion`, "<name> blew up", like vanilla's `explosion(null, null)`), so the grace covers them and Blast Protection now softens them, as in vanilla.
 
 ## 13. Recipe book and creative
 
@@ -608,9 +637,9 @@ The fork has no recipe book screen yet (`MINECRAFT-SURVIVAL.md:398`), so this tr
 - Recipes whose ingredients are missing have the red background. Clicking a recipe places the ingredients, or shows red ghost items for the missing ones. Shift-click places as many as fit. Right-click on a group button opens its alternatives.
 - Placing goes through a new `MenuAction::PlaceRecipe { recipe, all }` that the host applies, for the host and for friends.
 - **Every fork recipe is always known,** with no unlock toast, so the book shows every gun from the first day (the owner's request). Fork recipe ids are never written to the save.
-- **Vanilla recipes** unlock the vanilla way (`auto_unlock_rules`). Their unlocks, `toBeDisplayed` and the per-tab open and filter flags are saved in vanilla's `recipeBook` compound, which today is only carried over.
+- **Vanilla recipes** unlock the vanilla way (`auto_unlock_rules`), also from the items carried when joining (vanilla's first inventory sync). Their unlocks, `toBeDisplayed` and the open and filter flags of each book type (crafting, furnace, blast furnace, smoker; the inventory and the crafting table share the crafting flags) are saved in vanilla's `recipeBook` compound. An id the 26.3 data does not know is dropped on load, as vanilla does; stonecutting, smithing and special ids stay.
 - **Where fork recipes appear:** all are `category: "equipment"`, so they are in the Equipment tab after the vanilla ones. The groups keep the tab short: `iw4l_parts`, `iw4l_pistols`, `iw4l_machine_pistols`, `iw4l_smgs`, `iw4l_assault_rifles`, `iw4l_shotguns`, `iw4l_specials` (riot shield, crossbow, ballistic knife), `iw4l_snipers`, `iw4l_lmgs`, `iw4l_launchers`, `iw4l_ammo`, `iw4l_lethal`, `iw4l_tactical`, `iw4l_attachments`.
-- **Loading:** the vendored `RecipeBook` gets `with_extra(recipes)`, which reuses `parse_recipe` and gives fork recipes display indices after vanilla's. It is called in `load_recipes` before `with_item_catalog`, on the host and on the friend, who needs it only for the display.
+- **Loading:** the vendored `RecipeBook` gets `with_extra(recipes)`, which reuses `parse_recipe` and gives fork recipes display indices after vanilla's: after the highest index of a loaded display catalog, and without one (the game loads none) after vanilla's crafting and cooking recipe count, in table order. It is called in `load_recipes` before `with_item_catalog`, on the host and on the friend, who needs it only for the display. The recipe JSON is part of `fork_items::table_hash`, so it joins `registry_fingerprint`.
 - The attach, akimbo and split special recipes are not listed, like vanilla's special recipes.
 
 ### 13.2 Creative
@@ -623,7 +652,7 @@ The fork has no recipe book screen yet (`MINECRAFT-SURVIVAL.md:398`), so this tr
 
 - **The host runs everything:** every player's inventory, grenade slots, crafting (special recipes and the grindstone included), ammo use, first-join flag, flare respawn, damage and totem grace. Player state is keyed by UUID, sim state by MW2 client id. The sim's `apply_arsenal` runs for each friend client.
 - **Wire form:** slots, menu cells and ground items carry the disk form of section 4.3. The gun special case in `views::slot_nbt` and `view_stack` (`views.rs:150-173`) goes; they just call `stack_tag` and `stack_of`. Ground items (`MobAdd` tags) already come from the same serializer, so friends now see dropped guns. The friend turns the carrier back with the same table, so clips, attachments and names show in the friend's tooltips.
-- **Version checks:** `PlayerView` carries 45 slots and `MenuAction::PlaceRecipe` is new. `PROTOCOL` goes up once for both. The fork table and recipe hash joins `registry_fingerprint`, so a friend on another build is refused.
+- **Version checks:** `PlayerView` carries 45 slots, and `MenuAction::PlaceRecipe`, `ToClient::RecipeBook` (a friend's unlocked recipes, the ones waiting to be shown and the book settings), `ToServer::RecipeBookSettings` and `ToServer::RecipeSeen` are new. `PROTOCOL` goes up once for all of them. The fork table and recipe hash joins `registry_fingerprint`, so a friend on another build is refused.
 - **A friend's clicks** on slots 43 and 44 pass `valid_slot` (below 45).
 - **A friend's MW2 side:** `ps.weapons`, clips, stock and `meta.loadout` reach them by snapshot as today, so their weapon bar, `Follow` and G and Shift+G work unchanged. The friend's prediction takes no items; between snapshots its predicted stock may run ahead after a reload, and the host's snapshot corrects it, as it does today for clips.
 - **Damage:** each side's armour and totem protect them against the other's guns, through the same `player_damage` rule.
@@ -672,7 +701,7 @@ Crates touched: sim, minecraft_survival, minecraft_terrain, minecraft_net, minec
 - **Attachments:** attach and strip keep the clip; an impossible combination gives no result; akimbo pairs and splits with the remainder.
 - **Grenades:** only a lethal goes in slot 43; shift-click routing; a number key cannot swap dirt into a grenade slot; a throw takes one; refill from the backpack with the same type only; 32 + 32 once; an empty slot keeps the C4 detonator.
 - **First join:** given once, the tag kept next to other tags; class attachments become item attachments; round-8 files get it once.
-- **Damage:** the table in 11.3 (it has no x.5 cases); pierce; mob damage unchanged; the totem grace boundary at 80 ticks on both clocks; it ends on respawn.
+- **Damage:** the table in 11.3 (its x.5 cells round up, also at the 80 % ceiling); pierce; mob damage unchanged; the totem grace boundary at 80 ticks on both clocks; it ends on respawn.
 - **Multiplayer:** a friend's slot 44 click is valid; `PLAYER_SLOTS` is 45 in the codec; `PlaceRecipe` round trip.
 - **Vendored code:** extra recipes get display indices after vanilla; inserted items have their max stack; two guns on the ground do not merge.
 
@@ -708,7 +737,7 @@ Setup:
    2. Press E: the two slots are right of the offhand. An iron block is refused in the lethal slot.
    3. Take the frag stack out of the lethal slot, put one frag back and leave the rest in the backpack. Throw it: the slot refills with frags.
    4. Swap the semtex into the lethal slot and throw it with G. **Screenshot 8.**
-9. **Tactical insertion.** Put it in the tactical slot, plant it with Shift+G, walk away and `/kill`. You respawn at the flare once. The next death respawns you at your bed or the world spawn.
+9. **Tactical insertion.** Put it in the lethal slot, plant it with G, walk away and `/kill`. You respawn at the flare once. The next death respawns you at your bed or the world spawn.
 10. **Damage between players (H and F).**
     1. F shoots unarmoured H once in the chest with an M4A1: about 1.5 hearts.
     2. H puts on the iron set: an M4A1 hit takes about 0.3 heart. F puts FMJ on the M4A1: about 0.6 heart. **Screenshot 9.**
@@ -716,7 +745,7 @@ Setup:
 11. **Totem.**
     1. H holds a totem in the offhand at low health. F holds the trigger and the totem pops.
     2. For about 4 s H's hearts don't drop and F sees no hit markers. **Screenshot 10.**
-    3. Repeat with a frag at H's feet just after a pop: no damage, but a push.
+    3. Repeat with a frag at H's feet just after a pop: no damage (and no push: explosions push no player in the fork).
     4. A knife hit still hurts during the 4 s.
 12. **The friend.**
     1. F's first join gives F their own class guns and 32 + 32 grenades.
@@ -764,16 +793,16 @@ IW4L_MINECRAFT_KIT=iw4l:barrett, iw4l:usp, iw4l:usp, iw4l:sniper_rounds*16, iw4l
 | 28 | Protection and Resistance | Count at vanilla rates under the same ceiling; Resistance after it | left out |
 | 29 | Armour pierce | LMG 0.25, sniper 0.5, FMJ +0.25 (at most 0.75) | none (iron, diamond and netherite equal against every gun) |
 | 30 | Halving scope | All MW2 weapon damage to players, the knife and own grenades included | bullets only (one line) |
-| 31 | Totem grace | Bullets and explosions, MW2 and Minecraft, 80 ticks, knockback kept | everything for 4 s |
+| 31 | Totem grace | Bullets and explosions, MW2 and Minecraft, 80 ticks; explosions push no player in the fork | everything for 4 s |
 | 32 | Two copies of one gun | A fast reload by switching, accepted | a forced raise animation |
 
 **Not verified** (the implementer checks these):
-- MW2 damage numbers (M4A1 30, USP 40, Desert Eagle 50, LMG 40, Intervention 98, knife 135, rocket 150) are from memory. Only the frag (130) is confirmed by a sim test constant. The tables in 11.3 and the test must be recomputed from the owner's data.
+- ~~MW2 damage numbers are from memory.~~ Checked in round 9 against the owner's `common_mp.ff` (section 11.3): snipers are 70 with x1.5 on the chest (105, not 98), the frag 150 (130 was a sim test's stand-in), the RPG-7 blast 160. The table in 11.3 and the test use the real values.
 - That MW2's death weapon drop and weapon pickups can be switched off per client on Minecraft maps without GSC errors.
 - That an empty primary set (weapon 0) does not upset GSC or the first-person view.
 - That `inventory_add_weapon` adds a gun's alt mode by itself for `_gl_` and `_shotgun_` variants.
 - Whether the stock setter clamps to `maxAmmo`. The design publishes at most `maxAmmo` either way.
-- The site where MW2 retrieves a thrown knife, and where it plants the tactical insertion flare.
+- The site where MW2 retrieves a thrown knife, and where it plants the tactical insertion flare (checked: 10.4 and 10.6).
 - The T5 and IW5 attachment alias names in the content. A content test lists names with no item.
 - The default components of `poisonous_potato` in 26.3, which decide the `!` removals.
 - The creative tab's free pixels for the grenade slots, against `tab_inventory.png`.

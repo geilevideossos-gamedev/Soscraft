@@ -43,6 +43,7 @@ pub struct Player {
     pub held: Option<Switch>,
     pub portal: crate::portal::Portal,
     pub follow: crate::guns::Follow,
+    pub arsenal: crate::guns::Binding,
     pub menus: crate::menus::Menus,
     pub enchantment_seed: i32,
     pub riding: Option<crate::riding::Riding>,
@@ -53,6 +54,8 @@ pub struct Player {
     pub time_since_rest: i32,
     pub saved_in_bed: Option<(i32, i32, i32)>,
     pub drop_throttle: crate::creative::DropThrottle,
+    pub tags: Vec<String>,
+    pub recipe_book: crate::recipe_book::Book,
 }
 
 #[derive(Default)]
@@ -120,6 +123,7 @@ impl Player {
             held: None,
             portal: crate::portal::Portal::default(),
             follow: crate::guns::Follow::default(),
+            arsenal: crate::guns::Binding::default(),
             menus: crate::menus::Menus::default(),
             enchantment_seed: crate::level::opener_key(&PlayerUuid(profile.uuid.clone())) as i32,
             riding: None,
@@ -130,6 +134,8 @@ impl Player {
             time_since_rest: 0,
             saved_in_bed: None,
             drop_throttle: crate::creative::DropThrottle::default(),
+            tags: Vec::new(),
+            recipe_book: crate::recipe_book::Book::default(),
         }
     }
 
@@ -277,6 +283,8 @@ impl Player {
                 .map(|sleeping| sleeping.head)
                 .or(self.saved_in_bed),
             time_since_rest: Some(self.time_since_rest),
+            tags: Some(self.tags.clone()),
+            recipe_book: Some(self.recipe_book.saved(&self.inventory)),
         }
     }
 }

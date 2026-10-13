@@ -32,6 +32,7 @@ mod minecraft_hotbar;
 mod minecraft_inventory;
 mod minecraft_loading;
 mod minecraft_portal;
+mod minecraft_recipe_book;
 mod minecraft_screens;
 mod minecraft_sleep;
 mod minecraft_spyglass;

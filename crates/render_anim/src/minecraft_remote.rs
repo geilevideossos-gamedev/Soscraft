@@ -52,7 +52,9 @@ struct Prepared {
 fn prepare() -> Result<Prepared, String> {
     let root = assets::minecraft_map::root().ok_or_else(assets::minecraft_setup::status)?;
     let paths = DataPaths::under(&root);
-    let registries = Arc::new(Registries::load(&paths)?);
+    let mut registries = Registries::load(&paths)?;
+    minecraft_terrain::fork_items::load(&mut registries.items);
+    let registries = Arc::new(registries);
     let packs = PackStack::open(vec![root.join("resourcepacks/local/minecraft-26.3")])
         .map_err(|error| error.to_string())?;
     let language =
@@ -170,6 +172,7 @@ pub(crate) struct Friend {
     flakes: Flakes,
     activation: crate::minecraft_hand::ItemActivation,
     activation_tick: u64,
+    recipe_book: crate::minecraft_recipe_book::FriendBook,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -351,10 +354,12 @@ pub(crate) fn friend(
         Option<Res<frame::ActivePad>>,
         Option<Res<frame::HudInputView>>,
     ),
-    (mut body_gear, mut sound_queue, mut sleepers): (
+    (mut body_gear, mut sound_queue, mut sleepers, weapons, strings): (
         ResMut<crate::anim::minecraft_gear::McBodyGear>,
         ResMut<audio::McSoundQueue>,
         ResMut<frame::McSleepers>,
+        Option<Res<assets::PreparedWeapons>>,
+        Option<Res<assets::PreparedLocalizedStrings>>,
     ),
 ) {
     if *role != frame::RuntimeRole::Client {
@@ -534,6 +539,12 @@ pub(crate) fn friend(
     let shown = (dt, seconds, now_ms);
     let swap = std::mem::take(&mut ui.swap_hands);
     let drop = ui.drop_selected.take();
+    friend.inventory_ui.set_weapons(&mut ui, weapons.as_deref(), strings.as_deref());
+    if let Some(prepared) = friend.prepared.as_mut() {
+        let state = (view.generation, view.active);
+        let look = &mut prepared.look;
+        friend.inventory_ui.fork.dress_world(&mut look.packs, &look.atlas, state, &mut view.atlas_patches);
+    }
     let operator_items = settings
         .as_deref()
         .is_some_and(|settings| settings.minecraft_operator_items);
@@ -631,6 +642,8 @@ fn show_effects(
         cracks,
         credits_due,
         activation,
+        recipe_book,
+        inventory_ui,
         ..
     } = friend
     else {
@@ -674,6 +687,10 @@ fn show_effects(
                 ..
             } => killed_by(ui, killer),
             ToClient::Credits => *credits_due = true,
+            ToClient::RecipeBook(book) => {
+                let unlocked = recipe_book.receive(book, &mut ui.recipe_book);
+                inventory_ui.set_unlocked(unlocked);
+            }
             effect => {
                 if own_totem(&effect, own) {
                     let level = remote.level.as_mut();
@@ -988,6 +1005,7 @@ fn show_player(
         atlas_animation,
         shown_menu,
         screen_open,
+        recipe_book,
         ..
     } = friend
     else {
@@ -1095,8 +1113,17 @@ fn show_player(
     let vitals = hud.vitals(view, dt, eye_in_water, eye_in_lava);
     ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));
     ui.fire_frames = fire_frames.clone();
+    let mut guns = [None; minecraft_survival::guns::HOTBAR];
+    for (gun, stack) in guns.iter_mut().zip(&inventory.slots) {
+        *gun = stack
+            .as_ref()
+            .and_then(|stack| inventory_ui.fork.weapon(stack))
+            .filter(|&weapon| ps.weapons.contains(&(weapon as i32)));
+    }
     let held = inventory.slots[selection.slot].as_ref();
-    ui.holding_item = interacts && held.is_none_or(|stack| weapon_of(stack).is_none());
+    ui.holding_item = interacts
+        && held.is_none_or(|stack| weapon_of(stack).is_none())
+        && guns.get(selection.slot).copied().flatten().is_none();
     ui.empty_hand = ui.holding_item && held.is_none();
     ui.using_item = view.using.is_some();
     ui.scoping = minecraft_survival::spyglass::seen_scoping(
@@ -1107,7 +1134,7 @@ fn show_player(
     ui.camera_overlay = minecraft_terrain::body_gear::camera_overlay(&inventory.slots);
     let mut selected = selection.slot;
     ui.weapon_request = follow
-        .request(&inventory, &mut selected, ps.weapon)
+        .request_with(&inventory, &guns, &mut selected, ps.weapon)
         .filter(|_| interacts);
     selection.slot = selected;
     inventory_ui.animation_tick = atlas_animation.ticks();
@@ -1123,6 +1150,7 @@ fn show_player(
         images,
         (&screen, level, &containers),
     );
+    out.extend(recipe_book.outgoing(&ui.recipe_book, inventory_ui.take_seen()));
     out
 }
 

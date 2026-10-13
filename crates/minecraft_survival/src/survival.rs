@@ -164,6 +164,7 @@ pub struct Survival {
     in_powder_snow: bool,
     freeze_immune: bool,
     melted: Vec<(i32, i32, i32)>,
+    totem_grace_until: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -711,6 +712,9 @@ impl Survival {
         if !self.rules.allows(cause) || (self.invulnerable && cause != DamageCause::Kill) || self.protection.immune(cause.damage_type()) {
             return false;
         }
+        if cause.is_explosion() && self.totem_grace() {
+            return false;
+        }
         if cause.burns() && (self.status.effect(EffectKind::FireResistance).is_some() || !self.rules.fire_damage) {
             return false;
         }
@@ -979,7 +983,25 @@ impl Survival {
         self.status.add_effect(EffectKind::Regeneration, 900, 1);
         self.status.add_effect(EffectKind::Absorption, 100, 1);
         self.status.add_effect(EffectKind::FireResistance, 800, 0);
+        self.totem_grace_until = Some(self.tick + TOTEM_GRACE_TICKS);
         true
+    }
+
+    pub fn totem_grace(&self) -> bool {
+        self.totem_grace_until.is_some_and(|until| self.tick < until)
+    }
+
+    pub fn gun_armor(&self, inventory: &Inventory) -> GunArmor {
+        let (armor, toughness) = armor(inventory).value.unwrap_or((0.0, 0.0));
+        GunArmor {
+            armor,
+            toughness,
+            epf_bullet: self.protection.against(GUN_BULLET_DAMAGE),
+            epf_blast: self.protection.against(GUN_BLAST_DAMAGE),
+            epf_melee: self.protection.against(GUN_MELEE_DAMAGE),
+            resistance: self.status.effect(EffectKind::Resistance).map_or(0, |effect| effect.amplifier.saturating_add(1)),
+            totem_grace: self.totem_grace(),
+        }
     }
 
     pub fn clear_effects(&mut self) {
@@ -1191,6 +1213,22 @@ pub fn armor(inventory: &Inventory) -> Armor {
     Armor {
         value: (points > 0.0).then_some((points as f32, toughness as f32)),
     }
+}
+
+pub const TOTEM_GRACE_TICKS: u64 = 80;
+pub const GUN_BULLET_DAMAGE: &str = "minecraft:arrow";
+pub const GUN_BLAST_DAMAGE: &str = "minecraft:player_explosion";
+pub const GUN_MELEE_DAMAGE: &str = "minecraft:player_attack";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GunArmor {
+    pub armor: f32,
+    pub toughness: f32,
+    pub epf_bullet: f32,
+    pub epf_blast: f32,
+    pub epf_melee: f32,
+    pub resistance: u8,
+    pub totem_grace: bool,
 }
 
 pub fn bubble_count(air: i32, max_air: i32) -> i32 {
@@ -3336,5 +3374,90 @@ mod tests {
         assert_eq!(powder_snow_flakes(&world, [0.8, 1.2, 0.5], 1.8), vec![1, 1, 2]);
         assert!(powder_snow_flakes(&world, [0.5, 0.5, 0.5], 1.8).is_empty(), "the feet must be in the snow");
         assert!(powder_snow_flakes(&world, [0.5, 3.0, 0.5], 1.8).is_empty());
+    }
+
+    #[test]
+    fn guns_meet_the_worn_armour_its_protection_and_resistance() {
+        let mut survival = Survival::default();
+        assert_eq!(survival.gun_armor(&Inventory::default()), GunArmor::default());
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let Ok(catalog) = minecraftoss_player::item_catalog::ItemCatalog::from_path(&std::path::Path::new(&root).join(minecraft_terrain::crafting::ITEM_CATALOG)) else {
+            return;
+        };
+        let mut inventory = Inventory::default();
+        inventory.recipes = std::sync::Arc::new(minecraftoss_player::crafting::RecipeBook::default().with_item_catalog(std::sync::Arc::new(catalog)));
+        let enchanted = |id: &str, enchantment: &str| {
+            let mut stack = ItemStack::new(id, 1);
+            stack.components = Some(serde_json::json!({"minecraft:enchantments": {enchantment: 4}}));
+            stack
+        };
+        inventory.slots[36] = Some(enchanted("minecraft:diamond_boots", "minecraft:blast_protection"));
+        inventory.slots[37] = Some(ItemStack::new("minecraft:diamond_leggings", 1));
+        inventory.slots[38] = Some(enchanted("minecraft:diamond_chestplate", "minecraft:protection"));
+        inventory.slots[39] = Some(enchanted("minecraft:diamond_helmet", "minecraft:projectile_protection"));
+        let book = minecraft_terrain::protection::ProtectionBook::from_jar(&jar).unwrap();
+        survival.wear(minecraft_terrain::protection::Protection::worn(Some(std::sync::Arc::new(book)), &inventory));
+        survival.status.add_effect(EffectKind::Resistance, 200, 1);
+        let worn = survival.gun_armor(&inventory);
+        assert_eq!((worn.armor, worn.toughness), (20.0, 8.0));
+        assert_eq!(worn.epf_bullet, 4.0 + 8.0, "protection and projectile protection");
+        assert_eq!(worn.epf_blast, 4.0 + 8.0, "protection and blast protection");
+        assert_eq!(worn.epf_melee, 4.0, "protection only");
+        assert_eq!(worn.resistance, 2);
+        assert!(!worn.totem_grace);
+    }
+
+    fn popped() -> (Survival, Inventory) {
+        let mut survival = fresh();
+        let mut inventory = Inventory::default();
+        inventory.slots[40] = Some(ItemStack::new("minecraft:totem_of_undying", 1));
+        survival.status.health = 0.0;
+        assert!(survival.protect(&mut inventory, 0));
+        (survival, inventory)
+    }
+
+    #[test]
+    fn a_popped_totem_turns_explosions_away_for_four_seconds() {
+        use crate::death::MobAttack;
+        let creeper = DamageCause::mob(MobAttack::Explosion, Some(9), Some("minecraft:creeper"));
+        let zombie = DamageCause::mob(MobAttack::Melee, Some(9), Some("minecraft:zombie"));
+        assert!(!fresh().totem_grace());
+        let (mut survival, inventory) = popped();
+        assert!(survival.totem_grace());
+        assert!(survival.gun_armor(&inventory).totem_grace);
+        assert!(!survival.hurt(6.0, Armor::default(), None, creeper));
+        assert!(!survival.hurt(6.0, Armor::default(), None, DamageCause::Explosion));
+        assert!(!survival.struck(6.0, 0.0, Armor::default(), None, DamageCause::BadRespawnPoint, None));
+        assert_eq!((survival.status.health, survival.status.absorption), (1.0, 8.0));
+        assert!(survival.hurt(2.0, Armor::default(), None, zombie), "mob melee still hurts");
+        let (mut falling, _) = popped();
+        assert!(falling.hurt(2.0, Armor::default(), None, DamageCause::Fall), "a fall still hurts");
+        let (mut later, inventory) = popped();
+        for _ in 0..TOTEM_GRACE_TICKS - 1 {
+            later.tick(&Motion::default());
+        }
+        assert!(later.totem_grace());
+        assert!(!later.hurt(6.0, Armor::default(), None, creeper));
+        later.tick(&Motion::default());
+        assert!(!later.totem_grace());
+        assert!(!later.gun_armor(&inventory).totem_grace);
+        assert!(later.hurt(6.0, Armor::default(), None, creeper), "an explosion lands again after 80 ticks");
+    }
+
+    #[test]
+    fn the_totem_grace_ends_on_respawn() {
+        use crate::death::MobAttack;
+        let (mut survival, inventory) = popped();
+        survival.respawn();
+        assert!(!survival.totem_grace());
+        assert!(!survival.gun_armor(&inventory).totem_grace);
+        let creeper = DamageCause::mob(MobAttack::Explosion, Some(9), Some("minecraft:creeper"));
+        assert!(survival.hurt(6.0, Armor::default(), None, creeper));
     }
 }

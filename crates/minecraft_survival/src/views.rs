@@ -349,11 +349,19 @@ mod tests {
         let mut chat = CommandServer::new(crate::commands::HOST);
         let mut alex = player(&mut chat, 1, "Alex");
         alex.inventory.slots[0] = Some(weapon_item(12));
+        let mut gun = ItemStack::new("iw4l:m4", 1);
+        gun.components = Some(serde_json::json!({
+            "minecraft:custom_data": {"iw4l": {"attachments": ["reflex", "gl"], "clip": 27, "alt_clip": 1}}
+        }));
+        alex.inventory.slots[1] = Some(gun.clone());
+        alex.inventory.slots[2] = Some(ItemStack::new("iw4l:frag_grenade", 9));
         alex.inventory.slots[3] = Some(ItemStack::new("minecraft:dirt", 17));
         alex.inventory.slots[OFFHAND] = Some(ItemStack::new("minecraft:shield", 1));
+        alex.inventory.slots[43] = Some(ItemStack::new("iw4l:semtex", 30));
+        alex.inventory.slots[44] = Some(ItemStack::new("iw4l:smoke_grenade", 2));
         alex.selected = 3;
         let view = player_view(&alex);
-        assert_eq!(view.slots.len(), PLAYER_SLOTS);
+        assert_eq!(view.slots.len(), 45);
         assert_eq!(view.selected, 3);
         let recipes = RecipeBook::default();
         let back = |slot: usize| {
@@ -365,7 +373,49 @@ mod tests {
         assert_eq!(back(0), Some(("iw4:weapon/12".to_owned(), 1)));
         assert_eq!(back(3), Some(("minecraft:dirt".to_owned(), 17)));
         assert_eq!(back(OFFHAND), Some(("minecraft:shield".to_owned(), 1)));
-        assert_eq!(back(1), None);
+        assert_eq!(back(4), None);
+        assert_eq!(back(1), Some(("iw4l:m4".to_owned(), 1)));
+        assert_eq!(back(2), Some(("iw4l:frag_grenade".to_owned(), 9)));
+        assert_eq!(back(43), Some(("iw4l:semtex".to_owned(), 30)));
+        assert_eq!(back(44), Some(("iw4l:smoke_grenade".to_owned(), 2)));
+        let loaded = view.slots[1]
+            .as_ref()
+            .and_then(|nbt| view_stack(nbt, &recipes))
+            .unwrap();
+        assert_eq!(loaded.components, gun.components, "clip and attachments survive");
+    }
+
+    #[test]
+    fn a_friend_sees_a_fork_item_through_slot_nbt() {
+        let mut gun = ItemStack::new("iw4l:barrett", 1);
+        gun.components = Some(serde_json::json!({
+            "minecraft:custom_name": "Lucky",
+            "minecraft:custom_data": {"iw4l": {"attachments": ["thermal"], "clip": 4}}
+        }));
+        let nbt = slot_nbt(&gun).expect("a fork gun goes on the wire");
+        let tag = minecraftoss_core::nbt::read(&nbt.0).unwrap();
+        assert_eq!(
+            tag.get("id").and_then(Tag::as_str),
+            Some(minecraft_terrain::item_nbt::GUN_CARRIER)
+        );
+        let recipes = RecipeBook::default();
+        let seen = view_stack(&nbt, &recipes).unwrap();
+        assert_eq!((&seen.id, seen.count, &seen.components), (&gun.id, 1, &gun.components));
+        let rockets = ItemStack::new("iw4l:rocket", 16);
+        let cells = vec![slot_nbt(&gun), None, slot_nbt(&rockets), slot_nbt(&weapon_item(3))];
+        let shown: Vec<Option<(String, u8)>> = crate::menus::stacks(&cells, &recipes)
+            .into_iter()
+            .map(|cell| cell.map(|stack| (stack.id, stack.count)))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                Some(("iw4l:barrett".to_owned(), 1)),
+                None,
+                Some(("iw4l:rocket".to_owned(), 16)),
+                Some(("iw4:weapon/3".to_owned(), 1)),
+            ]
+        );
     }
 
     #[test]

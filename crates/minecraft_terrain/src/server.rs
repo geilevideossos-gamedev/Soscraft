@@ -288,6 +288,7 @@ impl ServerSim {
         let worldgen: &'static WorldGen = leaked;
         let range = states.vertical_range();
         let mut level = Level::new(&worldgen.library, range.start, range.end - range.start);
+        minecraftoss_world::level::burning::add_fire_resistant_items(crate::fork_items::fire_proof_ids());
         level.random_sequences = minecraftoss_core::loot::RandomSequences::new(worldgen.terrain.seed);
         level.destroyed = Some(Vec::new());
         if let Err(e) = level.set_dimension(dimension_type) {
@@ -7303,6 +7304,24 @@ mod tests {
     }
 
     #[test]
+    fn a_netherite_gun_survives_lava_and_other_guns_burn() {
+        let Some((mut server, mut scene)) = burn_world() else { return };
+        lava_pool(&mut server, &mut scene, (5, 201, 5));
+        lava_pool(&mut server, &mut scene, (11, 201, 11));
+        let clip = Some(r#"{"minecraft:custom_data":{"iw4l":{"clip":5}}}"#);
+        let barrett = server.spawn_item("iw4l:barrett", 1, clip, [5.5, 202.5, 5.5], [0.0; 3], 10, 0);
+        let m4 = server.spawn_item("iw4l:m4", 1, clip, [11.5, 202.5, 11.5], [0.0; 3], 10, 0);
+        for _ in 0..300 {
+            server.tick();
+        }
+        assert!(alive(&server, m4).is_none(), "an iron gun burns up in lava");
+        let kept = alive(&server, barrett).expect("the Barrett is netherite and survives lava");
+        assert!(!kept.on_fire);
+        let components: serde_json::Value = serde_json::from_str(kept.components.as_deref().unwrap()).unwrap();
+        assert_eq!(components["minecraft:custom_data"]["iw4l"]["clip"], 5);
+    }
+
+    #[test]
     fn fire_and_soul_fire_burn_items_silently() {
         let Some((mut server, mut scene)) = burn_world() else { return };
         place(&mut server, &mut scene, (5, 201, 5), Block::new("minecraft:netherrack"));
@@ -7388,6 +7407,32 @@ mod tests {
         assert!(crate::server_mobs::load_level_entity(&mut server.level, &old));
         let resaved = sword(&server).expect("the old sword is saved again");
         assert_eq!(resaved.get("Item").and_then(|item| item.get("components")), Some(saved_components));
+    }
+
+    #[test]
+    fn a_dropped_gun_is_saved_as_a_vanilla_item_entity_and_comes_back() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = door_world() else { return };
+        let components = r#"{"minecraft:custom_data":{"iw4l":{"attachments":["reflex"],"clip":27}}}"#;
+        server.spawn_item("iw4l:m4", 1, Some(components), [8.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        server.spawn_item("iw4l:frag_grenade", 5, None, [9.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        server.spawn_item("iw4:weapon/12", 1, None, [10.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        let saved = crate::server_mobs::level_entity_tags(&server.level, |_| true);
+        let items: Vec<&Tag> = saved.iter().filter_map(|tag| tag.get("Item")).collect();
+        let mut ids: Vec<&str> = items.iter().filter_map(|item| item.get("id").and_then(Tag::as_str)).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["minecraft:carrot_on_a_stick", "minecraft:poisonous_potato"], "the killstreak mirror is not saved");
+        let gun = items.iter().find(|item| item.get("id").and_then(Tag::as_str) == Some("minecraft:carrot_on_a_stick")).unwrap();
+        let state = gun.get("components").and_then(|c| c.get("minecraft:custom_data")).and_then(|c| c.get("iw4l"));
+        assert_eq!(state.and_then(|s| s.get("id")), Some(&Tag::String("iw4l:m4".to_owned())));
+        assert_eq!(state.and_then(|s| s.get("clip")), Some(&Tag::Int(27)));
+        server.level.entities.clear();
+        for tag in &saved {
+            assert!(crate::server_mobs::load_level_entity(&mut server.level, tag));
+        }
+        let mut back: Vec<(String, i32, Option<String>)> = server.items().into_iter().map(|i| (i.item, i.count, i.components)).collect();
+        back.sort();
+        assert_eq!(back, [("iw4l:frag_grenade".to_owned(), 5, None), ("iw4l:m4".to_owned(), 1, Some(components.to_owned()))]);
     }
 
     #[test]

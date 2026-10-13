@@ -69,6 +69,8 @@ impl Drop for ChunkWorker {
 type LecternClicks = Vec<([i32; 3], Option<i32>)>;
 type BookEdits = Vec<(u8, Vec<String>, Option<String>)>;
 
+const SEEN_RECIPES: usize = 256;
+
 fn encode(job: &BatchJob, registries: &Registries) -> EncodedBatch {
     minecraft_survival::session::encode_batch(job.seq, &job.chunks, registries)
 }
@@ -179,6 +181,17 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
             Ok(ToServer::CreativeSlot { slot, stack }) => {
                 if let Some(session) = host.sessions.sessions.get_mut(&client) {
                     session.push_menu(MenuInput::Creative { slot, stack });
+                }
+            }
+            Ok(ToServer::RecipeBookSettings { open, filtering }) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    session.book_settings = Some((open, filtering));
+                }
+            }
+            Ok(ToServer::RecipeSeen(ids)) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    let room = SEEN_RECIPES.saturating_sub(session.seen_recipes.len());
+                    session.seen_recipes.extend(ids.into_iter().take(room));
                 }
             }
             Ok(_) => {}
@@ -338,6 +351,8 @@ pub(crate) fn host(
         host.edit_books.remove(client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
+        sim::voxel::forget_gun_guard(*client);
+        sim::voxel::forget_arsenal(*client);
     }
     read_inbox(&mut host, &mut wire, now);
     let host = &mut *host;
@@ -424,6 +439,7 @@ pub(crate) fn host(
             dt: time.delta_secs_f64(),
             now: time.elapsed_secs_f64(),
             instant: now,
+            guns: &mut *view.guns,
         };
         let mut told = Vec::new();
         let leaving = std::mem::take(&mut host.leave_beds);
@@ -437,6 +453,12 @@ pub(crate) fn host(
                 session.hands.take(now, |_| false);
                 continue;
             };
+            minecraft_survival::recipe_book::follow_friend(
+                &mut player.recipe_book,
+                &player.inventory,
+                session.book_settings.take(),
+                &std::mem::take(&mut session.seen_recipes),
+            );
             let selected = host.selects.remove(&session.client);
             let clicks = host
                 .lecterns

@@ -7,6 +7,7 @@ description = "Minecraft chat and commands: network-ready messages, text compone
 
 [dependencies]
 md5 = "0.8"
+minecraftoss-core = { path = "../../third_party/minecraftoss/core" }
 minecraftoss-player = { path = "../../third_party/minecraftoss/player" }
 minecraftoss-world = { path = "../../third_party/minecraftoss/world" }
 serde = { workspace = true }
