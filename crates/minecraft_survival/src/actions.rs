@@ -753,7 +753,18 @@ pub fn act(
                         .is_some()
                 })
             });
+            let leashed_fence = main
+                && player
+                    .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
+                    .map(|hit| hit.pos)
+                    .filter(|&pos| {
+                        Scene::block(&terrain.scene, pos)
+                            .is_some_and(minecraft_terrain::leash_render::is_fence_block)
+                    })
+                    .filter(|&pos| entities.has_knot(pos) || !(player.crouching && has_item))
+                    .is_some_and(|pos| entities.leash_fence(player_id, pos, player.crouching));
             let used = if main
+                && !leashed_fence
                 && table.is_none()
                 && station.is_none()
                 && workshop.is_none()
@@ -908,6 +919,9 @@ pub fn act(
                     &mut effects,
                 )
                 .or(bed);
+                hand.swing = Some(0.0);
+                HandUse::Consumed
+            } else if leashed_fence {
                 hand.swing = Some(0.0);
                 HandUse::Consumed
             } else if let Some(pos) = used {

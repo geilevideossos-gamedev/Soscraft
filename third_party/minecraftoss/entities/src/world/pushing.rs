@@ -58,7 +58,7 @@ impl PlayerBox {
 }
 
 /// A player's width and height for the pose its eyes tell.
-fn player_size(eye_height: f32) -> (f32, f32) {
+pub(super) fn player_size(eye_height: f32) -> (f32, f32) {
     match eye_height {
         e if e >= 1.5 => (0.6, 1.8),
         e if e >= 1.0 => (0.6, 1.5),

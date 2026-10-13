@@ -30,6 +30,7 @@ pub struct EntityView {
     pub(crate) spell: minecraft_terrain::spell_particles::SpellParticles,
     pub(crate) ambient: minecraft_terrain::ambient_particles::AmbientParticles,
     pub(crate) bodies: HashMap<u128, minecraft_terrain::ambient_particles::Body>,
+    pub(crate) rope_holders: HashMap<u128, minecraft_terrain::leash_render::RopeHolder>,
     pub(crate) items: ItemVisuals,
     pub(crate) clock: f64,
     pub(crate) tick_seconds: f64,
@@ -70,6 +71,7 @@ impl EntityView {
                 (seed ^ 0xa3b1) as u64,
             ),
             bodies: HashMap::new(),
+            rope_holders: HashMap::new(),
             items: ItemVisuals::default(),
             clock: 0.0,
             tick_seconds: TICK_SECONDS,
@@ -340,6 +342,15 @@ impl EntityView {
             height,
         };
         self.bodies.insert(key, body);
+    }
+
+    pub fn hold_rope(&mut self, key: u128, feet: [f64; 3], yaw: f32, height: f64) {
+        let holder = minecraft_terrain::leash_render::RopeHolder {
+            feet: DVec3::from_array(feet),
+            yaw,
+            height,
+        };
+        self.rope_holders.insert(key, holder);
     }
 
     pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
@@ -925,6 +936,16 @@ impl EntityView {
             &mut out.models,
             w.felines().iter(),
             poses,
+            atlas,
+            light,
+            partial,
+        );
+        leash_render::append_knots(&mut out.models, &w.knots(), atlas, light);
+        leash_render::append_ropes(
+            &mut out.models,
+            w,
+            poses,
+            &self.rope_holders,
             atlas,
             light,
             partial,

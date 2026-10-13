@@ -866,6 +866,7 @@ impl ServerSim {
         self.drop_death_loot();
         self.throw_barters();
         self.drop_cat_gifts();
+        self.drop_leads();
         for conversion in self.mobs.take_piglin_conversions() {
             self.mob_tags.insert(conversion.zombified, crate::piglin_save::converted_tag(&conversion));
         }
@@ -1010,6 +1011,18 @@ impl ServerSim {
                 self.level.spawn_at_location([x, at.y, z], stack);
             }
         }
+    }
+
+    fn drop_leads(&mut self) {
+        for at in self.mobs.take_lead_drops() {
+            self.level.spawn_at_location(at.to_array(), stack_of(minecraftoss_entities::world::LEAD, 1, None));
+        }
+    }
+
+    pub fn leash_fence(&mut self, player: u64, pos: BlockPos, sneaking: bool) -> bool {
+        let tied = self.mobs.leash_fence(player, pos, sneaking);
+        self.drop_leads();
+        tied
     }
 
     fn throw_barters(&mut self) {
@@ -2898,6 +2911,7 @@ pub enum Command {
     FrameAction { player: u64, id: u64, action: crate::item_frame::FrameAction },
     ChestOpeners { pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
+    LeashFence { player: u64, pos: BlockPos, sneaking: bool },
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
@@ -3381,6 +3395,10 @@ impl ServerHandle {
         self.send(Command::Lectern { player, pos, action });
     }
 
+    pub fn leash_fence(&mut self, player: u64, pos: BlockPos, sneaking: bool) {
+        self.send(Command::LeashFence { player, pos, sneaking });
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -3543,6 +3561,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     if let Some(placed) = sim.lectern(player, pos, action) {
                         out.item_uses.push((player, placed));
                     }
+                }
+                Command::LeashFence { player, pos, sneaking } => {
+                    sim.leash_fence(player, pos, sneaking);
                 }
                 Command::Save => {
                     sim.ticks_since_save = 0;
@@ -10910,5 +10931,43 @@ mod tests {
         assert!(crate::item_frame::struck_frame(crate::thrown::PLAYER_TARGET).is_none());
         assert_eq!(crate::item_frame::struck_frame(crate::item_frame::FRAME_TARGET + 3), Some(3));
         assert_eq!(crate::item_frame::struck_frame(3), None);
+    }
+
+    #[test]
+    fn a_cow_on_a_lead_ties_to_a_fence_saves_its_knot_and_drops_the_lead_when_it_snaps() {
+        use minecraftoss_entities::world::{LeashHolder, MobHit};
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=30 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        server.player_edit_block((8, 201, 10), Some(&Block::new("minecraft:oak_fence")), PlayerEdit::Place);
+        server.take_changes();
+        server.set_players(&[[8.5, 201.0, 8.5]], 2);
+        server.set_simulation_area((0, 0), 4);
+        server.summon("minecraft:cow", [8.5, 201.0, 6.5], None, 0.0).unwrap();
+        let cow = server.mobs.cows().last().expect("a cow").id;
+        let me = candidate(0, [8.5, 201.0, 8.5]);
+        server.tick_mobs(&[me], true);
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.slots[0] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:lead", 2));
+        let result = server.mob_action(0, MobHit::Cow(cow), None, inventory, 0, false);
+        assert_eq!(result.slots, [(0, Some(minecraftoss_player::inventory::ItemStack::new("minecraft:lead", 1)))]);
+        assert_eq!(server.mobs.leash_holder(cow), Some(LeashHolder::Player(0)));
+        assert!(server.leash_fence(0, (8, 201, 10), false));
+        assert_eq!(server.mobs.leash_holder(cow), Some(LeashHolder::Knot((8, 201, 10))));
+        let saved = crate::server_mobs::mob_tags_where(&server.mobs, |id, _| id == cow, &server.mob_tags, false);
+        assert_eq!(saved[0].1.get("leash"), Some(&minecraftoss_core::nbt::Tag::IntArray(vec![8, 201, 10])));
+        for _ in 0..40 {
+            server.tick_mobs(&[me], true);
+        }
+        assert_eq!(server.mobs.leash_holder(cow), Some(LeashHolder::Knot((8, 201, 10))), "the fence holds it");
+        assert!(server.leash_fence(0, (8, 201, 10), false), "the player takes it back");
+        let far = candidate(0, [8.5, 201.0, 28.5]);
+        server.tick_mobs(&[far], true);
+        assert_eq!(server.mobs.leash_holder(cow), None, "beyond twelve blocks the lead snaps");
+        assert!(item_ids(&server).contains(&"minecraft:lead".to_owned()));
+        assert!(server.mobs.take_sounds().iter().any(|s| s.event == "item.lead.break"));
     }
 }

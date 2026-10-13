@@ -1218,6 +1218,9 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
     if let Some(ints) = tag.get("UUID").and_then(Tag::as_ints).filter(|i| i.len() == 4) {
         world.set_uuid(id, minecraftoss_entities::gossip::uuid_from_ints([ints[0], ints[1], ints[2], ints[3]]));
     }
+    if let Some(leash) = tag.get("leash").and_then(saved_leash_of) {
+        world.load_leash(id, leash);
+    }
     // `LivingEntity.readAdditionalSaveData`: its effects as saved.
     if let (Some(list), Some((effects, _, _))) = (tag.get("active_effects").and_then(Tag::as_list), world.mob_effects_mut(id)) {
         for saved in list {
@@ -1301,6 +1304,23 @@ fn effect_tag(effect: &minecraftoss_entities::effects::EffectInstance, with_id: 
         map.insert("hidden_effect".to_owned(), effect_tag(hidden, false));
     }
     Tag::Compound(map)
+}
+
+pub fn saved_leash_of(tag: &Tag) -> Option<minecraftoss_entities::world::SavedLeash> {
+    use minecraftoss_entities::world::SavedLeash;
+    if let Some(ints) = tag.as_ints() {
+        let [x, y, z] = <[i32; 3]>::try_from(ints).ok()?;
+        return Some(SavedLeash::Knot((x, y, z)));
+    }
+    let ints = <[i32; 4]>::try_from(tag.get("UUID").and_then(Tag::as_ints)?).ok()?;
+    Some(SavedLeash::Uuid(minecraftoss_entities::gossip::uuid_from_ints(ints)))
+}
+
+pub fn leash_tag(leash: minecraftoss_entities::world::SavedLeash) -> Tag {
+    match leash {
+        minecraftoss_entities::world::SavedLeash::Knot((x, y, z)) => Tag::IntArray(vec![x, y, z]),
+        minecraftoss_entities::world::SavedLeash::Uuid(uuid) => Tag::Compound([("UUID".to_owned(), Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec()))].into_iter().collect()),
+    }
 }
 
 /// Doubles as an NBT list.
@@ -1393,6 +1413,14 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         map.entry("UUID".into()).or_insert_with(|| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(world.uuid_of(id)).to_vec()));
         for (key, value) in fields {
             map.insert(key.to_owned(), value);
+        }
+        match world.saved_leash(id) {
+            Some(leash) => {
+                map.insert("leash".into(), leash_tag(leash));
+            }
+            None => {
+                map.remove("leash");
+            }
         }
         out.push((id, Tag::Compound(map)));
     };
@@ -2482,5 +2510,34 @@ mod tests {
         let zombie = &world.zombie_mut(id).unwrap().zombie;
         assert_eq!((zombie.main_hand.as_deref(), zombie.off_hand.as_deref()), (Some("minecraft:fishing_rod"), Some("minecraft:nautilus_shell")));
         assert_eq!(zombie.hand_drop_chances, [0.085, 2.0]);
+    }
+
+    #[test]
+    fn a_leashed_cow_saves_and_loads_its_leash_to_a_player_a_mob_or_a_knot() {
+        use minecraftoss_entities::world::{LeashHolder, SavedLeash};
+        let to_knot = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[1.5d,64.0d,2.5d],leash:[I;3,64,-2]}").unwrap();
+        let to_player = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[4.5d,64.0d,2.5d],leash:{UUID:[I;1,2,3,4]}}").unwrap();
+        let loose = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:pig\",Pos:[6.5d,64.0d,2.5d],leash:{UUID:[I;9,9,9,9]}}").unwrap();
+        let mut world = EntityWorld::default();
+        let ids: Vec<u64> = [&to_knot, &to_player, &loose].iter().map(|tag| spawn_saved(&mut world, tag).expect("it loads")).collect();
+        assert_eq!(world.saved_leash(ids[0]), Some(SavedLeash::Knot((3, 64, -2))));
+        let player_uuid = minecraftoss_entities::gossip::uuid_from_ints([1, 2, 3, 4]);
+        assert_eq!(world.saved_leash(ids[1]), Some(SavedLeash::Uuid(player_uuid)));
+        world.set_leash(ids[1], LeashHolder::Mob(ids[0]));
+        world.drop_leash(ids[2], false);
+        world.set_leash(ids[2], LeashHolder::Mob(ids[0]));
+        world.drop_leash(ids[2], false);
+        let originals: std::collections::HashMap<u64, Tag> = ids.iter().copied().zip([to_knot, to_player, loose]).collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let tag_of = |id: u64| saved.iter().find(|(saved_id, _)| *saved_id == id).map(|(_, tag)| tag.clone()).unwrap();
+        assert_eq!(tag_of(ids[0]).get("leash"), Some(&Tag::IntArray(vec![3, 64, -2])));
+        let to_mob = tag_of(ids[1]);
+        let holder = to_mob.get("leash").and_then(|l| l.get("UUID")).and_then(Tag::as_ints).unwrap();
+        assert_eq!(minecraftoss_entities::gossip::uuid_from_ints(<[i32; 4]>::try_from(holder).unwrap()), world.uuid_of(ids[0]));
+        assert!(tag_of(ids[2]).get("leash").is_none(), "an untied pig saves no leash");
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, &tag_of(ids[0])).unwrap();
+        assert_eq!(fresh.saved_leash(back), Some(SavedLeash::Knot((3, 64, -2))));
+        assert_eq!(saved_leash_of(&leash_tag(SavedLeash::Uuid(player_uuid))), Some(SavedLeash::Uuid(player_uuid)));
     }
 }

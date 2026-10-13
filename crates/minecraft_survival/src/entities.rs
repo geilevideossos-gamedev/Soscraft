@@ -1134,6 +1134,23 @@ impl Entities {
         self.view.track_body(key, feet, width, height);
     }
 
+    pub fn hold_rope(&mut self, key: u128, feet: [f64; 3], yaw: f32, height: f64) {
+        self.view.hold_rope(key, feet, yaw, height);
+    }
+
+    pub fn leash_fence(&mut self, player: u64, pos: (i32, i32, i32), sneaking: bool) -> bool {
+        let mut world = self.view.world.clone();
+        if !world.leash_fence(player, pos, sneaking) {
+            return false;
+        }
+        self.server.leash_fence(player, pos, sneaking);
+        true
+    }
+
+    pub fn has_knot(&self, pos: (i32, i32, i32)) -> bool {
+        self.view.world.has_knot(pos)
+    }
+
     pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
         self.view.totem_pop(key, feet, width, height);
     }

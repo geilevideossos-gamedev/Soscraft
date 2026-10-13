@@ -1181,4 +1181,34 @@ mod tests {
         assert_eq!(friend.burning().len(), 1, "the burning creeper's flames");
         assert!(friend.zombies()[0].aggressive, "the zombie raises its arms");
     }
+
+    #[test]
+    fn a_friend_sees_a_cow_tied_to_the_host_and_then_to_a_fence_knot() {
+        use crate::leash_render::{rope_ends, RopeEnd};
+        use minecraftoss_entities::world::LeashHolder;
+        let mut host = EntityWorld::default();
+        let (cow, cow_tag) = spawn(&mut host, "{id:\"minecraft:cow\",Pos:[2.5d,64.0d,0.5d]}");
+        host.set_player_uuid(0, 0x5eed);
+        host.set_leash(cow, LeashHolder::Player(0));
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(cow, cow_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+        }
+        assert_eq!(rope_ends(&friend), [(cow, RopeEnd::Player(0x5eed))]);
+        host.set_leash(cow, LeashHolder::Knot((4, 64, 0)));
+        let mut looks = Vec::new();
+        for _ in 0..LOOK_TICKS {
+            trackers.tick();
+            looks.extend(trackers.update(&host, &originals, &[watcher(3, 0.5)]).events);
+        }
+        let (_, MobEvent::Look(id, sent)) = &looks[0] else { panic!("{looks:?}") };
+        assert!(spawn_tracked(&mut friend, *id, sent));
+        assert_eq!(rope_ends(&friend), [(cow, RopeEnd::Knot((4, 64, 0)))]);
+        assert_eq!(friend.knots(), [(4, 64, 0)]);
+    }
 }

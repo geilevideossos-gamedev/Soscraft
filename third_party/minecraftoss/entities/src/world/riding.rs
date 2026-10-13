@@ -388,6 +388,9 @@ impl EntityWorld {
         self.unlink(rider);
         self.passengers.entry(vehicle).or_default().push(rider);
         self.seat_mob(rider);
+        if let Rider::Mob(id) = rider {
+            self.drop_leash(id, true);
+        }
         true
     }
 
@@ -407,7 +410,7 @@ impl EntityWorld {
         self.force_riding(rider, vehicle)
     }
 
-    fn unlink(&mut self, rider: Rider) -> Option<u64> {
+    pub(super) fn unlink(&mut self, rider: Rider) -> Option<u64> {
         let vehicle = self.vehicle_of(rider)?;
         if let Some(riders) = self.passengers.get_mut(&vehicle) {
             riders.retain(|r| *r != rider);
@@ -755,6 +758,7 @@ impl EntityWorld {
             riders.retain(|rider| !matches!(rider, Rider::Mob(id) if gone(*id)));
             !gone(*vehicle) && !riders.is_empty()
         });
+        self.leashes.retain(|id, _| !gone(*id));
     }
 }
 

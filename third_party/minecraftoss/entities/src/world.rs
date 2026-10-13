@@ -44,6 +44,8 @@ mod piglins;
 pub use piglins::{BarterThrow, PICKUP_DELAY as BARTER_PICKUP_DELAY, PiglinConversion, PiglinEntity};
 mod riding;
 pub use riding::Rider;
+mod leashes;
+pub use leashes::{is_fence, knot_position, Leash, LeashHolder, LeashPlayer, LeashUse, SavedLeash, LEAD, SNAP_DISTANCE};
 mod shulkers;
 mod shulker_bullets;
 mod equines;
@@ -2571,6 +2573,10 @@ pub struct EntityWorld {
     passengers: std::collections::BTreeMap<u64, Vec<Rider>>,
     player_dismounts: Vec<(u64, u64, Option<DVec3>)>,
     ride_jumps: HashMap<u64, crate::horse::RideJump>,
+    leashes: std::collections::BTreeMap<u64, Leash>,
+    knots: std::collections::BTreeMap<minecraftoss_player::Pos, i32>,
+    leash_players: Vec<LeashPlayer>,
+    lead_drops: Vec<DVec3>,
 }
 
 impl Default for EntityWorld {
@@ -2667,6 +2673,10 @@ impl Default for EntityWorld {
             passengers: std::collections::BTreeMap::new(),
             player_dismounts: Vec::new(),
             ride_jumps: HashMap::new(),
+            leashes: std::collections::BTreeMap::new(),
+            knots: std::collections::BTreeMap::new(),
+            leash_players: Vec::new(),
+            lead_drops: Vec::new(),
         }
     }
 }
@@ -5324,11 +5334,16 @@ impl EntityWorld {
             passengers: self.passengers.clone(),
             player_dismounts: Vec::new(),
             ride_jumps: self.ride_jumps.clone(),
+            leashes: self.leashes.clone(),
+            knots: self.knots.clone(),
+            leash_players: self.leash_players.clone(),
+            lead_drops: Vec::new(),
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
         copy.order = self.order.iter().copied().filter(|key| kept.contains(&key.id())).collect();
         copy.sections.retain_mobs(|id| kept.contains(&id));
         copy.prune_riding();
+        copy.leashes.retain(|id, _| kept.contains(id));
         copy
     }
 
@@ -5346,7 +5361,7 @@ impl EntityWorld {
     /// obstruction test.
     pub fn census(&self) -> Vec<CensusEntry> {
         let entry = |id: u64, kind: &'static str, body: &crate::movement::Body, persistent: bool| {
-            let passenger = self.vehicle_of(Rider::Mob(id)).is_some();
+            let passenger = self.vehicle_of(Rider::Mob(id)).is_some() || self.leash_holder(id).is_some();
             CensusEntry {
                 kind,
                 position: body.position,
@@ -5405,7 +5420,7 @@ impl EntityWorld {
         const CREATURE: (f64, bool, bool) = (128.0, false, true);
         const AMBIENT: (f64, bool, bool) = (128.0, true, true);
         const VILLAGER: (f64, bool, bool) = (128.0, false, true);
-        let riders: HashSet<u64> = self.riding_mobs().map(|(rider, _)| rider).collect();
+        let riders: HashSet<u64> = self.riding_mobs().map(|(rider, _)| rider).chain(self.leashes.iter().filter(|(_, leash)| leash.holder.is_some()).map(|(&id, _)| id)).collect();
         let check = |id: u64, position: DVec3, persistent: bool, rule: (f64, bool, bool), no_action_time: &mut i32, random: &mut LegacyRandom| -> bool {
             let persistent = persistent || riders.contains(&id);
             if !listed(position) {
@@ -5511,6 +5526,7 @@ impl EntityWorld {
         self.tick_ride_jumps();
         self.resolve_piglin_angers(players);
         let ticking: HashSet<u64> = self.positions().filter(|&(_, position)| ticks(position)).map(|(id, _)| id).collect();
+        self.tick_leashes(&*world, players, &ticking);
         // Snapshot membership: newborns join the world immediately but start
         // ticking on the next game tick, in global insertion order.
         let mut order = self.order.clone();

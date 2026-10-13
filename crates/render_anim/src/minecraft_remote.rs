@@ -839,6 +839,16 @@ fn track_bodies(friend: &mut Friend, presented: &net::PresentedSnapshot) {
                 .track_body(u128::from(client), feet, width, height);
         }
     }
+    for (&client, (_, uuid)) in &remote.players {
+        let Some((feet, height)) = body_of(presented, client, level.origin) else {
+            continue;
+        };
+        let yaw = presented
+            .player(sim::ClientId(client))
+            .map_or(0.0, |ps| crate::minecraft_world::minecraft_yaw(ps.viewangles[1]));
+        let key = minecraft_survival::level::opener_key(uuid);
+        level.view.hold_rope(key, feet, yaw, height);
+    }
 }
 
 fn snowflakes(friend: &mut Friend, presented: &net::PresentedSnapshot) {

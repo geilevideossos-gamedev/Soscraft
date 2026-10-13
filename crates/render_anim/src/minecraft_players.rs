@@ -1081,6 +1081,12 @@ pub(crate) fn track_body(
         PLAYER_WIDTH,
         f64::from(maxs[2] / sim::voxel::BLOCK),
     );
+    entities.hold_rope(
+        key,
+        feet,
+        minecraft_yaw(ps.viewangles[1]),
+        f64::from(maxs[2] / sim::voxel::BLOCK),
+    );
 }
 
 fn place(

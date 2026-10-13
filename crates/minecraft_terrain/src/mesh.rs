@@ -513,6 +513,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     for texture in crate::cat_render::textures() {
         textures.insert(ResourceId::parse(&texture)?, ());
     }
+    for texture in crate::leash_render::textures() {
+        textures.insert(ResourceId::parse(texture)?, ());
+    }
     for texture in crate::llama_render::textures() {
         textures.insert(ResourceId::parse(&texture)?, ());
     }
