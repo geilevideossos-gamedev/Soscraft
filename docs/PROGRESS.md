@@ -19,15 +19,21 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 - Owner test steps and kit lines go into files under `docs/round9/`.
 
 ## Where it stands
-- 2026-10-13: briefs being researched (workflow `round9-briefs`: one researcher per item, three weapon designs judged into `docs/WEAPONS.md`, one brief per track in `docs/round9/track-<x>.md`).
+- 2026-10-13: briefs and `docs/WEAPONS.md` committed (24dfdf71). Worktrees `C:\Dev\mc-wt\track-{a,b,c,d}` on branches `track-{a,b,c,d}` from 24dfdf71 (round 8's merged track branches were deleted first), target dirs `D:\iw4l-wt\track-{a,b,c,d}`. All four tracks run with the track-runner (base 24dfdf71, round 9).
+- Track runs are split into segments; each segment is one track-runner run with its own review and verify. The launcher scripts (`run-<segment>.js`, made by `mkruns.py` from the brief workflow's groups) are in the session scratchpad; if they are lost, the groups are listed in each brief's plan.
+  - A: one run, 5 groups (`a1-a2-a5-bodies-hands-crystals`, `a4-worn-heads`, `a3-dragon-sync`, `a6-friend-creative`, `a7-player-collision`).
+  - B: one run, 7 groups (`b10-overlay` ... `b9-swirls`).
+  - C: c1 = 8 groups (`fork-items` ... `book-place-creative`), then c2 = 5 groups (`ammo` ... `damage-totem`).
+  - D: 70 groups in six runs: d1 = groups 1-13 (`mobs-list-drowned-load` ... `loot-functions`), d2 = 14-19 (pillagers, raids), d3 = 20-27 (darkness ... shriekers), d4 = 28-52 (`rabbits` ... `happy-ghasts`), d5 = 53-61 (`wither-live` ... `lodestones`), d6 = 62-70 (`friend-hand` ... `mobs-wrapup`).
+- If a session stops mid-run: in the worktree read the track log and `git status`, commit or discard a half-done group, then start the same segment again with only the groups not yet committed.
 
 ## Tracks
 | Track | Branch | State |
 |---|---|---|
-| A. Multiplayer fixes | track-a | brief |
-| B. Items and the screen | track-b | brief |
-| C. Guns and grenades as real items | track-c | design and brief |
-| D. Finish survival | track-d | brief |
+| A. Multiplayer fixes | track-a | running (one run) |
+| B. Items and the screen | track-b | running (one run) |
+| C. Guns and grenades as real items | track-c | c1 running |
+| D. Finish survival | track-d | d1 running |
 
 ## Release builds
 | # | When | Commit | State |
@@ -37,6 +43,10 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 
 ## Decisions
 - Gentle mode from the start of round 9: the owner had two `iw4l-survival` windows open (their multiplayer test).
+- A5 (dragon respawn): no defect. Our check is vanilla's `EnderDragonFight.tryRespawn`: a crystal's 2x2x2 box must touch the cell 3 blocks out on each side at portal height + 1, so any of the three straight rim blocks on a side counts and only the four corner blocks don't. The crystals in screenshot 9 sit on straight rim blocks, so vanilla respawns too. Track A pins it with tests; exact centres only would be one line and not vanilla.
+- TNT with pvp off (track D): the brief found that TNT hurts nobody today, so the owner's premise needs checking in game; D10 handles it.
+- Four tracks at once in gentle mode: D: had 45 GB free; a watchdog warns below 10 GB.
 
 ## Log
+- 2026-10-13: briefs done (28 agents); tracks A, B, C (c1) and D (d1) started.
 - 2026-10-13: round 9 started; brief research started.
