@@ -985,7 +985,12 @@ fn parse_result(value: &Value) -> Option<ItemStack> {
     let result = value.get("result")?;
     let id = result.get("id")?.as_str()?;
     let count = u8::try_from(result.get("count").and_then(Value::as_u64).unwrap_or(1)).ok()?;
-    Some(ItemStack::new(id, count))
+    let mut stack = ItemStack::new(id, count);
+    stack.components = result
+        .get("components")
+        .filter(|components| components.as_object().is_some_and(|map| !map.is_empty()))
+        .cloned();
+    Some(stack)
 }
 
 fn trim_pattern(rows: Vec<Vec<Option<Ingredient>>>) -> Option<Vec<Vec<Option<Ingredient>>>> {
@@ -1111,6 +1116,50 @@ mod tests {
         assert_eq!(inv.count("minecraft:oak_log"), 3);
         assert!(inv.workbench.iter().all(Option::is_none));
     }
+    #[test]
+    fn a_recipe_result_keeps_its_components() {
+        let effects = serde_json::json!({"minecraft:suspicious_stew_effects": [{"duration": 60, "id": "minecraft:fire_resistance"}]});
+        let recipe = parse_recipe(&serde_json::json!({
+            "type": "minecraft:crafting_shapeless",
+            "ingredients": ["minecraft:bowl", "minecraft:allium"],
+            "result": {"id": "minecraft:suspicious_stew", "components": effects.clone()}
+        }))
+        .unwrap();
+        assert_eq!(recipe.result.components.as_ref(), Some(&effects));
+        let plain = parse_recipe(&serde_json::json!({
+            "type": "minecraft:crafting_shapeless",
+            "ingredients": ["minecraft:bowl"],
+            "result": {"id": "minecraft:mushroom_stew", "components": {}}
+        }))
+        .unwrap();
+        assert_eq!(plain.result.components, None);
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        let mut grid: [Option<ItemStack>; 9] = std::array::from_fn(|_| None);
+        grid[0] = Some(ItemStack::new("minecraft:bowl", 1));
+        grid[1] = Some(ItemStack::new("minecraft:red_mushroom", 1));
+        grid[2] = Some(ItemStack::new("minecraft:brown_mushroom", 1));
+        grid[4] = Some(ItemStack::new("minecraft:allium", 1));
+        let stew = book.matching(&grid, 3, 3).unwrap();
+        assert_eq!(stew.id, "minecraft:suspicious_stew");
+        assert_eq!(stew.components, Some(effects));
+        grid[4] = Some(ItemStack::new("minecraft:oxeye_daisy", 1));
+        let regeneration = book.matching(&grid, 3, 3).unwrap();
+        assert_eq!(
+            regeneration.components.as_ref().and_then(|c| c["minecraft:suspicious_stew_effects"][0]["id"].as_str()),
+            Some("minecraft:regeneration")
+        );
+        let mut planks: [Option<ItemStack>; 4] = std::array::from_fn(|_| None);
+        planks[0] = Some(ItemStack::new("minecraft:oak_log", 1));
+        assert_eq!(book.matching(&planks, 2, 2).map(|stack| stack.components), Some(None));
+    }
+
     #[test]
     fn pinned_jar_furnace_recipe_matches_when_available() {
         let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(

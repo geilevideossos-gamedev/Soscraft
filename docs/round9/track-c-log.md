@@ -441,9 +441,29 @@ Commit: the one after `5aa90e2b`.
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:ak47,iw4l:usp,iw4l:barrett,iw4l:cheytac,iw4l:riotshield,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,iw4l:frag_grenade*8,iw4l:flash_grenade*4,iw4l:red_dot_sight,iw4l:gun_barrel*2,iw4l:rapid_fire,minecraft:chest,minecraft:lava_bucket,minecraft:cobblestone*16,minecraft:item_frame*4,minecraft:oak_planks*16
 ```
 
+## C11.5 Recipes
+
+### 1. Recipe results keep their components, so crafted suspicious stew has its effect
+
+Commit: the one after `639ea393`.
+
+- **Changed:**
+  - Vendored `minecraftoss_player::crafting::parse_result` keeps `result.components` on the result stack (an empty object counts as none). Before, every crafting and cooking result was a bare id and count, so the 17 vanilla suspicious stew recipes (the only 26.3 crafting results with components) gave a stew without `minecraft:suspicious_stew_effects`. Now a crafted stew carries the same component a mooshroom's stew does, and it is saved and sent to friends with it.
+  - Fork recipes (next commit) need the same path: a recipe result is cloned whole, so whatever its JSON says stays on the crafted item.
+- **Tests:** vendored `crafting::tests::a_recipe_result_keeps_its_components`: a parsed shapeless result keeps its components and an empty object is none; with the 26.3 jar (`MINECRAFTOSS_ROOT`) bowl, red and brown mushroom and allium in the 3x3 grid give `minecraft:suspicious_stew` with fire resistance for 60 ticks, an oxeye daisy gives regeneration, and oak planks still have no components.
+- **Decisions:**
+  - **Eating a suspicious stew still applies no effect.** The fork's eating code (`survival.rs` `apply_consumed_food_effects`) has no suspicious stew arm, for mooshroom stews either; that is an open limitation from before this track and outside the recipes group. The stew now carries the effect, so adding the arm later needs no data change.
+- **Owner's test steps:** nothing new to see in the game: the stew's tooltip shows no effects in the fork, and eating it applies none yet (see above). Craft one to check nothing broke:
+  1. Crafting table: a bowl, a red mushroom, a brown mushroom and an allium make a suspicious stew. Eat it: hunger fills as before. **Screenshot 1** (the stew in the result slot).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:bowl*4,minecraft:red_mushroom*4,minecraft:brown_mushroom*4,minecraft:allium*2,minecraft:oxeye_daisy*2
+```
+
 ## Vendored minecraftoss files
 
-Patched by this track so far (4): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file). Added: none.
+Patched by this track so far (5): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`. Added: none.
 
 ## Protocol
 
