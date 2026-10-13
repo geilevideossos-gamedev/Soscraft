@@ -420,7 +420,7 @@ fn run_players_system(ecs: &mut World) {
                 if crate::voxel::active() && ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP == 0 && let Some(origin) = crate::voxel::push_out(ps.origin, hull_mins, hull_maxs, Some(crate::voxel::Mover::of(ps, &cmd))) {
                     ps.origin = origin;
                 }
-                if crate::voxel::active() && pushable(ps) {
+                if crate::voxel::active() && pushable(ps, crate::voxel::climb_as(ps.origin, Some(crate::voxel::Mover::of(ps, &cmd)))) {
                     let push = minecraft_push(ps.origin, hull_maxs[2], &pushers, id.0 as u16);
                     let mover = crate::voxel::Mover::of(ps, &cmd);
                     let seconds = f64::from(delta) / 1000.0;
@@ -1887,9 +1887,9 @@ fn push_bodies(world: &FrameWorld) -> Vec<PushBody> {
     bodies
 }
 
-fn pushable(ps: &PlayerState) -> bool {
+fn pushable(ps: &PlayerState, climb: movement_iw4::ClimbSample) -> bool {
     use playerstate_iw4::pm_flags::{LADDER, MC_NOCLIP, MC_RIDING};
-    ps.pm_type == 0 && ps.pm_flags & (MC_NOCLIP | MC_RIDING | LADDER) == 0
+    ps.pm_type == 0 && ps.pm_flags & (MC_NOCLIP | MC_RIDING | LADDER) == 0 && !(climb.on && !climb.powder)
 }
 
 fn entity_push(dx: f64, dz: f64) -> Option<[f64; 2]> {
@@ -2548,11 +2548,23 @@ mod tests {
 
         use playerstate_iw4::pm_flags::{LADDER, MC_RIDING};
         let walker = PlayerState::ZERO;
-        assert!(pushable(&walker));
+        let ground = movement_iw4::ClimbSample::default();
+        assert!(pushable(&walker, ground));
         for flags in [MC_NOCLIP, MC_RIDING, LADDER] {
-            assert!(!pushable(&PlayerState { pm_flags: flags, ..walker }), "{flags:#x}");
+            assert!(!pushable(&PlayerState { pm_flags: flags, ..walker }, ground), "{flags:#x}");
         }
-        assert!(!pushable(&PlayerState { pm_type: 1, ..walker }));
+        assert!(!pushable(&PlayerState { pm_type: 1, ..walker }, ground));
+    }
+
+    #[test]
+    fn a_player_on_a_ladder_vine_or_scaffolding_is_not_pushed_but_one_in_powder_snow_is() {
+        let walker = PlayerState::ZERO;
+        let ladder = movement_iw4::ClimbSample { on: true, ..Default::default() };
+        assert!(!pushable(&walker, ladder));
+        assert!(!pushable(&walker, movement_iw4::ClimbSample { scaffolding: true, ..ladder }));
+        assert!(pushable(&walker, movement_iw4::ClimbSample { powder: true, ..ladder }));
+        assert!(pushable(&walker, movement_iw4::ClimbSample { powder: true, ..Default::default() }));
+        assert!(pushable(&walker, movement_iw4::ClimbSample::default()));
     }
 
     #[test]
@@ -2563,13 +2575,13 @@ mod tests {
         alive(&mut world, ClientId(2), 0);
         assert!(world.ride(ClientId(2), Some([0.1 * B, 0.0, 0.0])));
         let sleeper = *world.player(ClientId(2)).unwrap();
-        assert!(!pushable(&sleeper));
+        assert!(!pushable(&sleeper, movement_iw4::ClimbSample::default()));
         let bodies = push_bodies(&world);
         assert_eq!(bodies.iter().map(|body| (body.entnum, body.riding)).collect::<Vec<_>>(), [(1, false), (2, true)]);
         assert_eq!(minecraft_push([0.0; 3], 1.8 * B, &bodies, 1), [0.0, 0.0]);
         assert!(world.ride(ClientId(2), None));
         let awake = *world.player(ClientId(2)).unwrap();
-        assert!(pushable(&awake));
+        assert!(pushable(&awake, movement_iw4::ClimbSample::default()));
         assert!(minecraft_push([0.0; 3], 1.8 * B, &push_bodies(&world), 1)[0] < 0.0);
     }
 

@@ -457,6 +457,16 @@ Commit: "A sneaking Minecraft player is not pushed off an edge by another player
 - **Test:** `sim` `step::tests::a_sneaking_player_is_not_pushed_off_an_edge` (a sneaking player 0.2 blocks past a ledge, pushed outward by a player behind them for 40 ticks, stays supported but still moves up to the edge; a non-sneaking one is pushed over; pushes toward the land and along the edge are unchanged; a player already off the ground is not clipped; a push that would leave the ground at once becomes no push). `movement_iw4` `edge::tests` unchanged and green. Run: `test -p sim -p movement_iw4 --locked` (125 and 61 passed), `check -p launcher --locked`.
 - **Owner's test step** (two windows, kit of A7 commit 1): build a 1-wide cobblestone bridge 4 blocks out over a drop. The host sneaks to the end of the bridge and stays at its edge; the friend walks along the bridge into the host's back, sneaking or not: the host is nudged to the edge and stays on the bridge. Then the host stops sneaking: the friend's push slides the host off. **Screenshot** of the host at the edge with the friend behind.
 
+### Climbing players are not pushed
+
+Commit: "Minecraft players on ladders, vines and scaffolding are not pushed by other players", the one after the sneak edge fix.
+
+- **Defect** (from A7 commit 2): `pushable` used the MW2 `LADDER` flag for vanilla's `onClimbable()`, but Minecraft climbing never sets it (it comes from `voxel::climb_as(..).on`, and `movement_iw4::climbing` even needs `LADDER` clear). So a player on a ladder or vine who overlapped another player was pushed off it, and owner step 7 of A7 commit 2 would fail.
+- **Vanilla 26.3** (javap): `LivingEntity.isPushable` is `isAlive && !isSpectator && !onClimbable`; `onClimbable` is the `#climbable` block tag (ladders, vines, scaffolding and the rest) plus an open trapdoor over a ladder, not powder snow.
+- **Changed** (`sim` `step.rs`): `pushable(ps, climb)` also needs `!(climb.on && !climb.powder)`; `run_players_system` passes `voxel::climb_as(ps.origin, mover)`, the same sample `pmove` climbs with. The `LADDER` check stays for MW2 ladders.
+- **Tests:** `sim` `step::tests::a_player_on_a_ladder_vine_or_scaffolding_is_not_pushed_but_one_in_powder_snow_is`; the pushable checks in `the_push_respects_height_spectators_and_riders` and `a_player_lying_in_bed_is_held_like_a_rider_and_not_pushed` pass an empty climb sample. Run: `test -p sim --locked` (126 passed), `check -p launcher --locked`.
+- **Owner's test step** (two windows, kit of A7 commit 1; host: `/give @a minecraft:ladder 16`, `/give @a minecraft:vine 16`): place a column of ladders 6 high on a wall. The host climbs halfway and stops; the friend climbs up behind and into the host: the host stays on the ladder. The friend stands at the foot and the host climbs down into them: the host is not pushed off. The same on a vine column. **Screenshot** with both on the ladder.
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
