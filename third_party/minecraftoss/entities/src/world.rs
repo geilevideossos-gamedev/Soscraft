@@ -26,6 +26,8 @@ mod golems;
 mod wolves;
 mod felines;
 pub use felines::FelineEntity;
+mod traders;
+pub use traders::TraderEntity;
 mod hazards;
 mod living;
 mod pushing;
@@ -2064,6 +2066,7 @@ enum EntityKey {
     ShulkerBullet(u64),
     Feline(u64),
     LlamaSpit(u64),
+    Trader(u64),
 }
 
 impl EntityKey {
@@ -2095,7 +2098,8 @@ impl EntityKey {
             | Self::Shulker(id)
             | Self::ShulkerBullet(id)
             | Self::Feline(id)
-            | Self::LlamaSpit(id) => id,
+            | Self::LlamaSpit(id)
+            | Self::Trader(id) => id,
         }
     }
 }
@@ -2125,13 +2129,14 @@ pub enum MobHit {
     Piglin(u64),
     Shulker(u64),
     Feline(u64),
+    WanderingTrader(u64),
 }
 
 impl MobHit {
     /// The hit mob's entity ID.
     pub fn id(self) -> u64 {
         match self {
-            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) | Self::Feline(id) => id,
+            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) | Self::Feline(id) | Self::WanderingTrader(id) => id,
         }
     }
 }
@@ -2457,6 +2462,7 @@ pub struct EntityWorld {
     iron_golems: Vec<IronGolemEntity>,
     wolves: Vec<WolfEntity>,
     felines: Vec<FelineEntity>,
+    wandering_traders: Vec<TraderEntity>,
     ghasts: Vec<GhastEntity>,
     fireballs: Vec<FireballEntity>,
     fireball_blasts: Vec<FireballBlast>,
@@ -2593,6 +2599,7 @@ impl Default for EntityWorld {
             iron_golems: Vec::new(),
             wolves: Vec::new(),
             felines: Vec::new(),
+            wandering_traders: Vec::new(),
             ghasts: Vec::new(),
             fireballs: Vec::new(),
             fireball_blasts: Vec::new(),
@@ -2867,6 +2874,10 @@ impl EntityWorld {
                 let e = self.felines.iter().find(|e| e.id == id)?;
                 (e.feline.body.clone(), e.feline.eye_height())
             }
+            EntityKey::Trader(id) => {
+                let e = self.wandering_traders.iter().find(|e| e.id == id)?;
+                (e.trader.body.clone(), e.trader.eye_height())
+            }
             EntityKey::Villager(id) => {
                 let e = self.villagers.iter().find(|e| e.id == id)?;
                 (e.villager.body.clone(), e.villager.eye_height())
@@ -2932,6 +2943,7 @@ impl EntityWorld {
             EntityKey::IronGolem(id) => self.iron_golems.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.golem.body)),
             EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.wolf.body)),
             EntityKey::Feline(id) => self.felines.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.feline.body)),
+            EntityKey::Trader(id) => self.wandering_traders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.trader.body)),
             EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.villager_attacker(), time), &mut e.villager.body)),
             EntityKey::Cow(id) => self.cows.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.cow.body)),
             EntityKey::Sheep(id) => self.sheep.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.body)),
@@ -3216,6 +3228,10 @@ impl EntityWorld {
                         let entity = self.felines.iter().find(|entity| entity.id == id)?;
                         (id, &entity.feline.body, entity.feline.health)
                     }
+                    EntityKey::Trader(id) => {
+                        let entity = self.wandering_traders.iter().find(|entity| entity.id == id)?;
+                        (id, &entity.trader.body, entity.trader.health)
+                    }
                     EntityKey::Villager(id) => {
                         let entity = self.villagers.iter().find(|entity| entity.id == id)?;
                         (id, &entity.villager.body, entity.villager.health)
@@ -3431,6 +3447,13 @@ impl EntityWorld {
             outcome = Some(result);
             if result.applied {
                 projectile_knockback(&mut entity.feline.body, &mut entity.random, hit.velocity);
+            }
+        } else if let Some(entity) = self.wandering_traders.iter_mut().find(|entity| entity.id == id) {
+            let time = self.game_time;
+            let result = entity.hurt_from(hit.damage, "minecraft:arrow", Some(crate::monster_ai::Target::Mob(owner)), time);
+            outcome = Some(result);
+            if result.applied {
+                projectile_knockback(&mut entity.trader.body, &mut entity.random, hit.velocity);
             }
         } else if let Some(entity) = self.cows.iter_mut().find(|entity| entity.id == id) {
             let result = entity.hurt(hit.damage, source);
@@ -3938,6 +3961,9 @@ impl EntityWorld {
         for e in &self.felines {
             add(e.id, e.feline.kind.type_id(), &e.feline.body, e.feline.eye_height(), e.feline.health > 0.0, e.feline.baby());
         }
+        for e in &self.wandering_traders {
+            add(e.id, crate::wandering_trader::TYPE_ID, &e.trader.body, e.trader.eye_height(), e.trader.health > 0.0, false);
+        }
         for e in &self.sheep {
             let baby = e.sheep.age.baby();
             add(e.id, "minecraft:sheep", &e.body, if baby { 0.6175 } else { 1.235 }, e.health > 0.0, baby);
@@ -4053,6 +4079,8 @@ impl EntityWorld {
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == victim) {
             (e.hurt_from(damage, "minecraft:mob_attack", Some(by), time), false)
         } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == victim) {
+            (e.hurt_from(damage, "minecraft:mob_attack", Some(by), time), false)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == victim) {
             (e.hurt_from(damage, "minecraft:mob_attack", Some(by), time), false)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == victim) {
             (e.hurt(damage, DamageSourceKind::MobAttack), false)
@@ -4421,6 +4449,10 @@ impl EntityWorld {
             animal(&mut death, &mut e.random);
             deaths.push((order, death));
         }
+        for e in &mut self.wandering_traders {
+            let kind = crate::wandering_trader::TYPE_ID;
+            deaths.extend(death_of(e.id, &mut e.trader.damage, kind, adult(false, kind), EntityLootContext { baby: false, ..plain }));
+        }
         for e in &mut self.sheep {
             let baby = e.sheep.age.baby();
             let context = EntityLootContext { baby, sheep_color: Some(e.sheep.wool.data() & 15), sheep_sheared: e.sheep.wool.sheared(), ..plain };
@@ -4531,6 +4563,9 @@ impl EntityWorld {
         if let Some(e) = self.felines.iter().find(|e| e.id == id) {
             return Some(e.feline.kind.type_id());
         }
+        if self.wandering_traders.iter().any(|e| e.id == id) {
+            return Some(crate::wandering_trader::TYPE_ID);
+        }
         if self.wolves.iter().any(|e| e.id == id) {
             return Some("minecraft:wolf");
         }
@@ -4604,6 +4639,7 @@ impl EntityWorld {
             .chain(self.iron_golems.iter_mut().map(|e| &mut e.golem.body))
             .chain(self.wolves.iter_mut().map(|e| &mut e.wolf.body))
             .chain(self.felines.iter_mut().map(|e| &mut e.feline.body))
+            .chain(self.wandering_traders.iter_mut().map(|e| &mut e.trader.body))
             .chain(self.villagers.iter_mut().map(|e| &mut e.villager.body))
             .chain(self.cows.iter_mut().map(|e| &mut e.cow.body))
             .chain(self.sheep.iter_mut().map(|e| &mut e.body))
@@ -4641,6 +4677,8 @@ impl EntityWorld {
             Some(&mut e.wolf.body)
         } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
             Some(&mut e.feline.body)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.trader.body)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.villager.body)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
@@ -4681,6 +4719,7 @@ impl EntityWorld {
             .or_else(|| self.iron_golems.iter().find(|e| e.id == id).map(|e| &e.golem.damage))
             .or_else(|| self.wolves.iter().find(|e| e.id == id).map(|e| &e.wolf.damage))
             .or_else(|| self.felines.iter().find(|e| e.id == id).map(|e| &e.feline.damage))
+            .or_else(|| self.wandering_traders.iter().find(|e| e.id == id).map(|e| &e.trader.damage))
             .or_else(|| self.villagers.iter().find(|e| e.id == id).map(|e| &e.villager.damage))
             .or_else(|| self.cows.iter().find(|e| e.id == id).map(|e| &e.cow.damage))
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| &e.damage))
@@ -4718,6 +4757,8 @@ impl EntityWorld {
             Some(&mut e.wolf.damage)
         } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
             Some(&mut e.feline.damage)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.trader.damage)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.villager.damage)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
@@ -4808,6 +4849,9 @@ impl EntityWorld {
         for e in &mut self.felines {
             let family = if e.feline.is_cat() { "cat" } else { "ocelot" };
             resolve_voices(&mut out, &mut e.voices, family, 1.0, "neutral_volume");
+        }
+        for e in &mut self.wandering_traders {
+            resolve_voices(&mut out, &mut e.voices, "wandering_trader", 1.0, "neutral_volume");
         }
         for e in &mut self.cows {
             if let Some(horse) = &e.horse {
@@ -5153,6 +5197,7 @@ impl EntityWorld {
             .chain(self.iron_golems.iter().map(|e| (e.id, e.golem.body.position)))
             .chain(self.wolves.iter().map(|e| (e.id, e.wolf.body.position)))
             .chain(self.felines.iter().map(|e| (e.id, e.feline.body.position)))
+            .chain(self.wandering_traders.iter().map(|e| (e.id, e.trader.body.position)))
             .chain(self.arrows.iter().map(|e| (e.id, e.arrow.position)))
             .chain(self.potions.iter().map(|e| (e.id, e.potion.position)))
             .chain(self.villagers.iter().map(|e| (e.id, e.villager.body.position)))
@@ -5191,6 +5236,7 @@ impl EntityWorld {
         self.iron_golems.iter().for_each(|e| add(e.previous_position, &e.golem.body));
         self.wolves.iter().for_each(|e| add(e.previous_position, &e.wolf.body));
         self.felines.iter().for_each(|e| add(e.previous_position, &e.feline.body));
+        self.wandering_traders.iter().for_each(|e| add(e.previous_position, &e.trader.body));
         self.villagers.iter().for_each(|e| add(e.previous_position, &e.villager.body));
         self.cows.iter().for_each(|e| add(e.previous_position, &e.cow.body));
         self.sheep.iter().for_each(|e| add(e.previous_position, &e.body));
@@ -5226,6 +5272,7 @@ impl EntityWorld {
         let iron_golems: Vec<IronGolemEntity> = self.iron_golems.iter().filter(|e| keep(e.golem.body.position)).cloned().collect();
         let wolves: Vec<WolfEntity> = self.wolves.iter().filter(|e| keep(e.wolf.body.position)).cloned().collect();
         let felines: Vec<FelineEntity> = self.felines.iter().filter(|e| keep(e.feline.body.position)).cloned().collect();
+        let wandering_traders: Vec<TraderEntity> = self.wandering_traders.iter().filter(|e| keep(e.trader.body.position)).cloned().collect();
         let arrows: Vec<ArrowEntity> = self.arrows.iter().filter(|e| keep(e.arrow.position)).cloned().collect();
         let potions: Vec<PotionEntity> = self.potions.iter().filter(|e| keep(e.potion.position)).cloned().collect();
         let villagers: Vec<VillagerEntity> = self.villagers.iter().filter(|e| keep(e.villager.body.position)).cloned().collect();
@@ -5254,6 +5301,7 @@ impl EntityWorld {
             iron_golems,
             wolves,
             felines,
+            wandering_traders,
             ghasts,
             fireballs,
             fireball_blasts: Vec::new(),
@@ -5387,6 +5435,7 @@ impl EntityWorld {
         out.extend(self.iron_golems.iter().map(|e| entry(e.id, "minecraft:iron_golem", &e.golem.body, e.golem.persistence_required)));
         out.extend(self.wolves.iter().map(|e| entry(e.id, "minecraft:wolf", &e.wolf.body, e.wolf.persistence_required || e.wolf.tame)));
         out.extend(self.felines.iter().map(|e| entry(e.id, e.feline.kind.type_id(), &e.feline.body, e.feline.persistence_required || !e.feline.wild())));
+        out.extend(self.wandering_traders.iter().map(|e| entry(e.id, crate::wandering_trader::TYPE_ID, &e.trader.body, e.trader.persistence_required)));
         out.extend(self.villagers.iter().map(|e| entry(e.id, "minecraft:villager", &e.villager.body, e.villager.persistence_required)));
         out.extend(self.cows.iter().map(|e| {
             let kind = if e.mooshroom.is_some() { "minecraft:mooshroom" } else { "minecraft:cow" };
@@ -5456,6 +5505,7 @@ impl EntityWorld {
         // `TamableAnimal`: a tame wolf never goes.
         self.wolves.retain_mut(|e| !check(e.id, e.wolf.body.position, e.wolf.persistence_required || e.wolf.tame, CREATURE, &mut e.no_action_time, &mut e.random));
         self.felines.retain_mut(|e| !check(e.id, e.feline.body.position, e.feline.persistence_required, (128.0, e.feline.wild() && e.tick_count > 2400, true), &mut e.no_action_time, &mut e.random));
+        self.wandering_traders.retain_mut(|e| !check(e.id, e.trader.body.position, e.trader.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         self.villagers.retain_mut(|e| !check(e.id, e.villager.body.position, e.villager.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         self.cows.retain_mut(|e| !check(e.id, e.cow.body.position, e.cow.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
         self.sheep.retain_mut(|e| !check(e.id, e.body.position, e.sheep.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
@@ -5489,6 +5539,7 @@ impl EntityWorld {
         self.iron_golems.retain(|e| !remove(e.golem.body.position));
         self.wolves.retain(|e| !remove(e.wolf.body.position));
         self.felines.retain(|e| !remove(e.feline.body.position));
+        self.wandering_traders.retain(|e| !remove(e.trader.body.position));
         self.arrows.retain(|e| !remove(e.arrow.position));
         self.potions.retain(|e| !remove(e.potion.position));
         self.villagers.retain(|e| !remove(e.villager.body.position));
@@ -5627,6 +5678,15 @@ impl EntityWorld {
                             alive: entity.villager.health > 0.0,
                             baby: entity.villager.age.baby(),
                         })
+                        .chain(self.wandering_traders.iter().map(|entity| VillagerCandidate {
+                            id: entity.id,
+                            position: entity.trader.body.position,
+                            eye_height: entity.trader.eye_height(),
+                            width: entity.trader.body.width,
+                            height: entity.trader.body.height,
+                            alive: entity.trader.health > 0.0,
+                            baby: false,
+                        }))
                         .collect();
                     let bright_outside = self.bright_outside;
                     let sea_level = self.sea_level;
@@ -5820,6 +5880,8 @@ impl EntityWorld {
                             if result.died {
                                 killed_villager = Some(victim_id);
                             }
+                        } else if self.is_wandering_trader(victim_id) {
+                            self.mob_hits_mob(id, victim_id, damage, attacker_position, 0.0);
                         }
                     }
                     self.pois = lent_pois.expect("the points of interest come back");
@@ -6146,6 +6208,10 @@ impl EntityWorld {
                 }
                 EntityKey::Feline(id) => {
                     self.tick_feline(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::Trader(id) => {
+                    self.tick_wandering_trader(id, world, players, ticks);
                     continue;
                 }
                 EntityKey::Potion(id) => {
@@ -7565,6 +7631,7 @@ impl EntityWorld {
         self.iron_golems.retain(|entity| entity.golem.damage.death_ticks < 20);
         self.wolves.retain(|entity| entity.wolf.damage.death_ticks < 20);
         self.felines.retain(|entity| entity.feline.damage.death_ticks < 20);
+        self.wandering_traders.retain(|entity| entity.trader.damage.death_ticks < 20);
         self.potions.retain(|entity| entity.potion.alive);
         self.villagers
             .retain(|entity| entity.villager.damage.death_ticks < 20);
@@ -7600,6 +7667,7 @@ impl EntityWorld {
             .chain(self.iron_golems.iter().map(|entity| entity.id))
             .chain(self.wolves.iter().map(|entity| entity.id))
             .chain(self.felines.iter().map(|entity| entity.id))
+            .chain(self.wandering_traders.iter().map(|entity| entity.id))
             .chain(self.arrows.iter().map(|entity| entity.id))
             .chain(self.potions.iter().map(|entity| entity.id))
             .chain(self.villagers.iter().map(|entity| entity.id))
@@ -7644,7 +7712,8 @@ impl EntityWorld {
             | EntityKey::Shulker(id)
             | EntityKey::ShulkerBullet(id)
             | EntityKey::Feline(id)
-            | EntityKey::LlamaSpit(id) => alive_ids.contains(id),
+            | EntityKey::LlamaSpit(id)
+            | EntityKey::Trader(id) => alive_ids.contains(id),
         });
         self.prune_riding();
     }
@@ -7780,6 +7849,15 @@ impl EntityWorld {
                         continue;
                     }
                     (MobHit::Feline(id), &entity.feline.body)
+                }
+                EntityKey::Trader(id) => {
+                    let Some(entity) = self.wandering_traders.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.trader.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::WanderingTrader(id), &entity.trader.body)
                 }
                 EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) => continue,
                 EntityKey::Ghast(id) => {

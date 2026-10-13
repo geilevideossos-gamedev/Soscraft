@@ -445,6 +445,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:strider",
     "minecraft:trader_llama",
     "minecraft:villager",
+    "minecraft:wandering_trader",
     "minecraft:witch",
     "minecraft:wither_skeleton",
     "minecraft:wolf",
@@ -1139,6 +1140,25 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             entity.body_rotation.body_yaw = yaw;
             id
         }
+        "minecraft:wandering_trader" => {
+            use minecraftoss_entities::wandering_trader::WanderingTrader;
+            let mut trader = WanderingTrader::new(pos);
+            trader.yaw = yaw;
+            trader.persistence_required = persistent;
+            trader.age = age.max(0);
+            trader.despawn_delay = int(tag, "DespawnDelay").unwrap_or(0);
+            let block = |key: &str| tag.get(key).and_then(Tag::as_ints).and_then(|ints| <[i32; 3]>::try_from(ints).ok()).map(|[x, y, z]| (x, y, z));
+            trader.wander_target = block("wander_target");
+            trader.home = int(tag, "home_radius").filter(|radius| *radius >= 0).map(|radius| (block("home_pos").unwrap_or((0, 0, 0)), radius));
+            if let Some(health) = health {
+                trader.health = health.min(minecraftoss_entities::wandering_trader::MAX_HEALTH);
+            }
+            let id = world.spawn_wandering_trader(trader, no_ai);
+            let entity = world.wandering_trader_mut(id)?;
+            entity.random = random;
+            entity.offers = tag.get("Offers").and_then(offers_of);
+            id
+        }
         "minecraft:villager" => {
             let mut villager = Villager::new(pos);
             villager.set_age(age);
@@ -1545,6 +1565,28 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
     for e in world.spiders() {
         add(e.id, e.spider.type_id(), &e.spider.body, e.spider.yaw, e.spider.health, e.spider.persistence_required, Vec::new());
     }
+    for e in world.wandering_traders() {
+        let t = &e.trader;
+        let mut fields = vec![("DespawnDelay", Tag::Int(t.despawn_delay)), ("Age", Tag::Int(t.age))];
+        if let Some((x, y, z)) = t.wander_target {
+            fields.push(("wander_target", Tag::IntArray(vec![x, y, z])));
+        }
+        if let Some(((x, y, z), radius)) = t.home {
+            fields.push(("home_pos", Tag::IntArray(vec![x, y, z])));
+            fields.push(("home_radius", Tag::Int(radius)));
+        }
+        if let Some(offers) = &e.offers {
+            fields.push(("Offers", offers_tag(offers)));
+        }
+        if let Some(drink) = t.held {
+            let mut stack: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), text_tag(drink.item())), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
+            if let Some(components) = drink.components() {
+                stack.insert("components".to_owned(), json_tag(&components));
+            }
+            fields.push(("equipment", Tag::Compound([("mainhand".to_owned(), Tag::Compound(stack))].into_iter().collect())));
+        }
+        add(e.id, minecraftoss_entities::wandering_trader::TYPE_ID, &t.body, t.yaw, t.health, t.persistence_required, fields);
+    }
     for e in world.villagers() {
         let v = &e.villager;
         let mut fields = age(&v.age);
@@ -1822,6 +1864,21 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         map.insert("Item".to_owned(), Tag::Compound(item.into_iter().collect()));
         map.insert("UUID".to_owned(), fresh_uuid(p.id, potion.position));
         out.push((p.id, Tag::Compound(map)));
+    }
+    for e in world.wandering_traders() {
+        let Some(Tag::Compound(map)) = out.iter_mut().find(|(id, _)| *id == e.id).map(|(_, tag)| tag) else { continue };
+        if e.trader.wander_target.is_none() {
+            map.remove("wander_target");
+        }
+        if e.trader.home.is_none() {
+            map.remove("home_pos");
+            map.remove("home_radius");
+        }
+        if e.trader.held.is_none() {
+            if let Some(Tag::Compound(equipment)) = map.get_mut("equipment") {
+                equipment.remove("mainhand");
+            }
+        }
     }
     out
 }
@@ -2510,6 +2567,45 @@ mod tests {
         let zombie = &world.zombie_mut(id).unwrap().zombie;
         assert_eq!((zombie.main_hand.as_deref(), zombie.off_hand.as_deref()), (Some("minecraft:fishing_rod"), Some("minecraft:nautilus_shell")));
         assert_eq!(zombie.hand_drop_chances, [0.085, 2.0]);
+    }
+
+    #[test]
+    fn a_wandering_trader_saves_and_loads_its_stay_wander_target_home_offers_and_potion() {
+        use minecraftoss_entities::effects::MobEffect;
+        use minecraftoss_entities::wandering_trader::Drink;
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wandering_trader\",Pos:[1.5d,64.0d,2.5d],UUID:[I;1,2,3,9],DespawnDelay:47000,wander_target:[I;10,64,-3],home_pos:[I;10,64,-3],home_radius:16,Health:15.0f,active_effects:[{id:\"minecraft:invisibility\",duration:900,amplifier:0b}],Offers:{Recipes:[{buy:{id:\"minecraft:emerald\",count:5},sell:{id:\"minecraft:blue_ice\",count:1},maxUses:6,uses:2,xp:1,priceMultiplier:0.05f}]}}").unwrap();
+        assert!(SIMULATED_KINDS.contains(&"minecraft:wandering_trader"));
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("wandering traders load");
+        assert_eq!(world.entity_type(id), Some("minecraft:wandering_trader"));
+        {
+            let e = world.wandering_trader_mut(id).unwrap();
+            assert_eq!((e.trader.despawn_delay, e.trader.wander_target, e.trader.home, e.trader.health), (47000, Some((10, 64, -3)), Some(((10, 64, -3), 16)), 15.0));
+            assert!(e.invisible(), "the potion it drank stays on");
+            assert_eq!(e.offers.as_ref().map(Vec::len), Some(1));
+            e.trader.held = Some(Drink::Milk);
+        }
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let saved = &saved[0].1;
+        assert_eq!((int(saved, "DespawnDelay"), int(saved, "home_radius")), (Some(47000), Some(16)));
+        assert_eq!(saved.get("wander_target").and_then(Tag::as_ints), Some(vec![10, 64, -3]));
+        assert_eq!(saved.get("equipment").and_then(|e| e.get("mainhand")).and_then(|m| text(m, "id")), Some("minecraft:milk_bucket"));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved trader loads");
+        let e = fresh.wandering_trader_mut(back).unwrap();
+        assert_eq!((e.trader.despawn_delay, e.trader.wander_target, e.trader.home), (47000, Some((10, 64, -3)), Some(((10, 64, -3), 16))));
+        assert!(e.effects.get(MobEffect::Invisibility).is_some());
+        let offer = &e.offers.as_ref().unwrap()[0];
+        assert_eq!((offer.sell.id.as_str(), offer.buy.count, offer.uses), ("minecraft:blue_ice", 5, 2));
+        e.trader.wander_target = None;
+        e.trader.home = None;
+        e.trader.held = None;
+        let originals: std::collections::HashMap<u64, Tag> = [(back, saved.clone())].into_iter().collect();
+        let again = mob_tags_where(&fresh, |_, _| true, &originals, true);
+        let again = &again[0].1;
+        assert!(again.get("wander_target").is_none() && again.get("home_pos").is_none() && again.get("home_radius").is_none(), "{again:?}");
+        assert!(again.get("equipment").and_then(|e| e.get("mainhand")).is_none(), "the empty hand saves no bucket");
     }
 
     #[test]

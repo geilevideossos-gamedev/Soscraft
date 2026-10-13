@@ -35,6 +35,8 @@ pub mod hoglin;
 pub mod hoglin_brain;
 pub mod horse;
 pub mod llama_ai;
+pub mod trader_ai;
+pub mod wandering_trader;
 pub mod llama_spit;
 pub mod inside_blocks;
 pub mod villager_brain;

@@ -212,13 +212,17 @@ impl CowEntity {
         };
         if horse.kind != HorseKind::TraderLlama
             || horse.tame
-            || horse.leashed
+            || (horse.leashed && horse.trader.is_none())
+            || horse.ridden
             || self.cow.age.locked
             || self.cow.persistence_required
         {
             return;
         }
-        horse.despawn_delay -= 1;
+        horse.despawn_delay = match horse.trader {
+            Some((_, delay)) => delay - 1,
+            None => horse.despawn_delay - 1,
+        };
     }
 
     pub(super) fn forget_old_attacker(&mut self) {
@@ -348,9 +352,19 @@ impl EntityWorld {
                     seen.extend(self.seen_mob(zombie.id, Foe::Zombie));
                 }
             }
-            for target in [horse.fight.target, horse.fight.hurt_by.map(|(t, _)| t)]
-                .into_iter()
-                .flatten()
+            let trader_attacker = horse.trader.and_then(|(trader, _)| {
+                self.wandering_traders
+                    .iter()
+                    .find(|e| e.id == trader)
+                    .and_then(|e| e.ai.state.hurt_by)
+            });
+            for target in [
+                horse.fight.target,
+                horse.fight.hurt_by.map(|(t, _)| t),
+                trader_attacker.map(|(t, _)| t),
+            ]
+            .into_iter()
+            .flatten()
             {
                 if let Target::Mob(id) | Target::Villager(id) = target {
                     if !seen.iter().any(|(s, _)| s.target == Target::Mob(id)) {
@@ -388,6 +402,7 @@ impl EntityWorld {
                 fight: horse.fight.clone(),
                 seen,
                 llamas,
+                trader_attacker,
             }
         });
         HorseInputs {

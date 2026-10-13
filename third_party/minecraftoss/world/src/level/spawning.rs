@@ -243,6 +243,32 @@ impl Level<'_> {
         Some(tag)
     }
 
+    pub fn wandering_trader_spot(&mut self, center: BlockPos, radius: i32, random: &mut dyn RandomSource) -> Option<BlockPos> {
+        let natural = self.natural_spawning.take()?;
+        let spawns = natural.spawns.clone();
+        self.natural_spawning = Some(natural);
+        for _ in 0..10 {
+            let x = center.x + random.next_i32_bound(radius * 2) - radius;
+            let z = center.z + random.next_i32_bound(radius * 2) - radius;
+            let y = World::height_at(self, HeightmapKind::MotionBlockingNoLeaves, x, z);
+            let pos = BlockPos::new(x, y, z);
+            if spawns.on_ground_spawn_ok(self, "minecraft:wandering_trader", pos, 0.6, 1.95) {
+                return Some(pos);
+            }
+        }
+        None
+    }
+
+    pub fn has_room_for_trader(&self, pos: BlockPos) -> bool {
+        (0..=1).all(|dx| (0..=2).all(|dy| (0..=1).all(|dz| self.registries().blocks.collision_boxes(self.block(BlockPos::new(pos.x + dx, pos.y + dy, pos.z + dz))).is_empty())))
+    }
+
+    pub fn biome_in_tag_at(&self, pos: BlockPos, tag: &str) -> bool {
+        let registries = self.registries();
+        let Some(tag) = registries.biome_tags.id(tag) else { return false };
+        registries.biome_in_tag(SpawnLevel::biome(self, pos), tag)
+    }
+
     pub fn in_structure_piece(&self, pos: BlockPos, names: &[&str]) -> bool {
         let Some(finder) = self.natural_spawning.as_ref().and_then(|natural| natural.structures.clone()) else {
             return false;

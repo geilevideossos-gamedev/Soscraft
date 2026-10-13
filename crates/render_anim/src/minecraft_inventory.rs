@@ -446,8 +446,8 @@ impl InventoryUi {
                         level: view.level,
                         xp: view.xp,
                         future_xp: view.future_xp,
-                        show_progress: true,
-                        can_restock: true,
+                        show_progress: !view.trader,
+                        can_restock: !view.trader,
                     });
                     chosen = merchant.selected;
                     (merchant.view.payment.iter().map(&mut convert).collect(), convert(&merchant.view.result), [0; 4])

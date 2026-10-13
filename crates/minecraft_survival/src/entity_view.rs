@@ -534,6 +534,9 @@ impl EntityView {
         for e in w.felines().iter().filter(|e| e.feline.health > 0.0) {
             add(MobHit::Feline(e.id), &e.feline.body);
         }
+        for e in w.wandering_traders().iter().filter(|e| e.trader.health > 0.0) {
+            add(MobHit::WanderingTrader(e.id), &e.trader.body);
+        }
         for e in w.villagers().iter().filter(|e| e.villager.health > 0.0) {
             add(MobHit::Villager(e.id), &e.villager.body);
         }
@@ -755,6 +758,14 @@ impl EntityView {
             w.villagers().iter(),
             poses,
             &|pos| Scene::block(scene, pos).and_then(|b| b.properties.get("facing").cloned()),
+            atlas,
+            light,
+            partial,
+        );
+        let trader_items = villager_render::append_wandering_traders(
+            &mut out.models,
+            w.wandering_traders().iter(),
+            poses,
             atlas,
             light,
             partial,
@@ -1088,6 +1099,7 @@ impl EntityView {
             .into_iter()
             .chain(zombie_items)
             .chain(villager_items)
+            .chain(trader_items)
             .chain(witch_items)
             .chain(piglin_items)
             .chain(placed_items.iter().cloned())

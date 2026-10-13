@@ -664,6 +664,21 @@ impl CreatureSpawns {
         }
     }
 
+    pub fn on_ground_spawn_ok(&self, level: &mut dyn SpawnLevel, kind: &str, pos: BlockPos, width: f32, height: f32) -> bool {
+        let info = TypeInfo {
+            width,
+            height,
+            placement: Placement::OnGround,
+            heightmap: HeightmapKind::MotionBlockingNoLeaves,
+            fire_immune: false,
+            rules: Rules::Other,
+            walk: Walk::Neutral,
+            remove_far: false,
+            cluster: 1,
+        };
+        self.is_spawn_position_ok(level, kind, &info, pos)
+    }
+
     /// `SpawnPlacements.isSpawnPositionOk` (the world border is far away).
     fn is_spawn_position_ok(&self, level: &mut dyn SpawnLevel, kind: &str, info: &TypeInfo, pos: BlockPos) -> bool {
         let registries = &*self.registries;

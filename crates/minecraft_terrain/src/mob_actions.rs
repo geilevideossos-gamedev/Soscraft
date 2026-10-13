@@ -308,6 +308,13 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             outcome.handled = true;
             return outcome;
         }
+        MobHit::WanderingTrader(id) => {
+            if world.wandering_trader_interact(id, actor.player, held.as_deref()) == minecraftoss_entities::world::VillagerUse::Pass {
+                return outcome;
+            }
+            outcome.handled = true;
+            return outcome;
+        }
         MobHit::Wolf(id) => {
             // `Wolf.mobInteract`: taming with bones, feeding, collar dyes,
             // love, and its owner's orders to sit or stand.

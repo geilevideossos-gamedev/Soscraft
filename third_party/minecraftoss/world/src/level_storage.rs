@@ -553,14 +553,14 @@ fn read_nbt_or_old(path: &Path) -> Result<Option<Tag>, String> {
     }
 }
 
-fn read_saved_at(path: &Path) -> Result<Option<Tag>, String> {
+pub fn read_saved_at(path: &Path) -> Result<Option<Tag>, String> {
     let Some(root) = read_nbt_or_old(path)? else {
         return Ok(None);
     };
     Ok(root.get("data").cloned())
 }
 
-fn write_saved_at(path: &Path, data: Tag) -> Result<(), String> {
+pub fn write_saved_at(path: &Path, data: Tag) -> Result<(), String> {
     let root = compound(vec![
         ("data", data),
         ("DataVersion", Tag::Int(DATA_VERSION)),

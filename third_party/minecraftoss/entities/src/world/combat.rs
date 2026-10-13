@@ -167,6 +167,9 @@ impl EntityWorld {
         if let Some(e) = self.felines.iter().find(|e| e.id == id) {
             return Some((e.feline.body.clone(), e.feline.health));
         }
+        if let Some(e) = self.wandering_traders.iter().find(|e| e.id == id) {
+            return Some((e.trader.body.clone(), e.trader.health));
+        }
         if let Some(e) = self.cows.iter().find(|e| e.id == id) {
             return Some((e.cow.body.clone(), e.cow.health));
         }
@@ -228,6 +231,8 @@ impl EntityWorld {
             (&mut e.wolf.body, &mut e.random)
         } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
             (&mut e.feline.body, &mut e.random)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            (&mut e.trader.body, &mut e.random)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             (&mut e.cow.body, &mut e.random)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
@@ -328,6 +333,9 @@ impl EntityWorld {
             let time = self.game_time;
             e.hurt_from(amount, "minecraft:player_attack", Some(crate::monster_ai::Target::Player(player)), time)
         } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
+            let time = self.game_time;
+            e.hurt_from(amount, "minecraft:player_attack", Some(crate::monster_ai::Target::Player(player)), time)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
             let time = self.game_time;
             e.hurt_from(amount, "minecraft:player_attack", Some(crate::monster_ai::Target::Player(player)), time)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {

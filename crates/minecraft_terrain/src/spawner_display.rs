@@ -49,6 +49,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:strider",
     "minecraft:trader_llama",
     "minecraft:villager",
+    "minecraft:wandering_trader",
     "minecraft:witch",
     "minecraft:wither_skeleton",
     "minecraft:wolf",
@@ -279,6 +280,16 @@ impl Shown {
                     w.villagers().iter(),
                     poses,
                     &|_| None,
+                    atlas,
+                    light,
+                    partial,
+                );
+            }
+            "minecraft:wandering_trader" => {
+                villager_render::append_wandering_traders(
+                    models,
+                    w.wandering_traders().iter(),
+                    poses,
                     atlas,
                     light,
                     partial,

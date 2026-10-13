@@ -1221,6 +1221,9 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.felines() {
         push(e.id, e.feline.yaw, &e.ai.state.look_control, &e.feline.body, e.feline.baby(), e.feline.eye_height());
     }
+    for e in world.wandering_traders() {
+        push(e.id, e.trader.yaw, &e.ai.state.look_control, &e.trader.body, false, e.trader.eye_height());
+    }
     for e in world.ghasts() {
         push(e.id, e.ghast.yaw, &e.ai.state.look_control, &e.ghast.body, false, minecraftoss_entities::ghast::EYE_HEIGHT);
     }
@@ -1283,6 +1286,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.witches().iter().map(|e| (e.id, 0.5)));
     kinds.extend(world.wolves().iter().map(|e| (e.id, 0.5 * age(e.wolf.baby()))));
     kinds.extend(world.felines().iter().map(|e| (e.id, crate::cat_render::SHADOW_RADIUS * age(e.feline.baby()))));
+    kinds.extend(world.wandering_traders().iter().filter(|e| !e.invisible()).map(|e| (e.id, crate::villager_render::WANDERING_TRADER_SHADOW)));
     kinds.extend(world.ghasts().iter().map(|e| (e.id, 1.5)));
     kinds.extend(world.blazes().iter().map(|e| (e.id, 0.5)));
     kinds.extend(world.striders().iter().map(|e| (e.id, crate::strider_render::shadow_radius(e.strider.age.baby()))));

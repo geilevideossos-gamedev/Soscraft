@@ -72,6 +72,8 @@ pub struct MobShow {
     pub sprinting: bool,
     pub on_sleeper: bool,
     pub ridden: bool,
+    pub invisible: bool,
+    pub drink: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -267,7 +269,7 @@ pub fn tracking_range(kind: &str) -> i32 {
         "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf" | "ocelot"
         | "villager" | "iron_golem" | "ghast" | "slime" | "strider" | "shulker"
         | "ender_dragon" | "tnt" | "falling_block" | "item_frame" | "glow_item_frame"
-        | "area_effect_cloud" | "llama" | "trader_llama" => 10,
+        | "area_effect_cloud" | "llama" | "trader_llama" | "wandering_trader" => 10,
         "zombie" | "husk" | "drowned" | "zombie_villager" | "zombified_piglin" | "skeleton"
         | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
@@ -379,6 +381,21 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
                 },
             );
         }
+    }
+    for e in world.wandering_traders() {
+        let drink = match e.trader.held {
+            Some(minecraftoss_entities::wandering_trader::Drink::Invisibility) => 1,
+            Some(minecraftoss_entities::wandering_trader::Drink::Milk) => 2,
+            None => 0,
+        };
+        put(
+            e.id,
+            MobShow {
+                invisible: e.invisible(),
+                drink,
+                ..MobShow::default()
+            },
+        );
     }
     for e in world.ghasts() {
         put(
@@ -555,6 +572,21 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
         f.lying_on_sleeping_player = show.on_sleeper;
         f.update_lie_down_amount();
         f.update_relax_state_one_amount();
+    }
+    if let Some(e) = world.wandering_trader_mut(id) {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_entities::wandering_trader::Drink;
+        place(&mut e.previous_position, &mut e.trader.body, mob);
+        if show.invisible {
+            e.effects.add(EffectInstance::new(MobEffect::Invisibility, -1, 0));
+        } else {
+            e.effects.remove(MobEffect::Invisibility);
+        }
+        e.trader.held = match show.drink {
+            1 => Some(Drink::Invisibility),
+            2 => Some(Drink::Milk),
+            _ => None,
+        };
     }
     if let Some(e) = world.ghast_mut(id) {
         place(&mut e.previous_position, &mut e.ghast.body, mob);
@@ -1180,6 +1212,38 @@ mod tests {
         assert_eq!(shown.previous_position, DVec3::new(2.5, 64.0, 0.5));
         assert_eq!(friend.burning().len(), 1, "the burning creeper's flames");
         assert!(friend.zombies()[0].aggressive, "the zombie raises its arms");
+    }
+
+    #[test]
+    fn a_friend_sees_the_wandering_trader_drink_and_vanish() {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_entities::wandering_trader::Drink;
+        let mut host = EntityWorld::default();
+        let (trader, trader_tag) = spawn(&mut host, "{id:\"minecraft:wandering_trader\",Pos:[2.5d,64.0d,0.5d],NoAI:1b}");
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, trader, &trader_tag));
+        assert_eq!(friend.entity_type(trader), Some("minecraft:wandering_trader"));
+        host.wandering_trader_mut(trader).unwrap().trader.held = Some(Drink::Invisibility);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert_eq!(friend.wandering_traders()[0].trader.held, Some(Drink::Invisibility));
+        assert!(!friend.wandering_traders()[0].invisible());
+        {
+            let e = host.wandering_trader_mut(trader).unwrap();
+            e.trader.held = None;
+            e.effects.add(EffectInstance::new(MobEffect::Invisibility, 3600, 0));
+        }
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(friend.wandering_traders()[0].invisible(), "the friend loses sight of it too");
+        assert_eq!(friend.wandering_traders()[0].trader.held, None);
+        host.wandering_trader_mut(trader).unwrap().effects.remove(MobEffect::Invisibility);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(!friend.wandering_traders()[0].invisible());
     }
 
     #[test]

@@ -292,3 +292,150 @@ pub fn append_villagers<'a>(
     crate::cow_render::apply_overlays(mesh, &marks);
     held
 }
+
+pub const WANDERING_TRADER_TEXTURE: &str = "minecraft:entity/wandering_trader/wandering_trader";
+pub const WANDERING_TRADER_SHADOW: f32 = 0.5;
+
+pub fn append_wandering_traders<'a>(
+    mesh: &mut ChunkMesh,
+    traders: impl IntoIterator<Item = &'a minecraftoss_entities::world::TraderEntity>,
+    poses: &ClientMobs,
+    atlas: &Atlas,
+    light: &SkyLight,
+    partial: f32,
+) -> Vec<crate::mesh::HeldItem> {
+    use glam::Mat4;
+    use minecraftoss_entities::wandering_trader::Drink;
+    let mut held = Vec::new();
+    let mut marks = Vec::new();
+    let Ok(texture) = ResourceId::parse(WANDERING_TRADER_TEXTURE) else {
+        return held;
+    };
+    let region = atlas.entity_region(&texture);
+    for entity in traders {
+        let Some(mob) = poses.pose(entity.id, partial) else { continue };
+        let feet = mob.feet;
+        let sample = mob.light_block();
+        let sky = light.get(sample) as f32;
+        let block = light.get_block(sample) as f32;
+        let rotation = mob.body_rotation(90.0);
+        let swing = mob.walk_position * 0.6662;
+        let (right, left) = (swing.cos() * 1.4 * mob.walk_speed * 0.5, (swing + PI).cos() * 1.4 * mob.walk_speed * 0.5);
+        let head = Pose::ROOT.child([0.0; 3], mob.head_pitch.to_radians(), mob.head_yaw.to_radians(), 0.0);
+        if let Some(drink) = entity.trader.held {
+            let arms = Pose::ROOT.child([0.0, 3.0, -1.0], -0.75, 0.0, 0.0);
+            let pose = Mat4::from_translation(feet.as_vec3())
+                * Mat4::from_quat(rotation)
+                * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+                * Mat4::from_translation(Vec3::new(0.0, -1.501, 0.0))
+                * Mat4::from_translation(Vec3::new(0.0, 24.016 * (1.0 - 0.9375) / 16.0, 0.0))
+                * Mat4::from_scale(Vec3::splat(0.9375))
+                * Mat4::from_translation(arms.origin / 16.0)
+                * Mat4::from_quat(arms.rotation)
+                * Mat4::from_rotation_x(0.75)
+                * Mat4::from_scale(Vec3::splat(1.07))
+                * Mat4::from_translation(Vec3::new(0.0, 0.13, -0.34))
+                * Mat4::from_rotation_x(PI);
+            let first_tint = (drink == Drink::Invisibility).then(|| {
+                let rgb = crate::potions::effect_color("minecraft:invisibility").unwrap_or(0xF6F6F6);
+                [((rgb >> 16) & 255) as f32 / 255.0, ((rgb >> 8) & 255) as f32 / 255.0, (rgb & 255) as f32 / 255.0]
+            });
+            held.push(crate::mesh::HeldItem { pose, light: mob.light_probe.as_vec3(), id: drink.item().to_owned(), display: crate::mesh::HeldDisplay::Ground, first_tint });
+        }
+        if entity.invisible() {
+            continue;
+        }
+        marks.push((mesh.vertices.len(), mob.overlay(0.0)));
+        for (index, &(from, to, uv, pivot)) in ADULT.iter().enumerate() {
+            let uv_dimensions = match index {
+                1 => Some([8., 10., 8.]),
+                5 => Some([8., 20., 6.]),
+                _ => None,
+            };
+            let pose = match index {
+                0 | 1 => head,
+                2 => head.child([0.0; 3], -PI / 2.0, 0.0, 0.0),
+                3 => head.child([0.0, -2.0, 0.0], 0.0, 0.0, 0.0),
+                6..=8 => Pose::ROOT.child(pivot, -0.75, 0.0, 0.0),
+                9 => Pose::ROOT.child(pivot, right, 0.0, 0.0),
+                10 => Pose::ROOT.child(pivot, left, 0.0, 0.0),
+                _ => Pose::ROOT.child(pivot, 0.0, 0.0, 0.0),
+            };
+            cube_tinted_pose_mirror(
+                mesh,
+                feet,
+                rotation,
+                0.9375,
+                region,
+                sky,
+                block,
+                from,
+                to,
+                uv,
+                pose.origin.to_array(),
+                pose.rotation,
+                [1.0; 3],
+                [64., 64.],
+                uv_dimensions,
+                index == 10,
+            );
+        }
+    }
+    crate::cow_render::apply_overlays(mesh, &marks);
+    held
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+    use minecraftoss_entities::wandering_trader::Drink;
+    use minecraftoss_entities::world::EntityWorld;
+
+    fn atlas() -> Atlas {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();
+        let id = ResourceId::parse(WANDERING_TRADER_TEXTURE).unwrap();
+        let path = root.join(format!("assets/minecraft/textures/{}.png", id.path));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([90, 60, 30, 255])).save(path).unwrap();
+        let packs = crate::pack::PackStack::open(vec![root.into()]).unwrap();
+        crate::mesh::make_atlas(&packs, vec![id]).unwrap()
+    }
+
+    fn drawn(world: &EntityWorld, atlas: &Atlas) -> (ChunkMesh, Vec<crate::mesh::HeldItem>) {
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(world));
+        let light = SkyLight::from_levels((-2, 62, -2), (5, 5, 5), vec![15; 125], vec![0; 125]);
+        let mut mesh = ChunkMesh::default();
+        let held = append_wandering_traders(&mut mesh, world.wandering_traders().iter(), &poses, atlas, &light, 0.0);
+        (mesh, held)
+    }
+
+    #[test]
+    fn a_wandering_trader_is_a_villager_in_its_own_coat_and_vanishes_but_its_bottle_does_not() {
+        let atlas = atlas();
+        let region = atlas.entity_region(&ResourceId::parse(WANDERING_TRADER_TEXTURE).unwrap());
+        let mut world = EntityWorld::default();
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wandering_trader\",Pos:[0.5d,64.0d,0.5d]}").unwrap();
+        let id = crate::server_mobs::spawn_saved(&mut world, &tag).expect("the trader loads");
+        let (mesh, held) = drawn(&world, &atlas);
+        assert_eq!(mesh.vertices.len(), ADULT.len() * 6 * 4);
+        assert!(mesh.vertices.iter().all(|v| v.uv[0] >= region[0] && v.uv[0] <= region[2] && v.uv[1] >= region[1] && v.uv[1] <= region[3]));
+        assert!(held.is_empty());
+        let top = mesh.vertices.iter().map(|v| v.position[1]).fold(f32::MIN, f32::max);
+        assert!((top - (64.0 + (34.0 + 0.51) * 0.9375 / 16.0)).abs() < 0.01, "the hat tops it at 0.9375 scale: {top}");
+        let entity = world.wandering_trader_mut(id).unwrap();
+        entity.trader.held = Some(Drink::Invisibility);
+        entity.effects.add(EffectInstance::new(MobEffect::Invisibility, 3600, 0));
+        let (mesh, held) = drawn(&world, &atlas);
+        assert!(mesh.vertices.is_empty(), "an invisible trader draws no body");
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].id, "minecraft:potion");
+        assert!(held[0].first_tint.is_some(), "the potion wears its colour");
+        world.wandering_trader_mut(id).unwrap().trader.held = Some(Drink::Milk);
+        let (_, held) = drawn(&world, &atlas);
+        assert_eq!((held[0].id.as_str(), held[0].first_tint), ("minecraft:milk_bucket", None));
+    }
+}

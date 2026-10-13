@@ -55,6 +55,7 @@ pub enum MonsterKind {
     Shulker,
     Cat,
     Ocelot,
+    WanderingTrader,
 }
 
 impl MonsterKind {
@@ -77,6 +78,7 @@ impl MonsterKind {
             Self::Shulker => &SHULKER_GOAL_NAMES,
             Self::Cat => &crate::feline_ai::CAT_GOAL_NAMES,
             Self::Ocelot => &crate::feline_ai::OCELOT_GOAL_NAMES,
+            Self::WanderingTrader => &crate::trader_ai::GOAL_NAMES,
         }
     }
 
@@ -98,6 +100,7 @@ impl MonsterKind {
             Self::Shulker => &SHULKER_TARGET_NAMES,
             Self::Cat => &crate::feline_ai::CAT_TARGET_NAMES,
             Self::Ocelot => &crate::feline_ai::OCELOT_TARGET_NAMES,
+            Self::WanderingTrader => &crate::trader_ai::TARGET_NAMES,
         }
     }
 }
@@ -519,6 +522,7 @@ pub struct MonsterGoalContext {
     /// A wolf's own state (`wolf_ai`).
     pub wolf: crate::wolf_ai::WolfState,
     pub feline: crate::feline_ai::FelineState,
+    pub trader: crate::trader_ai::TraderState,
     /// The level's points of interest and random, lent while it ticks (to
     /// iron golems and zombies).
     pub pois: Option<crate::poi::PoiManager>,
@@ -732,7 +736,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -792,13 +796,13 @@ impl MonsterAi {
         // `Monster`: none of an animal's fire maluses; the creeper's
         // `FloatGoal` lets its navigation float; it walks towards darkness.
         let mut walk = WalkProfile::animal(body.width, body.height);
-        let animal = matches!(kind, MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot);
+        let animal = matches!(kind, MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader);
         if !animal {
             walk.clear_malus(PathType::FireInNeighbor);
             walk.clear_malus(PathType::Fire);
         }
         // `FloatGoal` lets the navigation float.
-        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot);
+        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader);
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::WitherSkeleton => FOLLOW_RANGE,
             MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
@@ -808,6 +812,7 @@ impl MonsterAi {
             MonsterKind::Blaze => crate::blaze::FOLLOW_RANGE,
             MonsterKind::Shulker => FOLLOW_RANGE,
             MonsterKind::Cat | MonsterKind::Ocelot => crate::feline::FOLLOW_RANGE,
+            MonsterKind::WanderingTrader => crate::wandering_trader::FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -833,6 +838,9 @@ impl MonsterAi {
             walk.set_malus(PathType::Water, -1.0);
             walk.set_malus(PathType::Lava, 8.0);
         }
+        if kind == MonsterKind::WanderingTrader {
+            walk.walk_target = WalkTarget::Zero;
+        }
         if kind == MonsterKind::IronGolem {
             // A `PathfinderMob` with a one-block step (`STEP_HEIGHT`) whose
             // spots are all alike (`getWalkTargetValue` 0).
@@ -849,6 +857,7 @@ impl MonsterAi {
             MonsterKind::Shulker => (shulker_goals(), shulker_targets(), crate::shulker::EYE_HEIGHT),
             MonsterKind::Cat => (crate::feline_ai::cat_goals(), crate::feline_ai::cat_targets(), crate::feline::CAT_EYE_HEIGHT),
             MonsterKind::Ocelot => (crate::feline_ai::ocelot_goals(), crate::feline_ai::ocelot_targets(), crate::feline::OCELOT_EYE_HEIGHT),
+            MonsterKind::WanderingTrader => (crate::trader_ai::trader_goals(), crate::trader_ai::trader_targets(), crate::wandering_trader::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -912,6 +921,7 @@ impl MonsterAi {
                 golem: Default::default(),
                 wolf: Default::default(),
                 feline: Default::default(),
+                trader: Default::default(),
                 pois: None,
                 level_random: None,
                 can_break_doors: false,
@@ -1648,6 +1658,7 @@ impl Goal<MonsterGoalContext> for FleeSunGoal {
 #[derive(Clone)]
 pub(crate) struct AvoidEntityGoal {
     kind: &'static str,
+    also: &'static [&'static str],
     max_dist: f64,
     walk: f64,
     sprint: f64,
@@ -1656,7 +1667,11 @@ pub(crate) struct AvoidEntityGoal {
 }
 impl AvoidEntityGoal {
     pub(crate) fn new(kind: &'static str, max_dist: f64, walk: f64, sprint: f64) -> Self {
-        Self { kind, max_dist, walk, sprint, to_avoid: None, path: None }
+        Self { kind, also: &[], max_dist, walk, sprint, to_avoid: None, path: None }
+    }
+
+    pub(crate) fn also(self, also: &'static [&'static str]) -> Self {
+        Self { also, ..self }
     }
 }
 impl Goal<MonsterGoalContext> for AvoidEntityGoal {
@@ -1675,7 +1690,7 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
         let range = self.max_dist.max(2.0);
         let mut best: Option<(f64, TargetInfo)> = None;
         for m in ctx.mobs.clone() {
-            if m.kind != self.kind {
+            if m.kind != self.kind && !self.also.contains(&m.kind) {
                 continue;
             }
             let mh = f64::from(m.width / 2.0);

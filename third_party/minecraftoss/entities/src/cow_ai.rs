@@ -493,12 +493,14 @@ pub const TRADER_LLAMA_GOAL_NAMES: [&str; 17] = [
 ];
 
 pub fn registered_llama_goals(trader: bool) -> GoalSelector<CowGoalContext> {
-    use crate::llama_ai::{CaravanGoal, HurtByGoal, NearestFoeGoal, NoTargetGoal, SpitGoal};
+    use crate::llama_ai::{
+        CaravanGoal, DefendTraderGoal, HurtByGoal, NearestFoeGoal, NoTargetGoal, SpitGoal,
+    };
     let mut selector = GoalSelector::default();
     selector.add(1, HurtByGoal);
     selector.add(2, NearestFoeGoal::wolves());
     if trader {
-        selector.add(1, NoTargetGoal);
+        selector.add(1, DefendTraderGoal);
         selector.add(2, NearestFoeGoal::zombies());
         selector.add(2, NoTargetGoal);
     }

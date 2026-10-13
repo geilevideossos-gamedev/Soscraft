@@ -158,6 +158,7 @@ pub struct MerchantView {
     /// prices.
     pub max_stacks: Vec<(String, i32)>,
     pub name: Option<String>,
+    pub trader: bool,
 }
 
 /// What the player does on the trading screen.
@@ -524,7 +525,12 @@ impl ServerSim {
     pub fn merchant_view(&mut self, player: u64) -> Option<MerchantView> {
         let menu = self.mobs.merchant_menu(player)?.clone();
         let offers = self.mobs.villager_offers(menu.villager).map(<[_]>::to_vec).unwrap_or_default();
-        let villager = self.mobs.villagers().iter().find(|e| e.id == menu.villager)?;
+        let trader = self.mobs.is_wandering_trader(menu.villager);
+        let (profession, level, xp) = match self.mobs.villagers().iter().find(|e| e.id == menu.villager) {
+            Some(villager) => (villager.villager.profession.id(), villager.villager.level, villager.villager.xp),
+            None if trader => (minecraftoss_entities::villager::Profession::None.id(), 1, 0),
+            None => return None,
+        };
         let mut max_stacks = Vec::new();
         for offer in &offers {
             for id in std::iter::once(&offer.buy.id).chain(offer.buy_b.as_ref().map(|b| &b.id)).chain(std::iter::once(&offer.sell.id)) {
@@ -535,9 +541,9 @@ impl ServerSim {
         }
         Some(MerchantView {
             villager: menu.villager,
-            profession: villager.villager.profession.id(),
-            level: villager.villager.level,
-            xp: villager.villager.xp,
+            profession,
+            level,
+            xp,
             offers,
             payment: menu.payment.clone(),
             result: menu.result.clone(),
@@ -547,6 +553,7 @@ impl ServerSim {
                 serde_json::Value::String(text) => Some(text),
                 other => other.get("text").and_then(serde_json::Value::as_str).map(str::to_owned),
             }),
+            trader,
         })
     }
 
@@ -630,6 +637,33 @@ impl ServerSim {
     /// Where the level's entities are saved (the chunk map's storage).
     pub fn set_entity_storage(&mut self, storage: Option<Arc<minecraftoss_world::storage::ChunkStorage>>) {
         self.storage = storage;
+        let saved = self.trader_data_path().and_then(|path| minecraftoss_world::level_storage::read_saved_at(&path).ok().flatten());
+        if let (Some(traders), Some(tag)) = (self.custom_spawners.traders.as_mut(), saved) {
+            traders.data = crate::custom_spawners::TraderData::read(&tag);
+        }
+    }
+
+    fn trader_data_path(&self) -> Option<std::path::PathBuf> {
+        self.custom_spawners.traders.as_ref()?;
+        let world = self.storage.as_ref()?.world_dir()?;
+        Some(world.join("data").join("minecraft").join(crate::custom_spawners::TRADER_DATA))
+    }
+
+    pub fn trader_data(&self) -> Option<crate::custom_spawners::TraderData> {
+        self.custom_spawners.traders.as_ref().map(|traders| traders.data)
+    }
+
+    pub fn set_trader_data(&mut self, data: crate::custom_spawners::TraderData) {
+        if let Some(traders) = self.custom_spawners.traders.as_mut() {
+            traders.data = data;
+        }
+    }
+
+    fn save_trader_data(&self) {
+        let (Some(path), Some(data)) = (self.trader_data_path(), self.trader_data()) else { return };
+        if let Err(e) = minecraftoss_world::level_storage::write_saved_at(&path, data.write()) {
+            eprintln!("wandering trader data write failed: {e}");
+        }
     }
 
     /// A chunk joins the level with its entities (`EntityStorage`): those
@@ -758,6 +792,7 @@ impl ServerSim {
                 eprintln!("entity storage write failed: {e}");
             }
         }
+        self.save_trader_data();
     }
 
     /// Before the level ticks: natural spawning's players (registered with
@@ -867,6 +902,9 @@ impl ServerSim {
         self.throw_barters();
         self.drop_cat_gifts();
         self.drop_leads();
+        for gone in self.mobs.take_departed_traders() {
+            self.mob_tags.remove(&gone);
+        }
         for conversion in self.mobs.take_piglin_conversions() {
             self.mob_tags.insert(conversion.zombified, crate::piglin_save::converted_tag(&conversion));
         }
@@ -997,6 +1035,71 @@ impl ServerSim {
         if let Some(tag) = self.level.spawner_cat(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), persistent) {
             self.add_saved_entity(tag);
         }
+    }
+
+    pub fn tick_trader_spawner(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        let spawn_mobs = self.level.natural_spawning.as_ref().is_some_and(|natural| natural.spawn_mobs);
+        let rule = self.custom_spawners.spawn_wandering_traders;
+        let Some(traders) = self.custom_spawners.traders.as_mut() else { return };
+        if !traders.due(rule, spawn_mobs) {
+            return;
+        }
+        if self.spawn_wandering_trader(players) {
+            if let Some(traders) = self.custom_spawners.traders.as_mut() {
+                traders.spawned();
+            }
+        }
+    }
+
+    fn spawn_wandering_trader(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) -> bool {
+        use crate::custom_spawners as spawners;
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_core::random::RandomSource;
+        let alive: Vec<glam::DVec3> = players.iter().filter(|p| p.alive).map(|p| p.position).collect();
+        if alive.is_empty() {
+            return true;
+        }
+        let player = alive[self.level.random.next_i32_bound(alive.len() as i32) as usize];
+        let Self { level, custom_spawners, mobs, .. } = self;
+        let Some(traders) = custom_spawners.traders.as_mut() else { return false };
+        if !traders.tries() {
+            return false;
+        }
+        let feet = (player.x.floor() as i32, player.y.floor() as i32, player.z.floor() as i32);
+        let meeting = |kind: minecraftoss_entities::poi::PoiType| kind == minecraftoss_entities::poi::PoiType::Meeting;
+        let center = mobs.pois.find_first(&meeting, &|_| true, feet, spawners::TRADER_RANGE, minecraftoss_entities::poi::Occupancy::Any).unwrap_or(feet);
+        let center_pos = minecraftoss_core::BlockPos::new(center.0, center.1, center.2);
+        let Some(spot) = level.wandering_trader_spot(center_pos, spawners::TRADER_RANGE, &mut traders.random) else { return false };
+        if !level.has_room_for_trader(spot) || level.biome_in_tag_at(spot, spawners::NO_TRADER_BIOMES) {
+            return false;
+        }
+        let yaw = minecraftoss_core::entity_data::wrap_degrees(level.random.next_f32() * 360.0);
+        let at = |pos: minecraftoss_core::BlockPos| [f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5];
+        let Ok(mut trader) = level.summon_mob(minecraftoss_entities::wandering_trader::TYPE_ID, at(spot), None, yaw) else { return false };
+        let mut llamas = Vec::new();
+        for _ in 0..spawners::TRADER_LLAMAS {
+            let Some(near) = level.wandering_trader_spot(spot, spawners::LLAMA_RANGE, &mut traders.random) else { continue };
+            let yaw = minecraftoss_core::entity_data::wrap_degrees(level.random.next_f32() * 360.0);
+            if let Ok(llama) = level.summon_mob("minecraft:trader_llama", at(near), None, yaw) {
+                llamas.push(llama);
+            }
+        }
+        let uuid = trader.get("UUID").cloned();
+        if let Tag::Compound(map) = &mut trader {
+            map.insert("DespawnDelay".to_owned(), Tag::Int(minecraftoss_entities::wandering_trader::DESPAWN_DELAY));
+            map.insert("wander_target".to_owned(), Tag::IntArray(vec![center.0, center.1, center.2]));
+            map.insert("home_pos".to_owned(), Tag::IntArray(vec![center.0, center.1, center.2]));
+            map.insert("home_radius".to_owned(), Tag::Int(minecraftoss_entities::wandering_trader::HOME_RADIUS));
+        }
+        self.add_saved_entity(trader);
+        for mut llama in llamas {
+            if let (Tag::Compound(map), Some(uuid)) = (&mut llama, uuid.clone()) {
+                map.insert("Age".to_owned(), Tag::Int(0));
+                map.insert("leash".to_owned(), Tag::Compound([("UUID".to_owned(), uuid)].into_iter().collect()));
+            }
+            self.add_saved_entity(llama);
+        }
+        true
     }
 
     fn drop_cat_gifts(&mut self) {
@@ -2592,6 +2695,7 @@ impl ServerSim {
         if let Some(natural) = &mut self.level.natural_spawning {
             natural.spawner_blocks_work = rules.bool("spawner_blocks_work");
         }
+        self.custom_spawners.spawn_wandering_traders = rules.bool("spawn_wandering_traders");
     }
 
     pub fn weather(&mut self, feet: Option<[f64; 3]>) -> WeatherView {
@@ -3622,6 +3726,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.prepare_spawning(&input.mob_players);
         sim.tick();
         sim.tick_custom_spawners(&input.mob_players);
+        sim.tick_trader_spawner(&input.mob_players);
     }
     let mobs_started = std::time::Instant::now();
     if normal {
@@ -6729,9 +6834,9 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
-    const HATCHING_EGGS: [&str; 42] = [
+    const HATCHING_EGGS: [&str; 43] = [
         "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
-        "trader_llama", "villager", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
+        "trader_llama", "villager", "wandering_trader", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
     ];
 
     #[test]
@@ -10969,5 +11074,137 @@ mod tests {
         assert_eq!(server.mobs.leash_holder(cow), None, "beyond twelve blocks the lead snaps");
         assert!(item_ids(&server).contains(&"minecraft:lead".to_owned()));
         assert!(server.mobs.take_sounds().iter().any(|s| s.event == "item.lead.break"));
+    }
+
+    #[test]
+    fn a_wandering_trader_sells_two_buying_two_uncommon_and_five_common_trades_with_no_experience_bar() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, _)) = trading_server() else { return };
+        server.summon("minecraft:wandering_trader", [2.5, 100.0, 0.5], Some(&minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap()), 0.0).unwrap();
+        let trader = server.mobs.wandering_traders()[0].id;
+        let hit = minecraftoss_entities::world::MobHit::WanderingTrader(trader);
+        let view = server.mob_action(0, hit, None, Inventory::default(), 0, false).merchant.expect("its trading screen opens");
+        assert!(view.trader);
+        assert_eq!((view.profession, view.level, view.xp), ("minecraft:none", 1, 0));
+        assert_eq!(view.offers.len(), 9, "{:?}", view.offers);
+        assert!(view.offers[..2].iter().all(|offer| offer.sell.id == "minecraft:emerald"), "it buys first");
+        assert!(view.offers[2..].iter().all(|offer| offer.buy.id == "minecraft:emerald"), "then sells for emeralds");
+        let mut sold: Vec<&str> = view.offers.iter().map(|offer| offer.sell.id.as_str()).collect();
+        sold.dedup();
+        assert_eq!(sold.len(), view.offers.len() - 1, "no trade twice");
+        assert!(server.mobs.wandering_traders()[0].trading_player.is_some());
+        assert!(server.mob_action(1, hit, None, Inventory::default(), 0, false).merchant.is_none(), "one customer at a time");
+        server.merchant(0, MerchantOp::Close, Inventory::default(), 0, [2.5, 100.0, 1.5]);
+        let again = server.mob_action(1, hit, None, Inventory::default(), 0, false).merchant.expect("the next customer");
+        assert_eq!(again.offers.iter().map(|o| o.sell.id.clone()).collect::<Vec<_>>(), view.offers.iter().map(|o| o.sell.id.clone()).collect::<Vec<_>>(), "the same wares");
+    }
+
+    #[test]
+    fn a_trade_with_a_wandering_trader_drops_three_to_six_experience_and_teaches_it_nothing() {
+        use minecraftoss_player::inventory::{Inventory, ItemStack};
+        let Some((mut server, _)) = trading_server() else { return };
+        let nbt = minecraftoss_core::snbt::parse_compound("{NoAI:1b,Offers:{Recipes:[{buy:{id:\"minecraft:emerald\",count:1},sell:{id:\"minecraft:blue_ice\",count:1},maxUses:6,xp:1,priceMultiplier:0.05f}]}}").unwrap();
+        server.summon("minecraft:wandering_trader", [2.5, 100.0, 0.5], Some(&nbt), 0.0).unwrap();
+        let trader = server.mobs.wandering_traders()[0].id;
+        let mut inventory = Inventory::default();
+        inventory.slots[9] = Some(ItemStack { max: 64, ..ItemStack::new("minecraft:emerald", 5) });
+        let view = server.mob_action(0, minecraftoss_entities::world::MobHit::WanderingTrader(trader), None, inventory.clone(), 0, false).merchant.expect("open");
+        assert_eq!(view.offers.len(), 1, "its saved offers");
+        let apply = |inventory: &mut Inventory, update: &MerchantUpdate| {
+            for (slot, stack) in &update.slots {
+                inventory.slots[*slot] = stack.clone();
+            }
+            inventory.cursor = update.cursor.clone();
+        };
+        let update = server.merchant(0, MerchantOp::Select(0), inventory.clone(), 0, [2.5, 100.0, 1.5]);
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Result { shift: false }, inventory.clone(), 0, [2.5, 100.0, 1.5]);
+        apply(&mut inventory, &update);
+        let view = update.view.expect("still open");
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.id.as_str()), Some("minecraft:blue_ice"));
+        assert_eq!((view.trader, view.level, view.xp), (true, 1, 0), "a trader never levels");
+        assert_eq!(view.offers[0].uses, 1);
+        let orbs: Vec<i32> = server.orbs().iter().map(|orb| orb.value).collect();
+        assert_eq!(orbs.len(), 1);
+        assert!((3..=6).contains(&orbs[0]), "{orbs:?}");
+    }
+
+    #[test]
+    fn the_trader_spawner_brings_a_trader_within_48_blocks_with_two_trader_llamas_on_leads() {
+        use minecraftoss_entities::world::LeashHolder;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -4..=4 {
+            for z in -4..=4 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let me = candidate(0, [8.5, 200.0, 8.5]);
+        let mut tries = 0;
+        while server.mobs.wandering_traders().is_empty() {
+            tries += 1;
+            assert!(tries < 400, "a trader comes once in ten tries");
+            assert!(server.spawn_wandering_trader(&[me]) == !server.mobs.wandering_traders().is_empty());
+        }
+        let trader = &server.mobs.wandering_traders()[0];
+        let (id, at) = (trader.id, trader.position());
+        assert!((at.x - 8.5).abs() <= 48.0 && (at.z - 8.5).abs() <= 48.0, "{at}");
+        assert_eq!(trader.trader.despawn_delay, 48000);
+        assert_eq!(trader.trader.home, Some(((8, 200, 8), 16)));
+        assert_eq!(trader.trader.wander_target, Some((8, 200, 8)));
+        server.set_players(&[[8.5, 200.0, 8.5]], 2);
+        server.set_simulation_area((0, 0), 6);
+        server.tick_mobs(&[me], true);
+        let llamas: Vec<u64> = server.mobs.cows().iter().filter(|e| e.horse.as_ref().is_some_and(|h| h.kind == minecraftoss_entities::horse::HorseKind::TraderLlama)).map(|e| e.id).collect();
+        assert_eq!(llamas.len(), 2);
+        for llama in llamas {
+            assert_eq!(server.mobs.leash_holder(llama), Some(LeashHolder::Mob(id)));
+            let cow = server.mobs.cow_mut(llama).unwrap();
+            assert!(!cow.cow.age.baby());
+            let position = cow.cow.body.position;
+            assert!((position.x - at.x).abs() <= 5.0 && (position.z - at.z).abs() <= 5.0, "{position} {at}");
+        }
+        assert!(server.custom_spawners.traders.is_some());
+        assert!(server.spawn_wandering_trader(&[]), "no player counts as a spawn, as in vanilla");
+        assert_eq!(server.mobs.wandering_traders().len(), 1, "but brings no trader");
+    }
+
+    #[test]
+    fn the_trader_spawner_waits_for_its_rule_and_its_saved_day() {
+        let Some((mut server, _)) = door_world() else { return };
+        let traders = server.custom_spawners.traders.as_mut().expect("the overworld has one");
+        traders.data = crate::custom_spawners::TraderData { spawn_delay: 1200, spawn_chance: 75 };
+        traders.tick_delay = 1;
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("spawn_wandering_traders", "false").unwrap();
+        server.apply_game_rules(&rules);
+        let me = candidate(0, [8.5, 200.0, 8.5]);
+        server.tick_trader_spawner(&[me]);
+        assert_eq!(server.trader_data().unwrap().spawn_delay, 1200, "the rule off stops it");
+        rules.set("spawn_wandering_traders", "true").unwrap();
+        server.apply_game_rules(&rules);
+        server.tick_trader_spawner(&[me]);
+        let data = server.trader_data().unwrap();
+        assert_eq!(data.spawn_delay, 24000);
+        assert!(data.spawn_chance == 75 || data.spawn_chance == 25, "{data:?}");
+        let dir = std::env::temp_dir().join(format!("iw4l-trader-data-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("data").join("minecraft").join(crate::custom_spawners::TRADER_DATA);
+        let wanted = crate::custom_spawners::TraderData { spawn_delay: 3600, spawn_chance: 50 };
+        minecraftoss_world::level_storage::write_saved_at(&path, wanted.write()).unwrap();
+        let registries = Arc::new(Registries::load(&DataPaths::discover().unwrap()).unwrap());
+        server.set_entity_storage(Some(Arc::new(minecraftoss_world::storage::ChunkStorage::new(&dir, "minecraft:overworld", registries, -64, 384))));
+        assert_eq!(server.trader_data(), Some(wanted), "the world's wandering_trader.dat is read");
+        let later = crate::custom_spawners::TraderData { spawn_delay: 1200, spawn_chance: 75 };
+        server.set_trader_data(later);
+        server.save_all_entities();
+        let saved = minecraftoss_world::level_storage::read_saved_at(&path).unwrap().expect("written back");
+        assert_eq!(crate::custom_spawners::TraderData::read(&saved), later);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

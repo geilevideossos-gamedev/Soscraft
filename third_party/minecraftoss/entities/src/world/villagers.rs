@@ -152,6 +152,9 @@ impl EntityWorld {
     /// `AbstractVillager.getOffers`: the villager's offers, made from its
     /// profession's trade set for its level the first time they are needed.
     pub fn villager_offers(&mut self, id: u64) -> Option<&[crate::trading::MerchantOffer]> {
+        if self.is_wandering_trader(id) {
+            return self.wandering_trader_offers(id);
+        }
         let book = self.trades.clone();
         let entity = self.villagers.iter_mut().find(|e| e.id == id)?;
         if entity.offers.is_none() {
@@ -320,6 +323,9 @@ impl EntityWorld {
         }
         for e in &self.felines {
             out.push(seen_of(e.feline.kind.type_id(), "creature", &e.feline.body, e.feline.eye_height(), e.feline.health > 0.0, e.feline.baby(), e.id));
+        }
+        for e in &self.wandering_traders {
+            out.push(seen_of(crate::wandering_trader::TYPE_ID, "creature", &e.trader.body, e.trader.eye_height(), e.trader.health > 0.0, false, e.id));
         }
         for p in players {
             out.push(Seen {

@@ -157,6 +157,12 @@ impl EntityWorld {
                     .iter()
                     .find(|e| e.id == id)
                     .map(|e| &e.villager.body)
+            })
+            .or_else(|| {
+                self.wandering_traders
+                    .iter()
+                    .find(|e| e.id == id)
+                    .map(|e| &e.trader.body)
             });
         if found.is_some() {
             return found;
@@ -281,6 +287,7 @@ impl EntityWorld {
             || self.iron_golems.iter().any(|e| e.id == id && e.no_ai)
             || self.striders.iter().any(|e| e.id == id && e.no_ai)
             || self.hoglins.iter().any(|e| e.id == id && e.no_ai)
+            || self.wandering_traders.iter().any(|e| e.id == id && e.no_ai)
     }
 
     fn leash_panicking(&self, id: u64) -> bool {
@@ -455,14 +462,23 @@ impl EntityWorld {
     }
 
     fn sync_llama_leash(&mut self, mob: u64) {
-        let leashed = self.leash_holder(mob).is_some();
+        let holder = self.leash_holder(mob);
+        let trader = match holder {
+            Some(LeashHolder::Mob(id)) => self
+                .wandering_traders
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| (id, e.trader.despawn_delay)),
+            _ => None,
+        };
         if let Some(horse) = self
             .cows
             .iter_mut()
             .find(|e| e.id == mob)
             .and_then(|e| e.horse.as_mut())
         {
-            horse.leashed = leashed;
+            horse.leashed = holder.is_some();
+            horse.trader = trader;
         }
     }
 
@@ -757,6 +773,7 @@ impl EntityWorld {
             let Some(holder) = leash.holder else {
                 continue;
             };
+            self.sync_llama_leash(mob);
             let holder_box = self.holder_box(holder);
             let holder_ok = holder_box.is_some_and(|(_, _, _, _, alive)| alive);
             if !self.mob_alive(mob) || !holder_ok {

@@ -1021,6 +1021,9 @@ fn merchant_title(view: &MerchantView) -> Text {
     if let Some(name) = view.name.as_ref() {
         return Text::literal(name.clone());
     }
+    if view.trader {
+        return Text::translate("entity.minecraft.wandering_trader", Vec::new());
+    }
     let profession = view
         .profession
         .rsplit(':')
@@ -1344,7 +1347,7 @@ fn merchant_extras(screen: &MerchantScreen) -> MenuExtras {
         level: view.level,
         xp: view.xp,
         future_xp: view.future_xp,
-        show_progress: true,
+        show_progress: !view.trader,
         selected: screen
             .selected
             .and_then(|selected| u16::try_from(selected).ok()),
@@ -1359,9 +1362,9 @@ fn mirror_merchant(view: &MenuView, cells: &[Option<ItemStack>]) -> Option<Open>
         level,
         xp,
         future_xp,
+        show_progress,
         selected,
         offers,
-        ..
     } = &view.extras
     else {
         return None;
@@ -1384,6 +1387,7 @@ fn mirror_merchant(view: &MenuView, cells: &[Option<ItemStack>]) -> Option<Open>
             future_xp: *future_xp,
             max_stacks: Vec::new(),
             name: None,
+            trader: !*show_progress,
         },
         selected: selected.map(usize::from),
         held: VecDeque::new(),
@@ -2409,6 +2413,24 @@ mod tests {
             merchant_title(&trade_view(9)),
             Text::translate("entity.minecraft.villager.farmer", Vec::new())
         );
+        let trader = MerchantView {
+            trader: true,
+            profession: "minecraft:none",
+            ..trade_view(9)
+        };
+        assert_eq!(
+            merchant_title(&trader),
+            Text::translate("entity.minecraft.wandering_trader", Vec::new())
+        );
+        let screen = MerchantScreen {
+            view: trader,
+            selected: None,
+            held: VecDeque::new(),
+        };
+        let MenuExtras::Merchant { show_progress, .. } = merchant_extras(&screen) else {
+            panic!("a merchant's extras")
+        };
+        assert!(!show_progress, "a wandering trader has no experience bar");
     }
 
     fn trade_view(villager: u64) -> MerchantView {
@@ -2423,6 +2445,7 @@ mod tests {
             future_xp: 0,
             max_stacks: Vec::new(),
             name: None,
+            trader: false,
         }
     }
 

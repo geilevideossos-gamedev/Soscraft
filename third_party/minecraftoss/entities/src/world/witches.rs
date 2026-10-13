@@ -492,6 +492,9 @@ impl EntityWorld {
         if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
+        if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
         if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
@@ -536,6 +539,7 @@ impl EntityWorld {
             .or_else(|| self.iron_golems.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.wolves.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.felines.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.wandering_traders.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.cows.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.pigs.iter().find(|e| e.id == id).map(|e| &e.effects))
@@ -609,6 +613,8 @@ impl EntityWorld {
             (&mut e.wolf.health, max)
         } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
             (&mut e.feline.health, crate::feline::MAX_HEALTH)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            (&mut e.trader.health, crate::wandering_trader::MAX_HEALTH)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             (&mut e.cow.health, 10.0)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
@@ -665,6 +671,10 @@ impl EntityWorld {
             let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
             e.hurt_from(amount, kind, by, self.game_time)
         } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
+            let kind = if owner.is_some() { "minecraft:indirect_magic" } else { "minecraft:magic" };
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            e.hurt_from(amount, kind, by, self.game_time)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
             let kind = if owner.is_some() { "minecraft:indirect_magic" } else { "minecraft:magic" };
             let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
             e.hurt_from(amount, kind, by, self.game_time)

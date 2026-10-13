@@ -54,6 +54,7 @@ pub struct LlamaContext {
     pub fight: LlamaFight,
     pub seen: Vec<(Seen, Foe)>,
     pub llamas: Vec<Caravaner>,
+    pub trader_attacker: Option<(Target, i32)>,
 }
 
 impl LlamaContext {
@@ -289,6 +290,44 @@ impl Goal<CowGoalContext> for NearestFoeGoal {
             llama.fight.target = None;
         }
         self.found = None;
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct DefendTraderGoal;
+impl Goal<CowGoalContext> for DefendTraderGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Target])
+    }
+    fn can_start(&mut self, ctx: &mut CowGoalContext, _world: &dyn World) -> bool {
+        let Some(llama) = ctx.llama.as_ref() else {
+            return false;
+        };
+        let Some((attacker, stamp)) = llama.trader_attacker else {
+            return false;
+        };
+        stamp != llama.fight.defend_seen
+            && llama
+                .info(attacker)
+                .is_some_and(|seen| seen.alive && seen.attackable)
+    }
+    fn can_continue(&mut self, ctx: &mut CowGoalContext, world: &dyn World) -> bool {
+        keeps_target(ctx, world, FOLLOW_RANGE, false, 60)
+    }
+    fn start(&mut self, ctx: &mut CowGoalContext) {
+        let Some(llama) = ctx.llama.as_mut() else {
+            return;
+        };
+        if let Some((attacker, stamp)) = llama.trader_attacker {
+            llama.fight.target = Some(attacker);
+            llama.fight.defend_seen = stamp;
+            llama.fight.unseen_ticks = 0;
+        }
+    }
+    fn stop(&mut self, ctx: &mut CowGoalContext) {
+        if let Some(llama) = ctx.llama.as_mut() {
+            llama.fight.target = None;
+        }
     }
 }
 

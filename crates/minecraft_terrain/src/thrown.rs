@@ -545,6 +545,13 @@ pub fn targets(world: &EntityWorld) -> Vec<PotionTarget> {
     );
     out.extend(
         world
+            .wandering_traders()
+            .iter()
+            .filter(|e| e.trader.health > 0.0)
+            .map(|e| target(e.id, &e.trader.body)),
+    );
+    out.extend(
+        world
             .villagers()
             .iter()
             .filter(|e| e.villager.health > 0.0)
@@ -677,6 +684,8 @@ pub fn hurt_by(
     } else if let Some(e) = world.wolf_mut(id) {
         (e.hurt_from(amount, kind, by, time), false)
     } else if let Some(e) = world.feline_mut(id) {
+        (e.hurt_from(amount, kind, by, time), false)
+    } else if let Some(e) = world.wandering_trader_mut(id) {
         (e.hurt_from(amount, kind, by, time), false)
     } else if let Some(e) = world.villager_mut(id) {
         (

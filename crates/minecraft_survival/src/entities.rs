@@ -1815,6 +1815,7 @@ pub(crate) fn encode(hit: MobHit) -> u64 {
         MobHit::Piglin(_) => PIGLIN_KEY,
         MobHit::Shulker(_) => 26,
         MobHit::Feline(_) => FELINE_KEY,
+        MobHit::WanderingTrader(_) => WANDERING_TRADER_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1845,6 +1846,7 @@ pub(crate) fn decode(key: u64) -> Option<MobHit> {
         PIGLIN_KEY => MobHit::Piglin(id),
         26 => MobHit::Shulker(id),
         FELINE_KEY => MobHit::Feline(id),
+        WANDERING_TRADER_KEY => MobHit::WanderingTrader(id),
         _ => return None,
     })
 }
@@ -1857,6 +1859,7 @@ const STRIDER_KEY: u64 = 23;
 const HOGLIN_KEY: u64 = 22;
 const PIGLIN_KEY: u64 = 21;
 const FELINE_KEY: u64 = 29;
+const WANDERING_TRADER_KEY: u64 = 30;
 pub(crate) const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
@@ -2215,6 +2218,16 @@ mod tests {
     }
 
     #[test]
+    fn a_wandering_trader_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::WanderingTrader(91));
+        assert_eq!(key >> 56, 30);
+        assert_eq!(decode(key), Some(MobHit::WanderingTrader(91)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
     fn a_strider_hit_box_encodes_and_decodes() {
         let key = encode(MobHit::Strider(77));
         assert_eq!(key >> 56, 23);
@@ -2501,7 +2514,7 @@ mod tests {
     #[test]
     fn trading_screens_reach_only_their_player_and_set_the_slots_before_anything_else() {
         use minecraft_terrain::server::{MerchantUpdate, MerchantView, MobResult};
-        let view = |villager: u64| MerchantView { villager, profession: "minecraft:farmer", level: 1, xp: 0, offers: Vec::new(), payment: [None, None], result: None, future_xp: 0, max_stacks: Vec::new(), name: None };
+        let view = |villager: u64| MerchantView { villager, profession: "minecraft:farmer", level: 1, xp: 0, offers: Vec::new(), payment: [None, None], result: None, future_xp: 0, max_stacks: Vec::new(), name: None, trader: false };
         let mut queues = two_queues();
         queues.queue(FRIEND).merchant_waiting = 2;
         let mut output = minecraft_terrain::server::Output::default();

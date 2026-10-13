@@ -510,6 +510,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     for texture in crate::piglin_render::TEXTURES {
         textures.insert(ResourceId::parse(texture)?, ());
     }
+    textures.insert(ResourceId::parse(crate::villager_render::WANDERING_TRADER_TEXTURE)?, ());
     for texture in crate::cat_render::textures() {
         textures.insert(ResourceId::parse(&texture)?, ());
     }
