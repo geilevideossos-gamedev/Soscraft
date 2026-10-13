@@ -408,6 +408,13 @@ Commit: "The Minecraft scene entity cell report is one let chain, clean under cl
 - **Kit:** none.
 - **Combined kit:** `minecraft:golden_apple*16` and `minecraft:red_bed` make room for `minecraft:bow` and `minecraft:arrow*64`, which the A3 dragon steps need to shoot the crystals; each window has its own white bed for the A7 bed step.
 
+### Test run
+
+Commit: "Track A log records the final test run", the one after `2a8707a7` (clippy fix). Log only.
+
+- **Tests:** on the code of `2a8707a7`, `test -p <crate> --locked` for every touched crate: `frame` 24, `hud` 152, `minecraft_net` 15, `minecraft_survival` 604 + 1, `minecraft_terrain` 1139 (3 ignored; the known flaky `sections::tests::background_full_update_matches_the_synchronous_one` failed once under load and passed on the re-run), `render_anim` 159, `render_frontend` 4, `sim` 124, all passed. `check -p launcher --locked` clean.
+- **Owner's test steps:** none; the steps of each commit above stand, with the combined kit below.
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
