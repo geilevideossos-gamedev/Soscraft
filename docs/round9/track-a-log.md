@@ -39,15 +39,45 @@ Commit: "MW2 bodies show in the Nether and deep caves: the stand-in map's cells 
 IW4L_MINECRAFT_KIT=minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_sword,minecraft:torch*32,minecraft:cobblestone*64
 ```
 
+## A2. Held items sit in the MW2 body's fists from the wrists
+
+Commit: "Minecraft held items sit in the MW2 body's fists from the wrists, not on the weapon tags", the one after `76c3565a` (A1).
+
+- **Cause** (as in the brief): every Minecraft hand item was placed on the MW2 weapon tags `tag_weapon_right` and `tag_weapon_left`, using the tag's posed matrix. That only works while the playing MW2 animation keys those tags at the hands. In the bind pose both tags share one point on the body's right side (the owner's log: the right tag about 11 units from the right wrist, the left tag about 48 units from the left wrist), so with an unkeyed tag the offhand item crossed to the right and landed on the main-hand item, and the inventory character's item sat above its shoulder. The wrist fallback never ran, because the kit has both tags.
+- **Vanilla 26.3:** `ItemInHandLayer` draws each hand's item at the fist of its own arm (`translateToHand`, then `Rx(-90)`, `Ry(180)`, then `(+-1/16, 2/16, -10/16)`), so the two hands never share a point.
+- **Changed:** `render_anim` `anim/minecraft_gear.rs` only.
+  - `GearFit.fist` (`GEAR_FIT.fist = 3.5` map units): the step from the wrist along the forearm to the middle of the fist.
+  - `hand_frame` never reads `HAND_TAGS`. The fist point is the wrist's bind position plus `fist` along the elbow-to-wrist bind direction, carried by the wrist's skinning delta, so it follows every MW2 arm pose like the hand mesh. The orientation comes from the skin delta of the first of `SPINE4`, `SPINE_UPPER`, `SPINE_LOWER` (else the wrist), so the item stays upright with the chest (the round 7 rule) and takes the body's yaw, the aim pitch, crouch, prone, the glide tilt and the inventory character's scale. The rest is unchanged: `model_to_hand`, the item scale and `hand_offset`, mirrored on x for the left hand.
+  - `tag_weapon_right` and `tag_weapon_left` stay in `GEAR_BONES`: `measures()` and the `Minecraft gear bones missing` log line still name them, and the MW2 riot shield uses `tag_weapon_left` through sim.
+  - Presentation only: host and friend build every body's rig from their own `PosedGearFrame`, so this fixes other players' bodies, the own F5 body and the inventory character on both sides. No protocol, server or `minecraft_terrain` change.
+- **Tests:** `render_anim` `anim::minecraft_gear::tests`:
+  - rewritten from the tag rule: `a_wrist_turns_into_the_vanilla_hand_frame_in_blocks` (was `a_hand_tag_turns_...`), `the_hand_offset_is_in_pixels_and_mirrored_for_the_left_hand` (wrists in place of tags), `the_fist_rides_the_wrist_and_the_frame_stays_upright_with_the_chest` (was `without_a_hand_tag_the_hand_rides_the_wrist_upright_from_the_bind_pose`);
+  - new: `held_items_ignore_unkeyed_weapon_tags` (both tags at one right-side point; each hand within `fist` + 1 of its own wrist, the hands more than 15 units apart), `the_fist_steps_along_the_forearm` (bind pose and a 90 degree elbow bend), `the_hand_frame_turns_with_the_chest_and_the_puppet_scale`, `the_hand_frame_falls_back_to_the_wrist_without_a_spine` (and no wrist gives no hand).
+- **Owner's test steps** (two windows: `& scripts\mp-local.ps1 -World r9-a2 -Fresh`, kit below in both; host: `/time set day`, `/op Friend`; stand 4 blocks apart, facing each other):
+  1. **Host, F5 front view.** Diamond sword in the main hand, torch in the offhand (F), F5 twice. The sword comes out of the right fist, the torch out of the left; nothing floats and they don't touch. Select a pistol, wait, select the sword again: still in the fists. Repeat after a rifle and after an SMG. **Screenshot 1** (one per gun class).
+  2. **Inventory.** E: the small character holds the sword in its right fist and the torch in its left, nothing above the shoulder (the screenshot 2 case). Turn it: the items stay in the hands. **Screenshot 2.**
+  3. **Friend's view of the host.** Same sword and torch in the fists. The host walks, crouches, goes prone and looks up and down: the items stay in the fists and tilt with the chest. **Screenshot 3.**
+  4. **Totem.** The friend empties the main hand and holds the totem in the offhand. In the host window the totem is in the friend's left fist, not low on the right (the screenshot 3 case). **Screenshot 4.**
+  5. **Book.** The friend selects the enchanted book. Their inventory character and the host window show it in the right fist (the screenshot 4 case). **Screenshot 5.**
+  6. **Gun plus offhand.** The host holds a gun with cobblestone in the offhand: the gun as before, the cobblestone in the left fist.
+  7. **Log.** `latest.log` still has `Minecraft gear bones missing: []`. If an item sits a little inside or outside the fist, send the screenshot: `GEAR_FIT.fist` and `hand_offset` are the tuning values.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:torch*64,minecraft:cobblestone*64,minecraft:totem_of_undying,minecraft:enchanted_book,minecraft:iron_helmet
+```
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
+- **A2:** the hand anchor is the posed wrist plus a fixed step along the forearm, never the MW2 weapon tags, because the tags are only at the hands while the playing MW2 animation keys them (it depends on the last raised gun's class). The item keeps the chest's orientation, not the forearm's, as in round 7 ("as a vanilla player holds it with the arm down"). `GEAR_FIT.fist = 3.5` is a first guess (vanilla's fist centre is about 4 map units past the wrist at the 0.9375 item scale; MW2's hand is a little smaller) and is tuned from the owner's screenshots.
 
 ## State doc changes
 
 Wording for the state docs, to be applied when the round's state is written (this track does not edit them):
 
 - **`docs/MINECRAFT-SURVIVAL.md`, multiplayer and rendering:** "MW2 bodies (other players, corpses, grenades, dropped guns) are drawn in every dimension and at every depth. In Minecraft worlds the stand-in map's (`mp_rust`) cells no longer cull MW2 scene entities: every scene entity is linked into every cell, and only the frustum, sphere and LOD culling and the dimension band gate decide. MW2 maps are unchanged. MW2 FX and marks were not checked for the same culling (`adapters/fx/world_mark.rs`)."
+- **`docs/MINECRAFT-SURVIVAL.md`, held items on the MW2 body:** "Minecraft items in the main hand and offhand sit in the MW2 body's right and left fist: the posed wrist plus 3.5 map units along the forearm (`GEAR_FIT.fist`), upright with the chest. The MW2 weapon tags are no longer used for Minecraft items, so the item no longer depends on which gun's animations are playing, and the two hands never overlap. The same rig serves other players' bodies, the own F5 body and the inventory character, for the host and every friend."
 
 ## Combined kit
 
