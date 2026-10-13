@@ -774,6 +774,19 @@ Commit: the one after `095da2fb`. This is the brief's C11.8.
 IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:oak_log*8,minecraft:iron_ingot*16,minecraft:copper_ingot*8,minecraft:iron_nugget*16,minecraft:gunpowder*16,minecraft:tripwire_hook*2,minecraft:redstone*4,minecraft:repeater*2,minecraft:dirt*8
 ```
 
+## Review of the whole track
+
+Fixes from the adversarial review of `24dfdf71..820dc0ab`, one commit each.
+
+### 1. The fork item look file passes rustfmt
+
+Commit: the one after `820dc0ab`.
+
+- **Defect:** `crates/render_anim/src/minecraft_fork_items.rs` is a new file of this track, but its committed content did not pass `rustfmt --check --edition 2024` (an import out of order and five over-long lines). The project rule says every new file must pass rustfmt.
+- **Changed:** rustfmt (edition 2024) run on that one file. Formatting only, no code change.
+- **Tests:** none needed; `git show :crates/render_anim/src/minecraft_fork_items.rs | rustfmt --check --edition 2024` prints nothing, and `check -p render_anim` passes.
+- **Owner's steps:** none (no behaviour change).
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`. Added: none.

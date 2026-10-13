@@ -5,9 +5,9 @@ use asset_game::{FamilyKey, LoadoutRules, WeaponRegistry, WeaponSelection};
 use minecraft_survival::gun_crafting;
 use minecraft_survival::gun_names::{self, GunContent, GunNames};
 use minecraft_survival::guns::{self, Hotbar, Settled, Spent};
+use minecraft_terrain::crafting::Grid;
 use minecraft_terrain::fork_items::{self, Bucket, Icon, Kind};
 use minecraft_terrain::fork_look;
-use minecraft_terrain::crafting::Grid;
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraft_terrain::gun_mods::GunRules;
 use minecraft_terrain::item_icon::SpriteClock;
@@ -112,10 +112,16 @@ impl ForkLook {
                     .weapon_families()
                     .families()
                     .iter()
-                    .flat_map(|family| family.attachments.iter().map(|choice| choice.name.as_str()));
+                    .flat_map(|family| {
+                        family.attachments.iter().map(|choice| choice.name.as_str())
+                    });
                 let missing = gun_crafting::unmapped(names);
                 if !missing.is_empty() {
-                    diag::warn!(World, "MW2 attachments with no Minecraft item, so they cannot be crafted: {}", missing.join(", "));
+                    diag::warn!(
+                        World,
+                        "MW2 attachments with no Minecraft item, so they cannot be crafted: {}",
+                        missing.join(", ")
+                    );
                 }
             }
         }
@@ -144,7 +150,9 @@ impl ForkLook {
     ) -> Vec<String> {
         let Some(row) = fork_items::get(&stack.id).filter(|row| row.kind == Kind::Gun) else {
             return match fork_items::get(&stack.id) {
-                Some(row) if row.kind == Kind::Attachment => vec![gun_crafting::ATTACH_HINT.to_owned()],
+                Some(row) if row.kind == Kind::Attachment => {
+                    vec![gun_crafting::ATTACH_HINT.to_owned()]
+                }
                 _ => Vec::new(),
             };
         };
@@ -292,7 +300,10 @@ impl ForkLook {
             else {
                 continue;
             };
-            let key = match registry.namespace_of(index).map(|namespace| namespace.as_str()) {
+            let key = match registry
+                .namespace_of(index)
+                .map(|namespace| namespace.as_str())
+            {
                 Some(namespace) if namespace != "iw4" => format!("{namespace}:material/{image}"),
                 _ => image.to_owned(),
             };
@@ -326,7 +337,9 @@ impl ForkLook {
         let stand_in = |texture: &str| {
             let id = ResourceId::parse(texture).ok()?;
             let bytes = packs.texture(&id).ok().flatten()?;
-            image::load_from_memory(&bytes).ok().map(|image| image.to_rgba8())
+            image::load_from_memory(&bytes)
+                .ok()
+                .map(|image| image.to_rgba8())
         };
         let (gun_stand_in, item_stand_in) = (stand_in(GUN_STAND_IN), stand_in(ITEM_STAND_IN));
         let mut missing = Vec::new();
@@ -341,7 +354,11 @@ impl ForkLook {
                 Some(icon) => icon,
                 None => {
                     missing.push(row.id);
-                    let stand_in = if row.kind == Kind::Gun { &gun_stand_in } else { &item_stand_in };
+                    let stand_in = if row.kind == Kind::Gun {
+                        &gun_stand_in
+                    } else {
+                        &item_stand_in
+                    };
                     let Some(icon) = stand_in.as_ref() else {
                         continue;
                     };
@@ -351,7 +368,11 @@ impl ForkLook {
             sprites.push((row.id, fork_look::sprite(icon, false)));
         }
         if !missing.is_empty() {
-            diag::warn!(World, "Minecraft fork items with a stand-in look on the ground: {}", missing.join(", "));
+            diag::warn!(
+                World,
+                "Minecraft fork items with a stand-in look on the ground: {}",
+                missing.join(", ")
+            );
         }
         Some(sprites)
     }
@@ -370,7 +391,8 @@ impl ForkLook {
             return;
         };
         let installed = world.first().is_none_or(|(id, _)| {
-            ResourceId::parse(id).is_ok_and(|id| packs.item_definition(&id).ok().flatten().is_some())
+            ResourceId::parse(id)
+                .is_ok_and(|id| packs.item_definition(&id).ok().flatten().is_some())
         });
         if !installed {
             for (id, sprite) in world {
@@ -379,7 +401,11 @@ impl ForkLook {
         }
         let key = (Arc::as_ptr(atlas) as usize, generation);
         if active && (!installed || self.patched != Some(key)) {
-            patches.extend(world.iter().filter_map(|(id, sprite)| fork_look::patch(atlas, id, sprite)));
+            patches.extend(
+                world
+                    .iter()
+                    .filter_map(|(id, sprite)| fork_look::patch(atlas, id, sprite)),
+            );
         }
         self.patched = active.then_some(key);
     }
@@ -401,7 +427,11 @@ impl ForkLook {
             return Vec::new();
         };
         if !given.stood_in.is_empty() {
-            diag::warn!(World, "Minecraft first-join loadout: no item for {}, gave the first gun of its class", given.stood_in.join(", "));
+            diag::warn!(
+                World,
+                "Minecraft first-join loadout: no item for {}, gave the first gun of its class",
+                given.stood_in.join(", ")
+            );
         }
         given.dropped
     }
