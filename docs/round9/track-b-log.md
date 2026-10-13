@@ -249,6 +249,18 @@ What changed: only this log. Owner's step 8 (B9.2) asked to check the friend's p
 
 Tests added: none (documentation only).
 
+### Final check: no disallowed `unwrap_or_default` in the track's new lines
+
+Base: 24bd3b83 (the review's log fix).
+
+What changed: clippy on the touched crates (frame, hud, minecraft_net, minecraft_survival, minecraft_terrain, render_anim, render_frontend) flagged two lines the track added with the workspace's disallowed `unwrap_or_default` (`clippy.toml`). Both now name their fallback, with the same behaviour:
+- `minecraft_terrain/src/server.rs` `mob_swirls`: `entity_type(..).unwrap_or("")`, which falls to the default tracking range as before.
+- `render_anim/src/minecraft_host.rs`: `edit_books.remove(..).unwrap_or_else(Vec::new)`.
+
+Every other warning in the touched crates is on older lines and stays.
+
+Tests added: none (no behaviour change); the touched crates' tests run green after it.
+
 ## Owner's test steps (B9.1)
 
 1. **Inventory (E).** Each bottle has its own liquid colour:
@@ -377,6 +389,14 @@ Numbered as in the brief's B8 steps. B8.2 (`edit_book`) is tested through steps 
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book[writable_book_content={pages:["Quill page one","Quill page two"]}],minecraft:writable_book,minecraft:writable_book,minecraft:lectern*2,minecraft:comparator,minecraft:redstone*16,minecraft:redstone_lamp,minecraft:book*2,minecraft:ink_sac*2,minecraft:feather*2,minecraft:crafting_table,minecraft:stone*32
+```
+
+## Combined kit (all of track B)
+
+One kit for the B8, B9 and B10 steps (27 stacks). Left out for room: the third book and quill (craft one in B8 step 5), the B9.1 colours of Swiftness, Strong Turtle Master, Invisibility, Awkward, Leaping and Weakness and the Slow Falling and second lingering bottles (take them from the creative Food & Drinks tab), the tipped arrows of strength and leaping, the cactus (B10 step 3 works with the zombie alone), cobblestone, ladders, the sword and the shield.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book[writable_book_content={pages:["Quill page one","Quill page two"]}],minecraft:writable_book,minecraft:lectern*2,minecraft:comparator,minecraft:redstone*16,minecraft:redstone_lamp,minecraft:book,minecraft:ink_sac,minecraft:feather,minecraft:crafting_table,minecraft:potion@healing,minecraft:potion@poison*2,minecraft:potion@fire_resistance,minecraft:potion@night_vision,minecraft:potion@water,minecraft:splash_potion@harming,minecraft:splash_potion@regeneration*2,minecraft:splash_potion@poison,minecraft:lingering_potion@poison,minecraft:tipped_arrow@poison*16,minecraft:item_frame*4,minecraft:cow_spawn_egg*4,minecraft:golden_apple*16,minecraft:zombie_spawn_egg*4,minecraft:magma_block*4,minecraft:totem_of_undying
 ```
 
 ## State doc changes

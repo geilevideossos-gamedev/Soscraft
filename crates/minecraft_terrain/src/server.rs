@@ -3532,7 +3532,7 @@ pub fn mob_swirls(mobs: &minecraftoss_entities::world::EntityWorld) -> Vec<crate
         .iter()
         .filter_map(|target| {
             let effects = mobs.mob_effects(target.id).filter(|effects| !effects.is_empty())?;
-            let range = crate::mob_tracking::tracking_range(mobs.entity_type(target.id).unwrap_or_default());
+            let range = crate::mob_tracking::tracking_range(mobs.entity_type(target.id).unwrap_or(""));
             let size = target.max - target.min;
             let colors = effects.iter().map(|effect| (crate::potions::effect_color(effect.effect.id()).unwrap_or(0), effect.ambient, effect.visible));
             crate::spell_particles::SwirlView::of_effects((crate::thrown::target_feet(target), size.x as f32, size.y as f32), colors, false, range)
