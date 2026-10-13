@@ -298,6 +298,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "camel_husk" => (1.7, 2.375, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "creeper" => (0.6, 1.7, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "spider" => (1.4, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "cave_spider" => (0.7, 0.5, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "enderman" => (0.6, 2.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "slime" => (0.52, 0.52, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "magma_cube" => (0.52, 0.52, Placement::OnGround, MotionBlockingNoLeaves, true, false),
@@ -311,7 +312,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),

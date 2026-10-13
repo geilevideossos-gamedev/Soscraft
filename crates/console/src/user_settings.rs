@@ -131,11 +131,7 @@ pub(crate) fn consume_menu_binding(
         view.revision = view.revision.wrapping_add(1);
         return;
     }
-    let button = keys
-        .get_just_pressed()
-        .copied()
-        .map(BindButton::Key)
-        .next()
+    let button = crate::binds::captured_key(&keys)
         .or_else(|| {
             mouse
                 .get_just_pressed()
@@ -344,7 +340,7 @@ fn parse_into<T: std::str::FromStr>(value: &str, slot: &mut T) {
 fn serialize_settings(settings: &frame::GameSettings, binds: &KeyBinds) -> String {
     let safe_name = settings.player_name.replace(['\n', '\r', '='], " ");
     let mut lines = vec![
-        "// IW4L user settings v5".to_owned(),
+        "// IW4L user settings v6".to_owned(),
         format!(
             "resolution={}x{}",
             settings.resolution.width, settings.resolution.height
@@ -519,6 +515,17 @@ fn parse_settings(source: &str, settings: &mut frame::GameSettings, binds: &mut 
                 | "// IW4L user settings v3"
         )
     ) && binds.move_old_grenade_keys();
+    let shifted = matches!(
+        source.lines().next().map(str::trim),
+        Some(
+            "// IW4L user settings v1"
+                | "// IW4L user settings v2"
+                | "// IW4L user settings v3"
+                | "// IW4L user settings v4"
+                | "// IW4L user settings v5"
+        )
+    ) && binds.move_tactical_to_shift_g();
+    let moved = moved || shifted;
     if !binds.has_pad_binds() {
         binds.apply_pad_layout(usize::from(settings.pad_layout.min(4)));
     }
@@ -742,6 +749,7 @@ mod minecraft_bind_tests {
     const F: BindButton = BindButton::Key(KeyCode::KeyF);
     const G: BindButton = BindButton::Key(KeyCode::KeyG);
     const B: BindButton = BindButton::Key(KeyCode::KeyB);
+    const SHIFT_G: BindButton = BindButton::Shifted(KeyCode::KeyG);
     const F5: BindButton = BindButton::Key(KeyCode::F5);
     const F6: BindButton = BindButton::Key(KeyCode::F6);
     const J: BindButton = BindButton::Key(KeyCode::KeyJ);
@@ -768,7 +776,8 @@ mod minecraft_bind_tests {
             assert_eq!(binds.binding_name(E), Some("+activate"), "{header}");
             assert_eq!(binds.binding_name(F), None, "{header}");
             assert_eq!(binds.binding_name(G), Some("+frag"), "{header}");
-            assert_eq!(binds.binding_name(B), Some("+smoke"), "{header}");
+            assert_eq!(binds.binding_name(SHIFT_G), Some("+smoke"), "{header}");
+            assert_eq!(binds.binding_name(B), None, "{header}");
         }
     }
 
@@ -780,13 +789,15 @@ mod minecraft_bind_tests {
             assert_eq!(binds.minecraft_binding(J), Some("mc_skate"), "{header}");
             assert_eq!(binds.binding_name(E), Some("+activate"), "{header}");
         }
-        let binds = load("// IW4L user settings v5\nunbindall\nbind e +activate\n");
-        assert_eq!(binds.iter_minecraft().count(), 0);
-        assert_eq!(binds.binding_name(E), Some("+activate"));
+        for header in ["// IW4L user settings v5", "// IW4L user settings v6"] {
+            let binds = load(&format!("{header}\nunbindall\nbind e +activate\n"));
+            assert_eq!(binds.iter_minecraft().count(), 0, "{header}");
+            assert_eq!(binds.binding_name(E), Some("+activate"), "{header}");
+        }
     }
 
     #[test]
-    fn old_grenade_keys_move_to_g_and_b() {
+    fn old_grenade_keys_move_to_g_and_shift_g() {
         for header in [
             "// IW4L user settings v1",
             "// IW4L user settings v2",
@@ -796,7 +807,8 @@ mod minecraft_bind_tests {
                 "{header}\nunbindall\nbind e +activate\nbind f +frag\nbind g +smoke\nbind f mc_swaphands\nbind BUTTON_RSHLDR +frag\nbind BUTTON_LSHLDR +smoke\n"
             ));
             assert_eq!(binds.binding_name(G), Some("+frag"), "{header}");
-            assert_eq!(binds.binding_name(B), Some("+smoke"), "{header}");
+            assert_eq!(binds.binding_name(SHIFT_G), Some("+smoke"), "{header}");
+            assert_eq!(binds.binding_name(B), None, "{header}");
             assert_eq!(binds.binding_name(F), None, "{header}");
             assert_eq!(binds.minecraft_binding(F), Some("mc_swaphands"), "{header}");
             assert_eq!(
@@ -805,14 +817,15 @@ mod minecraft_bind_tests {
                 "{header}"
             );
             let saved = serialize_settings(&frame::GameSettings::default(), &binds);
-            assert_eq!(saved.lines().next(), Some("// IW4L user settings v5"));
+            assert_eq!(saved.lines().next(), Some("// IW4L user settings v6"));
             assert!(saved.lines().any(|line| line == "bind g +frag"));
-            assert!(saved.lines().any(|line| line == "bind b +smoke"));
+            assert!(saved.lines().any(|line| line == "bind SHIFT+G +smoke"));
+            assert!(!saved.lines().any(|line| line.starts_with("bind b ")));
             assert!(saved.lines().any(|line| line == "bind f mc_swaphands"));
             assert!(!saved.lines().any(|line| line == "bind f +frag"));
             let again = load(&saved);
             assert_eq!(again.list_lines(), binds.list_lines(), "{header}");
-            let rerun = load(&saved.replacen("settings v5", "settings v3", 1));
+            let rerun = load(&saved.replacen("settings v6", "settings v3", 1));
             assert_eq!(rerun.list_lines(), binds.list_lines(), "{header}");
         }
     }
@@ -831,6 +844,44 @@ mod minecraft_bind_tests {
         assert!(!parse(&saved).0);
         assert!(!parse("// IW4L user settings v2\nunbindall\nbind e +activate\n").0);
         assert!(!parse("// IW4L user settings v4\nunbindall\nbind f +frag\nbind g +smoke\n").0);
+        assert!(parse("// IW4L user settings v5\nunbindall\nbind g +frag\nbind b +smoke\n").0);
+        assert!(!parse("// IW4L user settings v6\nunbindall\nbind g +frag\nbind b +smoke\n").0);
+    }
+
+    #[test]
+    fn the_tactical_on_b_moves_to_shift_g_once() {
+        for header in ["// IW4L user settings v4", "// IW4L user settings v5"] {
+            let source = format!(
+                "{header}\nunbindall\nbind SHIFT +breath_sprint\nbind b +smoke\nbind g +frag\nbind f mc_swaphands\nbind BUTTON_LSHLDR +smoke\n"
+            );
+            let binds = load(&source);
+            assert_eq!(binds.binding_name(SHIFT_G), Some("+smoke"), "{header}");
+            assert_eq!(binds.binding_name(G), Some("+frag"), "{header}");
+            assert_eq!(binds.binding_name(B), None, "{header}");
+            assert_eq!(binds.minecraft_binding(B), None, "{header}");
+            assert_eq!(
+                binds.binding_name(BindButton::Key(KeyCode::ShiftLeft)),
+                Some("+breath_sprint"),
+                "{header}"
+            );
+            assert_eq!(
+                binds.binding_name(BindButton::Pad(crate::PadButton::LeftBumper)),
+                Some("+smoke"),
+                "{header}"
+            );
+            let saved = serialize_settings(&frame::GameSettings::default(), &binds);
+            assert!(saved.lines().any(|line| line == "bind SHIFT+G +smoke"));
+            assert_eq!(load(&saved).list_lines(), binds.list_lines(), "{header}");
+        }
+        for extra in ["bind mouse4 +smoke\n", "bind SHIFT+G +melee\n", "bind SHIFT+G mc_drop\n"] {
+            let binds = load(&format!(
+                "// IW4L user settings v5\nunbindall\nbind b +smoke\nbind g +frag\n{extra}"
+            ));
+            assert_eq!(binds.binding_name(B), Some("+smoke"), "{extra}");
+        }
+        let binds = load("// IW4L user settings v6\nunbindall\nbind b +smoke\nbind g +frag\n");
+        assert_eq!(binds.binding_name(B), Some("+smoke"));
+        assert_eq!(binds.binding_name(SHIFT_G), None);
     }
 
     #[test]
@@ -865,7 +916,7 @@ mod minecraft_bind_tests {
         let loaded = load(&saved);
         assert_eq!(loaded.binding_name(mouse4), Some("+frag"));
         assert_eq!(loaded.binding_name(G), None);
-        assert_eq!(loaded.binding_name(B), Some("+smoke"));
+        assert_eq!(loaded.binding_name(SHIFT_G), Some("+smoke"));
         assert_eq!(loaded.list_lines(), binds.list_lines());
     }
 
@@ -877,7 +928,7 @@ mod minecraft_bind_tests {
         binds.clear_command_on(perspective, false);
         binds.set(F6, perspective);
         let saved = serialize_settings(&frame::GameSettings::default(), &binds);
-        assert_eq!(saved.lines().next(), Some("// IW4L user settings v5"));
+        assert_eq!(saved.lines().next(), Some("// IW4L user settings v6"));
         assert!(saved.lines().any(|line| line == "bind F6 mc_perspective"));
         assert!(!saved.lines().any(|line| line == "bind F5 mc_perspective"));
         let loaded = load(&saved);
@@ -903,7 +954,7 @@ mod minecraft_bind_tests {
         assert_eq!(dvars.get("ui_bind_mc_inventory"), Some("e"));
         assert_eq!(dvars.get("ui_bind_+activate"), Some("e"));
         assert_eq!(dvars.get("ui_bind_+frag"), Some("g | R-BUMPER"));
-        assert_eq!(dvars.get("ui_bind_+smoke"), Some("b | L-BUMPER"));
+        assert_eq!(dvars.get("ui_bind_+smoke"), Some("SHIFT+G | L-BUMPER"));
         assert_eq!(dvars.get("ui_bind_mc_swaphands"), Some("f"));
         assert_eq!(dvars.get("ui_bind_mc_skate"), Some("j"));
     }
@@ -921,7 +972,7 @@ mod minecraft_bind_tests {
             assert_eq!(binds.minecraft_binding(J), Some("mc_skate"), "{header}");
             assert_eq!(binds.binding_name(J), None, "{header}");
             let saved = serialize_settings(&frame::GameSettings::default(), &binds);
-            assert_eq!(saved.lines().next(), Some("// IW4L user settings v5"));
+            assert_eq!(saved.lines().next(), Some("// IW4L user settings v6"));
             assert!(saved.lines().any(|line| line == "bind j mc_skate"), "{header}");
             assert_eq!(load(&saved).list_lines(), binds.list_lines(), "{header}");
         }
@@ -967,7 +1018,7 @@ mod minecraft_bind_tests {
         assert_eq!(loaded.minecraft_binding(K), Some("mc_skate"));
         assert_eq!(loaded.minecraft_binding(J), None);
         assert_eq!(loaded.list_lines(), binds.list_lines());
-        let older = load(&saved.replacen("settings v5", "settings v4", 1));
+        let older = load(&saved.replacen("settings v6", "settings v4", 1));
         assert_eq!(older.minecraft_binding(J), None);
     }
 }

@@ -1518,7 +1518,7 @@ fn resting_monsters(w: &EntityWorld, sleeper: u64) -> Vec<(&'static str, bool, [
         out.push(("minecraft:creeper", false, bounds(&e.creeper.body)));
     }
     for e in w.spiders().iter().filter(|e| e.spider.health > 0.0) {
-        out.push(("minecraft:spider", false, bounds(&e.spider.body)));
+        out.push((e.spider.type_id(), false, bounds(&e.spider.body)));
     }
     for e in w.endermen().iter().filter(|e| e.enderman.health > 0.0) {
         out.push(("minecraft:enderman", false, bounds(&e.enderman.body)));

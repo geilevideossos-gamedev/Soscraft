@@ -317,7 +317,9 @@ fn publish_client_action_input(
         physical.mouse_activity_start = time.elapsed_secs();
     }
     let pad = active.0.and_then(|entity| gamepads.get(entity).ok());
-    let inputs = BindInputs::new(&keys, &mouse_buttons).with_pad(pad);
+    let inputs = BindInputs::new(&keys, &mouse_buttons)
+        .with_pad(pad)
+        .with_shifted_keys(&binds);
     let owner_changed = physical.active_pad != active.0;
     physical.active_pad = active.0;
     if owner_changed {

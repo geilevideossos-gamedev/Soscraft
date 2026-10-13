@@ -312,6 +312,17 @@ pub fn act(
             effects.push(sound(event, None, 1.0, 1.0));
         }
     }
+    let (scoping, stopped) = crate::spyglass::step(
+        hand.scoping,
+        use_live,
+        alive && !skating,
+        inventory,
+        *selected,
+    );
+    hand.scoping = scoping;
+    if stopped {
+        effects.push(sound(crate::spyglass::STOP_SOUND, None, 1.0, 1.0));
+    }
     let mut open_table = None;
     let mut open_block = None;
     let mut open_bench = None;
@@ -350,6 +361,7 @@ pub fn act(
         let busy = survival.eating().is_some()
             || hand.blocking.is_some()
             || hand.charging.is_some()
+            || hand.scoping.is_some()
             || hand.miss_time > 0
             || mw2_offhand;
         let mut block_press = false;
@@ -582,10 +594,14 @@ pub fn act(
         if let Some(charging) = hand.charging.as_mut() {
             charging.ticks = charging.ticks.saturating_add(hand_ticks);
         }
+        if let Some(scoping) = hand.scoping.as_mut() {
+            scoping.ticks = scoping.ticks.saturating_add(hand_ticks);
+        }
         hand.place_delay = hand.place_delay.saturating_sub(hand_ticks);
         let idle = survival.eating().is_none()
             && hand.blocking.is_none()
             && hand.charging.is_none()
+            && hand.scoping.is_none()
             && !mw2_offhand;
         let (use_pressed, use_down) = if holding_item {
             (!skating && input.use_pressed, use_held)
@@ -1185,6 +1201,18 @@ pub fn act(
                 ) {
                     Some(charging) => {
                         hand.charging = Some(charging);
+                        HandUse::Consumed
+                    }
+                    None => HandUse::Failed,
+                }
+            } else if held
+                .as_ref()
+                .is_some_and(|stack| stack.id == crate::spyglass::ITEM)
+            {
+                match crate::spyglass::Scoping::start(inventory, slot) {
+                    Some(scoping) => {
+                        hand.scoping = Some(scoping);
+                        effects.push(sound(crate::spyglass::USE_SOUND, None, 1.0, 1.0));
                         HandUse::Consumed
                     }
                     None => HandUse::Failed,
@@ -2186,5 +2214,59 @@ pub(crate) mod tests {
             stopped.survival.eating().is_none(),
             "letting go stops eating"
         );
+    }
+
+    #[test]
+    fn a_held_spyglass_scopes_while_use_is_held_and_stops_with_its_sound() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding(crate::spyglass::ITEM, 1);
+        let looking = actor(0.0, -30.0);
+        let held = Hands {
+            use_held: true,
+            attack_pressed: true,
+            ..Hands::default()
+        };
+        let heard = |acted: &Acted, wanted: &str| {
+            acted
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Sound { event, .. } if event == wanted))
+        };
+        let mut step = |player: &mut Player, input: Hands| {
+            act(
+                player,
+                &mut level,
+                &globals,
+                &mut Flat,
+                &looking,
+                input,
+                &moved(),
+                None,
+                0.0,
+            )
+        };
+        let started = step(&mut player, press());
+        assert!(heard(&started, crate::spyglass::USE_SOUND));
+        assert_eq!(
+            player.hand.scoping.map(|scoping| scoping.slot),
+            Some(0),
+            "the spyglass in the main hand scopes"
+        );
+        player.hand.swing = None;
+        for _ in 0..5 {
+            let acted = step(&mut player, held);
+            assert!(!heard(&acted, crate::spyglass::STOP_SOUND));
+        }
+        assert_eq!(
+            player.hand.scoping.map(|scoping| scoping.ticks),
+            Some(5),
+            "scoping counts the hand ticks"
+        );
+        assert_eq!(player.hand.swing, None, "a scoping hand does not punch");
+        let stopped = step(&mut player, Hands::default());
+        assert!(heard(&stopped, crate::spyglass::STOP_SOUND));
+        assert_eq!(player.hand.scoping, None, "letting go stops scoping");
     }
 }

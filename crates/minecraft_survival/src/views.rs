@@ -121,9 +121,15 @@ fn using(player: &Player) -> Option<UsingView> {
             ticks: count(blocking.ticks),
         });
     }
-    player.hand.charging.map(|charging| UsingView {
-        hand: hand(charging.slot),
-        ticks: count(charging.ticks),
+    if let Some(charging) = player.hand.charging {
+        return Some(UsingView {
+            hand: hand(charging.slot),
+            ticks: count(charging.ticks),
+        });
+    }
+    player.hand.scoping.map(|scoping| UsingView {
+        hand: hand(scoping.slot),
+        ticks: count(scoping.ticks),
     })
 }
 

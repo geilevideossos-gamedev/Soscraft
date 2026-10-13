@@ -1318,6 +1318,7 @@ fn leave_level(player: &mut Player, level: &mut Level) {
     survival.stop_eating();
     hand.blocking = None;
     hand.charging = None;
+    hand.scoping = None;
     hand.swing = None;
     hand.recent.clear();
     steps.air_peak = None;

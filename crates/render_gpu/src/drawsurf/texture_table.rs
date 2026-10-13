@@ -261,9 +261,19 @@ impl ExactTextureTable {
                 views_2d[usize::from(index)] = &**placeholder;
             }
         }
-        let views_cube: Vec<&WgpuTextureView> = self.views[1].iter().map(|v| &**v).collect();
-        let views_3d: Vec<&WgpuTextureView> = self.views[2].iter().map(|v| &**v).collect();
-        let samplers: Vec<&WgpuSampler> = self.samplers.iter().map(|s| &**s).collect();
+        let views_2d = full_binding_array(views_2d, TEXTURE_TABLE_2D_CAPACITY);
+        let views_cube = full_binding_array(
+            self.views[1].iter().map(|v| &**v).collect(),
+            TEXTURE_TABLE_CUBE_CAPACITY,
+        );
+        let views_3d = full_binding_array(
+            self.views[2].iter().map(|v| &**v).collect(),
+            TEXTURE_TABLE_3D_CAPACITY,
+        );
+        let samplers = full_binding_array(
+            self.samplers.iter().map(|s| &**s).collect::<Vec<&WgpuSampler>>(),
+            TEXTURE_TABLE_SAMPLER_CAPACITY,
+        );
         device.create_bind_group(
             label,
             bgl,
@@ -351,4 +361,46 @@ impl ExactTextureTable {
 
 pub(super) fn array_count(count: u32) -> NonZeroU32 {
     NonZeroU32::new(count).expect("texture table capacities are non-zero")
+}
+
+fn full_binding_array<T: ?Sized>(mut entries: Vec<&T>, capacity: u32) -> Vec<&T> {
+    if let Some(&first) = entries.first() {
+        entries.resize(capacity as usize, first);
+    }
+    entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_binding_array_is_filled_to_its_layout_count_after_its_own_entries() {
+        let entries = ["placeholder", "atlas", "probe"];
+        let filled = full_binding_array(entries.iter().collect(), 8);
+        assert_eq!(filled.len(), 8);
+        assert_eq!(filled[..3], [&"placeholder", &"atlas", &"probe"]);
+        assert!(filled[3..].iter().all(|entry| **entry == "placeholder"));
+        assert!(full_binding_array(Vec::<&str>::new(), 8).is_empty());
+    }
+
+    #[test]
+    fn every_table_array_is_bound_with_the_layout_count() {
+        use super::super::gpu_contract::{WgpuBindingKind, texture_table_bind_entries};
+        for entry in texture_table_bind_entries() {
+            let count = match entry.kind {
+                WgpuBindingKind::TextureArray { dimension, count } => {
+                    assert_eq!(capacity(dimension), count, "{dimension:?}");
+                    count
+                }
+                WgpuBindingKind::SamplerArray { count } => {
+                    assert_eq!(TEXTURE_TABLE_SAMPLER_CAPACITY, count);
+                    count
+                }
+                other => panic!("unexpected table binding {other:?}"),
+            };
+            let placeholder = 0u8;
+            assert_eq!(full_binding_array(vec![&placeholder], count).len(), count as usize);
+        }
+    }
 }

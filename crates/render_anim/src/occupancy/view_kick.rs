@@ -236,12 +236,16 @@ pub fn tick_session_view_kick(
     );
 }
 
+type McCameraViews<'w, 's> = (
+    Res<'w, frame::SkateMode>,
+    Option<Res<'w, frame::McCamera>>,
+    Option<Res<'w, frame::McSleepers>>,
+    Option<Res<'w, frame::MinecraftUi>>,
+    Local<'s, crate::minecraft_spyglass::FovModifier>,
+);
+
 pub fn sync_camera_from_presented(
-    (skate, mc_camera, sleepers): (
-        Res<frame::SkateMode>,
-        Option<Res<frame::McCamera>>,
-        Option<Res<frame::McSleepers>>,
-    ),
+    (skate, mc_camera, sleepers, minecraft, mut scope_fov): McCameraViews,
     mut killcam: Local<super::killcam::KillcamCamera>,
     clock: Res<FrameClock>,
     presented: Res<PresentedSnapshot>,
@@ -271,6 +275,10 @@ pub fn sync_camera_from_presented(
     let Some(ps) = presented.player(local.0) else {
         return;
     };
+    let scoping = minecraft.as_deref().is_some_and(|ui| ui.active && ui.scoping)
+        && !mc_camera.as_deref().is_some_and(|camera| camera.detached);
+    scope_fov.0 =
+        crate::minecraft_spyglass::step_fov_modifier(scope_fov.0, scoping, clock.frametime_secs());
     if skate.active
         && let Some((eye, fov)) = skate.camera
     {
@@ -571,7 +579,13 @@ pub fn sync_camera_from_presented(
         kick.b_position_to_ads,
         actions.as_deref_mut(),
     ) {
-        kick.horiz_fov_deg = horiz;
+        kick.horiz_fov_deg = crate::minecraft_spyglass::zoom_lens(
+            &mut lenses,
+            horiz,
+            scope_fov.0,
+            scoping,
+            actions.as_deref_mut(),
+        );
     }
 }
 

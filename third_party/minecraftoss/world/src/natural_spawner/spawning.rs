@@ -953,6 +953,7 @@ impl CreatureSpawns {
                     }
                 }
             }
+            "minecraft:cave_spider" => {}
             "minecraft:witch" => {
                 // `Raider.finalizeSpawn`, then `PatrollingMonster`'s leader
                 // roll (witches never lead), then `Mob`'s part.
@@ -1342,6 +1343,16 @@ mod tests {
         assert_eq!(info.rules, super::Rules::Hoglin);
         let zoglin = super::type_info("minecraft:zoglin").unwrap();
         assert_eq!((zoglin.fire_immune, zoglin.remove_far, zoglin.rules), (true, true, super::Rules::AnyLightMonster));
+    }
+
+    #[test]
+    fn a_cave_spider_spawns_by_the_spider_rules_at_its_own_size() {
+        let spider = super::type_info("minecraft:spider").unwrap();
+        let cave = super::type_info("minecraft:cave_spider").unwrap();
+        assert_eq!((cave.width, cave.height), (0.7, 0.5));
+        assert_eq!((cave.rules, cave.walk, cave.remove_far, cave.fire_immune), (spider.rules, spider.walk, spider.remove_far, spider.fire_immune));
+        assert_eq!(cave.rules, super::Rules::Monster);
+        assert_eq!(crate::natural_spawner::type_width("minecraft:cave_spider"), Some(0.7));
     }
 
     #[test]

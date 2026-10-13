@@ -342,6 +342,7 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:parched"
             | "minecraft:creeper"
             | "minecraft:spider"
+            | "minecraft:cave_spider"
             | "minecraft:slime"
             | "minecraft:enderman"
             | "minecraft:witch"

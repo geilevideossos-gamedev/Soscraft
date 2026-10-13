@@ -1,6 +1,6 @@
 //! Inventory icons and names for items, as MinecraftOSS's viewer makes them
 //! (`engine/viewer/src/interface.rs`: `load_catalog_icons`, `item_name`).
-use crate::interface::{item_model_reference, item_model_tints};
+use crate::interface::{item_gui_model_reference, item_model_tints};
 use crate::pack::{PackStack, ResourceId};
 use anyhow::Result;
 use image::{imageops::FilterType, RgbaImage};
@@ -24,7 +24,7 @@ pub fn item_icon_at(
     }
     let id = ResourceId::parse(key)?;
     let definition = packs.item_definition(&id)?;
-    let model = dial.or_else(|| definition.as_ref().and_then(|value| item_model_reference(&value["model"])));
+    let model = dial.or_else(|| definition.as_ref().and_then(|value| item_gui_model_reference(&value["model"])));
     let tints = definition
         .as_ref()
         .map(|value| item_model_tints(packs, &value["model"]))
@@ -223,4 +223,27 @@ fn model_texture(packs: &PackStack, model: &str) -> Result<Option<ResourceId>> {
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vanilla_spyglass_and_spear_icons_are_their_inventory_sprites() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        for (item, sprite) in [("minecraft:spyglass", "minecraft:item/spyglass"), ("minecraft:iron_spear", "minecraft:item/iron_spear")] {
+            let icon = item_icon(&packs, item, 32).unwrap().unwrap();
+            let bytes = packs.texture(&ResourceId::parse(sprite).unwrap()).unwrap().unwrap();
+            let expected = image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 32, 32, FilterType::Nearest);
+            assert!(icon == expected, "{item} is drawn from {sprite}");
+        }
+    }
 }

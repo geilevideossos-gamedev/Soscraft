@@ -410,6 +410,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:bat",
     "minecraft:blaze",
     "minecraft:bogged",
+    "minecraft:cave_spider",
     "minecraft:chicken",
     "minecraft:cow",
     "minecraft:creeper",
@@ -471,6 +472,22 @@ pub fn spawn_saved_all(world: &mut EntityWorld, tag: &Tag) -> Vec<(u64, Tag)> {
             world.force_riding(Rider::Mob(rider_id), id);
         }
         out.extend(spawned);
+    }
+    out
+}
+
+pub fn spawn_unmounted(world: &mut EntityWorld, tag: &Tag) -> Vec<(u64, Tag)> {
+    let Tag::Compound(map) = tag else { return Vec::new() };
+    if !map.contains_key("Passengers") || carries(tag) {
+        return spawn_saved_all(world, tag);
+    }
+    let mut bare = map.clone();
+    let riders = bare.remove("Passengers").and_then(|riders| riders.as_list().map(<[Tag]>::to_vec)).unwrap_or_else(Vec::new);
+    let bare = Tag::Compound(bare);
+    let Some(id) = spawn_saved(world, &bare) else { return Vec::new() };
+    let mut out = vec![(id, bare)];
+    for rider in &riders {
+        out.extend(spawn_unmounted(world, rider));
     }
     out
 }
@@ -783,8 +800,8 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
-        "minecraft:spider" if tag.get("Passengers").is_none() => {
-            let mut spider = minecraftoss_entities::spider::Spider::new(pos);
+        "minecraft:spider" | "minecraft:cave_spider" if tag.get("Passengers").is_none() => {
+            let mut spider = if kind == "minecraft:cave_spider" { minecraftoss_entities::spider::Spider::cave(pos) } else { minecraftoss_entities::spider::Spider::new(pos) };
             spider.yaw = yaw;
             spider.persistence_required = persistent;
             if let Some(health) = health {
@@ -1362,7 +1379,7 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         add(e.id, "minecraft:creeper", &c.body, e.ai.yaw, c.health, c.persistence_required, fields);
     }
     for e in world.spiders() {
-        add(e.id, "minecraft:spider", &e.spider.body, e.spider.yaw, e.spider.health, e.spider.persistence_required, Vec::new());
+        add(e.id, e.spider.type_id(), &e.spider.body, e.spider.yaw, e.spider.health, e.spider.persistence_required, Vec::new());
     }
     for e in world.villagers() {
         let v = &e.villager;
@@ -1861,6 +1878,31 @@ mod tests {
         assert!(spawn_saved_all(&mut EntityWorld::default(), &spider).is_empty());
         let strider = strider_tag("Passengers:[{id:\"minecraft:camel\"}]");
         assert!(spawn_saved_all(&mut EntityWorld::default(), &strider).is_empty(), "a rider it does not simulate keeps the whole group dormant");
+    }
+
+    #[test]
+    fn a_hatched_jockey_stands_its_rider_beside_its_mount() {
+        let spider = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:spider\",Pos:[1.5d,64.0d,2.5d],Passengers:[{id:\"minecraft:skeleton\",Pos:[1.5d,64.0d,2.5d]}]}").unwrap();
+        let mut world = EntityWorld::default();
+        let spawned = spawn_unmounted(&mut world, &spider);
+        let kinds: Vec<_> = spawned.iter().map(|(id, _)| world.entity_type(*id)).collect();
+        assert_eq!(kinds, [Some("minecraft:spider"), Some("minecraft:skeleton")]);
+        assert!(spawned.iter().all(|(id, tag)| tag.get("Passengers").is_none() && world.vehicle_of(Rider::Mob(*id)).is_none()));
+        let chicken = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:chicken\",Pos:[1.5d,64.0d,2.5d],Passengers:[{id:\"minecraft:zombie\",Pos:[1.5d,64.0d,2.5d],IsBaby:1b}]}").unwrap();
+        let spawned = spawn_unmounted(&mut world, &chicken);
+        let kinds: Vec<_> = spawned.iter().map(|(id, _)| world.entity_type(*id)).collect();
+        assert_eq!(kinds, [Some("minecraft:chicken"), Some("minecraft:zombie")]);
+        let strider = strider_tag("Passengers:[{id:\"minecraft:zombified_piglin\",Pos:[1.5d,65.5d,2.5d]}]");
+        let spawned = spawn_unmounted(&mut world, &strider);
+        assert_eq!(world.vehicle_of(Rider::Mob(spawned[1].0)), Some(spawned[0].0), "a strider still carries its rider");
+        let horse = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:zombie_horse\",Pos:[1.5d,64.0d,2.5d],Passengers:[{id:\"minecraft:zombie\",Pos:[1.5d,64.0d,2.5d]}]}").unwrap();
+        assert!(spawn_unmounted(&mut world, &horse).is_empty(), "without its mount the rider stays away too");
+        let cave = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cave_spider\",Pos:[1.5d,64.0d,2.5d],Health:7.0f}").unwrap();
+        let spawned = spawn_unmounted(&mut world, &cave);
+        assert_eq!(world.entity_type(spawned[0].0), Some("minecraft:cave_spider"));
+        let saved = mob_tags(&world, |_| true, &spawned.into_iter().collect());
+        let back = saved.iter().find(|(_, tag)| text(tag, "id") == Some("minecraft:cave_spider")).expect("it saves as a cave spider");
+        assert_eq!(back.1.get("Health").and_then(Tag::as_f64), Some(7.0));
     }
 
     #[test]

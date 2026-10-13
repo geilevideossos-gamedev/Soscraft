@@ -6,6 +6,21 @@ pub(crate) fn item_model_reference(value: &serde_json::Value) -> Option<&str> {
     item_model_leaf(value)?.get("model")?.as_str()
 }
 
+pub(crate) fn item_gui_model_reference(value: &serde_json::Value) -> Option<&str> {
+    let in_gui = |when: &serde_json::Value| match when {
+        serde_json::Value::String(one) => one == "gui",
+        serde_json::Value::Array(many) => many.iter().any(|one| one.as_str() == Some("gui")),
+        _ => false,
+    };
+    value
+        .get("cases")
+        .and_then(serde_json::Value::as_array)
+        .filter(|_| value.get("property").and_then(serde_json::Value::as_str) == Some("minecraft:display_context"))
+        .and_then(|cases| cases.iter().filter(|case| case.get("when").is_some_and(in_gui)).find_map(|case| item_model_leaf(&case["model"])))
+        .and_then(|leaf| leaf.get("model")?.as_str())
+        .or_else(|| item_model_reference(value))
+}
+
 fn item_model_leaf(value: &serde_json::Value) -> Option<&serde_json::Value> {
     match value.get("type")?.as_str()? {
         "minecraft:model" => value.get("model")?.as_str().map(|_| value),
@@ -133,5 +148,38 @@ mod tests {
         assert!(item_model_tints(&packs, &wolf).unwrap().is_empty());
         let stonecutter = json!({"type": "minecraft:model", "model": "minecraft:block/stonecutter"});
         assert!(item_model_tints(&packs, &stonecutter).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_inventory_icon_takes_the_gui_case_of_a_display_context_select() {
+        let spyglass = json!({
+            "type": "minecraft:select",
+            "property": "minecraft:display_context",
+            "cases": [{"when": ["gui", "ground", "fixed", "on_shelf"], "model": {"type": "minecraft:model", "model": "minecraft:item/spyglass"}}],
+            "fallback": {"type": "minecraft:model", "model": "minecraft:item/spyglass_in_hand"}
+        });
+        assert_eq!(item_gui_model_reference(&spyglass), Some("minecraft:item/spyglass"));
+        assert_eq!(item_model_reference(&spyglass), Some("minecraft:item/spyglass_in_hand"));
+        let bundle = json!({
+            "type": "minecraft:select",
+            "property": "minecraft:display_context",
+            "cases": [{"when": "gui", "model": {"type": "minecraft:condition", "property": "minecraft:bundle/has_selected_item", "on_false": {"type": "minecraft:model", "model": "minecraft:item/bundle"}, "on_true": {"type": "minecraft:model", "model": "minecraft:item/bundle_open_front"}}}],
+            "fallback": {"type": "minecraft:model", "model": "minecraft:item/bundle"}
+        });
+        assert_eq!(item_gui_model_reference(&bundle), Some("minecraft:item/bundle"));
+        let held_only = json!({
+            "type": "minecraft:select",
+            "property": "minecraft:display_context",
+            "cases": [{"when": "firstperson_righthand", "model": {"type": "minecraft:model", "model": "test:item/held"}}],
+            "fallback": {"type": "minecraft:model", "model": "test:item/plain"}
+        });
+        assert_eq!(item_gui_model_reference(&held_only), Some("test:item/plain"));
+        let other = json!({
+            "type": "minecraft:select",
+            "property": "minecraft:trim_material",
+            "cases": [{"when": "gui", "model": {"type": "minecraft:model", "model": "test:item/trimmed"}}],
+            "fallback": {"type": "minecraft:model", "model": "test:item/plain"}
+        });
+        assert_eq!(item_gui_model_reference(&other), Some("test:item/plain"));
     }
 }

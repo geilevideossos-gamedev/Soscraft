@@ -193,6 +193,7 @@ pub struct MinecraftUi {
     pub offhand_key: Option<bool>,
     pub offhand_busy: bool,
     pub using_item: bool,
+    pub scoping: bool,
     /// The minimap's picture of the world and the map points of its
     /// north-west and south-east corners.
     pub minimap: Option<(Handle<Image>, [f32; 2], [f32; 2])>,
@@ -207,6 +208,7 @@ pub struct MinecraftUi {
     pub portal_frames: Option<(Handle<Image>, u32)>,
     pub portal_overlay: Option<McPortalOverlay>,
     pub freeze_outline: Option<Handle<Image>>,
+    pub spyglass_scope: Option<Handle<Image>>,
     pub overlay_message: Option<McOverlayMessage>,
     pub sleep: Option<McSleep>,
     pub boss_bars: Vec<McBossBar>,

@@ -926,7 +926,10 @@ impl ServerSim {
     pub fn hatch_egg(&mut self, kind: &str, position: [f64; 3], y_rot: f32) -> Result<(), String> {
         let tag = self.level.summon_mob(kind, position, None, y_rot)?;
         self.mobs.set_day_time(self.level.overworld_clock());
-        let spawned = crate::server_mobs::spawn_saved_all(&mut self.mobs, &tag);
+        if self.dragons.add(&tag).is_some() {
+            return Ok(());
+        }
+        let spawned = crate::server_mobs::spawn_unmounted(&mut self.mobs, &tag);
         if spawned.is_empty() {
             return Err(format!("{kind} is not simulated"));
         }
@@ -6352,6 +6355,44 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
+    const HATCHING_EGGS: [&str; 36] = [
+        "bat", "blaze", "bogged", "cave_spider", "chicken", "cow", "creeper", "donkey", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "magma_cube", "mooshroom", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
+        "villager", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
+    ];
+
+    #[test]
+    fn every_spawn_egg_of_a_mob_the_game_has_hatches_that_mob() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        let items = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3/assets/minecraft/items");
+        let Ok(entries) = std::fs::read_dir(&items) else { return };
+        let mut eggs: Vec<String> = entries.filter_map(|entry| entry.ok()?.file_name().to_str()?.strip_suffix("_spawn_egg.json").map(str::to_owned)).collect();
+        eggs.sort();
+        let Some((mut server, scene)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        let mut player = minecraftoss_player::Player::new(glam::DVec3::new(8.5, 202.0 - 1.62, 8.5));
+        player.pitch = 90.0;
+        let mut hatched = Vec::new();
+        for name in &eggs {
+            let egg = format!("minecraft:{name}_spawn_egg");
+            let aimed = crate::spawn_egg::egg_use(&player, &crate::doors::Outlined(&scene), &egg);
+            let Some(crate::spawn_egg::EggUse::Spawn { kind, position }) = aimed else { panic!("{egg}: {aimed:?}") };
+            assert_eq!(kind, format!("minecraft:{name}"));
+            let before: std::collections::HashSet<u64> = server.mobs.mob_ids().collect();
+            let (dormant, dragons) = (server.dormant.len(), server.dragons.list.len());
+            match server.hatch_egg(&kind, position, 0.0) {
+                Ok(()) => {
+                    let new: Vec<_> = server.mobs.mob_ids().filter(|id| !before.contains(id)).filter_map(|id| server.mobs.entity_type(id)).collect();
+                    let dragon = server.dragons.list.len() == dragons + 1;
+                    assert!(new.contains(&kind.as_str()) || (dragon && kind == ENDER_DRAGON), "{egg} hatched {new:?}");
+                    hatched.push(name.as_str());
+                }
+                Err(_) => assert_eq!((server.dormant.len(), server.dragons.list.len(), server.mobs.mob_ids().count()), (dormant, dragons, before.len()), "{egg} left nothing behind"),
+            }
+        }
+        assert_eq!(eggs.len(), 88);
+        assert_eq!(hatched, HATCHING_EGGS);
+    }
+
     fn spawner_with_egg(difficulty: i32, rule: bool) -> Option<ServerSim> {
         let (mut server, _) = door_world()?;
         server.set_players(&[[4.5, 205.0, 7.5]], difficulty);
@@ -6442,6 +6483,51 @@ mod tests {
         assert_eq!(answers[1].as_deref(), Ok("minecraft:cow"));
         let changed: Vec<_> = outputs.iter().flat_map(|out| out.block_entities.clone()).collect();
         assert!(changed.iter().any(|(pos, tag)| *pos == (4, 205, 4) && tag.as_ref().and_then(|t| t.get("SpawnData")?.get("entity")?.get("id")?.as_str().map(str::to_owned)).as_deref() == Some("minecraft:cow")), "{changed:?}");
+    }
+
+    #[test]
+    fn a_cave_spider_spawner_keeps_the_monster_light_rules() {
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(4.5, 205.0, 7.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let run = |time: i64| -> Option<Vec<minecraftoss_core::nbt::Tag>> {
+            let mut server = spawner_with_egg(2, true)?;
+            server.spawner_egg((4, 205, 4), "minecraft:cave_spider").unwrap();
+            server.level.natural_spawning.as_mut().unwrap().spawn_mobs = false;
+            let mut spawned = Vec::new();
+            for _ in 0..400 {
+                server.set_time(time);
+                server.set_players(&[[4.5, 205.0, 7.5]], 2);
+                server.set_simulation_area((0, 0), 1);
+                server.prepare_spawning(&[player]);
+                server.tick();
+                spawned.extend(server.level.spawned.iter().filter(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:cave_spider")).cloned());
+                server.take_spawned();
+            }
+            Some(spawned)
+        };
+        let Some(noon) = run(6000) else { return };
+        assert!(noon.is_empty(), "no cave spider in full daylight: {}", noon.len());
+        let midnight = run(18000).unwrap();
+        assert!(!midnight.is_empty(), "the spawner makes cave spiders in the dark");
+        assert!(midnight.iter().all(|tag| tag.get("Passengers").is_none() && !format!("{tag:?}").contains("random_spawn_bonus")), "no jockey and no Mob.finalizeSpawn");
     }
 
     #[test]

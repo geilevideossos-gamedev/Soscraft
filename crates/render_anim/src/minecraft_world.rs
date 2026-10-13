@@ -631,6 +631,7 @@ fn update(
                 runtime.fire_frames = fire_frames(&world.packs).map(|(image, frames)| (images.add(image), frames));
                 ui.portal_frames = crate::minecraft_portal::frames(&world.packs, &mut images);
                 ui.freeze_outline = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::FREEZE_OUTLINE).map(|(image, _)| image);
+                ui.spyglass_scope = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::SPYGLASS_SCOPE).map(|(image, _)| image);
                 runtime.loading_backgrounds = Some(crate::minecraft_loading::LoadingBackgrounds::load(&world.packs, &mut images));
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
@@ -1384,8 +1385,9 @@ fn update(
             && offhand_stack.as_ref().is_some_and(|stack| {
                 minecraft_survival::offhand::has_use(stack, placeable(stack), &survival.status.food, player_mode.mode) || (containers.cooks_on_campfire(stack, &entities.recipes) && aims_at_campfire())
             });
-        ui.offhand_busy = alive && !moved.holding && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some());
-        ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some());
+        ui.offhand_busy = alive && !moved.holding && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.scoping.is_some());
+        ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.scoping.is_some());
+        ui.scoping = alive && hand.scoping.is_some();
         sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
@@ -1394,8 +1396,8 @@ fn update(
         let main_stack = inventory.slots[*selected].clone().filter(|_| ui.holding_item);
         let offhand_stack = offhand_stack.filter(|_| ui.holding_item || ui.offhand_busy);
         let activation = item_activation.pose((hand.clock / TICK_SECONDS) as f32, aspect).filter(|_| ui_draw.as_ref().is_none_or(|draw| draw.0));
-        let main_stack = main_stack.filter(|_| !mc_detached);
-        let offhand_stack = offhand_stack.filter(|_| !mc_detached);
+        let main_stack = main_stack.filter(|_| !mc_detached && hand.scoping.is_none());
+        let offhand_stack = offhand_stack.filter(|_| !mc_detached && hand.scoping.is_none());
         if !puppet.active && sleepers.camera.is_none() && (activation.is_some() || main_stack.is_some() || offhand_stack.is_some()) {
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
             let mut posed = Vec::new();
@@ -2391,6 +2393,7 @@ fn leave_level(
     survival.stop_eating();
     hand.blocking = None;
     hand.charging = None;
+    hand.scoping = None;
     hand.swing = None;
     hand.recent.clear();
     steps.air_peak = None;
