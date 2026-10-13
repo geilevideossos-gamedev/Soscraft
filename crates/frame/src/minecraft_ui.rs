@@ -126,6 +126,7 @@ pub enum McClick {
     Choose(usize),
     Rename(String),
     Clone(McSlot),
+    EditBook { pages: Vec<String>, title: Option<String> },
 }
 
 #[derive(Resource, Default)]

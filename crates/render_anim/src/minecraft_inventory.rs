@@ -286,6 +286,15 @@ impl InventoryUi {
                         self.book_button(ui, source, *button);
                         continue;
                     }
+                    McClick::EditBook { pages, title } => {
+                        if let BookSource::Held(slot) = source {
+                            let Player { inventory, name, .. } = &mut *player;
+                            minecraft_survival::books::edit_book(inventory, slot, pages, title.as_deref(), name);
+                            ui.inventory_open = false;
+                            self.close_book(ui);
+                        }
+                        continue;
+                    }
                     McClick::Close => self.close_book(ui),
                     _ => continue,
                 }
@@ -651,7 +660,7 @@ pub(crate) fn action_of(click: &McClick) -> Option<MenuAction> {
         McClick::Spread { slots, right } => MenuAction::Spread { slots: slots.iter().filter_map(|slot| menu_slot(*slot)).collect(), right: *right },
         McClick::Throw { slot, whole } => MenuAction::Throw { slot: menu_slot(*slot)?, whole: *whole },
         McClick::Choose(index) => MenuAction::Choose(u16::try_from(*index).ok()?),
-        McClick::Close | McClick::Rename(_) | McClick::Clone(_) => return None,
+        McClick::Close | McClick::Rename(_) | McClick::Clone(_) | McClick::EditBook { .. } => return None,
     })
 }
 
@@ -949,5 +958,40 @@ mod tests {
         ui.inventory_open = true;
         assert!(!inventory_ui.show_held_book(&mut ui, 0, book), "not over another screen");
         assert!(ui.book.is_none());
+    }
+
+    #[test]
+    fn a_held_book_edit_reaches_the_inventory_slot() {
+        use minecraft_survival::books::{WRITABLE_BOOK, WRITABLE_BOOK_CONTENT, WRITTEN_BOOK, WRITTEN_BOOK_CONTENT};
+        let mut inventory_ui = InventoryUi::default();
+        let mut ui = MinecraftUi::default();
+        let profile = minecraft_commands::server::Profile { id: minecraft_commands::PlayerId(0), name: "Steve".to_owned(), uuid: "00000000-0000-0000-0000-000000000001".to_owned() };
+        let mut player = Player::new(&profile, Default::default(), Default::default(), Inventory::default());
+        let mut containers = Containers::default();
+        let data = minecraft_survival::data::GameData::default();
+        player.inventory.slots[2] = Some(ItemStack::new(WRITABLE_BOOK, 1));
+        let empty = frame::McBook { pages: Vec::new(), page: 0, take: false };
+        assert!(inventory_ui.show_held_book(&mut ui, 2, empty.clone()));
+        ui.clicks = vec![McClick::EditBook { pages: vec!["Hello".to_owned(), "World".to_owned()], title: None }];
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
+        assert!(!ui.inventory_open && ui.book.is_none());
+        assert!(inventory_ui.take_lectern_actions().is_empty());
+        let stack = player.inventory.slots[2].clone().expect("the quill");
+        assert_eq!(stack.id, WRITABLE_BOOK);
+        assert_eq!(stack.components, Some(serde_json::json!({WRITABLE_BOOK_CONTENT: {"pages": [{"raw": "Hello"}, {"raw": "World"}]}})));
+        assert!(inventory_ui.show_held_book(&mut ui, 2, empty.clone()));
+        ui.clicks = vec![McClick::EditBook { pages: vec!["Hello".to_owned()], title: Some("Diary".to_owned()) }, McClick::Close];
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
+        let signed = player.inventory.slots[2].clone().expect("the signed book");
+        assert_eq!(signed.id, WRITTEN_BOOK);
+        assert_eq!(signed.components, Some(serde_json::json!({WRITTEN_BOOK_CONTENT: {"title": {"raw": "Diary"}, "author": "Steve", "pages": [{"raw": "Hello"}], "resolved": true}})));
+        let pos = (4, 64, -2);
+        player.inventory.slots[3] = Some(ItemStack::new(WRITABLE_BOOK, 1));
+        assert!(inventory_ui.show_lectern(&mut ui, pos, empty));
+        ui.clicks = vec![McClick::EditBook { pages: vec!["x".to_owned()], title: None }];
+        let _ = inventory_ui.apply_input(&mut ui, &mut player, &mut containers, Books::of(&data), 0.5);
+        assert_eq!(inventory_ui.lectern(), Some(pos), "a lectern book is not edited");
+        assert!(ui.inventory_open);
+        assert_eq!(player.inventory.slots[3], Some(ItemStack::new(WRITABLE_BOOK, 1)));
     }
 }

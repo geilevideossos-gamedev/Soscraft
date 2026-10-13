@@ -97,6 +97,28 @@ Decisions:
 - The held view reuses `McScreen::Lectern` and `McBook`, so the lectern code and its tests are unchanged.
 - Page turns with PageUp/PageDown play no sound, as for the lectern (vanilla's `PageButton.onPress` from a key plays none either); clicking an arrow plays `item.book.page_turn`.
 
+### B8.2 Minecraft books and quills keep their pages and sign into written books on the host
+
+Base: d2d4c403 (B8.1).
+
+What changed:
+- `minecraft_survival/src/books.rs`: `edit_book(inventory, slot, pages, title, author) -> bool`, following vanilla's `ServerGamePacketListenerImpl.handleEditBook`:
+  - refused with no change when the slot is not 0-8 or 40, there are more than 100 pages (`MAX_PAGES`), a page is over 1024 characters (`PAGE_LENGTH`) or the title is over 32 (`TITLE_LENGTH`), or the slot does not hold `minecraft:writable_book`;
+  - pages and title lose `§` and control characters other than `'\n'` (vanilla's `StringUtil.filterText(s, true)` rule: below space and DEL);
+  - without a title the stack keeps its other components and gets `minecraft:writable_book_content = {"pages":[{"raw":p},...]}`; no pages removes the key, and an empty component map becomes `None`;
+  - with a title the same stack (count and other components kept) becomes `minecraft:written_book`: the writable content is removed and `minecraft:written_book_content = {"title":{"raw":t},"author":author,"pages":[{"raw":p}...],"resolved":true}` is written, with no `generation` key (0, "Original", as `book.rs` saves it) and no `pages` key when there are none; `max` comes from the recipe book (16 with the item catalog).
+- `frame`: `McClick::EditBook { pages: Vec<String>, title: Option<String> }`. `action_of` maps it to no menu action.
+- `render_anim/src/minecraft_inventory.rs` `apply_input`: for a held book (`BookSource::Held(slot)`) an `EditBook` calls `edit_book(&mut player.inventory, slot, .., &player.name)` and closes the book screen; a lectern ignores it. Nothing pushes `EditBook` yet: the edit and sign screens (B8.3) and the friend's `ToServer::EditBook` (B8.4) do.
+
+Tests added:
+- minecraft_survival `books`: `editing_a_quill_stores_its_pages_and_an_empty_one_has_no_component` (custom name kept), `signing_turns_a_quill_into_an_original_written_book` (offhand slot 40, exact component, no generation key, trailing empty pages kept, custom name and count kept, max equals the recipe book's and is 16 when the 26.3 item catalog is found, a signed book refuses further edits), `book_edits_follow_vanilla_slot_and_size_rules` (slots 9 and 39 refused, 0, 8 and 40 accepted, an empty slot, a written book and stone refused, 101 pages, a 1025-character page and a 33-character title refused with no change, 100 pages and 1024 two-byte characters accepted, `§`, `\u{1}`, DEL and tab dropped with `'\n'` kept, the title filtered too), `a_signed_book_survives_the_item_nbt_round_trip` (`item_nbt::stack_tag` then `stack_of`: `resolved` comes back as 1, `pages_text` reads both pages).
+- render_anim `a_held_book_edit_reaches_the_inventory_slot` (pages, then signing with the player's name, then a lectern ignoring the edit).
+
+Decisions:
+- **Not vanilla (hardening only):** the host filters `§` and control characters itself. Vanilla's server trusts its client's filter; a friend's client is ours, so the result is the same.
+- The title is filtered but not trimmed on the host; the sign screen (B8.3) trims it before sending, as vanilla's client does.
+- No in-game steps for this commit alone: until B8.3 there is no screen that sends an edit.
+
 ## Owner's test steps (B9.1)
 
 1. **Inventory (E).** Each bottle has its own liquid colour:
@@ -159,7 +181,7 @@ IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*8,minecraft:cactus*4,minecraft:mag
 
 ## Owner's test steps (B8)
 
-Numbered as in the brief's B8 steps. Steps 2-5 and 9 (tooltip, writing, signing, crafting and the friend) come with later groups of this track.
+Numbered as in the brief's B8 steps. Steps 2-5 and 9 (tooltip, writing, signing, crafting and the friend) come with later groups of this track. B8.2 (`edit_book`) has no step of its own until the edit screen arrives.
 
 1. **Reading from the hand.** Hold "Test" and right-click at the sky.
    - "Page 1 of 3" opens, with only the forward arrow and one wide Done button (no Take Book).
@@ -186,3 +208,5 @@ IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",aut
 "MW2's low-health blood overlay and pain vision no longer show on Minecraft maps, for the host or for friends; MW2 maps keep both. Instead a hit gives a faint red flash of about half a second (MW2-style feedback, not vanilla: vanilla has no screen red), and Show Blood (Options > Advanced Video) turns it off."
 
 `docs/MULTIPLAYER.md` line 162 (the `PROTOCOL` constant in the message listing): `pub const PROTOCOL: u16 = 4;`. Line 1415: "... `minecraft_net::PROTOCOL` in `Hello` is the check that counts, and it is 4 (E3, E14, E22; round 9 track B, B9.2: held potion colours in `GearItem` and `FrameView`)." Section 20 or the gear section: the net `GearItem` carries `potion: Option<u32>` (the stack's potion colour) next to `dye`, so other players' held potions are drawn in their colour.
+
+`docs/MINECRAFT-SURVIVAL.md` line 437 (books), after B8.1 and B8.2: replace "and a book can't be read from the hand." with "A written book is read from the hand (main hand or offhand) on vanilla's book screen with one wide Done button; page turns are local." Keep "Books can't be written or signed in game" until the B8.3 group lands, and add: "The host already stores a book and quill's pages and signs it into an original written book (`books::edit_book`, vanilla's `handleEditBook` limits)."
