@@ -308,6 +308,14 @@ mod tests {
                 filtering: false,
             },
             ToServer::RecipeSeen(vec!["minecraft:oak_planks".to_owned()]),
+            ToServer::Click(Click {
+                menu: 0,
+                state: 9,
+                action: MenuAction::PlaceRecipe {
+                    recipe: "iw4l:m4".to_owned(),
+                    all: true,
+                },
+            }),
         ]
     }
 

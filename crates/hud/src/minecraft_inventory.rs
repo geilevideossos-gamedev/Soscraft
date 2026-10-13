@@ -497,6 +497,7 @@ pub(crate) fn update_minecraft_hud(
                     now,
                     gui: gui_size,
                     origin,
+                    shift,
                 };
                 crate::minecraft_recipe_book::input(&mut ui, &mut input.book, frame, Some(&gui.font), clipboard)
             } else {
@@ -559,7 +560,7 @@ pub(crate) fn update_minecraft_hud(
                 clicks.extend(input.clicks.key(&view, hovered, swap, throw));
             }
             if clicks.iter().any(crate::minecraft_recipe_book::touches_grid) {
-                ui.recipe_book.ghost = None;
+                ui.recipe_book.clear_ghost();
             }
             ui.clicks.extend(clicks);
         }

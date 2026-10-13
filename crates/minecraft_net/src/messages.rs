@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 3;
+pub const PROTOCOL: u16 = 4;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -158,6 +158,10 @@ pub enum MenuAction {
         whole: bool,
     },
     Choose(u16),
+    PlaceRecipe {
+        recipe: String,
+        all: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

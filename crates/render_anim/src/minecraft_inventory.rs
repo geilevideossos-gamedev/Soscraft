@@ -684,6 +684,7 @@ pub(crate) fn action_of(click: &McClick) -> Option<MenuAction> {
         McClick::Spread { slots, right } => MenuAction::Spread { slots: slots.iter().filter_map(|slot| menu_slot(*slot)).collect(), right: *right },
         McClick::Throw { slot, whole } => MenuAction::Throw { slot: menu_slot(*slot)?, whole: *whole },
         McClick::Choose(index) => MenuAction::Choose(u16::try_from(*index).ok()?),
+        McClick::PlaceRecipe { recipe, all } => MenuAction::PlaceRecipe { recipe: recipe.clone(), all: *all },
         McClick::Close | McClick::Rename(_) | McClick::Clone(_) => return None,
     })
 }
@@ -842,6 +843,8 @@ mod tests {
         assert_eq!(action_of(&McClick::Choose(2)), Some(MenuAction::Choose(2)));
         let output = McClick::Throw { slot: McSlot::Output, whole: true };
         assert_eq!(action_of(&output), Some(MenuAction::Throw { slot: MenuSlot::Output, whole: true }));
+        let place = McClick::PlaceRecipe { recipe: "iw4l:m4".to_owned(), all: true };
+        assert_eq!(action_of(&place), Some(MenuAction::PlaceRecipe { recipe: "iw4l:m4".to_owned(), all: true }));
         for kept in [McClick::Close, McClick::Rename("Blade".to_owned()), McClick::Clone(McSlot::Inventory(0)), McClick::Slot { slot: McSlot::Creative(5), right: false, shift: false }] {
             assert_eq!(action_of(&kept), None, "{kept:?}");
         }

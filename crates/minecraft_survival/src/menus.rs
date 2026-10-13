@@ -29,6 +29,7 @@ pub const MENU_IDS: u8 = 100;
 pub const STATE_MASK: u16 = 0x7fff;
 pub const PLAYER_SLOTS: usize = 41;
 pub const MENU_INPUTS: usize = 256;
+pub const RECIPE_ID_LIMIT: usize = 256;
 
 #[derive(Clone, Debug)]
 pub enum Open {
@@ -461,6 +462,14 @@ fn keeps_gun(
     }
 }
 
+fn book_grid(menu: Option<&Menu>) -> Option<bool> {
+    match menu.map(|menu| &menu.open) {
+        None | Some(Open::Inventory) => Some(false),
+        Some(Open::Table(_)) => Some(true),
+        _ => None,
+    }
+}
+
 fn valid_slot(menu: Option<&Menu>, containers: &mut Containers, slot: MenuSlot) -> bool {
     let size = match menu.map(|menu| &menu.open) {
         Some(Open::Block(opened)) => containers.cells(opened).len(),
@@ -492,6 +501,9 @@ fn valid(menu: Option<&Menu>, containers: &mut Containers, action: &MenuAction) 
             slots.len() <= PLAYER_SLOTS + 64 && slots.iter().all(|at| slot(*at))
         }
         MenuAction::Outside { .. } | MenuAction::Choose(_) => true,
+        MenuAction::PlaceRecipe { recipe, .. } => {
+            recipe.len() <= RECIPE_ID_LIMIT && book_grid(menu).is_some()
+        }
     }
 }
 
@@ -708,7 +720,7 @@ fn grid_action(
                 None => {}
             }
         }
-        MenuAction::Choose(_) => {}
+        MenuAction::Choose(_) | MenuAction::PlaceRecipe { .. } => {}
     }
 }
 
@@ -731,6 +743,12 @@ pub fn apply(
     } = player;
     containers.with_ender(ender, |containers| {
         if keeps_gun(menus.open.as_ref(), inventory, containers, action) {
+            return;
+        }
+        if let MenuAction::PlaceRecipe { recipe, all } = action {
+            if let Some(table) = book_grid(menus.open.as_ref()) {
+                crate::recipe_book::place(inventory, table, recipe, *all);
+            }
             return;
         }
         let grid = match menus.open.as_ref().map(|menu| &menu.open) {

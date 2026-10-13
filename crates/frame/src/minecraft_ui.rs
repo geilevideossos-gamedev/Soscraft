@@ -125,6 +125,7 @@ pub enum McClick {
     Choose(usize),
     Rename(String),
     Clone(McSlot),
+    PlaceRecipe { recipe: String, all: bool },
 }
 
 #[derive(Resource, Default)]

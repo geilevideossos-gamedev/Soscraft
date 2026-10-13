@@ -699,13 +699,57 @@ IW4L_MINECRAFT_KIT=minecraft:oak_log*16,minecraft:wooden_pickaxe,minecraft:iron_
 IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:oak_log*16,minecraft:wooden_pickaxe,minecraft:iron_ingot*32,minecraft:gunpowder*32,minecraft:copper_ingot*16,minecraft:iron_nugget*16,minecraft:tripwire_hook*4,minecraft:redstone*8,minecraft:repeater*2,minecraft:iron_block*2,minecraft:stick*8,minecraft:cobblestone*16
 ```
 
+## C11.7 and C11.8 Placing from the book, creative
+
+### 1. The recipe book places ingredients for the host and friends
+
+Commit: the one after `7c7633a2`. This is the brief's C11.7 item 2.
+
+- **Changed:**
+  - `minecraft_net` `messages.rs`: `MenuAction::PlaceRecipe { recipe, all }`, appended at the end of `MenuAction`. `PROTOCOL` goes from 3 to 4: the track's one bump, which also covers the recipe-book group's `ToClient::RecipeBook`, `ToServer::RecipeBookSettings` and `ToServer::RecipeSeen`.
+  - Vendored `minecraftoss_player::inventory`: `place_crafting_recipe` keeps its unlock check and hands the rest to the new `place_known_crafting_recipe` (the same body, unchanged), so the fork can place recipes that are always known without unlocking them. The placement itself is the vendored one, written from vanilla's `ServerPlaceRecipe`: the grid goes back into the inventory first (nothing happens when it does not fit), ingredients come only from slots 0-35 and only from stacks without components, a click on the recipe already in the grid adds one more set, shift places as many sets as the inventory and the stack sizes allow (at most 64), and a recipe the inventory cannot make leaves the grid empty and answers `Ghost`.
+  - `minecraft_survival` `recipe_book.rs`: `place(inventory, table, recipe, all)`: a fork recipe (always known) or an unlocked vanilla recipe is placed, anything else is refused.
+  - `minecraft_survival` `menus.rs` (additive): `apply` places the recipe in the open grid, the 2x2 with the inventory open and the 3x3 with a crafting table open; with any other screen open it does nothing. `valid` refuses a `PlaceRecipe` from a friend when no crafting screen is open or the id is longer than `RECIPE_ID_LIMIT` (256), and the menu is sent again. The host's own clicks (`apply`) and a friend's clicks (`click`) go through the same code, per player.
+  - `frame`: `McClick::PlaceRecipe { recipe, all }` (appended); `McRecipeBook.last_placed`, `place` and `clear_ghost`.
+  - `hud` `minecraft_recipe_book.rs`: a left click on a recipe button or on an alternative sends `PlaceRecipe` (shift held: `all`). `BookFrame` carries the shift key; the click works on a `Pick` and pushes into `ui.clicks`, so the request goes in order with the slot clicks. A grid click clears the ghost and the last placed recipe (`clear_ghost`), like vanilla's `slotClicked`. In a narrow window an alternative pick closes the book too, like a button pick.
+  - `render_anim` `minecraft_inventory.rs` `action_of`: `McClick::PlaceRecipe` becomes `MenuAction::PlaceRecipe`, which the host applies to its own player and a friend's window sends as a `Click` on its open menu (`minecraft_remote.rs` unchanged).
+- **Tests:**
+  - `minecraft_survival` `recipe_book::tests` (fork recipes from `fork_recipes::recipes()` plus a planks recipe, no jar needed):
+    - `placing_a_recipe_clears_the_grid_then_fills_it_and_another_click_adds_a_set`: with a crafting table open, dirt in the grid goes back to the inventory, the gun barrel's three iron ingots land in the middle row, a second click makes them 2 each, and the grid gives 2 gun barrels.
+    - `shift_places_as_many_sets_as_the_inventory_holds`: 5 copper ingots give 5 sets of rifle ammo ingredients, and 256 of each give 64 a cell.
+    - `a_missing_ingredient_places_nothing_and_asks_for_the_ghost`: a frag grenade with one plain gunpowder (a named stack does not count) answers `Ghost` with the grid emptied into the inventory; a vanilla recipe is refused until it is unlocked, then placed; a recipe that does not fit the 2x2 and an unknown id are refused.
+    - `a_friend_places_through_its_click_and_only_in_a_crafting_screen`: through `menus::click`, refused (and resent) with a chest open and for an overlong id, placed in the friend's own 2x2 with the inventory open.
+  - `frame` `minecraft_recipe_book::tests::placing_a_recipe_asks_the_host_and_shows_a_ghost_only_for_missing_ingredients`; `reopen` clears `last_placed`.
+  - `hud` `minecraft_recipe_book::tests::clicks_open_tabs_turn_pages_pick_ghosts_and_open_alternatives` now checks the sent `PlaceRecipe` requests: a missing recipe once (a second click on it sends nothing), a shift pick of an alternative with `all`.
+  - `render_anim` `minecraft_inventory::tests::screen_clicks_become_menu_actions_and_the_rest_stay_on_the_screen` covers `PlaceRecipe`.
+  - `minecraft_net` `codec::tests::every_message_to_the_server_round_trips` carries a `Click` with `PlaceRecipe`.
+- **Decisions:**
+  - **The ghost is decided on the screen, not sent back.** Vanilla's server answers an unplaceable recipe with `ClientboundPlaceGhostRecipePacket`. Here every screen already knows whether the recipe can be made (the button's craftable flag, counted from the same slots 0-35 and grid, components-free stacks only), and the host answers `Ghost` exactly when that flag is false. So the screen shows the ghost itself when it asks for a recipe it cannot make, and the host empties the grid; no extra message, for the host and for friends alike.
+  - **Vanilla's repeat rule kept** (`RecipeBookComponent.tryPlaceRecipe`, checked with javap): a click on the same recipe that still cannot be made does nothing; a recipe that can be made is asked for again, which adds a set.
+  - **A full inventory blocks the place,** as vanilla's survival `testClearGrid`; vanilla's creative mode would drop the grid items instead, which the fork does not do.
+  - **A friend's `PlaceRecipe` with no crafting screen open is refused** and the menu resent, like an invalid slot.
+- **Owner's test steps** (survival, a new world, kit below; "row 2" is the middle row of the crafting table):
+  1. Open the inventory and the recipe book (green button). Iron axe tab, find Rifle Ammo and click it: a copper ingot, an iron nugget and gunpowder jump into the 2x2 grid and the result shows 16 Rifle Ammo. **Screenshot 1.**
+  2. Click Rifle Ammo again: each cell holds 2. Shift-click it: each cell holds 8 (all the copper).
+  3. Take the grid items back out, put 4 dirt into the grid, click Rifle Ammo: the dirt goes back into the inventory and the ingredients come in.
+  4. Place the crafting table and open it, open the book: click Gun Barrel: three iron ingots in row 2. Take the 2 barrels. Click Firing Mechanism, take it.
+  5. Click the M4A1 (no iron block in the kit): the grid empties, red ghost items show every ingredient (the iron block too, since the grid holds nothing) and a red M4A1 over the result. Click it again: nothing changes. Put any item into the grid: the ghost goes. **Screenshot 2.**
+  6. Click Oak Planks (unlocked by the logs): a log lands in the grid.
+  7. Two windows (`scripts\mp-local.ps1`, both on this build, both with the kit): the friend places Rifle Ammo in their 2x2 and shift-clicks Gun Barrel in a crafting table; only the friend's grid fills, and the friend takes the results. **Screenshot 3** (friend window).
+  8. A friend on an older build is refused when joining with the outdated-build message (protocol 4).
+- **Kit** (10 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:oak_log*8,minecraft:iron_ingot*16,minecraft:copper_ingot*8,minecraft:iron_nugget*16,minecraft:gunpowder*16,minecraft:tripwire_hook*2,minecraft:redstone*4,minecraft:repeater*2,minecraft:dirt*8
+```
+
 ## Vendored minecraftoss files
 
-Patched by this track so far (5): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`. Added: none.
+Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`. Added: none.
 
 ## Protocol
 
-`minecraft_net::PROTOCOL` not changed yet (it goes up once in the group book-place-creative). The recipe-book group already changed the message shapes (`ToClient::RecipeBook`, `ToServer::RecipeBookSettings`, `ToServer::RecipeSeen`, appended at the end of both enums, codec indices 31, 12 and 13); the bump in the next group covers them.
+`minecraft_net::PROTOCOL` is 4 (from 3), bumped once in "The recipe book places ingredients for the host and friends". It covers `ToClient::RecipeBook`, `ToServer::RecipeBookSettings`, `ToServer::RecipeSeen` (codec indices 31, 12 and 13) and `MenuAction::PlaceRecipe` (the last `MenuAction` variant). The grenade-slot group must not bump it again. Tracks A and B bump it too: whoever merges later takes the next number and renumbers the new codec indices.
 
 ## State doc changes
 
@@ -729,3 +773,5 @@ Patched by this track so far (5): `player/src/item_catalog.rs`, `core/src/item.r
 - `MINECRAFT-SURVIVAL.md`, line 398 (no recipe book), replaced by: "The inventory and the crafting table have vanilla's recipe book: the green button, the panel to the left with the Search, Equipment, Building, Misc and Redstone tabs, 20 recipes a page, the search box (fork items by their MW2 names), \"Showing craftable\", red buttons for missing ingredients, groups behind one button with the right-click alternatives, and ghost ingredients for a clicked recipe. Every fork recipe is always in it (Equipment, after vanilla's); vanilla recipes appear once unlocked. Not built: the furnace books and keyboard or pad navigation of the book."
 - `MINECRAFT-SURVIVAL.md`, the saving section: "Each player's vanilla recipe unlocks, the recipes still waiting to be shown, and the recipe book's open and \"Showing craftable\" flags are saved in vanilla's `recipeBook` compound of the player file; a recipe id the 26.3 data does not know is dropped on load like vanilla, and fork recipes are never written (they are always known). Recipes unlock the vanilla way, from items entering the inventory, including the items carried when joining."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's recipe unlocks and book settings live on the host in the friend's player file; the host sends the friend's unlocked recipes when they change, and the friend sends its book settings and the recipes its book has shown."
+- `MINECRAFT-SURVIVAL.md`, the recipe book sentence: "A click on a recipe moves its ingredients from the inventory into the grid (what was in the grid goes back first), another click adds one more set and shift-click places as many as fit; a recipe that cannot be made empties the grid and shows red ghost items."
+- `MULTIPLAYER.md` (version checks): "The Minecraft multiplayer protocol is 4: friends place recipe-book recipes with `MenuAction::PlaceRecipe`, which the host applies to the friend's own grid."

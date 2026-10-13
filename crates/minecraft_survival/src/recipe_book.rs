@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use minecraft_net::messages::RecipeBookView;
-use minecraftoss_player::inventory::Inventory;
+use minecraftoss_player::inventory::{Inventory, RecipePlacement};
 
 use crate::player_nbt::SavedBook;
 
@@ -120,6 +120,15 @@ pub fn notice_carried(inventory: &mut Inventory) {
     }
 }
 
+pub fn place(inventory: &mut Inventory, table: bool, recipe: &str, all: bool) -> RecipePlacement {
+    if !minecraft_terrain::recipe_book::always_known(recipe)
+        && !inventory.unlocked_recipes.contains(recipe)
+    {
+        return RecipePlacement::Blocked;
+    }
+    inventory.place_known_crafting_recipe(recipe, table, all)
+}
+
 pub fn follow_screen(
     book: &mut Book,
     inventory: &Inventory,
@@ -157,7 +166,12 @@ mod tests {
     use minecraftoss_player::inventory::ItemStack;
     use serde_json::json;
 
+    use minecraft_net::messages::{Click, MenuAction};
+    use minecraft_terrain::containers::{Containers, Opened, Station};
+    use minecraft_terrain::stations::StationBook;
+
     use super::*;
+    use crate::menus::{self, Books, Open};
 
     fn inventory() -> Inventory {
         let planks = json!({"type": "minecraft:crafting_shapeless", "category": "building", "ingredients": ["minecraft:oak_log"], "result": {"id": "minecraft:oak_planks", "count": 4}});
@@ -169,6 +183,235 @@ mod tests {
             ("iw4l:rifle_ammo".to_owned(), ammo),
         ]));
         inventory
+    }
+
+    fn placing() -> Inventory {
+        let planks = json!({"type": "minecraft:crafting_shapeless", "category": "building", "ingredients": ["minecraft:oak_log"], "result": {"id": "minecraft:oak_planks", "count": 4}});
+        let mut recipes = minecraft_terrain::fork_recipes::recipes();
+        recipes.push(("minecraft:oak_planks".to_owned(), planks));
+        Inventory::default().with_recipes(RecipeBook::default().with_extra(recipes))
+    }
+
+    fn stack(id: &str, count: u8) -> Option<ItemStack> {
+        Some(ItemStack::new(id, count))
+    }
+
+    fn cells(grid: &[Option<ItemStack>]) -> Vec<Option<(&str, u8)>> {
+        grid.iter()
+            .map(|stack| stack.as_ref().map(|stack| (stack.id.as_str(), stack.count)))
+            .collect()
+    }
+
+    fn total(inventory: &Inventory, id: &str) -> u32 {
+        inventory
+            .slots
+            .iter()
+            .flatten()
+            .filter(|stack| stack.id == id)
+            .map(|stack| u32::from(stack.count))
+            .sum()
+    }
+
+    fn player(id: u32, name: &str, inventory: Inventory) -> crate::player::Player {
+        let mut chat = minecraft_commands::CommandServer::new(crate::commands::HOST);
+        let id = minecraft_commands::PlayerId(id);
+        chat.join(id, name);
+        crate::player::Player::new(
+            chat.profile(id).unwrap(),
+            minecraft_terrain::game_mode::PlayerMode::default(),
+            crate::survival::Survival::default(),
+            inventory,
+        )
+    }
+
+    fn place_action(recipe: &str, all: bool) -> MenuAction {
+        MenuAction::PlaceRecipe {
+            recipe: recipe.to_owned(),
+            all,
+        }
+    }
+
+    fn apply(player: &mut crate::player::Player, action: &MenuAction) {
+        let stations = StationBook::default();
+        let books = Books {
+            stations: &stations,
+            enchantments: None,
+            guns: None,
+        };
+        menus::apply(player, &mut Containers::default(), books, action, 0.5);
+    }
+
+    #[test]
+    fn placing_a_recipe_clears_the_grid_then_fills_it_and_another_click_adds_a_set() {
+        let mut inventory = placing();
+        inventory.slots[5] = stack("minecraft:iron_ingot", 10);
+        let mut host = player(0, "Steve", inventory);
+        assert!(menus::open(
+            &mut host,
+            Open::Table((0, 64, 0)),
+            minecraft_commands::Text::literal("Crafting"),
+            0
+        ));
+        host.inventory.workbench[0] = stack("minecraft:dirt", 3);
+        apply(&mut host, &place_action("iw4l:gun_barrel", false));
+        let iron = Some(("minecraft:iron_ingot", 1));
+        assert_eq!(
+            cells(&host.inventory.workbench),
+            [None, None, None, iron, iron, iron, None, None, None]
+        );
+        assert_eq!(total(&host.inventory, "minecraft:dirt"), 3);
+        assert_eq!(total(&host.inventory, "minecraft:iron_ingot"), 7);
+        apply(&mut host, &place_action("iw4l:gun_barrel", false));
+        let iron = Some(("minecraft:iron_ingot", 2));
+        assert_eq!(cells(&host.inventory.workbench)[3..6], [iron, iron, iron]);
+        assert_eq!(total(&host.inventory, "minecraft:iron_ingot"), 4);
+        let made = host
+            .inventory
+            .recipes
+            .matching(&host.inventory.workbench, 3, 3);
+        assert_eq!(
+            made.map(|stack| (stack.id, stack.count)),
+            Some(("iw4l:gun_barrel".to_owned(), 2))
+        );
+    }
+
+    #[test]
+    fn shift_places_as_many_sets_as_the_inventory_holds() {
+        let mut inventory = placing();
+        inventory.slots[0] = stack("minecraft:copper_ingot", 5);
+        inventory.slots[9] = stack("minecraft:iron_nugget", 20);
+        inventory.slots[20] = stack("minecraft:gunpowder", 64);
+        inventory.slots[21] = stack("minecraft:gunpowder", 64);
+        let mut host = player(0, "Steve", inventory);
+        apply(&mut host, &place_action("iw4l:rifle_ammo", true));
+        assert_eq!(
+            cells(&host.inventory.crafting),
+            [
+                Some(("minecraft:copper_ingot", 5)),
+                Some(("minecraft:iron_nugget", 5)),
+                Some(("minecraft:gunpowder", 5)),
+                None
+            ]
+        );
+        assert_eq!(total(&host.inventory, "minecraft:copper_ingot"), 0);
+        assert_eq!(total(&host.inventory, "minecraft:iron_nugget"), 15);
+        assert_eq!(total(&host.inventory, "minecraft:gunpowder"), 123);
+        let mut many = placing();
+        for slot in 0..4 {
+            many.slots[slot] = stack("minecraft:copper_ingot", 64);
+            many.slots[slot + 9] = stack("minecraft:iron_nugget", 64);
+            many.slots[slot + 18] = stack("minecraft:gunpowder", 64);
+        }
+        assert_eq!(
+            place(&mut many, false, "iw4l:rifle_ammo", true),
+            RecipePlacement::Placed
+        );
+        assert_eq!(
+            cells(&many.crafting),
+            [
+                Some(("minecraft:copper_ingot", 64)),
+                Some(("minecraft:iron_nugget", 64)),
+                Some(("minecraft:gunpowder", 64)),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_ingredient_places_nothing_and_asks_for_the_ghost() {
+        let mut inventory = placing();
+        inventory.slots[0] = stack("minecraft:iron_ingot", 4);
+        inventory.slots[1] = stack("minecraft:iron_nugget", 4);
+        inventory.slots[2] = stack("minecraft:gunpowder", 1);
+        let mut named = ItemStack::new("minecraft:gunpowder", 5);
+        named.components = Some(json!({"minecraft:custom_name": "Dust"}));
+        inventory.slots[3] = Some(named);
+        inventory.crafting[3] = stack("minecraft:dirt", 2);
+        assert_eq!(
+            place(&mut inventory, false, "iw4l:frag_grenade", false),
+            RecipePlacement::Ghost
+        );
+        assert_eq!(cells(&inventory.crafting), [None, None, None, None]);
+        assert_eq!(total(&inventory, "minecraft:dirt"), 2);
+        assert_eq!(total(&inventory, "minecraft:iron_ingot"), 4);
+        assert_eq!(total(&inventory, "minecraft:gunpowder"), 6);
+        inventory.slots[4] = stack("minecraft:oak_log", 2);
+        assert_eq!(
+            place(&mut inventory, false, "minecraft:oak_planks", false),
+            RecipePlacement::Blocked
+        );
+        assert!(inventory.unlock_recipe("minecraft:oak_planks"));
+        assert_eq!(
+            place(&mut inventory, false, "minecraft:oak_planks", false),
+            RecipePlacement::Placed
+        );
+        assert_eq!(
+            cells(&inventory.crafting)[0],
+            Some(("minecraft:oak_log", 1))
+        );
+        assert_eq!(
+            place(&mut inventory, false, "iw4l:m4", false),
+            RecipePlacement::Blocked
+        );
+        assert_eq!(
+            place(&mut inventory, false, "iw4l:nothing", false),
+            RecipePlacement::Blocked
+        );
+    }
+
+    #[test]
+    fn a_friend_places_through_its_click_and_only_in_a_crafting_screen() {
+        let mut inventory = placing();
+        inventory.slots[7] = stack("minecraft:copper_ingot", 2);
+        inventory.slots[8] = stack("minecraft:iron_nugget", 2);
+        inventory.slots[30] = stack("minecraft:gunpowder", 2);
+        let mut friend = player(1, "Alex", inventory);
+        let stations = StationBook::default();
+        let books = Books {
+            stations: &stations,
+            enchantments: None,
+            guns: None,
+        };
+        let mut containers = Containers::default();
+        let chest = Opened {
+            station: Station::Chest,
+            cells: vec![(4, 64, 4)],
+        };
+        assert!(menus::open(
+            &mut friend,
+            Open::Block(chest),
+            minecraft_commands::Text::literal("Chest"),
+            0
+        ));
+        let id = friend.menus.current().id;
+        let message = |menu: u8, recipe: &str| Click {
+            menu,
+            state: 0,
+            action: place_action(recipe, false),
+        };
+        let mut click = |friend: &mut crate::player::Player, message: Click| {
+            menus::click(friend, &mut containers, books, &message, 0.5);
+        };
+        click(&mut friend, message(id, "iw4l:rifle_ammo"));
+        assert_eq!(cells(&friend.inventory.crafting), [None, None, None, None]);
+        assert!(friend.menus.current().resends());
+        menus::close(&mut friend);
+        let long = format!("iw4l:{}", "a".repeat(menus::RECIPE_ID_LIMIT));
+        click(&mut friend, message(menus::INVENTORY_MENU, &long));
+        assert!(friend.menus.current().resends());
+        click(
+            &mut friend,
+            message(menus::INVENTORY_MENU, "iw4l:rifle_ammo"),
+        );
+        assert_eq!(
+            cells(&friend.inventory.crafting)[..3],
+            [
+                Some(("minecraft:copper_ingot", 1)),
+                Some(("minecraft:iron_nugget", 1)),
+                Some(("minecraft:gunpowder", 1))
+            ]
+        );
+        assert_eq!(total(&friend.inventory, "minecraft:copper_ingot"), 1);
     }
 
     fn file(recipes: &[&str], shown: &[&str]) -> SavedBook {

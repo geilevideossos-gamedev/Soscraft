@@ -1,4 +1,4 @@
-use crate::{McSlot, McStack};
+use crate::{McClick, McSlot, McStack};
 
 pub const MC_RECIPE_TABS: usize = 5;
 pub const MC_RECIPES_PER_PAGE: usize = 20;
@@ -70,6 +70,7 @@ pub struct McRecipeBook {
     pub highlight: usize,
     pub focused: bool,
     pub ghost: Option<String>,
+    pub last_placed: Option<String>,
     pub overlay: Option<usize>,
     pub tabs: [bool; MC_RECIPE_TABS],
     pub tab_icons: Vec<Vec<McStack>>,
@@ -90,6 +91,7 @@ impl Default for McRecipeBook {
             highlight: 0,
             focused: false,
             ghost: None,
+            last_placed: None,
             overlay: None,
             tabs: [true, false, false, false, false],
             tab_icons: Vec::new(),
@@ -108,8 +110,25 @@ impl McRecipeBook {
         self.cursor = 0;
         self.highlight = 0;
         self.focused = false;
-        self.ghost = None;
+        self.clear_ghost();
         self.overlay = None;
+    }
+
+    pub fn clear_ghost(&mut self) {
+        self.ghost = None;
+        self.last_placed = None;
+    }
+
+    pub fn place(&mut self, recipe: &McRecipeOption, all: bool) -> Option<McClick> {
+        if !recipe.craftable && self.last_placed.as_ref() == Some(&recipe.id) {
+            return None;
+        }
+        self.last_placed = Some(recipe.id.clone());
+        self.ghost = (!recipe.craftable).then(|| recipe.id.clone());
+        Some(McClick::PlaceRecipe {
+            recipe: recipe.id.clone(),
+            all,
+        })
     }
 
     pub fn select_tab(&mut self, tab: usize) {
@@ -245,6 +264,7 @@ mod tests {
         assert_eq!(book.shown_tab(), 1);
         book.query = "stick".to_owned();
         book.ghost = Some("minecraft:stick".to_owned());
+        book.last_placed = Some("minecraft:stick".to_owned());
         book.open = true;
         book.filtering = true;
         book.reopen();
@@ -258,5 +278,44 @@ mod tests {
             (0, 0, "", None)
         );
         assert!(book.open && book.filtering);
+        assert_eq!(book.last_placed, None);
+    }
+
+    #[test]
+    fn placing_a_recipe_asks_the_host_and_shows_a_ghost_only_for_missing_ingredients() {
+        let mut book = McRecipeBook::default();
+        let planks = option("minecraft:oak_planks", "minecraft:oak_planks", true);
+        let gun = option("iw4l:m4", "iw4l:m4", false);
+        let request = |recipe: &str, all: bool| {
+            Some(McClick::PlaceRecipe {
+                recipe: recipe.to_owned(),
+                all,
+            })
+        };
+        assert_eq!(
+            book.place(&planks, false),
+            request("minecraft:oak_planks", false)
+        );
+        assert_eq!(book.ghost, None);
+        assert_eq!(
+            book.place(&planks, true),
+            request("minecraft:oak_planks", true)
+        );
+        assert_eq!(book.place(&gun, false), request("iw4l:m4", false));
+        assert_eq!(book.ghost.as_deref(), Some("iw4l:m4"));
+        assert_eq!(book.place(&gun, true), None);
+        assert_eq!(book.ghost.as_deref(), Some("iw4l:m4"));
+        assert_eq!(
+            book.place(&planks, false),
+            request("minecraft:oak_planks", false)
+        );
+        assert_eq!(book.ghost, None);
+        assert_eq!(book.place(&gun, false), request("iw4l:m4", false));
+        book.clear_ghost();
+        assert_eq!(
+            (book.ghost.as_deref(), book.last_placed.as_deref()),
+            (None, None)
+        );
+        assert_eq!(book.place(&gun, false), request("iw4l:m4", false));
     }
 }

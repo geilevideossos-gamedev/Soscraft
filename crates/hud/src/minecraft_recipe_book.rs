@@ -206,6 +206,7 @@ pub(crate) struct BookFrame<'a> {
     pub now: f64,
     pub gui: [i32; 2],
     pub origin: [i32; 2],
+    pub shift: bool,
 }
 
 pub(crate) fn input(
@@ -219,7 +220,11 @@ pub(crate) fn input(
         return [false; 2];
     }
     let toggle = button(ui.screen, frame.origin, frame.gui);
-    let book = &mut ui.recipe_book;
+    let MinecraftUi {
+        recipe_book: book,
+        clicks,
+        ..
+    } = ui;
     if book.page >= book.pages {
         book.page = 0;
     }
@@ -232,7 +237,14 @@ pub(crate) fn input(
             return [true, false];
         }
         if book.open {
-            consumed = click(book, mouse, frame.pressed, frame.gui, ticks(frame.now));
+            let pick = Pick {
+                mouse,
+                pressed: frame.pressed,
+                gui: frame.gui,
+                ticks: ticks(frame.now),
+                shift: frame.shift,
+            };
+            consumed = click(book, pick, clicks);
             if book.focused && consumed[0] {
                 input.since = frame.now;
             }
@@ -266,21 +278,35 @@ pub(crate) fn input(
     consumed
 }
 
-pub(crate) fn click(
-    book: &mut McRecipeBook,
-    mouse: [i32; 2],
-    pressed: [bool; 2],
-    gui: [i32; 2],
-    ticks: f64,
-) -> [bool; 2] {
+#[derive(Clone, Copy)]
+pub(crate) struct Pick {
+    pub mouse: [i32; 2],
+    pub pressed: [bool; 2],
+    pub gui: [i32; 2],
+    pub ticks: f64,
+    pub shift: bool,
+}
+
+pub(crate) fn click(book: &mut McRecipeBook, pick: Pick, clicks: &mut Vec<McClick>) -> [bool; 2] {
+    let Pick {
+        mouse,
+        pressed,
+        gui,
+        ticks,
+        shift,
+    } = pick;
     let panel = panel(gui);
     if let Some((index, overlay)) = overlay_of(book, panel) {
         if pressed[0] {
             let options = book.buttons[index].alternatives(book.filtering);
-            if let Some(chosen) =
-                (0..options.len()).find(|&option| inside(mouse, overlay.option(option)))
+            if let Some(chosen) = (0..options.len())
+                .find(|&option| inside(mouse, overlay.option(option)))
+                .map(|chosen| options[chosen].clone())
             {
-                book.ghost = Some(options[chosen].id.clone());
+                clicks.extend(book.place(&chosen, shift));
+                if narrow(gui) {
+                    book.open = false;
+                }
             }
         }
         book.overlay = None;
@@ -303,8 +329,8 @@ pub(crate) fn click(
     {
         let button = &book.buttons[index];
         if pressed[0] {
-            if let Some(shown) = button.shown(book.filtering, ticks) {
-                book.ghost = Some(shown.id.clone());
+            if let Some(shown) = button.shown(book.filtering, ticks).cloned() {
+                clicks.extend(book.place(&shown, shift));
                 if narrow(gui) {
                     book.open = false;
                 }
@@ -782,6 +808,31 @@ mod tests {
 
     const GUI: [i32; 2] = [427, 240];
 
+    fn tap(
+        book: &mut McRecipeBook,
+        sent: &mut Vec<McClick>,
+        mouse: [i32; 2],
+        pressed: [bool; 2],
+        gui: [i32; 2],
+        ticks: f64,
+    ) -> [bool; 2] {
+        let pick = Pick {
+            mouse,
+            pressed,
+            gui,
+            ticks,
+            shift: false,
+        };
+        click(book, pick, sent)
+    }
+
+    fn placed(recipe: &str, all: bool) -> McClick {
+        McClick::PlaceRecipe {
+            recipe: recipe.to_owned(),
+            all,
+        }
+    }
+
     #[test]
     fn the_book_opens_left_of_the_screen_and_shifts_it_like_vanilla() {
         let inventory = crate::minecraft_screens::layout(McScreen::Inventory);
@@ -849,15 +900,17 @@ mod tests {
     #[test]
     fn clicks_open_tabs_turn_pages_pick_ghosts_and_open_alternatives() {
         let mut book = book();
+        let mut sent = Vec::new();
         let panel = panel(GUI);
         assert_eq!(
-            click(&mut book, [30, 70], [true, false], GUI, 0.0),
+            tap(&mut book, &mut sent, [30, 70], [true, false], GUI, 0.0),
             [true, false]
         );
         assert_eq!((book.tab, book.page), (1, 0));
         assert_eq!(
-            click(
+            tap(
                 &mut book,
+                &mut sent,
                 [panel[0] + 95, panel[1] + 140],
                 [true, false],
                 GUI,
@@ -866,16 +919,18 @@ mod tests {
             [true, false]
         );
         assert_eq!(book.page, 1);
-        click(
+        tap(
             &mut book,
+            &mut sent,
             [panel[0] + 40, panel[1] + 140],
             [true, false],
             GUI,
             0.0,
         );
         assert_eq!(book.page, 0);
-        click(
+        tap(
             &mut book,
+            &mut sent,
             [panel[0] + 40, panel[1] + 140],
             [true, false],
             GUI,
@@ -883,17 +938,20 @@ mod tests {
         );
         assert_eq!(book.page, 0);
         let first = recipe_rect(panel, 0);
-        click(
+        tap(
             &mut book,
+            &mut sent,
             [first[0] + 2, first[1] + 2],
             [true, false],
             GUI,
             31.0,
         );
         assert_eq!(book.ghost.as_deref(), Some("minecraft:birch_planks"));
+        assert_eq!(sent, [placed("minecraft:birch_planks", false)]);
         let second = recipe_rect(panel, 1);
-        click(
+        tap(
             &mut book,
+            &mut sent,
             [second[0] + 2, second[1] + 2],
             [false, true],
             GUI,
@@ -901,8 +959,9 @@ mod tests {
         );
         assert_eq!(book.overlay, None, "one recipe has no alternatives");
         assert_eq!(
-            click(
+            tap(
                 &mut book,
+                &mut sent,
                 [first[0] + 2, first[1] + 2],
                 [false, true],
                 GUI,
@@ -912,8 +971,9 @@ mod tests {
         );
         assert_eq!(book.overlay, Some(0));
         let overlay = Overlay::new(2, [first[0], first[1]], panel).option(1);
-        click(
+        tap(
             &mut book,
+            &mut sent,
             [overlay[0] + 1, overlay[1] + 1],
             [true, false],
             GUI,
@@ -921,16 +981,34 @@ mod tests {
         );
         assert_eq!(book.ghost.as_deref(), Some("minecraft:birch_planks"));
         assert_eq!(book.overlay, None);
+        assert_eq!(
+            sent.len(),
+            1,
+            "the same missing recipe is not asked for again"
+        );
+        book.overlay = Some(0);
+        let oak = Overlay::new(2, [first[0], first[1]], panel).option(0);
+        let pick = Pick {
+            mouse: [oak[0] + 1, oak[1] + 1],
+            pressed: [true, false],
+            gui: GUI,
+            ticks: 0.0,
+            shift: true,
+        };
+        click(&mut book, pick, &mut sent);
+        assert_eq!(sent[1..], [placed("minecraft:oak_planks", true)]);
+        assert_eq!(book.ghost, None);
         book.overlay = Some(0);
         assert_eq!(
-            click(&mut book, [5, 5], [true, false], GUI, 0.0),
+            tap(&mut book, &mut sent, [5, 5], [true, false], GUI, 0.0),
             [true, false],
             "a click beside the alternatives only closes them"
         );
         assert_eq!(book.overlay, None);
         assert_eq!(
-            click(
+            tap(
                 &mut book,
+                &mut sent,
                 [panel[0] + 30, panel[1] + 16],
                 [true, false],
                 GUI,
@@ -939,8 +1017,9 @@ mod tests {
             [true, false]
         );
         assert!(book.focused);
-        click(
+        tap(
             &mut book,
+            &mut sent,
             [panel[0] + 112, panel[1] + 14],
             [true, false],
             GUI,
@@ -948,14 +1027,15 @@ mod tests {
         );
         assert!(book.filtering && !book.focused);
         assert_eq!(
-            click(&mut book, [5, 5], [true, false], GUI, 0.0),
+            tap(&mut book, &mut sent, [5, 5], [true, false], GUI, 0.0),
             [false, false]
         );
         book.filtering = false;
         book.open = true;
         let narrow_first = recipe_rect(super::panel([320, 240]), 0);
-        click(
+        tap(
             &mut book,
+            &mut sent,
             [narrow_first[0] + 2, narrow_first[1] + 2],
             [true, false],
             [320, 240],
@@ -986,6 +1066,7 @@ mod tests {
             now: 1.0,
             gui: GUI,
             origin,
+            shift: false,
         };
         assert_eq!(
             input_of(

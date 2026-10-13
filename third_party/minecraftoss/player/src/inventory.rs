@@ -228,6 +228,15 @@ impl Inventory {
         if !self.unlocked_recipes.contains(recipe_id) {
             return RecipePlacement::Blocked;
         }
+        self.place_known_crafting_recipe(recipe_id, workbench, use_max_items)
+    }
+
+    pub fn place_known_crafting_recipe(
+        &mut self,
+        recipe_id: &str,
+        workbench: bool,
+        use_max_items: bool,
+    ) -> RecipePlacement {
         let side = if workbench { 3 } else { 2 };
         let Some(candidates) = self.recipes.crafting_grid_candidates(recipe_id, side, side) else {
             return RecipePlacement::Blocked;
