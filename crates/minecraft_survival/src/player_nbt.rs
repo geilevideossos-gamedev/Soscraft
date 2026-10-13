@@ -170,6 +170,13 @@ const OWNED: [&str; 25] = [
 ];
 
 #[derive(Clone, Debug, Default, PartialEq)]
+pub struct SavedBook {
+    pub recipes: Vec<String>,
+    pub to_be_displayed: Vec<String>,
+    pub settings: [bool; 8],
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlayerData {
     pub mode: Option<PlayerMode>,
     pub inventory: Option<Vec<Option<ItemStack>>>,
@@ -187,6 +194,7 @@ pub struct PlayerData {
     pub sleeping_pos: Option<(i32, i32, i32)>,
     pub time_since_rest: Option<i32>,
     pub tags: Option<Vec<String>>,
+    pub recipe_book: Option<SavedBook>,
 }
 
 impl PlayerData {
@@ -252,6 +260,7 @@ impl PlayerData {
                     .map(str::to_owned)
                     .collect()
             }),
+            recipe_book: tag.get("recipeBook").map(read_book),
         }
     }
 
@@ -325,6 +334,9 @@ impl PlayerData {
             let list = tags.iter().map(|tag| Tag::String(tag.clone())).collect();
             entries.insert("Tags".to_owned(), Tag::List(list));
         }
+        if let Some(book) = &self.recipe_book {
+            entries.insert("recipeBook".to_owned(), book_tag(book));
+        }
         entries
     }
 
@@ -369,6 +381,37 @@ impl PlayerData {
         }
         entries
     }
+}
+
+fn read_book(tag: &Tag) -> SavedBook {
+    let ids = |key: &str| -> Vec<String> {
+        tag.get(key)
+            .and_then(Tag::as_list)
+            .map_or_else(Vec::new, |list| list.iter().filter_map(Tag::as_str).map(str::to_owned).collect())
+    };
+    let mut settings = [false; 8];
+    for (flag, key) in settings.iter_mut().zip(crate::recipe_book::SETTINGS) {
+        *flag = tag.get(key).and_then(Tag::as_i64).is_some_and(|value| value != 0);
+    }
+    SavedBook {
+        recipes: ids("recipes"),
+        to_be_displayed: ids("toBeDisplayed"),
+        settings,
+    }
+}
+
+fn book_tag(book: &SavedBook) -> Tag {
+    let list = |ids: &[String]| Tag::List(ids.iter().map(|id| Tag::String(id.clone())).collect());
+    let mut entries: BTreeMap<String, Tag> = book
+        .settings
+        .iter()
+        .zip(crate::recipe_book::SETTINGS)
+        .filter(|(flag, _)| **flag)
+        .map(|(_, key)| (key.to_owned(), Tag::Byte(1)))
+        .collect();
+    entries.insert("recipes".to_owned(), list(&book.recipes));
+    entries.insert("toBeDisplayed".to_owned(), list(&book.to_be_displayed));
+    Tag::Compound(entries)
 }
 
 fn compound(entries: Vec<(&str, Tag)>) -> Tag {
@@ -855,6 +898,68 @@ mod tests {
         assert_eq!(names, ["vanilla_team_red", "other_pack", "iw4l_loadout_given"]);
         let without = PlayerData::default().merged(Some(previous.clone()));
         assert_eq!(without.get("Tags"), previous.get("Tags"));
+    }
+
+    #[test]
+    fn the_recipe_book_is_saved_in_vanilla_s_recipe_book_compound() {
+        let data = PlayerData {
+            recipe_book: Some(SavedBook {
+                recipes: vec!["minecraft:oak_planks".to_owned(), "minecraft:stick".to_owned()],
+                to_be_displayed: vec!["minecraft:stick".to_owned()],
+                settings: [true, false, false, true, false, false, false, false],
+            }),
+            ..PlayerData::default()
+        };
+        let tag = Tag::Compound(data.entries());
+        let book = tag.get("recipeBook").unwrap();
+        assert_eq!(book.get("isGuiOpen"), Some(&Tag::Byte(1)));
+        assert_eq!(book.get("isFurnaceFilteringCraftable"), Some(&Tag::Byte(1)));
+        assert_eq!(book.get("isFilteringCraftable"), None);
+        assert_eq!(
+            book.get("recipes"),
+            Some(&Tag::List(vec![Tag::String("minecraft:oak_planks".to_owned()), Tag::String("minecraft:stick".to_owned())]))
+        );
+        assert_eq!(book.get("toBeDisplayed"), Some(&Tag::List(vec![Tag::String("minecraft:stick".to_owned())])));
+        let recipes = RecipeBook::default();
+        assert_eq!(PlayerData::read(&tag, &recipes).recipe_book, data.recipe_book);
+        let previous = compound(vec![("recipeBook", compound(vec![("isSmokerGuiOpen", Tag::Byte(1)), ("recipes", Tag::List(Vec::new()))]))]);
+        let merged = data.merged(Some(previous.clone()));
+        assert_eq!(merged.get("recipeBook"), Some(book));
+        let carried = PlayerData::default().merged(Some(previous.clone()));
+        assert_eq!(carried.get("recipeBook"), previous.get("recipeBook"));
+        let empty = compound(vec![("recipeBook", compound(vec![("isSmokerGuiOpen", Tag::Byte(1))]))]);
+        let read = PlayerData::read(&empty, &recipes).recipe_book.unwrap();
+        assert!(read.recipes.is_empty() && read.to_be_displayed.is_empty());
+        assert_eq!(read.settings, [false, false, false, false, false, false, true, false]);
+    }
+
+    #[test]
+    fn a_player_saves_its_unlocked_recipes_but_never_a_fork_recipe() {
+        let planks = serde_json::json!({"type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:oak_log"], "result": {"id": "minecraft:oak_planks", "count": 4}});
+        let ammo = serde_json::json!({"type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:gunpowder"], "result": {"id": "iw4l:rifle_ammo", "count": 16}});
+        let recipes = RecipeBook::default().with_extra(vec![("minecraft:oak_planks".to_owned(), planks), ("iw4l:rifle_ammo".to_owned(), ammo)]);
+        let tag = compound(vec![(
+            "recipeBook",
+            compound(vec![
+                ("recipes", Tag::List(vec![Tag::String("minecraft:oak_planks".to_owned()), Tag::String("minecraft:removed_long_ago".to_owned()), Tag::String("iw4l:rifle_ammo".to_owned())])),
+                ("toBeDisplayed", Tag::List(vec![Tag::String("minecraft:removed_long_ago".to_owned())])),
+                ("isFilteringCraftable", Tag::Byte(1)),
+            ]),
+        )]);
+        let read = PlayerData::read(&tag, &recipes);
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.recipes = std::sync::Arc::new(recipes);
+        let book = crate::recipe_book::Book::restore(read.recipe_book.as_ref(), &mut inventory);
+        inventory.unlocked_recipes.insert("iw4l:rifle_ammo".to_owned());
+        let saved = PlayerData {
+            recipe_book: Some(book.saved(&inventory)),
+            ..PlayerData::default()
+        };
+        let written = Tag::Compound(saved.entries());
+        let written = written.get("recipeBook").unwrap();
+        assert_eq!(written.get("recipes"), Some(&Tag::List(vec![Tag::String("minecraft:oak_planks".to_owned())])));
+        assert_eq!(written.get("toBeDisplayed"), Some(&Tag::List(Vec::new())));
+        assert_eq!(written.get("isFilteringCraftable"), Some(&Tag::Byte(1)));
     }
 
     #[test]

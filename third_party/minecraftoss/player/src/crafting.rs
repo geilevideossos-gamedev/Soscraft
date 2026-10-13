@@ -140,6 +140,7 @@ pub struct RecipeBook {
     auto_unlocks: Vec<AutoUnlockRule>,
     display_indices: HashMap<String, Vec<u32>>,
     item_catalog: Option<Arc<ItemCatalog>>,
+    jar_ids: HashSet<String>,
 }
 impl RecipeBook {
     pub fn from_jar(path: &Path) -> Result<Self> {
@@ -181,6 +182,16 @@ impl RecipeBook {
             }
         }
         raw_recipes.sort_by(|a, b| a.0.cmp(&b.0));
+        let jar_ids = raw_recipes
+            .iter()
+            .map(|(name, _)| {
+                format!(
+                    "minecraft:{}",
+                    name.trim_start_matches("data/minecraft/recipe/")
+                        .trim_end_matches(".json")
+                )
+            })
+            .collect();
         let mut recipes = Vec::new();
         let mut smelting = Vec::new();
         for (name, value) in raw_recipes {
@@ -262,7 +273,14 @@ impl RecipeBook {
             auto_unlocks,
             display_indices: HashMap::new(),
             item_catalog: None,
+            jar_ids,
         })
+    }
+
+    pub fn has_recipe(&self, id: &str) -> bool {
+        self.jar_ids.contains(id)
+            || self.recipes.iter().any(|recipe| recipe.id == id)
+            || self.smelting.iter().any(|entry| entry.id == id)
     }
 
     /// Load display IDs observed from the pinned server recipe manager. The
@@ -1238,6 +1256,28 @@ mod tests {
         let mut inventory = Inventory::default().with_recipes(book);
         inventory.notice_item_changed(&ItemStack::new("minecraft:gunpowder", 1));
         assert!(inventory.unlocked_recipes.is_empty());
+    }
+
+    #[test]
+    fn every_recipe_of_the_jar_and_every_extra_recipe_is_known() {
+        let book = RecipeBook::default().with_extra([("fork:gun".to_owned(), serde_json::json!({
+            "type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:stick"], "result": {"id": "fork:gun"}
+        }))]);
+        assert!(book.has_recipe("fork:gun"));
+        assert!(!book.has_recipe("minecraft:oak_planks"));
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        assert!(book.has_recipe("minecraft:oak_planks"));
+        assert!(book.has_recipe("minecraft:iron_ingot_from_smelting_raw_iron"));
+        assert!(book.has_recipe("minecraft:andesite_slab_from_andesite_stonecutting"));
+        assert!(!book.has_recipe("minecraft:andesite_slab_from_andesite_stonecutting_x"));
+        assert!(!book.has_recipe("minecraft:recipe/oak_planks"));
     }
 
     #[test]

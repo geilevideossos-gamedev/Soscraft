@@ -966,8 +966,10 @@ mod tests {
 
     #[test]
     fn the_book_button_toggles_the_book_and_typing_needs_the_search_box() {
-        let mut ui = MinecraftUi::default();
-        ui.screen = McScreen::Inventory;
+        let mut ui = MinecraftUi {
+            screen: McScreen::Inventory,
+            ..MinecraftUi::default()
+        };
         let mut input = BookInput::default();
         let origin = [125, 37];
         let typed = [Typed {

@@ -169,6 +169,7 @@ pub(crate) struct Friend {
     flakes: Flakes,
     activation: crate::minecraft_hand::ItemActivation,
     activation_tick: u64,
+    recipe_book: crate::minecraft_recipe_book::FriendBook,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -623,6 +624,8 @@ fn show_effects(
         cracks,
         credits_due,
         activation,
+        recipe_book,
+        inventory_ui,
         ..
     } = friend
     else {
@@ -666,6 +669,10 @@ fn show_effects(
                 ..
             } => killed_by(ui, killer),
             ToClient::Credits => *credits_due = true,
+            ToClient::RecipeBook(book) => {
+                let unlocked = recipe_book.receive(book, &mut ui.recipe_book);
+                inventory_ui.set_unlocked(unlocked);
+            }
             effect => {
                 if own_totem(&effect, own) {
                     let level = remote.level.as_mut();
@@ -980,6 +987,7 @@ fn show_player(
         atlas_animation,
         shown_menu,
         screen_open,
+        recipe_book,
         ..
     } = friend
     else {
@@ -1102,6 +1110,7 @@ fn show_player(
         images,
         (&screen, level, &containers),
     );
+    out.extend(recipe_book.outgoing(&ui.recipe_book, inventory_ui.take_seen()));
     out
 }
 

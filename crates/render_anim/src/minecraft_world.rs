@@ -1322,6 +1322,8 @@ fn update(
         menu_effects.extend(minecraft_survival::menus::recheck_lids(minecraft_survival::menus::Lids { entities, terrain, openers, body: &mut body }, |key| open_cells.iter().find(|(each, _)| *each == key).map(|(_, cells)| cells.clone())));
         crate::minecraft_input::play(menu_effects, &mut crate::minecraft_input::Presenter { sounds: sounds.as_mut(), packs: &world.packs, atlas: &world.atlas, mining: &mut *mining, scene: &terrain.scene, origin, ui: &mut ui, inventory_ui: &*inventory_ui });
         let screen = minecraft_survival::menus::screen(player, containers);
+        let shown_book = &mut ui.recipe_book;
+        minecraft_survival::recipe_book::follow_screen(&mut player.recipe_book, &player.inventory, (&mut shown_book.open, &mut shown_book.filtering), &inventory_ui.take_seen());
         let minecraft_survival::player::Player { survival, death_watch, inventory, selected, hand, arsenal, .. } = &mut *player;
         for view in entities.take_lecterns(host_id) {
             if let Some(book) = view.taken {

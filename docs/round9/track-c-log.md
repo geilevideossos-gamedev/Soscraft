@@ -643,13 +643,69 @@ Commit: the one after `10e0370b`.
 IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:oak_log*16,minecraft:iron_ingot*32,minecraft:gunpowder*32,minecraft:copper_ingot*16,minecraft:iron_nugget*16,minecraft:tripwire_hook*4,minecraft:redstone*8,minecraft:repeater*2,minecraft:iron_block*2,minecraft:stick*8,minecraft:cobblestone*16
 ```
 
+### 2. Vanilla recipe unlocks and the book's settings are saved in the player file
+
+Commit: the one after `cac751f5`.
+
+- **Changed:**
+  - `minecraft_survival` `recipe_book.rs` (new, edition 2024, rustfmt-clean): `Book`, each player's recipe book on the host, in `Player.recipe_book` (per UUID, saved with the player):
+    - `restore` (on join, from the file): every saved recipe id the 26.3 data knows is unlocked again, an unknown id is dropped (vanilla's "Tried to load unrecognized recipe: ... removed now."), fork ids are skipped (they are always known); `toBeDisplayed` likewise; the eight vanilla settings flags come back as they were.
+    - `notice_carried`: right after the restore every stack the player carries counts as a changed item, like vanilla's first inventory sync on login (`ServerPlayer.initInventoryMenu`, every slot fires `inventory_changed`), so a new player's kit or a round-8 player file unlocks its recipes on the first join.
+    - Unlocks themselves stay the vendored `auto_unlocks_for_change` path (vanilla's recipe advancements, `auto_unlock_rules`) that every inventory change already runs, per player. `update` adds every newly unlocked recipe to `toBeDisplayed` (vanilla's `addHighlight` in `ServerRecipeBook.addRecipes`); `seen` removes the recipes the book has shown (vanilla's `ServerboundRecipeBookSeenRecipePacket`).
+    - `saved` / `view`: the unlocked recipes without the fork ids, sorted, `toBeDisplayed`, the settings.
+    - `follow_screen` (the host's own screen: the saved open and "Showing craftable" flags go to the screen once, then the screen's flags come back to the book) and `follow_friend` (a friend's messages), so the host and every friend go through the same `Book`.
+  - `minecraft_survival` `player_nbt.rs`: `SavedBook` and `PlayerData.recipe_book`, read from and written to vanilla's `recipeBook` compound: `recipes` and `toBeDisplayed` string lists (always written), and `isGuiOpen`, `isFilteringCraftable`, `isFurnaceGuiOpen`, `isFurnaceFilteringCraftable`, `isBlastingFurnaceGuiOpen`, `isBlastingFurnaceFilteringCraftable`, `isSmokerGuiOpen`, `isSmokerFilteringCraftable` as bytes written only when true (vanilla's `optionalFieldOf(..., false)`; checked with javap on `RecipeBookSettings$TypeSettings` and `ServerRecipeBook$Packed`). The furnace flags are kept as read. The compound replaces the old one when the player is saved; it was only carried over before.
+  - `minecraft_survival` `player.rs` and `server.rs`: the field, `data()` saves it, `join_from` restores it before `notice_carried`.
+  - Vendored `minecraftoss_player::crafting`: `RecipeBook` keeps every recipe id of the jar (`data/minecraft/recipe/*.json`, stonecutting, smithing and special recipes too) and `has_recipe(id)` answers for them, the parsed crafting and cooking recipes and the extra (fork) ones. Without it the restore would drop every stonecutting or smithing unlock a vanilla 26.3 player file has, and re-saving would lose them.
+  - Friends:
+    - `minecraft_net` `messages.rs` (appended): `ToClient::RecipeBook(RecipeBookView { recipes, highlight, open, filtering })`, `ToServer::RecipeBookSettings { open, filtering }` and `ToServer::RecipeSeen(ids)`. `codec.rs` tests cover the three.
+    - `minecraft_survival` `session.rs`: `Session::send_recipe_book` sends a friend its book whenever the unlocked count, the highlight count or a setting changes (from `send_views`, so every host frame); `book_settings` and `seen_recipes` hold what the friend sent.
+    - `render_anim` `minecraft_host.rs`: the two friend messages go into the friend's session (at most 256 seen ids a step), and every step `follow_friend` applies them to the friend's `Book` before the friend's step.
+    - `render_anim` `minecraft_recipe_book.rs`: `FriendBook`: the first book from the host sets the friend's open and filter flags; afterwards the friend's own changes go to the host as `RecipeBookSettings`, and recipes the book showed that were waiting to be displayed go as `RecipeSeen`. The unlocked ids reach the book through `InventoryUi::set_unlocked` (the friend rebuilds its `Inventory` every frame, so the set is kept once instead of copied).
+    - `render_anim` `minecraft_remote.rs`: the new message is taken from the effects queue (`show_effects`), so `minecraft_survival/src/remote.rs` is untouched; `show_player` sends the outgoing book messages.
+  - `render_anim` `minecraft_inventory.rs`: `InventoryUi` keeps the ids the book showed (`take_seen`) and the friend's unlocked set; `minecraft_world.rs`: one `follow_screen` call for the host.
+  - `hud` `minecraft_recipe_book.rs`: a test builds its `MinecraftUi` with struct update syntax (clippy's `field_reassign_with_default` on the previous commit's test).
+  - `minecraft_survival/tests/vanilla_world.rs`: the player file now has `recipeBook` (compound) with `recipes` and `toBeDisplayed` lists, like a vanilla player file.
+- **Tests:**
+  - `minecraft_survival` `recipe_book::tests`: `a_saved_book_comes_back_without_unknown_or_fork_recipes`, `new_unlocks_wait_to_be_displayed_until_the_book_shows_them`, `the_host_screen_takes_the_saved_settings_once_then_writes_them_back` (and a friend's settings), `items_carried_on_joining_unlock_their_recipes` (with the 26.3 jar: an oak log in the backpack unlocks the planks; I made it fail once on purpose to see that it runs).
+  - `minecraft_survival` `player_nbt::tests`: `the_recipe_book_is_saved_in_vanilla_s_recipe_book_compound` (round trip, true flags only, a file without our book keeps its compound, missing lists read as empty), `a_player_saves_its_unlocked_recipes_but_never_a_fork_recipe` (an unknown id in the file is dropped on load like vanilla, a fork id in the file or in the unlocked set is never written, the filter flag survives).
+  - `minecraft_survival` `session::tests::a_friends_recipe_book_is_sent_once_for_each_change`.
+  - `render_anim` `minecraft_recipe_book::tests::a_friend_takes_the_hosts_settings_once_and_reports_its_own_changes_and_seen_recipes`.
+  - Vendored `crafting::tests::every_recipe_of_the_jar_and_every_extra_recipe_is_known` (with the 26.3 jar: a crafting, a smelting and a stonecutting id are known, made-up ids are not).
+  - `minecraft_net` `codec::tests`: the round trips cover `RecipeBookSettings`, `RecipeSeen` and `RecipeBook`.
+- **Decisions:**
+  - **The message shapes changed without the protocol bump**, as the brief says: `PROTOCOL` goes up once in the next group's `PlaceRecipe` commit, which also covers these three messages. Until then a friend on this build and a host on an older one decode each other wrongly; nobody plays between the two commits.
+  - **The recipe list goes to a friend as its own message, not in `PlayerView`**: `PlayerView` is resent on every vitals change, the list is hundreds of ids and changes rarely. It travels through the friend's effects queue, so Track D's `remote.rs` needs no edit.
+  - **The bounce of newly unlocked recipes is still not drawn**, but `toBeDisplayed` behaves like vanilla: a recipe leaves it once the book has shown it on a page, so a vanilla client loading the save bounces only what this game never showed.
+  - **A friend's settings from the host are taken once** (the first book after joining); after that the friend's screen is the source and the host only stores them. The host never changes them on its own, so nothing is lost.
+  - Recipes unlocked on join by carried items are also highlighted, as in vanilla (they are new to the book).
+  - **WEAPONS.md 13.1 and 14 corrected**: vanilla's flags are per book type (crafting, furnace, blast furnace, smoker), not per tab; the inventory and the crafting table share the crafting pair. Section 14 lists the three new messages under the one protocol bump.
+- **Owner's test steps** (a new world, `IW4L_MINECRAFT_WORLD=r9-book`, kit below):
+  1. Join. Open the inventory and the book: planks, sticks, the crafting table and more are already there (the kit's items unlock their recipes on joining). **Screenshot 1.**
+  2. Click "Showing craftable" so it reads "Showing Craftable", leave the book open, close the inventory. Break a stone block and pick up the cobblestone: the furnace and stone tools join the book.
+  3. Save and quit, start the world again, open the inventory: the book is open by itself, still "Showing Craftable", and the furnace is still there. **Screenshot 2.**
+  4. Close the book with its button, save and quit, start again: the inventory opens without the book.
+  5. Two windows (`scripts\mp-local.ps1`, both with the kit): the friend opens the book: the friend's vanilla recipes (planks and so on) are there now, next to the fork ones. The friend sets "Showing Craftable" and leaves; the friend joins again: the setting is kept. **Screenshot 3** (friend window).
+  6. Optional, with vanilla Minecraft 26.3: open a copy of the world folder: the recipe book shows the same unlocked recipes and settings.
+- **Kit** (8 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_log*16,minecraft:wooden_pickaxe,minecraft:iron_ingot*16,minecraft:gunpowder*16,minecraft:copper_ingot*8,minecraft:iron_nugget*8,minecraft:redstone*8,minecraft:crafting_table
+```
+
+## Combined kit for group recipe-book
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:oak_log*16,minecraft:wooden_pickaxe,minecraft:iron_ingot*32,minecraft:gunpowder*32,minecraft:copper_ingot*16,minecraft:iron_nugget*16,minecraft:tripwire_hook*4,minecraft:redstone*8,minecraft:repeater*2,minecraft:iron_block*2,minecraft:stick*8,minecraft:cobblestone*16
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (5): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`. Added: none.
 
 ## Protocol
 
-`minecraft_net::PROTOCOL` not changed yet (it goes up once in the group book-place-creative).
+`minecraft_net::PROTOCOL` not changed yet (it goes up once in the group book-place-creative). The recipe-book group already changed the message shapes (`ToClient::RecipeBook`, `ToServer::RecipeBookSettings`, `ToServer::RecipeSeen`, appended at the end of both enums, codec indices 31, 12 and 13); the bump in the next group covers them.
 
 ## State doc changes
 
@@ -671,3 +727,5 @@ Patched by this track so far (5): `player/src/item_catalog.rs`, `core/src/item.r
 - `MULTIPLAYER.md` (per-player state on the host): "A friend's gun crafting (attachments, akimbo, split) runs on the host through the same function as the host's; each screen shows the result from its own MW2 content."
 - `MINECRAFT-SURVIVAL.md`, the grindstone (stations section): "A gun alone in the grindstone comes out with its attachments removed (akimbo kept), its clip cut to the bare size; the attachments and the extra rounds are lost, and it gives a little XP like disenchanting (3-5 for one attachment, 5-9 for two). Without MW2 content a gun gives no result there."
 - `MINECRAFT-SURVIVAL.md`, line 398 (no recipe book), replaced by: "The inventory and the crafting table have vanilla's recipe book: the green button, the panel to the left with the Search, Equipment, Building, Misc and Redstone tabs, 20 recipes a page, the search box (fork items by their MW2 names), \"Showing craftable\", red buttons for missing ingredients, groups behind one button with the right-click alternatives, and ghost ingredients for a clicked recipe. Every fork recipe is always in it (Equipment, after vanilla's); vanilla recipes appear once unlocked. Not built: the furnace books and keyboard or pad navigation of the book."
+- `MINECRAFT-SURVIVAL.md`, the saving section: "Each player's vanilla recipe unlocks, the recipes still waiting to be shown, and the recipe book's open and \"Showing craftable\" flags are saved in vanilla's `recipeBook` compound of the player file; a recipe id the 26.3 data does not know is dropped on load like vanilla, and fork recipes are never written (they are always known). Recipes unlock the vanilla way, from items entering the inventory, including the items carried when joining."
+- `MULTIPLAYER.md` (per-player state on the host): "Each friend's recipe unlocks and book settings live on the host in the friend's player file; the host sends the friend's unlocked recipes when they change, and the friend sends its book settings and the recipes its book has shown."

@@ -836,7 +836,9 @@ pub fn join_from(
         saved.mode.or_else(|| save.map(WorldSave::default_mode)),
         chosen_mode,
     );
-    let inventory = joining_inventory(recipes.clone(), saved.inventory, kit);
+    let mut inventory = joining_inventory(recipes.clone(), saved.inventory, kit);
+    let recipe_book = crate::recipe_book::Book::restore(saved.recipe_book.as_ref(), &mut inventory);
+    crate::recipe_book::notice_carried(&mut inventory);
     let dead = saved.stats.is_some_and(|stats| stats.status.health <= 0.0);
     let survival = match (saved.stats, carried) {
         (Some(stats), _) => {
@@ -868,6 +870,7 @@ pub fn join_from(
     player.time_since_rest = saved.time_since_rest.unwrap_or(0);
     player.saved_in_bed = saved.sleeping_pos;
     player.tags = saved.tags.unwrap_or_default();
+    player.recipe_book = recipe_book;
     player.dead = dead;
     player.place = Some(Place::standing(Dimension::Overworld, spawn, 0.0, 0.0));
     match saved.place {

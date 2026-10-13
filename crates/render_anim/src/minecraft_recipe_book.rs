@@ -1,8 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use frame::{McRecipeBook, McScreen, McSlot};
+use minecraft_net::ToServer;
+use minecraft_net::messages::RecipeBookView;
 use minecraft_terrain::recipe_book::{self, Known, Tab, View};
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
@@ -61,6 +63,7 @@ impl RecipeBookUi {
         &mut self,
         state: &McRecipeBook,
         inventory: &Inventory,
+        unlocked: &HashSet<String>,
         grid: Option<bool>,
         language: &HashMap<String, String>,
     ) -> Option<Built> {
@@ -68,17 +71,13 @@ impl RecipeBookUi {
             return self.built.take().map(|_| Built::default());
         };
         let book = &inventory.recipes;
-        let key = (Arc::as_ptr(book) as usize, inventory.unlocked_recipes.len());
+        let key = (Arc::as_ptr(book) as usize, unlocked.len());
         if self
             .known
             .as_ref()
-            .is_none_or(|(ptr, unlocked, _)| (*ptr, *unlocked) != key)
+            .is_none_or(|(ptr, count, _)| (*ptr, *count) != key)
         {
-            self.known = Some((
-                key.0,
-                key.1,
-                recipe_book::known(book, &inventory.unlocked_recipes),
-            ));
+            self.known = Some((key.0, key.1, recipe_book::known(book, unlocked)));
             self.built = None;
         }
         let grid_cells: &[Option<ItemStack>] = if table {
@@ -199,6 +198,50 @@ impl RecipeBookUi {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct FriendBook {
+    highlight: HashSet<String>,
+    sent: Option<(bool, bool)>,
+}
+
+impl FriendBook {
+    pub(crate) fn receive(
+        &mut self,
+        view: RecipeBookView,
+        ui: &mut McRecipeBook,
+    ) -> HashSet<String> {
+        if self.sent.is_none() {
+            ui.open = view.open;
+            ui.filtering = view.filtering;
+            self.sent = Some((view.open, view.filtering));
+        }
+        self.highlight = view.highlight.into_iter().collect();
+        view.recipes.into_iter().collect()
+    }
+
+    pub(crate) fn outgoing(&mut self, ui: &McRecipeBook, seen: Vec<String>) -> Vec<ToServer> {
+        let mut out = Vec::new();
+        let Some(sent) = self.sent else {
+            return out;
+        };
+        if sent != (ui.open, ui.filtering) {
+            self.sent = Some((ui.open, ui.filtering));
+            out.push(ToServer::RecipeBookSettings {
+                open: ui.open,
+                filtering: ui.filtering,
+            });
+        }
+        let seen: Vec<String> = seen
+            .into_iter()
+            .filter(|id| self.highlight.remove(id))
+            .collect();
+        if !seen.is_empty() {
+            out.push(ToServer::RecipeSeen(seen));
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,9 +271,24 @@ mod tests {
             ..McRecipeBook::default()
         };
         let language = HashMap::new();
-        assert!(ui.build(&state, &inventory, None, &language).is_none());
+        assert!(
+            ui.build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                None,
+                &language
+            )
+            .is_none()
+        );
         let built = ui
-            .build(&state, &inventory, Some(false), &language)
+            .build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(false),
+                &language,
+            )
             .unwrap();
         assert_eq!(built.buttons.len(), 1);
         assert_eq!(built.buttons[0][0].id, "iw4l:rifle_ammo");
@@ -238,13 +296,25 @@ mod tests {
         assert_eq!(built.tabs, [true, true, false, false, false]);
         assert_eq!(built.pages, 1);
         assert!(
-            ui.build(&state, &inventory, Some(false), &language)
-                .is_none()
+            ui.build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(false),
+                &language
+            )
+            .is_none()
         );
         inventory.unlock_recipe("minecraft:stick");
         inventory.slots[0] = Some(ItemStack::new("minecraft:oak_planks", 2));
         let built = ui
-            .build(&state, &inventory, Some(false), &language)
+            .build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(false),
+                &language,
+            )
             .unwrap();
         let ids: Vec<(&str, bool)> = built
             .buttons
@@ -254,33 +324,115 @@ mod tests {
         assert_eq!(ids, [("iw4l:rifle_ammo", false), ("minecraft:stick", true)]);
         state.filtering = true;
         let built = ui
-            .build(&state, &inventory, Some(false), &language)
+            .build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(false),
+                &language,
+            )
             .unwrap();
         assert_eq!(built.buttons.len(), 1);
         state.filtering = false;
         state.tab = Tab::Redstone.index();
         let built = ui
-            .build(&state, &inventory, Some(false), &language)
+            .build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(false),
+                &language,
+            )
             .unwrap();
         assert_eq!(built.buttons.len(), 2, "a hidden tab shows the search tab");
         state.tab = Tab::Misc.index();
         state.query = "rifle".to_owned();
         let built = ui
-            .build(&state, &inventory, Some(false), &language)
+            .build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(false),
+                &language,
+            )
             .unwrap();
         assert!(built.buttons.is_empty());
         state.tab = 0;
         let built = ui
-            .build(&state, &inventory, Some(false), &language)
+            .build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(false),
+                &language,
+            )
             .unwrap();
         assert_eq!(built.buttons.len(), 1);
         assert!(built.buttons[0][0].cells.is_empty());
         state.overlay = Some(0);
         let built = ui
-            .build(&state, &inventory, Some(false), &language)
+            .build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(false),
+                &language,
+            )
             .unwrap();
         assert_eq!(built.buttons[0][0].cells.len(), 9);
         assert_eq!(built.tab_icons[1].len(), 2);
+    }
+
+    #[test]
+    fn a_friend_takes_the_hosts_settings_once_and_reports_its_own_changes_and_seen_recipes() {
+        let mut friend = FriendBook::default();
+        let mut ui = McRecipeBook::default();
+        assert!(
+            friend
+                .outgoing(&ui, vec!["minecraft:stick".to_owned()])
+                .is_empty()
+        );
+        let view = RecipeBookView {
+            recipes: vec!["minecraft:stick".to_owned()],
+            highlight: vec!["minecraft:stick".to_owned(), "minecraft:chest".to_owned()],
+            open: true,
+            filtering: true,
+        };
+        let unlocked = friend.receive(view.clone(), &mut ui);
+        assert_eq!(unlocked, HashSet::from(["minecraft:stick".to_owned()]));
+        assert!(ui.open && ui.filtering);
+        assert!(friend.outgoing(&ui, Vec::new()).is_empty());
+        ui.filtering = false;
+        let sent = friend.outgoing(
+            &ui,
+            vec![
+                "minecraft:stick".to_owned(),
+                "minecraft:oak_planks".to_owned(),
+            ],
+        );
+        assert_eq!(
+            sent,
+            [
+                ToServer::RecipeBookSettings {
+                    open: true,
+                    filtering: false
+                },
+                ToServer::RecipeSeen(vec!["minecraft:stick".to_owned()])
+            ]
+        );
+        assert!(
+            friend
+                .outgoing(&ui, vec!["minecraft:stick".to_owned()])
+                .is_empty()
+        );
+        friend.receive(
+            RecipeBookView {
+                open: false,
+                ..view
+            },
+            &mut ui,
+        );
+        assert!(ui.open, "only the first book from the host sets the screen");
     }
 
     #[test]
@@ -294,7 +446,13 @@ mod tests {
         };
         let language = HashMap::new();
         let built = ui
-            .build(&state, &inventory, Some(false), &language)
+            .build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(false),
+                &language,
+            )
             .unwrap();
         let ghost: Vec<(McSlot, &str)> = built
             .ghost
@@ -310,7 +468,15 @@ mod tests {
             ]
         );
         assert_eq!(built.ghost[2].1[0].count, 4);
-        let built = ui.build(&state, &inventory, Some(true), &language).unwrap();
+        let built = ui
+            .build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                Some(true),
+                &language,
+            )
+            .unwrap();
         let slots: Vec<McSlot> = built.ghost.iter().map(|(slot, _)| *slot).collect();
         assert_eq!(
             slots,
@@ -322,7 +488,25 @@ mod tests {
         );
         assert_eq!(grid_of(McScreen::CraftingTable), Some(true));
         assert_eq!(grid_of(McScreen::Anvil), None);
-        assert!(ui.build(&state, &inventory, None, &language).is_some());
-        assert!(ui.build(&state, &inventory, None, &language).is_none());
+        assert!(
+            ui.build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                None,
+                &language
+            )
+            .is_some()
+        );
+        assert!(
+            ui.build(
+                &state,
+                &inventory,
+                &inventory.unlocked_recipes,
+                None,
+                &language
+            )
+            .is_none()
+        );
     }
 }

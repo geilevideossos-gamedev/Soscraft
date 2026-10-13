@@ -68,6 +68,8 @@ impl Drop for ChunkWorker {
 
 type LecternClicks = Vec<([i32; 3], Option<i32>)>;
 
+const SEEN_RECIPES: usize = 256;
+
 fn encode(job: &BatchJob, registries: &Registries) -> EncodedBatch {
     minecraft_survival::session::encode_batch(job.seq, &job.chunks, registries)
 }
@@ -166,6 +168,17 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
             Ok(ToServer::LeaveBed) => {
                 if host.sessions.sessions.contains_key(&client) {
                     host.leave_beds.push(client);
+                }
+            }
+            Ok(ToServer::RecipeBookSettings { open, filtering }) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    session.book_settings = Some((open, filtering));
+                }
+            }
+            Ok(ToServer::RecipeSeen(ids)) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    let room = SEEN_RECIPES.saturating_sub(session.seen_recipes.len());
+                    session.seen_recipes.extend(ids.into_iter().take(room));
                 }
             }
             Ok(_) => {}
@@ -417,6 +430,12 @@ pub(crate) fn host(
                 session.hands.take(now, |_| false);
                 continue;
             };
+            minecraft_survival::recipe_book::follow_friend(
+                &mut player.recipe_book,
+                &player.inventory,
+                session.book_settings.take(),
+                &std::mem::take(&mut session.seen_recipes),
+            );
             let selected = host.selects.remove(&session.client);
             let clicks = host
                 .lecterns

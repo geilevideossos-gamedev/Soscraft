@@ -50,6 +50,8 @@ pub(crate) struct InventoryUi {
     lectern_actions: Vec<(BlockPos, minecraft_terrain::lectern::LecternAction)>,
     pub(crate) fork: crate::minecraft_fork_items::ForkLook,
     recipe_book: crate::minecraft_recipe_book::RecipeBookUi,
+    unlocked: Option<HashSet<String>>,
+    seen: Vec<String>,
 }
 
 #[derive(Default)]
@@ -309,6 +311,14 @@ impl InventoryUi {
         self.follow.request_with(inventory, guns, selected, held)
     }
 
+    pub(crate) fn set_unlocked(&mut self, unlocked: HashSet<String>) {
+        self.unlocked = Some(unlocked);
+    }
+
+    pub(crate) fn take_seen(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.seen)
+    }
+
     pub(crate) fn set_weapons(
         &mut self,
         ui: &mut MinecraftUi,
@@ -466,7 +476,9 @@ impl InventoryUi {
         ui.output = output;
         ui.data = data;
         let book_grid = crate::minecraft_recipe_book::grid_of(ui.screen).filter(|_| ui.inventory_open);
-        if let Some(built) = self.recipe_book.build(&ui.recipe_book, inventory, book_grid, lang) {
+        let unlocked = self.unlocked.as_ref().unwrap_or(&inventory.unlocked_recipes);
+        if let Some(built) = self.recipe_book.build(&ui.recipe_book, inventory, unlocked, book_grid, lang) {
+            self.seen = built.buttons.iter().flatten().map(|choice| choice.id.clone()).collect();
             let book = &mut ui.recipe_book;
             book.tabs = built.tabs;
             book.pages = built.pages;

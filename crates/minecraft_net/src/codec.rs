@@ -214,6 +214,8 @@ mod tests {
             ToServer::CreditsDone => 9,
             ToServer::Lectern { .. } => 10,
             ToServer::LeaveBed => 11,
+            ToServer::RecipeBookSettings { .. } => 12,
+            ToServer::RecipeSeen(_) => 13,
         }
     }
 
@@ -250,6 +252,7 @@ mod tests {
             ToClient::Bursts { .. } => 28,
             ToClient::Lectern(_) => 29,
             ToClient::Sleeping { .. } => 30,
+            ToClient::RecipeBook(_) => 31,
         }
     }
 
@@ -300,6 +303,11 @@ mod tests {
                 button: None,
             },
             ToServer::LeaveBed,
+            ToServer::RecipeBookSettings {
+                open: true,
+                filtering: false,
+            },
+            ToServer::RecipeSeen(vec!["minecraft:oak_planks".to_owned()]),
         ]
     }
 
@@ -571,6 +579,12 @@ mod tests {
                 bed: None,
                 timer: 100,
             },
+            ToClient::RecipeBook(RecipeBookView {
+                recipes: vec!["minecraft:oak_planks".to_owned(), "minecraft:stick".to_owned()],
+                highlight: vec!["minecraft:stick".to_owned()],
+                open: true,
+                filtering: true,
+            }),
         ]
     }
 
@@ -585,7 +599,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 12];
+        let mut seen = [false; 14];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -604,7 +618,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 31];
+        let mut seen = [false; 32];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);

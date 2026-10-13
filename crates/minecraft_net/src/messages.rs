@@ -54,6 +54,11 @@ pub enum ToServer {
         button: Option<i32>,
     },
     LeaveBed,
+    RecipeBookSettings {
+        open: bool,
+        filtering: bool,
+    },
+    RecipeSeen(Vec<String>),
 }
 
 impl ToServer {
@@ -267,6 +272,15 @@ pub enum ToClient {
         bed: Option<Lying>,
         timer: i32,
     },
+    RecipeBook(RecipeBookView),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipeBookView {
+    pub recipes: Vec<String>,
+    pub highlight: Vec<String>,
+    pub open: bool,
+    pub filtering: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

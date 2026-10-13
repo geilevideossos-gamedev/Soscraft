@@ -54,6 +54,7 @@ pub struct Player {
     pub time_since_rest: i32,
     pub saved_in_bed: Option<(i32, i32, i32)>,
     pub tags: Vec<String>,
+    pub recipe_book: crate::recipe_book::Book,
 }
 
 #[derive(Default)]
@@ -132,6 +133,7 @@ impl Player {
             time_since_rest: 0,
             saved_in_bed: None,
             tags: Vec::new(),
+            recipe_book: crate::recipe_book::Book::default(),
         }
     }
 
@@ -280,6 +282,7 @@ impl Player {
                 .or(self.saved_in_bed),
             time_since_rest: Some(self.time_since_rest),
             tags: Some(self.tags.clone()),
+            recipe_book: Some(self.recipe_book.saved(&self.inventory)),
         }
     }
 }

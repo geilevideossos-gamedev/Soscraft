@@ -338,10 +338,16 @@ fn check_player_file(path: &Path) {
             ("foodTickTimer", "int"),
             ("playerGameType", "int"),
             ("previousPlayerGameType", "int"),
+            ("recipeBook", "compound"),
             ("respawn", "compound"),
             ("seenCredits", "byte"),
         ],
         "the player file",
+    );
+    expect_kinds(
+        file.get("recipeBook").unwrap(),
+        &[("recipes", "list"), ("toBeDisplayed", "list")],
+        "the recipe book",
     );
     for item in list_kinds(file.get("Inventory").unwrap(), "Inventory")
         .iter()
