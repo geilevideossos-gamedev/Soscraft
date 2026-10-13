@@ -265,7 +265,7 @@ Example, the M4A1:
  "result": {"id": "iw4l:m4", "count": 1}}
 ```
 
-The recipes are our own vanilla-format JSON in `crates/minecraft_terrain/data/fork_recipes.json`, read with `include_str!` and generated from the fork table. No Mojang file is copied.
+The recipes are our own vanilla-format JSON in `crates/minecraft_terrain/data/fork_recipes.json`, read with `include_str!`: one object keyed by recipe id (the result's `iw4l:` id), written from the tables below. Tests check it against the fork table (one recipe per row, kind, group, yield) and against the 26.3 jar (every ingredient exists, no grid collides). No Mojang file is copied.
 
 ### 7.2 Gun parts
 
@@ -614,7 +614,7 @@ The fork has no recipe book screen yet (`MINECRAFT-SURVIVAL.md:398`), so this tr
 - **Every fork recipe is always known,** with no unlock toast, so the book shows every gun from the first day (the owner's request). Fork recipe ids are never written to the save.
 - **Vanilla recipes** unlock the vanilla way (`auto_unlock_rules`). Their unlocks, `toBeDisplayed` and the per-tab open and filter flags are saved in vanilla's `recipeBook` compound, which today is only carried over.
 - **Where fork recipes appear:** all are `category: "equipment"`, so they are in the Equipment tab after the vanilla ones. The groups keep the tab short: `iw4l_parts`, `iw4l_pistols`, `iw4l_machine_pistols`, `iw4l_smgs`, `iw4l_assault_rifles`, `iw4l_shotguns`, `iw4l_specials` (riot shield, crossbow, ballistic knife), `iw4l_snipers`, `iw4l_lmgs`, `iw4l_launchers`, `iw4l_ammo`, `iw4l_lethal`, `iw4l_tactical`, `iw4l_attachments`.
-- **Loading:** the vendored `RecipeBook` gets `with_extra(recipes)`, which reuses `parse_recipe` and gives fork recipes display indices after vanilla's. It is called in `load_recipes` before `with_item_catalog`, on the host and on the friend, who needs it only for the display.
+- **Loading:** the vendored `RecipeBook` gets `with_extra(recipes)`, which reuses `parse_recipe` and gives fork recipes display indices after vanilla's: after the highest index of a loaded display catalog, and without one (the game loads none) after vanilla's crafting and cooking recipe count, in table order. It is called in `load_recipes` before `with_item_catalog`, on the host and on the friend, who needs it only for the display. The recipe JSON is part of `fork_items::table_hash`, so it joins `registry_fingerprint`.
 - The attach, akimbo and split special recipes are not listed, like vanilla's special recipes.
 
 ### 13.2 Creative

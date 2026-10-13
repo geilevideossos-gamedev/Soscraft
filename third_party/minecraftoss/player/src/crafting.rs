@@ -306,6 +306,30 @@ impl RecipeBook {
         Ok(self)
     }
 
+    pub fn with_extra(mut self, recipes: impl IntoIterator<Item = (String, Value)>) -> Self {
+        let vanilla = u32::try_from(self.recipes.len() + self.smelting.len()).unwrap_or(u32::MAX);
+        let mut next = self
+            .display_indices
+            .values()
+            .flatten()
+            .max()
+            .map_or(0, |index| index.saturating_add(1))
+            .max(vanilla);
+        for (id, value) in recipes {
+            let Some(mut recipe) = parse_recipe(&value) else {
+                continue;
+            };
+            if self.recipes.iter().any(|known| known.id == id) {
+                continue;
+            }
+            recipe.id = id.clone();
+            self.recipes.push(recipe);
+            self.display_indices.insert(id, vec![next]);
+            next = next.saturating_add(1);
+        }
+        self
+    }
+
     pub fn display_indices(&self, id: &str) -> Option<&[u32]> {
         self.display_indices.get(id).map(Vec::as_slice)
     }
@@ -974,8 +998,8 @@ fn parse_recipe(value: &Value) -> Option<Recipe> {
     };
     Some(Recipe {
         id: String::new(),
-        category: "misc".to_owned(),
-        group: None,
+        category: value.get("category").and_then(Value::as_str).unwrap_or("misc").to_owned(),
+        group: value.get("group").and_then(Value::as_str).filter(|group| !group.is_empty()).map(str::to_owned),
         kind,
         result,
     })
@@ -1158,6 +1182,62 @@ mod tests {
         let mut planks: [Option<ItemStack>; 4] = std::array::from_fn(|_| None);
         planks[0] = Some(ItemStack::new("minecraft:oak_log", 1));
         assert_eq!(book.matching(&planks, 2, 2).map(|stack| stack.components), Some(None));
+    }
+
+    #[test]
+    fn extra_recipes_get_display_indices_after_vanilla() {
+        let mut book = RecipeBook::default();
+        for (id, pattern) in [("minecraft:a", "AA"), ("minecraft:b", "BB")] {
+            let mut recipe = parse_recipe(&serde_json::json!({
+                "type": "minecraft:crafting_shaped",
+                "key": {"A": "minecraft:stone", "B": "minecraft:dirt"},
+                "pattern": [pattern],
+                "result": {"id": id}
+            }))
+            .unwrap();
+            recipe.id = id.to_owned();
+            book.recipes.push(recipe);
+        }
+        book.display_indices.insert("minecraft:a".into(), vec![7]);
+        book.display_indices.insert("minecraft:b".into(), vec![40]);
+        let gun = serde_json::json!({
+            "type": "minecraft:crafting_shaped", "category": "equipment", "group": "fork_guns",
+            "key": {"I": "minecraft:iron_ingot", "G": "minecraft:gunpowder"},
+            "pattern": ["IG"], "result": {"id": "fork:gun"}
+        });
+        let ammo = serde_json::json!({
+            "type": "minecraft:crafting_shapeless", "category": "equipment",
+            "ingredients": ["minecraft:gunpowder", "minecraft:copper_ingot"], "result": {"id": "fork:ammo", "count": 16}
+        });
+        let book = book.with_extra([
+            ("fork:gun".to_owned(), gun),
+            ("minecraft:a".to_owned(), ammo.clone()),
+            ("fork:broken".to_owned(), serde_json::json!({"type": "minecraft:crafting_shaped"})),
+            ("fork:ammo".to_owned(), ammo),
+        ]);
+        assert_eq!(book.count(), 4);
+        assert_eq!(book.display_indices("fork:gun"), Some(&[41][..]));
+        assert_eq!(book.display_indices("fork:ammo"), Some(&[42][..]));
+        assert_eq!(book.display_indices("minecraft:a"), Some(&[7][..]));
+        assert_eq!(book.display_indices("fork:broken"), None);
+        let gun = book.crafting_recipes().find(|recipe| recipe.id == "fork:gun").unwrap();
+        assert_eq!((gun.category, gun.group, gun.width, gun.height), ("equipment", Some("fork_guns"), 2, 1));
+        let ammo = book.crafting_recipes().find(|recipe| recipe.id == "fork:ammo").unwrap();
+        assert_eq!((ammo.category, ammo.group, ammo.result.count), ("equipment", None, 16));
+        let grid = [
+            Some(ItemStack::new("minecraft:gunpowder", 1)),
+            Some(ItemStack::new("minecraft:iron_ingot", 1)),
+            None,
+            None,
+        ];
+        assert_eq!(book.matching(&grid, 2, 2).map(|stack| stack.id), Some("fork:gun".to_owned()));
+        let bare = RecipeBook::default().with_extra([("fork:gun".to_owned(), serde_json::json!({
+            "type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:stick"], "result": {"id": "fork:gun"}
+        }))]);
+        assert_eq!(bare.display_indices("fork:gun"), Some(&[0][..]));
+        let mut inventory = Inventory::default().with_recipes(book);
+        inventory.notice_item_changed(&ItemStack::new("minecraft:gunpowder", 1));
+        assert!(inventory.unlocked_recipes.is_empty());
     }
 
     #[test]

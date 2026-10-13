@@ -974,6 +974,10 @@ pub fn table_hash() -> u64 {
             hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
     }
+    for byte in crate::fork_recipes::JSON.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
     hash
 }
 

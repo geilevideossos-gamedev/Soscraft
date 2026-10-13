@@ -60,7 +60,7 @@ pub fn load_recipes(
     jar: &Path,
     catalog: Option<&Path>,
 ) -> Result<(RecipeBook, Option<anyhow::Error>)> {
-    let book = RecipeBook::from_jar(jar)?;
+    let book = RecipeBook::from_jar(jar)?.with_extra(crate::fork_recipes::recipes());
     let Some(path) = catalog else {
         return Ok((
             book,
