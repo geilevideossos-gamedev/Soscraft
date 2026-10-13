@@ -292,6 +292,35 @@ Commit: "Creative drops are throttled like vanilla", the one after `27fdf953` (A
   2. The host does the same in its own window: the same limit.
   3. Normal throwing (a few Q presses) is not affected.
 
+## A7. Players stuck inside each other after a spawn or a teleport
+
+### Commit 1: players pass through each other
+
+Commit: "Players in Minecraft worlds pass through each other instead of sticking", the one after `e5f969ed` (A6 commit 3).
+
+- **Cause** (as in the brief, re-checked at `e5f969ed`): to each other's pmove, players were hard MW2 capsules (`alive_body_clips` fed `ClipBackend`, whose `trace` ends in `clip_move_to_players`: a 30x70-unit capsule with `CONTENTS_BODY`). A player who starts inside another gets startsolid and, for any horizontal move, allsolid, so `slide.rs` does not move them, and `correct_solid` only tries 1-unit nudges. MW2's own fix, `phase_stuck_in_client`, sets an eject velocity, but the allsolid traces never let it move anyone. Both players were frozen.
+- **Vanilla 26.3:** players are never solid to each other (`canBeCollidedWith` is false); they only push each other (commit 2).
+- **Changed:** `sim` `step.rs` only.
+  - `alive_body_clips` calls the new `player_body_clips(world, block_world)` with `crate::voxel::active()`. In a Minecraft world it returns no bodies, so pmove, the script slide and `script_mantle` trace through other players. On MW2 maps the list is the same as before (alive clients and the prediction's remote bodies, minus noclip spectators).
+  - `phase_stuck_in_client` (MW2's 25 u/s eject plus 300 ms of hard landing) no longer runs in a Minecraft world.
+  - The `CONTENTS_BODY` area links (`link_player_area`) are untouched, so bullets, melee and lag compensation still hit players.
+  - The friend predicts through the same `alive_body_clips` (`step_predicted`), so the friend no longer collides with the host or other friends either. No protocol or message change.
+- **Tests** (`sim` `step::tests`, independent of the process-global voxel world):
+  - `block_world_players_are_no_body_to_bump_into`: four alive clients (one a noclip spectator): `player_body_clips(&world, true)` is empty; with false it is clients 1, 3 and 4.
+  - `a_trace_starting_inside_another_player_is_free_in_a_block_world`: a 15-unit move starting 5 units from another player's origin is free (startsolid 0, fraction 1) with the Minecraft list, and startsolid and allsolid with the MW2 list.
+  - `spectators_are_no_body_for_other_players_to_bump_into` now calls `player_body_clips(&world, false)`: through `alive_body_clips` it read the process-global voxel flag, which another test in the same run turns on.
+  - Run: `test -p sim --locked` (119 passed), `check -p launcher --locked`.
+- **Owner's test steps** (two windows: `& scripts\mp-local.ps1 -World r9-a7 -Fresh`, kit below in both; host `/op Friend`):
+  1. The friend: `/tp <host name>`. They land inside the host. Both can walk away at once; nobody is frozen. (They do not drift apart on their own until commit 2.) **Screenshot 1** right after the teleport, from both windows.
+  2. The host: `/tp <friend name>`: the same.
+  3. Walk into each other: you pass through (until commit 2 adds the push). Crouch and jump inside each other: nothing sticks.
+  4. With pvp on, shoot the other with an MW2 gun and hit them with the diamond sword: hits still register.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed,minecraft:red_bed,minecraft:oak_planks*64,minecraft:cobblestone*64,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:cooked_beef*32,minecraft:diamond_sword
+```
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
@@ -308,6 +337,7 @@ Commit: "Creative drops are throttled like vanilla", the one after `27fdf953` (A
 - **A6 wire:** the creative target has a `Carried` variant, which vanilla does not have (vanilla keeps the creative cursor on the client). The fork keeps every cursor on the server (`inventory.cursor`), so the friend sets its creative cursor on the host like any other slot. A refused or undecodable set changes nothing and is not answered, as in vanilla (which only logs); the friend's screen shows the host's state on the next change. **Protocol: 4** in this track; the second of tracks A and B to merge takes 5.
 - **A6 friend screen:** the friend's creative screen does not predict, like every friend menu: the cursor and the slots show the host's state one round trip later, and a second creative click before the host answers is worked out from the old mirror (within one frame, clicks chain on a scratch copy). Vanilla keeps the creative cursor on the client, so it has no such delay. The Operator Utilities tab needs command level 2 and the friend's own `minecraft_operator_items` setting, like vanilla's `canUseGameMasterBlocks` plus the operator-items option; the host checks no op level for a creative set (vanilla does not either). Saved hotbars stay in each player's own `hotbar.nbt`, as in vanilla, and a load is sent as nine creative sets.
 - **A6 drop throttle:** vanilla's `TickThrottler(20, 1480)` per player, on the host and the friend path alike (vanilla's integrated server throttles the host too). It is ticked with the player's hand ticks in `movement`, which runs every frame for every player, so a player whose `movement` stops (none today) would keep its count; vanilla ticks it with the connection. It is not saved, as in vanilla.
+- **A7 no body collision:** in a Minecraft world players are never solid to each other's movement, as in vanilla, instead of MW2 capsules plus MW2's StuckInClient eject. Hits (`CONTENTS_BODY` links) are unchanged. MW2 maps keep MW2 player collision and StuckInClient.
 
 ## State doc changes
 
@@ -326,6 +356,8 @@ Wording for the state docs, to be applied when the round's state is written (thi
 - **`docs/MINECRAFT-SURVIVAL.md:368`, a friend's limits:** replace "the creative inventory (a friend in creative mode gets the survival screen), and command suggestions" with "command suggestions"; the creative inventory now works for friends.
 
 - **`docs/MULTIPLAYER.md` 10.2, creative inventory (add to the A6 wording):** "Creative drops are throttled like vanilla (`TickThrottler(20, 1480)` per player, host and friends): 74 in a burst, then one a second."
+
+- **`docs/MINECRAFT-SURVIVAL.md:143`, after "Every MW2 spawn and respawn lands on the Minecraft spawn, ...":** add "In Minecraft worlds players are not solid to each other's movement, as in vanilla: pmove, the script slide and mantling ignore other players, and MW2's StuckInClient eject does not run, so two players who overlap after a spawn or a teleport are never frozen. Bullets, melee and lag compensation still hit players. MW2 maps keep MW2 player collision."
 
 ## Combined kit
 

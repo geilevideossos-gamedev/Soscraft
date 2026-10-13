@@ -538,7 +538,7 @@ fn run_players_system(ecs: &mut World) {
 
     restamp_debug_move_look(&mut world, &input.actions);
 
-    if allow_move && world.publishes_snapshot() {
+    if allow_move && world.publishes_snapshot() && !crate::voxel::active() {
         phase_stuck_in_client(&mut world);
     }
     drop(world);
@@ -1804,6 +1804,13 @@ struct PlayerBodyClip {
 }
 
 fn alive_body_clips(world: &FrameWorld) -> Vec<PlayerBodyClip> {
+    player_body_clips(world, crate::voxel::active())
+}
+
+fn player_body_clips(world: &FrameWorld, block_world: bool) -> Vec<PlayerBodyClip> {
+    if block_world {
+        return Vec::new();
+    }
     let mut bodies: Vec<_> = world
         .client_ids_sorted()
         .into_iter()
@@ -2290,8 +2297,41 @@ mod tests {
         alive(&mut world, ClientId(1), MC_MAY_FLY | MC_FLYING);
         alive(&mut world, ClientId(2), MC_MAY_FLY | MC_NOCLIP | MC_FLYING);
         alive(&mut world, ClientId(3), 0);
-        let bodies: Vec<u16> = alive_body_clips(&world).iter().map(|body| body.entnum).collect();
+        let bodies: Vec<u16> = player_body_clips(&world, false).iter().map(|body| body.entnum).collect();
         assert_eq!(bodies, [1, 3]);
+    }
+
+    #[test]
+    fn block_world_players_are_no_body_to_bump_into() {
+        let mut sim = crate::SimWorld::default();
+        let mut world = sim.frame();
+        alive(&mut world, ClientId(1), MC_MAY_FLY | MC_FLYING);
+        alive(&mut world, ClientId(2), MC_MAY_FLY | MC_NOCLIP | MC_FLYING);
+        alive(&mut world, ClientId(3), 0);
+        alive(&mut world, ClientId(4), 0);
+        assert!(player_body_clips(&world, true).is_empty());
+        let bodies: Vec<u16> = player_body_clips(&world, false).iter().map(|body| body.entnum).collect();
+        assert_eq!(bodies, [1, 3, 4]);
+    }
+
+    #[test]
+    fn a_trace_starting_inside_another_player_is_free_in_a_block_world() {
+        let input = GroundTraceInput {
+            start: [5.0, 0.0, 0.0],
+            end: [20.0, 0.0, 0.0],
+            mins: [-15.0, -15.0, 0.0],
+            maxs: [15.0, 15.0, 70.0],
+            tracemask: crate::bullet_collision::MASK_PLAYER_SOLID,
+        };
+        let free = Trace { fraction: 1.0, endpos: input.end, ..Trace::default() };
+        let hard = [PlayerBodyClip { entnum: 2, origin: [0.0; 3] }];
+        let soft: [PlayerBodyClip; 0] = [];
+        let through = clip_move_to_players(free, &soft, 1, input);
+        assert_eq!(through.startsolid, 0);
+        assert_eq!(through.fraction, 1.0);
+        let stuck = clip_move_to_players(free, &hard, 1, input);
+        assert_eq!(stuck.startsolid, 1);
+        assert_eq!(stuck.allsolid, 1);
     }
 
     #[test]
