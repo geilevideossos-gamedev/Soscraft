@@ -359,6 +359,7 @@ impl InventoryUi {
         let lang: &HashMap<String, String> = language;
         let enchant_table = self.enchantments.clone();
         let specials = (self.fork.special(inventory, Grid::Inventory), self.fork.special(inventory, Grid::Table));
+        let gun_rules = self.fork.rules();
         let fork = &mut self.fork;
         let mut convert = |stack: &Option<ItemStack>| {
             stack.as_ref().map(|s| {
@@ -414,6 +415,7 @@ impl InventoryUi {
             bookshelves: screen.shelves,
             seed: screen.seed,
             level,
+            guns: gun_rules.as_ref().map(|rules| rules as &dyn minecraft_terrain::gun_mods::GunRules),
         };
         let (container, output, data) = match (opened.as_ref(), bench) {
             (None, Some(bench)) => {

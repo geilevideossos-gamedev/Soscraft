@@ -457,7 +457,7 @@ These are fork special recipes, like vanilla's shield decoration. They work in a
   - Two attachments need no Bling: items do not depend on the class, and the crafting cost replaces the perk slot.
 - **Akimbo:** two copies of the same gun with the same attachments give one gun with `akimbo` added, if the gun offers akimbo. Its `clip` and `clip_left` come from the two guns.
 - **Split an akimbo pair:** an akimbo gun alone in the grid gives one gun without `akimbo`. The second gun is left in the same cell as the crafting remainder, with `clip_left` as its clip. This is vanilla's remainder mechanism (a milk bucket leaves a bucket).
-- **Strip at the grindstone:** a gun in the grindstone comes out with no attachments (akimbo excepted), keeping its clip, cut to the bare clip size. The attachments are lost, and the grindstone gives a little XP, as it does for enchantments. Swapping an attachment therefore costs a new one, which keeps attachments a sink like enchanted books.
+- **Strip at the grindstone:** a gun in the grindstone comes out with no attachments (akimbo excepted), keeping its clip, cut to the bare clip size. The attachments and the rounds above the bare clip are lost, and the grindstone gives a little XP, as it does for enchantments: vanilla's disenchanting formula with each attachment counted as cost 5 (3-5 XP for one attachment, 5-9 for two). A gun with any second item in the grindstone gives nothing. Swapping an attachment therefore costs a new one, which keeps attachments a sink like enchanted books.
 
 ## 10. Grenades and the grenade slots
 

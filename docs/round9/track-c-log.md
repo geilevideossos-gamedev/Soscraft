@@ -554,6 +554,40 @@ Commit: the one after `afafe0c5`.
 IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:anvil,minecraft:experience_bottle*16,iw4l:m4,iw4l:m4,iw4l:usp,iw4l:usp,iw4l:t5_galil,iw4l:red_dot_sight*4,iw4l:acog_scope*2,iw4l:fmj*2,iw4l:silencer*2,iw4l:extended_mags*2,iw4l:grip*2
 ```
 
+### 2. A grindstone strips a gun's attachments
+
+Commit: the one after `8563f752`.
+
+- **Changed:**
+  - `minecraft_terrain` `gun_mods.rs`: `strip(gun, rules)` gives the gun with only `akimbo` left (if it had it) through `refit`, so the clip and `clip_left` are cut to the bare size, and the number of attachments removed. No result for a gun with nothing to strip or for a stack that is not one gun.
+  - `minecraft_terrain` `stations.rs`: `Context` gains `guns: Option<&dyn GunRules>`. The grindstone accepts fork guns in both input slots. One gun alone (in either slot) gives the stripped gun; a gun with any second item gives nothing. Taking it gives XP by vanilla's disenchanting formula (half the cost, plus a random part up to half), each removed attachment counted as cost 5 (`ATTACHMENT_COST`): 3-5 XP for one attachment, 5-9 for two. Enchantment XP is unchanged.
+  - `menus.rs` fills the context's `guns` from `Books.guns`, so the host's and every friend's grindstone use the MW2 content; `render_anim` `minecraft_inventory.rs` fills it from `ForkLook::rules` for the result shown on the host's and the friend's screen.
+  - `docs/WEAPONS.md` 9.2: the lost rounds and the XP numbers.
+- **Tests:**
+  - `minecraft_survival` `gun_crafting::tests::the_grindstone_strips_a_gun_keeps_akimbo_and_cuts_the_clip` (through `menus::apply` on an open grindstone and the output slot): an M4A1 with extended mags and 40 rounds comes out bare with 30 and 3-5 XP; an akimbo USP .45 with FMJ keeps `akimbo` and both clips; a bare gun, two guns and a gun without MW2 content give nothing.
+  - `minecraft_terrain` `gun_mods::tests::stripping_keeps_akimbo_and_needs_something_to_strip`.
+- **Decisions:**
+  - **The rounds above the bare clip are lost** with the attachments: the grindstone has one output slot and vanilla's grindstone gives nothing back but XP.
+  - **XP:** an attachment counts like a level-1 enchantment with Unbreaking I's minimum cost (5), the middle of vanilla's level-1 costs, so stripping gives a little XP, less than disenchanting a good tool.
+  - **The grindstone needs MW2 content** for the bare clip size; without it a gun can be put in, but no result shows.
+- **Owner's test steps** (survival, kit below; the kit gives every gun a full clip):
+  1. Put an M4A1 and Extended Mags into the inventory grid: the M4A1 shows "Extended Mags" and "Clip 30/45" (the kit's 30 rounds stay 30). Put it on the hotbar, select it and press R: "Clip 45/45".
+  2. Put that M4A1 into the grindstone (either slot): the result is the M4A1 without "Extended Mags", "Clip 30/30". Take it: a few XP orbs' worth of XP is added (3-5). **Screenshot 1** (the grindstone with the result).
+  3. Two USP .45 make an akimbo pair; put an FMJ on it; put it in the grindstone: the result keeps "Akimbo" and both clips and loses "FMJ".
+  4. A bare M4A1 in the grindstone: no result. An M4A1 with a red dot together with an iron sword: no result.
+  5. Two windows (`scripts\mp-local.ps1`, both with the kit): the friend strips a red-dot M4A1 at a grindstone. **Screenshot 2** (friend window).
+- **Kit** (9 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:grindstone,minecraft:iron_sword,iw4l:m4,iw4l:m4,iw4l:usp,iw4l:usp,iw4l:extended_mags*2,iw4l:fmj*2,iw4l:red_dot_sight*2
+```
+
+## Combined kit for group attachments
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:grindstone,minecraft:anvil,minecraft:experience_bottle*16,minecraft:iron_sword,iw4l:m4,iw4l:m4,iw4l:m4,iw4l:usp,iw4l:usp,iw4l:t5_galil,iw4l:red_dot_sight*4,iw4l:acog_scope*2,iw4l:fmj*2,iw4l:silencer*2,iw4l:extended_mags*2,iw4l:grip*2
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (5): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`. Added: none.
@@ -580,3 +614,4 @@ Patched by this track so far (5): `player/src/item_catalog.rs`, `core/src/item.r
 - `MULTIPLAYER.md` (version checks): "The fork recipes are part of the same fork table hash."
 - `MINECRAFT-SURVIVAL.md`, the crafting section: "Attachments go onto a gun in any crafting grid, the 2x2 included: one gun plus one or two attachment items, when MW2 has that combination (at most two attachments, akimbo counted). The gun keeps its name, its loaded rounds and its other attachments; rounds above a smaller clip come back as ammo. Two identical guns with the same attachments make an akimbo pair if MW2 offers akimbo for the gun; an akimbo gun alone in the grid splits, and the second gun stays in its cell. These recipes are not in the recipe book; attachment tooltips say how to use them."
 - `MULTIPLAYER.md` (per-player state on the host): "A friend's gun crafting (attachments, akimbo, split) runs on the host through the same function as the host's; each screen shows the result from its own MW2 content."
+- `MINECRAFT-SURVIVAL.md`, the grindstone (stations section): "A gun alone in the grindstone comes out with its attachments removed (akimbo kept), its clip cut to the bare size; the attachments and the extra rounds are lost, and it gives a little XP like disenchanting (3-5 for one attachment, 5-9 for two). Without MW2 content a gun gives no result there."

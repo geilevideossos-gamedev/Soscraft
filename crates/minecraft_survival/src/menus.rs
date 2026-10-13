@@ -196,6 +196,7 @@ fn context<'a>(
         bookshelves: shelves,
         seed,
         level,
+        guns: books.guns,
     }
 }
 

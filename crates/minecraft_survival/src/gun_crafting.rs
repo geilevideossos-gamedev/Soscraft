@@ -607,6 +607,90 @@ mod tests {
     }
 
     #[test]
+    fn the_grindstone_strips_a_gun_keeps_akimbo_and_cuts_the_clip() {
+        use crate::menus::{Books, Open};
+        use minecraft_net::messages::{MenuAction, MenuSlot};
+        use minecraft_terrain::containers::Containers;
+        use minecraft_terrain::game_mode::PlayerMode;
+        use minecraft_terrain::stations::{Bench, StationBook, Workshop};
+        let mut chat = minecraft_commands::CommandServer::new(crate::commands::HOST);
+        let id = minecraft_commands::PlayerId(0);
+        chat.join(id, "Steve");
+        let mut player = crate::player::Player::new(
+            chat.profile(id).unwrap(),
+            PlayerMode::default(),
+            crate::survival::Survival::default(),
+            Inventory::default(),
+        );
+        let stations = StationBook::default();
+        let rules = Rules(&Fake);
+        let books = Books {
+            stations: &stations,
+            enchantments: None,
+            guns: Some(&rules),
+        };
+        let mut containers = Containers::default();
+        let output = MenuAction::Slot {
+            slot: MenuSlot::Output,
+            right: false,
+            shift: false,
+        };
+        let mut grind =
+            |player: &mut crate::player::Player, cells: [Option<ItemStack>; 2], books| {
+                let mut bench = Bench::new(Workshop::Grindstone);
+                bench.cells = cells.to_vec();
+                let title = minecraft_commands::Text::literal("Grindstone");
+                assert!(crate::menus::open(
+                    player,
+                    Open::Bench((0, 64, 0), bench),
+                    title,
+                    0
+                ));
+                let clicked = crate::menus::apply(player, &mut containers, books, &output, 0.5);
+                let taken = player.inventory.cursor.take();
+                (taken, clicked.experience, crate::menus::close(player))
+            };
+        let m4 = gun("iw4l:m4", json!({"attachments": ["xmags"], "clip": 40}));
+        let (bare, experience, _) = grind(&mut player, [Some(m4.clone()), None], books);
+        assert_eq!(bare.as_ref().map(state), Some(json!({"clip": 30})));
+        assert_eq!(
+            bare.as_ref()
+                .and_then(|bare| bare.components.as_ref())
+                .map(|c| c.as_object().unwrap().len()),
+            Some(1)
+        );
+        assert!((3..=5).contains(&experience), "{experience}");
+        let pair = gun(
+            "iw4l:usp",
+            json!({"attachments": ["akimbo", "fmj"], "clip": 10, "clip_left": 7}),
+        );
+        let (bare, _, _) = grind(&mut player, [None, Some(pair)], books);
+        assert_eq!(
+            bare.as_ref().map(state),
+            Some(json!({"attachments": ["akimbo"], "clip": 10, "clip_left": 7}))
+        );
+        let plain = gun("iw4l:m4", json!({"clip": 12}));
+        let (nothing, experience, back) = grind(&mut player, [Some(plain), None], books);
+        assert_eq!((nothing, experience), (None, 0));
+        assert_eq!(
+            back.len() + player.inventory.slots.iter().flatten().count(),
+            1
+        );
+        player
+            .inventory
+            .slots
+            .iter_mut()
+            .for_each(|slot| *slot = None);
+        let both = [Some(m4.clone()), Some(m4.clone())];
+        assert_eq!(grind(&mut player, both, books).0, None);
+        let without = Books {
+            guns: None,
+            ..books
+        };
+        assert_eq!(grind(&mut player, [Some(m4), None], without).0, None);
+    }
+
+    #[test]
     fn content_attachment_names_without_an_item_are_listed() {
         let presets = include_str!("../../frame/src/class_presets.rs");
         let names: Vec<&str> = presets

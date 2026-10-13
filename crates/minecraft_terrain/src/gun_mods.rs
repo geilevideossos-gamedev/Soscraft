@@ -122,6 +122,23 @@ pub fn refit(stack: &ItemStack, attachments: &[String], rules: &dyn GunRules) ->
     }
 }
 
+pub fn strip(stack: &ItemStack, rules: &dyn GunRules) -> Option<(ItemStack, usize)> {
+    if !is_gun(stack) || stack.count != 1 {
+        return None;
+    }
+    let attachments = attachments(stack);
+    let kept: Vec<String> = attachments
+        .iter()
+        .filter(|name| *name == AKIMBO)
+        .cloned()
+        .collect();
+    let removed = attachments.len() - kept.len();
+    if removed == 0 || !rules.accepts(&stack.id, &kept) {
+        return None;
+    }
+    Some((refit(stack, &kept, rules).stack, removed))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -185,5 +202,16 @@ mod tests {
         plain.components =
             Some(json!({"minecraft:custom_data": {"iw4l": {"attachments": ["reflex"]}}}));
         assert_eq!(with_state(&plain, &[], [None; 3]).components, None);
+    }
+
+    #[test]
+    fn stripping_keeps_akimbo_and_needs_something_to_strip() {
+        let pair = gun(json!({"attachments": ["akimbo", "xmags"], "clip": 45, "clip_left": 44}));
+        let (bare, removed) = strip(&pair, &Sizes).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(attachments(&bare), ["akimbo"]);
+        assert_eq!(clips(&bare), [Some(30), Some(30), None]);
+        assert_eq!(strip(&bare, &Sizes), None);
+        assert_eq!(strip(&ItemStack::new("minecraft:stone", 1), &Sizes), None);
     }
 }
