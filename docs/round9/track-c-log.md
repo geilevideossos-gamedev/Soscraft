@@ -1046,6 +1046,32 @@ Commit: the one after `edcd9cc5`.
 IW4L_MINECRAFT_KIT=iw4l:frag_grenade*16,iw4l:flash_grenade*8,minecraft:cobblestone*64,minecraft:shield
 ```
 
+### 3. New players start with 32 lethal and 32 tactical grenades
+
+Commit: the one after `b47be4bb`.
+
+- **Changed:**
+  - `minecraft_survival` `loadout`: `give_first_loadout` (the C11.4 first-join loadout, once per player through the `iw4l_loadout_given` tag) also gives `CLASS_GRENADES` (32) of the class lethal into slot 43 and 32 of the class tactical into slot 44. The class weapon (`LoadoutSpec.lethal`/`tactical`) becomes its item through `GunNames::item`; with no class grenade, or one that is not a lethal (or tactical) item, it is frags and flashes. An empty slot gets the 32; a slot holding the same grenade is topped up to 64; the rest, or all 32 when the slot holds another grenade, goes to the backpack like the ammo, and what does not fit is dropped at the feet.
+  - Nothing else changed: the host and every friend already call `ForkLook::first_loadout` with their own class (`class_of`), and the tag is saved with the player file. The sim's `follow_grenades` only rewrites `loadout.lethal`/`tactical` once a slot holds a grenade, so the loadout still reads the class grenades on the first frame.
+- **Tests:** `minecraft_survival` `loadout::tests::a_new_player_gets_32_of_each_class_grenade_once` (a class with semtex and stun grenades: 32 semtex in 43 and 32 stun in 44, nothing dropped, a second call gives nothing; a class with no grenades gives frags and flashes, and 40 frags already in 43 are topped up to 64 with 8 in the backpack). The test sits next to the other loadout tests in `loadout.rs`, not in `guns.rs` as the brief listed it, since the loadout function lives there. `test -p minecraft_survival` and `check -p launcher` green.
+- **Decisions:**
+  - **A slot that already holds a grenade is respected:** the same grenade is topped up, another one is left alone and the 32 go to the backpack. This covers a round 8 player file whose player picked up grenades before this round.
+  - **The fallbacks also cover a class grenade the fork has no item for** (none today: every lethal and tactical MW2 offers has a row).
+  - The tactical insertion counts as a tactical grenade here, so a class with it starts with 32 of them, like WEAPONS.md 6 says for any class tactical.
+- **Owner's test steps** (survival, a new world `IW4L_MINECRAFT_WORLD=r9-grenade-start`, no kit, a class with Semtex and Stun):
+  1. Join: the lethal frame shows 32 semtex and the tactical frame 32 stun grenades, next to the class guns and their ammo. **Screenshot 1** (hotbar).
+  2. Throw one of each (31 and 31), save and quit, load the world: still 31 and 31, no new 32. **Screenshot 2.**
+  3. `/kill` and respawn: the grenades dropped with the rest, and respawning gives none.
+  4. `/tag @s remove iw4l_loadout_given`: the guns, ammo and 32 + 32 grenades are given again (picked-up grenades top up their slot or fill the backpack).
+  5. Two windows (`scripts\mp-local.ps1`), the friend with a class with Frag and Flash in a new friend player file: the friend's first join gives 32 frags and 32 flashes in the friend's frames; the host's counts are unchanged. **Screenshot 3** (friend window).
+- **Kit:** none (the loadout comes from the class).
+
+## Combined kit for group grenade-throws
+
+```
+IW4L_MINECRAFT_KIT=iw4l:frag_grenade*2,iw4l:frag_grenade*16,iw4l:semtex*16,iw4l:c4*4,iw4l:throwing_knife*8,iw4l:flash_grenade*8,iw4l:concussion_grenade*8,iw4l:smoke_grenade*8,minecraft:cobblestone*64,minecraft:shield,minecraft:torch*16,minecraft:cooked_beef*16
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none.
@@ -1092,3 +1118,4 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `MINECRAFT-SURVIVAL.md`, the guns section: "G throws the grenade in the lethal slot and Shift+G the one in the tactical slot, whatever is held; each throw, and a frag that blows up in the hand, uses one item, and when a throw empties the slot it refills from the inventory with the same grenade. MW2's grenade icons show the slot counts. An empty slot keeps the last grenade's icon with 0, so placed C4 can still be detonated. Picking a thrown knife up gives the item back. In creative throws use nothing. Bots keep unlimited grenades."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's throws take the friend's own grenade items on the host, through the same function as the host's."
 - `MINECRAFT-SURVIVAL.md`, the inventory section: "The grenade slots are drawn as two offhand-style frames left of the hotbar (lethal nearer to the hotbar), always, with their item and count, and as two slots right of the recipe book button in the inventory and right of the leggings and boots in the creative inventory tab; an empty one shows the tooltip Lethal or Tactical."
+- `MINECRAFT-SURVIVAL.md`, the first-join loadout sentence, added: "It also puts 32 of the class lethal grenade into the lethal slot and 32 of the class tactical into the tactical slot (frags and flashes when the class has none)."
