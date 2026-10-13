@@ -520,7 +520,7 @@ mod tests {
         );
         assert_eq!(PotionEffect::of_mob(&mob), poison);
         assert_eq!(poison.player_effect(), Some(EffectKind::Poison));
-        assert_eq!(PotionEffect::new("strength", 100, 0).mob_effect(), None);
+        assert_eq!(PotionEffect::new("glowing", 100, 0).mob_effect(), None);
         assert_eq!(PotionEffect::new("speed", 100, 0).player_effect(), None);
         assert_eq!(
             PotionEffect::new("minecraft:haste", 100, 0).player_effect(),

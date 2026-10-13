@@ -739,6 +739,7 @@ pub struct PlayerFights {
 
 /// Arrow target IDs above this are players (the rest are entity IDs).
 const PLAYER_TARGET: u64 = u64::MAX / 2;
+pub const ZOMBIE_VILLAGER_CURE_SOUND: &str = "entity.zombie_villager.cure";
 
 impl VillagerEntity {
     /// Where it stands (its feet).
@@ -2496,6 +2497,7 @@ pub struct EntityWorld {
     piglin_conversions: Vec<piglins::PiglinConversion>,
     zombie_conversions: Vec<(u64, u64)>,
     villager_infections: Vec<(u64, u64)>,
+    zombie_cures: Vec<u64>,
     trident_throws: Vec<crate::drowned_ai::TridentThrow>,
     sea_level: i32,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
@@ -2612,6 +2614,7 @@ impl Default for EntityWorld {
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
             villager_infections: Vec::new(),
+            zombie_cures: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: 63,
             difficulty: 2,
@@ -3593,6 +3596,44 @@ impl EntityWorld {
 
     pub fn take_villager_infections(&mut self) -> Vec<(u64, u64)> {
         std::mem::take(&mut self.villager_infections)
+    }
+
+    pub fn take_zombie_cures(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.zombie_cures)
+    }
+
+    pub fn start_curing(&mut self, id: u64, player: u64) -> Option<bool> {
+        let starter = self.uuid_of(PLAYER_TARGET + player);
+        let difficulty = self.difficulty;
+        let entity = self.zombies.iter_mut().find(|e| e.id == id && e.zombie.kind == ZombieKind::ZombieVillager && e.zombie.health > 0.0)?;
+        if !entity.effects.has(MobEffect::Weakness) {
+            return Some(false);
+        }
+        let time = entity.random.next_int(2401) as i32 + 3600;
+        entity.zombie.conversion_starter = Some(starter);
+        entity.zombie.villager_conversion_time = time;
+        entity.effects.remove(MobEffect::Weakness);
+        entity.effects.add(crate::effects::EffectInstance::new(MobEffect::Strength, time, (difficulty - 1).min(0)));
+        let (volume, pitch) = (1.0 + entity.random.next_float(), entity.random.next_float() * 0.7 + 0.3);
+        let eye = entity.zombie.body.position + DVec3::Y * f64::from(entity.zombie.eye_height());
+        entity.voices.push((Voice::Event(ZOMBIE_VILLAGER_CURE_SOUND, volume, pitch), eye));
+        Some(true)
+    }
+
+    fn tick_zombie_cure(&mut self, id: u64, world: &impl World) -> bool {
+        let Some(entity) = self.zombies.iter_mut().find(|e| e.id == id) else { return false };
+        if entity.zombie.health <= 0.0 || !entity.zombie.curing() {
+            return false;
+        }
+        let random = &mut entity.random;
+        let progress = crate::zombie::cure_progress(entity.zombie.body.position, || random.next_float(), |x, y, z| world.block((x, y, z)).is_some_and(|b| b.id == "minecraft:iron_bars" || villagers::is_bed(&b.id)));
+        entity.zombie.villager_conversion_time -= progress;
+        if entity.zombie.villager_conversion_time > 0 {
+            return false;
+        }
+        entity.zombie.villager_conversion_time = -1;
+        self.zombie_cures.push(id);
+        true
     }
 
     fn zombie_killed_villager(&mut self, zombie: u64, villager: u64) {
@@ -5160,6 +5201,7 @@ impl EntityWorld {
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
             villager_infections: Vec::new(),
+            zombie_cures: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: self.sea_level,
             difficulty: 2,
@@ -5289,7 +5331,7 @@ impl EntityWorld {
         };
         let before = self.order.len();
         self.bats.retain_mut(|e| !check(e.id, e.bat.body.position, e.bat.persistence_required, AMBIENT, &mut e.no_action_time, &mut e.random));
-        self.zombies.retain_mut(|e| !check(e.id, e.zombie.body.position, e.zombie.persistence_required, if e.zombie.villager_xp != 0 { KEPT_MONSTER } else { MONSTER }, &mut e.no_action_time, &mut e.random));
+        self.zombies.retain_mut(|e| !check(e.id, e.zombie.body.position, e.zombie.persistence_required, if e.zombie.villager_xp != 0 || e.zombie.curing() { KEPT_MONSTER } else { MONSTER }, &mut e.no_action_time, &mut e.random));
         self.skeletons.retain_mut(|e| !check(e.id, e.skeleton.body.position, e.skeleton.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.creepers.retain_mut(|e| !check(e.id, e.creeper.body.position, e.creeper.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.spiders.retain_mut(|e| !check(e.id, e.spider.body.position, e.spider.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
@@ -5455,6 +5497,9 @@ impl EntityWorld {
                     continue;
                 }
                 EntityKey::Zombie(id) => {
+                    if self.tick_zombie_cure(id, &*world) {
+                        continue;
+                    }
                     let villagers: Vec<_> = self
                         .villagers
                         .iter()
@@ -8325,6 +8370,88 @@ mod tests {
         world.check_despawn(&[DVec3::ZERO], false, &|_| true);
         assert!(world.zombies().iter().any(|e| e.id == traded));
         assert!(world.zombies().iter().all(|e| e.id != plain));
+    }
+
+    struct Barred(bool);
+    impl World for Barred {
+        fn block(&self, (x, y, z): minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            if y < 1 {
+                return Some(minecraftoss_player::Block::new("minecraft:stone"));
+            }
+            (self.0 && y == 1 && (2..=3).contains(&x.abs()) && z.abs() <= 3).then(|| minecraftoss_player::Block::new(if x > 0 { "minecraft:iron_bars" } else { "minecraft:red_bed" }))
+        }
+        fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    fn zombie_villager(time: i32) -> Zombie {
+        let mut zombie = Zombie::new(DVec3::new(0.5, 1.0, 0.5));
+        zombie.kind = ZombieKind::ZombieVillager;
+        zombie.villager_conversion_time = time;
+        zombie
+    }
+
+    #[test]
+    fn a_golden_apple_starts_curing_only_a_weakened_zombie_villager() {
+        let mut world = EntityWorld::default();
+        world.set_player_uuid(0, 0xC0FFEE);
+        let id = world.spawn_zombie(zombie_villager(-1), true);
+        let plain = world.spawn_zombie(Zombie::new(DVec3::new(5.5, 1.0, 0.5)), true);
+        assert_eq!(world.start_curing(plain, 0), None, "only zombie villagers");
+        assert_eq!(world.start_curing(id, 0), Some(false), "not without weakness");
+        assert!(world.zombies().iter().all(|e| !e.zombie.curing()));
+        assert!(world.add_mob_effect(id, crate::effects::EffectInstance::new(MobEffect::Weakness, 1800, 0)));
+        world.zombie_mut(id).unwrap().voices.clear();
+        assert_eq!(world.start_curing(id, 0), Some(true));
+        let entity = world.zombie_mut(id).unwrap();
+        let time = entity.zombie.villager_conversion_time;
+        assert!((3600..=6000).contains(&time), "{time}");
+        assert_eq!(entity.zombie.conversion_starter, Some(0xC0FFEE));
+        assert!(!entity.effects.has(MobEffect::Weakness));
+        assert_eq!(entity.effects.get(MobEffect::Strength).map(|e| (e.duration, e.amplifier)), Some((time, 0)));
+        let cured = matches!(entity.voices.as_slice(), [(Voice::Event(ZOMBIE_VILLAGER_CURE_SOUND, volume, pitch), _)] if (1.0..2.0).contains(volume) && (0.3..1.0).contains(pitch));
+        assert!(cured, "{:?}", entity.voices);
+        assert_eq!(world.start_curing(id, 0), Some(false), "its weakness is gone");
+        let times: Vec<i32> = (0..500)
+            .map(|seed| {
+                let id = world.spawn_zombie(zombie_villager(-1), true);
+                world.zombie_mut(id).unwrap().random = LegacyRandom::new(seed);
+                world.add_mob_effect(id, crate::effects::EffectInstance::new(MobEffect::Weakness, 1800, 0));
+                world.start_curing(id, 0);
+                world.zombie_mut(id).unwrap().zombie.villager_conversion_time
+            })
+            .collect();
+        let (low, high) = (*times.iter().min().unwrap(), *times.iter().max().unwrap());
+        assert!(low >= 3600 && high <= 6000 && low < 3700 && high > 5900, "{low}..{high}");
+    }
+
+    #[test]
+    fn a_curing_zombie_villager_counts_down_faster_beside_iron_bars_and_beds_and_is_handed_over() {
+        let countdown = |barred: bool| {
+            let mut world = EntityWorld::default();
+            world.spawn_zombie(zombie_villager(6000), true);
+            let mut level = Barred(barred);
+            for _ in 0..3000 {
+                world.tick(&mut level);
+            }
+            6000 - world.zombies()[0].zombie.villager_conversion_time
+        };
+        assert_eq!(countdown(false), 3000, "one a tick");
+        let faster = countdown(true);
+        assert!(faster > 3040, "{faster}");
+        let mut world = EntityWorld::default();
+        let id = world.spawn_zombie(zombie_villager(2), true);
+        world.tick(&mut Barred(false));
+        assert!(world.take_zombie_cures().is_empty());
+        world.tick(&mut Barred(false));
+        assert_eq!(world.take_zombie_cures(), vec![id]);
+        assert!(!world.zombies()[0].zombie.curing(), "handed over once");
+        world.tick(&mut Barred(false));
+        assert!(world.take_zombie_cures().is_empty());
+        let mut far = zombie_villager(3000);
+        far.body.position = DVec3::new(200.0, 1.0, 0.0);
+        let far = world.spawn_zombie(far, true);
+        world.check_despawn(&[DVec3::ZERO], false, &|_| true);
+        assert!(world.zombies().iter().any(|e| e.id == far), "a curing zombie villager stays");
     }
 
     #[test]

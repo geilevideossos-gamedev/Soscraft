@@ -283,6 +283,12 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             let Some(drops) = world.piglin_admire_held(id, actor.inventory, selected, infinite) else { return outcome };
             outcome.drops.extend(drops);
         }
+        MobHit::Zombie(id) if held.as_deref() == Some("minecraft:golden_apple") => {
+            let Some(started) = world.start_curing(id, actor.player) else { return outcome };
+            if started && !infinite {
+                minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+            }
+        }
         MobHit::IronGolem(id) if held.as_deref() == Some("minecraft:iron_ingot") => {
             let Some(entity) = world.iron_golem_mut(id) else { return outcome };
             if !entity.repair_with_ingot() {
@@ -697,5 +703,32 @@ mod tests {
         assert!(inventory.slots[0].is_none());
         assert!(world.pig_mut(pig).unwrap().pig.saddled);
         assert_eq!(outcome.sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["entity.pig.saddle"]);
+    }
+
+    #[test]
+    fn a_golden_apple_cures_only_a_weakened_zombie_villager_and_is_used_up_then() {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_entities::zombie::{Zombie, ZombieKind};
+        let mut world = EntityWorld::default();
+        let mut villager = Zombie::new(DVec3::new(0.5, 1.0, 2.0));
+        villager.kind = ZombieKind::ZombieVillager;
+        let villager = world.spawn_zombie(villager, true);
+        let plain = world.spawn_zombie(Zombie::new(DVec3::new(4.5, 1.0, 2.0)), true);
+        let apple = "minecraft:golden_apple";
+        let (outcome, inventory) = use_on(&mut world, MobHit::Zombie(plain), apple);
+        assert!(!outcome.handled && inventory.slots[0].as_ref().map(|s| s.count) == Some(4), "a plain zombie lets the player eat");
+        assert!(!would_interact(&world, MobHit::Zombie(plain), &holding(Some(apple)), 0, false, 0));
+        let (outcome, inventory) = use_on(&mut world, MobHit::Zombie(villager), apple);
+        assert!(outcome.handled && inventory.slots[0].as_ref().map(|s| s.count) == Some(4), "without weakness the click is taken and the apple kept");
+        assert!(!world.zombie_mut(villager).unwrap().zombie.curing());
+        assert!(world.add_mob_effect(villager, EffectInstance::new(MobEffect::Weakness, 1800, 0)));
+        assert!(would_interact(&world, MobHit::Zombie(villager), &holding(Some(apple)), 0, false, 0));
+        assert!(!world.zombie_mut(villager).unwrap().zombie.curing(), "asking changes nothing");
+        let (outcome, inventory) = use_on(&mut world, MobHit::Zombie(villager), apple);
+        assert!(outcome.handled && outcome.inventory_changed);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3), "one apple is used");
+        assert!(world.zombie_mut(villager).unwrap().zombie.curing());
+        let (_, inventory) = use_on(&mut world, MobHit::Zombie(villager), "minecraft:apple");
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4), "other food does nothing");
     }
 }

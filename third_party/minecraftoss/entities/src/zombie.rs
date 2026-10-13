@@ -89,6 +89,8 @@ pub struct Zombie {
     /// The head, chest, legs and feet slots' item IDs.
     pub armor: [Option<String>; 4],
     pub villager_xp: i32,
+    pub villager_conversion_time: i32,
+    pub conversion_starter: Option<u128>,
 }
 
 impl Zombie {
@@ -111,6 +113,8 @@ impl Zombie {
             hand_drop_chances: [0.085; 2],
             armor: Default::default(),
             villager_xp: 0,
+            villager_conversion_time: -1,
+            conversion_starter: None,
         }
     }
 
@@ -118,6 +122,14 @@ impl Zombie {
         self.baby = baby;
         self.body.width = if baby { 0.49 } else { 0.6 };
         self.body.height = if baby { 0.98 } else { 1.95 };
+    }
+
+    pub fn curing(&self) -> bool {
+        self.villager_conversion_time > -1
+    }
+
+    pub fn shaking(&self) -> bool {
+        self.underwater_converting || self.curing()
     }
 
     pub fn eye_height(&self) -> f32 {
@@ -161,6 +173,31 @@ impl Zombie {
     }
 }
 
+pub fn cure_progress(position: DVec3, mut next_float: impl FnMut() -> f32, speeds_up: impl Fn(i32, i32, i32) -> bool) -> i32 {
+    let mut progress = 1;
+    if next_float() >= 0.01 {
+        return progress;
+    }
+    let (x, y, z) = (position.x as i32, position.y as i32, position.z as i32);
+    let mut found = 0;
+    for bx in x - 4..x + 4 {
+        for by in y - 4..y + 4 {
+            for bz in z - 4..z + 4 {
+                if found >= 14 {
+                    return progress;
+                }
+                if speeds_up(bx, by, bz) {
+                    if next_float() < 0.3 {
+                        progress += 1;
+                    }
+                    found += 1;
+                }
+            }
+        }
+    }
+    progress
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +236,26 @@ mod tests {
         }
         assert_eq!(zombie.conversion_time, 0);
         assert!(zombie.tick_drowning(true, false));
+    }
+
+    #[test]
+    fn a_cure_counts_one_a_tick_and_a_hundredth_of_ticks_look_for_up_to_fourteen_bars_and_beds() {
+        let everywhere = |_: i32, _: i32, _: i32| true;
+        let asked = std::cell::Cell::new(0);
+        assert_eq!(cure_progress(DVec3::ZERO, || 0.01, |_, _, _| { asked.set(asked.get() + 1); true }), 1);
+        assert_eq!(asked.get(), 0, "most ticks look at no blocks");
+        assert_eq!(cure_progress(DVec3::ZERO, || 0.0, everywhere), 15, "fourteen blocks at most");
+        assert_eq!(cure_progress(DVec3::ZERO, || 0.0, |_, _, _| false), 1);
+        let mut floats = [0.0, 0.29, 0.3, 0.1].into_iter().chain(std::iter::repeat(0.9));
+        assert_eq!(cure_progress(DVec3::ZERO, || floats.next().unwrap(), everywhere), 3, "each block found adds one three times in ten");
+        let edges = |x: i32, y: i32, z: i32| [(-4, -4, -4), (3, 0, 3), (4, 0, 0), (-5, 0, 0)].contains(&(x, y, z));
+        assert_eq!(cure_progress(DVec3::new(-0.5, 0.5, -0.5), || 0.0, edges), 3, "from four below to three above the truncated position");
+        let mut zombie = Zombie::new(DVec3::ZERO);
+        assert!(!zombie.curing() && !zombie.shaking());
+        zombie.villager_conversion_time = 0;
+        assert!(zombie.curing() && zombie.shaking());
+        zombie.villager_conversion_time = -1;
+        zombie.underwater_converting = true;
+        assert!(!zombie.curing() && zombie.shaking());
     }
 }

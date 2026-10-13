@@ -860,6 +860,7 @@ impl ServerSim {
         }
         self.carry_zombie_conversions();
         self.infect_villagers();
+        self.cure_zombie_villagers(players);
         self.throw_mob_tridents();
         self.explode_creepers();
         self.explode_fireballs();
@@ -902,6 +903,40 @@ impl ServerSim {
             self.add_saved_entity(tag);
             if let Some(at) = at.filter(|_| !silent) {
                 self.level.level_events.push((crate::level_events::ZOMBIE_INFECT, minecraftoss_core::BlockPos::new(at.x, at.y, at.z), 0));
+            }
+        }
+    }
+
+    fn cure_zombie_villagers(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_entities::gossip::GossipType;
+        for zombie in self.mobs.take_zombie_cures() {
+            let Some((_, saved)) = crate::server_mobs::mob_tags_where(&self.mobs, |id, _| id == zombie, &self.mob_tags, false).into_iter().next() else { continue };
+            let Some((position, starter)) = self.mobs.zombies().iter().find(|e| e.id == zombie).map(|e| (e.zombie.body.position, e.zombie.conversion_starter)) else { continue };
+            let (tag, dropped) = crate::server_mobs::cured_villager_tag(&saved);
+            for (item, count, components) in dropped {
+                self.level.spawn_at_location(position.to_array(), stack_of(&item, count, components.as_deref()));
+            }
+            let tag = self.level.finalize_conversion(tag);
+            self.mobs.remove_mobs(&[zombie]);
+            self.mob_tags.remove(&zombie);
+            let silent = saved.get("Silent").and_then(minecraftoss_core::nbt::Tag::as_i64).is_some_and(|silent| silent != 0);
+            let uuid = tag_uuid(&tag);
+            self.add_saved_entity(tag);
+            if let Some(villager) = uuid.and_then(|uuid| self.mobs.mob_with_uuid(uuid)) {
+                let present = |starter: &u128| players.iter().any(|p| self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + p.id) == *starter);
+                if let Some(starter) = starter.filter(present) {
+                    if let Some(cured) = self.mobs.villager_mut(villager) {
+                        let gossips = std::sync::Arc::make_mut(&mut cured.gossips);
+                        gossips.add(starter, GossipType::MajorPositive, 20);
+                        gossips.add(starter, GossipType::MinorPositive, 25);
+                    }
+                }
+                self.mobs.add_mob_effect(villager, EffectInstance::new(MobEffect::Nausea, 200, 0));
+            }
+            if !silent {
+                let at = position.floor().as_ivec3();
+                self.level.level_events.push((crate::level_events::ZOMBIE_VILLAGER_CONVERTED, minecraftoss_core::BlockPos::new(at.x, at.y, at.z), 0));
             }
         }
     }
@@ -6683,6 +6718,75 @@ mod tests {
         server.infect_villagers();
         assert_eq!(server.mobs.zombies().iter().filter(|e| e.zombie.kind == minecraftoss_entities::zombie::ZombieKind::ZombieVillager).count(), 1, "easy never infects");
         assert!(server.level.level_events.is_empty());
+    }
+
+    #[test]
+    fn a_golden_apple_cures_a_weakened_zombie_villager_into_the_same_villager_that_trades_cheaper_with_its_curer() {
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_player::inventory::{Inventory, ItemStack};
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=16 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        server.take_changes();
+        let (curer, other) = ([8.5, 201.0, 12.5], [8.5, 201.0, 4.5]);
+        server.set_players(&[curer, other], 2);
+        server.set_simulation_area((0, 0), 4);
+        server.set_player_uuid(0, 0xA11CE);
+        server.set_player_uuid(1, 0xB0B);
+        let nbt = minecraftoss_core::snbt::parse_compound(
+            r#"{NoAI:1b,PersistenceRequired:1b,CustomName:"Bob",Xp:12,VillagerData:{type:"minecraft:desert",profession:"minecraft:farmer",level:2},Offers:{Recipes:[{buy:{id:"minecraft:wheat",count:20},sell:{id:"minecraft:emerald",count:1},maxUses:16,xp:2,priceMultiplier:0.05f}]}}"#,
+        )
+        .unwrap();
+        server.summon("minecraft:zombie_villager", [8.5, 201.0, 8.5], Some(&nbt), 0.0).unwrap();
+        let zombie = server.mobs.zombies().last().expect("a zombie villager").id;
+        let mut inventory = Inventory::default();
+        let mut apples = ItemStack::new("minecraft:golden_apple", 2);
+        apples.max = 64;
+        inventory.slots[0] = Some(apples);
+        let result = server.mob_action(0, minecraftoss_entities::world::MobHit::Zombie(zombie), None, inventory.clone(), 0, false);
+        assert!(result.slots.is_empty(), "no apple without weakness");
+        assert!(server.mobs.add_mob_effect(zombie, EffectInstance::new(MobEffect::Weakness, 1800, 0)));
+        let result = server.mob_action(0, minecraftoss_entities::world::MobHit::Zombie(zombie), None, inventory.clone(), 0, false);
+        assert_eq!(result.slots.first().and_then(|(_, stack)| stack.as_ref()).map(|s| s.count), Some(1), "one apple is used");
+        let time = server.mobs.zombie_mut(zombie).unwrap().zombie.villager_conversion_time;
+        assert!((3600..=6000).contains(&time), "{time}");
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, saved) = tags.iter().find(|(id, _)| *id == zombie).expect("saved");
+        assert_eq!(saved.get("ConversionTime").and_then(Tag::as_i64), Some(i64::from(time)));
+        assert_eq!(saved.get("ConversionPlayer").and_then(Tag::as_ints).map(|ints| ints.to_vec()), Some(minecraftoss_entities::gossip::uuid_to_ints(0xA11CE).to_vec()));
+        assert!(!crate::dormant::removed_when_far_away("minecraft:zombie_villager", saved), "a curing one stays");
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        let back = &loaded.zombie_mut(back).unwrap().zombie;
+        assert_eq!((back.villager_conversion_time, back.conversion_starter), (time, Some(0xA11CE)), "the cure survives a reload");
+        server.mobs.zombie_mut(zombie).unwrap().zombie.villager_conversion_time = 1;
+        server.level.level_events.clear();
+        server.tick_mobs(&[candidate(0, curer), candidate(1, other)], false);
+        assert!(server.mobs.zombies().iter().all(|e| e.id != zombie) && !server.mob_tags.contains_key(&zombie), "the zombie villager is gone");
+        let cured = server.mobs.villagers().last().expect("a villager");
+        let id = cured.id;
+        assert_eq!((cured.villager.kind.as_str(), cured.villager.profession.id(), cured.villager.level, cured.villager.xp), ("minecraft:desert", "minecraft:farmer", 2, 12));
+        assert_eq!(cured.villager.body.position.to_array(), [8.5, 201.0, 8.5]);
+        assert_eq!(cured.offers.as_ref().map(Vec::len), Some(1));
+        assert!(cured.effects.get(MobEffect::Nausea).is_some_and(|e| e.duration == 200), "nausea");
+        assert!(cured.effects.has(MobEffect::Strength), "its effects come along");
+        let about_curer: Vec<_> = cured.gossips.unpack().into_iter().filter(|(target, _, _)| *target == 0xA11CE).map(|(_, kind, value)| (kind.id(), value)).collect();
+        assert!(about_curer.contains(&("major_positive", 20)) && about_curer.contains(&("minor_positive", 25)), "{about_curer:?}");
+        assert!(server.level.level_events.contains(&(1027, minecraftoss_core::BlockPos::new(8, 201, 8), 0)), "{:?}", server.level.level_events);
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, villager) = tags.iter().find(|(tag_id, _)| *tag_id == id).expect("the villager is saved");
+        assert_eq!(villager.get("CustomName").and_then(Tag::as_str), Some("Bob"));
+        let price = |server: &mut ServerSim, player: u64| {
+            let view = server.mob_action(player, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.expect("its trades open");
+            server.merchant(player, MerchantOp::Close, Inventory::default(), 0, [8.5, 201.0, 8.5]);
+            view.offers[0].cost_a_count(64)
+        };
+        assert_eq!(price(&mut server, 1), 20);
+        assert_eq!(price(&mut server, 0), 14, "125 reputation off a 0.05 multiplier");
     }
 
     fn spawner_with_egg(difficulty: i32, rule: bool) -> Option<ServerSim> {

@@ -1238,7 +1238,8 @@ impl CreatureSpawns {
             let uuid = level.next_uuid();
             set(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
         }
-        match tag.get("id").and_then(Tag::as_str) {
+        let kind = tag.get("id").and_then(Tag::as_str).map(str::to_owned);
+        match kind.as_deref() {
             Some("minecraft:zombie_villager") => {
                 set(&mut tag, "VillagerDataFinalized", byte(true));
                 let _ = attribute(&mut tag, "minecraft:follow_range", follow_range_base("minecraft:zombie_villager"));
@@ -1249,6 +1250,18 @@ impl CreatureSpawns {
                 Self::halloween_head(level, context, &mut tag);
                 let mut own = entity_random(Self::uuid(&tag));
                 Self::zombie_attributes(&mut tag, &mut own, special, false);
+            }
+            Some("minecraft:villager") => {
+                if tag.get("VillagerDataFinalized").and_then(Tag::as_i64).unwrap_or(0) == 0 {
+                    let biome = self.biome_name(level.biome(pos));
+                    if let Tag::Compound(map) = &mut tag {
+                        if let Some(Tag::Compound(data)) = map.get_mut("VillagerData") {
+                            data.insert("type".to_owned(), Tag::String(villager_type(&biome).to_owned()));
+                        }
+                    }
+                    set(&mut tag, "VillagerDataFinalized", byte(true));
+                }
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
             Some(_) => finalize_mob(&mut tag, &mut RandomRef(level.random())),
             None => {}

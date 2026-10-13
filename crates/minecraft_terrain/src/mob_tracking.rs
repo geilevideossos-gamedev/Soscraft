@@ -12,7 +12,7 @@ use crate::client_mobs::{ServerMob, server_mobs};
 pub const LOOK_TICKS: u64 = 10;
 pub const DEFAULT_RANGE: i32 = 5;
 
-const VOLATILE: [&str; 28] = [
+const VOLATILE: [&str; 29] = [
     "Pos",
     "Motion",
     "Rotation",
@@ -41,6 +41,7 @@ const VOLATILE: [&str; 28] = [
     "FoodLevel",
     "active_effects",
     "Brain",
+    "ConversionTime",
 ];
 
 const ARM_POSES: [ArmPose; 6] = [
@@ -304,6 +305,7 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             e.id,
             MobShow {
                 aggressive: e.aggressive,
+                converting: e.zombie.shaking(),
                 ..MobShow::default()
             },
         );
@@ -462,6 +464,13 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.zombie_mut(id) {
         place(&mut e.previous_position, &mut e.zombie.body, mob);
         e.aggressive = show.aggressive;
+        if e.zombie.shaking() != show.converting {
+            if e.zombie.kind == minecraftoss_entities::zombie::ZombieKind::ZombieVillager {
+                e.zombie.villager_conversion_time = if show.converting { 0 } else { -1 };
+            } else {
+                e.zombie.underwater_converting = show.converting;
+            }
+        }
     }
     if let Some(e) = world.skeleton_mut(id) {
         place(&mut e.previous_position, &mut e.skeleton.body, mob);
@@ -864,6 +873,40 @@ mod tests {
             show_on(&mut friend, &mob);
         }
         assert!(!crate::zombie_render::raises_trident(friend.zombie_mut(drowned).unwrap()));
+    }
+
+    #[test]
+    fn a_friend_sees_a_zombie_villager_shake_while_it_is_cured_and_a_zombie_while_it_drowns() {
+        let mut host = EntityWorld::default();
+        let (villager, tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:zombie_villager\",Pos:[2.5d,64.0d,0.5d],VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1},ConversionTime:-1}",
+        );
+        let (zombie, zombie_tag) = spawn(&mut host, "{id:\"minecraft:zombie\",Pos:[6.5d,64.0d,0.5d]}");
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, villager, &tag));
+        assert!(spawn_tracked(&mut friend, zombie, &zombie_tag));
+        assert!(!friend.zombie_mut(villager).unwrap().zombie.shaking());
+        host.zombie_mut(villager).unwrap().zombie.villager_conversion_time = 4000;
+        host.zombie_mut(zombie).unwrap().zombie.underwater_converting = true;
+        assert!(shows(&host)[&villager].converting && shows(&host)[&zombie].converting);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(friend.zombie_mut(villager).unwrap().zombie.shaking());
+        assert!(friend.zombie_mut(zombie).unwrap().zombie.shaking());
+        host.zombie_mut(villager).unwrap().zombie.villager_conversion_time = -1;
+        host.zombie_mut(zombie).unwrap().zombie.underwater_converting = false;
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(!friend.zombie_mut(villager).unwrap().zombie.shaking());
+        assert!(!friend.zombie_mut(zombie).unwrap().zombie.shaking());
+        let mut curing = tag.clone();
+        if let Tag::Compound(map) = &mut curing {
+            map.insert("ConversionTime".to_owned(), Tag::Int(3999));
+        }
+        assert_eq!(look(&curing), look(&tag), "the countdown resends no look");
     }
 
     #[test]

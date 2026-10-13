@@ -63,6 +63,7 @@ pub fn append_zombies<'a>(
     for entity in zombies {
         let zombie = &entity.zombie;
         let Some(pose) = poses.pose(entity.id, partial) else { continue };
+        let pose = MobPose { body_rot: pose.body_rot + crate::piglin_render::shake_degrees(pose.age_in_ticks, zombie.shaking()), ..pose };
         marks.push((mesh.vertices.len(), pose.overlay(0.0)));
         let feet = pose.feet;
         if zombie.kind == ZombieKind::ZombieVillager {

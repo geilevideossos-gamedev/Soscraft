@@ -407,6 +407,105 @@ After d8de1bcb.
 IW4L_MINECRAFT_KIT=minecraft:villager_spawn_egg*8,minecraft:zombie_spawn_egg*8,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:torch*32,minecraft:diamond_sword,minecraft:cooked_beef*32
 ```
 
+### 2. A golden apple cures a weakened Minecraft zombie villager
+
+After c61f2757.
+
+- **Vanilla (javap, 26.3):**
+  - `ZombieVillager.mobInteract` with a golden apple:
+    - With Weakness: `ItemStack.consume(1, player)` (nothing is used up in creative), then `startConverting(player UUID, random.nextInt(2401) + 3600)`, answering `SUCCESS_SERVER`.
+    - Without Weakness: `CONSUME`. The click is taken, the apple is kept and the player does not eat it.
+    - Any other item goes to `Zombie.mobInteract`.
+  - `startConverting(uuid, time)`: sets the starter and the time and the synced `DATA_CONVERTING_ID`. Removes Weakness, adds Strength for `time` ticks at amplifier `min(difficulty - 1, 0)`, and broadcasts entity event 16.
+  - Entity event 16 (`handleEntityEvent`): `entity.zombie_villager.cure` at the eye, volume `1 + nextFloat`, pitch `nextFloat * 0.7 + 0.3`, unless silent.
+  - `tick`, before `Zombie.tick`: while alive and converting, the time drops by `getConversionProgress()`, and at 0 or below `finishConversion` runs.
+  - `getConversionProgress`: 1. On a `nextFloat() < 0.01`, it walks x, y and z from the truncated `(int) getX() - 4` up to `+ 4` (exclusive), stopping after 14 blocks of `#speeds_up_zombie_villager_curing` (iron bars and `#beds` in the 26.3 data pack). Each block found adds 1 when `nextFloat() < 0.3`.
+  - `finishConversion`: `convertTo(VILLAGER, ConversionParams.single(this, false, false))`, so no equipment and no `CanPickUpLoot` carry over. Then:
+    - `dropPreservedEquipment` drops items with a drop chance above 1. Binding-cursed items move onto the villager.
+    - `setVillagerDataFinalized`, `setVillagerData`, the gossips (when there are any), a copy of the offers (when there are any) and `setVillagerXp`.
+    - `finalizeSpawn(CONVERSION, null)`: `finalizeVillagerType` (the biome's type only when not finalized), `AbstractVillager` and `AgeableMob` with no roll for the first of a group, then `Mob.finalizeSpawn`.
+    - `refreshBrain`.
+    - When the starter is a player in this level (`ServerLevel.getPlayerByUUID`): the advancement trigger and `ZOMBIE_VILLAGER_CURED`. In `Villager.onReputationEventFrom` that is +20 `major_positive` and +25 `minor_positive` gossip about the player.
+    - Nausea for 200 ticks, and level event 1027 at the block unless silent.
+  - Saved data: `ConversionTime` (always written, -1 when not converting) and `ConversionPlayer` (a UUID, written when known). Loading with a time other than -1 runs `startConverting`.
+  - `LevelEventHandler` 1027: `entity.zombie_villager.converted` (HOSTILE), volume 2.0, pitch `(nextFloat - nextFloat) * 0.2 + 1.0`.
+  - `AbstractZombieRenderer.isShaking` is true while a zombie converts under water, and `ZombieVillagerRenderer` adds `isConverting`. A shaking body turns by `cos(ageInTicks * 3.25) * PI * 0.4` degrees.
+  - `MobEffects.STRENGTH`: beneficial, colour 16762624, +3 `attack_damage` a level.
+- **Changed:**
+  - Vendored `entities/src/zombie.rs`:
+    - New fields `villager_conversion_time` (-1 when not curing) and `conversion_starter`.
+    - New `curing()` and `shaking()` (curing, or drowning into a drowned).
+    - New `cure_progress`, the progress above.
+  - Vendored `entities/src/world.rs`:
+    - New `start_curing(zombie, player)`: `None` for any zombie but a living zombie villager, `Some(false)` without Weakness. Otherwise it rolls the time from the zombie's random and records the player's UUID. It swaps Weakness for Strength and makes the cure sound at the eye.
+    - A curing zombie villager counts down first thing in its tick, with iron bars and beds speeding it up.
+    - When the time runs out, the zombie goes on the new `zombie_cures` list (`take_zombie_cures`), stops curing and skips the rest of that tick.
+    - `check_despawn` keeps a curing zombie villager like one with villager experience.
+  - Vendored `entities/src/effects.rs`: new `MobEffect::Strength` (`minecraft:strength`), its +3 a level in `attack_damage_modifier`, and `MobEffects::remove`. Vendored `entities/src/potion.rs`: Strength's colour.
+  - Vendored `world/src/natural_spawner/spawning.rs`: `finalize_conversion` has a villager branch. It gives the biome's type when the data is not finalized, then runs `Mob.finalizeSpawn`'s part.
+  - `minecraft_terrain/src/mob_actions.rs`: a golden apple on a zombie calls `start_curing`. A started cure uses one apple (not in creative), a zombie villager without Weakness takes the click and keeps the apple, and any other zombie lets the player eat.
+  - `minecraft_terrain/src/server_mobs.rs`:
+    - A zombie villager saves `ConversionTime` and, while curing, `ConversionPlayer`, and loads both back.
+    - New `cured_villager_tag` builds the villager from the zombie villager's saved tag. It keeps the common fields, effects, `VillagerData`, gossips, offers and `Xp`, sets `VillagerDataFinalized` as vanilla reads it and an `Age` for a baby, and lists the preserved equipment to drop.
+  - `minecraft_terrain/src/server.rs`: after the mobs tick, `cure_zombie_villagers` turns each cured zombie villager into the villager.
+    - It drops the preserved equipment, finalizes the tag and replaces the mob.
+    - When the starter is among the players of this level, it gives the cured villager +20 `major_positive` and +25 `minor_positive` gossip about them.
+    - It adds Nausea for 200 ticks and sends level event 1027 unless the zombie was `Silent`.
+  - `minecraft_terrain/src/level_events.rs`: event 1027 plays `entity.zombie_villager.converted` for the host and the friend.
+  - `minecraft_terrain/src/mob_tracking.rs`:
+    - `MobShow.converting` carries a zombie's shaking (curing or drowning), and `show_on` sets it on the friend's copy.
+    - `ConversionTime` is in `VOLATILE`, so the countdown does not resend the look tag every tick.
+  - `minecraft_terrain/src/zombie_render.rs`: a shaking zombie or zombie villager turns its body like a converting piglin, for the host and the friend.
+  - `minecraft_terrain/src/potions.rs`: its test now uses glowing as the effect mobs do not have, since strength exists now.
+  - The cure sound is a mob sound on the host, so it reaches friends through `heard.rs` like every other mob sound. No protocol change.
+- **Tests:**
+  - `zombie::tests::a_cure_counts_one_a_tick_and_a_hundredth_of_ticks_look_for_up_to_fourteen_bars_and_beds`:
+    - Most ticks look at no blocks.
+    - The cap is 14 blocks (progress 15).
+    - Three in ten found blocks add one.
+    - The box runs from 4 below to 3 above the truncated position.
+    - `curing` and `shaking`.
+  - `world::tests::a_golden_apple_starts_curing_only_a_weakened_zombie_villager`:
+    - It does nothing for a plain zombie, and gives `Some(false)` without weakness.
+    - Once started: a time of 3600 to 6000 with the player's UUID, weakness gone, strength for the time, and the cure sound once.
+    - A second apple does nothing.
+    - 500 seeded starts spread over 3600 to 6000.
+  - `world::tests::a_curing_zombie_villager_counts_down_faster_beside_iron_bars_and_beds_and_is_handed_over`:
+    - 3000 ticks count exactly 3000 without bars, and more than 3040 beside 28 iron bars and beds.
+    - The cure is handed over exactly once, at 0.
+    - A curing zombie villager 200 blocks away does not despawn.
+  - `mob_actions::tests::a_golden_apple_cures_only_a_weakened_zombie_villager_and_is_used_up_then`: a plain zombie lets the player eat; without weakness the click is taken and the apple kept; `would_interact` agrees and changes nothing; with weakness one apple is used and the cure starts; other food does nothing.
+  - `mob_tracking::tests::a_friend_sees_a_zombie_villager_shake_while_it_is_cured_and_a_zombie_while_it_drowns`: shaking turns on and off on the friend's copy, and the countdown changes no look.
+  - `server::tests::a_golden_apple_cures_a_weakened_zombie_villager_into_the_same_villager_that_trades_cheaper_with_its_curer`:
+    - No apple is used without weakness. With weakness one is.
+    - The saved tag has `ConversionTime` and `ConversionPlayer`, a curing one is not removed when far away (`dormant.rs`), and it reloads with the same time and starter.
+    - At the end of the countdown the zombie villager becomes a desert farmer of level 2 with 12 xp, its offer, its name and Strength, standing in the same place.
+    - The villager has 200 ticks of Nausea, +20 `major_positive` and +25 `minor_positive` gossip about the curer, and level event 1027 plays.
+    - The wheat offer costs the other player 20 and the curer 14.
+  - `level_events::tests::a_cured_zombie_villager_rings_out_where_it_stood`.
+  - `potions::tests::effects_cross_to_mobs_and_players_where_they_exist` (updated).
+  - Runs: `minecraftoss-entities` lib 240, `minecraftoss-world` lib 77, `minecraft_terrain` lib 1136 (3 ignored) and `minecraft_survival` lib 601, all green. `check -p launcher` is green.
+- **Decisions:**
+  - The cure sound's volume and pitch come from the zombie's random on the host, so host and friend hear the same sound. Vanilla draws them on each client.
+  - Preserved equipment (drop chance above 1) drops at the cure. Binding-cursed items do not move onto the villager, because the fork's villagers wear no armour.
+  - A curing zombie villager loaded from a save keeps its saved effects. It does not run `startConverting` again, which in vanilla removes Weakness and gives Strength for the remaining time once more on load.
+  - Drowning zombies now shake too, as in vanilla. `MobShow.converting` carries both kinds of shaking.
+  - Strength is a mob effect now, so a splash potion of strength also lands on mobs. Mob melee does not read effects yet, so Strength does not make a curing zombie villager hit harder. Vanilla adds 3 damage.
+  - The starter counts as present when they are among the players ticking this level, which is `getPlayerByUUID` on that level.
+- **Test steps (survival, difficulty normal):**
+  1. Build a closed planks box of about 5 x 5 with a roof, so the sun cannot burn what is inside. Inside, summon a farmer zombie villager: `/summon minecraft:zombie_villager ~ ~ ~2 {PersistenceRequired:1b,VillagerData:{type:"minecraft:plains",profession:"minecraft:farmer",level:1}}`.
+  2. Right-click it with a golden apple: nothing happens and the apple stays in your hand.
+  3. Throw a splash potion of weakness at it, then right-click it with a golden apple. One apple is used, a cure sound plays and the zombie villager starts shaking from side to side (**30_curing_shakes**).
+  4. Place iron bars and a red bed within 4 blocks of it. Save and quit after a minute, load again: it is still shaking.
+  5. Wait 3 to 5 minutes in total. It turns into a plains farmer with a loud sound (**31_cured_villager**).
+  6. Right-click the farmer. Its offers are much cheaper than a normal farmer's: the struck-through old price shows next to the new one (**32_cured_prices**).
+  7. Friend window: the friend sees the shaking and hears the cure and converted sounds. The friend's own trading screen with that farmer shows the normal prices (**33_friend_prices**). The friend can cure a second zombie villager the same way and gets the discount there.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombie_villager_spawn_egg*4,minecraft:splash_potion@weakness,minecraft:splash_potion@weakness,minecraft:splash_potion@weakness,minecraft:splash_potion@weakness,minecraft:golden_apple*16,minecraft:iron_bars*16,minecraft:red_bed,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:wheat*64,minecraft:emerald*32,minecraft:torch*32,minecraft:cooked_beef*32
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -418,10 +517,11 @@ IW4L_MINECRAFT_KIT=minecraft:villager_spawn_egg*8,minecraft:zombie_spawn_egg*8,m
 - `CLAUDE.md` roadmap item 2: drop "trading screens" from the multiplayer leftovers.
 - `docs/MINECRAFT-SURVIVAL.md`: a zombie of any kind that kills a villager turns it into a zombie villager: always on Hard, half the time on Normal, never on Easy or Peaceful. The zombie villager keeps the villager's type, profession, level, experience, trades, gossip, name and held item. The villager drops nothing, and a loud groan plays (level event 1026). A zombie villager that was a traded villager never despawns.
 - `docs/MINECRAFT-SURVIVAL.md`: the server's mobs now follow the world difficulty in their own rules too. Until round 9 the entity world always ran as Normal. This covers skeleton fire rates and spread, drowned trident spread, husk hunger and the zombie villager conversion.
+- `docs/MINECRAFT-SURVIVAL.md`: a zombie villager with Weakness (splash weakness on it) is cured by right-clicking it with a golden apple, which is used up. It shakes for 3 to 5 minutes, faster with iron bars and beds within 4 blocks, keeps curing through a save, and never despawns while curing. Then it becomes the same villager again (type, profession, level, experience, trades, gossip and name), with nausea and a loud sound. The player who cured it gets much lower prices from it. Without Weakness the apple is kept. Friends see the shaking and hear the sounds. Zombies drowning into drowned shake too.
 
 ## Vendored files
 
-Patched by track D: 8 (`entities/src/lib.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`). Added: 1 (`entities/src/drowned_ai.rs`). Group zombie-villagers commit 1 added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` to the patched list.
+Patched by track D: 10 (`entities/src/effects.rs`, `entities/src/lib.rs`, `entities/src/potion.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`). Added: 1 (`entities/src/drowned_ai.rs`). Group zombie-villagers added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` (commit 1) and `entities/src/effects.rs` and `entities/src/potion.rs` (commit 2) to the patched list.
 
 ## Left for later
 

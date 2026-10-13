@@ -729,6 +729,10 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 let field = |key: &str, default: &str| data.and_then(|d| text(d, key)).unwrap_or(default).to_owned();
                 zombie.villager = Some((field("type", "minecraft:plains"), field("profession", "minecraft:none")));
                 zombie.villager_xp = int(tag, "Xp").unwrap_or(0);
+                if let Some(time) = int(tag, "ConversionTime").filter(|time| *time != -1) {
+                    zombie.villager_conversion_time = time.max(0);
+                    zombie.conversion_starter = tag.get("ConversionPlayer").and_then(Tag::as_ints).filter(|i| i.len() == 4).map(|i| minecraftoss_entities::gossip::uuid_from_ints([i[0], i[1], i[2], i[3]]));
+                }
             }
             zombie.head_item = head_item(tag);
             zombie.main_hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
@@ -1307,6 +1311,12 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         if let (ZombieKind::ZombifiedPiglin, Some(ai)) = (e.zombie.kind, e.ai.as_deref()) {
             fields.push(("anger_end_time", Tag::Long(ai.state.enderman.anger_end_time)));
         }
+        if e.zombie.kind == ZombieKind::ZombieVillager {
+            fields.push(("ConversionTime", Tag::Int(if e.zombie.curing() { e.zombie.villager_conversion_time } else { -1 })));
+            if let Some(starter) = e.zombie.conversion_starter.filter(|_| e.zombie.curing()) {
+                fields.push(("ConversionPlayer", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(starter).to_vec())));
+            }
+        }
         add(e.id, kind, &e.zombie.body, e.yaw, e.zombie.health, e.zombie.persistence_required, fields);
     }
     for e in world.skeletons() {
@@ -1845,6 +1855,48 @@ pub fn infected_villager_tag(world: &EntityWorld, villager: u64, original: Optio
         map.insert("active_effects".to_owned(), Tag::List(effects.iter().map(|e| effect_tag(e, true)).collect()));
     }
     Some(Tag::Compound(map))
+}
+
+pub fn cured_villager_tag(zombie: &Tag) -> (Tag, Vec<(String, i32, Option<String>)>) {
+    const KEPT: [&str; 21] = [
+        "Pos",
+        "Motion",
+        "Rotation",
+        "OnGround",
+        "fall_distance",
+        "active_effects",
+        "LeftHanded",
+        "NoAI",
+        "PersistenceRequired",
+        "CustomName",
+        "CustomNameVisible",
+        "Invulnerable",
+        "NoGravity",
+        "PortalCooldown",
+        "Silent",
+        "Tags",
+        "leash",
+        "VillagerData",
+        "Gossips",
+        "Offers",
+        "Xp",
+    ];
+    let Tag::Compound(map) = zombie else { return (Tag::Compound(std::collections::BTreeMap::new()), Vec::new()) };
+    let mut out: std::collections::BTreeMap<String, Tag> = map.iter().filter(|(key, _)| KEPT.contains(&key.as_str())).map(|(key, value)| (key.clone(), value.clone())).collect();
+    out.insert("id".to_owned(), Tag::String("minecraft:villager".to_owned()));
+    let finalized = int(zombie, "VillagerDataFinalized").is_some_and(|f| f != 0) || zombie.get("VillagerData").is_some();
+    out.insert("VillagerDataFinalized".to_owned(), Tag::Byte(i8::from(finalized)));
+    let baby = int(zombie, "IsBaby").is_some_and(|b| b != 0);
+    out.insert("Age".to_owned(), Tag::Int(if baby { -24000 } else { 0 }));
+    let mut dropped = Vec::new();
+    for slot in ["mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle"] {
+        let chance = zombie.get("drop_chances").and_then(|d| d.get(slot)).and_then(Tag::as_f64).unwrap_or(0.0);
+        let Some(item) = zombie.get("equipment").and_then(|e| e.get(slot)).filter(|_| chance > 1.0) else { continue };
+        let Some(id) = text(item, "id") else { continue };
+        let components = item.get("components").map(|c| crate::item_nbt::tag_json(c).to_string());
+        dropped.push((id.to_owned(), int(item, "count").unwrap_or(1), components));
+    }
+    (Tag::Compound(out), dropped)
 }
 
 /// The head, chest, legs and feet slots' item IDs from `equipment`.
