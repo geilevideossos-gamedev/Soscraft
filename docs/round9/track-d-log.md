@@ -853,6 +853,49 @@ After 58a9ee21.
 IW4L_MINECRAFT_KIT=minecraft:mule_spawn_egg*4,minecraft:golden_carrot*16,minecraft:chest*4,minecraft:stick,minecraft:iron_sword,minecraft:cooked_beef*16
 ```
 
+### 2. Minecraft llamas and trader llamas are drawn like vanilla and spit
+
+After c0e12ab3.
+
+- **Vanilla (javap, 26.3):**
+  - `LlamaModel.createBodyLayer(CubeDeformation)` (128 x 64): `head` at (0, 7, -6) with the muzzle (-2, -14, -10; 4 x 4 x 9 at 0, 0), `neck` (-4, -16, -6; 8 x 18 x 6 at 0, 14) and two `ear`s (-4 and 1, -19, -4; 3 x 3 x 2 at 17, 0); `body` at (0, 5, 2) turned pi/2 about X (-6, -10, -7; 12 x 18 x 10 at 29, 0); `right_chest` at (-8.5, 3, 3) and `left_chest` at (5.5, 3, 3), both turned pi/2 about Y (-3, 0, 0; 8 x 8 x 3 at 45, 28 and 45, 41); the four legs at (+-3.5, 10, 6 and -5) (-2, 0, -2; 4 x 14 x 4 at 29, 29).
+  - `BabyLlamaModel.createBodyLayer` (64 x 64): `head` at (0, 12, -4) with (-3, -9, -4; 6 x 11 x 4 at 0, 0), (-1.5, -7, -7; 3 x 3 x 3 at 0, 15) and the ears (0.5 and -2.5, -11, -3; 2 x 2 x 2 at 20, 4 and 20, 0); legs at (+-2.5, 16.5, 4.5 and -3.5) (-1.4 or -1.6, -0.5, -1.5; 3 x 8 x 3 at 0 or 12, 45 and 34); `body` at (0, 14, 2.5) (-4, -3, -8.5; 8 x 6 x 13 at 0, 15); the chests at (-8.5 and 5.5, 4, 3) as on the adult. It keeps `LlamaModel.setupAnim`.
+  - `LlamaModel.setupAnim`: the head's pitch and yaw from the look (x 0.017453292); right hind and left front legs `cos(pos x 0.6662) x 1.4 x speed`, the other two with + pi; both chests visible only with `hasChest`.
+  - `LayerDefinitions`: `LLAMA` and `TRADER_LLAMA` = `LlamaModel.createBodyLayer(NONE)`, `LLAMA_BABY` and `TRADER_LLAMA_BABY` = the baby layer, `LLAMA_DECOR` with `CubeDeformation(0.5)`, `LLAMA_BABY_DECOR` with `CubeDeformation(0.2)`; no mesh scaling.
+  - `LlamaRenderer`: `AgeableMobRenderer` with shadow 0.7; textures `entity/llama/llama_<creamy|white|brown|gray>` and `_baby`; `hasChest` = not a baby and `hasChest()`.
+  - `LlamaDecorLayer.submit`: an adult (`!isBaby`) whose body item has an `Equippable` asset draws that asset's `llama_body` layer on the decor model; otherwise a trader llama draws `trader_llama_baby` or `trader_llama`. The carpets' assets (`equipment/<dye>_carpet.json`) name the `llama_body` textures `<dye>`, the trader's `trader_llama` and `trader_llama_baby`.
+  - `LlamaSpitModel.createBodyLayer` (64 x 32): one part `main` of seven 2 x 2 x 2 cubes at (-4, 0, 0), (0, -4, 0), (0, 0, -4), (0, 0, 0), (2, 0, 0), (0, 2, 0), (0, 0, 2), all at 0, 0. `LlamaSpitRenderer.submit`: translate (0, 0.15, 0), turn Y by `yRot - 90`, then Z by `xRot` (both lerped), texture `entity/llama/llama_spit`, no overlay.
+  - `LlamaSpit.recreateFromPacket` adds seven `spit` particles on the client; not drawn here (Left for later).
+- **Changed:**
+  - New `minecraft_terrain/src/llama_render.rs`: the adult and baby models and their pose, the coat by variant, the chests, the decor layer (carpets on adults, the trader's blanket), and the spit model drawn between its last two places with its turn eased.
+  - `minecraft_terrain`: `mesh.rs` loads the 27 llama textures; `client_mobs.rs` gives llamas the 0.7 shadow (horses, donkeys and mules keep 0.75); `spawner_display.rs` draws llamas and trader llamas in cages.
+  - `minecraft_survival/src/entity_view.rs`: draws the llamas after the horses and the spit beside the shulker bullets, for the host and friends alike (the friend's copies come from the look tag and the tracked moves of commit 1).
+  - No vendored file changed in this commit.
+- **Tests:**
+  - `llama_render::tests::a_llama_has_nine_cubes_and_two_more_with_a_chest_and_stands_on_the_ground`, `the_legs_swing_in_pairs_and_the_head_follows_the_look`, `the_decor_is_an_adult_s_carpet_or_the_trader_s_blanket_and_grows_half_a_pixel`, `a_saved_llama_draws_its_coat_chests_and_carpet_and_a_baby_trader_its_blanket` (loaded from a saved tag through `spawn_saved` and drawn through `ClientMobs`, the friend's path too), `spit_is_seven_little_cubes_turned_along_its_flight`, `flying_spit_is_drawn_between_its_last_two_places`.
+  - `spawner_display::tests::a_zombie_a_blaze_the_nether_mobs_and_a_shulker_sit_inside_their_cage` with the mule, the llama and the trader llama (all within 0.05 of the cage).
+  - The brief's family tests (a mule from horse x donkey, a llama spits at its attacker, the carpet and chest save round trip) came with commit 1: `world::equines::tests::a_tame_horse_and_a_tame_donkey_in_love_have_a_mule`, `a_llama_spits_at_the_player_who_hit_it_once`, `server_mobs::tests::a_mule_a_llama_and_a_trader_llama_save_and_load_with_variant_strength_carpet_and_chest`; they still pass.
+  - Runs: `minecraft_terrain` lib 1159 (3 ignored), `minecraft_survival` lib 607, all green. `check -p launcher` green. `llama_render.rs` passes `rustfmt --check --edition 2021`.
+- **Decisions:**
+  - The carpet texture comes from the carpet's id (`<dye>_carpet` to `entity/equipment/llama_body/<dye>`), as `armor_render.rs` maps armour items to their assets; it is what the 16 `equipment/<dye>_carpet.json` files say. Any other body item draws no carpet.
+  - The decor layer's `CubeDeformation` is drawn by scaling each cube about its centre, as `cat_render.rs` does for the collar, so the texture coordinates stay those of the plain cube.
+  - Llamas get no new `MobShow` field: the chest, carpet and coat come from the look tag (commit 1), and the pose (head, legs) from the tracked moves.
+  - The spit's seven particles when it appears are not drawn; listed under Left for later.
+- **Test steps (survival, normal difficulty, by day):**
+  1. Use the llama egg on grass a few times: llamas in creamy, white, brown and gray coats walk about, with their long necks and ears; a baby is small with a short neck (**73_llamas_drawn**).
+  2. `/summon minecraft:llama ~ ~ ~ {Tame:1b}`. Right-click it with a chest: two chests hang on its sides. Right-click it with the white carpet: a white blanket covers its back, neck and chests. Summon a second tame llama and right-click it with the red carpet: a red one (**74_llama_chest_carpet**).
+  3. Hit a llama from the egg with the sword: it turns and spits once; the little white ball of spit flies at you and hurts a little (half a heart) (**75_llama_spits**).
+  4. Use the trader llama egg: it wears the blue trader's blanket. `/summon minecraft:trader_llama ~ ~ ~ {Age:-24000}`: the foal wears the small blanket (**76_trader_llamas**). Use the zombie egg 5 blocks from a trader llama: it spits at the zombie.
+  5. `/summon minecraft:horse ~ ~ ~ {Tame:1b}` and `/summon minecraft:donkey ~2 ~ ~ {Tame:1b}`, feed both a golden carrot: hearts, and a mule foal stands between them. Or use the mule egg (as in step 2 of commit 1).
+  6. Place the two spawners and use the llama egg on one and the trader llama egg on the other: a small llama turns inside each cage (**77_llama_spawner**).
+  7. Save and quit, then load again: every llama keeps its coat, chests and carpet.
+  8. Friend window: the friend sees the same llamas with their coats, chests, carpets and the trader's blanket, and sees the spit fly when the host hits a llama (**78_friend_llamas**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:llama_spawn_egg*4,minecraft:trader_llama_spawn_egg*2,minecraft:horse_spawn_egg*2,minecraft:donkey_spawn_egg*2,minecraft:mule_spawn_egg*2,minecraft:golden_carrot*16,minecraft:chest*2,minecraft:white_carpet*2,minecraft:red_carpet*2,minecraft:hay_block*8,minecraft:zombie_spawn_egg*2,minecraft:spawner*2,minecraft:iron_sword,minecraft:cooked_beef*16
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -873,6 +916,7 @@ IW4L_MINECRAFT_KIT=minecraft:mule_spawn_egg*4,minecraft:golden_carrot*16,minecra
 - `docs/MINECRAFT-SURVIVAL.md`: cats are tamed with raw cod or salmon (one try in three) and then belong to that player by UUID: they sit and stand on their owner's click, follow and teleport to their owner, wear a collar their owner can dye, heal from fish, sit on chests, lit furnaces and the foot of beds, relax and lie on their sleeping owner's bed and may leave a morning gift (string, a feather, rabbit hide, a rabbit's foot, raw chicken or rotten flesh) when the owner wakes up at dawn, and breed into tame kittens. Ocelots learn to trust a player who feeds them fish while they creep close. Creepers run from cats and ocelots. Phantoms do not exist yet, and cats sitting on chests do not keep them shut yet.
 - `docs/MINECRAFT-SURVIVAL.md`: the Overworld has vanilla's cat spawner: once a minute, while `spawn_mobs` is on, a spot 8 to 31 blocks from a random player gets a cat when it is near a village with more than four claimed beds within 48 blocks and fewer than five cats around (48 by 8), or inside a swamp hut with no cat within 16 blocks (that cat stays for good).
 - `docs/MINECRAFT-SURVIVAL.md`: mules, llamas and trader llamas are live mobs: saved, hatched from their eggs and seen by friends; natural llamas in windswept hills and savanna plateaus come alive. A tame horse and a tame donkey in love have a mule (horses and donkeys have their own kind; mules never breed), with health, speed and jump from both parents. Horses, donkeys, mules and llamas eat like vanilla (heal, grow, temper; golden carrots and apples, or hay for llamas, bring love when tame), rear angrily at other items while wild, take a chest when tame (donkeys, mules, llamas) and llamas a carpet, and drop their own loot, the carpet, the chest and its items. A llama hit by a player or mob spits at it once (1 damage, "was slain by Llama"), spits at wild wolves within 4 blocks, and trader llamas spit at zombies and leave after 40 minutes unless tamed or kept. Taming by riding, riding and the horse inventory are not there yet; caravans form once leads exist.
+- `docs/MINECRAFT-SURVIVAL.md`: llamas and trader llamas are drawn like vanilla: the four coats, babies with their own model, the chests on a chested llama, a carpet of any of the 16 colours on an adult, and the trader's blanket on trader llamas (the small one on foals). Llama spit is drawn in flight. Llamas and trader llamas turn in spawner cages. Friends see all of it. The puff of spit particles is not drawn yet.
 
 ## Vendored files
 
@@ -893,3 +937,4 @@ Patched by track D: 25 (`entities/src/effects.rs`, `entities/src/lib.rs`, `entit
 - Wolves flee llamas (`Wolf.WolfAvoidEntityGoal`: a wild wolf avoids a llama within 24 blocks when the llama's strength beats `nextInt(5)`): the wolf's goal context has no llama strength yet; the slot stays the idle goal in `wolf_ai.rs`.
 - Llama caravans and trader llamas on leads to their trader need leads (group `wandering-trader`); the caravan goal is in place and tested with a lead flag.
 - Horse armour on horses, saddles, taming by riding and the horse inventory screen (group `riding`).
+- The seven `spit` particles when llama spit appears (`LlamaSpit.recreateFromPacket`): the client has no particle for a newly tracked projectile yet.

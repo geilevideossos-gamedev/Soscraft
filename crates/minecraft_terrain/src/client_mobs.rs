@@ -1267,7 +1267,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     let age = |baby: bool| if baby { 0.5 } else { 1.0 };
     let mut kinds: Vec<(u64, f32)> = Vec::new();
     // `AbstractHorseRenderer`'s shadow is 0.75.
-    kinds.extend(world.cows().iter().map(|e| (e.id, if e.horse.is_some() { 0.75 } else { 0.7 } * age(e.cow.age.baby()))));
+    kinds.extend(world.cows().iter().map(|e| (e.id, match &e.horse { Some(h) if h.kind.is_llama() => crate::llama_render::SHADOW_RADIUS, Some(_) => 0.75, None => 0.7 } * age(e.cow.age.baby()))));
     kinds.extend(world.sheep().iter().map(|e| (e.id, 0.7 * age(e.sheep.age.baby()))));
     kinds.extend(world.pigs().iter().map(|e| (e.id, 0.7 * age(e.pig.age.baby()))));
     kinds.extend(world.chickens().iter().map(|e| (e.id, 0.3 * age(e.chicken.age.baby()))));

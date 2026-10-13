@@ -757,6 +757,14 @@ impl EntityView {
             light,
             partial,
         );
+        llama_render::append_llamas(
+            &mut out.models,
+            w.cows().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
         slime_render::append_slimes(
             &mut out.models,
             &mut out.translucent,
@@ -887,6 +895,13 @@ impl EntityView {
                 .iter()
                 .filter(|e| near(e.bullet.position)),
             atlas,
+            partial,
+        );
+        llama_render::append_spits(
+            &mut out.models,
+            w.llama_spits().iter().filter(|e| near(e.spit.position)),
+            atlas,
+            light,
             partial,
         );
         let poppies = golem_render::append_iron_golems(

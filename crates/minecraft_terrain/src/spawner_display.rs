@@ -31,6 +31,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:horse",
     "minecraft:husk",
     "minecraft:iron_golem",
+    "minecraft:llama",
     "minecraft:magma_cube",
     "minecraft:mooshroom",
     "minecraft:mule",
@@ -46,6 +47,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:spider",
     "minecraft:stray",
     "minecraft:strider",
+    "minecraft:trader_llama",
     "minecraft:villager",
     "minecraft:witch",
     "minecraft:wither_skeleton",
@@ -208,6 +210,9 @@ impl Shown {
                 light,
                 partial,
             ),
+            "minecraft:llama" | "minecraft:trader_llama" => {
+                llama_render::append_llamas(models, w.cows().iter(), poses, atlas, light, partial)
+            }
             "minecraft:sheep" => {
                 sheep_render::append_sheep(models, w.sheep().iter(), poses, atlas, light, partial)
             }
@@ -876,6 +881,9 @@ mod tests {
             ("minecraft:shulker", 0.1),
             ("minecraft:cat", 0.1),
             ("minecraft:ocelot", 0.25),
+            ("minecraft:mule", 0.05),
+            ("minecraft:llama", 0.05),
+            ("minecraft:trader_llama", 0.05),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);
