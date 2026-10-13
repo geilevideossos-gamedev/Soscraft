@@ -785,3 +785,36 @@ fn a_thrown_tactical_insertion_plants_a_flare_that_a_second_one_replaces_and_a_b
         "20 damage destroys the flare once"
     );
 }
+
+#[test]
+fn an_akimbo_reload_short_of_both_clips_loads_only_the_rounds_there_are() {
+    let reloaded = |stock| weapon_iw4::WeaponHandState {
+        clip: 12,
+        stock,
+        loaded: 12,
+        ..weapon_iw4::WeaponHandState::default()
+    };
+    let mut hands = [reloaded(0), reloaded(0)];
+    assert_eq!(crate::combat::loaded_within_stock(&mut hands, 12), 12);
+    assert_eq!(
+        (hands[0].clip, hands[0].loaded, hands[0].stock),
+        (12, 12, 0)
+    );
+    assert_eq!(
+        (hands[1].clip, hands[1].loaded, hands[1].stock),
+        (0, 0, 0),
+        "the left hand gives its rounds back first"
+    );
+    let mut hands = [reloaded(8), reloaded(8)];
+    assert_eq!(crate::combat::loaded_within_stock(&mut hands, 20), 20);
+    assert_eq!((hands[0].clip, hands[1].clip), (12, 8));
+    assert_eq!((hands[0].stock, hands[1].stock), (0, 0));
+    let mut hands = [reloaded(18), reloaded(18)];
+    assert_eq!(crate::combat::loaded_within_stock(&mut hands, 30), 24);
+    assert_eq!((hands[0].clip, hands[1].clip), (12, 12));
+    assert_eq!(
+        (hands[0].stock, hands[1].stock),
+        (18, 18),
+        "a stock that covers both clips is untouched"
+    );
+}

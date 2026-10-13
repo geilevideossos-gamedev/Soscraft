@@ -490,10 +490,12 @@ pub(crate) fn advance_weapon_command(
         };
         let clip_before = hands[0].clip;
         let events = weapon_hands(&mut hands, &facts, &mut wcmd, last_hand);
-        let loaded: i32 = hands[..=last_hand.clamp(0, 1) as usize]
-            .iter()
-            .map(|hand| hand.loaded)
-            .sum();
+        let held = &mut hands[..=last_hand.clamp(0, 1) as usize];
+        let loaded: i32 = if world.publishes_snapshot() && crate::voxel::publishes_arsenal(id.0) {
+            loaded_within_stock(held, stock)
+        } else {
+            held.iter().map(|hand| hand.loaded).sum()
+        };
         if loaded > 0 && world.publishes_snapshot() && crate::voxel::active() {
             crate::voxel::spend_rounds(id.0, ammo_weapon, loaded, |gun| {
                 world
@@ -916,6 +918,23 @@ pub(crate) fn advance_weapon_command(
         }
     }
     accepted
+}
+
+pub(crate) fn loaded_within_stock(hands: &mut [WeaponHandState], stock: i32) -> i32 {
+    let loaded: i32 = hands.iter().map(|hand| hand.loaded).sum();
+    let stock = stock.max(0);
+    if loaded <= stock {
+        return loaded;
+    }
+    let mut extra = loaded - stock;
+    for hand in hands.iter_mut().rev() {
+        let back = extra.min(hand.loaded);
+        hand.clip -= back;
+        hand.loaded -= back;
+        hand.stock = 0;
+        extra -= back;
+    }
+    stock
 }
 
 pub(crate) fn apply_player_anim_event(world: &mut FrameWorld, id: ClientId, event: u8) {

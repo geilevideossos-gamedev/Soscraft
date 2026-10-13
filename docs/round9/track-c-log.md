@@ -1361,6 +1361,23 @@ Commit: the one after the recipe unlock fix. Fixes `3cab4adb`, `d9247254` and `4
 - **Changed:** the layout rustfmt asks for at exactly those spots; nothing else.
 - **Tests:** every `.rs` file added since `24dfdf71` passes `rustfmt --check` on its committed content with the repo's settings and its crate's edition (`fork_items.rs` with 2021). `check -p launcher` green. No behaviour change, no owner steps or kit.
 
+### 4. An akimbo reload loads only the rounds there are
+
+Commit: the one after the rustfmt fix. Fixes the ammo group (C11.9).
+
+- **Defect:** both akimbo hands start a tick with the same copy of the reserve, and when both reload in the same tick (R, or both clips empty) each `reload_clip` takes from its own copy. With 12 pistol rounds and two empty USP clips each hand loaded 12, `spend_rounds` queued 24, `take_rounds` could remove only the 12 items there were, and `Spent::Clip` wrote 12 + 12 onto the item: 12 rounds made from nothing. A reserve that covers both clips was not affected.
+- **Changed:** `sim/src/combat.rs`: for a client with a published arsenal in a Minecraft world, `loaded_within_stock` caps the rounds loaded in the tick at the reserve the tick started with, takes the extra back out of the left hand's clip first, then the right's, and leaves no reserve. Only that many rounds are queued. MW2 maps and bots keep the old path.
+- **Tests:** `sim` `item::arsenal_tests::an_akimbo_reload_short_of_both_clips_loads_only_the_rounds_there_are` (12 rounds for two empty clips: 12 loaded, right 12 and left 0; 20 rounds: 12 and 8; 30 rounds: both full, reserve untouched). `test -p sim` (155) and `check -p launcher` green.
+- **Owner's test steps** (survival, kit below):
+  1. `/clear @s iw4l:pistol_ammo`. Put both USPs into the 2x2 grid and take the akimbo pair, put it on the hotbar and fire both pistols empty.
+  2. `/give @s iw4l:pistol_ammo 12` and press R. **Screenshot 1:** MW2's counter shows 12 rounds in all (one pistol full, the other empty) and no pistol ammo is left in the inventory.
+  3. Fire until both click: exactly 12 shots. Put the pair alone in the 2x2 grid to split it: both USPs are empty. **Screenshot 2.**
+- **Kit** (2 stacks):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:usp,iw4l:usp
+```
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.
