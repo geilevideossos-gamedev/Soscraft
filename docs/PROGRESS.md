@@ -11,7 +11,7 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 - Release builds: one when A and B are merged, one at the end; back up the old exe as `iw4l-survival-<old commit>.exe`, push, test steps and kit lines in `docs/round9/`. At the end update CLAUDE.md and `docs/MINECRAFT-SURVIVAL.md`. Decisions go to `docs/round9/decisions.md`.
 
 ## How to continue
-- Every cargo command goes through `scripts\cargo-slot.ps1` (PowerShell). Gentle mode is on (the owner plays): `%LOCALAPPDATA%\iw4l-cargo-slot.txt` holds `slots=1`, `jobs=4`, `priority=low`.
+- Every cargo command goes through `scripts\cargo-slot.ps1` (PowerShell). Full speed since 2026-10-13 afternoon (the owner closed the multiplayer test, no game running): `%LOCALAPPDATA%\iw4l-cargo-slot.txt` holds `slots=2`, `jobs=8`. Set it back to `slots=1`, `jobs=4`, `priority=low` when the owner plays.
 - The full suite is `scripts\full-suite.ps1`.
 - Track worktrees live in `C:\Dev\mc-wt\<name>` on branch `<name>`, each with its own target dir `D:\iw4l-wt\<name>`. Worktrees never share a target dir.
 - Merging a track: in the track's worktree `git checkout --detach minecraft-survival` and `git merge --no-ff <track>`, run `scripts\full-suite.ps1 +target=<the track's target dir>` there, then `git merge --ff-only <merge commit>` in `C:\Dev\mashup-crafting` and push to `origin`. Delete the track's target dir once merged.
