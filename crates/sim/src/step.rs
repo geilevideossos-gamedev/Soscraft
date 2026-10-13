@@ -2533,6 +2533,24 @@ mod tests {
     }
 
     #[test]
+    fn a_player_lying_in_bed_is_held_like_a_rider_and_not_pushed() {
+        let mut sim = crate::SimWorld::default();
+        let mut world = sim.frame();
+        alive(&mut world, ClientId(1), 0);
+        alive(&mut world, ClientId(2), 0);
+        assert!(world.ride(ClientId(2), Some([0.1 * B, 0.0, 0.0])));
+        let sleeper = *world.player(ClientId(2)).unwrap();
+        assert!(!pushable(&sleeper));
+        let bodies = push_bodies(&world);
+        assert_eq!(bodies.iter().map(|body| (body.entnum, body.riding)).collect::<Vec<_>>(), [(1, false), (2, true)]);
+        assert_eq!(minecraft_push([0.0; 3], 1.8 * B, &bodies, 1), [0.0, 0.0]);
+        assert!(world.ride(ClientId(2), None));
+        let awake = *world.player(ClientId(2)).unwrap();
+        assert!(pushable(&awake));
+        assert!(minecraft_push([0.0; 3], 1.8 * B, &push_bodies(&world), 1)[0] < 0.0);
+    }
+
+    #[test]
     fn a_push_stops_at_a_wall() {
         let wall = 2.0_f32;
         let blocked = |from: [f32; 3], to: [f32; 3]| {
