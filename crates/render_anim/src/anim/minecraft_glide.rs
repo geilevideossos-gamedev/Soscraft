@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use minecraft_terrain::elytra_render::{ElytraAnim, WingAngles, flying_roll};
 use minecraft_terrain::walk_animation::WalkAnimation;
 use net::{FrameClock, PresentedSnapshot};
-use playerstate_iw4::pm_flags::MC_GLIDING;
+use playerstate_iw4::pm_flags::{MC_GLIDING, MC_RIDING};
 use playerstate_iw4::{PM_TYPE_DEAD, PlayerState, eflags};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -16,6 +16,7 @@ pub struct GlideInput {
     pub look: [f64; 3],
     pub pitch_deg: f32,
     pub alive: bool,
+    pub riding: bool,
 }
 
 const WALK_TICK: f32 = 0.05;
@@ -35,6 +36,7 @@ pub fn glide_input(ps: &PlayerState) -> GlideInput {
         ],
         pitch_deg: ps.viewangles[0],
         alive: ps.pm_type < PM_TYPE_DEAD,
+        riding: ps.pm_flags & MC_RIDING != 0,
     }
 }
 
@@ -64,7 +66,7 @@ impl BodyGlide {
         let ticks = (self.walk_clock / WALK_TICK).floor();
         self.walk_clock = (self.walk_clock - ticks * WALK_TICK).max(0.0);
         for _ in 0..(ticks as u32).min(MAX_WALK_TICKS) {
-            if input.alive {
+            if input.alive && !input.riding {
                 let distance = input.motion[0].hypot(input.motion[1]) as f32;
                 self.walk.update(distance, false);
             } else {
@@ -354,6 +356,29 @@ mod tests {
         glide.step(0.075, [(4, walking)]);
         assert!((glide.walk_position(4) - 0.2).abs() < 1e-5);
         assert_eq!(glide.walk_position(9), 0.0);
+    }
+
+    #[test]
+    fn a_rider_stops_the_walk_swing_like_vanilla() {
+        let walking = GlideInput {
+            motion: [0.3, 0.0, 0.0],
+            alive: true,
+            ..Default::default()
+        };
+        let mut body = BodyGlide::default();
+        for _ in 0..3 {
+            body.advance(0.05, walking);
+        }
+        body.advance(0.025, walking);
+        assert!(body.walk_position() > 0.0);
+        let seated = glide_input(&player(MC_RIDING, [216.0, 0.0, 0.0]));
+        assert!(seated.riding && seated.alive);
+        assert!(!glide_input(&player(0, [216.0, 0.0, 0.0])).riding);
+        body.advance(0.05, seated);
+        assert_eq!(body.walk.raw_speed(), 0.0);
+        assert_eq!(body.walk_position(), 0.0);
+        body.advance(0.05, seated);
+        assert_eq!(body.walk_position(), 0.0);
     }
 
     #[test]
