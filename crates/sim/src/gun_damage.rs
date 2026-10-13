@@ -128,6 +128,7 @@ pub(crate) fn verdict(
     let Some(guard) = victim.guard else {
         return Verdict::Unchanged;
     };
+    let pierce = if kind == GunHit::Bullet { pierce } else { 0.0 };
     match gun_damage_to_player(amount, victim.max_health, &guard, pierce, kind) {
         0 => Verdict::Refused,
         amount => Verdict::Amount(amount),
@@ -491,6 +492,29 @@ mod tests {
         assert_eq!(
             verdict(true, crate::script_player::MINECRAFT_MEANS, 30, 0.0, graced),
             Verdict::Unchanged
+        );
+    }
+
+    #[test]
+    fn only_bullets_pierce_whatever_gun_is_held() {
+        let iron = victim(worn(15.0, 0.0));
+        let sniper = pierce(false, true, true);
+        assert_eq!(
+            verdict(true, "MOD_MELEE", 135, sniper, iron),
+            Verdict::Amount(23),
+            "a knife lunge with a sniper in hand"
+        );
+        assert_eq!(
+            verdict(true, "MOD_MELEE", 135, sniper, iron),
+            verdict(true, "MOD_MELEE", 135, 0.0, iron)
+        );
+        assert_eq!(
+            verdict(true, "MOD_GRENADE_SPLASH", 150, PIERCE_LMG, iron),
+            verdict(true, "MOD_GRENADE_SPLASH", 150, 0.0, iron)
+        );
+        assert_eq!(
+            verdict(true, "MOD_RIFLE_BULLET", 105, sniper, iron),
+            Verdict::Amount(42)
         );
     }
 

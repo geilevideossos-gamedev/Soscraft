@@ -552,6 +552,7 @@ The class menu offers it, so it is an item with a recipe. In a Minecraft world i
 - **Built:** the rule is `sim::gun_damage` (`gun_hit`, `gun_damage_to_player`, `verdict`); the Minecraft side is `Survival::gun_armor` and render_anim's `mirror_gun_guard`. A victim that never published a guard (a bot, an MW2 map) keeps MW2's amount. A hit the formula takes to 0 (Resistance V) is refused before GSC, so it shows no hit marker. A friend who leaves has the guard removed (`forget_gun_guard`).
 - **Pierce** comes from a `weapon index -> pierce` table pushed once per match (`sim::voxel::set_pierce_table`), built from the gun's class and its `fmj` attachment.
 - **Built:** render_anim's `ForkLook::set_weapons` pushes the table (`pierce_table`) whenever the weapon content changes: one entry per weapon index, from MW2's weapon class (LMG, sniper) and an `fmj` attachment in the configuration. Every other weapon (a grenade launcher alt mode, a shotgun attachment, explosives, killstreaks) pierces nothing. The table is not cleared when a world is left, since it describes the weapon content, not the world.
+- **Only bullets pierce.** MW2 tags a knife lunge with the held weapon's index, so `gun_damage::verdict` passes the table's pierce only for bullet means; a knife hit with an LMG or sniper in hand pierces nothing, as the knife row of 11.3 (pierce 0) says.
 
 ### 11.2 Formula
 

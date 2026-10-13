@@ -1288,6 +1288,22 @@ Commit: the one after `6c184122`. Fixes `edcd9cc5` and `d9247254`.
 IW4L_MINECRAFT_KIT=minecraft:white_bed,iw4l:tactical_insertion*4,iw4l:frag_grenade*16,minecraft:cobblestone*64
 ```
 
+### 2. A knife hit pierces no armour, whatever gun is held
+
+Commit: the one after `bd497d69`. Fixes `415a85cb`.
+
+- **Defect:** `gun_verdict` looks the pierce up by the hit's weapon index, and MW2 tags a knife lunge (`combat.rs` melee, `DamageSource::Melee`) with the held weapon. A knife hit with a sniper in hand therefore pierced 0.5 (0.75 with FMJ), and with an LMG 0.25, although WEAPONS.md 11.3 gives the knife pierce 0: against iron a lunge took 56 instead of 23 with an FMJ Intervention held.
+- **Changed:** `sim/src/gun_damage.rs` `verdict` passes the pierce on only for `GunHit::Bullet`; explosions and melee get 0. `docs/WEAPONS.md` 11.1 says so.
+- **Tests:** `sim` `gun_damage::tests::only_bullets_pierce_whatever_gun_is_held` (a knife lunge with an FMJ sniper held takes 23 against iron, the same as with no pierce; a frag with an LMG's pierce is unchanged; an FMJ sniper bullet still takes 42). `test -p sim` (154) and `check -p launcher` green; `gun_damage.rs` still passes rustfmt.
+- **Owner's test steps** (two windows with `scripts\mp-local.ps1`, survival, pvp on; host H in the iron set at full health, friend F with the kit below):
+  1. F holds the Barrett with FMJ (FMJ and the Barrett in the crafting grid) and knifes H (melee key): H loses about 2.3 hearts, the same as a knife with the M4A1 held. **Screenshot 1.**
+  2. F fires the Barrett into H's chest: about 4 hearts, as before.
+- **Kit** (9 stacks, for each player):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:barrett,iw4l:fmj,iw4l:sniper_rounds*16,minecraft:crafting_table,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots
+```
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.
