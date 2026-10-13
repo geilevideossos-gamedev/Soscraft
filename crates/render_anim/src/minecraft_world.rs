@@ -1245,7 +1245,7 @@ fn update(
             show_chat(&mut ui.chat, inventory_ui, &world.packs, std::slice::from_ref(&told));
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
-        let minecraft_survival::player::Player { name: player_name, survival, mode: player_mode, inventory, selected, hand, menus, drop_throttle, arsenal, tags, .. } = &mut *player;
+        let minecraft_survival::player::Player { name: player_name, survival, mode: player_mode, inventory, selected, hand, menus, drop_throttle, arsenal, tags, dimension: player_dimension, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
@@ -1278,7 +1278,8 @@ fn update(
         }
         inventory_ui.sync_weapons(inventory, &owned);
         let hotbar = minecraft_survival::guns::Hotbar { selected: *selected, room: crate::minecraft_fork_items::gun_room(ps, &authority.0), binding: &mut *arsenal };
-        let settled = inventory_ui.fork.settle(inventory, player_mode, local.0.0, hotbar);
+        let flare_at = crate::minecraft_fork_items::flare_place(*player_dimension, origin, minecraft_yaw(ps.viewangles[1]));
+        let settled = inventory_ui.fork.settle(inventory, player_mode, local.0.0, hotbar, flare_at);
         for stack in settled.iter().flat_map(|settled| &settled.dropped) {
             entities.drop_given(stack, feet);
         }

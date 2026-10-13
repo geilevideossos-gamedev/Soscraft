@@ -777,6 +777,9 @@ pub(crate) fn advance_weapon_command(
                 } => {
                     let minecraft = world.publishes_snapshot() && crate::voxel::active();
                     use_offhand_round(world, *id, weapon, minecraft);
+                    if minecraft {
+                        plant_flare(world, *id, weapon);
+                    }
                     if crate::equipment::spawn_offhand_projectile(
                         world,
                         *id,
@@ -1795,6 +1798,25 @@ pub(crate) fn use_offhand_round(world: &mut FrameWorld, id: ClientId, weapon: u3
     if minecraft {
         crate::voxel::spend_grenade(id.0, weapon, -1);
     }
+}
+
+const FLARE_GROUND_SEARCH: f32 = 2048.0;
+
+pub(crate) fn plant_flare(world: &FrameWorld, id: ClientId, weapon: u32) {
+    if world.weapon_script_name(weapon) != crate::voxel::FLARE_WEAPON {
+        return;
+    }
+    let Some(origin) = world.player(id).map(|ps| ps.origin) else {
+        return;
+    };
+    crate::voxel::plant_flare(id.0, flare_ground(origin));
+}
+
+fn flare_ground(origin: [f32; 3]) -> [f32; 3] {
+    let start = [origin[0], origin[1], origin[2] + 1.0];
+    let end = [origin[0], origin[1], origin[2] - FLARE_GROUND_SEARCH];
+    let ground = crate::voxel::trace(start, end, [0.0; 3], [0.0; 3]);
+    if ground.fraction < 1.0 { ground.endpos } else { origin }
 }
 
 fn spend_ps_offhand_round(ps: &mut PlayerState, weapon: u32, facts: weapon_iw4::WeaponCombatFacts) {

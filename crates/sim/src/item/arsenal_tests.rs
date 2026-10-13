@@ -20,6 +20,7 @@ const C4: u32 = 14;
 const FLASH: u32 = 15;
 const SMOKE: u32 = 16;
 const MARKER: u32 = 17;
+const FLARE: u32 = 18;
 const ME: ClientId = ClientId(7);
 
 fn facts(clip: i32, max_ammo: i32, inventory_type: i32) -> WeaponCombatFacts {
@@ -54,6 +55,7 @@ fn sim() -> crate::SimWorld {
         "flash_grenade_mp",
         "smoke_grenade_mp",
         "airdrop_marker_mp",
+        "flare_mp",
     ];
     let mut rows = vec![
         WeaponCombatFacts::none(),
@@ -68,7 +70,7 @@ fn sim() -> crate::SimWorld {
     ];
     rows.extend([facts(5, 20, 0), facts(8, 32, 0), facts(32, 128, 0)]);
     rows.extend([facts(30, 120, 0), facts(1, 99, 0)]);
-    rows.extend([SEMTEX, KNIFE, CLAYMORE, C4, FLASH, SMOKE, MARKER].map(|_| facts(1, 1, 1)));
+    rows.extend([SEMTEX, KNIFE, CLAYMORE, C4, FLASH, SMOKE, MARKER, FLARE].map(|_| facts(1, 1, 1)));
     let mut equipment = vec![EquipmentRuntimeFacts::default(); rows.len()];
     for (weapon, class) in [
         (FRAG, 1),
@@ -79,6 +81,7 @@ fn sim() -> crate::SimWorld {
         (FLASH, 3),
         (SMOKE, 2),
         (MARKER, 2),
+        (FLARE, 2),
     ] {
         equipment[weapon as usize] = EquipmentRuntimeFacts {
             offhand_class: class,
@@ -711,4 +714,41 @@ fn creative_throws_and_knife_pickups_queue_nothing() {
         vec![thrown(KNIFE, -1), thrown(KNIFE, 1)],
         "a killstreak marker is not a grenade"
     );
+}
+
+#[test]
+fn a_thrown_tactical_insertion_plants_a_flare_that_a_second_one_replaces_and_a_blast_destroys() {
+    let (client, stranger) = (ClientId(4254), ClientId(4255));
+    crate::voxel::set_arsenal(client.0, grenades(None, Some((FLARE, 2))));
+    let mut sim = sim();
+    let at = |sim: &mut crate::SimWorld, id: ClientId, origin: [f32; 3]| {
+        sim.frame().ensure_player(id).origin = origin;
+    };
+    let first = [90_000.0, 500.0, 36.0];
+    let second = [90_400.0, 500.0, 72.0];
+    at(&mut sim, client, first);
+    at(&mut sim, stranger, first);
+    crate::combat::plant_flare(&sim.frame(), client, FRAG);
+    crate::combat::plant_flare(&sim.frame(), stranger, FLARE);
+    assert!(crate::voxel::take_spent(client.0).is_empty(), "only the tactical insertion plants");
+    assert!(crate::voxel::take_spent(stranger.0).is_empty(), "a client that never published plants nothing");
+    crate::combat::plant_flare(&sim.frame(), client, FLARE);
+    at(&mut sim, client, second);
+    crate::combat::plant_flare(&sim.frame(), client, FLARE);
+    let near = |spot: [f32; 3], damage: i32| {
+        move |pos: [f32; 3]| if pos == spot { damage } else { 0 }
+    };
+    crate::voxel::blast_flares(near(first, 100));
+    crate::voxel::blast_flares(near(second, 19));
+    let planted = crate::voxel::take_spent(client.0);
+    crate::voxel::blast_flares(near(second, 20));
+    crate::voxel::blast_flares(near(second, 100));
+    let destroyed = crate::voxel::take_spent(client.0);
+    crate::voxel::forget_arsenal(client.0);
+    assert_eq!(
+        planted,
+        vec![Spent::Flare { pos: first }, Spent::Flare { pos: second }],
+        "the second flare replaced the first, which a blast can no longer destroy, and 19 damage is not enough"
+    );
+    assert_eq!(destroyed, vec![Spent::FlareGone], "20 damage destroys the flare once");
 }

@@ -508,6 +508,7 @@ pub enum Spent {
     Grenade { weapon: u32, delta: i32 },
     Clip { weapon: u32, clip: i32, clip_left: i32, alt_clip: i32 },
     Flare { pos: [f32; 3] },
+    FlareGone,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -520,6 +521,10 @@ pub(crate) struct Published {
 
 static ARSENALS: std::sync::Mutex<Vec<(u32, Published)>> = std::sync::Mutex::new(Vec::new());
 static SPENT: std::sync::Mutex<Vec<(u32, Spent)>> = std::sync::Mutex::new(Vec::new());
+static FLARES: std::sync::Mutex<Vec<(u32, [f32; 3])>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) const FLARE_WEAPON: &str = "flare_mp";
+const FLARE_DESTROYING_DAMAGE: i32 = 20;
 
 pub fn set_arsenal(client: u32, arsenal: Arsenal) {
     if let Ok(mut published) = ARSENALS.lock() {
@@ -548,6 +553,7 @@ pub fn forget_arsenal(client: u32) {
         published.retain(|(c, _)| *c != client);
     }
     let _ = take_spent(client);
+    forget_flare(client);
 }
 
 pub fn has_arsenal(client: u32) -> bool {
@@ -608,6 +614,43 @@ pub(crate) fn spend_grenade(client: u32, weapon: u32, delta: i32) {
     });
     if counted && let Ok(mut spent) = SPENT.lock() {
         spent.push((client, Spent::Grenade { weapon, delta }));
+    }
+}
+
+pub(crate) fn plant_flare(client: u32, pos: [f32; 3]) {
+    if !has_arsenal(client) {
+        return;
+    }
+    if let Ok(mut flares) = FLARES.lock() {
+        flares.retain(|(c, _)| *c != client);
+        flares.push((client, pos));
+    }
+    if let Ok(mut spent) = SPENT.lock() {
+        spent.push((client, Spent::Flare { pos }));
+    }
+}
+
+pub(crate) fn forget_flare(client: u32) {
+    if let Ok(mut flares) = FLARES.lock() {
+        flares.retain(|(c, _)| *c != client);
+    }
+}
+
+pub(crate) fn blast_flares(damage_at: impl Fn([f32; 3]) -> i32) {
+    let Ok(mut flares) = FLARES.lock() else {
+        return;
+    };
+    let mut gone = Vec::new();
+    flares.retain(|&(client, pos)| {
+        let destroyed = damage_at(pos) >= FLARE_DESTROYING_DAMAGE;
+        if destroyed {
+            gone.push((client, Spent::FlareGone));
+        }
+        !destroyed
+    });
+    drop(flares);
+    if !gone.is_empty() && let Ok(mut spent) = SPENT.lock() {
+        spent.extend(gone);
     }
 }
 
@@ -839,6 +882,9 @@ pub fn deactivate() {
     }
     if let Ok(mut spent) = SPENT.lock() {
         spent.clear();
+    }
+    if let Ok(mut flares) = FLARES.lock() {
+        flares.clear();
     }
     if let Ok(mut boxes) = MOB_BOXES.write() {
         boxes.iter_mut().for_each(Vec::clear);

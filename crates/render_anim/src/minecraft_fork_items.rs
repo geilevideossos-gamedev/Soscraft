@@ -4,7 +4,9 @@ use std::sync::{Arc, mpsc};
 use asset_game::{FamilyKey, LoadoutRules, WeaponRegistry, WeaponSelection};
 use minecraft_survival::gun_crafting;
 use minecraft_survival::gun_names::{self, GunContent, GunNames};
+use minecraft_net::Dimension;
 use minecraft_survival::guns::{self, Hotbar, Settled, Spent};
+use minecraft_survival::player_nbt::Place;
 use minecraft_terrain::crafting::Grid;
 use minecraft_terrain::fork_items::{self, Bucket, Icon, Kind};
 use minecraft_terrain::fork_look;
@@ -452,9 +454,10 @@ impl ForkLook {
         mode: &PlayerMode,
         client: u32,
         hotbar: Hotbar<'_>,
+        flare_at: impl Fn([f32; 3]) -> Option<Place>,
     ) -> Option<Settled> {
         let registry = self.registry.clone()?;
-        let spent = spent(client);
+        let spent = spent(client, flare_at);
         let content = RegistryGuns(&registry);
         let settled =
             guns::settle_arsenal(inventory, mode, spent, (&mut self.names, &content), hotbar);
@@ -514,24 +517,42 @@ fn published(arsenal: &guns::Arsenal) -> sim::voxel::Arsenal {
     }
 }
 
-fn spent(client: u32) -> Vec<Spent> {
+pub(crate) fn flare_place(
+    dimension: Dimension,
+    origin: [f64; 3],
+    yaw: f32,
+) -> impl Fn([f32; 3]) -> Option<Place> {
+    move |pos| {
+        minecraft_survival::bands::holds(dimension, f64::from(pos[2]))
+            .then(|| Place::standing(dimension, sim::voxel::to_block(origin, pos), yaw, 0.0))
+    }
+}
+
+fn spent(client: u32, flare_at: impl Fn([f32; 3]) -> Option<Place>) -> Vec<Spent> {
     sim::voxel::take_spent(client)
         .into_iter()
-        .map(|spent| match spent {
-            sim::voxel::Spent::Rounds { ammo, rounds } => Spent::Rounds { ammo, rounds },
-            sim::voxel::Spent::Grenade { weapon, delta } => Spent::Grenade { weapon, delta },
+        .filter_map(|spent| match spent {
+            sim::voxel::Spent::Rounds { ammo, rounds } => Some(Spent::Rounds { ammo, rounds }),
+            sim::voxel::Spent::Grenade { weapon, delta } => Some(Spent::Grenade { weapon, delta }),
             sim::voxel::Spent::Clip {
                 weapon,
                 clip,
                 clip_left,
                 alt_clip,
-            } => Spent::Clip {
+            } => Some(Spent::Clip {
                 weapon,
                 clip,
                 clip_left,
                 alt_clip,
-            },
-            sim::voxel::Spent::Flare { pos } => Spent::Flare { pos },
+            }),
+            sim::voxel::Spent::Flare { pos } => {
+                let at = flare_at(pos);
+                if at.is_none() {
+                    diag::warn!(World, "Minecraft tactical insertion planted outside the player's dimension");
+                }
+                at.map(|at| Spent::Flare { at })
+            }
+            sim::voxel::Spent::FlareGone => Some(Spent::FlareGone),
         })
         .collect()
 }

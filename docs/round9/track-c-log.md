@@ -1072,6 +1072,53 @@ Commit: the one after `b47be4bb`.
 IW4L_MINECRAFT_KIT=iw4l:frag_grenade*2,iw4l:frag_grenade*16,iw4l:semtex*16,iw4l:c4*4,iw4l:throwing_knife*8,iw4l:flash_grenade*8,iw4l:concussion_grenade*8,iw4l:smoke_grenade*8,minecraft:cobblestone*64,minecraft:shield,minecraft:torch*16,minecraft:cooked_beef*16
 ```
 
+## C12.3 Tactical insertion and the class menu
+
+### 1. A planted tactical insertion is a one-use respawn point
+
+Commit: the one after `3cab4adb`. **Not vanilla** (WEAPONS.md 10.6).
+
+- **Plant site (found):** MW2 plants the flare in GSC: `monitorTIUse` in `maps/mp/perks/_perkfunctions.gsc` (`common_mp.ff`, read from the owner's install, not committed) waits for `grenade_fire` with `flare_mp`, spawns the glowstick at the ground below `self.TISpawnPosition` (the thrower's last on-ground origin) and sets `self.setSpawnPoint`; `spawnPlayer` in `_playerlogic.gsc` then spawns at `setSpawnPoint.playerSpawnPos` and deletes it. That script runs only for the equipment perk `specialty_tacticalinsertion` (`setTacticalInsertion`), but our class menu offers `flare_mp` in the tactical row (`ui/src/classes/setup.rs`), which `_class.gsc` does not treat as a perk, so the GSC flare never exists in this game. The plant site is therefore the throw itself: `sim::combat::plant_flare`, called for `OffhandUsed` right after `use_offhand_round`, under the same Minecraft gate (`publishes_snapshot() && voxel::active()`).
+- **Changed:**
+  - `sim/src/voxel.rs`: `Spent::FlareGone`; `FLARES` (the last planted flare per MW2 client id, cleared in `deactivate` and `forget_arsenal`); `plant_flare(client, pos)` (only for a client that publishes an arsenal, so bots and MW2 maps queue nothing; a second plant replaces the first) and `blast_flares(damage_at)` (a flare taking 20 or more is removed and `FlareGone` queued); `FLARE_WEAPON` = `flare_mp`.
+  - `sim/src/combat.rs`: `plant_flare(world, id, weapon)`: for `flare_mp` only, at the thrower's origin traced down to the ground (up to 2048 units, MW2's ground search; a trace that finds nothing keeps the origin).
+  - `sim/src/damage.rs`: both voxel blast sites (`apply_explosion_blast`, `apply_script_blast`) call `push_voxel_blasts`, which runs `push_mob_blasts` as before and then `blast_flares` with `flare_blast_damage` (MW2's `radius_damage_amount` falloff at the flare's spot, the claymore cone respected, no visibility scale).
+  - `minecraft_survival/src/guns.rs`: `Spent::Flare { at: Place }` and `Spent::FlareGone`; `Binding` (per UUID in `Player.arsenal`, never saved) keeps `flare: Option<Place>` with `flare()`, `take_flare()` and `set_flare()`; `settle_arsenal` applies them in queue order and keeps the flare when it rebuilds the binding. `Binding` is no longer `Eq` (a `Place` holds floats).
+  - `minecraft_survival/src/respawn.rs`: `respawn_at_flare(globals, level, player)`, a separate check at the top of `respawn` (the bed, anchor and `level_spawn` logic below it is unchanged): it takes the flare; in the same dimension it checks the spot with `flare_stands` and sets `arrival`; in another dimension it switches there with the flare as the arrival; either way `respawning` is cleared. `flare_stands(flare, open)`: the blocks at feet + 0.5 and feet + 1.5 must be open (`level::open_for_respawn`: no collision box, no fluid; an unloaded chunk counts as open), so standing on a slab is fine.
+  - `minecraft_survival/src/bands.rs`: `holds(dimension, map_z)`, the same band test as `sim::voxel::band_of`.
+  - `render_anim/src/minecraft_fork_items.rs`: `flare_place(dimension, origin, yaw)` turns the MW2 position into a `Place` with `sim::voxel::to_block` and the level's origin when the position lies in that dimension's band (otherwise it is dropped with a warning); `ForkLook::settle` takes it and `spent()` converts `Flare` and `FlareGone`. The host (`minecraft_world.rs`) and each friend (`minecraft_players.rs`) pass their own dimension, level origin and MW2 yaw, through the same `settle_arsenal`.
+  - `docs/WEAPONS.md` 5.1 (`FlareGone`, where the flare lives) and 10.6 (the GSC finding, the plant site, the destroy rule, the spot check), and the "not verified" line.
+- **Tests:**
+  - `sim` `item::arsenal_tests::a_thrown_tactical_insertion_plants_a_flare_that_a_second_one_replaces_and_a_blast_destroys` (the test content has `flare_mp`, class 2): a frag plants nothing, a client that never published plants nothing, two plants queue two `Flare`s, a blast at the replaced first spot does nothing, 19 damage does nothing, 20 queues one `FlareGone` and a second blast nothing more.
+  - `sim` `damage::tests::a_planted_flare_takes_the_blast_damage_at_its_spot`: 130 at the centre, the falloff at 128 units, 0 out of reach and behind a claymore.
+  - `minecraft_survival` `guns::tests::a_planted_flare_is_kept_per_player_until_replaced_or_destroyed`: plant, kept, replaced by a second plant, cleared by `FlareGone`, a plant after a blast stands, `take_flare` uses it up, and another player's binding is untouched.
+  - `minecraft_survival` `respawn::tests::a_flare_stands_where_the_body_fits` (feet and head blocks, the floor, a slab, an unloaded spot) and `a_flare_wins_over_the_respawn_point_once_for_its_own_player` (needs the 26.3 data, gated like its neighbours): the friend's flare wins over the friend's forced point once and is used up, the next respawn is at the point, the host is not moved by the friend's flare, and a flare in the Nether switches the host there with the flare as the arrival.
+  - `minecraft_survival` `bands::tests::each_map_height_belongs_to_one_dimension`.
+  - `test -p sim -p minecraft_survival -p render_anim` green (sim 143 with the MW2-map tests, survival 690 plus `vanilla_world`, render_anim 173), `check -p launcher` green.
+- **Decisions:**
+  - **The plant site is the throw** (above), since MW2's GSC flare never runs here. The position is MW2's `playerSpawnPos` (the thrower's feet), dropped to the ground below when thrown in the air. The respawn faces the yaw the player had when the throw was settled, pitch 0, like MW2's `spawnAngles` (the glowstick takes the thrower's angles).
+  - **The flare lives in `guns::Binding`** (the per-UUID, never-saved host state the arsenal already uses) instead of a new `Player` field, so `settle_arsenal` stores it without another argument.
+  - **Destroyed by MW2 blasts only:** MW2's glowstick dies from 20 damage, the owner's included. Bullets cannot hit it (no glowstick model is spawned) and Minecraft explosions (creepers, TNT, beds, anchors) never reach the sim's blast path, so they leave it. The thrown flare's own landing does not destroy it (a tactical deals no damage).
+  - **Spot check at the respawn** like MW2's `tiValidationCheck` (`canSpawn`): a solid block or a fluid at the feet or head drops the flare and the bed, anchor or world spawn is used. A flare in another dimension is not checked (its level is not loaded yet).
+  - **Creative plants too** (the flare is MW2's, not an item rule); the throw itself uses no item there, as before.
+  - The sim keeps its copy of the flare after the host used it; a later blast there queues a `FlareGone` that finds no flare on the host, which is harmless, and the next plant replaces it.
+  - No visible marker stays: the thrown `flare_mp` projectile is the only flare drawn, as before. A glowstick model is left for later.
+- **Owner's test steps** (survival, a new world `IW4L_MINECRAFT_WORLD=r9-insertion`, kit below; F3 shows the coordinates):
+  1. Place the bed and right-click it ("Respawn point set" by day). Open the inventory and shift-click the tactical insertions into the tactical slot (the right one). Walk 30 blocks away, face north, press Shift+G: the flare is thrown and the slot shows 3. Note the coordinates. **Screenshot 1.**
+  2. Walk 20 blocks on, `/kill`: you respawn where you stood when you threw it, facing north. **Screenshot 2.**
+  3. `/kill` again: you respawn at the bed.
+  4. Plant one at spot A, walk 20 blocks to spot B, plant another, walk away, `/kill`: you respawn at B.
+  5. Plant one, step back 6 blocks, throw a frag (G) onto the spot and wait for the blast, `/kill`: you respawn at the bed.
+  6. Plant one, put two cobblestone blocks on the spot (one above the other), `/kill`: you respawn at the bed.
+  7. Plant one, build a Nether portal (obsidian, flint and steel) and go to the Nether, `/kill` there: you respawn at the flare in the Overworld. **Screenshot 3.**
+  8. Plant one, save and quit, load the world, `/kill`: you respawn at the bed (the flare is not saved).
+  9. Two windows (`scripts\mp-local.ps1`), the friend with the same kit: the friend plants a flare and walks away; the host `/kill`s: the host respawns at the host's bed; the friend `/kill`s: the friend respawns at the friend's flare. **Screenshot 4** (friend window).
+- **Kit** (6 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed,iw4l:tactical_insertion*4,iw4l:frag_grenade*16,minecraft:cobblestone*64,minecraft:obsidian*10,minecraft:flint_and_steel
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none.
@@ -1119,3 +1166,6 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's throws take the friend's own grenade items on the host, through the same function as the host's."
 - `MINECRAFT-SURVIVAL.md`, the inventory section: "The grenade slots are drawn as two offhand-style frames left of the hotbar (lethal nearer to the hotbar), always, with their item and count, and as two slots right of the recipe book button in the inventory and right of the leggings and boots in the creative inventory tab; an empty one shows the tooltip Lethal or Tactical."
 - `MINECRAFT-SURVIVAL.md`, the first-join loadout sentence, added: "It also puts 32 of the class lethal grenade into the lethal slot and 32 of the class tactical into the tactical slot (frags and flashes when the class has none)."
+- `MINECRAFT-SURVIVAL.md`, the respawn section: "A planted tactical insertion (Shift+G with it in the tactical slot) is a one-use respawn point ahead of the bed or respawn anchor: the next respawn stands where the player stood when throwing it, facing the same way, also from another dimension, and uses it up. A second plant moves it, an MW2 blast dealing 20 or more at its spot destroys it, a block or fluid on the spot drops it, and it is not saved. Not vanilla."
+- `MULTIPLAYER.md` (per-player state on the host): "Each friend's tactical insertion respawn lives on the host per UUID, set from the friend's own throws through the same function as the host's."
+- `decisions.md` (Not vanilla): "The tactical insertion's flare is a one-use respawn point ahead of the bed, kept on the host and never saved; only MW2 blasts destroy it."

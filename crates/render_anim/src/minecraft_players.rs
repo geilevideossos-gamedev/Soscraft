@@ -1663,7 +1663,9 @@ pub(crate) fn step_friend(
         room,
         binding: &mut *arsenal,
     };
-    let settled = world.guns.settle(inventory, mode, client.0, hotbar);
+    let flare_at =
+        crate::minecraft_fork_items::flare_place(*dimension, origin, minecraft_yaw(ps.viewangles[1]));
+    let settled = world.guns.settle(inventory, mode, client.0, hotbar, flare_at);
     if let Some(entities) = world
         .levels
         .get_mut(dimension)

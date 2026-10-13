@@ -6,6 +6,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 use serde_json::{Map, Value};
 
 use crate::gun_names::{GunContent, GunNames};
+use crate::player_nbt::Place;
 
 pub const WEAPON_PREFIX: &str = "iw4:weapon/";
 pub const HOTBAR: usize = 9;
@@ -216,18 +217,32 @@ pub enum Spent {
         alt_clip: i32,
     },
     Flare {
-        pos: [f32; 3],
+        at: Place,
     },
+    FlareGone,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Binding {
     bound: Vec<(u32, usize, [i64; 3])>,
     guns: [Option<u32>; HOTBAR],
     inert_selected: bool,
+    flare: Option<Place>,
 }
 
 impl Binding {
+    pub fn flare(&self) -> Option<Place> {
+        self.flare
+    }
+
+    pub fn take_flare(&mut self) -> Option<Place> {
+        self.flare.take()
+    }
+
+    pub fn set_flare(&mut self, flare: Option<Place>) {
+        self.flare = flare;
+    }
+
     pub fn guns(&self) -> &[Option<u32>; HOTBAR] {
         &self.guns
     }
@@ -444,6 +459,11 @@ pub fn settle_arsenal<C: GunContent>(
     } = hotbar;
     let mut dropped = Vec::new();
     for spent in &spent {
+        match *spent {
+            Spent::Flare { at } => binding.set_flare(Some(at)),
+            Spent::FlareGone => binding.set_flare(None),
+            _ => {}
+        }
         if let Spent::Grenade { weapon, delta } = *spent
             && mode.consumes_items()
             && let Some(id) = grenade_item(names, content, weapon)
@@ -589,6 +609,7 @@ pub fn settle_arsenal<C: GunContent>(
         bound,
         guns,
         inert_selected,
+        flare: binding.flare,
     };
     Settled {
         arsenal,
@@ -1317,5 +1338,35 @@ mod tests {
             .map(|stack| (stack.id.as_str(), stack.count))
             .collect();
         assert_eq!(dropped, vec![(fork_items::THROWING_KNIFE, 1)]);
+    }
+
+    #[test]
+    fn a_planted_flare_is_kept_per_player_until_replaced_or_destroyed() {
+        use minecraft_net::Dimension;
+        let mut inventory = Inventory::default();
+        let mut names = GunNames::default();
+        let (mut host, friend) = (Binding::default(), Binding::default());
+        let first = Place::standing(Dimension::Overworld, [10.5, 64.0, -3.5], 90.0, 0.0);
+        let second = Place::standing(Dimension::Nether, [1.5, 70.0, 2.5], -45.0, 0.0);
+        let mut step = |binding: &mut Binding, spent: Vec<Spent>| {
+            settle(&mut inventory, &mut names, binding, (0, 13), spent);
+            binding.flare()
+        };
+        assert_eq!(step(&mut host, vec![Spent::Flare { at: first }]), Some(first));
+        assert_eq!(friend.flare(), None, "the friend's binding is their own");
+        assert_eq!(step(&mut host, Vec::new()), Some(first), "kept while nothing happens");
+        assert_eq!(
+            step(&mut host, vec![Spent::Flare { at: second }]),
+            Some(second),
+            "a second plant replaces the first"
+        );
+        assert_eq!(step(&mut host, vec![Spent::FlareGone]), None, "destroyed");
+        assert_eq!(
+            step(&mut host, vec![Spent::FlareGone, Spent::Flare { at: first }]),
+            Some(first),
+            "a plant after a blast stands"
+        );
+        assert_eq!(host.take_flare(), Some(first));
+        assert_eq!(host.flare(), None, "a respawn uses it up");
     }
 }

@@ -153,7 +153,7 @@ pub struct GunSpec { pub weapon: u32, pub clip: i32, pub clip_left: i32, pub alt
 pub struct Arsenal { pub guns: Vec<GunSpec>, pub selected: Option<u32>, pub stock: [i32; AMMO_TYPES],
                      pub lethal: Option<(u32, i32)>, pub tactical: Option<(u32, i32)>, pub endless: bool }
 pub enum Spent { Rounds { ammo: u8, rounds: i32 }, Grenade { weapon: u32, delta: i32 },
-                 Clip { weapon: u32, clip: i32, clip_left: i32, alt_clip: i32 }, Flare { pos: [f32; 3] } }
+                 Clip { weapon: u32, clip: i32, clip_left: i32, alt_clip: i32 }, Flare { pos: [f32; 3] }, FlareGone }
 pub fn set_arsenal(client: u32, arsenal: Arsenal)
 pub fn take_spent(client: u32) -> Vec<Spent>
 ```
@@ -171,7 +171,7 @@ pub fn take_spent(client: u32) -> Vec<Spent>
 The sim queues spending **only at the sites that really spend**, never by comparing numbers:
 - A finished reload queues `Rounds` with the rounds moved from stock into the clip. A partial reload queues only the missing rounds. The site is `weapon_iw4::reload_clip`: it adds the rounds it moves to the hand's `loaded`, and `advance_weapon_command` queues the sum over both akimbo hands for the held weapon's ammo type (`alt_ammo` for an alt mode), on the host and only in Minecraft worlds.
 - A throw or a cook-off (`combat::use_offhand_round`, called for `OffhandUsed` and `OffhandCookedOff`) queues `Grenade { delta: -1 }`. Picking a thrown knife up again (`item::grab_projectile`) queues `+1`; for a publishing client the pickup no longer needs room in MW2's clip, and a Ballistic Knife blade gives back a throwing knife.
-- A planted tactical insertion queues `Flare` (section 9.6).
+- A planted tactical insertion queues `Flare` and a blast that destroys it `FlareGone` (section 10.6).
 - Everything else that MW2 does to ammo is overwritten by the published values at the next step: GSC `giveLoadout` at a spawn, Scavenger, One Man Army and ammo pickups. So none of them can create items.
   - The stock is overwritten every step. A clip only through the held gun, whose live clip the sim keeps: so a script that gives a weapon or sets a clip (`giveWeapon`, `setWeaponAmmoClip`, `giveStartAmmo`, an offhand's `giveMaxAmmo`) marks the client, and the next step caps the held gun's live clips at the last clips it knew. A spawn refill cannot grow a clip, and rounds fired before the script call stay spent.
 
@@ -187,7 +187,7 @@ The sim queues spending **only at the sites that really spend**, never by compar
    - `Rounds` removes items in vanilla's projectile search order: offhand, main hand, then slots 0-35. In creative it removes nothing.
    - `Clip` writes the clips into the bound gun item.
    - `Grenade` changes the grenade slot (a `+1` goes through the pickup rules if the slot is full).
-   - `Flare` sets the player's flare respawn.
+   - `Flare` sets the player's flare respawn and `FlareGone` clears it. `minecraft_survival` keeps it in `guns::Binding` (per UUID in `Player.arsenal`, never saved); `ForkLook::settle` turns the MW2 position into a `Place` in the player's dimension, through that dimension's band and origin.
 2. Build the gun list from hotbar slots 0-8 in slot order, each MW2 weapon once.
    - The list stops when `ps.weapons` would overflow: 15 slots, shared with the offhands, alt modes and killstreaks.
    - A gun past that point is inert. Selecting it shows "Too many guns on the hotbar" on the action bar.
@@ -523,7 +523,11 @@ Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's
 
 The class menu offers it, so it is an item with a recipe. In a Minecraft world it does what it does in MW2, mapped onto Minecraft's respawn:
 - Shift+G plants MW2's flare. The sim queues `Flare { pos }`.
+  - MW2 plants the flare in GSC (`monitorTIUse` in `maps/mp/perks/_perkfunctions.gsc`, `common_mp.ff`), which runs only for the `specialty_tacticalinsertion` equipment perk. Our class menu offers `flare_mp` as the tactical grenade instead, so that script never runs, and MW2's spawn point (`setSpawnPoint`) is not used in Minecraft worlds either.
+  - The plant site is therefore the throw: `combat::plant_flare`, called for `OffhandUsed` next to `use_offhand_round`, on the host in a Minecraft world, for a client that publishes an arsenal. Its position is where MW2 would respawn the player (`playerSpawnPos`, the thrower's own feet on the ground): the thrower's origin, traced down to the ground below (up to 2048 units, MW2's ground search).
 - The host stores it as the player's flare respawn (level and position). The next respawn of that player is at the flare, ahead of a bed or respawn anchor. That respawn uses it up, and so does the flare being destroyed or a second flare being planted.
+  - The check is `respawn::respawn_at_flare`, before the bed and anchor logic of `respawn::respawn`. Like MW2's `tiValidationCheck`, a flare whose spot is now blocked (a solid block or fluid at the feet or head) is dropped and the bed, anchor or world spawn is used. A flare in another dimension switches the player there.
+  - Destroyed: MW2's glowstick dies from 20 damage. The sim keeps each client's planted flare and every MW2 blast in a Minecraft world (`damage::push_voxel_blasts`, both the weapon and the script blasts) that deals 20 or more at the flare's spot, with MW2's radius falloff and the claymore cone, queues `FlareGone`. The owner's own blasts count, as in MW2.
 - It is not saved, like the MW2 flare entity. This is a fork rule.
 
 ## 11. Damage to players (item 13)
@@ -782,7 +786,7 @@ IW4L_MINECRAFT_KIT=iw4l:barrett, iw4l:usp, iw4l:usp, iw4l:sniper_rounds*16, iw4l
 - That an empty primary set (weapon 0) does not upset GSC or the first-person view.
 - That `inventory_add_weapon` adds a gun's alt mode by itself for `_gl_` and `_shotgun_` variants.
 - Whether the stock setter clamps to `maxAmmo`. The design publishes at most `maxAmmo` either way.
-- The site where MW2 retrieves a thrown knife, and where it plants the tactical insertion flare.
+- The site where MW2 retrieves a thrown knife, and where it plants the tactical insertion flare (checked: 10.4 and 10.6).
 - The T5 and IW5 attachment alias names in the content. A content test lists names with no item.
 - The default components of `poisonous_potato` in 26.3, which decide the `!` removals.
 - The creative tab's free pixels for the grenade slots, against `tab_inventory.png`.
