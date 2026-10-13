@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 3;
+pub const PROTOCOL: u16 = 4;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -54,6 +54,11 @@ pub enum ToServer {
         button: Option<i32>,
     },
     LeaveBed,
+    EditBook {
+        slot: u8,
+        pages: Vec<String>,
+        title: Option<String>,
+    },
 }
 
 impl ToServer {
@@ -266,6 +271,9 @@ pub enum ToClient {
         client: u32,
         bed: Option<Lying>,
         timer: i32,
+    },
+    OpenBook {
+        slot: u8,
     },
 }
 
@@ -495,6 +503,7 @@ pub struct GearItem {
     pub id: String,
     pub glint: bool,
     pub dye: Option<u32>,
+    pub potion: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

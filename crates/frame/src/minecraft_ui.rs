@@ -45,6 +45,8 @@ pub struct McStack {
     pub contents: Vec<String>,
     pub more: Option<String>,
     pub glint: bool,
+    pub icon: String,
+    pub lore: Vec<String>,
 }
 
 /// A slot of the inventory screen.
@@ -79,6 +81,8 @@ pub enum McScreen {
     Enchanting,
     Creative(crate::McTabKind),
     Lectern,
+    BookEdit,
+    BookSign,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -94,6 +98,19 @@ pub struct McBook {
     pub pages: Vec<String>,
     pub page: usize,
     pub take: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McBookEdit {
+    pub pages: Vec<String>,
+    pub page: usize,
+    pub cursor: usize,
+    pub highlight: usize,
+    pub title: String,
+    pub title_cursor: usize,
+    pub title_highlight: usize,
+    pub author: String,
+    pub since: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -125,6 +142,7 @@ pub enum McClick {
     Choose(usize),
     Rename(String),
     Clone(McSlot),
+    EditBook { pages: Vec<String>, title: Option<String> },
 }
 
 #[derive(Resource, Default)]
@@ -214,6 +232,7 @@ pub struct MinecraftUi {
     pub boss_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
     pub book: Option<McBook>,
+    pub book_edit: Option<McBookEdit>,
     pub ui_sounds: Vec<&'static str>,
 }
 

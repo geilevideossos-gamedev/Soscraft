@@ -18,6 +18,7 @@ pub fn item_icon_at(
     icon_size: usize,
     clock: &crate::item_icon::SpriteClock,
 ) -> Result<Option<RgbaImage>> {
+    let (key, potion) = crate::item_tint::split(key);
     let (key, dial) = crate::dials::split(key);
     if dial.is_some() {
         clock.mark_animated();
@@ -27,7 +28,7 @@ pub fn item_icon_at(
     let model = dial.or_else(|| definition.as_ref().and_then(|value| item_gui_model_reference(&value["model"])));
     let tints = definition
         .as_ref()
-        .map(|value| item_model_tints(packs, &value["model"]))
+        .map(|value| item_model_tints(packs, &value["model"], potion))
         .transpose()?
         .unwrap_or_default();
     if definition.as_ref().is_some_and(|value| crate::special_models::uses_item_geometry(&value["model"])) {
@@ -244,6 +245,42 @@ mod tests {
             let bytes = packs.texture(&ResourceId::parse(sprite).unwrap()).unwrap().unwrap();
             let expected = image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 32, 32, FilterType::Nearest);
             assert!(icon == expected, "{item} is drawn from {sprite}");
+        }
+    }
+
+    #[test]
+    fn potion_and_tipped_arrow_icons_take_the_stack_colour_on_layer_zero() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let healing = [0xF8u8, 0x24, 0x23];
+        for (item, layer0, layer1) in [
+            ("minecraft:potion", "minecraft:item/potion_overlay", "minecraft:item/potion"),
+            ("minecraft:tipped_arrow", "minecraft:item/tipped_arrow_head", "minecraft:item/tipped_arrow_base"),
+        ] {
+            let sprite = |name: &str| {
+                let bytes = packs.texture(&ResourceId::parse(name).unwrap()).unwrap().unwrap();
+                image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 16, 16, FilterType::Nearest)
+            };
+            let (under, over) = (sprite(layer0), sprite(layer1));
+            let plain = item_icon(&packs, item, 16).unwrap().unwrap();
+            let tinted = item_icon(&packs, &crate::item_tint::key(item, Some(0xF82423)), 16).unwrap().unwrap();
+            assert!(plain != tinted, "{item} changes colour");
+            let mut checked = 0;
+            for (x, y, pixel) in under.enumerate_pixels() {
+                if pixel[3] != 255 || over.get_pixel(x, y)[3] != 0 {
+                    continue;
+                }
+                let expected: Vec<u8> = (0..3).map(|channel| (pixel[channel] as u16 * healing[channel] as u16 / 255) as u8).collect();
+                assert_eq!(&tinted.get_pixel(x, y).0[..3], expected.as_slice(), "{item} at {x},{y}");
+                checked += 1;
+            }
+            assert!(checked > 0, "{item} has a bare {layer0} pixel");
         }
     }
 }

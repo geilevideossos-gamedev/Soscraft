@@ -1162,6 +1162,12 @@ pub(crate) fn tick_actor<'a>(
         sneaking: ps.pm_flags
             & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
             != 0,
+        swirl: minecraft_survival::swirls::player_swirl(
+            &player.survival.status,
+            sim::voxel::to_block(origin, ps.origin),
+            ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
+                != 0,
+        ),
     };
     let actor = TickActor {
         id: u64::from(player.id.0),
@@ -1179,6 +1185,7 @@ pub(crate) struct Stepped {
     pub(crate) killers: Vec<String>,
     pub(crate) books: Vec<Option<minecraft_net::messages::BookView>>,
     pub(crate) bed: Option<Bed>,
+    pub(crate) open_book: Option<minecraft_survival::books::OpenBook>,
 }
 
 type Bed = minecraft_survival::respawn_block::Bed;
@@ -1563,10 +1570,11 @@ pub(crate) fn step_friend(
         } = player;
         drop_on_death(death_watch, inventory, hand, entities);
     }
-    let (effects, (table, block, bench), bed) = friend_hand(
+    let (effects, (table, block, bench), bed, open_book) = friend_hand(
         player, world, client, origin, &ps, &moved, taken, life.alive,
     );
     stepped.bed = bed;
+    stepped.open_book = open_book;
     if let Some(level) = world.levels.get_mut(&player.dimension) {
         let recipes = player.inventory.recipes.clone();
         minecraft_survival::menus::open_station(
@@ -1649,9 +1657,14 @@ fn friend_hand(
     moved: &Moved,
     taken: HandTake,
     alive: bool,
-) -> (Vec<Effect>, Opens, Option<Bed>) {
+) -> (
+    Vec<Effect>,
+    Opens,
+    Option<Bed>,
+    Option<minecraft_survival::books::OpenBook>,
+) {
     let Some(level) = world.levels.get_mut(&player.dimension) else {
-        return (Vec::new(), (None, None, None), None);
+        return (Vec::new(), (None, None, None), None, None);
     };
     let interacts = alive && player.mode.interacts();
     if interacts
@@ -1742,6 +1755,7 @@ fn friend_hand(
         effects,
         (acted.open_table, acted.open_block, acted.open_bench),
         acted.bed,
+        acted.open_book,
     )
 }
 

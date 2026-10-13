@@ -213,7 +213,7 @@ pub(crate) fn layout(screen: McScreen) -> Layout {
             player_inventory(&mut slots, 84);
         }
         McScreen::Creative(kind) => return crate::minecraft_creative::layout(kind, 0),
-        McScreen::Lectern => size = [192, 192],
+        McScreen::Lectern | McScreen::BookEdit | McScreen::BookSign => size = [192, 192],
     }
     Layout {
         screen,
@@ -263,7 +263,7 @@ impl Layout {
             McScreen::Stonecutter => "stonecutter",
             McScreen::Smithing => "smithing",
             McScreen::Creative(_) => "creative_inventory/tab_items",
-            McScreen::Lectern => "book",
+            McScreen::Lectern | McScreen::BookEdit | McScreen::BookSign => "book",
         }
     }
 }
@@ -1207,6 +1207,8 @@ mod tests {
             contents: Vec::new(),
             more: None,
             glint: false,
+            icon: id.into(),
+            lore: Vec::new(),
         };
         let netherite = stack("minecraft:netherite_upgrade_smithing_template");
         assert_eq!(

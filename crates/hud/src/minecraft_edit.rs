@@ -7,6 +7,7 @@ pub(crate) struct Edit<'a> {
     cursor: &'a mut usize,
     highlight: &'a mut usize,
     limit: usize,
+    multiline: bool,
 }
 
 impl<'a> Edit<'a> {
@@ -23,6 +24,14 @@ impl<'a> Edit<'a> {
             cursor,
             highlight,
             limit,
+            multiline: false,
+        }
+    }
+
+    pub(crate) fn multiline(self) -> Self {
+        Self {
+            multiline: true,
+            ..self
         }
     }
 
@@ -62,7 +71,7 @@ impl<'a> Edit<'a> {
         }
         let added: String = text
             .chars()
-            .filter(|c| allowed_in_chat(*c))
+            .filter(|c| allowed_in_chat(*c) || (self.multiline && *c == '\n'))
             .take(room)
             .collect();
         self.text.replace_range(range.clone(), &added);
@@ -294,6 +303,9 @@ mod tests {
         let mut line = Line::new("");
         line.edit().insert("a\u{a7}b\r\n\tc\u{7f}");
         assert_eq!(line.text, "abc");
+        let mut page = Line::new("");
+        page.edit().multiline().insert("a\u{a7}b\r\n\tc\u{7f}");
+        assert_eq!(page.text, "ab\nc");
     }
 
     #[test]

@@ -67,50 +67,55 @@ impl McFont {
     }
 
     pub fn split(&self, text: &str, max_width: i32) -> Vec<String> {
+        self.split_ranges(text, max_width)
+            .into_iter()
+            .map(|range| text[range].to_owned())
+            .collect()
+    }
+
+    pub fn split_ranges(&self, text: &str, max_width: i32) -> Vec<std::ops::Range<usize>> {
         let max = max_width as f32;
         let mut lines = Vec::new();
-        let mut line = String::new();
+        let mut start = 0;
         let mut width = 0.0;
         let mut drawn = false;
         let mut last_space: Option<usize> = None;
-        for c in text.chars() {
+        for (at, c) in text.char_indices() {
             if c == '\n' {
-                lines.push(std::mem::take(&mut line));
+                lines.push(start..at);
+                start = at + 1;
                 width = 0.0;
                 drawn = false;
                 last_space = None;
                 continue;
             }
             if c == ' ' {
-                last_space = Some(line.len());
+                last_space = Some(at);
             }
             let advance = self.advance(c);
             if drawn && width + advance > max {
-                if let Some(at) = last_space.take() {
-                    let mut rest = line.split_off(at);
-                    lines.push(std::mem::take(&mut line));
-                    if !rest.is_empty() {
-                        rest.remove(0);
-                    }
-                    line = rest;
-                    width = line.chars().map(|c| self.advance(c)).sum();
+                if let Some(space) = last_space.take() {
+                    lines.push(start..space);
+                    start = if space < at { space + 1 } else { at };
+                    width = text[start..at].chars().map(|c| self.advance(c)).sum();
                     drawn = width != 0.0;
                     if c == ' ' {
+                        start = at + 1;
                         continue;
                     }
                 }
                 if drawn && width + advance > max {
-                    lines.push(std::mem::take(&mut line));
+                    lines.push(start..at);
+                    start = at;
                     width = 0.0;
                     drawn = false;
                 }
             }
-            line.push(c);
             width += advance;
             drawn |= advance != 0.0;
         }
-        if !line.is_empty() || lines.is_empty() {
-            lines.push(line);
+        if start < text.len() || lines.is_empty() {
+            lines.push(start..text.len());
         }
         lines
     }
@@ -235,6 +240,95 @@ mod tests {
         assert_eq!(font.split("ab cd ef", 22), vec!["ab", "cd", "ef"]);
         assert_eq!(font.split("abcdef", 12), vec!["ab", "cd", "ef"]);
         assert_eq!(font.split("", 12), vec![""]);
+    }
+
+    fn split_by_strings(font: &McFont, text: &str, max_width: i32) -> Vec<String> {
+        let max = max_width as f32;
+        let mut lines = Vec::new();
+        let mut line = String::new();
+        let mut width = 0.0;
+        let mut drawn = false;
+        let mut last_space: Option<usize> = None;
+        for c in text.chars() {
+            if c == '\n' {
+                lines.push(std::mem::take(&mut line));
+                width = 0.0;
+                drawn = false;
+                last_space = None;
+                continue;
+            }
+            if c == ' ' {
+                last_space = Some(line.len());
+            }
+            let advance = font.advance(c);
+            if drawn && width + advance > max {
+                if let Some(at) = last_space.take() {
+                    let mut rest = line.split_off(at);
+                    lines.push(std::mem::take(&mut line));
+                    if !rest.is_empty() {
+                        rest.remove(0);
+                    }
+                    line = rest;
+                    width = line.chars().map(|c| font.advance(c)).sum();
+                    drawn = width != 0.0;
+                    if c == ' ' {
+                        continue;
+                    }
+                }
+                if drawn && width + advance > max {
+                    lines.push(std::mem::take(&mut line));
+                    width = 0.0;
+                    drawn = false;
+                }
+            }
+            line.push(c);
+            width += advance;
+            drawn |= advance != 0.0;
+        }
+        if !line.is_empty() || lines.is_empty() {
+            lines.push(line);
+        }
+        lines
+    }
+
+    #[test]
+    fn split_ranges_match_split() {
+        let font = font();
+        let texts = [
+            "ab cd ef",
+            "abcdef",
+            "",
+            "one\ntwo",
+            "a\n\nb",
+            "abc\n",
+            "\n",
+            "ab  cd    ef",
+            "ab cd ",
+            " ab",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa iii aaa",
+            "é ab cd é ab",
+            "word word word word word word word word word word",
+        ];
+        for text in texts {
+            for width in [1, 6, 12, 22, 28, 40, 114] {
+                let ranges = font.split_ranges(text, width);
+                let lines: Vec<String> = ranges
+                    .iter()
+                    .map(|range| text[range.clone()].to_owned())
+                    .collect();
+                assert_eq!(lines, split_by_strings(&font, text, width), "{text:?} at {width}");
+                assert_eq!(font.split(text, width), lines);
+                for pair in ranges.windows(2) {
+                    assert!(pair[0].end <= pair[1].start, "{text:?} at {width}");
+                }
+                assert!(ranges.iter().all(|range| range.end <= text.len()));
+            }
+        }
+        assert_eq!(font.split_ranges("ab cd ef", 28), vec![0..5, 6..8]);
+        assert_eq!(font.split_ranges("abcdef", 12), vec![0..2, 2..4, 4..6]);
+        assert_eq!(font.split_ranges("one\ntwo", 100), vec![0..3, 4..7]);
+        assert_eq!(font.split_ranges("abc\n", 100), vec![0..3]);
+        assert_eq!(font.split_ranges("", 12), vec![0..0]);
     }
 
     #[test]

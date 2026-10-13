@@ -884,6 +884,7 @@ mod tests {
                 id: "minecraft:torch".to_owned(),
                 glint: false,
                 dye: None,
+                potion: None,
             }),
             ..BodyGear::default()
         };
@@ -910,6 +911,7 @@ mod tests {
                     id: "minecraft:elytra".to_owned(),
                     glint: false,
                     dye: None,
+                    potion: None,
                 }),
                 None,
                 None,
@@ -953,6 +955,7 @@ mod tests {
                 id: "minecraft:torch".to_owned(),
                 glint: false,
                 dye: None,
+                potion: None,
             }),
             ..BodyGear::default()
         };

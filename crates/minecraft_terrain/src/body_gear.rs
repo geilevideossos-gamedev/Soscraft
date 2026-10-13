@@ -10,6 +10,7 @@ pub struct GearItem {
     pub id: String,
     pub glint: bool,
     pub dye: Option<u32>,
+    pub potion: Option<u32>,
 }
 
 impl GearItem {
@@ -18,6 +19,7 @@ impl GearItem {
             id: stack.id.clone(),
             glint: crate::glint::has_glint(stack),
             dye: dyed_color(stack),
+            potion: crate::potions::stack_color(stack.components.as_ref()),
         }
     }
 }
@@ -96,6 +98,7 @@ mod tests {
             id: id.to_owned(),
             glint: false,
             dye: None,
+            potion: None,
         })
     }
 
@@ -179,11 +182,32 @@ mod tests {
                 id: "minecraft:diamond_sword".to_owned(),
                 glint: true,
                 dye: None,
+                potion: None,
             })
         );
         assert_eq!(gear.armor[1].as_ref().unwrap().dye, Some(0xB02E26));
         assert_eq!(gear.armor[2].as_ref().unwrap().dye, Some(0x0000FF));
         assert_eq!(gear.armor[3].as_ref().unwrap().dye, None);
         assert!(!gear.armor[1].as_ref().unwrap().glint);
+    }
+
+    #[test]
+    fn a_held_potion_carries_its_colour_and_a_sword_none() {
+        let inventory = slots(&[
+            (
+                0,
+                stack(
+                    "minecraft:potion",
+                    Some(json!({"minecraft:potion_contents": {"potion": "minecraft:poison"}})),
+                ),
+            ),
+            (1, stack("minecraft:diamond_sword", None)),
+            (OFFHAND, stack("minecraft:potion", None)),
+        ]);
+        let gear = body_gear(&inventory, 0, is_gun);
+        assert_eq!(gear.main.as_ref().unwrap().potion, Some(0x87A363));
+        assert_eq!(gear.off.as_ref().unwrap().potion, None);
+        let sword = body_gear(&inventory, 1, is_gun);
+        assert_eq!(sword.main.as_ref().unwrap().potion, None);
     }
 }

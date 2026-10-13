@@ -1003,7 +1003,15 @@ fn show_player(
     for book in std::mem::take(&mut remote.lecterns) {
         show_book(inventory_ui, ui, book, &mut out);
     }
-    if !inventory_ui.lectern_clicks(ui) {
+    let own_name = remote
+        .login
+        .as_ref()
+        .and_then(|login| remote.players.get(&login.client))
+        .map_or("Player", |(name, _)| name.as_str());
+    for slot in std::mem::take(&mut remote.open_books) {
+        open_held_book(inventory_ui, ui, (view, recipes), own_name, slot);
+    }
+    if !inventory_ui.book_clicks(ui) {
         show_menus(
             ui,
             (&mut remote.menu, remote.inventory_menu.as_ref()),
@@ -1021,6 +1029,11 @@ fn show_player(
         };
         let pos = [pos.0, pos.1, pos.2];
         out.push(ToServer::Lectern { pos, button });
+    }
+    for (slot, pages, title) in inventory_ui.take_book_edits() {
+        if let Ok(slot) = u8::try_from(slot) {
+            out.push(ToServer::EditBook { slot, pages, title });
+        }
     }
     let Some(ps) = alive else {
         ui.vitals = None;
@@ -1109,6 +1122,39 @@ fn show_book(
             pos: book.pos,
             button: None,
         });
+    }
+}
+
+pub(crate) fn open_held_book(
+    inventory_ui: &mut crate::minecraft_inventory::InventoryUi,
+    ui: &mut frame::MinecraftUi,
+    (view, recipes): (&minecraft_net::messages::PlayerView, &RecipeBook),
+    own_name: &str,
+    slot: u8,
+) -> bool {
+    let slot = usize::from(slot);
+    let Some(stack) = view
+        .slots
+        .get(slot)
+        .and_then(Option::as_ref)
+        .and_then(|nbt| view_stack(nbt, recipes))
+    else {
+        return false;
+    };
+    let pages = minecraft_terrain::lectern::pages_text(stack.components.as_ref());
+    match minecraft_survival::books::book_use(&stack) {
+        Some(minecraft_survival::books::BookUse::Read) => {
+            let book = frame::McBook {
+                pages,
+                page: 0,
+                take: false,
+            };
+            inventory_ui.show_held_book(ui, slot, book)
+        }
+        Some(minecraft_survival::books::BookUse::Write) => {
+            inventory_ui.show_book_editor(ui, slot, pages, own_name)
+        }
+        None => false,
     }
 }
 

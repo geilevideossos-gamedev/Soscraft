@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod bands;
+pub mod books;
 pub mod command_blocks;
 pub mod commands;
 pub mod cooldowns;
@@ -34,6 +35,7 @@ pub mod sleep;
 pub mod spyglass;
 pub mod survival;
 pub mod switch;
+pub mod swirls;
 pub mod the_end;
 pub mod tick_rate;
 pub mod trident;

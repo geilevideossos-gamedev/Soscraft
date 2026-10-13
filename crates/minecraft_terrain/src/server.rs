@@ -238,6 +238,7 @@ pub struct EntitySnapshot {
     pub frames: Vec<crate::item_frame::FrameView>,
     pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
     pub dragon_explosions: Vec<(glam::DVec3, bool)>,
+    pub swirls: Vec<crate::spell_particles::SwirlView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -1308,6 +1309,10 @@ impl ServerSim {
 
     pub fn cloud_views(&self) -> Vec<crate::effect_cloud::CloudView> {
         self.clouds.iter().map(crate::effect_cloud::EffectCloud::view).collect()
+    }
+
+    pub fn swirl_views(&self) -> Vec<crate::spell_particles::SwirlView> {
+        mob_swirls(&self.mobs)
     }
 
     fn douse_fire(&mut self, (x, y, z): BlockPos) {
@@ -3522,6 +3527,19 @@ fn player_left(sim: &mut ServerSim, running: Option<&mut TickInput>, player: u64
     sim.player_left(player);
 }
 
+pub fn mob_swirls(mobs: &minecraftoss_entities::world::EntityWorld) -> Vec<crate::spell_particles::SwirlView> {
+    crate::thrown::targets(mobs)
+        .iter()
+        .filter_map(|target| {
+            let effects = mobs.mob_effects(target.id).filter(|effects| !effects.is_empty())?;
+            let range = crate::mob_tracking::tracking_range(mobs.entity_type(target.id).unwrap_or(""));
+            let size = target.max - target.min;
+            let colors = effects.iter().map(|effect| (crate::potions::effect_color(effect.effect.id()).unwrap_or(0), effect.ambient, effect.visible));
+            crate::spell_particles::SwirlView::of_effects((crate::thrown::target_feet(target), size.x as f32, size.y as f32), colors, false, range)
+        })
+        .collect()
+}
+
 fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     let (centre, range) = input.tracking;
     let centres: Vec<[f64; 3]> = std::iter::once(centre).chain(input.watchers.iter().map(|watcher| watcher.feet)).collect();
@@ -3530,7 +3548,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views() });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -8191,6 +8209,27 @@ mod tests {
         let back = crate::server_mobs::spawn_saved(&mut loaded, tag).expect("wither skeletons load");
         let back = &loaded.skeleton_mut(back).unwrap().skeleton;
         assert_eq!((back.kind, back.main_hand.as_deref(), back.body.height), (minecraftoss_entities::skeleton::SkeletonKind::WitherSkeleton, Some("minecraft:stone_sword"), 2.4));
+    }
+
+    #[test]
+    fn a_cow_with_poison_gives_off_a_poison_green_swirl() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[2.5d,64.0d,-3.5d],active_effects:[{id:\"minecraft:poison\",amplifier:0b,duration:900}]}").unwrap();
+        let plain = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[8.5d,64.0d,-3.5d]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        crate::server_mobs::spawn_saved(&mut world, &tag).expect("cows load");
+        crate::server_mobs::spawn_saved(&mut world, &plain).expect("cows load");
+        let swirls = mob_swirls(&world);
+        assert_eq!(swirls.len(), 1);
+        let swirl = &swirls[0];
+        assert_eq!(swirl.colors.iter().map(|c| c & 0xFF_FFFF).collect::<Vec<_>>(), vec![0x87A363]);
+        assert_eq!(swirl.colors, vec![0xFF87_A363]);
+        assert!(!swirl.ambient && !swirl.invisible);
+        assert!((swirl.feet - glam::DVec3::new(2.5, 64.0, -3.5)).length() < 1e-6, "{:?}", swirl.feet);
+        assert_eq!((swirl.width, swirl.height, swirl.range), (0.9, 1.4, 10));
+        let hidden = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[2.5d,64.0d,-3.5d],active_effects:[{id:\"minecraft:poison\",amplifier:0b,duration:900,show_particles:0b}]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        crate::server_mobs::spawn_saved(&mut world, &hidden).expect("cows load");
+        assert!(mob_swirls(&world).is_empty());
     }
 
     #[test]

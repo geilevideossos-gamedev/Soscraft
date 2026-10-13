@@ -555,7 +555,7 @@ impl CreativeUi {
             * frame::minecraft_creative::MC_CREATIVE_ROWS;
         let tabs = ui.creative.tabs.iter().filter_map(|tab| tab.icon.as_ref());
         let items = ui.creative.items.iter().skip(first).take(window).flatten();
-        tabs.chain(items).map(|stack| stack.id.clone()).collect()
+        tabs.chain(items).map(|stack| stack.icon.clone()).collect()
     }
 
     fn grid(&self, inventory: &Inventory, index: usize, click: GridClick) -> Vec<SetSlot> {

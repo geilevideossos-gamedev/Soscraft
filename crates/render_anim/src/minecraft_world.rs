@@ -948,7 +948,7 @@ fn update(
     let mut actor = crate::minecraft_players::actor(ps, origin, alive);
     actor.skating = skate.active;
     let mut body = crate::minecraft_players::MwBody { authority: &mut authority.0, client: local.0, ps, registries: &globals.registries, shapes: &mut *shapes, shape_ids: &mut *shape_ids, level: band };
-    let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects, bed } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
+    let minecraft_survival::actions::Acted { open_table, mut open_block, mut open_bench, hand_mined, creative_broken, hand_broken, effects, bed, open_book } = minecraft_survival::actions::act(player, level, globals, &mut body, &actor, hands, &moved, light.as_ref(), time.elapsed_secs_f64());
     if bed.is_some() {
         *bed_request = bed;
     }
@@ -1124,6 +1124,7 @@ fn update(
             main_hand: inventory.slots[*selected].as_ref().filter(|_| ui.holding_item).map(|stack| stack.id.clone()),
             offhand: inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().map(|stack| stack.id.clone()),
             sneaking: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
+            swirl: minecraft_survival::swirls::player_swirl(&survival.status, feet, ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0),
         };
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
@@ -1296,6 +1297,19 @@ fn update(
         {
             inventory_ui.show_menu(&mut ui, menu);
         }
+        if !ui.inventory_open
+            && let Some(minecraft_survival::books::OpenBook { slot, kind: minecraft_survival::books::BookUse::Read }) = open_book
+            && let Some(stack) = player.inventory.slots.get(slot).cloned().flatten()
+        {
+            let shown = frame::McBook { pages: minecraft_terrain::lectern::pages_text(stack.components.as_ref()), page: 0, take: false };
+            inventory_ui.show_held_book(&mut ui, slot, shown);
+        }
+        if !ui.inventory_open
+            && let Some(minecraft_survival::books::OpenBook { slot, kind: minecraft_survival::books::BookUse::Write }) = open_book
+            && let Some(stack) = player.inventory.slots.get(slot).cloned().flatten()
+        {
+            inventory_ui.show_book_editor(&mut ui, slot, minecraft_terrain::lectern::pages_text(stack.components.as_ref()), &player.name);
+        }
         let now_open = player.menus.block().cloned();
         let spectator = player_mode.mode == minecraftoss_player::GameMode::Spectator;
         let open_cells: Vec<OpenCells> = std::iter::once(&*player)
@@ -1421,7 +1435,7 @@ fn update(
                     .map(|eating| crate::minecraft_hand::eat_transform(eating.remaining_ticks() as f32, (hand.clock / TICK_SECONDS) as f32, eating.info.consume_ticks, arm));
                 let swung = if using || eat.is_some() || hand.swing_offhand != (slot == minecraft_survival::offhand::OFFHAND) { 0.0 } else { swing };
                 let glint = minecraft_terrain::glint::has_glint(&stack);
-                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), inventory_ui.dials.key(&stack.id).to_owned(), glint));
+                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), minecraft_terrain::item_tint::key(inventory_ui.dials.key(&stack.id), minecraft_terrain::potions::stack_color(stack.components.as_ref())), glint));
             }
             let mut mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
             if let Some(pose) = activation {
@@ -2442,7 +2456,7 @@ mod skate_tests {
     use playerstate_iw4::pm_flags::{CROUCH, MC_FLYING, MC_GLIDING, MC_RIDING, SPRINTING};
 
     fn item(id: &str) -> Option<GearItem> {
-        Some(GearItem { id: id.to_owned(), glint: false, dye: None })
+        Some(GearItem { id: id.to_owned(), glint: false, dye: None, potion: None })
     }
 
     #[test]

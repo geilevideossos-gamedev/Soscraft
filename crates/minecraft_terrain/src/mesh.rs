@@ -412,7 +412,7 @@ pub fn build_item_model(packs: &PackStack, item: &ResourceId) -> Result<Option<B
     }
     let tints = packs
         .item_definition(item)?
-        .map(|value| crate::interface::item_model_tints(packs, &value["model"]))
+        .map(|value| crate::interface::item_model_tints(packs, &value["model"], None))
         .transpose()?
         .unwrap_or_default();
     let textures = model
@@ -897,7 +897,8 @@ impl ItemVisuals {
     }
     fn model<'a>(&'a mut self, id: &str, packs: &PackStack) -> Result<Option<&'a ItemVisual>> {
         if !self.models.contains_key(id) {
-            let (key, dial) = crate::dials::split(id);
+            let (base, potion) = crate::item_tint::split(id);
+            let (key, dial) = crate::dials::split(base);
             let resource = ResourceId::parse(key)?;
             let resolved = match dial {
                 Some(leaf) => Some(crate::model::resolve_item_leaf(packs, &resource, leaf)?),
@@ -922,7 +923,7 @@ impl ItemVisuals {
             let fixed = crate::model::item_display_transform(packs, &resource, "fixed")?;
             let tints = definition
                 .as_ref()
-                .map(|value| crate::interface::item_model_tints(packs, &value["model"]))
+                .map(|value| crate::interface::item_model_tints(packs, &value["model"], potion))
                 .transpose()?
                 .unwrap_or_default()
                 .into_iter()
@@ -971,7 +972,7 @@ impl ItemVisuals {
                 .iter()
                 .map(|effect| (&effect.item, Some(effect.position(partial_tick)))),
         ) {
-            let Some(visual) = self.model(&entity.stack.id, packs)? else {
+            let Some(visual) = self.model(&crate::item_tint::of_stack(&entity.stack), packs)? else {
                 continue;
             };
             let partial = partial_tick.clamp(0.0, 1.0);
@@ -1232,6 +1233,7 @@ impl ItemVisuals {
             let Some(id) = view.item.as_deref() else {
                 continue;
             };
+            let id = &crate::item_tint::key(id, view.potion);
             let Some((fixed, tints)) = self.model(id, packs)?.map(|visual| (visual.fixed, visual.tints.clone())) else {
                 continue;
             };
@@ -3739,6 +3741,69 @@ mod tests {
             .unwrap();
         assert_eq!(mesh.vertices.len(), 4 + 4 + 12 + 4);
         assert_eq!(mesh.glint, [4..8, 8..20, 20..24]);
+    }
+    #[test]
+    fn dropped_and_framed_potions_take_their_stack_colour() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        for (name, contents) in [
+            ("pack.mcmeta", r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#),
+            ("assets/minecraft/items/potion.json", r#"{"model":{"type":"minecraft:model","model":"minecraft:item/potion","tints":[{"type":"minecraft:potion","default":-13083194}]}}"#),
+            ("assets/minecraft/models/item/potion.json", r#"{"parent":"minecraft:item/generated","textures":{"layer0":"minecraft:item/potion_overlay"}}"#),
+            ("assets/minecraft/models/item/generated.json", r#"{"parent":"builtin/generated"}"#),
+        ] {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        let sprite = root.join("assets/minecraft/textures/item/potion_overlay.png");
+        std::fs::create_dir_all(sprite.parent().unwrap()).unwrap();
+        let mut image = RgbaImage::new(16, 16);
+        image.put_pixel(8, 8, image::Rgba([255, 255, 255, 255]));
+        image.save(sprite).unwrap();
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let atlas = make_atlas(&packs, vec![ResourceId::parse("minecraft:item/potion_overlay").unwrap()]).unwrap();
+        let sky_light = SkyLight::build(&HandcraftedScene::new());
+        let potion = |name: Option<&str>| minecraftoss_player::inventory::ItemStack {
+            components: name.map(|name| serde_json::json!({"minecraft:potion_contents": {"potion": name}})),
+            ..minecraftoss_player::inventory::ItemStack::new("minecraft:potion", 1)
+        };
+        let tinted = |vertices: &[Vertex], rgb: [u8; 3]| {
+            let want = rgb.map(|c| c as f32 / 255.0);
+            !vertices.is_empty()
+                && vertices.iter().all(|vertex| {
+                    let shade = vertex.color[0] / want[0];
+                    shade > 0.0 && shade <= 1.0 + 1e-5 && (0..3).all(|i| (vertex.color[i] - want[i] * shade).abs() < 1e-5)
+                })
+        };
+        let healing = [0xF8, 0x24, 0x23];
+        let default = [0x38, 0x5D, 0xC6];
+        let mut visuals = ItemVisuals::default();
+        for (name, rgb) in [(Some("minecraft:healing"), healing), (None, default), (Some("minecraft:healing"), healing)] {
+            let mut items = WorldItems::default();
+            items.spawn(potion(name), glam::DVec3::new(0.5, 1.0, 0.5));
+            let mesh = visuals.mesh(&items, &packs, &atlas, &sky_light, 1.0).unwrap();
+            assert!(tinted(&mesh.vertices, rgb), "{name:?}");
+        }
+        assert!(visuals.models.contains_key("minecraft:potion~f82423") && visuals.models.contains_key("minecraft:potion"));
+        let frame = |potion: Option<u32>| crate::item_frame::FrameView {
+            id: 1,
+            glow: false,
+            pos: (0, 1, 0),
+            facing: Direction::North,
+            position: glam::DVec3::new(0.5, 1.5, 0.96875),
+            item: Some("minecraft:potion".to_owned()),
+            potion,
+            glint: false,
+            rotation: 0,
+            invisible: true,
+            fixed: false,
+        };
+        for (view, rgb) in [(frame(Some(0xF82423)), healing), (frame(None), default)] {
+            let mut mesh = ChunkMesh::default();
+            visuals.append_frames(&mut mesh, &[view], &packs, &atlas, &sky_light).unwrap();
+            assert!(tinted(&mesh.vertices, rgb), "{rgb:?}");
+        }
     }
     #[test]
     #[ignore = "local performance diagnostic with the pinned resource pack"]
