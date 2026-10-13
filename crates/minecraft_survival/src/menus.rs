@@ -957,6 +957,9 @@ pub fn take_inputs(
 }
 
 fn merchant_title(view: &MerchantView) -> Text {
+    if let Some(name) = view.name.as_ref() {
+        return Text::literal(name.clone());
+    }
     let profession = view
         .profession
         .rsplit(':')
@@ -2108,6 +2111,19 @@ mod tests {
         assert!(mirror(None, &recipes).open.is_none());
     }
 
+    #[test]
+    fn a_named_villager_s_trading_screen_takes_its_name_as_the_title() {
+        let named = MerchantView {
+            name: Some("Bob".to_owned()),
+            ..trade_view(9)
+        };
+        assert_eq!(merchant_title(&named), Text::literal("Bob"));
+        assert_eq!(
+            merchant_title(&trade_view(9)),
+            Text::translate("entity.minecraft.villager.farmer", Vec::new())
+        );
+    }
+
     fn trade_view(villager: u64) -> MerchantView {
         MerchantView {
             villager,
@@ -2119,6 +2135,7 @@ mod tests {
             result: None,
             future_xp: 0,
             max_stacks: Vec::new(),
+            name: None,
         }
     }
 

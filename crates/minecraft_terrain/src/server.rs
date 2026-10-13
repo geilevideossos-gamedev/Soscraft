@@ -155,6 +155,7 @@ pub struct MerchantView {
     /// Items' maximum stack sizes the offers name, for the client's
     /// prices.
     pub max_stacks: Vec<(String, i32)>,
+    pub name: Option<String>,
 }
 
 /// What the player does on the trading screen.
@@ -539,6 +540,10 @@ impl ServerSim {
             result: menu.result.clone(),
             future_xp: menu.future_xp,
             max_stacks,
+            name: self.mob_tags.get(&menu.villager).and_then(|tag| tag.get("CustomName")).map(crate::item_nbt::tag_json).and_then(|name| match name {
+                serde_json::Value::String(text) => Some(text),
+                other => other.get("text").and_then(serde_json::Value::as_str).map(str::to_owned),
+            }),
         })
     }
 
@@ -4438,6 +4443,23 @@ mod tests {
         assert!(server.mobs.merchant_menu(0).is_none());
         assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.is_some());
         assert_eq!(server.check_merchant(&[at(9.0)]).len(), 1, "a new screen is asked again");
+    }
+
+    #[test]
+    fn a_named_villager_s_trading_screen_carries_its_name() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let view = server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.expect("open");
+        assert_eq!(view.name, None);
+        let nbt = minecraftoss_core::snbt::parse_compound(
+            "{NoAI:1b,CustomName:\"Bob\",VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1},Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1},maxUses:16,xp:2,priceMultiplier:0.05f}]}}",
+        )
+        .unwrap();
+        server.summon("minecraft:villager", [2.5, 100.0, 0.5], Some(&nbt), 0.0).unwrap();
+        let bob = server.mobs.villagers().iter().map(|villager| villager.id).find(|&other| other != id).unwrap();
+        let view = server.mob_action(1, minecraftoss_entities::world::MobHit::Villager(bob), None, Inventory::default(), 0, false).merchant.expect("open");
+        assert_eq!(view.name.as_deref(), Some("Bob"));
+        assert_eq!(view.profession, "minecraft:farmer");
     }
 
     /// A villager claims the bed and bell placed near it by day, and sleeps

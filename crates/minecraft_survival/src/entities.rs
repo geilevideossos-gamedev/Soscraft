@@ -2442,7 +2442,7 @@ mod tests {
     #[test]
     fn trading_screens_reach_only_their_player_and_set_the_slots_before_anything_else() {
         use minecraft_terrain::server::{MerchantUpdate, MerchantView, MobResult};
-        let view = |villager: u64| MerchantView { villager, profession: "minecraft:farmer", level: 1, xp: 0, offers: Vec::new(), payment: [None, None], result: None, future_xp: 0, max_stacks: Vec::new() };
+        let view = |villager: u64| MerchantView { villager, profession: "minecraft:farmer", level: 1, xp: 0, offers: Vec::new(), payment: [None, None], result: None, future_xp: 0, max_stacks: Vec::new(), name: None };
         let mut queues = two_queues();
         queues.queue(FRIEND).merchant_waiting = 2;
         let mut output = minecraft_terrain::server::Output::default();

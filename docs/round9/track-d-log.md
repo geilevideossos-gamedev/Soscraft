@@ -188,10 +188,78 @@ After 616204a0.
 IW4L_MINECRAFT_KIT=minecraft:emerald*64,minecraft:emerald*64,minecraft:wheat*64,minecraft:paper*64,minecraft:stick*64,minecraft:coal*64,minecraft:string*64,minecraft:rotten_flesh*64,minecraft:iron_ingot*32,minecraft:villager_spawn_egg*4,minecraft:composter,minecraft:lectern,minecraft:fletching_table,minecraft:smithing_table,minecraft:red_bed,minecraft:cobblestone*64,minecraft:cooked_beef*32
 ```
 
+## Group trading-screen
+
+### 1. The Minecraft trading screen looks like vanilla
+
+After 0535f063.
+
+- **Vanilla (javap, 26.3):**
+  - `MerchantMenu`: payment slots at (136, 37) and (162, 37), the result at (220, 37), the inventory from (108, 84) and the hotbar at (108, 142).
+  - `MerchantScreen`: 276 x 166 from the 512 x 256 `textures/gui/container/villager.png`; inventory label at x 107.
+    - **Offer buttons:** seven `TradeOfferButton`s (`Button.Plain`, 88 x 20) at (5, 18 + 20i).
+    - **Offer rows:** each row's items sit at y 19 + 20k: the first cost at x 10, the second cost at 40, the arrow (10 x 9) at 60, y + 3, and the result at 73.
+    - **Discount:** when the first cost's count differs from its base count, the base count is drawn at the item and the new count 14 to the right (a count of 1 is written out), with `discount_strikethrough` (9 x 2) at (+7, +12).
+    - **Sold out:** a sold-out offer draws `trade_arrow_out_of_stock`. The picked offer (`shopItem`, 0 until one is picked) draws `out_of_stock` (28 x 21) at (182, 35) when it is sold out. Hovering there (22 x 21 from (186, 35), one pixel of slack) on a merchant that restocks shows `merchant.deprecated`.
+    - **Scroller:** 6 x 27 at (94, 18) on a 139-pixel bar, only with more than 7 offers. Its y is `min(113, scrollOff * (1 + rest / n + 139 / n))`, or 113 on the last step, with `n = offers - 6` and `rest = 139 - (27 + (n - 1) * 139 / n)`. Otherwise `scroller_disabled`.
+    - **Scrolling:** the wheel scrolls `scrollOff - scrollY`, anywhere on the screen. A press with x strictly between 94 and 100 and y in (18, 158] starts a drag, and dragging sets `(int)(((y - 18 - 13.5) / 112) * (offers - 7) + 0.5)`, clamped.
+    - **Clicking a button:** picks offer `index + scrollOff`, with the left button only, and the button keeps the focus highlight.
+    - **Button tooltips:** x below the button's x + 20 shows the first cost (the discounted stack), x strictly between +30 and +50 the second cost, and x above +65 the result.
+    - **Experience bar:** shown only when `showProgressBar` and the level is below 5. The background is 102 x 5 at (136, 16). The current part is `min(floor(102 / (max - min) * (xp - min)), 102)` wide, and only drawn when xp >= the level's minimum and the level can rise. The future part is `min(floor(futureXp * ratio), 102 - current)` wide and starts where the current part ends.
+    - **Labels:** the title is `merchant.title` ("%s - %s") with `merchant.level.<n>` when the level is 1 to 5 and the progress bar shows, otherwise the plain title. It is centred on 49 + 138, y 6. "Trades" (`merchant.trades`) is centred on 53, y 6. All labels use colour 0xFF404040 without shadow.
+- **Changed:**
+  - `frame/src/minecraft_ui.rs`:
+    - New `McOffer`: the first cost at its modified count, its base count, the second cost, the result and whether it is sold out.
+    - New `McMerchant`: the offers, level, xp, future xp, whether the progress bar shows and whether the merchant restocks.
+    - New field `MinecraftUi.merchant`.
+  - `render_anim/src/minecraft_gui.rs`: the `villager` sheet, the `container/villager/` sprites and the `merchant.` texts load into the GUI atlas.
+  - `render_anim/src/minecraft_inventory.rs`: the trading screen fills `ui.merchant` from the `MerchantScreen`. The first cost comes from `MerchantOffer::cost_a_count` with the item's stack size the level sent (`max_stacks`), and the costs keep their component predicates for the icons. The offers no longer go through `ui.choices`.
+  - New `hud/src/minecraft_merchant.rs`: the screen's numbers above, the offer-row hit test, the scroller, the wheel and drag scrolling, the experience bar widths, the title, the tooltips and the drawing.
+  - `hud/src/minecraft_screens.rs`: the `Merchant` layout uses the vanilla slot positions, the `villager` sheet, and the merchant background, labels and tooltip. The placeholder's stonecutter look is gone.
+  - `hud/src/minecraft_inventory.rs`: the trading input.
+    - A left click on an offer row picks it (`Choose(index)`) and keeps that row highlighted.
+    - The scroller drags and the wheel scrolls, both reset when the screen opens.
+    - Hovering an offer's columns shows the item tooltips.
+    - With a controller, LB and RB move the highlight through the offers and scroll with it, and RT picks the highlighted offer (like the enchanting table, because picking moves the payments).
+  - `minecraft_terrain/src/server.rs`: `MerchantView.name` carries the villager's custom name from its saved tag (`CustomName`, plain text or the component's `text`).
+  - `minecraft_survival/src/menus.rs`: the screen's title is that name when there is one, otherwise `entity.minecraft.villager.<profession>`.
+- **Tests:**
+  - `minecraft_screens::tests::station_slots_sit_where_vanilla_puts_them`: the merchant's size (276 x 166), sheet, payment and result slots, inventory and hotbar positions, and its 39 slots.
+  - `minecraft_merchant::tests::offer_rows_take_clicks_on_the_vanilla_buttons`: the button edges, rows 0, 1 and 6, rows past the offers, and a row with the list scrolled.
+  - `minecraft_merchant::tests::nine_offers_scroll_two_steps_by_wheel_and_drag`: 9 offers scroll 0 to 2, the shown range, wheel clamping, drag positions at the top, middle and bottom, the scroller at 0, 53 and 113, and the scroller's grab area.
+  - `minecraft_merchant::tests::a_discount_strikes_the_old_price_and_a_sold_out_offer_crosses_its_arrow`.
+  - `minecraft_merchant::tests::the_experience_bar_fills_toward_the_next_level`.
+  - `minecraft_merchant::tests::the_title_names_the_level_and_tooltips_follow_the_columns`: "Farmer - Apprentice", the plain title without the bar, the tooltip columns, the hovered stack with the list scrolled, and the restock hint only on a sold-out picked offer.
+  - `minecraft_inventory::tests::a_trading_offer_shows_its_discounted_first_cost_its_second_cost_and_what_it_sells` (render_anim): a special price of -3 on 10 emeralds shows 7, the book as the second cost, the enchanted book keeps its components, and a price above a stack shows 64.
+  - `minecraft_gui::tests::the_real_gui_textures_and_fonts_load_into_one_atlas`: the villager sheet and the scroller (6 x 27) and strikethrough (9 x 2) sprites load.
+  - `server::tests::a_named_villager_s_trading_screen_carries_its_name`.
+  - `menus::tests::a_named_villager_s_trading_screen_takes_its_name_as_the_title`.
+  - Runs: `hud` 156, `render_anim` lib 150, `minecraft_survival` lib 599, `frame` 24, `minecraft_terrain` lib 1129 (3 ignored), all green. `check -p launcher` green. The new `minecraft_merchant.rs` passes `rustfmt --check --edition 2024` on its staged content.
+- **Decisions:**
+  - Every merchant today is a villager, so `show_progress` and `can_restock` are both true. The wandering trader (group `wandering-trader`) sets both to false.
+  - The clicked row keeps its highlight while the list scrolls, as vanilla's focused button does. With a controller, the highlighted row follows the offer the pad points at.
+  - With a controller, moving through the offers does not pick them. Only RT picks, because picking moves payments out of the inventory. The stonecutter picks as it moves.
+  - The villager's custom name rides on `MerchantView`, read from the mob's saved tag. The fork has no name tags on mobs yet, so a name comes from `/summon` or a saved world.
+  - The hud keeps its own copy of the villager level thresholds (0, 10, 70, 150, 250) for the bar. It has no dependency on the vendored entities crate.
+- **Test steps (survival, host):**
+  1. Put a composter down and hatch a villager egg next to it, or go to a village. Wait until the villager is a farmer, then right-click it. The wide vanilla trading screen opens. On the left, "Trades" sits over the offer buttons, each showing the payment, an arrow and the result. On the right, "Farmer - Novice" is centred over an empty experience bar, with the two payment slots and the result, and the inventory sits below (**16_trading_screen**).
+  2. Hover over an offer's payment, second payment and result: each shows its item tooltip.
+  3. Click an offer: its button stays highlighted, the payments move into the slots and a light green part on the bar shows the experience the trade gives. Take the result: the bar fills, and after a few trades the title becomes "Farmer - Apprentice" with two more offers (**17_trading_xp_bar**).
+  4. Summon a librarian that is about to level: `/summon minecraft:villager ~ ~ ~2 {CustomName:"Bob",Xp:249,VillagerData:{type:"minecraft:plains",profession:"minecraft:librarian",level:1}}`. Fence it in. Make four trades, closing and reopening the screen between them if it does not level up straight away. It goes to "Bob - Master", the bar is gone, and there are 9 offers.
+  5. With the 9 offers, the scroller on the right of the buttons is lit. The mouse wheel scrolls two steps, and dragging the scroller does the same (**18_trading_scroll**).
+  6. Buy one cheap offer until it is sold out: its arrow gets a red cross. While it is picked, a big red cross sits between the payments and the result, and hovering over it says "Villagers restock up to two times per day." (**19_trading_sold_out**).
+  7. Hit a villager once and right-click it again. The first payment of each offer shows the old price struck through with the new, higher price next to it (**20_trading_price_up**).
+  8. Controller: LB and RB move the highlighted offer, scrolling with it, and RT picks it.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:emerald*64,minecraft:emerald*64,minecraft:emerald*64,minecraft:paper*64,minecraft:paper*64,minecraft:book*64,minecraft:wheat*64,minecraft:string*64,minecraft:stick*64,minecraft:coal*64,minecraft:rotten_flesh*64,minecraft:iron_ingot*32,minecraft:villager_spawn_egg*4,minecraft:composter,minecraft:lectern,minecraft:fletching_table,minecraft:red_bed,minecraft:oak_fence*64,minecraft:cobblestone*64,minecraft:cooked_beef*32
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
-- `docs/MINECRAFT-SURVIVAL.md`: right-clicking an adult villager with a job opens its trading screen for the host (for now on a placeholder look). Picking an offer fills the payments from the inventory, the result trades once or, shift-clicked, as often as the items last, and a shift-click moves stacks between inventory and hotbar. Trades give the villager experience, level it up with new offers and Regeneration, and drop experience orbs (3 to 6, 5 more on a level-up). Prices follow reputation and Hero of the Village. The screen closes when the villager is out of reach (8 blocks), dies or sleeps, and the payments return to the inventory (or drop when it is full); dying or leaving the level closes it the same way. Babies shake their heads. Friends cannot trade yet.
+- `docs/MINECRAFT-SURVIVAL.md`: right-clicking an adult villager with a job opens its vanilla trading screen for the host: the offer buttons with their payments, arrows and results, the struck-through old price on a changed price, a crossed arrow on a sold-out offer, the scroller beyond 7 offers (wheel and drag), the experience bar with the coming experience, and the title "<Profession or name> - <Level>". Picking an offer fills the payments from the inventory, the result trades once or, shift-clicked, as often as the items last, and a shift-click moves stacks between inventory and hotbar. Trades give the villager experience, level it up with new offers and Regeneration, and drop experience orbs (3 to 6, 5 more on a level-up). Prices follow reputation and Hero of the Village. The screen closes when the villager is out of reach (8 blocks), dies or sleeps, and the payments return to the inventory (or drop when it is full); dying or leaving the level closes it the same way. Babies shake their heads. Friends cannot trade yet.
 
 ## Vendored files
 
@@ -202,4 +270,4 @@ Patched by track D: 6 (`entities/src/lib.rs`, `entities/src/stroll.rs`, `entitie
 - Ocean ruin drowned: the generator's `finalize_spawn` (`generator/src/feature/entities.rs`) gives them only `Mob.finalizeSpawn`; vanilla runs `Drowned.finalizeSpawn` with the `STRUCTURE` reason (trident roll, shell, zombie nautilus jockey).
 - Zombie nautilus jockeys for natural drowned with tridents (needs mob 38, group `nautiluses`).
 - The drowned's raised trident uses the plain held model; vanilla draws `item/trident_throwing` while the item is in use (`minecraft:using_item`), which needs a using flag on `mesh::HeldItem`.
-- Trading: friends' screens (group `trading-friend`) and the vanilla screen (group `trading-screen`); number keys, Q, double-click gathering and drags on the payment and result slots; a villager's custom name as the title.
+- Trading: friends' screens (group `trading-friend`); number keys, Q, double-click gathering and drags on the payment and result slots.

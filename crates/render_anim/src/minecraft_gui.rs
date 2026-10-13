@@ -15,7 +15,7 @@ const ATLAS_WIDTH: u32 = 2048;
 const GUTTER: u32 = 1;
 const SPRITES: &str = "assets/minecraft/textures/gui/sprites/";
 
-pub(crate) const CONTAINER_SHEETS: [&str; 16] = [
+pub(crate) const CONTAINER_SHEETS: [&str; 17] = [
     "inventory",
     "crafting_table",
     "generic_54",
@@ -29,12 +29,13 @@ pub(crate) const CONTAINER_SHEETS: [&str; 16] = [
     "grindstone",
     "stonecutter",
     "smithing",
+    "villager",
     "creative_inventory/tab_items",
     "creative_inventory/tab_item_search",
     "creative_inventory/tab_inventory",
 ];
 
-const SPRITE_FOLDERS: [&str; 13] = [
+const SPRITE_FOLDERS: [&str; 14] = [
     "container/slot/",
     "container/anvil/",
     "container/brewing_stand/",
@@ -46,6 +47,7 @@ const SPRITE_FOLDERS: [&str; 13] = [
     "container/smoker/",
     "container/blast_furnace/",
     "container/creative_inventory/",
+    "container/villager/",
     "hud/heart/",
     "tooltip/",
 ];
@@ -66,7 +68,7 @@ const LOOSE_SPRITES: [&str; 11] = [
 
 pub(crate) const BOOK_SHEET: &str = "book";
 
-const TEXT_PREFIXES: [&str; 11] = [
+const TEXT_PREFIXES: [&str; 12] = [
     "container.",
     "itemGroup.",
     "inventory.",
@@ -78,6 +80,7 @@ const TEXT_PREFIXES: [&str; 11] = [
     "book.",
     "lectern.",
     "gui.done",
+    "merchant.",
 ];
 
 pub(crate) const PUPPET_HEIGHT: f32 = 60.0 / 70.0;
@@ -615,6 +618,9 @@ mod tests {
         assert!(atlas.height() <= 2048);
         assert_eq!(gui.sheets.len(), CONTAINER_SHEETS.len() + 1);
         assert!(gui.sheets.contains_key("creative_inventory/tab_item_search"));
+        assert!(gui.sheets.contains_key("villager"));
+        assert_eq!(gui.sprites["container/villager/scroller"].rect[2..], [6, 27]);
+        assert_eq!(gui.sprites["container/villager/discount_strikethrough"].rect[2..], [9, 2]);
         assert_eq!(gui.sprites["container/creative_inventory/tab_top_selected_7"].rect[2..], [26, 32]);
         assert_eq!(gui.sprites["container/creative_inventory/tab_bottom_unselected_1"].rect[2..], [26, 32]);
         assert_eq!(gui.sprites["container/creative_inventory/scroller"].rect[2..], [12, 15]);

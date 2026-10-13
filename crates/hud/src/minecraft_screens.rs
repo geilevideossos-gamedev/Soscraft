@@ -215,8 +215,12 @@ pub(crate) fn layout(screen: McScreen) -> Layout {
         McScreen::Creative(kind) => return crate::minecraft_creative::layout(kind, 0),
         McScreen::Lectern => size = [192, 192],
         McScreen::Merchant => {
-            slots.extend([cell(0, 20, 33), cell(1, 20, 52), output(143, 33)]);
+            size = crate::minecraft_merchant::SIZE;
+            slots.extend([cell(0, 136, 37), cell(1, 162, 37), output(220, 37)]);
             player_inventory(&mut slots, 84);
+            for spec in slots.iter_mut().filter(|spec| spec.group == Group::Player) {
+                spec.x += 100;
+            }
         }
     }
     Layout {
@@ -264,7 +268,8 @@ impl Layout {
             McScreen::Enchanting => "enchanting_table",
             McScreen::Anvil => "anvil",
             McScreen::Grindstone => "grindstone",
-            McScreen::Stonecutter | McScreen::Merchant => "stonecutter",
+            McScreen::Stonecutter => "stonecutter",
+            McScreen::Merchant => "villager",
             McScreen::Smithing => "smithing",
             McScreen::Creative(_) => "creative_inventory/tab_items",
             McScreen::Lectern => "book",
@@ -402,6 +407,8 @@ pub(crate) struct Station<'a> {
     pub cyclers: &'a [Cycler; 3],
     pub partial: f32,
     pub level: u32,
+    pub trade_scroll: usize,
+    pub trade_row: Option<usize>,
 }
 
 pub(crate) struct Screen<'a> {
@@ -457,7 +464,8 @@ pub(crate) fn draw_background(p: &mut Painter<'_>, s: &Screen<'_>) {
                 p.sprite("container/grindstone/error", x, y, 28, 21);
             }
         }
-        McScreen::Stonecutter | McScreen::Merchant => stonecutter(p, s),
+        McScreen::Stonecutter => stonecutter(p, s),
+        McScreen::Merchant => crate::minecraft_merchant::draw_background(p, s),
         McScreen::Smithing => smithing(p, s),
         _ => {}
     }
@@ -758,13 +766,16 @@ fn smithing(p: &mut Painter<'_>, s: &Screen<'_>) {
 }
 
 pub(crate) fn draw_labels(p: &mut Painter<'_>, s: &Screen<'_>) {
+    if s.layout.screen == McScreen::Merchant {
+        return crate::minecraft_merchant::draw_labels(p, s);
+    }
     let [w, h] = s.layout.size;
     let (x, y) = match s.layout.screen {
         McScreen::Inventory => (97, 6),
         McScreen::CraftingTable => (29, 6),
         McScreen::Furnace(_) | McScreen::Brewing => ((w - p.width(s.title)) / 2, 6),
         McScreen::Anvil => (60, 6),
-        McScreen::Stonecutter | McScreen::Merchant => (8, 5),
+        McScreen::Stonecutter => (8, 5),
         McScreen::Smithing => (44, 15),
         _ => (8, 6),
     };
@@ -968,6 +979,7 @@ pub(crate) fn station_tooltip(p: &Painter<'_>, s: &Screen<'_>) -> Option<(Vec<Te
                 false,
             ))
         }
+        McScreen::Merchant => crate::minecraft_merchant::tooltip(p, s),
         _ => None,
     }
 }
@@ -1000,7 +1012,7 @@ fn onboarding_key(
 }
 
 pub(crate) fn hovered_recipe(s: &Screen<'_>) -> Option<usize> {
-    if !matches!(s.layout.screen, McScreen::Stonecutter | McScreen::Merchant) {
+    if s.layout.screen != McScreen::Stonecutter {
         return None;
     }
     let rel = [
@@ -1111,10 +1123,15 @@ mod tests {
             at(&layout(McScreen::Stonecutter), McSlot::Output),
             (143, 33)
         );
-        assert_eq!(
-            at(&layout(McScreen::Merchant), McSlot::Container(1)),
-            (20, 52)
-        );
+        let merchant = layout(McScreen::Merchant);
+        assert_eq!((merchant.size, merchant.sheet()), ([276, 166], "villager"));
+        assert_eq!(at(&merchant, McSlot::Container(0)), (136, 37));
+        assert_eq!(at(&merchant, McSlot::Container(1)), (162, 37));
+        assert_eq!(at(&merchant, McSlot::Output), (220, 37));
+        assert_eq!(at(&merchant, McSlot::Inventory(9)), (108, 84));
+        assert_eq!(at(&merchant, McSlot::Inventory(35)), (252, 120));
+        assert_eq!(at(&merchant, McSlot::Inventory(0)), (108, 142));
+        assert_eq!(merchant.slots.len(), 39);
         assert_eq!(
             at(&layout(McScreen::Smithing), McSlot::Container(2)),
             (44, 48)

@@ -106,6 +106,25 @@ pub struct McChoice {
     pub runes: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McOffer {
+    pub cost_a: Option<McStack>,
+    pub base_count: u8,
+    pub cost_b: Option<McStack>,
+    pub result: Option<McStack>,
+    pub out_of_stock: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McMerchant {
+    pub offers: Vec<McOffer>,
+    pub level: i32,
+    pub xp: i32,
+    pub future_xp: i32,
+    pub show_progress: bool,
+    pub can_restock: bool,
+}
+
 /// What the player did on the inventory screen, applied with vanilla's
 /// container click rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -215,6 +234,7 @@ pub struct MinecraftUi {
     pub boss_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
     pub book: Option<McBook>,
+    pub merchant: Option<McMerchant>,
     pub ui_sounds: Vec<&'static str>,
 }
 
