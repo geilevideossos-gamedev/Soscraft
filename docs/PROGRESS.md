@@ -11,7 +11,7 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 - Release builds: one when A and B are merged, one at the end; back up the old exe as `iw4l-survival-<old commit>.exe`, push, test steps and kit lines in `docs/round9/`. At the end update CLAUDE.md and `docs/MINECRAFT-SURVIVAL.md`. Decisions go to `docs/round9/decisions.md`.
 
 ## How to continue
-- Every cargo command goes through `scripts\cargo-slot.ps1` (PowerShell). Gentle mode since 2026-10-13 evening (the owner tests release 1): `%LOCALAPPDATA%\iw4l-cargo-slot.txt` holds `slots=1`, `jobs=4`, `priority=low`. Full speed (`slots=2`, `jobs=8`) only when the owner says they are not playing.
+- Every cargo command goes through `scripts\cargo-slot.ps1` (PowerShell). Gentle mode since 2026-10-13 evening (the owner tests release 1): `%LOCALAPPDATA%\iw4l-cargo-slot.txt` holds `slots=1`, `jobs=4`, `priority=low`. Full speed (`slots=2`, `jobs=8`, `priority=normal`) since 2026-10-13 late, when the owner said they stopped playing; back to gentle when they say "gentle mode" again.
 - The full suite is `scripts\full-suite.ps1`.
 - Track worktrees live in `C:\Dev\mc-wt\<name>` on branch `<name>`, each with its own target dir `D:\iw4l-wt\<name>`. Worktrees never share a target dir.
 - Merging a track: in the track's worktree `git checkout --detach minecraft-survival` and `git merge --no-ff <track>`, run `scripts\full-suite.ps1 +target=<the track's target dir>` there, then `git merge --ff-only <merge commit>` in `C:\Dev\mashup-crafting` and push to `origin`. Delete the track's target dir once merged.
@@ -49,6 +49,7 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 - Four tracks at once in gentle mode: D: had 45 GB free; a watchdog warns below 10 GB.
 
 ## Log
+- 2026-10-13: the owner stopped playing; cargo back to full speed.
 - 2026-10-13: track C c1 done; A and B being merged into track C, then c2.
 - 2026-10-13: track A merged (57302e99); release 1 built and copied in; test steps `docs/round9/release-1-tests.md`.
 - 2026-10-13: track B merged (2e13b78c), full suite green.
