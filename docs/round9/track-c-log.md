@@ -174,6 +174,35 @@ Commit: the one after `06e61fa9`.
 IW4L_MINECRAFT_KIT=iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex"]}}],iw4l:barrett,iw4l:frag_grenade*8,iw4l:rocket*16,minecraft:item_frame*2,minecraft:oak_planks*16
 ```
 
+### 3. Friends see fork items through the same vanilla form in slots, menus and on the ground
+
+Commit: the one after `44c94ac7`.
+
+- **Changed:**
+  - No code change was needed in `views.rs` or `menus.rs`. `views::slot_nbt` already called `item_nbt::stack_tag` for everything except `weapon_of` stacks, and `weapon_of` only matches `iw4:weapon/<index>`: since the C11.1 table the "gun special case" is exactly the killstreak pair the brief keeps. Fork guns used to be dropped there because `stack_tag` refused every non-vanilla id; since commit 1 of this group they travel in the disk form (carrot on a stick or poisonous potato with `custom_data.iw4l`), and `view_stack` turns them back through `stack_of`/`from_disk` with the friend's own recipe book (whose catalog has the fork stack sizes from `fork_items::load`). Menu cells (`menus.rs` `sent` at :968-975 and `stacks` at :1281) and the friend's inventory mirror (`render_anim/src/minecraft_remote.rs:1040`) call the same two functions, so clips, attachments, custom names and stack sizes reach the friend's slots, menus and tooltips.
+  - Ground items reach a friend in the `EntitySnapshot` as `ServerItem { item, components }` with the in-memory id (see commit 2), so a dropped gun arrives as `iw4l:m4` with its components; how it is drawn on the ground comes with the look group (C11.4).
+  - No `PROTOCOL` bump: no message changed shape.
+- **Tests:**
+  - `minecraft_survival` `views::tests::the_view_carries_items_and_guns_and_they_come_back` now also carries an M4A1 with a red dot and a grenade launcher (`clip` 27, `alt_clip` 1) and 9 frags: they come back as `iw4l:m4` and `iw4l:frag_grenade` with the exact components; the killstreak mirror still comes back as `iw4:weapon/12`.
+  - `minecraft_survival` `views::tests::a_friend_sees_a_fork_item_through_slot_nbt` (a renamed Barrett with a thermal scope goes on the wire as a carrot on a stick and comes back whole; menu cells through `menus::stacks` show the Barrett, an empty cell, 16 rockets and a killstreak mirror).
+- **Owner's test steps** (two windows with `scripts\mp-local.ps1`, survival, kit below in the `.env` both games read):
+  1. The friend opens their inventory: the M4A1, the Barrett, the frags and the rockets show their MW2 icons and names (not a carrot on a stick or a potato). Hover the M4A1: "Red Dot Sight", "Grenade Launcher" and its clip. **Screenshot 1** (friend window).
+  2. The friend puts the M4A1 and 8 frags into a chest; the host opens the chest: the same M4A1 (same tooltip) and frags. The host takes the M4A1 out; the friend's chest view updates. **Screenshot 2** (host window with the chest).
+  3. The friend renames the Barrett in an anvil (`/xp add @s 5 levels` first): the friend's tooltip shows the new name in italics, and the host sees it when the friend puts it in the chest.
+  4. The friend presses Q on the frags: they drop and the host can pick them up as frags.
+  5. The friend leaves and joins again: their inventory still holds the fork items (saved in their player file on the host). **Screenshot 3** (friend window after the rejoin).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex","gl"]}}],iw4l:barrett,iw4l:frag_grenade*16,iw4l:rocket*16,minecraft:chest,minecraft:anvil
+```
+
+## Combined kit for group disk-wire
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex","gl"]}}],iw4l:barrett,iw4l:ak47,iw4l:usp,iw4l:frag_grenade*16,iw4l:rocket*24,minecraft:chest,minecraft:ender_chest,minecraft:shulker_box,minecraft:item_frame*2,minecraft:anvil,minecraft:diamond_pickaxe,minecraft:oak_planks*16
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (3): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`. Added: none.
@@ -187,4 +216,5 @@ Patched by this track so far (3): `player/src/item_catalog.rs`, `core/src/item.r
 - `MINECRAFT-SURVIVAL.md`, the command list (next to `/spawnpoint`, line 165): "`/tag <targets> add|remove|list` (level 2) adds, removes and lists a player's tags with vanilla's messages; the tags are saved in the player file's vanilla `Tags` list. Players only." And next to `/give`: "`/give`, `/clear` and the kit also take the fork's `iw4l:` items (guns, ammo, grenades, attachments, gun parts); a given gun comes with a full magazine, and `/give` takes `minecraft:custom_data`, e.g. `iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex"]}}]`."
 - `MINECRAFT-SURVIVAL.md`, the inventory section: "Fork items show MW2 pictures: guns their kill icon, grenades and attachments their class-menu picture, ammo and gun parts tinted vanilla sprites; a gun's tooltip lists its attachments, its clip and its ammo type before MW2's stat lines."
 - `MINECRAFT-SURVIVAL.md`, the saving section: "Fork items (guns, ammo, grenades, attachments, gun parts) are saved in the player file, the ender chest, chests, shulker boxes and bundles as a vanilla `minecraft:carrot_on_a_stick` (guns) or an uneatable `minecraft:poisonous_potato` (everything else) with `custom_data.iw4l` (id, clip, attachments) and a translatable `item_name`, so vanilla 26.3 keeps them and our game turns them back. Killstreak items are never saved."
+- `MULTIPLAYER.md` (what a friend sees): "Fork items reach a friend's slots and menus in the same vanilla form they are saved in (a carrot on a stick or poisonous potato with `custom_data.iw4l`), and the friend's game turns them back, so a friend sees the same guns, clips, attachments and names as the host. Ground items carry the item id itself."
 - `MULTIPLAYER.md` (version checks): "The fork item table's hash is part of the registry fingerprint, so a friend whose build has another item table is refused."
