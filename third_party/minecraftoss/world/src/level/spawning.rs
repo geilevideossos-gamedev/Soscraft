@@ -224,6 +224,32 @@ impl Level<'_> {
         result
     }
 
+    pub fn spawner_cat(&mut self, pos: BlockPos, persistent: bool) -> Option<Tag> {
+        let natural = self.natural_spawning.take()?;
+        let spawns = natural.spawns.clone();
+        self.natural_spawning = Some(natural);
+        let mut tag = self.registries().entities.as_ref()?.default_tag("minecraft:cat")?;
+        let uuid = SpawnLevel::next_uuid(self);
+        minecraftoss_core::entity_data::place(&mut tag, [0.0, 0.0, 0.0], 0.0, 0.0, uuid);
+        let moon = MOON_BRIGHTNESS_PER_PHASE[self.moon_phase()];
+        spawns.finalize_cat(self, &mut tag, false, moon);
+        let at = [f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5];
+        minecraftoss_core::entity_data::place(&mut tag, at, 0.0, 0.0, uuid);
+        if persistent {
+            if let Tag::Compound(map) = &mut tag {
+                map.insert("PersistenceRequired".to_owned(), Tag::Byte(1));
+            }
+        }
+        Some(tag)
+    }
+
+    pub fn in_structure_piece(&self, pos: BlockPos, names: &[&str]) -> bool {
+        let Some(finder) = self.natural_spawning.as_ref().and_then(|natural| natural.structures.clone()) else {
+            return false;
+        };
+        finder(pos).iter().any(|s| s.in_piece && names.contains(&s.name.as_str()))
+    }
+
     pub fn finalize_conversion(&mut self, tag: Tag) -> Tag {
         let Some(natural) = self.natural_spawning.take() else { return tag };
         let inputs = self.spawn_inputs(&natural.players);

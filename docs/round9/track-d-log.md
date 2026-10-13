@@ -762,6 +762,39 @@ After 31f6a995.
 IW4L_MINECRAFT_KIT=minecraft:cat_spawn_egg*6,minecraft:ocelot_spawn_egg*3,minecraft:creeper_spawn_egg*2,minecraft:cod*64,minecraft:salmon*32,minecraft:blue_dye*4,minecraft:red_bed,minecraft:chest*2,minecraft:iron_sword,minecraft:cooked_beef*16
 ```
 
+### 3. Minecraft villages and swamp huts get their cats
+
+After 75b10b22.
+
+- **Vanilla (javap, 26.3):**
+  - `MinecraftServer` gives only the Overworld its custom spawners (`PhantomSpawner`, `PatrolSpawner`, `CatSpawner`, `VillageSiege`, `WanderingTraderSpawner`). `ServerChunkCache.tickChunks` runs `ServerLevel.tickCustomSpawners(spawnEnemies)` after the block-ticking chunks, only while the `spawn_mobs` game rule is on.
+  - `CatSpawner.tick`: `nextTick` counts down (it starts at 0 and is not saved); at 0 or below it is reset to 1200 and the spawner looks once. `getRandomPlayer` (the living players, one drawn with the level random); x and z offsets of `(8 + nextInt(24)) * (nextBoolean ? -1 : 1)` each from the player's block, at the player's y. It gives up unless every chunk from 10 blocks around is loaded (`hasChunksAt`). Cats have no spawn placement, so any spot is fine (`isSpawnPositionOk` with `NO_RESTRICTIONS`).
+  - Near a village (`isCloseToVillage(pos, 2)`: at most 2 sections from a village section): more than 4 occupied `HOME` points of interest within 48 blocks and fewer than 5 cats in the box of the spot grown by 48, 8, 48 → a cat. Otherwise, in a piece of a `#cats_spawn_in` structure (the swamp hut): no cat in the box grown by 16, 8, 16 → a persistent cat.
+  - `spawnCat`: `EntityType.create(NATURAL)`, then `finalizeSpawn(NATURAL)`, then `setPersistenceRequired` for the hut, then `snapTo(pos, 0, 0)` (the block's bottom centre), then `addFreshEntityWithPassengers`. `finalizeSpawn` runs before the cat is placed, so its variant's structure test looks at (0, 0, 0): a spawner cat in a swamp hut gets an ordinary coat (black only at full moon), unlike the hut's generated cat.
+- **Changed:**
+  - New `minecraft_terrain/src/custom_spawners.rs`: `CustomSpawners` (the hook later spawners join: wandering traders, patrols, phantoms), built per dimension with a `CatSpawner` in the Overworld only; `CatSpawner::next_spot` (the timer, the player and the offsets from the level random); the chunk, box and rule helpers.
+  - `minecraft_terrain/src/server.rs`: `ServerSim.custom_spawners` and `tick_custom_spawners`, run right after the level tick (natural spawning) and before the mobs, while `spawn_mobs` is on. It reads the village distance and the occupied homes from the entity world's points of interest, counts the cats in the box, tests the swamp hut through the level's structure finder, and adds the cat.
+  - Vendored `world/src/level/spawning.rs`: `Level::spawner_cat` (the natural cat's tag finalized with `finalize_cat` at the vanilla moment, then placed, persistent for the hut) and `Level::in_structure_piece`.
+- **Tests:**
+  - `custom_spawners::tests::the_cat_spawner_looks_every_minute_between_eight_and_thirty_one_blocks_away` (the 1200-tick timing, the offsets, no player) and `villages_take_up_to_five_cats_with_more_than_four_homes_and_huts_one` (the rules, the boxes, the chunks, Overworld only).
+  - `server::tests::the_cat_spawner_brings_cats_to_a_village_with_more_than_four_occupied_homes`: no village, no cat; with 25 occupied homes the next cat comes exactly 1200 ticks later, wild and in a vanilla coat; never more than five; nothing while `spawn_mobs` is off.
+  - Runs (with the whole group in place): `minecraftoss-entities` lib 253, `minecraftoss-world` lib 78, `minecraftoss-generator` lib 30, `minecraft_terrain` lib 1147, `render_anim` lib 151, all green. `minecraft_survival` lib 605 of 606: `the_end::tests::an_arrival_rebuilds_the_platform_once_its_chunks_are_in` (End chunk streaming, no cat code) failed once under load and passed twice alone. `check -p launcher` green. `custom_spawners.rs` passes `rustfmt --check --edition 2021`.
+- **Decisions:**
+  - The spawner state is not saved, as in vanilla (`CatSpawner.nextTick` is a plain field), so the first look comes on the first tick after loading.
+  - The structure test keeps vanilla's order (finalize before placing), so spawner cats in swamp huts are not forced black.
+  - The hook runs once per server tick of the Overworld level, after natural spawning, which is where `tickChunks` runs it.
+- **Test steps (survival, normal difficulty, `spawn_mobs` on):**
+  1. `/locate structure minecraft:village_plains`, `/tp` there by day and count the cats (**67_village_cats_before**).
+  2. Wait in the middle of the village for about five minutes (or until night, when the villagers have claimed their beds): new cats appear in the village, up to five near you (**68_village_cats_after**). A village with four or fewer claimed beds gets none.
+  3. `/locate structure minecraft:swamp_hut`, `/tp` into the hut. If the hut's cat is still there, kill it with the sword. Wait about a minute: a new cat appears in or near the hut and stays there, it does not despawn (**69_hut_cat**).
+  4. `/gamerule spawn_mobs false`: no more cats come (nor other mobs). Set it back to true.
+  5. Friend window: the friend sees the new village and hut cats.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:iron_sword,minecraft:cod*32,minecraft:red_bed*4,minecraft:villager_spawn_egg*6,minecraft:cooked_beef*16,minecraft:torch*32
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -780,6 +813,7 @@ IW4L_MINECRAFT_KIT=minecraft:cat_spawn_egg*6,minecraft:ocelot_spawn_egg*3,minecr
 - `docs/MINECRAFT-SURVIVAL.md`: cats and ocelots are live mobs. Cats come in the 11 vanilla coats (black ones in swamp huts and, at full moon, anywhere) with the two vanilla voices, and village and swamp hut cats move. Ocelots spawn in jungles (on grass or leaves at or above sea level, babies after the first of a group). Both are saved, hatch from their eggs, run from players while wild, creep after a player holding raw cod or salmon (crouching, scared off by quick moves or turns) and hunt (ocelots chase and bite chickens). They are drawn like vanilla with their walking, crouching and sprinting poses. Friends see them and can hit them.
 
 - `docs/MINECRAFT-SURVIVAL.md`: cats are tamed with raw cod or salmon (one try in three) and then belong to that player by UUID: they sit and stand on their owner's click, follow and teleport to their owner, wear a collar their owner can dye, heal from fish, sit on chests, lit furnaces and the foot of beds, relax and lie on their sleeping owner's bed and may leave a morning gift (string, a feather, rabbit hide, a rabbit's foot, raw chicken or rotten flesh) when the owner wakes up at dawn, and breed into tame kittens. Ocelots learn to trust a player who feeds them fish while they creep close. Creepers run from cats and ocelots. Phantoms do not exist yet, and cats sitting on chests do not keep them shut yet.
+- `docs/MINECRAFT-SURVIVAL.md`: the Overworld has vanilla's cat spawner: once a minute, while `spawn_mobs` is on, a spot 8 to 31 blocks from a random player gets a cat when it is near a village with more than four claimed beds within 48 blocks and fewer than five cats around (48 by 8), or inside a swamp hut with no cat within 16 blocks (that cat stays for good).
 
 ## Vendored files
 

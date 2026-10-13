@@ -109,6 +109,7 @@ pub struct ServerSim {
     lectern_viewers: std::collections::HashMap<u64, BlockPos>,
     lecterns: Vec<crate::lectern::LecternView>,
     trackers: crate::mob_tracking::Trackers,
+    custom_spawners: crate::custom_spawners::CustomSpawners,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -376,6 +377,7 @@ impl ServerSim {
             lectern_viewers: std::collections::HashMap::new(),
             lecterns: Vec::new(),
             trackers: Default::default(),
+            custom_spawners: crate::custom_spawners::CustomSpawners::for_dimension(dimension_type),
         }
     }
 
@@ -946,6 +948,52 @@ impl ServerSim {
                 let at = position.floor().as_ivec3();
                 self.level.level_events.push((crate::level_events::ZOMBIE_VILLAGER_CONVERTED, minecraftoss_core::BlockPos::new(at.x, at.y, at.z), 0));
             }
+        }
+    }
+
+    pub fn tick_custom_spawners(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        use crate::custom_spawners as spawners;
+        if !self.level.natural_spawning.as_ref().is_some_and(|natural| natural.spawn_mobs) {
+            return;
+        }
+        let Some(cats) = self.custom_spawners.cats.as_mut() else { return };
+        let alive: Vec<glam::DVec3> = players.iter().filter(|p| p.alive).map(|p| p.position).collect();
+        let Some(pos) = cats.next_spot(&mut self.level.random, &alive) else { return };
+        if !spawners::chunks_around(pos).into_iter().all(|(cx, cz)| self.level.chunk(ChunkPos::new(cx, cz)).is_some()) {
+            return;
+        }
+        let section = (pos.0 >> 4, pos.1 >> 4, pos.2 >> 4);
+        let near_village = self.mobs.pois.sections_to_village(section) <= spawners::VILLAGE_SECTIONS;
+        let homes = self.mobs.pois.in_range(&|kind| kind == minecraftoss_entities::poi::PoiType::Home, pos, 48, minecraftoss_entities::poi::Occupancy::IsOccupied).len();
+        let cats_in = |reach: (f64, f64)| {
+            let (min, max) = spawners::reach_box(pos, reach);
+            self.mobs
+                .felines()
+                .iter()
+                .filter(|e| e.feline.is_cat())
+                .filter(|e| {
+                    let b = &e.feline.body;
+                    let half = f64::from(b.width / 2.0);
+                    let p = b.position;
+                    p.x - half < max.x && p.x + half > min.x && p.y < max.y && p.y + f64::from(b.height) > min.y && p.z - half < max.z && p.z + half > min.z
+                })
+                .count()
+        };
+        let persistent = if near_village {
+            if !spawners::village_wants_cat(homes, cats_in(spawners::VILLAGE_REACH)) {
+                return;
+            }
+            false
+        } else if self.level.in_structure_piece(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), &spawners::CAT_SPAWNS_IN) {
+            if !spawners::hut_wants_cat(cats_in(spawners::HUT_REACH)) {
+                return;
+            }
+            true
+        } else {
+            return;
+        };
+        if let Some(tag) = self.level.spawner_cat(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), persistent) {
+            self.add_saved_entity(tag);
         }
     }
 
@@ -3545,6 +3593,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     if normal {
         sim.prepare_spawning(&input.mob_players);
         sim.tick();
+        sim.tick_custom_spawners(&input.mob_players);
     }
     let mobs_started = std::time::Instant::now();
     if normal {
@@ -6704,6 +6753,76 @@ mod tests {
         assert!(cats.iter().any(|cat| cat.variant != minecraftoss_entities::feline::DEFAULT_CAT_VARIANT), "the variant is drawn");
         assert!(cats.iter().all(|cat| minecraftoss_entities::feline::CAT_SOUND_VARIANTS.contains(&cat.sound_variant.as_str())));
         assert!(server.mobs.felines().iter().any(|e| e.feline.kind == minecraftoss_entities::feline::FelineKind::Ocelot));
+    }
+
+    #[test]
+    fn the_cat_spawner_brings_cats_to_a_village_with_more_than_four_occupied_homes() {
+        let Some(paths) = DataPaths::discover().ok() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let Ok(terrain) = TerrainGenerator::overworld(registries.clone(), 0) else { return };
+        let worldgen = Arc::new(WorldGen::new(Arc::new(terrain)).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -3..=3 {
+            for z in -3..=3 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                server.load_chunk(&chunk);
+            }
+        }
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(8.5, 200.0, 8.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let cats = |server: &ServerSim| server.mobs.felines().iter().filter(|e| e.feline.is_cat()).count();
+        server.tick_custom_spawners(&[player]);
+        assert_eq!(cats(&server), 0, "no village, no cat");
+        for x in [-24, -8, 8, 24, 40] {
+            for z in [-24, -8, 8, 24, 40] {
+                let home = (x, 200, z);
+                assert!(server.mobs.pois.add(home, minecraftoss_entities::poi::PoiType::Home));
+                assert!(server.mobs.pois.acquire(home));
+            }
+        }
+        for _ in 0..crate::custom_spawners::CAT_TICK_DELAY - 1 {
+            server.tick_custom_spawners(&[player]);
+        }
+        assert_eq!(cats(&server), 0, "the spawner waits a minute");
+        server.tick_custom_spawners(&[player]);
+        assert_eq!(cats(&server), 1, "then a cat comes to the village");
+        let cat = server.mobs.felines().iter().find(|e| e.feline.is_cat()).unwrap();
+        assert!(!cat.feline.persistence_required, "a village cat may wander off");
+        assert!(minecraftoss_entities::feline::CAT_VARIANTS.contains(&cat.feline.variant.as_str()));
+        for _ in 0..crate::custom_spawners::CAT_TICK_DELAY * 8 {
+            server.tick_custom_spawners(&[player]);
+            let ids: Vec<u64> = server.mobs.felines().iter().map(|e| e.id).collect();
+            for id in ids {
+                server.mobs.feline_mut(id).unwrap().feline.body.position = player.position;
+            }
+        }
+        assert_eq!(cats(&server), crate::custom_spawners::VILLAGE_CATS, "no more than five");
+        server.level.natural_spawning.as_mut().unwrap().spawn_mobs = false;
+        for _ in 0..crate::custom_spawners::CAT_TICK_DELAY * 2 {
+            server.tick_custom_spawners(&[player]);
+        }
+        assert_eq!(cats(&server), crate::custom_spawners::VILLAGE_CATS);
     }
 
     #[test]
