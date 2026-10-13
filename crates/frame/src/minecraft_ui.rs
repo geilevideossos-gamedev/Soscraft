@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 /// Slots of the vanilla player inventory: 0..9 hotbar, 9..36 main, 36..40
 /// armor (feet to head), 40 offhand.
-pub const MC_INVENTORY_SLOTS: usize = 41;
+pub const MC_INVENTORY_SLOTS: usize = 45;
 pub const MC_HOTBAR: usize = 9;
 pub const GLINT_STRENGTH: f32 = 0.75;
 pub const GLINT_SPEED: f64 = 0.5;

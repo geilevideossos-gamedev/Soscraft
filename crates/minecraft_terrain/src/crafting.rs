@@ -31,7 +31,7 @@ impl Grid {
 
     pub fn player_slots(self) -> usize {
         match self {
-            Grid::Inventory => 41,
+            Grid::Inventory => 45,
             Grid::Table => STORAGE,
         }
     }
@@ -60,7 +60,9 @@ pub fn load_recipes(
     jar: &Path,
     catalog: Option<&Path>,
 ) -> Result<(RecipeBook, Option<anyhow::Error>)> {
-    let book = RecipeBook::from_jar(jar)?.with_extra(crate::fork_recipes::recipes());
+    let book = RecipeBook::from_jar(jar)?
+        .with_extra(crate::fork_recipes::recipes())
+        .with_reserved_slots(crate::fork_items::grenade_slot);
     let Some(path) = catalog else {
         return Ok((
             book,
@@ -1426,6 +1428,19 @@ mod tests {
         assert!(close(&mut inv, 6).is_empty());
         assert_eq!(count_of(&inv.slots[6]), 15);
         assert_eq!(count_of(&inv.slots[0]), 10);
+    }
+
+    #[test]
+    fn the_loaded_book_sends_picked_up_grenades_to_their_slots() {
+        let mut inv = inventory();
+        inv.workbench[0] = stack(&inv, "iw4l:frag_grenade", 5);
+        inv.workbench[1] = stack(&inv, "iw4l:smoke_grenade", 2);
+        inv.workbench[2] = stack(&inv, "minecraft:oak_log", 3);
+        assert!(close(&mut inv, 0).is_empty());
+        assert_eq!(id_of(&inv.slots[43]), Some("iw4l:frag_grenade"));
+        assert_eq!(count_of(&inv.slots[43]), 5);
+        assert_eq!(id_of(&inv.slots[44]), Some("iw4l:smoke_grenade"));
+        assert_eq!(id_of(&inv.slots[0]), Some("minecraft:oak_log"));
     }
 
     #[test]

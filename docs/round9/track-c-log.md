@@ -899,13 +899,76 @@ IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:usp,iw4l:usp,iw4l:rifle_ammo*64,iw4l:pistol_ammo
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:usp,iw4l:usp,iw4l:rifle_ammo*64,iw4l:rifle_ammo*10,iw4l:pistol_ammo*64,iw4l:explosive_round*8,iw4l:t5_knife_ballistic,iw4l:throwing_knife*8,minecraft:chest
 ```
 
+## C12.1 The grenade slots
+
+### 1. Lethal and tactical grenade slots in the player inventory, saved with the player, for the host and friends
+
+Commit: the one after `2dffcdda`.
+
+- **Changed:**
+  - Vendored `minecraftoss_player::inventory`: the inventory has 45 slots (`Default`, `demo_hotbar`, `add_item`'s `seen`); 43 is the lethal slot and 44 the tactical slot. `add_item` asks the recipe book for the stack's reserved slot and, right after the main-hand and offhand merge, tops up that slot when it holds the same item or fills it when it is empty; only then the backpack.
+  - Vendored `minecraftoss_player::crafting`: `RecipeBook::with_reserved_slots(fn(&str) -> Option<usize>)` and `reserved_slot(id)`; a book without one (every `RecipeBook::default()`) reserves nothing, so vanilla behaviour and the vendored tests are unchanged.
+  - Vendored `minecraftoss_player::chest` (test only): the drag test's chest cells start at 45 instead of 43, because `distribute` puts external cells after the player slots.
+  - `minecraft_terrain` `fork_items`: `LETHAL_SLOT` (43), `TACTICAL_SLOT` (44) and `grenade_slot(id)` (lethal rows to 43, tactical rows to 44, the tactical insertion included). `crafting::load_recipes` hands it to the book with `with_reserved_slots`, so the host's and every friend's inventory route grenades. `Grid::Inventory.player_slots()` is 45, so a drag in the inventory screen reaches the grenade slots (the table still only reaches 0-35).
+  - `minecraft_survival` `guns`: `fits(slot, stack)`: slot 43 takes only lethal grenades, 44 only tactical ones, at most 64; body 41 and saddle 42 take nothing; every other slot anything. `grenade_quick_move(inventory, index)`: a shift-click on a grenade in 0-35 moves as much as fits into its slot when that slot is empty or holds the same grenade with room.
+  - `minecraft_survival` `menus`: `PLAYER_SLOTS` is 45, so `valid_slot` accepts a friend's click on 43 and 44. `apply` refuses a click that would put the cursor into a slot where it does not fit and a number-key or F swap that would put either stack where it does not fit (`misfits`, next to `keeps_gun`), and drops the slots that do not fit from a drag before any spread path runs (`fitted_spread`; vanilla's quick-craft leaves out slots whose `mayPlace` fails). In the player's own inventory screen a shift-click goes through `grenade_quick_move` first; out of 43 or 44 the vendored `quick_move` already goes to 9-35, then 0-8. In a chest or the crafting table a shift-click stays vanilla (to the chest, or between backpack and hotbar), as vanilla's `ChestMenu` and `CraftingMenu` never route to equipment slots.
+  - `minecraft_survival` `creative`: `MENU_SLOTS` is 48; menu index 46 is slot 43 and 47 is slot 44 (`menu_place`, `menu_index`); `set_slot` refuses a stack that does not `fit` with `BadSlot`, so a creative friend cannot set dirt into a grenade slot either. The trash's shift-click empties both.
+  - `minecraft_survival` `player_nbt`: `SLOTS` is 45. Slots 43 and 44 are saved under the fork's top-level key `iw4l_grenades`, a `slot_list` in the disk form (`Slot:0b` lethal, `Slot:1b` tactical, each grenade as the uneatable `minecraft:poisonous_potato` carrier), written only when one of them holds something. The key is in `OWNED`, so emptied slots leave the file. It never goes into `equipment`.
+  - `minecraft_survival` `death`: `EQUIPMENT_DROP_ORDER` ends with 43 and 44, after the saddle; `keep_inventory` keeps them as before.
+  - `minecraft_commands` `clear`: `PLAYER_SLOTS` is 45, so `/clear` covers the grenade slots (and body and saddle, see the decisions).
+  - `minecraft_net` `PLAYER_SLOTS` and `frame` `MC_INVENTORY_SLOTS` are 45: `views::player_view` sends a friend all 45 slots, and the host's and friend's `McUi.slots` hold them for the next commit's drawing.
+  - `docs/WEAPONS.md` 10.2: where the pickup predicate lives, body and saddle, the creative menu indices and `/clear`.
+- **Tests:**
+  - Vendored `inventory::tests`: `the_inventory_has_two_grenade_slots_after_the_saddle`, `a_pickup_fills_an_empty_grenade_slot_of_its_kind` (a frag pickup goes into the empty lethal slot although 10 frags sit in the backpack; a flash into the tactical slot), `a_pickup_tops_up_a_matching_grenade_slot_after_the_hands` (main hand first, then the lethal slot to 64, then the backpack; a semtex does not merge into a slot holding frags), `other_items_never_land_in_a_grenade_slot` (dirt with a full backpack stays out; a book without the predicate puts a frag in the backpack). `chest::tests::dragging_across_chest_and_player_slots_conserves_stack` uses the new cell indices.
+  - `minecraft_terrain`: `fork_items::tests::lethal_and_tactical_grenades_have_their_own_slot`, `crafting::tests::the_loaded_book_sends_picked_up_grenades_to_their_slots` (a frag and a smoke in the grid go to 43 and 44 when the screen closes, a log to the hotbar).
+  - `minecraft_survival` `menus::tests`: `only_a_lethal_grenade_goes_in_the_lethal_slot` (dirt, flash, an M4A1 and a killstreak mirror refused; semtex, throwing knife, claymore and C4 accepted; 65 frags do not fit), `only_a_tactical_goes_in_the_tactical_slot` (dirt, frag, rifle ammo refused; flash, stun, smoke and tactical insertion accepted; body and saddle refuse a saddle), `shift_click_moves_a_grenade_to_its_slot_and_back_out` (40 + 24 semtex into the lethal slot, the rest of a full slot to the hotbar, a frag with semtex in the slot to the hotbar, out of 43 to slot 9, out of 44 to the hotbar when 9-35 are full, in a chest to the chest), `a_number_key_cannot_swap_dirt_into_a_grenade_slot` (dirt refused both ways, semtex swaps with frag, an empty hotbar slot takes the grenade, F swaps a smoke from the offhand into 44), `a_drag_spreads_only_into_grenade_slots_that_fit` (dirt only to slot 20; 10 frags over 43, 44 and 20 give 5 and 5), `a_friends_click_on_slot_44_is_valid` (the friend's flash lands in 44 with no resend; slot 45 is refused and resent).
+  - `minecraft_survival` `creative::tests::creative_puts_only_grenades_of_the_right_kind_in_the_grenade_slots`; `menu_slots_map_onto_the_inventory_like_the_inventory_menu` covers 46 and 47; `the_trash_deletes_the_carried_stack_and_shift_empties_the_inventory` empties 43 and 44.
+  - `minecraft_survival` `player_nbt::tests::grenade_slots_are_saved_under_their_own_key_and_read_back` (two poisonous potato carriers with `Slot` 0b and 1b, no `equipment`, an empty `Inventory`, both read back into 43 and 44; a tactical alone is `Slot:1b`), `emptied_grenade_slots_leave_the_file`.
+  - `minecraft_survival` `death::tests::grenade_slots_drop_after_the_saddle_and_keep_inventory_keeps_them`.
+  - `minecraft_survival` `views::tests::the_view_carries_items_and_guns_and_they_come_back` sends 45 slots and gets 43 and 44 back.
+  - `minecraft_survival` `tests/vanilla_world.rs` (26.3 data): the saved player has semtex and flashes in 43 and 44; `iw4l_grenades` is a list of two slot items (`Slot` byte, `count` int, `id` string, `components` compound) with `Slot` 0b and 1b; `equipment` still has only chest, feet, head, legs and offhand; the slots come back after loading.
+  - `minecraft_commands` `clear::tests::clear_empties_the_grenade_slots`; the count tests now include the saddle slot (112 instead of 103 stone, 123 instead of 114 items).
+  - `minecraft_net`: `messages::tests::a_new_player_view_has_every_slot` checks 45; `codec::tests::a_player_view_carries_both_grenade_slots`, and the round-trip `player_view` fills 43 and 44.
+  - `test -p minecraftoss-player` (with the stand-in scenario files) `-p minecraft_terrain -p minecraft_survival -p minecraft_commands -p minecraft_net -p frame` green; `check -p launcher` green.
+- **Decisions:**
+  - **Not vanilla:** two extra player slots, 43 lethal and 44 tactical, saved under the top-level `iw4l_grenades` (vanilla 26.3 ignores the key and drops it if it re-saves the player). For `decisions.md`.
+  - **The pickup predicate lives on the recipe book,** not on `Inventory` and not as a global: every player inventory on the host and the friend's mirror already get the book from `load_recipes`, so the rule reaches all of them without touching the places that build inventories, and `RecipeBook::default()` keeps the vendored crate's own behaviour. When the 26.3 jar is missing there is no book and no routing; grenades then go to the backpack, but `fits` still guards the slots.
+  - **An empty grenade slot is filled before the backpack is topped up,** as WEAPONS.md 10.2 orders it ("otherwise it goes to the backpack"), so a pickup fills the slot even when the backpack holds the same grenade.
+  - **Body 41 and saddle 42 are refused by `fits`.** Raising `PLAYER_SLOTS` to 45 also makes them valid click targets and sends them to friends; nothing may be placed there, as no screen shows them.
+  - **`/clear` now also clears body and saddle.** `PLAYER_SLOTS` was 41 in `clear.rs`, which skipped them; vanilla's `Inventory.clearOrCountMatchingItems` walks the whole 43-slot container (`getContainerSize` = items + `EQUIPMENT_SLOT_MAPPING`, which maps 41 to BODY and 42 to SADDLE, checked with javap). The old test asserted the saddle stayed; it now matches vanilla.
+  - **Creative menu indices 46 and 47** for the two slots (vanilla's inventory menu ends at 45); the creative tab will draw them in C12.2.
+  - **Shift-click routing only in the player's own inventory screen,** like vanilla's armour routing in `InventoryMenu.quickMoveStack`.
+  - **No protocol bump:** `PlayerView.slots` is a list, so 45 slots ride on protocol 5 (see Protocol).
+  - Transitional until C12.2: the slots are not drawn yet, and G and Shift+G still throw the class grenades with unlimited ammo.
+- **Owner's test steps** (survival, a new world `IW4L_MINECRAFT_WORLD=r9-grenade-slots`, kit below; the two slots are drawn only from the next commit, so this commit is checked with `/clear ... 0`, which counts without removing):
+  1. Join and open the inventory: the kit's frags, semtex, flashes and smoke grenades are in the backpack. **Screenshot 1.**
+  2. Shift-click the frag stack: it vanishes from the backpack. `/clear @s iw4l:frag_grenade 0`: "Found 16 matching item(s)": the frags are in the hidden lethal slot. Shift-click the semtex stack: it stays in the inventory (it moves to the hotbar), because the lethal slot holds frags.
+  3. Shift-click the flash stack: it vanishes too (tactical slot). `/clear @s iw4l:flash_grenade 0` finds 8.
+  4. `/clear @s iw4l:flash_grenade` empties the tactical slot. Move the smoke grenades to the hotbar, hold them, press Q once and walk over the dropped one: it vanishes from view (it filled the empty tactical slot), and `/clear @s iw4l:smoke_grenade 0` still finds 4. Drop one semtex with Q and walk over it: it goes back onto its hotbar stack, because the lethal slot holds frags.
+  5. Save and quit, load the world: `/clear @s iw4l:frag_grenade 0` still finds 16 and `/clear @s iw4l:smoke_grenade 0` the same as before. **Screenshot 2** (the chat lines).
+  6. `/gamerule keep_inventory false`, stand on flat ground and `/kill`: the frags and the smoke grenade drop with the rest; pick them up again after respawning and check with `/clear ... 0` that the frags are back in the lethal slot (16 counted, none visible in the backpack). **Screenshot 3.**
+  7. Two windows (`scripts\mp-local.ps1`), the friend with the same kit: the friend repeats steps 2 and 3 in their window and gets the same counts; the host's counts are unchanged. **Screenshot 4** (friend window).
+- **Kit** (5 stacks):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:frag_grenade*16,iw4l:semtex*16,iw4l:flash_grenade*8,iw4l:smoke_grenade*4,minecraft:cobblestone*64
+```
+
+## Combined kit for group grenade-slots
+
+```
+IW4L_MINECRAFT_KIT=iw4l:frag_grenade*16,iw4l:semtex*16,iw4l:flash_grenade*8,iw4l:smoke_grenade*4,minecraft:cobblestone*64
+```
+
 ## Vendored minecraftoss files
 
-Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`. Added: none.
+Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none.
 
 ## Protocol
 
 `minecraft_net::PROTOCOL` is 4 (from 3), bumped once in "The recipe book places ingredients for the host and friends". It covers `ToClient::RecipeBook`, `ToServer::RecipeBookSettings`, `ToServer::RecipeSeen` (codec indices 31, 12 and 13) and `MenuAction::PlaceRecipe` (the last `MenuAction` variant). The grenade-slot group must not bump it again. Tracks A and B bump it too: whoever merges later takes the next number and renumbers the new codec indices.
+
+Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The grenade-slot group did not bump it: `PlayerView.slots` is a list, so its 45 slots (from 41) need no new message shape. Release 1 shipped protocol 4, and protocol 5 has not been released yet, so no released pair of builds disagrees on the slot count.
 
 ## State doc changes
 
@@ -935,3 +998,8 @@ Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.r
 - `MINECRAFT-SURVIVAL.md`, line 134 ("Guns sit in the hotbar with unlimited ammo"), the ammo half: "A gun's reserve is its ammo items in the offhand and slots 0-35 (never containers or the grenade slots), up to MW2's maximum: MW2's ammo counter shows the clip and that reserve. A reload takes exactly the rounds it loads, from the offhand first, then the main hand, then the inventory in slot order; with no ammo items an empty gun clicks. Pistols, machine pistols and SMGs share pistol ammo; the grenade launcher uses explosive rounds and the underbarrel shotgun shells; the Ballistic Knife reloads from throwing knives. Respawning, Scavenger and One Man Army refill nothing. In creative the reserve is always full and reloads use no items, but the clip still empties and reloads."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's gun reserve is counted from the friend's own inventory on the host, and the friend's reloads take the friend's items, through the same function as the host's."
 - `MINECRAFT-SURVIVAL.md`, the inventory section: "A gun's loaded rounds show as an item bar under its icon (in the hotbar, the inventory and every menu, for the host and friends): green and full width when the clip is full, yellowing as it empties, one red pixel when empty; an akimbo pair shows both clips together."
+- `MINECRAFT-SURVIVAL.md`, the inventory section: "The player inventory has two fork slots after the offhand: 43 takes only lethal grenades (frag, semtex, throwing knife, claymore, C4) and 44 only tactical ones (flash, stun, smoke, tactical insertion), up to 64 each; clicks, number keys, drags and creative refuse anything else. A shift-click on a grenade in the inventory screen moves it into its slot when that slot is empty or holds the same grenade; a picked-up grenade tops up its slot, or fills it when empty, before the backpack. Not vanilla."
+- `MINECRAFT-SURVIVAL.md`, the saving section: "The grenade slots are saved in the player file under the fork's top-level key `iw4l_grenades` (a slot list, `Slot:0b` lethal, `Slot:1b` tactical, in the same vanilla carrier form as other fork items); vanilla 26.3 ignores the key and drops it if it re-saves the player."
+- `MINECRAFT-SURVIVAL.md`, the death and `/clear` lines: "The grenade slots drop after the saddle on death unless `keep_inventory` is on; `/clear` covers them, and like vanilla also the (normally empty) body and saddle slots."
+- `MULTIPLAYER.md` (per-player state on the host): "Each friend's grenade slots live on the host in the friend's inventory and player file; the friend's view carries all 45 slots, and the host checks the friend's clicks on 43 and 44 with the same rules as the host's."
+- `decisions.md` (Not vanilla): "Two fork inventory slots, 43 lethal and 44 tactical, saved under the top-level key `iw4l_grenades`, never inside `equipment`."

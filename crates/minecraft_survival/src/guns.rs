@@ -125,6 +125,59 @@ pub fn is_gun(stack: &ItemStack) -> bool {
     weapon_of(stack).is_some() || is_fork_gun(stack)
 }
 
+pub use fork_items::{LETHAL_SLOT, TACTICAL_SLOT};
+pub const BODY_SLOT: usize = 41;
+pub const SADDLE_SLOT: usize = 42;
+pub const GRENADE_STACK: u8 = 64;
+
+pub fn fits(slot: usize, stack: &ItemStack) -> bool {
+    match slot {
+        BODY_SLOT | SADDLE_SLOT => false,
+        LETHAL_SLOT | TACTICAL_SLOT => {
+            fork_items::grenade_slot(&stack.id) == Some(slot) && stack.count <= GRENADE_STACK
+        }
+        _ => true,
+    }
+}
+
+pub fn grenade_quick_move(inventory: &mut Inventory, index: usize) -> bool {
+    if index >= crate::player_nbt::STORAGE {
+        return false;
+    }
+    let Some(source) = inventory.slots[index].as_ref() else {
+        return false;
+    };
+    let Some(target) = fork_items::grenade_slot(&source.id) else {
+        return false;
+    };
+    let room = match inventory.slots.get(target) {
+        Some(None) => source.max.min(GRENADE_STACK),
+        Some(Some(held)) if held.same_item(source) => held.max.saturating_sub(held.count),
+        _ => 0,
+    };
+    if room == 0 {
+        return false;
+    }
+    let Some(mut source) = inventory.slots[index].take() else {
+        return false;
+    };
+    let moved = room.min(source.count);
+    match &mut inventory.slots[target] {
+        Some(held) => held.count += moved,
+        empty => {
+            *empty = Some(ItemStack {
+                count: moved,
+                ..source.clone()
+            })
+        }
+    }
+    source.count -= moved;
+    if source.count > 0 {
+        inventory.slots[index] = Some(source);
+    }
+    true
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Gun {
     pub weapon: u32,

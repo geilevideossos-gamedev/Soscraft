@@ -101,7 +101,7 @@ impl Default for Inventory {
     fn default() -> Self {
         Self {
             // 0..36 storage; 36..40 armor; 40 offhand; 41 body; 42 saddle.
-            slots: vec![None; 43],
+            slots: vec![None; 45],
             cursor: None,
             crafting: std::array::from_fn(|_| None),
             workbench: std::array::from_fn(|_| None),
@@ -405,7 +405,7 @@ impl Inventory {
 
     /// Sample-only creative palette used by the handcrafted viewer scene.
     pub fn demo_hotbar() -> Self {
-        let mut slots = vec![None; 43];
+        let mut slots = vec![None; 45];
         for (i, id) in [
             "stone",
             "dirt",
@@ -966,13 +966,31 @@ impl Inventory {
             indices.push(selected);
         }
         indices.push(40);
+        let reserved = self
+            .recipes
+            .reserved_slot(&stack.id)
+            .filter(|&slot| slot < self.slots.len().min(45));
+        indices.extend(reserved);
         indices.extend(0..36);
-        let mut seen = [false; 43];
+        let mut seen = [false; 45];
         for index in indices.iter().copied() {
             if seen[index] {
                 continue;
             }
             seen[index] = true;
+            if Some(index) == reserved && self.slots[index].is_none() {
+                let moved = stack.count.min(stack.max);
+                self.slots[index] = Some(ItemStack {
+                    count: moved,
+                    ..stack.clone()
+                });
+                stack.count -= moved;
+                if stack.count == 0 {
+                    self.notice_item_changed(&changed_item);
+                    return None;
+                }
+                continue;
+            }
             if let Some(target) = self.slots[index].as_mut() {
                 if target.same_item(&stack) && target.count < target.max {
                     let moved = (target.max - target.count).min(stack.count);
@@ -1704,5 +1722,60 @@ mod tests {
                 3
             )]
         );
+    }
+    fn grenade_slot(id: &str) -> Option<usize> {
+        match id {
+            "test:frag" | "test:semtex" => Some(43),
+            "test:flash" => Some(44),
+            _ => None,
+        }
+    }
+    fn with_grenade_slots() -> Inventory {
+        Inventory::default().with_recipes(RecipeBook::default().with_reserved_slots(grenade_slot))
+    }
+    #[test]
+    fn the_inventory_has_two_grenade_slots_after_the_saddle() {
+        assert_eq!(Inventory::default().slots.len(), 45);
+        assert_eq!(Inventory::demo_hotbar().slots.len(), 45);
+    }
+    #[test]
+    fn a_pickup_fills_an_empty_grenade_slot_of_its_kind() {
+        let mut inv = with_grenade_slots();
+        inv.slots[5] = Some(ItemStack::new("test:frag", 10));
+        assert!(inv.add_item(ItemStack::new("test:frag", 4), 0).is_none());
+        assert!(inv.add_item(ItemStack::new("test:flash", 3), 0).is_none());
+        assert_eq!(inv.slots[43], Some(ItemStack::new("test:frag", 4)));
+        assert_eq!(inv.slots[44], Some(ItemStack::new("test:flash", 3)));
+        assert_eq!(inv.slots[5], Some(ItemStack::new("test:frag", 10)));
+    }
+    #[test]
+    fn a_pickup_tops_up_a_matching_grenade_slot_after_the_hands() {
+        let mut inv = with_grenade_slots();
+        inv.slots[2] = Some(ItemStack::new("test:frag", 62));
+        inv.slots[43] = Some(ItemStack::new("test:frag", 60));
+        inv.slots[9] = Some(ItemStack::new("test:frag", 1));
+        assert!(inv.add_item(ItemStack::new("test:frag", 10), 2).is_none());
+        assert_eq!(inv.slots[2].as_ref().map(|s| s.count), Some(64));
+        assert_eq!(inv.slots[43].as_ref().map(|s| s.count), Some(64));
+        assert_eq!(inv.slots[9].as_ref().map(|s| s.count), Some(5));
+        let mut held = with_grenade_slots();
+        held.slots[43] = Some(ItemStack::new("test:frag", 5));
+        assert!(held.add_item(ItemStack::new("test:semtex", 3), 0).is_none());
+        assert_eq!(held.slots[43], Some(ItemStack::new("test:frag", 5)));
+        assert_eq!(held.slots[0], Some(ItemStack::new("test:semtex", 3)));
+    }
+    #[test]
+    fn other_items_never_land_in_a_grenade_slot() {
+        let mut inv = with_grenade_slots();
+        for slot in 0..36 {
+            inv.slots[slot] = Some(ItemStack::new("minecraft:stone", 64));
+        }
+        let rest = inv.add_item(ItemStack::new("minecraft:dirt", 5), 0);
+        assert_eq!(rest, Some(ItemStack::new("minecraft:dirt", 5)));
+        assert!(inv.slots[43].is_none() && inv.slots[44].is_none());
+        let mut plain = Inventory::default();
+        assert!(plain.add_item(ItemStack::new("test:frag", 2), 0).is_none());
+        assert_eq!(plain.slots[0], Some(ItemStack::new("test:frag", 2)));
+        assert!(plain.slots[43].is_none());
     }
 }

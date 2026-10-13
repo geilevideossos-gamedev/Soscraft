@@ -233,6 +233,8 @@ fn fill_player(player: &mut Player, data: &GameData) {
     slots[38] = Some(stack(data, "minecraft:diamond_chestplate", 1));
     slots[39] = Some(stack(data, "minecraft:diamond_helmet", 1));
     slots[40] = Some(stack(data, "minecraft:shield", 1));
+    slots[43] = Some(stack(data, "iw4l:semtex", 32));
+    slots[44] = Some(stack(data, "iw4l:flash_grenade", 31));
     player.selected = 4;
     player.mode = PlayerMode::new(GameMode::Survival);
     let status = &mut player.survival.status;
@@ -336,6 +338,7 @@ fn check_player_file(path: &Path) {
             ("foodLevel", "int"),
             ("foodSaturationLevel", "float"),
             ("foodTickTimer", "int"),
+            ("iw4l_grenades", "list"),
             ("playerGameType", "int"),
             ("previousPlayerGameType", "int"),
             ("recipeBook", "compound"),
@@ -352,6 +355,7 @@ fn check_player_file(path: &Path) {
     for item in list_kinds(file.get("Inventory").unwrap(), "Inventory")
         .iter()
         .chain(list_kinds(file.get("EnderItems").unwrap(), "EnderItems"))
+        .chain(list_kinds(file.get("iw4l_grenades").unwrap(), "iw4l_grenades"))
     {
         let mut expected = vec![("Slot", "byte"), ("count", "int"), ("id", "string")];
         if item.get("components").is_some() {
@@ -393,6 +397,18 @@ fn check_player_file(path: &Path) {
             ("minecraft:item_name", "compound"),
         ],
         "the grenades' components",
+    );
+    let grenade_slots: Vec<(Option<&Tag>, Option<&str>)> =
+        list_kinds(file.get("iw4l_grenades").unwrap(), "iw4l_grenades")
+            .iter()
+            .map(|item| (item.get("Slot"), item.get("id").and_then(Tag::as_str)))
+            .collect();
+    assert_eq!(
+        grenade_slots,
+        [
+            (Some(&Tag::Byte(0)), Some("minecraft:poisonous_potato")),
+            (Some(&Tag::Byte(1)), Some("minecraft:poisonous_potato")),
+        ]
     );
     let equipment = file.get("equipment").unwrap();
     let names: Vec<&str> = equipment

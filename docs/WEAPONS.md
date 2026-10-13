@@ -488,6 +488,10 @@ Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's
   - Slot 43 takes only lethal grenades and slot 44 only tactical ones, up to 64. Anything else is refused, as an armour slot refuses a stick.
   - Shift-click on a grenade in slots 0-35 moves it to its slot first, when that slot is empty or holds the same grenade. Shift-click out of 43 or 44 goes to 9-35, then 0-8.
 - **Pickup:** a picked-up grenade tops up a grenade slot that holds the same grenade, right after vanilla's main-hand and offhand merge. It also fills an empty grenade slot of its kind, because the slot exists only for grenades. Otherwise it goes to the backpack.
+  - The rule sits in the vendored `add_item` behind a predicate the fork hands the recipe book (`RecipeBook::with_reserved_slots(fork_items::grenade_slot)` in `crafting::load_recipes`), so the vendored crate holds no fork table. Every `add_item` caller follows it: pickups, `/give`, grid items going back when a screen closes.
+- **Body 41 and saddle 42** now travel to friends with the 45 slots, but `fits` refuses every item there, so no click can fill them.
+- **Creative menu indices:** 46 is the lethal slot and 47 the tactical slot, after vanilla's 45 (offhand), so the creative inventory tab and the trash's shift-click reach them.
+- **`/clear`** covers slots 0-44. Vanilla's player `Inventory` container is 43 slots with body and saddle (`getContainerSize`, `EQUIPMENT_SLOT_MAPPING`, checked with javap), so `/clear` now also empties body and saddle like vanilla.
 - **Refill:** when throwing empties a grenade slot, it refills from the backpack with the same grenade, as a bow finds arrows anywhere. It never switches to another type on its own.
 
 ### 10.3 Layout

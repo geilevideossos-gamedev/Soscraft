@@ -357,9 +357,11 @@ mod tests {
         alex.inventory.slots[2] = Some(ItemStack::new("iw4l:frag_grenade", 9));
         alex.inventory.slots[3] = Some(ItemStack::new("minecraft:dirt", 17));
         alex.inventory.slots[OFFHAND] = Some(ItemStack::new("minecraft:shield", 1));
+        alex.inventory.slots[43] = Some(ItemStack::new("iw4l:semtex", 30));
+        alex.inventory.slots[44] = Some(ItemStack::new("iw4l:smoke_grenade", 2));
         alex.selected = 3;
         let view = player_view(&alex);
-        assert_eq!(view.slots.len(), PLAYER_SLOTS);
+        assert_eq!(view.slots.len(), 45);
         assert_eq!(view.selected, 3);
         let recipes = RecipeBook::default();
         let back = |slot: usize| {
@@ -374,6 +376,8 @@ mod tests {
         assert_eq!(back(4), None);
         assert_eq!(back(1), Some(("iw4l:m4".to_owned(), 1)));
         assert_eq!(back(2), Some(("iw4l:frag_grenade".to_owned(), 9)));
+        assert_eq!(back(43), Some(("iw4l:semtex".to_owned(), 30)));
+        assert_eq!(back(44), Some(("iw4l:smoke_grenade".to_owned(), 2)));
         let loaded = view.slots[1]
             .as_ref()
             .and_then(|nbt| view_stack(nbt, &recipes))

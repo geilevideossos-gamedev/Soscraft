@@ -141,6 +141,7 @@ pub struct RecipeBook {
     display_indices: HashMap<String, Vec<u32>>,
     item_catalog: Option<Arc<ItemCatalog>>,
     jar_ids: HashSet<String>,
+    reserved_slots: Option<fn(&str) -> Option<usize>>,
 }
 impl RecipeBook {
     pub fn from_jar(path: &Path) -> Result<Self> {
@@ -274,6 +275,7 @@ impl RecipeBook {
             display_indices: HashMap::new(),
             item_catalog: None,
             jar_ids,
+            reserved_slots: None,
         })
     }
 
@@ -380,6 +382,15 @@ impl RecipeBook {
         }
         self.item_catalog = Some(catalog);
         self
+    }
+
+    pub fn with_reserved_slots(mut self, slot: fn(&str) -> Option<usize>) -> Self {
+        self.reserved_slots = Some(slot);
+        self
+    }
+
+    pub fn reserved_slot(&self, id: &str) -> Option<usize> {
+        self.reserved_slots.and_then(|slot| slot(id))
     }
 
     pub fn item_catalog(&self) -> Option<&ItemCatalog> {

@@ -426,7 +426,7 @@ pub struct UsingView {
     pub ticks: i32,
 }
 
-pub const PLAYER_SLOTS: usize = 41;
+pub const PLAYER_SLOTS: usize = 45;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlayerView {
@@ -692,6 +692,7 @@ mod tests {
     #[test]
     fn a_new_player_view_has_every_slot() {
         let view = PlayerView::default();
+        assert_eq!(PLAYER_SLOTS, 45);
         assert_eq!(view.slots.len(), PLAYER_SLOTS);
         assert_eq!(view.health, 20.0);
         assert_eq!(view.food, 20);

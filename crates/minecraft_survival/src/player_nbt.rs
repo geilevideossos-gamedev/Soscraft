@@ -12,7 +12,7 @@ use minecraftoss_player::survival::{EffectKind, SurvivalStatus};
 use crate::guns::HOTBAR;
 
 pub const STORAGE: usize = 36;
-pub const SLOTS: usize = 43;
+pub const SLOTS: usize = 45;
 pub const ENDER_SLOTS: usize = 27;
 const INFINITE: i32 = -1;
 pub const EFFECTS: [(EffectKind, &str); EffectKind::ALL.len()] = [
@@ -141,7 +141,9 @@ pub const EQUIPMENT: [(usize, &str); 7] = [
     (41, "body"),
     (42, "saddle"),
 ];
-const OWNED: [&str; 25] = [
+pub const GRENADES: &str = "iw4l_grenades";
+pub const GRENADE_SLOTS: [usize; 2] = [crate::guns::LETHAL_SLOT, crate::guns::TACTICAL_SLOT];
+const OWNED: [&str; 26] = [
     "playerGameType",
     "previousPlayerGameType",
     "abilities",
@@ -167,6 +169,7 @@ const OWNED: [&str; 25] = [
     "RootVehicle",
     "SleepTimer",
     "sleeping_pos",
+    GRENADES,
 ];
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -207,6 +210,12 @@ impl PlayerData {
                     .get("equipment")
                     .and_then(|equipment| equipment.get(name))
                     .and_then(|stack| stack_of(stack, recipes));
+            }
+            if let Some(list) = tag.get(GRENADES) {
+                let saved = minecraft_terrain::item_nbt::slots(list, GRENADE_SLOTS.len(), recipes);
+                for (slot, stack) in GRENADE_SLOTS.into_iter().zip(saved) {
+                    slots[slot] = stack;
+                }
             }
             slots
         });
@@ -283,6 +292,14 @@ impl PlayerData {
                 .collect();
             if !equipment.is_empty() {
                 entries.insert("equipment".to_owned(), Tag::Compound(equipment));
+            }
+            let grenades = slot_list(
+                GRENADE_SLOTS
+                    .iter()
+                    .map(|&slot| inventory.get(slot).unwrap_or(&None)),
+            );
+            if grenades.as_list().is_some_and(|list| !list.is_empty()) {
+                entries.insert(GRENADES.to_owned(), grenades);
             }
         }
         entries.insert(
@@ -832,6 +849,85 @@ mod tests {
             ender[6].as_ref().map(|s| (&s.id, &s.components)),
             Some((&gun.id, &gun.components))
         );
+    }
+
+    #[test]
+    fn grenade_slots_are_saved_under_their_own_key_and_read_back() {
+        let mut slots = vec![None; SLOTS];
+        slots[43] = Some(stack("iw4l:semtex", 20));
+        slots[44] = Some(stack("iw4l:flash_grenade", 32));
+        let data = PlayerData {
+            inventory: Some(slots),
+            ..PlayerData::default()
+        };
+        let entries = data.entries();
+        assert_eq!(entries["Inventory"], Tag::List(Vec::new()));
+        assert!(!entries.contains_key("equipment"));
+        let grenades = entries[GRENADES].as_list().unwrap();
+        let saved: Vec<(Option<&Tag>, Option<&str>, Option<&Tag>)> = grenades
+            .iter()
+            .map(|entry| {
+                (
+                    entry.get("Slot"),
+                    entry.get("id").and_then(Tag::as_str),
+                    entry.get("count"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            saved,
+            [
+                (
+                    Some(&Tag::Byte(0)),
+                    Some("minecraft:poisonous_potato"),
+                    Some(&Tag::Int(20))
+                ),
+                (
+                    Some(&Tag::Byte(1)),
+                    Some("minecraft:poisonous_potato"),
+                    Some(&Tag::Int(32))
+                ),
+            ]
+        );
+        let read = PlayerData::read(&data.merged(None), &RecipeBook::default());
+        let inventory = read.inventory.unwrap();
+        assert_eq!(inventory.len(), SLOTS);
+        let held = |slot: usize| inventory[slot].as_ref().map(|s| (s.id.as_str(), s.count));
+        assert_eq!(held(43), Some(("iw4l:semtex", 20)));
+        assert_eq!(held(44), Some(("iw4l:flash_grenade", 32)));
+        assert!(inventory[..43].iter().all(Option::is_none));
+        let mut tactical_only = vec![None; SLOTS];
+        tactical_only[44] = Some(stack("iw4l:smoke_grenade", 3));
+        let entries = PlayerData {
+            inventory: Some(tactical_only),
+            ..PlayerData::default()
+        }
+        .entries();
+        let list = entries[GRENADES].as_list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].get("Slot"), Some(&Tag::Byte(1)));
+    }
+
+    #[test]
+    fn emptied_grenade_slots_leave_the_file() {
+        let mut slots = vec![None; SLOTS];
+        slots[43] = Some(stack("iw4l:frag_grenade", 32));
+        slots[44] = Some(stack("iw4l:flash_grenade", 32));
+        let full = PlayerData {
+            inventory: Some(slots),
+            ..PlayerData::default()
+        };
+        let previous = full.merged(None);
+        assert!(previous.get(GRENADES).is_some());
+        let emptied = PlayerData {
+            inventory: Some(vec![None; SLOTS]),
+            ..PlayerData::default()
+        };
+        let merged = emptied.merged(Some(previous));
+        assert_eq!(merged.get(GRENADES), None);
+        assert_eq!(merged.get("equipment"), None);
+        let read = PlayerData::read(&merged, &RecipeBook::default());
+        assert_eq!(read.inventory, Some(vec![None; SLOTS]));
     }
 
     #[test]

@@ -919,6 +919,17 @@ pub fn is_fork(id: &str) -> bool {
     get(id).is_some()
 }
 
+pub const LETHAL_SLOT: usize = 43;
+pub const TACTICAL_SLOT: usize = 44;
+
+pub fn grenade_slot(id: &str) -> Option<usize> {
+    match get(id)?.kind {
+        Kind::Lethal => Some(LETHAL_SLOT),
+        Kind::Tactical => Some(TACTICAL_SLOT),
+        _ => None,
+    }
+}
+
 pub fn by_weapon(weapon: &str) -> Option<&'static ForkItem> {
     ROWS.iter().find(|row| row.weapon == Some(weapon))
 }
@@ -1146,6 +1157,21 @@ mod tests {
         assert_eq!(count(Kind::Part), 2);
         assert_eq!(count(Kind::Lethal), 5);
         assert_eq!(count(Kind::Tactical), 4);
+    }
+
+    #[test]
+    fn lethal_and_tactical_grenades_have_their_own_slot() {
+        for row in rows() {
+            let expected = match row.kind {
+                Kind::Lethal => Some(LETHAL_SLOT),
+                Kind::Tactical => Some(TACTICAL_SLOT),
+                _ => None,
+            };
+            assert_eq!(grenade_slot(row.id), expected, "{}", row.id);
+        }
+        assert_eq!(grenade_slot("iw4l:semtex"), Some(43));
+        assert_eq!(grenade_slot("iw4l:tactical_insertion"), Some(44));
+        assert_eq!(grenade_slot("minecraft:snowball"), None);
     }
 
     #[test]

@@ -396,6 +396,8 @@ mod tests {
         };
         view.slots[0] = Some(Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0]));
         view.slots[40] = Some(Nbt(vec![0]));
+        view.slots[43] = Some(Nbt(vec![10, 0, 0, 0]));
+        view.slots[44] = Some(Nbt(vec![10, 1, 0, 0]));
         view
     }
 
@@ -723,6 +725,21 @@ mod tests {
         let bytes = encode(Lane::Reliable, &potion).unwrap();
         let back: GearItem = decode(Lane::Reliable, &bytes).unwrap();
         assert_eq!(back.potion, Some(0x87A363));
+    }
+
+    #[test]
+    fn a_player_view_carries_both_grenade_slots() {
+        let view = player_view();
+        assert_eq!(view.slots.len(), crate::messages::PLAYER_SLOTS);
+        let message = ToClient::Player(Box::new(view.clone()));
+        let bytes = encode(Lane::Reliable, &message).unwrap();
+        let ToClient::Player(back) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+            panic!("not a player view");
+        };
+        assert_eq!(back.slots.len(), 45);
+        assert_eq!(back.slots[43], view.slots[43]);
+        assert_eq!(back.slots[44], view.slots[44]);
+        assert!(back.slots[43].is_some() && back.slots[44].is_some());
     }
 
     #[test]

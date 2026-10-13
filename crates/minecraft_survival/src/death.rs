@@ -16,7 +16,7 @@ const OWNERLESS_ARROW: &str = "minecraft:arrow";
 const DEATH_EXPERIENCE_PER_LEVEL: u32 = 7;
 const MAX_DEATH_EXPERIENCE: u32 = 100;
 const STORAGE_SLOTS: usize = 36;
-const EQUIPMENT_DROP_ORDER: [usize; 7] = [40, 36, 37, 38, 39, 41, 42];
+const EQUIPMENT_DROP_ORDER: [usize; 9] = [40, 36, 37, 38, 39, 41, 42, 43, 44];
 const ENCHANTMENTS: &str = "minecraft:enchantments";
 pub const PLAYER_KILL: &str = "death.attack.player";
 pub const PLAYER_KILL_ITEM: &str = "death.attack.player.item";
@@ -1166,6 +1166,43 @@ mod tests {
         assert!(inventory.crafting.iter().all(Option::is_none));
         assert!(inventory.workbench.iter().all(Option::is_none));
         assert!(inventory.cursor.is_none());
+    }
+
+    #[test]
+    fn grenade_slots_drop_after_the_saddle_and_keep_inventory_keeps_them() {
+        let loaded = || {
+            let mut inventory = Inventory::default();
+            inventory.slots[3] = Some(ItemStack::new("minecraft:dirt", 4));
+            inventory.slots[40] = Some(ItemStack::new("minecraft:shield", 1));
+            inventory.slots[42] = Some(ItemStack::new("minecraft:saddle", 1));
+            inventory.slots[43] = Some(ItemStack::new("iw4l:semtex", 32));
+            inventory.slots[44] = Some(ItemStack::new("iw4l:flash_grenade", 31));
+            inventory.cursor = Some(ItemStack::new("minecraft:apple", 1));
+            inventory
+        };
+        let death = |keep_inventory| Death {
+            spot: spot(0.0),
+            experience: 0,
+            keep_inventory,
+        };
+        let mut lost = loaded();
+        let drops = dropped_on_death(&death(false), &mut lost);
+        assert_eq!(
+            ids(&drops),
+            [
+                "minecraft:dirt",
+                "minecraft:shield",
+                "minecraft:saddle",
+                "iw4l:semtex",
+                "iw4l:flash_grenade",
+                "minecraft:apple",
+            ]
+        );
+        assert_eq!((drops[3].count, drops[4].count), (32, 31));
+        assert!(lost.slots.iter().all(Option::is_none));
+        let mut kept = loaded();
+        assert!(dropped_on_death(&death(true), &mut kept).is_empty());
+        assert_eq!(kept.slots, loaded().slots);
     }
 
     #[test]
