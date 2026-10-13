@@ -81,6 +81,7 @@ pub fn saved(id: &str) -> bool {
     vanilla(id) || fork_items::is_fork(id)
 }
 
+pub const KILLSTREAK_PREFIX: &str = "iw4:weapon/";
 pub const GUN_CARRIER: &str = "minecraft:carrot_on_a_stick";
 pub const ITEM_CARRIER: &str = "minecraft:poisonous_potato";
 pub const CARRIER_REMOVALS: [&str; 2] = ["!minecraft:food", "!minecraft:consumable"];
@@ -156,7 +157,7 @@ fn nested_item(item: &mut Tag, convert: Convert, saving: bool) -> bool {
         return true;
     };
     let (id, components) = convert(&id, map.remove("components"));
-    if saving && !saved(&id) {
+    if saving && id.starts_with(KILLSTREAK_PREFIX) {
         return false;
     }
     map.insert("id".to_owned(), Tag::String(id));
@@ -187,7 +188,8 @@ fn non_empty(map: BTreeMap<String, Tag>) -> Option<Tag> {
 pub fn to_disk(id: &str, components: Option<Tag>) -> (String, Option<Tag>) {
     let mut map = match components {
         Some(Tag::Compound(map)) => map,
-        _ => BTreeMap::new(),
+        None => BTreeMap::new(),
+        other => return (id.to_owned(), other),
     };
     nested(&mut map, to_disk, true);
     let Some(row) = fork_items::get(id) else {
@@ -202,8 +204,9 @@ pub fn to_disk(id: &str, components: Option<Tag>) -> (String, Option<Tag>) {
 }
 
 pub fn from_disk(id: &str, components: Option<Tag>) -> (String, Option<Tag>) {
-    let Some(Tag::Compound(mut map)) = components else {
-        return (id.to_owned(), None);
+    let mut map = match components {
+        Some(Tag::Compound(map)) => map,
+        other => return (id.to_owned(), other),
     };
     nested(&mut map, from_disk, false);
     let row = map
@@ -619,7 +622,18 @@ mod tests {
             {"slot": 0, "item": {"id": "othermod:widget", "count": 1}}
         ]});
         let (_, loaded) = from_disk("minecraft:shulker_box", Some(json_tag(&foreign)));
-        assert_eq!(loaded.as_ref().map(tag_json), Some(foreign));
+        assert_eq!(loaded.as_ref().map(tag_json), Some(foreign.clone()));
+        let (_, saved) = to_disk("minecraft:shulker_box", Some(json_tag(&foreign)));
+        assert_eq!(saved.as_ref().map(tag_json), Some(foreign));
+        let text = Tag::String("{}".to_owned());
+        assert_eq!(
+            to_disk("minecraft:stone", Some(text.clone())),
+            ("minecraft:stone".to_owned(), Some(text.clone()))
+        );
+        assert_eq!(
+            from_disk("minecraft:stone", Some(text.clone())),
+            ("minecraft:stone".to_owned(), Some(text))
+        );
     }
 
     #[test]

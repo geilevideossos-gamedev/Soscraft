@@ -142,6 +142,38 @@ Commit: the one after `86cd3918`.
 IW4L_MINECRAFT_KIT=iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex","fmj"]}}],iw4l:barrett,iw4l:ak47,iw4l:usp,iw4l:frag_grenade*16,iw4l:rocket*24,minecraft:chest,minecraft:ender_chest,minecraft:shulker_box,minecraft:diamond_pickaxe
 ```
 
+### 2. Ground items, item frames, piglin inventories, campfires and creative hotbars save fork items the same way
+
+Commit: the one after `06e61fa9`.
+
+- **Changed:**
+  - `server_mobs.rs` `level_entity_tags` writes a ground item through `item_nbt::to_disk` and `load_level_entity` reads it through `from_disk` (three lines each). A ground stack with an `iw4:weapon/` id is skipped (never saved); every other id is saved as before.
+  - `item_frame.rs` `stack_of_tag` (frames load) goes through `from_disk`; the frame's save already used `item_nbt::stack_tag`.
+  - `piglin_save.rs` `stack_of` (inventory and equipment load) goes through `from_disk`; the save already used `stack_tag`. Piglins never take fork items (C11.1), so this only keeps a hand-edited world consistent; the same tags are what a friend's `MobAdd` carries.
+  - `hotbars.rs` (creative saved hotbars, `hotbar.nbt`) writes through `to_disk` and reads through `from_disk`.
+  - `item_nbt.rs`: `KILLSTREAK_PREFIX` (`iw4:weapon/`). Changed from commit 1: a nested shulker-box or bundle item is now dropped on save only when it is a killstreak mirror (another mod's nested item is kept, as before this track), and `to_disk`/`from_disk` hand non-compound components (older JSON text) back unchanged.
+- **Grep results (`Tag::String(stack.id` and every own item serializer):**
+  - Campfires save and load through `item_nbt::slot_list`/`slots` (`campfire.rs:151`), so they were done by commit 1.
+  - `render_anim/src/minecraft_creative.rs:521-527` needs no edit: its filter is `guns::weapon_of(stack).is_none()`, and `weapon_of` only matches `iw4:weapon/<index>` ids, so since commit 1 of C11.1 it drops killstreak mirrors only and fork guns are already stored in saved hotbars. Loading them back passes `creative::apply`, because the command item list (the `known` check) has every fork id since `e6c6666d`.
+  - Not routed, because fork items cannot get there: mob equipment saves (`server_mobs.rs:728`, the id only), the villager's held trade item and inventory (`server_mobs.rs:1394`, `:1501`; villagers want only their food and farming items), lecterns and books (`server.rs:258`, `lectern.rs`), tridents (`trident.rs`), the splash potion item (`server_mobs.rs:1609`), the eye of ender.
+  - Friends do not see ground items through `MobAdd`: they come in the `EntitySnapshot` as `ServerItem { item, components }` with the in-memory id (`iw4l:m4`), which the friend's own table reads. So ground items needed no wire change (commit 3 covers slots and menus).
+- **Tests:**
+  - `minecraft_terrain` `server::tests::a_dropped_gun_is_saved_as_a_vanilla_item_entity_and_comes_back` (a loaded M4A1, 5 frags and a killstreak mirror on the ground: the saved tags hold a carrot on a stick with `iw4l.id` and `clip` and a poisonous potato, no mirror; after loading, the M4A1 has its exact components and the frags are 5 again).
+  - `minecraft_terrain` `item_frame::tests::a_gun_in_a_frame_is_saved_as_its_carrier_and_comes_back`.
+  - `minecraft_terrain` `hotbars::tests::a_saved_hotbar_keeps_a_gun_and_rockets_through_their_carriers`.
+  - `item_nbt::tests::fork_items_in_shulker_boxes_and_bundles_are_saved_and_loaded_both_ways` also checks that another mod's nested item is saved and that JSON-text components pass through unchanged.
+- **Decisions:**
+  - A ground item of another namespace is still saved (as before this track); only killstreak mirrors are skipped. Inventories keep their older rule (only vanilla and fork ids are saved).
+- **Owner's test steps** (survival, a new world, kit below):
+  1. Press Q on the M4A1 (red dot) and on the frag stack so both lie on the ground. Within a minute, save and quit to the title and load the world again: both still lie there. Pick them up: the M4A1 tooltip still lists the red dot and the same clip, the frags are 8. **Screenshot 1** (the M4A1 tooltip after the reload).
+  2. Place an item frame and put the Barrett into it. Save and quit, load again: the frame still holds it (it may look empty or wrong until the look group draws fork items on the ground and in frames). Hit the frame: the Barrett drops, and its tooltip says Barrett .50cal. **Screenshot 2.**
+  3. `/gamemode creative`, keep the M4A1 and the rockets in the hotbar, hold C and press 1 ("Saved toolbar"). `/clear`, then hold X and press 1: the M4A1 (with its red dot) and the rockets come back. Quit the game completely, start it again, load the world, X+1 again: they come back. **Screenshot 3.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex"]}}],iw4l:barrett,iw4l:frag_grenade*8,iw4l:rocket*16,minecraft:item_frame*2,minecraft:oak_planks*16
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (3): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`. Added: none.

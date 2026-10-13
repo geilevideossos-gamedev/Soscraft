@@ -7373,6 +7373,32 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_gun_is_saved_as_a_vanilla_item_entity_and_comes_back() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = door_world() else { return };
+        let components = r#"{"minecraft:custom_data":{"iw4l":{"attachments":["reflex"],"clip":27}}}"#;
+        server.spawn_item("iw4l:m4", 1, Some(components), [8.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        server.spawn_item("iw4l:frag_grenade", 5, None, [9.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        server.spawn_item("iw4:weapon/12", 1, None, [10.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        let saved = crate::server_mobs::level_entity_tags(&server.level, |_| true);
+        let items: Vec<&Tag> = saved.iter().filter_map(|tag| tag.get("Item")).collect();
+        let mut ids: Vec<&str> = items.iter().filter_map(|item| item.get("id").and_then(Tag::as_str)).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["minecraft:carrot_on_a_stick", "minecraft:poisonous_potato"], "the killstreak mirror is not saved");
+        let gun = items.iter().find(|item| item.get("id").and_then(Tag::as_str) == Some("minecraft:carrot_on_a_stick")).unwrap();
+        let state = gun.get("components").and_then(|c| c.get("minecraft:custom_data")).and_then(|c| c.get("iw4l"));
+        assert_eq!(state.and_then(|s| s.get("id")), Some(&Tag::String("iw4l:m4".to_owned())));
+        assert_eq!(state.and_then(|s| s.get("clip")), Some(&Tag::Int(27)));
+        server.level.entities.clear();
+        for tag in &saved {
+            assert!(crate::server_mobs::load_level_entity(&mut server.level, tag));
+        }
+        let mut back: Vec<(String, i32, Option<String>)> = server.items().into_iter().map(|i| (i.item, i.count, i.components)).collect();
+        back.sort();
+        assert_eq!(back, [("iw4l:frag_grenade".to_owned(), 5, None), ("iw4l:m4".to_owned(), 1, Some(components.to_owned()))]);
+    }
+
+    #[test]
     fn hoppers_hand_their_changed_items_to_the_chunk_map_and_leave_chests_to_the_containers() {
         use minecraftoss_core::nbt::Tag;
         let Some((mut server, mut scene)) = door_world() else { return };
