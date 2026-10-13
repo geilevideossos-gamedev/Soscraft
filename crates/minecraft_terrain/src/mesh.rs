@@ -699,6 +699,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
             textures.insert(id, ());
         }
         textures.insert(ResourceId::parse("minecraft:misc/shadow")?, ());
+        for id in crate::fork_look::textures() {
+            textures.insert(id, ());
+        }
     }
     let atlas = make_atlas(packs, textures.into_keys().collect())?;
     let tint = BiomeTint::from_pack(packs)?;

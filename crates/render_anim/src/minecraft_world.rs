@@ -330,7 +330,8 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     Ok((loaded, minecraft_survival::server::Server { globals, levels: std::collections::BTreeMap::from([(Dimension::Overworld, level)]), opening: Default::default(), players: std::collections::BTreeMap::new(), published: false }))
 }
 
-pub(crate) fn load_look(packs: PackStack) -> Result<Loaded, String> {
+pub(crate) fn load_look(mut packs: PackStack) -> Result<Loaded, String> {
+    minecraft_terrain::fork_look::reserve(&mut packs);
     let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
         .map_err(|e| e.to_string())?;
     let celestial = Arc::new(celestial_image(&packs).map_err(|e| e.to_string())?);
@@ -1363,6 +1364,7 @@ fn update(
         }
         inventory_ui.animation_tick = atlas_animation.ticks();
         inventory_ui.set_weapons(&mut ui, weapon_names.0.as_deref(), weapon_names.1.as_deref());
+        inventory_ui.fork.dress_world(&mut world.packs, &world.atlas, (view.generation, view.active), &mut view.atlas_patches);
         inventory_ui.publish(&mut ui, inventory, *selected, &world.packs, &mut images, (&screen, survival.status.experience_level, containers));
 
         if let Some(sounds) = sounds.as_mut() {

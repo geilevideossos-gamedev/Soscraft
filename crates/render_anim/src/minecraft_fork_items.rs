@@ -5,9 +5,11 @@ use asset_game::{FamilyKey, LoadoutRules, WeaponRegistry, WeaponSelection};
 use minecraft_survival::gun_names::{self, GunContent, GunNames};
 use minecraft_survival::guns::{self, Hotbar, Settled, Spent};
 use minecraft_terrain::fork_items::{self, Icon, Kind};
+use minecraft_terrain::fork_look;
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraft_terrain::item_icon::SpriteClock;
-use minecraft_terrain::pack::PackStack;
+use minecraft_terrain::mesh::{Atlas, AtlasPatch};
+use minecraft_terrain::pack::{PackStack, ResourceId};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use playerstate_iw4::PlayerState;
 
@@ -48,6 +50,10 @@ impl GunContent for RegistryGuns<'_> {
 }
 
 type Decoded = Vec<(String, image::RgbaImage)>;
+type Sprites = Vec<(&'static str, image::RgbaImage)>;
+
+const GUN_STAND_IN: &str = "minecraft:item/crossbow_standby";
+const ITEM_STAND_IN: &str = "minecraft:item/firework_star";
 
 #[derive(Default)]
 pub(crate) struct ForkLook {
@@ -56,6 +62,10 @@ pub(crate) struct ForkLook {
     named: bool,
     pending: Option<mpsc::Receiver<Decoded>>,
     images: Option<HashMap<String, image::RgbaImage>>,
+    gun_pending: Option<mpsc::Receiver<Decoded>>,
+    gun_icons: Option<HashMap<String, image::RgbaImage>>,
+    world: Option<Sprites>,
+    patched: Option<(usize, u64)>,
 }
 
 impl ForkLook {
@@ -199,6 +209,130 @@ impl ForkLook {
         })
     }
 
+    fn gun_icons_ready(&mut self) -> bool {
+        if self.gun_icons.is_some() {
+            return true;
+        }
+        if let Some(pending) = self.gun_pending.as_ref() {
+            let decoded = match pending.try_recv() {
+                Ok(decoded) => decoded,
+                Err(mpsc::TryRecvError::Empty) => return false,
+                Err(mpsc::TryRecvError::Disconnected) => Vec::new(),
+            };
+            self.gun_icons = Some(decoded.into_iter().collect());
+            self.gun_pending = None;
+            return true;
+        }
+        let Some(registry) = self.registry.clone() else {
+            return false;
+        };
+        let content = RegistryGuns(&registry);
+        let mut jobs = Vec::new();
+        for row in fork_items::rows() {
+            if row.icon != Icon::KillIcon {
+                continue;
+            }
+            let Some(index) = self.names.weapon(&content, row.id, &[]) else {
+                continue;
+            };
+            let Some(image) = registry
+                .kill_icon_image_of(index)
+                .or_else(|| registry.kill_icon_of(index))
+            else {
+                continue;
+            };
+            let key = match registry.namespace_of(index).map(|namespace| namespace.as_str()) {
+                Some(namespace) if namespace != "iw4" => format!("{namespace}:material/{image}"),
+                _ => image.to_owned(),
+            };
+            let flip = registry
+                .facts_of(index)
+                .is_some_and(|facts| facts.flip_kill_icon);
+            jobs.push((row.id.to_owned(), key, flip));
+        }
+        let (send, receive) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("minecraft-gun-icons".into())
+            .spawn(move || {
+                let _ = send.send(decode_guns(&jobs));
+            });
+        if spawned.is_ok() {
+            self.gun_pending = Some(receive);
+            false
+        } else {
+            self.gun_icons = Some(HashMap::new());
+            true
+        }
+    }
+
+    fn world_sprites(&mut self, packs: &PackStack) -> Option<Sprites> {
+        let material = fork_items::rows()
+            .iter()
+            .find(|row| matches!(row.icon, Icon::Material(_)))?;
+        if self.waiting(material.id) || !self.gun_icons_ready() {
+            return None;
+        }
+        let stand_in = |texture: &str| {
+            let id = ResourceId::parse(texture).ok()?;
+            let bytes = packs.texture(&id).ok().flatten()?;
+            image::load_from_memory(&bytes).ok().map(|image| image.to_rgba8())
+        };
+        let (gun_stand_in, item_stand_in) = (stand_in(GUN_STAND_IN), stand_in(ITEM_STAND_IN));
+        let mut missing = Vec::new();
+        let mut sprites = Vec::new();
+        for row in fork_items::rows() {
+            let found = match row.icon {
+                Icon::KillIcon => self.gun_icons.as_ref().and_then(|icons| icons.get(row.id)),
+                Icon::Material(stem) => self.images.as_ref().and_then(|images| images.get(stem)),
+                Icon::Sprite { .. } => continue,
+            };
+            let icon = match found {
+                Some(icon) => icon,
+                None => {
+                    missing.push(row.id);
+                    let stand_in = if row.kind == Kind::Gun { &gun_stand_in } else { &item_stand_in };
+                    let Some(icon) = stand_in.as_ref() else {
+                        continue;
+                    };
+                    icon
+                }
+            };
+            sprites.push((row.id, fork_look::sprite(icon, false)));
+        }
+        if !missing.is_empty() {
+            diag::warn!(World, "Minecraft fork items with a stand-in look on the ground: {}", missing.join(", "));
+        }
+        Some(sprites)
+    }
+
+    pub(crate) fn dress_world(
+        &mut self,
+        packs: &mut PackStack,
+        atlas: &Arc<Atlas>,
+        (generation, active): (u64, bool),
+        patches: &mut Vec<AtlasPatch>,
+    ) {
+        if self.world.is_none() {
+            self.world = self.world_sprites(packs);
+        }
+        let Some(world) = self.world.as_ref() else {
+            return;
+        };
+        let installed = world.first().is_none_or(|(id, _)| {
+            ResourceId::parse(id).is_ok_and(|id| packs.item_definition(&id).ok().flatten().is_some())
+        });
+        if !installed {
+            for (id, sprite) in world {
+                fork_look::install(packs, id, sprite);
+            }
+        }
+        let key = (Arc::as_ptr(atlas) as usize, generation);
+        if active && (!installed || self.patched != Some(key)) {
+            patches.extend(world.iter().filter_map(|(id, sprite)| fork_look::patch(atlas, id, sprite)));
+        }
+        self.patched = active.then_some(key);
+    }
+
     pub(crate) fn settle(
         &mut self,
         inventory: &mut Inventory,
@@ -289,6 +423,28 @@ fn decode(stems: &[&'static str]) -> Decoded {
             }
             Ok(None) => diag::warn!(World, "Minecraft fork item icon `{stem}` not found"),
             Err(error) => diag::warn!(World, "Minecraft fork item icon `{stem}`: {error}"),
+        }
+    }
+    out
+}
+
+fn decode_guns(jobs: &[(String, String, bool)]) -> Decoded {
+    let Ok(games) = asset_transport::games_root_from_env() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (id, key, flip) in jobs {
+        match asset_material::decode_ui_image(&games.0, key) {
+            Ok(Some((width, height, pixels))) => {
+                if let Some(mut image) = image::RgbaImage::from_raw(width, height, pixels) {
+                    if *flip {
+                        image::imageops::flip_horizontal_in_place(&mut image);
+                    }
+                    out.push((id.clone(), image));
+                }
+            }
+            Ok(None) => diag::warn!(World, "Minecraft gun icon `{key}` for `{id}` not found"),
+            Err(error) => diag::warn!(World, "Minecraft gun icon `{key}` for `{id}`: {error}"),
         }
     }
     out

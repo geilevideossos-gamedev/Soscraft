@@ -359,6 +359,43 @@ Commit: the one after `188c2f61`.
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:ak47,iw4l:usp,iw4l:barrett,iw4l:riotshield,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,iw4l:frag_grenade*8,minecraft:chest,minecraft:lava_bucket,minecraft:cobblestone*16
 ```
 
+### 2. Dropped fork items and fork items in item frames are drawn as their icon
+
+Commit: the one after `34a1697f`.
+
+- **Changed:**
+  - `minecraft_terrain` `pack.rs`: `PackStack` gains an in-memory overlay (`put(path, bytes)`), read before the packs and kept across a pack reload. Fork models and icons go there at runtime; nothing is written to disk.
+  - `minecraft_terrain` `fork_look.rs` (new, edition 2021, rustfmt-clean), all at the model-resolve level, so every renderer that resolves an item model through the pack (ground items and item frames through `ItemVisuals`, the held non-gun item in the hand) draws fork items without a renderer change:
+    - `reserve(packs)`: ammo, gun parts and rapid fire get an item definition that reuses the vanilla item's model (`iron_nugget`, `fire_charge`, `firework_rocket`, `iron_bars`, `tripwire_hook`, `repeater`) with the table's tint as a `minecraft:constant` tint, so they are extruded and tinted like the inventory icon. Guns, grenades and the other attachments get a blank 16x16 texture `iw4l:item/<path>` so the world atlas reserves a cell for them.
+    - `install(packs, id, sprite)`: the icon as `iw4l:item/<path>` (PNG), the model `{"parent": "minecraft:item/generated", "textures": {"layer0": ...}}` and the item definition. From then on `resolve_item_model` gives vanilla's extruded `item/generated` geometry with the `ground` and `fixed` display transforms of `item/generated`.
+    - `sprite(icon, flip)`: the MW2 picture fitted into 16x16, centred, alpha cut at 128 (vanilla item sprites are 16 px and cut out).
+    - `patch(atlas, id, sprite)`: the `AtlasPatch` (64 px tile and its 4 mip levels) that writes the icon into its reserved atlas cell on the GPU.
+  - `mesh.rs` (one loop, 3 lines): the world atlas reserves `fork_look::textures()` next to the other preloaded sprites.
+  - `render_anim` `minecraft_fork_items.rs` `ForkLook::dress_world`: once the MW2 pictures are decoded (the class-menu pictures it already decodes for the inventory, plus the guns' kill icon images, `kill_icon_image_of` or `kill_icon_of`, decoded from the owner's IWDs on a worker thread, mirrored when the weapon's kill icon is flipped), it installs every icon into the pack overlay and queues the atlas patches; it installs again when a new world look (a new `PackStack`) appears and patches again when the atlas or the view generation changes or the view becomes active. A picture that cannot be decoded uses a stand-in (`crossbow_standby` for a gun, `firework_star` for the rest), logged once by id.
+  - Host: `load_look` calls `fork_look::reserve` before the atlas is built (the host and the friend both use it); `dress_world` runs next to `set_weapons` in `minecraft_world.rs` and in the friend's frame in `minecraft_remote.rs` (one call each).
+  - No edit to `render_anim/src/anim/minecraft_gear.rs` (track A's file) or to `item_frame.rs`.
+- **Tests** (`minecraft_terrain` `fork_look::tests`, with stand-in model JSON written by the test, no Mojang file):
+  - `a_fork_id_resolves_to_a_generated_model_with_its_icon_sprite`: before `install` the M4A1 has no model; after it the model is the extruded sprite (1 front-and-back element and 12 edge elements for a 4x2 block of pixels), every face on `iw4l:item/m4`; ammo and non-fork ids are refused.
+  - `ammo_and_parts_use_their_vanilla_sprite_with_the_tint`: rifle ammo resolves to the iron nugget with the copper `constant` tint on tint index 0; the barrel has no tint.
+  - `guns_grenades_and_attachments_have_icon_textures_and_sprites_do_not`, `a_sprite_is_fitted_flipped_and_cut_out`, `a_patch_covers_the_reserved_atlas_tile_with_every_mip_level` (origin on the tile corner, 64/32/16/8/4 levels, no missing texture after `reserve`).
+- **Decisions:**
+  - **The icons live in an in-memory pack overlay, not in a renderer special case,** so ground items, item frames and the held non-gun item all take the same vanilla path (`item_definition` -> `item/generated`), and a later resource pack could even replace them by giving `iw4l` models.
+  - **The GPU atlas is patched instead of rebuilt.** The world atlas is built when the world loads, before MW2's weapons and pictures may be ready; a rebuild would take seconds. The cells are reserved up front and written with the existing `atlas_patches` path (the one animated textures use). The CPU copy of the atlas keeps the blank cell; nothing reads fork pixels from it.
+  - **A fork item is not drawn on the ground until its pictures are decoded** (a second or two after MW2's weapons load, as before this commit, when it was never drawn); ammo, parts and rapid fire are drawn at once.
+  - **Stand-ins** for a picture the owner's files lack, so no item is ever invisible on the ground.
+- **Owner's test steps** (survival, a new world, kit below):
+  1. Press Q on the M4A1, the Intervention, the frags, the red dot sight, the rifle ammo and the gun barrel, one by one, so they lie in a row. Each lies on the ground as its inventory picture, a few pixels thick and spinning like a dropped vanilla item: the guns as their MW2 kill icon, the frag as its class-menu picture, the ammo as a copper nugget, the barrel as iron bars. **Screenshot 1.**
+  2. Place two item frames and put the M4A1 and the frags into them: they show the same pictures flat on the wall. **Screenshot 2** (both frames).
+  3. Hold the frags or the rifle ammo in the main hand: they are drawn in the hand like a vanilla item (no MW2 gun is raised). Hold the M4A1: MW2 draws the gun as before.
+  4. Save and quit, load again: the dropped items and the framed items look the same.
+  5. Two windows: the friend sees the dropped items and the framed items the same way, and drops their own gun, which the host sees as its kill icon. **Screenshot 3** (friend window).
+  6. If the log has "Minecraft fork items with a stand-in look on the ground: ...", send that line: those items lie as a crossbow or a firework star.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:cheytac,iw4l:usp,iw4l:frag_grenade*8,iw4l:flash_grenade*4,iw4l:red_dot_sight,iw4l:rifle_ammo*32,iw4l:gun_barrel*2,iw4l:rapid_fire,minecraft:item_frame*4,minecraft:oak_planks*16
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (4): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file). Added: none.
@@ -378,3 +415,4 @@ Patched by this track so far (4): `player/src/item_catalog.rs`, `core/src/item.r
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's guns follow their own hotbar the same way, through the same host function, and the host keeps each player's bound gun copies per UUID."
 - `MINECRAFT-SURVIVAL.md`, the guns section: "Killstreak items cannot go into a chest or any other container cell, into the offhand, or be dropped with Q or from the cursor."
 - `MINECRAFT-SURVIVAL.md`, the guns section: "Guns drop with Q, go into chests and every other container, and drop on death like any item, with their loaded rounds; `keep_inventory` keeps them. Killstreak items vanish on death. No gun goes into the offhand (the riot shield included). The Barrett and the M240 are netherite and survive fire and lava on the ground."
+- `MINECRAFT-SURVIVAL.md`, the guns section: "Dropped fork items and fork items in item frames are drawn as their inventory picture, extruded like a vanilla item (16 pixels, a few pixels thick): guns as their MW2 kill icon, grenades and attachments as their class-menu picture, ammo and gun parts as tinted vanilla sprites. A grenade, ammo or an attachment held in the hand is drawn like a vanilla item. A picture the MW2 files lack is shown as a crossbow (guns) or a firework star."

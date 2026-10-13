@@ -530,6 +530,11 @@ pub(crate) fn friend(
     let swap = std::mem::take(&mut ui.swap_hands);
     let drop = ui.drop_selected.take();
     friend.inventory_ui.set_weapons(&mut ui, weapons.as_deref(), strings.as_deref());
+    if let Some(prepared) = friend.prepared.as_mut() {
+        let state = (view.generation, view.active);
+        let look = &mut prepared.look;
+        friend.inventory_ui.fork.dress_world(&mut look.packs, &look.atlas, state, &mut view.atlas_patches);
+    }
     let mut messages = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
     if leave_bed {
         messages.push(ToServer::LeaveBed);
