@@ -531,6 +531,7 @@ pub fn gear_rigs<'a>(
                 puppet: puppet == Some(body.client),
                 rig: BodyRig {
                     wings: glide.pose(body.client).map(|pose| pose.wings),
+                    head_swing: glide.walk_position(body.client),
                     ..body_rig(&body.joints, origin, &GEAR_FIT)
                 },
                 gear: worn,
@@ -1112,6 +1113,57 @@ mod tests {
         assert_eq!(wings(1), Some(glide.pose(1).unwrap().wings));
         assert!(wings(1).unwrap().z < -0.3);
         assert_eq!(wings(2), None);
+    }
+
+    #[test]
+    fn gear_rigs_take_each_clients_walk_swing() {
+        let mut posed = PosedGearFrame::default();
+        let mut gear = McBodyGear::default();
+        let dragon_head = BodyGear {
+            armor: [
+                Some(minecraft_terrain::body_gear::GearItem {
+                    id: "minecraft:dragon_head".to_owned(),
+                    glint: false,
+                    dye: None,
+                }),
+                None,
+                None,
+                None,
+            ],
+            ..BodyGear::default()
+        };
+        for client in [1, 2, 3] {
+            posed.publish(PosedGear {
+                client,
+                joints: [None; JOINTS],
+            });
+            gear.set(client, dragon_head.clone());
+        }
+        let walking = crate::anim::minecraft_glide::GlideInput {
+            motion: [0.2, 0.1, 0.0],
+            alive: true,
+            ..Default::default()
+        };
+        let standing = crate::anim::minecraft_glide::GlideInput {
+            alive: true,
+            ..Default::default()
+        };
+        let mut glide = McGlide::default();
+        for _ in 0..5 {
+            glide.step(0.07, [(1, walking), (2, standing)]);
+        }
+        let rigs = gear_rigs(&posed, &gear, &glide, [0.0; 3], Some(1), None);
+        let swing = |client: u32| {
+            rigs.iter()
+                .find(|rig| rig.client == client)
+                .map(|rig| rig.rig.head_swing)
+                .unwrap()
+        };
+        assert!(swing(1) > 1.0, "{}", swing(1));
+        assert_eq!(swing(1), glide.walk_position(1));
+        assert_eq!(swing(2), 0.0);
+        assert_eq!(swing(3), 0.0);
+        assert!(rigs.iter().any(|rig| rig.puppet && rig.rig.head_swing == swing(1)));
     }
 
     #[test]

@@ -123,6 +123,26 @@ Commit: "Worn mob heads and carved pumpkins are drawn on the MW2 body", the one 
 IW4L_MINECRAFT_KIT=minecraft:dragon_head,minecraft:piglin_head,minecraft:skeleton_skull,minecraft:wither_skeleton_skull,minecraft:zombie_head,minecraft:creeper_head,minecraft:player_head,minecraft:carved_pumpkin,minecraft:diamond_helmet,minecraft:spyglass
 ```
 
+### Commit 2: the walk swing moves the dragon jaw and the piglin ears
+
+Commit: "A worn dragon head opens its jaw and a piglin head flaps its ears while walking", the one after `580d7723` (A4 commit 1).
+
+- **Vanilla 26.3:** `wornHeadAnimationPos` is the wearer's walk animation position (`WalkAnimationState`, run every client tick by `calculateEntityAnimation`): horizontal distance only, `target = min(dist*4, 1)`, `speed += (target - speed)*0.4`, `position += speed`, rendered at `position - speed*(1 - partialTick)`. Every client computes it for every player it shows.
+- **Changed** (`render_anim`, plus `PartialEq` on `minecraft_terrain::walk_animation::WalkAnimation`):
+  - `anim/minecraft_glide.rs`: `GlideInput.alive` (`ps.pm_type < PM_TYPE_DEAD`). `BodyGlide` keeps a `WalkAnimation` and a 20 Hz clock: each whole tick of frame time (at most 10 a frame) calls `walk.update(hypot(motion x, motion y), false)`, or `walk.stop()` while dead. `BodyGlide::walk_position()` is the position at the clock's partial tick; `McGlide::walk_position(client)` is 0 for a client it does not know.
+  - `anim/minecraft_gear.rs`: `gear_rigs` sets `head_swing` from `glide.walk_position(body.client)`, next to the wings.
+  - `step_body_glides` already runs on the host and on every friend for every presented player, from that player's presented `PlayerState`, so the jaw and ears move the same on other players' bodies, the own F5 body and the inventory character (vanilla's inventory doll shows the live walk too). No protocol, server or save change.
+- **Tests** (`render_anim`):
+  - `minecraft_glide`: `the_walk_swing_advances_once_per_tick_and_eases_like_vanilla` (one 0.05 s step at motion [0.3, 0, 0] gives speed 0.4 and position 0.4; two half steps give the same; the next tick 0.64 and 1.04; a 2 s frame runs only 10 ticks; vertical motion alone does not swing; dead stops at 0; the rendered swing interpolates within the tick; an unknown client is 0).
+  - `minecraft_gear`: `gear_rigs_take_each_clients_walk_swing` (a walking client's rig and its puppet take its swing, a standing one and one without a glide entry stay at 0).
+  - Run: `test -p render_anim --locked` (155 passed), `check -p launcher --locked`.
+- **Owner's test steps** (kit of commit 1):
+  1. **Dragon head, F5.** Wear the dragon head, F5, walk forward: the lower jaw opens and closes about twice a second at walking speed (faster when sprinting). Stop: it eases to a halt and stays where it is. **Screenshot 1** with the jaw open.
+  2. **Inventory.** Walk, stop with the jaw open, press E: the small character's jaw is open the same amount as the F5 body's was.
+  3. **Piglin head.** Wear it and walk in F5: both ears flap, a little out of step with each other. **Screenshot 2.**
+  4. **Two windows.** The host wears the dragon head and walks: the friend sees the jaw move. The friend wears the piglin head in the Nether and walks: the host sees the ears flap. **Screenshot 3** (both windows).
+  5. **Respawn.** Die while wearing the dragon head (`/kill`), respawn, put it on again and stand still in F5: the jaw is at rest (0.2 rad open, like a placed dragon head).
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
@@ -130,6 +150,7 @@ IW4L_MINECRAFT_KIT=minecraft:dragon_head,minecraft:piglin_head,minecraft:skeleto
 - **A5:** keep vanilla's rule. A respawn starts when each of the four side cells (one block above the rim, three out from the portal centre) is touched by a crystal's 2x2x2 box, so any of the three straight rim blocks per side counts and only the four diagonal corner blocks fail. Accepting only the exact middle blocks would be one line in `Crystals::in_cell` (compare `crystal.block_position() == cell`), but it is not vanilla, so it is not done. If the owner's step 2 ever shows four corner crystals starting a respawn, log the exit portal location, the four cells and each crystal's block in `try_respawn` and check `fight.exit_portal` against the visible podium (a later fix).
 
 - **A4:** worn heads follow vanilla's `CustomHeadLayer`: the seven skull items are drawn as skull models at 1.1875 times the head with no glint; every other head-slot item that is not a helmet (the carved pumpkin, or any item put there by command) is drawn as its item model with the `head` display transform and glint. A non-head armour piece in the head slot (only possible by command) is drawn as an item, as vanilla's `shouldRender(stack, HEAD)` check does. A player head is drawn with the default skin (the `profile` component is not read), as before for placed and held player heads.
+- **A4 walk swing:** the swing is computed on each window from the presented player's velocity (blocks per tick, horizontal part), not from the position change between snapshots, because `BodyGlide` already reads the presented `PlayerState` every frame for the elytra. A player riding an entity keeps their own swing (vanilla uses the vehicle's); the fork's ridden mobs would need the vehicle's swing in the presented state, so this is left as it is.
 
 ## State doc changes
 
