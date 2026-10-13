@@ -20,6 +20,7 @@ pub const PEARL_COOLDOWN: u32 = 20;
 const KNOCKBACK: f64 = 0.4;
 const THROWN: &str = "minecraft:thrown";
 pub const PLAYER_TARGET: u64 = u64::MAX / 2;
+pub const MOB_THROWER: u64 = u64::MAX;
 const PLAYER_HALF_WIDTH: f64 = 0.3;
 const PLAYER_HEIGHT: f64 = 1.8;
 const HIDDEN_TICKS: i32 = 2;
@@ -306,6 +307,7 @@ pub struct Thrown {
     pub owner: u64,
     pub components: Option<serde_json::Value>,
     pub previous: DVec3,
+    pub shooter: Option<u64>,
     flight: ThrownPotion,
     random: LegacyRandom,
 }
@@ -355,6 +357,30 @@ impl Thrown {
             owner: throw.owner,
             components: throw.components.cloned(),
             previous: start,
+            shooter: None,
+            flight,
+            random: LegacyRandom::new(random.next_long()),
+        })
+    }
+
+    pub fn shot_by_mob(
+        item: &str,
+        shooter: u64,
+        from: DVec3,
+        direction: DVec3,
+        power: f32,
+        uncertainty: f32,
+        random: &mut LegacyRandom,
+    ) -> Option<Self> {
+        let kind = Throwable::of(item)?;
+        let flight = ThrownPotion::shoot(Potion::Healing, shooter, from, direction, power, uncertainty, random);
+        Some(Self {
+            item: item.to_owned(),
+            kind,
+            owner: MOB_THROWER,
+            components: None,
+            previous: from,
+            shooter: Some(shooter),
             flight,
             random: LegacyRandom::new(random.next_long()),
         })
@@ -552,6 +578,13 @@ pub fn targets(world: &EntityWorld) -> Vec<PotionTarget> {
     );
     out.extend(
         world
+            .snow_golems()
+            .iter()
+            .filter(|e| e.golem.health > 0.0)
+            .map(|e| target(e.id, &e.golem.body)),
+    );
+    out.extend(
+        world
             .villagers()
             .iter()
             .filter(|e| e.villager.health > 0.0)
@@ -687,6 +720,12 @@ pub fn hurt_by(
         (e.hurt_from(amount, kind, by, time), false)
     } else if let Some(e) = world.wandering_trader_mut(id) {
         (e.hurt_from(amount, kind, by, time), false)
+    } else if let Some(e) = world.snow_golem_mut(id) {
+        let hit = e.hurt(amount);
+        if let Some(blamed) = blame(&hit, e.tick_count) {
+            e.ai.state.hurt_by = Some(blamed);
+        }
+        (hit, false)
     } else if let Some(e) = world.villager_mut(id) {
         (
             e.hurt_from(amount, kind, Some(PLAYER_TARGET + player), time),

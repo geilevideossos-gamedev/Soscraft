@@ -67,6 +67,8 @@ pub mod skeleton;
 pub mod sight;
 pub mod skeleton_bow;
 pub mod slime;
+pub mod snow_golem;
+pub mod snow_golem_ai;
 pub mod spider;
 pub mod steering;
 pub mod strider;

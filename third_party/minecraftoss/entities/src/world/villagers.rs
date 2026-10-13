@@ -327,6 +327,9 @@ impl EntityWorld {
         for e in &self.wandering_traders {
             out.push(seen_of(crate::wandering_trader::TYPE_ID, "creature", &e.trader.body, e.trader.eye_height(), e.trader.health > 0.0, false, e.id));
         }
+        for e in &self.snow_golems {
+            out.push(seen_of(crate::snow_golem::TYPE_ID, "misc", &e.golem.body, crate::snow_golem::EYE_HEIGHT, e.golem.health > 0.0, false, e.id));
+        }
         for p in players {
             out.push(Seen {
                 id: PLAYER_TARGET + p.id,

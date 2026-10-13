@@ -81,6 +81,7 @@ pub mod shulker_render;
 pub mod enderman_render;
 pub mod witch_render;
 pub mod golem_render;
+pub mod snow_golem_render;
 pub mod wolf_render;
 pub mod cat_render;
 pub mod custom_spawners;

@@ -912,6 +912,7 @@ impl ServerSim {
         self.infect_villagers();
         self.cure_zombie_villagers(players);
         self.throw_mob_tridents();
+        self.throw_mob_snowballs();
         self.explode_creepers();
         self.explode_fireballs();
         self.explode_blasts(players);
@@ -922,6 +923,15 @@ impl ServerSim {
         for throw in self.mobs.take_trident_throws() {
             let uuid = self.mobs.uuid_of(throw.owner);
             self.throw_trident(crate::trident::ThrownTrident::thrown_by_mob(throw.owner, uuid, &throw.item, throw.position, throw.velocity));
+        }
+    }
+
+    fn throw_mob_snowballs(&mut self) {
+        use minecraftoss_entities::snow_golem::{SNOWBALL, SNOWBALL_POWER, SNOWBALL_UNCERTAINTY};
+        for shot in self.mobs.take_snowball_shots() {
+            if let Some(thrown) = crate::thrown::Thrown::shot_by_mob(SNOWBALL, shot.shooter, shot.from, shot.direction, SNOWBALL_POWER, SNOWBALL_UNCERTAINTY, &mut self.sound_random) {
+                self.throw(thrown);
+            }
         }
     }
 
@@ -1674,6 +1684,7 @@ impl ServerSim {
         let frame_targets = self.frames.targets();
         let mut frame_hits = Vec::new();
         let mut struck = Vec::new();
+        let mut shot_by_mobs = Vec::new();
         let mut hatched = Vec::new();
         let mut awards = Vec::new();
         let mut splashes = Vec::new();
@@ -1687,7 +1698,15 @@ impl ServerSim {
                 let mut targets = mob_targets.clone();
                 targets.extend(crate::thrown::player_targets(players, t.owner));
                 targets.extend(frame_targets.iter().cloned());
-                let landed = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner));
+                let mut owner_box = crate::thrown::owner_box(players, t.owner);
+                if let Some(shooter) = t.shooter {
+                    owner_box = None;
+                    for target in targets.iter_mut().filter(|target| target.id == shooter) {
+                        target.owner = true;
+                        owner_box = Some((target.min, target.max));
+                    }
+                }
+                let landed = t.tick(&world, &targets, owner_box);
                 if t.kind == Throwable::EnderPearl {
                     let to = landed.as_ref().map_or_else(|| t.position(), |landed| landed.at);
                     let through = crate::end_gateway::pearl_gateway(t.previous.to_array(), to.to_array(), |pos| match gateways.trigger_cooldown(pos) {
@@ -1708,7 +1727,10 @@ impl ServerSim {
                 let frame = landed.mob.and_then(crate::item_frame::struck_frame);
                 frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
-                    struck.push((mob, landed.velocity, t.owner, t.random().next_long()));
+                    match t.shooter {
+                        Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
+                        None => struck.push((mob, landed.velocity, t.owner, t.random().next_long())),
+                    }
                 }
                 if hurts {
                     thrown_hits.push(crate::thrown::ThrownHit { item: t.item.clone(), kind: t.kind, at: landed.at });
@@ -1795,6 +1817,9 @@ impl ServerSim {
         }
         for (mob, velocity, owner, seed) in struck {
             crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+        }
+        for (shooter, mob, velocity) in shot_by_mobs {
+            self.mobs.snowball_hits_mob(shooter, mob, velocity);
         }
         for (at, yaw, variant) in hatched {
             if let Ok(nbt) = minecraftoss_core::snbt::parse_compound(&format!("{{Age:-24000,variant:\"{variant}\"}}")) {
@@ -5639,6 +5664,84 @@ mod tests {
     }
 
     #[test]
+    fn two_snow_blocks_and_a_carved_pumpkin_build_a_snow_golem_that_leaves_snow() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 6..=10 {
+            for z in 6..=10 {
+                place(&mut server, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:snow_block"));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:snow_block"));
+        server.take_changes();
+        server.take_destroyed();
+        place(&mut server, &mut scene, (8, 202, 8), Block::new("minecraft:carved_pumpkin").with("facing", "east"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for pos in [(8, 200, 8), (8, 201, 8), (8, 202, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?} is cleared");
+        }
+        assert_eq!(server.take_destroyed().len(), 3);
+        server.take_spawned();
+        assert!(server.mobs.iron_golems().is_empty());
+        let golems = server.mobs.snow_golems();
+        assert_eq!(golems.len(), 1);
+        assert!(golems[0].golem.pumpkin);
+        assert_eq!(golems[0].position(), glam::DVec3::new(8.5, 200.05, 8.5));
+        let melts = server.level.snow_golem_melts_at(8, 200, 8);
+        server.set_simulation_area((0, 0), 1);
+        let mut snow = std::collections::HashSet::new();
+        for _ in 0..10 {
+            server.tick_mobs(&[], true);
+            for (pos, block) in server.take_changes() {
+                if block.is_some_and(|b| b.id.key() == "minecraft:snow") {
+                    snow.insert(pos);
+                }
+            }
+        }
+        if melts {
+            assert!(server.mobs.snow_golems().first().is_none_or(|g| g.golem.health < 4.0), "a warm biome melts it");
+        } else {
+            assert!(snow.contains(&(8, 200, 8)), "it leaves a snow layer under its feet: {snow:?}");
+        }
+    }
+
+    #[test]
+    fn a_snow_golem_s_snowball_flies_with_the_thrown_items_and_turns_a_zombie_on_it() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 6..=10 {
+            for z in 4..=16 {
+                place(&mut server, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        server.take_changes();
+        if server.level.snow_golem_melts_at(8, 200, 8) {
+            return;
+        }
+        server.set_players(&[[8.5, 200.0, 30.5]], 2);
+        server.set_simulation_area((0, 0), 1);
+        server.summon("minecraft:snow_golem", [8.5, 200.0, 5.5], None, 0.0).unwrap();
+        server.summon("minecraft:husk", [8.5, 200.0, 10.5], None, 180.0).unwrap();
+        server.take_spawned();
+        let golem = server.mobs.snow_golems()[0].id;
+        let zombie = server.mobs.zombies()[0].id;
+        let mut seen_snowball = false;
+        let mut turned = false;
+        for _ in 0..1200 {
+            server.tick_mobs(&[], false);
+            server.tick_thrown(&[]);
+            seen_snowball |= server.thrown_views().iter().any(|t| t.item == "minecraft:snowball" && t.owner == crate::thrown::MOB_THROWER);
+            let hurt_by = server.mobs.zombies().iter().find(|e| e.id == zombie).and_then(|e| e.ai.as_ref()).and_then(|ai| ai.state.hurt_by);
+            if hurt_by.is_some_and(|(by, _)| by == minecraftoss_entities::monster_ai::Target::Mob(golem)) {
+                turned = true;
+                break;
+            }
+        }
+        assert!(seen_snowball, "the golem's snowballs fly as thrown items");
+        assert!(turned, "a snowball strikes the zombie, which turns on the golem");
+        assert_eq!(server.mobs.zombies().iter().find(|e| e.id == zombie).map(|e| e.zombie.health), Some(20.0), "snowballs do it no harm");
+    }
+
+    #[test]
     fn a_carved_pumpkin_on_an_incomplete_t_stays_a_pumpkin() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:iron_block"));
@@ -6877,8 +6980,8 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
-    const HATCHING_EGGS: [&str; 43] = [
-        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
+    const HATCHING_EGGS: [&str; 44] = [
+        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "snow_golem", "spider", "stray", "strider",
         "trader_llama", "villager", "wandering_trader", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
     ];
 

@@ -354,6 +354,16 @@ impl PlayerWorld for MobWorld<'_> {
         self.level.borrow_mut().is_raining_at(minecraftoss_core::BlockPos::new(x, y, z))
     }
 
+    fn snow_golem_melts(&self, (x, y, z): (i32, i32, i32)) -> bool {
+        self.level.borrow().snow_golem_melts_at(x, y, z)
+    }
+
+    fn block_survives(&self, (x, y, z): (i32, i32, i32), block: &PlayerBlock) -> bool {
+        let Ok(id) = crate::pack::ResourceId::parse(&block.id) else { return false };
+        let Some(state) = self.states.state_of(&Block { id, properties: block.properties.clone() }) else { return false };
+        self.level.borrow().can_survive_at(state, minecraftoss_core::BlockPos::new(x, y, z))
+    }
+
     fn light_path_cost(&self, (x, y, z): (i32, i32, i32)) -> f32 {
         let mut level = self.level.borrow_mut();
         let brightness = level.max_local_raw_brightness(minecraftoss_core::BlockPos::new(x, y, z));
@@ -440,6 +450,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:shulker",
     "minecraft:skeleton",
     "minecraft:slime",
+    "minecraft:snow_golem",
     "minecraft:spider",
     "minecraft:stray",
     "minecraft:strider",
@@ -945,6 +956,21 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             if let Some(end) = tag.get("anger_end_time").and_then(Tag::as_i64) {
                 entity.ai.state.enderman.anger_end_time = end;
             }
+            id
+        }
+        "minecraft:snow_golem" => {
+            use minecraftoss_entities::snow_golem::{SnowGolem, MAX_HEALTH};
+            let mut golem = SnowGolem::new(pos);
+            golem.yaw = yaw;
+            golem.persistence_required = persistent;
+            golem.pumpkin = int(tag, "Pumpkin").unwrap_or(1) != 0;
+            if let Some(health) = health {
+                golem.health = health.min(MAX_HEALTH);
+            }
+            let id = world.spawn_snow_golem(golem, no_ai);
+            let entity = world.snow_golem_mut(id)?;
+            entity.random = random;
+            entity.ai.body_rotation.body_yaw = yaw;
             id
         }
         "minecraft:wolf" => {
@@ -1508,6 +1534,11 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         let g = &e.golem;
         let fields = vec![("PlayerCreated", Tag::Byte(i8::from(g.player_created))), ("anger_end_time", Tag::Long(e.ai.state.enderman.anger_end_time))];
         add(e.id, "minecraft:iron_golem", &g.body, g.yaw, g.health, g.persistence_required, fields);
+    }
+    for e in world.snow_golems() {
+        let g = &e.golem;
+        let fields = vec![("Pumpkin", Tag::Byte(i8::from(g.pumpkin)))];
+        add(e.id, minecraftoss_entities::snow_golem::TYPE_ID, &g.body, g.yaw, g.health, g.persistence_required, fields);
     }
     for e in world.wolves() {
         let w = &e.wolf;
@@ -2606,6 +2637,30 @@ mod tests {
         let again = &again[0].1;
         assert!(again.get("wander_target").is_none() && again.get("home_pos").is_none() && again.get("home_radius").is_none(), "{again:?}");
         assert!(again.get("equipment").and_then(|e| e.get("mainhand")).is_none(), "the empty hand saves no bucket");
+    }
+
+    #[test]
+    fn a_snow_golem_saves_and_loads_with_its_pumpkin_and_health() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:snow_golem\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,7],Health:3.0f,Rotation:[90.0f,0.0f]}").unwrap();
+        assert!(SIMULATED_KINDS.contains(&"minecraft:snow_golem"));
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("snow golems load");
+        assert_eq!(world.entity_type(id), Some("minecraft:snow_golem"));
+        {
+            let e = world.snow_golem_mut(id).unwrap();
+            assert!(e.golem.pumpkin, "a golem saved without the field wears its pumpkin");
+            assert_eq!((e.golem.health, e.golem.yaw), (3.0, 90.0));
+            e.golem.pumpkin = false;
+        }
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("Pumpkin"), Some(&Tag::Byte(0)));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved snow golem loads");
+        let e = fresh.snow_golem_mut(back).unwrap();
+        assert!(!e.golem.pumpkin, "a sheared golem stays bare");
+        assert_eq!(e.golem.health, 3.0);
     }
 
     #[test]

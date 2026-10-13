@@ -270,6 +270,17 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
         }
+        MobHit::SnowGolem(id) if held.as_deref() == Some("minecraft:shears") => {
+            use minecraftoss_entities::snow_golem::{SHEAR_LOOT, SHEAR_SOUND};
+            let Some((position, eye)) = world.shear_snow_golem(id) else { return outcome };
+            outcome.sound(SHEAR_SOUND, position, 1.0, "players_volume");
+            let at = position + DVec3::new(0.0, f64::from(eye), 0.0);
+            let drops = actor.shearing_loot.as_deref_mut().and_then(|loot| loot.roll_items(SHEAR_LOOT)).unwrap_or_else(Vec::new);
+            outcome.drops.extend(drops.into_iter().map(|stack| (stack, at)));
+            if !infinite && actor.inventory.wear_tool(selected, 1) {
+                outcome.broken.push("minecraft:shears".to_owned());
+            }
+        }
         MobHit::Mooshroom(id) if held.as_deref() == Some("minecraft:shears") => {
             let Some(position) = world.mooshroom_mut(id).map(|entity| entity.cow.body.position) else { return outcome };
             let Some(shearing) = world.shear_mooshroom(id) else { return outcome };
@@ -854,6 +865,30 @@ mod tests {
         assert!(world.zombie_mut(villager).unwrap().zombie.curing());
         let (_, inventory) = use_on(&mut world, MobHit::Zombie(villager), "minecraft:apple");
         assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4), "other food does nothing");
+    }
+
+    #[test]
+    fn shears_take_a_snow_golem_s_pumpkin_once_and_drop_it_at_its_eyes() {
+        use minecraftoss_entities::snow_golem::{SnowGolem, EYE_HEIGHT};
+        let mut world = EntityWorld::default();
+        let golem = world.spawn_snow_golem(SnowGolem::new(DVec3::new(2.5, 64.0, 0.5)), true);
+        let inventory = holding(Some("minecraft:shears"));
+        assert!(would_interact(&world, MobHit::SnowGolem(golem), &inventory, 0, false, 0));
+        assert!(!would_interact(&world, MobHit::SnowGolem(golem), &holding(Some("minecraft:stick")), 0, false, 0));
+        let mut loot = std::env::var_os("MINECRAFTOSS_ROOT").and_then(|root| ShearingLootBook::from_jar(&std::path::Path::new(&root).join("client.jar"), 0).ok());
+        let mut inventory = holding(Some("minecraft:shears"));
+        let mut actor = Actor { inventory: &mut inventory, selected: 0, infinite: false, entity_loot: None, shearing_loot: loot.as_mut(), player: 0 };
+        let outcome = interact(&mut world, MobHit::SnowGolem(golem), &mut actor);
+        assert!(outcome.handled);
+        assert!(outcome.sounds.iter().any(|s| s.event == "entity.snow_golem.shear" && s.category == "players_volume"));
+        assert!(!world.snow_golems()[0].golem.pumpkin);
+        if loot.is_some() {
+            assert_eq!(outcome.drops.len(), 1);
+            assert_eq!(outcome.drops[0].0.id, "minecraft:carved_pumpkin");
+            assert_eq!(outcome.drops[0].1, DVec3::new(2.5, 64.0 + f64::from(EYE_HEIGHT), 0.5));
+        }
+        let (again, _) = use_on(&mut world, MobHit::SnowGolem(golem), "minecraft:shears");
+        assert!(!again.handled, "a bare snow golem has nothing to shear");
     }
 
     #[test]

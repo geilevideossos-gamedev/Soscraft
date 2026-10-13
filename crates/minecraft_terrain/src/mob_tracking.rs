@@ -74,6 +74,7 @@ pub struct MobShow {
     pub ridden: bool,
     pub invisible: bool,
     pub drink: u8,
+    pub pumpkin: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -273,7 +274,7 @@ pub fn tracking_range(kind: &str) -> i32 {
         "zombie" | "husk" | "drowned" | "zombie_villager" | "zombified_piglin" | "skeleton"
         | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
-        | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" | "mule" => 8,
+        | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" | "mule" | "snow_golem" => 8,
         "item" | "experience_orb" => 6,
         "arrow" | "spectral_arrow" | "snowball" | "egg" | "ender_pearl" | "eye_of_ender"
         | "trident" | "fireball" | "small_fireball" | "dragon_fireball" | "splash_potion"
@@ -393,6 +394,15 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             MobShow {
                 invisible: e.invisible(),
                 drink,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.snow_golems() {
+        put(
+            e.id,
+            MobShow {
+                pumpkin: e.golem.pumpkin,
                 ..MobShow::default()
             },
         );
@@ -587,6 +597,10 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
             2 => Some(Drink::Milk),
             _ => None,
         };
+    }
+    if let Some(e) = world.snow_golem_mut(id) {
+        place(&mut e.previous_position, &mut e.golem.body, mob);
+        e.golem.pumpkin = show.pumpkin;
     }
     if let Some(e) = world.ghast_mut(id) {
         place(&mut e.previous_position, &mut e.ghast.body, mob);
@@ -1244,6 +1258,23 @@ mod tests {
             show_on(&mut friend, &mob);
         }
         assert!(!friend.wandering_traders()[0].invisible());
+    }
+
+    #[test]
+    fn a_friend_sees_a_snow_golem_from_its_look_tag_and_loses_its_pumpkin_to_shears() {
+        let mut host = EntityWorld::default();
+        let (golem, golem_tag) = spawn(&mut host, "{id:\"minecraft:snow_golem\",Pos:[2.5d,64.0d,0.5d],NoAI:1b,Pumpkin:1b}");
+        assert_eq!(tracking_range("minecraft:snow_golem"), 8);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, golem, &golem_tag));
+        assert_eq!(friend.entity_type(golem), Some("minecraft:snow_golem"));
+        assert!(friend.snow_golems()[0].golem.pumpkin);
+        host.shear_snow_golem(golem).expect("sheared");
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(!friend.snow_golems()[0].golem.pumpkin, "the friend sees its bare head");
+        assert_eq!(friend.snow_golems()[0].golem.body.position, DVec3::new(2.5, 64.0, 0.5));
     }
 
     #[test]

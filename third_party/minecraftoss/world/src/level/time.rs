@@ -242,6 +242,11 @@ impl Level<'_> {
         sky.environment.value_named("gameplay/piglins_zombify", &sample) == minecraftoss_core::environment::Value::Bool(true)
     }
 
+    pub fn snow_golem_melts_at(&self, x: i32, y: i32, z: i32) -> bool {
+        let biome = minecraftoss_generator::feature::World::biome(self, x, y, z).map_or(0, |b| b.0);
+        self.environment_flag("gameplay/snow_golem_melts", biome)
+    }
+
     /// A float attribute's value in a biome.
     pub(super) fn biome_value(&self, name: &str, biome: u16) -> f32 {
         self.environment_value(name, biome)

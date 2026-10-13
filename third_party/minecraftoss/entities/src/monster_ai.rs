@@ -56,6 +56,7 @@ pub enum MonsterKind {
     Cat,
     Ocelot,
     WanderingTrader,
+    SnowGolem,
 }
 
 impl MonsterKind {
@@ -79,6 +80,7 @@ impl MonsterKind {
             Self::Cat => &crate::feline_ai::CAT_GOAL_NAMES,
             Self::Ocelot => &crate::feline_ai::OCELOT_GOAL_NAMES,
             Self::WanderingTrader => &crate::trader_ai::GOAL_NAMES,
+            Self::SnowGolem => &crate::snow_golem_ai::GOAL_NAMES,
         }
     }
 
@@ -101,6 +103,7 @@ impl MonsterKind {
             Self::Cat => &crate::feline_ai::CAT_TARGET_NAMES,
             Self::Ocelot => &crate::feline_ai::OCELOT_TARGET_NAMES,
             Self::WanderingTrader => &crate::trader_ai::TARGET_NAMES,
+            Self::SnowGolem => &crate::snow_golem_ai::TARGET_NAMES,
         }
     }
 }
@@ -401,6 +404,7 @@ pub(crate) enum Prey {
     Skeleton,
     Piglin,
     Chicken,
+    Monster,
 }
 
 /// `MeleeAttackGoal`'s state (and `ZombieAttackGoal`'s raised arms).
@@ -523,6 +527,7 @@ pub struct MonsterGoalContext {
     pub wolf: crate::wolf_ai::WolfState,
     pub feline: crate::feline_ai::FelineState,
     pub trader: crate::trader_ai::TraderState,
+    pub snow_golem: crate::snow_golem_ai::SnowGolemState,
     /// The level's points of interest and random, lent while it ticks (to
     /// iron golems and zombies).
     pub pois: Option<crate::poi::PoiManager>,
@@ -736,7 +741,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -813,6 +818,7 @@ impl MonsterAi {
             MonsterKind::Shulker => FOLLOW_RANGE,
             MonsterKind::Cat | MonsterKind::Ocelot => crate::feline::FOLLOW_RANGE,
             MonsterKind::WanderingTrader => crate::wandering_trader::FOLLOW_RANGE,
+            MonsterKind::SnowGolem => crate::snow_golem::FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -841,6 +847,9 @@ impl MonsterAi {
         if kind == MonsterKind::WanderingTrader {
             walk.walk_target = WalkTarget::Zero;
         }
+        if kind == MonsterKind::SnowGolem {
+            walk.walk_target = WalkTarget::Zero;
+        }
         if kind == MonsterKind::IronGolem {
             // A `PathfinderMob` with a one-block step (`STEP_HEIGHT`) whose
             // spots are all alike (`getWalkTargetValue` 0).
@@ -858,6 +867,7 @@ impl MonsterAi {
             MonsterKind::Cat => (crate::feline_ai::cat_goals(), crate::feline_ai::cat_targets(), crate::feline::CAT_EYE_HEIGHT),
             MonsterKind::Ocelot => (crate::feline_ai::ocelot_goals(), crate::feline_ai::ocelot_targets(), crate::feline::OCELOT_EYE_HEIGHT),
             MonsterKind::WanderingTrader => (crate::trader_ai::trader_goals(), crate::trader_ai::trader_targets(), crate::wandering_trader::EYE_HEIGHT),
+            MonsterKind::SnowGolem => (crate::snow_golem_ai::snow_golem_goals(), crate::snow_golem_ai::snow_golem_targets(), crate::snow_golem::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -922,6 +932,7 @@ impl MonsterAi {
                 wolf: Default::default(),
                 feline: Default::default(),
                 trader: Default::default(),
+                snow_golem: Default::default(),
                 pois: None,
                 level_random: None,
                 can_break_doors: false,
@@ -2396,11 +2407,11 @@ impl Goal<MonsterGoalContext> for HealRaidersGoal {
 /// until it has seen it for 5 ticks within the radius, looks at it, and
 /// attacks every `min` to `max` ticks (by distance) while in sight.
 #[derive(Clone)]
-struct RangedAttackGoal {
-    speed: f64,
-    interval_min: i32,
-    interval_max: i32,
-    radius: f32,
+pub(crate) struct RangedAttackGoal {
+    pub(crate) speed: f64,
+    pub(crate) interval_min: i32,
+    pub(crate) interval_max: i32,
+    pub(crate) radius: f32,
 }
 impl Goal<MonsterGoalContext> for RangedAttackGoal {
     fn controls(&self) -> Controls {
@@ -2465,6 +2476,11 @@ impl Goal<MonsterGoalContext> for RangedAttackGoal {
 /// splash potion for the target, and the throw sound's pitch from its
 /// random.
 fn perform_ranged_attack(ctx: &mut MonsterGoalContext, target: TargetInfo) {
+    if ctx.kind == MonsterKind::SnowGolem {
+        let pitch = crate::snow_golem::SnowGolem::shoot_pitch(ctx.random.next_float());
+        ctx.snow_golem.shot = Some((target.position, target.eye_height, pitch));
+        return;
+    }
     if ctx.witch.drinking {
         return;
     }
@@ -2828,6 +2844,7 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
             Prey::Skeleton => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Piglin => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:piglin" | "minecraft:piglin_brute")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Chicken => ctx.mobs.iter().filter(|m| m.kind == "minecraft:chicken").map(|m| Target::Mob(m.id)).collect(),
+            Prey::Monster => ctx.mobs.iter().filter(|m| is_enemy(m.kind)).map(|m| Target::Mob(m.id)).collect(),
         };
         let mut best: Option<(f64, Target)> = None;
         for target in candidates {

@@ -537,6 +537,9 @@ impl EntityView {
         for e in w.wandering_traders().iter().filter(|e| e.trader.health > 0.0) {
             add(MobHit::WanderingTrader(e.id), &e.trader.body);
         }
+        for e in w.snow_golems().iter().filter(|e| e.golem.health > 0.0) {
+            add(MobHit::SnowGolem(e.id), &e.golem.body);
+        }
         for e in w.villagers().iter().filter(|e| e.villager.health > 0.0) {
             add(MobHit::Villager(e.id), &e.villager.body);
         }
@@ -934,6 +937,14 @@ impl EntityView {
             light,
             partial,
         );
+        let pumpkins = minecraft_terrain::snow_golem_render::append_snow_golems(
+            &mut out.models,
+            w.snow_golems().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
         wolf_render::append_wolves(
             &mut out.models,
             w.wolves().iter(),
@@ -1107,7 +1118,7 @@ impl EntityView {
         let _ = self
             .items
             .append_held_items(&mut out.items, &held, packs, atlas, light);
-        let carried: Vec<_> = carried.into_iter().chain(poppies).collect();
+        let carried: Vec<_> = carried.into_iter().chain(poppies).chain(pumpkins).collect();
         let _ = self
             .items
             .append_posed_blocks(&mut out.items, &carried, packs, atlas, light);

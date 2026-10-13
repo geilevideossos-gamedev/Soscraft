@@ -163,6 +163,12 @@ impl EntityWorld {
                     .iter()
                     .find(|e| e.id == id)
                     .map(|e| &e.trader.body)
+            })
+            .or_else(|| {
+                self.snow_golems
+                    .iter()
+                    .find(|e| e.id == id)
+                    .map(|e| &e.golem.body)
             });
         if found.is_some() {
             return found;
@@ -288,6 +294,7 @@ impl EntityWorld {
             || self.striders.iter().any(|e| e.id == id && e.no_ai)
             || self.hoglins.iter().any(|e| e.id == id && e.no_ai)
             || self.wandering_traders.iter().any(|e| e.id == id && e.no_ai)
+            || self.snow_golems.iter().any(|e| e.id == id && e.no_ai)
     }
 
     fn leash_panicking(&self, id: u64) -> bool {
@@ -334,6 +341,7 @@ impl EntityWorld {
             || self.chickens.iter().any(|e| e.id == id)
             || self.felines.iter().any(|e| e.id == id)
             || self.iron_golems.iter().any(|e| e.id == id)
+            || self.snow_golems.iter().any(|e| e.id == id)
             || self.striders.iter().any(|e| e.id == id)
             || self.hoglins.iter().any(|e| e.id == id)
             || self

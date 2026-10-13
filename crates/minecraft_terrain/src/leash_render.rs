@@ -72,6 +72,7 @@ pub fn y_rot(v: DVec3, angle: f64) -> DVec3 {
 pub fn leash_offset(kind: &str, eye_height: f32, width: f32) -> DVec3 {
     let (eye, side) = match kind.strip_prefix("minecraft:").unwrap_or(kind) {
         "llama" | "trader_llama" => (0.75, 0.5),
+        "snow_golem" => (0.75, 0.4),
         "ocelot" => (0.5, 0.4),
         "iron_golem" => (0.875, 0.4),
         "pig" | "wolf" | "strider" => (0.6, 0.4),

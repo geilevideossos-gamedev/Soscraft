@@ -44,6 +44,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:shulker",
     "minecraft:skeleton",
     "minecraft:slime",
+    "minecraft:snow_golem",
     "minecraft:spider",
     "minecraft:stray",
     "minecraft:strider",
@@ -343,6 +344,16 @@ impl Shown {
                 golem_render::append_iron_golems(
                     models,
                     w.iron_golems().iter(),
+                    poses,
+                    atlas,
+                    light,
+                    partial,
+                );
+            }
+            "minecraft:snow_golem" => {
+                crate::snow_golem_render::append_snow_golems(
+                    models,
+                    w.snow_golems().iter(),
                     poses,
                     atlas,
                     light,
@@ -895,6 +906,7 @@ mod tests {
             ("minecraft:mule", 0.05),
             ("minecraft:llama", 0.05),
             ("minecraft:trader_llama", 0.05),
+            ("minecraft:snow_golem", 0.05),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);

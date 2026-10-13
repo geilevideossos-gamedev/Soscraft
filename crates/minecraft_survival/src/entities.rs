@@ -1816,6 +1816,7 @@ pub(crate) fn encode(hit: MobHit) -> u64 {
         MobHit::Shulker(_) => 26,
         MobHit::Feline(_) => FELINE_KEY,
         MobHit::WanderingTrader(_) => WANDERING_TRADER_KEY,
+        MobHit::SnowGolem(_) => SNOW_GOLEM_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1847,6 +1848,7 @@ pub(crate) fn decode(key: u64) -> Option<MobHit> {
         26 => MobHit::Shulker(id),
         FELINE_KEY => MobHit::Feline(id),
         WANDERING_TRADER_KEY => MobHit::WanderingTrader(id),
+        SNOW_GOLEM_KEY => MobHit::SnowGolem(id),
         _ => return None,
     })
 }
@@ -1860,6 +1862,7 @@ const HOGLIN_KEY: u64 = 22;
 const PIGLIN_KEY: u64 = 21;
 const FELINE_KEY: u64 = 29;
 const WANDERING_TRADER_KEY: u64 = 30;
+const SNOW_GOLEM_KEY: u64 = 31;
 pub(crate) const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
@@ -2212,6 +2215,16 @@ mod tests {
         let key = encode(MobHit::Feline(77));
         assert_eq!(key >> 56, 29);
         assert_eq!(decode(key), Some(MobHit::Feline(77)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
+    fn a_snow_golem_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::SnowGolem(77));
+        assert_eq!(key >> 56, 31);
+        assert_eq!(decode(key), Some(MobHit::SnowGolem(77)));
         assert_eq!(fireball_of(key), None);
         assert_eq!(crystal_of(key), None);
         assert_eq!(end_target_of(key), None);

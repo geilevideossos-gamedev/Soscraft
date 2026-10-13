@@ -4,6 +4,7 @@ use minecraftoss_core::pos::Direction;
 use minecraftoss_core::{BlockPos, BlockStateId};
 
 pub const IRON_GOLEM: &str = "minecraft:iron_golem";
+pub const SNOW_GOLEM: &str = "minecraft:snow_golem";
 pub const CARVED_PUMPKIN: &str = "minecraft:carved_pumpkin";
 pub const JACK_O_LANTERN: &str = "minecraft:jack_o_lantern";
 
@@ -15,6 +16,13 @@ pub struct GolemPattern {
     pub spawn: (i32, i32),
 }
 
+pub const SNOW_GOLEM_FULL: GolemPattern = GolemPattern {
+    kind: SNOW_GOLEM,
+    body: "minecraft:snow_block",
+    rows: &["^", "#", "#"],
+    spawn: (0, 2),
+};
+
 pub const IRON_GOLEM_FULL: GolemPattern = GolemPattern {
     kind: IRON_GOLEM,
     body: "minecraft:iron_block",
@@ -22,7 +30,7 @@ pub const IRON_GOLEM_FULL: GolemPattern = GolemPattern {
     spawn: (1, 2),
 };
 
-pub const GOLEMS: [GolemPattern; 1] = [IRON_GOLEM_FULL];
+pub const GOLEMS: [GolemPattern; 2] = [SNOW_GOLEM_FULL, IRON_GOLEM_FULL];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GolemMatch {
@@ -374,6 +382,58 @@ mod tests {
         let tag = golem_tag(&IRON_GOLEM_FULL, None);
         assert_eq!(tag.get("id").and_then(Tag::as_str), Some(IRON_GOLEM));
         assert_eq!(tag.get("PlayerCreated"), Some(&Tag::Byte(1)));
+    }
+
+    #[test]
+    fn two_snow_blocks_under_a_pumpkin_build_a_snow_golem_facing_any_way() {
+        for pumpkin in [CARVED_PUMPKIN, JACK_O_LANTERN] {
+            let map = world(&[
+                ((3, 66, 3), pumpkin),
+                ((3, 65, 3), "minecraft:snow_block"),
+                ((3, 64, 3), "minecraft:snow_block"),
+            ]);
+            let found = find(&SNOW_GOLEM_FULL, BlockPos::new(3, 66, 3), &lookup(&map))
+                .expect("a snow golem");
+            assert_eq!(found.cells().len(), 3);
+            assert_eq!(spawn_position(&SNOW_GOLEM_FULL, &found), [3.5, 64.05, 3.5]);
+            assert!(find(&IRON_GOLEM_FULL, BlockPos::new(3, 66, 3), &lookup(&map)).is_none());
+        }
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let map = world(&[
+                ((3, 64, 3), CARVED_PUMPKIN),
+                ((3 + dx, 64, 3 + dz), "minecraft:snow_block"),
+                ((3 + 2 * dx, 64, 3 + 2 * dz), "minecraft:snow_block"),
+            ]);
+            let found = find(&SNOW_GOLEM_FULL, BlockPos::new(3, 64, 3), &lookup(&map))
+                .expect("lying down along any side");
+            let [x, y, z] = spawn_position(&SNOW_GOLEM_FULL, &found);
+            assert_eq!(
+                (x, y, z),
+                (
+                    f64::from(3 + 2 * dx) + 0.5,
+                    64.05,
+                    f64::from(3 + 2 * dz) + 0.5
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_snow_golem_needs_both_snow_blocks_and_is_not_player_made() {
+        let map = world(&[
+            ((3, 66, 3), CARVED_PUMPKIN),
+            ((3, 65, 3), "minecraft:snow_block"),
+            ((3, 64, 3), "minecraft:snow"),
+        ]);
+        assert!(find(&SNOW_GOLEM_FULL, BlockPos::new(3, 66, 3), &lookup(&map)).is_none());
+        let tag = golem_tag(&SNOW_GOLEM_FULL, None);
+        assert_eq!(tag.get("id").and_then(Tag::as_str), Some(SNOW_GOLEM));
+        assert_eq!(tag.get("PlayerCreated"), None);
+    }
+
+    #[test]
+    fn the_snow_golem_is_tried_before_the_iron_golem() {
+        assert_eq!(GOLEMS.map(|g| g.kind), [SNOW_GOLEM, IRON_GOLEM]);
     }
 
     #[test]

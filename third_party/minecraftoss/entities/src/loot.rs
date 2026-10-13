@@ -82,6 +82,26 @@ impl ShearingLootBook {
         })
     }
 
+    pub fn roll_items(&mut self, id: &str) -> Option<Vec<ItemStack>> {
+        let table = self.tables.get(id)?;
+        if table["type"] != "minecraft:shearing" {
+            return None;
+        }
+        let mut out = Vec::new();
+        for pool in table["pools"].as_array()? {
+            let rolls = pool["rolls"].as_u64()?;
+            let entries = pool["entries"].as_array()?;
+            if entries.len() != 1 || entries[0]["type"] != "minecraft:item" || entries[0].get("functions").is_some() || entries[0].get("conditions").is_some() || pool.get("conditions").is_some() {
+                return None;
+            }
+            let item = entries[0]["name"].as_str()?;
+            for _ in 0..rolls {
+                out.push(ItemStack::new(item.to_owned(), 1));
+            }
+        }
+        Some(out)
+    }
+
     pub fn roll_sheep(&mut self, color: &str) -> Option<Vec<ItemStack>> {
         let root = self.tables.get("minecraft:shearing/sheep")?;
         if root["type"] != "minecraft:shearing" {

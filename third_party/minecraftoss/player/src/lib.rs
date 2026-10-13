@@ -185,6 +185,12 @@ pub trait World {
     fn rain_at(&self, _pos: Pos) -> bool {
         false
     }
+    fn snow_golem_melts(&self, _pos: Pos) -> bool {
+        false
+    }
+    fn block_survives(&self, _pos: Pos, _block: &Block) -> bool {
+        true
+    }
     /// The lowest block Y (`LevelHeightAccessor.getMinY`).
     fn min_y(&self) -> i32 {
         -64

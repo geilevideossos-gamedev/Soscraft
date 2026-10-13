@@ -532,6 +532,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman_eyes")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/witch/witch")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/iron_golem/iron_golem")?, ());
+    textures.insert(ResourceId::parse(crate::snow_golem_render::TEXTURE)?, ());
     for cracks in ["low", "medium", "high"] {
         textures.insert(ResourceId::parse(&format!("minecraft:entity/iron_golem/iron_golem_crackiness_{cracks}"))?, ());
     }
