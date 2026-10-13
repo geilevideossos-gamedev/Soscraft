@@ -379,6 +379,7 @@ fn run_players_system(ecs: &mut World) {
                 .flat_map(|c| c.solid_brushes().iter().cloned())
                 .collect();
             let bodies = alive_body_clips(&world);
+            let pushers = if crate::voxel::active() { push_bodies(&world) } else { Vec::new() };
             let glass_damage = world.world_objects().glass_damage_pairs();
             let backend = ClipBackend {
                 brushes: &brushes,
@@ -418,6 +419,13 @@ fn run_players_system(ecs: &mut World) {
                 let (hull_mins, hull_maxs) = crate::voxel::player_hull(ps);
                 if crate::voxel::active() && ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP == 0 && let Some(origin) = crate::voxel::push_out(ps.origin, hull_mins, hull_maxs, Some(crate::voxel::Mover::of(ps, &cmd))) {
                     ps.origin = origin;
+                }
+                if crate::voxel::active() && pushable(ps) {
+                    let push = minecraft_push(ps.origin, hull_maxs[2], &pushers, id.0 as u16);
+                    let mover = crate::voxel::Mover::of(ps, &cmd);
+                    if let Some(origin) = push_move(ps.origin, push, f64::from(delta) / 1000.0, |from, to| crate::voxel::trace_as(from, to, hull_mins, hull_maxs, Some(mover))) {
+                        ps.origin = origin;
+                    }
                 }
                 let backend = ClipBackend { mover: Some(crate::voxel::Mover::of(ps, &cmd)), ..backend };
                 let moved_from = ps.origin;
@@ -1839,6 +1847,82 @@ fn player_body_clips(world: &FrameWorld, block_world: bool) -> Vec<PlayerBodyCli
     bodies
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PushBody {
+    entnum: u16,
+    origin: [f32; 3],
+    height: f32,
+    riding: bool,
+}
+
+const PUSH_HALF_WIDTH: f64 = 0.3;
+const PUSH_GAIN: f64 = 1.0 / (1.0 - 0.546);
+
+fn push_bodies(world: &FrameWorld) -> Vec<PushBody> {
+    let mut bodies: Vec<_> = world
+        .client_ids_sorted()
+        .into_iter()
+        .filter(|id| world.client_meta(*id).is_some_and(|m| m.lifecycle == ClientLifecycle::Alive))
+        .filter_map(|id| {
+            world.player(id).filter(|ps| ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP == 0).map(|ps| PushBody {
+                entnum: id.0 as u16,
+                origin: ps.origin,
+                height: crate::voxel::player_hull(ps).1[2],
+                riding: ps.pm_flags & playerstate_iw4::pm_flags::MC_RIDING != 0,
+            })
+        })
+        .collect();
+    bodies.extend(world.prediction_remote_bodies().iter().filter(|body| !body.noclip).map(|body| PushBody {
+        entnum: body.client.0 as u16,
+        origin: body.origin,
+        height: body.height,
+        riding: body.riding,
+    }));
+    bodies
+}
+
+fn pushable(ps: &PlayerState) -> bool {
+    use playerstate_iw4::pm_flags::{LADDER, MC_NOCLIP, MC_RIDING};
+    ps.pm_type == 0 && ps.pm_flags & (MC_NOCLIP | MC_RIDING | LADDER) == 0
+}
+
+fn entity_push(dx: f64, dz: f64) -> Option<[f64; 2]> {
+    let d = dx.abs().max(dz.abs());
+    if d < 0.01 {
+        return None;
+    }
+    let d = d.sqrt();
+    let scale = (1.0 / d).min(1.0) * 0.05;
+    Some([dx / d * scale, dz / d * scale])
+}
+
+fn minecraft_push(own: [f32; 3], own_height: f32, others: &[PushBody], self_entnum: u16) -> [f64; 2] {
+    let block = f64::from(crate::voxel::BLOCK);
+    let (x, z, y) = (f64::from(own[0]) / block, -f64::from(own[1]) / block, f64::from(own[2]) / block);
+    let top = y + f64::from(own_height) / block;
+    let mut push = [0.0, 0.0];
+    for other in others.iter().filter(|other| other.entnum != self_entnum && !other.riding) {
+        let (ox, oz, oy) = (f64::from(other.origin[0]) / block, -f64::from(other.origin[1]) / block, f64::from(other.origin[2]) / block);
+        let otop = oy + f64::from(other.height) / block;
+        let overlap = (ox - x).abs() < 2.0 * PUSH_HALF_WIDTH && (oz - z).abs() < 2.0 * PUSH_HALF_WIDTH && oy < top && otop > y;
+        if let Some([dx, dz]) = entity_push(ox - x, oz - z).filter(|_| overlap) {
+            push[0] -= dx;
+            push[1] -= dz;
+        }
+    }
+    push
+}
+
+fn push_move(origin: [f32; 3], push: [f64; 2], seconds: f64, trace: impl Fn([f32; 3], [f32; 3]) -> Trace) -> Option<[f32; 3]> {
+    if push == [0.0, 0.0] {
+        return None;
+    }
+    let step = 20.0 * f64::from(crate::voxel::BLOCK) * PUSH_GAIN * seconds.min(0.2);
+    let target = [origin[0] + (push[0] * step) as f32, origin[1] - (push[1] * step) as f32, origin[2]];
+    let hit = trace(origin, target);
+    (hit.startsolid == 0).then_some(hit.endpos)
+}
+
 #[derive(Clone, Copy)]
 struct ClipBackend<'a> {
     brushes: &'a [SimBrush],
@@ -2332,6 +2416,140 @@ mod tests {
         let stuck = clip_move_to_players(free, &hard, 1, input);
         assert_eq!(stuck.startsolid, 1);
         assert_eq!(stuck.allsolid, 1);
+    }
+
+    const B: f32 = crate::voxel::BLOCK;
+
+    fn pusher(entnum: u16, x: f32, z: f32) -> PushBody {
+        PushBody { entnum, origin: [x * B, -z * B, 0.0], height: 1.8 * B, riding: false }
+    }
+
+    fn free(_: [f32; 3], to: [f32; 3]) -> Trace {
+        Trace { fraction: 1.0, endpos: to, ..Trace::default() }
+    }
+
+    fn apart(a: [f32; 3], b: [f32; 3]) -> f64 {
+        f64::from((a[0] - b[0]).hypot(a[1] - b[1]) / B)
+    }
+
+    fn drift(step_ms: u32, steps: u32) -> (f64, Option<u32>) {
+        let mut bodies = [pusher(1, 0.0, 0.0), pusher(2, 0.1, 0.0)];
+        let mut parted = None;
+        for n in 0..steps {
+            for i in 0..2 {
+                let push = minecraft_push(bodies[i].origin, bodies[i].height, &bodies, bodies[i].entnum);
+                if let Some(origin) = push_move(bodies[i].origin, push, f64::from(step_ms) / 1000.0, free) {
+                    bodies[i].origin = origin;
+                }
+            }
+            if parted.is_none() && apart(bodies[0].origin, bodies[1].origin) >= 0.6 {
+                parted = Some((n + 1) * step_ms);
+            }
+        }
+        (apart(bodies[0].origin, bodies[1].origin), parted)
+    }
+
+    #[test]
+    fn the_push_matches_vanilla_entity_push() {
+        let push = minecraft_push([0.3 * B, 0.0, 0.0], 1.8 * B, &[pusher(2, 0.0, 0.0)], 1);
+        assert!((push[0] - 0.3 / 0.3_f64.sqrt() * 0.05).abs() < 1e-4, "{push:?}");
+        assert!((push[0] - 0.027386).abs() < 1e-5, "{push:?}");
+        assert!(push[1].abs() < 1e-9);
+        assert_eq!(entity_push(0.005, 0.009), None);
+        assert_eq!(minecraft_push([0.005 * B, -0.009 * B, 0.0], 1.8 * B, &[pusher(2, 0.0, 0.0)], 1), [0.0, 0.0]);
+        let far = entity_push(4.0, 0.0).unwrap();
+        assert!((far[0] - 4.0 / 2.0 * 0.5 * 0.05).abs() < 1e-12, "{far:?}");
+        let near = entity_push(0.25, 0.0).unwrap();
+        assert!((near[0] - 0.25 / 0.5 * 0.05).abs() < 1e-12, "{near:?}");
+        let left = minecraft_push([-0.3 * B, 0.0, 0.0], 1.8 * B, &[pusher(2, 0.0, 0.0)], 1);
+        assert!(left[0] < 0.0);
+        let south = minecraft_push([0.0, -0.3 * B, 0.0], 1.8 * B, &[pusher(2, 0.0, 0.0)], 1);
+        assert!(south[1] > 0.0 && south[0].abs() < 1e-9);
+        let moved = push_move([0.0, -0.3 * B, 0.0], south, 0.05, free).unwrap();
+        assert!(moved[1] < -0.3 * B, "pushed further south: {moved:?}");
+        let both = minecraft_push([0.0; 3], 1.8 * B, &[pusher(2, 0.2, 0.0), pusher(3, -0.2, 0.0)], 1);
+        assert!(both[0].abs() < 1e-9, "{both:?}");
+        assert_eq!(minecraft_push([0.0; 3], 1.8 * B, &[pusher(1, 0.2, 0.0)], 1), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn overlapping_players_drift_apart_within_a_second() {
+        let (coarse, coarse_parted) = drift(50, 20);
+        assert!(coarse > 0.6, "{coarse}");
+        let (fine, fine_parted) = drift(16, 62);
+        assert!(fine > 0.6, "{fine}");
+        let (coarse_parted, fine_parted) = (coarse_parted.unwrap(), fine_parted.unwrap());
+        assert!(coarse_parted <= 400 && fine_parted <= 400, "{coarse_parted} {fine_parted}");
+        assert!(coarse_parted.abs_diff(fine_parted) <= 50, "{coarse_parted} {fine_parted}");
+        let push = [0.02, 0.0];
+        let mut a = [0.0_f32; 3];
+        for _ in 0..20 {
+            a = push_move(a, push, 0.05, free).unwrap();
+        }
+        let mut b = [0.0_f32; 3];
+        for _ in 0..62 {
+            b = push_move(b, push, 0.016, free).unwrap();
+        }
+        assert!((f64::from(b[0]) / f64::from(a[0]) - 1.0).abs() < 0.05, "{a:?} {b:?}");
+        assert!((f64::from(a[0] / B) - 0.02 * 20.0 * PUSH_GAIN).abs() < 1e-4, "{a:?}");
+        let held = push_move([0.0; 3], push, 2.0, free).unwrap();
+        assert!((f64::from(held[0] / B) - 0.02 * 4.0 * PUSH_GAIN).abs() < 1e-4, "a long frame moves at most 0.2 s: {held:?}");
+    }
+
+    #[test]
+    fn the_push_respects_height_spectators_and_riders() {
+        let own = [0.0_f32; 3];
+        let above = PushBody { origin: [0.2 * B, 0.0, 1.8 * B], ..pusher(2, 0.0, 0.0) };
+        assert_eq!(minecraft_push(own, 1.8 * B, &[above], 1), [0.0, 0.0]);
+        let head = PushBody { origin: [0.2 * B, 0.0, 1.7 * B], ..pusher(2, 0.0, 0.0) };
+        assert!(minecraft_push(own, 1.8 * B, &[head], 1)[0] < 0.0);
+        assert_eq!(minecraft_push(own, 1.5 * B, &[PushBody { origin: [0.2 * B, 0.0, 1.6 * B], ..head }], 1), [0.0, 0.0]);
+        let below = PushBody { origin: [0.2 * B, 0.0, -1.8 * B], ..pusher(2, 0.0, 0.0) };
+        assert_eq!(minecraft_push(own, 1.8 * B, &[below], 1), [0.0, 0.0]);
+        let rider = PushBody { riding: true, ..pusher(2, 0.2, 0.0) };
+        assert_eq!(minecraft_push(own, 1.8 * B, &[rider], 1), [0.0, 0.0]);
+        assert_eq!(minecraft_push(own, 1.8 * B, &[pusher(2, 0.6, 0.0), pusher(3, 0.0, -0.6)], 1), [0.0, 0.0]);
+
+        let mut sim = crate::SimWorld::default();
+        let mut world = sim.frame();
+        alive(&mut world, ClientId(1), 0);
+        alive(&mut world, ClientId(2), MC_MAY_FLY | MC_NOCLIP | MC_FLYING);
+        alive(&mut world, ClientId(3), playerstate_iw4::pm_flags::MC_RIDING);
+        alive(&mut world, ClientId(4), playerstate_iw4::pm_flags::CROUCH);
+        world.player_mut(ClientId(4)).unwrap().view_height_target = movement_iw4::view_height::CROUCH;
+        let bodies = push_bodies(&world);
+        let found: Vec<(u16, bool)> = bodies.iter().map(|body| (body.entnum, body.riding)).collect();
+        assert_eq!(found, [(1, false), (3, true), (4, false)]);
+        assert!(bodies[2].height < bodies[0].height, "{bodies:?}");
+        assert_eq!(bodies[0].height, crate::voxel::player_hull(world.player(ClientId(1)).unwrap()).1[2]);
+
+        use playerstate_iw4::pm_flags::{LADDER, MC_RIDING};
+        let walker = PlayerState::ZERO;
+        assert!(pushable(&walker));
+        for flags in [MC_NOCLIP, MC_RIDING, LADDER] {
+            assert!(!pushable(&PlayerState { pm_flags: flags, ..walker }), "{flags:#x}");
+        }
+        assert!(!pushable(&PlayerState { pm_type: 1, ..walker }));
+    }
+
+    #[test]
+    fn a_push_stops_at_a_wall() {
+        let wall = 2.0_f32;
+        let blocked = |from: [f32; 3], to: [f32; 3]| {
+            let end = to[0].min(wall);
+            let fraction = if to[0] > from[0] { ((end - from[0]) / (to[0] - from[0])).clamp(0.0, 1.0) } else { 1.0 };
+            Trace { fraction, endpos: [end, to[1], to[2]], ..Trace::default() }
+        };
+        let push = minecraft_push([0.0; 3], 1.8 * B, &[pusher(2, -0.1, 0.0)], 1);
+        assert!(push[0] > 0.0);
+        let mut origin = [0.0_f32; 3];
+        for _ in 0..20 {
+            origin = push_move(origin, push, 0.05, blocked).unwrap();
+        }
+        assert_eq!(origin[0], wall);
+        let inside = |_: [f32; 3], to: [f32; 3]| Trace { startsolid: 1, allsolid: 1, endpos: to, ..Trace::default() };
+        assert_eq!(push_move([0.0; 3], push, 0.05, inside), None);
+        assert_eq!(push_move([0.0; 3], [0.0, 0.0], 0.05, free), None);
     }
 
     #[test]

@@ -321,6 +321,38 @@ Commit: "Players in Minecraft worlds pass through each other instead of sticking
 IW4L_MINECRAFT_KIT=minecraft:white_bed,minecraft:red_bed,minecraft:oak_planks*64,minecraft:cobblestone*64,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:cooked_beef*32,minecraft:diamond_sword
 ```
 
+### Commit 2: overlapping players push each other apart
+
+Commit: "Overlapping Minecraft players push each other apart like vanilla", the one after `bb470a28` (A7 commit 1).
+
+- **Vanilla 26.3** (checked with javap): `LivingEntity.pushEntities` takes `Level.getPushableEntities(this, box)`; on the client `EntitySelector.pushableBy` keeps only the local player (and only when `isPushable`: alive, not a spectator, not on a climbable), so each client pushes its own player once per overlapping player per tick. `Entity.push(other)`: nothing for passengers of the same vehicle or `noPhysics`; `dx`, `dz` to the other; `d = absMax(dx, dz)`; nothing below 0.01; `d = sqrt(d)`, `dx /= d`, `dz /= d`, times `min(1, 1/d)` and 0.05; the pushed player moves away by that, added to its motion. On the ground the friction (0.6 x 0.91 = 0.546 a tick) turns a steady push p into p / (1 - 0.546), about 2.2 p, blocks a tick.
+- **Changed** (`sim`):
+  - `world.rs`: `PredictionRemoteBody` gains `height` (`voxel::player_hull(ps).1[2]`, so crouching and prone bodies are lower) and `riding` (`MC_RIDING`), filled where the friend's prediction takes the snapshot's other players.
+  - `step.rs`:
+    - `PushBody { entnum, origin, height, riding }` and `push_bodies(world)`: the alive clients and the prediction's remote bodies, minus noclip spectators. Built only in Minecraft worlds, next to `alive_body_clips`, before the mutable borrow of the moving player.
+    - `entity_push(dx, dz)`: a copy of vanilla's `Entity.push` step (the vendored `pushing.rs` one is private and `sim` does not use minecraftoss).
+    - `minecraft_push(own, own_height, others, self_entnum) -> [f64; 2]`: in blocks (x = map x / 36, z = -map y / 36, y = map z / 36), each body a 0.6-wide box with its own height; only strictly overlapping boxes count; the impulses of all overlapping players are summed. Riders are skipped.
+    - `pushable(ps)`: `pm_type` 0, not noclip, not riding, not on a ladder (`LADDER` stands for `onClimbable`).
+    - `push_move(origin, push, seconds, trace)`: the push is applied as a collision-checked move, not as velocity, because MW2 ground friction (stopspeed 100) would eat every vanilla-sized push and idle players would never separate. The step is `push x 20 x 36 x GAIN x dt` map units with `GAIN = 1/(1 - 0.546)` and `dt` the command's time clamped to 0.2 s (as the prediction does); map dx = +x, map dy = -z. The move is traced with the player's hull (`voxel::trace_as`, the same mover as `push_out`), and nothing moves when the trace starts solid. `ps.velocity` is untouched.
+    - `run_players_system`: in Minecraft worlds, after `voxel::push_out` and before `pmove`, a pushable player is moved by `minecraft_push` against everyone else through `push_move`.
+  - The host steps every player through `run_players_system`, and the friend predicts its own push through the same code (`step_predicted`, with the snapshot's remote bodies), as in vanilla where each client pushes its own player. No new messages, no protocol change. The host's result is authoritative; a small difference between the friend's prediction and the host is corrected like any other prediction error.
+  - MW2 maps: `voxel::active()` is false, so no push bodies are built and nothing is pushed.
+- **Tests** (`sim` `step::tests`, pure functions, no voxel world):
+  - `the_push_matches_vanilla_entity_push`: (0.3, 0) against (0, 0) gives 0.3/sqrt(0.3) x 0.05 = 0.027386 and 0; (0.005, 0.009) gives nothing; d = 4 is scaled by 0.5 and d = 0.25 is not; the push points away in x and z (and a push in +z moves the map origin to -y); two players on both sides cancel out; the own entry is ignored.
+  - `overlapping_players_drift_apart_within_a_second`: two players 0.1 blocks apart, both pushed in turn with a free trace: 20 commands of 50 ms and 62 of 16 ms both end more than 0.6 blocks apart, both stop overlapping within 0.4 s (about 0.25 s) and within 50 ms of each other; a steady push moves the same distance per second at 50 ms and 16 ms within 5% (4% from 62 x 16 = 992 ms), 0.02 x 20 x GAIN blocks in one second; a 2 s command moves only 0.2 s worth.
+  - `the_push_respects_height_spectators_and_riders`: a player standing on the other's head (feet at its top) does not push, one 0.1 blocks lower does; a crouched player (1.5 blocks) is not pushed by one at 1.6; one below does not push; a rider does not push; 0.6 blocks apart is no overlap; `push_bodies` leaves out the noclip spectator, marks the rider and gives the crouched player a lower height from `player_hull`; `pushable` is false for noclip, riding, ladder and `pm_type` other than 0.
+  - `a_push_stops_at_a_wall`: a player pushed toward a wall stops at it; a trace that starts solid moves nothing; no push, no move.
+  - Run: `test -p sim --locked` (123 passed), `check -p launcher --locked`.
+- **Owner's test steps** (two windows: `& scripts\mp-local.ps1 -World r9-a7 -Fresh`, kit of commit 1 in both; host `/op Friend`):
+  1. Stand next to each other and walk into the other: you slide into them a little and get nudged sideways, as in vanilla; no wall, no stop. Stand still half inside each other: you slide apart within about a quarter of a second. **Screenshot 1** while overlapping, from both windows.
+  2. The friend: `/tp <host name>`. A teleport lands on exactly the same point, where vanilla does not push either (the push needs at least 0.01 blocks between the centres). As soon as either player moves a step, both slide apart. The host: `/tp <friend name>`: the same.
+  3. One player crouches next to the other, then jumps onto the other's head: standing on the head does not push.
+  4. Push the other against a wall: they stop at the wall and do not go into it.
+  5. One player in `/gamemode spectator` flies through the other: no pushing either way.
+  6. One player rides a pig with a saddle (or a horse) next to the other: the rider is not pushed and does not push.
+  7. One player climbs a ladder while the other stands at its foot: the climber is not pushed off the ladder.
+  8. With pvp on, shoot the other with an MW2 gun: hits still register.
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
@@ -338,6 +370,7 @@ IW4L_MINECRAFT_KIT=minecraft:white_bed,minecraft:red_bed,minecraft:oak_planks*64
 - **A6 friend screen:** the friend's creative screen does not predict, like every friend menu: the cursor and the slots show the host's state one round trip later, and a second creative click before the host answers is worked out from the old mirror (within one frame, clicks chain on a scratch copy). Vanilla keeps the creative cursor on the client, so it has no such delay. The Operator Utilities tab needs command level 2 and the friend's own `minecraft_operator_items` setting, like vanilla's `canUseGameMasterBlocks` plus the operator-items option; the host checks no op level for a creative set (vanilla does not either). Saved hotbars stay in each player's own `hotbar.nbt`, as in vanilla, and a load is sent as nine creative sets.
 - **A6 drop throttle:** vanilla's `TickThrottler(20, 1480)` per player, on the host and the friend path alike (vanilla's integrated server throttles the host too). It is ticked with the player's hand ticks in `movement`, which runs every frame for every player, so a player whose `movement` stops (none today) would keep its count; vanilla ticks it with the connection. It is not saved, as in vanilla.
 - **A7 no body collision:** in a Minecraft world players are never solid to each other's movement, as in vanilla, instead of MW2 capsules plus MW2's StuckInClient eject. Hits (`CONTENTS_BODY` links) are unchanged. MW2 maps keep MW2 player collision and StuckInClient.
+- **A7 push:** the push uses vanilla's `Entity.push` impulse, but it is applied as a move traced against the blocks with `GAIN = 1/(1 - 0.546)` (the distance vanilla's ground friction turns a steady push into), not added to the velocity, because MW2's friction would eat it. That is not vanilla: the push does not carry momentum, is the same in the air and on ice as on the ground, and is scaled by each command's time. Riders neither push nor are pushed (vanilla moves a rider with its vehicle, and the fork's mounts are mobs that do not push players; a vanilla rider's own box would still push a walker it reaches). Not done, both vanilla behaviours missing: a sleeping player is still pushed (vanilla's `LivingEntity.push` does nothing while sleeping), and there is no cramming damage between players (`max_entity_cramming`), only between mobs. Team collision rules are not read (there are no teams).
 
 ## State doc changes
 
@@ -357,7 +390,7 @@ Wording for the state docs, to be applied when the round's state is written (thi
 
 - **`docs/MULTIPLAYER.md` 10.2, creative inventory (add to the A6 wording):** "Creative drops are throttled like vanilla (`TickThrottler(20, 1480)` per player, host and friends): 74 in a burst, then one a second."
 
-- **`docs/MINECRAFT-SURVIVAL.md:143`, after "Every MW2 spawn and respawn lands on the Minecraft spawn, ...":** add "In Minecraft worlds players are not solid to each other's movement, as in vanilla: pmove, the script slide and mantling ignore other players, and MW2's StuckInClient eject does not run, so two players who overlap after a spawn or a teleport are never frozen. Bullets, melee and lag compensation still hit players. MW2 maps keep MW2 player collision."
+- **`docs/MINECRAFT-SURVIVAL.md:143`, after "Every MW2 spawn and respawn lands on the Minecraft spawn, ...":** add "In Minecraft worlds players are not solid to each other's movement, as in vanilla: pmove, the script slide and mantling ignore other players, and MW2's StuckInClient eject does not run, so two players who overlap after a spawn or a teleport are never frozen. Bullets, melee and lag compensation still hit players. MW2 maps keep MW2 player collision." Then: "Overlapping players push each other apart with vanilla's `Entity.push` step (0.6-wide boxes with each player's own height; spectators, riders and players on a ladder are not pushed), applied as a move traced against the blocks at about 2.2 times the per-tick impulse, the distance vanilla's ground friction turns a steady push into. Each player's own game pushes them (the host for the host and every friend, the friend's prediction for the friend). Not vanilla: the push carries no momentum; a sleeping player can be pushed; players deal each other no cramming damage."
 
 ## Combined kit
 
