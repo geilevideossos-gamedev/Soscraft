@@ -38,6 +38,7 @@ pub struct EntityView {
     pub(crate) burning_items: Vec<u32>,
     pub(crate) thrown: Vec<minecraft_terrain::thrown::ThrownView>,
     pub(crate) clouds: Vec<minecraft_terrain::effect_cloud::CloudView>,
+    pub(crate) swirls: Vec<minecraft_terrain::spell_particles::SwirlView>,
     pub(crate) tridents: Vec<minecraft_terrain::trident::TridentView>,
     pub(crate) crystals: Vec<minecraft_terrain::end_crystal::CrystalView>,
     pub(crate) gateways: minecraft_terrain::end_gateway::ClientGateways,
@@ -78,6 +79,7 @@ impl EntityView {
             burning_items: Vec::new(),
             thrown: Vec::new(),
             clouds: Vec::new(),
+            swirls: Vec::new(),
             tridents: Vec::new(),
             crystals: Vec::new(),
             gateways: Default::default(),
@@ -159,6 +161,9 @@ impl EntityView {
                         .cloud(cloud.position, cloud.radius, cloud.color, cloud.waiting);
                 }
             }
+            for swirl in &self.swirls {
+                self.spell.swirl(swirl);
+            }
             self.spell.tick();
             minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_target);
             if self.ticks.is_multiple_of(600) {
@@ -200,6 +205,7 @@ impl EntityView {
             &mut self.item_crumbs,
         );
         self.clouds = std::mem::take(&mut snapshot.clouds);
+        self.swirls = std::mem::take(&mut snapshot.swirls);
         self.tridents = std::mem::take(&mut snapshot.tridents);
         self.crystals = std::mem::take(&mut snapshot.crystals);
         self.gateways

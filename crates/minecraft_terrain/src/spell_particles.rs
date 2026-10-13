@@ -9,6 +9,7 @@ const FRICTION: f64 = 0.96;
 const GRAVITY: f64 = -0.1;
 const CAP: usize = 16384;
 const BURST: usize = 100;
+pub const AMBIENT_ALPHA: u32 = 38;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpellKind {
@@ -32,9 +33,50 @@ struct Spell {
     previous: DVec3,
     velocity: DVec3,
     color: [f32; 3],
+    alpha: f32,
     size: f32,
     age: i32,
     lifetime: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SwirlView {
+    pub feet: DVec3,
+    pub width: f32,
+    pub height: f32,
+    pub colors: Vec<u32>,
+    pub ambient: bool,
+    pub invisible: bool,
+    pub range: i32,
+}
+
+impl SwirlView {
+    pub fn of_effects(
+        (feet, width, height): (DVec3, f32, f32),
+        effects: impl IntoIterator<Item = (u32, bool, bool)>,
+        invisible: bool,
+        range: i32,
+    ) -> Option<Self> {
+        let mut colors = Vec::new();
+        let mut ambient = true;
+        for (color, effect_ambient, visible) in effects {
+            if !visible {
+                continue;
+            }
+            ambient &= effect_ambient;
+            let alpha = if effect_ambient { AMBIENT_ALPHA } else { 255 };
+            colors.push((alpha << 24) | (color & 0xFF_FFFF));
+        }
+        (!colors.is_empty()).then_some(Self {
+            feet,
+            width,
+            height,
+            colors,
+            ambient,
+            invisible,
+            range,
+        })
+    }
 }
 
 pub struct SpellParticles {
@@ -155,6 +197,31 @@ impl SpellParticles {
         }
     }
 
+    pub fn swirl(&mut self, view: &SwirlView) {
+        if view.colors.is_empty() {
+            return;
+        }
+        let chance = if view.invisible { 15 } else { 4 } * if view.ambient { 5 } else { 1 };
+        if self.random.next_int(chance) != 0 {
+            return;
+        }
+        let color = view.colors[self.random.next_int(view.colors.len() as u32) as usize];
+        let width = f64::from(view.width);
+        let x = view.feet.x + width * (2.0 * self.random.next_double() - 1.0) * 0.5;
+        let y = view.feet.y + f64::from(view.height) * self.random.next_double();
+        let z = view.feet.z + width * (2.0 * self.random.next_double() - 1.0) * 0.5;
+        self.spawn(
+            SpellKind::Effect,
+            DVec3::new(x, y, z),
+            DVec3::ONE,
+            rgb(color),
+            1.0,
+        );
+        if let Some(spell) = self.particles.last_mut() {
+            spell.alpha = (color >> 24) as f32 / 255.0;
+        }
+    }
+
     pub fn spawn(
         &mut self,
         kind: SpellKind,
@@ -194,6 +261,7 @@ impl SpellParticles {
             previous: at,
             velocity,
             color,
+            alpha: 1.0,
             size,
             age: 0,
             lifetime,
@@ -242,7 +310,7 @@ impl SpellParticles {
                 center.z.floor() as i32,
             );
             let (sky, block) = (light.get(cell) as f32, light.get_block(cell) as f32);
-            let color = [spell.color[0], spell.color[1], spell.color[2], 1.0];
+            let color = [spell.color[0], spell.color[1], spell.color[2], spell.alpha];
             let start = mesh.vertices.len() as u32;
             for (corner, uv) in [
                 (Vec2::new(-1.0, -1.0), [u0, v1]),
@@ -336,6 +404,111 @@ mod tests {
             "{}",
             waiting.len()
         );
+    }
+
+    fn swirling(ambient: bool, invisible: bool) -> SwirlView {
+        SwirlView {
+            feet: DVec3::new(10.0, 64.0, -3.0),
+            width: 0.9,
+            height: 1.4,
+            colors: vec![0xFF87_A363, 0xFFCD_5CAB],
+            ambient,
+            invisible,
+            range: 10,
+        }
+    }
+
+    #[test]
+    fn a_swirl_spawns_at_vanillas_chance() {
+        for (ambient, invisible, chance) in [
+            (false, false, 4.0),
+            (true, false, 20.0),
+            (false, true, 15.0),
+            (true, true, 75.0),
+        ] {
+            let mut spells = SpellParticles::new(7);
+            let view = swirling(ambient, invisible);
+            for _ in 0..4000 {
+                spells.swirl(&view);
+            }
+            let expected = 4000.0 / chance;
+            let spawned = spells.len() as f64;
+            assert!(
+                (spawned - expected).abs() < expected * 0.25 + 5.0,
+                "{ambient} {invisible}: {spawned} for {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn swirl_spells_take_a_listed_colour_inside_the_body() {
+        let mut spells = SpellParticles::new(8);
+        let view = swirling(false, false);
+        for _ in 0..400 {
+            spells.swirl(&view);
+        }
+        let listed: Vec<[f32; 3]> = view.colors.iter().map(|&c| rgb(c)).collect();
+        assert!(spells.len() > 50);
+        assert!(listed.iter().all(|color| spells.colors().contains(color)));
+        assert!(spells.particles.iter().all(|s| {
+            let d = s.position - view.feet;
+            listed.contains(&s.color)
+                && s.alpha == 1.0
+                && s.kind == SpellKind::Effect
+                && d.x.abs() <= 0.45
+                && d.z.abs() <= 0.45
+                && (0.0..=1.4).contains(&d.y)
+        }));
+        let mut none = SpellParticles::new(9);
+        for _ in 0..100 {
+            none.swirl(&SwirlView {
+                colors: Vec::new(),
+                ..view.clone()
+            });
+        }
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn hidden_effects_are_left_out_and_ambient_ones_are_faint() {
+        let body = (DVec3::new(0.5, 64.0, 0.5), 0.6, 1.8);
+        assert_eq!(
+            SwirlView::of_effects(body, [(0x87A363, false, false)], false, 32),
+            None
+        );
+        let mixed = SwirlView::of_effects(
+            body,
+            [(0x87A363, false, true), (0x1D_C2D1, true, true)],
+            false,
+            32,
+        )
+        .unwrap();
+        assert_eq!(mixed.colors, vec![0xFF87_A363, 0x261D_C2D1]);
+        assert!(!mixed.ambient);
+        let conduit = SwirlView::of_effects(
+            body,
+            [(0x1D_C2D1, true, true), (0x87A363, false, false)],
+            false,
+            32,
+        )
+        .unwrap();
+        assert_eq!(conduit.colors, vec![0x261D_C2D1]);
+        assert!(conduit.ambient);
+        let mut spells = SpellParticles::new(10);
+        while spells.is_empty() {
+            spells.swirl(&conduit);
+        }
+        assert_eq!(spells.particles[0].alpha, 38.0 / 255.0);
+        let light = SkyLight::from_levels((0, 64, 0), (1, 1, 1), vec![12], vec![3]);
+        let atlas = crate::mesh::make_atlas(
+            &crate::pack::PackStack::open(Vec::new()).unwrap(),
+            textures(),
+        )
+        .unwrap();
+        let mut mesh = ChunkMesh::default();
+        spells.append_mesh(&mut mesh, &atlas, Vec3::Z, 0.0, &light);
+        assert_eq!(mesh.vertices.len(), 4);
+        assert!(mesh.vertices.iter().all(|v| v.color[3] == 38.0 / 255.0));
     }
 
     #[test]

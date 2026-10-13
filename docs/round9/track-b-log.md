@@ -76,6 +76,39 @@ Decisions:
 - The thrown bottle, the splash burst, the area cloud and the witch's potion were already right and are untouched.
 - The held-item pose code in `body_render.rs` and the `mesh.rs` held-item append functions are track A's; only the `HeldItem.id` line and the `ItemVisuals::model` key split changed there.
 
+### B9.3 Minecraft entities with effects give off coloured effect particles
+
+Base: 5448b8f0 (B8.5).
+
+What changed:
+- `minecraft_terrain/src/spell_particles.rs`:
+  - `SwirlView { feet, width, height, colors, ambient, invisible, range }` (serde). `colors` are ARGB: alpha 38 (`AMBIENT_ALPHA`) for an ambient effect and 255 otherwise, as vanilla's per-effect `ColorParticleOption`. `range` is the body's tracking range in chunks.
+  - `SwirlView::of_effects(body, effects, invisible, range)` keeps only the visible effects (`show_particles`), and `ambient` is true when every visible effect is ambient (`LivingEntity.areAllEffectsAmbient`). No visible effect gives no swirl, as vanilla's empty `DATA_EFFECT_PARTICLES`.
+  - `SpellParticles::swirl(view)`: the client half of `LivingEntity.tickEffects`. It spawns only when `nextInt((invisible ? 15 : 4) * (ambient ? 5 : 1)) == 0`, picks a random colour from the list, and places the particle at `getRandomX(0.5)`, `getRandomY()`, `getRandomZ(0.5)` with motion (1, 1, 1) and power 1, as an `entity_effect` (`SpellKind::Effect`).
+  - Each spell particle has an `alpha` (1.0 for bursts and clouds as before). `append_mesh` writes it into the vertex colour. The spells go into the entity translucent mesh, whose `entity_translucent_fragment` blends with `texel.a * colour.a` (`BlendState::ALPHA_BLENDING`), so an ambient swirl is faint as in vanilla.
+- `minecraft_terrain/src/server.rs`: `EntitySnapshot.swirls` (added at the end of the struct and of the `finish_batch` literal). `mob_swirls(mobs)` (and `ServerSim::swirl_views`) builds one swirl per living mob whose `mob_effects` is not empty, from `thrown::targets` (the mob's box), `potions::effect_color` of each effect and `tracking_range` of its `entity_type`.
+- `minecraft_survival`:
+  - New `swirls.rs`: `player_swirl(status, feet, crouching)` from the player's `SurvivalStatus` effects (the 15 simulated kinds, colours from `potions::effect_color`; conduit power is ambient, as the conduit's `MobEffectInstance(.., true, true)`), on the player's box (0.6 wide, 1.8 high, 1.5 crouching), tracking range 32. Its staged content passes the edition 2024 rustfmt check with empty output.
+  - `entities::PlayerView.swirl: Option<SwirlView>`. `Entities::tick` appends every non-spectator actor's swirl to the level's snapshot as it arrives, before the friends' copy is kept, so the host and the friends get the same list. Spectators give off none (vanilla `ServerPlayer.updateInvisibilityStatus`). Test literals gained `swirl: None`.
+  - `entity_view.rs`: `swirls` is kept from each snapshot like `clouds`, and every client tick calls `spell.swirl` for each, next to the cloud loop. The host and the friend both draw through it, so each sees every body's swirls, its own included (F5 and first person).
+  - `mob_sender::near()`: swirls are filtered by their own tracking range and the friend's loaded chunks, like the other entities, not cloned unfiltered.
+- `render_anim`: one added field line each where the host's (`minecraft_world.rs`) and a friend's (`minecraft_players.rs` `tick_actor`) `PlayerView` is built: `swirl: player_swirl(&status, feet, crouching)`.
+- Nothing else on the wire changes shape beyond the snapshot blob; `PROTOCOL` stays 4.
+
+Tests added:
+- minecraft_terrain `spell_particles`: `a_swirl_spawns_at_vanillas_chance` (seed 7, 4000 calls: about 1 in 4, 1 in 20 ambient, 1 in 15 invisible, 1 in 75 both), `swirl_spells_take_a_listed_colour_inside_the_body` (only listed colours, both seen, inside the box, full alpha, an empty list spawns nothing), `hidden_effects_are_left_out_and_ambient_ones_are_faint` (a hidden effect gives no swirl, mixed effects are not ambient and keep 0xFF/0x26 alphas, an ambient particle's alpha and its mesh vertices' alpha are 38/255).
+- minecraft_terrain `server::a_cow_with_poison_gives_off_a_poison_green_swirl` (a poisoned cow gives one swirl with colour 0x87A363 at alpha 255, its 0.9 x 1.4 box and range 10; a plain cow none; `show_particles:0b` none).
+- minecraft_survival `mob_sender::effect_swirls_go_only_as_far_as_their_body_is_tracked`, `swirls::a_poisoned_player_gives_off_a_poison_green_swirl`, `swirls::conduit_power_alone_is_an_ambient_swirl`, and `entities::a_poisoned_player_swirls_for_the_host_and_in_the_friends_snapshot` (game data: the poisoned friend's swirl reaches the host's view and the friend's snapshot, a spectator host's does not).
+
+Checked with javap (26.3): `LivingEntity.tickEffects` (client branch: the chance, `Util.getRandom`, `getRandomX(0.5)`, `getRandomY()`, `getRandomZ(0.5)`, motion 1, 1, 1), `updateSynchronizedMobEffectParticles` (visible effects only), `areAllEffectsAmbient` (visible and not ambient breaks it), `SpellParticle$MobEffectProvider` (colour and alpha from the option), `SpellParticle.getLayer` (TRANSLUCENT), `ServerPlayer.updateInvisibilityStatus` (spectators: no particles).
+
+Decisions:
+- The swirl colours carry their alpha per effect (ARGB), so a player with conduit power and poison gets faint cyan and solid green particles, as vanilla. The brief's "[0x87A363]" check is therefore `[0xFF87A363]`, plus the RGB part checked on its own.
+- `SwirlView` has one field more than the brief, `range`, so `near()` can use each body's own tracking range (8 or 10 chunks for mobs, 32 for players) without knowing its kind.
+- **Not vanilla:** `SpellParticle.isCloseToScopingPlayer` (own particles hidden within 3 blocks while scoping with a spyglass in first person) is not done.
+- **Not vanilla:** a player's box is 0.6 x 1.8 standing and 1.5 crouching (MW2 prone counts as crouching); swimming, gliding and sleeping boxes are not used for the swirl.
+- **Limits:** `World::mob_effects` has no effects for ghasts, blazes, magma cubes and endermites, so they never swirl (mob AI files belong to track D). Players have only the 15 simulated effect kinds, so swiftness, strength, jump boost, invisibility, night vision, water breathing and the like give no swirl on players (and `invisible` is always false: neither mobs nor players have invisibility here). Player effects carry no hidden-particles flag, so all are visible.
+
 ### B8.1 Minecraft written books are read from the hand like vanilla
 
 Base: bd7a398d (B9.2).
@@ -248,6 +281,26 @@ Numbered as in the brief's B9 steps (1-3 are B9.1's, 7 and 11 come with the swir
 IW4L_MINECRAFT_KIT=minecraft:potion@healing,minecraft:potion@poison,minecraft:potion@swiftness,minecraft:potion@fire_resistance,minecraft:potion@night_vision,minecraft:potion@strong_turtle_master,minecraft:potion@invisibility,minecraft:potion@water,minecraft:potion@awkward,minecraft:potion@leaping,minecraft:potion@weakness,minecraft:splash_potion@harming*2,minecraft:splash_potion@regeneration*2,minecraft:splash_potion@poison,minecraft:lingering_potion@poison*2,minecraft:lingering_potion@slow_falling,minecraft:tipped_arrow@poison*16,minecraft:tipped_arrow@strength*16,minecraft:tipped_arrow@leaping*16,minecraft:item_frame*4,minecraft:cow_spawn_egg*2
 ```
 
+## Owner's test steps (B9.3)
+
+Numbered as in the brief's B9 steps.
+
+**Host alone:**
+
+7. **Swirls.**
+   - Drink Poison and press F5: olive green swirls rise around you for the 45 seconds of the effect, a few every second. In first person a few drift past the view too.
+   - Spawn a cow and throw Splash Regeneration at it: pink swirls rise around the cow. Throw Splash Poison at a second cow: green swirls.
+   - Eat a golden apple: pink (regeneration) and blue (absorption) swirls mix around you.
+   - Switch to `/gamemode spectator` while an effect is on: no swirls; back to `/gamemode survival`: they return.
+
+**Multiplayer** (both games this build):
+
+11. The friend drinks Poison: the host sees green swirls around the friend, and the friend sees them in F5. Then the host drinks one: the friend sees swirls around the host. A cow splashed with Regeneration swirls pink in both windows.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@poison*2,minecraft:splash_potion@regeneration*2,minecraft:splash_potion@poison*2,minecraft:cow_spawn_egg*4,minecraft:golden_apple*2
+```
+
 ## Owner's test steps (B10)
 
 1. Options > Advanced Video: check that Show Blood is on.
@@ -333,3 +386,7 @@ After B8.4 and B8.5 (the final wording; this fixes the limitation at `docs/MINEC
 "Books work like vanilla for the host and for friends: a written book is read from the hand (main hand or offhand) with local page turns; a book and quill is written on vanilla's edit screen (14 lines and 1024 characters a page, up to 100 pages; Done keeps the pages, Esc discards them) and signed on vanilla's sign screen into an original written book (`books::edit_book`, vanilla's `handleEditBook` limits); a friend's edit goes to the host as `EditBook`. A written book is named by its title and its tooltip shows "by <author>" and its generation. Open limits: no book cloning (the special crafting recipe is missing); pages are plain text, without colours, styles, click or hover events, and `resolveForItem` (selectors, scores and nbt components in pages) is not done; the `minecraft:used` statistic is not counted for books; page and title limits count Unicode characters, not UTF-16 units (only emoji differ); a text selection is a plain blue box (vanilla uses an inverting highlight); and `PlayerView` resends all 41 slots on every change, so a friend carrying a full 100-page book receives about 100-300 KB each time (measured: 103,364 bytes for ASCII pages, 308,164 for three-byte characters)."
 
 `docs/MULTIPLAYER.md` message listing (B8.4): after `LeaveBed,` add `EditBook { slot: u8, pages: Vec<String>, title: Option<String> },` (index 12) and after `Sleeping { .. },` add `OpenBook { slot: u8 },` (index 31). New paragraph after the lectern paragraph (line 251): "**Books in the hand** follow vanilla's `ClientboundOpenBookPacket` and `ServerboundEditBookPacket`. When a friend's use on the host opens a book, the host sends `OpenBook { slot }` (the selected slot or 40 for the offhand; for a book and quill too, since the use runs on the host); the friend reads the stack from its last `PlayerView` and opens the read-only book or the edit screen. Done and Sign send `EditBook { slot, pages, title }` (no title for Done); the host applies it with `books::edit_book` under vanilla's limits (slot 0-8 or 40, 100 pages, 1024 characters a page, a 32-character title, a book and quill in the slot) before the friend's next step, and the next `PlayerView` carries the new book. `PROTOCOL` stays 4 (the two messages were added in the same round as the bump)." Section 20 leftovers: add "`PlayerView` resends all 41 slot NBTs on every change; with a full 100-page book that is 100-300 KB per change (round 9 track B measurement). Slot diffs are left for later."
+
+`docs/MINECRAFT-SURVIVAL.md` (potions and effects, round 9 track B, B9.3): "Living entities with effects give off vanilla's coloured `entity_effect` swirls (`LivingEntity.tickEffects`: 1 in 4 a tick, 1 in 20 when all visible effects are ambient; hidden effects give none; an ambient effect's particles are faint, alpha 38/255), for mobs from their `mob_effects` and for players from their simulated effects (conduit power ambient; spectators none). Friends see them too (the snapshot's `swirls`, filtered by each body's tracking range). Limits: ghasts, blazes, magma cubes and endermites keep no effects, so they never swirl; players only swirl for the 15 simulated effect kinds; own particles are not hidden while scoping with a spyglass (vanilla hides them within 3 blocks)."
+
+`docs/MULTIPLAYER.md` (entity snapshot): the `EntitySnapshot` blob gained `swirls: Vec<SwirlView>` (feet, width, height, ARGB colours, ambient, invisible, tracking range). The host adds each non-spectator player's swirl to the level's snapshot; `mob_sender::near()` keeps a swirl only within its own tracking range and the friend's loaded chunks. `PROTOCOL` stays 4.

@@ -1162,6 +1162,12 @@ pub(crate) fn tick_actor<'a>(
         sneaking: ps.pm_flags
             & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
             != 0,
+        swirl: minecraft_survival::swirls::player_swirl(
+            &player.survival.status,
+            sim::voxel::to_block(origin, ps.origin),
+            ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
+                != 0,
+        ),
     };
     let actor = TickActor {
         id: u64::from(player.id.0),

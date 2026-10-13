@@ -2122,6 +2122,7 @@ pub(crate) mod tests {
                 main_hand: None,
                 offhand: None,
                 sneaking: false,
+                swirl: None,
             };
             let mut actors = [TickActor {
                 id: 0,

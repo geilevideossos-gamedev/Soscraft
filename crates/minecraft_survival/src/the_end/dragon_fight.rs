@@ -1151,6 +1151,7 @@ mod tests {
                             main_hand: None,
                             offhand: None,
                             sneaking: false,
+                            swirl: None,
                         },
                         inventory: &mut minecraftoss_player::inventory::Inventory::default(),
                         selected: 0,
