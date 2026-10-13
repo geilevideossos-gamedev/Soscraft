@@ -941,7 +941,7 @@ Commit: the one after `2dffcdda`.
   - **No protocol bump:** `PlayerView.slots` is a list, so 45 slots ride on protocol 5 (see Protocol).
   - Transitional until C12.2: the slots are not drawn yet, and G and Shift+G still throw the class grenades with unlimited ammo.
 - **Owner's test steps** (survival, a new world `IW4L_MINECRAFT_WORLD=r9-grenade-slots`, kit below; the two slots are drawn only from the next commit, so this commit is checked with `/clear ... 0`, which counts without removing):
-  1. Join and open the inventory: the kit's frags, semtex, flashes and smoke grenades are in the backpack. **Screenshot 1.**
+  1. Join, empty the two grenade slots of the 32 + 32 class grenades the first-join loadout put there (`/gamemode creative`, the creative inventory tab, click each stack right of the leggings and boots onto the trash slot, `/gamemode survival`), and open the inventory: the kit's frags, semtex, flashes and smoke grenades are in the backpack. **Screenshot 1.**
   2. Shift-click the frag stack: it vanishes from the backpack. `/clear @s iw4l:frag_grenade 0`: "Found 16 matching item(s)": the frags are in the hidden lethal slot. Shift-click the semtex stack: it stays in the inventory (it moves to the hotbar), because the lethal slot holds frags.
   3. Shift-click the flash stack: it vanishes too (tactical slot). `/clear @s iw4l:flash_grenade 0` finds 8.
   4. `/clear @s iw4l:flash_grenade` empties the tactical slot. Move the smoke grenades to the hotbar, hold them, press Q once and walk over the dropped one: it vanishes from view (it filled the empty tactical slot), and `/clear @s iw4l:smoke_grenade 0` still finds 4. Drop one semtex with Q and walk over it: it goes back onto its hotbar stack, because the lethal slot holds frags.
@@ -1001,7 +1001,7 @@ Commit: the one after `3b6a9ed3`.
   - **A published weapon in the wrong slot** (class not lethal for 43 or not tactical for 44) is ignored and the last weapon stays with 0; `fits` already keeps such items out of the slots.
   - Transitional until the next commits: the two slots are not drawn yet, and new players do not get their 32 + 32 yet.
 - **Owner's test steps** (survival, a new world `IW4L_MINECRAFT_WORLD=r9-grenade-throws`, a class with Frag and Flash, kit below; the slots are drawn from the next commit, so this commit is checked with MW2's grenade icons at the bottom right and `/clear ... 0`, which counts without removing):
-  1. Join and open the inventory. Shift-click the stack of 2 frags and the flash stack: both vanish into the hidden slots. Close it: MW2's grenade icons show 2 frags and 8 flashes. **Screenshot 1.**
+  1. Join, empty the two grenade slots of the 32 + 32 class grenades the first-join loadout put there (`/gamemode creative`, the creative inventory tab, click each stack right of the leggings and boots onto the trash slot, `/gamemode survival`), and open the inventory. Shift-click the stack of 2 frags and the flash stack: both vanish into the hidden slots. Close it: MW2's grenade icons show 2 frags and 8 flashes. **Screenshot 1.**
   2. Press G: a frag is thrown, 1. Press Shift+G: a flash, 7. Press G again: the slot empties and refills from the backpack's 16 frags, the icon shows 16. Hold G until the frag blows up in your hand: 15. `/clear @s iw4l:frag_grenade 0` finds 15 (no frag is left in the backpack). **Screenshot 2.**
   3. Open the inventory, shift-click the semtex stack: it goes to the hotbar, because the lethal slot holds frags. `/clear @s iw4l:frag_grenade`, then shift-click the semtex stack: it vanishes into the lethal slot, and G throws semtex (its icon shows).
   4. `/clear @s iw4l:semtex`, shift-click the C4: G places C4 four times; with the slot empty the C4 icon stays with 0, and G detonates the placed C4. **Screenshot 3.**
@@ -1034,7 +1034,7 @@ Commit: the one after `edcd9cc5`.
   - **The empty-slot tooltip shows only with nothing carried,** like item tooltips.
   - The frames are drawn with the background, before the hovered-slot highlight, so the highlight shows on them like on vanilla slots.
 - **Owner's test steps** (survival, the world of commit 1 or a new one, kit below):
-  1. Join with an empty offhand: left of the hotbar there are two empty offhand-style frames, with a gap where the offhand frame shows when it holds something. **Screenshot 1** (hotbar).
+  1. Join with an empty offhand and empty the two grenade slots of the 32 + 32 class grenades the first-join loadout put there (`/gamemode creative`, the creative inventory tab, click each stack right of the leggings and boots onto the trash slot, `/gamemode survival`): left of the hotbar there are two empty offhand-style frames, with a gap where the offhand frame shows when it holds something. **Screenshot 1** (hotbar).
   2. Open the inventory: two slot frames right of the recipe book button, level with the offhand slot. Hover them: "Lethal" and "Tactical". **Screenshot 2** (inventory open, tooltip).
   3. Click the frags into the left one and the flashes into the right one. Cobblestone is refused in both. Close the inventory: the frames show the frag and the flash with 16 and 8; G and Shift+G lower the counts in the frames and on MW2's icons alike. **Screenshot 3.**
   4. Put the shield into the offhand: the offhand frame appears to the right of the grenade frames, which stay where they are.
@@ -1278,10 +1278,10 @@ Commit: the one after `6c184122`. Fixes `edcd9cc5` and `d9247254`.
 - **Tests:** `sim` `item::arsenal_tests`: the test content's `flare_mp` has the real class 5, and `a_tactical_insertion_is_thrown_from_the_lethal_slot_like_mw2_equipment` (in the lethal slot it becomes the lethal offhand with class 5 and its count; published in the tactical slot it is refused and has 0). `minecraft_terrain` `fork_items::tests`: 6 lethal and 3 tactical rows, `grenade_slot` of the tactical insertion is 43. `minecraft_survival` `menus::tests`: the lethal slot accepts it, the tactical slot refuses it. `test -p minecraft_terrain -p minecraft_survival -p sim` (sim 153) and `check -p launcher` green.
 - **Decision:** follow the data (the brief's rule for a WEAPONS.md fact the data proves wrong). Making the sim treat `flare_mp` as a tactical would have needed a second class-5 offhand next to C4 in the same MW2 throw path.
 - **Owner's test steps** (survival, a new world `IW4L_MINECRAFT_WORLD=r9-insertion-lethal`, kit below; replaces steps 1 and 4-9 of "A planted tactical insertion is a one-use respawn point", which said tactical slot and Shift+G):
-  1. Place the bed and right-click it. Open the inventory and shift-click the tactical insertions: they go into the lethal slot (the left frame). Click them into the tactical slot: refused. **Screenshot 1.**
+  1. Place the bed and right-click it, and empty the two grenade slots of the 32 + 32 class grenades the first-join loadout put there (`/gamemode creative`, the creative inventory tab, click each stack right of the leggings and boots onto the trash slot, `/gamemode survival`). Open the inventory and shift-click the tactical insertions: they go into the lethal slot (the left frame). Click them into the tactical slot: refused. **Screenshot 1.**
   2. Walk 30 blocks away, face north, press G: the flare is thrown and the lethal frame shows 3. Walk 20 blocks on, `/kill`: you respawn where you threw it, facing north. **Screenshot 2.**
   3. `/kill` again: you respawn at the bed.
-  4. Take the frags into the lethal slot instead and press G: a frag is thrown, as before.
+  4. Take the insertions out of the lethal slot into the backpack and shift-click the frags: they go into the lethal slot. Press G: a frag is thrown, as before.
 - **Kit** (4 stacks):
 
 ```
@@ -1410,6 +1410,16 @@ Commit: the one after the rounding fix. Fixes the docs of `7660486d`.
 - **Tests:** none (no code change).
 - **Owner's test steps:** the corrected C14 steps 2 and 4 above (no push expected).
 - **Kit:** C14's kit.
+
+### 8. The grenade steps empty the loadout's grenades first
+
+Commit: the one after the push doc fix. Fixes the owner steps of `3b6a9ed3` (grenade slots), `edcd9cc5` (throws), `b47be4bb` (slot drawing) and `bd497d69` (tactical insertion), which `3cab4adb` made stale.
+
+- **Defect:** since "New players start with 32 lethal and 32 tactical grenades", a new world puts 32 of the class lethal (frags when none) into slot 43 and 32 of the class tactical (flashes) into slot 44 on the first join, and a shift-click moves a grenade into its slot only when the slot is empty or holds the same grenade. The earlier steps on the final build therefore failed: the grenade-slots steps expected `/clear ... 0` to find 16 frags (48), the throw steps expected icons of 2 frags and 8 flashes and a refill from the backpack's 16, the slot drawing steps expected two empty frames, and the review's tactical insertion steps could not shift-click the insertions into the lethal slot, which held 32 frags.
+- **Changed:** docs only. Step 1 of each of those four step lists now first empties the two grenade slots through the creative inventory tab's trash slot, which takes neither the kit's grenades nor anything else; the tactical insertion step 4 now moves the insertions out before the frags go in.
+- **Tests:** none (no code change).
+- **Owner's test steps:** the corrected step lists above.
+- **Kit:** the kits of those step lists, unchanged.
 
 ## Combined kit from the brief (C11 to C14)
 
