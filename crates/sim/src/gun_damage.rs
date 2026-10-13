@@ -16,6 +16,7 @@ const ARMOR_DIVISOR: f64 = 25.0;
 const ENCHANTMENT_CAP: f64 = 20.0;
 const ENCHANTMENT_SHARE: f64 = 0.04;
 const RESISTANCE_SHARE: f64 = 0.2;
+const ROUNDING_SLACK: f64 = 1e-9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GunHit {
@@ -91,7 +92,7 @@ pub fn gun_damage_to_player(
     if kept <= 0.0 {
         return 0;
     }
-    ((damage * kept * scale).round() as i32).max(1)
+    ((damage * kept * scale + ROUNDING_SLACK).round() as i32).max(1)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -237,12 +238,13 @@ mod tests {
             (150, [75, 67, 60, 54, 48, 30, 15, 15]),
             (160, [80, 71, 67, 61, 54, 35, 16, 16]),
             (200, [100, 89, 84, 82, 81, 60, 20, 20]),
+            (135, [68, 60, 50, 45, 39, 23, 14, 14]),
         ];
         for (amount, expected) in table {
-            let kind = if amount >= 150 {
-                GunHit::Explosion
-            } else {
-                GunHit::Bullet
+            let kind = match amount {
+                135 => GunHit::Melee,
+                150.. => GunHit::Explosion,
+                _ => GunHit::Bullet,
             };
             assert_eq!(row(amount, 0.0, kind), expected, "{amount}");
         }
@@ -259,6 +261,28 @@ mod tests {
             gun_damage_to_player(1000, 100, &worn(20.0, 8.0), 0.0, GunHit::Explosion),
             340,
             "a heavy hit gets through more armour, like vanilla"
+        );
+    }
+
+    #[test]
+    fn an_x_5_result_at_the_ceiling_rounds_up() {
+        let at_ceiling = [
+            (135, (20.0, 8.0), GunHit::Melee, 14),
+            (135, (20.0, 12.0), GunHit::Melee, 14),
+            (25, (12.0, 0.0), GunHit::Bullet, 3),
+            (55, (20.0, 8.0), GunHit::Explosion, 6),
+            (155, (20.0, 8.0), GunHit::Explosion, 16),
+        ];
+        for (amount, (armor, toughness), kind, expected) in at_ceiling {
+            assert_eq!(
+                gun_damage_to_player(amount, 100, &worn(armor, toughness), 0.0, kind),
+                expected,
+                "{amount} against {armor}"
+            );
+        }
+        assert_eq!(
+            gun_damage_to_player(105, 100, &GunGuard::default(), 0.0, GunHit::Bullet),
+            53
         );
     }
 

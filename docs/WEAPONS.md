@@ -592,7 +592,7 @@ The damage values are the owner's MW2 data (`common_mp.ff`, read with the fork's
 | Frag, centre (150) | 0 | 75 (2) | 67 (2) | 60 (2) | 54 (2) | 48 (3) | 30 (4) | 15 (7) | 15 (7) |
 | Semtex or C4, centre (200) | 0 | 100 (1) | 89 (2) | 84 (2) | 82 (2) | 81 (2) | 60 (2) | 20 (5) | 20 (5) |
 | RPG-7 blast, centre (160) | 0 | 80 (2) | 71 (2) | 67 (2) | 61 (2) | 54 (2) | 35 (3) | 16 (7) | 16 (7) |
-| Knife (135) | 0 | 68 (2) | 60 (2) | 50 (2) | 45 (3) | 39 (3) | 23 (5) | 13 (8) | 13 (8) |
+| Knife (135) | 0 | 68 (2) | 60 (2) | 50 (2) | 45 (3) | 39 (3) | 23 (5) | 14 (8) | 14 (8) |
 
 With Protection IV on all four pieces, an M4A1 hit on an unarmoured-equivalent player drops from 15 to 5 and a frag from 75 to 27. Blast Protection IV on four pieces takes every frag to 15. A rocket's direct impact (1000) still kills through any armour.
 
@@ -701,7 +701,7 @@ Crates touched: sim, minecraft_survival, minecraft_terrain, minecraft_net, minec
 - **Attachments:** attach and strip keep the clip; an impossible combination gives no result; akimbo pairs and splits with the remainder.
 - **Grenades:** only a lethal goes in slot 43; shift-click routing; a number key cannot swap dirt into a grenade slot; a throw takes one; refill from the backpack with the same type only; 32 + 32 once; an empty slot keeps the C4 detonator.
 - **First join:** given once, the tag kept next to other tags; class attachments become item attachments; round-8 files get it once.
-- **Damage:** the table in 11.3 (it has no x.5 cases); pierce; mob damage unchanged; the totem grace boundary at 80 ticks on both clocks; it ends on respawn.
+- **Damage:** the table in 11.3 (its x.5 cells round up, also at the 80 % ceiling); pierce; mob damage unchanged; the totem grace boundary at 80 ticks on both clocks; it ends on respawn.
 - **Multiplayer:** a friend's slot 44 click is valid; `PLAYER_SLOTS` is 45 in the codec; `PlaceRecipe` round trip.
 - **Vendored code:** extra recipes get display indices after vanilla; inserted items have their max stack; two guns on the ground do not merge.
 

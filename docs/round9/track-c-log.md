@@ -1391,6 +1391,16 @@ Commit: the one after the akimbo fix. Fixes `bd497d69` (with `3cab4adb`).
   3. Move the frags into the backpack and the insertions into the lethal slot, then press G: the flare is planted.
 - **Kit:** none.
 
+### 6. A gun hit of exactly x.5 rounds up at the 80 % ceiling too
+
+Commit: the one after the class insertion fix. Fixes `54504900`.
+
+- **Defect:** at the ceiling the kept share is `1 - 0.8`, which is 0.19999999999999996 in f64, so a hit whose exact result is x.5 came out at x.4999... and `round` gave the lower value, against WEAPONS.md 11.3's "x.5 rounds up". The knife (135) against diamond and netherite did 13 instead of 14, the USP .45 far (25) against chainmail and up 2 instead of 3 (50 hits instead of 34), the frag edge (55) against diamond 5 instead of 6, and the AT4 or Stinger (155) against diamond 15 instead of 16. The 11.3 table copied the 13, and the test skipped those cells.
+- **Changed:** `sim/src/gun_damage.rs` `gun_damage_to_player` adds a slack of 1e-9 before rounding, so float error no longer turns an x.5 down. `docs/WEAPONS.md` 11.3: the knife's diamond and netherite cells are 14 (8 hits either way); 16: the table's x.5 cells round up.
+- **Tests:** `sim` `gun_damage::tests::an_x_5_result_at_the_ceiling_rounds_up` (knife against diamond and netherite 14, USP far against chainmail 3, frag edge and AT4 against diamond 6 and 16, an unarmoured sniper chest hit 53); `armour_takes_twice_vanilla_s_share_up_to_four_fifths` now also checks the whole knife row. `test -p sim` (156) and `check -p launcher` green.
+- **Owner's test steps:** none. Each changed cell moves by one point (0.1 heart), below what the heart bar shows, and the knife still kills diamond and netherite in 8 hits; the unit test covers it.
+- **Kit:** none.
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.
