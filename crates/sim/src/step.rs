@@ -423,7 +423,13 @@ fn run_players_system(ecs: &mut World) {
                 if crate::voxel::active() && pushable(ps) {
                     let push = minecraft_push(ps.origin, hull_maxs[2], &pushers, id.0 as u16);
                     let mover = crate::voxel::Mover::of(ps, &cmd);
-                    if let Some(origin) = push_move(ps.origin, push, f64::from(delta) / 1000.0, |from, to| crate::voxel::trace_as(from, to, hull_mins, hull_maxs, Some(mover))) {
+                    let seconds = f64::from(delta) / 1000.0;
+                    let push = if ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING == 0 && ps.velocity[2] <= 0.0 && movement_iw4::sneaking(ps, &cmd) {
+                        edge_push(ps.origin, push, seconds, |at| crate::voxel::ground_within(at, hull_mins, hull_maxs, movement_iw4::MAX_UP_STEP, Some(mover)))
+                    } else {
+                        push
+                    };
+                    if let Some(origin) = push_move(ps.origin, push, seconds, |from, to| crate::voxel::trace_as(from, to, hull_mins, hull_maxs, Some(mover))) {
                         ps.origin = origin;
                     }
                 }
@@ -1917,10 +1923,27 @@ fn push_move(origin: [f32; 3], push: [f64; 2], seconds: f64, trace: impl Fn([f32
     if push == [0.0, 0.0] {
         return None;
     }
-    let step = 20.0 * f64::from(crate::voxel::BLOCK) * PUSH_GAIN * seconds.min(0.2);
+    let step = push_step(seconds);
     let target = [origin[0] + (push[0] * step) as f32, origin[1] - (push[1] * step) as f32, origin[2]];
     let hit = trace(origin, target);
     (hit.startsolid == 0).then_some(hit.endpos)
+}
+
+fn push_step(seconds: f64) -> f64 {
+    20.0 * f64::from(crate::voxel::BLOCK) * PUSH_GAIN * seconds.min(0.2)
+}
+
+fn edge_push(origin: [f32; 3], push: [f64; 2], seconds: f64, ground: impl Fn([f32; 3]) -> bool) -> [f64; 2] {
+    let step = push_step(seconds);
+    if step <= 0.0 {
+        return push;
+    }
+    let wanted = [(push[0] * step) as f32, -(push[1] * step) as f32];
+    let kept = movement_iw4::kept_on_edge(wanted, |dx, dy| Some(ground([origin[0] + dx, origin[1] + dy, origin[2]])));
+    if kept == wanted {
+        return push;
+    }
+    [f64::from(kept[0]) / step, -f64::from(kept[1]) / step]
 }
 
 #[derive(Clone, Copy)]
@@ -2568,6 +2591,36 @@ mod tests {
         let inside = |_: [f32; 3], to: [f32; 3]| Trace { startsolid: 1, allsolid: 1, endpos: to, ..Trace::default() };
         assert_eq!(push_move([0.0; 3], push, 0.05, inside), None);
         assert_eq!(push_move([0.0; 3], [0.0, 0.0], 0.05, free), None);
+    }
+
+    #[test]
+    fn a_sneaking_player_is_not_pushed_off_an_edge() {
+        let edge = 10.0 * B;
+        let ground = |at: [f32; 3]| at[0] - 0.3 * B < edge;
+        let mut origin = [edge + 0.2 * B, 0.0, 0.0];
+        for _ in 0..40 {
+            let push = minecraft_push(origin, 1.5 * B, &[pusher(2, origin[0] / B - 0.1, 0.0)], 1);
+            assert!(push[0] > 0.0);
+            let kept = edge_push(origin, push, 0.05, ground);
+            if let Some(moved) = push_move(origin, kept, 0.05, free) {
+                origin = moved;
+            }
+            assert!(ground(origin), "pushed off at {origin:?}");
+        }
+        assert!(origin[0] > edge + 0.2 * B, "it is still pushed up to the edge: {origin:?}");
+        let mut walking = [edge + 0.2 * B, 0.0, 0.0];
+        for _ in 0..40 {
+            let push = minecraft_push(walking, 1.8 * B, &[pusher(2, walking[0] / B - 0.1, 0.0)], 1);
+            walking = push_move(walking, push, 0.05, free).unwrap();
+        }
+        assert!(!ground(walking), "without sneaking the push carries a player over");
+        let landward = [-0.03, 0.0];
+        assert_eq!(edge_push([edge + 0.29 * B, 0.0, 0.0], landward, 0.05, ground), landward);
+        let along = [0.0, 0.03];
+        assert_eq!(edge_push([edge + 0.29 * B, 0.0, 0.0], along, 0.05, ground), along);
+        let falling = [0.03, 0.0];
+        assert_eq!(edge_push([edge + 0.5 * B, 0.0, 0.0], falling, 0.05, ground), falling, "already off the ground");
+        assert_eq!(edge_push([edge + 0.29 * B, 0.0, 0.0], falling, 0.05, ground), [0.0, 0.0]);
     }
 
     #[test]

@@ -445,6 +445,18 @@ Commit: "A friend's dragon and its fireballs hold still while the host's ticks a
   - Run: `test -p minecraft_terrain --locked client_dragon` (9 passed), `test -p minecraft_survival --locked entity_view` (1 passed), `check -p launcher --locked`.
 - **Owner's test step** (A3 commit 1, step 4, in both windows): host `/tick freeze` while the dragon circles and while one of its fireballs flies: in the friend window the dragon and the fireball stop dead, the wings stop, no flap sound or growl plays, the heal beam holds still. **Screenshot** from the friend window. `/tick unfreeze`: both fly on smoothly.
 
+### A sneaking player is not pushed off an edge
+
+Commit: "A sneaking Minecraft player is not pushed off an edge by another player", the one after the dragon freeze fix.
+
+- **Defect** (from A7 commit 2): the push moved `ps.origin` with its own trace before `pmove`, so it skipped `movement_iw4::back_off_from_edge`, which only shrinks `ps.velocity` inside `pmove` and does nothing once the player is already off the ground. A sneaking player at a ledge (bridging, or at a ravine or lava edge) who overlapped another player behind them was pushed over the edge and fell, on the host and in the friend's prediction.
+- **Vanilla 26.3** (javap): the push goes into `deltaMovement`, and `Player.move(SELF, ..)` runs it through `maybeBackOffFromEdge` (not flying, `delta.y <= 0`, `isStayingOnGroundSurface`, `isAboveGround`), so a sneaking player is never pushed off an edge.
+- **Changed:**
+  - `movement_iw4` `edge.rs`: the shrink loop of `back_off_from_edge` is now the pure `kept_on_edge(wanted, ground)` (wanted map displacement in, kept displacement out; unchanged when the player is not on block ground), which `back_off_from_edge` calls. Same behaviour.
+  - `sim` `step.rs`: `push_step(seconds)` (the push's map units per unit of push, split out of `push_move`) and `edge_push(origin, push, seconds, ground)`, which clips the push's displacement with `kept_on_edge` and turns it back into a push. In `run_players_system` a pushable player who sneaks (`movement_iw4::sneaking`), is not flying and is not moving up has the push clipped with `voxel::ground_within(.., MAX_UP_STEP, mover)` before `push_move`. The friend predicts through the same code.
+- **Test:** `sim` `step::tests::a_sneaking_player_is_not_pushed_off_an_edge` (a sneaking player 0.2 blocks past a ledge, pushed outward by a player behind them for 40 ticks, stays supported but still moves up to the edge; a non-sneaking one is pushed over; pushes toward the land and along the edge are unchanged; a player already off the ground is not clipped; a push that would leave the ground at once becomes no push). `movement_iw4` `edge::tests` unchanged and green. Run: `test -p sim -p movement_iw4 --locked` (125 and 61 passed), `check -p launcher --locked`.
+- **Owner's test step** (two windows, kit of A7 commit 1): build a 1-wide cobblestone bridge 4 blocks out over a drop. The host sneaks to the end of the bridge and stays at its edge; the friend walks along the bridge into the host's back, sneaking or not: the host is nudged to the edge and stays on the bridge. Then the host stops sneaking: the friend's push slides the host off. **Screenshot** of the host at the edge with the friend behind.
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
