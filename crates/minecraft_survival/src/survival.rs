@@ -34,6 +34,7 @@ const SWIM_EXHAUSTION: f32 = 0.01;
 const SPRINT_FOOD: u8 = 6;
 const SAFE_FALL: f64 = 3.0;
 const MAX_STRIDE: f64 = 2.0;
+const BAD_OMEN_SOUND: &str = "minecraft:event.mob_effect.bad_omen";
 pub(crate) const DAMAGE_BLINK: u64 = 20;
 pub(crate) const SETTLE_DISPLAY: u64 = 20;
 
@@ -187,6 +188,7 @@ pub enum Bite {
         sound: String,
         overflow: Option<ItemStack>,
         fed: bool,
+        heard: Vec<&'static str>,
     },
 }
 
@@ -947,11 +949,17 @@ impl Survival {
                 if id == minecraft_terrain::bottle::MILK_BUCKET {
                     self.clear_effects();
                 }
+                let heard = if id == minecraft_terrain::bottle::OMINOUS_BOTTLE {
+                    self.drink_ominous_bottle(components.as_ref())
+                } else {
+                    Vec::new()
+                };
                 let fed = minecraftoss_player::food::catalog().contains_key(&id);
                 Bite::Done {
                     sound,
                     overflow,
                     fed,
+                    heard,
                 }
             }
             FoodUseTick::Cancelled => {
@@ -980,6 +988,21 @@ impl Survival {
         self.status.add_effect(EffectKind::Absorption, 100, 1);
         self.status.add_effect(EffectKind::FireResistance, 800, 0);
         true
+    }
+
+    pub fn drink_ominous_bottle(&mut self, components: Option<&serde_json::Value>) -> Vec<&'static str> {
+        let fresh = self.status.effect(EffectKind::BadOmen).is_none();
+        self.status.add_effect(
+            EffectKind::BadOmen,
+            minecraft_terrain::bottle::BAD_OMEN_TICKS,
+            minecraft_terrain::bottle::ominous_amplifier(components),
+        );
+        let mut heard = Vec::new();
+        if fresh && self.status.effect(EffectKind::BadOmen).is_some() {
+            heard.push(BAD_OMEN_SOUND);
+        }
+        heard.push(minecraft_terrain::bottle::OMINOUS_DISPOSE_SOUND);
+        heard
     }
 
     pub fn clear_effects(&mut self) {
@@ -2040,13 +2063,60 @@ mod tests {
         }
         assert!(survival.status.effect(EffectKind::Poison).is_some());
         let done = survival.chew(&mut inventory, 4, || 0.5);
-        assert_eq!(done, Bite::Done { sound: "minecraft:entity.generic.drink".to_owned(), overflow: None, fed: false });
+        assert_eq!(done, Bite::Done { sound: "minecraft:entity.generic.drink".to_owned(), overflow: None, fed: false, heard: Vec::new() });
         assert_eq!(survival.status.effect(EffectKind::Poison), None);
         assert_eq!(survival.status.effect(EffectKind::Haste), None);
         assert_eq!(survival.status.effect(EffectKind::MiningFatigue), None);
         assert_eq!(survival.status.effect(EffectKind::ConduitPower), None);
         assert_eq!(survival.status.absorption, 0.0);
         assert_eq!(inventory.slots[40].as_ref().map(|s| s.id.as_str()), Some("minecraft:bucket"));
+    }
+
+    #[test]
+    fn an_ominous_bottle_is_drunk_away_and_gives_bad_omen_at_its_amplifier() {
+        use minecraft_terrain::bottle::{OMINOUS_BOTTLE, OMINOUS_DISPOSE_SOUND, drink_ominous};
+        let bottle = |amplifier: Option<i64>| {
+            let mut stack = ItemStack::new(OMINOUS_BOTTLE, 2);
+            stack.max = 64;
+            stack.components = amplifier.map(|a| serde_json::json!({"minecraft:ominous_bottle_amplifier": a}));
+            stack
+        };
+        let drink = |survival: &mut Survival, inventory: &mut Inventory| {
+            let stack = inventory.slots[4].clone().expect("a bottle");
+            survival.start_using(drink_ominous(4, &stack));
+            let using = survival.eating().expect("drinking");
+            assert!(using.info.animation.eq_ignore_ascii_case("drink"));
+            assert_eq!(using.info.consume_ticks, 32, "Consumables.defaultDrink: 1.6 seconds");
+            for _ in 1..32 {
+                assert!(!matches!(survival.chew(inventory, 4, || 0.5), Bite::Done { .. }));
+            }
+            survival.chew(inventory, 4, || 0.5)
+        };
+        let mut survival = fresh();
+        let mut inventory = Inventory::default();
+        inventory.slots[4] = Some(bottle(Some(3)));
+        let done = drink(&mut survival, &mut inventory);
+        assert_eq!(
+            done,
+            Bite::Done {
+                sound: "minecraft:entity.generic.drink".to_owned(),
+                overflow: None,
+                fed: false,
+                heard: vec![BAD_OMEN_SOUND, OMINOUS_DISPOSE_SOUND]
+            }
+        );
+        assert_eq!(survival.status.effect(EffectKind::BadOmen).map(|e| (e.duration, e.amplifier)), Some((120000, 3)));
+        assert_eq!(inventory.slots[4].as_ref().map(|s| (s.id.as_str(), s.count)), Some((OMINOUS_BOTTLE, 1)), "one bottle used, no glass bottle back");
+        let Bite::Done { heard, .. } = drink(&mut survival, &mut inventory) else { panic!("drunk") };
+        assert_eq!(heard, vec![OMINOUS_DISPOSE_SOUND], "an omen already there plays no omen sound");
+        assert_eq!(inventory.slots[4], None);
+        let mut plain = fresh();
+        inventory.slots[4] = Some(bottle(None));
+        drink(&mut plain, &mut inventory);
+        assert_eq!(plain.status.effect(EffectKind::BadOmen).map(|e| (e.duration, e.amplifier)), Some((120000, 0)));
+        inventory.slots[4] = Some(bottle(Some(9)));
+        drink(&mut plain, &mut inventory);
+        assert_eq!(plain.status.effect(EffectKind::BadOmen).map(|e| e.amplifier), Some(4), "the component holds 0 to 4");
     }
 
     #[test]

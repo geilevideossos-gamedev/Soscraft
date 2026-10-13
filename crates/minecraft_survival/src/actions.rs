@@ -430,7 +430,8 @@ pub fn act(
                     sound,
                     overflow,
                     fed,
-                } => (sound, Some((overflow, fed))),
+                    heard,
+                } => (sound, Some((overflow, fed, heard))),
             };
             if crumbs {
                 let count = if finished.is_some() { 16 } else { 5 };
@@ -449,7 +450,10 @@ pub fn act(
                 (if r1 < 0.5 { 0.5 } else { 1.0 }, (r1 - r2) * 0.2 + 1.0)
             };
             effects.push(sound(&chewed, None, volume, chew_pitch));
-            if let Some((overflow, fed)) = finished {
+            if let Some((overflow, fed, heard)) = finished {
+                for event in heard {
+                    effects.push(sound(event, None, 1.0, 1.0));
+                }
                 if fed {
                     effects.push(sound(
                         "minecraft:entity.player.burp",
@@ -1308,6 +1312,12 @@ pub fn act(
                 .filter(|s| s.id == minecraft_terrain::bottle::MILK_BUCKET)
             {
                 survival.start_using(minecraft_terrain::bottle::drink_milk(slot, stack));
+                HandUse::Consumed
+            } else if let Some(stack) = held
+                .as_ref()
+                .filter(|s| s.id == minecraft_terrain::bottle::OMINOUS_BOTTLE)
+            {
+                survival.start_using(minecraft_terrain::bottle::drink_ominous(slot, stack));
                 HandUse::Consumed
             } else if held
                 .as_ref()

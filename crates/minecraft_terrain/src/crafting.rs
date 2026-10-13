@@ -490,6 +490,10 @@ pub fn kit_components(entry: &str) -> (&str, Option<serde_json::Value>) {
             if let Ok(content) = minecraftoss_world::book::content(&name, value.trim()) {
                 components.insert(name, content);
             }
+        } else if name == crate::bottle::OMINOUS_AMPLIFIER {
+            if let Some(amplifier) = value.trim().parse::<i64>().ok().filter(|a| (0..=4).contains(a)) {
+                components.insert(name, serde_json::json!(amplifier));
+            }
         }
     }
     (entry[..open].trim(), (!components.is_empty()).then_some(serde_json::Value::Object(components)))
@@ -718,6 +722,16 @@ mod tests {
         let components = |slot: usize| inventory.slots[HOTBAR + slot].as_ref().unwrap().components.clone();
         assert_eq!(components(0), Some(json!({"minecraft:damage": 430})));
         assert_eq!(components(1), Some(json!({"minecraft:enchantments": {"minecraft:sharpness": 5}, "minecraft:damage": 12})));
+    }
+
+    #[test]
+    fn kit_ominous_bottles_carry_their_amplifier() {
+        let mut inventory = Inventory::default();
+        assert_eq!(give_kit(&mut inventory, "ominous_bottle[ominous_bottle_amplifier=4]*2,minecraft:ominous_bottle,ominous_bottle[ominous_bottle_amplifier=7]"), 3);
+        let stack = |slot: usize| inventory.slots[HOTBAR + slot].as_ref().map(|s| (s.id.clone(), s.count, s.components.clone()));
+        assert_eq!(stack(0), Some(("minecraft:ominous_bottle".to_owned(), 2, Some(json!({"minecraft:ominous_bottle_amplifier": 4})))));
+        assert_eq!(stack(1), Some(("minecraft:ominous_bottle".to_owned(), 1, None)));
+        assert_eq!(stack(2), Some(("minecraft:ominous_bottle".to_owned(), 1, None)), "out of range is left out");
     }
 
     fn write_jar(path: &Path, recipes: &[(&str, Value)], tags: &[(&str, Value)]) {

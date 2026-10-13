@@ -553,6 +553,45 @@ After 4cd55bf8.
 IW4L_MINECRAFT_KIT=minecraft:wheat*64,minecraft:wheat*64,minecraft:emerald*32,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:oak_planks*64,minecraft:torch*32,minecraft:cooked_beef*32
 ```
 
+### 2. Minecraft ominous bottles give bad omen
+
+After 0dd063c0.
+
+- **Vanilla (javap, 26.3):**
+  - `Items.OMINOUS_BOTTLE`: rarity UNCOMMON, the `Consumables.OMINOUS_BOTTLE` consumable and `OminousBottleAmplifier(0)` as its default `minecraft:ominous_bottle_amplifier`. It stacks to 64 and has no remainder.
+  - `Consumables.OMINOUS_BOTTLE` = `defaultDrink()` (1.6 s = 32 ticks, the DRINK animation, `entity.generic.drink`, no particles) plus `soundAfterConsume(item.ominous_bottle.dispose)`, which is a `PlaySoundConsumeEffect` at the drinker's block, volume 1, pitch 1.
+  - `Consumable.onConsume`: the drink sound (`emitParticlesAndSounds`, volume 0.5, pitch 0.9 to 1), then the `ConsumableListener` components (here `OminousBottleAmplifier.onConsume`), then the consume effects (the dispose sound), then `ItemStack.consume(1)` (nothing is used in creative).
+  - `OminousBottleAmplifier.onConsume`: `addEffect(new MobEffectInstance(BAD_OMEN, 120000, value, false, false, true))`. Its codec is `ExtraCodecs.intRange(0, 4)`.
+  - `MobEffect.onEffectAdded` plays the effect's `soundOnAdded` at the entity, volume 1, pitch 1, only when the effect is new (`LivingEntity.addEffect` calls it for a fresh effect, not for an update). Bad Omen's is `event.mob_effect.bad_omen`.
+- **Changed:**
+  - `minecraft_terrain/src/bottle.rs`: `OMINOUS_BOTTLE`, `OMINOUS_AMPLIFIER`, `OMINOUS_DISPOSE_SOUND`, `BAD_OMEN_TICKS` (120000), `drink_ominous` (the drink with no remainder) and `ominous_amplifier` (the component, 0 when missing, held to 0 to 4).
+  - `minecraft_survival/src/actions.rs`: right-clicking with an ominous bottle in either hand starts drinking it. When it is drunk, the new sounds in `Bite::Done.heard` play at the player, after the drink sound.
+  - `minecraft_survival/src/survival.rs`: `Bite::Done` has `heard`. A finished ominous bottle runs `drink_ominous_bottle`: Bad Omen for 120000 ticks at the bottle's amplifier, then `event.mob_effect.bad_omen` when the omen is new and `item.ominous_bottle.dispose`.
+  - `minecraft_survival/src/offhand.rs`: the ominous bottle is an item the offhand uses.
+  - `minecraft_commands/src/args.rs`: `/give` and `/kit` take `[minecraft:ominous_bottle_amplifier=N]` (0 to 4; outside that, vanilla's "malformed" error with "Value N outside of range [0:4]").
+  - `minecraft_terrain/src/crafting.rs`: the env kit takes the same component (`minecraft:ominous_bottle[ominous_bottle_amplifier=4]`). A value outside 0 to 4 is left out.
+- **Tests:**
+  - `survival::tests::an_ominous_bottle_is_drunk_away_and_gives_bad_omen_at_its_amplifier`: 32 ticks of drinking; amplifier 3 gives Bad Omen 120000 ticks at 3 with the drink sound, the omen sound and the dispose sound; one bottle of two is used and no glass bottle comes back; a second bottle plays only the dispose sound; a bottle without the component gives amplifier 0, and a value of 9 is held to 4.
+  - `args::tests::an_ominous_bottle_takes_its_amplifier_from_zero_to_four`: `=4` gives the component, `=5` is malformed at the 5, `=x` wants an integer.
+  - `crafting::tests::kit_ominous_bottles_carry_their_amplifier`.
+  - Runs: `minecraft_survival` lib 604, `minecraft_commands` lib 135 and `minecraft_terrain` lib 1138 (3 ignored), all green. `check -p launcher` green.
+- **Decisions:**
+  - The dispose sound plays at the player like the omen sound. Vanilla plays it at the centre of the player's block, less than a block away.
+  - `/effect give` of an omen plays no omen sound. Vanilla plays it there too; the fork's commands have no sound path to the player yet. It is listed under Left for later.
+  - The bottle's tooltip line ("Bad Omen V (100:00)") is not drawn: the fork's tooltips show potion contents only. It is listed under Left for later.
+- **Test steps (survival, difficulty normal):**
+  1. Hold the plain ominous bottle and keep right-click pressed: the drinking animation and sound run for 1.6 seconds, then an eerie omen sound and the bottle-break sound play, and one bottle is gone with no glass bottle back (**46_ominous_drunk**).
+  2. `/effect clear @s minecraft:bad_omen` answers that Bad Omen was removed (it was level I). Drink the bottle with amplifier 4, then give yourself the same omen again with `/effect give @s minecraft:bad_omen 10 0`: the answer says it could not be applied, because a stronger one (level V) is running (**47_omen_level_five**).
+  3. Drink an ominous bottle from the offhand (F swaps it there): it works the same.
+  4. In creative mode (`/gamemode creative`), drink one: the bottle stays.
+  5. Back in survival, drink a milk bucket: the Bad Omen is gone (`/effect clear @s minecraft:bad_omen` now says there was nothing to remove).
+  6. Friend window: the friend drinks a bottle and hears the omen sound; the host standing next to them hears it too (**48_friend_omen**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:ominous_bottle[ominous_bottle_amplifier=4]*2,minecraft:ominous_bottle[ominous_bottle_amplifier=2],minecraft:milk_bucket,minecraft:milk_bucket,minecraft:cooked_beef*16
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -566,6 +605,7 @@ IW4L_MINECRAFT_KIT=minecraft:wheat*64,minecraft:wheat*64,minecraft:emerald*32,mi
 - `docs/MINECRAFT-SURVIVAL.md`: the server's mobs now follow the world difficulty in their own rules too. Until round 9 the entity world always ran as Normal. This covers skeleton fire rates and spread, drowned trident spread, husk hunger and the zombie villager conversion.
 - `docs/MINECRAFT-SURVIVAL.md`: a zombie villager with Weakness (splash weakness on it) is cured by right-clicking it with a golden apple, which is used up. It shakes for 3 to 5 minutes, faster with iron bars and beds within 4 blocks, keeps curing through a save, and never despawns while curing. Then it becomes the same villager again (type, profession, level, experience, trades, gossip and name), with nausea and a loud sound. The player who cured it gets much lower prices from it. Without Weakness the apple is kept. Friends see the shaking and hear the sounds. Zombies drowning into drowned shake too.
 - `docs/MINECRAFT-SURVIVAL.md`: players can carry Darkness, Bad Omen, Raid Omen, Trial Omen and Hero of the Village. They are saved in the player file, `/effect` gives and clears them, and milk and totems remove them. Hero of the Village lowers that player's prices at every villager (30 % of the first cost at level I, 6.25 % more a level). Bad Omen does not yet turn into Raid Omen in a village, Raid Omen does not yet start a raid, Trial Omen is not yet read by trial spawners, and Darkness does not yet darken the screen.
+- `docs/MINECRAFT-SURVIVAL.md`: ominous bottles are drunk like potions (1.6 seconds, either hand) and give Bad Omen for 100 minutes at the bottle's level (`minecraft:ominous_bottle_amplifier`, 0 to 4), with the omen sound when it is new and the bottle-break sound. The bottle is used up without a glass bottle. `/give`, `/kit` and the test kit take `minecraft:ominous_bottle[ominous_bottle_amplifier=N]`.
 
 ## Vendored files
 
@@ -577,3 +617,5 @@ Patched by track D: 11 (`entities/src/effects.rs`, `entities/src/lib.rs`, `entit
 - Zombie nautilus jockeys for natural drowned with tridents (needs mob 38, group `nautiluses`).
 - The drowned's raised trident uses the plain held model; vanilla draws `item/trident_throwing` while the item is in use (`minecraft:using_item`), which needs a using flag on `mesh::HeldItem`.
 - Trading: number keys, Q, double-click gathering and drags on the payment and result slots.
+- `/effect give` of Bad Omen, Raid Omen or Trial Omen plays no omen sound (vanilla plays `event.mob_effect.<omen>` for a new omen from any source); the commands need a sound path to the player.
+- The ominous bottle's tooltip line ("Bad Omen V (100:00)" from `OminousBottleAmplifier.addToTooltip`).

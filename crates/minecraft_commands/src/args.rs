@@ -341,6 +341,7 @@ fn players(reader: &mut StringReader, single: bool) -> Result<Selector, CommandE
 
 pub const ENCHANTMENT_COMPONENTS: [&str; 2] =
     ["minecraft:enchantments", "minecraft:stored_enchantments"];
+pub const OMINOUS_AMPLIFIER: &str = "minecraft:ominous_bottle_amplifier";
 
 pub(crate) fn allowed_in_id(c: char) -> bool {
     c.is_ascii_digit() || c.is_ascii_lowercase() || matches!(c, '_' | ':' | '/' | '.' | '-')
@@ -395,7 +396,8 @@ fn components(
         let start = reader.cursor;
         let id = resource_id(reader)?;
         let book = book::CONTENT_COMPONENTS.contains(&id.as_str());
-        if !book && !ENCHANTMENT_COMPONENTS.contains(&id.as_str()) {
+        let ominous = id == OMINOUS_AMPLIFIER;
+        if !book && !ominous && !ENCHANTMENT_COMPONENTS.contains(&id.as_str()) {
             reader.cursor = start;
             return Err(
                 CommandError::new("arguments.item.component.unknown", vec![literal(&id)]).at(start),
@@ -412,6 +414,8 @@ fn components(
         reader.skip_ws();
         if book {
             book_content(reader, &id, books)?;
+        } else if ominous {
+            ominous_amplifier(reader, &id, books)?;
         } else {
             enchantment_levels(reader, &id, out)?;
         }
@@ -453,6 +457,28 @@ fn book_content(
             .at(start))
         }
     }
+}
+
+fn ominous_amplifier(
+    reader: &mut StringReader,
+    component: &str,
+    components: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CommandError> {
+    let start = reader.cursor;
+    let amplifier = reader.read_int()?;
+    if !(0..=4).contains(&amplifier) {
+        reader.cursor = start;
+        return Err(CommandError::new(
+            "arguments.item.component.malformed",
+            vec![
+                literal(component),
+                literal(format!("Value {amplifier} outside of range [0:4]")),
+            ],
+        )
+        .at(start));
+    }
+    components.insert(component.to_owned(), serde_json::json!(amplifier));
+    Ok(())
 }
 
 fn enchantment_levels(
@@ -1003,6 +1029,24 @@ mod tests {
         assert_eq!(
             key(&parse_item(r#"written_book[written_book_content={title:"T",author:"A"},written_book_content={title:"T",author:"A"}]"#).unwrap_err()),
             "arguments.item.component.repeated"
+        );
+    }
+
+    #[test]
+    fn an_ominous_bottle_takes_its_amplifier_from_zero_to_four() {
+        let bottle = parse_item("ominous_bottle[minecraft:ominous_bottle_amplifier=4]").unwrap();
+        assert_eq!(bottle.id, "minecraft:ominous_bottle");
+        assert_eq!(
+            bottle.components,
+            Some(serde_json::json!({"minecraft:ominous_bottle_amplifier": 4}))
+        );
+        let text = "ominous_bottle[ominous_bottle_amplifier=5]";
+        let error = parse_item(text).unwrap_err();
+        assert_eq!(key(&error), "arguments.item.component.malformed");
+        assert_eq!(error.cursor, text.find('5'));
+        assert_eq!(
+            key(&parse_item("ominous_bottle[ominous_bottle_amplifier=x]").unwrap_err()),
+            "parsing.int.expected"
         );
     }
 

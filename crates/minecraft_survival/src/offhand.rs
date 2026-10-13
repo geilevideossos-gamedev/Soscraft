@@ -18,7 +18,7 @@ const WEAR_BASE: f32 = 1.0;
 const WEAR_FACTOR: f32 = 1.0;
 const REDUCTION_BASE: f32 = 0.0;
 const REDUCTION_FACTOR: f32 = 1.0;
-const USED_ITEMS: [&str; 10] = [
+const USED_ITEMS: [&str; 11] = [
     "minecraft:bucket",
     "minecraft:water_bucket",
     "minecraft:lava_bucket",
@@ -28,6 +28,7 @@ const USED_ITEMS: [&str; 10] = [
     "minecraft:glass_bottle",
     "minecraft:potion",
     minecraft_terrain::bottle::MILK_BUCKET,
+    minecraft_terrain::bottle::OMINOUS_BOTTLE,
     SHIELD,
 ];
 
