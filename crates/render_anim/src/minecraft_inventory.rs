@@ -423,7 +423,25 @@ impl InventoryUi {
                     _ => (cells.iter().map(&mut convert).collect(), None, [0; 4]),
                 }
             }
-            (None, None) => (Vec::new(), None, [0; 4]),
+            (None, None) => match &screen.open {
+                Some(Open::Merchant(merchant)) if ui.inventory_open => {
+                    choices = merchant
+                        .view
+                        .offers
+                        .iter()
+                        .map(|offer| McChoice {
+                            icon: convert(&Some(offer_stack(&inventory.recipes, offer))),
+                            label: String::new(),
+                            cost: 0,
+                            enabled: !offer.out_of_stock(),
+                            runes: String::new(),
+                        })
+                        .collect();
+                    chosen = merchant.selected;
+                    (merchant.view.payment.iter().map(&mut convert).collect(), convert(&merchant.view.result), [0; 4])
+                }
+                _ => (Vec::new(), None, [0; 4]),
+            },
         };
         ui.choices = choices;
         ui.chosen = chosen;
@@ -580,6 +598,7 @@ pub(crate) fn screen_for(open: Option<&Open>) -> McScreen {
         Some(Open::Table(_)) => McScreen::CraftingTable,
         Some(Open::Block(opened)) => screen_of(opened),
         Some(Open::Bench(_, bench)) => bench_screen(bench.kind),
+        Some(Open::Merchant(_)) => McScreen::Merchant,
         Some(Open::Inventory) | None => McScreen::Inventory,
     }
 }
@@ -645,6 +664,7 @@ fn droppable(
             out.extend((0..4).map(|i| (McSlot::Crafting(i), max)));
         }
         McScreen::CraftingTable => out.extend((0..9).map(|i| (McSlot::Workbench(i), max))),
+        McScreen::Merchant => out.extend((0..2).map(|i| (McSlot::Container(i), max))),
         McScreen::Creative(frame::McTabKind::Inventory) => {
             for index in 36..40 {
                 if armor_slot(index).is_some_and(|slot| inventory.recipes.equipment_slot(carried) == Some(slot)) {
@@ -721,6 +741,16 @@ fn display_name(language: &HashMap<String, String>, stack: &ItemStack) -> Option
     let effect = potion.rsplit(':').next()?.trim_start_matches("long_").trim_start_matches("strong_");
     let item = stack.id.rsplit(':').next()?;
     language.get(&format!("item.minecraft.{item}.effect.{effect}")).cloned()
+}
+
+fn offer_stack(recipes: &minecraftoss_player::crafting::RecipeBook, offer: &minecraftoss_entities::trading::MerchantOffer) -> ItemStack {
+    let max = recipes.max_stack(&offer.sell.id);
+    ItemStack {
+        id: offer.sell.id.clone(),
+        count: u8::try_from(offer.sell.count.max(1)).unwrap_or(u8::MAX),
+        max,
+        components: (!offer.sell.components.is_empty()).then(|| serde_json::Value::Object(offer.sell.components.clone())),
+    }
 }
 
 fn bench_screen(kind: Workshop) -> McScreen {

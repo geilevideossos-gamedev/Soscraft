@@ -302,7 +302,6 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
 pub fn would_interact(world: &EntityWorld, hit: MobHit, inventory: &Inventory, selected: usize, infinite: bool, player: u64) -> bool {
     let held = inventory.slots.get(selected).and_then(Option::as_ref).map(|stack| stack.id.as_str());
     match hit {
-        MobHit::Villager(_) => false,
         MobHit::Sheep(id) if held == Some("minecraft:shears") => world.sheep().iter().any(|e| e.id == id),
         _ => {
             let mut world = world.clone();
@@ -375,6 +374,30 @@ mod tests {
         hurt.health = 50.0;
         let hurt_golem = world.spawn_iron_golem(hurt, true);
         let villager = world.spawn_villager(Villager::new(at), true);
+        let offer = minecraftoss_entities::trading::MerchantOffer {
+            buy: minecraftoss_entities::trading::ItemCost { id: "minecraft:wheat".to_owned(), count: 20, components: None },
+            buy_b: None,
+            sell: minecraftoss_entities::trading::TradeItem { id: "minecraft:emerald".to_owned(), count: 1, components: serde_json::Map::new() },
+            uses: 0,
+            max_uses: 16,
+            reward_exp: true,
+            special_price: 0,
+            demand: 0,
+            price_multiplier: 0.05,
+            xp: 2,
+        };
+        let trader = world.spawn_villager(Villager::new(at), true);
+        world.villager_mut(trader).unwrap().offers = Some(vec![offer.clone()]);
+        let mut young = Villager::new(at);
+        young.age = baby(young.age);
+        let young_villager = world.spawn_villager(young, true);
+        world.villager_mut(young_villager).unwrap().offers = Some(vec![offer.clone()]);
+        let sleeper = world.spawn_villager(Villager::new(at), true);
+        world.villager_mut(sleeper).unwrap().offers = Some(vec![offer.clone()]);
+        world.villager_mut(sleeper).unwrap().sleeping = Some((0, 64, 0));
+        let busy = world.spawn_villager(Villager::new(at), true);
+        world.villager_mut(busy).unwrap().offers = Some(vec![offer]);
+        world.villager_mut(busy).unwrap().trading_player = Some(9);
         let wolf = world.spawn_wolf(Wolf::new(at), true);
         let chicken = world.spawn_chicken(minecraftoss_entities::chicken::Chicken::new(at), true);
         let hoglin = world.spawn_hoglin(Hoglin::new(HoglinKind::Hoglin, at), true);
@@ -417,8 +440,13 @@ mod tests {
             (MobHit::Chicken(chicken), Some("minecraft:wheat"), false),
             (MobHit::Wolf(wolf), Some("minecraft:bone"), true),
             (MobHit::Wolf(wolf), Some("minecraft:stick"), false),
-            (MobHit::Villager(villager), Some("minecraft:emerald"), false),
-            (MobHit::Villager(villager), None, false),
+            (MobHit::Villager(trader), Some("minecraft:emerald"), true),
+            (MobHit::Villager(trader), None, true),
+            (MobHit::Villager(trader), Some("minecraft:villager_spawn_egg"), false),
+            (MobHit::Villager(villager), None, true),
+            (MobHit::Villager(young_villager), None, true),
+            (MobHit::Villager(sleeper), None, false),
+            (MobHit::Villager(busy), Some("minecraft:emerald"), false),
             (MobHit::Hoglin(hoglin), Some("minecraft:crimson_fungus"), true),
             (MobHit::Hoglin(hoglin), Some("minecraft:warped_fungus"), false),
             (MobHit::Hoglin(hoglet), Some("minecraft:crimson_fungus"), true),
@@ -440,15 +468,15 @@ mod tests {
                 let mut used = inventory.clone();
                 let mut actor = Actor { inventory: &mut used, selected: 0, infinite, entity_loot: None, shearing_loot: None, player: 0 };
                 let handled = interact(&mut copy, hit, &mut actor).handled;
-                if !matches!(hit, MobHit::Villager(_)) {
-                    assert_eq!(would, handled, "{hit:?} with {held:?}");
-                }
+                assert_eq!(would, handled, "{hit:?} with {held:?}");
                 assert_eq!(would, expected, "{hit:?} with {held:?}");
             }
         }
         assert!(would_interact(&world, MobHit::Sheep(sheep), &holding(Some("minecraft:shears")), 0, false, 0), "shears always take on a sheep");
         assert!(!would_interact(&world, MobHit::Sheep(sheep + 1000), &holding(Some("minecraft:shears")), 0, false, 0));
         assert!(world.pig_mut(pig).is_some_and(|e| !e.pig.saddled), "the predicate leaves the world alone");
+        assert!(world.villagers().iter().all(|e| e.id == busy || e.trading_player.is_none()), "nor starts a trade");
+        assert!(world.merchant_menu(0).is_none());
     }
 
     #[test]

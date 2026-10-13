@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use minecraft_commands::Text;
 use minecraft_net::messages::{Click, MenuAction, MenuExtras, MenuKind, MenuSlot, MenuView, Nbt};
@@ -7,6 +7,7 @@ use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::crafting::{self, Grid, Spot};
 use minecraft_terrain::openers::RECHECK_TICKS;
 use minecraft_terrain::scene::{BlockPos, HandcraftedScene, Scene};
+use minecraft_terrain::server::{MerchantOp, MerchantView};
 use minecraft_terrain::stations::{Bench, Context, StationBook, Taken, Workshop};
 use minecraftoss_entities::enchant::Enchantments;
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
@@ -14,7 +15,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::actions::{Body, Effect};
 use crate::data::GameData;
-use crate::entities::Entities;
+use crate::entities::{Entities, MerchantNews};
 use crate::guns::{HOTBAR, weapon_of};
 use crate::level::Terrain;
 use crate::offhand::OFFHAND;
@@ -34,6 +35,21 @@ pub enum Open {
     Table(BlockPos),
     Block(Opened),
     Bench(BlockPos, Bench),
+    Merchant(MerchantScreen),
+}
+
+#[derive(Clone, Debug)]
+pub struct MerchantScreen {
+    pub view: MerchantView,
+    pub selected: Option<usize>,
+    pub held: VecDeque<MenuAction>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MerchantShown {
+    pub opened: bool,
+    pub closed: bool,
+    pub thrown: Vec<ItemStack>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -88,6 +104,8 @@ pub struct Menus {
     pub inventory: Menu,
     counter: u8,
     told: Option<u8>,
+    merchant_ops: Vec<MerchantOp>,
+    merchant_waiting: bool,
 }
 
 impl Default for Menus {
@@ -103,6 +121,8 @@ impl Default for Menus {
             ),
             counter: 0,
             told: None,
+            merchant_ops: Vec::new(),
+            merchant_waiting: false,
         }
     }
 }
@@ -123,6 +143,10 @@ impl Menus {
     fn next_id(&mut self) -> u8 {
         self.counter = self.counter % MENU_IDS + 1;
         self.counter
+    }
+
+    fn merchant_busy(&self) -> bool {
+        self.merchant_waiting || !self.merchant_ops.is_empty()
     }
 }
 
@@ -316,6 +340,7 @@ pub fn still_valid(menu: &Menu, scene: &HandcraftedScene, eye: [f64; 3]) -> bool
         Open::Bench(pos, bench) => {
             near(*pos) && Scene::block(scene, *pos).and_then(Workshop::of) == Some(bench.kind)
         }
+        Open::Merchant(_) => true,
     }
 }
 
@@ -427,6 +452,7 @@ fn valid_slot(menu: Option<&Menu>, containers: &mut Containers, slot: MenuSlot) 
     let size = match menu.map(|menu| &menu.open) {
         Some(Open::Block(opened)) => containers.cells(opened).len(),
         Some(Open::Bench(_, bench)) => bench.cells.len(),
+        Some(Open::Merchant(_)) => 3,
         _ => 0,
     };
     let table = matches!(menu.map(|menu| &menu.open), Some(Open::Table(_)));
@@ -657,6 +683,67 @@ fn grid_action(
     }
 }
 
+fn merchant_op(action: &MenuAction) -> Option<MerchantOp> {
+    Some(match action {
+        MenuAction::Slot {
+            slot: MenuSlot::Container(index @ (0 | 1)),
+            right,
+            shift,
+        } => MerchantOp::Payment {
+            slot: usize::from(*index),
+            right: *right,
+            shift: *shift,
+        },
+        MenuAction::Slot {
+            slot: MenuSlot::Container(2) | MenuSlot::Output,
+            shift,
+            ..
+        } => MerchantOp::Result { shift: *shift },
+        MenuAction::Slot {
+            slot: MenuSlot::Inventory(index),
+            shift: true,
+            ..
+        } => MerchantOp::QuickMove(usize::from(*index)),
+        MenuAction::Choose(index) => MerchantOp::Select(i32::from(*index)),
+        _ => return None,
+    })
+}
+
+fn merchant_local(action: &MenuAction) -> bool {
+    let player = |slot: &MenuSlot| matches!(slot, MenuSlot::Inventory(_));
+    match action {
+        MenuAction::Slot { slot, .. }
+        | MenuAction::Gather { slot, .. }
+        | MenuAction::Swap { slot, .. }
+        | MenuAction::Throw { slot, .. } => player(slot),
+        MenuAction::Spread { slots, .. } => slots.iter().all(player),
+        MenuAction::Outside { .. } => true,
+        MenuAction::Choose(_) => false,
+    }
+}
+
+fn merchant_action(
+    screen: &mut MerchantScreen,
+    ops: &mut Vec<MerchantOp>,
+    inventory: &mut Inventory,
+    action: &MenuAction,
+    busy: bool,
+    thrown: &mut Vec<ItemStack>,
+) {
+    if busy {
+        screen.held.push_back(action.clone());
+        return;
+    }
+    if let Some(op) = merchant_op(action) {
+        if let MerchantOp::Select(index) = op {
+            screen.selected = usize::try_from(index).ok();
+        }
+        ops.push(op);
+    } else if merchant_local(action) {
+        grid_action(action, inventory, Grid::Inventory, thrown);
+    }
+}
+
 pub fn apply(
     player: &mut Player,
     containers: &mut Containers,
@@ -676,6 +763,23 @@ pub fn apply(
     } = player;
     containers.with_ender(ender, |containers| {
         if keeps_gun(menus.open.as_ref(), inventory, containers, action) {
+            return;
+        }
+        if let Some(Menu {
+            open: Open::Merchant(screen),
+            ..
+        }) = menus.open.as_mut()
+        {
+            let busy =
+                menus.merchant_waiting || !menus.merchant_ops.is_empty() || !screen.held.is_empty();
+            merchant_action(
+                screen,
+                &mut menus.merchant_ops,
+                inventory,
+                action,
+                busy,
+                &mut clicked.thrown,
+            );
             return;
         }
         let grid = match menus.open.as_ref().map(|menu| &menu.open) {
@@ -791,6 +895,15 @@ pub fn rename(player: &mut Player, name: &str, language: Option<&HashMap<String,
 }
 
 pub fn close(player: &mut Player) -> Vec<ItemStack> {
+    if let Some(Menu {
+        open: Open::Merchant(_),
+        ..
+    }) = player.menus.open
+    {
+        player.menus.open = None;
+        player.menus.merchant_ops.push(MerchantOp::Close);
+        return Vec::new();
+    }
     let mut thrown = Vec::new();
     if let Some(Menu {
         open: Open::Bench(_, mut bench),
@@ -805,7 +918,7 @@ pub fn close(player: &mut Player) -> Vec<ItemStack> {
                 .filter_map(|stack| player.inventory.add_item(stack, selected)),
         );
     }
-    if crafting::has_loose_items(&player.inventory) {
+    if crafting::has_loose_items(&player.inventory) && !player.menus.merchant_busy() {
         thrown.extend(crafting::close(&mut player.inventory, player.selected));
     }
     thrown.extend(player.inventory.take_pending_drops());
@@ -843,6 +956,158 @@ pub fn take_inputs(
     clicked
 }
 
+fn merchant_title(view: &MerchantView) -> Text {
+    let profession = view
+        .profession
+        .rsplit(':')
+        .next()
+        .unwrap_or(view.profession);
+    Text::translate(
+        format!("entity.minecraft.villager.{profession}"),
+        Vec::new(),
+    )
+}
+
+fn merchant_news(
+    player: &mut Player,
+    news: Vec<MerchantNews>,
+    shows: bool,
+    waiting: bool,
+) -> MerchantShown {
+    let mut shown = MerchantShown::default();
+    let dimension = player.dimension;
+    let menus = &mut player.menus;
+    for news in news {
+        let other = menus
+            .open
+            .as_ref()
+            .is_some_and(|menu| !matches!(menu.open, Open::Merchant(_)));
+        let screen = match menus.open.as_mut() {
+            Some(Menu {
+                open: Open::Merchant(screen),
+                ..
+            }) => Some(screen),
+            _ => None,
+        };
+        match news {
+            MerchantNews::Opened(view) => match screen {
+                Some(screen) if screen.view.villager == view.villager => screen.view = view,
+                None if shows && !other => {
+                    let id = menus.next_id();
+                    let title = merchant_title(&view);
+                    let screen = MerchantScreen {
+                        view,
+                        selected: None,
+                        held: VecDeque::new(),
+                    };
+                    menus.open = Some(Menu::new(id, dimension, Open::Merchant(screen), title, 0));
+                    shown.opened = true;
+                }
+                _ => menus.merchant_ops.push(MerchantOp::Close),
+            },
+            MerchantNews::Answer(update) => {
+                if let Some(screen) = screen {
+                    match update.view {
+                        Some(view) => screen.view = view,
+                        None => {
+                            menus.open = None;
+                            shown.closed = true;
+                        }
+                    }
+                }
+            }
+            MerchantNews::Closing => {
+                if screen.is_some() {
+                    menus.open = None;
+                    menus.merchant_ops.push(MerchantOp::Close);
+                    shown.closed = true;
+                }
+            }
+        }
+    }
+    menus.merchant_waiting = waiting;
+    shown
+}
+
+fn pump_merchant(
+    player: &mut Player,
+    mut send: impl FnMut(MerchantOp, &Inventory, usize),
+) -> Vec<ItemStack> {
+    let Player {
+        menus,
+        inventory,
+        selected,
+        ..
+    } = player;
+    let mut thrown = Vec::new();
+    while !menus.merchant_waiting {
+        if !menus.merchant_ops.is_empty() {
+            let op = menus.merchant_ops.remove(0);
+            send(op, inventory, *selected);
+            menus.merchant_waiting = true;
+            continue;
+        }
+        let Some(Menu {
+            open: Open::Merchant(screen),
+            ..
+        }) = menus.open.as_mut()
+        else {
+            break;
+        };
+        let Some(action) = screen.held.pop_front() else {
+            break;
+        };
+        merchant_action(
+            screen,
+            &mut menus.merchant_ops,
+            inventory,
+            &action,
+            false,
+            &mut thrown,
+        );
+    }
+    thrown.extend(inventory.take_pending_drops());
+    keep_guns(inventory, *selected, thrown)
+}
+
+pub fn merchant(
+    player: &mut Player,
+    entities: &mut Entities,
+    feet: [f64; 3],
+    shows: bool,
+    alive: bool,
+) -> MerchantShown {
+    let id = u64::from(player.id.0);
+    let news = entities.take_merchant(id);
+    let waiting = entities.awaits_merchant(id);
+    let mut shown = merchant_news(player, news, shows && alive, waiting);
+    if !alive {
+        close_merchant_now(player, entities, feet);
+        return shown;
+    }
+    shown.thrown = pump_merchant(player, |op, inventory, selected| {
+        entities.merchant(id, op, inventory, selected, feet);
+    });
+    shown
+}
+
+pub fn close_merchant_now(player: &mut Player, entities: &mut Entities, feet: [f64; 3]) {
+    let id = u64::from(player.id.0);
+    let open = matches!(
+        player.menus.open.as_ref().map(|menu| &menu.open),
+        Some(Open::Merchant(_))
+    );
+    if open {
+        player.menus.open = None;
+    }
+    if !open && !player.menus.merchant_busy() && !entities.awaits_merchant(id) {
+        return;
+    }
+    entities.close_merchant_now(id, &mut player.inventory, player.selected, feet);
+    player.menus.merchant_ops.clear();
+    player.menus.merchant_waiting = false;
+}
+
 fn oven_data(data: [i32; 4]) -> Vec<(u8, i32)> {
     data.iter()
         .enumerate()
@@ -872,6 +1137,11 @@ fn contents(
         Open::Bench(_, bench) => {
             let chosen = bench.chosen.map_or(-1, |chosen| chosen as i32);
             (bench.cells.clone(), [chosen, 0, 0, 0])
+        }
+        Open::Merchant(screen) => {
+            let mut cells = screen.view.payment.to_vec();
+            cells.push(screen.view.result.clone());
+            (cells, [0; 4])
         }
     }
 }
@@ -923,6 +1193,7 @@ fn kind_of(open: &Open) -> MenuKind {
             Workshop::Anvil => MenuKind::Anvil,
             Workshop::Enchanting => MenuKind::Enchanting,
         },
+        Open::Merchant(_) => MenuKind::Inventory,
     }
 }
 
@@ -1835,5 +2106,220 @@ mod tests {
         assert_eq!(bench.chosen, Some(2));
         assert!(bench.cells[0].is_some());
         assert!(mirror(None, &recipes).open.is_none());
+    }
+
+    fn trade_view(villager: u64) -> MerchantView {
+        MerchantView {
+            villager,
+            profession: "minecraft:farmer",
+            level: 1,
+            xp: 0,
+            offers: Vec::new(),
+            payment: [None, None],
+            result: None,
+            future_xp: 0,
+            max_stacks: Vec::new(),
+        }
+    }
+
+    fn trading(chat: &mut CommandServer) -> Player {
+        let mut steve = player(chat, 0, "Steve");
+        let shown = merchant_news(
+            &mut steve,
+            vec![MerchantNews::Opened(trade_view(9))],
+            true,
+            false,
+        );
+        assert!(shown.opened && !shown.closed);
+        steve
+    }
+
+    fn sent(player: &mut Player) -> Vec<MerchantOp> {
+        let mut ops = Vec::new();
+        let _ = pump_merchant(player, |op, _, _| ops.push(op));
+        ops
+    }
+
+    fn answer(view: Option<MerchantView>) -> MerchantNews {
+        MerchantNews::Answer(minecraft_terrain::server::MerchantUpdate {
+            view,
+            slots: Vec::new(),
+            cursor: None,
+            closing: false,
+        })
+    }
+
+    #[test]
+    fn a_villager_s_trading_screen_turns_clicks_into_trades() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut steve = trading(&mut chat);
+        let menu = steve.menus.open.as_ref().expect("the trading screen is open");
+        assert!(matches!(menu.open, Open::Merchant(_)));
+        assert_eq!(
+            menu.title,
+            Text::translate("entity.minecraft.villager.farmer", Vec::new())
+        );
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let pay_right = MenuAction::Slot {
+            slot: MenuSlot::Container(1),
+            right: true,
+            shift: false,
+        };
+        let take_all = MenuAction::Slot {
+            slot: MenuSlot::Output,
+            right: false,
+            shift: true,
+        };
+        let expected = [
+            (MenuAction::Choose(3), MerchantOp::Select(3)),
+            (
+                cell(0),
+                MerchantOp::Payment {
+                    slot: 0,
+                    right: false,
+                    shift: false,
+                },
+            ),
+            (
+                pay_right,
+                MerchantOp::Payment {
+                    slot: 1,
+                    right: true,
+                    shift: false,
+                },
+            ),
+            (cell(2), MerchantOp::Result { shift: false }),
+            (take_all, MerchantOp::Result { shift: true }),
+            (slot(14, true), MerchantOp::QuickMove(14)),
+        ];
+        for (action, op) in expected {
+            let _ = apply(&mut steve, &mut containers, books(&book), &action, 0.5);
+            assert_eq!(sent(&mut steve), [op], "{action:?}");
+            let shown = merchant_news(&mut steve, vec![answer(Some(trade_view(9)))], true, false);
+            assert!(!shown.opened && !shown.closed);
+        }
+        let Some(Menu {
+            open: Open::Merchant(screen),
+            ..
+        }) = steve.menus.open.as_ref()
+        else {
+            panic!("still trading");
+        };
+        assert_eq!(screen.selected, Some(3));
+        steve.inventory.slots[2] = Some(ItemStack::new("minecraft:wheat", 5));
+        let _ = apply(&mut steve, &mut containers, books(&book), &slot(2, false), 0.5);
+        assert!(sent(&mut steve).is_empty(), "a plain click in the inventory stays here");
+        assert_eq!(
+            steve.inventory.cursor.as_ref().map(|stack| stack.count),
+            Some(5)
+        );
+        let _ = apply(&mut steve, &mut containers, books(&book), &slot(2, false), 0.5);
+        assert!(steve.inventory.cursor.is_none());
+        assert!(close(&mut steve).is_empty());
+        assert!(steve.menus.open.is_none());
+        assert_eq!(sent(&mut steve), [MerchantOp::Close]);
+    }
+
+    #[test]
+    fn clicks_wait_for_the_answer_to_the_click_before_them_and_follow_in_order() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut steve = trading(&mut chat);
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        steve.inventory.slots[2] = Some(ItemStack::new("minecraft:wheat", 5));
+        for action in [cell(0), slot(2, false), slot(9, true), MenuAction::Choose(1)] {
+            let _ = apply(&mut steve, &mut containers, books(&book), &action, 0.5);
+        }
+        assert!(
+            steve.inventory.cursor.is_none(),
+            "the held inventory click waits too"
+        );
+        assert_eq!(
+            sent(&mut steve),
+            [MerchantOp::Payment {
+                slot: 0,
+                right: false,
+                shift: false
+            }]
+        );
+        assert!(sent(&mut steve).is_empty(), "one trade click at a time");
+        let _ = merchant_news(&mut steve, Vec::new(), true, true);
+        assert!(sent(&mut steve).is_empty(), "the answer has not come");
+        let _ = merchant_news(&mut steve, vec![answer(Some(trade_view(9)))], true, false);
+        assert_eq!(sent(&mut steve), [MerchantOp::QuickMove(9)]);
+        assert_eq!(
+            steve.inventory.cursor.as_ref().map(|stack| stack.count),
+            Some(5),
+            "the inventory click ran once the answer came"
+        );
+        let _ = merchant_news(&mut steve, vec![answer(Some(trade_view(9)))], true, false);
+        assert_eq!(sent(&mut steve), [MerchantOp::Select(1)]);
+        let _ = merchant_news(&mut steve, vec![answer(Some(trade_view(9)))], true, false);
+        assert!(sent(&mut steve).is_empty());
+        let _ = apply(&mut steve, &mut containers, books(&book), &cell(1), 0.5);
+        assert!(close(&mut steve).is_empty());
+        assert!(
+            steve.inventory.cursor.is_some(),
+            "the cursor waits for the server's close"
+        );
+        assert_eq!(
+            sent(&mut steve),
+            [MerchantOp::Payment {
+                slot: 1,
+                right: false,
+                shift: false
+            }]
+        );
+        assert!(close(&mut steve).is_empty());
+        assert!(
+            steve.inventory.cursor.is_some(),
+            "a close while a click is out leaves the cursor alone"
+        );
+        let _ = merchant_news(&mut steve, vec![answer(Some(trade_view(9)))], true, false);
+        assert_eq!(sent(&mut steve), [MerchantOp::Close]);
+    }
+
+    #[test]
+    fn the_server_closes_the_trading_screen_and_friends_turn_it_down_for_now() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut steve = trading(&mut chat);
+        let shown = merchant_news(&mut steve, vec![MerchantNews::Closing], true, false);
+        assert!(shown.closed && steve.menus.open.is_none());
+        assert_eq!(sent(&mut steve), [MerchantOp::Close], "the client answers with a close");
+        let _ = merchant_news(&mut steve, vec![answer(None)], true, false);
+        let reopened = vec![MerchantNews::Opened(trade_view(9))];
+        assert!(merchant_news(&mut steve, reopened, true, false).opened);
+        let shown = merchant_news(&mut steve, vec![answer(None)], true, false);
+        assert!(shown.closed && steve.menus.open.is_none(), "the villager went away");
+        assert!(sent(&mut steve).is_empty());
+        let mut alex = player(&mut chat, 1, "Alex");
+        let shown = merchant_news(
+            &mut alex,
+            vec![MerchantNews::Opened(trade_view(9))],
+            false,
+            false,
+        );
+        assert!(!shown.opened && alex.menus.open.is_none());
+        assert_eq!(sent(&mut alex), [MerchantOp::Close]);
+        let mut busy = player(&mut chat, 2, "Kai");
+        busy.menus.open = Some(Menu::new(
+            5,
+            Dimension::Overworld,
+            Open::Table((0, 64, 0)),
+            Text::literal("Crafting"),
+            0,
+        ));
+        let _ = merchant_news(
+            &mut busy,
+            vec![MerchantNews::Opened(trade_view(9))],
+            true,
+            false,
+        );
+        assert!(matches!(
+            busy.menus.open.as_ref().map(|menu| &menu.open),
+            Some(Open::Table(_))
+        ));
+        assert_eq!(sent(&mut busy), [MerchantOp::Close]);
     }
 }

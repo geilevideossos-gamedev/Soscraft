@@ -166,6 +166,7 @@ pub enum MerchantOp {
     Payment { slot: usize, right: bool, shift: bool },
     /// The result clicked (shift: traded as often as it goes).
     Result { shift: bool },
+    QuickMove(usize),
     Close,
 }
 
@@ -552,6 +553,7 @@ impl ServerSim {
             MerchantOp::Select(index) => self.mobs.merchant_select(player, index, &mut inventory),
             MerchantOp::Payment { slot, right, shift } => self.mobs.merchant_click_payment(player, slot, right, shift, &mut inventory),
             MerchantOp::Result { shift } => self.mobs.merchant_click_result(player, shift, &mut inventory),
+            MerchantOp::QuickMove(index) => self.mobs.merchant_quick_move_inventory(player, index, &mut inventory),
             MerchantOp::Close => {
                 for stack in self.mobs.merchant_close(player, &mut inventory, selected) {
                     let components = stack.components.as_ref().map(|c| c.to_string());
@@ -4299,24 +4301,7 @@ mod tests {
     #[test]
     fn players_trade_with_villagers() {
         use minecraftoss_player::inventory::{Inventory, ItemStack};
-        let Ok(paths) = DataPaths::discover() else { return };
-        let Ok(registries) = Registries::load(&paths) else { return };
-        let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../harness/.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-common-1fad6b3808/26.3/minecraft-common-1fad6b3808-26.3.jar");
-        if !jar.exists() || registries.entities.is_none() {
-            return;
-        }
-        let registries = Arc::new(registries);
-        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
-        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
-        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
-        server.load_loot(&jar, 1234);
-        let nbt = minecraftoss_core::snbt::parse_compound(
-            "{NoAI:1b,Xp:8,VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1},Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1},maxUses:16,xp:2,priceMultiplier:0.05f}]}}",
-        )
-        .unwrap();
-        server.summon("minecraft:villager", [0.5, 100.0, 0.5], Some(&nbt), 0.0).unwrap();
-        let id = server.mobs.villagers()[0].id;
+        let Some((mut server, id)) = trading_server() else { return };
         let mut inventory = Inventory::default();
         let mut wheat = ItemStack::new("minecraft:wheat", 50);
         wheat.max = 64;
@@ -4343,11 +4328,116 @@ mod tests {
         assert_eq!((view.level, view.xp), (2, 12), "the first trade levelled the farmer up");
         assert!(view.offers.len() > 1, "with its next level's offers");
         assert!(server.level.experience_total() > 0, "trades dropped experience");
+        let mut orbs: Vec<i32> = server.orbs().iter().map(|orb| orb.value).collect();
+        orbs.sort_unstable();
+        assert_eq!(orbs.len(), 2, "one orb a trade");
+        assert!((3..=6).contains(&orbs[0]), "a plain trade drops 3 to 6: {orbs:?}");
+        assert!((8..=11).contains(&orbs[1]), "the levelling trade drops 5 more: {orbs:?}");
+        assert!(server.mobs.villagers()[0].effects.has(minecraftoss_entities::effects::MobEffect::Regeneration), "a new level brings regeneration");
         let update = server.merchant(0, MerchantOp::Close, inventory.clone(), 0, [0.0; 3]);
         apply(&mut inventory, &update);
         assert!(update.view.is_none(), "closed");
         assert_eq!(inventory.count("minecraft:wheat"), 10, "the rest came back");
         assert!(server.mobs.villagers()[0].trading_player.is_none());
+    }
+
+    fn trading_server() -> Option<(ServerSim, u64)> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Registries::load(&paths).ok()?;
+        let jar = std::env::var_os("MINECRAFTOSS_ROOT")
+            .map(|root| std::path::Path::new(&root).join("client.jar"))
+            .filter(|jar| jar.exists())
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../harness/.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-common-1fad6b3808/26.3/minecraft-common-1fad6b3808-26.3.jar")
+            });
+        if !jar.exists() || registries.entities.is_none() {
+            return None;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        server.load_loot(&jar, 1234);
+        let nbt = minecraftoss_core::snbt::parse_compound(
+            "{NoAI:1b,Xp:8,VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1},Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1},maxUses:16,xp:2,priceMultiplier:0.05f}]}}",
+        )
+        .unwrap();
+        server.summon("minecraft:villager", [0.5, 100.0, 0.5], Some(&nbt), 0.0).unwrap();
+        let id = server.mobs.villagers()[0].id;
+        Some((server, id))
+    }
+
+    fn wheat(count: u8) -> minecraftoss_player::inventory::ItemStack {
+        let mut wheat = minecraftoss_player::inventory::ItemStack::new("minecraft:wheat", count);
+        wheat.max = 64;
+        wheat
+    }
+
+    #[test]
+    fn a_shift_click_in_the_trading_screen_moves_between_inventory_and_hotbar() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let mut inventory = Inventory::default();
+        inventory.slots[12] = Some(wheat(30));
+        inventory.slots[2] = Some(wheat(5));
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false).merchant.is_some());
+        let update = server.merchant(0, MerchantOp::QuickMove(12), inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(2, Some(wheat(35))), (12, None)], "from the inventory onto the hotbar's wheat");
+        let view = update.view.expect("still open");
+        assert!(view.payment.iter().all(Option::is_none), "a shift-click never fills the payments");
+        for (slot, stack) in update.slots {
+            inventory.slots[slot] = stack;
+        }
+        let update = server.merchant(0, MerchantOp::QuickMove(2), inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(2, None), (9, Some(wheat(35)))], "and back from the hotbar into the inventory");
+        assert!(server.merchant(0, MerchantOp::QuickMove(36), inventory.clone(), 0, [0.0; 3]).slots.is_empty(), "armour stays");
+    }
+
+    #[test]
+    fn closing_the_trading_screen_gives_the_payments_back_and_drops_what_does_not_fit() {
+        use minecraftoss_player::inventory::{Inventory, ItemStack};
+        let Some((mut server, id)) = trading_server() else { return };
+        let mut inventory = Inventory::default();
+        inventory.slots[9] = Some(wheat(40));
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false).merchant.is_some());
+        let update = server.merchant(0, MerchantOp::Select(0), inventory.clone(), 0, [0.0; 3]);
+        for (slot, stack) in update.slots {
+            inventory.slots[slot] = stack;
+        }
+        assert_eq!(update.view.expect("open").payment[0].as_ref().map(|s| s.count), Some(40));
+        assert!(inventory.slots[9].is_none());
+        let mut full = inventory.clone();
+        for slot in 0..36 {
+            full.slots[slot] = Some(ItemStack { max: 64, ..ItemStack::new("minecraft:dirt", 64) });
+        }
+        full.cursor = Some(ItemStack { max: 64, ..ItemStack::new("minecraft:stone", 3) });
+        let feet = [4.5, 101.0, 0.5];
+        let update = server.merchant(0, MerchantOp::Close, full.clone(), 0, feet);
+        assert!(update.view.is_none() && update.slots.is_empty() && update.cursor.is_none(), "nothing fit and the cursor left");
+        let mut dropped: Vec<(String, i32)> = server.items().iter().map(|item| (item.item.clone(), item.count)).collect();
+        dropped.sort();
+        assert_eq!(dropped, vec![("minecraft:stone".to_owned(), 3), ("minecraft:wheat".to_owned(), 40)], "both dropped at the feet");
+        assert!(server.items().iter().all(|item| (item.position[0] - feet[0]).abs() < 1.0 && (item.position[2] - feet[2]).abs() < 1.0));
+        assert!(server.mobs.villagers()[0].trading_player.is_none());
+        assert!(server.merchant(0, MerchantOp::Close, inventory.clone(), 0, feet).slots.is_empty(), "a second close finds nothing");
+    }
+
+    #[test]
+    fn the_trading_screen_closes_once_its_villager_is_out_of_reach() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.is_some());
+        let at = |z: f64| candidate(0, [0.5, 100.0, z]);
+        assert!(server.check_merchant(&[at(7.0)]).is_empty(), "within reach plus four");
+        let closing = server.check_merchant(&[at(8.5)]);
+        assert_eq!(closing.len(), 1);
+        assert!(closing[0].1.closing && closing[0].1.view.is_none());
+        assert!(server.check_merchant(&[at(9.0)]).is_empty(), "asked once");
+        server.merchant(0, MerchantOp::Close, Inventory::default(), 0, [0.5, 100.0, 9.0]);
+        assert!(server.mobs.merchant_menu(0).is_none());
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.is_some());
+        assert_eq!(server.check_merchant(&[at(9.0)]).len(), 1, "a new screen is asked again");
     }
 
     /// A villager claims the bed and bell placed near it by day, and sleeps

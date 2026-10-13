@@ -1296,6 +1296,9 @@ fn leave_level(player: &mut Player, level: &mut Level) {
         .place
         .filter(|place| place.dimension == level.dimension)
         .map(|place| place.feet);
+    if let (Some(entities), Some(feet)) = (level.entities.as_mut(), feet) {
+        minecraft_survival::menus::close_merchant_now(player, entities, feet);
+    }
     let thrown = minecraft_survival::menus::close(player);
     if let Some(entities) = level.entities.as_mut() {
         let id = u64::from(player.id.0);
@@ -1549,6 +1552,7 @@ pub(crate) fn step_friend(
         }
         stepped.books.extend(lectern.books);
         if !life.alive {
+            minecraft_survival::menus::close_merchant_now(player, entities, feet);
             let yaw = minecraft_yaw(ps.viewangles[1]);
             for stack in minecraft_survival::menus::close(player) {
                 let eye = glam::DVec3::from_array(eye);
@@ -1847,6 +1851,9 @@ pub(crate) fn friend_menus(
         world.language,
         || entities.random_float(),
     );
+    let at = player.place.map_or([0.0; 3], |place| place.feet);
+    let traded = minecraft_survival::menus::merchant(player, entities, at, false, !player.dead);
+    clicked.thrown.extend(traded.thrown);
     let Some(ps) = ps else {
         if let Some(feet) = player.place.map(|place| place.feet) {
             for stack in &clicked.thrown {

@@ -724,6 +724,9 @@ impl Server {
                     if player.riding.is_some() {
                         player.saved_vehicle = entities.root_vehicle(u64::from(player.id.0), true);
                     }
+                    if let Some(feet) = feet {
+                        crate::menus::close_merchant_now(&mut player, entities, feet);
+                    }
                     let experience = entities.leave(
                         u64::from(player.id.0),
                         &mut player.inventory,

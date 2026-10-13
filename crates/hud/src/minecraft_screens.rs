@@ -214,6 +214,10 @@ pub(crate) fn layout(screen: McScreen) -> Layout {
         }
         McScreen::Creative(kind) => return crate::minecraft_creative::layout(kind, 0),
         McScreen::Lectern => size = [192, 192],
+        McScreen::Merchant => {
+            slots.extend([cell(0, 20, 33), cell(1, 20, 52), output(143, 33)]);
+            player_inventory(&mut slots, 84);
+        }
     }
     Layout {
         screen,
@@ -260,7 +264,7 @@ impl Layout {
             McScreen::Enchanting => "enchanting_table",
             McScreen::Anvil => "anvil",
             McScreen::Grindstone => "grindstone",
-            McScreen::Stonecutter => "stonecutter",
+            McScreen::Stonecutter | McScreen::Merchant => "stonecutter",
             McScreen::Smithing => "smithing",
             McScreen::Creative(_) => "creative_inventory/tab_items",
             McScreen::Lectern => "book",
@@ -453,7 +457,7 @@ pub(crate) fn draw_background(p: &mut Painter<'_>, s: &Screen<'_>) {
                 p.sprite("container/grindstone/error", x, y, 28, 21);
             }
         }
-        McScreen::Stonecutter => stonecutter(p, s),
+        McScreen::Stonecutter | McScreen::Merchant => stonecutter(p, s),
         McScreen::Smithing => smithing(p, s),
         _ => {}
     }
@@ -760,7 +764,7 @@ pub(crate) fn draw_labels(p: &mut Painter<'_>, s: &Screen<'_>) {
         McScreen::CraftingTable => (29, 6),
         McScreen::Furnace(_) | McScreen::Brewing => ((w - p.width(s.title)) / 2, 6),
         McScreen::Anvil => (60, 6),
-        McScreen::Stonecutter => (8, 5),
+        McScreen::Stonecutter | McScreen::Merchant => (8, 5),
         McScreen::Smithing => (44, 15),
         _ => (8, 6),
     };
@@ -996,7 +1000,7 @@ fn onboarding_key(
 }
 
 pub(crate) fn hovered_recipe(s: &Screen<'_>) -> Option<usize> {
-    if s.layout.screen != McScreen::Stonecutter {
+    if !matches!(s.layout.screen, McScreen::Stonecutter | McScreen::Merchant) {
         return None;
     }
     let rel = [
@@ -1106,6 +1110,10 @@ mod tests {
         assert_eq!(
             at(&layout(McScreen::Stonecutter), McSlot::Output),
             (143, 33)
+        );
+        assert_eq!(
+            at(&layout(McScreen::Merchant), McSlot::Container(1)),
+            (20, 52)
         );
         assert_eq!(
             at(&layout(McScreen::Smithing), McSlot::Container(2)),

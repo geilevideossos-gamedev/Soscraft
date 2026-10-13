@@ -533,7 +533,7 @@ pub(crate) fn update_minecraft_hud(
             McScreen::Enchanting => enchant_row_at(rel),
             _ => None,
         });
-        let focused_choice = pad_pointer.then_some(input.choice_focus).filter(|_| matches!(ui.screen, McScreen::Enchanting | McScreen::Stonecutter));
+        let focused_choice = pad_pointer.then_some(input.choice_focus).filter(|_| matches!(ui.screen, McScreen::Enchanting | McScreen::Stonecutter | McScreen::Merchant));
         let level = ui.vitals.as_ref().map_or(0, |v| v.experience_level);
         let cursor_on = ((now - input.name_since) * 1000.0 / 300.0) as i64 % 2 == 0 && typing;
         let screen_title = title(&ui, &gui);
@@ -667,7 +667,7 @@ fn station_input(
                 }
             }
         }
-        McScreen::Stonecutter => {
+        McScreen::Stonecutter | McScreen::Merchant => {
             let active = choices > RECIPE_COLUMNS * RECIPE_ROWS;
             let start = start_index(input.scroll, choices);
             if pressed && let Some(rel) = mouse {

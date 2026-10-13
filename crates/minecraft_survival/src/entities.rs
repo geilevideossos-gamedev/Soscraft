@@ -180,7 +180,36 @@ pub(crate) struct PlayerQueue {
     boost_waiting: Option<(usize, String)>,
     boosts_done: Vec<(usize, String)>,
     lecterns: Vec<minecraft_terrain::lectern::LecternView>,
+    merchant_routed: Vec<MerchantNews>,
+    merchant: Vec<MerchantNews>,
+    merchant_waiting: usize,
     pub(crate) out: PlayerOutputs,
+}
+
+#[derive(Clone, Debug)]
+pub enum MerchantNews {
+    Opened(minecraft_terrain::server::MerchantView),
+    Answer(minecraft_terrain::server::MerchantUpdate),
+    Closing,
+}
+
+fn apply_merchant_answer(inventory: &mut Inventory, update: &minecraft_terrain::server::MerchantUpdate) {
+    for (slot, stack) in &update.slots {
+        if let Some(held) = inventory.slots.get_mut(*slot) {
+            *held = stack.clone();
+        }
+    }
+    inventory.cursor = update.cursor.clone();
+}
+
+fn settle_merchant_news(queue: &mut PlayerQueue, inventory: &mut Inventory) {
+    for news in std::mem::take(&mut queue.merchant_routed) {
+        if let MerchantNews::Answer(update) = &news {
+            apply_merchant_answer(inventory, update);
+            queue.merchant_waiting = queue.merchant_waiting.saturating_sub(1);
+        }
+        queue.merchant.push(news);
+    }
 }
 
 #[derive(Default)]
@@ -261,11 +290,23 @@ impl PlayerQueues {
                 queue.out.hits.push(hit);
             }
         }
+        let (closings, answers): (Vec<_>, Vec<_>) = std::mem::take(&mut output.merchant).into_iter().partition(|(_, update)| update.closing);
+        for (player, update) in answers {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.merchant_routed.push(MerchantNews::Answer(update));
+            }
+        }
         for (player, result) in &output.mob_results {
             if let Some(queue) = self.0.get_mut(player) {
                 queue.mob_slots.push(result.slots.clone());
                 queue.broken.extend(result.broken.iter().cloned());
                 queue.mounts.extend(result.mounted);
+                queue.merchant_routed.extend(result.merchant.clone().map(MerchantNews::Opened));
+            }
+        }
+        for (player, _) in closings {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.merchant_routed.push(MerchantNews::Closing);
             }
         }
         for &(player, vehicle, spot) in &output.dismounts {
@@ -841,6 +882,47 @@ impl Entities {
         self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.lecterns))
     }
 
+    pub fn merchant(&mut self, player: u64, op: minecraft_terrain::server::MerchantOp, inventory: &Inventory, selected: usize, feet: [f64; 3]) {
+        self.server.merchant(player, op, inventory, selected, feet);
+        self.players.queue(player).merchant_waiting += 1;
+    }
+
+    pub fn take_merchant(&mut self, player: u64) -> Vec<MerchantNews> {
+        self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.merchant))
+    }
+
+    pub fn awaits_merchant(&self, player: u64) -> bool {
+        self.players.0.get(&player).is_some_and(|queue| queue.merchant_waiting > 0)
+    }
+
+    pub fn close_merchant_now(&mut self, player: u64, inventory: &mut Inventory, selected: usize, feet: [f64; 3]) {
+        self.settle_merchant_now(player, inventory);
+        self.server.merchant(player, minecraft_terrain::server::MerchantOp::Close, inventory, selected, feet);
+        self.settle_merchant_now(player, inventory);
+    }
+
+    fn settle_merchant_now(&mut self, player: u64, inventory: &mut Inventory) {
+        self.server.wait_idle();
+        self.poll_jobs();
+        let mut answers = Vec::new();
+        for output in &mut self.unread {
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut output.merchant).into_iter().partition(|(each, update)| *each == player && !update.closing);
+            output.merchant = rest;
+            answers.extend(mine.into_iter().map(|(_, update)| update));
+        }
+        let queue = self.players.queue(player);
+        for news in std::mem::take(&mut queue.merchant_routed) {
+            if let MerchantNews::Answer(update) = news {
+                apply_merchant_answer(inventory, &update);
+            }
+        }
+        for update in &answers {
+            apply_merchant_answer(inventory, update);
+        }
+        queue.merchant.clear();
+        queue.merchant_waiting = 0;
+    }
+
     pub fn vehicle_uuid(&self, vehicle: u64) -> u128 {
         self.view.world.uuid_of(vehicle)
     }
@@ -1405,6 +1487,7 @@ impl Entities {
                     }
                 }
             }
+            settle_merchant_news(queue, actor.inventory);
             let broken = std::mem::take(&mut queue.broken);
             if presenter == Some(actor.id) {
                 self.broken_items.extend(broken);
@@ -2354,6 +2437,45 @@ mod tests {
         assert!(host.mob_slots.is_empty() && host.mounts.is_empty() && host.lecterns.is_empty());
         assert_eq!(host.dismounts, [(39, None)]);
         assert!(host.boosts_done.is_empty() && host.boost_waiting.is_none(), "a refused boost is let go");
+    }
+
+    #[test]
+    fn trading_screens_reach_only_their_player_and_set_the_slots_before_anything_else() {
+        use minecraft_terrain::server::{MerchantUpdate, MerchantView, MobResult};
+        let view = |villager: u64| MerchantView { villager, profession: "minecraft:farmer", level: 1, xp: 0, offers: Vec::new(), payment: [None, None], result: None, future_xp: 0, max_stacks: Vec::new() };
+        let mut queues = two_queues();
+        queues.queue(FRIEND).merchant_waiting = 2;
+        let mut output = minecraft_terrain::server::Output::default();
+        output.mob_results = vec![(FRIEND, MobResult { merchant: Some(view(9)), ..Default::default() })];
+        let wheat = ItemStack::new("minecraft:wheat", 20);
+        let answer = MerchantUpdate { view: Some(view(9)), slots: vec![(4, None), (12, Some(wheat.clone()))], cursor: Some(ItemStack::new("minecraft:emerald", 1)), closing: false };
+        let closing = MerchantUpdate { view: None, slots: Vec::new(), cursor: None, closing: true };
+        output.merchant = vec![(FRIEND, closing), (FRIEND, answer)];
+        let _ = queues.route(&mut output, 2, |_| None);
+        assert!(output.merchant.is_empty());
+        assert!(queues.queue(HOST).merchant_routed.is_empty(), "the host traded nothing");
+        let friend = queues.queue(FRIEND);
+        assert!(friend.merchant.is_empty(), "nothing shows before its slots are set");
+        let order: Vec<&str> = friend
+            .merchant_routed
+            .iter()
+            .map(|news| match news {
+                MerchantNews::Answer(_) => "answer",
+                MerchantNews::Opened(_) => "opened",
+                MerchantNews::Closing => "closing",
+            })
+            .collect();
+        assert_eq!(order, ["answer", "opened", "closing"], "answers to the player's clicks, then a screen the tick opened, then the tick's end check");
+        let mut inventory = Inventory::default();
+        inventory.slots[4] = Some(ItemStack::new("minecraft:wheat", 3));
+        inventory.cursor = Some(ItemStack::new("minecraft:dirt", 5));
+        settle_merchant_news(friend, &mut inventory);
+        assert_eq!(inventory.slots[4], None);
+        assert_eq!(inventory.slots[12], Some(wheat));
+        assert_eq!(inventory.cursor, Some(ItemStack::new("minecraft:emerald", 1)));
+        assert_eq!(friend.merchant_waiting, 1, "one answer came of the two in flight");
+        assert_eq!(friend.merchant.len(), 3);
+        assert!(friend.merchant_routed.is_empty());
     }
 
     #[test]

@@ -79,6 +79,7 @@ pub enum McScreen {
     Enchanting,
     Creative(crate::McTabKind),
     Lectern,
+    Merchant,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
