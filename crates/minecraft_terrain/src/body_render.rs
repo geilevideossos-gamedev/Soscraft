@@ -28,7 +28,7 @@ pub fn held_items(rig: &BodyRig, gear: &BodyGear) -> Vec<(HeldItem, bool)> {
             let held = HeldItem {
                 pose,
                 light: rig.light,
-                id: item.id.clone(),
+                id: crate::item_tint::key(&item.id, item.potion),
                 display,
                 first_tint: None,
             };
@@ -82,6 +82,7 @@ mod tests {
             id: id.to_owned(),
             glint,
             dye: None,
+            potion: None,
         })
     }
 
@@ -362,5 +363,27 @@ mod tests {
         };
         assert_eq!(draw(&no_back, &wearing(1, true)).faces, 0);
         assert_eq!(draw(&rig, &wearing(0, true)).faces, 0);
+    }
+
+    #[test]
+    fn a_held_potion_keys_its_colour() {
+        let rig = BodyRig {
+            hands: [Some(Mat4::IDENTITY), Some(Mat4::IDENTITY)],
+            ..BodyRig::default()
+        };
+        let gear = BodyGear {
+            main: Some(GearItem {
+                id: "minecraft:potion".to_owned(),
+                glint: false,
+                dye: None,
+                potion: Some(0x87A363),
+            }),
+            off: item("minecraft:potion", false),
+            ..BodyGear::default()
+        };
+        let held = held_items(&rig, &gear);
+        assert_eq!(held[0].0.id, "minecraft:potion~87a363");
+        assert_eq!(held[0].0.first_tint, None);
+        assert_eq!(held[1].0.id, "minecraft:potion");
     }
 }

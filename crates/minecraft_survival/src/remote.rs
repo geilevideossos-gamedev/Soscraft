@@ -1191,6 +1191,7 @@ mod tests {
                     id: "minecraft:iron_helmet".to_owned(),
                     glint: false,
                     dye: None,
+                    potion: None,
                 }),
                 None,
                 None,

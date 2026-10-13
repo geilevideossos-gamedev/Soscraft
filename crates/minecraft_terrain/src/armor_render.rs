@@ -344,7 +344,7 @@ mod tests {
     }
 
     fn worn(id: &str, dye: Option<u32>) -> Option<GearItem> {
-        Some(GearItem { id: id.to_owned(), glint: false, dye })
+        Some(GearItem { id: id.to_owned(), glint: false, dye, potion: None })
     }
 
     fn rig() -> ArmorRig {
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn an_enchanted_piece_shimmers_on_its_first_layer_only() {
         let (_temp, atlas) = armor_atlas();
-        let enchanted = |id: &str| Some(GearItem { id: id.to_owned(), glint: true, dye: None });
+        let enchanted = |id: &str| Some(GearItem { id: id.to_owned(), glint: true, dye: None, potion: None });
         let mut mesh = ChunkMesh::default();
         append_armor_on_rig(&mut mesh, &atlas, &rig(), &[None, enchanted("minecraft:leather_chestplate"), None, None], 15.0, 0.0);
         assert_eq!((mesh.armor_glint.len(), mesh.armor_glint.first()), (1, Some(&(0..120))));

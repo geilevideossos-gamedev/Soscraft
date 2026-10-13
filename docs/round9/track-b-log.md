@@ -53,6 +53,29 @@ Decisions:
 - Every stack with potion contents gets its own atlas cell, even when its colour is the default (water, awkward). That is vanilla's tint result and costs one cell per potion kind; `ICON_ATLAS_LIMIT` has room.
 - Dyed leather keeps its default tint (out of scope in the brief; the same key can carry it later).
 
+### B9.2 Held, dropped and framed potions show their colour, also on other players
+
+Base: cfe6e2a4 (B9.1).
+
+What changed:
+- `minecraft_terrain/src/mesh.rs`: `ItemVisuals::model(key)` splits the tint (`item_tint::split`) first, then the dial, and passes the colour to `item_model_tints`. The cache stays keyed by the full key, so each colour is its own cached visual. Dropped items look up `item_tint::of_stack(&entity.stack)`. `append_frames` looks the framed item up by `item_tint::key(id, view.potion)` for both `model` and `append_model`.
+- `body_gear.rs`: `GearItem.potion: Option<u32>`, set in `GearItem::of` from `potions::stack_color`. `body_render.rs` `held_items`: only the `HeldItem.id` line changed, to `item_tint::key(&item.id, item.potion)`; `first_tint` stays `None` (it is the witch's). The test literals in `armor_render.rs`, `body_render.rs`, `body_gear.rs` and render_anim (`anim/minecraft_gear.rs`, `minecraft_world.rs`) gained `potion: None`.
+- `item_frame.rs`: `FrameView.potion: Option<u32>`, set in `view()` from the framed stack. `FrameView` travels to friends inside the entity snapshot, so a friend's frames carry the colour too.
+- `render_anim/src/minecraft_world.rs` first person: the posed item key is `item_tint::key(dials.key(&stack.id), potions::stack_color(..))`.
+- Multiplayer: the net `GearItem` (`minecraft_net/src/messages.rs`) gained `potion: Option<u32>`, and `minecraft_survival/src/gear.rs` maps it both ways. `minecraft_net::PROTOCOL` goes from 3 to 4 (the track's only bump; `GearItem` and `FrameView` both changed on the wire). Literals fixed in `remote.rs`, `session.rs` and `codec.rs` tests.
+
+Tests added:
+- minecraft_terrain `mesh::dropped_and_framed_potions_take_their_stack_colour`: a synthetic pack (`minecraft:potion` with the `minecraft:potion` tint, default -13083194, on a one-pixel `builtin/generated` layer0). A dropped Healing potion's vertices are F82423/255 times their shade, a plain one 385DC6/255 times shade, and the two keys are cached apart; a framed (invisible frame) potion with `potion: Some(0xF82423)` and one with `None` give the same two colours.
+- `body_gear::a_held_potion_carries_its_colour_and_a_sword_none` (Poison is `Some(0x87A363)`, a plain offhand potion and a diamond sword `None`).
+- `body_render::a_held_potion_keys_its_colour` (`HeldItem.id` is `minecraft:potion~87a363`, `first_tint` stays `None`, a plain potion keeps its bare id).
+- `item_frame::a_framed_potion_view_carries_its_colour` (Night Vision `Some(0xC2FF66)`, a plain potion and an elytra `None`).
+- minecraft_net `codec::a_held_potion_colour_round_trips_on_protocol_4` (asserts `PROTOCOL == 4`), and `to_client()`'s `Equipment` now carries an offhand potion with `Some(0xF82423)` through the existing round trip.
+- minecraft_survival `gear::a_held_potion_keeps_its_colour_both_ways` (`gear_view` then `gear_of`).
+
+Decisions:
+- The thrown bottle, the splash burst, the area cloud and the witch's potion were already right and are untouched.
+- The held-item pose code in `body_render.rs` and the `mesh.rs` held-item append functions are track A's; only the `HeldItem.id` line and the `ItemVisuals::model` key split changed there.
+
 ## Owner's test steps (B9.1)
 
 1. **Inventory (E).** Each bottle has its own liquid colour:
@@ -66,6 +89,28 @@ Decisions:
 3. **Creative.** In `/gamemode creative`, the potions in Food & Drinks and the tipped arrows in Combat each show their own colour.
 
 Held, dropped and framed potions still show the old blue until the next commit (B9.2).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@healing,minecraft:potion@poison,minecraft:potion@swiftness,minecraft:potion@fire_resistance,minecraft:potion@night_vision,minecraft:potion@strong_turtle_master,minecraft:potion@invisibility,minecraft:potion@water,minecraft:potion@awkward,minecraft:potion@leaping,minecraft:potion@weakness,minecraft:splash_potion@harming*2,minecraft:splash_potion@regeneration*2,minecraft:splash_potion@poison,minecraft:lingering_potion@poison*2,minecraft:lingering_potion@slow_falling,minecraft:tipped_arrow@poison*16,minecraft:tipped_arrow@strength*16,minecraft:tipped_arrow@leaping*16,minecraft:item_frame*4,minecraft:cow_spawn_egg*2
+```
+
+## Owner's test steps (B9.2)
+
+Numbered as in the brief's B9 steps (1-3 are B9.1's, 7 and 11 come with the swirls).
+
+**Host alone:**
+
+4. **Held.** A held Healing potion is red in first person, in the offhand (F) and in third person (F5). Poison held in first person is olive green; Water stays the old blue.
+5. **Dropped and framed.**
+   - Press Q on Poison and Fire Resistance: they lie green and orange on the ground.
+   - Place an item frame and put a Poison tipped arrow in it: the head is green. A Night Vision bottle in a second frame is lime.
+6. **Thrown.** A thrown Splash Harming bottle and its burst are dusky red. Lingering Poison leaves a green cloud. (Unchanged, a check that nothing broke.)
+
+**Multiplayer** (both games must be this build: protocol 4; an older friend build is refused at the join):
+
+8. The friend's potions are coloured in their inventory, hotbar and first-person hand.
+9. Each player sees the other's held potion in its colour: the host holds Healing (red) in the main hand and Poison (green) in the offhand, and the friend sees both; then the other way round.
+10. The friend sees the host's dropped Poison and Fire Resistance and the framed Night Vision bottle and Poison arrow in their colours.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:potion@healing,minecraft:potion@poison,minecraft:potion@swiftness,minecraft:potion@fire_resistance,minecraft:potion@night_vision,minecraft:potion@strong_turtle_master,minecraft:potion@invisibility,minecraft:potion@water,minecraft:potion@awkward,minecraft:potion@leaping,minecraft:potion@weakness,minecraft:splash_potion@harming*2,minecraft:splash_potion@regeneration*2,minecraft:splash_potion@poison,minecraft:lingering_potion@poison*2,minecraft:lingering_potion@slow_falling,minecraft:tipped_arrow@poison*16,minecraft:tipped_arrow@strength*16,minecraft:tipped_arrow@leaping*16,minecraft:item_frame*4,minecraft:cow_spawn_egg*2
@@ -95,3 +140,5 @@ IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*8,minecraft:cactus*4,minecraft:mag
 
 `docs/MINECRAFT-SURVIVAL.md` line 431 (MW2 perks and scripts that heal or resize health): keep the first sentence and replace the last one ("Since MW2's maximum health stays at its spawn value, MW2's blood overlay and pain vision stay on while the hearts are low.") with:
 "MW2's low-health blood overlay and pain vision no longer show on Minecraft maps, for the host or for friends; MW2 maps keep both. Instead a hit gives a faint red flash of about half a second (MW2-style feedback, not vanilla: vanilla has no screen red), and Show Blood (Options > Advanced Video) turns it off."
+
+`docs/MULTIPLAYER.md` line 162 (the `PROTOCOL` constant in the message listing): `pub const PROTOCOL: u16 = 4;`. Line 1415: "... `minecraft_net::PROTOCOL` in `Hello` is the check that counts, and it is 4 (E3, E14, E22; round 9 track B, B9.2: held potion colours in `GearItem` and `FrameView`)." Section 20 or the gear section: the net `GearItem` carries `potion: Option<u32>` (the stack's potion colour) next to `dye`, so other players' held potions are drawn in their colour.

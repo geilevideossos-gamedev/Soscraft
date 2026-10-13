@@ -1421,7 +1421,7 @@ fn update(
                     .map(|eating| crate::minecraft_hand::eat_transform(eating.remaining_ticks() as f32, (hand.clock / TICK_SECONDS) as f32, eating.info.consume_ticks, arm));
                 let swung = if using || eat.is_some() || hand.swing_offhand != (slot == minecraft_survival::offhand::OFFHAND) { 0.0 } else { swing };
                 let glint = minecraft_terrain::glint::has_glint(&stack);
-                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), inventory_ui.dials.key(&stack.id).to_owned(), glint));
+                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), minecraft_terrain::item_tint::key(inventory_ui.dials.key(&stack.id), minecraft_terrain::potions::stack_color(stack.components.as_ref())), glint));
             }
             let mut mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
             if let Some(pose) = activation {
@@ -2442,7 +2442,7 @@ mod skate_tests {
     use playerstate_iw4::pm_flags::{CROUCH, MC_FLYING, MC_GLIDING, MC_RIDING, SPRINTING};
 
     fn item(id: &str) -> Option<GearItem> {
-        Some(GearItem { id: id.to_owned(), glint: false, dye: None })
+        Some(GearItem { id: id.to_owned(), glint: false, dye: None, potion: None })
     }
 
     #[test]

@@ -368,6 +368,7 @@ mod tests {
             id: "minecraft:leather_helmet".to_string(),
             glint: true,
             dye: Some(0xA06540),
+            potion: None,
         };
         vec![
             ToClient::Login(Login {
@@ -479,8 +480,14 @@ mod tests {
                         id: "minecraft:diamond_sword".to_string(),
                         glint: false,
                         dye: None,
+                        potion: None,
                     }),
-                    off: None,
+                    off: Some(GearItem {
+                        id: "minecraft:potion".to_string(),
+                        glint: false,
+                        dye: None,
+                        potion: Some(0xF82423),
+                    }),
                     armor: [Some(helmet), None, None, None],
                     hides_gun: true,
                 },
@@ -618,6 +625,21 @@ mod tests {
                 messages,
             },
         );
+    }
+
+    #[test]
+    fn a_held_potion_colour_round_trips_on_protocol_4() {
+        assert_eq!(crate::PROTOCOL, 4);
+        let potion = GearItem {
+            id: "minecraft:splash_potion".to_string(),
+            glint: false,
+            dye: None,
+            potion: Some(0x87A363),
+        };
+        round_trip(Lane::Reliable, &potion);
+        let bytes = encode(Lane::Reliable, &potion).unwrap();
+        let back: GearItem = decode(Lane::Reliable, &bytes).unwrap();
+        assert_eq!(back.potion, Some(0x87A363));
     }
 
     #[test]
