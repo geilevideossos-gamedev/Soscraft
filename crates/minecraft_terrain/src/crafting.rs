@@ -434,7 +434,9 @@ pub fn give_kit(inventory: &mut Inventory, spec: &str) -> usize {
             let size = count.min(max);
             count -= size;
             let stack = kit_potion_stack(&inventory.recipes, id, size as u8, &enchantments, potion.as_deref());
-            inventory.slots[slot] = Some(with_components(stack, components.as_ref()));
+            let mut stack = with_components(stack, components.as_ref());
+            stack.components = crate::fork_items::with_full_clip(id, stack.components.take());
+            inventory.slots[slot] = Some(stack);
             given += 1;
         }
     }
@@ -489,6 +491,12 @@ pub fn kit_components(entry: &str) -> (&str, Option<serde_json::Value>) {
         };
         let name = name.trim();
         let name = if name.contains(':') { name.to_owned() } else { format!("minecraft:{name}") };
+        if name == crate::fork_items::CUSTOM_DATA {
+            if let Ok(tag) = minecraftoss_core::snbt::parse_compound(value.trim()) {
+                components.insert(name, crate::item_nbt::tag_json(&tag));
+            }
+            continue;
+        }
         if minecraftoss_world::book::CONTENT_COMPONENTS.contains(&name.as_str()) {
             if let Ok(content) = minecraftoss_world::book::content(&name, value.trim()) {
                 components.insert(name, content);

@@ -3933,6 +3933,7 @@ name = "minecraft_commands"
 version = "0.1.0"
 dependencies = [
  "md5",
+ "minecraftoss-core",
  "minecraftoss-player",
  "minecraftoss-world",
  "serde",

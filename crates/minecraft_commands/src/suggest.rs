@@ -455,6 +455,7 @@ fn suggest_argument(
             }
         }
         ArgKind::Greedy
+        | ArgKind::Word
         | ArgKind::Int { .. }
         | ArgKind::Nbt
         | ArgKind::Rotation
@@ -840,6 +841,7 @@ mod tests {
                 "setblock",
                 "spawnpoint",
                 "summon",
+                "tag",
                 "teleport",
                 "tell",
                 "tick",
@@ -1092,7 +1094,7 @@ mod tests {
         assert_eq!(texts(&at_end("/tp", OWNERS)), Vec::<&str>::new());
         assert_eq!(
             texts(&at_end("/t", OWNERS)),
-            vec!["teleport", "tell", "tick", "time", "tp"]
+            vec!["tag", "teleport", "tell", "tick", "time", "tp"]
         );
         assert_eq!(texts(&at_end("/xp ", OWNERS)), vec!["add", "query", "set"]);
         assert_eq!(

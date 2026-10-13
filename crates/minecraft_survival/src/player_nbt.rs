@@ -186,6 +186,7 @@ pub struct PlayerData {
     pub sleep_timer: Option<i32>,
     pub sleeping_pos: Option<(i32, i32, i32)>,
     pub time_since_rest: Option<i32>,
+    pub tags: Option<Vec<String>>,
 }
 
 impl PlayerData {
@@ -245,6 +246,12 @@ impl PlayerData {
                     _ => None,
                 }),
             time_since_rest: None,
+            tags: tag.get("Tags").and_then(Tag::as_list).map(|list| {
+                list.iter()
+                    .filter_map(Tag::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            }),
         }
     }
 
@@ -314,6 +321,10 @@ impl PlayerData {
         if let Some((x, y, z)) = self.sleeping_pos {
             entries.insert("sleeping_pos".to_owned(), Tag::IntArray(vec![x, y, z]));
         }
+        if let Some(tags) = self.tags.as_ref().filter(|tags| !tags.is_empty()) {
+            let list = tags.iter().map(|tag| Tag::String(tag.clone())).collect();
+            entries.insert("Tags".to_owned(), Tag::List(list));
+        }
         entries
     }
 
@@ -326,6 +337,9 @@ impl PlayerData {
         let attributes = merged.remove("attributes");
         for key in OWNED {
             merged.remove(key);
+        }
+        if self.tags.is_some() {
+            merged.remove("Tags");
         }
         merged.extend(self.entries());
         merged.extend(self.effect_entries(effects.as_ref(), attributes.as_ref()));
@@ -753,6 +767,56 @@ mod tests {
         assert_eq!(missing.inventory, None);
         assert_eq!(missing.mode, None);
         assert_eq!(missing.selected, 0);
+    }
+
+    #[test]
+    fn tags_round_trip_through_the_vanilla_tags_list() {
+        let data = PlayerData {
+            tags: Some(vec!["iw4l_loadout_given".to_owned(), "builder".to_owned()]),
+            ..PlayerData::default()
+        };
+        let tag = data.merged(None);
+        assert_eq!(
+            tag.get("Tags"),
+            Some(&Tag::List(vec![
+                Tag::String("iw4l_loadout_given".to_owned()),
+                Tag::String("builder".to_owned()),
+            ]))
+        );
+        let read = PlayerData::read(&tag, &RecipeBook::default());
+        assert_eq!(read.tags, data.tags);
+        let untagged = PlayerData::read(&compound(Vec::new()), &RecipeBook::default());
+        assert_eq!(untagged.tags, None);
+        let cleared = PlayerData {
+            tags: Some(Vec::new()),
+            ..PlayerData::default()
+        };
+        assert_eq!(cleared.merged(Some(tag)).get("Tags"), None);
+    }
+
+    #[test]
+    fn the_merge_keeps_foreign_tags_and_owns_the_list_only_when_it_has_one() {
+        let previous = compound(vec![(
+            "Tags",
+            Tag::List(vec![
+                Tag::String("vanilla_team_red".to_owned()),
+                Tag::String("other_pack".to_owned()),
+            ]),
+        )]);
+        let mut read = PlayerData::read(&previous, &RecipeBook::default());
+        let tags = read.tags.as_mut().unwrap();
+        tags.push("iw4l_loadout_given".to_owned());
+        let merged = read.merged(Some(previous.clone()));
+        let names: Vec<&str> = merged
+            .get("Tags")
+            .and_then(Tag::as_list)
+            .unwrap()
+            .iter()
+            .filter_map(Tag::as_str)
+            .collect();
+        assert_eq!(names, ["vanilla_team_red", "other_pack", "iw4l_loadout_given"]);
+        let without = PlayerData::default().merged(Some(previous.clone()));
+        assert_eq!(without.get("Tags"), previous.get("Tags"));
     }
 
     #[test]

@@ -954,6 +954,69 @@ pub fn table_hash() -> u64 {
     hash
 }
 
+pub const CUSTOM_DATA: &str = "minecraft:custom_data";
+pub const FULL_CLIP: i64 = -1;
+
+pub fn with_full_clip(
+    id: &str,
+    components: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    use serde_json::{Map, Value};
+    if !get(id).is_some_and(|row| row.kind == Kind::Gun && row.ammo.is_some()) {
+        return components;
+    }
+    let mut components = match components {
+        Some(Value::Object(map)) => map,
+        _ => Map::new(),
+    };
+    let custom = components
+        .entry(CUSTOM_DATA)
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !custom.is_object() {
+        *custom = Value::Object(Map::new());
+    }
+    let state = custom
+        .as_object_mut()
+        .map(|custom| {
+            custom
+                .entry("iw4l")
+                .or_insert_with(|| Value::Object(Map::new()))
+        })
+        .filter(|state| state.is_object());
+    let Some(Value::Object(state)) = state else {
+        return Some(Value::Object(components));
+    };
+    let attachments: Vec<String> = state
+        .get("attachments")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let alt = attachments.iter().any(|name| {
+        by_alias(name).is_some_and(|attachment| {
+            matches!(
+                attachment.id,
+                "iw4l:grenade_launcher" | "iw4l:underbarrel_shotgun"
+            )
+        })
+    });
+    let mut fill = vec!["clip"];
+    if attachments.iter().any(|name| name == "akimbo") {
+        fill.push("clip_left");
+    }
+    if alt {
+        fill.push("alt_clip");
+    }
+    for key in fill {
+        state.entry(key).or_insert_with(|| Value::from(FULL_CLIP));
+    }
+    Some(Value::Object(components))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1120,6 +1183,63 @@ mod tests {
         assert_eq!(player.max_stack("iw4l:explosive_round"), 16);
         assert_eq!(player.max_stack("iw4l:fmj"), 64);
         assert_eq!(player.max_stack("minecraft:stone"), 64);
+    }
+
+    #[test]
+    fn given_guns_get_full_clips_and_other_items_stay_plain() {
+        use serde_json::json;
+        assert_eq!(
+            with_full_clip("iw4l:m4", None),
+            Some(json!({"minecraft:custom_data": {"iw4l": {"clip": -1}}}))
+        );
+        let named = json!({
+            "minecraft:custom_name": "Old Faithful",
+            "minecraft:custom_data": {"other": 1, "iw4l": {"attachments": ["akimbo", "gl"], "clip": 7}}
+        });
+        assert_eq!(
+            with_full_clip("iw4l:m4", Some(named)),
+            Some(json!({
+                "minecraft:custom_name": "Old Faithful",
+                "minecraft:custom_data": {"other": 1, "iw4l": {
+                    "attachments": ["akimbo", "gl"], "clip": 7, "clip_left": -1, "alt_clip": -1
+                }}
+            }))
+        );
+        assert_eq!(with_full_clip("iw4l:riotshield", None), None);
+        assert_eq!(with_full_clip("iw4l:rifle_ammo", None), None);
+        assert_eq!(with_full_clip("minecraft:bow", None), None);
+        let kept = Some(json!({"minecraft:custom_name": "x"}));
+        assert_eq!(with_full_clip("iw4l:frag_grenade", kept.clone()), kept);
+    }
+
+    #[test]
+    fn the_start_kit_gives_loaded_guns_with_their_attachments() {
+        let mut catalog = minecraftoss_player::item_catalog::ItemCatalog::default();
+        load(&mut catalog);
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.recipes = std::sync::Arc::new(
+            minecraftoss_player::crafting::RecipeBook::default()
+                .with_item_catalog(std::sync::Arc::new(catalog)),
+        );
+        let given = crate::crafting::give_kit(
+            &mut inventory,
+            r#"iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex"]}}]*2,iw4l:rocket*20"#,
+        );
+        assert_eq!(given, 4);
+        let stacks: Vec<_> = inventory.slots.iter().flatten().collect();
+        assert_eq!(stacks[0].id, "iw4l:m4");
+        assert_eq!(stacks[0].count, 1);
+        assert_eq!(
+            stacks[0].components,
+            Some(
+                serde_json::json!({"minecraft:custom_data": {"iw4l": {"attachments": ["reflex"], "clip": -1}}})
+            )
+        );
+        assert_eq!(stacks[1].components, stacks[0].components);
+        assert_eq!(
+            (stacks[2].id.as_str(), stacks[2].count, stacks[3].count),
+            ("iw4l:rocket", 16, 4)
+        );
     }
 
     #[test]

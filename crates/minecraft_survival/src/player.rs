@@ -52,6 +52,7 @@ pub struct Player {
     pub sleep_timer: i32,
     pub time_since_rest: i32,
     pub saved_in_bed: Option<(i32, i32, i32)>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Default)]
@@ -128,6 +129,7 @@ impl Player {
             sleep_timer: 0,
             time_since_rest: 0,
             saved_in_bed: None,
+            tags: Vec::new(),
         }
     }
 
@@ -275,6 +277,7 @@ impl Player {
                 .map(|sleeping| sleeping.head)
                 .or(self.saved_in_bed),
             time_since_rest: Some(self.time_since_rest),
+            tags: Some(self.tags.clone()),
         }
     }
 }
