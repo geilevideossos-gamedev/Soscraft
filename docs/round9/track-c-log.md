@@ -736,7 +736,7 @@ Commit: the one after `7c7633a2`. This is the brief's C11.7 item 2.
   5. Click the M4A1 (no iron block in the kit): the grid empties, red ghost items show every ingredient (the iron block too, since the grid holds nothing) and a red M4A1 over the result. Click it again: nothing changes. Put any item into the grid: the ghost goes. **Screenshot 2.**
   6. Click Oak Planks (unlocked by the logs): a log lands in the grid.
   7. Two windows (`scripts\mp-local.ps1`, both on this build, both with the kit): the friend places Rifle Ammo in their 2x2 and shift-clicks Gun Barrel in a crafting table; only the friend's grid fills, and the friend takes the results. **Screenshot 3** (friend window).
-  8. A friend on an older build is refused when joining with the outdated-build message (protocol 4).
+  8. A friend on the release-1 build (protocol 4) is refused when joining with the outdated-build message (this build is protocol 5).
 - **Kit** (10 stacks):
 
 ```
@@ -1421,6 +1421,16 @@ Commit: the one after the push doc fix. Fixes the owner steps of `3b6a9ed3` (gre
 - **Owner's test steps:** the corrected step lists above.
 - **Kit:** the kits of those step lists, unchanged.
 
+### 9. The log names protocol 5
+
+Commit: the one after the grenade step fix. Fixes the log after the merge `c27f9bc9`.
+
+- **Defect:** the merge set `PROTOCOL` to 5 and renumbered the codec indices correctly, but the queued `MULTIPLAYER.md` text still said "The Minecraft multiplayer protocol is 4", the first Protocol paragraph read as if 4 were current, and owner step 8 of "The recipe book places ingredients for the host and friends" still called this build protocol 4, which is now the release-1 build that gets refused.
+- **Changed:** docs only. The queued `MULTIPLAYER.md` text says protocol 5 and names the messages it covers (track B's `EditBook` and `OpenBook`, track A's `CreativeSlot`, this track's `PlaceRecipe`, `RecipeBookSettings`, `RecipeSeen` and `RecipeBook`); the Protocol section says 4 was the number before the merge; step 8 says a release-1 friend (protocol 4) is refused by this build (protocol 5).
+- **Tests:** none (no code change). `minecraft_net::PROTOCOL` is 5 and the codec indices are `EditBook` 12, `CreativeSlot` 13, `RecipeBookSettings` 14, `RecipeSeen` 15, `OpenBook` 31 and `RecipeBook` 32.
+- **Owner's test steps:** the corrected step 8.
+- **Kit:** none.
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.
@@ -1435,7 +1445,7 @@ Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.r
 
 ## Protocol
 
-`minecraft_net::PROTOCOL` is 4 (from 3), bumped once in "The recipe book places ingredients for the host and friends". It covers `ToClient::RecipeBook`, `ToServer::RecipeBookSettings`, `ToServer::RecipeSeen` (codec indices 31, 12 and 13) and `MenuAction::PlaceRecipe` (the last `MenuAction` variant). The grenade-slot group must not bump it again. Tracks A and B bump it too: whoever merges later takes the next number and renumbers the new codec indices.
+Before the merge of tracks A and B, `minecraft_net::PROTOCOL` was 4 (from 3) on this track, bumped once in "The recipe book places ingredients for the host and friends". It covers `ToClient::RecipeBook`, `ToServer::RecipeBookSettings`, `ToServer::RecipeSeen` (codec indices 31, 12 and 13) and `MenuAction::PlaceRecipe` (the last `MenuAction` variant). The grenade-slot group must not bump it again. Tracks A and B bump it too: whoever merges later takes the next number and renumbers the new codec indices.
 
 Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The grenade-slot group did not bump it: `PlayerView.slots` is a list, so its 45 slots (from 41) need no new message shape. Release 1 shipped protocol 4, and protocol 5 has not been released yet, so no released pair of builds disagrees on the slot count.
 
@@ -1462,7 +1472,7 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `MINECRAFT-SURVIVAL.md`, the saving section: "Each player's vanilla recipe unlocks, the recipes still waiting to be shown, and the recipe book's open and \"Showing craftable\" flags are saved in vanilla's `recipeBook` compound of the player file; a recipe id the 26.3 data does not know is dropped on load like vanilla, and fork recipes are never written (they are always known). Recipes unlock the vanilla way, from items entering the inventory, including the items carried when joining."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's recipe unlocks and book settings live on the host in the friend's player file; the host sends the friend's unlocked recipes when they change, and the friend sends its book settings and the recipes its book has shown."
 - `MINECRAFT-SURVIVAL.md`, the recipe book sentence: "A click on a recipe moves its ingredients from the inventory into the grid (what was in the grid goes back first), another click adds one more set and shift-click places as many as fit; a recipe that cannot be made empties the grid and shows red ghost items."
-- `MULTIPLAYER.md` (version checks): "The Minecraft multiplayer protocol is 4: friends place recipe-book recipes with `MenuAction::PlaceRecipe`, which the host applies to the friend's own grid."
+- `MULTIPLAYER.md` (version checks): "The Minecraft multiplayer protocol is 5: friends edit and sign books with `ToServer::EditBook` and the host opens them with `ToClient::OpenBook` (track B), creative friends set slots with `ToServer::CreativeSlot` (track A), and friends place recipe-book recipes with `MenuAction::PlaceRecipe`, which the host applies to the friend's own grid, and send their book settings and shown recipes with `ToServer::RecipeBookSettings` and `ToServer::RecipeSeen`, the host sending the unlocks with `ToClient::RecipeBook`. Release 1 was protocol 4."
 - `MINECRAFT-SURVIVAL.md`, the creative section: "Every fork item is at the end of the creative Combat tab, in the fork table's order (pistols, machine pistols, SMGs, assault rifles, shotguns, specials, snipers, LMGs, launchers, then gun parts, attachments, ammo, lethal and tactical grenades); guns come without attachments and with a full magazine. The creative search finds them by their MW2 names."
 - `MINECRAFT-SURVIVAL.md`, line 134 ("Guns sit in the hotbar with unlimited ammo"), the ammo half: "A gun's reserve is its ammo items in the offhand and slots 0-35 (never containers or the grenade slots), up to MW2's maximum: MW2's ammo counter shows the clip and that reserve. A reload takes exactly the rounds it loads, from the offhand first, then the main hand, then the inventory in slot order; with no ammo items an empty gun clicks. Pistols, machine pistols and SMGs share pistol ammo; the grenade launcher uses explosive rounds and the underbarrel shotgun shells; the Ballistic Knife reloads from throwing knives. Respawning, Scavenger and One Man Army refill nothing. In creative the reserve is always full and reloads use no items, but the clip still empties and reloads."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's gun reserve is counted from the friend's own inventory on the host, and the friend's reloads take the friend's items, through the same function as the host's."
