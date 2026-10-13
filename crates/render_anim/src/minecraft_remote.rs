@@ -413,6 +413,11 @@ pub(crate) fn friend(
                     crate::minecraft_portal::SPYGLASS_SCOPE,
                 )
                 .map(|(image, _)| image);
+                ui.pumpkin_blur = crate::minecraft_portal::blurred(
+                    &prepared.look.packs,
+                    &mut images,
+                    crate::minecraft_portal::PUMPKIN_BLUR,
+                );
                 friend
                     .inventory_ui
                     .set_station_data(prepared.stations.clone(), prepared.enchantments.clone());
@@ -1065,6 +1070,7 @@ fn show_player(
         &inventory,
         usize::from(view.selected),
     );
+    ui.camera_overlay = minecraft_terrain::body_gear::camera_overlay(&inventory.slots);
     let mut selected = selection.slot;
     ui.weapon_request = follow
         .request(&inventory, &mut selected, ps.weapon)

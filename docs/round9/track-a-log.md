@@ -143,6 +143,28 @@ Commit: "A worn dragon head opens its jaw and a piglin head flaps its ears while
   4. **Two windows.** The host wears the dragon head and walks: the friend sees the jaw move. The friend wears the piglin head in the Nether and walks: the host sees the ears flap. **Screenshot 3** (both windows).
   5. **Respawn.** Die while wearing the dragon head (`/kill`), respawn, put it on again and stand still in F5: the jaw is at rest (0.2 rad open, like a placed dragon head).
 
+### Commit 3: the carved pumpkin blur
+
+Commit: "A worn carved pumpkin blurs the first-person view like vanilla", the one after `f5d652cb` (A4 commit 2).
+
+- **Vanilla 26.3** (`Hud.extractCameraOverlays`): only in first person; while scoping only the spyglass overlay is drawn; otherwise every equipped item whose `equippable` has a `camera_overlay` is blitted over the whole screen at alpha 1. In 26.3 only `minecraft:carved_pumpkin` has one, `misc/pumpkinblur` (256x256, `"blur": true`, so linear filtering).
+- **Changed:**
+  - `frame/src/minecraft_ui.rs`: two fields appended to `MinecraftUi`, `pumpkin_blur: Option<Handle<Image>>` and `camera_overlay: bool` (fields only; track B edits this file too).
+  - `minecraft_terrain` `body_gear.rs`: `camera_overlay(slots)`, true when slot 39 holds `minecraft:carved_pumpkin`.
+  - `render_anim` `minecraft_portal.rs`: `PUMPKIN_BLUR = "minecraft:misc/pumpkinblur"` and `blurred(..)`, the `strip` image with `ImageSampler::linear()`. The HUD's tess pass binds each image's own sampler (`render_gpu` `iw_tess.rs` uses `gpu_image.sampler`), so no `HudImages` change was needed.
+  - Host (`minecraft_world.rs`): loads the blur next to the spyglass scope and sets `ui.camera_overlay = alive && camera_overlay(&inventory.slots)` next to `ui.scoping`.
+  - Friend (`minecraft_remote.rs`): loads the blur next to its spyglass scope and sets `ui.camera_overlay` from its replicated inventory next to `ui.scoping`. While the friend is dead `ui.active` is false, which hides the overlay.
+  - `hud` `minecraft_spyglass.rs`: pure `overlay_job(active, scoping, first_person, wearing, has_texture)` (`None`, `Scope` or `PumpkinBlur`) and `camera_overlay_quad(size)`. When the job is the blur, one full-screen quad (`mc_pumpkin_blur`, st 0..1, white, alpha 1) goes into the spyglass pass; the scope branch is unchanged.
+- **Tests:** `minecraft_terrain` `body_gear::tests::only_a_carved_pumpkin_on_the_head_blurs_the_view`; `hud` `minecraft_spyglass::tests::the_pumpkin_blur_covers_the_screen_only_in_first_person_and_not_while_scoping`. Run: `test -p minecraft_terrain`, `-p render_anim`, `-p hud`, `-p frame` and `check -p launcher` (all `--locked`).
+- **For track D (friend overlays, not done here):** a friend's window never sets `ui.freeze_outline` (only `minecraft_world.rs` loads it, next to the spyglass scope), so the powder-snow outline is probably missing for friends. Loading it in `minecraft_remote.rs` next to the spyglass scope and the pumpkin blur would be the fix.
+- **Owner's test steps** (kit of commit 1; alone, then two windows):
+  1. **First person.** Put the carved pumpkin in the helmet slot and close the inventory: the orange pumpkin blur covers the screen, dark at the edges, with the carved eye holes clear. It is smooth, not pixelated. **Screenshot 1.**
+  2. **F5.** No blur; the pumpkin with its carved face forward sits on the soldier's head. F5 again (front view): no blur either. Back in first person: the blur is back.
+  3. **Spyglass.** In first person, hold the spyglass and right-click: only the scope shows, no blur. Release: the blur is back. **Screenshot 2** while scoping.
+  4. **Take it off.** Move the pumpkin out of the helmet slot: the blur goes. Put on the diamond helmet: no blur.
+  5. **Death.** Die wearing the pumpkin: no blur on the death screen.
+  6. **Two windows.** The friend wears the pumpkin: the friend has the blur, their inventory character and F5 show the pumpkin, the host sees the pumpkin on the friend's body and has no blur. Then the other way round. **Screenshot 3** (both windows).
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
@@ -151,6 +173,7 @@ Commit: "A worn dragon head opens its jaw and a piglin head flaps its ears while
 
 - **A4:** worn heads follow vanilla's `CustomHeadLayer`: the seven skull items are drawn as skull models at 1.1875 times the head with no glint; every other head-slot item that is not a helmet (the carved pumpkin, or any item put there by command) is drawn as its item model with the `head` display transform and glint. A non-head armour piece in the head slot (only possible by command) is drawn as an item, as vanilla's `shouldRender(stack, HEAD)` check does. A player head is drawn with the default skin (the `profile` component is not read), as before for placed and held player heads.
 - **A4 walk swing:** the swing is computed on each window from the presented player's velocity (blocks per tick, horizontal part), not from the position change between snapshots, because `BodyGlide` already reads the presented `PlayerState` every frame for the elytra. A player riding an entity keeps their own swing (vanilla uses the vehicle's); the fork's ridden mobs would need the vehicle's swing in the presented state, so this is left as it is.
+- **A4 camera overlay:** the pumpkin blur is the only camera overlay, read from the item id (`minecraft:carved_pumpkin` in slot 39), not from the `equippable` component, because 26.3 has no other item with a `camera_overlay` and the fork does not read `equippable` for the client view. It is drawn in the spyglass HUD pass, so it sits where the scope does and goes with the HUD.
 
 ## State doc changes
 
@@ -160,6 +183,7 @@ Wording for the state docs, to be applied when the round's state is written (thi
 - **`docs/MINECRAFT-SURVIVAL.md`, held items on the MW2 body:** "Minecraft items in the main hand and offhand sit in the MW2 body's right and left fist: the posed wrist plus 3.5 map units along the forearm (`GEAR_FIT.fist`), upright with the chest. The MW2 weapon tags are no longer used for Minecraft items, so the item no longer depends on which gun's animations are playing, and the two hands never overlap. The same rig serves other players' bodies, the own F5 body and the inventory character, for the host and every friend."
 - **`docs/MINECRAFT-SURVIVAL.md`, the dragon respawn:** "Four end crystals respawn the dragon like vanilla 26.3: one must touch each of the four cells one block above the exit portal's rim, three blocks out on each side. A crystal's box is two blocks wide, so a crystal on any of the three straight rim blocks of a side counts, and one on a diagonal corner block does not. A crystal on a corner block also blocks placing one on the rim block beside it."
 - **`docs/MINECRAFT-SURVIVAL.md:406`, the limitation:** drop "heads and carved pumpkins on the head". Add to the MW2 body section: "Mob heads (skeleton, wither skeleton, zombie, creeper, dragon, piglin, player) and the carved pumpkin worn in the helmet slot are drawn on the MW2 body like vanilla's `CustomHeadLayer`: skulls at 1.1875 times the head, other items with their `head` display transform, for other players, the own F5 body and the inventory character, for the host and every friend. A player head always shows the default skin."
+- **`docs/MINECRAFT-SURVIVAL.md`, overlays:** "A worn carved pumpkin blurs the first-person view with `misc/pumpkinblur` (linear filtering) like vanilla's camera overlay, for the host and every friend; not in F5 and not while scoping with the spyglass." Also, for `docs/MULTIPLAYER.md` section 20 (friend limits, track D): "A friend's window does not load the powder-snow outline (`ui.freeze_outline`)."
 
 ## Combined kit
 

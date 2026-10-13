@@ -632,6 +632,7 @@ fn update(
                 ui.portal_frames = crate::minecraft_portal::frames(&world.packs, &mut images);
                 ui.freeze_outline = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::FREEZE_OUTLINE).map(|(image, _)| image);
                 ui.spyglass_scope = crate::minecraft_portal::strip(&world.packs, &mut images, crate::minecraft_portal::SPYGLASS_SCOPE).map(|(image, _)| image);
+                ui.pumpkin_blur = crate::minecraft_portal::blurred(&world.packs, &mut images, crate::minecraft_portal::PUMPKIN_BLUR);
                 runtime.loading_backgrounds = Some(crate::minecraft_loading::LoadingBackgrounds::load(&world.packs, &mut images));
                 runtime.server = Some(server);
                 runtime.local = Some(uuid);
@@ -1388,6 +1389,7 @@ fn update(
         ui.offhand_busy = alive && !moved.holding && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.scoping.is_some());
         ui.using_item = alive && (survival.eating().is_some() || hand.blocking.is_some() || hand.charging.is_some() || hand.scoping.is_some());
         ui.scoping = alive && hand.scoping.is_some();
+        ui.camera_overlay = alive && minecraft_terrain::body_gear::camera_overlay(&inventory.slots);
         sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
         // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();

@@ -215,6 +215,8 @@ pub struct MinecraftUi {
     pub credits: Option<crate::minecraft_credits::McCredits>,
     pub book: Option<McBook>,
     pub ui_sounds: Vec<&'static str>,
+    pub pumpkin_blur: Option<Handle<Image>>,
+    pub camera_overlay: bool,
 }
 
 impl MinecraftUi {
