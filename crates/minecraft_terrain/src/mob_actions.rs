@@ -279,6 +279,11 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 return outcome;
             }
         }
+        MobHit::Feline(id) => {
+            if world.feline_interact(id, actor.player, actor.inventory, selected, infinite) == InteractionResult::Pass {
+                return outcome;
+            }
+        }
         MobHit::Piglin(id) => {
             let Some(drops) = world.piglin_admire_held(id, actor.inventory, selected, infinite) else { return outcome };
             outcome.drops.extend(drops);
@@ -422,7 +427,27 @@ mod tests {
         world.piglin_mut(admiring).unwrap().brain.admire_for(50);
         let sulking = world.spawn_piglin(Piglin::new(PiglinKind::Piglin, at), true);
         world.piglin_mut(sulking).unwrap().brain.memories.admiring_disabled.set_for((), 400);
+        use minecraftoss_entities::feline::{Feline, FelineKind};
+        world.set_player_uuid(0, 77);
+        let stray = world.spawn_feline(Feline::new(FelineKind::Cat, at), true);
+        let mut pet = Feline::new(FelineKind::Cat, at);
+        pet.tame = true;
+        pet.owner = Some(77);
+        let pet = world.spawn_feline(pet, true);
+        let mut other = Feline::new(FelineKind::Cat, at);
+        other.tame = true;
+        other.owner = Some(78);
+        let other = world.spawn_feline(other, true);
+        let ocelot = world.spawn_feline(Feline::new(FelineKind::Ocelot, at), true);
         let cases: &[(MobHit, Option<&str>, bool)] = &[
+            (MobHit::Feline(stray), Some("minecraft:cod"), true),
+            (MobHit::Feline(stray), Some("minecraft:stick"), false),
+            (MobHit::Feline(pet), None, true),
+            (MobHit::Feline(pet), Some("minecraft:red_dye"), true),
+            (MobHit::Feline(pet), Some("minecraft:blue_dye"), true),
+            (MobHit::Feline(other), None, false),
+            (MobHit::Feline(ocelot), Some("minecraft:salmon"), true),
+            (MobHit::Feline(ocelot), None, false),
             (MobHit::Cow(cow), Some("minecraft:wheat"), true),
             (MobHit::Cow(cow), Some("minecraft:bucket"), true),
             (MobHit::Cow(cow), Some("minecraft:carrot"), false),

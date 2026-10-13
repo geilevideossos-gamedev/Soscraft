@@ -929,6 +929,8 @@ mod tests {
                         offhand: None,
                         sneaking: false,
                         hero: None,
+                        sleeping: None,
+                        sleep_timer: 0,
                     },
                     inventory: &mut *inventory,
                     selected: 0,

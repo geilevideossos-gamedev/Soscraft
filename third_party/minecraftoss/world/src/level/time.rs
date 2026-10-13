@@ -231,6 +231,10 @@ impl Level<'_> {
         sky.environment.value_named("gameplay/monsters_burn", &sample) == minecraftoss_core::environment::Value::Bool(true)
     }
 
+    pub fn cat_gift_chance(&self) -> f32 {
+        self.environment_value("gameplay/cat_waking_up_gift_chance", 0)
+    }
+
     pub fn piglins_zombify(&self) -> bool {
         let Some(sky) = &self.sky else { return false };
         let clocks = |clock: &str| sky.clocks.get(clock).copied().unwrap_or(0);

@@ -826,6 +826,7 @@ impl ServerSim {
         self.mobs.set_bright_outside(bright_outside);
         self.mobs.set_monsters_burn(self.level.monsters_burn());
         self.mobs.set_piglins_zombify(self.level.piglins_zombify());
+        self.mobs.set_cat_gift_chance(self.level.cat_gift_chance());
         self.mobs.set_sea_level(self.level.sea_level);
         self.mobs.set_difficulty(self.level.difficulty);
         let Self { level, states, mobs, mob_tables, .. } = self;
@@ -861,6 +862,7 @@ impl ServerSim {
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
         self.throw_barters();
+        self.drop_cat_gifts();
         for conversion in self.mobs.take_piglin_conversions() {
             self.mob_tags.insert(conversion.zombified, crate::piglin_save::converted_tag(&conversion));
         }
@@ -943,6 +945,20 @@ impl ServerSim {
             if !silent {
                 let at = position.floor().as_ivec3();
                 self.level.level_events.push((crate::level_events::ZOMBIE_VILLAGER_CONVERTED, minecraftoss_core::BlockPos::new(at.x, at.y, at.z), 0));
+            }
+        }
+    }
+
+    fn drop_cat_gifts(&mut self) {
+        for (at, body_yaw) in self.mobs.take_cat_gifts() {
+            let Some(stacks) = self.entity_loot.as_mut().and_then(|loot| loot.roll_cat_gift()) else { continue };
+            let radians = body_yaw * 0.017_453_292;
+            let x = at.x - f64::from(minecraftoss_player::mth::sin(f64::from(radians)));
+            let z = at.z + f64::from(minecraftoss_player::mth::cos(f64::from(radians)));
+            for stack in stacks {
+                let components = stack.components.as_ref().map(|c| c.to_string());
+                let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
+                self.level.spawn_at_location([x, at.y, z], stack);
             }
         }
     }

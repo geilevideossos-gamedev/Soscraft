@@ -978,8 +978,8 @@ pub fn creeper_goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(1, FloatGoal);
     selector.add(2, SwellGoal { target: None });
-    selector.add(3, NeverGoal { controls: &[Control::Move] });
-    selector.add(3, NeverGoal { controls: &[Control::Move] });
+    selector.add(3, AvoidEntityGoal::new("minecraft:ocelot", 6.0, 1.0, 1.2));
+    selector.add(3, AvoidEntityGoal::new("minecraft:cat", 6.0, 1.0, 1.2));
     selector.add(4, MeleeAttackGoal { hits: false, raises_arms: false, follow_unseen: false, gives_up_in_light: false, speed: 1.0 });
     selector.add(5, StrollGoal { speed: 0.8, probability: 0.001 });
     selector.add(6, LookAtPlayerGoal { range: 8.0 });
@@ -1812,7 +1812,7 @@ impl Goal<MonsterGoalContext> for BowGoal {
 
 /// `Mob.lookAt(entity, yMax, xMax)`: the body and pitch turn straight at
 /// the target's eyes, by at most the given steps.
-fn look_at(ctx: &mut MonsterGoalContext, target: TargetInfo, y_max: f32, x_max: f32) {
+pub(crate) fn look_at(ctx: &mut MonsterGoalContext, target: TargetInfo, y_max: f32, x_max: f32) {
     let p = ctx.body.position;
     let xd = target.position.x - p.x;
     let zd = target.position.z - p.z;

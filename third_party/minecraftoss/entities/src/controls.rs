@@ -7,6 +7,8 @@ pub struct PlayerControls {
     pub offhand: Option<String>,
     pub sneaking: bool,
     pub armor: [Option<String>; 4],
+    pub sleeping: Option<(i32, i32, i32)>,
+    pub sleep_timer: i32,
 }
 
 impl PlayerControls {

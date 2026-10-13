@@ -1067,7 +1067,7 @@ fn update(
             let _ = minecraft_survival::actions::harvest(friend, level, globals, (mined, Vec::new()), &[], at);
         }
     }
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, .. } = &mut *player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, sleeping: host_sleeping, sleep_timer: host_sleep_timer, .. } = &mut *player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, shots, pending_batch, .. } = &mut *level;
     if let Some(entities) = entities.as_mut() {
         entities.broken_items.extend(harvest.worn_out);
@@ -1125,6 +1125,8 @@ fn update(
             offhand: inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().map(|stack| stack.id.clone()),
             sneaking: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
             hero: survival.status.effect(minecraftoss_player::survival::EffectKind::HeroOfTheVillage).map(|effect| i32::from(effect.amplifier)),
+            sleeping: host_sleeping.map(|sleeping| sleeping.head),
+            sleep_timer: *host_sleep_timer,
         };
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);

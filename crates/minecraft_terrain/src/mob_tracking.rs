@@ -69,6 +69,7 @@ pub struct MobShow {
     pub relaxed: bool,
     pub crouching: bool,
     pub sprinting: bool,
+    pub on_sleeper: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -361,6 +362,7 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
                 relaxed: f.relax_state_one,
                 crouching: f.crouching,
                 sprinting: f.sprinting,
+                on_sleeper: f.lying_on_sleeping_player,
                 ..MobShow::default()
             },
         );
@@ -530,6 +532,7 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
         f.relax_state_one = show.relaxed;
         f.crouching = show.crouching;
         f.sprinting = show.sprinting;
+        f.lying_on_sleeping_player = show.on_sleeper;
         f.update_lie_down_amount();
         f.update_relax_state_one_amount();
     }
@@ -914,6 +917,7 @@ mod tests {
             f.lying = true;
             f.relax_state_one = true;
             f.sitting = false;
+            f.lying_on_sleeping_player = true;
         }
         let seen = shows(&host);
         assert!(seen[&cat].lying && seen[&cat].relaxed && !seen[&cat].sitting && seen[&ocelot].crouching);
@@ -922,6 +926,7 @@ mod tests {
         }
         let shown = &friend.feline_mut(cat).unwrap().feline;
         assert!(shown.lying && shown.relax_state_one && !shown.sitting && shown.lie_down_amount > 0.0);
+        assert!(shown.lying_on_sleeping_player);
         assert!(friend.feline_mut(ocelot).unwrap().feline.crouching);
     }
 

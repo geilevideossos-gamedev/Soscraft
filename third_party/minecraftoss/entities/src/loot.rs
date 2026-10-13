@@ -247,6 +247,11 @@ impl EntityLootBook {
         self.roll_of_type("minecraft:gameplay/piglin_bartering", "minecraft:barter", context)
     }
 
+    pub fn roll_cat_gift(&mut self) -> Option<Vec<ItemStack>> {
+        let context = EntityLootContext { this_type: Some("minecraft:cat"), ..Default::default() };
+        self.roll_of_type(crate::feline::GIFT_TABLE, "minecraft:gift", context)
+    }
+
     fn roll_of_type(&mut self, entity_id: &str, kind: &str, context: EntityLootContext) -> Option<Vec<ItemStack>> {
         let table = self.tables.get(entity_id)?;
         if table["type"].as_str()? != kind {

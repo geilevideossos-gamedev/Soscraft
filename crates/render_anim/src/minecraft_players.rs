@@ -1167,6 +1167,8 @@ pub(crate) fn tick_actor<'a>(
             .status
             .effect(minecraftoss_player::survival::EffectKind::HeroOfTheVillage)
             .map(|effect| i32::from(effect.amplifier)),
+        sleeping: player.sleeping.map(|sleeping| sleeping.head),
+        sleep_timer: player.sleep_timer,
     };
     let actor = TickActor {
         id: u64::from(player.id.0),

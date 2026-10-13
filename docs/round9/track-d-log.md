@@ -710,6 +710,58 @@ After c983b378.
 IW4L_MINECRAFT_KIT=minecraft:cat_spawn_egg*8,minecraft:ocelot_spawn_egg*4,minecraft:chicken_spawn_egg*4,minecraft:cod*32,minecraft:salmon*16,minecraft:iron_sword,minecraft:spawner,minecraft:cooked_beef*16
 ```
 
+### 2. Minecraft cats are tamed with fish, sit, and scare creepers; ocelots learn to trust
+
+After 31f6a995.
+
+- **Vanilla (javap, 26.3):**
+  - `Cat.mobInteract`, wild: raw cod or salmon (`#cat_food`) is eaten (one used unless creative), `tryToTame` tames one time in three (`tame(player)`, `setOrderedToSit(true)`, entity event 7) or shows smoke (event 6); either way it becomes persistent and plays its eat sound. Tame and owned: a dye (`#cat_collar_dyes`) of another colour recolours the collar (one used, persistent); its food heals it while hurt (`TamableAnimal.feed(1, 1)`: the food's nutrition); otherwise `Animal.mobInteract` (food: love or a baby's growth), and when that does nothing the owner's click toggles `setOrderedToSit`. Tame but someone else's: only `Animal.mobInteract`. `Cat` has no `applyTamingSideEffects` (10 health stays).
+  - `Ocelot.mobInteract`: while its tempt goal runs, it does not trust yet, the item is `#ocelot_food` and the player is within 3 blocks (`distanceToSqr < 9`), the fish is used and it trusts one time in three (entity event 41, hearts) or shows smoke (event 40); otherwise `Animal.mobInteract`.
+  - `SitWhenOrderedToGoal` (2): a tame cat on the ground and dry sits when told, or whenever its owner is away; not beside an owner who was just hurt.
+  - `CatRelaxOnOwnerGoal` (3, no flags): a tame cat not told to sit, within 10 blocks of its sleeping owner whose bed (`#cats_can_lie_on`) is under the owner's block, goes (at 1.1) to the block past the bed's foot (the bed's facing, reversed) unless another cat lies or relaxes within 2 blocks of it. Within `sqrt(2.5)` of the owner it relaxes (looks at the owner, 45 and 45) for 8 goal ticks (`adjustedTickDelay(16)`) and then lies down. `stop`: if the owner's sleep timer is 100 or more and the level random's float is below `gameplay/cat_waking_up_gift_chance`, the morning gift: `randomTeleport` to its block plus (-5..5, -2..2, -5..5) avoiding `#cat_does_not_teleport_to`, then the `gameplay/cat_morning_gift` loot (`minecraft:gift`) dropped at its block, offset by its body yaw (x - sin, z + cos).
+  - The gift chance comes from the `minecraft:day` timeline: 0.7 from tick 23667 to tick 362 of the day, else 0 (constant ease, `maximum` modifier over the default 0).
+  - `CatLieOnBlockGoal(1.1, 8)` (5): `MoveToBlockGoal` with search range 8, vertical range 6 starting at -2 (so the y offsets tried are -3, 2, -4, 3, -5, 4, -6, 5, -7), a new search every 40 ticks; a `#cats_can_lie_on` block with air above; it lies down once within 1 block of the block above's centre. `MoveToBlockGoal`: a path to the block's top centre at the speed, a new one every 40 ticks away from it, staying `nextInt(nextInt(1200) + 1200) + 1200` ticks, giving up after 1200 ticks away.
+  - `FollowOwnerGoal(1.0, 10, 5)` (6): from 10 blocks, until 5; a new path every 5 goal ticks; 12 blocks or more away it teleports next to its owner. `TamableAnimalPanicGoal` teleports the same way.
+  - `CatSitOnBlockGoal(0.8)` (7): search range 8, vertical range 1; `#cats_can_sit_on` with air above: a chest nobody has open, a lit furnace, the foot of a bed; it sits while on it.
+  - `BreedGoal(0.8)` (10 for cats, 9 for ocelots): `Cat.canMate` needs both tame; the kitten takes either parent's coat, and of a tame parent its owner, tameness and the parents' collars mixed (`DyeColor.getMixedColor`).
+  - `Creeper.registerGoals`: `AvoidEntityGoal(Ocelot, 6, 1.0, 1.2)` then `AvoidEntityGoal(Cat, 6, 1.0, 1.2)`, both at 3.
+  - `Cat.handleLieDown`: a lying cat with a sleeping player within 2 blocks lies on top of them (drawn 0.15 further over).
+- **Changed:**
+  - Vendored `entities`:
+    - `feline_ai.rs`: `SitGoal`, `RelaxOnOwnerGoal`, `BlockGoal` (lying and sitting on blocks), `FollowOwnerGoal`, `BreedGoal`, the panic goal's teleport, `random_teleport`, `find_nearest_block`, `can_lie_on`, `can_sit_on`; `FelineState` gains the owner's sleep, the resting cats, the gift chance, the mates and the follow and breed state.
+    - `world/felines.rs`: `feline_interact` (taming, sitting, collars, healing, love, ocelot trust), `feline_breed`, the surroundings each tick (owner, owner's sleep, resting cats, mates, sleepers nearby), the morning gift after the goals, `set_cat_gift_chance`, `take_cat_gifts`.
+    - `controls.rs`: `PlayerControls.sleeping` and `sleep_timer`. `monster_ai.rs`: creepers avoid ocelots and cats; `look_at` is `pub(crate)`. `loot.rs`: `roll_cat_gift`. `feline.rs`: the teleport tag and the gift table.
+  - Vendored `world`: `Level::cat_gift_chance` reads the attribute.
+  - `minecraft_terrain`: the right-click (`mob_actions.rs`); the server sets the gift chance each tick and drops the gifts (`drop_cat_gifts`); `MobShow.on_sleeper`.
+  - `minecraft_survival` and `render_anim`: `PlayerView.sleeping` and `sleep_timer` (the bed's head and the sleep timer) for the host and each friend, passed on in the players' controls.
+- **Tests:**
+  - `world::felines::tests::a_wild_cat_takes_raw_fish_and_is_tamed_one_time_in_three`, `its_owner_sits_a_tame_cat_down_dyes_its_collar_and_others_cannot`, `a_tame_cat_follows_the_player_with_its_owner_s_uuid`, `a_creeper_runs_from_a_cat_and_from_an_ocelot`, `an_ocelot_learns_to_trust_only_while_tempted_and_close`, `a_tame_cat_lies_down_on_a_bed`, `a_cat_curls_up_on_its_sleeping_owner_s_bed_and_brings_a_morning_gift`, `two_tame_cats_in_love_have_a_tame_kitten`.
+  - `mob_actions::tests::would_interact_agrees_with_interact` with a stray cat, a tame cat (its owner and another player), collar dyes and an ocelot.
+  - `mob_tracking::tests::a_friend_sees_a_cat_and_an_ocelot_from_their_look_tags` also checks the cat lying on a sleeper.
+  - Runs: `minecraftoss-entities` feline tests 13, `minecraft_terrain` lib tests for mob actions, tracking, cats and ocelots 53, `minecraft_survival` hit-key tests 4, all green. `check -p launcher` green. The full suites of the touched crates run at the end of the group (commit 3).
+- **Decisions:**
+  - The players' sleep reaches the level through `PlayerControls` (sent every tick already), so a friend's sleep counts for that friend's cats like the host's.
+  - The lying search keeps vanilla's vertical order from -2 (offsets -3, 2, -4, ...), so a cat does not search for a bed at its own level; it still sits on the foot of beds (`CatSitOnBlockGoal`) and lies on its sleeping owner's bed.
+  - A chest's open count is not known to the mobs; every chest counts as closed for sitting. Cats on a chest do not yet stop it opening (`ChestBlock.isChestBlockedAt`); listed under Left for later.
+  - The gift chance is read at the level's first biome; no biome sets the attribute.
+  - Entity events 6, 7, 18, 40 and 41 are recorded but the client draws no particles for entity events yet (as for wolves).
+  - Phantoms do not exist yet, so cats do not scare them (group `phantoms`).
+- **Test steps (survival, normal difficulty):**
+  1. Use the cat egg on grass. Hold raw cod, stand still and let it come to you, then right-click it with cod until it takes (some tries fail): it sits down and wears a red collar (**61_cat_tamed**).
+  2. Right-click it with an empty hand: it stands up and follows you. Walk 15 blocks away fast: it appears next to you. Right-click again: it sits and stays.
+  3. Right-click it with the blue dye: its collar turns blue.
+  4. Use the creeper egg 3 blocks from the cat: the creeper runs away from the cat (**62_creeper_flees**).
+  5. Place a chest next to the standing cat: it walks onto the chest and sits on it (**63_cat_on_chest**).
+  6. At night place the bed and sleep in it with the tame cat standing near: the cat comes and lies at the foot of the bed. In the morning, when you wake up, it may have left a gift on the floor (string, a feather, rabbit hide, a rabbit's foot, raw chicken or rotten flesh) (**64_morning_gift**).
+  7. Use the ocelot egg, hold cod and stand still: when it creeps within 3 blocks, right-click it with cod until hearts show: it no longer runs from you (**65_ocelot_trusts**).
+  8. Tame a second cat, feed both cod at full health: hearts, and a kitten with a collar appears.
+  9. Friend window: the friend tames their own cat with cod; it follows the friend, not the host; only the friend can sit it down; both see the same cats sitting and lying (**66_friend_cat**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cat_spawn_egg*6,minecraft:ocelot_spawn_egg*3,minecraft:creeper_spawn_egg*2,minecraft:cod*64,minecraft:salmon*32,minecraft:blue_dye*4,minecraft:red_bed,minecraft:chest*2,minecraft:iron_sword,minecraft:cooked_beef*16
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -727,12 +779,16 @@ IW4L_MINECRAFT_KIT=minecraft:cat_spawn_egg*8,minecraft:ocelot_spawn_egg*4,minecr
 - `docs/MINECRAFT-SURVIVAL.md`: the player's effects show as vanilla icons at the top right of the screen, for the host and for friends: beneficial effects in the top row, harmful and neutral ones (the omens) in the row below, sorted as in vanilla, each blinking and fading in its last 10 seconds. The inventory screens do not yet list the effects beside them.
 - `docs/MINECRAFT-SURVIVAL.md`: cats and ocelots are live mobs. Cats come in the 11 vanilla coats (black ones in swamp huts and, at full moon, anywhere) with the two vanilla voices, and village and swamp hut cats move. Ocelots spawn in jungles (on grass or leaves at or above sea level, babies after the first of a group). Both are saved, hatch from their eggs, run from players while wild, creep after a player holding raw cod or salmon (crouching, scared off by quick moves or turns) and hunt (ocelots chase and bite chickens). They are drawn like vanilla with their walking, crouching and sprinting poses. Friends see them and can hit them.
 
+- `docs/MINECRAFT-SURVIVAL.md`: cats are tamed with raw cod or salmon (one try in three) and then belong to that player by UUID: they sit and stand on their owner's click, follow and teleport to their owner, wear a collar their owner can dye, heal from fish, sit on chests, lit furnaces and the foot of beds, relax and lie on their sleeping owner's bed and may leave a morning gift (string, a feather, rabbit hide, a rabbit's foot, raw chicken or rotten flesh) when the owner wakes up at dawn, and breed into tame kittens. Ocelots learn to trust a player who feeds them fish while they creep close. Creepers run from cats and ocelots. Phantoms do not exist yet, and cats sitting on chests do not keep them shut yet.
+
 ## Vendored files
 
-Patched by track D: 18 (`entities/src/effects.rs`, `entities/src/lib.rs`, `entities/src/potion.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `player/src/survival.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs`, `generator/src/feature/entities.rs`). Added: 4 (`entities/src/drowned_ai.rs`; `entities/src/feline.rs`, `entities/src/feline_ai.rs` and `entities/src/world/felines.rs` from group cats). Group zombie-villagers added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` (commit 1) and `entities/src/effects.rs` and `entities/src/potion.rs` (commit 2) to the patched list. Group effects-omens added `player/src/survival.rs` (commit 1). Group cats added `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs` and `generator/src/feature/entities.rs` (commit 1).
+Patched by track D: 21 (`entities/src/effects.rs`, `entities/src/lib.rs`, `entities/src/potion.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `player/src/survival.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs`, `generator/src/feature/entities.rs`, `entities/src/controls.rs`, `entities/src/loot.rs`, `world/src/level/time.rs`). Added: 4 (`entities/src/drowned_ai.rs`; `entities/src/feline.rs`, `entities/src/feline_ai.rs` and `entities/src/world/felines.rs` from group cats). Group zombie-villagers added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` (commit 1) and `entities/src/effects.rs` and `entities/src/potion.rs` (commit 2) to the patched list. Group effects-omens added `player/src/survival.rs` (commit 1). Group cats added `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs` and `generator/src/feature/entities.rs` (commit 1), and `entities/src/controls.rs`, `entities/src/loot.rs` and `world/src/level/time.rs` (commit 2).
 
 ## Left for later
 
+- Cats sitting on a chest keep it shut (`ChestBlock.isChestBlockedAt`, `isCatSittingOnChest`): the level's containers cannot see the entity world's cats yet; it needs glue in `minecraft_terrain`.
+- Cats scare phantoms (group `phantoms`), and cats hiss at them.
 - Ocean ruin drowned: the generator's `finalize_spawn` (`generator/src/feature/entities.rs`) gives them only `Mob.finalizeSpawn`; vanilla runs `Drowned.finalizeSpawn` with the `STRUCTURE` reason (trident roll, shell, zombie nautilus jockey).
 - Zombie nautilus jockeys for natural drowned with tridents (needs mob 38, group `nautiluses`).
 - The drowned's raised trident uses the plain held model; vanilla draws `item/trident_throwing` while the item is in use (`minecraft:using_item`), which needs a using flag on `mesh::HeldItem`.

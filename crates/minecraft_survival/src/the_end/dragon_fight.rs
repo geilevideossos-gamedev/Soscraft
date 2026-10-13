@@ -1152,6 +1152,8 @@ mod tests {
                             offhand: None,
                             sneaking: false,
                             hero: None,
+                            sleeping: None,
+                            sleep_timer: 0,
                         },
                         inventory: &mut minecraftoss_player::inventory::Inventory::default(),
                         selected: 0,

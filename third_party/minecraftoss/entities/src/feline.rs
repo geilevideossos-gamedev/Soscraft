@@ -38,6 +38,8 @@ pub const CAT_VARIANTS: [&str; 11] = [
 pub const CAT_SOUND_VARIANTS: [&str; 2] = ["classic", "royal"];
 pub const FOOD_TAG: &str = "minecraft:cat_food";
 pub const OCELOT_FOOD_TAG: &str = "minecraft:ocelot_food";
+pub const NO_TELEPORT_TAG: &str = "minecraft:cat_does_not_teleport_to";
+pub const GIFT_TABLE: &str = "minecraft:gameplay/cat_morning_gift";
 pub const TRUSTING_EVENT: u8 = 41;
 pub const DISTRUSTING_EVENT: u8 = 40;
 
