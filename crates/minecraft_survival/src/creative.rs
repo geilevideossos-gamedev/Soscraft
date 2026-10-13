@@ -5,6 +5,31 @@ use serde_json::Value;
 
 pub const MENU_SLOTS: usize = 46;
 pub const HOTBAR_MENU: usize = 36;
+pub const DROP_STEP: u32 = 20;
+pub const DROP_THRESHOLD: u32 = 1480;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DropThrottle {
+    pub count: u32,
+}
+
+impl DropThrottle {
+    pub fn tick(&mut self, ticks: u32) {
+        self.count = self.count.saturating_sub(ticks);
+    }
+
+    pub fn allow(&mut self, name: &str) -> bool {
+        if self.count >= DROP_THRESHOLD {
+            diag::warn!(
+                World,
+                "Player {name} was dropping items too fast in creative mode, ignoring."
+            );
+            return false;
+        }
+        self.count += DROP_STEP;
+        true
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CreativeSlot {

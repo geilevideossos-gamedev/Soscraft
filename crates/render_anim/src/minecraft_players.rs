@@ -314,6 +314,7 @@ pub(crate) fn movement(
         hand,
         steps,
         riding,
+        drop_throttle,
         ..
     } = player;
     let feet = sim::voxel::to_block(origin, ps.origin);
@@ -483,6 +484,7 @@ pub(crate) fn movement(
     let hand_ticks = (hand.clock / TICK_SECONDS) as u32;
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     hand.cooldowns.tick(hand_ticks);
+    drop_throttle.tick(hand_ticks);
     let cooldowns = hand.cooldowns.shown((hand.clock / TICK_SECONDS) as f32);
     hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
     hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);

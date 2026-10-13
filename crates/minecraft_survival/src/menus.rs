@@ -875,6 +875,9 @@ fn creative_set(
         None => None,
     };
     match set_slot(&player.mode, &mut player.inventory, slot, stack, known) {
+        Ok(drop) if slot == CreativeSlot::Drop => {
+            drop.filter(|_| player.drop_throttle.allow(&player.name))
+        }
         Ok(drop) => drop,
         Err(refused) => {
             diag::debug!(World, "creative slot set from {} refused: {refused:?}", player.name);
@@ -2047,6 +2050,38 @@ mod tests {
         );
         assert!(friend.inventory.slots.iter().all(Option::is_none));
         assert!(friend.inventory.cursor.is_none());
+    }
+
+    #[test]
+    fn creative_drops_are_throttled_like_vanilla() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let drops = |count: usize| {
+            (0..count)
+                .map(|_| set(CreativeTarget::Drop, nbt("minecraft:cobblestone", 1)))
+                .collect::<Vec<_>>()
+        };
+        let clicked = take(&mut friend, &mut containers, drops(75));
+        assert_eq!(clicked.thrown.len(), 74);
+        assert_eq!(friend.drop_throttle.count, 1480);
+        friend.drop_throttle.tick(1);
+        assert_eq!(take(&mut friend, &mut containers, drops(2)).thrown.len(), 1);
+        assert_eq!(friend.drop_throttle.count, 1499);
+        friend.drop_throttle.tick(19);
+        assert!(take(&mut friend, &mut containers, drops(1)).thrown.is_empty());
+        friend.drop_throttle.tick(1);
+        assert_eq!(take(&mut friend, &mut containers, drops(2)).thrown.len(), 1);
+        let mut throttle = crate::creative::DropThrottle { count: 5 };
+        throttle.tick(9);
+        assert_eq!(throttle.count, 0);
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![set(CreativeTarget::Menu(36), nbt("minecraft:stone", 64))],
+        );
+        assert!(clicked.thrown.is_empty());
+        assert_eq!(held(&friend.inventory.slots[0]), Some(("minecraft:stone", 64)));
     }
 
     #[test]

@@ -1239,7 +1239,7 @@ fn update(
             show_chat(&mut ui.chat, inventory_ui, &world.packs, std::slice::from_ref(&told));
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
-        let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, .. } = &mut *player;
+        let minecraft_survival::player::Player { name: player_name, survival, mode: player_mode, inventory, selected, hand, menus, drop_throttle, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
@@ -1277,7 +1277,7 @@ fn update(
         inventory_ui.creative.prepare(!player_mode.consumes_items(), operator);
         inventory_ui.creative.set_item_tags(&globals.chat.data().item_tags);
         let known = |id: &str| globals.chat.registries().items.iter().any(|item| item == id);
-        let creative_thrown = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known);
+        let creative_thrown: Vec<_> = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known).into_iter().filter(|_| drop_throttle.allow(player_name)).collect();
         inventory_ui.creative.hotbar_key(&mut ui, player_mode, inventory, &known);
         let player_mode = *player_mode;
         let books = minecraft_survival::menus::Books::of(&globals.data);

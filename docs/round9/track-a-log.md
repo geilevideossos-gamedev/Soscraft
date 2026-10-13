@@ -274,6 +274,24 @@ Commit: "A friend in creative mode gets the creative inventory with tabs and sea
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:oak_log*16,minecraft:diamond_helmet
 ```
 
+### Commit 3: creative drops are throttled
+
+Commit: "Creative drops are throttled like vanilla", the one after `27fdf953` (A6 commit 2).
+
+- **Vanilla 26.3** (checked with javap): `ServerGamePacketListenerImpl.dropSpamThrottler` is `TickThrottler(20, 1480)`. A valid creative drop (slot < 0) is thrown only while `isUnderThreshold()` (count < 1480), then `increment()` adds 20; otherwise the server logs "Player {} was dropping items too fast in creative mode, ignoring." and drops nothing. `tick()` takes 1 off every server tick down to 0. So 74 drops in a burst pass, the 75th is ignored, and after that one drop passes every 20 ticks (one a second).
+- **Changed:**
+  - `minecraft_survival/src/creative.rs`: `DropThrottle { count }` with `tick(ticks)` and `allow(name)` (refuses at 1480 or more with vanilla's warning, else adds 20), `DROP_STEP = 20`, `DROP_THRESHOLD = 1480`.
+  - `minecraft_survival/src/player.rs`: `Player.drop_throttle`, appended at the end, not saved (vanilla keeps it on the connection).
+  - `minecraft_survival/src/menus.rs` `creative_set` (the friend path): a valid Drop set is thrown only when `drop_throttle.allow` passes.
+  - `render_anim/src/minecraft_world.rs` (the host path): the stacks `CreativeUi::apply` throws go through the host player's `drop_throttle` the same way.
+  - `render_anim/src/minecraft_players.rs` `movement` (the per-player tick for the host and every friend): `drop_throttle.tick(hand_ticks)` beside the item cooldowns.
+- **Tests:** `minecraft_survival` `menus::tests::creative_drops_are_throttled_like_vanilla` (75 drops in one batch throw 74 and leave the count at 1480; one tick later one more passes; then nothing until 20 more ticks; menu sets are never throttled).
+  - Run: `test -p minecraft_survival --locked` (601 passed), `test -p render_anim --locked` (159 passed), `check -p launcher --locked`.
+- **Owner's test steps** (host and friend, both in creative, kit of commit 2):
+  1. Friend: open the creative screen and hold Ctrl+Q over cobblestone in a tab for ten seconds (or click Q very fast): about 74 stacks fly out at once, then one more about every second, in both windows. **Screenshot 1.**
+  2. The host does the same in its own window: the same limit.
+  3. Normal throwing (a few Q presses) is not affected.
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
@@ -289,6 +307,7 @@ IW4L_MINECRAFT_KIT=minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:oa
 
 - **A6 wire:** the creative target has a `Carried` variant, which vanilla does not have (vanilla keeps the creative cursor on the client). The fork keeps every cursor on the server (`inventory.cursor`), so the friend sets its creative cursor on the host like any other slot. A refused or undecodable set changes nothing and is not answered, as in vanilla (which only logs); the friend's screen shows the host's state on the next change. **Protocol: 4** in this track; the second of tracks A and B to merge takes 5.
 - **A6 friend screen:** the friend's creative screen does not predict, like every friend menu: the cursor and the slots show the host's state one round trip later, and a second creative click before the host answers is worked out from the old mirror (within one frame, clicks chain on a scratch copy). Vanilla keeps the creative cursor on the client, so it has no such delay. The Operator Utilities tab needs command level 2 and the friend's own `minecraft_operator_items` setting, like vanilla's `canUseGameMasterBlocks` plus the operator-items option; the host checks no op level for a creative set (vanilla does not either). Saved hotbars stay in each player's own `hotbar.nbt`, as in vanilla, and a load is sent as nine creative sets.
+- **A6 drop throttle:** vanilla's `TickThrottler(20, 1480)` per player, on the host and the friend path alike (vanilla's integrated server throttles the host too). It is ticked with the player's hand ticks in `movement`, which runs every frame for every player, so a player whose `movement` stops (none today) would keep its count; vanilla ticks it with the connection. It is not saved, as in vanilla.
 
 ## State doc changes
 
@@ -305,6 +324,8 @@ Wording for the state docs, to be applied when the round's state is written (thi
 - **`docs/MULTIPLAYER.md:660`, creative inventory (10.2):** "**Creative inventory:** a player whose `abilities.instabuild` is true gets the creative screen, the host and every friend alike: the tabs from the jar, search by name and `#tag` (the friend reads the item tags from its own data pack), the inventory tab with the trash, middle-click clone and the C/X saved hotbars in each player's own `hotbar.nbt`. A friend's game applies nothing itself: every creative change goes to the host as `ToServer::CreativeSlot { slot: Menu(0..=45) | Carried | Drop, stack }` (vanilla's `ServerboundSetCreativeModeSlotPacket` plus a carried target, because the fork keeps the cursor on the host), and the host checks it with `creative::set_slot` on that friend's `Player`, in order with the friend's clicks: not creative, a bad slot, an unknown item or a stack over its maximum is ignored, as is any set while dead; a drop is thrown from the friend's eye. The friend's creative screen does not predict either. The Operator Utilities tab needs command level 2 and the player's `minecraft_operator_items` setting. Protocol 4 (A6)."
 - **`docs/MULTIPLAYER.md:1330`, section 20:** drop the line "Creative inventory for friends (`ServerboundSetCreativeModeSlotPacket`)."
 - **`docs/MINECRAFT-SURVIVAL.md:368`, a friend's limits:** replace "the creative inventory (a friend in creative mode gets the survival screen), and command suggestions" with "command suggestions"; the creative inventory now works for friends.
+
+- **`docs/MULTIPLAYER.md` 10.2, creative inventory (add to the A6 wording):** "Creative drops are throttled like vanilla (`TickThrottler(20, 1480)` per player, host and friends): 74 in a burst, then one a second."
 
 ## Combined kit
 
