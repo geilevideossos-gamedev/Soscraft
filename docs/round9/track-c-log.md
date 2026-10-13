@@ -1272,7 +1272,7 @@ Commit: the one after `6c184122`. Fixes `edcd9cc5` and `d9247254`.
 - **Defect:** `iw4l:tactical_insertion` was a tactical item (slot 44, Shift+G), but `flare_mp` is MW2 offhand class 5 ("other"), which the sim's `step::offhand_slot` gives to the lethal slot. `item::follow_grenades` refuses a weapon whose class does not fit its slot, so a tactical insertion in slot 44 was never given to MW2 and Shift+G could not plant it in the real game. The sim tests used class 2 as a stand-in, so they passed.
 - **Checked in the owner's data:** a throwaway Python probe (not committed) inflated the owner's `common_mp.ff` and read each grenade's `WeaponDef.offhandClass` at the loader's x64 offset 104 (`fastfile_iw4` `load/weapon.rs`): frag 1, semtex 5, throwing knife 4, claymore 5, C4 5, flash 3, stun 2, smoke 2, `flare_mp` 5, M4A1 0. MW2 itself carries the tactical insertion as equipment.
 - **Changed:**
-  - `minecraft_terrain/src/fork_items.rs`: the tactical insertion row is `Kind::Lethal` and moves after C4, so the creative tab and the recipe book keep lethals before tacticals. `grenade_slot` now sends it to 43, so `fits`, shift-click, pickups and the first-join loadout (a class whose lethal is `flare_mp` now gets 32 of them instead of frags) follow.
+  - `minecraft_terrain/src/fork_items.rs`: the tactical insertion row is `Kind::Lethal` and moves after C4, so the creative tab and the recipe book keep lethals before tacticals. `grenade_slot` now sends it to 43, so `fits`, shift-click and pickups follow. (The first-join loadout did not follow: a class whose tactical is `flare_mp`, the only row the class menu offers it in, got 32 flashes; fixed in "A class tactical insertion is given as insertions" in the second review.)
   - `minecraft_terrain/data/fork_recipes.json`: its recipe group is `iw4l_lethal` (the recipe itself is unchanged).
   - `docs/WEAPONS.md` 10.1 (the table), 10.6 (G plants it, the probe's values) and the test step 9.
 - **Tests:** `sim` `item::arsenal_tests`: the test content's `flare_mp` has the real class 5, and `a_tactical_insertion_is_thrown_from_the_lethal_slot_like_mw2_equipment` (in the lethal slot it becomes the lethal offhand with class 5 and its count; published in the tactical slot it is refused and has 0). `minecraft_terrain` `fork_items::tests`: 6 lethal and 3 tactical rows, `grenade_slot` of the tactical insertion is 43. `minecraft_survival` `menus::tests`: the lethal slot accepts it, the tactical slot refuses it. `test -p minecraft_terrain -p minecraft_survival -p sim` (sim 153) and `check -p launcher` green.
@@ -1378,6 +1378,19 @@ Commit: the one after the rustfmt fix. Fixes the ammo group (C11.9).
 IW4L_MINECRAFT_KIT=iw4l:usp,iw4l:usp
 ```
 
+### 5. A class tactical insertion is given as insertions
+
+Commit: the one after the akimbo fix. Fixes `bd497d69` (with `3cab4adb`).
+
+- **Defect:** the class menu offers `flare_mp` only in the Tactical row, and since `bd497d69` `iw4l:tactical_insertion` is a lethal item. `give_first_loadout` paired the class tactical with `Kind::Tactical`, dropped the insertion and gave the flash fallback, so a player who picked the tactical insertion started with 32 flashes and no insertions (before `bd497d69` they got 32 insertions). The `bd497d69` entry's "a class whose lethal is `flare_mp`" case cannot happen.
+- **Changed:** `minecraft_survival/src/loadout.rs`: each class grenade (lethal row, then tactical row) becomes its fork item whichever row it came from and goes, 32 of it, to its own slot by `fork_items::grenade_slot` through `give_grenades` (an empty slot takes it, the same grenade is topped up, otherwise it goes to the backpack). A slot that no class grenade goes to gets the 32 frags or flashes. `docs/WEAPONS.md` 6 says so, and the state doc entry above is updated.
+- **Tests:** `minecraft_survival` `loadout::tests::a_class_tactical_insertion_is_given_as_insertions_in_the_lethal_slot` (tactical insertion and no lethal: 32 insertions in 43, 32 flashes in 44, no frags; with semtex as lethal: semtex in 43, the insertions in the backpack, flashes in 44). `test -p minecraft_survival` and `check -p launcher` green.
+- **Owner's test steps** (survival, no kit needed):
+  1. On the MW2 main menu, edit the class you play: Tactical = Tactical Insertion, Lethal = Frag.
+  2. Start a new world `IW4L_MINECRAFT_WORLD=r9-class-insertion` with that class. Open the inventory. **Screenshot 1:** the lethal slot shows 32 frags, the tactical slot 32 flashes, and 32 tactical insertions are in the backpack.
+  3. Move the frags into the backpack and the insertions into the lethal slot, then press G: the flare is planted.
+- **Kit:** none.
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.
@@ -1432,7 +1445,7 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `MINECRAFT-SURVIVAL.md`, the guns section: "G throws the grenade in the lethal slot and Shift+G the one in the tactical slot, whatever is held; each throw, and a frag that blows up in the hand, uses one item, and when a throw empties the slot it refills from the inventory with the same grenade. MW2's grenade icons show the slot counts. An empty slot keeps the last grenade's icon with 0, so placed C4 can still be detonated. Picking a thrown knife up gives the item back. In creative throws use nothing. Bots keep unlimited grenades."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's throws take the friend's own grenade items on the host, through the same function as the host's."
 - `MINECRAFT-SURVIVAL.md`, the inventory section: "The grenade slots are drawn as two offhand-style frames left of the hotbar (lethal nearer to the hotbar), always, with their item and count, and as two slots right of the recipe book button in the inventory and right of the leggings and boots in the creative inventory tab; an empty one shows the tooltip Lethal or Tactical."
-- `MINECRAFT-SURVIVAL.md`, the first-join loadout sentence, added: "It also puts 32 of the class lethal grenade into the lethal slot and 32 of the class tactical into the tactical slot (frags and flashes when the class has none)."
+- `MINECRAFT-SURVIVAL.md`, the first-join loadout sentence, added: "It also puts 32 of each class grenade into its own grenade slot: the class lethal into the lethal slot and the class tactical into the tactical slot, except a tactical insertion, which goes into the lethal slot (or the backpack when the class lethal took it). A slot no class grenade goes to gets 32 frags or flashes."
 - `MINECRAFT-SURVIVAL.md`, the respawn section: "A planted tactical insertion (Shift+G with it in the tactical slot) is a one-use respawn point ahead of the bed or respawn anchor: the next respawn stands where the player stood when throwing it, facing the same way, also from another dimension, and uses it up. A second plant moves it, an MW2 blast dealing 20 or more at its spot destroys it, a block or fluid on the spot drops it, and it is not saved. Not vanilla."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's tactical insertion respawn lives on the host per UUID, set from the friend's own throws through the same function as the host's."
 - `decisions.md` (Not vanilla): "The tactical insertion's flare is a one-use respawn point ahead of the bed, kept on the host and never saved; only MW2 blasts destroy it."

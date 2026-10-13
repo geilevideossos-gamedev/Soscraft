@@ -238,7 +238,7 @@ On Minecraft maps the class menu changes perks and killstreaks only. Its weapon 
 - **What is given:**
   1. The primary and secondary as gun items, with their attachments and a full clip (both clips for akimbo), into hotbar slots 0 and 1 if free, otherwise the vanilla add order.
   2. Three magazines of reserve per gun as ammo items into the backpack: an M4A1 gets 90 rifle rounds, an Intervention 15 sniper rounds, a Javelin 3 rockets. Guns that share an ammo type add up.
-  3. 32 of the class lethal into slot 43 and 32 of the class tactical into slot 44. The fallbacks are frag and flash.
+  3. 32 of each class grenade into its own grenade slot (10.2): the class lethal into slot 43 and the class tactical into slot 44, except the tactical insertion, which MW2 keeps as equipment and so goes into slot 43 (into the backpack when the class lethal already took it). A slot that no class grenade goes to gets 32 frags (43) or flashes (44).
   4. The flag is set. It is saved with the next save, together with the items, so a crash before saving loses both and gives both again.
   - Whatever does not fit drops at the player's feet, like `/give` (`commands::give_stacks`).
 - Killstreaks are not part of it. `IW4L_MINECRAFT_KIT` is unchanged and given on its own.

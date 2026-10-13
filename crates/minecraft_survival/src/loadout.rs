@@ -9,13 +9,9 @@ pub const MAGAZINES: u32 = 3;
 const BACKPACK_FIRST: [std::ops::Range<usize>; 2] = [9..36, 0..9];
 const SLOT_STAND_INS: [&str; 2] = ["iw4l:m4", "iw4l:usp"];
 pub const CLASS_GRENADES: u32 = 32;
-const GRENADE_STAND_INS: [(Kind, usize, &str); 2] = [
-    (Kind::Lethal, fork_items::LETHAL_SLOT, "iw4l:frag_grenade"),
-    (
-        Kind::Tactical,
-        fork_items::TACTICAL_SLOT,
-        "iw4l:flash_grenade",
-    ),
+const GRENADE_STAND_INS: [(usize, &str); 2] = [
+    (fork_items::LETHAL_SLOT, "iw4l:frag_grenade"),
+    (fork_items::TACTICAL_SLOT, "iw4l:flash_grenade"),
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -131,14 +127,13 @@ fn stow(inventory: &mut Inventory, id: &str, count: u32) -> Vec<ItemStack> {
 fn class_grenade<C: GunContent>(
     (names, content): (&mut GunNames, &C),
     weapon: u32,
-    kind: Kind,
 ) -> Option<&'static str> {
     if weapon == 0 {
         return None;
     }
     let (id, _) = names.item(content, weapon)?;
     fork_items::get(id)
-        .filter(|row| row.kind == kind)
+        .filter(|row| fork_items::grenade_slot(row.id).is_some())
         .map(|row| row.id)
 }
 
@@ -199,14 +194,26 @@ pub fn give_first_loadout<C: GunContent>(
     for (ammo, count) in rounds {
         given.dropped.extend(stow(inventory, ammo, count));
     }
-    for ((kind, slot, stand_in), weapon) in GRENADE_STAND_INS
+    let picked: Vec<&'static str> = [class.lethal, class.tactical]
         .into_iter()
-        .zip([class.lethal, class.tactical])
-    {
-        let id = class_grenade((&mut *names, content), weapon, kind).unwrap_or(stand_in);
-        given
-            .dropped
-            .extend(give_grenades(inventory, slot, id, CLASS_GRENADES));
+        .filter_map(|weapon| class_grenade((&mut *names, content), weapon))
+        .collect();
+    for id in &picked {
+        if let Some(slot) = fork_items::grenade_slot(id) {
+            given
+                .dropped
+                .extend(give_grenades(inventory, slot, id, CLASS_GRENADES));
+        }
+    }
+    for (slot, stand_in) in GRENADE_STAND_INS {
+        if !picked
+            .iter()
+            .any(|id| fork_items::grenade_slot(id) == Some(slot))
+        {
+            given
+                .dropped
+                .extend(give_grenades(inventory, slot, stand_in, CLASS_GRENADES));
+        }
     }
     Some(given)
 }
@@ -218,7 +225,7 @@ mod tests {
 
     type Row = (&'static str, &'static [&'static str], i32, Option<Bucket>);
 
-    const WEAPONS: [Row; 11] = [
+    const WEAPONS: [Row; 12] = [
         ("iw4:weapon/m4_mp", &[], 30, Some(Bucket::AssaultRifle)),
         (
             "iw4:weapon/m4_mp",
@@ -235,6 +242,7 @@ mod tests {
         ("iw4:weapon/cheytac_mp", &[], 5, Some(Bucket::Sniper)),
         ("iw4:weapon/semtex_mp", &[], 1, None),
         ("iw4:weapon/concussion_grenade_mp", &[], 1, None),
+        ("iw4:weapon/flare_mp", &[], 1, None),
     ];
 
     struct Fake;
@@ -497,5 +505,53 @@ mod tests {
             slot(&fresh, fork_items::TACTICAL_SLOT),
             Some(("iw4l:flash_grenade".to_owned(), 32))
         );
+    }
+
+    #[test]
+    fn a_class_tactical_insertion_is_given_as_insertions_in_the_lethal_slot() {
+        let mut names = GunNames::default();
+        let slot = |inventory: &Inventory, slot: usize| {
+            inventory.slots[slot]
+                .as_ref()
+                .map(|stack| (stack.id.clone(), stack.count))
+        };
+        let insertion = index("iw4:weapon/flare_mp", &[]);
+        let mut inventory = Inventory::default();
+        let only = Class {
+            tactical: insertion,
+            ..class(index("iw4:weapon/m4_mp", &[]), 0)
+        };
+        let given = give(&mut inventory, &mut Vec::new(), Some(&only), &mut names).unwrap();
+        assert!(given.dropped.is_empty());
+        assert_eq!(
+            slot(&inventory, fork_items::LETHAL_SLOT),
+            Some(("iw4l:tactical_insertion".to_owned(), 32)),
+            "the insertion takes the lethal slot, where MW2 keeps it"
+        );
+        assert_eq!(
+            slot(&inventory, fork_items::TACTICAL_SLOT),
+            Some(("iw4l:flash_grenade".to_owned(), 32))
+        );
+        assert_eq!(count(&inventory, "iw4l:frag_grenade"), 0);
+        let mut inventory = Inventory::default();
+        let both = Class {
+            lethal: index("iw4:weapon/semtex_mp", &[]),
+            ..only
+        };
+        give(&mut inventory, &mut Vec::new(), Some(&both), &mut names).unwrap();
+        assert_eq!(
+            slot(&inventory, fork_items::LETHAL_SLOT),
+            Some(("iw4l:semtex".to_owned(), 32))
+        );
+        assert_eq!(
+            count(&inventory, "iw4l:tactical_insertion"),
+            32,
+            "the insertions wait in the backpack"
+        );
+        assert_eq!(
+            slot(&inventory, fork_items::TACTICAL_SLOT),
+            Some(("iw4l:flash_grenade".to_owned(), 32))
+        );
+        assert_eq!(count(&inventory, "iw4l:flash_grenade"), 32);
     }
 }
