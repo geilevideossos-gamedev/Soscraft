@@ -21,6 +21,61 @@ pub(crate) struct BloodOverlayLatch {
     last_gpu_intensity: Option<f32>,
     last_w: Option<f32>,
     last_h: Option<f32>,
+    flash: HurtFlash,
+}
+
+const MC_HURT_FLASH_MS: i32 = 500;
+const MC_HURT_FLASH_PEAK: f32 = 0.3;
+
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+struct HurtFlash {
+    last_event: Option<u32>,
+    hit_at: Option<i32>,
+}
+
+impl HurtFlash {
+    fn observe(&mut self, damage_event: u32, now_ms: i32) -> f32 {
+        if self.last_event.is_some_and(|last| last != damage_event) {
+            self.hit_at = Some(now_ms);
+        }
+        self.last_event = Some(damage_event);
+        let Some(hit_at) = self.hit_at else {
+            return 0.0;
+        };
+        let elapsed = now_ms.wrapping_sub(hit_at);
+        if !(0..MC_HURT_FLASH_MS).contains(&elapsed) {
+            self.hit_at = None;
+        }
+        mc_hurt_flash(elapsed)
+    }
+}
+
+fn mc_hurt_flash(elapsed_ms: i32) -> f32 {
+    if !(0..MC_HURT_FLASH_MS).contains(&elapsed_ms) {
+        return 0.0;
+    }
+    let t = 1.0 - elapsed_ms as f32 / MC_HURT_FLASH_MS as f32;
+    (MC_HURT_FLASH_PEAK * (t.powi(4) * std::f32::consts::PI).sin()).max(0.0)
+}
+
+fn next_intensity(
+    intensity: f32,
+    flash: &mut HurtFlash,
+    on_minecraft: bool,
+    health_frac: f32,
+    damage_event: u32,
+    now_ms: i32,
+    frametime_ms: i32,
+) -> f32 {
+    if on_minecraft {
+        return flash.observe(damage_event, now_ms);
+    }
+    blood_overlay_lerp(
+        intensity,
+        health_frac,
+        frametime_ms,
+        HUD_BLOOD_OVERLAY_LERP_RATE_DEFAULT,
+    )
 }
 
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
@@ -70,16 +125,20 @@ pub(crate) fn update_blood_overlay(
     view: Res<ViewSubject>,
     ui_draw: Option<Res<UiDraw>>,
     settings: Option<Res<frame::GameSettings>>,
+    minecraft: Option<Res<frame::MinecraftUi>>,
 ) {
     *job = BloodGpuJob::Idle;
     for ev in started.read() {
         if ev.client == local.0.0 {
             latch.intensity = 0.0;
+            latch.flash = HurtFlash::default();
         }
     }
     let in_game = matches!(*screen, AppScreen::InGame);
+    let on_minecraft = minecraft.is_some_and(|ui| ui.active || ui.credits.is_some());
     let Some(ps) = presented.player(local.0) else {
         latch.intensity = 0.0;
+        latch.flash = HurtFlash::default();
         gaps.clear(HudGap::BloodOverlay);
         request_hide(&mut job, latch.packed.is_empty());
         return;
@@ -90,6 +149,7 @@ pub(crate) fn update_blood_overlay(
 
     if !in_game {
         latch.intensity = 0.0;
+        latch.flash = HurtFlash::default();
         gaps.clear(HudGap::BloodOverlay);
         request_hide(&mut job, latch.packed.is_empty());
         return;
@@ -114,6 +174,9 @@ pub(crate) fn update_blood_overlay(
     if !should_draw {
         if !blood_enabled {
             latch.intensity = 0.0;
+            latch.flash = HurtFlash::default();
+        } else if on_minecraft {
+            latch.flash.observe(ps.damage_event, cg_clock.time());
         }
         gaps.clear(HudGap::BloodOverlay);
         request_hide(&mut job, latch.packed.is_empty());
@@ -121,11 +184,15 @@ pub(crate) fn update_blood_overlay(
     }
 
     let frametime_ms = cg_clock.frametime();
-    latch.intensity = blood_overlay_lerp(
+    let latch = &mut *latch;
+    latch.intensity = next_intensity(
         latch.intensity,
+        &mut latch.flash,
+        on_minecraft,
         health_frac,
+        ps.damage_event,
+        cg_clock.time(),
         frametime_ms,
-        HUD_BLOOD_OVERLAY_LERP_RATE_DEFAULT,
     );
 
     if latch.intensity == 0.0 {
@@ -243,5 +310,70 @@ mod tests {
             false,
             0
         ));
+    }
+
+    #[test]
+    fn the_first_damage_count_seen_does_not_flash() {
+        let mut flash = HurtFlash::default();
+        assert_eq!(flash.observe(7, 1000), 0.0);
+        for now in (1016..2000).step_by(16) {
+            assert_eq!(flash.observe(7, now), 0.0);
+        }
+    }
+
+    #[test]
+    fn a_hit_flashes_faintly_and_fades_within_half_a_second() {
+        let mut flash = HurtFlash::default();
+        flash.observe(3, 1000);
+        assert_eq!(flash.observe(4, 2000), 0.0);
+        let peak = flash.observe(4, 2080);
+        assert!(peak > 0.25 && peak <= MC_HURT_FLASH_PEAK, "{peak}");
+        let tail = flash.observe(4, 2499);
+        assert!(tail < 0.05, "{tail}");
+        assert_eq!(flash.observe(4, 2500), 0.0);
+        assert_eq!(flash.observe(4, 4000), 0.0);
+    }
+
+    #[test]
+    fn the_flash_peak_stays_far_below_the_mw2_low_health_overlay() {
+        let highest = (0..MC_HURT_FLASH_MS)
+            .map(mc_hurt_flash)
+            .fold(0.0f32, f32::max);
+        assert!(highest <= 0.35, "{highest}");
+        let mw2 = blood_overlay_lerp(0.0, 0.1, 16, HUD_BLOOD_OVERLAY_LERP_RATE_DEFAULT);
+        assert!(mw2 > 0.85, "{mw2}");
+        assert!(highest * 2.5 < mw2);
+    }
+
+    #[test]
+    fn a_wrapped_damage_counter_still_flashes() {
+        let mut flash = HurtFlash::default();
+        flash.observe(u32::MAX, 1000);
+        flash.observe(0, 1100);
+        assert!(flash.observe(0, 1180) > 0.25);
+    }
+
+    #[test]
+    fn low_health_alone_shows_no_flash_on_minecraft() {
+        let mut flash = HurtFlash::default();
+        let mut intensity = 0.0;
+        for frame in 0..600 {
+            intensity = next_intensity(intensity, &mut flash, true, 0.1, 9, frame * 16, 16);
+            assert_eq!(intensity, 0.0);
+        }
+        let mut mw2 = HurtFlash::default();
+        let lasting = next_intensity(0.0, &mut mw2, false, 0.1, 9, 0, 16);
+        assert!(lasting > 0.85, "{lasting}");
+    }
+
+    #[test]
+    fn a_new_life_forgets_the_last_hit() {
+        let mut latch = BloodOverlayLatch::default();
+        latch.flash.observe(1, 1000);
+        assert_eq!(latch.flash.observe(2, 1100), 0.0);
+        assert!(latch.flash.observe(2, 1180) > 0.25);
+        latch.flash = HurtFlash::default();
+        assert_eq!(latch.flash.observe(0, 1200), 0.0);
+        assert_eq!(latch.flash.observe(0, 1280), 0.0);
     }
 }
