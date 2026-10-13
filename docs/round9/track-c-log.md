@@ -509,6 +509,51 @@ IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:iron_ingot*64,minecraft:ir
 IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:iron_ingot*64,minecraft:iron_block*4,minecraft:copper_ingot*32,minecraft:gunpowder*64,minecraft:iron_nugget*32,minecraft:tripwire_hook*8,minecraft:redstone*16,minecraft:repeater*4,minecraft:stone_button*4,minecraft:lever*2,minecraft:tnt*4,minecraft:fire_charge*4,minecraft:glowstone_dust*4,minecraft:redstone_torch*4,minecraft:glass_pane*8,minecraft:crying_obsidian*2,minecraft:blaze_rod*2,minecraft:iron_chain*2,minecraft:oak_log*8,minecraft:bowl*2,minecraft:red_mushroom*2,minecraft:brown_mushroom*2,minecraft:allium*2,minecraft:spyglass*2,minecraft:diamond*4
 ```
 
+## C11.6 Attachments, akimbo, the grindstone
+
+### 1. Attachments go onto a gun in the crafting grid, and two identical guns make an akimbo pair
+
+Commit: the one after `afafe0c5`.
+
+- **Changed:**
+  - `minecraft_terrain` `gun_mods.rs` (new, edition 2021, rustfmt-clean): the trait `GunRules` (`accepts(id, attachments)`, `clip_size(id, attachments)`), the item state helpers `is_gun`, `attachments`, `clip`, `clips`, `with_state` (rewrites `custom_data.iw4l` and keeps every other component; an empty state leaves no empty `custom_data`) and `refit` (new attachments; a full clip `-1` becomes the old clip size when it is known; a clip above the new size is cut and the extra rounds are counted; `clip_left` is kept only with `akimbo`, `alt_clip` only while the gun keeps its alt mode).
+  - `minecraft_survival` `gun_crafting.rs` (new, edition 2024, rustfmt-clean): `Rules(&impl GunContent)` (the MW2 check through `WeaponFamilies::resolve` with at most 2 attachments, the way `GunNames` uses it), `craft(cells, rules)`, `result(inventory, grid, rules)` and `take(inventory, grid, rules, place)`:
+    - **Attach:** exactly one gun plus 1 or 2 attachment items in any cells, nothing else. Each item tries its MW2 names in table order (`reflex`/`elbit`, `silencer`/`silencer02`/`silencer03`, `xmags`/`extclip`/`dualclip`, `rof`/`rf`/`auto`, `acog`/`hamrhybrid`/`hybrid`, `gl`/`gp`, `shotgun`/`mk`, `thermal`/`ir`) and the first combination MW2 resolves wins. No result for a third attachment, an attachment the gun already has, the same item twice, a combination MW2 has no def for (two sights) or any other item in the grid. The gun keeps its name, its clip (cut to the new size) and its other attachments; one item is taken from each attachment cell.
+    - **Akimbo:** two copies of the same gun with the same attachments (in any order), nothing else, at most one attachment so far, and MW2 resolves the gun with `akimbo` added: one gun with `akimbo`, `clip` from the first gun in grid order and `clip_left` from the second.
+    - **Split:** an akimbo gun alone in the grid gives the gun without `akimbo` with its `clip`; the second gun stays in the same cell with `clip_left` as its clip.
+    - Rounds above a smaller clip become the gun's ammo items, added to the inventory in vanilla's add order; what does not fit drops at the feet.
+    - The result goes onto the empty cursor (click), into the inventory from the right end of the hotbar like vanilla's shift-click, into an empty hotbar slot (number key; never the offhand) or onto the ground (Q). A full cursor takes nothing.
+  - `menus.rs`: `Books` gains `guns: Option<&dyn GunRules>` (`Books::of` sets none, `with_guns` adds it). `grid_action` tries the special recipe first for a click, a shift-click, a number key and Q on the result slot, and falls back to vanilla's crafting when the grid holds no special recipe. The host passes the rules for its own clicks (`minecraft_world.rs`, also when it leaves a level) and for every friend's clicks (`minecraft_players.rs` `friend_menus`), so both go through the same function.
+  - `render_anim` `minecraft_fork_items.rs`: `ForkRules` (the registry's rules), `ForkLook::rules` and `ForkLook::special`; `minecraft_inventory.rs` shows the special result in the 2x2 and the crafting table before vanilla's result, on the host's and the friend's screen (each from its own MW2 content). Attachment tooltips say "Craft together with a gun to attach it". When MW2 content arrives, the game logs once the content's attachment names that have no item.
+  - `minecraft_terrain` `crafting.rs`: `result_order` and `move_into` are public, so the shift-click of a special result uses vanilla's order.
+  - `docs/WEAPONS.md` 9.2: where the special recipes run and how the MW2 check reaches them.
+- **Tests:**
+  - `minecraft_survival` `gun_crafting::tests`: `attaching_keeps_the_clip_the_name_and_the_other_attachments`, `a_smaller_clip_gives_the_extra_rounds_back_as_ammo`, `two_sights_a_third_attachment_or_the_same_one_twice_give_nothing` (also three items, dirt in the grid and a gun alone), `a_t5_gun_takes_the_attachment_under_its_own_name` (the Galil gets `elbit`), `two_identical_guns_make_an_akimbo_pair_with_both_clips` (full `-1` clips; different attachments, an M4A1 pair and a mixed pair give none), `an_akimbo_gun_alone_splits_and_the_second_gun_stays_in_its_cell`, `the_result_goes_to_the_hotbar_the_inventory_or_the_ground_and_never_onto_a_full_cursor` (the offhand refused), `a_click_on_the_result_crafts_through_the_menu` (through `menus::apply`, and no special result without rules), `content_attachment_names_without_an_item_are_listed` (reads `frame/src/class_presets.rs`, prints the names with no item and fails only if a mapped name is missing; today it lists `speed`).
+  - `minecraft_terrain` `gun_mods::tests`: `a_smaller_clip_gives_the_extra_rounds_back_and_keeps_every_other_component`, `a_bare_state_leaves_no_empty_custom_data`.
+- **Decisions:**
+  - **The content test reads the class presets, not the MW2 zones.** No unit test in the workspace loads a weapon registry from the owner's content (that needs the full session load), so the test lists the preset classes' attachment names, and the game logs the content's own unmapped names once when the registry arrives (`MW2 attachments with no Minecraft item`).
+  - **The first gun in grid order is the right-hand gun** of an akimbo pair: its clip is `clip`, and its components (custom name) are kept. The second gun's own name is lost; a split gives both guns the pair's name.
+  - **Shift-click crafts once:** a special recipe uses up the gun, so it cannot repeat like vanilla's shift-click.
+  - **A new alt attachment comes empty** (`alt_clip` absent), like a crafted gun; the grindstone drops its rounds with it.
+  - **No MW2 content, no special result** (the grid shows nothing, as for any invalid grid), because the combination and the clip size can only come from MW2.
+  - No MW2 attachment makes a clip smaller, so in the game the "rounds back" path matters only for content that does; the grindstone (next commit) is where clips really shrink.
+- **Owner's test steps** (survival, any world, kit below; the kit gives every gun a full clip):
+  1. Open the inventory. Put an M4A1 and a Red Dot Sight anywhere in the 2x2 grid: the result is the M4A1. Hover it: "Red Dot Sight", "Clip 30/30". Take it. **Screenshot 1** (the tooltip).
+  2. Crafting table: the second M4A1, a Red Dot Sight and an ACOG Scope: no result (two sights). Take the ACOG out: the result is the M4A1 with a red dot.
+  3. A red-dot M4A1 and an FMJ: the M4A1 now lists "Red Dot Sight" and "FMJ". That M4A1 and a Silencer: no result (a third attachment). **Screenshot 2** (the empty result slot).
+  4. Rename the other M4A1 on an anvil, then put a Silencer on it: the name stays.
+  5. Two USP .45 in the 2x2: one USP .45 with "Akimbo" and "Clip 12/12 + 12/12". Take it. Two M4A1: no result. **Screenshot 3.**
+  6. Put the akimbo USP .45 alone in the grid: the result is one USP .45. Take it: the other USP .45 stays in the cell. **Screenshot 4.**
+  7. Hover a Red Dot Sight in the inventory: "Craft together with a gun to attach it".
+  8. The Galil and a Red Dot Sight make a Galil with a red dot sight.
+  9. With a gun and an attachment in the grid: press Q over the result (the gun drops), a number key over the result (the gun goes into that empty hotbar slot) and shift-click the result (it goes to the right end of the hotbar).
+  10. Two windows (`scripts\mp-local.ps1`, both with the kit): the friend makes the akimbo USP .45 and splits it again. **Screenshot 5** (friend window).
+- **Kit** (14 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:anvil,minecraft:experience_bottle*16,iw4l:m4,iw4l:m4,iw4l:usp,iw4l:usp,iw4l:t5_galil,iw4l:red_dot_sight*4,iw4l:acog_scope*2,iw4l:fmj*2,iw4l:silencer*2,iw4l:extended_mags*2,iw4l:grip*2
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (5): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`. Added: none.
@@ -533,3 +578,5 @@ Patched by this track so far (5): `player/src/item_catalog.rs`, `core/src/item.r
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's first-join loadout is given on the host from the friend's own class, through the same function as the host's, and the tag is saved in the friend's player file."
 - `MINECRAFT-SURVIVAL.md`, the crafting section: "Crafting results keep the components their recipe gives, so a crafted suspicious stew carries its effect (eating it does not apply the effect yet). Every fork gun, gun part, attachment, ammo type and grenade has one crafting recipe (`equipment`), our own vanilla-format JSON in `crates/minecraft_terrain/data/fork_recipes.json`; none matches a vanilla 26.3 grid. A crafted gun comes out empty. Fork recipes are always known and never saved in `recipeBook`."
 - `MULTIPLAYER.md` (version checks): "The fork recipes are part of the same fork table hash."
+- `MINECRAFT-SURVIVAL.md`, the crafting section: "Attachments go onto a gun in any crafting grid, the 2x2 included: one gun plus one or two attachment items, when MW2 has that combination (at most two attachments, akimbo counted). The gun keeps its name, its loaded rounds and its other attachments; rounds above a smaller clip come back as ammo. Two identical guns with the same attachments make an akimbo pair if MW2 offers akimbo for the gun; an akimbo gun alone in the grid splits, and the second gun stays in its cell. These recipes are not in the recipe book; attachment tooltips say how to use them."
+- `MULTIPLAYER.md` (per-player state on the host): "A friend's gun crafting (attachments, akimbo, split) runs on the host through the same function as the host's; each screen shows the result from its own MW2 content."

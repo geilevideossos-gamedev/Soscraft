@@ -1866,7 +1866,9 @@ pub(crate) fn friend_menus(
     let Some(entities) = entities.as_mut() else {
         return lines;
     };
-    let books = minecraft_survival::menus::Books::of(&world.globals.data);
+    let guns = world.guns.rules();
+    let books = minecraft_survival::menus::Books::of(&world.globals.data)
+        .with_guns(guns.as_ref().map(|guns| guns as &dyn minecraft_terrain::gun_mods::GunRules));
     let mut clicked = minecraft_survival::menus::take_inputs(
         player,
         containers,

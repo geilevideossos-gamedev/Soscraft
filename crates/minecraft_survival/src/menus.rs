@@ -5,6 +5,7 @@ use minecraft_net::messages::{Click, MenuAction, MenuExtras, MenuKind, MenuSlot,
 use minecraft_net::{Dimension, PlayerUuid, ToClient};
 use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::crafting::{self, Grid, Spot};
+use minecraft_terrain::gun_mods::GunRules;
 use minecraft_terrain::openers::RECHECK_TICKS;
 use minecraft_terrain::scene::{BlockPos, HandcraftedScene, Scene};
 use minecraft_terrain::stations::{Bench, Context, StationBook, Taken, Workshop};
@@ -15,6 +16,7 @@ use minecraftoss_player::inventory::{Inventory, ItemStack};
 use crate::actions::{Body, Effect};
 use crate::data::GameData;
 use crate::entities::Entities;
+use crate::gun_crafting::Place;
 use crate::guns::{HOTBAR, is_gun, weapon_of};
 use crate::level::Terrain;
 use crate::offhand::OFFHAND;
@@ -130,6 +132,7 @@ impl Menus {
 pub struct Books<'a> {
     pub stations: &'a StationBook,
     pub enchantments: Option<&'a Enchantments>,
+    pub guns: Option<&'a dyn GunRules>,
 }
 
 impl<'a> Books<'a> {
@@ -137,7 +140,12 @@ impl<'a> Books<'a> {
         Self {
             stations: &data.stations,
             enchantments: data.enchantments.as_deref(),
+            guns: None,
         }
+    }
+
+    pub fn with_guns(self, guns: Option<&'a dyn GunRules>) -> Self {
+        Self { guns, ..self }
     }
 }
 
@@ -619,8 +627,12 @@ fn grid_action(
     action: &MenuAction,
     inventory: &mut Inventory,
     grid: Grid,
+    guns: Option<&dyn GunRules>,
     thrown: &mut Vec<ItemStack>,
 ) {
+    let special = |inventory: &mut Inventory, place| {
+        guns.and_then(|rules| crate::gun_crafting::take(inventory, grid, rules, place))
+    };
     match action {
         MenuAction::Slot {
             slot: MenuSlot::Inventory(index),
@@ -637,7 +649,13 @@ fn grid_action(
         MenuAction::Slot { slot, right, shift } => match spot(*slot, grid) {
             Some(Spot::Grid(cell)) => crafting::click_cell(inventory, grid, cell, *right, *shift),
             Some(Spot::Result) => {
-                crafting::click_result(inventory, grid, *shift);
+                let place = if *shift { Place::Inventory } else { Place::Cursor };
+                match special(inventory, place) {
+                    Some(rest) => thrown.extend(rest),
+                    None => {
+                        crafting::click_result(inventory, grid, *shift);
+                    }
+                }
             }
             _ => {}
         },
@@ -659,7 +677,13 @@ fn grid_action(
             let hotbar = usize::from(*hotbar);
             match spot(*slot, grid) {
                 Some(Spot::Grid(cell)) => crafting::swap(inventory, grid, Some(cell), hotbar),
-                Some(Spot::Result) => crafting::swap(inventory, grid, None, hotbar),
+                Some(Spot::Result) => match special(inventory, Place::Hotbar(hotbar)) {
+                    Some(rest) => {
+                        thrown.extend(rest);
+                        true
+                    }
+                    None => crafting::swap(inventory, grid, None, hotbar),
+                },
                 _ => false,
             };
         }
@@ -676,9 +700,10 @@ fn grid_action(
                 Some(Spot::Grid(cell)) => {
                     thrown.extend(crafting::throw_cell(inventory, grid, cell, *whole))
                 }
-                Some(Spot::Result) => {
-                    thrown.extend(crafting::throw_result(inventory, grid, *whole))
-                }
+                Some(Spot::Result) => match special(inventory, Place::Ground) {
+                    Some(rest) => thrown.extend(rest),
+                    None => thrown.extend(crafting::throw_result(inventory, grid, *whole)),
+                },
                 None => {}
             }
         }
@@ -744,7 +769,7 @@ pub fn apply(
         {
             return;
         }
-        grid_action(action, inventory, grid, &mut clicked.thrown);
+        grid_action(action, inventory, grid, books.guns, &mut clicked.thrown);
     });
     let mut thrown = std::mem::take(&mut clicked.thrown);
     thrown.extend(inventory.take_pending_drops());
@@ -1385,6 +1410,7 @@ mod tests {
         Books {
             stations: book,
             enchantments: None,
+            guns: None,
         }
     }
 

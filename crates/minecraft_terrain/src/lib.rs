@@ -40,6 +40,7 @@ pub mod item_frame;
 pub mod fork_items;
 pub mod fork_look;
 pub mod fork_recipes;
+pub mod gun_mods;
 pub mod environment;
 pub(crate) mod face_culling;
 pub mod fluid;

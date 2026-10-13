@@ -358,6 +358,7 @@ impl InventoryUi {
             .unwrap_or_else(|| "Water Bottle".to_owned());
         let lang: &HashMap<String, String> = language;
         let enchant_table = self.enchantments.clone();
+        let specials = (self.fork.special(inventory, Grid::Inventory), self.fork.special(inventory, Grid::Table));
         let fork = &mut self.fork;
         let mut convert = |stack: &Option<ItemStack>| {
             stack.as_ref().map(|s| {
@@ -394,9 +395,9 @@ impl InventoryUi {
         let table_open = ui.inventory_open && table;
         let small_open = ui.inventory_open && !table;
         ui.crafting = std::array::from_fn(|i| convert(&inventory.crafting[i]));
-        ui.result = if small_open { convert(&crafting::output(inventory, Grid::Inventory)) } else { None };
+        ui.result = if small_open { convert(&specials.0.or_else(|| crafting::output(inventory, Grid::Inventory))) } else { None };
         ui.workbench = std::array::from_fn(|i| convert(&inventory.workbench[i]));
-        ui.workbench_result = if table_open { convert(&crafting::output(inventory, Grid::Table)) } else { None };
+        ui.workbench_result = if table_open { convert(&specials.1.or_else(|| crafting::output(inventory, Grid::Table))) } else { None };
         let opened = match &screen.open {
             Some(Open::Block(opened)) if ui.inventory_open => Some(opened.clone()),
             _ => None,

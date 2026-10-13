@@ -450,7 +450,7 @@ All attachment recipes are shaped, `category: "equipment"`, group `iw4l_attachme
 
 ### 9.2 Putting attachments on, akimbo, taking them off
 
-These are fork special recipes, like vanilla's shield decoration. They work in any crafting grid, the inventory's 2x2 included, and run in `minecraft_survival` where the crafting result is computed. They are not listed in the recipe book. Each attachment's tooltip says "Craft together with a gun to attach it".
+These are fork special recipes, like vanilla's shield decoration. They work in any crafting grid, the inventory's 2x2 included, and run in `minecraft_survival` (`gun_crafting.rs`). The grid result itself is computed by `minecraft_terrain::crafting`, so the special recipes are checked first: on the host for every click of the host and of each friend, and on each screen for the result it shows. The MW2 check reaches them through `minecraft_terrain::gun_mods::GunRules`; without MW2 content there is no special result. They are not listed in the recipe book. Each attachment's tooltip says "Craft together with a gun to attach it".
 
 - **Attach:** exactly one gun plus 1 or 2 attachment items, in any cells. The result is the same gun with the attachments added and every other component kept: the clip (cut to the new clip size, with the extra rounds given back as ammo items), the custom name and the other attachments.
   - The result exists only if the gun ends with at most 2 attachments and `WeaponFamilies::resolve` accepts the combination. That uses the owner's own attachment and combination tables, so no list is kept by hand. Two sights or two alt modes have no MW2 def and give no result, as vanilla shows nothing for an invalid grid.

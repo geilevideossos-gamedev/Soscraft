@@ -13,6 +13,7 @@ pub mod entities;
 pub mod entity_view;
 pub mod gear;
 pub mod guns;
+pub mod gun_crafting;
 pub mod gun_names;
 pub mod heard;
 pub mod impulse;

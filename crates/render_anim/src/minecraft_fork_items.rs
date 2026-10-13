@@ -2,11 +2,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
 
 use asset_game::{FamilyKey, LoadoutRules, WeaponRegistry, WeaponSelection};
+use minecraft_survival::gun_crafting;
 use minecraft_survival::gun_names::{self, GunContent, GunNames};
 use minecraft_survival::guns::{self, Hotbar, Settled, Spent};
 use minecraft_terrain::fork_items::{self, Bucket, Icon, Kind};
 use minecraft_terrain::fork_look;
+use minecraft_terrain::crafting::Grid;
 use minecraft_terrain::game_mode::PlayerMode;
+use minecraft_terrain::gun_mods::GunRules;
 use minecraft_terrain::item_icon::SpriteClock;
 use minecraft_terrain::mesh::{Atlas, AtlasPatch};
 use minecraft_terrain::pack::{PackStack, ResourceId};
@@ -62,6 +65,18 @@ impl GunContent for RegistryGuns<'_> {
     }
 }
 
+pub(crate) struct ForkRules(Arc<WeaponRegistry>);
+
+impl GunRules for ForkRules {
+    fn accepts(&self, id: &str, attachments: &[String]) -> bool {
+        gun_crafting::Rules(&RegistryGuns(&self.0)).accepts(id, attachments)
+    }
+
+    fn clip_size(&self, id: &str, attachments: &[String]) -> Option<i32> {
+        gun_crafting::Rules(&RegistryGuns(&self.0)).clip_size(id, attachments)
+    }
+}
+
 type Decoded = Vec<(String, image::RgbaImage)>;
 type Sprites = Vec<(&'static str, image::RgbaImage)>;
 
@@ -92,7 +107,27 @@ impl ForkLook {
             self.registry = registry.cloned();
             self.names = GunNames::default();
             self.named = false;
+            if let Some(registry) = registry {
+                let names = registry
+                    .weapon_families()
+                    .families()
+                    .iter()
+                    .flat_map(|family| family.attachments.iter().map(|choice| choice.name.as_str()));
+                let missing = gun_crafting::unmapped(names);
+                if !missing.is_empty() {
+                    diag::warn!(World, "MW2 attachments with no Minecraft item, so they cannot be crafted: {}", missing.join(", "));
+                }
+            }
         }
+    }
+
+    pub(crate) fn rules(&self) -> Option<ForkRules> {
+        self.registry.clone().map(ForkRules)
+    }
+
+    pub(crate) fn special(&self, inventory: &Inventory, grid: Grid) -> Option<ItemStack> {
+        let rules = self.rules()?;
+        gun_crafting::result(inventory, grid, &rules)
     }
 
     pub(crate) fn weapon(&mut self, stack: &ItemStack) -> Option<u32> {
@@ -108,7 +143,10 @@ impl ForkLook {
         language: &HashMap<String, String>,
     ) -> Vec<String> {
         let Some(row) = fork_items::get(&stack.id).filter(|row| row.kind == Kind::Gun) else {
-            return Vec::new();
+            return match fork_items::get(&stack.id) {
+                Some(row) if row.kind == Kind::Attachment => vec![gun_crafting::ATTACH_HINT.to_owned()],
+                _ => Vec::new(),
+            };
         };
         let name = |id: &str| minecraft_terrain::item_icons::item_name(language, id);
         let attachments: Vec<String> = gun_names::attachments(stack)

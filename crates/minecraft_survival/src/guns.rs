@@ -525,6 +525,7 @@ mod tests {
         let books = Books {
             stations: &stations,
             enchantments: None,
+            guns: None,
         };
         let shift = MenuAction::Slot {
             slot: MenuSlot::Inventory(0),

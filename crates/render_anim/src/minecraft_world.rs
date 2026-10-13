@@ -781,7 +781,9 @@ fn update(
         crate::minecraft_players::Begun::Left(switch) => {
             *switch_screen = Some(switch.reason);
             if let Some(level) = levels.get_mut(&switch.from) {
-                leave_level(level, player, &mut ui, inventory_ui, minecraft_survival::menus::Books::of(&globals.data));
+                let guns = inventory_ui.fork.rules();
+                let books = minecraft_survival::menus::Books::of(&globals.data).with_guns(guns.as_ref().map(|guns| guns as &dyn minecraft_terrain::gun_mods::GunRules));
+                leave_level(level, player, &mut ui, inventory_ui, books);
             }
             sim::voxel::set_mob_boxes(minecraft_survival::bands::level(switch.from), Vec::new());
             *shown = None;
@@ -1290,7 +1292,8 @@ fn update(
         let creative_thrown = inventory_ui.creative.apply(&mut ui, player_mode, inventory, &known);
         inventory_ui.creative.hotbar_key(&mut ui, player_mode, inventory, &known);
         let player_mode = *player_mode;
-        let books = minecraft_survival::menus::Books::of(&globals.data);
+        let guns = inventory_ui.fork.rules();
+        let books = minecraft_survival::menus::Books::of(&globals.data).with_guns(guns.as_ref().map(|guns| guns as &dyn minecraft_terrain::gun_mods::GunRules));
         let clicked = inventory_ui.apply_input(&mut ui, player, containers, books, roll);
         for (pos, action) in inventory_ui.take_lectern_actions() {
             entities.lectern(host_id, pos, action, None);

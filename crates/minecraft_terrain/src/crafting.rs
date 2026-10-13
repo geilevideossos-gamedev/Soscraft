@@ -585,7 +585,7 @@ fn armor_slot(index: usize) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn result_order() -> Vec<usize> {
+pub fn result_order() -> Vec<usize> {
     (0..HOTBAR).rev().chain((HOTBAR..STORAGE).rev()).collect()
 }
 
@@ -597,7 +597,7 @@ fn limit(recipes: &RecipeBook, stack: &ItemStack) -> u8 {
     }
 }
 
-pub(crate) fn move_into(
+pub fn move_into(
     cells: &mut [Option<ItemStack>],
     stack: &mut ItemStack,
     order: &[usize],
