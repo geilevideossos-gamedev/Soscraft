@@ -67,10 +67,34 @@ Commit: "Minecraft held items sit in the MW2 body's fists from the wrists, not o
 IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:torch*64,minecraft:cobblestone*64,minecraft:totem_of_undying,minecraft:enchanted_book,minecraft:iron_helmet
 ```
 
+## A5. Dragon respawn tests pin vanilla's crystal spots on the exit portal rim
+
+Commit: "Minecraft dragon respawn tests pin vanilla's crystal spots on the exit portal rim", the one after `8e5a1567` (A2). Tests only, no behaviour change.
+
+- **Finding:** four end crystals placed in spots the owner thought were wrong still brought a new dragon (screenshot 9).
+- **Cause:** no defect. Our `try_respawn` (`minecraft_terrain/src/server.rs`) does what vanilla 26.3's `EnderDragonFight.tryRespawn` does: for each horizontal direction it looks for crystals whose 2x2x2 box meets the 1x1x1 cell at `portal.above(1).relative(dir, 3)` (strict intersection, `END_CRYSTAL` sized 2.0 x 2.0). A crystal stands at the top centre of the block it was placed on, so its box reaches one block to each side. Any of the three straight rim blocks on a side counts; only the four diagonal rim blocks at (+-2, +-2) do not. In screenshot 9 the bottom crystal was one block off the middle, still on a straight rim block.
+- **Tests:**
+  - `minecraft_terrain` `end_crystal::tests::a_crystal_counts_for_a_cell_its_two_block_box_touches`: the side's middle block and both straight blocks beside it count; a corner block counts for neither neighbouring side; two blocks off the middle does not; a crystal raised one block does not; one block lower just outside the rim does.
+  - `minecraft_terrain` `server::tests::only_crystals_touching_the_four_side_cells_of_the_exit_portal_start_a_respawn` (real 26.3 data through `respawn_world`): four crystals on the diagonal rim blocks start nothing and report nothing; then on the side-end blocks (1, -3), (3, 1), (-1, 3), (-3, -1) three are not enough and the fourth gives exactly one `FightReport::Respawning` at stage `start` with 4 crystals. In a fresh world a crystal on obsidian over the rim's middle (standing a block higher) plus three good ones starts nothing.
+  - Run: `test -p minecraft_terrain --locked end_crystal` and `... respawn` (both green; the server test was checked to run on the real data, not skip).
+- **Note on the brief's test plan:** the corner crystals have to be removed before the side-end crystals go down. A crystal on a corner block fills the rim block beside it (its box reaches over it), so a side-end crystal cannot be placed next to a standing corner crystal, as in vanilla (`EndCrystalItem.useOn` refuses when an entity is in the 1x2x1 space). The test asserts that refusal too. So the respawn's 4 crystals are the side-end ones only.
+- **Owner's test steps** (needs a dead dragon: kill the respawned one first; kit below):
+  1. `/gamemode creative`, fly over the exit portal and look straight down. The rim has three straight blocks on each side and one diagonal block at each corner.
+  2. One crystal on each of the four diagonal corner blocks. `/gamemode survival`, wait 10 s: no beams, no new dragon. **Screenshot 1** from above.
+  3. Break the four corner crystals (a crystal beside a corner one can't be placed while it stands, as in vanilla). One crystal on an end block of each straight side, one block beside the middle. Right after the fourth: the portal goes out, beams rise, the pillars are rebuilt, and after about 25 s the new dragon and its bar appear. Vanilla 26.3 does the same, because the crystal's 2x2 box touches the middle block's column. **Screenshot 2.**
+  4. Multiplayer: the friend places the four side crystals instead. Both windows see the beams and the new dragon.
+  5. If a corner-only set in step 2 does start a respawn, press F3 and note the coordinates of each crystal's block and of the portal pillar. **Screenshot 3.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:obsidian*8,minecraft:diamond_sword+sharpness=5,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cobblestone*64,minecraft:elytra,minecraft:firework_rocket*64
+```
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
 - **A2:** the hand anchor is the posed wrist plus a fixed step along the forearm, never the MW2 weapon tags, because the tags are only at the hands while the playing MW2 animation keys them (it depends on the last raised gun's class). The item keeps the chest's orientation, not the forearm's, as in round 7 ("as a vanilla player holds it with the arm down"). `GEAR_FIT.fist = 3.5` is a first guess (vanilla's fist centre is about 4 map units past the wrist at the 0.9375 item scale; MW2's hand is a little smaller) and is tuned from the owner's screenshots.
+- **A5:** keep vanilla's rule. A respawn starts when each of the four side cells (one block above the rim, three out from the portal centre) is touched by a crystal's 2x2x2 box, so any of the three straight rim blocks per side counts and only the four diagonal corner blocks fail. Accepting only the exact middle blocks would be one line in `Crystals::in_cell` (compare `crystal.block_position() == cell`), but it is not vanilla, so it is not done. If the owner's step 2 ever shows four corner crystals starting a respawn, log the exit portal location, the four cells and each crystal's block in `try_respawn` and check `fight.exit_portal` against the visible podium (a later fix).
 
 ## State doc changes
 
@@ -78,6 +102,7 @@ Wording for the state docs, to be applied when the round's state is written (thi
 
 - **`docs/MINECRAFT-SURVIVAL.md`, multiplayer and rendering:** "MW2 bodies (other players, corpses, grenades, dropped guns) are drawn in every dimension and at every depth. In Minecraft worlds the stand-in map's (`mp_rust`) cells no longer cull MW2 scene entities: every scene entity is linked into every cell, and only the frustum, sphere and LOD culling and the dimension band gate decide. MW2 maps are unchanged. MW2 FX and marks were not checked for the same culling (`adapters/fx/world_mark.rs`)."
 - **`docs/MINECRAFT-SURVIVAL.md`, held items on the MW2 body:** "Minecraft items in the main hand and offhand sit in the MW2 body's right and left fist: the posed wrist plus 3.5 map units along the forearm (`GEAR_FIT.fist`), upright with the chest. The MW2 weapon tags are no longer used for Minecraft items, so the item no longer depends on which gun's animations are playing, and the two hands never overlap. The same rig serves other players' bodies, the own F5 body and the inventory character, for the host and every friend."
+- **`docs/MINECRAFT-SURVIVAL.md`, the dragon respawn:** "Four end crystals respawn the dragon like vanilla 26.3: one must touch each of the four cells one block above the exit portal's rim, three blocks out on each side. A crystal's box is two blocks wide, so a crystal on any of the three straight rim blocks of a side counts, and one on a diagonal corner block does not. A crystal on a corner block also blocks placing one on the rim block beside it."
 
 ## Combined kit
 
