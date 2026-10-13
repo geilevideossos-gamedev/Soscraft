@@ -395,6 +395,19 @@ Commit: "A Minecraft player lying in bed is held like a rider and not pushed, pi
 - **Test added:** `sim` `step::tests::a_player_lying_in_bed_is_held_like_a_rider_and_not_pushed`: a player put in bed with `ride` is not pushable, is a rider in `push_bodies` and does not push the player next to them; after `ride(None)` both push again.
 - **Owner's test step** (two windows, kit of A7 commit 1; host `/time set night`): both place a bed side by side, the host lies down and the friend walks into the host's bed: the host stays in bed, the friend is not pushed off and passes through. **Screenshot** from the host window.
 
+## Final verification
+
+### Clippy fix: the scene entity cell report
+
+Commit: "The Minecraft scene entity cell report is one let chain, clean under clippy", the one after `624250b5` (review fix).
+
+- **Changed:** `render_frontend` `adapters/anim/dyn_ent_brush.rs`: the A1 one-time report of a scene entity without a cell is one `if` with a let chain instead of an `if` inside an `if` (`clippy::collapsible_if`). Same behaviour.
+- **Clippy:** `clippy -p frame -p hud -p minecraft_net -p minecraft_survival -p minecraft_terrain -p render_anim -p render_frontend -p sim --locked --all-targets -- -A clippy::approx_constant`: this was the only warning on a line the track added; the older warnings stay.
+- **Tests:** none added (no behaviour change).
+- **Owner's test steps:** as A1; nothing new to see.
+- **Kit:** none.
+- **Combined kit:** `minecraft:golden_apple*16` and `minecraft:red_bed` make room for `minecraft:bow` and `minecraft:arrow*64`, which the A3 dragon steps need to shoot the crystals; each window has its own white bed for the A7 bed step.
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
@@ -439,8 +452,8 @@ Wording for the state docs, to be applied when the round's state is written (thi
 
 ## Combined kit
 
-Starting point from the brief's shared points (27 stacks; the other heads come from the A4 kit or `/give`):
+From the brief's shared points, with a bow and arrows for the A3 dragon steps (27 stacks; `/give` anything else a step's own kit lists, such as `minecraft:oak_log` or `minecraft:oak_planks`):
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_sword+sharpness=5,minecraft:torch*64,minecraft:cobblestone*64,minecraft:totem_of_undying,minecraft:enchanted_book,minecraft:spyglass,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:end_crystal*16,minecraft:elytra,minecraft:firework_rocket*64,minecraft:dragon_head,minecraft:piglin_head,minecraft:skeleton_skull,minecraft:wither_skeleton_skull,minecraft:zombie_head,minecraft:creeper_head,minecraft:player_head,minecraft:carved_pumpkin,minecraft:white_bed,minecraft:red_bed
+IW4L_MINECRAFT_KIT=minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_sword+sharpness=5,minecraft:torch*64,minecraft:cobblestone*64,minecraft:totem_of_undying,minecraft:enchanted_book,minecraft:spyglass,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cooked_beef*32,minecraft:end_crystal*16,minecraft:elytra,minecraft:firework_rocket*64,minecraft:dragon_head,minecraft:piglin_head,minecraft:skeleton_skull,minecraft:wither_skeleton_skull,minecraft:zombie_head,minecraft:creeper_head,minecraft:player_head,minecraft:carved_pumpkin,minecraft:white_bed,minecraft:bow,minecraft:arrow*64
 ```

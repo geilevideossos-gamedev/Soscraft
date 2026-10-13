@@ -354,14 +354,15 @@ fn link_scene_ents(
     }
     cache.linked.clear();
     let every_cell = sim::voxel::active();
-    if every_cell && !*reported {
-        if let Some((ent_id, z)) = first_scene_ent_without_cell(&dpvs, &gfx.scene) {
-            *reported = true;
-            diag::info!(
-                World,
-                "minecraft scene ents: entity {ent_id} at map z {z:.0} has no cell in the stand-in map, linked into every cell"
-            );
-        }
+    if every_cell
+        && !*reported
+        && let Some((ent_id, z)) = first_scene_ent_without_cell(&dpvs, &gfx.scene)
+    {
+        *reported = true;
+        diag::info!(
+            World,
+            "minecraft scene ents: entity {ent_id} at map z {z:.0} has no cell in the stand-in map, linked into every cell"
+        );
     }
     for model in &gfx.scene.scene_models {
         if let Some(bounds) = scene_ent_pose_bounds(model.origin, model.radius, model.posed_bounds)
