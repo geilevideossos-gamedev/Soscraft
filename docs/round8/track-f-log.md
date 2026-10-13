@@ -219,3 +219,20 @@ Commit: the one after `48e7cf50` (adversarial review of F1 to F4).
 ```
 IW4L_MINECRAFT_KIT=minecraft:spawner,minecraft:cave_spider_spawn_egg,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:torch*16,minecraft:iron_sword
 ```
+
+## Final verification
+
+Run on `33dfd459` (the review fix), base `aaf968e1`.
+
+- **Touched crates:** `console`, `frame`, `hud`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `render_gpu`, `minecraftoss-entities`, `minecraftoss-world`.
+- **Clippy** (`--all-targets`, `-A clippy::approx_constant`) on all nine: no warning on a line the track added or changed. The warnings left in the touched files are older (`disallowed_methods` on `unwrap_or_default`, `type_complexity`, `too_many_arguments`); the track added no argument to a function that warns.
+- **Tests** (`test -p`, all passed, none failed): `console` 51, `frame` 24, `hud` 151, `minecraft_survival` 476, `minecraft_terrain` 1096 (3 ignored), `render_gpu` 38, `render_anim` 130, `minecraftoss-entities` and `minecraftoss-world` together 302 (with the stand-in scenario files `full-suite.ps1` makes).
+- **rustfmt:** the three new files (`hud` and `render_anim` `minecraft_spyglass.rs`, `minecraft_survival` `spyglass.rs`) pass `rustfmt --check --edition 2024`. No comments in the added lines.
+
+## Combined kit for the whole track
+
+27 stacks. It holds everything the steps of F1 to F4 and R1 need, except seven of the extra eggs in F3 step 5 (wolf, witch, hoglin, piglin, mooshroom, bat and magma cube): try those from the creative spawn eggs tab (F3 step 9), or with F3's own kit line.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:torch*64,minecraft:elytra,minecraft:iron_chestplate,minecraft:spyglass,minecraft:spyglass,minecraft:iron_spear,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:spawner,minecraft:milk_bucket,minecraft:iron_sword,minecraft:cave_spider_spawn_egg*16,minecraft:spider_spawn_egg*4,minecraft:zombie_spawn_egg*8,minecraft:ender_dragon_spawn_egg,minecraft:fox_spawn_egg,minecraft:wither_spawn_egg,minecraft:horse_spawn_egg,minecraft:donkey_spawn_egg,minecraft:iron_golem_spawn_egg,minecraft:villager_spawn_egg,minecraft:ghast_spawn_egg,minecraft:shulker_spawn_egg,minecraft:strider_spawn_egg
+```
