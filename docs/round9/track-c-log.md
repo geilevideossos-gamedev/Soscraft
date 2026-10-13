@@ -1015,6 +1015,37 @@ Commit: the one after `3b6a9ed3`.
 IW4L_MINECRAFT_KIT=iw4l:frag_grenade*2,iw4l:frag_grenade*16,iw4l:semtex*16,iw4l:c4*4,iw4l:throwing_knife*8,iw4l:flash_grenade*8,iw4l:concussion_grenade*8,iw4l:smoke_grenade*8,minecraft:cobblestone*64,minecraft:torch*16,minecraft:cooked_beef*16
 ```
 
+### 2. The hotbar and the inventory show the lethal and tactical grenade slots
+
+Commit: the one after `edcd9cc5`.
+
+- **Changed:**
+  - `hud` `minecraft_hotbar`: `grenade_frames(cx, h)`: the lethal frame at x = cx-91-29-29 and the tactical frame at cx-91-29-58, both at y = h-23, drawn with vanilla's `hud/hotbar_offhand_left` sprite whenever the hotbar shows, empty or not, so they never move. Each slot's item sits at the frame's x+3, h-19 with its count and decorations, like the offhand. MW2's grenade icons are unchanged.
+  - `hud` `minecraft_screens`: `LETHAL`, `TACTICAL`, `GRENADE_SLOTS`: the inventory screen has `McSlot::Inventory(43)` at (134, 62) and `(44)` at (152, 62), after the offhand in the layout; `draw_grenade_frames` draws `container/slot` behind them with the background. `grenade_slot_tooltip`: hovering an empty grenade slot with nothing carried shows "Lethal" or "Tactical", after every other tooltip.
+  - `hud` `minecraft_creative`: the creative inventory tab has the two slots at (127, 20) and (145, 20), with their frames; the item tabs do not. Clicks on them are ordinary inventory clicks, which the host already checks with `fits`, and the creative menu indices 46 and 47 of the grenade-slot group.
+  - `hud` `minecraft_inventory`: the empty-slot tooltip is the last fallback in the tooltip chain.
+  - `render_anim` `minecraft_gui`: `container/slot` is loaded as a loose GUI sprite from the pack at runtime.
+  - The friend's window draws the same: its hotbar and screens use the 45 slots of its `PlayerView`.
+  - `docs/WEAPONS.md` 10.3: the creative tab positions and the free pixels, checked.
+- **Tests:** `hud` `minecraft_creative::tests::the_grenade_slots_sit_in_free_panel_space_and_left_of_the_offhand` (creative tab (127, 20) and (145, 20), none in an item tab; inventory screen (134, 62) and (152, 62) and a mouse hit, none on the crafting table; hotbar frames at cx-149 and cx-178, y h-23, left of the offhand frame; the tooltips "Lethal" and "Tactical" only on empty grenade slots). `the_inventory_tab_places_armor_offhand_and_trash_like_vanilla` and `the_inventory_screen_follows_the_vanilla_menu_order` count the two new slots. `test -p hud -p render_anim` and `check -p launcher` green.
+- **Decisions:**
+  - **Free pixels checked** in the 26.3 jar's `inventory.png` and `tab_inventory.png` (decoded, not committed): both positions from WEAPONS.md are plain panel, so they stay.
+  - **The tooltip names are English literals** ("Lethal", "Tactical"), like the other fork texts (MW2's class menu calls the rows Lethal and Tactical); vanilla has no key for them.
+  - **The empty-slot tooltip shows only with nothing carried,** like item tooltips.
+  - The frames are drawn with the background, before the hovered-slot highlight, so the highlight shows on them like on vanilla slots.
+- **Owner's test steps** (survival, the world of commit 1 or a new one, kit below):
+  1. Join with an empty offhand: left of the hotbar there are two empty offhand-style frames, with a gap where the offhand frame shows when it holds something. **Screenshot 1** (hotbar).
+  2. Open the inventory: two slot frames right of the recipe book button, level with the offhand slot. Hover them: "Lethal" and "Tactical". **Screenshot 2** (inventory open, tooltip).
+  3. Click the frags into the left one and the flashes into the right one. Cobblestone is refused in both. Close the inventory: the frames show the frag and the flash with 16 and 8; G and Shift+G lower the counts in the frames and on MW2's icons alike. **Screenshot 3.**
+  4. Put the shield into the offhand: the offhand frame appears to the right of the grenade frames, which stay where they are.
+  5. `/gamemode creative`, open the inventory tab of the creative screen: the two slots sit right of the leggings and boots slots and hold the same grenades; take the flashes out and put them back. **Screenshot 4.** `/gamemode survival`.
+  6. Two windows (`scripts\mp-local.ps1`), the friend with the same kit: the friend's hotbar shows its own two frames, and the friend's inventory has the two slots; step 3 in the friend's window changes only the friend's counts. **Screenshot 5** (friend window).
+- **Kit** (4 stacks):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:frag_grenade*16,iw4l:flash_grenade*8,minecraft:cobblestone*64,minecraft:shield
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none.
@@ -1060,3 +1091,4 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `decisions.md` (Not vanilla): "Two fork inventory slots, 43 lethal and 44 tactical, saved under the top-level key `iw4l_grenades`, never inside `equipment`."
 - `MINECRAFT-SURVIVAL.md`, the guns section: "G throws the grenade in the lethal slot and Shift+G the one in the tactical slot, whatever is held; each throw, and a frag that blows up in the hand, uses one item, and when a throw empties the slot it refills from the inventory with the same grenade. MW2's grenade icons show the slot counts. An empty slot keeps the last grenade's icon with 0, so placed C4 can still be detonated. Picking a thrown knife up gives the item back. In creative throws use nothing. Bots keep unlimited grenades."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's throws take the friend's own grenade items on the host, through the same function as the host's."
+- `MINECRAFT-SURVIVAL.md`, the inventory section: "The grenade slots are drawn as two offhand-style frames left of the hotbar (lethal nearer to the hotbar), always, with their item and count, and as two slots right of the recipe book button in the inventory and right of the leggings and boots in the creative inventory tab; an empty one shows the tooltip Lethal or Tactical."

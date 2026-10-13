@@ -687,7 +687,7 @@ pub(crate) fn update_minecraft_hud(
             }
             crate::minecraft_recipe_book::Tip::Text(text) => (vec![TextLine::new(text, WHITE)], false),
         });
-        let tooltip = item_tooltip.or(book_tooltip).or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen)).or_else(creative_tooltip);
+        let tooltip = item_tooltip.or(book_tooltip).or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen)).or_else(creative_tooltip).or_else(|| crate::minecraft_screens::grenade_slot_tooltip(&ui, hovered));
         if let (Some((lines, gap)), Some(_)) = (tooltip, pointer) {
             painter.tooltip(&lines, pointer_gui, gap);
         }

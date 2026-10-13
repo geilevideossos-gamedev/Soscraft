@@ -51,7 +51,8 @@ const SPRITE_FOLDERS: [&str; 14] = [
     "recipe_book/",
 ];
 
-const LOOSE_SPRITES: [&str; 13] = [
+const LOOSE_SPRITES: [&str; 14] = [
+    "container/slot",
     "container/slot_highlight_back",
     "container/slot_highlight_front",
     "boss_bar/pink_background",

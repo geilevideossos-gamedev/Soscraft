@@ -501,7 +501,7 @@ Each explosive costs about one gunpowder, a fifth of TNT, which matches a frag's
   - They stay on the left even with the main arm on the left, because the MW2 weapon bar starts about 8 px right of the hotbar at 16:9 (screenshot 11).
   - The MW2 weapon bar's grenade icons stay, and their counts now come from the slots.
 - **Inventory screen:** slot 43 at (134, 62) and slot 44 at (152, 62), drawn with `container/slot`. That is the empty panel right of the recipe book button at (104, 61) and of the offhand at (77, 62). Empty slots show the tooltip "Lethal" or "Tactical".
-- **Creative inventory tab:** about (127, 20) and (145, 20), checked against `tab_inventory.png` in the implementation.
+- **Creative inventory tab:** (127, 20) and (145, 20), also drawn with `container/slot`. `tab_inventory.png` (26.3) is plain panel from x 125 to 191 and y 3 to 52 right of the leggings and boots slots, so both frames (126-161, 19-36) sit on free pixels. The inventory screen's `inventory.png` is plain from x 94 to 172 at y 56-82, so (133-168, 61-78) is free too. `container/slot` is a loose sprite (`gui/sprites/container/slot.png`, 18x18), loaded with the other GUI sprites.
 
 ### 10.4 Keys and throwing
 
