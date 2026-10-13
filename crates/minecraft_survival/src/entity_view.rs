@@ -44,6 +44,7 @@ pub struct EntityView {
     pub(crate) dragons: Vec<minecraft_terrain::ender_dragon::DragonView>,
     pub(crate) dragon_fireballs: Vec<minecraft_terrain::dragon_fireball::FireballView>,
     drawn_dragons: minecraft_terrain::client_dragon::ClientDragons,
+    drawn_fireballs: minecraft_terrain::client_dragon::ClientFireballs,
     pub(crate) frames: Vec<minecraft_terrain::item_frame::FrameView>,
     pub(crate) growls: HashMap<u64, i32>,
     pub(crate) orbs: Vec<ServerOrb>,
@@ -85,6 +86,7 @@ impl EntityView {
             dragons: Vec::new(),
             dragon_fireballs: Vec::new(),
             drawn_dragons: Default::default(),
+            drawn_fireballs: Default::default(),
             frames: Vec::new(),
             growls: HashMap::new(),
             orbs: Vec::new(),
@@ -131,6 +133,7 @@ impl EntityView {
             self.client.tick();
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);
+            self.drawn_fireballs.tick();
             for enderman in self.world.endermen() {
                 if let Some(mob) = self.client.get(enderman.id) {
                     self.portal.emit_enderman(mob.position, 0.6, 2.9);
@@ -211,6 +214,7 @@ impl EntityView {
         self.dragons = std::mem::take(&mut snapshot.dragons);
         self.drawn_dragons.receive(&self.dragons);
         self.dragon_fireballs = std::mem::take(&mut snapshot.dragon_fireballs);
+        self.drawn_fireballs.receive(&self.dragon_fireballs);
         for fireball in &self.dragon_fireballs {
             self.ambient.breath_trail(fireball.position);
         }
@@ -953,7 +957,7 @@ impl EntityView {
         );
         minecraft_terrain::dragon_fireball::append_fireballs(
             &mut out.items,
-            &self.dragon_fireballs,
+            &self.drawn_fireballs.views(),
             atlas,
             forward,
             partial,

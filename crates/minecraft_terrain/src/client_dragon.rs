@@ -2,12 +2,15 @@ use glam::DVec3;
 use minecraftoss_core::entity_data::wrap_degrees;
 
 use crate::client_mobs::{ClientMobs, ServerMob, SyncFlags};
+use crate::dragon_fireball::FireballView;
 use crate::ender_dragon::{DEATH_TICKS, DragonView, EYE_HEIGHT, FlightHistory, HISTORY_SENT};
 
 pub const UPDATE_INTERVAL: i32 = 3;
 const MAX_HEAD_Y_ROT: f32 = 75.0;
 const SIZE: (f32, f32) = (16.0, 8.0);
 const RESYNC_TICKS: i32 = 2;
+const FIREBALL_SNAP: f64 = 1.0;
+const FIREBALL_TRACK_TICKS: i32 = 2;
 
 pub fn flapping(o_flap_time: f32, flap_time: f32) -> bool {
     let before = minecraftoss_player::mth::cos(f64::from(o_flap_time * std::f32::consts::TAU));
@@ -159,6 +162,78 @@ impl ClientDragons {
                     death_time: dragon.death_time,
                     ..dragon.latest.clone()
                 })
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClientFireball {
+    id: u64,
+    position: DVec3,
+    previous_position: DVec3,
+    velocity: DVec3,
+}
+
+impl ClientFireball {
+    fn on_track(&self, host: DVec3) -> bool {
+        (-FIREBALL_TRACK_TICKS..=FIREBALL_TRACK_TICKS).any(|ticks| {
+            (self.position + self.velocity * f64::from(ticks)).distance(host) <= FIREBALL_SNAP
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct ClientFireballs {
+    fireballs: Vec<ClientFireball>,
+}
+
+impl ClientFireballs {
+    pub fn receive(&mut self, views: &[FireballView]) {
+        self.fireballs
+            .retain(|fireball| views.iter().any(|view| view.id == fireball.id));
+        for view in views {
+            let velocity = view.position - view.previous_position;
+            match self
+                .fireballs
+                .iter_mut()
+                .find(|fireball| fireball.id == view.id)
+            {
+                Some(fireball) => {
+                    if !fireball.on_track(view.position) {
+                        fireball.position = view.position;
+                        fireball.previous_position = view.previous_position;
+                    }
+                    fireball.velocity = velocity;
+                }
+                None => self.fireballs.push(ClientFireball {
+                    id: view.id,
+                    position: view.position,
+                    previous_position: view.previous_position,
+                    velocity,
+                }),
+            }
+        }
+    }
+
+    pub fn tick(&mut self) {
+        use minecraftoss_entities::fireball::{ACCELERATION_POWER, INERTIA, normalize};
+        for fireball in &mut self.fireballs {
+            fireball.velocity = (fireball.velocity
+                + normalize(fireball.velocity) * ACCELERATION_POWER)
+                * f64::from(INERTIA);
+            fireball.previous_position = fireball.position;
+            fireball.position += fireball.velocity;
+        }
+    }
+
+    pub fn views(&self) -> Vec<FireballView> {
+        self.fireballs
+            .iter()
+            .map(|fireball| FireballView {
+                id: fireball.id,
+                position: fireball.position,
+                previous_position: fireball.previous_position,
             })
             .collect()
     }
@@ -465,5 +540,84 @@ mod tests {
             dragons.tick();
         }
         assert_eq!(drawn(&dragons).death_time, DEATH_TICKS);
+    }
+
+    struct HostFireball {
+        position: DVec3,
+        velocity: DVec3,
+    }
+
+    impl HostFireball {
+        fn tick(&mut self) -> FireballView {
+            use minecraftoss_entities::fireball::{ACCELERATION_POWER, INERTIA, normalize};
+            self.velocity = (self.velocity + normalize(self.velocity) * ACCELERATION_POWER)
+                * f64::from(INERTIA);
+            let previous_position = self.position;
+            self.position += self.velocity;
+            FireballView {
+                id: 9,
+                position: self.position,
+                previous_position,
+            }
+        }
+    }
+
+    #[test]
+    fn a_drawn_fireball_moves_every_client_tick_and_snaps_when_far_off() {
+        let mut host = HostFireball {
+            position: DVec3::new(0.0, 80.0, 0.0),
+            velocity: DVec3::new(0.1, 0.0, 0.0),
+        };
+        let mut fireballs = ClientFireballs::default();
+        let mut newest = host.tick();
+        fireballs.receive(&[newest]);
+        assert_eq!(
+            fireballs.views(),
+            vec![newest],
+            "a new one starts where the host has it"
+        );
+        let mut drawn = Vec::new();
+        let mut old = Vec::new();
+        for frames in [1, 0, 2, 1, 1, 0, 2, 1, 1, 1].repeat(3) {
+            for _ in 0..frames {
+                newest = host.tick();
+                let kept = fireballs.views()[0].position;
+                fireballs.receive(&[newest]);
+                assert_eq!(fireballs.views()[0].position, kept, "on its track: no snap");
+            }
+            let before = fireballs.views()[0].position;
+            fireballs.tick();
+            let view = fireballs.views()[0];
+            assert!(view.position.x > before.x, "it moves on every client tick");
+            assert_eq!(view.previous_position, before);
+            for partial in PARTIALS {
+                drawn.push(at_fireball(&view, partial).x);
+                old.push(at_fireball(&newest, partial).x);
+            }
+        }
+        for pair in drawn.windows(2) {
+            assert!(pair[1] >= pair[0], "the drawn fireball went back: {pair:?}");
+        }
+        assert!(
+            old.windows(2).any(|pair| pair[1] < pair[0]),
+            "the host's newest view drawn at the client's partial goes back"
+        );
+        let shown = fireballs.views()[0];
+        assert!(
+            shown.position.distance(host.position) <= 2.0 * host.velocity.length() + FIREBALL_SNAP,
+            "it keeps up with the host"
+        );
+        host.position.z += 5.0;
+        let far = host.tick();
+        fireballs.receive(&[far]);
+        assert_eq!(fireballs.views(), vec![far], "snapped to the host");
+        fireballs.receive(&[]);
+        assert!(fireballs.views().is_empty(), "a gone fireball is forgotten");
+        fireballs.tick();
+        assert!(fireballs.views().is_empty());
+    }
+
+    fn at_fireball(view: &FireballView, partial: f64) -> DVec3 {
+        view.previous_position.lerp(view.position, partial)
     }
 }
