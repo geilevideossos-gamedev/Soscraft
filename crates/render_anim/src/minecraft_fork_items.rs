@@ -588,4 +588,75 @@ mod tests {
         assert_eq!(out.get_pixel(16, 4).0[3], 0);
         assert_eq!(out.get_pixel(16, 27).0[3], 0);
     }
+
+    #[test]
+    fn the_creative_combat_tab_and_search_list_the_fork_items_by_their_mw2_names() {
+        use crate::minecraft_creative::{entry_stacks, search_lines};
+        use minecraft_terrain::creative_search::{Searched, search};
+        use minecraft_terrain::creative_variants::VariantData;
+        let mut tabs = minecraft_terrain::creative_tabs::fallback_tabs(Vec::new(), "test");
+        assert!(fork_items::add_to_creative(&mut tabs));
+        let mut catalog = minecraftoss_player::item_catalog::ItemCatalog::default();
+        fork_items::load(&mut catalog);
+        let recipes = minecraftoss_player::crafting::RecipeBook::default()
+            .with_item_catalog(Arc::new(catalog));
+        let variants = VariantData::default();
+        let combat = tabs.tab(fork_items::CREATIVE_TAB).unwrap();
+        let shown = entry_stacks(
+            &combat.displayed().collect::<Vec<_>>(),
+            &recipes,
+            Some(&variants),
+        );
+        let ids: Vec<&str> = shown.iter().map(|stack| stack.id.as_str()).collect();
+        let table: Vec<&str> = fork_items::rows().iter().map(|row| row.id).collect();
+        assert_eq!(ids, table);
+        let m4 = shown.iter().find(|stack| stack.id == "iw4l:m4").unwrap();
+        assert_eq!(m4.components, Some(fork_items::loaded_gun()));
+        assert_eq!(m4.max, 1);
+        let shield = shown
+            .iter()
+            .find(|stack| stack.id == "iw4l:riotshield")
+            .unwrap();
+        assert_eq!(shield.components, None);
+        let rockets = shown
+            .iter()
+            .find(|stack| stack.id == "iw4l:rocket")
+            .unwrap();
+        assert_eq!((rockets.components.clone(), rockets.max), (None, 16));
+        let mut language = HashMap::new();
+        language.insert(
+            "item.iw4l.cheytac".to_owned(),
+            "Intervention (MW2)".to_owned(),
+        );
+        fork_items::add_names(&mut language);
+        let entries = tabs.search(false);
+        let stacks = entry_stacks(
+            &entries.iter().collect::<Vec<_>>(),
+            &recipes,
+            Some(&variants),
+        );
+        let lines: Vec<Vec<String>> = stacks
+            .iter()
+            .map(|stack| search_lines(stack, Some(&language), Some(&variants)))
+            .collect();
+        let searched: Vec<Searched> = stacks
+            .iter()
+            .zip(&lines)
+            .map(|(stack, lines)| Searched {
+                id: &stack.id,
+                lines,
+                tags: &[],
+            })
+            .collect();
+        let found = |query: &str| -> Vec<&str> {
+            search(query, &searched)
+                .into_iter()
+                .map(|index| stacks[index].id.as_str())
+                .collect()
+        };
+        assert!(found("M4A1").contains(&"iw4l:m4"));
+        assert!(found("m4a1").contains(&"iw4l:m4"));
+        assert_eq!(found("Intervention (MW2)"), ["iw4l:cheytac"]);
+        assert!(found("frag").contains(&"iw4l:frag_grenade"));
+    }
 }

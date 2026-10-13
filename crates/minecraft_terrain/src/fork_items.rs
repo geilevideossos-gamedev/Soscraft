@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use crate::creative_tabs::{CreativeTabs, TabEntry, Variants};
+
 pub const NAMESPACE: &str = "iw4l:";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -983,6 +985,33 @@ pub fn table_hash() -> u64 {
 
 pub const CUSTOM_DATA: &str = "minecraft:custom_data";
 pub const FULL_CLIP: i64 = -1;
+pub const CREATIVE_TAB: &str = "minecraft:combat";
+
+pub fn loaded_gun() -> serde_json::Value {
+    let state = serde_json::json!({"iw4l": {"clip": FULL_CLIP}});
+    serde_json::Value::Object([(CUSTOM_DATA.to_owned(), state)].into_iter().collect())
+}
+
+pub fn creative_entries() -> Vec<TabEntry> {
+    let mut rows: Vec<&ForkItem> = rows().iter().collect();
+    rows.sort_by_key(|row| row.creative_order());
+    rows.into_iter()
+        .map(|row| TabEntry {
+            item: row.id.to_owned(),
+            variants: (row.kind == Kind::Gun && row.ammo.is_some()).then_some(Variants::FullClip),
+            in_tab: true,
+            in_search: true,
+        })
+        .collect()
+}
+
+pub fn add_to_creative(tabs: &mut CreativeTabs) -> bool {
+    let Some(tab) = tabs.tabs.iter_mut().find(|tab| tab.id == CREATIVE_TAB) else {
+        return false;
+    };
+    tab.entries.extend(creative_entries());
+    true
+}
 
 pub fn has_alt_mode(attachments: &[String]) -> bool {
     attachments.iter().any(|name| {
@@ -1214,6 +1243,94 @@ mod tests {
         assert_eq!(player.max_stack("iw4l:explosive_round"), 16);
         assert_eq!(player.max_stack("iw4l:fmj"), 64);
         assert_eq!(player.max_stack("minecraft:stone"), 64);
+    }
+
+    #[test]
+    fn the_combat_tab_ends_with_every_fork_item_in_table_order_and_guns_come_loaded() {
+        let mut tabs = crate::creative_tabs::fallback_tabs(Vec::new(), "test");
+        let combat = tabs
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == CREATIVE_TAB)
+            .unwrap();
+        combat.entries.push(TabEntry {
+            item: "minecraft:bow".to_owned(),
+            variants: None,
+            in_tab: true,
+            in_search: true,
+        });
+        assert!(add_to_creative(&mut tabs));
+        let combat = tabs.tab(CREATIVE_TAB).unwrap();
+        let ids = combat.item_ids();
+        let table: Vec<&str> = rows().iter().map(|row| row.id).collect();
+        assert_eq!(ids[0], "minecraft:bow");
+        assert_eq!(ids[1..], table[..]);
+        for entry in &combat.entries[1..] {
+            let row = get(&entry.item).unwrap();
+            let loaded = row.kind == Kind::Gun && row.ammo.is_some();
+            assert_eq!(entry.variants.is_some(), loaded, "{}", row.id);
+            assert!(entry.in_tab && entry.in_search);
+        }
+        assert_eq!(combat.entries[1].variants, Some(Variants::FullClip));
+        let shield = combat
+            .entries
+            .iter()
+            .find(|entry| entry.item == "iw4l:riotshield")
+            .unwrap();
+        assert_eq!(shield.variants, None);
+        let data = crate::creative_variants::VariantData::default();
+        let expanded = data.expand(&Variants::FullClip).unwrap();
+        for row in rows()
+            .iter()
+            .filter(|row| row.kind == Kind::Gun && row.ammo.is_some())
+        {
+            assert_eq!(
+                Some(&expanded[0]),
+                with_full_clip(row.id, None).as_ref(),
+                "{}",
+                row.id
+            );
+        }
+        let search = tabs.search(false);
+        assert_eq!(
+            search.iter().filter(|entry| is_fork(&entry.item)).count(),
+            rows().len()
+        );
+        assert!(!add_to_creative(&mut CreativeTabs::default()));
+    }
+
+    #[test]
+    fn the_real_combat_tab_keeps_vanilla_first_and_ends_with_the_fork_items() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let mut tabs = crate::creative_tabs::read_creative_tabs(&jar).unwrap();
+        let vanilla = tabs.tab(CREATIVE_TAB).unwrap().entries.len();
+        assert!(vanilla > 0);
+        assert!(add_to_creative(&mut tabs));
+        let combat = tabs.tab(CREATIVE_TAB).unwrap();
+        assert!(
+            combat.entries[..vanilla]
+                .iter()
+                .all(|entry| entry.item.starts_with("minecraft:"))
+        );
+        let added: Vec<&str> = combat.entries[vanilla..]
+            .iter()
+            .map(|entry| entry.item.as_str())
+            .collect();
+        let table: Vec<&str> = rows().iter().map(|row| row.id).collect();
+        assert_eq!(added, table);
+        assert!(
+            tabs.tabs
+                .iter()
+                .filter(|tab| tab.id != CREATIVE_TAB)
+                .flat_map(|tab| &tab.entries)
+                .all(|entry| !is_fork(&entry.item))
+        );
     }
 
     #[test]

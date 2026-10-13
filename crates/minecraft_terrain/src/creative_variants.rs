@@ -271,6 +271,7 @@ impl VariantData {
                 .iter()
                 .map(|mode| json!({"minecraft:block_state": {"mode": mode}}))
                 .collect(),
+            Variants::FullClip => vec![crate::fork_items::loaded_gun()],
             Variants::SuspiciousStews | Variants::OminousBanner => return None,
         })
     }

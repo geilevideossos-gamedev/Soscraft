@@ -81,6 +81,7 @@ pub enum Variants {
     OminousBanner,
     TestBlockModes,
     LightLevels,
+    FullClip,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

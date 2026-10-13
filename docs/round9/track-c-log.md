@@ -743,6 +743,37 @@ Commit: the one after `7c7633a2`. This is the brief's C11.7 item 2.
 IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:oak_log*8,minecraft:iron_ingot*16,minecraft:copper_ingot*8,minecraft:iron_nugget*16,minecraft:gunpowder*16,minecraft:tripwire_hook*2,minecraft:redstone*4,minecraft:repeater*2,minecraft:dirt*8
 ```
 
+### 2. Guns, ammo, grenades and attachments are at the end of the creative Combat tab
+
+Commit: the one after `095da2fb`. This is the brief's C11.8.
+
+- **Changed:**
+  - `minecraft_terrain` `fork_items.rs`: `creative_entries()` (one `TabEntry` per fork item in the table's creative order, `in_tab` and `in_search`), `add_to_creative(tabs)` (appends them to `minecraft:combat`, after vanilla's entries; false when there is no Combat tab), `loaded_gun()` (the full-clip components, `custom_data.iw4l.clip = -1`), `CREATIVE_TAB`.
+  - `minecraft_terrain` `creative_tabs.rs`: `Variants::FullClip` (appended). `creative_variants.rs` `expand`: `FullClip` gives one variant, `loaded_gun()`. Every gun with ammo gets this variant, so the creative item is the bare gun with a full clip (the same components `/give` writes), while the riot shield, parts, attachments, ammo and grenades stay plain, so their stacks keep merging.
+  - `render_anim` `minecraft_creative.rs`: only the loader thread, right after `creative_tabs(&jar)`: `add_to_creative`, with a log line if the jar has no Combat tab. Track A's `apply` and `hotbar_key` are untouched.
+  - Search needs no change: the Search tab lists every category entry that is `in_search`, and its lines are the item names from the language map, where the fork names are (the table's English names from the start, MW2's localized names once the weapon registry is in).
+- **Tests:**
+  - `minecraft_terrain` `fork_items::tests::the_combat_tab_ends_with_every_fork_item_in_table_order_and_guns_come_loaded` (on the fallback tabs: a vanilla entry stays first, then all 94 fork ids in table order; guns with ammo carry `FullClip` and the riot shield does not; the expanded components equal `with_full_clip` for every such gun; the Search tab holds all 94; no Combat tab, nothing added).
+  - `minecraft_terrain` `fork_items::tests::the_real_combat_tab_keeps_vanilla_first_and_ends_with_the_fork_items` (with the 26.3 jar: vanilla's Combat entries stay first and are all `minecraft:`, the fork items follow in table order, no other tab gets one). I made it fail once on purpose to see that it runs.
+  - `render_anim` `minecraft_fork_items::tests::the_creative_combat_tab_and_search_list_the_fork_items_by_their_mw2_names` (through the creative screen's own `entry_stacks` and `search_lines`: the Combat tab shows the fork items in table order, the M4A1 loaded and stacking to 1, the riot shield without a clip, rockets plain and stacking to 16; the search finds "M4A1" and "m4a1", a name from the language map ("Intervention (MW2)" standing in for MW2's string) and "frag").
+- **Decisions:**
+  - **"Fully loaded" is a creative variant**, the way vanilla's creative tabs carry potions or fireworks with components. `TabEntry` has no components field, and the brief keeps the edit in `minecraft_creative.rs` to the loader. If `VariantData` cannot be read from the jar (already logged as "creative variants unavailable"), the guns show bare with no clip, like the other variant items fall back to their plain stack.
+  - **The order is the fork table's order**, which a test already ties to WEAPONS.md 13.2's (guns by class, pistols to launchers, then parts, attachments, ammo, lethal, tactical). Inside the launchers the table keeps the IW4 launchers (AT4, RPG, Stinger, Javelin) before the T5 and IW5 ones, as the design tables list them.
+  - **The search list is built when the Search tab is first opened**, after the match has loaded the MW2 names; a search list built earlier keeps the table's English names (the same as MW2's for most guns) until the creative screen loads again.
+  - The friend's creative screen comes with track A (A6); it uses the same loader, so the fork items appear there too after that merge.
+- **Owner's test steps** (any world, `/gamemode creative`):
+  1. Open the inventory (E) and the Combat tab. Scroll to the end: after vanilla's combat items come the pistols, machine pistols, SMGs, assault rifles, shotguns, the riot shield, crossbow and ballistic knife, the snipers, LMGs and launchers, then Gun Barrel and Firing Mechanism, the attachments, the seven ammo types, the lethal grenades and the tactical grenades (Tactical Insertion last). **Screenshot 1.**
+  2. Hover the M4A1 in the tab: "Clip 30/30". Take it to the hotbar, close the inventory and press its number: it comes up with a full magazine. **Screenshot 2** (the tooltip in the tab).
+  3. Hover the Riot Shield: no clip line. Shift-click Rockets into the inventory: a stack of 16.
+  4. Search tab: type `M4A1`: the M4A1. Type `intervention`: the Intervention. Type `frag`: the Frag Grenade. Hovering a result names the Combat tab. **Screenshot 3** (the search for `M4A1`).
+- **Kit:** none needed (creative).
+
+## Combined kit for group book-place-creative
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:oak_log*8,minecraft:iron_ingot*16,minecraft:copper_ingot*8,minecraft:iron_nugget*16,minecraft:gunpowder*16,minecraft:tripwire_hook*2,minecraft:redstone*4,minecraft:repeater*2,minecraft:dirt*8
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`. Added: none.
@@ -775,3 +806,4 @@ Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.r
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's recipe unlocks and book settings live on the host in the friend's player file; the host sends the friend's unlocked recipes when they change, and the friend sends its book settings and the recipes its book has shown."
 - `MINECRAFT-SURVIVAL.md`, the recipe book sentence: "A click on a recipe moves its ingredients from the inventory into the grid (what was in the grid goes back first), another click adds one more set and shift-click places as many as fit; a recipe that cannot be made empties the grid and shows red ghost items."
 - `MULTIPLAYER.md` (version checks): "The Minecraft multiplayer protocol is 4: friends place recipe-book recipes with `MenuAction::PlaceRecipe`, which the host applies to the friend's own grid."
+- `MINECRAFT-SURVIVAL.md`, the creative section: "Every fork item is at the end of the creative Combat tab, in the fork table's order (pistols, machine pistols, SMGs, assault rifles, shotguns, specials, snipers, LMGs, launchers, then gun parts, attachments, ammo, lethal and tactical grenades); guns come without attachments and with a full magazine. The creative search finds them by their MW2 names."

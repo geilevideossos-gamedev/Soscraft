@@ -264,7 +264,10 @@ impl CreativeUi {
                 let spawned = std::thread::Builder::new()
                     .name("minecraft-creative-tabs".into())
                     .spawn(move || {
-                        let tabs = minecraft_terrain::creative_tabs::creative_tabs(&jar);
+                        let mut tabs = minecraft_terrain::creative_tabs::creative_tabs(&jar);
+                        if !minecraft_terrain::fork_items::add_to_creative(&mut tabs) {
+                            eprintln!("creative tabs have no Combat tab for the guns");
+                        }
                         let variants = VariantData::read(&jar)
                             .map_err(|error| eprintln!("creative variants unavailable: {error:#}"))
                             .ok();
