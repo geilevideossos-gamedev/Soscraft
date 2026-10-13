@@ -288,8 +288,8 @@ Commit: "Creative drops are throttled like vanilla", the one after `27fdf953` (A
 - **Tests:** `minecraft_survival` `menus::tests::creative_drops_are_throttled_like_vanilla` (75 drops in one batch throw 74 and leave the count at 1480; one tick later one more passes; then nothing until 20 more ticks; menu sets are never throttled).
   - Run: `test -p minecraft_survival --locked` (601 passed), `test -p render_anim --locked` (159 passed), `check -p launcher --locked`.
 - **Owner's test steps** (host and friend, both in creative, kit of commit 2):
-  1. Friend: open the creative screen and hold Ctrl+Q over cobblestone in a tab for ten seconds (or click Q very fast): about 74 stacks fly out at once, then one more about every second, in both windows. **Screenshot 1.**
-  2. The host does the same in its own window: the same limit.
+  1. Friend: open the creative screen and press Q (or Ctrl+Q) over cobblestone in a tab as fast as you can, about 5 times a second, for 20 to 25 seconds. Holding the key does not repeat: every drop needs its own press. After roughly 90 drops (about 18 seconds at 5 presses a second), further presses drop only one stack about every second, in both windows. The host's `latest.log` has "Player <friend name> was dropping items too fast in creative mode, ignoring." **Screenshot 1** of the pile.
+  2. The host does the same in its own window: the same limit, and the same line in `latest.log` with the host's name.
   3. Normal throwing (a few Q presses) is not affected.
 
 ## A7. Players stuck inside each other after a spawn or a teleport
@@ -479,6 +479,14 @@ Commit: "Minecraft adventure worlds respawn exactly on the spawn column like van
   - `minecraft_survival` `respawn.rs`: `level_spawn` picks through the private `spawn_position(stream, home, adventure, radius)`: outside the spawn dimension or on a friend's stream `player_spawn` as before, in an adventure world `exact_spawn_position()`, otherwise `respawn_position(radius)`.
 - **Tests:** `minecraft_survival` `respawn::tests::adventure_worlds_respawn_on_the_spawn_column_whatever_the_radius` (data-gated, runs: four adventure respawns at radius 10 all on the exact spawn column; another dimension keeps `player_spawn`; a survival respawn stays within the radius); `minecraft_terrain` `terrain::tests::respawn_positions_spread_over_the_radius` also checks `exact_spawn_position` is (40.5, -23.5), the same every call, standing in air on a block. Run: `test -p minecraft_survival --locked respawn` (38 passed), `test -p minecraft_terrain --locked --lib respawn_positions`, `test -p minecraftoss-world --locked --lib spawn` (7 passed), `check -p launcher --locked`.
 - **Owner's test step** (alone, optional: it needs an adventure world, and the fork has no `/defaultgamemode`; create a world in vanilla 26.3 with game mode Adventure and copy its folder into the fork's saves, or set `Data.GameType` to 2 in a copy's `level.dat` with an NBT editor): note the world spawn with F3 after the first join. `/kill` three times without a bed: every respawn is on exactly the same block, the spawn column (x and z match the spawn's block centre). `/gamerule respawn_radius 5` changes nothing in adventure. In a survival world the respawns still spread.
+
+### The creative drop throttle steps can be followed
+
+Commit: "Track A log gives creative drop throttle steps that work without key repeat", the one after the adventure respawn fix. Log only.
+
+- **Defect:** A6 commit 3, owner steps 1 and 2, said to hold Ctrl+Q for ten seconds and expect about 74 stacks at once. In the fork a drop inside a screen fires only on a fresh key press (`hud` `minecraft_inventory.rs` reads `McActionInput::just_pressed`, and `console` `binds.rs` presses an action only on `just_pressed`), so holding the key drops one stack. By hand at about 5 presses a second the count (+20 a drop, -1 a tick, so -20 a second) reaches 1480 only after about 18 seconds and about 90 drops, with no burst. The owner would have reported a failure for working code.
+- **Changed:** steps 1 and 2 of A6 commit 3 now say to press Q as fast as possible for 20 to 25 seconds, expect about 90 drops before the limit and then one a second, and name the host's `latest.log` line. No code changed.
+- **Tests:** none (log only).
 
 ## Decisions
 
