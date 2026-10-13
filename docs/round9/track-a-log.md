@@ -349,8 +349,8 @@ Commit: "Overlapping Minecraft players push each other apart like vanilla", the 
   3. One player crouches next to the other, then jumps onto the other's head: standing on the head does not push.
   4. Push the other against a wall: they stop at the wall and do not go into it.
   5. One player in `/gamemode spectator` flies through the other: no pushing either way.
-  6. One player rides a pig with a saddle (or a horse) next to the other: the rider is not pushed and does not push.
-  7. One player climbs a ladder while the other stands at its foot: the climber is not pushed off the ladder.
+  6. Host: `/give @s minecraft:saddle` and `/summon minecraft:pig ~2 ~ ~`. Right-click the pig with the saddle, then right-click it again to ride. The friend walks into the pig and the rider: the rider is not pushed and does not push.
+  7. Host: `/give @a minecraft:ladder 16`. Place a column of ladders 6 high on a wall. One player climbs it while the other stands at its foot: the climber is not pushed off the ladder.
   8. With pvp on, shoot the other with an MW2 gun: hits still register.
 
 ### Commit 3: respawns and new friends spread over the respawn radius
@@ -486,6 +486,14 @@ Commit: "Track A log gives creative drop throttle steps that work without key re
 
 - **Defect:** A6 commit 3, owner steps 1 and 2, said to hold Ctrl+Q for ten seconds and expect about 74 stacks at once. In the fork a drop inside a screen fires only on a fresh key press (`hud` `minecraft_inventory.rs` reads `McActionInput::just_pressed`, and `console` `binds.rs` presses an action only on `just_pressed`), so holding the key drops one stack. By hand at about 5 presses a second the count (+20 a drop, -1 a tick, so -20 a second) reaches 1480 only after about 18 seconds and about 90 drops, with no burst. The owner would have reported a failure for working code.
 - **Changed:** steps 1 and 2 of A6 commit 3 now say to press Q as fast as possible for 20 to 25 seconds, expect about 90 drops before the limit and then one a second, and name the host's `latest.log` line. No code changed.
+- **Tests:** none (log only).
+
+### The push steps name their saddle, pig and ladder
+
+Commit: "Track A log gives the push steps the commands for their saddle, pig and ladder", the one after the drop throttle steps fix. Log only.
+
+- **Defect:** A7 commit 2, owner steps 6 and 7, needed a saddle, a pig or horse and ladders, which neither the A7 kit nor the combined kit holds, and the steps gave no `/give` or `/summon`.
+- **Changed:** step 6 now starts with `/give @s minecraft:saddle` and `/summon minecraft:pig ~2 ~ ~` and says how to saddle and mount the pig; step 7 starts with `/give @a minecraft:ladder 16` and a 6-high ladder column. The kits are unchanged. No code changed.
 - **Tests:** none (log only).
 
 ## Decisions
