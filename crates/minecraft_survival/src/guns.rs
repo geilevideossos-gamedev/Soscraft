@@ -11,7 +11,7 @@ pub const WEAPON_PREFIX: &str = "iw4:weapon/";
 pub const HOTBAR: usize = 9;
 pub const WEAPON_SLOTS: usize = 15;
 pub const NO_AMMO: u8 = u8::MAX;
-pub const AMMO_TYPES: usize = fork_items::AMMO_TYPES.len();
+pub const AMMO_TYPES: usize = fork_items::AMMO_TYPES.len() + 1;
 pub const TOO_MANY_GUNS: &str = "Too many guns on the hotbar";
 
 pub fn weapon_of(stack: &ItemStack) -> Option<u32> {
@@ -133,6 +133,7 @@ pub struct Gun {
     pub alt_clip: i32,
     pub ammo: u8,
     pub rebind: bool,
+    pub alt_ammo: u8,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -237,6 +238,48 @@ fn write_clips(stack: &mut ItemStack, clips: [i64; 3]) {
     }
 }
 
+pub fn stock_index(id: &str) -> Option<u8> {
+    fork_items::ammo_index(id).or_else(|| {
+        (id == fork_items::THROWING_KNIFE)
+            .then(|| u8::try_from(fork_items::AMMO_TYPES.len()).ok())
+            .flatten()
+    })
+}
+
+fn stock_id(index: u8) -> Option<&'static str> {
+    fork_items::AMMO_TYPES
+        .get(usize::from(index))
+        .copied()
+        .or_else(|| {
+            (usize::from(index) == fork_items::AMMO_TYPES.len())
+                .then_some(fork_items::THROWING_KNIFE)
+        })
+}
+
+fn take_rounds(inventory: &mut Inventory, selected: usize, ammo: u8, rounds: i32) {
+    let Some(id) = stock_id(ammo) else {
+        return;
+    };
+    let mut left = rounds;
+    for slot in [crate::offhand::OFFHAND, selected].into_iter().chain(0..36) {
+        let Some(cell) = inventory.slots.get_mut(slot) else {
+            continue;
+        };
+        let Some(stack) = cell.as_mut().filter(|stack| stack.id == id) else {
+            continue;
+        };
+        if left <= 0 {
+            return;
+        }
+        let take = left.min(i32::from(stack.count));
+        stack.count -= u8::try_from(take).unwrap_or(stack.count);
+        left -= take;
+        if stack.count == 0 {
+            *cell = None;
+        }
+    }
+}
+
 pub fn settle_arsenal<C: GunContent>(
     inventory: &mut Inventory,
     mode: &PlayerMode,
@@ -256,6 +299,12 @@ pub fn settle_arsenal<C: GunContent>(
             .and_then(|stack| names.weapon_of(content, stack))
     };
     for spent in spent {
+        if let Spent::Rounds { ammo, rounds } = spent {
+            if mode.consumes_items() {
+                take_rounds(inventory, selected, ammo, rounds);
+            }
+            continue;
+        }
         let Spent::Clip {
             weapon,
             clip,
@@ -343,7 +392,10 @@ pub fn settle_arsenal<C: GunContent>(
             .is_none_or(|(_, was, state)| *was != slot || *state != clips);
         let ammo = fork_items::get(&stack.id)
             .and_then(|row| row.ammo)
-            .and_then(fork_items::ammo_index)
+            .and_then(stock_index)
+            .unwrap_or(NO_AMMO);
+        let alt_ammo = fork_items::alt_ammo(&crate::gun_names::attachments(stack))
+            .and_then(stock_index)
             .unwrap_or(NO_AMMO);
         let [clip, clip_left, alt_clip] = clips.map(|clip| i32::try_from(clip).unwrap_or(0));
         arsenal.guns.push(Gun {
@@ -353,12 +405,13 @@ pub fn settle_arsenal<C: GunContent>(
             alt_clip,
             ammo,
             rebind,
+            alt_ammo,
         });
         bound.push((weapon, slot, clips));
     }
     let counted = (0..36).chain(std::iter::once(crate::offhand::OFFHAND));
     for stack in counted.filter_map(|slot| inventory.slots.get(slot).cloned().flatten()) {
-        if let Some(index) = fork_items::ammo_index(&stack.id) {
+        if let Some(index) = stock_index(&stack.id) {
             arsenal.stock[usize::from(index)] += i32::from(stack.count);
         }
     }
@@ -417,6 +470,7 @@ mod tests {
     const AK: u32 = 3;
     const USP_AKIMBO: u32 = 4;
     const M4_GL: u32 = 5;
+    const KNIFE: u32 = 6;
 
     struct Fake;
 
@@ -429,6 +483,7 @@ mod tests {
                 ("iw4:weapon/usp_mp", []) => Some(USP),
                 ("iw4:weapon/usp_mp", ["akimbo"]) => Some(USP_AKIMBO),
                 ("iw4:weapon/ak47_mp", []) => Some(AK),
+                ("t5:weapon/knife_ballistic_mp", []) => Some(KNIFE),
                 _ => None,
             }
         }
@@ -441,6 +496,7 @@ mod tests {
             match index {
                 M4 | AK | M4_GL => Some(30),
                 USP | USP_AKIMBO => Some(12),
+                KNIFE => Some(1),
                 _ => None,
             }
         }
@@ -774,11 +830,165 @@ mod tests {
                 alt_clip: 1,
                 ammo: fork_items::ammo_index(fork_items::RIFLE_AMMO).unwrap(),
                 rebind: false,
+                alt_ammo: fork_items::ammo_index(fork_items::EXPLOSIVE_ROUND).unwrap(),
             }
         );
         assert_eq!(
             crate::gun_names::attachments(inventory.slots[1].as_ref().unwrap()),
             vec!["reflex".to_owned(), "gl".to_owned()]
         );
+    }
+
+    fn count(inventory: &Inventory, slot: usize) -> u8 {
+        inventory.slots[slot]
+            .as_ref()
+            .map_or(0, |stack| stack.count)
+    }
+
+    fn rifle_rounds(rounds: i32) -> Spent {
+        Spent::Rounds {
+            ammo: stock_index(fork_items::RIFLE_AMMO).unwrap(),
+            rounds,
+        }
+    }
+
+    #[test]
+    fn a_reload_takes_exactly_the_missing_rounds_offhand_first() {
+        let rifle = |count| Some(ItemStack::new(fork_items::RIFLE_AMMO, count));
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(fork_gun("iw4l:m4", serde_json::json!({ "clip": 12 })));
+        inventory.slots[1] = rifle(7);
+        inventory.slots[2] = rifle(3);
+        inventory.slots[5] = rifle(64);
+        inventory.slots[20] = Some(ItemStack::new(fork_items::PISTOL_AMMO, 30));
+        inventory.slots[crate::offhand::OFFHAND] = rifle(10);
+        let (mut names, mut binding) = (GunNames::default(), Binding::default());
+        let index = usize::from(stock_index(fork_items::RIFLE_AMMO).unwrap());
+        let before = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (2, 13),
+            Vec::new(),
+        );
+        assert_eq!(before.arsenal.stock[index], 84);
+        let after = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (2, 13),
+            vec![rifle_rounds(18)],
+        );
+        assert_eq!(
+            count(&inventory, crate::offhand::OFFHAND),
+            0,
+            "offhand first"
+        );
+        assert_eq!(count(&inventory, 2), 0, "then the main hand");
+        assert_eq!(count(&inventory, 1), 2, "then slots 0-35 in order");
+        assert_eq!(count(&inventory, 5), 64);
+        assert_eq!(count(&inventory, 20), 30, "other ammo types stay");
+        assert_eq!(after.arsenal.stock[index], 66);
+        let partial = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (2, 13),
+            vec![rifle_rounds(3)],
+        );
+        assert_eq!((count(&inventory, 1), count(&inventory, 5)), (0, 63));
+        assert_eq!(partial.arsenal.stock[index], 63);
+        let short = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (2, 13),
+            vec![rifle_rounds(100)],
+        );
+        assert_eq!(short.arsenal.stock[index], 0, "never below nothing");
+        assert_eq!(count(&inventory, 20), 30);
+        assert!(is_fork_gun(inventory.slots[0].as_ref().unwrap()));
+    }
+
+    #[test]
+    fn creative_takes_no_rounds_and_has_endless_stock() {
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(fork_gun("iw4l:m4", serde_json::json!({ "clip": 0 })));
+        inventory.slots[5] = Some(ItemStack::new(fork_items::RIFLE_AMMO, 20));
+        let (mut names, mut binding) = (GunNames::default(), Binding::default());
+        let hotbar = Hotbar {
+            selected: 0,
+            room: 13,
+            binding: &mut binding,
+        };
+        let creative = PlayerMode::new(minecraftoss_player::GameMode::Creative);
+        let settled = settle_arsenal(
+            &mut inventory,
+            &creative,
+            vec![rifle_rounds(18)],
+            (&mut names, &Fake),
+            hotbar,
+        );
+        assert!(settled.arsenal.endless);
+        assert_eq!(count(&inventory, 5), 20);
+    }
+
+    #[test]
+    fn the_ballistic_knife_reloads_from_throwing_knives() {
+        let mut inventory = Inventory::default();
+        let knife = fork_gun("iw4l:t5_knife_ballistic", serde_json::json!({ "clip": 0 }));
+        inventory.slots[0] = Some(knife);
+        inventory.slots[10] = Some(ItemStack::new(fork_items::THROWING_KNIFE, 5));
+        let (mut names, mut binding) = (GunNames::default(), Binding::default());
+        let settled = settle(
+            &mut inventory,
+            &mut names,
+            &mut binding,
+            (0, 13),
+            Vec::new(),
+        );
+        let index = stock_index(fork_items::THROWING_KNIFE).unwrap();
+        assert_eq!(usize::from(index), AMMO_TYPES - 1);
+        assert_eq!(weapons(&settled), vec![KNIFE]);
+        assert_eq!(settled.arsenal.guns[0].ammo, index);
+        assert_eq!(settled.arsenal.stock[usize::from(index)], 5);
+        let spent = vec![Spent::Rounds {
+            ammo: index,
+            rounds: 1,
+        }];
+        let settled = settle(&mut inventory, &mut names, &mut binding, (0, 13), spent);
+        assert_eq!(count(&inventory, 10), 4);
+        assert_eq!(settled.arsenal.stock[usize::from(index)], 4);
+    }
+
+    #[test]
+    fn each_player_s_arsenal_counts_their_own_inventory() {
+        let mut names = GunNames::default();
+        let mut host = Inventory::default();
+        host.slots[0] = Some(fork_gun("iw4l:m4", serde_json::json!({ "clip": 30 })));
+        host.slots[9] = Some(ItemStack::new(fork_items::RIFLE_AMMO, 64));
+        let mut friend = Inventory::default();
+        friend.slots[0] = Some(fork_gun("iw4l:m4", serde_json::json!({ "clip": 2 })));
+        friend.slots[9] = Some(ItemStack::new(fork_items::RIFLE_AMMO, 40));
+        let (mut host_binding, mut friend_binding) = (Binding::default(), Binding::default());
+        let index = usize::from(stock_index(fork_items::RIFLE_AMMO).unwrap());
+        let host_settled = settle(
+            &mut host,
+            &mut names,
+            &mut host_binding,
+            (0, 13),
+            Vec::new(),
+        );
+        let friend_settled = settle(
+            &mut friend,
+            &mut names,
+            &mut friend_binding,
+            (0, 13),
+            vec![rifle_rounds(28)],
+        );
+        assert_eq!(host_settled.arsenal.stock[index], 64);
+        assert_eq!(friend_settled.arsenal.stock[index], 12);
+        assert_eq!(friend_settled.arsenal.guns[0].clip, 2);
+        assert_eq!((count(&host, 9), count(&friend, 9)), (64, 12));
     }
 }

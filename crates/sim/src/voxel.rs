@@ -478,7 +478,7 @@ pub fn take_totem_pops() -> Vec<u32> {
     TOTEM_POPS.lock().map_or_else(|_| Vec::new(), |mut pops| std::mem::take(&mut *pops))
 }
 
-pub const AMMO_TYPES: usize = 7;
+pub const AMMO_TYPES: usize = 8;
 pub const NO_AMMO: u8 = u8::MAX;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -489,6 +489,7 @@ pub struct GunSpec {
     pub alt_clip: i32,
     pub ammo: u8,
     pub rebind: bool,
+    pub alt_ammo: u8,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -513,6 +514,7 @@ pub enum Spent {
 pub(crate) struct Published {
     pub(crate) arsenal: Arsenal,
     pub(crate) held: u32,
+    pub(crate) scripted: bool,
 }
 
 static ARSENALS: std::sync::Mutex<Vec<(u32, Published)>> = std::sync::Mutex::new(Vec::new());
@@ -522,7 +524,13 @@ pub fn set_arsenal(client: u32, arsenal: Arsenal) {
     if let Ok(mut published) = ARSENALS.lock() {
         match published.iter_mut().find(|(c, _)| *c == client) {
             Some((_, held)) => held.arsenal = rebinds_kept(&held.arsenal, arsenal),
-            None => published.push((client, Published { arsenal, held: 0 })),
+            None => published.push((
+                client,
+                Published {
+                    arsenal,
+                    ..Published::default()
+                },
+            )),
         }
     }
 }
@@ -556,6 +564,44 @@ pub fn take_spent(client: u32) -> Vec<Spent> {
     let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *spent).into_iter().partition(|(c, _)| *c == client);
     *spent = rest;
     mine.into_iter().map(|(_, spent)| spent).collect()
+}
+
+pub(crate) fn spend_rounds(client: u32, weapon: u32, rounds: i32, alternate: impl Fn(u32) -> u32) {
+    if rounds <= 0 {
+        return;
+    }
+    let ammo = ARSENALS.lock().ok().and_then(|published| {
+        let (_, held) = published.iter().find(|(c, _)| *c == client)?;
+        if held.arsenal.endless {
+            return None;
+        }
+        held.arsenal.guns.iter().find_map(|gun| {
+            if gun.weapon == weapon {
+                Some(gun.ammo)
+            } else if alternate(gun.weapon) == weapon {
+                Some(gun.alt_ammo)
+            } else {
+                None
+            }
+        })
+    });
+    if let Some(ammo) = ammo.filter(|&ammo| usize::from(ammo) < AMMO_TYPES)
+        && let Ok(mut spent) = SPENT.lock()
+    {
+        spent.push((client, Spent::Rounds { ammo, rounds }));
+    }
+}
+
+pub(crate) fn queued_spent() -> Vec<(u32, Spent)> {
+    SPENT.lock().map_or_else(|_| Vec::new(), |spent| spent.clone())
+}
+
+pub(crate) fn script_set_clips(client: u32) {
+    if let Ok(mut published) = ARSENALS.lock()
+        && let Some((_, held)) = published.iter_mut().find(|(c, _)| *c == client)
+    {
+        held.scripted = true;
+    }
 }
 
 pub(crate) fn with_arsenals<T>(run: impl FnOnce(&mut Vec<(u32, Published)>) -> (T, Vec<(u32, Spent)>)) -> Option<T> {

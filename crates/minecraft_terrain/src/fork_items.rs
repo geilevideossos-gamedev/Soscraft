@@ -1014,14 +1014,17 @@ pub fn add_to_creative(tabs: &mut CreativeTabs) -> bool {
 }
 
 pub fn has_alt_mode(attachments: &[String]) -> bool {
-    attachments.iter().any(|name| {
-        by_alias(name).is_some_and(|attachment| {
-            matches!(
-                attachment.id,
-                "iw4l:grenade_launcher" | "iw4l:underbarrel_shotgun"
-            )
+    alt_ammo(attachments).is_some()
+}
+
+pub fn alt_ammo(attachments: &[String]) -> Option<&'static str> {
+    attachments
+        .iter()
+        .find_map(|name| match by_alias(name)?.id {
+            "iw4l:grenade_launcher" => Some(EXPLOSIVE_ROUND),
+            "iw4l:underbarrel_shotgun" => Some(SHOTGUN_SHELLS),
+            _ => None,
         })
-    })
 }
 
 pub fn with_full_clip(
@@ -1191,6 +1194,11 @@ mod tests {
         assert_eq!(by_alias("reflex").unwrap().id, "iw4l:red_dot_sight");
         assert_eq!(by_alias("rf").unwrap().id, "iw4l:rapid_fire");
         assert_eq!(ammo_index(ROCKET), Some(6));
+        let alt =
+            |names: &[&str]| alt_ammo(&names.iter().map(|n| n.to_string()).collect::<Vec<_>>());
+        assert_eq!(alt(&["reflex", "gl"]), Some(EXPLOSIVE_ROUND));
+        assert_eq!(alt(&["shotgun"]), Some(SHOTGUN_SHELLS));
+        assert_eq!(alt(&["reflex"]), None);
     }
 
     #[test]

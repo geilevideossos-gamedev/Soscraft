@@ -804,6 +804,69 @@ Commit: the one after `9a085715`.
 IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:grindstone,minecraft:anvil,minecraft:chest,minecraft:item_frame*4,minecraft:oak_log*16,minecraft:iron_ingot*32,minecraft:copper_ingot*16,minecraft:iron_nugget*16,minecraft:gunpowder*32,minecraft:tripwire_hook*4,minecraft:redstone*8,minecraft:repeater*2,minecraft:experience_bottle*16,iw4l:m4,iw4l:m4,iw4l:usp,iw4l:usp,iw4l:barrett,iw4l:riotshield,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,iw4l:frag_grenade*8,iw4l:rocket*16,iw4l:red_dot_sight*2,iw4l:extended_mags*2,iw4l:fmj*2
 ```
 
+## C11.9 Ammo
+
+### 1. Reloading a gun in a Minecraft world takes ammo items from the inventory
+
+Commit: the one after `c27f9bc9` (the merge of tracks A and B into track C).
+
+- **Changed:**
+  - `weapon_iw4`: `WeaponHandState` has a new `loaded` counter. `reload::reload_clip`, the one place a reload moves rounds from the stock into the clip (normal, per-shell and bolt reloads alike), adds the rounds it moved. Nothing reads it on MW2 maps.
+  - `sim/src/combat.rs` `advance_weapon_command`: after `weapon_hands`, the rounds loaded by both hands (akimbo) are queued as `Spent::Rounds` for the held weapon through `voxel::spend_rounds`, only on the host (`publishes_snapshot`) and only in Minecraft worlds (`voxel::active()`).
+  - `sim/src/voxel.rs`:
+    - `AMMO_TYPES` is 8: the 7 ammo items, then the throwing knife for the Ballistic Knife.
+    - `GunSpec.alt_ammo`: the ammo type of a gun's alt mode.
+    - `spend_rounds(client, weapon, rounds, alternate)`: finds the published gun (or the gun whose alt mode it is) and queues `Rounds` with its `ammo` or `alt_ammo`. It queues nothing for a client that has not published, in creative, or for a gun with no ammo type.
+    - `queued_spent()`, and `script_set_clips(client)`, which marks a publishing client's `Published.scripted`.
+  - `sim/src/script_player.rs`: `give_weapon` (when it seeds a new weapon's ammo) and `set_ammo_clip` (also behind `giveStartAmmo` and an offhand's `giveMaxAmmo`) call `script_set_clips`.
+  - `sim/src/item.rs` `apply_arsenal`:
+    - Each published gun's MW2 stock is `min(stock[ammo] - rounds still queued for this client and type, full stock)`, and its alt mode's the same with `alt_ammo`. Full stock is what MW2 refilled to before (`max(maxAmmo, startAmmo)`); the stock setter does not clamp, so the clamp is here. Creative and a gun with no ammo type (the riot shield) get the full stock.
+    - Creative no longer forces full clips: clips empty, reload and are written back to the item as in survival.
+    - After a script marked the client, the held gun's live clips are capped at the last clips the sim knew (other guns get their item clips anyway). So GSC `giveLoadout` at a spawn, and One Man Army, cannot grow a clip.
+    - The transitional stock top-up of group arsenal is gone. Grenades keep today's refill until group grenade-throws.
+  - `minecraft_survival/src/guns.rs` `settle_arsenal`:
+    - `Spent::Rounds` removes that many ammo items in vanilla's projectile order: offhand, main hand, then slots 0-35. In creative it removes nothing. If fewer items are left than rounds queued, it removes what is there.
+    - `stock_index` (the 7 ammo items, then `iw4l:throwing_knife`) counts the stock over slots 0-35 and the offhand, so the Ballistic Knife reloads from throwing knives anywhere but the lethal slot.
+    - `Gun.alt_ammo` from the gun's attachments: explosive rounds for the grenade launcher, shotgun shells for the underbarrel shotgun.
+  - `minecraft_terrain/src/fork_items.rs`: `alt_ammo(attachments)`; `has_alt_mode` uses it.
+  - `render_anim/src/minecraft_fork_items.rs`: passes `alt_ammo` to the sim. The host and each friend go through the same `ForkLook::settle`, so each friend's stock comes from the friend's own inventory and their reloads take the friend's items.
+  - `docs/WEAPONS.md` 5.1 and 8.2: `GunSpec.alt_ammo`, 8 stock types, the full-stock cap, creative clips, the reload site and the script clip cap.
+- **Tests:**
+  - `weapon_iw4` `reload::tests::a_finished_reload_counts_only_the_rounds_it_moved`: 12/30 with 100 in stock loads and counts 18; a short stock loads 5; no stock loads nothing; a shotgun counts one shell per insert.
+  - `sim` `item::arsenal_tests`:
+    - `the_stock_is_the_counted_ammo_less_the_rounds_not_yet_taken`: 50 rifle rounds with 18 queued publish 32; another client's or another type's queue is not subtracted; the grenade launcher counts explosive rounds; 500 rounds publish the full stock; creative publishes the full stock with no items.
+    - `no_ammo_items_leave_the_gun_to_click_empty`: no items and an empty clip give stock 0, and MW2 does not allow the reload.
+    - `a_spawn_refill_creates_no_items`: `takeAllWeapons`, `giveWeapon` and `giveMaxAmmo` refill the held M4 to 30; the next step puts back its 5 rounds and the counted stock, with nothing queued; rounds fired before a script call stay spent.
+    - `script_clip_changes_mark_only_a_publishing_client`, `a_reload_queues_rounds_of_the_gun_s_ammo_type` (rifle, the alt mode's explosive rounds, nothing for a gun without an ammo type or not published, nothing in creative).
+    - `a_held_gun_queues_its_clip` now checks that creative keeps the live clip (4) and reports it, with the full stock.
+  - `minecraft_survival` `guns::tests`: `a_reload_takes_exactly_the_missing_rounds_offhand_first` (offhand, main hand, then slot order; a partial reload of 3; more rounds than items empties the type only), `creative_takes_no_rounds_and_has_endless_stock`, `the_ballistic_knife_reloads_from_throwing_knives`, `each_player_s_arsenal_counts_their_own_inventory` (the friend's rounds come out of the friend's inventory only); `a_clip_spent_is_written_to_the_bound_item` checks `alt_ammo`.
+  - `minecraft_terrain` `fork_items::tests::guns_have_ammo_and_only_netherite_guns_resist_fire` checks `alt_ammo`.
+  - `test -p weapon_iw4 -p sim -p minecraft_survival -p minecraft_terrain` green (sim 135, the MW2-map tests included); `check -p launcher` green.
+- **Decisions:**
+  - **The reload site is a counter on the hand, not the `ReloadAmmoAdded` event.** `finish_weapon_tick` returns one event per hand, and a rechamber or a state change in the same tick hides the shells event, so a count on the event would lose rounds.
+  - **Akimbo:** the sim's MW2 code gives both hands the smaller of their two stocks after a tick, so if both hands load in the same tick it takes fewer rounds from MW2's stock than it loads (an existing difference to IW4, unchanged for MW2 maps). The queue counts the rounds both hands loaded, so the items taken always match the rounds in the clips.
+  - **The stock cap** is the full stock MW2 refilled to before (`max(maxAmmo, startAmmo)`), not maxAmmo alone, so a def with a small maxAmmo (an alt mode) still reloads as it did. WEAPONS.md updated.
+  - **The throwing knife is stock type 8** (index 7) in `minecraft_survival` and the sim; `fork_items::AMMO_TYPES` stays the 7 ammo items, so recipes and the creative tab are unchanged.
+  - **Creative clips:** WEAPONS.md 5.1 said creative refills clips, 8.2 and this group's brief say the clip still empties and reloads. The brief wins; 5.1 updated.
+  - **Script clip cap (not in the brief):** without it, the spawn refill would have grown the held gun's live clip, which the sim keeps and writes back to the item. Capping at the last known clips (instead of writing them) keeps rounds fired in the same step spent.
+  - Rounds still queued when a friend leaves are dropped with the friend's arsenal; at most one frame's reload.
+  - The riot shield, the only gun without an ammo type, keeps the full stock (it has no clip).
+- **Owner's test steps** (survival, a new world or one without the kit items, kit below; the kit fills the backpack):
+  1. Open the inventory. Move the M4A1 to hotbar slot 1 and the USP .45 to slot 2. Put the stack of 10 rifle ammo into the offhand slot. Close it and press 1. MW2's ammo counter shows 30 and, to the right, the rifle rounds you carry (74, or MW2's maximum for the M4A1 if smaller).
+  2. Fire 12 rounds and press R. When the reload finishes, the offhand stack is gone and the backpack's 64 rifle ammo became 62; the counter shows 30 and 62. **Screenshot 1** (the inventory open).
+  3. Press 2 and fire the USP until it reloads by itself: the pistol ammo drops by the rounds loaded; the rifle ammo stays at 62.
+  4. Place the chest and put all rifle ammo into it. Press 1, fire the M4A1 empty: it clicks, the counter shows 0 and 0, R does nothing. Take 5 rifle ammo back: the right number shows 5 at once; R loads 5 and the 5 items are gone. **Screenshot 2.**
+  5. Take the rifle ammo back. `/gamerule keep_inventory true`. Fire the M4A1 down to about 10 rounds, then `/kill` and respawn. Press 1: the clip still has those 10 rounds (hover the M4A1: "Clip 10/30"), and the rifle ammo count is what it was before `/kill`. **Screenshot 3.** `/gamerule keep_inventory false`.
+  6. `/give @s iw4l:m4[minecraft:custom_data={iw4l:{attachments:["gl"]}}]`, put it on slot 3 and press 3. Switch to the grenade launcher with MW2's attachment key and fire it, then reload it: the 8 explosive rounds become 7.
+  7. Put the Ballistic Knife on slot 4 and press 4. Fire it and reload: the 8 throwing knives in the backpack become 7.
+  8. `/gamemode creative`. Fire the M4A1 empty and reload: the clip empties and reloads, the counter's right number is full, and no ammo item is used. `/gamemode survival`.
+  9. Two windows (`scripts\mp-local.ps1`), the friend with the same kit: the friend repeats steps 1 and 2 in their window; the friend's rifle ammo drops, the host's does not. **Screenshot 4** (both windows).
+- **Kit** (9 stacks):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:usp,iw4l:rifle_ammo*64,iw4l:rifle_ammo*10,iw4l:pistol_ammo*64,iw4l:explosive_round*8,iw4l:t5_knife_ballistic,iw4l:throwing_knife*8,minecraft:chest
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`. Added: none.
@@ -837,3 +900,5 @@ Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.r
 - `MINECRAFT-SURVIVAL.md`, the recipe book sentence: "A click on a recipe moves its ingredients from the inventory into the grid (what was in the grid goes back first), another click adds one more set and shift-click places as many as fit; a recipe that cannot be made empties the grid and shows red ghost items."
 - `MULTIPLAYER.md` (version checks): "The Minecraft multiplayer protocol is 4: friends place recipe-book recipes with `MenuAction::PlaceRecipe`, which the host applies to the friend's own grid."
 - `MINECRAFT-SURVIVAL.md`, the creative section: "Every fork item is at the end of the creative Combat tab, in the fork table's order (pistols, machine pistols, SMGs, assault rifles, shotguns, specials, snipers, LMGs, launchers, then gun parts, attachments, ammo, lethal and tactical grenades); guns come without attachments and with a full magazine. The creative search finds them by their MW2 names."
+- `MINECRAFT-SURVIVAL.md`, line 134 ("Guns sit in the hotbar with unlimited ammo"), the ammo half: "A gun's reserve is its ammo items in the offhand and slots 0-35 (never containers or the grenade slots), up to MW2's maximum: MW2's ammo counter shows the clip and that reserve. A reload takes exactly the rounds it loads, from the offhand first, then the main hand, then the inventory in slot order; with no ammo items an empty gun clicks. Pistols, machine pistols and SMGs share pistol ammo; the grenade launcher uses explosive rounds and the underbarrel shotgun shells; the Ballistic Knife reloads from throwing knives. Respawning, Scavenger and One Man Army refill nothing. In creative the reserve is always full and reloads use no items, but the clip still empties and reloads."
+- `MULTIPLAYER.md` (per-player state on the host): "Each friend's gun reserve is counted from the friend's own inventory on the host, and the friend's reloads take the friend's items, through the same function as the host's."

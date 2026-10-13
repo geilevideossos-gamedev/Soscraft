@@ -493,6 +493,7 @@ fn published(arsenal: &guns::Arsenal) -> sim::voxel::Arsenal {
                 alt_clip: gun.alt_clip,
                 ammo: gun.ammo,
                 rebind: gun.rebind,
+                alt_ammo: gun.alt_ammo,
             })
             .collect(),
         selected: arsenal.selected,

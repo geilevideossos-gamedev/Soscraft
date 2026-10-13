@@ -149,7 +149,7 @@ A stackable fork item on disk:
 `sim/src/voxel.rs` gets a per-client published arsenal next to `set_death_protected` (`voxel.rs:456`), cleared in `deactivate`:
 
 ```rust
-pub struct GunSpec { pub weapon: u32, pub clip: i32, pub clip_left: i32, pub alt_clip: i32, pub ammo: u8, pub rebind: bool }
+pub struct GunSpec { pub weapon: u32, pub clip: i32, pub clip_left: i32, pub alt_clip: i32, pub ammo: u8, pub rebind: bool, pub alt_ammo: u8 }
 pub struct Arsenal { pub guns: Vec<GunSpec>, pub selected: Option<u32>, pub stock: [i32; AMMO_TYPES],
                      pub lethal: Option<(u32, i32)>, pub tactical: Option<(u32, i32)>, pub endless: bool }
 pub enum Spent { Rounds { ammo: u8, rounds: i32 }, Grenade { weapon: u32, delta: i32 },
@@ -164,15 +164,16 @@ pub fn take_spent(client: u32) -> Vec<Spent>
    - Kept: offhands, the alt modes of kept guns, killstreak weapons, and the weapons MW2's scripts hand out for a moment: the AC-130's `ac130_*` guns and the S&D `briefcase_bomb*` (`sim::voxel::kept_by_mw2`). Removing them would break the AC-130 and bomb planting.
    - If the held weapon was removed, it switches to `selected`, or to weapon 0 (`none`, which the sim already supports: `item.rs:97`).
 2. **Clips.** A gun that is not held gets its clips from its spec. The held gun keeps its live clips, and the sim queues `Clip` when they differ from the spec. With `rebind`, the spec clip is written even into the held gun.
-3. **Stock.** The stock of each gun's MW2 ammo index is `min(stock[ammo] - rounds not yet taken, the weapon's maxAmmo)`.
+3. **Stock.** The stock of each gun's MW2 ammo index is `min(stock[ammo] - rounds not yet taken, the weapon's full stock)`, and its alt mode's is the same with `alt_ammo`. The full stock is what MW2 refills to today: maxAmmo, or startAmmo when a def's is larger. `AMMO_TYPES` is 8: the 7 ammo items, then `iw4l:throwing_knife` for the Ballistic Knife. A gun with no ammo type (the riot shield) keeps the full stock.
 4. **Grenades:** section 9.4.
-5. **Endless.** With `endless` set (creative), stock, clips and grenades refill as today and nothing is queued. Clients that never published (bots) keep today's full refill.
+5. **Endless.** With `endless` set (creative), the stock is full and no `Rounds` are queued. Clips work as in survival: they empty and reload (section 8.2). Grenades refill as today until the grenade slots. Clients that never published (bots) keep today's full refill.
 
 The sim queues spending **only at the sites that really spend**, never by comparing numbers:
-- A finished reload queues `Rounds` with the rounds moved from stock into the clip. A partial reload queues only the missing rounds.
+- A finished reload queues `Rounds` with the rounds moved from stock into the clip. A partial reload queues only the missing rounds. The site is `weapon_iw4::reload_clip`: it adds the rounds it moves to the hand's `loaded`, and `advance_weapon_command` queues the sum over both akimbo hands for the held weapon's ammo type (`alt_ammo` for an alt mode), on the host and only in Minecraft worlds.
 - A throw or a cook-off (`combat.rs:763/808`) queues `Grenade { delta: -1 }`. Picking a thrown knife up again queues `+1`.
 - A planted tactical insertion queues `Flare` (section 9.6).
 - Everything else that MW2 does to ammo is overwritten by the published values at the next step: GSC `giveLoadout` at a spawn, Scavenger, One Man Army and ammo pickups. So none of them can create items.
+  - The stock is overwritten every step. A clip only through the held gun, whose live clip the sim keeps: so a script that gives a weapon or sets a clip (`giveWeapon`, `setWeaponAmmoClip`, `giveStartAmmo`, an offhand's `giveMaxAmmo`) marks the client, and the next step caps the held gun's live clips at the last clips it knew. A spawn refill cannot grow a clip, and rounds fired before the script call stay spent.
 
 `BLOCK_WORLD_GUNS` (the free Intervention, SPAS-12 and UMP45, `item.rs:146`) is removed, with its `give_weapon_to_ps_akimbo` raise.
 
@@ -183,7 +184,7 @@ The sim queues spending **only at the sites that really spend**, never by compar
 **The host glue** is one function, `minecraft_survival::guns::settle_arsenal(inventory, mode, spent, (names, content), Hotbar { selected, room, binding }) -> Settled`. `Settled` holds the `Arsenal`, the hotbar slots whose gun MW2 holds (for `Follow` and for "is a gun in hand") and whether to show "Too many guns on the hotbar". `binding` is the player's `guns::Binding` (per UUID in `Player.arsenal`): which copy is bound and its clips, so a moved or swapped copy sets `rebind`. `minecraft_survival` does not depend on `sim`, so it has its own `Arsenal`, `Gun` and `Spent`, converted in `render_anim/src/minecraft_fork_items.rs` (`ForkLook::settle`, which also calls `set_arsenal`). It runs for the host next to `sync_weapons` in `minecraft_world.rs` and for each friend in `minecraft_players.rs` `step_friend`:
 
 1. Apply the drained `Spent` list:
-   - `Rounds` removes items in vanilla's projectile search order: offhand, main hand, then slots 0-35.
+   - `Rounds` removes items in vanilla's projectile search order: offhand, main hand, then slots 0-35. In creative it removes nothing.
    - `Clip` writes the clips into the bound gun item.
    - `Grenade` changes the grenade slot (a `+1` goes through the pickup rules if the slot is full).
    - `Flare` sets the player's flare respawn.
@@ -191,7 +192,7 @@ The sim queues spending **only at the sites that really spend**, never by compar
    - The list stops when `ps.weapons` would overflow: 15 slots, shared with the offhands, alt modes and killstreaks.
    - A gun past that point is inert. Selecting it shows "Too many guns on the hotbar" on the action bar.
    - With 9 hotbar slots this needs at least 7 non-gun weapons in `ps.weapons`, so in play it is rare; the unit test covers it.
-3. Count `stock` per ammo type over slots 0-35 and the offhand. Containers and the grenade slots never count. Guns that share an ammo type see the same count.
+3. Count `stock` per ammo type over slots 0-35 and the offhand. Containers and the grenade slots never count. Guns that share an ammo type see the same count. Throwing knives count for the Ballistic Knife.
 4. Call `set_arsenal`.
 
 `Follow` (`guns.rs:57-89`) keeps its job. Selecting a hotbar gun raises it through `ui.weapon_request`, and an MW2 switch (alt mode, killstreak, out of ammo) moves the selection. The client's `ps.weapons.contains(target)` check (`net/src/client/runtime.rs:1004-1015`) works unchanged.
@@ -413,7 +414,7 @@ Yields scale with fire rate: SMGs and LMGs get more rounds per gunpowder because
 ### 8.2 How ammo is used
 
 - **The clip is on the gun** (`clip`, `clip_left`, `alt_clip`). When a gun joins `ps.weapons`, its item clip goes into MW2. Reloads, firing and switching write it back through `Clip` (section 5.1).
-- **The stock is the inventory.** MW2 sees `min(rounds of the gun's ammo type in the offhand and slots 0-35, the weapon's maxAmmo)`. If the inventory holds more, the rest waits. Containers and the grenade slots never count.
+- **The stock is the inventory.** MW2 sees `min(rounds of the gun's ammo type in the offhand and slots 0-35, the weapon's full stock)` (5.1). If the inventory holds more, the rest waits. Containers and the grenade slots never count.
 - **A reload takes items.** MW2's own reload moves rounds from the stock into the clip, with its own animation and timing. The rounds moved come back as `Rounds`, and the host removes that many items: offhand, main hand, then slots 0-35, as vanilla's projectile search does. Rounds still queued are subtracted from the published stock until they are taken. A partial reload takes only the missing rounds: reloading a 30-round clip at 12 takes 18 items.
 - **No ammo:** with an empty clip and no ammo items, MW2 clicks empty as usual. Picking up or crafting ammo makes the stock appear on the next frame.
 - **Alt modes:** the grenade launcher uses explosive rounds and the underbarrel shotgun uses shells, each with its own `alt_clip`. They are reached with MW2's attachment-toggle key, as today.

@@ -148,15 +148,43 @@ pub(crate) fn apply_arsenal(world: &mut FrameWorld) {
     if !crate::voxel::active() || !world.publishes_snapshot() {
         return;
     }
-    if crate::voxel::with_arsenals(|published| ((), apply_arsenal_with(world, published))).is_none()
+    let queued = crate::voxel::queued_spent();
+    if crate::voxel::with_arsenals(|published| ((), apply_arsenal_with(world, published, &queued)))
+        .is_none()
     {
-        let _ = apply_arsenal_with(world, &mut Vec::new());
+        let _ = apply_arsenal_with(world, &mut Vec::new(), &queued);
+    }
+}
+
+fn queued_rounds(queued: &[(u32, crate::voxel::Spent)], client: u32, ammo: u8) -> i32 {
+    queued
+        .iter()
+        .filter_map(|(c, spent)| match spent {
+            crate::voxel::Spent::Rounds { ammo: a, rounds } if *c == client && *a == ammo => {
+                Some(*rounds)
+            }
+            _ => None,
+        })
+        .sum()
+}
+
+fn published_stock(
+    arsenal: &crate::voxel::Arsenal,
+    queued: i32,
+    ammo: u8,
+    facts: &weapon_iw4::WeaponCombatFacts,
+) -> i32 {
+    let full = facts.max_ammo.max(facts.start_ammo).max(0);
+    match arsenal.stock.get(usize::from(ammo)) {
+        Some(&have) if !arsenal.endless => (have - queued).clamp(0, full),
+        _ => full,
     }
 }
 
 pub(crate) fn apply_arsenal_with(
     world: &mut FrameWorld,
     published: &mut [(u32, crate::voxel::Published)],
+    queued: &[(u32, crate::voxel::Spent)],
 ) -> Vec<(u32, crate::voxel::Spent)> {
     let mut spent = Vec::new();
     for id in world.client_ids_sorted() {
@@ -169,7 +197,7 @@ pub(crate) fn apply_arsenal_with(
         let before = ps;
         match published.iter_mut().find(|(client, _)| *client == id.0) {
             Some((_, published)) => {
-                for queued in follow_arsenal(world, id, &mut ps, published) {
+                for queued in follow_arsenal(world, id, &mut ps, published, queued) {
                     spent.push((id.0, queued));
                 }
             }
@@ -283,11 +311,14 @@ fn follow_arsenal(
     id: ClientId,
     ps: &mut PlayerState,
     published: &mut crate::voxel::Published,
+    queued: &[(u32, crate::voxel::Spent)],
 ) -> Vec<crate::voxel::Spent> {
     let crate::voxel::Published {
         arsenal,
         held: last_held,
+        scripted,
     } = published;
+    let scripted = std::mem::take(scripted);
     let wanted: Vec<u32> = arsenal.guns.iter().map(|gun| gun.weapon).collect();
     let mut lost_held = false;
     for slot in ps.weapons {
@@ -353,15 +384,11 @@ fn follow_arsenal(
             },
             alt_facts.map_or(0, |f| f.clip_size),
         );
-        let want = if arsenal.endless {
-            full
-        } else {
-            (
-                filled(gun.clip, full.0),
-                filled(gun.clip_left, full.1),
-                filled(gun.alt_clip, full.2),
-            )
-        };
+        let want = (
+            filled(gun.clip, full.0),
+            filled(gun.clip_left, full.1),
+            filled(gun.alt_clip, full.2),
+        );
         let (live_r, live_l, _) = ammo_from_ps(world, ps, gun.weapon);
         let live_alt = if alt_facts.is_some() {
             ammo_from_ps(world, ps, alt).0
@@ -369,45 +396,57 @@ fn follow_arsenal(
             0
         };
         let write = if gun.weapon == held {
-            arsenal.endless || gun.rebind || switched
+            gun.rebind || switched
         } else {
             !held_keys.contains(&clip_key(world, gun.weapon))
         };
+        let capped = !write && scripted && gun.weapon == held;
         let now = if write {
             want
+        } else if capped {
+            (live_r.min(want.0), live_l.min(want.1), live_alt.min(want.2))
         } else {
             (live_r, live_l, live_alt)
         };
-        let stock = facts.max_ammo.max(facts.start_ammo);
+        let stock = published_stock(
+            arsenal,
+            queued_rounds(queued, id.0, gun.ammo),
+            gun.ammo,
+            &facts,
+        );
         put_ammo(
             world,
             id,
             ps,
             gun.weapon,
-            write.then_some((want.0, want.1)),
+            (write || capped).then_some((now.0, now.1)),
             stock,
         );
         if let Some(alt_facts) = alt_facts {
-            let alt_write =
-                write && (gun.weapon == held || !held_keys.contains(&clip_key(world, alt)));
-            let alt_stock = alt_facts.max_ammo.max(alt_facts.start_ammo);
+            let alt_write = (write || capped)
+                && (gun.weapon == held || !held_keys.contains(&clip_key(world, alt)));
+            let alt_stock = published_stock(
+                arsenal,
+                queued_rounds(queued, id.0, gun.alt_ammo),
+                gun.alt_ammo,
+                &alt_facts,
+            );
             put_ammo(
                 world,
                 id,
                 ps,
                 alt,
-                alt_write.then_some((want.2, 0)),
+                alt_write.then_some((now.2, 0)),
                 alt_stock,
             );
         }
         let spec = (gun.clip, gun.clip_left, gun.alt_clip);
         let unknown = spec.0 < 0 || spec.1 < 0 || spec.2 < 0;
-        let report = !arsenal.endless
-            && if write {
-                unknown
-            } else {
-                gun.weapon == held && now != spec
-            };
+        let report = if write {
+            unknown
+        } else {
+            gun.weapon == held && now != spec
+        };
         if report {
             spent.push(crate::voxel::Spent::Clip {
                 weapon: gun.weapon,
@@ -418,7 +457,7 @@ fn follow_arsenal(
         }
         let stored = &mut arsenal.guns[index];
         stored.rebind = false;
-        if !arsenal.endless && (report || write) {
+        if report || write {
             (stored.clip, stored.clip_left, stored.alt_clip) = now;
         }
     }

@@ -292,6 +292,7 @@ pub(crate) fn advance_weapon_command(
                 delayed_rechamber: false,
                 weapon_restrict_kick_time: ps.weapon_restrict_kick_time,
                 quick_reload,
+                loaded: 0,
             },
             WeaponHandState {
                 weapon: started_weapon,
@@ -308,6 +309,7 @@ pub(crate) fn advance_weapon_command(
                 delayed_rechamber: false,
                 weapon_restrict_kick_time: ps.weapon_restrict_kick_time_secondary,
                 quick_reload,
+                loaded: 0,
             },
         ];
         let locked_fire = world.missile_launch_facts(ps.weapon).is_none_or(|f| {
@@ -488,6 +490,17 @@ pub(crate) fn advance_weapon_command(
         };
         let clip_before = hands[0].clip;
         let events = weapon_hands(&mut hands, &facts, &mut wcmd, last_hand);
+        let loaded: i32 = hands[..=last_hand.clamp(0, 1) as usize]
+            .iter()
+            .map(|hand| hand.loaded)
+            .sum();
+        if loaded > 0 && world.publishes_snapshot() && crate::voxel::active() {
+            crate::voxel::spend_rounds(id.0, ammo_weapon, loaded, |gun| {
+                world
+                    .combat_facts_for(gun)
+                    .map_or(0, |facts| facts.alternate_weapon)
+            });
+        }
         let hand0 = hands[0];
         for &(hand, event) in events.iter().flatten() {
             if hand != 0 {

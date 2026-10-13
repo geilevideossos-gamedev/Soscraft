@@ -1,5 +1,5 @@
 use super::*;
-use crate::voxel::{Arsenal, GunSpec, NO_AMMO, Published, Spent};
+use crate::voxel::{AMMO_TYPES, Arsenal, GunSpec, NO_AMMO, Published, Spent};
 use weapon_iw4::WeaponCombatFacts;
 
 const M4: u32 = 1;
@@ -80,6 +80,7 @@ fn gun(weapon: u32, clip: i32) -> GunSpec {
         alt_clip: 0,
         ammo: NO_AMMO,
         rebind: false,
+        alt_ammo: NO_AMMO,
     }
 }
 
@@ -89,12 +90,26 @@ fn published(guns: Vec<GunSpec>, selected: Option<u32>) -> Vec<(u32, Published)>
         selected,
         ..Arsenal::default()
     };
-    vec![(ME.0, Published { arsenal, held: 0 })]
+    vec![(
+        ME.0,
+        Published {
+            arsenal,
+            ..Published::default()
+        },
+    )]
 }
 
 fn step(sim: &mut crate::SimWorld, published: &mut [(u32, Published)]) -> Vec<Spent> {
+    step_with(sim, published, &[])
+}
+
+fn step_with(
+    sim: &mut crate::SimWorld,
+    published: &mut [(u32, Published)],
+    queued: &[(u32, Spent)],
+) -> Vec<Spent> {
     let mut frame = sim.frame();
-    apply_arsenal_with(&mut frame, published)
+    apply_arsenal_with(&mut frame, published, queued)
         .into_iter()
         .map(|(client, spent)| {
             assert_eq!(client, ME.0);
@@ -246,6 +261,191 @@ fn a_held_gun_queues_its_clip() {
     assert!(!published[0].1.arsenal.guns[0].rebind);
     published[0].1.arsenal.endless = true;
     set_clip(&mut sim, M4, 4);
-    assert!(step(&mut sim, &mut published).is_empty());
-    assert_eq!(ammo(&mut sim, M4).0, 30, "creative keeps every clip full");
+    assert_eq!(
+        step(&mut sim, &mut published),
+        vec![Spent::Clip {
+            weapon: M4,
+            clip: 4,
+            clip_left: 0,
+            alt_clip: 1,
+        }]
+    );
+    assert_eq!(
+        ammo(&mut sim, M4),
+        (4, 0, 120),
+        "in creative the clip still empties and the stock is full"
+    );
+}
+
+const RIFLE: u8 = 1;
+const EXPLOSIVE: u8 = 5;
+
+fn rifle_gun(weapon: u32, clip: i32) -> GunSpec {
+    GunSpec {
+        ammo: RIFLE,
+        alt_ammo: EXPLOSIVE,
+        ..gun(weapon, clip)
+    }
+}
+
+fn stocked(guns: Vec<GunSpec>, stock: [i32; AMMO_TYPES]) -> Vec<(u32, Published)> {
+    let mut published = published(guns, Some(M4));
+    published[0].1.arsenal.stock = stock;
+    published
+}
+
+fn rounds(client: ClientId, ammo: u8, rounds: i32) -> (u32, Spent) {
+    (client.0, Spent::Rounds { ammo, rounds })
+}
+
+#[test]
+fn the_stock_is_the_counted_ammo_less_the_rounds_not_yet_taken() {
+    let mut sim = sim();
+    carrying(&mut sim, &[M4, USP], M4);
+    let mut stock = [0; AMMO_TYPES];
+    stock[usize::from(RIFLE)] = 50;
+    stock[usize::from(EXPLOSIVE)] = 3;
+    let mut published = stocked(vec![rifle_gun(M4, 30)], stock);
+    let queued = [
+        rounds(ME, RIFLE, 18),
+        rounds(ClientId(ME.0 + 1), RIFLE, 7),
+        rounds(ME, EXPLOSIVE, 2),
+    ];
+    step_with(&mut sim, &mut published, &queued);
+    assert_eq!(
+        ammo(&mut sim, M4),
+        (30, 0, 32),
+        "50 rifle rounds less the 18 still queued"
+    );
+    assert_eq!(
+        ammo(&mut sim, GL).2,
+        1,
+        "the grenade launcher counts its own type"
+    );
+    published[0].1.arsenal.stock[usize::from(RIFLE)] = 500;
+    step(&mut sim, &mut published);
+    assert_eq!(ammo(&mut sim, M4).2, 120, "never more than maxAmmo");
+    published[0].1.arsenal.stock = [0; AMMO_TYPES];
+    published[0].1.arsenal.endless = true;
+    step(&mut sim, &mut published);
+    assert_eq!(ammo(&mut sim, M4).2, 120, "creative has a full stock");
+}
+
+#[test]
+fn no_ammo_items_leave_the_gun_to_click_empty() {
+    let mut sim = sim();
+    carrying(&mut sim, &[M4], M4);
+    let mut published = stocked(vec![rifle_gun(M4, 0)], [0; AMMO_TYPES]);
+    step(&mut sim, &mut published);
+    assert_eq!(ammo(&mut sim, M4), (0, 0, 0));
+    let hand = weapon_iw4::WeaponHandState::default();
+    let facts = sim.frame().combat_facts_for(M4).expect("the M4");
+    assert!(!weapon_iw4::weapon_allow_reload(&hand, &facts));
+}
+
+#[test]
+fn a_spawn_refill_creates_no_items() {
+    let mut sim = sim();
+    carrying(&mut sim, &[M4, USP], M4);
+    let mut stock = [0; AMMO_TYPES];
+    stock[usize::from(RIFLE)] = 10;
+    let mut published = stocked(vec![rifle_gun(M4, 5), rifle_gun(USP, 2)], stock);
+    step(&mut sim, &mut published);
+    assert_eq!(ammo(&mut sim, M4), (5, 0, 10));
+    {
+        let mut frame = sim.frame();
+        crate::script_player::take_all_weapons(&mut frame, ME);
+        for weapon in [M4, USP] {
+            crate::script_player::give_weapon(&mut frame, ME, weapon, false).expect("given");
+            crate::script_player::give_max_ammo(&mut frame, ME, weapon);
+        }
+        let ps = frame.player_mut(ME).expect("the player");
+        ps.weapon = M4;
+        ps.weapon_primary = M4;
+    }
+    assert_eq!(ammo(&mut sim, M4).0, 30, "giveLoadout filled the clip");
+    published[0].1.scripted = true;
+    assert!(step(&mut sim, &mut published).is_empty(), "no clip grows");
+    assert_eq!(ammo(&mut sim, M4), (5, 0, 10));
+    assert_eq!(ammo(&mut sim, USP), (2, 0, 10));
+    assert!(!published[0].1.scripted);
+    set_clip(&mut sim, M4, 3);
+    published[0].1.scripted = true;
+    assert_eq!(
+        step(&mut sim, &mut published),
+        vec![Spent::Clip {
+            weapon: M4,
+            clip: 3,
+            clip_left: 0,
+            alt_clip: 0,
+        }],
+        "rounds fired before a script call stay spent"
+    );
+}
+
+#[test]
+fn script_clip_changes_mark_only_a_publishing_client() {
+    let mine = ClientId(4241);
+    let other = ClientId(4242);
+    crate::voxel::set_arsenal(mine.0, Arsenal::default());
+    let mut sim = sim();
+    {
+        let mut frame = sim.frame();
+        crate::script_player::set_ammo_clip(&mut frame, mine, M4, 3);
+        crate::script_player::set_ammo_clip(&mut frame, other, M4, 3);
+    }
+    let marked = crate::voxel::with_arsenals(|published| {
+        let marked: Vec<u32> = published
+            .iter()
+            .filter(|(client, held)| held.scripted && [mine.0, other.0].contains(client))
+            .map(|(client, _)| *client)
+            .collect();
+        (marked, Vec::new())
+    });
+    crate::voxel::forget_arsenal(mine.0);
+    assert_eq!(marked, Some(vec![mine.0]));
+}
+
+#[test]
+fn a_reload_queues_rounds_of_the_gun_s_ammo_type() {
+    let client = 4243;
+    let alternate = |weapon: u32| if weapon == M4 { GL } else { 0 };
+    crate::voxel::set_arsenal(
+        client,
+        Arsenal {
+            guns: vec![rifle_gun(M4, 30), gun(USP, 12)],
+            ..Arsenal::default()
+        },
+    );
+    crate::voxel::spend_rounds(client, M4, 18, alternate);
+    crate::voxel::spend_rounds(client, GL, 1, alternate);
+    crate::voxel::spend_rounds(client, USP, 5, alternate);
+    crate::voxel::spend_rounds(client, AK, 5, alternate);
+    crate::voxel::spend_rounds(client, M4, 0, alternate);
+    let spent = crate::voxel::take_spent(client);
+    crate::voxel::set_arsenal(
+        client,
+        Arsenal {
+            guns: vec![rifle_gun(M4, 30)],
+            endless: true,
+            ..Arsenal::default()
+        },
+    );
+    crate::voxel::spend_rounds(client, M4, 18, alternate);
+    let creative = crate::voxel::take_spent(client);
+    crate::voxel::forget_arsenal(client);
+    assert_eq!(
+        spent,
+        vec![
+            Spent::Rounds {
+                ammo: RIFLE,
+                rounds: 18,
+            },
+            Spent::Rounds {
+                ammo: EXPLOSIVE,
+                rounds: 1,
+            },
+        ]
+    );
+    assert!(creative.is_empty(), "creative takes no items");
 }

@@ -178,6 +178,7 @@ pub fn reload_clip(hand: &mut WeaponHandState, facts: &WeaponCombatFacts) -> i32
     }
     hand.clip += take;
     hand.stock -= take;
+    hand.loaded += take;
     take
 }
 
@@ -270,5 +271,45 @@ fn bolt_reload_segment_ms(hand: &WeaponHandState, facts: &WeaponCombatFacts, sta
             reload_time = add;
         }
         reload_time
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reloading(clip: i32, stock: i32) -> WeaponHandState {
+        WeaponHandState {
+            weaponstate: WeaponState::Reloading as i32,
+            clip,
+            stock,
+            ..WeaponHandState::default()
+        }
+    }
+
+    #[test]
+    fn a_finished_reload_counts_only_the_rounds_it_moved() {
+        let rifle = WeaponCombatFacts {
+            clip_size: 30,
+            ..WeaponCombatFacts::none()
+        };
+        let mut hand = reloading(12, 100);
+        assert_eq!(reload_clip(&mut hand, &rifle), 18);
+        assert_eq!((hand.clip, hand.stock, hand.loaded), (30, 82, 18));
+        let mut short = reloading(0, 5);
+        reload_clip(&mut short, &rifle);
+        assert_eq!((short.clip, short.stock, short.loaded), (5, 0, 5));
+        let mut empty = reloading(0, 0);
+        assert_eq!(reload_clip(&mut empty, &rifle), 0);
+        assert_eq!(empty.loaded, 0);
+        let shotgun = WeaponCombatFacts {
+            clip_size: 8,
+            reload_ammo_add: 1,
+            ..WeaponCombatFacts::none()
+        };
+        let mut shells = reloading(3, 20);
+        reload_clip(&mut shells, &shotgun);
+        reload_clip(&mut shells, &shotgun);
+        assert_eq!((shells.clip, shells.stock, shells.loaded), (5, 18, 2));
     }
 }

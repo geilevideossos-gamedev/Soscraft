@@ -516,6 +516,7 @@ pub(crate) fn give_weapon(
     };
     seed_ps_ammo_tables(ps, weapon, &facts, clip, clip_alt, akimbo, stock);
     world.client_meta_mut(id).set_ammo(weapon, clip, stock);
+    crate::voxel::script_set_clips(id.0);
     Ok(())
 }
 
@@ -688,6 +689,7 @@ pub(crate) fn set_ammo_clip(world: &mut FrameWorld, id: ClientId, weapon: u32, c
     }
     let stock = ammo_stock(world, id, weapon);
     world.client_meta_mut(id).set_ammo(weapon, count, stock);
+    crate::voxel::script_set_clips(id.0);
 }
 
 pub(crate) fn set_ammo_stock(world: &mut FrameWorld, id: ClientId, weapon: u32, count: i32) {
