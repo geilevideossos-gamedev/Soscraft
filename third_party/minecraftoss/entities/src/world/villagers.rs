@@ -869,10 +869,18 @@ impl EntityWorld {
             }
         }
     }
+
+    pub(super) fn release_villager_pois(&mut self, id: u64) {
+        let Some(entity) = self.villagers.iter_mut().find(|e| e.id == id) else { return };
+        if let Some(ai) = entity.ai.as_deref_mut().filter(|ai| !ai.pois_released) {
+            ai.pois_released = true;
+            release_all_pois(&ai.brain.memories, entity.villager.profession, &mut self.pois);
+        }
+    }
 }
 
 /// `#minecraft:beds`.
-fn is_bed(id: &str) -> bool {
+pub(super) fn is_bed(id: &str) -> bool {
     id.strip_prefix("minecraft:").and_then(|n| n.strip_suffix("_bed")).is_some_and(|color| {
         matches!(
             color,

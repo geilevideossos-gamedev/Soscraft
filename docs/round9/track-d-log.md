@@ -326,6 +326,87 @@ After ec8dd240.
 IW4L_MINECRAFT_KIT=minecraft:emerald*64,minecraft:emerald*64,minecraft:emerald*64,minecraft:paper*64,minecraft:book*64,minecraft:wheat*64,minecraft:wheat*64,minecraft:string*64,minecraft:stick*64,minecraft:coal*64,minecraft:rotten_flesh*64,minecraft:iron_ingot*32,minecraft:villager_spawn_egg*4,minecraft:composter,minecraft:lectern,minecraft:fletching_table,minecraft:red_bed,minecraft:oak_fence*64,minecraft:cobblestone*64,minecraft:cooked_beef*32
 ```
 
+## Group zombie-villagers
+
+### 1. Zombies turn the villagers they kill into zombie villagers
+
+After d8de1bcb.
+
+- **Vanilla (javap, 26.3):**
+  - `Zombie.killedEntity` covers every zombie kind: zombie, husk, drowned, zombie villager and zombified piglin.
+    - It only acts on Normal or Hard, and only when the victim is a `Villager`.
+    - On Normal it returns early when the zombie's own `random.nextBoolean()` is true. Hard never returns early.
+    - Then it calls `convertVillagerToZombieVillager`. A conversion makes `killedEntity` answer false, so `LivingEntity.die` drops no loot and sends no death event for the villager. Its death sound has already played, and `Villager.die` has already told the witnesses and released its points of interest.
+  - `convertVillagerToZombieVillager` calls `villager.convertTo(ZOMBIE_VILLAGER, ConversionParams.single(villager, true, true))`.
+    - The two flags keep the equipment and `CanPickUpLoot`.
+    - `ConversionType.SINGLE` copies the common fields listed under group mobs-list-drowned-load and gives a new UUID.
+    - Then, in order: `setVillagerDataFinalized(villager's)`, `finalizeSpawn(CONVERSION, new ZombieGroupData(false, true))`, `setVillagerData`, a copy of the gossips, a copy of the offers and `setVillagerXp`.
+    - Last, level event 1026 at the zombie's block, unless the zombie is silent.
+  - `ZombieVillager.finalizeSpawn` first runs `finalizeVillagerType`. It sets the biome's type only when the data is not finalized, and the villager's data overwrites it anyway. Then it runs `Zombie.finalizeSpawn`:
+    - `Mob.finalizeSpawn`: the follow range's random bonus and left-handedness, from the level random.
+    - No `CanPickUpLoot` roll for `CONVERSION`.
+    - Not a baby from the group data.
+    - `setCanBreakDoors(nextFloat < special * 0.1)`.
+    - No equipment or enchantments for `CONVERSION`.
+    - The Halloween head.
+    - `handleAttributes` from the zombie's own random. The reason makes no difference there.
+  - `LevelEventHandler` 1026 plays `entity.zombie.infect` (HOSTILE) at the block, volume 2.0, pitch `(nextFloat - nextFloat) * 0.2 + 1.0`.
+  - `ZombieVillager.removeWhenFarAway` is false while it converts or while its `Xp` is not 0.
+- **Changed:**
+  - Vendored `entities/src/world.rs`:
+    - A zombie's killing blow on a villager goes through `zombie_killed_villager`. That covers its melee hit and any hit through `mob_hits_mob`, including a drowned's trident.
+    - It applies the difficulty gate above. Then it drops the villager's death record (no loot, no experience), releases its points of interest and adds `(zombie, villager)` to the new `villager_infections` list (`take_villager_infections`).
+    - `check_despawn` never removes a zombie villager with villager experience for being far away.
+  - Vendored `entities/src/zombie.rs`: new `Zombie.villager_xp`, loaded from a zombie villager's `Xp`.
+  - Vendored `entities/src/world/villagers.rs`: new `release_villager_pois` releases one villager's points of interest at once.
+  - Vendored `world/src/natural_spawner/spawning.rs`:
+    - New `CreatureSpawns::finalize_conversion`: the zombie villager's `CONVERSION` finalize above, with a new UUID from the level.
+    - New `zombie_attributes`: the zombie's `handleAttributes`, moved out of `finalize_zombie` unchanged so both use it.
+  - Vendored `world/src/level/spawning.rs`: new `Level::finalize_conversion`.
+  - `minecraft_terrain/src/server_mobs.rs`: new `infected_villager_tag` builds the zombie villager's tag from the villager.
+    - It starts from the kept fields of the villager's saved tag, as `converted_zombie_tag` does.
+    - It adds the villager's position, motion, yaw, baby, persistence, `CanPickUpLoot`, `VillagerData`, `VillagerDataFinalized`, `Xp`, offers, gossips, held item and effects.
+    - It has no health and no attributes, because the new mob has its own.
+  - `minecraft_terrain/src/server.rs`:
+    - After the mobs tick, `infect_villagers` finalizes that tag and removes the villager.
+    - It adds the zombie villager like a loaded mob, so the friend gets it through the tracker like any new mob.
+    - It sends level event 1026 unless the zombie is `Silent`.
+    - **The entity world now gets the level's difficulty every tick** (`set_difficulty`). Until now it stayed at Normal, so every mob rule that depends on the difficulty ran as on Normal: this gate, skeleton fire rates, trident and arrow spread, and husk hunger.
+  - `minecraft_terrain/src/level_events.rs`: event 1026 plays `entity.zombie.infect` for the host and the friend. The friend already plays the host's level events.
+- **Tests:**
+  - `world::tests::a_zombie_s_killing_blow_infects_a_villager_always_on_hard_half_the_time_on_normal_and_never_below`:
+    - 200 kills on each difficulty infect 200 on Hard, about 100 on Normal, and none on Easy or Peaceful.
+    - An infected villager leaves no death to drop loot. A villager that stays dead does.
+    - A skeleton's kill never infects.
+  - `world::tests::a_zombie_villager_that_was_a_traded_villager_never_despawns_far_away`.
+  - `server::tests::a_zombie_turns_the_villager_it_kills_into_a_zombie_villager_with_its_trades`:
+    - On Hard, a zombie kills a named desert farmer of level 2 with 12 xp, an offer, gossip and `NoAI`. The villager is gone.
+    - The zombie villager stands where the villager stood, with 20 health. It has the same type, profession, level, xp, offer, gossip, name and `NoAI`, `VillagerDataFinalized` and a new UUID.
+    - Level event 1026 plays at the zombie's block.
+    - Its saved tag loads back as a zombie villager with the same data.
+    - On Easy a second kill infects nobody and sends no event.
+  - `level_events::tests::a_zombie_infecting_a_villager_groans_loudly_where_it_stands`.
+  - Runs: `minecraftoss-entities` lib 237, `minecraftoss-world` lib 77 and `minecraft_terrain` lib 1132 (3 ignored), all green. `check -p launcher` is green.
+- **Decisions:**
+  - The villager's witnesses only hear of the murder when the villager's own tick comes before the server removes it. Vanilla always tells them. The gossip is about a zombie, which no villager trades with, so nothing a player sees changes.
+  - A drowned's trident kill infects too, one tick later, because vanilla's `killedEntity` goes to the trident's owner. The trident's hit lands after the mobs' tick.
+  - The zombie villager is built as a tag and loaded like a saved mob, not made inside the entity world. That way it carries every saved field the entity world does not hold (offers, gossips, name), and a new one behaves exactly like one loaded from a save.
+  - Giving the entity world the level's difficulty is a fix beyond the brief. The gate needs it, and `docs/MINECRAFT-SURVIVAL.md` already says that mob behaviour follows the difficulty.
+- **Test steps (survival):**
+  1. `/difficulty hard` and `/time set night`. Build a closed 3 x 3 box of planks with a roof, so no sun reaches inside.
+     - Inside, summon a farmer that has traded: `/summon minecraft:villager ~ ~ ~2 {VillagerData:{type:"minecraft:plains",profession:"minecraft:farmer",level:2},Xp:12}`.
+     - Hatch a zombie egg next to it. The zombie kills the villager and a loud groan plays.
+     - A zombie villager in the farmer's straw hat stands where the villager died, and nothing drops (**26_villager_infected**).
+  2. Look at the zombie villager closely: green skin, the plains overlay and the farmer's hat and clothes (**27_infected_outfit**).
+  3. Save and quit, then load again: it is still a zombie villager in the farmer's clothes. Fly 130 blocks away and come back: it is still there, because a villager that traded never despawns.
+  4. `/difficulty normal`: repeat step 1 four times with plain villager eggs. About half of the villagers turn, and the rest simply die. Then `/difficulty easy`: villagers never turn (**28_infection_normal_easy**).
+  5. Friend window: the friend sees the villager vanish and the zombie villager appear in its place, and hears the groan (**29_infected_friend**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:villager_spawn_egg*8,minecraft:zombie_spawn_egg*8,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:torch*32,minecraft:diamond_sword,minecraft:cooked_beef*32
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -335,10 +416,12 @@ IW4L_MINECRAFT_KIT=minecraft:emerald*64,minecraft:emerald*64,minecraft:emerald*6
   - `minecraft_net::PROTOCOL` is 4 (track D, round 9: `MenuKind::Merchant`, `MenuExtras::Merchant` and `NetOffer`). The code block at line 162 and the note at line 1415 read 4.
   - Section 20 and the leftover lists at lines 1303 and 1331 drop "trading screens". New wording: "A friend opens a villager's trading screen on the host's level thread. The offers, level, xp, coming xp and picked offer ride in `MenuExtras::Merchant`, and the friend's clicks run on the host."
 - `CLAUDE.md` roadmap item 2: drop "trading screens" from the multiplayer leftovers.
+- `docs/MINECRAFT-SURVIVAL.md`: a zombie of any kind that kills a villager turns it into a zombie villager: always on Hard, half the time on Normal, never on Easy or Peaceful. The zombie villager keeps the villager's type, profession, level, experience, trades, gossip, name and held item. The villager drops nothing, and a loud groan plays (level event 1026). A zombie villager that was a traded villager never despawns.
+- `docs/MINECRAFT-SURVIVAL.md`: the server's mobs now follow the world difficulty in their own rules too. Until round 9 the entity world always ran as Normal. This covers skeleton fire rates and spread, drowned trident spread, husk hunger and the zombie villager conversion.
 
 ## Vendored files
 
-Unchanged by group `trading-friend`. Patched by track D: 6 (`entities/src/lib.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/zombie.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`). Added: 1 (`entities/src/drowned_ai.rs`).
+Patched by track D: 8 (`entities/src/lib.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`). Added: 1 (`entities/src/drowned_ai.rs`). Group zombie-villagers commit 1 added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` to the patched list.
 
 ## Left for later
 

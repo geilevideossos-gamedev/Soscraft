@@ -88,6 +88,7 @@ pub struct Zombie {
     pub hand_drop_chances: [f32; 2],
     /// The head, chest, legs and feet slots' item IDs.
     pub armor: [Option<String>; 4],
+    pub villager_xp: i32,
 }
 
 impl Zombie {
@@ -109,6 +110,7 @@ impl Zombie {
             off_hand: None,
             hand_drop_chances: [0.085; 2],
             armor: Default::default(),
+            villager_xp: 0,
         }
     }
 

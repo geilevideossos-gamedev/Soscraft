@@ -1204,20 +1204,7 @@ impl CreatureSpawns {
         }
         Self::halloween_head(level, context, &mut tag);
         // `handleAttributes`, from the zombie's own random.
-        let reinforcements = if piglin { 0.0 } else { own.next_f64() * f64::from(0.1f32) };
-        set_attribute_base(&mut tag, "minecraft:spawn_reinforcements", reinforcements);
-        add_modifier(&mut tag, "minecraft:knockback_resistance", 0.0, "minecraft:random_spawn_bonus", own.next_f64() * f64::from(0.05f32), "add_value");
-        let follow = own.next_f64() * 1.5 * f64::from(special);
-        if follow > 1.0 {
-            add_modifier(&mut tag, "minecraft:follow_range", 35.0, "minecraft:zombie_random_spawn_bonus", follow, "add_multiplied_total");
-        }
-        if own.next_f32() < special * 0.05 {
-            add_modifier(&mut tag, "minecraft:spawn_reinforcements", 0.0, "minecraft:leader_zombie_bonus", own.next_f64() * 0.25 + 0.5, "add_value");
-            let bonus = own.next_f64() * 3.0 + 1.0;
-            add_modifier(&mut tag, "minecraft:max_health", 20.0, "minecraft:leader_zombie_bonus", bonus, "add_multiplied_total");
-            set(&mut tag, "Health", Tag::Float((20.0 * (1.0 + bonus)).clamp(1.0, 1024.0) as f32));
-            set(&mut tag, "CanBreakDoors", byte(true));
-        }
+        Self::zombie_attributes(&mut tag, own, special, piglin);
         match vehicle {
             Some(mut chicken) => {
                 set(&mut chicken, "Passengers", Tag::List(vec![tag]));
@@ -1225,6 +1212,48 @@ impl CreatureSpawns {
             }
             None => tag,
         }
+    }
+
+    fn zombie_attributes(tag: &mut Tag, own: &mut LegacyRandom, special: f32, piglin: bool) {
+        let reinforcements = if piglin { 0.0 } else { own.next_f64() * f64::from(0.1f32) };
+        set_attribute_base(tag, "minecraft:spawn_reinforcements", reinforcements);
+        add_modifier(tag, "minecraft:knockback_resistance", 0.0, "minecraft:random_spawn_bonus", own.next_f64() * f64::from(0.05f32), "add_value");
+        let follow = own.next_f64() * 1.5 * f64::from(special);
+        if follow > 1.0 {
+            add_modifier(tag, "minecraft:follow_range", 35.0, "minecraft:zombie_random_spawn_bonus", follow, "add_multiplied_total");
+        }
+        if own.next_f32() < special * 0.05 {
+            add_modifier(tag, "minecraft:spawn_reinforcements", 0.0, "minecraft:leader_zombie_bonus", own.next_f64() * 0.25 + 0.5, "add_value");
+            let bonus = own.next_f64() * 3.0 + 1.0;
+            add_modifier(tag, "minecraft:max_health", 20.0, "minecraft:leader_zombie_bonus", bonus, "add_multiplied_total");
+            set(tag, "Health", Tag::Float((20.0 * (1.0 + bonus)).clamp(1.0, 1024.0) as f32));
+            set(tag, "CanBreakDoors", byte(true));
+        }
+    }
+
+    pub fn finalize_conversion(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, mut tag: Tag) -> Tag {
+        let at = Self::position(&tag);
+        let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+        if tag.get("UUID").is_none() {
+            let uuid = level.next_uuid();
+            set(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+        }
+        match tag.get("id").and_then(Tag::as_str) {
+            Some("minecraft:zombie_villager") => {
+                set(&mut tag, "VillagerDataFinalized", byte(true));
+                let _ = attribute(&mut tag, "minecraft:follow_range", follow_range_base("minecraft:zombie_villager"));
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+                let special = Self::difficulty_at(level, context, pos).special_multiplier();
+                let doors = level.random().next_f32() < special * 0.1;
+                set(&mut tag, "CanBreakDoors", byte(doors));
+                Self::halloween_head(level, context, &mut tag);
+                let mut own = entity_random(Self::uuid(&tag));
+                Self::zombie_attributes(&mut tag, &mut own, special, false);
+            }
+            Some(_) => finalize_mob(&mut tag, &mut RandomRef(level.random())),
+            None => {}
+        }
+        tag
     }
 
     /// `Husk.finalizeSpawn` after the zombie's part: a second loot roll,

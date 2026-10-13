@@ -728,6 +728,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 let data = tag.get("VillagerData");
                 let field = |key: &str, default: &str| data.and_then(|d| text(d, key)).unwrap_or(default).to_owned();
                 zombie.villager = Some((field("type", "minecraft:plains"), field("profession", "minecraft:none")));
+                zombie.villager_xp = int(tag, "Xp").unwrap_or(0);
             }
             zombie.head_item = head_item(tag);
             zombie.main_hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
@@ -1796,6 +1797,54 @@ pub fn converted_zombie_tag(original: &Tag) -> Tag {
     const KEPT: [&str; 14] = ["equipment", "drop_chances", "CanPickUpLoot", "LeftHanded", "NoAI", "PersistenceRequired", "CustomName", "CustomNameVisible", "Invulnerable", "NoGravity", "PortalCooldown", "Silent", "Tags", "leash"];
     let Tag::Compound(map) = original else { return Tag::Compound(std::collections::BTreeMap::new()) };
     Tag::Compound(map.iter().filter(|(key, _)| KEPT.contains(&key.as_str())).map(|(key, value)| (key.clone(), value.clone())).collect())
+}
+
+pub fn infected_villager_tag(world: &EntityWorld, villager: u64, original: Option<&Tag>) -> Option<Tag> {
+    let e = world.villagers().iter().find(|v| v.id == villager)?;
+    let v = &e.villager;
+    let Tag::Compound(mut map) = original.map_or_else(|| Tag::Compound(std::collections::BTreeMap::new()), converted_zombie_tag) else { return None };
+    let text_tag = |s: &str| Tag::String(s.to_owned());
+    let body = &v.body;
+    map.insert("id".to_owned(), text_tag("minecraft:zombie_villager"));
+    map.insert("Pos".to_owned(), doubles(body.position.to_array()));
+    map.insert("Motion".to_owned(), doubles(body.velocity.to_array()));
+    map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(e.ai.as_deref().map_or(e.yaw, |ai| ai.yaw)), Tag::Float(0.0)]));
+    map.insert("OnGround".to_owned(), Tag::Byte(i8::from(body.on_ground)));
+    map.insert("fall_distance".to_owned(), Tag::Double(body.fall_distance));
+    map.insert("IsBaby".to_owned(), Tag::Byte(i8::from(v.age.baby())));
+    map.insert("PersistenceRequired".to_owned(), Tag::Byte(i8::from(v.persistence_required)));
+    map.insert("CanPickUpLoot".to_owned(), Tag::Byte(i8::from(e.can_pick_up_loot)));
+    let data = [("type".to_owned(), text_tag(&v.kind)), ("profession".to_owned(), text_tag(v.profession.id())), ("level".to_owned(), Tag::Int(v.level))];
+    map.insert("VillagerData".to_owned(), Tag::Compound(data.into_iter().collect()));
+    map.insert("Xp".to_owned(), Tag::Int(v.xp));
+    if let Some(offers) = &e.offers {
+        map.insert("Offers".to_owned(), offers_tag(offers));
+    }
+    let gossips = e
+        .gossips
+        .unpack()
+        .into_iter()
+        .map(|(target, kind, value)| {
+            let entry = [
+                ("Target".to_owned(), Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(target).to_vec())),
+                ("Type".to_owned(), Tag::String(kind.id().to_owned())),
+                ("Value".to_owned(), Tag::Int(value)),
+            ];
+            Tag::Compound(entry.into_iter().collect())
+        })
+        .collect();
+    map.insert("Gossips".to_owned(), Tag::List(gossips));
+    if let Some(item) = &e.held_item {
+        let mut stack: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), text_tag(&item.id)), ("count".to_owned(), Tag::Int(item.count))].into_iter().collect();
+        if !item.components.is_empty() {
+            stack.insert("components".to_owned(), json_tag(&serde_json::Value::Object(item.components.clone())));
+        }
+        map.insert("equipment".to_owned(), Tag::Compound([("mainhand".to_owned(), Tag::Compound(stack))].into_iter().collect()));
+    }
+    if let Some(effects) = world.mob_effects(villager).filter(|effects| !effects.is_empty()) {
+        map.insert("active_effects".to_owned(), Tag::List(effects.iter().map(|e| effect_tag(e, true)).collect()));
+    }
+    Some(Tag::Compound(map))
 }
 
 /// The head, chest, legs and feet slots' item IDs from `equipment`.

@@ -2495,6 +2495,7 @@ pub struct EntityWorld {
     piglin_angers: Vec<piglins::PiglinAnger>,
     piglin_conversions: Vec<piglins::PiglinConversion>,
     zombie_conversions: Vec<(u64, u64)>,
+    villager_infections: Vec<(u64, u64)>,
     trident_throws: Vec<crate::drowned_ai::TridentThrow>,
     sea_level: i32,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
@@ -2610,6 +2611,7 @@ impl Default for EntityWorld {
             piglin_angers: Vec::new(),
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
+            villager_infections: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: 63,
             difficulty: 2,
@@ -3589,6 +3591,25 @@ impl EntityWorld {
         std::mem::take(&mut self.zombie_conversions)
     }
 
+    pub fn take_villager_infections(&mut self) -> Vec<(u64, u64)> {
+        std::mem::take(&mut self.villager_infections)
+    }
+
+    fn zombie_killed_villager(&mut self, zombie: u64, villager: u64) {
+        let difficulty = self.difficulty;
+        if difficulty < 2 {
+            return;
+        }
+        let Some(killer) = self.zombies.iter_mut().find(|e| e.id == zombie) else { return };
+        if difficulty != 3 && killer.random.next_boolean() {
+            return;
+        }
+        let Some(victim) = self.villagers.iter_mut().find(|e| e.id == villager) else { return };
+        victim.villager.damage.death = None;
+        self.release_villager_pois(villager);
+        self.villager_infections.push((zombie, villager));
+    }
+
     pub fn take_trident_throws(&mut self) -> Vec<crate::drowned_ai::TridentThrow> {
         std::mem::take(&mut self.trident_throws)
     }
@@ -3929,6 +3950,9 @@ impl EntityWorld {
             let hit = e.hurt_from(damage, "minecraft:mob_attack", Some(attacker), time);
             if hit.applied {
                 self.villager_hurt_by(victim, attacker);
+            }
+            if hit.died && self.zombies.iter().any(|z| z.id == attacker) {
+                self.zombie_killed_villager(attacker, victim);
             }
             (hit, false)
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == victim) {
@@ -5135,6 +5159,7 @@ impl EntityWorld {
             piglin_angers: Vec::new(),
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
+            villager_infections: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: self.sea_level,
             difficulty: 2,
@@ -5239,6 +5264,7 @@ impl EntityWorld {
     pub fn check_despawn(&mut self, players: &[DVec3], peaceful: bool, listed: &dyn Fn(DVec3) -> bool) -> usize {
         // Despawn distance, `removeWhenFarAway`, `isAllowedInPeaceful`.
         const MONSTER: (f64, bool, bool) = (128.0, true, false);
+        const KEPT_MONSTER: (f64, bool, bool) = (128.0, false, false);
         const CREATURE: (f64, bool, bool) = (128.0, false, true);
         const AMBIENT: (f64, bool, bool) = (128.0, true, true);
         const VILLAGER: (f64, bool, bool) = (128.0, false, true);
@@ -5263,7 +5289,7 @@ impl EntityWorld {
         };
         let before = self.order.len();
         self.bats.retain_mut(|e| !check(e.id, e.bat.body.position, e.bat.persistence_required, AMBIENT, &mut e.no_action_time, &mut e.random));
-        self.zombies.retain_mut(|e| !check(e.id, e.zombie.body.position, e.zombie.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.zombies.retain_mut(|e| !check(e.id, e.zombie.body.position, e.zombie.persistence_required, if e.zombie.villager_xp != 0 { KEPT_MONSTER } else { MONSTER }, &mut e.no_action_time, &mut e.random));
         self.skeletons.retain_mut(|e| !check(e.id, e.skeleton.body.position, e.skeleton.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.creepers.retain_mut(|e| !check(e.id, e.creeper.body.position, e.creeper.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.spiders.retain_mut(|e| !check(e.id, e.spider.body.position, e.spider.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
@@ -5623,6 +5649,7 @@ impl EntityWorld {
                         self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
                     }
                     let damage = self.zombies.iter().find(|e| e.id == id).map_or(3.0, |e| zombie_attack_damage(&e.zombie));
+                    let mut killed_villager = None;
                     if let Some((victim_id, attacker_position)) = pending_attack {
                         if let Some(victim) = self.villager_mut(victim_id) {
                             let result = victim.hurt_from(damage, "minecraft:mob_attack", Some(id), game_time);
@@ -5630,9 +5657,15 @@ impl EntityWorld {
                                 victim.knockback_from(attacker_position);
                                 self.villager_hurt_by(victim_id, id);
                             }
+                            if result.died {
+                                killed_villager = Some(victim_id);
+                            }
                         }
                     }
                     self.pois = lent_pois.expect("the points of interest come back");
+                    if let Some(villager) = killed_villager {
+                        self.zombie_killed_villager(id, villager);
+                    }
                     if let Some((victim, attacker_position)) = pending_mob {
                         self.mob_hits_mob(id, victim, damage, attacker_position, 0.0);
                     }
@@ -8241,6 +8274,57 @@ mod tests {
         );
         assert!(world.villager_mut(villager).unwrap().hurt(21.0).died);
         assert!(world.mob_on_ray(eye, DVec3::Z, 5.0).is_none());
+    }
+
+    #[test]
+    fn a_zombie_s_killing_blow_infects_a_villager_always_on_hard_half_the_time_on_normal_and_never_below() {
+        let infections = |difficulty: i32| {
+            let mut world = EntityWorld::default();
+            world.set_difficulty(difficulty);
+            let zombie = world.spawn_zombie(Zombie::new(DVec3::new(0.0, 1.0, 0.0)), true);
+            let mut infected = 0;
+            for _ in 0..200 {
+                let villager = world.spawn_villager(Villager::new(DVec3::new(0.0, 1.0, 1.0)), true);
+                assert!(world.mob_shot_mob(zombie, villager, 100.0, DVec3::Z));
+                let taken = world.take_villager_infections();
+                let died = world.take_deaths().iter().any(|death| death.id == villager);
+                if taken.is_empty() {
+                    assert!(died, "a villager that stays dead leaves its death");
+                } else {
+                    assert_eq!(taken, vec![(zombie, villager)]);
+                    assert!(!died, "an infected villager drops nothing");
+                    infected += 1;
+                }
+                world.remove_mobs(&[villager]);
+            }
+            infected
+        };
+        assert_eq!(infections(3), 200);
+        let normal = infections(2);
+        assert!((70..=130).contains(&normal), "{normal}");
+        assert_eq!(infections(1), 0);
+        assert_eq!(infections(0), 0);
+        let mut world = EntityWorld::default();
+        world.set_difficulty(3);
+        let skeleton = world.spawn_skeleton(crate::skeleton::Skeleton::new(DVec3::ZERO), true);
+        let villager = world.spawn_villager(Villager::new(DVec3::new(0.0, 1.0, 1.0)), true);
+        assert!(world.mob_shot_mob(skeleton, villager, 100.0, DVec3::Z));
+        assert!(world.take_villager_infections().is_empty(), "only zombies infect");
+    }
+
+    #[test]
+    fn a_zombie_villager_that_was_a_traded_villager_never_despawns_far_away() {
+        let mut world = EntityWorld::default();
+        let mut traded = Zombie::new(DVec3::new(200.0, 1.0, 0.0));
+        traded.kind = ZombieKind::ZombieVillager;
+        traded.villager_xp = 12;
+        let traded = world.spawn_zombie(traded, true);
+        let mut plain = Zombie::new(DVec3::new(200.0, 1.0, 2.0));
+        plain.kind = ZombieKind::ZombieVillager;
+        let plain = world.spawn_zombie(plain, true);
+        world.check_despawn(&[DVec3::ZERO], false, &|_| true);
+        assert!(world.zombies().iter().any(|e| e.id == traded));
+        assert!(world.zombies().iter().all(|e| e.id != plain));
     }
 
     #[test]

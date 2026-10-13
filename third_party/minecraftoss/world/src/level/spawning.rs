@@ -223,6 +223,20 @@ impl Level<'_> {
         self.natural_spawning = Some(natural);
         result
     }
+
+    pub fn finalize_conversion(&mut self, tag: Tag) -> Tag {
+        let Some(natural) = self.natural_spawning.take() else { return tag };
+        let inputs = self.spawn_inputs(&natural.players);
+        let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
+        let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let mut context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
+        let spawns = natural.spawns.clone();
+        let result = spawns.finalize_conversion(self, &mut context, tag);
+        self.natural_spawning = Some(natural);
+        result
+    }
 }
 
 struct Spawner {

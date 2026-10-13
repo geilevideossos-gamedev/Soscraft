@@ -8,6 +8,8 @@ pub const LAVA_FIZZ: i32 = 1501;
 pub const BONE_MEAL_USE: i32 = 1505;
 pub const BONE_MEAL_PARTICLES: i32 = 15;
 pub const LECTERN_PAGE_TURN: i32 = 1043;
+pub const ZOMBIE_INFECT: i32 = 1026;
+pub const ZOMBIE_INFECT_SOUND: &str = "minecraft:entity.zombie.infect";
 pub const LAVA_EXTINGUISH: &str = "minecraft:block.lava.extinguish";
 const FIZZ_SMOKE: usize = 8;
 const EVAPORATION_SMOKE: usize = 8;
@@ -111,6 +113,14 @@ pub fn level_event<S: Scene + ?Sized>(
                 at: (base + DVec3::splat(0.5)).to_array(),
                 volume: 1.0,
                 pitch: random.next_float() * 0.1 + 0.9,
+            });
+        }
+        ZOMBIE_INFECT => {
+            out.sounds.push(AmbientSound {
+                event: ZOMBIE_INFECT_SOUND,
+                at: (base + DVec3::splat(0.5)).to_array(),
+                volume: 2.0,
+                pitch: (random.next_float() - random.next_float()) * 0.2 + 1.0,
             });
         }
         BONE_MEAL_USE => {
@@ -341,6 +351,27 @@ mod tests {
         assert_eq!(sound.event, "minecraft:item.book.page_turn");
         assert_eq!(sound.at, [2.5, 70.5, -4.5]);
         assert_eq!((sound.volume, sound.pitch), (1.0, mirror.next_float() * 0.1 + 0.9));
+        assert!(event.particles.is_empty());
+    }
+
+    #[test]
+    fn a_zombie_infecting_a_villager_groans_loudly_where_it_stands() {
+        let mut random = LegacyRandom::new(9);
+        let mut mirror = LegacyRandom::new(9);
+        let event = level_event(
+            ZOMBIE_INFECT,
+            (4, 64, -2),
+            0,
+            &no_scene(),
+            &classes,
+            &mut random,
+        );
+        assert_eq!(event.sounds.len(), 1);
+        let sound = &event.sounds[0];
+        assert_eq!(sound.event, "minecraft:entity.zombie.infect");
+        assert_eq!(sound.at, [4.5, 64.5, -1.5]);
+        let pitch = (mirror.next_float() - mirror.next_float()) * 0.2 + 1.0;
+        assert_eq!((sound.volume, sound.pitch), (2.0, pitch));
         assert!(event.particles.is_empty());
     }
 
