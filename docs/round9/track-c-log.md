@@ -290,6 +290,38 @@ Commit: the one after `781ec027`. This is the fix for the owner's screenshot 12 
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:m4,iw4l:usp,iw4l:ak47,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,minecraft:chest
 ```
 
+### 2. Killstreak weapons stay MW2 mirrors and cannot be put into containers
+
+Commit: the one after `18a2bd59`.
+
+- **Changed:**
+  - `minecraft_survival` `menus.rs` `keeps_gun` (the guard every menu click passes, host and friends alike, in `apply`) now also refuses an `iw4:weapon/` killstreak item:
+    - placed from the cursor into a container cell (`Slot` on `Container`, chests and the bench cells of furnaces, anvils and the like);
+    - shift-clicked from the inventory while a block container or a bench is open;
+    - swapped into a container cell with a number key (`Swap` on `Container`);
+    - spread over cells that include a container cell (`Spread`);
+    - dropped from the cursor outside the window (`Outside`).
+  - The offhand arms and the in-menu Q (`Throw`) were already there. Q outside menus already put a killstreak item back (`keep_guns`, and the friend's `friend_hand`).
+  - Killstreak items are still minted on the first free hotbar slot by `sync_weapons` and never saved. Death is unchanged until group drops-loadout, which makes them vanish.
+- **Tests:** `minecraft_survival` `menus::tests::killstreak_items_cannot_go_into_a_chest`: with a chest open, a shift-click, a number-key swap into a cell, a cursor click on a cell, a spread over two cells and a cursor drop outside all leave the killstreak item with the player. Dirt still shift-clicks into the chest, and the chest ends up holding only the dirt.
+- **Decisions:** the 2x2 and crafting-table grids are not container cells. An item left there comes back through `close` and `keep_guns`, and `sync_weapons` already counts those cells, so no copy can be made there.
+- **Owner's test steps** (survival, kit below; first earn a killstreak, e.g. a UAV after 3 kills on bots or on the friend with the M4A1 moved to the hotbar, since killstreak items cannot be given):
+  1. With the UAV item on the hotbar, open a chest. Shift-click the UAV item: it stays in the hotbar. Pick it up with the cursor and click a chest cell: it stays on the cursor. Click outside the window: it stays on the cursor. Put it back. **Screenshot 1** (the chest open, the UAV item still in the hotbar).
+  2. Hover a chest cell and press the UAV's hotbar number: nothing moves.
+  3. Shift-click dirt into the same chest: it moves as usual.
+  4. Two windows: the friend repeats step 1 with their own killstreak item. **Screenshot 2** (friend window).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:chest,minecraft:dirt*16,iw4l:m4,iw4l:rifle_ammo*64
+```
+
+## Combined kit for group arsenal
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:m4,iw4l:usp,iw4l:ak47,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,minecraft:chest,minecraft:dirt*16
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (3): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`. Added: none.
@@ -307,3 +339,4 @@ Patched by this track so far (3): `player/src/item_catalog.rs`, `core/src/item.r
 - `MULTIPLAYER.md` (version checks): "The fork item table's hash is part of the registry fingerprint, so a friend whose build has another item table is refused."
 - `MINECRAFT-SURVIVAL.md`, the guns section, replacing the free Intervention, SPAS-12 and UMP45 and the class guns as hotbar mirrors: "MW2 holds exactly the fork guns on the hotbar, in hotbar order, each gun once. A gun in the backpack, a chest or on the cursor is not in MW2. Selecting a hotbar gun raises it. The loaded rounds live on the item, so a gun put away and taken back keeps its clip, and two copies of one gun keep one clip each. MW2's own weapon drop and pickups are off in Minecraft worlds. For now the reserve ammo and the grenades still refill; ammo items and grenade slots come later. Killstreak weapons are still hotbar mirrors."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's guns follow their own hotbar the same way, through the same host function, and the host keeps each player's bound gun copies per UUID."
+- `MINECRAFT-SURVIVAL.md`, the guns section: "Killstreak items cannot go into a chest or any other container cell, into the offhand, or be dropped with Q or from the cursor."

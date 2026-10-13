@@ -419,6 +419,29 @@ fn keeps_gun(
             slot, shift: false, ..
         } if *slot == offhand => gun(inventory.cursor.clone()),
         MenuAction::Throw { slot, .. } => gun(stack_at(menu, inventory, containers, *slot)),
+        MenuAction::Slot {
+            slot: MenuSlot::Container(_),
+            shift: false,
+            ..
+        }
+        | MenuAction::Outside { .. } => gun(inventory.cursor.clone()),
+        MenuAction::Slot {
+            slot: slot @ MenuSlot::Inventory(_),
+            shift: true,
+            ..
+        } if menu.is_some_and(|menu| matches!(menu.open, Open::Block(_) | Open::Bench(..))) => {
+            gun(stack_at(menu, inventory, containers, *slot))
+        }
+        MenuAction::Swap {
+            slot: MenuSlot::Container(_),
+            hotbar,
+        } => gun(inventory.slots.get(usize::from(*hotbar)).cloned().flatten()),
+        MenuAction::Spread { slots, .. } => {
+            gun(inventory.cursor.clone())
+                && slots
+                    .iter()
+                    .any(|slot| matches!(slot, MenuSlot::Container(_)))
+        }
         _ => false,
     }
 }
@@ -1835,5 +1858,51 @@ mod tests {
         assert_eq!(bench.chosen, Some(2));
         assert!(bench.cells[0].is_some());
         assert!(mirror(None, &recipes).open.is_none());
+    }
+
+    #[test]
+    fn killstreak_items_cannot_go_into_a_chest() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let killstreak = crate::guns::weapon_item(12);
+        host.inventory.slots[0] = Some(killstreak.clone());
+        host.inventory.slots[1] = Some(ItemStack::new("minecraft:dirt", 4));
+        assert!(open(
+            &mut host,
+            Open::Block(chest()),
+            Text::literal("Chest"),
+            0
+        ));
+        let mut act = |host: &mut Player, action: MenuAction| {
+            apply(host, &mut containers, books(&book), &action, 0.5)
+        };
+        act(&mut host, slot(0, true));
+        assert_eq!(host.inventory.slots[0], Some(killstreak.clone()));
+        let swap = MenuAction::Swap {
+            slot: MenuSlot::Container(3),
+            hotbar: 0,
+        };
+        act(&mut host, swap);
+        assert_eq!(host.inventory.slots[0], Some(killstreak.clone()));
+        act(&mut host, slot(0, false));
+        assert_eq!(host.inventory.cursor, Some(killstreak.clone()));
+        act(&mut host, cell(5));
+        let spread = MenuAction::Spread {
+            slots: vec![MenuSlot::Container(6), MenuSlot::Container(7)],
+            right: false,
+        };
+        act(&mut host, spread);
+        let dropped = act(&mut host, MenuAction::Outside { right: false });
+        assert!(dropped.thrown.is_empty(), "the cursor drop keeps it");
+        assert_eq!(host.inventory.cursor, Some(killstreak.clone()));
+        act(&mut host, slot(0, false));
+        assert_eq!(host.inventory.slots[0], Some(killstreak));
+        act(&mut host, slot(1, true));
+        assert!(host.inventory.slots[1].is_none(), "other items still go in");
+        let cells = containers.cells(&chest());
+        let held: Vec<&str> = cells.iter().flatten().map(|s| s.id.as_str()).collect();
+        assert_eq!(held, vec!["minecraft:dirt"]);
     }
 }
