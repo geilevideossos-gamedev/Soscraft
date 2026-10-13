@@ -496,6 +496,7 @@ pub fn body_rig(joints: &[Option<PosedJoint>; JOINTS], origin: [f64; 3], fit: &G
         armor: bound_armor(joints, fit).posed(to_block),
         light: glam::Vec3::from_array(lit_at.to_array()),
         wings: None,
+        head_swing: 0.0,
     }
 }
 

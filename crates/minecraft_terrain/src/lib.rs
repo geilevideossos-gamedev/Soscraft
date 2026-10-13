@@ -131,3 +131,4 @@ pub mod item_nbt;
 pub mod body_gear;
 pub mod body_render;
 pub mod elytra_render;
+pub mod worn_head;

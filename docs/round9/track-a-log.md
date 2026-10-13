@@ -90,11 +90,46 @@ Commit: "Minecraft dragon respawn tests pin vanilla's crystal spots on the exit 
 IW4L_MINECRAFT_KIT=minecraft:end_crystal*16,minecraft:obsidian*8,minecraft:diamond_sword+sharpness=5,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cobblestone*64,minecraft:elytra,minecraft:firework_rocket*64
 ```
 
+## A4. Worn mob heads and carved pumpkins
+
+### Commit 1: worn heads drawn on the MW2 body
+
+Commit: "Worn mob heads and carved pumpkins are drawn on the MW2 body", the one after `51002a83` (A5).
+
+- **Cause** (as in the brief, re-checked at `51002a83`): head-slot items were only drawn when they were armour. `append_armor_on_rig` draws the layers from `armor_asset`, which knows only the helmets and the turtle helmet, so every skull and the carved pumpkin drew nothing: not on other players, not on the own F5 body and not on the inventory character, for the host and every friend. The gear already reaches every window (slot 39 is `armor[0]` of the replicated `GearView`), so no net change is needed.
+- **Vanilla 26.3** (`CustomHeadLayer.submit`, checked with javap): after `translateToHead`, a skull block item is `scale(1.1875)` then `SkullBlockRenderer.submitSkull(animationPos, ..)` with no foil; any other item that the armour layer does not draw takes `translate(0, -0.25, 0)`, `rotY(180)`, `scale(0.625, -0.625, -0.625)` and its `head` display transform, with foil.
+- **Changed** (`minecraft_terrain`, plus one default field in `render_anim`):
+  - `special_models.rs`: `push_head` takes the animation position. The dragon jaw is `((a*pi*0.2).sin() + 1)*0.2`, the piglin's left ear `-((a*pi*0.2*1.2).cos() + 2.5)*0.2` and the right ear `((a*pi*0.2).cos() + 2.5)*0.2` (`DragonHeadModel`, `PiglinHeadModel`). Placed and held heads pass 0.0, so they are unchanged. New `worn_skull(item_id)` (the seven skull items) and `worn_head_model(head, animation)` (the skull at `SKULL_SCALE`). `Head` is now `pub(crate)`.
+  - `mesh.rs`: the element loop of `ItemVisuals::append_model` moved unchanged into `pub(crate) fn append_elements`. New `HeldDisplay::Head` and `ItemVisual.head` from the item's `head` display transform (identity apart from vanilla's centring for blocks without one, such as the carved pumpkin through `block/block.json`).
+  - New `worn_head.rs`: `SKULL_SCALE = 1.1875`, `skull_pose`, `item_pose`, `is_helmet` and `append_worn_head`. It draws nothing without an item or a head frame, or when the armour layer draws the item (a helmet). A skull is drawn through `append_elements` at the body's light with no glint. Anything else goes through `append_held_items` with `HeldDisplay::Head`, with glint when the item has it.
+  - `body_render.rs`: `BodyRig.head_swing` (0 by default; commit 2 fills it) and an `append_worn_head` call right after the armour. The skull and entity textures were already in every window's atlas (`special_models::textures()`).
+  - `render_anim` `anim/minecraft_gear.rs`: `body_rig` sets `head_swing: 0.0` (the new field only).
+- **Tests** (`minecraft_terrain`):
+  - `special_models`: `worn_skulls_are_the_seven_heads_and_not_pumpkins_or_helmets`, `the_dragon_jaw_follows_the_walk_and_rests_where_the_block_does` (0.2 rad at 0 like the placed block, 0.4 at 2.5, 0 at 7.5), `piglin_ears_flap_at_their_own_rates` (+-0.7 at 0 like the placed block; at 5.0 the right ear 0.3 and the left `-(cos(1.2 pi) + 2.5)*0.2`).
+  - `worn_head`: `a_worn_skull_is_the_head_cube_scaled_like_vanilla` (6 faces spanning 9.5/16, uvs inside the skeleton sheet, the body's light, no glint), `a_worn_dragon_head_points_its_snout_forward` (snout below -15 px, the jaw present, only the jaw moves with the walk), `a_worn_carved_pumpkin_is_its_block_model_centred_on_the_head` (6 faces of 10 px centred at head pixel (0, -4, 0), the carved face at the lowest z, glint only when enchanted), `a_helmet_is_left_to_the_armour_layer`.
+  - `body_render`: `worn_heads_are_drawn_with_the_body_and_lit_where_it_is` (a zombie head gives 12 faces, lit at the rig's cell, no glint of either kind, nothing without a head frame).
+  - `mesh`: `the_head_display_is_identity_for_blocks_without_one`.
+  - Run: `test -p minecraft_terrain --locked` (all green apart from `sections::tests::background_full_update_matches_the_synchronous_one`, which failed once under load in the full run and passes alone; it does not touch this code), `check -p launcher --locked`.
+- **Owner's test steps** (alone, then two windows: `& scripts\mp-local.ps1 -World r9-a4 -Fresh`, kit below in both; host `/time set day`, `/op Friend`):
+  1. **Inventory.** E, drag the dragon head into the helmet slot. The small character wears it with the snout forward (the screenshot 7 case). **Screenshot 1.**
+  2. **F5.** The dragon head sits on the soldier's head (the screenshot 8 case). **Screenshot 2.** (The jaw stays at rest until commit 2.)
+  3. **The other heads.** Skeleton skull, wither skeleton skull, zombie head, creeper head, player head and piglin head in turn: each sits on the head, a little bigger than it. **Screenshot 3** of any where the MW2 helmet or face pokes through.
+  4. **Carved pumpkin.** F5: the pumpkin with its carved face forward sits on the head, the size of the MW2 head. **Screenshot 4.**
+  5. **Diamond helmet.** Drawn as before, with no head or pumpkin under it.
+  6. **Two windows.** The host wears the dragon head and the friend the carved pumpkin. Each sees the other's head item on the body, and their own in F5 and in the inventory. **Screenshot 5** (both windows).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:dragon_head,minecraft:piglin_head,minecraft:skeleton_skull,minecraft:wither_skeleton_skull,minecraft:zombie_head,minecraft:creeper_head,minecraft:player_head,minecraft:carved_pumpkin,minecraft:diamond_helmet,minecraft:spyglass
+```
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
 - **A2:** the hand anchor is the posed wrist plus a fixed step along the forearm, never the MW2 weapon tags, because the tags are only at the hands while the playing MW2 animation keys them (it depends on the last raised gun's class). The item keeps the chest's orientation, not the forearm's, as in round 7 ("as a vanilla player holds it with the arm down"). `GEAR_FIT.fist = 3.5` is a first guess (vanilla's fist centre is about 4 map units past the wrist at the 0.9375 item scale; MW2's hand is a little smaller) and is tuned from the owner's screenshots.
 - **A5:** keep vanilla's rule. A respawn starts when each of the four side cells (one block above the rim, three out from the portal centre) is touched by a crystal's 2x2x2 box, so any of the three straight rim blocks per side counts and only the four diagonal corner blocks fail. Accepting only the exact middle blocks would be one line in `Crystals::in_cell` (compare `crystal.block_position() == cell`), but it is not vanilla, so it is not done. If the owner's step 2 ever shows four corner crystals starting a respawn, log the exit portal location, the four cells and each crystal's block in `try_respawn` and check `fight.exit_portal` against the visible podium (a later fix).
+
+- **A4:** worn heads follow vanilla's `CustomHeadLayer`: the seven skull items are drawn as skull models at 1.1875 times the head with no glint; every other head-slot item that is not a helmet (the carved pumpkin, or any item put there by command) is drawn as its item model with the `head` display transform and glint. A non-head armour piece in the head slot (only possible by command) is drawn as an item, as vanilla's `shouldRender(stack, HEAD)` check does. A player head is drawn with the default skin (the `profile` component is not read), as before for placed and held player heads.
 
 ## State doc changes
 
@@ -103,6 +138,7 @@ Wording for the state docs, to be applied when the round's state is written (thi
 - **`docs/MINECRAFT-SURVIVAL.md`, multiplayer and rendering:** "MW2 bodies (other players, corpses, grenades, dropped guns) are drawn in every dimension and at every depth. In Minecraft worlds the stand-in map's (`mp_rust`) cells no longer cull MW2 scene entities: every scene entity is linked into every cell, and only the frustum, sphere and LOD culling and the dimension band gate decide. MW2 maps are unchanged. MW2 FX and marks were not checked for the same culling (`adapters/fx/world_mark.rs`)."
 - **`docs/MINECRAFT-SURVIVAL.md`, held items on the MW2 body:** "Minecraft items in the main hand and offhand sit in the MW2 body's right and left fist: the posed wrist plus 3.5 map units along the forearm (`GEAR_FIT.fist`), upright with the chest. The MW2 weapon tags are no longer used for Minecraft items, so the item no longer depends on which gun's animations are playing, and the two hands never overlap. The same rig serves other players' bodies, the own F5 body and the inventory character, for the host and every friend."
 - **`docs/MINECRAFT-SURVIVAL.md`, the dragon respawn:** "Four end crystals respawn the dragon like vanilla 26.3: one must touch each of the four cells one block above the exit portal's rim, three blocks out on each side. A crystal's box is two blocks wide, so a crystal on any of the three straight rim blocks of a side counts, and one on a diagonal corner block does not. A crystal on a corner block also blocks placing one on the rim block beside it."
+- **`docs/MINECRAFT-SURVIVAL.md:406`, the limitation:** drop "heads and carved pumpkins on the head". Add to the MW2 body section: "Mob heads (skeleton, wither skeleton, zombie, creeper, dragon, piglin, player) and the carved pumpkin worn in the helmet slot are drawn on the MW2 body like vanilla's `CustomHeadLayer`: skulls at 1.1875 times the head, other items with their `head` display transform, for other players, the own F5 body and the inventory character, for the host and every friend. A player head always shows the default skin."
 
 ## Combined kit
 
