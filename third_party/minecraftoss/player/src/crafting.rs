@@ -801,6 +801,21 @@ impl RecipeBook {
         })
     }
 
+    pub fn matching_id(
+        &self,
+        grid: &[Option<ItemStack>],
+        width: usize,
+        height: usize,
+    ) -> Option<&str> {
+        if grid.len() != width * height {
+            return None;
+        }
+        self.recipes
+            .iter()
+            .find(|recipe| self.recipe_matches(recipe, grid, width, height))
+            .map(|recipe| recipe.id.as_str())
+    }
+
     pub fn matches_crafting_id(
         &self,
         recipe_id: &str,

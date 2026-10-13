@@ -1334,6 +1334,25 @@ Commit: the one after `114a788b`. Fixes `settle_arsenal` from the group arsenal.
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:m4
 ```
 
+### 2. Crafting a vanilla recipe unlocks it, like vanilla
+
+Commit: the one after the clip fix. Fixes the recipe book group (C11.7.3).
+
+- **Defect:** vanilla 26.3 adds a recipe to the book when its result is taken (`ResultSlot.checkTakeAchievements` calls `awardUsedRecipes`, which calls `Player.awardRecipes` for every non-special recipe; checked with javap). The fork unlocked crafting recipes only through `inventory_changed` advancements, so planks taken onto the cursor and put straight back into the grid made a crafting table whose recipe never reached the book or the player file.
+- **Changed:**
+  - Vendored `player/src/crafting.rs`: `RecipeBook::matching_id` returns the id of the recipe `matching` would use.
+  - `minecraft_terrain/src/crafting.rs` `take_into_cursor`, which every result take goes through (click, shift-click `craft_all`, the number keys and F `swap`, Q `throw_result`): when the take succeeds, the recipe that matched is unlocked with `Inventory::unlock_recipe`. Fork recipes are skipped (they are always known and never saved), and the gun recipes of `gun_crafting` (attachments, akimbo, split) are special like vanilla's and unlock nothing. `Book::update` then highlights the new recipe and saves it in `recipeBook` like any other unlock, for the host and friends.
+- **Tests:** `minecraft_terrain` `crafting::tests::taking_a_result_unlocks_the_recipe_that_made_it` (a log taken from the 2x2 grid unlocks the planks, the planks put straight back from the cursor make sticks with `craft_all` and unlock the stick recipe, Q on the result and a number key swap unlock theirs, nothing else is unlocked). `test -p minecraft_terrain -p minecraft_survival` and `check -p launcher` green.
+- **Owner's test steps** (survival, a new world `IW4L_MINECRAFT_WORLD=r9-craft-unlock`, kit below):
+  1. Open the inventory, put the log into the 2x2 grid and click the planks result: 4 planks on the cursor.
+  2. Right-click the four grid cells so each holds one plank, without putting the planks into the inventory, and click the crafting table result. **Screenshot 1** of the recipe book: the crafting table is in it (with the new-recipe highlight).
+  3. Save and quit, join again, open the book: the crafting table is still there. **Screenshot 2.**
+- **Kit** (1 stack):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_log
+```
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.

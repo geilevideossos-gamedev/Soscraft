@@ -571,10 +571,20 @@ fn cells_mut(inventory: &mut Inventory, grid: Grid) -> &mut [Option<ItemStack>] 
 }
 
 fn take_into_cursor(inventory: &mut Inventory, grid: Grid) -> bool {
-    match grid {
+    let side = if grid == Grid::Table { 3 } else { 2 };
+    let used = inventory
+        .recipes
+        .matching_id(cells(inventory, grid), side, side)
+        .filter(|id| !crate::recipe_book::always_known(id))
+        .map(str::to_owned);
+    let taken = match grid {
         Grid::Inventory => inventory.take_crafting_output(false),
         Grid::Table => inventory.take_workbench_output(false),
+    };
+    if let Some(id) = used.filter(|_| taken) {
+        inventory.unlock_recipe(&id);
     }
+    taken
 }
 
 fn armor_slot(index: usize) -> Option<&'static str> {
@@ -1519,6 +1529,33 @@ mod tests {
         assert_eq!(id_of(&inv.slots[OFFHAND]), Some("minecraft:stick"));
         assert!(inv.crafting[2].is_none());
         assert!(!swap(&mut inv, Grid::Inventory, Some(2), 41));
+    }
+
+    #[test]
+    fn taking_a_result_unlocks_the_recipe_that_made_it() {
+        let mut inv = inventory();
+        put(&mut inv, Grid::Inventory, &[0], "minecraft:oak_log", 1);
+        assert!(!click_result(&mut inv, Grid::Table, false));
+        assert!(inv.unlocked_recipes.is_empty());
+        assert!(take(&mut inv, Grid::Inventory));
+        assert!(inv.unlocked_recipes.contains("minecraft:oak_planks"));
+        let planks = inv.cursor.take();
+        assert!(inv.slots.iter().all(Option::is_none), "the planks never entered the inventory");
+        inv.crafting[1] = planks.clone().map(|stack| ItemStack { count: 1, ..stack });
+        inv.crafting[3] = planks.map(|stack| ItemStack { count: 1, ..stack });
+        assert_eq!(craft_all(&mut inv, Grid::Inventory), 1);
+        assert!(inv.unlocked_recipes.contains("minecraft:stick"));
+
+        let mut inv = inventory();
+        put(&mut inv, Grid::Inventory, &[0], "minecraft:flint", 1);
+        assert_eq!(throw_result(&mut inv, Grid::Inventory, false).len(), 1);
+        assert!(inv.unlocked_recipes.contains("minecraft:flint_arrow"));
+
+        let mut inv = inventory();
+        put(&mut inv, Grid::Table, &[3, 4, 5], "minecraft:stone", 1);
+        assert!(swap(&mut inv, Grid::Table, None, 0));
+        assert!(inv.unlocked_recipes.contains("minecraft:stone_slab"));
+        assert_eq!(inv.unlocked_recipes.len(), 1);
     }
 
     #[test]
