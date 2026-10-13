@@ -2361,6 +2361,7 @@ pub struct EntityWorld {
     barter_throws: Vec<piglins::BarterThrow>,
     piglin_angers: Vec<piglins::PiglinAnger>,
     piglin_conversions: Vec<piglins::PiglinConversion>,
+    zombie_conversions: Vec<(u64, u64)>,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
@@ -2473,6 +2474,7 @@ impl Default for EntityWorld {
             barter_throws: Vec::new(),
             piglin_angers: Vec::new(),
             piglin_conversions: Vec::new(),
+            zombie_conversions: Vec::new(),
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: true,
@@ -3430,16 +3432,24 @@ impl EntityWorld {
         // `ConversionParams.keepEquipment`.
         zombie.head_item = old.zombie.head_item;
         zombie.main_hand = old.zombie.main_hand.clone();
+        zombie.armor = old.zombie.armor.clone();
         let yaw = old.yaw;
         // A zombie off the goal framework (the drowning model) converts
         // into another.
-        if old.ai.is_none() {
-            return self.spawn_zombie_internal(zombie, old.no_ai, false);
-        }
-        self.spawn_zombie_active(zombie, yaw)
+        let id = if old.ai.is_none() {
+            self.spawn_zombie_internal(zombie, old.no_ai, false)
+        } else {
+            self.spawn_zombie_active(zombie, yaw)
+        };
+        self.zombie_conversions.push((old_id, id));
+        id
     }
 
-    fn convert_zombie_to_drowned(&mut self, old_id: u64) -> u64 {
+    pub fn take_zombie_conversions(&mut self) -> Vec<(u64, u64)> {
+        std::mem::take(&mut self.zombie_conversions)
+    }
+
+    pub fn convert_zombie_to_drowned(&mut self, old_id: u64) -> u64 {
         let index = self
             .zombies
             .iter()
@@ -3461,7 +3471,10 @@ impl EntityWorld {
         // `ConversionParams.keepEquipment`.
         drowned.head_item = old.zombie.head_item;
         drowned.main_hand = old.zombie.main_hand.clone();
-        self.spawn_zombie_internal(drowned, old.no_ai, false)
+        drowned.armor = old.zombie.armor.clone();
+        let id = self.spawn_zombie_internal(drowned, old.no_ai, old.ai.is_some());
+        self.zombie_conversions.push((old_id, id));
+        id
     }
 
     /// The next spawned entity takes `id` (vanilla's `ENTITY_COUNTER` in a
@@ -4925,6 +4938,7 @@ impl EntityWorld {
             barter_throws: Vec::new(),
             piglin_angers: Vec::new(),
             piglin_conversions: Vec::new(),
+            zombie_conversions: Vec::new(),
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: self.mob_drops,

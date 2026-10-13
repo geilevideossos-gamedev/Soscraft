@@ -415,6 +415,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:cow",
     "minecraft:creeper",
     "minecraft:donkey",
+    "minecraft:drowned",
     "minecraft:end_crystal",
     "minecraft:ender_dragon",
     "minecraft:enderman",
@@ -711,14 +712,18 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
         }
         // Monsters and bats natural spawning makes. Riders (jockeys) wait
         // dormant with their vehicle.
-        "minecraft:zombie" | "minecraft:husk" | "minecraft:zombie_villager" | "minecraft:zombified_piglin" if tag.get("Passengers").is_none() => {
+        "minecraft:zombie" | "minecraft:husk" | "minecraft:drowned" | "minecraft:zombie_villager" | "minecraft:zombified_piglin" if tag.get("Passengers").is_none() => {
             let mut zombie = minecraftoss_entities::zombie::Zombie::new(pos);
             zombie.kind = match kind {
                 "minecraft:husk" => ZombieKind::Husk,
+                "minecraft:drowned" => ZombieKind::Drowned,
                 "minecraft:zombie_villager" => ZombieKind::ZombieVillager,
                 "minecraft:zombified_piglin" => ZombieKind::ZombifiedPiglin,
                 _ => ZombieKind::Zombie,
             };
+            if zombie.kind == ZombieKind::Drowned {
+                zombie.body.step_height = 1.0;
+            }
             if zombie.kind == ZombieKind::ZombieVillager {
                 let data = tag.get("VillagerData");
                 let field = |key: &str, default: &str| data.and_then(|d| text(d, key)).unwrap_or(default).to_owned();
@@ -733,7 +738,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             if let Some(health) = health {
                 zombie.health = health;
             }
-            let id = if no_ai { world.spawn_zombie(zombie, true) } else { world.spawn_zombie_active(zombie, yaw) };
+            let id = if no_ai { world.spawn_zombie(zombie, true) } else if zombie.kind == ZombieKind::Drowned { world.spawn_drowned_pursuit(zombie) } else { world.spawn_zombie_active(zombie, yaw) };
             let entity = world.zombie_mut(id)?;
             entity.random = random;
             // `Entity.load` turns the body and head to the saved yaw.
@@ -1781,6 +1786,12 @@ fn attribute_value(tag: &Tag, id: &str) -> Option<f64> {
 
 /// The head slot's item, when there is one: whether it can be damaged
 /// (armor can; pumpkins and heads cannot).
+pub fn converted_zombie_tag(original: &Tag) -> Tag {
+    const KEPT: [&str; 14] = ["equipment", "drop_chances", "CanPickUpLoot", "LeftHanded", "NoAI", "PersistenceRequired", "CustomName", "CustomNameVisible", "Invulnerable", "NoGravity", "PortalCooldown", "Silent", "Tags", "leash"];
+    let Tag::Compound(map) = original else { return Tag::Compound(std::collections::BTreeMap::new()) };
+    Tag::Compound(map.iter().filter(|(key, _)| KEPT.contains(&key.as_str())).map(|(key, value)| (key.clone(), value.clone())).collect())
+}
+
 /// The head, chest, legs and feet slots' item IDs from `equipment`.
 fn armor_slots(tag: &Tag) -> [Option<String>; 4] {
     ["head", "chest", "legs", "feet"].map(|slot| tag.get("equipment")?.get(slot)?.get("id")?.as_str().map(str::to_owned))
@@ -2021,5 +2032,39 @@ mod tests {
         assert!(again.hoglin_mut(id).is_none());
         assert_eq!(again.hoglins().len(), 1);
         assert_eq!(again.entity_type(again.hoglins()[0].id), Some("minecraft:zoglin"));
+    }
+
+    #[test]
+    fn a_drowned_saves_and_loads_as_a_drowned() {
+        let zombie = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:zombie\",Pos:[1.5d,64.0d,2.5d],UUID:[I;1,2,3,4],CustomName:\"Bob\",InWaterTime:600,attributes:[{id:\"minecraft:max_health\",base:20.0d}],equipment:{mainhand:{id:\"minecraft:trident\",count:1,components:{\"minecraft:damage\":7}},head:{id:\"minecraft:iron_helmet\",count:1}}}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &zombie).expect("zombies load");
+        let drowned = world.convert_zombie_to_drowned(id);
+        assert_eq!(world.take_zombie_conversions(), vec![(id, drowned)]);
+        assert!(world.take_zombie_conversions().is_empty());
+        world.zombie_mut(drowned).unwrap().zombie.health = 11.0;
+        assert_eq!(world.zombie_mut(drowned).unwrap().zombie.armor[0].as_deref(), Some("minecraft:iron_helmet"));
+        let originals: std::collections::HashMap<u64, Tag> = [(drowned, converted_zombie_tag(&zombie))].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        assert_eq!(saved.len(), 1);
+        let tag = &saved[0].1;
+        assert_eq!(text(tag, "id"), Some("minecraft:drowned"));
+        assert_eq!(text(tag, "CustomName"), Some("Bob"));
+        assert!(tag.get("InWaterTime").is_none() && tag.get("attributes").is_none());
+        assert_ne!(tag.get("UUID").and_then(Tag::as_ints), Some(vec![1, 2, 3, 4]), "a conversion is a new entity");
+        let hand = tag.get("equipment").and_then(|e| e.get("mainhand")).expect("the trident is saved");
+        assert_eq!(text(hand, "id"), Some("minecraft:trident"));
+        assert_eq!(hand.get("components").and_then(|c| c.get("minecraft:damage")).and_then(Tag::as_i64), Some(7));
+        assert!(SIMULATED_KINDS.contains(&"minecraft:drowned"));
+        let mut fresh = EntityWorld::default();
+        let loaded = spawn_saved(&mut fresh, tag).expect("a drowned loads");
+        assert_eq!(fresh.entity_type(loaded), Some("minecraft:drowned"));
+        let e = fresh.zombie_mut(loaded).unwrap();
+        assert_eq!(e.zombie.kind, ZombieKind::Drowned);
+        assert_eq!(e.zombie.health, 11.0);
+        assert_eq!(e.zombie.main_hand.as_deref(), Some("minecraft:trident"));
+        assert_eq!(e.zombie.armor[0].as_deref(), Some("minecraft:iron_helmet"));
+        assert_eq!(e.zombie.body.step_height, 1.0);
+        assert!(e.attack_only && e.ai.is_none() && !e.no_ai, "a loaded drowned fights with its attack goal");
     }
 }

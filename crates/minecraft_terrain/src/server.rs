@@ -847,10 +847,19 @@ impl ServerSim {
         for conversion in self.mobs.take_piglin_conversions() {
             self.mob_tags.insert(conversion.zombified, crate::piglin_save::converted_tag(&conversion));
         }
+        self.carry_zombie_conversions();
         self.explode_creepers();
         self.explode_fireballs();
         self.explode_blasts(players);
         self.sound_potion_breaks();
+    }
+
+    fn carry_zombie_conversions(&mut self) {
+        for (old, new) in self.mobs.take_zombie_conversions() {
+            if let Some(tag) = self.mob_tags.remove(&old) {
+                self.mob_tags.insert(new, crate::server_mobs::converted_zombie_tag(&tag));
+            }
+        }
     }
 
     fn throw_barters(&mut self) {
@@ -6355,8 +6364,8 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
-    const HATCHING_EGGS: [&str; 36] = [
-        "bat", "blaze", "bogged", "cave_spider", "chicken", "cow", "creeper", "donkey", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "magma_cube", "mooshroom", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
+    const HATCHING_EGGS: [&str; 37] = [
+        "bat", "blaze", "bogged", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "magma_cube", "mooshroom", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
         "villager", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
     ];
 
@@ -6391,6 +6400,25 @@ mod tests {
         }
         assert_eq!(eggs.len(), 88);
         assert_eq!(hatched, HATCHING_EGGS);
+    }
+
+    #[test]
+    fn a_zombie_that_drowns_keeps_its_equipment_and_name_as_a_drowned() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        let nbt = minecraftoss_core::snbt::parse_compound(r#"{CustomName:"Bob",equipment:{mainhand:{id:"minecraft:trident",count:1,components:{"minecraft:damage":7}}}}"#).unwrap();
+        server.summon("minecraft:zombie", [8.5, 200.0, 8.5], Some(&nbt), 0.0).unwrap();
+        let zombie = server.mobs.zombies().last().expect("a zombie").id;
+        let drowned = server.mobs.convert_zombie_to_drowned(zombie);
+        server.carry_zombie_conversions();
+        assert!(!server.mob_tags.contains_key(&zombie));
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = tags.iter().find(|(id, _)| *id == drowned).expect("the drowned is saved");
+        assert_eq!(tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:drowned"));
+        assert_eq!(tag.get("CustomName").and_then(minecraftoss_core::nbt::Tag::as_str), Some("Bob"));
+        let hand = tag.get("equipment").and_then(|e| e.get("mainhand")).expect("the trident is saved");
+        assert_eq!(hand.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:trident"));
+        assert_eq!(hand.get("components").and_then(|c| c.get("minecraft:damage")).and_then(minecraftoss_core::nbt::Tag::as_i64), Some(7));
     }
 
     fn spawner_with_egg(difficulty: i32, rule: bool) -> Option<ServerSim> {

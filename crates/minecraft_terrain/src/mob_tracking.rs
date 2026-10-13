@@ -795,6 +795,38 @@ mod tests {
     }
 
     #[test]
+    fn a_friend_sees_a_drowned() {
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(700);
+        let (drowned, tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:drowned\",Pos:[3.5d,64.0d,0.5d],Health:9.0f,IsBaby:1b,equipment:{mainhand:{id:\"minecraft:trident\",count:1}}}",
+        );
+        assert_eq!(tracking_range("minecraft:drowned"), 8);
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(drowned, tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let added: Vec<(u64, Tag)> = tracked
+            .events_of(3)
+            .map(|event| match event {
+                MobEvent::Add(id, tag) => (*id, tag.clone()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(added.len(), 1);
+        let (id, sent) = &added[0];
+        assert_eq!(*id, drowned);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, drowned, sent));
+        assert_eq!(friend.entity_type(drowned), Some("minecraft:drowned"));
+        let shown = friend.zombie_mut(drowned).unwrap();
+        assert!(shown.zombie.baby);
+        assert_eq!(shown.zombie.main_hand.as_deref(), Some("minecraft:trident"));
+        assert_eq!(shown.zombie.body.step_height, 1.0);
+    }
+
+    #[test]
     fn a_loaded_strider_and_its_rider_are_added_as_two_mobs_the_friend_can_spawn() {
         let mut host = EntityWorld::default();
         let jockey = saved(
