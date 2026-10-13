@@ -119,6 +119,47 @@ Decisions:
 - The title is filtered but not trimmed on the host; the sign screen (B8.3) trims it before sending, as vanilla's client does.
 - No in-game steps for this commit alone: until B8.3 there is no screen that sends an edit.
 
+### B8.3 Minecraft books and quills open vanilla's edit and sign screens
+
+Base: 02da42c3 (B8.2).
+
+What changed:
+- `frame`:
+  - `McScreen::BookEdit` and `McScreen::BookSign`.
+  - `MinecraftUi.book_edit: Option<McBookEdit { pages, page, cursor, highlight, title, title_cursor, title_highlight, author, since }>` (`title_highlight` added so the title box can select like vanilla's `EditBox`).
+  - `McFont::split_ranges(text, width) -> Vec<Range<usize>>` (byte ranges, same wrapping rules); `split` now maps over it.
+- New `hud/src/minecraft_book_edit.rs` (staged content passes the edition 2024 rustfmt check with empty output): layout, input and drawing of both screens with the vanilla 26.3 numbers.
+  - BookEdit: book at ((w-192)/2, 2); `MultiLineEditBox` area ((w-114)/2-8, 28, 122x134), text origin +4; `book.pageIndicator` right-aligned at (left+148, top+16); back arrow (left+43, top+157) only when page > 0; forward (left+116, top+157) always, appending an empty page on the last page while there are fewer than 100; Sign (`book.signButton`) at w/2-100 and Done (`gui.done`) at w/2+2, 98x20 at y 196.
+  - Typing through `minecraft_chat::fold_typed` and `minecraft_edit::Edit`; new `Edit::multiline(self)` lets `'\n'` through `insert`, so Enter and keypad Enter add a line. Every insert, paste, cut and delete runs on a copy and is refused whole when the copy needs more than 14 display lines (114 px, +1 when it ends in `'\n'`); 1024 characters per page.
+  - Keys: Left/Right (Ctrl by word), Up/Down by display line through `split_ranges` (vanilla's `seekCursorLine`: x of the cursor + 2, then `plainSubstrByWidth` on the target line), Home/End per display line (Ctrl: whole page), Shift extends the selection, Ctrl+A/C/V/X through the chat clipboard, Backspace/Delete (Ctrl by word), PageUp/PageDown and the pad triggers press the arrows. Clicking in the text moves the cursor (Shift-click selects).
+  - Cursor: a black 1 px bar from y-1 to y+10 inside the text and `_` after the last character, blinking at 300 ms from when the screen opened.
+  - Done trims trailing empty pages, pushes `EditBook { title: None }` and `Close`. Esc pushes only `Close` (the generic hud Escape), which discards the edits as vanilla does.
+  - BookSign: `book.editTitle` centred in [left+36, left+150] at y 34; the title box at ((w-114)/2-3, 50), centred, black, at most 15 characters; `book.byAuthor` dark gray centred at y 60; `book.finalizeWarning` wrapped to 114 at (left+36, 82); "Sign and Close" (`book.finalizeButton`) drawn with `widget/button_disabled` and inactive while the title is blank; Cancel (`gui.cancel`) goes back to BookEdit with the title kept. Enter with a non-empty title (or the button) pushes `EditBook { pages with trailing empties kept, title: Some(trimmed) }` and `Close`.
+- `hud/src/minecraft_inventory.rs`: the `typing` gate covers BookEdit and BookSign (E, Q and the digit keys type text); a draw and input branch sits beside the lectern branch.
+- `hud/src/minecraft_screens.rs`: size [192,192] and sheet `book` for both screens.
+- `render_anim`:
+  - `minecraft_gui.rs`: `gui.cancel` added to `TEXT_PREFIXES` (the atlas test now expects it).
+  - `minecraft_inventory.rs`: `show_book_editor(ui, slot, pages, author)` sets `BookSource::Held(slot)` and `ui.book_edit`, clips each page to 1024 characters and starts a book with no pages on one empty page, cursor at the end of page 1 (refused while another screen is open). `book_screen` keeps BookEdit/BookSign shown while an editor is open; `close_book` also clears `book_edit`. `EditBook` goes through the existing `apply_input` path to `books::edit_book`.
+  - `minecraft_world.rs`: on `OpenBook { kind: Write }` with no screen open, the host opens the editor with the slot's pages (`lectern::pages_text`) and the player's name.
+
+Tests added:
+- frame `split_ranges_match_split` (13 texts at 7 widths against the old string-based `split`, ordered and in-bounds ranges, exact ranges for 5 cases). `pages_wrap_at_114_pixels_and_14_lines` stays green.
+- hud `minecraft_edit`: the existing filter test also checks that `multiline()` keeps `'\n'`.
+- hud `minecraft_book_edit`: `edit_layout_matches_vanilla` (width 427: text origin (152,32), back (160,159,23,13), forward (233,159,23,13), Sign [113,196,98,20], Done [215,196,98,20], title box x 153 y 50, the warning at (153,82), the back arrow hidden on page 1), `typing_stops_at_14_lines_and_1024_chars` (Enter stops at 13 newlines, a 25-letter line stops at 19, an overflowing paste is refused whole, 1024 characters, `§` and tab dropped), `enter_inserts_a_newline_and_up_down_move_by_display_line` (also Home/End per wrapped line, Ctrl+Home/End, Ctrl+Left/Right, Ctrl+Backspace, keypad Enter, a click in the text), `forward_on_the_last_page_adds_one_up_to_100`, `done_trims_trailing_empty_pages_and_esc_discards`, `sign_and_close_waits_for_a_title_and_cancel_keeps_it` (blank title refused, 15-character limit, Cancel keeps the title and puts the cursor at the page end, Enter and the button sign with the trimmed title and trailing empty pages kept), `typing_in_a_book_does_not_toggle_the_inventory`, `copy_cut_and_select_all_use_the_clipboard`.
+- render_anim `a_book_and_quill_opens_the_editor_and_keeps_its_screen` (empty book starts with one page, refused over another screen, BookSign survives `apply_input`, Esc keeps the quill unchanged, a 1100-character page is clipped to 1024, Done writes the pages into the offhand quill).
+
+Checked with javap (26.3):
+- `TextCursorUtils.extractInsertCursor(g, x, y, color, 9 + 1)` fills (x, y-1, x+1, y+10); `extractAppendCursor` draws `_`; `isCursorVisible(ms)` is `ms / 300 % 2 == 0`. The insert x is inner left + `font.width(line start..cursor)`.
+- `BookSignScreen.keyPressed` signs on Enter when the title box value is not empty (`isEmpty`, not `isBlank`), so a title of only spaces signs with the empty trimmed title, as in vanilla. The button stays inactive for a blank title (`StringUtil.isBlank`).
+- `BookEditScreen.updatePageContent` calls `MultiLineEditBox.setValue(page, true)`, which puts the cursor at the page end; the screen is re-initialised when Cancel returns to it, so Cancel puts the cursor at the end of the page.
+
+Decisions:
+- Cancel on the sign screen puts the edit cursor back at the end of the page (vanilla re-initialises the edit screen).
+- **Not vanilla (approximation):** a selection is drawn as a solid blue box with white text. Vanilla's `textHighlight` uses a colour-logic highlight pipeline the hud painter does not have.
+- The editor needs no scrolling: 14 lines of 9 px fit the 126 px inner height, as in vanilla.
+- Switching between BookEdit and BookSign restarts the cursor blink and drops input for that one frame (the hud treats a screen change as a fresh open).
+- A friend cannot open the editor yet: `ToClient::OpenBook` and `ToServer::EditBook` come with the B8.4 group.
+
 ## Owner's test steps (B9.1)
 
 1. **Inventory (E).** Each bottle has its own liquid colour:
@@ -181,7 +222,7 @@ IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*8,minecraft:cactus*4,minecraft:mag
 
 ## Owner's test steps (B8)
 
-Numbered as in the brief's B8 steps. Steps 2-5 and 9 (tooltip, writing, signing, crafting and the friend) come with later groups of this track. B8.2 (`edit_book`) has no step of its own until the edit screen arrives.
+Numbered as in the brief's B8 steps. Steps 2 and 9 (the tooltip and the friend) come with later groups of this track; until the tooltip group lands, the signed book's name and "by"/"Original" lines in step 4 are not shown yet. B8.2 (`edit_book`) is tested through steps 3-5.
 
 1. **Reading from the hand.** Hold "Test" and right-click at the sky.
    - "Page 1 of 3" opens, with only the forward arrow and one wide Done button (no Take Book).
@@ -189,6 +230,20 @@ Numbered as in the brief's B8 steps. Steps 2-5 and 9 (tooltip, writing, signing,
    - Done and Esc close it.
    - Press F to move it to the offhand, select an empty hotbar slot and right-click: it opens again.
    - Holding right-click does not reopen it after Done.
+3. **Writing.** Right-click an empty book and quill.
+   - The book opens with a blinking `_` cursor, "Page 1 of 1", only the forward arrow, and the Sign and Done buttons.
+   - Type two sentences and press Enter (also keypad Enter) for a new line. Text wraps at the right edge of the page. E, Q and the number keys type letters and do not close the book.
+   - Hold a letter key: typing stops when the page has 14 lines.
+   - Left/Right, Up/Down (by wrapped line), Home/End, Ctrl+A, Ctrl+C and Ctrl+V work; clicking in the text moves the cursor.
+   - Click the forward arrow: "Page 2 of 2" and the back arrow appears. Type on it, then click Done and right-click the quill again: both pages are kept.
+   - Type more and press Esc, then reopen: the new text is gone, as in vanilla.
+   - Right-click the second book and quill ("Quill page one"): it opens on its own text, and PageDown/PageUp turn its pages.
+4. **Signing.** In the first quill, click Sign.
+   - "Enter Book Title:", "by <your name>" in dark gray and the warning text are shown, with "Sign and Close" and "Cancel".
+   - "Sign and Close" is grey and does nothing until there is a title; the title stops at 15 characters.
+   - Type "Diary", click Cancel: the edit screen is back. Click Sign again: "Diary" is still there.
+   - Click "Sign and Close". The quill becomes a written book in the same slot, and right-clicking it reads both pages.
+5. **Crafting.** Craft a book and quill from a book, an ink sac and a feather at the crafting table, then write in it and sign it (Enter in the title box also signs).
 6. **Lecterns.**
    - Place a lectern and right-click it with "Test": the book goes onto the lectern instead of opening in the hand.
    - Put a comparator behind the lectern, redstone and a lamp after it. Page turns change the signal, and Take Book works.
@@ -210,3 +265,5 @@ IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",aut
 `docs/MULTIPLAYER.md` line 162 (the `PROTOCOL` constant in the message listing): `pub const PROTOCOL: u16 = 4;`. Line 1415: "... `minecraft_net::PROTOCOL` in `Hello` is the check that counts, and it is 4 (E3, E14, E22; round 9 track B, B9.2: held potion colours in `GearItem` and `FrameView`)." Section 20 or the gear section: the net `GearItem` carries `potion: Option<u32>` (the stack's potion colour) next to `dye`, so other players' held potions are drawn in their colour.
 
 `docs/MINECRAFT-SURVIVAL.md` line 437 (books), after B8.1 and B8.2: replace "and a book can't be read from the hand." with "A written book is read from the hand (main hand or offhand) on vanilla's book screen with one wide Done button; page turns are local." Keep "Books can't be written or signed in game" until the B8.3 group lands, and add: "The host already stores a book and quill's pages and signs it into an original written book (`books::edit_book`, vanilla's `handleEditBook` limits)."
+
+After B8.3, replace "Books can't be written or signed in game" with: "The host writes in a book and quill on vanilla's edit screen (14 lines and 1024 characters a page, up to 100 pages; Done keeps the pages, Esc discards them) and signs it on vanilla's sign screen into an original written book. Not vanilla: a text selection is a plain blue box (vanilla uses an inverting highlight). Friends cannot write yet (B8.4)."

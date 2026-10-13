@@ -1303,6 +1303,12 @@ fn update(
             let shown = frame::McBook { pages: minecraft_terrain::lectern::pages_text(stack.components.as_ref()), page: 0, take: false };
             inventory_ui.show_held_book(&mut ui, slot, shown);
         }
+        if !ui.inventory_open
+            && let Some(minecraft_survival::books::OpenBook { slot, kind: minecraft_survival::books::BookUse::Write }) = open_book
+            && let Some(stack) = player.inventory.slots.get(slot).cloned().flatten()
+        {
+            inventory_ui.show_book_editor(&mut ui, slot, minecraft_terrain::lectern::pages_text(stack.components.as_ref()), &player.name);
+        }
         let now_open = player.menus.block().cloned();
         let spectator = player_mode.mode == minecraftoss_player::GameMode::Spectator;
         let open_cells: Vec<OpenCells> = std::iter::once(&*player)

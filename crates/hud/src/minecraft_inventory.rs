@@ -239,7 +239,7 @@ pub(crate) fn update_minecraft_hud(
     let open_before = ui.inventory_open;
     let hotbar = ui.game_mode.shows_hotbar();
     let searching = ui.inventory_open && ui.screen == McScreen::Creative(McTabKind::Search);
-    let typing = searching || (ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some));
+    let typing = searching || (ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some)) || crate::minecraft_book_edit::captures_typing(&ui);
     let events: Vec<bevy::input::keyboard::KeyboardInput> = typed.read().cloned().collect();
     let text: String = events.iter().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
     let reading = ui.inventory_open && ui.screen == McScreen::Lectern;
@@ -378,6 +378,33 @@ pub(crate) fn update_minecraft_hud(
         painter.gradient([0, 0, space.width, space.height], None, 0xC010_1010, 0xD010_1010);
         if let Some(book) = ui.book.as_ref() {
             crate::minecraft_book::draw(&mut painter, book, mouse);
+        }
+        ui.character_box = None;
+    } else if crate::minecraft_book_edit::captures_typing(&ui) {
+        let mouse = window.physical_cursor_position().map(|m| space.mouse([m.x, m.y]));
+        if opened && let Some(edit) = ui.book_edit.as_mut() {
+            edit.since = now;
+        }
+        if !opened && !blocked {
+            let held = MODIFIERS.map(|code| crate::minecraft_chat::held_before(keys.pressed(code), keys.just_pressed(code), keys.just_released(code)));
+            let typed = crate::minecraft_chat::fold_typed(held, &events);
+            let mut none = ();
+            let clipboard: &mut dyn crate::minecraft_chat::ChatClipboard = match clipboard.as_deref_mut() {
+                Some(clipboard) => clipboard,
+                None => &mut none,
+            };
+            let press = crate::minecraft_book_edit::Press {
+                mouse,
+                click: buttons.just_pressed(MouseButton::Left),
+                shift,
+                page_up: keys.just_pressed(KeyCode::PageUp) || pad_just(GamepadButton::LeftTrigger),
+                page_down: keys.just_pressed(KeyCode::PageDown) || pad_just(GamepadButton::RightTrigger),
+            };
+            crate::minecraft_book_edit::input(&mut ui, &gui.font, space.width, press, &typed, clipboard);
+        }
+        painter.gradient([0, 0, space.width, space.height], None, 0xC010_1010, 0xD010_1010);
+        if let Some(edit) = ui.book_edit.as_ref() {
+            crate::minecraft_book_edit::draw(&mut painter, ui.screen, edit, mouse, now);
         }
         ui.character_box = None;
     } else if ui.inventory_open {

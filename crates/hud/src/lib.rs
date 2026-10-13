@@ -18,6 +18,7 @@ mod killfeed;
 mod mantle_hint;
 mod menus;
 mod minecraft_book;
+mod minecraft_book_edit;
 mod minecraft_boss;
 mod minecraft_chat;
 mod minecraft_clicks;
