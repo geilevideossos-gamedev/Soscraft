@@ -245,6 +245,7 @@ pub struct MinecraftUi {
     pub merchant: Option<McMerchant>,
     pub effects: Vec<McEffect>,
     pub ui_sounds: Vec<&'static str>,
+    pub jump_bar: Option<f32>,
 }
 
 impl MinecraftUi {

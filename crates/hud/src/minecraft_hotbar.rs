@@ -61,6 +61,10 @@ pub(crate) fn xp_fill(progress: f32) -> i32 {
     (progress * 183.0) as i32
 }
 
+pub(crate) fn jump_fill(scale: f32) -> i32 {
+    (scale * 181.0).floor() as i32 + i32::from(scale > 0.0)
+}
+
 pub(crate) fn armor_sprites(armor: u8) -> [&'static str; 10] {
     std::array::from_fn(|i| {
         let point = i as i32 * 2 + 1;
@@ -159,11 +163,14 @@ pub(crate) fn draw_hud(
         }
         let bar_x = (p.space.width - 182) / 2;
         let bar_y = h - 24 - 5;
-        p.sprite("hud/experience_bar_background", bar_x, bar_y, 182, 5);
-        let fill = xp_fill(vitals.experience_progress.clamp(0.0, 1.0));
+        let (background, progress, fill) = match ui.jump_bar {
+            Some(scale) => ("hud/jump_bar_background", "hud/jump_bar_progress", jump_fill(scale)),
+            None => ("hud/experience_bar_background", "hud/experience_bar_progress", xp_fill(vitals.experience_progress.clamp(0.0, 1.0))),
+        };
+        p.sprite(background, bar_x, bar_y, 182, 5);
         if fill > 0 {
             p.sprite_part(
-                "hud/experience_bar_progress",
+                progress,
                 182,
                 5,
                 0,
@@ -278,5 +285,13 @@ mod tests {
         assert_eq!(xp_fill(0.5), 91);
         assert_eq!(xp_fill(1.0), 183);
         assert_eq!(sprite_name("gui:hud/air"), "hud/air");
+    }
+
+    #[test]
+    fn the_jump_bar_fills_like_mth_lerp_discrete() {
+        assert_eq!(jump_fill(0.0), 0);
+        assert_eq!(jump_fill(0.1), 19);
+        assert_eq!(jump_fill(0.5), 91);
+        assert_eq!(jump_fill(1.0), 182);
     }
 }

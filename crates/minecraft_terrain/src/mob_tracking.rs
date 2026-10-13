@@ -71,6 +71,7 @@ pub struct MobShow {
     pub crouching: bool,
     pub sprinting: bool,
     pub on_sleeper: bool,
+    pub ridden: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -368,6 +369,17 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             },
         );
     }
+    for e in world.cows() {
+        if let Some(horse) = &e.horse {
+            put(
+                e.id,
+                MobShow {
+                    ridden: horse.ridden,
+                    ..MobShow::default()
+                },
+            );
+        }
+    }
     for e in world.ghasts() {
         put(
             e.id,
@@ -473,6 +485,9 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     let (id, show) = (mob.id, mob.show);
     if let Some(e) = world.cow_mut(id) {
         place(&mut e.previous_position, &mut e.cow.body, mob);
+        if let Some(horse) = e.horse.as_mut() {
+            horse.ridden = show.ridden;
+        }
     }
     if let Some(e) = world.sheep_mut(id) {
         place(&mut e.previous_position, &mut e.body, mob);
@@ -988,6 +1003,43 @@ mod tests {
         assert!(spawn_tracked(&mut friend, *id, sent));
         let l = horse(&mut friend, llama);
         assert_eq!((l.chest, l.body_item.as_deref()), (true, Some("minecraft:black_carpet")));
+    }
+
+    #[test]
+    fn a_friend_sees_a_horse_get_its_saddle_and_armour_and_a_rider() {
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(800);
+        let (horse, horse_tag) = spawn(&mut host, "{id:\"minecraft:horse\",Pos:[2.5d,64.0d,0.5d],Tame:1b}");
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(horse, horse_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+        }
+        assert!(!friend.cow_mut(horse).unwrap().horse.as_ref().unwrap().saddled);
+        {
+            let h = host.cow_mut(horse).unwrap().horse.as_mut().unwrap();
+            h.saddled = true;
+            h.body_item = Some("minecraft:golden_horse_armor".to_owned());
+        }
+        let mut looks = Vec::new();
+        for _ in 0..LOOK_TICKS {
+            trackers.tick();
+            looks.extend(trackers.update(&host, &originals, &[watcher(3, 0.5)]).events);
+        }
+        let (_, MobEvent::Look(id, sent)) = &looks[0] else { panic!("{looks:?}") };
+        assert!(spawn_tracked(&mut friend, *id, sent));
+        let h = friend.cow_mut(horse).unwrap().horse.clone().unwrap();
+        assert!(h.saddled && h.body_item.as_deref() == Some("minecraft:golden_horse_armor"));
+        host.cow_mut(horse).unwrap().horse.as_mut().unwrap().ridden = true;
+        let show = shows(&host)[&horse];
+        assert!(show.ridden);
+        let moved = crate::client_mobs::server_mobs(&host).into_iter().find(|m| m.id == horse).map(|m| ServerMob { show, ..m }).unwrap();
+        show_on(&mut friend, &moved);
+        assert!(friend.cow_mut(horse).unwrap().horse.as_ref().unwrap().ridden, "the reins show while someone rides it");
     }
 
     #[test]

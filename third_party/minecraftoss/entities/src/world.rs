@@ -2569,7 +2569,8 @@ pub struct EntityWorld {
     /// 13 anger, 14 happiness).
     entity_events: Vec<(u64, u8)>,
     passengers: std::collections::BTreeMap<u64, Vec<Rider>>,
-    player_dismounts: Vec<(u64, u64)>,
+    player_dismounts: Vec<(u64, u64, Option<DVec3>)>,
+    ride_jumps: HashMap<u64, crate::horse::RideJump>,
 }
 
 impl Default for EntityWorld {
@@ -2665,6 +2666,7 @@ impl Default for EntityWorld {
             entity_events: Vec::new(),
             passengers: std::collections::BTreeMap::new(),
             player_dismounts: Vec::new(),
+            ride_jumps: HashMap::new(),
         }
     }
 }
@@ -5321,6 +5323,7 @@ impl EntityWorld {
             entity_events: Vec::new(),
             passengers: self.passengers.clone(),
             player_dismounts: Vec::new(),
+            ride_jumps: self.ride_jumps.clone(),
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
         copy.order = self.order.iter().copied().filter(|key| kept.contains(&key.id())).collect();
@@ -5505,6 +5508,7 @@ impl EntityWorld {
         self.game_time += 1;
         let game_time = self.game_time;
         self.set_pushing_players(players);
+        self.tick_ride_jumps();
         self.resolve_piglin_angers(players);
         let ticking: HashSet<u64> = self.positions().filter(|&(_, position)| ticks(position)).map(|(id, _)| id).collect();
         // Snapshot membership: newborns join the world immediately but start
@@ -7131,7 +7135,11 @@ impl EntityWorld {
             let horse_inputs = self.horse_inputs(index, &candidates, players);
             let mut horse_outputs = equines::HorseOutputs::default();
             let mut breeding_partner = None;
+            let ride = self.horse_ride(index);
             let entity = &mut self.cows[index];
+            for control in [crate::goals::Control::Move, crate::goals::Control::Jump, crate::goals::Control::Look] {
+                entity.goals.set_enabled(control, !ride.mob_controlled);
+            }
             entity.tick_count += 1;
             entity.forget_old_attacker();
             entity.update_fluid(world);
@@ -7196,7 +7204,11 @@ impl EntityWorld {
                 // `LivingEntity.aiStep` still settles small motion.
                 entity.cow.body.trim_small_velocity();
             }
-            if !entity.no_ai && immobile {
+            let ridden = ride.player.filter(|_| !entity.no_ai);
+            if let Some(controls) = &ridden {
+                entity.ride_tick(&*world, controls);
+            }
+            if !entity.no_ai && immobile && ridden.is_none() {
                 entity.cow.body.trim_small_velocity();
                 if players.iter().any(|player| player.alive && !player.spectator && player.position.distance_squared(entity.cow.body.position) < 32.0 * 32.0) {
                     entity.no_action_time = 0;
@@ -7231,7 +7243,7 @@ impl EntityWorld {
                     entity.hurt(damage, DamageSourceKind::Generic);
                 }
             }
-            if !entity.no_ai && !immobile {
+            if !entity.no_ai && !immobile && ridden.is_none() {
                 entity.cow.body.trim_small_velocity();
                 // Mob.checkDespawn clears inactivity near a player before serverAiStep.
                 if players.iter().any(|player| {
@@ -7275,6 +7287,7 @@ impl EntityWorld {
                     mates: horse_inputs.mates,
                     tempters: horse_inputs.tempters,
                     llama: horse_inputs.llama,
+                    crazy: ride.crazy,
                 };
                 if full_goal_tick {
                     entity.goals.tick(&mut context, &*world);
@@ -7317,6 +7330,13 @@ impl EntityWorld {
                         }
                         CowGoalEffect::Jump => jump_queued = true,
                         CowGoalEffect::Spit { aim } => horse_outputs.spit = Some(aim),
+                        CowGoalEffect::Tame(player) => horse_outputs.tamed = Some(player),
+                        CowGoalEffect::Temper(by) => {
+                            if let Some(horse) = &mut entity.horse {
+                                horse.modify_temper(by);
+                            }
+                        }
+                        CowGoalEffect::Buck => horse_outputs.buck = true,
                         CowGoalEffect::JoinCaravan(head) => horse_outputs.join.push(head),
                         CowGoalEffect::LeaveCaravan(head) => horse_outputs.leave.push(head),
                         CowGoalEffect::Stand => {
@@ -7423,7 +7443,7 @@ impl EntityWorld {
             }
             let id = self.cows[index].id;
             self.push_entities(EntityKey::Cow(id), &*world, game_time, ticks);
-            self.horse_outputs(index, horse_outputs);
+            self.horse_outputs(index, horse_outputs, &*world);
             let breeding_partner = breeding_partner.filter(|&partner| !self.breed_horses(index, partner));
             if let Some(partner_id) = breeding_partner {
                 if let Some(partner_index) = self.cows.iter().position(|e| e.id == partner_id) {
@@ -7494,7 +7514,7 @@ impl EntityWorld {
                     }
                     let p = entity.cow.body.position;
                     let below = (p.x.floor() as i32, p.y.floor() as i32 - 1, p.z.floor() as i32);
-                    if !horse.eating && horse.kind.can_eat_grass() && entity.random.next_int(300) == 0 && world.block(below).is_some_and(|b| b.id == "minecraft:grass_block") {
+                    if !horse.eating && horse.kind.can_eat_grass() && !ride.carrying && entity.random.next_int(300) == 0 && world.block(below).is_some_and(|b| b.id == "minecraft:grass_block") {
                         horse.eating = true;
                     }
                     if horse.eating {
@@ -7506,6 +7526,7 @@ impl EntityWorld {
                     }
                 }
                 horse.tick_animation();
+                horse.ridden = ride.carrying;
             }
             entity.tick_trader_despawn();
         }

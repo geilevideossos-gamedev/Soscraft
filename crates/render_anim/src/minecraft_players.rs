@@ -749,6 +749,7 @@ pub(crate) fn struck(
         steps,
         riding,
         reattach,
+        jump_bar,
         ..
     } = player;
     let local_uuid = &*uuid;
@@ -852,6 +853,7 @@ pub(crate) fn struck(
     crate::minecraft_riding::step(
         riding, reattach, steps, entities, authority, rider, origin, present,
     );
+    *jump_bar = riding.and_then(|_| entities.view.world.ride_jump_scale(player_id));
     for to in teleports
         .iter()
         .filter(|(uuid, _)| alive && uuid == local_uuid)
@@ -1139,6 +1141,8 @@ pub(crate) fn tick_actor<'a>(
     }
     let ps = authority.player(sim::ClientId(player.id.0))?;
     let alive = ps.pm_type == 0;
+    let (forward, strafe, jumping) =
+        crate::minecraft_riding::ride_input(authority, sim::ClientId(player.id.0));
     let view = minecraft_survival::entities::PlayerView {
         feet: sim::voxel::to_block(origin, ps.origin),
         alive,
@@ -1169,6 +1173,9 @@ pub(crate) fn tick_actor<'a>(
             .map(|effect| i32::from(effect.amplifier)),
         sleeping: player.sleeping.map(|sleeping| sleeping.head),
         sleep_timer: player.sleep_timer,
+        forward,
+        strafe,
+        jumping,
     };
     let actor = TickActor {
         id: u64::from(player.id.0),

@@ -88,6 +88,7 @@ pub fn player_view(player: &Player) -> PlayerView {
             })
             .collect(),
         using: using(player),
+        jump_bar: player.jump_bar,
     }
 }
 

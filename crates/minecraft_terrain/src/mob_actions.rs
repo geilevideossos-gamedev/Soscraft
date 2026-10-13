@@ -137,6 +137,11 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
     let mut outcome = MobOutcome::default();
     match hit {
         MobHit::Cow(id) if world.cows().iter().any(|e| e.id == id && e.horse.is_some()) => {
+            if world.horse_rides_on_use(id, actor.player, held.as_deref()) {
+                outcome.handled = true;
+                outcome.mount = Some(id);
+                return outcome;
+            }
             if world.horse_interact(id, actor.player, actor.inventory, selected, infinite) == InteractionResult::Pass {
                 return outcome;
             }
@@ -460,15 +465,17 @@ mod tests {
         let cases: &[(MobHit, Option<&str>, bool)] = &[
             (MobHit::Cow(wild_llama), Some("minecraft:hay_block"), true),
             (MobHit::Cow(wild_llama), Some("minecraft:chest"), true),
-            (MobHit::Cow(wild_llama), None, false),
+            (MobHit::Cow(wild_llama), None, true),
             (MobHit::Cow(llama), Some("minecraft:chest"), true),
             (MobHit::Cow(llama), Some("minecraft:white_carpet"), true),
-            (MobHit::Cow(llama), Some("minecraft:carrot"), false),
+            (MobHit::Cow(llama), Some("minecraft:carrot"), true),
             (MobHit::Cow(mule), Some("minecraft:chest"), true),
-            (MobHit::Cow(mule), Some("minecraft:white_carpet"), false),
-            (MobHit::Cow(mule), Some("minecraft:bucket"), false),
+            (MobHit::Cow(mule), Some("minecraft:white_carpet"), true),
+            (MobHit::Cow(mule), Some("minecraft:bucket"), true),
             (MobHit::Cow(horse), Some("minecraft:golden_carrot"), true),
-            (MobHit::Cow(horse), Some("minecraft:chest"), false),
+            (MobHit::Cow(horse), Some("minecraft:chest"), true),
+            (MobHit::Cow(horse), Some("minecraft:saddle"), true),
+            (MobHit::Cow(wild_llama), Some("minecraft:saddle"), true),
             (MobHit::Feline(stray), Some("minecraft:cod"), true),
             (MobHit::Feline(stray), Some("minecraft:stick"), false),
             (MobHit::Feline(pet), None, true),
@@ -624,6 +631,35 @@ mod tests {
         world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, ..Default::default() }]);
         assert!(world.force_riding(minecraftoss_entities::world::Rider::Player(7), saddled));
         let (outcome, _) = use_on(&mut world, MobHit::Strider(saddled), "minecraft:warped_fungus_on_a_stick");
+        assert!(outcome.mount.is_none(), "one rider at a time");
+    }
+
+    #[test]
+    fn right_click_mounts_a_horse_and_a_saddle_goes_on_a_tame_one() {
+        use minecraftoss_entities::horse::{HorseKind, HorseState};
+        let mut world = EntityWorld::default();
+        let mut horse = HorseState::new(HorseKind::Horse);
+        horse.max_health = 20.0;
+        let id = world.spawn_horse(Cow::new(DVec3::new(0.5, 64.0, 0.5)), horse, false);
+        let mut inventory = holding(None);
+        let mut actor = Actor { inventory: &mut inventory, selected: 0, infinite: false, entity_loot: None, shearing_loot: None, player: 0 };
+        let outcome = interact(&mut world, MobHit::Cow(id), &mut actor);
+        assert!(outcome.handled && outcome.mount == Some(id), "an empty hand mounts a wild horse to tame it");
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:saddle");
+        assert!(outcome.handled && outcome.mount.is_none(), "a wild horse rears at the saddle");
+        assert!(!world.cow_mut(id).unwrap().horse.as_ref().unwrap().saddled);
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().tame = true;
+        let (outcome, inventory) = use_on(&mut world, MobHit::Cow(id), "minecraft:saddle");
+        assert!(outcome.handled && outcome.mount.is_none());
+        assert!(world.cow_mut(id).unwrap().horse.as_ref().unwrap().saddled);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3));
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:stick");
+        assert_eq!(outcome.mount, Some(id), "a tame horse is ridden with any other item");
+        world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }]);
+        assert!(!would_interact(&world, MobHit::Cow(id), &holding(None), 0, false, 0), "crouching on a tame horse is for its inventory");
+        world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, ..Default::default() }]);
+        assert!(world.force_riding(minecraftoss_entities::world::Rider::Player(7), id));
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:stick");
         assert!(outcome.mount.is_none(), "one rider at a time");
     }
 

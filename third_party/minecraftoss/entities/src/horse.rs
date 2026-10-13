@@ -54,6 +54,23 @@ impl HorseKind {
         !self.is_llama()
     }
 
+    pub fn saddleable(self) -> bool {
+        !self.is_llama()
+    }
+
+    pub fn wears_armor(self) -> bool {
+        self == HorseKind::Horse
+    }
+
+    pub fn passenger_attachment(self) -> (f32, f32) {
+        match self {
+            HorseKind::Horse => (1.44375, 0.0),
+            HorseKind::Donkey => (1.1125, 0.0),
+            HorseKind::Mule => (1.2125, 0.0),
+            HorseKind::Llama | HorseKind::TraderLlama => (1.37, -0.3),
+        }
+    }
+
     pub fn max_temper(self) -> i32 {
         if self.is_llama() { 30 } else { 100 }
     }
@@ -183,6 +200,10 @@ pub struct HorseState {
     pub leashed: bool,
     pub despawn_delay: i32,
     pub fight: LlamaFight,
+    pub saddled: bool,
+    pub owner: Option<u128>,
+    pub jump_pending: f32,
+    pub ridden: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -313,7 +334,42 @@ impl HorseState {
             leashed: false,
             despawn_delay: TRADER_DESPAWN_DELAY,
             fight: LlamaFight::default(),
+            saddled: false,
+            owner: None,
+            jump_pending: 0.0,
+            ridden: false,
         }
+    }
+
+    pub fn jump_scale(power: i32) -> f32 {
+        if power >= 90 {
+            1.0
+        } else {
+            0.4 + 0.4 * power as f32 / 90.0
+        }
+    }
+
+    pub fn on_player_jump(&mut self, power: i32) {
+        if !self.saddled {
+            return;
+        }
+        let power = if power < 0 {
+            0
+        } else {
+            self.allow_stand_sliding = true;
+            self.stand_if_possible();
+            power
+        };
+        self.jump_pending = Self::jump_scale(power);
+    }
+
+    pub fn ridden_input(&self, on_ground: bool, strafe: f32, forward: f32) -> glam::DVec3 {
+        if on_ground && self.jump_pending == 0.0 && self.standing && !self.allow_stand_sliding {
+            return glam::DVec3::ZERO;
+        }
+        let x = strafe * 0.5;
+        let z = if forward <= 0.0 { forward * 0.25 } else { forward };
+        glam::DVec3::new(f64::from(x), 0.0, f64::from(z))
     }
 
     pub fn set_strength(&mut self, strength: i32) {
@@ -445,6 +501,45 @@ impl HorseState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RideJump {
+    pub ticks: i32,
+    pub scale: f32,
+    pub was_jumping: bool,
+}
+
+impl RideJump {
+    pub fn tick(&mut self, jumpable: bool, jumping: bool) -> Option<i32> {
+        let was = std::mem::replace(&mut self.was_jumping, jumping);
+        if !jumpable {
+            self.scale = 0.0;
+            return None;
+        }
+        if self.ticks < 0 {
+            self.ticks += 1;
+            if self.ticks == 0 {
+                self.scale = 0.0;
+            }
+        }
+        if was && !jumping {
+            self.ticks = -10;
+            return Some((self.scale * 100.0).floor() as i32);
+        }
+        if !was && jumping {
+            self.ticks = 0;
+            self.scale = 0.0;
+        } else if was {
+            self.ticks += 1;
+            self.scale = if self.ticks < 10 {
+                self.ticks as f32 * 0.1
+            } else {
+                0.8 + 2.0 / (self.ticks - 9) as f32 * 0.1
+            };
+        }
+        None
+    }
+}
+
 /// `AbstractHorse.getAmbientSoundInterval` (and its stand interval).
 pub const AMBIENT_SOUND_INTERVAL: i32 = 400;
 /// `AbstractHorse.getSoundVolume`.
@@ -471,5 +566,52 @@ mod tests {
             horse.tick_animation();
         }
         assert!(!horse.standing, "twenty ticks of rearing");
+    }
+
+    #[test]
+    fn a_held_jump_charges_to_full_at_ten_ticks_and_eases_off_after() {
+        let mut jump = RideJump::default();
+        assert_eq!(jump.tick(true, true), None);
+        assert_eq!(jump.scale, 0.0);
+        for _ in 0..5 {
+            jump.tick(true, true);
+        }
+        assert!((jump.scale - 0.5).abs() < 1e-6, "{}", jump.scale);
+        for _ in 0..5 {
+            jump.tick(true, true);
+        }
+        assert!((jump.scale - 1.0).abs() < 1e-6, "{}", jump.scale);
+        for _ in 0..10 {
+            jump.tick(true, true);
+        }
+        assert!((jump.scale - (0.8 + 2.0 / 11.0 * 0.1)).abs() < 1e-6, "{}", jump.scale);
+        assert_eq!(jump.tick(true, false), Some(81));
+        for _ in 0..9 {
+            jump.tick(true, false);
+        }
+        assert!(jump.scale > 0.0, "the bar holds for ten ticks");
+        jump.tick(true, false);
+        assert_eq!(jump.scale, 0.0);
+        jump.tick(false, true);
+        assert_eq!(jump.tick(false, false), None, "no jump off a horse");
+    }
+
+    #[test]
+    fn a_saddled_horse_takes_the_released_power_and_rears() {
+        let mut horse = HorseState::new(HorseKind::Horse);
+        horse.on_player_jump(100);
+        assert_eq!(horse.jump_pending, 0.0, "only a saddled horse jumps");
+        horse.saddled = true;
+        horse.on_player_jump(45);
+        assert!((horse.jump_pending - 0.6).abs() < 1e-6);
+        assert!(horse.standing && horse.allow_stand_sliding);
+        horse.on_player_jump(95);
+        assert_eq!(horse.jump_pending, 1.0);
+        let input = horse.ridden_input(true, 1.0, -1.0);
+        assert_eq!(input, glam::DVec3::new(0.5, 0.0, -0.25));
+        horse.jump_pending = 0.0;
+        horse.allow_stand_sliding = false;
+        assert_eq!(horse.ridden_input(true, 0.0, 1.0), glam::DVec3::ZERO, "rearing on the ground it stands still");
+        assert_eq!(horse.ridden_input(false, 0.0, 1.0), glam::DVec3::new(0.0, 0.0, 1.0));
     }
 }

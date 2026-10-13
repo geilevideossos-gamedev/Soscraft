@@ -1057,6 +1057,7 @@ fn show_player(
     let vitals = hud.vitals(view, dt, eye_in_water, eye_in_lava);
     ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));
     ui.effects = crate::minecraft_world::mc_effects(&hud.effects(view));
+    ui.jump_bar = view.jump_bar;
     ui.fire_frames = fire_frames.clone();
     let held = inventory.slots[selection.slot].as_ref();
     ui.holding_item = interacts && held.is_none_or(|stack| weapon_of(stack).is_none());

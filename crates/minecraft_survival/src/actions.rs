@@ -2126,6 +2126,9 @@ pub(crate) mod tests {
                 hero: None,
                 sleeping: None,
                 sleep_timer: 0,
+                forward: 0.0,
+                strafe: 0.0,
+                jumping: false,
             };
             let mut actors = [TickActor {
                 id: 0,

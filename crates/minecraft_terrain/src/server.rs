@@ -465,7 +465,7 @@ impl ServerSim {
     }
 
     pub fn take_vehicle_losses(&mut self) -> Vec<(u64, u64, Option<[f64; 3]>)> {
-        self.mobs.take_player_dismounts().into_iter().map(|(player, vehicle)| (player, vehicle, None)).collect()
+        self.mobs.take_player_dismounts().into_iter().map(|(player, vehicle, spot)| (player, vehicle, spot.map(|spot| spot.to_array()))).collect()
     }
 
     pub fn dismount(&mut self, player: u64) {

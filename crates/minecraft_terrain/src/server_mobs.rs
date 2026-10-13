@@ -454,8 +454,10 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:zombified_piglin",
 ];
 
+const VEHICLES: &[&str] = &["minecraft:strider", "minecraft:horse", "minecraft:donkey", "minecraft:mule", "minecraft:llama", "minecraft:trader_llama"];
+
 fn carries(tag: &Tag) -> bool {
-    text(tag, "id") == Some("minecraft:strider")
+    text(tag, "id").is_some_and(|id| VEHICLES.contains(&id))
         && tag.get("Passengers").and_then(Tag::as_list).is_some_and(|riders| {
             riders.iter().all(|rider| {
                 let kind = text(rider, "id").unwrap_or("");
@@ -571,7 +573,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             world.cow_mut(id)?.random = random;
             id
         }
-        "minecraft:horse" | "minecraft:donkey" | "minecraft:mule" | "minecraft:llama" | "minecraft:trader_llama" => {
+        "minecraft:horse" | "minecraft:donkey" | "minecraft:mule" | "minecraft:llama" | "minecraft:trader_llama" if tag.get("Passengers").is_none() => {
             use minecraftoss_entities::horse::{HorseKind, HorseState};
             let mut cow = Cow::new(pos);
             cow.yaw = yaw;
@@ -588,8 +590,10 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 horse.variant = horse.variant.clamp(0, 3);
                 horse.set_strength(int(tag, "Strength").unwrap_or(0));
                 horse.despawn_delay = int(tag, "DespawnDelay").unwrap_or(minecraftoss_entities::horse::TRADER_DESPAWN_DELAY);
-                horse.body_item = tag.get("equipment").and_then(|e| e.get("body")).and_then(|b| b.get("id")).and_then(Tag::as_str).map(str::to_owned);
             }
+            horse.body_item = tag.get("equipment").and_then(|e| e.get("body")).and_then(|b| b.get("id")).and_then(Tag::as_str).map(str::to_owned);
+            horse.saddled = horse.kind.saddleable() && tag.get("equipment").and_then(|e| e.get("saddle")).and_then(|b| b.get("id")).and_then(Tag::as_str) == Some("minecraft:saddle");
+            horse.owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
             horse.chest = int(tag, "ChestedHorse").unwrap_or(0) != 0;
             horse.tame = int(tag, "Tame").unwrap_or(0) != 0;
             horse.bred = int(tag, "Bred").unwrap_or(0) != 0;
@@ -1548,9 +1552,13 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
             if horse.kind.is_llama() {
                 fields.push(("Variant", Tag::Int(horse.variant)));
                 fields.push(("Strength", Tag::Int(horse.strength)));
-                if let Some(equipment) = body_equipment(originals.get(&e.id), horse.body_item.as_deref()) {
-                    fields.push(("equipment", equipment));
-                }
+            }
+            if let Some(owner) = horse.owner {
+                fields.push(("Owner", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec())));
+            }
+            let worn = body_equipment(originals.get(&e.id), horse.body_item.as_deref()).map(|slots| Tag::Compound([("equipment".to_owned(), slots)].into_iter().collect()));
+            if let Some(equipment) = saddle_equipment(worn.as_ref().or(originals.get(&e.id)), horse.saddled) {
+                fields.push(("equipment", equipment));
             }
             if horse.kind == HorseKind::TraderLlama {
                 fields.push(("DespawnDelay", Tag::Int(horse.despawn_delay)));
@@ -2124,6 +2132,44 @@ mod tests {
         assert_eq!(reloaded.len(), 3);
         assert_eq!(again.vehicle_of(Rider::Mob(reloaded[1].0)), Some(reloaded[0].0));
         assert!(again.census().iter().all(|entry| entry.riding));
+    }
+
+    #[test]
+    fn a_jockey_on_a_horse_loads_and_a_saddled_horse_keeps_its_saddle_armour_and_owner() {
+        let horse = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:horse\",Pos:[1.5d,64.0d,2.5d],Tame:1b,Owner:[I;1,2,3,4],equipment:{saddle:{id:\"minecraft:saddle\",count:1},body:{id:\"minecraft:iron_horse_armor\",count:1}},Passengers:[{id:\"minecraft:skeleton\",Pos:[1.5d,65.0d,2.5d],UUID:[I;5,6,7,8]}]}").unwrap();
+        assert!(carries(&horse), "a skeleton on a horse loads like a strider jockey");
+        assert_eq!(spawn_saved(&mut EntityWorld::default(), &horse), None, "the horse alone refuses its rider");
+        let mut world = EntityWorld::default();
+        let spawned = spawn_saved_all(&mut world, &horse);
+        assert_eq!(spawned.len(), 2);
+        let (mount, rider) = (spawned[0].0, spawned[1].0);
+        assert_eq!(world.entity_type(rider), Some("minecraft:skeleton"));
+        assert_eq!(world.vehicle_of(Rider::Mob(rider)), Some(mount));
+        assert_eq!(world.controlling_mob(mount), Some(rider));
+        let h = world.cow_mut(mount).unwrap().horse.clone().unwrap();
+        assert!(h.saddled && h.tame && h.body_item.as_deref() == Some("minecraft:iron_horse_armor"));
+        assert_eq!(h.owner, Some(minecraftoss_entities::gossip::uuid_from_ints([1, 2, 3, 4])));
+        let seat = world.seat(Rider::Mob(rider)).unwrap();
+        assert!((seat.y - (64.0 + f64::from(1.44375_f32) - f64::from(0.7_f32))).abs() < 1.0e-6, "{seat}");
+        {
+            let h = world.cow_mut(mount).unwrap().horse.as_mut().unwrap();
+            h.saddled = false;
+            h.body_item = Some("minecraft:diamond_horse_armor".to_owned());
+        }
+        let originals: std::collections::HashMap<u64, Tag> = spawned.into_iter().collect();
+        let saved = mob_tags(&world, |_| true, &originals);
+        assert_eq!(saved.len(), 1, "the rider saves inside its horse");
+        let back = &saved[0].1;
+        let equipment = back.get("equipment").unwrap();
+        assert!(equipment.get("saddle").is_none());
+        assert_eq!(equipment.get("body").and_then(|b| b.get("id")).and_then(Tag::as_str), Some("minecraft:diamond_horse_armor"));
+        assert_eq!(back.get("Owner").and_then(Tag::as_ints), Some(vec![1, 2, 3, 4]));
+        assert_eq!(back.get("Passengers").and_then(Tag::as_list).map(|riders| riders.len()), Some(1));
+        let llama = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:llama\",Pos:[1.5d,64.0d,2.5d],equipment:{saddle:{id:\"minecraft:saddle\",count:1}},Passengers:[{id:\"minecraft:zombie\",Pos:[1.5d,65.0d,2.5d]}]}").unwrap();
+        let mut world = EntityWorld::default();
+        let spawned = spawn_saved_all(&mut world, &llama);
+        assert_eq!(spawned.len(), 2, "a zombie rides a llama too");
+        assert!(!world.cow_mut(spawned[0].0).unwrap().horse.as_ref().unwrap().saddled, "a llama never takes a saddle");
     }
 
     #[test]

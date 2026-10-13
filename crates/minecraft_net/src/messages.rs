@@ -412,6 +412,7 @@ pub struct PlayerView {
     pub selected: u8,
     pub cooldowns: Vec<CooldownView>,
     pub using: Option<UsingView>,
+    pub jump_bar: Option<f32>,
 }
 
 impl Default for PlayerView {
@@ -436,6 +437,7 @@ impl Default for PlayerView {
             selected: 0,
             cooldowns: Vec::new(),
             using: None,
+            jump_bar: None,
         }
     }
 }

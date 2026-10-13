@@ -109,6 +109,16 @@ pub struct CowGoalContext {
     pub mates: Option<Vec<CowCandidate>>,
     pub tempters: Vec<u64>,
     pub llama: Option<crate::llama_ai::LlamaContext>,
+    pub crazy: Option<Crazy>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Crazy {
+    pub rider: Option<u64>,
+    pub mob_controlled: bool,
+    pub temper: i32,
+    pub max_temper: i32,
+    pub target: Option<DVec3>,
 }
 
 pub enum CowGoalEffect {
@@ -139,6 +149,9 @@ pub enum CowGoalEffect {
     },
     JoinCaravan(u64),
     LeaveCaravan(u64),
+    Tame(u64),
+    Temper(i32),
+    Buck,
 }
 
 pub fn registered_goals() -> GoalSelector<CowGoalContext> {
@@ -544,16 +557,42 @@ pub fn registered_horse_goals() -> GoalSelector<CowGoalContext> {
     selector
 }
 
-/// `RunAroundLikeCrazyGoal`: only for a rider on an untamed horse, which
-/// this simulation has none of (its test draws nothing otherwise).
 #[derive(Clone)]
 struct RunAroundLikeCrazyGoal;
 impl Goal<CowGoalContext> for RunAroundLikeCrazyGoal {
     fn controls(&self) -> Controls {
         Controls::new(&[Control::Move])
     }
-    fn can_start(&mut self, _ctx: &mut CowGoalContext, _world: &dyn World) -> bool {
-        false
+    fn can_start(&mut self, ctx: &mut CowGoalContext, world: &dyn World) -> bool {
+        let Some(crazy) = ctx.crazy.as_mut() else { return false };
+        if crazy.mob_controlled || crazy.rider.is_none() {
+            return false;
+        }
+        crazy.target = crate::stroll::default_random_position(world, &ctx.walk, ctx.child.position, 5, 4, &mut ctx.random);
+        crazy.target.is_some()
+    }
+    fn can_continue(&mut self, ctx: &mut CowGoalContext, _world: &dyn World) -> bool {
+        ctx.crazy.is_some_and(|c| c.rider.is_some()) && !ctx.navigation_done
+    }
+    fn start(&mut self, ctx: &mut CowGoalContext) {
+        if let Some(target) = ctx.crazy.and_then(|c| c.target) {
+            ctx.effects.push(CowGoalEffect::Navigate { target, speed: 1.2 });
+        }
+    }
+    fn tick(&mut self, ctx: &mut CowGoalContext) {
+        let Some(crazy) = ctx.crazy else { return };
+        if ctx.random.next_int(25) != 0 {
+            return;
+        }
+        let Some(rider) = crazy.rider else { return };
+        if crazy.max_temper > 0 && (ctx.random.next_int(crazy.max_temper as u32) as i32) < crazy.temper {
+            ctx.effects.push(CowGoalEffect::Tame(rider));
+            ctx.crazy = None;
+            return;
+        }
+        ctx.effects.push(CowGoalEffect::Temper(5));
+        ctx.effects.push(CowGoalEffect::Buck);
+        ctx.crazy = None;
     }
 }
 

@@ -532,6 +532,8 @@ pub struct SimState {
 
     old_cmd_angles: Vec<(ClientId, [i32; 3])>,
 
+    old_moves: Vec<(ClientId, [i8; 2])>,
+
     player_anim_trees: HashMap<u32, PlayerAnimTreeSlot>,
 
     corpse_anim_trees: HashMap<i32, xmodel_runtime::XAnimTreeRuntime>,
@@ -663,6 +665,7 @@ impl Default for SimState {
             model_library: Arc::default(),
             old_buttons: Vec::new(),
             old_cmd_angles: Vec::new(),
+            old_moves: Vec::new(),
             player_anim_trees: HashMap::new(),
             corpse_anim_trees: HashMap::new(),
             player_dobjs: HashMap::new(),
@@ -3332,6 +3335,7 @@ impl SimState {
 
         self.old_buttons.clear();
         self.old_cmd_angles.clear();
+        self.old_moves.clear();
 
         report.dropped = before.saturating_sub(adopted_player_count + self.clients.len());
         report.content_mismatch = snapshot.meta.rng.root_seed != self.root_seed;
@@ -3357,6 +3361,21 @@ impl SimState {
     pub fn set_old_cmd(&mut self, id: ClientId, buttons: u32, angles: [i32; 3]) {
         self.set_old_buttons(id, buttons);
         self.set_old_cmd_angles(id, angles);
+    }
+
+    pub fn set_old_moves(&mut self, id: ClientId, moves: [i8; 2]) {
+        if let Some(row) = self.old_moves.iter_mut().find(|(c, _)| *c == id) {
+            row.1 = moves;
+            return;
+        }
+        self.old_moves.push((id, moves));
+    }
+
+    pub fn old_moves(&self, id: ClientId) -> Option<[i8; 2]> {
+        self.old_moves
+            .iter()
+            .find(|(c, _)| *c == id)
+            .map(|(_, moves)| *moves)
     }
 
     pub fn old_buttons(&self, id: ClientId) -> Option<u32> {

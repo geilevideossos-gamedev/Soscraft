@@ -339,6 +339,7 @@ mod tests {
                 hand: Hand::Off,
                 ticks: 9,
             }),
+            jump_bar: Some(0.75),
             ..PlayerView::default()
         };
         view.slots[0] = Some(Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0]));

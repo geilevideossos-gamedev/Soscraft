@@ -136,6 +136,9 @@ pub struct PlayerView {
     pub hero: Option<i32>,
     pub sleeping: Option<(i32, i32, i32)>,
     pub sleep_timer: i32,
+    pub forward: f32,
+    pub strafe: f32,
+    pub jumping: bool,
 }
 
 fn player_controls(id: u64, player: &PlayerView, inventory: &Inventory) -> minecraftoss_entities::controls::PlayerControls {
@@ -149,6 +152,9 @@ fn player_controls(id: u64, player: &PlayerView, inventory: &Inventory) -> minec
         armor: [36, 37, 38, 39].map(|slot| inventory.slots[slot].as_ref().map(|stack| stack.id.clone())),
         sleeping: player.sleeping,
         sleep_timer: player.sleep_timer,
+        forward: player.forward,
+        strafe: player.strafe,
+        jumping: player.jumping,
     }
 }
 
@@ -939,10 +945,10 @@ impl Entities {
         let mob = self.view.client.get(vehicle)?;
         let partial = (self.view.clock / self.view.tick_seconds).clamp(0.0, 1.0);
         let pose = mob.pose(partial as f32);
-        let baby = self.view.world.striders().iter().any(|e| e.id == vehicle && e.strider.age.baby());
-        let attachment = minecraftoss_entities::strider::Strider::riding_attachment(baby);
-        let bob = crate::riding::bob(pose.walk_position, pose.walk_speed);
-        Some(crate::riding::seat(mob.old_position, mob.position, partial, attachment, bob))
+        let point = self.view.world.passenger_point(vehicle)?;
+        let strider = self.view.world.striders().iter().any(|e| e.id == vehicle);
+        let bob = if strider { crate::riding::bob(pose.walk_position, pose.walk_speed) } else { 0.0 };
+        Some(crate::riding::seat(mob.old_position, mob.position, partial, point.y, bob) + DVec3::new(point.x, 0.0, point.z))
     }
 
     pub fn dismount(&mut self, player: u64) {
@@ -1961,6 +1967,9 @@ mod tests {
             hero: None,
             sleeping: None,
             sleep_timer: 0,
+            forward: 0.0,
+            strafe: 0.0,
+            jumping: false,
         };
         let survival = player_candidate(HOST, &view(true, false));
         assert!(survival.alive && survival.attackable && !survival.spectator);
@@ -2074,7 +2083,7 @@ mod tests {
         entities.summon(minecraft_commands::PlayerId(0), "minecraft:pig".to_owned(), [0.5, 200.0, 2.5], Some(nbt));
         let mut inventory = Inventory::default();
         inventory.slots[3] = Some(ItemStack::new("minecraft:saddle", 1));
-        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0 };
+        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false };
         let started = std::time::Instant::now();
         let tick = |entities: &mut Entities, inventory: &mut Inventory| {
             assert!(started.elapsed().as_secs() < 60, "the server answers");
@@ -2163,7 +2172,7 @@ mod tests {
         let mut inventory = Inventory::default();
         inventory.slots[36] = Some(ItemStack::new("minecraft:golden_boots", 1));
         inventory.slots[39] = Some(ItemStack::new("minecraft:chainmail_helmet", 1));
-        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0 };
+        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false };
         let controls = player_controls(HOST, &view, &inventory);
         assert_eq!(controls.armor, [Some("minecraft:golden_boots".to_owned()), None, None, Some("minecraft:chainmail_helmet".to_owned())]);
     }
@@ -2566,6 +2575,9 @@ mod tests {
             hero: None,
             sleeping: None,
             sleep_timer: 0,
+            forward: 0.0,
+            strafe: 0.0,
+            jumping: false,
         };
         let batch = crate::tick_rate::TickBatch {
             normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },

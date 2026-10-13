@@ -498,6 +498,18 @@ impl Body {
         yaw: f32,
         jumping: bool,
     ) -> Option<f64> {
+        self.travel_air_flying(world, input, speed, yaw, jumping, 0.02_f32)
+    }
+
+    pub fn travel_air_flying(
+        &mut self,
+        world: &impl World,
+        input: DVec3,
+        speed: f32,
+        yaw: f32,
+        jumping: bool,
+        flying: f32,
+    ) -> Option<f64> {
         if self.levitation.is_some() || self.slow_falling {
             self.fall_distance = 0.0;
         }
@@ -513,7 +525,7 @@ impl Body {
                 speed
             }
         } else {
-            0.02_f32
+            flying
         };
         let length = input.length_squared();
         let added = if length < 1.0e-7 {
@@ -598,6 +610,10 @@ impl Body {
 }
 
 impl Body {
+    pub fn jump_power(&self, world: &impl World, strength: f64, multiplier: f32) -> f32 {
+        strength as f32 * multiplier * jump_factor(world, self.position, self.on_pos(world, 0.500001))
+    }
+
     fn next_step_from_here(&self) -> f32 {
         match self.step_after {
             Some(after) => self.move_dist + after,

@@ -24,6 +24,15 @@ pub(super) struct HorseOutputs {
     pub spit: Option<DVec3>,
     pub join: Vec<u64>,
     pub leave: Vec<u64>,
+    pub tamed: Option<u64>,
+    pub buck: bool,
+}
+
+pub(super) struct HorseRide {
+    pub player: Option<crate::controls::PlayerControls>,
+    pub mob_controlled: bool,
+    pub carrying: bool,
+    pub crazy: Option<crate::cow_ai::Crazy>,
 }
 
 const HORSE_COATS: i32 = 7;
@@ -75,6 +84,9 @@ pub(super) fn horse_death_equipment(horse: &HorseState, mob_drops: bool) -> Vec<
     if let (Some(item), true) = (&horse.body_item, mob_drops) {
         out.push(ItemStack::new(item, 1));
     }
+    if horse.saddled && mob_drops {
+        out.push(ItemStack::new("minecraft:saddle", 1));
+    }
     if horse.chest {
         out.extend(horse.inventory.iter().cloned());
         out.push(ItemStack::new("minecraft:chest", 1));
@@ -101,6 +113,92 @@ impl HorseState {
 }
 
 impl CowEntity {
+    pub(super) fn make_mad(&mut self) {
+        let baby = self.cow.age.baby();
+        let position = self.cow.body.position;
+        let Some(horse) = self.horse.as_mut() else {
+            return;
+        };
+        if horse.standing {
+            return;
+        }
+        horse.stand_if_possible();
+        if let Some(event) = horse_event(horse.kind, baby, "angry") {
+            let pitch = voice_pitch(&mut self.random, baby);
+            self.voices.push((
+                Voice::Event(event, crate::horse::SOUND_VOLUME, pitch),
+                position,
+            ));
+        }
+    }
+
+    pub(super) fn ride_tick(&mut self, world: &impl World, controls: &crate::controls::PlayerControls) {
+        let fall = {
+            let Some(horse) = self.horse.as_mut() else {
+                return;
+            };
+            let cow = &mut self.cow;
+            cow.body.trim_small_velocity();
+            self.no_action_time = 0;
+            cow.forward = 0.0;
+            cow.sideways = 0.0;
+            self.jumping = false;
+            self.no_jump_delay = 0;
+            cow.navigation.stop();
+            let yaw = controls.yaw;
+            cow.yaw = yaw;
+            self.previous_yaw = yaw;
+            self.look_control.head_yaw = yaw;
+            self.look_control.pitch = controls.pitch * 0.5;
+            self.body_rotation.body_yaw = yaw;
+            let input = horse.ridden_input(cow.body.on_ground, controls.strafe, controls.forward);
+            if cow.body.on_ground {
+                if horse.jump_pending > 0.0 {
+                    let scale = horse.jump_pending;
+                    let power = cow.body.jump_power(world, horse.jump_strength, scale);
+                    cow.body.velocity.y = f64::from(power);
+                    cow.body.needs_sync = true;
+                    if input.z > 0.0 {
+                        let angle = f64::from(yaw * 0.017_453_292_f32);
+                        let sin = minecraftoss_player::mth::sin(angle);
+                        let cos = minecraftoss_player::mth::cos(angle);
+                        cow.body.velocity += DVec3::new(
+                            f64::from(-0.4 * sin * scale),
+                            0.0,
+                            f64::from(0.4 * cos * scale),
+                        );
+                    }
+                }
+                horse.jump_pending = 0.0;
+            }
+            let speed = self.effects.movement_speed(horse.movement_speed) as f32;
+            let was_water = self.fluid.in_water();
+            let mut fall = None;
+            if was_water {
+                cow.body.travel_water(world, input, yaw);
+            } else if self.fluid.in_lava() {
+                cow.body.travel_lava(world, input, yaw, self.fluid.lava_height);
+            } else if let Some(fallen) =
+                cow.body.travel_air_flying(world, input, speed, yaw, false, speed * 0.1)
+            {
+                fall = fall_damage(&cow.body, world, fallen, false, &mut self.voices);
+            }
+            let sounds = horse_movement_sounds(horse, cow.age.baby());
+            play_movement(&mut cow.body, self.tick_count, &mut self.random, &mut self.voices, sounds);
+            self.body_rotation.tick(yaw, &mut self.look_control, self.previous_position, cow.body.position);
+            self.body_rotation.body_yaw = yaw;
+            self.look_control.head_yaw = yaw;
+            if !was_water {
+                self.fluid = FluidFrame::sample(world, cow.body.position, cow.body.width, cow.body.height);
+                self.was_touching_water = cow.body.touching_water;
+            }
+            fall
+        };
+        if let Some(damage) = fall {
+            self.hurt(damage, DamageSourceKind::Generic);
+        }
+    }
+
     pub fn note_attacker(&mut self, attacker: Target) {
         let tick = self.tick_count;
         if let Some(horse) = self.horse.as_mut() {
@@ -299,8 +397,53 @@ impl EntityWorld {
         }
     }
 
-    pub(super) fn horse_outputs(&mut self, index: usize, out: HorseOutputs) {
+    pub(super) fn horse_ride(&self, index: usize) -> HorseRide {
+        let entity = &self.cows[index];
+        let id = entity.id;
+        let first = self.passengers_of(id).first().copied();
+        let carrying = first.is_some();
+        let player = self
+            .controlling_player(id)
+            .and_then(|p| self.player_controls(p))
+            .cloned();
+        let crazy = entity.horse.as_ref().filter(|h| !h.tame && carrying).map(|h| crate::cow_ai::Crazy {
+            rider: match first {
+                Some(Rider::Player(p)) => Some(p),
+                _ => None,
+            },
+            mob_controlled: matches!(first, Some(Rider::Mob(_))),
+            temper: h.temper,
+            max_temper: h.kind.max_temper(),
+            target: None,
+        });
+        HorseRide {
+            player,
+            mob_controlled: self.controlling_mob(id).is_some(),
+            carrying,
+            crazy,
+        }
+    }
+
+    pub(super) fn horse_outputs(&mut self, index: usize, out: HorseOutputs, world: &impl World) {
         let id = self.cows[index].id;
+        if let Some(player) = out.tamed {
+            let uuid = self.uuid_of(PLAYER_TARGET + player);
+            if let Some(horse) = self.cows[index].horse.as_mut() {
+                horse.tame = true;
+                horse.owner = Some(uuid);
+            }
+            self.entity_events.push((id, 7));
+        }
+        if out.buck {
+            self.eject_passengers(id, world);
+            if let Some(index) = self.cows.iter().position(|e| e.id == id) {
+                self.cows[index].make_mad();
+            }
+            self.entity_events.push((id, 6));
+        }
+        let Some(index) = self.cows.iter().position(|e| e.id == id) else {
+            return;
+        };
         for head in out.leave {
             if let Some(h) = self
                 .cows
@@ -569,8 +712,28 @@ impl EntityWorld {
             }
             return InteractionResult::SuccessPredicted;
         }
+        if kind.saddleable() && !horse.saddled && !baby && item == "minecraft:saddle" {
+            horse.saddled = true;
+            entity
+                .voices
+                .push((Voice::Event("entity.horse.saddle", 1.0, 1.0), position));
+            if !infinite_materials {
+                crate::animal::consume_one(inventory, hand);
+            }
+            return InteractionResult::SuccessPredicted;
+        }
         if baby {
             return InteractionResult::Pass;
+        }
+        if kind.wears_armor() && horse.body_item.is_none() && item.ends_with("_horse_armor") {
+            horse.body_item = Some(item);
+            entity
+                .voices
+                .push((Voice::Event("entity.horse.armor", 1.0, 1.0), position));
+            if !infinite_materials {
+                crate::animal::consume_one(inventory, hand);
+            }
+            return InteractionResult::SuccessPredicted;
         }
         if kind.is_llama() && horse.body_item.is_none() && carpet(&item) {
             horse.body_item = Some(item);
@@ -583,6 +746,44 @@ impl EntityWorld {
             return InteractionResult::SuccessPredicted;
         }
         InteractionResult::Pass
+    }
+
+    pub fn horse_rides_on_use(&self, id: u64, player: u64, held: Option<&str>) -> bool {
+        let Some(entity) = self.cows.iter().find(|e| e.id == id) else {
+            return false;
+        };
+        let Some(horse) = &entity.horse else {
+            return false;
+        };
+        if entity.cow.health <= 0.0
+            || entity.cow.age.baby()
+            || !self.passengers_of(id).is_empty()
+            || self.vehicle_of(Rider::Player(player)).is_some()
+        {
+            return false;
+        }
+        let sneaking = self.player_controls(player).is_some_and(|c| c.sneaking);
+        if horse.tame && sneaking {
+            return false;
+        }
+        let Some(item) = held else {
+            return true;
+        };
+        let kind = horse.kind;
+        let food = match &self.recipes {
+            Some(recipes) => recipes.item_in_tag(kind.food_tag(), item),
+            None => kind.eats(item),
+        };
+        let carpet = match &self.recipes {
+            Some(recipes) => recipes.item_in_tag("minecraft:wool_carpets", item),
+            None => is_carpet(item),
+        };
+        !(food
+            || !horse.tame
+            || kind.is_chested() && !horse.chest && item == "minecraft:chest"
+            || kind.saddleable() && !horse.saddled && item == "minecraft:saddle"
+            || kind.wears_armor() && horse.body_item.is_none() && item.ends_with("_horse_armor")
+            || kind.is_llama() && horse.body_item.is_none() && carpet)
     }
 
     pub(super) fn breed_horses(&mut self, index: usize, partner: u64) -> bool {
@@ -954,5 +1155,145 @@ mod tests {
                 .despawn_delay,
             crate::horse::TRADER_DESPAWN_DELAY
         );
+    }
+
+    fn ridden(world: &mut EntityWorld, kind: HorseKind, tame: bool, saddled: bool) -> u64 {
+        let id = equine(world, kind, DVec3::new(0.5, 64.0, 0.5));
+        let horse = world.cow_mut(id).unwrap().horse.as_mut().unwrap();
+        horse.tame = tame;
+        horse.saddled = saddled;
+        world.set_player_uuid(0, 77);
+        assert!(world.start_riding(Rider::Player(0), id, &Floor));
+        id
+    }
+
+    fn steer(world: &mut EntityWorld, yaw: f32, forward: f32, jumping: bool) {
+        world.set_player_controls(&[crate::controls::PlayerControls {
+            id: 0,
+            yaw,
+            forward,
+            jumping,
+            ..Default::default()
+        }]);
+    }
+
+    #[test]
+    fn a_wild_horse_is_tamed_by_its_rider_when_its_temper_allows() {
+        let mut world = EntityWorld::default();
+        let id = ridden(&mut world, HorseKind::Horse, false, false);
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().temper = 100;
+        steer(&mut world, 0.0, 0.0, false);
+        let players = [player(0, DVec3::new(0.5, 65.0, 0.5))];
+        let mut ticks = 0;
+        while !world.cow_mut(id).unwrap().horse.as_ref().unwrap().tame {
+            world.tick_with_players(&mut Floor, &players);
+            ticks += 1;
+            assert!(ticks < 4000, "never tamed");
+        }
+        let horse = world.cow_mut(id).unwrap().horse.clone().unwrap();
+        assert_eq!(horse.owner, Some(77));
+        assert_eq!(world.vehicle_of(Rider::Player(0)), Some(id), "the rider stays on");
+        assert!(world.take_entity_events().contains(&(id, 7)));
+        assert!(world.take_player_dismounts().is_empty());
+    }
+
+    #[test]
+    fn a_wild_horse_bucks_its_rider_off_and_grows_tamer() {
+        let mut world = EntityWorld::default();
+        let id = ridden(&mut world, HorseKind::Donkey, false, false);
+        steer(&mut world, 0.0, 0.0, false);
+        let players = [player(0, DVec3::new(0.5, 65.0, 0.5))];
+        let mut ticks = 0;
+        while world.vehicle_of(Rider::Player(0)).is_some() {
+            world.tick_with_players(&mut Floor, &players);
+            ticks += 1;
+            assert!(ticks < 4000, "never bucked");
+        }
+        let entity = world.cow_mut(id).unwrap();
+        let horse = entity.horse.clone().unwrap();
+        assert!(!horse.tame && horse.temper == 5 && horse.standing);
+        let feet = entity.cow.body.position;
+        let dismounts = world.take_player_dismounts();
+        assert_eq!(dismounts.len(), 1);
+        let (player, vehicle, spot) = dismounts[0];
+        assert_eq!((player, vehicle), (0, id));
+        let spot = spot.expect("thrown beside it");
+        assert!((spot.y - 64.0).abs() < 1.0e-9 && spot.distance(feet) > 0.9, "{spot} {feet}");
+        assert!(world.take_entity_events().contains(&(id, 6)));
+    }
+
+    #[test]
+    fn a_tamed_horse_takes_a_saddle_and_its_rider_steers_it() {
+        let mut world = EntityWorld::default();
+        let id = equine(&mut world, HorseKind::Horse, DVec3::new(0.5, 64.0, 0.5));
+        let mut saddle = holding("minecraft:saddle");
+        assert!(!world.horse_rides_on_use(id, 0, Some("minecraft:saddle")), "a wild horse gets angry");
+        assert_eq!(world.horse_interact(id, 0, &mut saddle, 0, false), InteractionResult::SuccessPredicted);
+        assert!(!world.cow_mut(id).unwrap().horse.as_ref().unwrap().saddled);
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().clear_standing();
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().tame = true;
+        assert!(!world.horse_rides_on_use(id, 0, Some("minecraft:saddle")));
+        assert_eq!(world.horse_interact(id, 0, &mut saddle, 0, false), InteractionResult::SuccessPredicted);
+        assert!(world.cow_mut(id).unwrap().horse.as_ref().unwrap().saddled);
+        assert_eq!(saddle.slots[0].as_ref().unwrap().count, 7);
+        assert!(world.horse_rides_on_use(id, 0, Some("minecraft:saddle")), "a second saddle just mounts");
+        assert!(world.horse_rides_on_use(id, 0, None));
+        let mut armor = holding("minecraft:iron_horse_armor");
+        assert!(!world.horse_rides_on_use(id, 0, Some("minecraft:iron_horse_armor")));
+        world.horse_interact(id, 0, &mut armor, 0, false);
+        assert_eq!(world.cow_mut(id).unwrap().horse.as_ref().unwrap().body_item.as_deref(), Some("minecraft:iron_horse_armor"));
+        assert!(world.start_riding(Rider::Player(0), id, &Floor));
+        assert!(!world.horse_rides_on_use(id, 1, None), "one rider at a time");
+        assert_eq!(world.controlling_player(id), Some(0));
+        let seat = world.seat(Rider::Player(0)).unwrap();
+        assert!((seat.y - (64.0 + f64::from(1.44375_f32) - 0.6)).abs() < 1.0e-6, "{seat}");
+        steer(&mut world, 90.0, 0.98, false);
+        let players = [player(0, seat)];
+        for _ in 0..40 {
+            world.tick_with_players(&mut Floor, &players);
+        }
+        let entity = world.cow_mut(id).unwrap();
+        assert_eq!(entity.cow.yaw, 90.0);
+        let moved = entity.cow.body.position;
+        assert!(moved.x < -5.0 && (moved.z - 0.5).abs() < 1.0e-6, "{moved}");
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().saddled = false;
+        assert_eq!(world.controlling_player(id), None, "without a saddle it walks its own way");
+    }
+
+    fn jump_peak(strength: f64) -> f64 {
+        let mut world = EntityWorld::default();
+        let id = ridden(&mut world, HorseKind::Horse, true, true);
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().jump_strength = strength;
+        let players = [player(0, DVec3::new(0.5, 65.0, 0.5))];
+        steer(&mut world, 0.0, 0.0, false);
+        for _ in 0..5 {
+            world.tick_with_players(&mut Floor, &players);
+        }
+        steer(&mut world, 0.0, 0.0, true);
+        for _ in 0..11 {
+            world.tick_with_players(&mut Floor, &players);
+        }
+        assert!((world.ride_jump_scale(0).unwrap() - 1.0).abs() < 1.0e-6);
+        steer(&mut world, 0.0, 0.0, false);
+        let mut peak = 0.0_f64;
+        for _ in 0..40 {
+            world.tick_with_players(&mut Floor, &players);
+            peak = peak.max(world.cow_mut(id).unwrap().cow.body.position.y - 64.0);
+        }
+        peak
+    }
+
+    #[test]
+    fn a_full_charge_jumps_as_high_as_the_horse_s_jump_strength_allows() {
+        let low = jump_peak(0.5);
+        let high = jump_peak(1.0);
+        assert!((1.4..2.0).contains(&low), "{low}");
+        assert!((5.0..6.5).contains(&high), "{high}");
+        let mut world = EntityWorld::default();
+        let id = ridden(&mut world, HorseKind::Llama, true, false);
+        assert_eq!(world.ride_jump_scale(0), None, "a llama has no jump bar");
+        assert_eq!(world.controlling_player(id), None);
+        let point = world.passenger_point(id).unwrap();
+        assert!((point.y - f64::from(1.37_f32)).abs() < 1.0e-6 && (point.z + f64::from(0.3_f32)).abs() < 1.0e-6, "{point}");
     }
 }

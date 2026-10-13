@@ -9,6 +9,9 @@ pub struct PlayerControls {
     pub armor: [Option<String>; 4],
     pub sleeping: Option<(i32, i32, i32)>,
     pub sleep_timer: i32,
+    pub forward: f32,
+    pub strafe: f32,
+    pub jumping: bool,
 }
 
 impl PlayerControls {

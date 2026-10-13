@@ -52,6 +52,7 @@ pub struct Player {
     pub sleep_timer: i32,
     pub time_since_rest: i32,
     pub saved_in_bed: Option<(i32, i32, i32)>,
+    pub jump_bar: Option<f32>,
 }
 
 #[derive(Default)]
@@ -128,6 +129,7 @@ impl Player {
             sleep_timer: 0,
             time_since_rest: 0,
             saved_in_bed: None,
+            jump_bar: None,
         }
     }
 

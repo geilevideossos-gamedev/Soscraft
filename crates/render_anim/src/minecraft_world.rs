@@ -1112,6 +1112,7 @@ fn update(
     // The mobs: a server tick when due, the blocks it changed, its hits on
     // the player, the mobs' boxes for bullets and their meshes.
     if let Some(entities) = entities.as_mut() {
+        let host_ride = crate::minecraft_riding::ride_input(&authority.0, local.0);
         let viewer = minecraft_survival::entities::PlayerView {
             feet,
             alive,
@@ -1127,6 +1128,9 @@ fn update(
             hero: survival.status.effect(minecraftoss_player::survival::EffectKind::HeroOfTheVillage).map(|effect| i32::from(effect.amplifier)),
             sleeping: host_sleeping.map(|sleeping| sleeping.head),
             sleep_timer: *host_sleep_timer,
+            forward: host_ride.0,
+            strafe: host_ride.1,
+            jumping: host_ride.2,
         };
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
@@ -1241,6 +1245,7 @@ fn update(
             show_chat(&mut ui.chat, inventory_ui, &world.packs, std::slice::from_ref(&told));
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
+        ui.jump_bar = player.jump_bar.filter(|_| alive);
         let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.effects = if alive { mc_effects(&minecraft_survival::views::effect_views(&survival.status)) } else { Vec::new() };
