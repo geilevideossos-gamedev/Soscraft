@@ -84,6 +84,8 @@ pub struct Zombie {
     pub villager: Option<(String, String)>,
     /// The main hand's item ID, when it holds one.
     pub main_hand: Option<String>,
+    pub off_hand: Option<String>,
+    pub hand_drop_chances: [f32; 2],
     /// The head, chest, legs and feet slots' item IDs.
     pub armor: [Option<String>; 4],
 }
@@ -104,6 +106,8 @@ impl Zombie {
             head_item: None,
             villager: None,
             main_hand: None,
+            off_hand: None,
+            hand_drop_chances: [0.085; 2],
             armor: Default::default(),
         }
     }

@@ -10,7 +10,7 @@ Sizes: S, M, L, XL. "Exists" lists only what goes beyond the default: a texture,
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Group key | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | Drowned | oceans, rivers, drowning zombies | `ZombieKind::Drowned`, conversion, renderer, attack goal; saved, loaded, hatched and seen by friends | D1: natural spawns, equipment roll, water and beach goals, trident throw | M | `mobs-list-drowned-load`, `drowned` | 1 (zombie store) | live | "Minecraft drowned are saved, loaded and seen by friends" (after 80caed9e) |
+| 1 | Drowned | oceans, rivers, drowning zombies | `ZombieKind::Drowned`, conversion, renderer, attack goal; saved, loaded, hatched and seen by friends; natural spawns, trident, rod and nautilus shell with their drops | D1: water and beach goals, trident throw | M | `mobs-list-drowned-load`, `drowned` | 1 (zombie store) | live | "Minecraft drowned are saved, loaded and seen by friends" (after 80caed9e), "Minecraft drowned spawn in rivers and oceans with tridents and nautilus shells" (after 8fa0de3a) |
 | 2 | Cat | villages, swamp huts | generator variant (`generator/src/feature/entities.rs:150`), villagers look at cats | `Feline` store, taming, sitting, gifts, creepers and phantoms flee, collar model, `CatSpawner` | M | `cats` | | left | |
 | 3 | Ocelot | jungles | shares `Feline` | trust by fish, scares creepers | S | `cats` | | left | |
 | 4 | Mule | horse x donkey | `DonkeyModel` scaled in `horse_render.rs` | `HorseKind::Mule`, breeding result | S | `horse-family` | | left | |

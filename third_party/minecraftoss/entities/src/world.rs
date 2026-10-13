@@ -3432,6 +3432,8 @@ impl EntityWorld {
         // `ConversionParams.keepEquipment`.
         zombie.head_item = old.zombie.head_item;
         zombie.main_hand = old.zombie.main_hand.clone();
+        zombie.off_hand = old.zombie.off_hand.clone();
+        zombie.hand_drop_chances = old.zombie.hand_drop_chances;
         zombie.armor = old.zombie.armor.clone();
         let yaw = old.yaw;
         // A zombie off the goal framework (the drowning model) converts
@@ -3471,6 +3473,8 @@ impl EntityWorld {
         // `ConversionParams.keepEquipment`.
         drowned.head_item = old.zombie.head_item;
         drowned.main_hand = old.zombie.main_hand.clone();
+        drowned.off_hand = old.zombie.off_hand.clone();
+        drowned.hand_drop_chances = old.zombie.hand_drop_chances;
         drowned.armor = old.zombie.armor.clone();
         let id = self.spawn_zombie_internal(drowned, old.no_ai, old.ai.is_some());
         self.zombie_conversions.push((old_id, id));
@@ -3960,6 +3964,38 @@ impl EntityWorld {
                     for _ in 0..worn {
                         death.experience += 1 + e.random.next_int(3) as i32;
                     }
+                }
+            }
+            if e.zombie.kind == ZombieKind::Drowned {
+                let killed_by_player = death.context.killed_by_player;
+                let chances = e.zombie.hand_drop_chances;
+                for (hand, chance) in [&mut e.zombie.main_hand, &mut e.zombie.off_hand].into_iter().zip(chances) {
+                    let preserve = chance > 1.0;
+                    if !mob_drops || chance == 0.0 || hand.is_none() || !(preserve || killed_by_player) || e.random.next_float() >= chance {
+                        continue;
+                    }
+                    let item = hand.take().unwrap_or_default();
+                    let mut stack = ItemStack::new(&item, 1);
+                    let durability = match item.as_str() {
+                        "minecraft:trident" => 250,
+                        "minecraft:fishing_rod" => 64,
+                        _ => 0,
+                    };
+                    if !preserve && durability > 0 {
+                        stack.max = 1;
+                        let spread = e.random.next_int((durability - 3).max(1));
+                        let wear = durability - e.random.next_int(1 + spread);
+                        stack.components = Some(serde_json::json!({ "minecraft:damage": wear }));
+                    }
+                    death.equipment.push(stack);
+                }
+                if earns(&death, true) {
+                    let worn = [(&e.zombie.main_hand, chances[0]), (&e.zombie.off_hand, chances[1])].into_iter().filter(|(hand, chance)| hand.is_some() && *chance <= 1.0).count() + e.zombie.armor.iter().flatten().count();
+                    let mut experience = 5;
+                    for _ in 0..worn {
+                        experience += 1 + e.random.next_int(3) as i32;
+                    }
+                    death.experience = if e.zombie.baby { (experience as f32 * 2.5) as i32 } else { experience };
                 }
             }
             deaths.push((order, death));
@@ -7722,6 +7758,43 @@ mod tests {
             }
         }
         assert!(dropped > 0 && kept > 0, "{dropped} dropped, {kept} kept");
+    }
+
+    #[test]
+    fn a_drowned_always_drops_its_nautilus_shell_and_a_player_s_kill_sometimes_its_worn_trident() {
+        let mut world = EntityWorld::default();
+        let (mut tridents, mut kept) = (0, 0);
+        for n in 0..400_u32 {
+            let mut drowned = Zombie::new(DVec3::new(f64::from(n) * 3.0 + 0.5, 1.0, 0.5));
+            drowned.kind = ZombieKind::Drowned;
+            drowned.main_hand = Some("minecraft:trident".to_owned());
+            drowned.off_hand = Some("minecraft:nautilus_shell".to_owned());
+            drowned.hand_drop_chances[1] = 2.0;
+            let id = world.spawn_zombie(drowned, true);
+            world.zombie_mut(id).unwrap().random = LegacyRandom::new(u64::from(n));
+            let center = DVec3::new(f64::from(n) * 3.0 + 0.5, 1.0, 2.5);
+            let player = (n % 4 != 0).then_some(7);
+            assert!(world.player_blast(player, id, 100.0, center, 0.0).unwrap().died);
+            for death in world.take_deaths() {
+                assert_eq!(death.table, Some("minecraft:drowned"));
+                assert_eq!(death.equipment.iter().filter(|stack| stack.id == "minecraft:nautilus_shell").count(), 1, "a guaranteed drop");
+                match death.equipment.iter().find(|stack| stack.id == "minecraft:trident") {
+                    Some(trident) => {
+                        assert!(player.is_some(), "only a player's kill drops the trident");
+                        let wear = trident.components.as_ref().and_then(|c| c["minecraft:damage"].as_u64()).unwrap();
+                        assert!((1..=250).contains(&wear), "{wear}");
+                        assert_eq!(death.experience, 5);
+                        tridents += 1;
+                    }
+                    None if player.is_some() => {
+                        assert!((6..=8).contains(&death.experience), "{}", death.experience);
+                        kept += 1;
+                    }
+                    None => {}
+                }
+            }
+        }
+        assert!(tridents > 10 && kept > 200, "{tridents} dropped, {kept} kept");
     }
 
     #[test]

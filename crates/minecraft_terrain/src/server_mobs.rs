@@ -731,6 +731,12 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             zombie.head_item = head_item(tag);
             zombie.main_hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
+            zombie.off_hand = tag.get("equipment").and_then(|e| e.get("offhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
+            for (chance, slot) in zombie.hand_drop_chances.iter_mut().zip(["mainhand", "offhand"]) {
+                if let Some(saved) = tag.get("drop_chances").and_then(|d| d.get(slot)).and_then(Tag::as_f64) {
+                    *chance = saved as f32;
+                }
+            }
             zombie.armor = armor_slots(tag);
             zombie.set_baby(int(tag, "IsBaby").unwrap_or(0) != 0);
             zombie.can_break_doors = int(tag, "CanBreakDoors").unwrap_or(0) != 0;
@@ -2066,5 +2072,15 @@ mod tests {
         assert_eq!(e.zombie.armor[0].as_deref(), Some("minecraft:iron_helmet"));
         assert_eq!(e.zombie.body.step_height, 1.0);
         assert!(e.attack_only && e.ai.is_none() && !e.no_ai, "a loaded drowned fights with its attack goal");
+    }
+
+    #[test]
+    fn a_drowned_loads_its_nautilus_shell_with_its_guaranteed_drop() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:drowned\",Pos:[1.5d,64.0d,2.5d],equipment:{mainhand:{id:\"minecraft:fishing_rod\",count:1},offhand:{id:\"minecraft:nautilus_shell\",count:1}},drop_chances:{offhand:2.0f}}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("a drowned loads");
+        let zombie = &world.zombie_mut(id).unwrap().zombie;
+        assert_eq!((zombie.main_hand.as_deref(), zombie.off_hand.as_deref()), (Some("minecraft:fishing_rod"), Some("minecraft:nautilus_shell")));
+        assert_eq!(zombie.hand_drop_chances, [0.085, 2.0]);
     }
 }

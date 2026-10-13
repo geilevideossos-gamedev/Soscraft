@@ -264,6 +264,31 @@ pub(super) fn piglin_spawn(level: &mut dyn RandomSource, own: &mut impl RandomSo
     PiglinSpawn { baby, weapon, hunted, armor }
 }
 
+fn drowned_weapon(random: &mut dyn RandomSource) -> Option<&'static str> {
+    if f64::from(random.next_f32()) > 0.9 {
+        Some(if random.next_i32_bound(16) < 10 { "minecraft:trident" } else { "minecraft:fishing_rod" })
+    } else {
+        None
+    }
+}
+
+fn drowned_shell(random: &mut dyn RandomSource) -> bool {
+    random.next_f32() < 0.03
+}
+
+fn drowned_of(root: &mut Tag) -> Option<&mut Tag> {
+    if root.get("id").and_then(Tag::as_str) == Some("minecraft:drowned") {
+        return Some(root);
+    }
+    match root {
+        Tag::Compound(map) => match map.get_mut("Passengers") {
+            Some(Tag::List(riders)) => riders.first_mut(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub(super) fn piglin_may_stand_on(below: &str) -> bool {
     below != "minecraft:nether_wart_block"
 }
@@ -633,6 +658,7 @@ impl CreatureSpawns {
             Rules::SurfaceMonster => self.dark_enough(level, context, pos) && level.sky_brightness(pos) >= 15,
             Rules::Ghast => level.random().next_i32_bound(20) == 0,
             Rules::AnyLightMonster => true,
+            Rules::Drowned => self.dark_enough(level, context, pos),
             _ => self.natural_spawn_rules(level, context, kind, &info, pos),
         };
         if !rules {
@@ -677,6 +703,7 @@ impl CreatureSpawns {
                 pos.y <= level.sea_level() - 33 && level.raw_brightness(pos, 0) == 0 && water
             }
             Rules::Strider => self.strider_spawn_rules(level, pos),
+            Rules::Drowned => self.drowned_spawn_rules(level, context, pos),
             Rules::Hoglin => self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() != "minecraft:nether_wart_block",
             Rules::Piglin => piglin_may_stand_on(self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str()),
             Rules::Other => {
@@ -698,6 +725,19 @@ impl CreatureSpawns {
         let darkening = if context.thundering { 10 } else { level.sky_darken() };
         let brightness = level.raw_brightness(pos, darkening);
         brightness <= level.random().next_i32_bound(self.monster_light_test_max + 1)
+    }
+
+    fn drowned_spawn_rules(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, pos: BlockPos) -> bool {
+        let water = |level: &mut dyn SpawnLevel, at: BlockPos| self.registries.blocks.state(level.block(at)).fluid.is_some_and(|f| f.kind == minecraftoss_core::block::FluidKind::Water);
+        if !water(level, pos.below()) {
+            return false;
+        }
+        let biome = level.biome(pos);
+        let can_spawn = context.difficulty != 0 && self.dark_enough(level, context, pos) && water(level, pos);
+        if self.more_frequent_drowned.is_some_and(|t| self.registries.biome_in_tag(biome, t)) {
+            return level.random().next_i32_bound(15) == 0 && can_spawn;
+        }
+        level.random().next_i32_bound(40) == 0 && pos.y < level.sea_level() - 5 && can_spawn
     }
 
     /// `Bat.checkBatSpawnRules`.
@@ -927,6 +967,11 @@ impl CreatureSpawns {
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
                 return self.finalize_zombie(level, context, tag, pos, difficulty, group, &mut own);
             }
+            "minecraft:drowned" => {
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+                let root = self.finalize_zombie(level, context, tag, pos, difficulty, group, &mut own);
+                return self.finalize_drowned(level, root, pos, natural);
+            }
             // `AbstractSkeleton.finalizeSpawn`, which strays, bogged and
             // parched do not override.
             "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton" => {
@@ -1106,6 +1151,7 @@ impl CreatureSpawns {
     ) -> Tag {
         let special = difficulty.special_multiplier();
         let piglin = tag.get("id").and_then(Tag::as_str) == Some("minecraft:zombified_piglin");
+        let drowned = tag.get("id").and_then(Tag::as_str) == Some("minecraft:drowned");
         let loot = level.random().next_f32() < 0.55 * special;
         set(&mut tag, "CanPickUpLoot", byte(loot));
         if matches!(group, MonsterGroup::None) {
@@ -1137,12 +1183,16 @@ impl CreatureSpawns {
             if piglin {
                 let item = if level.random().next_i32_bound(20) == 0 { "minecraft:golden_spear" } else { "minecraft:golden_sword" };
                 equip(&mut tag, "mainhand", item);
+            } else if drowned {
+                if let Some(item) = drowned_weapon(level.random()) {
+                    equip(&mut tag, "mainhand", item);
+                }
             } else {
                 Self::populate_armor(level, &mut tag, difficulty);
             }
             // `Zombie.populateDefaultEquipmentSlots`: a rare iron weapon.
             let weapon_chance = if difficulty.base == 3 { 0.05 } else { 0.01 };
-            if !piglin && level.random().next_f32() < weapon_chance {
+            if !piglin && !drowned && level.random().next_f32() < weapon_chance {
                 let item = match level.random().next_i32_bound(6) {
                     0 => "minecraft:iron_sword",
                     1 => "minecraft:iron_spear",
@@ -1233,6 +1283,23 @@ impl CreatureSpawns {
         self.finalize_skeleton(level, context, &mut parched, difficulty);
         set(&mut camel, "Passengers", Tag::List(vec![root, parched]));
         camel
+    }
+
+    fn finalize_drowned(&self, level: &mut dyn SpawnLevel, mut root: Tag, pos: BlockPos, natural: bool) -> Tag {
+        let biome = level.biome(pos);
+        let frequent = self.more_frequent_drowned.is_some_and(|t| self.registries.biome_in_tag(biome, t));
+        let Some(drowned) = drowned_of(&mut root) else { return root };
+        if !has_equipment(drowned, "offhand") && drowned_shell(level.random()) {
+            equip(drowned, "offhand", "minecraft:nautilus_shell");
+            let chances = [("offhand".to_owned(), Tag::Float(2.0))].into_iter().collect();
+            set(drowned, "drop_chances", Tag::Compound(chances));
+        }
+        let trident = drowned.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str) == Some("minecraft:trident");
+        let baby = drowned.get("IsBaby").and_then(Tag::as_i64) == Some(1);
+        if natural && trident && level.random().next_f32() < 0.5 && !baby && !frequent {
+            level.note_unsupported("zombie nautilus jockey");
+        }
+        root
     }
 
     fn finalize_strider(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, mut tag: Tag, pos: BlockPos, difficulty: DifficultyInstance) -> Tag {
@@ -1422,6 +1489,167 @@ mod tests {
         assert_eq!(info.rules, super::Rules::Ghast);
         assert!(matches!(info.walk, super::Walk::Neutral));
         assert_eq!(super::follow_range_base("minecraft:ghast"), 100.0);
+    }
+
+    struct Column {
+        solid_top: i32,
+        water_top: i32,
+        floor: minecraftoss_core::BlockStateId,
+        water: minecraftoss_core::BlockStateId,
+        biome: minecraftoss_core::BiomeId,
+        darken: i32,
+        random: minecraftoss_core::random::LegacyRandom,
+        made: i32,
+        added: Vec<minecraftoss_core::nbt::Tag>,
+    }
+
+    impl super::SpawnLevel for Column {
+        fn block(&self, pos: minecraftoss_core::BlockPos) -> minecraftoss_core::BlockStateId {
+            if pos.y <= self.solid_top {
+                self.floor
+            } else if pos.y <= self.water_top {
+                self.water
+            } else {
+                minecraftoss_core::BlockStateId::AIR
+            }
+        }
+        fn height(&self, _kind: minecraftoss_core::chunk::HeightmapKind, _x: i32, _z: i32) -> i32 {
+            self.water_top.max(self.solid_top) + 1
+        }
+        fn biome(&self, _pos: minecraftoss_core::BlockPos) -> minecraftoss_core::BiomeId {
+            self.biome
+        }
+        fn noise_biome(&self, _qx: i32, _qy: i32, _qz: i32) -> minecraftoss_core::BiomeId {
+            self.biome
+        }
+        fn raw_brightness(&mut self, pos: minecraftoss_core::BlockPos, darkening: i32) -> i32 {
+            (self.sky_brightness(pos) - darkening).max(0)
+        }
+        fn sky_brightness(&mut self, pos: minecraftoss_core::BlockPos) -> i32 {
+            if pos.y <= self.solid_top {
+                0
+            } else if pos.y <= self.water_top {
+                (15 - (self.water_top + 1 - pos.y)).max(0)
+            } else {
+                15
+            }
+        }
+        fn block_brightness(&mut self, _pos: minecraftoss_core::BlockPos) -> i32 {
+            0
+        }
+        fn sky_darken(&self) -> i32 {
+            self.darken
+        }
+        fn min_y(&self) -> i32 {
+            -64
+        }
+        fn random(&mut self) -> &mut dyn minecraftoss_core::random::RandomSource {
+            &mut self.random
+        }
+        fn next_uuid(&mut self) -> [i32; 4] {
+            self.made += 1;
+            [self.made, 0, 0, 1]
+        }
+        fn add_entity(&mut self, entity: minecraftoss_core::nbt::Tag) {
+            self.added.push(entity);
+        }
+    }
+
+    fn river() -> Option<(std::sync::Arc<super::CreatureSpawns>, Column)> {
+        let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
+        let registries = minecraftoss_core::Registries::load(&paths).ok()?;
+        registries.entities.as_ref()?;
+        let biome = registries.biomes.id("minecraft:river")?;
+        let floor = registries.blocks.parse_state("minecraft:sand").ok()?;
+        let water = registries.blocks.parse_state("minecraft:water").ok()?;
+        let spawns = super::CreatureSpawns::load(std::sync::Arc::new(registries), "minecraft:overworld", false).ok()?;
+        let column = Column { solid_top: 49, water_top: 62, floor, water, biome, darken: 11, random: minecraftoss_core::random::LegacyRandom::new(9), made: 0, added: Vec::new() };
+        Some((std::sync::Arc::new(spawns), column))
+    }
+
+    fn spawn_monsters(spawns: &super::CreatureSpawns, column: &mut Column, y: i32, rounds: usize) {
+        let players = [[8.5, 63.0, 48.5]];
+        for _ in 0..rounds {
+            let mut context = super::SpawnContext {
+                players: &players,
+                respawn: None,
+                difficulty: 2,
+                overworld_time: 0,
+                moon_brightness: 0.0,
+                raining: false,
+                thundering: false,
+                seed: 0,
+                surface_slime_chance: &|_| 0.0,
+                halloween: false,
+                can_spawn_in_chunk: &|_| true,
+                obstacles: Vec::new(),
+                chickens: Vec::new(),
+                structures: &|_| Vec::new(),
+                spawning_monsters: true,
+            };
+            spawns.spawn_category_for_position(column, &mut context, &mut super::Unlimited, MobCategory::Monster, minecraftoss_core::ChunkPos::new(0, 0), minecraftoss_core::BlockPos::new(8, y, 8));
+        }
+    }
+
+    #[test]
+    fn a_drowned_spawns_in_a_river_column_at_night_and_never_on_dry_land() {
+        let Some((spawns, mut column)) = river() else { return };
+        spawn_monsters(&spawns, &mut column, 55, 2000);
+        let kinds: Vec<&str> = column.added.iter().filter_map(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str)).collect();
+        assert!(kinds.len() > 20, "{}", kinds.len());
+        assert!(kinds.iter().all(|kind| *kind == "minecraft:drowned"), "{kinds:?}");
+        for tag in &column.added {
+            let y = tag.get("Pos").and_then(minecraftoss_core::nbt::Tag::as_list).and_then(|p| p.get(1)).and_then(minecraftoss_core::nbt::Tag::as_f64).unwrap();
+            assert!((50.0..=62.0).contains(&y), "{y}");
+        }
+        let mut dry = Column { solid_top: 64, water_top: 64, added: Vec::new(), ..column };
+        spawn_monsters(&spawns, &mut dry, 65, 2000);
+        assert!(!dry.added.is_empty(), "other monsters spawn on the bank");
+        assert!(dry.added.iter().all(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) != Some("minecraft:drowned")));
+        let info = super::type_info("minecraft:drowned").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.rules, info.walk, info.remove_far, info.cluster), (0.6, 1.95, super::super::Placement::InWater, super::Rules::Drowned, super::Walk::Monster, true, 4));
+        let mut puddle = Column { solid_top: 61, water_top: 62, added: Vec::new(), ..dry };
+        let context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 0,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let at = minecraftoss_core::BlockPos::new(8, 62, 8);
+        assert!((0..500).all(|_| !spawns.natural_spawn_rules(&mut puddle, &context, "minecraft:drowned", &info, at)), "a drowned needs water below its feet");
+    }
+
+    #[test]
+    fn a_drowned_rolls_a_trident_or_fishing_rod_one_time_in_ten_and_a_nautilus_shell_three_in_a_hundred() {
+        let mut random = minecraftoss_core::random::LegacyRandom::new(21);
+        let rolls = 40_000;
+        let (mut tridents, mut rods, mut shells) = (0, 0, 0);
+        for _ in 0..rolls {
+            match super::drowned_weapon(&mut random) {
+                Some("minecraft:trident") => tridents += 1,
+                Some("minecraft:fishing_rod") => rods += 1,
+                None => {}
+                other => panic!("{other:?}"),
+            }
+            if super::drowned_shell(&mut random) {
+                shells += 1;
+            }
+        }
+        let share = |n: i32| f64::from(n) / f64::from(rolls);
+        assert!((share(tridents) - 0.1 * 10.0 / 16.0).abs() < 0.005, "{tridents}");
+        assert!((share(rods) - 0.1 * 6.0 / 16.0).abs() < 0.005, "{rods}");
+        assert!((share(shells) - 0.03).abs() < 0.004, "{shells}");
     }
 
     #[test]

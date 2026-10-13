@@ -103,6 +103,10 @@ pub fn append_zombies<'a>(
             let pivot = glam::Vec3::from_array(arm_pivot(0));
             held.push(crate::mesh::HeldItem { pose: crate::cow_render::right_hand_pose(feet, pose.body_rotation(90.0), pivot, limbs[0], zombie.baby), light: pose.light_probe.as_vec3(), id: item.clone(), display: crate::mesh::HeldDisplay::RightHand, first_tint: None });
         }
+        if let Some(item) = &zombie.off_hand {
+            let pivot = glam::Vec3::from_array(arm_pivot(1));
+            held.push(crate::mesh::HeldItem { pose: crate::cow_render::left_hand_pose(feet, pose.body_rotation(90.0), pivot, limbs[1], zombie.baby), light: pose.light_probe.as_vec3(), id: item.clone(), display: crate::mesh::HeldDisplay::LeftHand, first_tint: None });
+        }
         // `LayerDefinitions`: the adult husk is scaled up by 1.0625.
         let scale = if zombie.kind == ZombieKind::Husk && !zombie.baby { 1.0625 } else { 1.0 };
         for (index, &(from, to, uv, pivot)) in (if zombie.baby { &BABY } else { &ADULT }).iter().enumerate() {

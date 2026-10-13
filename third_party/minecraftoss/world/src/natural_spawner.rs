@@ -238,6 +238,7 @@ enum Rules {
     Bat,
     /// `GlowSquid.checkGlowSquidSpawnRules` (deep, dark water).
     GlowSquid,
+    Drowned,
     Strider,
     Hoglin,
     Piglin,
@@ -309,10 +310,11 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "zombie_horse" => (1.396_484_4, 1.6, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "bat" => (0.5, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "glow_squid" => (0.8, 0.8, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "drowned" => (0.6, 1.95, Placement::InWater, MotionBlockingNoLeaves, false, false),
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute" | "drowned");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),
@@ -333,6 +335,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "piglin_brute" => Rules::Other,
         "bat" => Rules::Bat,
         "glow_squid" => Rules::GlowSquid,
+        "drowned" => Rules::Drowned,
         "strider" => Rules::Strider,
         _ if monster => Rules::Monster,
         _ => Rules::Other,
@@ -378,6 +381,7 @@ pub struct CreatureSpawns {
     monster_light_test_max: i32,
     /// `#minecraft:allows_surface_slime_spawns`.
     surface_slimes: Option<TagId>,
+    more_frequent_drowned: Option<TagId>,
     /// `#minecraft:bats_spawnable_on`.
     bats_spawnable_on: Option<TagId>,
     probability: Vec<f32>,
@@ -515,6 +519,7 @@ impl CreatureSpawns {
             monster_block_light_limit: dimension["monster_spawn_block_light_limit"].as_i64().unwrap_or(0) as i32,
             monster_light_test_max,
             surface_slimes: registries.biome_tags.id("minecraft:allows_surface_slime_spawns"),
+            more_frequent_drowned: registries.biome_tags.id("minecraft:more_frequent_drowned_spawns"),
             bats_spawnable_on: registries.block_tags.id("minecraft:bats_spawnable_on"),
             probability,
             pig_variants: VariantRegistry::load(registries, "pig_variant")?,
@@ -777,7 +782,7 @@ impl CreatureSpawns {
     /// box (entities never obstruct in a generation region; the server's
     /// spawner tests them itself).
     fn check_spawn_obstruction(&self, level: &mut dyn SpawnLevel, info: &TypeInfo, x: f64, y: f64, z: f64) -> bool {
-        if info.rules == Rules::Strider {
+        if matches!(info.rules, Rules::Strider | Rules::Drowned) {
             return true;
         }
         let half = f64::from(info.width) / 2.0;
