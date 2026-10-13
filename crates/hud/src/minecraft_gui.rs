@@ -728,9 +728,9 @@ impl<'a> Painter<'a> {
         }
         let icon = ui
             .animated_icon_rects
-            .get(&stack.id)
+            .get(&stack.icon)
             .map(|&st| (ANIMATED_ICON_MATERIAL, st))
-            .or_else(|| ui.icon_rects.get(&stack.id).map(|&st| (ICON_MATERIAL, st)));
+            .or_else(|| ui.icon_rects.get(&stack.icon).map(|&st| (ICON_MATERIAL, st)));
         if let Some((material, st)) = icon {
             self.rect(
                 material,
@@ -1081,6 +1081,7 @@ mod tests {
             contents: Vec::new(),
             more: None,
             glint: false,
+            icon: "minecraft:dirt".into(),
         };
         let mut ui = MinecraftUi::default();
         painter.decorations(&ui, &stack, [0, 0], Some(("ab".into(), YELLOW)));
@@ -1140,6 +1141,7 @@ mod tests {
             contents: Vec::new(),
             more: None,
             glint,
+            icon: id.into(),
         }
     }
 

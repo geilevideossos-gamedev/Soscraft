@@ -335,7 +335,8 @@ impl InventoryUi {
         let enchant_table = self.enchantments.clone();
         let mut convert = |stack: &Option<ItemStack>| {
             stack.as_ref().map(|s| {
-                stacks.push(s.id.clone());
+                let icon = minecraft_terrain::item_tint::of_stack(s);
+                stacks.push(icon.clone());
                 McStack {
                     id: s.id.clone(),
                     count: s.count,
@@ -357,6 +358,7 @@ impl InventoryUi {
                     contents: contents_lines(lang, s),
                     more: more_line(lang, s),
                     glint: minecraft_terrain::glint::has_glint(s),
+                    icon,
                 }
             })
         };
@@ -466,20 +468,20 @@ impl InventoryUi {
         let animation_tick = self.animation_tick;
         if self.animated.tick != animation_tick {
             self.animated.tick = animation_tick;
-            let shown: Vec<&String> = if ui.inventory_open {
-                stacks.iter().collect()
+            let shown: Vec<String> = if ui.inventory_open {
+                stacks.clone()
             } else {
                 let hotbar = inventory.slots.iter().take(frame::minecraft_ui::MC_HOTBAR);
-                hotbar.chain(inventory.slots.get(OFFHAND)).chain(std::iter::once(&inventory.cursor)).flatten().map(|stack| &stack.id).collect()
+                hotbar.chain(inventory.slots.get(OFFHAND)).chain(std::iter::once(&inventory.cursor)).flatten().map(minecraft_terrain::item_tint::of_stack).collect()
             };
             let mut refreshed = HashSet::new();
-            for id in shown {
+            for id in &shown {
                 let Some(&cell) = self.animated.cells.get(id) else { continue };
                 if !refreshed.insert(id) {
                     continue;
                 }
                 let clock = minecraft_terrain::item_icon::SpriteClock::at(animation_tick);
-                let Ok(Some(rendered)) = minecraft_terrain::item_icons::item_icon_at(packs, self.dials.key(id), icon as usize, &clock) else { continue };
+                let Ok(Some(rendered)) = minecraft_terrain::item_icons::item_icon_at(packs, &icon_source(&self.dials, id).1, icon as usize, &clock) else { continue };
                 let rendered = image::imageops::resize(&rendered, icon, icon, image::imageops::FilterType::Nearest);
                 self.animated.draw(cell, &rendered, icon);
             }
@@ -488,8 +490,9 @@ impl InventoryUi {
             if id.starts_with(WEAPON_PREFIX) {
                 continue;
             }
-            if !ui.names.contains_key(&id) {
-                ui.names.insert(id.clone(), minecraft_terrain::item_icons::item_name(language, &id));
+            let (base, source) = icon_source(&self.dials, &id);
+            if !ui.names.contains_key(base) {
+                ui.names.insert(base.to_owned(), minecraft_terrain::item_icons::item_name(language, base));
             }
             if self.cells.contains_key(&id) || self.failed.contains(&id) || self.animated.cells.contains_key(&id) {
                 continue;
@@ -501,7 +504,7 @@ impl InventoryUi {
                 continue;
             }
             let clock = minecraft_terrain::item_icon::SpriteClock::at(animation_tick);
-            match minecraft_terrain::item_icons::item_icon_at(packs, self.dials.key(&id), icon as usize, &clock) {
+            match minecraft_terrain::item_icons::item_icon_at(packs, &source, icon as usize, &clock) {
                 Ok(Some(rendered)) => {
                     if clock.animated() && self.animated.add(id.clone(), &image::imageops::resize(&rendered, icon, icon, image::imageops::FilterType::Nearest), icon) {
                         continue;
@@ -565,6 +568,11 @@ impl InventoryUi {
         }
         self.animated.publish(ui, images, icon);
     }
+}
+
+fn icon_source<'a>(dials: &minecraft_terrain::dials::Dials, icon: &'a str) -> (&'a str, String) {
+    let (base, potion) = minecraft_terrain::item_tint::split(icon);
+    (base, minecraft_terrain::item_tint::key(dials.key(base), potion))
 }
 
 fn stack_limit(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &ItemStack) -> u8 {
@@ -771,6 +779,23 @@ mod tests {
         assert_eq!(screen_for(Some(&Open::Table((0, 0, 0)))), McScreen::CraftingTable);
         let chest = Opened { station: Station::Chest, cells: vec![(0, 0, 0), (1, 0, 0)] };
         assert_eq!(screen_for(Some(&Open::Block(chest))), McScreen::Chest { rows: 6 });
+    }
+
+    #[test]
+    fn two_potions_share_an_id_and_a_name_but_not_an_icon() {
+        let potion = |name: &str| {
+            let mut stack = ItemStack::new("minecraft:potion", 1);
+            stack.components = Some(serde_json::json!({"minecraft:potion_contents": {"potion": name}}));
+            stack
+        };
+        let (healing, poison) = (potion("minecraft:healing"), potion("minecraft:poison"));
+        let (healing_icon, poison_icon) = (minecraft_terrain::item_tint::of_stack(&healing), minecraft_terrain::item_tint::of_stack(&poison));
+        assert_eq!(healing.id, poison.id);
+        assert_ne!(healing_icon, poison_icon);
+        let dials = minecraft_terrain::dials::Dials::default();
+        assert_eq!(icon_source(&dials, &healing_icon), ("minecraft:potion", "minecraft:potion~f82423".to_owned()));
+        assert_eq!(icon_source(&dials, &poison_icon), ("minecraft:potion", "minecraft:potion~87a363".to_owned()));
+        assert_eq!(icon_source(&dials, "minecraft:clock"), ("minecraft:clock", "minecraft:clock".to_owned()));
     }
 
     #[test]

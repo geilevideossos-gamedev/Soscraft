@@ -961,6 +961,7 @@ mod tests {
             contents: (1..=5).map(|count| format!("{count} x Stone")).collect(),
             more: Some("and 2 more...".to_owned()),
             glint: false,
+            icon: "minecraft:shulker_box".to_owned(),
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool)> = lines.iter().map(|line| (line.text.as_str(), line.italic)).collect();

@@ -412,7 +412,7 @@ pub fn build_item_model(packs: &PackStack, item: &ResourceId) -> Result<Option<B
     }
     let tints = packs
         .item_definition(item)?
-        .map(|value| crate::interface::item_model_tints(packs, &value["model"]))
+        .map(|value| crate::interface::item_model_tints(packs, &value["model"], None))
         .transpose()?
         .unwrap_or_default();
     let textures = model
@@ -922,7 +922,7 @@ impl ItemVisuals {
             let fixed = crate::model::item_display_transform(packs, &resource, "fixed")?;
             let tints = definition
                 .as_ref()
-                .map(|value| crate::interface::item_model_tints(packs, &value["model"]))
+                .map(|value| crate::interface::item_model_tints(packs, &value["model"], None))
                 .transpose()?
                 .unwrap_or_default()
                 .into_iter()

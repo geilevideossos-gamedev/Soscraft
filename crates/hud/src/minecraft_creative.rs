@@ -702,6 +702,7 @@ mod tests {
             contents: Vec::new(),
             more: None,
             glint: false,
+            icon: "minecraft:stone".to_owned(),
         }
     }
 

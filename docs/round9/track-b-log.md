@@ -32,6 +32,45 @@ What changed (`crates/render_frontend/src/assemble/drawsurf/film_vision_view.rs`
 
 Tests added (render_frontend): `no_mw2_pain_vision_on_minecraft_maps` (`(Some(0.1), true, true)` false, `(Some(0.1), true, false)` true, `(Some(0.9), true, false)` false, plus no health and no script both false).
 
+### B9.1 Minecraft potion and tipped arrow icons show their vanilla potion colour
+
+Base: 05578b70 (B10.2).
+
+What changed:
+- `minecraft_terrain/src/potions.rs`: `stack_color(components)` is `Some(PotionContents::from_components(..).color())` when the stack has `minecraft:potion_contents` (string or object form), else `None`. The colour maths is unchanged.
+- New `minecraft_terrain/src/item_tint.rs`: an icon key is the item id plus `~rrggbb` when the stack has potion contents (`key`, `split`, `of_stack`, `KEY_MARK = '~'`). `split` takes the last `~`, so a dial key (`#`) stays whole for `dials::split` afterwards; a bad or empty suffix gives the id with no colour.
+- `interface.rs` `item_model_tints(packs, model, potion)`: the `minecraft:potion` tint uses the stack colour, or its `default` (0x385DC6) without one. Dye, firework, map colour, team and custom model data still use their default. `mesh.rs` passes `None` at both callers for now (the world commit is next).
+- `item_icons.rs` `item_icon_at`: splits the tint, then the dial, and tints layer 0 with the colour, so the potion overlay and the tipped arrow head take it.
+- `frame::McStack.icon`: the icon atlas key. `hud/src/minecraft_gui.rs` looks icons up by `stack.icon`; names stay keyed by `stack.id`.
+- `render_anim/src/minecraft_inventory.rs`: `convert` sets `icon = item_tint::of_stack(s)` and collects icon keys. The atlas loop names items by the base id and renders each icon from `item_tint::key(dials.key(base), potion)` (the small `icon_source` helper); the animated refresh uses `of_stack` too. `minecraft_creative.rs` `icon_ids` returns `stack.icon`. The gun handling is untouched.
+- The friend's inventory goes through the same `publish`, so friends get the colours too.
+
+Tests added:
+- minecraft_terrain: `a_stack_colour_needs_potion_contents` (None without the component, F82423 for healing in both forms, a custom colour, water's default, strong_turtle_master 0x8D85E6); `item_tint::a_key_splits_back_into_its_id_and_colour`, `a_dial_key_is_left_for_the_dial_split`, `a_bad_suffix_has_no_colour`, `a_poison_splash_potion_keys_its_colour` (`minecraft:splash_potion~87a363`); `interface::a_potion_tint_takes_the_stack_colour_or_its_default` and two dye/firework asserts that ignore a colour; `item_icons::potion_and_tipped_arrow_icons_take_the_stack_colour_on_layer_zero` (on the real 26.3 pack: tinted differs from plain, and every bare layer-0 pixel equals the sprite times F82423/255, for the potion overlay and the tipped arrow head).
+- render_anim: `two_potions_share_an_id_and_a_name_but_not_an_icon`.
+
+Decisions:
+- Every stack with potion contents gets its own atlas cell, even when its colour is the default (water, awkward). That is vanilla's tint result and costs one cell per potion kind; `ICON_ATLAS_LIMIT` has room.
+- Dyed leather keeps its default tint (out of scope in the brief; the same key can carry it later).
+
+## Owner's test steps (B9.1)
+
+1. **Inventory (E).** Each bottle has its own liquid colour:
+   - Healing is red, Poison olive green and Swiftness cyan;
+   - Fire Resistance is orange, Night Vision lime and Strong Turtle Master lavender blue;
+   - Invisibility is almost white, Leaping pale yellow and Weakness dark grey;
+   - Water and Awkward keep the old blue.
+
+   The splash and lingering bottles and the tipped arrows' heads are coloured the same way. Hovering still shows each potion's name.
+2. **Hotbar and cursor.** Potions in the hotbar and one carried on the cursor keep their colours.
+3. **Creative.** In `/gamemode creative`, the potions in Food & Drinks and the tipped arrows in Combat each show their own colour.
+
+Held, dropped and framed potions still show the old blue until the next commit (B9.2).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@healing,minecraft:potion@poison,minecraft:potion@swiftness,minecraft:potion@fire_resistance,minecraft:potion@night_vision,minecraft:potion@strong_turtle_master,minecraft:potion@invisibility,minecraft:potion@water,minecraft:potion@awkward,minecraft:potion@leaping,minecraft:potion@weakness,minecraft:splash_potion@harming*2,minecraft:splash_potion@regeneration*2,minecraft:splash_potion@poison,minecraft:lingering_potion@poison*2,minecraft:lingering_potion@slow_falling,minecraft:tipped_arrow@poison*16,minecraft:tipped_arrow@strength*16,minecraft:tipped_arrow@leaping*16,minecraft:item_frame*4,minecraft:cow_spawn_egg*2
+```
+
 ## Owner's test steps (B10)
 
 1. Options > Advanced Video: check that Show Blood is on.
