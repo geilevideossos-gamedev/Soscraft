@@ -342,4 +342,41 @@ mod tests {
             ["first", "second\nline"]
         );
     }
+
+    fn view_bytes(player: &crate::player::Player) -> usize {
+        let view = minecraft_net::ToClient::Player(Box::new(crate::views::player_view(player)));
+        minecraft_net::encode(minecraft_net::Lane::Reliable, &view)
+            .expect("a player view fits the reliable lane")
+            .len()
+    }
+
+    #[test]
+    fn a_player_view_with_a_full_book_is_measured() {
+        let profile = minecraft_commands::server::Profile {
+            id: minecraft_commands::PlayerId(2),
+            name: "Alex".to_owned(),
+            uuid: "00000000-0000-0000-0000-000000000002".to_owned(),
+        };
+        let mut player = crate::player::Player::new(
+            &profile,
+            Default::default(),
+            Default::default(),
+            Inventory::default(),
+        );
+        player.inventory.slots[0] = Some(ItemStack::new(WRITABLE_BOOK, 1));
+        let empty = view_bytes(&player);
+        let mut sizes = Vec::new();
+        for letter in ['a', '\u{e9}', '\u{4e2d}'] {
+            let page: String = std::iter::repeat_n(letter, PAGE_LENGTH).collect();
+            let pages = vec![page; MAX_PAGES];
+            player.inventory.slots[0] = Some(ItemStack::new(WRITABLE_BOOK, 1));
+            assert!(edit_book(&mut player.inventory, 0, &pages, None, "Alex"));
+            sizes.push(view_bytes(&player) - empty);
+        }
+        let text = MAX_PAGES * PAGE_LENGTH;
+        for (width, &size) in (1..).zip(&sizes) {
+            assert!((width * text..width * text + 2048).contains(&size));
+        }
+        assert!(empty + sizes[2] < minecraft_net::codec::RELIABLE_LIMIT / 10);
+    }
 }

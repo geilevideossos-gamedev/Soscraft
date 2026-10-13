@@ -54,6 +54,11 @@ pub enum ToServer {
         button: Option<i32>,
     },
     LeaveBed,
+    EditBook {
+        slot: u8,
+        pages: Vec<String>,
+        title: Option<String>,
+    },
 }
 
 impl ToServer {
@@ -266,6 +271,9 @@ pub enum ToClient {
         client: u32,
         bed: Option<Lying>,
         timer: i32,
+    },
+    OpenBook {
+        slot: u8,
     },
 }
 

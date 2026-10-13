@@ -67,6 +67,7 @@ impl Drop for ChunkWorker {
 }
 
 type LecternClicks = Vec<([i32; 3], Option<i32>)>;
+type BookEdits = Vec<(u8, Vec<String>, Option<String>)>;
 
 fn encode(job: &BatchJob, registries: &Registries) -> EncodedBatch {
     minecraft_survival::session::encode_batch(job.seq, &job.chunks, registries)
@@ -85,6 +86,7 @@ pub(crate) struct HostSessions {
     credits_done: Vec<u32>,
     lecterns: BTreeMap<u32, LecternClicks>,
     leave_beds: Vec<u32>,
+    edit_books: BTreeMap<u32, BookEdits>,
 }
 
 impl HostSessions {
@@ -97,6 +99,7 @@ impl HostSessions {
             && self.credits_done.is_empty()
             && self.lecterns.is_empty()
             && self.leave_beds.is_empty()
+            && self.edit_books.is_empty()
     }
 }
 
@@ -168,6 +171,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
                     host.leave_beds.push(client);
                 }
             }
+            Ok(ToServer::EditBook { slot, pages, title }) => {
+                if host.sessions.sessions.contains_key(&client) {
+                    host.edit_books.entry(client).or_default().push((slot, pages, title));
+                }
+            }
             Ok(_) => {}
             Err(error) => {
                 diag::warn!(
@@ -184,6 +192,14 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
         {
             session.hands.state(state, now);
         }
+    }
+}
+
+fn edit_books(player: &mut minecraft_survival::player::Player, edits: BookEdits) {
+    let minecraft_survival::player::Player { inventory, name, .. } = player;
+    for (slot, pages, title) in edits {
+        let slot = usize::from(slot);
+        minecraft_survival::books::edit_book(inventory, slot, &pages, title.as_deref(), name);
     }
 }
 
@@ -314,6 +330,7 @@ pub(crate) fn host(
         host.credits_done.retain(|done| done != client);
         host.lecterns.remove(client);
         host.leave_beds.retain(|leaving| leaving != client);
+        host.edit_books.remove(client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
     }
@@ -422,6 +439,8 @@ pub(crate) fn host(
                 .into_iter()
                 .flatten()
                 .collect();
+            let edits = host.edit_books.remove(&session.client).unwrap_or_default();
+            edit_books(player, edits);
             let id = sim::ClientId(session.client);
             let was = player.menus.block().cloned();
             let stepped = crate::minecraft_players::step_friend(
@@ -436,6 +455,11 @@ pub(crate) fn host(
             session
                 .outbox
                 .extend(stepped.books.into_iter().map(ToClient::Lectern));
+            if let Some(open) = stepped.open_book
+                && let Ok(slot) = u8::try_from(open.slot)
+            {
+                session.outbox.push(ToClient::OpenBook { slot });
+            }
             if let Some(bed) = stepped.bed {
                 beds.push((session.uuid.clone(), BedAction::Lie(bed)));
             }
@@ -692,5 +716,104 @@ mod tests {
             identity: net::SessionIdentity::unassigned(1),
         };
         assert_eq!(room_code(&connecting), None);
+    }
+
+    #[test]
+    fn a_friends_book_edit_on_the_host_changes_their_slot_and_goes_back_in_the_player_view() {
+        use minecraft_net::messages::PlayerView;
+        use minecraft_survival::books::{WRITABLE_BOOK, WRITTEN_BOOK, WRITTEN_BOOK_CONTENT};
+        use minecraft_survival::session::Session;
+        use minecraftoss_player::inventory::{Inventory, ItemStack};
+        let profile = minecraft_commands::server::Profile {
+            id: minecraft_commands::PlayerId(2),
+            name: "Alex".to_owned(),
+            uuid: "00000000-0000-0000-0000-000000000002".to_owned(),
+        };
+        let mut player = minecraft_survival::player::Player::new(
+            &profile,
+            Default::default(),
+            Default::default(),
+            Inventory::default(),
+        );
+        player.inventory.slots[40] = Some(ItemStack::new(WRITABLE_BOOK, 1));
+        player.inventory.slots[3] = Some(ItemStack::new(WRITABLE_BOOK, 1));
+        let recipes = player.inventory.recipes.clone();
+        let mut session = Session::new(2, player.uuid.clone(), "Alex", 2);
+        let views = |session: &mut Session| -> Vec<PlayerView> {
+            std::mem::take(&mut session.outbox)
+                .into_iter()
+                .filter_map(|message| match message {
+                    ToClient::Player(view) => Some(*view),
+                    _ => None,
+                })
+                .collect()
+        };
+        session.send_view(&player);
+        let before = views(&mut session).pop().expect("the first view");
+        let mut inventory_ui = crate::minecraft_inventory::InventoryUi::default();
+        let mut ui = frame::MinecraftUi::default();
+        let open = |inventory_ui: &mut crate::minecraft_inventory::InventoryUi,
+                    ui: &mut frame::MinecraftUi,
+                    view: &PlayerView| {
+            crate::minecraft_remote::open_held_book(inventory_ui, ui, (view, &recipes), "Alex", 40)
+        };
+        assert!(open(&mut inventory_ui, &mut ui, &before));
+        assert_eq!(ui.screen, frame::McScreen::BookEdit);
+        assert_eq!(ui.book_edit.as_ref().map(|edit| edit.author.as_str()), Some("Alex"));
+        ui.clicks = vec![
+            frame::McClick::EditBook {
+                pages: vec!["Dear diary".to_owned(), String::new()],
+                title: Some("Diary".to_owned()),
+            },
+            frame::McClick::Close,
+        ];
+        assert!(inventory_ui.book_clicks(&mut ui));
+        assert!(!ui.inventory_open && ui.book_edit.is_none());
+        assert!(inventory_ui.take_lectern_actions().is_empty());
+        let sent: Vec<ToServer> = inventory_ui
+            .take_book_edits()
+            .into_iter()
+            .map(|(slot, pages, title)| ToServer::EditBook {
+                slot: u8::try_from(slot).unwrap(),
+                pages,
+                title,
+            })
+            .collect();
+        assert_eq!(sent.len(), 1);
+        let bytes = minecraft_net::encode(Lane::Reliable, &sent[0]).unwrap();
+        let Ok(ToServer::EditBook { slot, pages, title }) =
+            minecraft_net::decode::<ToServer>(Lane::Reliable, &bytes)
+        else {
+            panic!("not a book edit");
+        };
+        assert_eq!(slot, 40);
+        let refused = (9, vec!["x".to_owned()], None);
+        let quill = (3, vec!["Draft".to_owned()], None);
+        edit_books(&mut player, vec![(slot, pages, title), refused, quill]);
+        session.send_view(&player);
+        let after = views(&mut session).pop().expect("a view with the new book");
+        let stack = after.slots[40]
+            .as_ref()
+            .and_then(|nbt| minecraft_survival::views::view_stack(nbt, &recipes))
+            .expect("the signed book");
+        assert_eq!((stack.id.as_str(), stack.count), (WRITTEN_BOOK, 1));
+        let content = &stack.components.as_ref().unwrap()[WRITTEN_BOOK_CONTENT];
+        assert_eq!(content["author"], "Alex");
+        assert_eq!(content["title"]["raw"], "Diary");
+        assert_eq!(
+            minecraft_terrain::lectern::pages_text(stack.components.as_ref()),
+            ["Dear diary", ""]
+        );
+        assert_eq!(after.slots[9], None);
+        let draft = after.slots[3]
+            .as_ref()
+            .and_then(|nbt| minecraft_survival::views::view_stack(nbt, &recipes))
+            .expect("the quill");
+        assert_eq!(draft.id, WRITABLE_BOOK);
+        assert_eq!(minecraft_terrain::lectern::pages_text(draft.components.as_ref()), ["Draft"]);
+        assert!(open(&mut inventory_ui, &mut ui, &after));
+        assert_eq!(ui.screen, frame::McScreen::Lectern);
+        let book = ui.book.as_ref().expect("the friend reads the signed book");
+        assert_eq!((book.pages.len(), book.page, book.take), (2, 0, false));
     }
 }

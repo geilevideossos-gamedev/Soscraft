@@ -48,6 +48,7 @@ pub(crate) struct InventoryUi {
     pub(crate) dials: minecraft_terrain::dials::Dials,
     book_source: Option<BookSource>,
     lectern_actions: Vec<(BlockPos, minecraft_terrain::lectern::LecternAction)>,
+    book_edits: Vec<(usize, Vec<String>, Option<String>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +266,10 @@ impl InventoryUi {
         std::mem::take(&mut self.lectern_actions)
     }
 
+    pub(crate) fn take_book_edits(&mut self) -> Vec<(usize, Vec<String>, Option<String>)> {
+        std::mem::take(&mut self.book_edits)
+    }
+
     pub(crate) fn book_clicks(&mut self, ui: &mut MinecraftUi) -> bool {
         let Some(source) = self.book_source else {
             return false;
@@ -273,6 +278,12 @@ impl InventoryUi {
             match click {
                 McClick::Choose(button) => self.book_button(ui, source, button),
                 McClick::Close => ui.inventory_open = false,
+                McClick::EditBook { pages, title } => {
+                    if let BookSource::Held(slot) = source {
+                        self.book_edits.push((slot, pages, title));
+                        ui.inventory_open = false;
+                    }
+                }
                 _ => {}
             }
         }

@@ -171,6 +171,7 @@ pub struct RemoteWorld {
     pub weather: [f32; 2],
     pub boss_bars: BTreeMap<u64, BossBar>,
     pub lecterns: Vec<Option<BookView>>,
+    pub open_books: Vec<u8>,
     pub sleepers: BTreeMap<u32, Lying>,
     pub sleep_timer: i32,
     sleep_clock: f64,
@@ -206,6 +207,7 @@ impl RemoteWorld {
             weather: [0.0; 2],
             boss_bars: BTreeMap::new(),
             lecterns: Vec::new(),
+            open_books: Vec::new(),
             sleepers: BTreeMap::new(),
             sleep_timer: 0,
             sleep_clock: 0.0,
@@ -491,6 +493,7 @@ impl RemoteWorld {
             } => self.open_level(dimension, epoch, origin, feet),
             ToClient::BossBar(update) => self.boss_bar(update),
             ToClient::Lectern(book) => self.lecterns.push(book),
+            ToClient::OpenBook { slot } => self.open_books.push(slot),
             ToClient::Sleeping { client, bed, timer } => {
                 if self.login.as_ref().is_some_and(|login| login.client == client) {
                     self.sleep_timer = timer;

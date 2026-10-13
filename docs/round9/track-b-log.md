@@ -160,6 +160,33 @@ Decisions:
 - Switching between BookEdit and BookSign restarts the cursor blink and drops input for that one frame (the hud treats a screen change as a fresh open).
 - A friend cannot open the editor yet: `ToClient::OpenBook` and `ToServer::EditBook` come with the B8.4 group.
 
+### B8.4 A friend reads, writes and signs books through the host
+
+Base: 7bf7221f (B8.3).
+
+What changed:
+- `minecraft_net/src/messages.rs`: `ToServer::EditBook { slot: u8, pages: Vec<String>, title: Option<String> }` (index 12, vanilla's `ServerboundEditBookPacket`) and `ToClient::OpenBook { slot: u8 }` (index 31, vanilla's `ClientboundOpenBookPacket`, with the slot instead of the hand). Both are appended, so every older index is unchanged. `PROTOCOL` stays 4 (bumped once in B9.2).
+- Host (`render_anim/src/minecraft_host.rs`):
+  - `edit_books: BTreeMap<u32, Vec<(slot, pages, title)>>` is queued per session like `lecterns`, counted in `idle()` and dropped when the friend leaves;
+  - each frame, before `step_friend`, the queued edits go through `books::edit_book(&mut player.inventory, slot, .., &player.name)` (`edit_books`), so the same frame's `PlayerView` carries the new slot NBT;
+  - after `step_friend`, `stepped.open_book` (from B8.1) becomes `ToClient::OpenBook { slot }` in the friend's outbox, for both kinds.
+- Friend:
+  - `minecraft_survival/src/remote.rs`: `RemoteWorld.open_books: Vec<u8>` collects `OpenBook`.
+  - `render_anim/src/minecraft_remote.rs` (additive): for each slot, `open_held_book` reads `view.slots[slot]` through `view_stack`; a written book with content opens `show_held_book` (page 0, no Take Book), a book and quill opens `show_book_editor` with the friend's own name (from the player list, as the credits do). Afterwards `InventoryUi.take_book_edits()` becomes `ToServer::EditBook`, next to the lectern actions.
+  - `render_anim/src/minecraft_inventory.rs`: `book_clicks` (the friend's path) queues `McClick::EditBook` for a held source and closes the screen; `take_book_edits()` hands them out. The host keeps using `apply_input`.
+
+Tests added:
+- minecraft_net `codec`: `to_server()` gains a 100-page book (1024 characters a page, with `é` and newlines) signed "Diary" in slot 40 and an empty edit; `to_client()` gains `OpenBook { slot: 40 }`; the index tables and seen-arrays grow to 13 and 32. New `book_messages_take_the_next_free_indices` (postcard's first byte is 12 for `EditBook` and 31 for `OpenBook`, `OpenBook { slot: 8 }` is exactly `[31, 8]`, the full book is over 100 KB and under the 4 MB reliable limit and decodes to 100 pages of 1024 characters).
+- render_anim `minecraft_host::a_friends_book_edit_on_the_host_changes_their_slot_and_goes_back_in_the_player_view`: a `Session`'s first `PlayerView` holds two quills; the friend's `open_held_book` on slot 40 opens the editor with "Alex"; Sign through `book_clicks` gives one `EditBook` that round-trips the codec; the host's `edit_books` applies it (plus a refused slot 9 edit and a plain quill edit in slot 3); the next `PlayerView` has a written book in slot 40 (author "Alex", title "Diary", pages "Dear diary" and an empty one) and the quill's "Draft" in slot 3; `open_held_book` then opens it read-only on page 1.
+- minecraft_survival `books::a_player_view_with_a_full_book_is_measured`.
+
+PlayerView size (measured by that test, postcard-encoded `ToClient::Player`): an otherwise empty view is 136 bytes; one book and quill with 100 full pages adds 103,364 bytes when the pages are ASCII, 205,764 with two-byte characters (`é`) and 308,164 with three-byte characters (`中`). `PlayerView` resends all 41 slots whenever anything in it changes (food, an effect, the selected slot), so a friend carrying such a book receives 100-300 KB on each change. That is under the 4 MB reliable limit; slot diffs are left to track A or a later round.
+
+Decisions:
+- The host sends `OpenBook` for a book and quill too. Vanilla opens `BookEditScreen` on the client alone, but here the use runs on the host, so the friend learns of it from the host.
+- The friend reads the book from its last `PlayerView`, not from the message, as vanilla's client reads its own stack.
+- **Not vanilla (small):** the 1024-character page limit and the 32-character title limit count Unicode characters; vanilla counts UTF-16 units (`String.length()`), so only characters outside the BMP (emoji) differ: vanilla allows 512 of them per page, we allow 1024.
+
 ## Owner's test steps (B9.1)
 
 1. **Inventory (E).** Each bottle has its own liquid colour:
@@ -222,7 +249,7 @@ IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*8,minecraft:cactus*4,minecraft:mag
 
 ## Owner's test steps (B8)
 
-Numbered as in the brief's B8 steps. Steps 2 and 9 (the tooltip and the friend) come with later groups of this track; until the tooltip group lands, the signed book's name and "by"/"Original" lines in step 4 are not shown yet. B8.2 (`edit_book`) is tested through steps 3-5.
+Numbered as in the brief's B8 steps. Step 2 (the tooltip) comes with the next commit (B8.5); until it lands, the signed book's name and "by"/"Original" lines in step 4 are not shown yet. B8.2 (`edit_book`) is tested through steps 3-5.
 
 1. **Reading from the hand.** Hold "Test" and right-click at the sky.
    - "Page 1 of 3" opens, with only the forward arrow and one wide Done button (no Take Book).
@@ -252,6 +279,14 @@ Numbered as in the brief's B8 steps. Steps 2 and 9 (the tooltip and the friend) 
 8. **Game modes.**
    - `/gamemode adventure`: right-clicking "Test" reads it.
    - `/gamemode spectator`: right-clicking with a book does nothing.
+9. **A friend** (`docs/round8/multiplayer-quickstart.md`, both games this build, same kit for both).
+   - The friend repeats step 1: "Test" opens from the main hand and from the offhand, with local page turns.
+   - The friend repeats step 3 in the second book and quill: typing, Enter, the 14-line stop, a second page, Done keeps both pages after reopening, Esc discards.
+   - The friend repeats step 4 in the first quill: "by <the friend's name>" on the sign screen; after "Sign and Close" the quill turns into a written book in the friend's hotbar within a moment, and right-clicking it reads the pages.
+   - The host presses F5 or looks at the friend: the friend's held quill becomes a written book in their hand.
+   - The friend repeats step 6: both players read the same lectern.
+   - The friend leaves and rejoins: the signed book and the quill's pages are kept.
+   - The friend in `/gamemode spectator` (host types `/gamemode spectator <friend>`): right-clicking a book does nothing.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Test",author:"Owner",pages:["Page one text.","Page two text.","Page three text."]}],minecraft:writable_book[writable_book_content={pages:["Quill page one","Quill page two"]}],minecraft:writable_book,minecraft:writable_book,minecraft:lectern*2,minecraft:comparator,minecraft:redstone*16,minecraft:redstone_lamp,minecraft:book*2,minecraft:ink_sac*2,minecraft:feather*2,minecraft:crafting_table,minecraft:stone*32
