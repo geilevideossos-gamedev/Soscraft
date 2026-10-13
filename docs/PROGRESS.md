@@ -30,7 +30,7 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 ## Tracks
 | Track | Branch | State |
 |---|---|---|
-| A. Multiplayer fixes | track-a | running (one run) |
+| A. Multiplayer fixes | track-a | **merged** 2db4cf47 + 57302e99 (5 conflicts with B, all both-sides; the message round-trip test counted one new message too few). 17 commits from the run (its own review stopped early with a progress note), then a second review (5 areas, 2 skeptics per finding) confirmed 7 defects, fixed e578f44f..d990a882 (rider head swing, frozen dragon for friends, sneak edge, ladders, adventure respawn, two log steps). Full suite green apart from that test, which passed after the fix; worktree and target removed; owner steps `docs/round9/track-a-log.md` and `docs/round9/release-1-tests.md` |
 | B. Items and the screen | track-b | **merged** 2e13b78c (full suite green, 10.2 min); 12 commits f7cfddd4..fa5d1bf0: faint 0.5 s hit flash and no pain vision on Minecraft maps (B10), potion colours in icons, hands, drops, frames, other players and effect swirls (B9), books read from the hand, edit and sign screens, friends through the host, tooltips (B8); review fixed 1 defect (an owner step asked for a friend's first-person potion); worktree and target removed; owner steps `docs/round9/track-b-log.md` (not in this branch any more: in minecraft-survival) |
 | C. Guns and grenades as real items | track-c | c1 running |
 | D. Finish survival | track-d | d1 running |
@@ -38,16 +38,18 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 ## Release builds
 | # | When | Commit | State |
 |---|---|---|---|
-| 1 | tracks A and B merged | | |
+| 1 | tracks A and B merged | 57302e99 | done 2026-10-13: 10.1 min at full speed (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, old one kept as `iw4l-survival-03e0c9b.exe`, relay copied too (unchanged); test steps `docs/round9/release-1-tests.md` |
 | 2 | end of the round | | |
 
 ## Decisions
 - Gentle mode from the start of round 9: the owner had two `iw4l-survival` windows open (their multiplayer test).
 - A5 (dragon respawn): no defect. Our check is vanilla's `EnderDragonFight.tryRespawn`: a crystal's 2x2x2 box must touch the cell 3 blocks out on each side at portal height + 1, so any of the three straight rim blocks on a side counts and only the four corner blocks don't. The crystals in screenshot 9 sit on straight rim blocks, so vanilla respawns too. Track A pins it with tests; exact centres only would be one line and not vanilla.
 - TNT with pvp off (track D): the brief found that TNT hurts nobody today, so the owner's premise needs checking in game; D10 handles it.
+- minecraft_net `PROTOCOL` stays 4 after both A and B bumped it: no protocol 4 build was released before release 1.
 - Four tracks at once in gentle mode: D: had 45 GB free; a watchdog warns below 10 GB.
 
 ## Log
+- 2026-10-13: track A merged (57302e99); release 1 built and copied in; test steps `docs/round9/release-1-tests.md`.
 - 2026-10-13: track B merged (2e13b78c), full suite green.
 - 2026-10-13: briefs done (28 agents); tracks A, B, C (c1) and D (d1) started.
 - 2026-10-13: round 9 started; brief research started.
