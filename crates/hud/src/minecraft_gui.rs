@@ -75,6 +75,13 @@ pub(crate) fn bar_color(damage: u32, max: u32) -> u32 {
     hsv_to_rgb(left / 3.0, 1.0, 1.0)
 }
 
+pub(crate) fn clip_bar(loaded: u32, capacity: u32) -> (i32, u32) {
+    let capacity = capacity.max(1);
+    let loaded = loaded.min(capacity);
+    let width = (1 + loaded as i32 * 12 / capacity as i32).min(13);
+    (width, bar_color(capacity - loaded, capacity))
+}
+
 pub(crate) fn cooldown_of(ui: &MinecraftUi, stack: &McStack) -> f32 {
     ui.cooldowns
         .iter()
@@ -806,6 +813,11 @@ impl<'a> Painter<'a> {
                 opaque(bar_color(damage, max)),
             );
         }
+        if let Some((loaded, capacity)) = stack.clip {
+            let (width, color) = clip_bar(loaded, capacity);
+            self.fill(x + 2, y + 13, x + 15, y + 15, 0xff00_0000);
+            self.fill(x + 2, y + 13, x + 2 + width, y + 14, opaque(color));
+        }
         if let Some([top, bottom]) = cooldown_rows(cooldown_of(ui, stack)) {
             self.fill(x, y + top, x + 16, y + bottom, 0x7FFF_FFFF);
         }
@@ -979,6 +991,17 @@ mod tests {
     }
 
     #[test]
+    fn a_gun_s_clip_bar_is_green_when_full_and_red_when_empty() {
+        assert_eq!(clip_bar(30, 30), (13, 0x00FF00));
+        assert_eq!(clip_bar(0, 30), (1, 0xFF0000));
+        assert_eq!(clip_bar(15, 30).0, 7);
+        assert_eq!(clip_bar(29, 30).0, 12);
+        assert_eq!(clip_bar(17, 24).0, 9);
+        assert_eq!(clip_bar(40, 30), (13, 0x00FF00));
+        assert_eq!(clip_bar(0, 0), (1, 0xFF0000));
+    }
+
+    #[test]
     fn tooltips_flip_left_and_clamp_up() {
         assert_eq!(
             tooltip_position([400, 300], [100, 100], [50, 20]),
@@ -1096,6 +1119,7 @@ mod tests {
             glint: false,
             icon: "minecraft:dirt".into(),
             lore: Vec::new(),
+            clip: None,
         };
         let mut ui = MinecraftUi::default();
         painter.decorations(&ui, &stack, [0, 0], Some(("ab".into(), YELLOW)));
@@ -1157,6 +1181,7 @@ mod tests {
             glint,
             icon: id.into(),
             lore: Vec::new(),
+            clip: None,
         }
     }
 

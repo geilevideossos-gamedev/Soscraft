@@ -47,6 +47,7 @@ pub struct McStack {
     pub glint: bool,
     pub icon: String,
     pub lore: Vec<String>,
+    pub clip: Option<(u32, u32)>,
 }
 
 /// A slot of the inventory screen.

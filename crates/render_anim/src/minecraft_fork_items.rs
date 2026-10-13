@@ -142,6 +142,16 @@ impl ForkLook {
         self.names.weapon_of(&RegistryGuns(&registry), stack)
     }
 
+    pub(crate) fn clip_bar(
+        &mut self,
+        stack: &ItemStack,
+        weapon: Option<u32>,
+    ) -> Option<(u32, u32)> {
+        let registry = self.registry.clone()?;
+        let size = self.names.clip_size(&RegistryGuns(&registry), weapon?);
+        gun_names::clip_bar(stack, size)
+    }
+
     pub(crate) fn lines(
         &mut self,
         stack: &ItemStack,

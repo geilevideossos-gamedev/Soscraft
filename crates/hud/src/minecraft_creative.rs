@@ -704,6 +704,7 @@ mod tests {
             glint: false,
             icon: "minecraft:stone".to_owned(),
             lore: Vec::new(),
+            clip: None,
         }
     }
 

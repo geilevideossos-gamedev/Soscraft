@@ -1048,6 +1048,7 @@ mod tests {
             glint: false,
             icon: "minecraft:shulker_box".to_owned(),
             lore: Vec::new(),
+            clip: None,
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool)> = lines.iter().map(|line| (line.text.as_str(), line.italic)).collect();
@@ -1084,6 +1085,7 @@ mod tests {
             glint: true,
             icon: "minecraft:written_book".to_owned(),
             lore: vec!["by Alex".to_owned(), "Original".to_owned()],
+            clip: None,
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool, u32)> = lines.iter().map(|line| (line.text.as_str(), line.italic, line.color)).collect();

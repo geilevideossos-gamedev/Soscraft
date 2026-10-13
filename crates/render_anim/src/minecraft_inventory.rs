@@ -485,6 +485,7 @@ impl InventoryUi {
                     glint: minecraft_terrain::glint::has_glint(s),
                     icon,
                     lore: book_lines(lang, s),
+                    clip: fork.clip_bar(s, weapon),
                 };
                 shown.enchantments.splice(0..0, fork.lines(s, weapon, lang));
                 shown

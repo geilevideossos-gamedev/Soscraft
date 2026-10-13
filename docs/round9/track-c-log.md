@@ -867,6 +867,38 @@ Commit: the one after `c27f9bc9` (the merge of tracks A and B into track C).
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:usp,iw4l:rifle_ammo*64,iw4l:rifle_ammo*10,iw4l:pistol_ammo*64,iw4l:explosive_round*8,iw4l:t5_knife_ballistic,iw4l:throwing_knife*8,minecraft:chest
 ```
 
+### 2. A gun's clip shows as the item bar under its icon
+
+Commit: the one after `268d78de`.
+
+- **Changed:**
+  - `frame` `McStack.clip: Option<(u32, u32)>`: the rounds loaded and the clip capacity (added at the end of the struct; every literal gets `clip: None`).
+  - `minecraft_survival` `gun_names::clip_bar(stack, size)`: for a fork gun with an ammo type and a known clip size, the rounds in `clip` (and `clip_left` for akimbo) and the capacity (the size, twice for akimbo). `-1` counts as full, a missing clip as empty. The riot shield, other items and a gun whose MW2 weapon is unknown get no bar.
+  - `render_anim`: `ForkLook::clip_bar` takes the size from the session's `GunNames`, and `InventoryUi::publish` fills `McStack.clip`. The host and the friend's window both build their slots there, each from its own MW2 content, so both screens show the bar.
+  - `hud` `minecraft_gui`: `decorations` draws the bar like vanilla's item bar (a black 13x2 strip at (2, 13) under the icon, then the coloured 1-pixel row), so it shows in the inventory, every menu, the creative inventory, the recipe book and the hotbar. `clip_bar(loaded, capacity)` gives its width and colour.
+- **Tests:** `hud` `minecraft_gui::tests::a_gun_s_clip_bar_is_green_when_full_and_red_when_empty` (full 13 px green, empty 1 px red, half 7 px, akimbo 17 of 24, more than the capacity full, a zero capacity safe); `minecraft_survival` `gun_names::tests::the_clip_bar_counts_the_loaded_rounds_of_both_akimbo_clips` (a full `-1` clip, no clip, an over-full clip clamped, unknown size, akimbo, riot shield, ammo). `test -p hud -p frame -p minecraft_survival -p render_anim` and `check -p launcher` green.
+- **Decisions:**
+  - **Width like vanilla's bundle bar, colour like the durability bar.** Vanilla shows a durability bar only on damaged items, and its width reaches 0 when broken, so an empty clip would show nothing. The bundle bar (`BundleItem.getBarWidth`: `min(1 + mulAndTruncate(fullness, 12), 13)`, checked with javap) is vanilla's bar for "how full" and keeps one pixel at empty, so the red shows. The colour is the durability hue by the fraction loaded: green full, yellow half, red empty.
+  - **The bar is always shown on a gun,** full ones included, as the design asks ("green when full").
+  - **Akimbo** shows both clips as one bar over twice the clip size.
+- **Owner's test steps** (survival, kit below):
+  1. Put the M4A1 on hotbar slot 1 and press 1. Under its icon in the hotbar a full green bar shows. **Screenshot 1** (hotbar).
+  2. Put the rifle ammo into the chest, so the M4A1 cannot reload. Fire about half the clip: the bar is half as wide and yellow. Fire until the clip is empty: one red pixel. Open the inventory: the same bar under the M4A1 there. **Screenshot 2** (inventory open, empty M4A1).
+  3. Take the ammo back and reload: the bar is full and green again.
+  4. Put the two USP .45 into the crafting grid to make an akimbo pair, put it on slot 2, press 2 and fire 12 rounds: the bar is about half (12 of 24 rounds left).
+  5. Two windows: the friend does steps 1 and 2 in their window; the friend's bar follows the friend's gun, and the host's bars are unchanged. **Screenshot 3** (friend window).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:usp,iw4l:usp,iw4l:rifle_ammo*64,iw4l:pistol_ammo*64,minecraft:chest
+```
+
+## Combined kit for group ammo
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:usp,iw4l:usp,iw4l:rifle_ammo*64,iw4l:rifle_ammo*10,iw4l:pistol_ammo*64,iw4l:explosive_round*8,iw4l:t5_knife_ballistic,iw4l:throwing_knife*8,minecraft:chest
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`. Added: none.
@@ -902,3 +934,4 @@ Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.r
 - `MINECRAFT-SURVIVAL.md`, the creative section: "Every fork item is at the end of the creative Combat tab, in the fork table's order (pistols, machine pistols, SMGs, assault rifles, shotguns, specials, snipers, LMGs, launchers, then gun parts, attachments, ammo, lethal and tactical grenades); guns come without attachments and with a full magazine. The creative search finds them by their MW2 names."
 - `MINECRAFT-SURVIVAL.md`, line 134 ("Guns sit in the hotbar with unlimited ammo"), the ammo half: "A gun's reserve is its ammo items in the offhand and slots 0-35 (never containers or the grenade slots), up to MW2's maximum: MW2's ammo counter shows the clip and that reserve. A reload takes exactly the rounds it loads, from the offhand first, then the main hand, then the inventory in slot order; with no ammo items an empty gun clicks. Pistols, machine pistols and SMGs share pistol ammo; the grenade launcher uses explosive rounds and the underbarrel shotgun shells; the Ballistic Knife reloads from throwing knives. Respawning, Scavenger and One Man Army refill nothing. In creative the reserve is always full and reloads use no items, but the clip still empties and reloads."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's gun reserve is counted from the friend's own inventory on the host, and the friend's reloads take the friend's items, through the same function as the host's."
+- `MINECRAFT-SURVIVAL.md`, the inventory section: "A gun's loaded rounds show as an item bar under its icon (in the hotbar, the inventory and every menu, for the host and friends): green and full width when the clip is full, yellowing as it empties, one red pixel when empty; an akimbo pair shows both clips together."

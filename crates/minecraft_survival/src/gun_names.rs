@@ -157,6 +157,23 @@ pub fn tooltip_lines(
     lines
 }
 
+pub fn clip_bar(stack: &ItemStack, size: Option<i32>) -> Option<(u32, u32)> {
+    fork_items::get(&stack.id).filter(|row| row.kind == Kind::Gun && row.ammo.is_some())?;
+    let size = size.filter(|size| *size > 0)?;
+    let loaded = |key: &str| match clip(stack, key) {
+        Some(fork_items::FULL_CLIP) => i64::from(size),
+        clip => clip.unwrap_or(0).clamp(0, i64::from(size)),
+    };
+    let hands = if attachments(stack).iter().any(|name| name == "akimbo") {
+        vec!["clip", "clip_left"]
+    } else {
+        vec!["clip"]
+    };
+    let rounds: i64 = hands.iter().map(|key| loaded(key)).sum();
+    let capacity = i64::from(size) * hands.len() as i64;
+    Some((u32::try_from(rounds).ok()?, u32::try_from(capacity).ok()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +315,43 @@ mod tests {
         assert_eq!(
             tooltip_lines(&[], (None, None), None, None),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_clip_bar_counts_the_loaded_rounds_of_both_akimbo_clips() {
+        let stack = |id: &str, state: Value| {
+            let mut stack = ItemStack::new(id, 1);
+            stack.components =
+                Some(serde_json::json!({ fork_items::CUSTOM_DATA: { "iw4l": state } }));
+            stack
+        };
+        let m4 = |state| stack("iw4l:m4", state);
+        assert_eq!(
+            clip_bar(&m4(serde_json::json!({ "clip": -1 })), Some(30)),
+            Some((30, 30))
+        );
+        assert_eq!(
+            clip_bar(&m4(serde_json::json!({})), Some(30)),
+            Some((0, 30))
+        );
+        assert_eq!(
+            clip_bar(&m4(serde_json::json!({ "clip": 99 })), Some(30)),
+            Some((30, 30))
+        );
+        assert_eq!(clip_bar(&m4(serde_json::json!({ "clip": 9 })), None), None);
+        let akimbo = serde_json::json!({ "attachments": ["akimbo"], "clip": 5, "clip_left": 12 });
+        assert_eq!(
+            clip_bar(&stack("iw4l:usp", akimbo), Some(12)),
+            Some((17, 24))
+        );
+        assert_eq!(
+            clip_bar(&stack("iw4l:riotshield", serde_json::json!({})), Some(1)),
+            None
+        );
+        assert_eq!(
+            clip_bar(&ItemStack::new(fork_items::RIFLE_AMMO, 5), Some(30)),
+            None
         );
     }
 }
