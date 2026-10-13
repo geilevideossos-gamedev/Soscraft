@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 13];
+        let mut seen = [false; 14];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
