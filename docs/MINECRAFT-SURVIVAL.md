@@ -360,8 +360,7 @@ One list of what is open after round 7 and round 8's multiplayer (track E). N6 a
 - **Not played yet:** the multiplayer code has passed its unit and loopback tests only. The owner's first two-window and internet session is `docs/round8/track-e-tests.md`.
 - **What a friend's game still lacks:**
   - skating (the skate key does nothing for a friend, and the host's board shows only on the host's screen);
-  - the held item, its swing, eating, blocking and the trident's charge in first person (only the totem's rise shows);
-  - the spyglass's zoom, scope overlay and slow look, and the slower walk and lowered gun while any item is in use (the host runs the friend's spyglass, its sounds and the busy hand);
+  - the held item, its swing, eating, blocking, the trident's charge and the spyglass in first person (only the totem's rise shows);
   - music of any kind;
   - the creative inventory (a friend in creative mode gets the survival screen), and command suggestions of names and positions (the commands their level allows are suggested);
   - the purple overlay while standing in a portal (the trigger sound plays);

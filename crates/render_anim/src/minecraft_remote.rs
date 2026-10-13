@@ -407,6 +407,12 @@ pub(crate) fn friend(
                 );
                 friend.fire_frames = crate::minecraft_world::fire_frames(&prepared.look.packs)
                     .map(|(image, frames)| (images.add(image), frames));
+                ui.spyglass_scope = crate::minecraft_portal::strip(
+                    &prepared.look.packs,
+                    &mut images,
+                    crate::minecraft_portal::SPYGLASS_SCOPE,
+                )
+                .map(|(image, _)| image);
                 friend
                     .inventory_ui
                     .set_station_data(prepared.stations.clone(), prepared.enchantments.clone());
@@ -1053,6 +1059,12 @@ fn show_player(
     let held = inventory.slots[selection.slot].as_ref();
     ui.holding_item = interacts && held.is_none_or(|stack| weapon_of(stack).is_none());
     ui.empty_hand = ui.holding_item && held.is_none();
+    ui.using_item = view.using.is_some();
+    ui.scoping = minecraft_survival::spyglass::seen_scoping(
+        view.using,
+        &inventory,
+        usize::from(view.selected),
+    );
     let mut selected = selection.slot;
     ui.weapon_request = follow
         .request(&inventory, &mut selected, ps.weapon)

@@ -1,3 +1,4 @@
+use minecraft_net::messages::{Hand, UsingView};
 use minecraftoss_player::inventory::Inventory;
 
 use crate::offhand::OFFHAND;
@@ -45,6 +46,20 @@ pub fn step(
     } else {
         (None, true)
     }
+}
+
+pub fn seen_scoping(using: Option<UsingView>, inventory: &Inventory, selected: usize) -> bool {
+    using.is_some_and(|using| {
+        let slot = match using.hand {
+            Hand::Main => selected,
+            Hand::Off => OFFHAND,
+        };
+        inventory
+            .slots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .is_some_and(|stack| stack.id == ITEM)
+    })
 }
 
 #[cfg(test)]
@@ -111,5 +126,25 @@ mod tests {
             ticks: USE_DURATION,
         });
         assert_eq!(step(done, true, true, &inventory, 0), (None, true));
+    }
+
+    #[test]
+    fn a_friend_sees_scoping_only_when_the_used_hand_holds_a_spyglass() {
+        let main = Some(UsingView {
+            hand: Hand::Main,
+            ticks: 4,
+        });
+        let off = Some(UsingView {
+            hand: Hand::Off,
+            ticks: 4,
+        });
+        assert!(seen_scoping(main, &holding(2, ITEM), 2));
+        assert!(!seen_scoping(main, &holding(2, ITEM), 3));
+        assert!(!seen_scoping(main, &holding(2, "minecraft:bread"), 2));
+        assert!(!seen_scoping(None, &holding(2, ITEM), 2));
+        assert!(seen_scoping(off, &holding(OFFHAND, ITEM), 2));
+        let mut eating_beside_a_spyglass = holding(2, ITEM);
+        eating_beside_a_spyglass.slots[OFFHAND] = Some(ItemStack::new("minecraft:bread", 1));
+        assert!(!seen_scoping(off, &eating_beside_a_spyglass, 2));
     }
 }
