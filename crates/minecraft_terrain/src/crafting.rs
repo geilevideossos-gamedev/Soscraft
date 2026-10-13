@@ -70,7 +70,10 @@ pub fn load_recipes(
         ));
     };
     match ItemCatalog::from_path(path) {
-        Ok(catalog) => Ok((book.with_item_catalog(Arc::new(catalog)), None)),
+        Ok(mut catalog) => {
+            crate::fork_items::load(&mut catalog);
+            Ok((book.with_item_catalog(Arc::new(catalog)), None))
+        }
         Err(error) => Ok((book, Some(error))),
     }
 }

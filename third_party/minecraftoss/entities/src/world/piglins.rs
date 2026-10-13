@@ -726,6 +726,9 @@ impl EntityWorld {
         if !self.mob_griefing || !piglin.can_pick_up_loot {
             return false;
         }
+        if stack.id.starts_with("iw4l:") {
+            return false;
+        }
         if piglin.is_brute() {
             return stack.id == "minecraft:golden_axe";
         }
@@ -2967,6 +2970,18 @@ mod tests {
         }
         assert!(ground.has(ingot));
         assert!(offhand(&world, id).is_none());
+    }
+
+    #[test]
+    fn piglins_never_want_fork_items() {
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(piglin_book());
+        let id = spawn(&mut world, PiglinKind::Piglin, 0.5, 0.5);
+        assert!(world.piglin_wants(id, &ItemStack::new("minecraft:stick", 1)));
+        assert!(world.piglin_wants(id, &ItemStack::new("minecraft:gold_ingot", 1)));
+        for fork in ["iw4l:m4", "iw4l:frag_grenade", "iw4l:rifle_ammo"] {
+            assert!(!world.piglin_wants(id, &ItemStack::new(fork, 1)), "{fork}");
+        }
     }
 
     #[test]

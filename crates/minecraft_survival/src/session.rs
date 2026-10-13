@@ -712,6 +712,7 @@ pub fn registry_fingerprint(registries: &Registries) -> u64 {
         write(blocks.state_to_string(BlockStateId(id)).as_bytes());
         write(&[0]);
     }
+    write(&minecraft_terrain::fork_items::table_hash().to_be_bytes());
     hash
 }
 

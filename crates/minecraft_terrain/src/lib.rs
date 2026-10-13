@@ -37,6 +37,7 @@ pub mod ender_dragon;
 pub mod ender_eye;
 pub mod eye_of_ender;
 pub mod item_frame;
+pub mod fork_items;
 pub mod environment;
 pub(crate) mod face_culling;
 pub mod fluid;

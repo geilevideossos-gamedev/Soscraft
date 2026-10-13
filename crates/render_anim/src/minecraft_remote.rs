@@ -51,7 +51,9 @@ struct Prepared {
 fn prepare() -> Result<Prepared, String> {
     let root = assets::minecraft_map::root().ok_or_else(assets::minecraft_setup::status)?;
     let paths = DataPaths::under(&root);
-    let registries = Arc::new(Registries::load(&paths)?);
+    let mut registries = Registries::load(&paths)?;
+    minecraft_terrain::fork_items::load(&mut registries.items);
+    let registries = Arc::new(registries);
     let packs = PackStack::open(vec![root.join("resourcepacks/local/minecraft-26.3")])
         .map_err(|error| error.to_string())?;
     let language =

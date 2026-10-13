@@ -75,9 +75,11 @@ pub fn item_icon_at(
 pub fn language(packs: &PackStack) -> Result<HashMap<String, String>> {
     let id = ResourceId::parse("minecraft:lang/en_us")?;
     let Some(value) = packs.json(&id, "lang/en_us.json")? else {
-        return Ok(HashMap::new());
+        let mut language = HashMap::new();
+        crate::fork_items::add_names(&mut language);
+        return Ok(language);
     };
-    Ok(value
+    let mut language: HashMap<String, String> = value
         .as_object()
         .map(|entries| {
             entries
@@ -85,16 +87,20 @@ pub fn language(packs: &PackStack) -> Result<HashMap<String, String>> {
                 .filter_map(|(key, text)| Some((key.clone(), text.as_str()?.to_owned())))
                 .collect()
         })
-        .unwrap_or_default())
+        .unwrap_or_default();
+    crate::fork_items::add_names(&mut language);
+    Ok(language)
 }
 
 /// `item_name`: the item's or its block's name, else its id's path.
 pub fn item_name(language: &HashMap<String, String>, id: &str) -> String {
-    let path = id.split(':').nth(1).unwrap_or(id);
+    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    let path = path.split(':').next().unwrap_or(path);
     language
-        .get(&format!("item.minecraft.{path}"))
-        .or_else(|| language.get(&format!("block.minecraft.{path}")))
+        .get(&format!("item.{namespace}.{path}"))
+        .or_else(|| language.get(&format!("block.{namespace}.{path}")))
         .cloned()
+        .or_else(|| crate::fork_items::get(id).map(|row| row.name.to_owned()))
         .unwrap_or_else(|| path.replace('_', " "))
 }
 

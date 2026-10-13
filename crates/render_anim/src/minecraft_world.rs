@@ -272,7 +272,9 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
     }
     let seed = opened.seed;
     let paths = DataPaths::under(&root);
-    let registries = Arc::new(Registries::load(&paths)?);
+    let mut registries = Registries::load(&paths)?;
+    minecraft_terrain::fork_items::load(&mut registries.items);
+    let registries = Arc::new(registries);
     let packs = PackStack::open(vec![root.join("resourcepacks/local/minecraft-26.3")])
         .map_err(|e| e.to_string())?;
     let terrain = minecraft_survival::level::Terrain::open(
