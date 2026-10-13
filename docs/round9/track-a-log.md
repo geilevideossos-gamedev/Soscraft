@@ -496,6 +496,14 @@ Commit: "Track A log gives the push steps the commands for their saddle, pig and
 - **Changed:** step 6 now starts with `/give @s minecraft:saddle` and `/summon minecraft:pig ~2 ~ ~` and says how to saddle and mount the pig; step 7 starts with `/give @a minecraft:ladder 16` and a 6-high ladder column. The kits are unchanged. No code changed.
 - **Tests:** none (log only).
 
+### Second review test run
+
+Commit: "Track A log records the second review's test run", the one after the push steps fix. Log only.
+
+- **Clippy:** `clippy -p render_anim -p minecraft_terrain -p minecraft_survival -p sim -p movement_iw4 -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant`: no warning on a line changed by the second review fixes; the older warnings stay.
+- **Tests:** on the code of `1f945fbc`, `test -p <crate> --locked` for every crate the fixes touched: `render_anim` 160, `sim` 126, `movement_iw4` 61, `minecraftoss-world` 75, `minecraft_survival` 606 + 1, `minecraft_terrain --lib` 1140 (3 ignored; the known flaky `sections::tests::background_full_update_matches_the_synchronous_one` failed once under load and passed on the re-run), all passed. `check -p launcher --locked` clean.
+- **Owner's test steps:** the steps of each fix above, with the combined kit; a fix's own `/give` and `/summon` lines add what the kit lacks.
+
 ## Decisions
 
 - **A1:** in a Minecraft world the stand-in map's DPVS no longer decides which MW2 scene entities are drawn; the frustum, sphere and LOD culling and the dimension band gate do, like vanilla's frustum and distance check. The cell walk is skipped rather than patched (for example by treating leaf 0 as cell 0), because the stand-in map's cells say nothing about a Minecraft world.
