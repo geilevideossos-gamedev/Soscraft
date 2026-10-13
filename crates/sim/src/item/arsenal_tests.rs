@@ -754,14 +754,19 @@ fn a_thrown_tactical_insertion_plants_a_flare_that_a_second_one_replaces_and_a_b
     at(&mut sim, stranger, first);
     crate::combat::plant_flare(&sim.frame(), client, FRAG);
     crate::combat::plant_flare(&sim.frame(), stranger, FLARE);
-    assert!(crate::voxel::take_spent(client.0).is_empty(), "only the tactical insertion plants");
-    assert!(crate::voxel::take_spent(stranger.0).is_empty(), "a client that never published plants nothing");
+    assert!(
+        crate::voxel::take_spent(client.0).is_empty(),
+        "only the tactical insertion plants"
+    );
+    assert!(
+        crate::voxel::take_spent(stranger.0).is_empty(),
+        "a client that never published plants nothing"
+    );
     crate::combat::plant_flare(&sim.frame(), client, FLARE);
     at(&mut sim, client, second);
     crate::combat::plant_flare(&sim.frame(), client, FLARE);
-    let near = |spot: [f32; 3], damage: i32| {
-        move |pos: [f32; 3]| if pos == spot { damage } else { 0 }
-    };
+    let near =
+        |spot: [f32; 3], damage: i32| move |pos: [f32; 3]| if pos == spot { damage } else { 0 };
     crate::voxel::blast_flares(near(first, 100));
     crate::voxel::blast_flares(near(second, 19));
     let planted = crate::voxel::take_spent(client.0);
@@ -774,5 +779,9 @@ fn a_thrown_tactical_insertion_plants_a_flare_that_a_second_one_replaces_and_a_b
         vec![Spent::Flare { pos: first }, Spent::Flare { pos: second }],
         "the second flare replaced the first, which a blast can no longer destroy, and 19 damage is not enough"
     );
-    assert_eq!(destroyed, vec![Spent::FlareGone], "20 damage destroys the flare once");
+    assert_eq!(
+        destroyed,
+        vec![Spent::FlareGone],
+        "20 damage destroys the flare once"
+    );
 }

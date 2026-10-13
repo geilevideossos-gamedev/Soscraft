@@ -1353,6 +1353,14 @@ Commit: the one after the clip fix. Fixes the recipe book group (C11.7.3).
 IW4L_MINECRAFT_KIT=minecraft:oak_log
 ```
 
+### 3. Three new files pass rustfmt again
+
+Commit: the one after the recipe unlock fix. Fixes `3cab4adb`, `d9247254` and `415a85cb`.
+
+- **Defect:** `loadout.rs`, `minecraft_fork_items.rs` and `item/arsenal_tests.rs` are new in this track and passed `rustfmt --check` at `d69f2140`, but the segment c2 commits left them failing: the flash tuple in `GRENADE_STAND_INS`, the `minecraft_net::Dimension` import order, the long `pierce` call, flare `warn!` and `pierce_table` assert, and the flare test's asserts and `near` closure. The c2 clippy pass checked only `gun_damage.rs`, and a stdin `rustfmt --check` exits 0 even when it prints a diff.
+- **Changed:** the layout rustfmt asks for at exactly those spots; nothing else.
+- **Tests:** every `.rs` file added since `24dfdf71` passes `rustfmt --check` on its committed content with the repo's settings and its crate's edition (`fork_items.rs` with 2021). `check -p launcher` green. No behaviour change, no owner steps or kit.
+
 ## Combined kit from the brief (C11 to C14)
 
 25 stacks, the brief's line for the whole track: guns, ammo, grenades, the tactical insertion, attachments, the crafting and grindstone ingredients, the iron set and two totems.

@@ -11,7 +11,11 @@ const SLOT_STAND_INS: [&str; 2] = ["iw4l:m4", "iw4l:usp"];
 pub const CLASS_GRENADES: u32 = 32;
 const GRENADE_STAND_INS: [(Kind, usize, &str); 2] = [
     (Kind::Lethal, fork_items::LETHAL_SLOT, "iw4l:frag_grenade"),
-    (Kind::Tactical, fork_items::TACTICAL_SLOT, "iw4l:flash_grenade"),
+    (
+        Kind::Tactical,
+        fork_items::TACTICAL_SLOT,
+        "iw4l:flash_grenade",
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

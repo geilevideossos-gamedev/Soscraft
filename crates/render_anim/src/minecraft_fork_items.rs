@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
 
 use asset_game::{FamilyKey, LoadoutRules, WeaponRegistry, WeaponSelection};
+use minecraft_net::Dimension;
 use minecraft_survival::gun_crafting;
 use minecraft_survival::gun_names::{self, GunContent, GunNames};
-use minecraft_net::Dimension;
 use minecraft_survival::guns::{self, Hotbar, Settled, Spent};
 use minecraft_survival::player_nbt::Place;
 use minecraft_terrain::crafting::Grid;
@@ -545,7 +545,11 @@ pub(crate) fn pierce_table(guns: &impl GunContent, count: usize) -> Vec<f32> {
             let fmj = guns
                 .selection(index)
                 .is_some_and(|(_, attachments)| attachments.iter().any(|name| name == "fmj"));
-            sim::gun_damage::pierce(bucket == Some(Bucket::Lmg), bucket == Some(Bucket::Sniper), fmj)
+            sim::gun_damage::pierce(
+                bucket == Some(Bucket::Lmg),
+                bucket == Some(Bucket::Sniper),
+                fmj,
+            )
         })
         .collect()
 }
@@ -581,7 +585,10 @@ fn spent(client: u32, flare_at: impl Fn([f32; 3]) -> Option<Place>) -> Vec<Spent
             sim::voxel::Spent::Flare { pos } => {
                 let at = flare_at(pos);
                 if at.is_none() {
-                    diag::warn!(World, "Minecraft tactical insertion planted outside the player's dimension");
+                    diag::warn!(
+                        World,
+                        "Minecraft tactical insertion planted outside the player's dimension"
+                    );
                 }
                 at.map(|at| Spent::Flare { at })
             }
@@ -690,7 +697,10 @@ mod tests {
                 }
             }
         }
-        assert_eq!(pierce_table(&Guns, 7), vec![0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.0]);
+        assert_eq!(
+            pierce_table(&Guns, 7),
+            vec![0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.0]
+        );
     }
 
     #[test]
