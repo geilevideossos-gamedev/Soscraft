@@ -869,7 +869,7 @@ pub fn join_from(
     player.sleep_timer = saved.sleep_timer.unwrap_or(0);
     player.time_since_rest = saved.time_since_rest.unwrap_or(0);
     player.saved_in_bed = saved.sleeping_pos;
-    player.tags = saved.tags.unwrap_or_default();
+    player.tags = saved.tags.into_iter().flatten().collect();
     player.recipe_book = recipe_book;
     player.dead = dead;
     player.place = Some(Place::standing(Dimension::Overworld, spawn, 0.0, 0.0));

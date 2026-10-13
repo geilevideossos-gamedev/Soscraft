@@ -88,7 +88,7 @@ fn list_tags(ctx: &mut Ctx) -> Result<i32, CommandError> {
     let mut tracker = Tracker::default();
     let mut all: Vec<String> = Vec::new();
     for player in targets {
-        let tags = ctx.world.tags(player).unwrap_or_default();
+        let tags: Vec<String> = ctx.world.tags(player).into_iter().flatten().collect();
         for tag in &tags {
             if !all.contains(tag) {
                 all.push(tag.clone());

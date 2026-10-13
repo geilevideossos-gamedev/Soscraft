@@ -34,13 +34,11 @@ pub fn attachments(stack: &ItemStack) -> Vec<String> {
     state(stack)
         .and_then(|state| state.get("attachments"))
         .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 pub fn clip(stack: &ItemStack, key: &str) -> Option<i64> {

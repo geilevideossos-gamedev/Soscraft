@@ -1056,13 +1056,11 @@ pub fn with_full_clip(
     let attachments: Vec<String> = state
         .get("attachments")
         .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
     let alt = has_alt_mode(&attachments);
     let mut fill = vec!["clip"];
     if attachments.iter().any(|name| name == "akimbo") {

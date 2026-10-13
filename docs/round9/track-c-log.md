@@ -787,6 +787,23 @@ Commit: the one after `820dc0ab`.
 - **Tests:** none needed; `git show :crates/render_anim/src/minecraft_fork_items.rs | rustfmt --check --edition 2024` prints nothing, and `check -p render_anim` passes.
 - **Owner's steps:** none (no behaviour change).
 
+### 2. Fork item code drops unwrap_or_default and an indexed hotbar loop, as clippy asks
+
+Commit: the one after `9a085715`.
+
+- **Defect:** clippy on the touched crates (`24dfdf71..9a085715`) warned on six lines this track added: the workspace's `clippy.toml` disallows `Option::unwrap_or_default` (it hides which fallback a site takes), used in `minecraft_commands` `tag.rs` (`/tag list`), `minecraft_survival` `server.rs` (the saved `Tags`), `gun_names.rs` and `minecraft_terrain` `gun_mods.rs` and `fork_items.rs` (a gun's attachment list), and `guns.rs` indexed `guns[slot]` in a `0..HOTBAR` loop (`needless_range_loop`).
+- **Changed:** the five fallbacks read the `Option` with `into_iter().flatten()` (no tags or no attachment list gives an empty list, as before); the hotbar loop walks `guns.iter_mut().enumerate()`. No behaviour change. The older `unwrap_or_default` in `item_icons.rs` `language` (from before this track, on a line it only reshaped) stays.
+- **Tests:** none new; the existing `/tag`, player file, attachment and hotbar binding tests cover these lines and pass (`test -p minecraft_commands -p minecraft_survival -p minecraft_terrain`). The three new files still pass `rustfmt --check`.
+- **Owner's steps:** none (no behaviour change).
+
+## Combined kit for the whole track
+
+27 stacks. It covers the inventory, saving, hotbar, drop, item frame, crafting, attachment, grindstone and recipe book steps; the first-join loadout (no kit) and the creative tab (creative) need none. For the gun recipes' full list of ingredients use the group recipes kit above.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:grindstone,minecraft:anvil,minecraft:chest,minecraft:item_frame*4,minecraft:oak_log*16,minecraft:iron_ingot*32,minecraft:copper_ingot*16,minecraft:iron_nugget*16,minecraft:gunpowder*32,minecraft:tripwire_hook*4,minecraft:redstone*8,minecraft:repeater*2,minecraft:experience_bottle*16,iw4l:m4,iw4l:m4,iw4l:usp,iw4l:usp,iw4l:barrett,iw4l:riotshield,iw4l:rifle_ammo*64,iw4l:pistol_ammo*32,iw4l:frag_grenade*8,iw4l:rocket*16,iw4l:red_dot_sight*2,iw4l:extended_mags*2,iw4l:fmj*2
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (6): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`. Added: none.

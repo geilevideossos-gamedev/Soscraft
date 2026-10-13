@@ -292,7 +292,7 @@ pub fn settle_arsenal<C: GunContent>(
     let mut copies: Vec<(u32, Vec<usize>)> = Vec::new();
     let mut guns = [None; HOTBAR];
     let mut inert = Vec::new();
-    for slot in 0..HOTBAR {
+    for (slot, gun) in guns.iter_mut().enumerate() {
         let Some(weapon) = weapon_at(inventory, slot) else {
             continue;
         };
@@ -304,7 +304,7 @@ pub fn settle_arsenal<C: GunContent>(
             inert.push(slot);
             continue;
         }
-        guns[slot] = Some(weapon);
+        *gun = Some(weapon);
     }
     let mut arsenal = Arsenal {
         endless: !mode.consumes_items(),
