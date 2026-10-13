@@ -31,7 +31,7 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 | Track | Branch | State |
 |---|---|---|
 | A. Multiplayer fixes | track-a | running (one run) |
-| B. Items and the screen | track-b | running (one run) |
+| B. Items and the screen | track-b | **merged** 2e13b78c (full suite green, 10.2 min); 12 commits f7cfddd4..fa5d1bf0: faint 0.5 s hit flash and no pain vision on Minecraft maps (B10), potion colours in icons, hands, drops, frames, other players and effect swirls (B9), books read from the hand, edit and sign screens, friends through the host, tooltips (B8); review fixed 1 defect (an owner step asked for a friend's first-person potion); worktree and target removed; owner steps `docs/round9/track-b-log.md` (not in this branch any more: in minecraft-survival) |
 | C. Guns and grenades as real items | track-c | c1 running |
 | D. Finish survival | track-d | d1 running |
 
@@ -48,5 +48,6 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 - Four tracks at once in gentle mode: D: had 45 GB free; a watchdog warns below 10 GB.
 
 ## Log
+- 2026-10-13: track B merged (2e13b78c), full suite green.
 - 2026-10-13: briefs done (28 agents); tracks A, B, C (c1) and D (d1) started.
 - 2026-10-13: round 9 started; brief research started.
