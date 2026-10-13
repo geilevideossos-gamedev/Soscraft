@@ -1861,6 +1861,7 @@ mod tests {
                 id: "minecraft:iron_sword".to_owned(),
                 glint: false,
                 dye: None,
+                potion: None,
             }),
             hides_gun: true,
             ..GearView::default()

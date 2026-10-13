@@ -350,6 +350,12 @@ impl PotionContents {
     }
 }
 
+pub fn stack_color(components: Option<&Value>) -> Option<u32> {
+    components
+        .and_then(|c| c.get(CONTENTS))
+        .map(|_| PotionContents::from_components(components).color())
+}
+
 pub fn duration_scale(item: &str, components: Option<&Value>) -> f32 {
     if let Some(scale) = components
         .and_then(|c| c.get(DURATION_SCALE))
@@ -482,6 +488,43 @@ mod tests {
         assert!(water.is_water() && !water.has_effects());
         assert_eq!(water.color(), DEFAULT_COLOR);
         assert_eq!(PotionContents::from_components(None).color(), DEFAULT_COLOR);
+    }
+
+    #[test]
+    fn a_stack_colour_needs_potion_contents() {
+        assert_eq!(stack_color(None), None);
+        assert_eq!(stack_color(Some(&json!({"minecraft:max_damage": 238}))), None);
+        assert_eq!(
+            stack_color(Some(
+                &json!({"minecraft:potion_contents": "minecraft:healing"})
+            )),
+            Some(0xF82423)
+        );
+        assert_eq!(
+            stack_color(Some(
+                &json!({"minecraft:potion_contents": {"potion": "minecraft:healing"}})
+            )),
+            Some(0xF82423)
+        );
+        assert_eq!(
+            stack_color(Some(&json!({"minecraft:potion_contents": {
+                "potion": "minecraft:healing",
+                "custom_color": 0x123456
+            }}))),
+            Some(0x123456)
+        );
+        assert_eq!(
+            stack_color(Some(
+                &json!({"minecraft:potion_contents": {"potion": "minecraft:water"}})
+            )),
+            Some(DEFAULT_COLOR)
+        );
+        assert_eq!(
+            stack_color(Some(
+                &json!({"minecraft:potion_contents": "minecraft:strong_turtle_master"})
+            )),
+            Some(0x8D85E6)
+        );
     }
 
     #[test]

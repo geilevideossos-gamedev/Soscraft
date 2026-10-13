@@ -241,7 +241,7 @@ pub(crate) fn update_minecraft_hud(
     let hotbar = ui.game_mode.shows_hotbar();
     let searching = ui.inventory_open && ui.screen == McScreen::Creative(McTabKind::Search);
     let book_typing = ui.inventory_open && crate::minecraft_recipe_book::has_book(ui.screen) && ui.recipe_book.open && ui.recipe_book.focused;
-    let typing = searching || book_typing || (ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some));
+    let typing = searching || book_typing || (ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some)) || crate::minecraft_book_edit::captures_typing(&ui);
     let events: Vec<bevy::input::keyboard::KeyboardInput> = typed.read().cloned().collect();
     let text: String = events.iter().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
     let reading = ui.inventory_open && ui.screen == McScreen::Lectern;
@@ -383,6 +383,33 @@ pub(crate) fn update_minecraft_hud(
         painter.gradient([0, 0, space.width, space.height], None, 0xC010_1010, 0xD010_1010);
         if let Some(book) = ui.book.as_ref() {
             crate::minecraft_book::draw(&mut painter, book, mouse);
+        }
+        ui.character_box = None;
+    } else if crate::minecraft_book_edit::captures_typing(&ui) {
+        let mouse = window.physical_cursor_position().map(|m| space.mouse([m.x, m.y]));
+        if opened && let Some(edit) = ui.book_edit.as_mut() {
+            edit.since = now;
+        }
+        if !opened && !blocked {
+            let held = MODIFIERS.map(|code| crate::minecraft_chat::held_before(keys.pressed(code), keys.just_pressed(code), keys.just_released(code)));
+            let typed = crate::minecraft_chat::fold_typed(held, &events);
+            let mut none = ();
+            let clipboard: &mut dyn crate::minecraft_chat::ChatClipboard = match clipboard.as_deref_mut() {
+                Some(clipboard) => clipboard,
+                None => &mut none,
+            };
+            let press = crate::minecraft_book_edit::Press {
+                mouse,
+                click: buttons.just_pressed(MouseButton::Left),
+                shift,
+                page_up: keys.just_pressed(KeyCode::PageUp) || pad_just(GamepadButton::LeftTrigger),
+                page_down: keys.just_pressed(KeyCode::PageDown) || pad_just(GamepadButton::RightTrigger),
+            };
+            crate::minecraft_book_edit::input(&mut ui, &gui.font, space.width, press, &typed, clipboard);
+        }
+        painter.gradient([0, 0, space.width, space.height], None, 0xC010_1010, 0xD010_1010);
+        if let Some(edit) = ui.book_edit.as_ref() {
+            crate::minecraft_book_edit::draw(&mut painter, ui.screen, edit, mouse, now);
         }
         ui.character_box = None;
     } else if ui.inventory_open {
@@ -809,6 +836,7 @@ fn tooltip_lines(
     let mut lines = vec![TextLine { italic: stack.named, ..TextLine::new(name, crate::minecraft_hotbar::name_color(Some(stack))) }];
     lines.extend(stack.contents.iter().map(|line| TextLine::new(line.clone(), WHITE)));
     lines.extend(stack.more.iter().map(|line| TextLine { italic: true, ..TextLine::new(line.clone(), WHITE) }));
+    lines.extend(stack.lore.iter().map(|line| TextLine::new(line.clone(), GRAY)));
     lines.extend(stack.enchantments.iter().map(|name| TextLine::new(name.clone(), GRAY)));
     let extra = match (stack.weapon, stack.attack) {
         (Some(weapon), _) => weapons
@@ -1018,6 +1046,8 @@ mod tests {
             contents: (1..=5).map(|count| format!("{count} x Stone")).collect(),
             more: Some("and 2 more...".to_owned()),
             glint: false,
+            icon: "minecraft:shulker_box".to_owned(),
+            lore: Vec::new(),
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool)> = lines.iter().map(|line| (line.text.as_str(), line.italic)).collect();
@@ -1035,5 +1065,29 @@ mod tests {
             ]
         );
         assert!(lines[1..7].iter().all(|line| line.color == WHITE));
+    }
+
+    #[test]
+    fn a_written_book_tooltip_shows_its_lore_in_gray_after_the_name() {
+        let stack = McStack {
+            id: "minecraft:written_book".to_owned(),
+            count: 1,
+            weapon: None,
+            damage: None,
+            max: 16,
+            named: false,
+            name: Some("Diary".to_owned()),
+            attack: None,
+            enchantments: Vec::new(),
+            contents: Vec::new(),
+            more: None,
+            glint: true,
+            icon: "minecraft:written_book".to_owned(),
+            lore: vec!["by Alex".to_owned(), "Original".to_owned()],
+        };
+        let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
+        let shown: Vec<(&str, bool, u32)> = lines.iter().map(|line| (line.text.as_str(), line.italic, line.color)).collect();
+        assert_eq!(shown[1..], [("by Alex", false, GRAY), ("Original", false, GRAY)]);
+        assert_eq!((shown[0].0, shown[0].1), ("Diary", false));
     }
 }

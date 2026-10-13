@@ -1,4 +1,5 @@
 use minecraft_net::Dimension;
+use minecraft_terrain::game_mode::GameMode;
 use minecraft_terrain::level_storage::RespawnData;
 
 use crate::level::Level;
@@ -46,14 +47,36 @@ pub fn respawn_target(
     }
 }
 
-pub fn level_spawn(spawn: &RespawnData, level: &Level) -> Place {
-    let (x, y, z) = level.terrain.stream.player_spawn;
-    let (yaw, pitch) = if spawn_dimension(spawn) == level.dimension {
+pub fn level_spawn(globals: &Globals, level: &mut Level) -> Place {
+    let spawn = &globals.spawn;
+    let home = spawn_dimension(spawn) == level.dimension;
+    let (yaw, pitch) = if home {
         (spawn.yaw, spawn.pitch)
     } else {
         (0.0, 0.0)
     };
+    let adventure = globals
+        .save
+        .as_ref()
+        .is_some_and(|save| save.default_mode().mode == GameMode::Adventure);
+    let radius = globals.game_rules.int("respawn_radius");
+    let (x, y, z) = spawn_position(&mut level.terrain.stream, home, adventure, radius);
     Place::standing(level.dimension, [x, y, z], yaw, pitch)
+}
+
+fn spawn_position(
+    stream: &mut minecraft_terrain::terrain::TerrainStream,
+    home: bool,
+    adventure: bool,
+    radius: i32,
+) -> (f64, f64, f64) {
+    if !home || stream.is_remote() {
+        stream.player_spawn
+    } else if adventure {
+        stream.exact_spawn_position()
+    } else {
+        stream.respawn_position(radius)
+    }
 }
 
 pub fn respawn_point(player: &Player) -> Option<Respawn> {
@@ -62,7 +85,7 @@ pub fn respawn_point(player: &Player) -> Option<Respawn> {
 
 pub fn respawn_in(
     globals: &Globals,
-    level: &Level,
+    level: &mut Level,
     player: &mut Player,
     spawn_block: impl FnOnce(&Respawn) -> Option<Place>,
 ) -> bool {
@@ -76,7 +99,7 @@ pub fn respawn_in(
         player.arrival = Some(
             respawned
                 .place
-                .unwrap_or_else(|| level_spawn(&globals.spawn, level)),
+                .unwrap_or_else(|| level_spawn(globals, level)),
         );
     } else {
         player.switch_to(respawned.dimension, respawned.place, LoadingReason::Other);
@@ -204,6 +227,68 @@ mod tests {
         assert_eq!(feet(&host), Some([40.5, 70.0, 40.5]));
         assert_eq!(feet(&friend), Some([-29.5, 80.0, 12.5]));
         assert!(host.switching.is_none() && friend.switching.is_none());
+    }
+
+    fn spawn_column(level: &Level) -> (f64, f64) {
+        let (x, _, z) = level.terrain.stream.world_spawn;
+        (f64::from(x) + 0.5, f64::from(z) + 0.5)
+    }
+
+    #[test]
+    fn bedless_respawns_land_within_the_respawn_radius() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        assert_eq!(globals.game_rules.int("respawn_radius"), 10);
+        let (x, z) = spawn_column(&level);
+        let mut chat = minecraft_commands::CommandServer::new(crate::commands::HOST);
+        let mut steve = player(&mut chat, 0, "Steve");
+        for _ in 0..4 {
+            assert!(!respawn_in(&globals, &mut level, &mut steve, |_| None));
+            let arrival = steve.arrival.take().expect("a bedless respawn arrives");
+            assert_eq!(
+                (arrival.dimension, arrival.yaw, arrival.pitch),
+                (Dimension::Overworld, globals.spawn.yaw, globals.spawn.pitch)
+            );
+            assert!(
+                (arrival.feet[0] - x).abs() <= 10.0 && (arrival.feet[2] - z).abs() <= 10.0,
+                "within 10 blocks of the world spawn: {arrival:?}"
+            );
+            assert!(steve.switching.is_none());
+        }
+    }
+
+    #[test]
+    fn respawn_radius_zero_respawns_on_the_spawn_column() {
+        let Some((mut level, mut globals)) = level_and_globals() else {
+            return;
+        };
+        globals.game_rules.set("respawn_radius", "0").unwrap();
+        let mut chat = minecraft_commands::CommandServer::new(crate::commands::HOST);
+        let mut steve = player(&mut chat, 0, "Steve");
+        let mut alex = player(&mut chat, 1, "Alex");
+        assert!(!respawn_in(&globals, &mut level, &mut steve, |_| None));
+        assert!(!respawn_in(&globals, &mut level, &mut alex, |_| None));
+        let column = |player: &Player| player.arrival.map(|place| (place.feet[0], place.feet[2]));
+        assert_eq!(column(&steve), Some(spawn_column(&level)));
+        assert_eq!(column(&alex), Some(spawn_column(&level)));
+    }
+
+    #[test]
+    fn adventure_worlds_respawn_on_the_spawn_column_whatever_the_radius() {
+        let Some((mut level, _)) = level_and_globals() else {
+            return;
+        };
+        let (x, z) = spawn_column(&level);
+        let stream = &mut level.terrain.stream;
+        let exact = stream.exact_spawn_position();
+        assert_eq!((exact.0, exact.2), (x, z));
+        for _ in 0..4 {
+            assert_eq!(spawn_position(stream, true, true, 10), exact);
+        }
+        assert_eq!(spawn_position(stream, false, true, 10), stream.player_spawn);
+        let spread = spawn_position(stream, true, false, 10);
+        assert!((spread.0 - x).abs() <= 10.0 && (spread.2 - z).abs() <= 10.0);
     }
 
     #[test]

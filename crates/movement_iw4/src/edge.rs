@@ -24,12 +24,20 @@ pub fn back_off_from_edge<C: CollisionBackend>(
         return;
     }
     let origin = ps.origin;
-    let ground = |dx: f32, dy: f32| {
+    let kept = kept_on_edge(wanted, |dx, dy| {
         let shifted = [origin[0] + dx, origin[1] + dy, origin[2]];
         collision.ground_within(shifted, bounds.mins, bounds.maxs, MAX_UP_STEP)
-    };
+    });
+    for k in 0..2 {
+        if kept[k] != wanted[k] {
+            ps.velocity[k] = kept[k] / frametime;
+        }
+    }
+}
+
+pub fn kept_on_edge(wanted: [f32; 2], ground: impl Fn(f32, f32) -> Option<bool>) -> [f32; 2] {
     if ground(0.0, 0.0) != Some(true) {
-        return;
+        return wanted;
     }
     let can_fall = |dx: f32, dy: f32| ground(dx, dy) == Some(false);
     let mut kept = wanted;
@@ -42,11 +50,7 @@ pub fn back_off_from_edge<C: CollisionBackend>(
     while kept[0] != 0.0 && kept[1] != 0.0 && can_fall(kept[0], kept[1]) {
         kept = kept.map(shrink);
     }
-    for k in 0..2 {
-        if kept[k] != wanted[k] {
-            ps.velocity[k] = kept[k] / frametime;
-        }
-    }
+    kept
 }
 
 fn shrink(distance: f32) -> f32 {

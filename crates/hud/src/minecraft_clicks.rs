@@ -319,6 +319,8 @@ mod tests {
             contents: Vec::new(),
             more: None,
             glint: false,
+            icon: id.into(),
+            lore: Vec::new(),
         }
     }
 

@@ -115,6 +115,7 @@ pub(crate) fn arriving(player: &mut Player, sounds: Option<&mut Sounds>, packs: 
 
 pub(crate) const FREEZE_OUTLINE: &str = "minecraft:misc/powder_snow_outline";
 pub(crate) const SPYGLASS_SCOPE: &str = "minecraft:misc/spyglass_scope";
+pub(crate) const PUMPKIN_BLUR: &str = "minecraft:misc/pumpkinblur";
 
 pub(crate) fn frames(
     packs: &PackStack,
@@ -150,4 +151,14 @@ pub(crate) fn strip(
         )
     };
     Some((images.add(image), frames))
+}
+
+pub(crate) fn blurred(
+    packs: &PackStack,
+    images: &mut Assets<Image>,
+    sprite: &str,
+) -> Option<Handle<Image>> {
+    let (handle, _) = strip(packs, images, sprite)?;
+    images.get_mut(&handle)?.sampler = bevy::image::ImageSampler::linear();
+    Some(handle)
 }

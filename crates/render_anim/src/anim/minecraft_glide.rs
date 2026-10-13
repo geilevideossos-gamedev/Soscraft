@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use anim_iw4::Local;
 use bevy::prelude::*;
 use minecraft_terrain::elytra_render::{ElytraAnim, WingAngles, flying_roll};
+use minecraft_terrain::walk_animation::WalkAnimation;
 use net::{FrameClock, PresentedSnapshot};
-use playerstate_iw4::pm_flags::MC_GLIDING;
+use playerstate_iw4::pm_flags::{MC_GLIDING, MC_RIDING};
 use playerstate_iw4::{PM_TYPE_DEAD, PlayerState, eflags};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -14,7 +15,12 @@ pub struct GlideInput {
     pub motion: [f64; 3],
     pub look: [f64; 3],
     pub pitch_deg: f32,
+    pub alive: bool,
+    pub riding: bool,
 }
+
+const WALK_TICK: f32 = 0.05;
+const MAX_WALK_TICKS: u32 = 10;
 
 pub fn glide_input(ps: &PlayerState) -> GlideInput {
     let per_tick = f64::from(sim::voxel::BLOCK) * 20.0;
@@ -29,6 +35,8 @@ pub fn glide_input(ps: &PlayerState) -> GlideInput {
             -pitch.sin(),
         ],
         pitch_deg: ps.viewangles[0],
+        alive: ps.pm_type < PM_TYPE_DEAD,
+        riding: ps.pm_flags & MC_RIDING != 0,
     }
 }
 
@@ -36,6 +44,8 @@ pub fn glide_input(ps: &PlayerState) -> GlideInput {
 pub struct BodyGlide {
     pub anim: ElytraAnim,
     pub input: GlideInput,
+    pub walk: WalkAnimation,
+    pub walk_clock: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,6 +62,21 @@ impl BodyGlide {
         self.input = input;
         self.anim
             .advance(seconds, input.gliding, input.crouching, input.motion);
+        self.walk_clock += seconds.max(0.0);
+        let ticks = (self.walk_clock / WALK_TICK).floor();
+        self.walk_clock = (self.walk_clock - ticks * WALK_TICK).max(0.0);
+        for _ in 0..(ticks as u32).min(MAX_WALK_TICKS) {
+            if input.alive && !input.riding {
+                let distance = input.motion[0].hypot(input.motion[1]) as f32;
+                self.walk.update(distance, false);
+            } else {
+                self.walk.stop();
+            }
+        }
+    }
+
+    pub fn walk_position(&self) -> f32 {
+        self.walk.position(self.walk_clock / WALK_TICK)
     }
 
     pub fn pose(&self) -> GlidePose {
@@ -80,6 +105,10 @@ impl McGlide {
 
     pub fn pose(&self, client: u32) -> Option<GlidePose> {
         self.get(client).map(BodyGlide::pose)
+    }
+
+    pub fn walk_position(&self, client: u32) -> f32 {
+        self.get(client).map_or(0.0, BodyGlide::walk_position)
     }
 
     pub fn step(&mut self, seconds: f32, clients: impl IntoIterator<Item = (u32, GlideInput)>) {
@@ -266,6 +295,90 @@ mod tests {
         };
         assert!(glide_input(&ducked).crouching);
         assert!(!glide_input(&player(0, [0.0; 3])).crouching);
+    }
+
+    #[test]
+    fn the_walk_swing_advances_once_per_tick_and_eases_like_vanilla() {
+        let walking = GlideInput {
+            motion: [0.3, 0.0, 0.0],
+            alive: true,
+            ..Default::default()
+        };
+        let mut whole = BodyGlide::default();
+        whole.advance(0.05, walking);
+        assert!((whole.walk.raw_speed() - 0.4).abs() < 1e-6);
+        assert!((whole.walk.position(1.0) - 0.4).abs() < 1e-6);
+        assert!(whole.walk_position().abs() < 1e-6);
+        let mut halves = BodyGlide::default();
+        halves.advance(0.025, walking);
+        assert_eq!(halves.walk.raw_speed(), 0.0);
+        assert!(halves.walk_position().abs() < 1e-6);
+        halves.advance(0.025, walking);
+        assert!((halves.walk.raw_speed() - 0.4).abs() < 1e-6);
+        assert!((halves.walk.position(1.0) - 0.4).abs() < 1e-6);
+        halves.advance(0.025, walking);
+        assert!((halves.walk_position() - 0.2).abs() < 1e-5);
+        whole.advance(0.05, walking);
+        assert!((whole.walk.raw_speed() - 0.64).abs() < 1e-6);
+        assert!((whole.walk.position(1.0) - 1.04).abs() < 1e-5);
+        let mut lagging = BodyGlide::default();
+        lagging.advance(2.0, walking);
+        let mut ten = BodyGlide::default();
+        for _ in 0..10 {
+            ten.advance(0.05, walking);
+        }
+        assert_eq!(lagging.walk.raw_speed(), ten.walk.raw_speed());
+        let mut rising = BodyGlide::default();
+        rising.advance(
+            0.05,
+            GlideInput {
+                motion: [0.0, 0.0, 0.5],
+                ..walking
+            },
+        );
+        assert_eq!(rising.walk.position(1.0), 0.0);
+        whole.advance(
+            0.05,
+            GlideInput {
+                alive: false,
+                ..walking
+            },
+        );
+        assert_eq!(whole.walk.raw_speed(), 0.0);
+        assert_eq!(whole.walk_position(), 0.0);
+        let dead = PlayerState {
+            pm_type: PM_TYPE_DEAD,
+            ..PlayerState::ZERO
+        };
+        assert!(glide_input(&PlayerState::ZERO).alive);
+        assert!(!glide_input(&dead).alive);
+        let mut glide = McGlide::default();
+        glide.step(0.075, [(4, walking)]);
+        assert!((glide.walk_position(4) - 0.2).abs() < 1e-5);
+        assert_eq!(glide.walk_position(9), 0.0);
+    }
+
+    #[test]
+    fn a_rider_stops_the_walk_swing_like_vanilla() {
+        let walking = GlideInput {
+            motion: [0.3, 0.0, 0.0],
+            alive: true,
+            ..Default::default()
+        };
+        let mut body = BodyGlide::default();
+        for _ in 0..3 {
+            body.advance(0.05, walking);
+        }
+        body.advance(0.025, walking);
+        assert!(body.walk_position() > 0.0);
+        let seated = glide_input(&player(MC_RIDING, [216.0, 0.0, 0.0]));
+        assert!(seated.riding && seated.alive);
+        assert!(!glide_input(&player(0, [216.0, 0.0, 0.0])).riding);
+        body.advance(0.05, seated);
+        assert_eq!(body.walk.raw_speed(), 0.0);
+        assert_eq!(body.walk_position(), 0.0);
+        body.advance(0.05, seated);
+        assert_eq!(body.walk_position(), 0.0);
     }
 
     #[test]

@@ -70,7 +70,7 @@ const LOOSE_SPRITES: [&str; 13] = [
 pub(crate) const BOOK_SHEET: &str = "book";
 pub(crate) const RECIPE_BOOK_SHEET: &str = "recipe_book";
 
-const TEXT_PREFIXES: [&str; 12] = [
+const TEXT_PREFIXES: [&str; 13] = [
     "container.",
     "itemGroup.",
     "inventory.",
@@ -82,6 +82,7 @@ const TEXT_PREFIXES: [&str; 12] = [
     "book.",
     "lectern.",
     "gui.done",
+    "gui.cancel",
     "gui.recipebook.",
 ];
 
@@ -714,6 +715,7 @@ mod tests {
             ("lectern.take_book".to_owned(), "Take Book".to_owned()),
             ("gui.done".to_owned(), "Done".to_owned()),
             ("gui.cancel".to_owned(), "Cancel".to_owned()),
+            ("gui.yes".to_owned(), "Yes".to_owned()),
         ]);
         let (atlas, gui) = build_atlas(&packs, &language).unwrap();
         let [bx, by] = gui.sheets[BOOK_SHEET];
@@ -737,7 +739,9 @@ mod tests {
         assert_eq!(gui.format("book.pageIndicator", &["2", "3"]), "Page 2 of 3");
         assert_eq!(gui.text("lectern.take_book"), "Take Book");
         assert_eq!(gui.text("gui.done"), "Done");
-        assert!(!gui.texts.contains_key("gui.cancel"));
+        assert_eq!(gui.text("gui.cancel"), "Cancel");
+        assert!(!gui.texts.contains_key("gui.yes"));
+        assert!(gui.sprites.contains_key("widget/button_disabled"));
     }
 
     #[test]

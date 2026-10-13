@@ -53,6 +53,7 @@ pub struct Player {
     pub sleep_timer: i32,
     pub time_since_rest: i32,
     pub saved_in_bed: Option<(i32, i32, i32)>,
+    pub drop_throttle: crate::creative::DropThrottle,
     pub tags: Vec<String>,
     pub recipe_book: crate::recipe_book::Book,
 }
@@ -132,6 +133,7 @@ impl Player {
             sleep_timer: 0,
             time_since_rest: 0,
             saved_in_bed: None,
+            drop_throttle: crate::creative::DropThrottle::default(),
             tags: Vec::new(),
             recipe_book: crate::recipe_book::Book::default(),
         }

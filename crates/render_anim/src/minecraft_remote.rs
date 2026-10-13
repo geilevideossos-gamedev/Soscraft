@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use minecraft_commands::{Clientbound, Serverbound, Text};
-use minecraft_net::messages::{BookView, Click, MenuView};
+use minecraft_net::messages::{BookView, Click, CreativeTarget, MenuView};
 use minecraft_net::messages::{GameMode, Target};
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
 use minecraft_survival::data::GameData;
@@ -26,7 +26,7 @@ use minecraftoss_core::registries::{DataPaths, Registries};
 use minecraftoss_core::{BlockStateId, Chunk};
 use minecraftoss_entities::enchant::Enchantments;
 use minecraftoss_player::crafting::RecipeBook;
-use minecraftoss_player::inventory::Inventory;
+use minecraftoss_player::inventory::{Inventory, ItemStack};
 use net::minecraft_wire::HOST;
 
 use crate::minecraft_sounds::Sounds;
@@ -46,6 +46,7 @@ struct Prepared {
     recipes: Arc<RecipeBook>,
     stations: Arc<StationBook>,
     enchantments: Option<Arc<Enchantments>>,
+    item_tags: BTreeMap<String, Vec<String>>,
 }
 
 fn prepare() -> Result<Prepared, String> {
@@ -60,6 +61,7 @@ fn prepare() -> Result<Prepared, String> {
         minecraft_terrain::item_icons::language(&packs).unwrap_or_else(|_| HashMap::new());
     let look = crate::minecraft_world::load_look(packs)?;
     let registry = minecraft_survival::session::registry_fingerprint(&registries);
+    let item_tags = minecraft_terrain::locate::datapack_tags(&registries.datapack, "item");
     let data = GameData::load(Some(&root), crate::minecraft_world::data_jar());
     Ok(Prepared {
         look,
@@ -69,6 +71,7 @@ fn prepare() -> Result<Prepared, String> {
         recipes: data.recipes,
         stations: data.stations,
         enchantments: data.enchantments,
+        item_tags,
     })
 }
 
@@ -334,11 +337,12 @@ pub(crate) fn friend(
     mut prediction: Option<ResMut<net::ClientPredictionState>>,
     (local, presented): (Res<net::LocalPresentClient>, Res<net::PresentedSnapshot>),
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    (skate, cameras, mc_camera, ui_draw): (
+    (skate, cameras, mc_camera, ui_draw, settings): (
         Res<frame::SkateMode>,
         Query<&Transform, With<render_scene::FlyCamera>>,
         Option<Res<frame::McCamera>>,
         Option<Res<frame::UiDraw>>,
+        Option<Res<frame::GameSettings>>,
     ),
     mut ui: ResMut<frame::MinecraftUi>,
     mut view: ResMut<MinecraftWorldView>,
@@ -418,6 +422,11 @@ pub(crate) fn friend(
                     crate::minecraft_portal::SPYGLASS_SCOPE,
                 )
                 .map(|(image, _)| image);
+                ui.pumpkin_blur = crate::minecraft_portal::blurred(
+                    &prepared.look.packs,
+                    &mut images,
+                    crate::minecraft_portal::PUMPKIN_BLUR,
+                );
                 friend
                     .inventory_ui
                     .set_station_data(prepared.stations.clone(), prepared.enchantments.clone());
@@ -536,7 +545,16 @@ pub(crate) fn friend(
         let look = &mut prepared.look;
         friend.inventory_ui.fork.dress_world(&mut look.packs, &look.atlas, state, &mut view.atlas_patches);
     }
-    let mut messages = show_player(friend, &mut ui, player.as_ref(), &mut images, shown);
+    let operator_items = settings
+        .as_deref()
+        .is_some_and(|settings| settings.minecraft_operator_items);
+    let mut messages = show_player(
+        friend,
+        &mut ui,
+        player.as_ref(),
+        &mut images,
+        (shown, operator_items),
+    );
     if leave_bed {
         messages.push(ToServer::LeaveBed);
     }
@@ -972,7 +990,7 @@ fn show_player(
     ui: &mut frame::MinecraftUi,
     ps: Option<&playerstate_iw4::PlayerState>,
     images: &mut Assets<Image>,
-    (dt, seconds, now_ms): (f64, f64, u64),
+    ((dt, seconds, now_ms), operator_items): ((f64, f64, u64), bool),
 ) -> Vec<ToServer> {
     let mut out = Vec::new();
     let Friend {
@@ -1018,10 +1036,40 @@ fn show_player(
         ui.inventory_open = false;
     }
     let recipes = &prepared.recipes;
+    let mut inventory = Inventory::default();
+    inventory.recipes = recipes.clone();
+    for (slot, stack) in inventory.slots.iter_mut().zip(&view.slots) {
+        *slot = stack.as_ref().and_then(|nbt| view_stack(nbt, recipes));
+    }
+    inventory.cursor = carried(remote.menu.as_ref(), remote.inventory_menu.as_ref(), recipes);
+    if let Some(grid) = remote.inventory_menu.as_ref() {
+        let cells = minecraft_survival::menus::stacks(&grid.slots, recipes);
+        for (cell, stack) in inventory.crafting.iter_mut().zip(cells) {
+            *cell = stack;
+        }
+    }
+    let operator = remote.command_level >= 2 && operator_items;
+    inventory_ui
+        .creative
+        .prepare(view.abilities.instabuild, operator);
+    inventory_ui.creative.set_item_tags(&prepared.item_tags);
+    let sets = inventory_ui.creative.sets(ui, &inventory);
+    let hotbar = inventory_ui.creative.hotbar_sets(ui, &inventory);
+    for (slot, stack) in sets.into_iter().chain(hotbar) {
+        out.extend(creative_message(slot, stack));
+    }
     for book in std::mem::take(&mut remote.lecterns) {
         show_book(inventory_ui, ui, book, &mut out);
     }
-    if !inventory_ui.lectern_clicks(ui) {
+    let own_name = remote
+        .login
+        .as_ref()
+        .and_then(|login| remote.players.get(&login.client))
+        .map_or("Player", |(name, _)| name.as_str());
+    for slot in std::mem::take(&mut remote.open_books) {
+        open_held_book(inventory_ui, ui, (view, recipes), own_name, slot);
+    }
+    if !inventory_ui.book_clicks(ui) {
         show_menus(
             ui,
             (&mut remote.menu, remote.inventory_menu.as_ref()),
@@ -1040,6 +1088,11 @@ fn show_player(
         let pos = [pos.0, pos.1, pos.2];
         out.push(ToServer::Lectern { pos, button });
     }
+    for (slot, pages, title) in inventory_ui.take_book_edits() {
+        if let Ok(slot) = u8::try_from(slot) {
+            out.push(ToServer::EditBook { slot, pages, title });
+        }
+    }
     let Some(ps) = alive else {
         ui.vitals = None;
         ui.weapon_request = None;
@@ -1047,22 +1100,8 @@ fn show_player(
         ui.empty_hand = false;
         return out;
     };
-    let mut inventory = Inventory::default();
-    inventory.recipes = recipes.clone();
-    for (slot, stack) in inventory.slots.iter_mut().zip(&view.slots) {
-        *slot = stack.as_ref().and_then(|nbt| view_stack(nbt, recipes));
-    }
     let screen = minecraft_survival::menus::mirror(remote.menu.as_ref(), recipes);
-    let current = remote.menu.as_ref().or(remote.inventory_menu.as_ref());
-    inventory.cursor = current
-        .and_then(|menu| menu.carried.as_ref())
-        .and_then(|nbt| view_stack(nbt, recipes));
-    if let Some(grid) = remote.inventory_menu.as_ref() {
-        let cells = minecraft_survival::menus::stacks(&grid.slots, recipes);
-        for (cell, stack) in inventory.crafting.iter_mut().zip(cells) {
-            *cell = stack;
-        }
-    }
+    inventory.cursor = carried(remote.menu.as_ref(), remote.inventory_menu.as_ref(), recipes);
     if matches!(screen.open, Some(Open::Table(_))) {
         for (cell, stack) in inventory.workbench.iter_mut().zip(&screen.cells) {
             *cell = stack.clone();
@@ -1092,6 +1131,7 @@ fn show_player(
         &inventory,
         usize::from(view.selected),
     );
+    ui.camera_overlay = minecraft_terrain::body_gear::camera_overlay(&inventory.slots);
     let mut selected = selection.slot;
     ui.weapon_request = follow
         .request_with(&inventory, &guns, &mut selected, ps.weapon)
@@ -1112,6 +1152,33 @@ fn show_player(
     );
     out.extend(recipe_book.outgoing(&ui.recipe_book, inventory_ui.take_seen()));
     out
+}
+
+fn carried(
+    menu: Option<&MenuView>,
+    inventory_menu: Option<&MenuView>,
+    recipes: &RecipeBook,
+) -> Option<ItemStack> {
+    menu.or(inventory_menu)
+        .and_then(|menu| menu.carried.as_ref())
+        .and_then(|nbt| view_stack(nbt, recipes))
+}
+
+fn creative_message(
+    slot: minecraft_survival::creative::CreativeSlot,
+    stack: Option<ItemStack>,
+) -> Option<ToServer> {
+    use minecraft_survival::creative::CreativeSlot;
+    let slot = match slot {
+        CreativeSlot::Menu(index) => CreativeTarget::Menu(u8::try_from(index).ok()?),
+        CreativeSlot::Carried => CreativeTarget::Carried,
+        CreativeSlot::Drop => CreativeTarget::Drop,
+    };
+    let stack = match stack {
+        Some(stack) => Some(minecraft_survival::views::slot_nbt(&stack)?),
+        None => None,
+    };
+    Some(ToServer::CreativeSlot { slot, stack })
 }
 
 fn show_book(
@@ -1140,6 +1207,39 @@ fn show_book(
     }
 }
 
+pub(crate) fn open_held_book(
+    inventory_ui: &mut crate::minecraft_inventory::InventoryUi,
+    ui: &mut frame::MinecraftUi,
+    (view, recipes): (&minecraft_net::messages::PlayerView, &RecipeBook),
+    own_name: &str,
+    slot: u8,
+) -> bool {
+    let slot = usize::from(slot);
+    let Some(stack) = view
+        .slots
+        .get(slot)
+        .and_then(Option::as_ref)
+        .and_then(|nbt| view_stack(nbt, recipes))
+    else {
+        return false;
+    };
+    let pages = minecraft_terrain::lectern::pages_text(stack.components.as_ref());
+    match minecraft_survival::books::book_use(&stack) {
+        Some(minecraft_survival::books::BookUse::Read) => {
+            let book = frame::McBook {
+                pages,
+                page: 0,
+                take: false,
+            };
+            inventory_ui.show_held_book(ui, slot, book)
+        }
+        Some(minecraft_survival::books::BookUse::Write) => {
+            inventory_ui.show_book_editor(ui, slot, pages, own_name)
+        }
+        None => false,
+    }
+}
+
 fn show_menus(
     ui: &mut frame::MinecraftUi,
     (menu, inventory_menu): (&mut Option<MenuView>, Option<&MenuView>),
@@ -1165,9 +1265,6 @@ fn show_menus(
         ui.inventory_open = true;
         ui.screen_opened = true;
         *screen_open = true;
-    }
-    if menu.is_none() && matches!(ui.screen, frame::McScreen::Creative(_)) {
-        ui.screen = frame::McScreen::Inventory;
     }
     let (id, state) = menu
         .as_ref()
@@ -1585,6 +1682,41 @@ fn present_entities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creative_message_maps_targets_and_never_sends_a_clear_for_an_unencodable_stack() {
+        use minecraft_survival::creative::CreativeSlot;
+        let recipes = RecipeBook::default();
+        let stone = ItemStack::new("minecraft:stone", 64);
+        let Some(ToServer::CreativeSlot { slot, stack }) =
+            creative_message(CreativeSlot::Menu(36), Some(stone.clone()))
+        else {
+            panic!("a menu set is sent");
+        };
+        assert_eq!(slot, CreativeTarget::Menu(36));
+        let sent = stack.and_then(|nbt| view_stack(&nbt, &recipes)).unwrap();
+        assert_eq!((sent.id.as_str(), sent.count), ("minecraft:stone", 64));
+        assert!(matches!(
+            creative_message(CreativeSlot::Carried, None),
+            Some(ToServer::CreativeSlot {
+                slot: CreativeTarget::Carried,
+                stack: None
+            })
+        ));
+        assert!(matches!(
+            creative_message(CreativeSlot::Drop, Some(stone.clone())),
+            Some(ToServer::CreativeSlot {
+                slot: CreativeTarget::Drop,
+                stack: Some(_)
+            })
+        ));
+        assert!(creative_message(CreativeSlot::Menu(300), None).is_none());
+        let unknown = ItemStack::new("othermod:thing", 1);
+        assert!(creative_message(CreativeSlot::Menu(36), Some(unknown.clone())).is_none());
+        assert!(creative_message(CreativeSlot::Carried, Some(unknown)).is_none());
+        let empty = ItemStack { count: 0, ..stone };
+        assert!(creative_message(CreativeSlot::Menu(37), Some(empty)).is_none());
+    }
 
     #[test]
     fn a_dimension_change_drops_only_the_old_level_behind_its_loading_screen() {

@@ -7,6 +7,7 @@ use crate::elytra_render::{WingAngles, append_elytra, wings_texture};
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh, HeldDisplay, HeldItem, ItemVisuals};
 use crate::pack::PackStack;
+use crate::worn_head::append_worn_head;
 
 pub const HAND_DISPLAYS: [HeldDisplay; 2] = [HeldDisplay::RightHand, HeldDisplay::LeftHand];
 
@@ -16,6 +17,7 @@ pub struct BodyRig {
     pub armor: ArmorRig,
     pub light: Vec3,
     pub wings: Option<WingAngles>,
+    pub head_swing: f32,
 }
 
 pub fn held_items(rig: &BodyRig, gear: &BodyGear) -> Vec<(HeldItem, bool)> {
@@ -28,7 +30,7 @@ pub fn held_items(rig: &BodyRig, gear: &BodyGear) -> Vec<(HeldItem, bool)> {
             let held = HeldItem {
                 pose,
                 light: rig.light,
-                id: item.id.clone(),
+                id: crate::item_tint::key(&item.id, item.potion),
                 display,
                 first_tint: None,
             };
@@ -52,6 +54,19 @@ pub fn append_body_gear(
         f32::from(light.get_block((cell.x, cell.y, cell.z))),
     );
     append_armor_on_rig(mesh, atlas, &rig.armor, &gear.armor, sky, block);
+    append_worn_head(
+        mesh,
+        items,
+        rig.armor.head,
+        gear.armor[0].as_ref(),
+        rig.head_swing,
+        rig.light,
+        packs,
+        atlas,
+        light,
+        sky,
+        block,
+    )?;
     let elytra = gear.armor[1]
         .as_ref()
         .filter(|item| wings_texture(&item.id).is_some());
@@ -82,6 +97,7 @@ mod tests {
             id: id.to_owned(),
             glint,
             dye: None,
+            potion: None,
         })
     }
 
@@ -362,5 +378,76 @@ mod tests {
         };
         assert_eq!(draw(&no_back, &wearing(1, true)).faces, 0);
         assert_eq!(draw(&rig, &wearing(0, true)).faces, 0);
+    }
+
+    #[test]
+    fn a_held_potion_keys_its_colour() {
+        let rig = BodyRig {
+            hands: [Some(Mat4::IDENTITY), Some(Mat4::IDENTITY)],
+            ..BodyRig::default()
+        };
+        let gear = BodyGear {
+            main: Some(GearItem {
+                id: "minecraft:potion".to_owned(),
+                glint: false,
+                dye: None,
+                potion: Some(0x87A363),
+            }),
+            off: item("minecraft:potion", false),
+            ..BodyGear::default()
+        };
+        let held = held_items(&rig, &gear);
+        assert_eq!(held[0].0.id, "minecraft:potion~87a363");
+        assert_eq!(held[0].0.first_tint, None);
+        assert_eq!(held[1].0.id, "minecraft:potion");
+    }
+
+    #[test]
+    fn worn_heads_are_drawn_with_the_body_and_lit_where_it_is() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        crate::worn_head::tests::write_pack(root, &[], &[("entity/zombie/zombie", 64, 64)]);
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let id = ResourceId::parse("minecraft:entity/zombie/zombie").unwrap();
+        let atlas = crate::mesh::make_atlas(&packs, vec![id]).unwrap();
+        let light = SkyLight::from_levels((0, 64, 0), (1, 1, 1), vec![7], vec![11]);
+        let head = Mat4::from_translation(Vec3::new(0.5, 65.5, 0.5))
+            * Mat4::from_scale(Vec3::new(1.0, -1.0, -1.0) / 16.0);
+        let rig = BodyRig {
+            armor: crate::armor_render::ArmorRig {
+                head: Some(head),
+                ..Default::default()
+            },
+            light: Vec3::new(0.5, 64.5, 0.5),
+            head_swing: 3.0,
+            ..BodyRig::default()
+        };
+        let gear = BodyGear {
+            armor: [item("minecraft:zombie_head", true), None, None, None],
+            ..BodyGear::default()
+        };
+        let mut mesh = ChunkMesh::default();
+        let mut items = ItemVisuals::default();
+        append_body_gear(&mut mesh, &mut items, &rig, &gear, &packs, &atlas, &light).unwrap();
+        assert_eq!(mesh.faces, 12, "the head and the hat layer");
+        assert!(
+            mesh.vertices
+                .iter()
+                .all(|vertex| (vertex.sky_light, vertex.block_light) == (7.0, 11.0))
+        );
+        assert!(mesh.armor_glint.is_empty() && mesh.glint.is_empty());
+        let top = mesh
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(top > 65.5 + 9.0 / 16.0 && top < 65.5 + 10.0 / 16.0, "{top}");
+        let bare = BodyRig {
+            armor: Default::default(),
+            ..rig
+        };
+        let mut nothing = ChunkMesh::default();
+        append_body_gear(&mut nothing, &mut items, &bare, &gear, &packs, &atlas, &light).unwrap();
+        assert_eq!(nothing.faces, 0);
     }
 }

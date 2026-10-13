@@ -261,6 +261,7 @@ impl McBodyGear {
 pub struct GearFit {
     pub item_scale: f32,
     pub hand_offset: [f32; 3],
+    pub fist: f32,
     pub head: f32,
     pub head_offset: [f32; 3],
     pub torso_width: f32,
@@ -274,6 +275,7 @@ pub struct GearFit {
 pub const GEAR_FIT: GearFit = GearFit {
     item_scale: 0.9375,
     hand_offset: [0.0, 2.0, -2.0],
+    fist: 3.5,
     head: 9.0,
     head_offset: [0.5, 0.0, 3.5],
     torso_width: 13.0,
@@ -307,13 +309,18 @@ pub fn hand_frame(
     side: usize,
     fit: &GearFit,
 ) -> Option<Mat4> {
-    let base = match joints[HAND_TAGS[side]] {
-        Some(tag) => tag.posed,
-        None => {
-            let wrist = joints[WRISTS[side]]?;
-            wrist.skin() * Mat4::from_translation(wrist.bind.w_axis.truncate())
-        }
-    };
+    let wrist = joints[WRISTS[side]]?;
+    let at = wrist.bind.w_axis.truncate();
+    let along = joints[ELBOWS[side]]
+        .and_then(|elbow| (at - elbow.bind.w_axis.truncate()).try_normalize())
+        .unwrap_or(Vec3::ZERO);
+    let fist = wrist.skin().transform_point3(at + along * fit.fist);
+    let turn = [SPINE4, SPINE_UPPER, SPINE_LOWER]
+        .into_iter()
+        .find_map(|joint| joints[joint])
+        .unwrap_or(wrist)
+        .skin();
+    let base = Mat4::from_cols(turn.x_axis, turn.y_axis, turn.z_axis, fist.extend(1.0));
     let mirror = if side == 0 { 1.0 } else { -1.0 };
     let [x, y, z] = fit.hand_offset;
     Some(
@@ -489,6 +496,7 @@ pub fn body_rig(joints: &[Option<PosedJoint>; JOINTS], origin: [f64; 3], fit: &G
         armor: bound_armor(joints, fit).posed(to_block),
         light: glam::Vec3::from_array(lit_at.to_array()),
         wings: None,
+        head_swing: 0.0,
     }
 }
 
@@ -523,6 +531,7 @@ pub fn gear_rigs<'a>(
                 puppet: puppet == Some(body.client),
                 rig: BodyRig {
                     wings: glide.pose(body.client).map(|pose| pose.wings),
+                    head_swing: glide.walk_position(body.client),
                     ..body_rig(&body.joints, origin, &GEAR_FIT)
                 },
                 gear: worn,
@@ -729,12 +738,23 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_tag_turns_into_the_vanilla_hand_frame_in_blocks() {
+    fn a_wrist_turns_into_the_vanilla_hand_frame_in_blocks() {
         let mut joints = [None; JOINTS];
-        joints[HAND_TAGS[0]] = joint_at(Mat4::from_translation(Vec3::new(36.0, 0.0, 72.0)));
+        let moved = Mat4::from_translation(Vec3::new(36.0, 10.0, 37.0));
+        let at = |x: f32, y: f32, z: f32| {
+            let bind = Mat4::from_translation(Vec3::new(x, y, z));
+            Some(PosedJoint {
+                posed: moved * bind,
+                bind,
+            })
+        };
+        joints[WRISTS[0]] = at(0.0, -10.0, 35.0);
+        joints[ELBOWS[0]] = at(0.0, -9.0, 45.0);
+        joints[SPINE4] = at(0.0, 0.0, 52.0);
         let fit = GearFit {
             item_scale: 1.0,
             hand_offset: [0.0; 3],
+            fist: 0.0,
             ..GEAR_FIT
         };
         let rig = body_rig(&joints, [10.0, 64.0, -5.0], &fit);
@@ -754,17 +774,18 @@ mod tests {
             (at([1.0, 0.0, 0.0]) - at([0.0; 3])).abs_diff_eq(glam::Vec3::Z, 1e-5),
             "right is map -Y, block +z"
         );
+        let chest = map_to_block([10.0, 64.0, -5.0]).transform_point3(Vec3::new(36.0, 10.0, 89.0));
         assert!(
             rig.light
-                .abs_diff_eq(glam::Vec3::new(11.0, 66.0, -5.0), 1e-4)
+                .abs_diff_eq(glam::Vec3::from_array(chest.to_array()), 1e-4)
         );
     }
 
     #[test]
     fn the_hand_offset_is_in_pixels_and_mirrored_for_the_left_hand() {
         let mut joints = [None; JOINTS];
-        joints[HAND_TAGS[0]] = joint_at(Mat4::IDENTITY);
-        joints[HAND_TAGS[1]] = joint_at(Mat4::IDENTITY);
+        joints[WRISTS[0]] = joint_at(Mat4::IDENTITY);
+        joints[WRISTS[1]] = joint_at(Mat4::IDENTITY);
         let fit = GearFit {
             item_scale: 0.5,
             hand_offset: [2.0, 4.0, -8.0],
@@ -785,27 +806,177 @@ mod tests {
         );
     }
 
+    fn bare_fit(fist: f32) -> GearFit {
+        GearFit {
+            item_scale: 1.0,
+            hand_offset: [0.0; 3],
+            fist,
+            ..GEAR_FIT
+        }
+    }
+
+    fn turned_about(joint: Option<PosedJoint>, turn: Mat4) -> Option<PosedJoint> {
+        joint.map(|joint| {
+            let pivot = joint.posed.w_axis.truncate();
+            PosedJoint {
+                posed: Mat4::from_translation(pivot)
+                    * turn
+                    * Mat4::from_translation(-pivot)
+                    * joint.posed,
+                bind: joint.bind,
+            }
+        })
+    }
+
+    fn forward(hand: Mat4) -> Vec3 {
+        hand.transform_vector3(Vec3::Y).normalize()
+    }
+
     #[test]
-    fn without_a_hand_tag_the_hand_rides_the_wrist_upright_from_the_bind_pose() {
+    fn the_fist_rides_the_wrist_and_the_frame_stays_upright_with_the_chest() {
         let mut joints = [None; JOINTS];
         let bind = Mat4::from_translation(Vec3::new(0.0, -20.0, 40.0));
         let turn = Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let moved = Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0)) * turn;
         joints[WRISTS[0]] = Some(PosedJoint {
-            posed: Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0)) * turn * bind,
+            posed: moved * bind,
             bind,
         });
-        let fit = GearFit {
-            item_scale: 1.0,
-            hand_offset: [0.0; 3],
-            ..GEAR_FIT
+        let elbow = Mat4::from_translation(Vec3::new(0.0, -20.0, 50.0));
+        joints[ELBOWS[0]] = Some(PosedJoint {
+            posed: moved * elbow,
+            bind: elbow,
+        });
+        joints[SPINE4] = joint_at(Mat4::from_translation(Vec3::new(0.0, 0.0, 52.0)));
+        let hand = hand_frame(&joints, 0, &bare_fit(4.0)).unwrap();
+        let fist = hand.transform_point3(Vec3::ZERO);
+        assert!(fist.abs_diff_eq(Vec3::new(25.0, 0.0, 36.0), 1e-4), "{fist}");
+        let forward = forward(hand);
+        assert!(forward.abs_diff_eq(Vec3::X, 1e-5), "{forward}");
+    }
+
+    #[test]
+    fn held_items_ignore_unkeyed_weapon_tags() {
+        let mut joints = standing();
+        let tag = Mat4::from_translation(Vec3::new(2.3, -28.5, 30.0));
+        joints[HAND_TAGS[0]] = Some(PosedJoint {
+            posed: tag,
+            bind: tag,
+        });
+        joints[HAND_TAGS[1]] = joints[HAND_TAGS[0]];
+        let fit = bare_fit(GEAR_FIT.fist);
+        let origin = |side: usize| {
+            hand_frame(&joints, side, &fit)
+                .unwrap()
+                .transform_point3(Vec3::ZERO)
         };
-        let hand = hand_frame(&joints, 0, &fit).unwrap();
+        let wrist = |side: usize| joints[WRISTS[side]].unwrap().posed.w_axis.truncate();
+        for side in [0, 1] {
+            let off = origin(side).distance(wrist(side));
+            assert!(
+                off <= GEAR_FIT.fist + 1.0,
+                "hand {side} is {off} from its wrist"
+            );
+        }
+        let apart = origin(0).distance(origin(1));
+        assert!(apart > 15.0, "the hands are only {apart} apart");
+        assert!(origin(0).y < 0.0 && origin(1).y > 0.0);
+    }
+
+    #[test]
+    fn the_fist_steps_along_the_forearm() {
+        let joints = standing();
+        let fit = bare_fit(3.5);
+        let wrist = joints[WRISTS[0]].unwrap().posed.w_axis.truncate();
+        let elbow = joints[ELBOWS[0]].unwrap().posed.w_axis.truncate();
+        let along = (wrist - elbow).normalize();
+        let fist = hand_frame(&joints, 0, &fit)
+            .unwrap()
+            .transform_point3(Vec3::ZERO);
+        assert!(fist.abs_diff_eq(wrist + along * 3.5, 1e-4), "{fist}");
+
+        let mut bent = joints;
+        let bend = Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let about_elbow = Mat4::from_translation(elbow) * bend * Mat4::from_translation(-elbow);
+        bent[WRISTS[0]] = bent[WRISTS[0]].map(|joint| PosedJoint {
+            posed: about_elbow * joint.posed,
+            bind: joint.bind,
+        });
+        let fist = hand_frame(&bent, 0, &fit)
+            .unwrap()
+            .transform_point3(Vec3::ZERO);
+        let expected = about_elbow.transform_point3(wrist + along * 3.5);
+        assert!(fist.abs_diff_eq(expected, 1e-4), "{fist} vs {expected}");
+        assert!((fist - elbow).y < (wrist - elbow).y - 5.0, "{fist}");
+    }
+
+    #[test]
+    fn the_hand_frame_turns_with_the_chest_and_the_puppet_scale() {
+        let joints = standing();
+        let fit = bare_fit(GEAR_FIT.fist);
+        let upright = hand_frame(&joints, 0, &fit).unwrap();
+        assert!(forward(upright).abs_diff_eq(Vec3::X, 1e-5));
+
+        let mut turned = joints;
+        turned[SPINE4] = turned_about(
+            turned[SPINE4],
+            Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
+        let hand = hand_frame(&turned, 0, &fit).unwrap();
+        assert!(
+            forward(hand).abs_diff_eq(Vec3::Y, 1e-5),
+            "{}",
+            forward(hand)
+        );
         assert!(
             hand.transform_point3(Vec3::ZERO)
-                .abs_diff_eq(Vec3::new(25.0, 0.0, 40.0), 1e-4)
+                .abs_diff_eq(upright.transform_point3(Vec3::ZERO), 1e-4)
         );
-        let forward = hand.transform_vector3(Vec3::Y).normalize();
-        assert!(forward.abs_diff_eq(Vec3::Y, 1e-5), "{forward}");
+
+        let puppet = Mat4::from_scale(Vec3::splat(0.1));
+        let small = joints.map(|joint| {
+            joint.map(|joint| PosedJoint {
+                posed: puppet * joint.posed,
+                bind: joint.bind,
+            })
+        });
+        let hand = hand_frame(&small, 0, &fit).unwrap();
+        for (axis, full) in [
+            (hand.x_axis, upright.x_axis),
+            (hand.y_axis, upright.y_axis),
+            (hand.z_axis, upright.z_axis),
+        ] {
+            assert!(axis.abs_diff_eq(full * 0.1, 1e-4), "{axis} vs {full}");
+        }
+        assert!(
+            hand.transform_point3(Vec3::ZERO)
+                .abs_diff_eq(upright.transform_point3(Vec3::ZERO) * 0.1, 1e-4)
+        );
+    }
+
+    #[test]
+    fn the_hand_frame_falls_back_to_the_wrist_without_a_spine() {
+        let mut joints = standing();
+        for joint in [SPINE4, SPINE_UPPER, SPINE_LOWER] {
+            joints[joint] = None;
+        }
+        joints[WRISTS[0]] = turned_about(
+            joints[WRISTS[0]],
+            Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
+        let hand = hand_frame(&joints, 0, &bare_fit(0.0)).unwrap();
+        assert!(
+            forward(hand).abs_diff_eq(Vec3::Y, 1e-5),
+            "{}",
+            forward(hand)
+        );
+        assert!(
+            hand.transform_point3(Vec3::ZERO)
+                .abs_diff_eq(Vec3::new(0.0, -10.0, 35.0), 1e-4)
+        );
+        joints[WRISTS[0]] = None;
+        assert!(hand_frame(&joints, 0, &bare_fit(0.0)).is_none());
+        assert!(hand_frame(&joints, 1, &bare_fit(0.0)).is_some());
     }
 
     #[test]
@@ -884,6 +1055,7 @@ mod tests {
                 id: "minecraft:torch".to_owned(),
                 glint: false,
                 dye: None,
+                potion: None,
             }),
             ..BodyGear::default()
         };
@@ -910,6 +1082,7 @@ mod tests {
                     id: "minecraft:elytra".to_owned(),
                     glint: false,
                     dye: None,
+                    potion: None,
                 }),
                 None,
                 None,
@@ -945,6 +1118,58 @@ mod tests {
     }
 
     #[test]
+    fn gear_rigs_take_each_clients_walk_swing() {
+        let mut posed = PosedGearFrame::default();
+        let mut gear = McBodyGear::default();
+        let dragon_head = BodyGear {
+            armor: [
+                Some(minecraft_terrain::body_gear::GearItem {
+                    id: "minecraft:dragon_head".to_owned(),
+                    glint: false,
+                    dye: None,
+                    potion: None,
+                }),
+                None,
+                None,
+                None,
+            ],
+            ..BodyGear::default()
+        };
+        for client in [1, 2, 3] {
+            posed.publish(PosedGear {
+                client,
+                joints: [None; JOINTS],
+            });
+            gear.set(client, dragon_head.clone());
+        }
+        let walking = crate::anim::minecraft_glide::GlideInput {
+            motion: [0.2, 0.1, 0.0],
+            alive: true,
+            ..Default::default()
+        };
+        let standing = crate::anim::minecraft_glide::GlideInput {
+            alive: true,
+            ..Default::default()
+        };
+        let mut glide = McGlide::default();
+        for _ in 0..5 {
+            glide.step(0.07, [(1, walking), (2, standing)]);
+        }
+        let rigs = gear_rigs(&posed, &gear, &glide, [0.0; 3], Some(1), None);
+        let swing = |client: u32| {
+            rigs.iter()
+                .find(|rig| rig.client == client)
+                .map(|rig| rig.rig.head_swing)
+                .unwrap()
+        };
+        assert!(swing(1) > 1.0, "{}", swing(1));
+        assert_eq!(swing(1), glide.walk_position(1));
+        assert_eq!(swing(2), 0.0);
+        assert_eq!(swing(3), 0.0);
+        assert!(rigs.iter().any(|rig| rig.puppet && rig.rig.head_swing == swing(1)));
+    }
+
+    #[test]
     fn gear_is_drawn_only_on_bodies_in_the_viewers_band() {
         let mut posed = PosedGearFrame::default();
         let mut gear = McBodyGear::default();
@@ -953,6 +1178,7 @@ mod tests {
                 id: "minecraft:torch".to_owned(),
                 glint: false,
                 dye: None,
+                potion: None,
             }),
             ..BodyGear::default()
         };

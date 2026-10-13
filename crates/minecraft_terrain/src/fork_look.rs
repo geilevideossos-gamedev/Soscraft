@@ -243,7 +243,7 @@ mod tests {
         else {
             panic!("rifle ammo is a tinted nugget");
         };
-        let tints = crate::interface::item_model_tints(&packs, &definition["model"]).unwrap();
+        let tints = crate::interface::item_model_tints(&packs, &definition["model"], None).unwrap();
         assert_eq!(tints, vec![copper]);
         let model = crate::model::resolve_item_model(&packs, &rifle)
             .unwrap()

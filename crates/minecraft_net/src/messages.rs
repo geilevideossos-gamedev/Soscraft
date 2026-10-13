@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 4;
+pub const PROTOCOL: u16 = 5;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -54,11 +54,27 @@ pub enum ToServer {
         button: Option<i32>,
     },
     LeaveBed,
+    EditBook {
+        slot: u8,
+        pages: Vec<String>,
+        title: Option<String>,
+    },
+    CreativeSlot {
+        slot: CreativeTarget,
+        stack: Option<Nbt>,
+    },
     RecipeBookSettings {
         open: bool,
         filtering: bool,
     },
     RecipeSeen(Vec<String>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CreativeTarget {
+    Menu(u8),
+    Carried,
+    Drop,
 }
 
 impl ToServer {
@@ -275,6 +291,9 @@ pub enum ToClient {
         client: u32,
         bed: Option<Lying>,
         timer: i32,
+    },
+    OpenBook {
+        slot: u8,
     },
     RecipeBook(RecipeBookView),
 }
@@ -513,6 +532,7 @@ pub struct GearItem {
     pub id: String,
     pub glint: bool,
     pub dye: Option<u32>,
+    pub potion: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

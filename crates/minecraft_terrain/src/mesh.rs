@@ -412,7 +412,7 @@ pub fn build_item_model(packs: &PackStack, item: &ResourceId) -> Result<Option<B
     }
     let tints = packs
         .item_definition(item)?
-        .map(|value| crate::interface::item_model_tints(packs, &value["model"]))
+        .map(|value| crate::interface::item_model_tints(packs, &value["model"], None))
         .transpose()?
         .unwrap_or_default();
     let textures = model
@@ -882,6 +882,7 @@ struct ItemVisual {
     min_y: f32,
     tints: Vec<[f32; 3]>,
     flat: bool,
+    head: Mat4,
 }
 fn face_normal(direction: &str) -> Result<Vec3> {
     let (x, y, z) = self::direction(direction)?;
@@ -900,7 +901,8 @@ impl ItemVisuals {
     }
     fn model<'a>(&'a mut self, id: &str, packs: &PackStack) -> Result<Option<&'a ItemVisual>> {
         if !self.models.contains_key(id) {
-            let (key, dial) = crate::dials::split(id);
+            let (base, potion) = crate::item_tint::split(id);
+            let (key, dial) = crate::dials::split(base);
             let resource = ResourceId::parse(key)?;
             let resolved = match dial {
                 Some(leaf) => Some(crate::model::resolve_item_leaf(packs, &resource, leaf)?),
@@ -923,9 +925,10 @@ impl ItemVisuals {
             let right_hand = crate::model::item_display_transform(packs, &resource, "thirdperson_righthand")?;
             let left_hand = crate::model::item_third_person_transform(packs, &resource, true)?;
             let fixed = crate::model::item_display_transform(packs, &resource, "fixed")?;
+            let head = crate::model::item_display_transform(packs, &resource, "head")?;
             let tints = definition
                 .as_ref()
-                .map(|value| crate::interface::item_model_tints(packs, &value["model"]))
+                .map(|value| crate::interface::item_model_tints(packs, &value["model"], potion))
                 .transpose()?
                 .unwrap_or_default()
                 .into_iter()
@@ -954,6 +957,7 @@ impl ItemVisuals {
                     min_y: min.y,
                     tints,
                     flat: max.z - min.z <= 0.0625,
+                    head,
                 },
             );
         }
@@ -974,7 +978,7 @@ impl ItemVisuals {
                 .iter()
                 .map(|effect| (&effect.item, Some(effect.position(partial_tick)))),
         ) {
-            let Some(visual) = self.model(&entity.stack.id, packs)? else {
+            let Some(visual) = self.model(&crate::item_tint::of_stack(&entity.stack), packs)? else {
                 continue;
             };
             let partial = partial_tick.clamp(0.0, 1.0);
@@ -1174,7 +1178,7 @@ impl ItemVisuals {
     pub fn append_held_items(&mut self, mesh: &mut ChunkMesh, items: &[HeldItem], packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
         for item in items {
             let Some((display, mut tints)) = self.model(&item.id, packs)?.map(|visual| {
-                (match item.display { HeldDisplay::RightHand => visual.right_hand, HeldDisplay::LeftHand => visual.left_hand, HeldDisplay::Ground => visual.ground, HeldDisplay::Fixed => visual.fixed }, visual.tints.clone())
+                (match item.display { HeldDisplay::RightHand => visual.right_hand, HeldDisplay::LeftHand => visual.left_hand, HeldDisplay::Ground => visual.ground, HeldDisplay::Fixed => visual.fixed, HeldDisplay::Head => visual.head }, visual.tints.clone())
             }) else {
                 continue;
             };
@@ -1228,13 +1232,14 @@ impl ItemVisuals {
                 if !self.models.contains_key(&key) {
                     let block = Block { id: ResourceId::parse(crate::item_frame::frame_item_id(view.glow))?, properties: BTreeMap::from([("map".to_owned(), "false".to_owned())]) };
                     let model = resolve_block_variants(packs, &block).ok().and_then(|variants| variants.into_iter().next()).map_or_else(|| ResolvedModel { elements: Vec::new() }, |(model, _)| model);
-                    self.models.insert(key.clone(), ItemVisual { model, hand: None, ground: Mat4::IDENTITY, right_hand: Mat4::IDENTITY, left_hand: Mat4::IDENTITY, fixed: Mat4::IDENTITY, min_y: 0.0, tints: Vec::new(), flat: false });
+                    self.models.insert(key.clone(), ItemVisual { model, hand: None, ground: Mat4::IDENTITY, right_hand: Mat4::IDENTITY, left_hand: Mat4::IDENTITY, fixed: Mat4::IDENTITY, min_y: 0.0, tints: Vec::new(), flat: false, head: Mat4::IDENTITY });
                 }
                 self.append_model(mesh, &key, Vec3::ZERO, crate::item_frame::model_pose(view), 1.0, None, false, packs, atlas, sky_light, Some(frame_light))?;
             }
             let Some(id) = view.item.as_deref() else {
                 continue;
             };
+            let id = &crate::item_tint::key(id, view.potion);
             let Some((fixed, tints)) = self.model(id, packs)?.map(|visual| (visual.fixed, visual.tints.clone())) else {
                 continue;
             };
@@ -1265,37 +1270,43 @@ impl ItemVisuals {
             let light_pos = (pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
             let (sky, block) = light.unwrap_or((sky_light.get(light_pos) as f32, sky_light.get_block(light_pos) as f32));
             let model = if hand { visual.hand.as_ref().unwrap_or(&visual.model) } else { &visual.model };
-            for element in &model.elements {
-                for face in &element.faces {
-                    if !atlas.contains(&face.texture) {
-                        continue;
-                    }
-                    let corners = element_corners(element, &face.direction)?;
-                    let entity = entity_face(face);
-                    let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
-                    let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
-                    let local_normal = if entity { quad_normal(&corners).unwrap_or(Vec3::Y) } else { face_normal(&face.direction)? };
-                    let normal = pose.transform_vector3(local_normal).normalize();
-                    let shade = level_item_shade(normal) * if white { 4.0 } else { 1.0 };
-                    let tint = tints.zip(face.tint_index).and_then(|(tints, index)| tints.get(index)).copied().unwrap_or([1.0; 3]);
-                    let alpha = entity_face_alpha(face);
-                    let start = mesh.vertices.len() as u32;
-                    for (corner, uv) in corners.into_iter().zip(uv) {
-                        mesh.vertices.push(Vertex {
-                            position: pose.transform_point3(Vec3::from_array(corner)).to_array(),
-                            uv,
-                            color: [tint[0] * shade, tint[1] * shade, tint[2] * shade, alpha],
-                            sky_light: sky,
-                            block_light: block,
-                        });
-                    }
-                    mesh.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
-                    mesh.faces += 1;
-                }
-            }
+            append_elements(mesh, &model.elements, pose, white, tints, atlas, sky, block)?;
         }
         Ok(())
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_elements(mesh: &mut ChunkMesh, elements: &[crate::model::Element], pose: Mat4, white: bool, tints: Option<&[[f32; 3]]>, atlas: &Atlas, sky: f32, block: f32) -> Result<()> {
+    for element in elements {
+        for face in &element.faces {
+            if !atlas.contains(&face.texture) {
+                continue;
+            }
+            let corners = element_corners(element, &face.direction)?;
+            let entity = entity_face(face);
+            let [u0, v0, u1, v1] = if entity { atlas.entity_region(&face.texture) } else { atlas.region(&face.texture) };
+            let uv = face.corner_uvs().map(|[s, t]| [u0 + (u1 - u0) * s, v0 + (v1 - v0) * t]);
+            let local_normal = if entity { quad_normal(&corners).unwrap_or(Vec3::Y) } else { face_normal(&face.direction)? };
+            let normal = pose.transform_vector3(local_normal).normalize();
+            let shade = level_item_shade(normal) * if white { 4.0 } else { 1.0 };
+            let tint = tints.zip(face.tint_index).and_then(|(tints, index)| tints.get(index)).copied().unwrap_or([1.0; 3]);
+            let alpha = entity_face_alpha(face);
+            let start = mesh.vertices.len() as u32;
+            for (corner, uv) in corners.into_iter().zip(uv) {
+                mesh.vertices.push(Vertex {
+                    position: pose.transform_point3(Vec3::from_array(corner)).to_array(),
+                    uv,
+                    color: [tint[0] * shade, tint[1] * shade, tint[2] * shade, alpha],
+                    sky_light: sky,
+                    block_light: block,
+                });
+            }
+            mesh.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+            mesh.faces += 1;
+        }
+    }
+    Ok(())
 }
 
 /// Which display transform a held item takes.
@@ -1307,6 +1318,7 @@ pub enum HeldDisplay {
     /// `GROUND` (`CrossedArmsItemLayer`, a witch's potion).
     Ground,
     Fixed,
+    Head,
 }
 
 /// An item a mob holds: its holder's pose, where it is lit, the item, its
@@ -3258,6 +3270,7 @@ mod tests {
             min_y: 0.0,
             tints: vec![[0.3, 0.6, 0.2]],
             flat: false,
+            head: Mat4::IDENTITY,
         };
         let source = BiomeTint { grass: colormap([10, 200, 10]), foliage: None, dry_foliage: None };
         let grass = source.grass(BiomeSample { temperature: 0.5, downfall: 1.0, ..BiomeSample::THE_VOID });
@@ -3621,6 +3634,7 @@ mod tests {
                 min_y: 0.0,
                 tints: vec![[0.3, 0.6, 0.2]],
                 flat: false,
+                head: Mat4::IDENTITY,
             },
         );
         let mut items = WorldItems::default();
@@ -3718,6 +3732,7 @@ mod tests {
             min_y: 0.0,
             tints: vec![],
             flat: true,
+            head: Mat4::IDENTITY,
         };
         let mut visuals = ItemVisuals::default();
         for id in ["minecraft:diamond_pickaxe", "minecraft:nether_star"] {
@@ -3742,6 +3757,69 @@ mod tests {
             .unwrap();
         assert_eq!(mesh.vertices.len(), 4 + 4 + 12 + 4);
         assert_eq!(mesh.glint, [4..8, 8..20, 20..24]);
+    }
+    #[test]
+    fn dropped_and_framed_potions_take_their_stack_colour() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        for (name, contents) in [
+            ("pack.mcmeta", r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#),
+            ("assets/minecraft/items/potion.json", r#"{"model":{"type":"minecraft:model","model":"minecraft:item/potion","tints":[{"type":"minecraft:potion","default":-13083194}]}}"#),
+            ("assets/minecraft/models/item/potion.json", r#"{"parent":"minecraft:item/generated","textures":{"layer0":"minecraft:item/potion_overlay"}}"#),
+            ("assets/minecraft/models/item/generated.json", r#"{"parent":"builtin/generated"}"#),
+        ] {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        let sprite = root.join("assets/minecraft/textures/item/potion_overlay.png");
+        std::fs::create_dir_all(sprite.parent().unwrap()).unwrap();
+        let mut image = RgbaImage::new(16, 16);
+        image.put_pixel(8, 8, image::Rgba([255, 255, 255, 255]));
+        image.save(sprite).unwrap();
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        let atlas = make_atlas(&packs, vec![ResourceId::parse("minecraft:item/potion_overlay").unwrap()]).unwrap();
+        let sky_light = SkyLight::build(&HandcraftedScene::new());
+        let potion = |name: Option<&str>| minecraftoss_player::inventory::ItemStack {
+            components: name.map(|name| serde_json::json!({"minecraft:potion_contents": {"potion": name}})),
+            ..minecraftoss_player::inventory::ItemStack::new("minecraft:potion", 1)
+        };
+        let tinted = |vertices: &[Vertex], rgb: [u8; 3]| {
+            let want = rgb.map(|c| c as f32 / 255.0);
+            !vertices.is_empty()
+                && vertices.iter().all(|vertex| {
+                    let shade = vertex.color[0] / want[0];
+                    shade > 0.0 && shade <= 1.0 + 1e-5 && (0..3).all(|i| (vertex.color[i] - want[i] * shade).abs() < 1e-5)
+                })
+        };
+        let healing = [0xF8, 0x24, 0x23];
+        let default = [0x38, 0x5D, 0xC6];
+        let mut visuals = ItemVisuals::default();
+        for (name, rgb) in [(Some("minecraft:healing"), healing), (None, default), (Some("minecraft:healing"), healing)] {
+            let mut items = WorldItems::default();
+            items.spawn(potion(name), glam::DVec3::new(0.5, 1.0, 0.5));
+            let mesh = visuals.mesh(&items, &packs, &atlas, &sky_light, 1.0).unwrap();
+            assert!(tinted(&mesh.vertices, rgb), "{name:?}");
+        }
+        assert!(visuals.models.contains_key("minecraft:potion~f82423") && visuals.models.contains_key("minecraft:potion"));
+        let frame = |potion: Option<u32>| crate::item_frame::FrameView {
+            id: 1,
+            glow: false,
+            pos: (0, 1, 0),
+            facing: Direction::North,
+            position: glam::DVec3::new(0.5, 1.5, 0.96875),
+            item: Some("minecraft:potion".to_owned()),
+            potion,
+            glint: false,
+            rotation: 0,
+            invisible: true,
+            fixed: false,
+        };
+        for (view, rgb) in [(frame(Some(0xF82423)), healing), (frame(None), default)] {
+            let mut mesh = ChunkMesh::default();
+            visuals.append_frames(&mut mesh, &[view], &packs, &atlas, &sky_light).unwrap();
+            assert!(tinted(&mesh.vertices, rgb), "{rgb:?}");
+        }
     }
     #[test]
     #[ignore = "local performance diagnostic with the pinned resource pack"]
@@ -4800,5 +4878,19 @@ mod tests {
         for corner in quads[2..].iter().flatten() {
             assert!(-4.0 - corner[0] <= 0.05 + 0.002 + 1e-5 && corner[0] <= -4.0, "{corner:?}");
         }
+    }
+
+    #[test]
+    fn the_head_display_is_identity_for_blocks_without_one() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let packs = crate::worn_head::tests::pumpkin_pack(temp.path());
+        let centred = Mat4::from_translation(Vec3::splat(-0.5));
+        let mut visuals = ItemVisuals::default();
+        let mut displays = |id: &str| visuals.model(id, &packs).unwrap().map(|visual| (visual.head, visual.right_hand)).unwrap();
+        let (head, right_hand) = displays("minecraft:carved_pumpkin");
+        assert!(head.abs_diff_eq(centred, 1e-6), "{head}");
+        assert!(!right_hand.abs_diff_eq(centred, 1e-3));
+        let (head, _) = displays("minecraft:hat_test");
+        assert!(head.abs_diff_eq(Mat4::from_scale(Vec3::splat(2.0)) * centred, 1e-6), "{head}");
     }
 }

@@ -194,6 +194,10 @@ pub fn near(
         frames: filtered(&snapshot.frames, |frame| keeps(FRAMES, frame.position)),
         dragon_breath: snapshot.dragon_breath.clone(),
         dragon_explosions: snapshot.dragon_explosions.clone(),
+        swirls: filtered(&snapshot.swirls, |swirl| {
+            has_chunk(chunk_of(swirl.feet))
+                && tracks(swirl.range, view_distance, feet.to_array(), swirl.feet)
+        }),
     }
 }
 
@@ -443,6 +447,44 @@ mod tests {
             .expect("a frame");
         assert!(next.tick > first);
         assert!(next.entities.0.is_empty());
+    }
+
+    #[test]
+    fn effect_swirls_go_only_as_far_as_their_body_is_tracked() {
+        let swirl = |x: f64, range: i32| minecraft_terrain::spell_particles::SwirlView {
+            feet: DVec3::new(x, 64.0, 0.5),
+            width: 0.9,
+            height: 1.4,
+            colors: vec![0xFF87_A363],
+            ambient: false,
+            invisible: false,
+            range,
+        };
+        let snapshot = EntitySnapshot {
+            swirls: vec![
+                swirl(100.5, 10),
+                swirl(170.5, 10),
+                swirl(140.5, 8),
+                swirl(300.5, 32),
+                swirl(20.5, 8),
+            ],
+            ..EntitySnapshot::default()
+        };
+        let kept = |view_distance: i32, has_chunk: fn(ChunkXz) -> bool| {
+            near(
+                &snapshot,
+                (DVec3::new(0.5, 64.0, 0.5), view_distance),
+                has_chunk,
+            )
+            .swirls
+            .iter()
+            .map(|swirl| swirl.feet.x)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(kept(32, |_| true), vec![100.5, 300.5, 20.5]);
+        assert_eq!(kept(32, |chunk| chunk.0 < 2), vec![20.5]);
+        assert_eq!(kept(16, |_| true), vec![100.5, 20.5]);
+        assert_eq!(kept(4, |_| true), vec![20.5]);
     }
 
     #[test]

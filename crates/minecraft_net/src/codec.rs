@@ -214,8 +214,10 @@ mod tests {
             ToServer::CreditsDone => 9,
             ToServer::Lectern { .. } => 10,
             ToServer::LeaveBed => 11,
-            ToServer::RecipeBookSettings { .. } => 12,
-            ToServer::RecipeSeen(_) => 13,
+            ToServer::EditBook { .. } => 12,
+            ToServer::CreativeSlot { .. } => 13,
+            ToServer::RecipeBookSettings { .. } => 14,
+            ToServer::RecipeSeen(_) => 15,
         }
     }
 
@@ -252,12 +254,25 @@ mod tests {
             ToClient::Bursts { .. } => 28,
             ToClient::Lectern(_) => 29,
             ToClient::Sleeping { .. } => 30,
-            ToClient::RecipeBook(_) => 31,
+            ToClient::OpenBook { .. } => 31,
+            ToClient::RecipeBook(_) => 32,
         }
     }
 
     fn event(seq: u32, kind: HandEventKind, target: Target) -> HandEvent {
         HandEvent { seq, kind, target }
+    }
+
+    fn full_book() -> Vec<String> {
+        (0..100)
+            .map(|page| {
+                format!("Page {page} \u{e9}\n")
+                    .repeat(200)
+                    .chars()
+                    .take(1024)
+                    .collect()
+            })
+            .collect()
     }
 
     fn to_server() -> Vec<ToServer> {
@@ -303,6 +318,28 @@ mod tests {
                 button: None,
             },
             ToServer::LeaveBed,
+            ToServer::EditBook {
+                slot: 40,
+                pages: full_book(),
+                title: Some("Diary".to_string()),
+            },
+            ToServer::EditBook {
+                slot: 0,
+                pages: Vec::new(),
+                title: None,
+            },
+            ToServer::CreativeSlot {
+                slot: CreativeTarget::Menu(36),
+                stack: Some(Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0])),
+            },
+            ToServer::CreativeSlot {
+                slot: CreativeTarget::Carried,
+                stack: None,
+            },
+            ToServer::CreativeSlot {
+                slot: CreativeTarget::Drop,
+                stack: Some(Nbt(vec![10, 0, 0, 0])),
+            },
             ToServer::RecipeBookSettings {
                 open: true,
                 filtering: false,
@@ -384,6 +421,7 @@ mod tests {
             id: "minecraft:leather_helmet".to_string(),
             glint: true,
             dye: Some(0xA06540),
+            potion: None,
         };
         vec![
             ToClient::Login(Login {
@@ -495,8 +533,14 @@ mod tests {
                         id: "minecraft:diamond_sword".to_string(),
                         glint: false,
                         dye: None,
+                        potion: None,
                     }),
-                    off: None,
+                    off: Some(GearItem {
+                        id: "minecraft:potion".to_string(),
+                        glint: false,
+                        dye: None,
+                        potion: Some(0xF82423),
+                    }),
                     armor: [Some(helmet), None, None, None],
                     hides_gun: true,
                 },
@@ -587,6 +631,7 @@ mod tests {
                 bed: None,
                 timer: 100,
             },
+            ToClient::OpenBook { slot: 40 },
             ToClient::RecipeBook(RecipeBookView {
                 recipes: vec!["minecraft:oak_planks".to_owned(), "minecraft:stick".to_owned()],
                 highlight: vec!["minecraft:stick".to_owned()],
@@ -607,7 +652,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 14];
+        let mut seen = [false; 16];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -626,7 +671,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 32];
+        let mut seen = [false; 33];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -640,6 +685,44 @@ mod tests {
                 messages,
             },
         );
+    }
+
+    #[test]
+    fn book_messages_take_the_next_free_indices() {
+        let edit = ToServer::EditBook {
+            slot: 40,
+            pages: full_book(),
+            title: Some("Diary".to_string()),
+        };
+        assert_eq!(server_index(&edit), 12);
+        assert_eq!(encode(Lane::Reliable, &edit).unwrap()[0], 12);
+        let open = ToClient::OpenBook { slot: 8 };
+        assert_eq!(client_index(&open), 31);
+        assert_eq!(encode(Lane::Reliable, &open).unwrap(), vec![31, 8]);
+        let bytes = encode(Lane::Reliable, &edit).unwrap();
+        assert!(bytes.len() > 100 * 1024 && bytes.len() < RELIABLE_LIMIT);
+        let ToServer::EditBook { pages, title, .. } = decode(Lane::Reliable, &bytes).unwrap()
+        else {
+            panic!("not an edit");
+        };
+        assert_eq!(pages.len(), 100);
+        assert!(pages.iter().all(|page| page.chars().count() == 1024));
+        assert_eq!(title.as_deref(), Some("Diary"));
+    }
+
+    #[test]
+    fn a_held_potion_colour_round_trips_on_protocol_5() {
+        assert_eq!(crate::PROTOCOL, 5);
+        let potion = GearItem {
+            id: "minecraft:splash_potion".to_string(),
+            glint: false,
+            dye: None,
+            potion: Some(0x87A363),
+        };
+        round_trip(Lane::Reliable, &potion);
+        let bytes = encode(Lane::Reliable, &potion).unwrap();
+        let back: GearItem = decode(Lane::Reliable, &bytes).unwrap();
+        assert_eq!(back.potion, Some(0x87A363));
     }
 
     #[test]

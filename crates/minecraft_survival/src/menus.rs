@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use minecraft_commands::Text;
-use minecraft_net::messages::{Click, MenuAction, MenuExtras, MenuKind, MenuSlot, MenuView, Nbt};
+use minecraft_net::messages::{
+    Click, CreativeTarget, MenuAction, MenuExtras, MenuKind, MenuSlot, MenuView, Nbt,
+};
 use minecraft_net::{Dimension, PlayerUuid, ToClient};
 use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::crafting::{self, Grid, Spot};
@@ -14,6 +16,7 @@ use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::actions::{Body, Effect};
+use crate::creative::{CreativeSlot, set_slot};
 use crate::data::GameData;
 use crate::entities::Entities;
 use crate::gun_crafting::Place;
@@ -172,6 +175,10 @@ pub enum MenuInput {
     Click(Click),
     Rename(String),
     Close(u8),
+    Creative {
+        slot: CreativeTarget,
+        stack: Option<Nbt>,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -901,6 +908,7 @@ pub fn take_inputs(
     books: Books<'_>,
     inputs: Vec<MenuInput>,
     language: Option<&HashMap<String, String>>,
+    known: &dyn Fn(&str) -> bool,
     mut roll: impl FnMut() -> f32,
 ) -> Clicked {
     let mut clicked = Clicked::default();
@@ -911,9 +919,44 @@ pub fn take_inputs(
             }
             MenuInput::Rename(name) => rename(player, &name, language),
             MenuInput::Close(menu) => clicked.thrown.extend(close_requested(player, menu)),
+            MenuInput::Creative { slot, stack } => {
+                clicked
+                    .thrown
+                    .extend(creative_set(player, slot, stack.as_ref(), known));
+            }
         }
     }
     clicked
+}
+
+fn creative_set(
+    player: &mut Player,
+    slot: CreativeTarget,
+    stack: Option<&Nbt>,
+    known: &dyn Fn(&str) -> bool,
+) -> Option<ItemStack> {
+    if player.dead {
+        return None;
+    }
+    let slot = match slot {
+        CreativeTarget::Menu(index) => CreativeSlot::Menu(usize::from(index)),
+        CreativeTarget::Carried => CreativeSlot::Carried,
+        CreativeTarget::Drop => CreativeSlot::Drop,
+    };
+    let stack = match stack {
+        Some(nbt) => Some(view_stack(nbt, &player.inventory.recipes)?),
+        None => None,
+    };
+    match set_slot(&player.mode, &mut player.inventory, slot, stack, known) {
+        Ok(drop) if slot == CreativeSlot::Drop => {
+            drop.filter(|_| player.drop_throttle.allow(&player.name))
+        }
+        Ok(drop) => drop,
+        Err(refused) => {
+            diag::debug!(World, "creative slot set from {} refused: {refused:?}", player.name);
+            None
+        }
+    }
 }
 
 fn oven_data(data: [i32; 4]) -> Vec<(u8, i32)> {
@@ -1410,7 +1453,7 @@ pub fn apply_slots(
 mod tests {
     use super::*;
     use minecraft_commands::{CommandServer, PlayerId};
-    use minecraft_terrain::game_mode::PlayerMode;
+    use minecraft_terrain::game_mode::{GameMode, PlayerMode};
 
     use crate::survival::Survival;
 
@@ -2003,5 +2046,251 @@ mod tests {
         assert!(host.inventory.cursor.is_none());
         let cells = containers.cells(&chest());
         assert_eq!(cells.iter().flatten().cloned().collect::<Vec<_>>(), vec![usp]);
+    }
+
+    fn creative_player(chat: &mut CommandServer, mode: GameMode) -> Player {
+        let mut friend = player(chat, 1, "Alex");
+        friend.mode = PlayerMode::new(mode);
+        friend
+    }
+
+    fn known(id: &str) -> bool {
+        id.starts_with("minecraft:") && id != "minecraft:nope"
+    }
+
+    fn nbt(id: &str, count: u8) -> Option<Nbt> {
+        let mut stack = ItemStack::new(id, count);
+        if id.ends_with("_sword") {
+            stack.components = Some(serde_json::json!({"minecraft:max_stack_size": 1}));
+        }
+        slot_nbt(&stack)
+    }
+
+    fn set(slot: CreativeTarget, stack: Option<Nbt>) -> MenuInput {
+        MenuInput::Creative { slot, stack }
+    }
+
+    fn take(friend: &mut Player, containers: &mut Containers, inputs: Vec<MenuInput>) -> Clicked {
+        let book = StationBook::default();
+        take_inputs(
+            friend,
+            containers,
+            books(&book),
+            inputs,
+            None,
+            &known,
+            || 0.5,
+        )
+    }
+
+    fn held(slot: &Option<ItemStack>) -> Option<(&str, u8)> {
+        slot.as_ref().map(|stack| (stack.id.as_str(), stack.count))
+    }
+
+    #[test]
+    fn a_creative_friends_slot_set_reaches_their_inventory() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let book = StationBook::default();
+        assert!(!changes(&mut friend, &mut containers, books(&book)).is_empty());
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Menu(36), nbt("minecraft:stone", 64)),
+                set(CreativeTarget::Menu(5), nbt("minecraft:diamond_helmet", 1)),
+            ],
+        );
+        assert_eq!(clicked, Clicked::default());
+        assert_eq!(held(&friend.inventory.slots[0]), Some(("minecraft:stone", 64)));
+        assert_eq!(
+            held(&friend.inventory.slots[39]),
+            Some(("minecraft:diamond_helmet", 1))
+        );
+        changes(&mut friend, &mut containers, books(&book));
+        take(
+            &mut friend,
+            &mut containers,
+            vec![set(CreativeTarget::Carried, nbt("minecraft:torch", 16))],
+        );
+        let sent = changes(&mut friend, &mut containers, books(&book));
+        let [
+            ToClient::MenuSlots {
+                menu: INVENTORY_MENU,
+                carried: Some(carried),
+                ..
+            },
+        ] = &sent[..]
+        else {
+            panic!("{sent:?}");
+        };
+        assert_eq!(shown(carried), Some(("minecraft:torch".to_owned(), 16)));
+    }
+
+    #[test]
+    fn a_survival_or_spectator_friends_creative_sets_are_refused() {
+        for mode in [GameMode::Survival, GameMode::Adventure, GameMode::Spectator] {
+            let mut chat = CommandServer::new(crate::commands::HOST);
+            let mut friend = creative_player(&mut chat, mode);
+            let mut containers = Containers::default();
+            let clicked = take(
+                &mut friend,
+                &mut containers,
+                vec![
+                    set(CreativeTarget::Menu(36), nbt("minecraft:stone", 64)),
+                    set(CreativeTarget::Carried, nbt("minecraft:stone", 1)),
+                    set(CreativeTarget::Drop, nbt("minecraft:stone", 1)),
+                ],
+            );
+            assert!(clicked.thrown.is_empty(), "{mode:?}");
+            assert!(friend.inventory.slots.iter().all(Option::is_none), "{mode:?}");
+            assert!(friend.inventory.cursor.is_none(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn creative_sets_refuse_unknown_items_bad_slots_and_overfull_stacks() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let weapon = slot_nbt(&crate::guns::weapon_item(7));
+        assert!(weapon.is_some());
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Menu(36), nbt("minecraft:nope", 1)),
+                set(CreativeTarget::Menu(0), nbt("minecraft:stone", 1)),
+                set(CreativeTarget::Menu(46), nbt("minecraft:stone", 1)),
+                set(CreativeTarget::Menu(37), nbt("minecraft:stone", 65)),
+                set(CreativeTarget::Menu(38), nbt("minecraft:diamond_sword", 2)),
+                set(CreativeTarget::Menu(39), weapon),
+                set(CreativeTarget::Carried, Some(Nbt(vec![10, 0]))),
+            ],
+        );
+        assert!(clicked.thrown.is_empty());
+        assert!(friend.inventory.slots.iter().all(Option::is_none));
+        assert!(friend.inventory.crafting.iter().all(Option::is_none));
+        assert!(friend.inventory.cursor.is_none());
+        friend.inventory.slots[2] = Some(ItemStack::new("minecraft:stone", 5));
+        take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Menu(38), Some(Nbt(vec![1, 2, 3]))),
+                set(CreativeTarget::Menu(39), nbt("minecraft:diamond_sword", 1)),
+            ],
+        );
+        assert_eq!(held(&friend.inventory.slots[2]), Some(("minecraft:stone", 5)));
+        assert_eq!(
+            held(&friend.inventory.slots[3]),
+            Some(("minecraft:diamond_sword", 1))
+        );
+        take(
+            &mut friend,
+            &mut containers,
+            vec![set(CreativeTarget::Menu(38), None)],
+        );
+        assert!(friend.inventory.slots[2].is_none());
+    }
+
+    #[test]
+    fn a_creative_drop_is_thrown_not_stored() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Drop, nbt("minecraft:cobblestone", 64)),
+                set(CreativeTarget::Drop, None),
+            ],
+        );
+        assert_eq!(
+            clicked
+                .thrown
+                .iter()
+                .map(|stack| (stack.id.as_str(), stack.count))
+                .collect::<Vec<_>>(),
+            vec![("minecraft:cobblestone", 64)]
+        );
+        assert!(friend.inventory.slots.iter().all(Option::is_none));
+        assert!(friend.inventory.cursor.is_none());
+    }
+
+    #[test]
+    fn creative_drops_are_throttled_like_vanilla() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let drops = |count: usize| {
+            (0..count)
+                .map(|_| set(CreativeTarget::Drop, nbt("minecraft:cobblestone", 1)))
+                .collect::<Vec<_>>()
+        };
+        let clicked = take(&mut friend, &mut containers, drops(75));
+        assert_eq!(clicked.thrown.len(), 74);
+        assert_eq!(friend.drop_throttle.count, 1480);
+        friend.drop_throttle.tick(1);
+        assert_eq!(take(&mut friend, &mut containers, drops(2)).thrown.len(), 1);
+        assert_eq!(friend.drop_throttle.count, 1499);
+        friend.drop_throttle.tick(19);
+        assert!(take(&mut friend, &mut containers, drops(1)).thrown.is_empty());
+        friend.drop_throttle.tick(1);
+        assert_eq!(take(&mut friend, &mut containers, drops(2)).thrown.len(), 1);
+        let mut throttle = crate::creative::DropThrottle { count: 5 };
+        throttle.tick(9);
+        assert_eq!(throttle.count, 0);
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![set(CreativeTarget::Menu(36), nbt("minecraft:stone", 64))],
+        );
+        assert!(clicked.thrown.is_empty());
+        assert_eq!(held(&friend.inventory.slots[0]), Some(("minecraft:stone", 64)));
+    }
+
+    #[test]
+    fn creative_sets_and_clicks_apply_in_the_order_sent() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let book = StationBook::default();
+        changes(&mut friend, &mut containers, books(&book));
+        let state = friend.menus.current().state;
+        take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Carried, nbt("minecraft:torch", 16)),
+                MenuInput::Click(Click {
+                    menu: INVENTORY_MENU,
+                    state,
+                    action: slot(3, false),
+                }),
+            ],
+        );
+        assert_eq!(held(&friend.inventory.slots[3]), Some(("minecraft:torch", 16)));
+        assert!(friend.inventory.cursor.is_none());
+    }
+
+    #[test]
+    fn a_dead_friends_creative_set_is_ignored() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        friend.dead = true;
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Menu(36), nbt("minecraft:stone", 64)),
+                set(CreativeTarget::Drop, nbt("minecraft:stone", 64)),
+            ],
+        );
+        assert!(clicked.thrown.is_empty());
+        assert!(friend.inventory.slots[0].is_none());
     }
 }

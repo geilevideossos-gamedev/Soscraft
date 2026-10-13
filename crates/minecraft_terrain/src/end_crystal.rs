@@ -608,6 +608,28 @@ mod tests {
     }
 
     #[test]
+    fn a_crystal_counts_for_a_cell_its_two_block_box_touches() {
+        let found = |base: (i32, i32, i32), cell: (i32, i32, i32)| {
+            let mut crystals = Crystals::default();
+            let tag = crystals.fresh_tag(placed_at(base), false);
+            crystals.add(&tag).unwrap();
+            !crystals.in_cell(cell).is_empty()
+        };
+        let side = (0, 63, 3);
+        assert!(found((0, 62, 3), side), "the middle block of the side");
+        assert!(found((1, 62, 3), side), "a straight rim block beside it");
+        assert!(found((-1, 62, 3), side), "and the one on its other side");
+        assert!(!found((2, 62, 2), side), "a corner block of the rim");
+        assert!(!found((2, 62, 2), (3, 63, 0)), "for either side");
+        assert!(!found((2, 62, 3), side), "two blocks off the middle");
+        assert!(!found((0, 63, 3), side), "a crystal raised one block");
+        assert!(
+            found((0, 61, 4), side),
+            "one block lower, just outside the rim"
+        );
+    }
+
+    #[test]
     fn a_look_at_a_crystal_finds_its_two_block_box() {
         let mut crystals = Crystals::default();
         let id = crystals.add(&crystal_tag([0.5, 64.0, 5.5])).unwrap();
