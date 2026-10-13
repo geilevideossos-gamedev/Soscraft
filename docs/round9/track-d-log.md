@@ -592,6 +592,61 @@ After 0dd063c0.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:ominous_bottle[ominous_bottle_amplifier=4]*2,minecraft:ominous_bottle[ominous_bottle_amplifier=2],minecraft:milk_bucket,minecraft:milk_bucket,minecraft:cooked_beef*16
 ```
 
+### 3. Minecraft effect icons show in the top right like vanilla
+
+After c013310f.
+
+- **Vanilla (javap, 26.3):**
+  - `Hud.extractRenderState` draws `extractEffects` after the hotbar and before the boss bars, only while the HUD is not hidden (F1), in every game mode.
+  - `Hud.extractEffects`:
+    - Nothing when there are no effects, or when the open screen `showsActiveEffects` (the survival and creative inventories do when `EffectsInInventory.canSeeEffects`, and then draw the effects beside themselves).
+    - The effects are sorted with `Ordering.natural().reverse()` and drawn in that order when `showIcon`.
+    - A beneficial effect (`MobEffect.isBeneficial`: category BENEFICIAL only) goes to x = gui width - 25 x (its count so far), y = 1. Any other (HARMFUL or NEUTRAL, so the omens) goes to the same x by its own count, at y = 1 + 26. Demo mode adds 15 to y.
+    - The frame is `hud/effect_background` 24 x 24, or `hud/effect_background_ambient` for an ambient effect. The icon is the sprite `mob_effect/<id>` (`getMobEffectSprite`, from the `mob_effect` folder in the gui atlas, `atlases/gui.json`) at x + 3, y + 3, 18 x 18, drawn in `ARGB.white(alpha)`.
+    - The alpha is 1, except for a non-ambient effect that `endsWithin(200)` (not infinite and at most 200 ticks left): with d ticks left and m = 10 - d / 20 (integer division), alpha = clamp(d / 10 / 5 x 0.5, 0, 0.5) + cos(d x pi / 5) x clamp(m / 10 x 0.25, 0, 0.25), held to 0 to 1.
+  - `MobEffectInstance.compareTo`: when both have more than 32147 ticks, or both are ambient, it compares ambient (false first), then the colour. Otherwise it compares ambient (false first), infinite (false first), the duration (an infinite one is -1), then the colour. The categories and colours of all 40 effects are from `MobEffects.<clinit>` (see commit 1 for the five new ones).
+  - `hud/effect_background` and `hud/effect_background_ambient` are 24 x 24, every `mob_effect/*.png` is 18 x 18.
+- **Changed:**
+  - New `hud/src/minecraft_effects.rs`:
+    - The table of the 40 vanilla effects: path, beneficial and colour.
+    - `compare` (vanilla's ordering), `alpha` (the blink) and `layout` (the rows, the frame and the sprite of each effect).
+    - `draw_effects` draws the frames and the icons through the GUI painter.
+    - `minecraft_hotbar::draw_hud` calls it before the boss bars and before the spectator check, so the icons show in every game mode wherever the Minecraft HUD is drawn.
+  - `frame/src/minecraft_ui.rs`: new `McEffect` (id, amplifier, duration with -1 for unending, ambient) and `MinecraftUi.effects`.
+  - `render_anim/src/minecraft_gui.rs`: the GUI atlas also holds every `textures/mob_effect/*.png` as the sprite `mob_effect/<name>`, as vanilla's gui atlas does. The `hud/` folder already brought the two frames.
+  - `minecraft_survival/src/views.rs`:
+    - New `effect_views`, the effects of a `SurvivalStatus` as the protocol's `EffectView`s. `player_view` uses it.
+    - `HudClock::effects` counts a friend's effects down on the friend between views. The host sends the view only when something other than a duration changes, so the friend counts from the view it last got and takes a new view as it is.
+  - `render_anim/src/minecraft_world.rs`: new `mc_effects`. The host fills `ui.effects` from its own status each frame, and nothing while dead.
+  - `render_anim/src/minecraft_remote.rs`: the friend fills `ui.effects` from `HudClock::effects`, and nothing while dead.
+- **Tests:**
+  - `minecraft_effects::tests::beneficial_effects_fill_the_top_row_and_harmful_ones_the_second_from_the_right`: six effects in the vanilla order and places, with Bad Omen (neutral) in the second row.
+  - `minecraft_effects::tests::long_effects_sort_by_colour_and_short_ones_by_time_left`: two effects over 32147 ticks by colour, an unending one before the rest, then the most time left, and an ambient one first.
+  - `minecraft_effects::tests::an_ambient_effect_gets_its_frame_and_never_blinks`.
+  - `minecraft_effects::tests::the_icon_blinks_in_the_last_ten_seconds_and_fades_out`: full above 200 ticks and when unending, 0.5 at 200, 0.475 at 195, 0.625 at 100, 0.375 at 105, 0.35 at 10, 0 at 5, a pulse every 10 ticks, and `ARGB.white`.
+  - `views::tests::a_friend_s_effects_count_down_between_views_and_restart_from_a_new_one`.
+  - `minecraft_gui::tests::every_mob_effect_icon_and_the_effect_frames_load`: the name filter, then with the 26.3 pack every `mob_effect/` sprite 18 x 18 (at least 40), both frames 24 x 24 and the atlas still at most 2048 high.
+  - Runs: `hud` lib 160, `frame` lib 24, `minecraft_survival` lib 605 and `render_anim` lib 151, all green. `check -p launcher` green. Clippy (touched crates, with `-A clippy::approx_constant` as for the whole fork) shows nothing on this group's lines. The new file passes `rustfmt --check --edition 2024`.
+- **Decisions:**
+  - The survival and creative inventories do not draw vanilla's effect list beside them yet (`EffectsInInventory`), so the HUD icons stay on screen while they are open. Vanilla hides the HUD icons then and shows the list instead. It is listed under Left for later.
+  - The blink's cosine is the float `cos`; vanilla's `Mth.cos` reads a 65536-step sine table. The difference is far below one alpha step.
+  - Every player effect is sent and drawn as not ambient, because the fork's `EffectInstance` has no ambient flag (vanilla's conduit and beacon effects are ambient). The ambient frame and order are in place for when it has one.
+  - The friend's durations count on the friend's own HUD clock, so a friend's blink can run a few ticks apart from the host's. The host's next view (any change that shows) sets it right again.
+- **Test steps (survival, difficulty normal):**
+  1. Eat a golden apple: Regeneration and Absorption icons appear at the top right in one row, each in a grey frame. Regeneration lasts only 5 seconds, so it blinks at once and fades out (**49_effect_icons**).
+  2. Throw a splash potion of weakness at your feet: the Weakness icon appears in a second row under the first (**50_harmful_row**).
+  3. Drink an ominous bottle: the Bad Omen icon joins the second row (the omens are neutral, and vanilla puts every effect that is not beneficial there) (**51_bad_omen_icon**).
+  4. `/effect give @s minecraft:hero_of_the_village 15`: the Hero of the Village icon joins the top row. Watch it for 15 seconds: for its last 10 seconds it blinks and fades, then it is gone (**52_icon_blinks**).
+  5. `/effect give @s minecraft:darkness 30` and `/effect give @s minecraft:trial_omen 30`, `/effect give @s minecraft:raid_omen 30`: each has its own icon in the second row (**53_all_new_icons**).
+  6. Open the inventory: the icons stay at the top right.
+  7. Drink a milk bucket: every icon is gone.
+  8. Friend window: the friend eats a golden apple and drinks an ominous bottle; the friend's own icons show the same way, and the Regeneration icon blinks in its last 10 seconds (**54_friend_icons**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*16,minecraft:splash_potion@weakness,minecraft:splash_potion@weakness,minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:cooked_beef*16
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -606,6 +661,7 @@ IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:ominous_bottle[ominous_b
 - `docs/MINECRAFT-SURVIVAL.md`: a zombie villager with Weakness (splash weakness on it) is cured by right-clicking it with a golden apple, which is used up. It shakes for 3 to 5 minutes, faster with iron bars and beds within 4 blocks, keeps curing through a save, and never despawns while curing. Then it becomes the same villager again (type, profession, level, experience, trades, gossip and name), with nausea and a loud sound. The player who cured it gets much lower prices from it. Without Weakness the apple is kept. Friends see the shaking and hear the sounds. Zombies drowning into drowned shake too.
 - `docs/MINECRAFT-SURVIVAL.md`: players can carry Darkness, Bad Omen, Raid Omen, Trial Omen and Hero of the Village. They are saved in the player file, `/effect` gives and clears them, and milk and totems remove them. Hero of the Village lowers that player's prices at every villager (30 % of the first cost at level I, 6.25 % more a level). Bad Omen does not yet turn into Raid Omen in a village, Raid Omen does not yet start a raid, Trial Omen is not yet read by trial spawners, and Darkness does not yet darken the screen.
 - `docs/MINECRAFT-SURVIVAL.md`: ominous bottles are drunk like potions (1.6 seconds, either hand) and give Bad Omen for 100 minutes at the bottle's level (`minecraft:ominous_bottle_amplifier`, 0 to 4), with the omen sound when it is new and the bottle-break sound. The bottle is used up without a glass bottle. `/give`, `/kit` and the test kit take `minecraft:ominous_bottle[ominous_bottle_amplifier=N]`.
+- `docs/MINECRAFT-SURVIVAL.md`: the player's effects show as vanilla icons at the top right of the screen, for the host and for friends: beneficial effects in the top row, harmful and neutral ones (the omens) in the row below, sorted as in vanilla, each blinking and fading in its last 10 seconds. The inventory screens do not yet list the effects beside them.
 
 ## Vendored files
 
@@ -619,3 +675,5 @@ Patched by track D: 11 (`entities/src/effects.rs`, `entities/src/lib.rs`, `entit
 - Trading: number keys, Q, double-click gathering and drags on the payment and result slots.
 - `/effect give` of Bad Omen, Raid Omen or Trial Omen plays no omen sound (vanilla plays `event.mob_effect.<omen>` for a new omen from any source); the commands need a sound path to the player.
 - The ominous bottle's tooltip line ("Bad Omen V (100:00)" from `OminousBottleAmplifier.addToTooltip`).
+- The inventory screens' effect list (`EffectsInInventory`: the effect names, levels and times beside the survival and creative inventories when there is room, which hides the HUD icons while it shows).
+- Ambient player effects (conduit power, later beacons): `EffectInstance` has no ambient flag, so the ambient frame and order never show.

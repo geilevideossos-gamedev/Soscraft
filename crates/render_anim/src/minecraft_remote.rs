@@ -1024,6 +1024,7 @@ fn show_player(
     }
     let Some(ps) = alive else {
         ui.vitals = None;
+        ui.effects.clear();
         ui.weapon_request = None;
         ui.holding_item = false;
         ui.empty_hand = false;
@@ -1055,6 +1056,7 @@ fn show_player(
     let eye_in_lava = sim::voxel::eye_in_lava(ps.origin, ps.view_height_current);
     let vitals = hud.vitals(view, dt, eye_in_water, eye_in_lava);
     ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));
+    ui.effects = crate::minecraft_world::mc_effects(&hud.effects(view));
     ui.fire_frames = fire_frames.clone();
     let held = inventory.slots[selection.slot].as_ref();
     ui.holding_item = interacts && held.is_none_or(|stack| weapon_of(stack).is_none());

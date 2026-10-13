@@ -1241,6 +1241,7 @@ fn update(
         }
         let minecraft_survival::player::Player { survival, mode: player_mode, inventory, selected, hand, menus, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
+        ui.effects = if alive { mc_effects(&minecraft_survival::views::effect_views(&survival.status)) } else { Vec::new() };
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
         // gun, and what the HUD shows.
@@ -2119,6 +2120,18 @@ fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
         minecraftoss_player::GameMode::Adventure => frame::McGameMode::Adventure,
         minecraftoss_player::GameMode::Spectator => frame::McGameMode::Spectator,
     }
+}
+
+pub(crate) fn mc_effects(effects: &[minecraft_net::messages::EffectView]) -> Vec<frame::minecraft_ui::McEffect> {
+    effects
+        .iter()
+        .map(|effect| frame::minecraft_ui::McEffect {
+            id: effect.kind.clone(),
+            amplifier: effect.amplifier,
+            duration: if effect.duration == i32::MAX { -1 } else { effect.duration },
+            ambient: effect.ambient,
+        })
+        .collect()
 }
 
 pub(crate) fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {

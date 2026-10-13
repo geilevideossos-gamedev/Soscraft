@@ -24,6 +24,7 @@ mod minecraft_clicks;
 mod minecraft_creative;
 mod minecraft_credits;
 mod minecraft_edit;
+mod minecraft_effects;
 mod minecraft_fire;
 mod minecraft_freeze;
 mod minecraft_gui;

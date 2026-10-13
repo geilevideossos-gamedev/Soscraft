@@ -14,6 +14,7 @@ use serde_json::Value;
 const ATLAS_WIDTH: u32 = 2048;
 const GUTTER: u32 = 1;
 const SPRITES: &str = "assets/minecraft/textures/gui/sprites/";
+const MOB_EFFECTS: &str = "assets/minecraft/textures/mob_effect/";
 
 pub(crate) const CONTAINER_SHEETS: [&str; 17] = [
     "inventory",
@@ -265,6 +266,16 @@ fn build_atlas(
         let scaling = sprite_scaling(meta.as_ref());
         pieces.push((Piece::Sprite(name, scaling), sprite));
     }
+    for name in mob_effect_names(&packs.list("minecraft", "textures/mob_effect/")?) {
+        let id = ResourceId::parse(&format!("minecraft:mob_effect/{name}"))?;
+        let Some(bytes) = packs.texture(&id)? else {
+            continue;
+        };
+        pieces.push((
+            Piece::Sprite(format!("mob_effect/{name}"), McScaling::Stretch),
+            decode(&bytes)?,
+        ));
+    }
     let mut fonts = FontPages::default();
     load_font(packs, "minecraft:default", false, &mut fonts, 0)?;
     load_font(packs, "minecraft:alt", true, &mut fonts, 0)?;
@@ -337,6 +348,19 @@ fn build_atlas(
     gui.font = default;
     gui.alt_font = alt;
     Ok((atlas, gui))
+}
+
+fn mob_effect_names(paths: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(MOB_EFFECTS))
+        .filter(|rest| !rest.contains('/'))
+        .filter_map(|rest| rest.strip_suffix(".png"))
+        .map(str::to_owned)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn sprite_names(paths: &[String], folder: &str) -> Vec<String> {
@@ -698,6 +722,36 @@ mod tests {
         assert_eq!(gui.text("lectern.take_book"), "Take Book");
         assert_eq!(gui.text("gui.done"), "Done");
         assert!(!gui.texts.contains_key("gui.cancel"));
+    }
+
+    #[test]
+    fn every_mob_effect_icon_and_the_effect_frames_load() {
+        assert_eq!(
+            mob_effect_names(&[
+                format!("{MOB_EFFECTS}speed.png"),
+                format!("{MOB_EFFECTS}bad_omen.png"),
+                format!("{MOB_EFFECTS}speed.png"),
+                format!("{MOB_EFFECTS}old/speed.png"),
+                format!("{SPRITES}hud/hotbar.png"),
+            ]),
+            ["bad_omen", "speed"]
+        );
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let (atlas, gui) = build_atlas(&packs, &HashMap::new()).unwrap();
+        assert!(atlas.height() <= 2048);
+        for effect in ["darkness", "bad_omen", "raid_omen", "trial_omen", "hero_of_the_village", "speed", "breath_of_the_nautilus"] {
+            assert_eq!(gui.sprites[&format!("mob_effect/{effect}")].rect[2..], [18, 18], "{effect}");
+        }
+        assert!(gui.sprites.keys().filter(|name| name.starts_with("mob_effect/")).count() >= 40);
+        assert_eq!(gui.sprites["hud/effect_background"].rect[2..], [24, 24]);
+        assert_eq!(gui.sprites["hud/effect_background_ambient"].rect[2..], [24, 24]);
     }
 
     #[test]

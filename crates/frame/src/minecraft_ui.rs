@@ -116,6 +116,14 @@ pub struct McOffer {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
+pub struct McEffect {
+    pub id: String,
+    pub amplifier: u8,
+    pub duration: i32,
+    pub ambient: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct McMerchant {
     pub offers: Vec<McOffer>,
     pub level: i32,
@@ -235,6 +243,7 @@ pub struct MinecraftUi {
     pub credits: Option<crate::minecraft_credits::McCredits>,
     pub book: Option<McBook>,
     pub merchant: Option<McMerchant>,
+    pub effects: Vec<McEffect>,
     pub ui_sounds: Vec<&'static str>,
 }
 
