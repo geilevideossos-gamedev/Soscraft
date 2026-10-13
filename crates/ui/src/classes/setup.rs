@@ -4,6 +4,8 @@ use crate::classes::icons::cac_weapon_image;
 
 pub const NO_PERK: &str = "specialty_null";
 
+pub const MINECRAFT_ITEM_ROWS: &str = "Guns and grenades are items in Minecraft worlds";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClassEditRow {
     Primary,
@@ -66,6 +68,17 @@ impl ClassEditRow {
 
     pub fn as_u8(self) -> u8 {
         self as u8
+    }
+
+    pub fn is_item_row(self) -> bool {
+        matches!(
+            self,
+            Self::Primary | Self::Secondary | Self::Lethal | Self::Tactical
+        )
+    }
+
+    pub fn minecraft_refusal(self, minecraft: bool) -> Option<&'static str> {
+        (minecraft && self.is_item_row()).then_some(MINECRAFT_ITEM_ROWS)
     }
 
     pub fn from_u8(value: u8) -> Option<Self> {
@@ -367,6 +380,18 @@ impl ClassLoadoutCatalog {
         Ok(())
     }
 
+    pub fn fit_attachments(&self, slot: &mut ClassSlotState) {
+        let rules = slot.loadout_rules();
+        for (weapon, chosen) in [
+            (&slot.primary, &mut slot.primary_attachments),
+            (&slot.secondary, &mut slot.secondary_attachments),
+        ] {
+            while !chosen.is_empty() && self.check_attachments(weapon, chosen, rules).is_err() {
+                chosen.pop();
+            }
+        }
+    }
+
     pub fn check_attachments(
         &self,
         weapon: &str,
@@ -490,6 +515,17 @@ impl ClassSlotState {
             ClassEditRow::Perk3 => &self.perk3,
             ClassEditRow::Deathstreak => &self.deathstreak,
         }
+    }
+
+    pub fn with_items_of(mut self, kept: &ClassSlotState) -> Self {
+        self.primary.clone_from(&kept.primary);
+        self.primary_attachments.clone_from(&kept.primary_attachments);
+        self.secondary.clone_from(&kept.secondary);
+        self.secondary_attachments
+            .clone_from(&kept.secondary_attachments);
+        self.lethal.clone_from(&kept.lethal);
+        self.tactical.clone_from(&kept.tactical);
+        self
     }
 
     pub fn loadout_rules(&self) -> asset_game::LoadoutRules {
@@ -646,4 +682,74 @@ pub fn picker_icon_stems() -> Vec<&'static str> {
     stems.sort_unstable();
     stems.dedup();
     stems
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn class(name: &str, guns: [&str; 4], perks: [&str; 4]) -> ClassSlotState {
+        ClassSlotState {
+            name: name.to_owned(),
+            primary: guns[0].to_owned(),
+            primary_attachments: vec!["reflex".to_owned()],
+            secondary: guns[1].to_owned(),
+            secondary_attachments: Vec::new(),
+            lethal: guns[2].to_owned(),
+            tactical: guns[3].to_owned(),
+            perk1: perks[0].to_owned(),
+            perk2: perks[1].to_owned(),
+            perk3: perks[2].to_owned(),
+            deathstreak: perks[3].to_owned(),
+            lock_reason: None,
+        }
+    }
+
+    #[test]
+    fn on_minecraft_maps_only_the_perk_rows_are_edited() {
+        assert!(
+            ClassEditRow::ALL
+                .iter()
+                .all(|row| row.minecraft_refusal(false).is_none()),
+            "MW2 maps edit every row"
+        );
+        let refused: Vec<ClassEditRow> = ClassEditRow::ALL
+            .into_iter()
+            .filter(|row| row.minecraft_refusal(true) == Some(MINECRAFT_ITEM_ROWS))
+            .collect();
+        assert_eq!(
+            refused,
+            [
+                ClassEditRow::Primary,
+                ClassEditRow::Secondary,
+                ClassEditRow::Lethal,
+                ClassEditRow::Tactical
+            ]
+        );
+        assert_eq!(
+            MINECRAFT_ITEM_ROWS,
+            "Guns and grenades are items in Minecraft worlds"
+        );
+    }
+
+    #[test]
+    fn a_reset_on_a_minecraft_map_keeps_the_guns_and_grenades() {
+        let mine = class(
+            "Mine",
+            ["iw4:weapon/m4_mp", "iw4:weapon/usp_mp", "semtex_mp", "flare_mp"],
+            ["specialty_bling", "specialty_hardline", NO_PERK, NO_PERK],
+        );
+        let default = class(
+            "Default",
+            ["iw4:weapon/ak47_mp", "iw4:weapon/beretta_mp", "frag_grenade_mp", "flash_grenade_mp"],
+            ["specialty_onemanarmy", "specialty_lightweight", "specialty_extendedmelee", "specialty_copycat"],
+        );
+        let reset = default.clone().with_items_of(&mine);
+        for row in ClassEditRow::ALL {
+            let from = if row.is_item_row() { &mine } else { &default };
+            assert_eq!(reset.row_value(row), from.row_value(row), "{row:?}");
+        }
+        assert_eq!(reset.primary_attachments, mine.primary_attachments);
+        assert_eq!(reset.name, "Default");
+    }
 }

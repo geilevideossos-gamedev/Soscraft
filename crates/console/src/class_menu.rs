@@ -103,6 +103,7 @@ pub(crate) fn route(
     mut menus: MessageWriter<UiMenuRequest>,
     mut echo: crate::feature_dispatch::ConsoleEcho,
 ) {
+    let minecraft = sim::voxel::active();
     for command in events
         .read()
         .filter(|command| command.name.starts_with("ui_class_"))
@@ -128,6 +129,9 @@ pub(crate) fn route(
                         .get(index(command)?)
                         .copied()
                         .ok_or("Unknown loadout slot")?;
+                    if let Some(note) = row.minecraft_refusal(minecraft) {
+                        return Err(note.into());
+                    }
                     state.row = Some(row);
                     state.game = None;
                     state.folder = None;
@@ -180,6 +184,9 @@ pub(crate) fn route(
                 }
                 "ui_class_pick" => {
                     let row = state.row.ok_or("No loadout slot selected")?;
+                    if let Some(note) = row.minecraft_refusal(minecraft) {
+                        return Err(note.into());
+                    }
                     let at = index(command)?;
                     if at >= PAGE_SIZE {
                         return Err("Invalid item row".into());
@@ -225,17 +232,7 @@ pub(crate) fn route(
                         }
                     } else {
                         candidate.set_row(row, value);
-                        let rules = candidate.loadout_rules();
-                        for (weapon, chosen) in [
-                            (&candidate.primary, &mut candidate.primary_attachments),
-                            (&candidate.secondary, &mut candidate.secondary_attachments),
-                        ] {
-                            while !chosen.is_empty()
-                                && catalog.check_attachments(weapon, chosen, rules).is_err()
-                            {
-                                chosen.pop();
-                            }
-                        }
+                        catalog.fit_attachments(&mut candidate);
                     }
                     catalog.validate_edit(&candidate, row)?;
                     candidate.lock_reason = catalog.validate_class(&candidate).err();
@@ -287,6 +284,13 @@ pub(crate) fn route(
                             .ok_or("No available default class")?;
                         default.name.clone_from(&slot.name);
                         default
+                    };
+                    let candidate = if minecraft {
+                        let mut kept = candidate.with_items_of(slot);
+                        catalog.fit_attachments(&mut kept);
+                        kept
+                    } else {
+                        candidate
                     };
                     catalog.validate_class(&candidate)?;
                     *slot = candidate;
@@ -345,6 +349,13 @@ pub(crate) fn route(
             && let Some(reason) = &slot.lock_reason
         {
             dvars.set("ui_class_status", format!("Class unavailable: {reason}"));
+        }
+        let note = ui::classes::setup::MINECRAFT_ITEM_ROWS;
+        let shown = dvars.get("ui_class_status").unwrap_or_default().to_owned();
+        if minecraft && shown.is_empty() {
+            dvars.set("ui_class_status", note);
+        } else if !minecraft && shown == note {
+            dvars.set("ui_class_status", "");
         }
         dvars.set("ui_class_title", &slot.name);
         dvars.set("ui_class_saved_name", &slot.name);

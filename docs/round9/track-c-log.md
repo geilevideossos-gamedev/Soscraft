@@ -1119,6 +1119,40 @@ Commit: the one after `3cab4adb`. **Not vanilla** (WEAPONS.md 10.6).
 IW4L_MINECRAFT_KIT=minecraft:white_bed,iw4l:tactical_insertion*4,iw4l:frag_grenade*16,minecraft:cobblestone*64,minecraft:obsidian*10,minecraft:flint_and_steel
 ```
 
+### 2. On Minecraft maps the class menu changes perks and killstreaks only
+
+Commit: the one after `d9247254`. **Not vanilla** (WEAPONS.md 5.5).
+
+- **Changed:**
+  - `ui/src/classes/setup.rs`: `MINECRAFT_ITEM_ROWS` ("Guns and grenades are items in Minecraft worlds"); `ClassEditRow::is_item_row` (Primary, Secondary, Lethal, Tactical) and `minecraft_refusal(minecraft)` (the note for an item row on a Minecraft map, else nothing); `ClassSlotState::with_items_of(kept)` (takes the guns, their attachments and the grenades of another class); `ClassLoadoutCatalog::fit_attachments(slot)`, the attachment trim the class picker already did after a pick, moved here unchanged so the reset can use it too.
+  - `console/src/class_menu.rs`: `minecraft = sim::voxel::active()`. `ui_class_edit` and `ui_class_attachments` on an item row and `ui_class_pick` for one return the note as the error (shown in `ui_class_status`), so no picker opens; `ui_class_reset` keeps the item rows (`with_items_of`, then `fit_attachments`); the status line shows the note whenever no error and no "Class unavailable" reason is shown, and drops it again once the world is left. The perk and deathstreak rows work as before.
+  - `docs/WEAPONS.md` 5.5: the gate, where the note shows, the reset, and why One Man Army and Bling change nothing.
+- **One Man Army and Bling (checked, no code needed):** `apply_arsenal` already overrides both. One Man Army's `onemanarmy_mp` bag takes the secondary's place, a primary-slot weapon, which `item::is_gun_slot` removes like any gun that is not on the hotbar; a class change through it runs GSC `giveLoadout`, whose guns, stock and grenades `apply_arsenal` overwrites at the next step (WEAPONS.md 5.1). Bling only lets the class guns carry two attachments; item attachments never read perks (`gun_crafting` allows two whenever MW2 has the combination).
+- **Tests:** `ui` `classes::setup::tests::on_minecraft_maps_only_the_perk_rows_are_edited` (MW2 maps refuse no row; Minecraft maps refuse exactly the four item rows with the note) and `a_reset_on_a_minecraft_map_keeps_the_guns_and_grenades` (the item rows and attachments come from the old class, the perks, deathstreak and name from the default). `test -p ui -p console` green, `check -p launcher` green.
+- **Decisions:**
+  - **The gate is `sim::voxel::active()`**, which the host and every friend's game set while a Minecraft world is loaded; the main menu and MW2 maps are unchanged.
+  - **Where the note shows:** the class editor draws only the row labels, images, the perk descriptions and one status line, so the note is the status line (whenever no error or lock reason is shown) and the answer to a click on a weapon or grenade row. The row labels keep the class guns and grenades, since they still make the first-join loadout and its 32 + 32 grenades.
+  - **Reset on a Minecraft map** restores the perks and the deathstreak only.
+  - **Dropping Bling still trims the class guns' second attachment** (the picker always did), because MW2's class check (`sim` `max_attachments`) refuses a class with two attachments without Bling. It changes no item, only the first-join guns of a player who has not joined yet.
+  - Killstreaks are not in this editor; nothing changes for them.
+- **Owner's test steps** (a Minecraft world, any class; a second world on an MW2 map or the main menu for step 5):
+  1. In the Minecraft world, open the class menu and edit a custom class: the status line at the bottom reads "Guns and grenades are items in Minecraft worlds". **Screenshot 1.**
+  2. Click Primary, Secondary, Lethal and Tactical: no list opens and the status line shows the note.
+  3. Click Perk 1 and pick One Man Army, close the menu, `/kill` and respawn with that class: the hotbar guns and the grenade slots are unchanged and MW2's weapon list shows only the hotbar guns, no One Man Army bag. **Screenshot 2.**
+  4. Pick Bling as Perk 1, then Reset the class: the perks go back to the default, the weapon and grenade rows stay as they were.
+  5. Leave to the main menu (or load an MW2 map) and edit the same class: the weapon and grenade rows open their lists again and the note is gone. **Screenshot 3.**
+- **Kit** (2 stacks):
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64
+```
+
+## Combined kit for group insertion-classmenu
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed,iw4l:tactical_insertion*4,iw4l:frag_grenade*16,minecraft:cobblestone*64,minecraft:obsidian*10,minecraft:flint_and_steel,iw4l:m4,iw4l:rifle_ammo*64
+```
+
 ## Vendored minecraftoss files
 
 Patched by this track so far (7): `player/src/item_catalog.rs`, `core/src/item.rs`, `entities/src/world/piglins.rs`, `world/src/level/burning.rs` (itself a fork-added file), `player/src/crafting.rs`, `player/src/inventory.rs`, `player/src/chest.rs` (a test index, group grenade-slots). Added: none.
@@ -1169,3 +1203,5 @@ Since the merge of tracks A and B into track C (`c27f9bc9`) `PROTOCOL` is 5. The
 - `MINECRAFT-SURVIVAL.md`, the respawn section: "A planted tactical insertion (Shift+G with it in the tactical slot) is a one-use respawn point ahead of the bed or respawn anchor: the next respawn stands where the player stood when throwing it, facing the same way, also from another dimension, and uses it up. A second plant moves it, an MW2 blast dealing 20 or more at its spot destroys it, a block or fluid on the spot drops it, and it is not saved. Not vanilla."
 - `MULTIPLAYER.md` (per-player state on the host): "Each friend's tactical insertion respawn lives on the host per UUID, set from the friend's own throws through the same function as the host's."
 - `decisions.md` (Not vanilla): "The tactical insertion's flare is a one-use respawn point ahead of the bed, kept on the host and never saved; only MW2 blasts destroy it."
+- `MINECRAFT-SURVIVAL.md`, the guns section: "In a Minecraft world the class editor changes the perks and the deathstreak only: a click on a weapon or grenade row opens nothing and shows "Guns and grenades are items in Minecraft worlds" (also the editor's status line), and Reset keeps the class's guns and grenades. One Man Army and Bling change no item. MW2 maps and the main menu are unchanged."
+- `MULTIPLAYER.md` (what a friend sees): "A friend's class editor follows the same rule while the friend is in the host's Minecraft world."

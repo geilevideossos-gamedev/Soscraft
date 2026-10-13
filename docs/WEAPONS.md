@@ -225,6 +225,11 @@ Killstreak weapons (`killstreak_*_mp`, `airdrop_*marker*_mp`) are earned per lif
 
 On Minecraft maps the class menu changes perks and killstreaks only. Its weapon and grenade rows show the note "Guns and grenades are items in Minecraft worlds". One Man Army and Bling change nothing there.
 
+- The gate is `sim::voxel::active()`, on the host and on a friend's game alike. The main menu and MW2 maps are unchanged.
+- A click on the Primary, Secondary, Lethal or Tactical row (or its attachments) opens nothing and shows the note as the editor's status line, which also shows it whenever no error or lock reason is shown. The rows keep their labels: the class guns and grenades still make the first-join loadout (section 6).
+- Reset restores the perks and the deathstreak and keeps the guns and grenades.
+- One Man Army: its `onemanarmy_mp` bag is a primary-slot weapon that `apply_arsenal` removes like any gun not on the hotbar, and a class change through it runs GSC `giveLoadout`, which `apply_arsenal` overrides at the next step (5.1). Bling: MW2 uses it only for the class's two attachments; items never read perks (9.2). Dropping Bling still trims the class guns' second attachment, so the class passes MW2's class check; that changes only the first-join guns.
+
 ## 6. First-join loadout
 
 - **The flag** is the string `iw4l_loadout_given` in the player file's vanilla `Tags` list. `PlayerData::merged` already carries `Tags`, and the merge owns only that string and keeps any other tags. Vanilla keeps the list, so even a world saved in vanilla does not hand out a second loadout.
