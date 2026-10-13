@@ -928,6 +928,7 @@ mod tests {
                         main_hand: None,
                         offhand: None,
                         sneaking: false,
+                        hero: None,
                     },
                     inventory: &mut *inventory,
                     selected: 0,

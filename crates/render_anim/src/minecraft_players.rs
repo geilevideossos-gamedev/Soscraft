@@ -1162,6 +1162,11 @@ pub(crate) fn tick_actor<'a>(
         sneaking: ps.pm_flags
             & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
             != 0,
+        hero: player
+            .survival
+            .status
+            .effect(minecraftoss_player::survival::EffectKind::HeroOfTheVillage)
+            .map(|effect| i32::from(effect.amplifier)),
     };
     let actor = TickActor {
         id: u64::from(player.id.0),

@@ -683,6 +683,7 @@ mod tests {
             simulation_centres: vec![((feet.x.floor() as i32) >> 4, (feet.z.floor() as i32) >> 4)],
             simulation_distance: 2,
             mob_players: Vec::new(),
+            heroes: Vec::new(),
             mob_views: Vec::new(),
             mob_vitals: Vec::new(),
             bright_outside: true,

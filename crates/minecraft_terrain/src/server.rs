@@ -611,6 +611,12 @@ impl ServerSim {
         self.mobs.forget_player(player);
     }
 
+    fn set_heroes(&mut self, heroes: &[(u64, Option<i32>)]) {
+        for &(player, amplifier) in heroes {
+            self.mobs.set_player_hero(player, amplifier);
+        }
+    }
+
     /// The orbs trades dropped, each whole into the level.
     fn spawn_trade_experience(&mut self) {
         for (position, value) in self.mobs.take_trade_experience() {
@@ -2919,6 +2925,7 @@ pub struct TickInput {
     pub simulation_distance: i32,
     /// The player as mobs see it (held food, whether it can be targeted).
     pub mob_players: Vec<minecraftoss_entities::tempt::PlayerCandidate>,
+    pub heroes: Vec<(u64, Option<i32>)>,
     /// Where each of those players looks (endermen read stares from it).
     pub mob_views: Vec<(u64, minecraftoss_entities::enderman::PlayerView)>,
     /// Each of those players' health, effects and motion (witches pick
@@ -2941,6 +2948,7 @@ impl TickInput {
     pub fn remove_player(&mut self, player: u64) {
         self.players.retain(|p| p.id != player);
         self.mob_players.retain(|p| p.id != player);
+        self.heroes.retain(|(id, _)| *id != player);
         self.mob_views.retain(|(id, _)| *id != player);
         self.mob_vitals.retain(|(id, _)| *id != player);
         self.player_hurts.retain(|(id, _, _)| *id != player);
@@ -3535,6 +3543,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     }
     sim.mobs.set_player_views(input.mob_views.clone());
     sim.mobs.set_player_vitals(input.mob_vitals.clone());
+    sim.set_heroes(&input.heroes);
     for player in &input.players {
         sim.mobs.set_player_main_hand(player.id, player.main_hand.as_deref());
     }
@@ -4396,6 +4405,24 @@ mod tests {
         assert!(update.view.is_none(), "closed");
         assert_eq!(inventory.count("minecraft:wheat"), 10, "the rest came back");
         assert!(server.mobs.villagers()[0].trading_player.is_none());
+    }
+
+    #[test]
+    fn hero_of_the_village_from_the_tick_input_lowers_that_player_s_prices() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let price = |server: &mut ServerSim, player: u64, heroes: Vec<(u64, Option<i32>)>| {
+            let mut input = TickInput { heroes, ..idle_input() };
+            run_ticks(server, &mut input, false, 1);
+            let view = server.mob_action(player, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.expect("its trades open");
+            server.merchant(player, MerchantOp::Close, Inventory::default(), 0, [0.5, 100.0, 0.5]);
+            view.offers[0].cost_a_count(64)
+        };
+        assert_eq!(price(&mut server, 0, vec![(0, None)]), 20);
+        assert_eq!(price(&mut server, 0, vec![(0, Some(0))]), 14, "level one takes 30 % off");
+        assert_eq!(price(&mut server, 1, vec![(0, Some(0)), (1, None)]), 20, "only for the hero");
+        assert_eq!(price(&mut server, 0, vec![(0, Some(4))]), 9, "level five takes 55 % off");
+        assert_eq!(price(&mut server, 0, vec![(0, None)]), 20, "and the price comes back when it ends");
     }
 
     fn trading_server() -> Option<(ServerSim, u64)> {
@@ -9782,6 +9809,7 @@ mod tests {
             simulation_centres: vec![(0, 0)],
             simulation_distance: 2,
             mob_players: Vec::new(),
+            heroes: Vec::new(),
             mob_views: Vec::new(),
             mob_vitals: Vec::new(),
             bright_outside: true,

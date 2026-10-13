@@ -31,6 +31,11 @@ pub const EFFECTS: [(EffectKind, &str); EffectKind::ALL.len()] = [
     (EffectKind::ConduitPower, "minecraft:conduit_power"),
     (EffectKind::Levitation, "minecraft:levitation"),
     (EffectKind::SlowFalling, "minecraft:slow_falling"),
+    (EffectKind::Darkness, "minecraft:darkness"),
+    (EffectKind::BadOmen, "minecraft:bad_omen"),
+    (EffectKind::RaidOmen, "minecraft:raid_omen"),
+    (EffectKind::TrialOmen, "minecraft:trial_omen"),
+    (EffectKind::HeroOfTheVillage, "minecraft:hero_of_the_village"),
 ];
 
 struct EffectModifier {
@@ -994,6 +999,51 @@ mod tests {
             status.effect(EffectKind::SlowFalling).map(|e| e.duration),
             Some(4800)
         );
+    }
+
+    #[test]
+    fn darkness_the_omens_and_hero_of_the_village_are_saved_and_read_back() {
+        let kinds = [
+            (EffectKind::Darkness, "minecraft:darkness", 260, 0),
+            (EffectKind::BadOmen, "minecraft:bad_omen", 120000, 4),
+            (EffectKind::RaidOmen, "minecraft:raid_omen", 600, 2),
+            (EffectKind::TrialOmen, "minecraft:trial_omen", 18000, 1),
+            (EffectKind::HeroOfTheVillage, "minecraft:hero_of_the_village", 48000, 3),
+        ];
+        let mut stats = hurt_and_fed();
+        for (kind, _, duration, amplifier) in kinds {
+            stats.status.add_effect(kind, duration, amplifier);
+        }
+        let data = with_stats(stats);
+        let entries = data.entries();
+        let saved: Vec<(&str, i64, i64)> = entries["active_effects"]
+            .as_list()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e.get("id").and_then(Tag::as_str).unwrap(),
+                    e.get("duration").and_then(Tag::as_i64).unwrap(),
+                    e.get("amplifier").and_then(Tag::as_i64).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            saved,
+            kinds
+                .iter()
+                .map(|&(_, id, duration, amplifier)| (id, i64::from(duration), i64::from(amplifier)))
+                .collect::<Vec<_>>()
+        );
+        let read = PlayerData::read(&data.merged(None), &RecipeBook::default());
+        let status = read.stats.unwrap().status;
+        for (kind, id, duration, amplifier) in kinds {
+            assert_eq!(
+                status.effect(kind).map(|e| (e.duration, e.amplifier)),
+                Some((duration, amplifier)),
+                "{id}"
+            );
+        }
     }
 
     #[test]

@@ -1610,6 +1610,7 @@ mod tests {
                 main_hand: None,
                 offhand: None,
                 sneaking: false,
+                hero: None,
             };
             let mut actors = [crate::entities::TickActor {
                 id: 1,

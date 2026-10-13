@@ -243,6 +243,11 @@ impl PotionEffect {
             "conduit_power" => EffectKind::ConduitPower,
             "levitation" => EffectKind::Levitation,
             "slow_falling" => EffectKind::SlowFalling,
+            "darkness" => EffectKind::Darkness,
+            "bad_omen" => EffectKind::BadOmen,
+            "raid_omen" => EffectKind::RaidOmen,
+            "trial_omen" => EffectKind::TrialOmen,
+            "hero_of_the_village" => EffectKind::HeroOfTheVillage,
             _ => return None,
         })
     }

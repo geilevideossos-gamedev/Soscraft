@@ -506,6 +506,53 @@ After c61f2757.
 IW4L_MINECRAFT_KIT=minecraft:zombie_villager_spawn_egg*4,minecraft:splash_potion@weakness,minecraft:splash_potion@weakness,minecraft:splash_potion@weakness,minecraft:splash_potion@weakness,minecraft:golden_apple*16,minecraft:iron_bars*16,minecraft:red_bed,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:wheat*64,minecraft:emerald*32,minecraft:torch*32,minecraft:cooked_beef*32
 ```
 
+## Group effects-omens
+
+### 1. Minecraft players carry darkness, bad omen, raid omen, trial omen and hero of the village
+
+After 4cd55bf8.
+
+- **Vanilla (javap, 26.3):**
+  - `MobEffects` registrations (category, colour):
+    - `darkness`: HARMFUL, 2696993, `setBlendDuration(22)`.
+    - `bad_omen`: NEUTRAL, 745784, a `BadOmenMobEffect` with `withSoundOnAdded(event.mob_effect.bad_omen)`.
+    - `hero_of_the_village`: BENEFICIAL, 4521796.
+    - `trial_omen`: NEUTRAL, 1484454, the `trial_omen` particle and `withSoundOnAdded(event.mob_effect.trial_omen)`.
+    - `raid_omen`: NEUTRAL, 14565464, a `RaidOmenMobEffect` with the `raid_omen` particle and `withSoundOnAdded(event.mob_effect.raid_omen)`.
+  - `BadOmenMobEffect.applyEffectTick` (every tick): a non-spectator `ServerPlayer` outside Peaceful standing in a village (`ServerLevel.isVillage`), whose raid there is missing or below its maximum omen level, gets Raid Omen for 600 ticks at the same amplifier and `setRaidOmenPosition` there, and the Bad Omen ends.
+  - `Villager.updateSpecialPrices`: Hero of the Village takes `floor((0.3 + 0.0625 x amplifier) x first cost)`, at least 1, off each offer. The fork's `EntityWorld::set_player_hero` already held this (`world/merchants.rs:76`, `:134`), but nothing called it.
+- **Changed:**
+  - Vendored `player/src/survival.rs`: `EffectKind` gains `Darkness`, `BadOmen`, `RaidOmen`, `TrialOmen` and `HeroOfTheVillage` at the end, and `ALL` has 20 kinds. None of them does anything on its own tick here.
+  - `minecraft_survival/src/player_nbt.rs`: `EFFECTS` maps them to `minecraft:darkness`, `minecraft:bad_omen`, `minecraft:raid_omen`, `minecraft:trial_omen` and `minecraft:hero_of_the_village`, so they are saved in the player file's `active_effects` and read back. Before this, a vanilla file's omens were kept untouched as unknown effects.
+  - `minecraft_survival/src/commands.rs`: `effect_kind` knows the five ids, so `/effect give` and `/effect clear` work on them.
+  - `minecraft_terrain/src/potions.rs`: `player_effect` has the five arms (added arms only, for track B9's colour edits).
+  - `minecraft_survival/src/entities.rs`: the mobs' `PlayerView` has `hero` (the Hero of the Village amplifier), and `Entities::tick` puts every actor's into the new `TickInput.heroes`, beside `mob_players`.
+  - `minecraft_terrain/src/server.rs`: `TickInput.heroes` (dropped by `remove_player`). Each level tick hands them to `EntityWorld::set_player_hero` before the mobs tick, so the next trading screen a hero opens is cheaper, for that player only.
+  - `render_anim/src/minecraft_world.rs` (the host) and `render_anim/src/minecraft_players.rs` (friends on the host) fill `hero` from the player's own effects. The other `PlayerView` builders (tests, the level loader, the dragon fight and the remote tests) pass `None`.
+- **Tests:**
+  - `player_nbt::tests::darkness_the_omens_and_hero_of_the_village_are_saved_and_read_back`: the five kinds are written with their vanilla ids, durations and amplifiers and read back the same.
+  - `commands::tests::darkness_the_omens_and_hero_of_the_village_are_given_and_cleared_by_command`: `/effect give` of each (seconds times 20, the amplifier), `/effect clear` of one and then of all; `effect_kind` maps each id.
+  - `server::tests::hero_of_the_village_from_the_tick_input_lowers_that_player_s_prices`: through `run_tick`, a 20-wheat offer costs 20 without the effect, 14 at level I and 9 at level V, and 20 for another player and after the effect ends.
+  - `survival::tests::every_effect_kind_is_listed_once_at_its_own_index` (existing) covers the 20 kinds.
+  - Runs: `minecraftoss-player` lib 190, `minecraft_survival` lib 603 and `minecraft_terrain` lib 1137 (3 ignored), all green. `check -p launcher` green.
+- **Decisions:**
+  - Bad Omen does not turn into Raid Omen in a village yet, and Raid Omen does not start a raid when it ends: both need villages and raids (group `raids`). Trial Omen waits for trial spawners. Darkness is only carried and saved; its look (the pulsing dark screen and the shorter view) is group `darkness`.
+  - The hero amplifier is sent every tick for every player in the level, also when it is `None`, so an effect that ends or is drunk away with milk stops the discount at the next screen.
+  - The fork saves every player effect with `ambient:0b`, `show_particles:1b` and `show_icon:1b`, as before. Vanilla's ominous bottle gives Bad Omen without particles; the fork draws no player effect particles yet, so nothing shows the difference.
+- **Test steps (survival, difficulty normal):**
+  1. In a closed room summon a farmer: `/summon minecraft:villager ~ ~ ~2 {NoAI:1b,PersistenceRequired:1b,VillagerData:{type:"minecraft:plains",profession:"minecraft:farmer",level:1}}`. Right-click it and note the wheat price (**40_price_before**). Close the screen.
+  2. `/effect give @s minecraft:hero_of_the_village 600 0`, then right-click the farmer again: every price is lower, with the old price struck through (**41_hero_prices**).
+  3. `/effect give @s minecraft:hero_of_the_village 600 4`: the prices drop further (level V). Then `/effect clear @s minecraft:hero_of_the_village` and right-click again: the prices are back (**42_hero_cleared**).
+  4. `/effect give @s minecraft:bad_omen 6000 2`, `/effect give @s minecraft:trial_omen 900`, `/effect give @s minecraft:raid_omen 30` and `/effect give @s minecraft:darkness 60`: each is answered with the vanilla "Applied effect" line and none is refused (**43_omens_given**).
+  5. Save and quit, load again, then `/effect clear @s minecraft:bad_omen`: the answer says it was removed, so it came back with the save (**44_omen_after_reload**).
+  6. Friend window: the friend runs step 2 with their own `/effect`. The friend's prices drop; the host's prices at the same farmer stay as they were (**45_friend_hero**).
+  7. Give Hero of the Village again and drink a milk bucket: the next trading screen has the normal prices.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:wheat*64,minecraft:wheat*64,minecraft:emerald*32,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:oak_planks*64,minecraft:torch*32,minecraft:cooked_beef*32
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -518,10 +565,11 @@ IW4L_MINECRAFT_KIT=minecraft:zombie_villager_spawn_egg*4,minecraft:splash_potion
 - `docs/MINECRAFT-SURVIVAL.md`: a zombie of any kind that kills a villager turns it into a zombie villager: always on Hard, half the time on Normal, never on Easy or Peaceful. The zombie villager keeps the villager's type, profession, level, experience, trades, gossip, name and held item. The villager drops nothing, and a loud groan plays (level event 1026). A zombie villager that was a traded villager never despawns.
 - `docs/MINECRAFT-SURVIVAL.md`: the server's mobs now follow the world difficulty in their own rules too. Until round 9 the entity world always ran as Normal. This covers skeleton fire rates and spread, drowned trident spread, husk hunger and the zombie villager conversion.
 - `docs/MINECRAFT-SURVIVAL.md`: a zombie villager with Weakness (splash weakness on it) is cured by right-clicking it with a golden apple, which is used up. It shakes for 3 to 5 minutes, faster with iron bars and beds within 4 blocks, keeps curing through a save, and never despawns while curing. Then it becomes the same villager again (type, profession, level, experience, trades, gossip and name), with nausea and a loud sound. The player who cured it gets much lower prices from it. Without Weakness the apple is kept. Friends see the shaking and hear the sounds. Zombies drowning into drowned shake too.
+- `docs/MINECRAFT-SURVIVAL.md`: players can carry Darkness, Bad Omen, Raid Omen, Trial Omen and Hero of the Village. They are saved in the player file, `/effect` gives and clears them, and milk and totems remove them. Hero of the Village lowers that player's prices at every villager (30 % of the first cost at level I, 6.25 % more a level). Bad Omen does not yet turn into Raid Omen in a village, Raid Omen does not yet start a raid, Trial Omen is not yet read by trial spawners, and Darkness does not yet darken the screen.
 
 ## Vendored files
 
-Patched by track D: 10 (`entities/src/effects.rs`, `entities/src/lib.rs`, `entities/src/potion.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`). Added: 1 (`entities/src/drowned_ai.rs`). Group zombie-villagers added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` (commit 1) and `entities/src/effects.rs` and `entities/src/potion.rs` (commit 2) to the patched list.
+Patched by track D: 11 (`entities/src/effects.rs`, `entities/src/lib.rs`, `entities/src/potion.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `player/src/survival.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`). Added: 1 (`entities/src/drowned_ai.rs`). Group zombie-villagers added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` (commit 1) and `entities/src/effects.rs` and `entities/src/potion.rs` (commit 2) to the patched list. Group effects-omens added `player/src/survival.rs` (commit 1).
 
 ## Left for later
 
