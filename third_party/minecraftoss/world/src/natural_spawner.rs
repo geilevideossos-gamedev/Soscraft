@@ -976,7 +976,7 @@ impl CreatureSpawns {
             }
             // `Llama.finalizeSpawn`: strength, the group's variant, then
             // `AbstractChestedHorse.randomizeAttributes` (health).
-            "minecraft:llama" => {
+            "minecraft:llama" | "minecraft:trader_llama" => {
                 let random = level.random();
                 let max = if random.next_f32() < 0.04 { 5 } else { 3 };
                 set(tag, "Strength", Tag::Int(1 + random.next_i32_bound(max)));

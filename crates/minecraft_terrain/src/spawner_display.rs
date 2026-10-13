@@ -33,6 +33,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:iron_golem",
     "minecraft:magma_cube",
     "minecraft:mooshroom",
+    "minecraft:mule",
     "minecraft:ocelot",
     "minecraft:parched",
     "minecraft:pig",
@@ -198,7 +199,7 @@ impl Shown {
             "minecraft:cow" | "minecraft:mooshroom" => {
                 cow_render::append_cows(models, w.cows().iter(), poses, atlas, light, partial)
             }
-            "minecraft:horse" | "minecraft:donkey" => horse_render::append_horses(
+            "minecraft:horse" | "minecraft:donkey" | "minecraft:mule" => horse_render::append_horses(
                 models,
                 translucent,
                 w.cows().iter(),

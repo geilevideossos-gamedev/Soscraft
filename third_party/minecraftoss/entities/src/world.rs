@@ -46,6 +46,8 @@ mod riding;
 pub use riding::Rider;
 mod shulkers;
 mod shulker_bullets;
+mod equines;
+pub use equines::{horse_event, is_carpet, LlamaSpitEntity};
 pub use ghasts::GhastEntity;
 pub use shulker_bullets::{BulletPuff, BulletPuffKind, ShulkerBulletEntity};
 pub use blazes::BlazeEntity;
@@ -601,6 +603,7 @@ pub enum PlayerHitKind {
     BadRespawnPoint { knockback: DVec3 },
     ShulkerBullet { velocity: DVec3 },
     Trident { velocity: DVec3 },
+    Spit { velocity: DVec3 },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,
@@ -898,14 +901,18 @@ impl PigEntity {
 impl CowEntity {
     fn movement_sounds(&self) -> MovementSounds {
         if let Some(horse) = &self.horse {
-            let family = horse.kind.sound_family(self.cow.age.baby());
-            let step = match family {
-                "baby_horse" => "entity.baby_horse.step",
-                _ => "entity.horse.step",
-            };
-            return MovementSounds { horse_step: Some((step, "entity.horse.step_wood")), ..MovementSounds::creature(None) };
+            return equines::horse_movement_sounds(horse, self.cow.age.baby());
         }
         cow_sounds(self.mooshroom.is_some(), self.cow.sound_variant)
+    }
+
+    fn goal_names(&self) -> &'static [&'static str] {
+        match self.horse.as_ref().map(|h| h.kind) {
+            Some(crate::horse::HorseKind::TraderLlama) => &crate::cow_ai::TRADER_LLAMA_GOAL_NAMES,
+            Some(crate::horse::HorseKind::Llama) => &crate::cow_ai::LLAMA_GOAL_NAMES,
+            Some(_) => &HORSE_GOAL_NAMES,
+            None => &GOAL_NAMES,
+        }
     }
 
     /// `getAmbientSoundInterval`.
@@ -2054,6 +2061,7 @@ enum EntityKey {
     Shulker(u64),
     ShulkerBullet(u64),
     Feline(u64),
+    LlamaSpit(u64),
 }
 
 impl EntityKey {
@@ -2084,7 +2092,8 @@ impl EntityKey {
             | Self::Piglin(id)
             | Self::Shulker(id)
             | Self::ShulkerBullet(id)
-            | Self::Feline(id) => id,
+            | Self::Feline(id)
+            | Self::LlamaSpit(id) => id,
         }
     }
 }
@@ -2252,12 +2261,12 @@ impl CowEntity {
     }
 
     pub fn running_goals(&self) -> Vec<&'static str> {
-        let names: &[&str] = if self.horse.is_some() { &HORSE_GOAL_NAMES } else { &GOAL_NAMES };
+        let names = self.goal_names();
         self.goals.running_ids().map(|id| names[id]).collect()
     }
 
     pub fn retain_goals(&mut self, names: &[&str]) {
-        let all: &[&str] = if self.horse.is_some() { &HORSE_GOAL_NAMES } else { &GOAL_NAMES };
+        let all = self.goal_names();
         let ids: Vec<_> = all
             .iter()
             .enumerate()
@@ -2458,6 +2467,7 @@ pub struct EntityWorld {
     shulkers: Vec<ShulkerEntity>,
     shulker_teleports: Vec<(minecraftoss_player::Pos, minecraftoss_player::Pos)>,
     shulker_bullets: Vec<ShulkerBulletEntity>,
+    llama_spits: Vec<LlamaSpitEntity>,
     bullet_puffs: Vec<BulletPuff>,
     fireball_fires: Vec<(i32, i32, i32)>,
     /// Where the players look, for endermen.
@@ -2588,6 +2598,7 @@ impl Default for EntityWorld {
             shulkers: Vec::new(),
             shulker_teleports: Vec::new(),
             shulker_bullets: Vec::new(),
+            llama_spits: Vec::new(),
             bullet_puffs: Vec::new(),
             fireball_fires: Vec::new(),
             player_views: Vec::new(),
@@ -2887,7 +2898,7 @@ impl EntityWorld {
                 let e = self.shulkers.iter().find(|e| e.id == id)?;
                 (e.shulker.body.clone(), e.shulker.eye_height())
             }
-            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => return None,
+            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) => return None,
         })
     }
 
@@ -2920,7 +2931,7 @@ impl EntityWorld {
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.hoglin.body)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.piglin.body)),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.shulker.body)),
-            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
+            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) => None,
         }?;
         if !matches!(key, EntityKey::Shulker(_)) {
             body.velocity += push;
@@ -3241,7 +3252,7 @@ impl EntityWorld {
                         let (min, max) = entity.shulker.bounding_box();
                         return Some(ArrowTarget { id, min, max });
                     }
-                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => return None,
+                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) => return None,
                 };
                 if id == owner_id || health <= 0.0 {
                     return None;
@@ -3413,6 +3424,7 @@ impl EntityWorld {
             let result = entity.hurt(hit.damage, source);
             outcome = Some(result);
             if result.applied {
+                entity.note_attacker(crate::monster_ai::Target::Mob(owner));
                 projectile_knockback(&mut entity.cow.body, &mut entity.random, hit.velocity);
             }
         } else if let Some(entity) = self.sheep.iter_mut().find(|entity| entity.id == id) {
@@ -4033,7 +4045,11 @@ impl EntityWorld {
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == victim) {
             (e.hurt(damage, DamageSourceKind::MobAttack), false)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == victim) {
-            (e.hurt(damage, DamageSourceKind::MobAttack), false)
+            let hit = e.hurt(damage, DamageSourceKind::MobAttack);
+            if hit.applied {
+                e.note_attacker(by);
+            }
+            (hit, false)
         } else if let Some(e) = self.pigs.iter_mut().find(|e| e.id == victim) {
             (e.hurt(damage, DamageSourceKind::MobAttack), false)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == victim) {
@@ -4367,10 +4383,17 @@ impl EntityWorld {
             deaths.extend(death_of(e.id, &mut e.villager.damage, "minecraft:villager", table, EntityLootContext { baby: e.villager.age.baby(), ..plain }));
         }
         for e in &mut self.cows {
-            let kind = if e.mooshroom.is_some() { "minecraft:mooshroom" } else { "minecraft:cow" };
+            let kind = match &e.horse {
+                Some(horse) => horse.kind.type_id(),
+                None if e.mooshroom.is_some() => "minecraft:mooshroom",
+                None => "minecraft:cow",
+            };
             let baby = e.cow.age.baby();
             let Some((order, mut death)) = death_of(e.id, &mut e.cow.damage, kind, adult(baby, kind), EntityLootContext { baby, ..plain }) else { continue };
             animal(&mut death, &mut e.random);
+            if let Some(horse) = &e.horse {
+                death.equipment = equines::horse_death_equipment(horse, mob_drops);
+            }
             deaths.push((order, death));
         }
         for e in &mut self.wolves {
@@ -4549,6 +4572,9 @@ impl EntityWorld {
         }
         if self.shulker_bullets.iter().any(|e| e.id == id) {
             return Some("minecraft:shulker_bullet");
+        }
+        if self.llama_spits.iter().any(|e| e.id == id) {
+            return Some("minecraft:llama_spit");
         }
         None
     }
@@ -4817,7 +4843,7 @@ impl EntityWorld {
 
     /// Every living entity's ID, in world order (arrows excluded).
     pub fn mob_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.order.iter().filter(|key| !matches!(key, EntityKey::Arrow(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_))).map(|key| key.id())
+        self.order.iter().filter(|key| !matches!(key, EntityKey::Arrow(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_))).map(|key| key.id())
     }
     pub fn set_recipe_book(&mut self, recipes: Arc<RecipeBook>) {
         self.recipes = Some(recipes);
@@ -4844,8 +4870,12 @@ impl EntityWorld {
         cow.body.step_height = 1.0;
         let id = self.spawn_cow_with_kind(cow, None, no_ai);
         let entity = self.cows.iter_mut().find(|e| e.id == id).expect("just spawned");
+        entity.goals = match horse.kind {
+            crate::horse::HorseKind::Llama => crate::cow_ai::registered_llama_goals(false),
+            crate::horse::HorseKind::TraderLlama => crate::cow_ai::registered_llama_goals(true),
+            _ => registered_horse_goals(),
+        };
         entity.horse = Some(horse);
-        entity.goals = registered_horse_goals();
         id
     }
 
@@ -5126,6 +5156,7 @@ impl EntityWorld {
             .chain(self.piglins.iter().map(|e| (e.id, e.piglin.body.position)))
             .chain(self.shulkers.iter().map(|e| (e.id, e.shulker.body.position)))
             .chain(self.shulker_bullets.iter().map(|e| (e.id, e.bullet.position)))
+            .chain(self.llama_spits.iter().map(|e| (e.id, e.spit.position)))
     }
 
     /// The burning mobs (`displayFireAnimation`), for their flames: where
@@ -5198,6 +5229,7 @@ impl EntityWorld {
         let piglins: Vec<PiglinEntity> = self.piglins.iter().filter(|e| keep(e.piglin.body.position)).cloned().collect();
         let shulkers: Vec<ShulkerEntity> = self.shulkers.iter().filter(|e| keep(e.shulker.body.position)).cloned().collect();
         let shulker_bullets: Vec<ShulkerBulletEntity> = self.shulker_bullets.iter().filter(|e| keep(e.bullet.position)).cloned().collect();
+        let llama_spits: Vec<LlamaSpitEntity> = self.llama_spits.iter().filter(|e| keep(e.spit.position)).cloned().collect();
         let mut copy = Self {
             bats,
             zombies,
@@ -5222,6 +5254,7 @@ impl EntityWorld {
             shulkers,
             shulker_teleports: Vec::new(),
             shulker_bullets,
+            llama_spits,
             bullet_puffs: Vec::new(),
             fireball_fires: Vec::new(),
             player_views: self.player_views.clone(),
@@ -5453,6 +5486,7 @@ impl EntityWorld {
         self.piglins.retain(|e| !remove(e.piglin.body.position));
         self.shulkers.retain(|e| !remove(e.shulker.body.position));
         self.shulker_bullets.retain(|e| !remove(e.bullet.position));
+        self.llama_spits.retain(|e| !remove(e.spit.position));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
         self.prune_riding();
@@ -6128,6 +6162,10 @@ impl EntityWorld {
                 }
                 EntityKey::ShulkerBullet(id) => {
                     self.tick_shulker_bullet(id, world, players);
+                    continue;
+                }
+                EntityKey::LlamaSpit(id) => {
+                    self.tick_llama_spit(id, world, players);
                     continue;
                 }
                 EntityKey::Arrow(id) => {
@@ -7090,9 +7128,12 @@ impl EntityWorld {
                     panicking: entity.panic.running,
                 })
                 .collect();
+            let horse_inputs = self.horse_inputs(index, &candidates, players);
+            let mut horse_outputs = equines::HorseOutputs::default();
             let mut breeding_partner = None;
             let entity = &mut self.cows[index];
             entity.tick_count += 1;
+            entity.forget_old_attacker();
             entity.update_fluid(world);
             hazards::burn(entity, &*world, game_time);
             let eye = entity.eye_height();
@@ -7176,8 +7217,7 @@ impl EntityWorld {
                     fall = fall_damage(&cow.body, &*world, fallen, false, &mut entity.voices);
                 }
                 let sounds = if let Some(horse) = &entity.horse {
-                    let family = horse.kind.sound_family(cow.age.baby());
-                    MovementSounds { horse_step: Some((if family == "baby_horse" { "entity.baby_horse.step" } else { "entity.horse.step" }, "entity.horse.step_wood")), ..MovementSounds::creature(None) }
+                    equines::horse_movement_sounds(horse, cow.age.baby())
                 } else {
                     cow_sounds(false, cow.sound_variant)
                 };
@@ -7232,6 +7272,9 @@ impl EntityWorld {
                     navigation_done: cow.navigation.is_done(),
                     random: std::mem::take(&mut entity.random),
                     effects: Vec::new(),
+                    mates: horse_inputs.mates,
+                    tempters: horse_inputs.tempters,
+                    llama: horse_inputs.llama,
                 };
                 if full_goal_tick {
                     entity.goals.tick(&mut context, &*world);
@@ -7248,6 +7291,9 @@ impl EntityWorld {
                 entity.random = context.random;
                 if let (Some(horse), Some(stand)) = (&mut entity.horse, context.stand) {
                     horse.next_stand = stand.next_stand;
+                }
+                if let (Some(horse), Some(llama)) = (&mut entity.horse, context.llama.take()) {
+                    horse.fight = llama.fight;
                 }
                 let mut jump_queued = false;
                 for effect in context.effects {
@@ -7270,6 +7316,9 @@ impl EntityWorld {
                             breeding_partner = Some(partner_id);
                         }
                         CowGoalEffect::Jump => jump_queued = true,
+                        CowGoalEffect::Spit { aim } => horse_outputs.spit = Some(aim),
+                        CowGoalEffect::JoinCaravan(head) => horse_outputs.join.push(head),
+                        CowGoalEffect::LeaveCaravan(head) => horse_outputs.leave.push(head),
                         CowGoalEffect::Stand => {
                             // `RandomStandGoal.start`: rear, and the ambient
                             // stand sound (`playSound(sound)`: volume and
@@ -7345,8 +7394,7 @@ impl EntityWorld {
                     fall = fall_damage(&cow.body, &*world, fallen, false, &mut entity.voices);
                 }
                 let sounds = if let Some(horse) = &entity.horse {
-                    let family = horse.kind.sound_family(cow.age.baby());
-                    MovementSounds { horse_step: Some((if family == "baby_horse" { "entity.baby_horse.step" } else { "entity.horse.step" }, "entity.horse.step_wood")), ..MovementSounds::creature(None) }
+                    equines::horse_movement_sounds(horse, cow.age.baby())
                 } else {
                     cow_sounds(entity.mooshroom.is_some(), cow.sound_variant)
                 };
@@ -7375,6 +7423,8 @@ impl EntityWorld {
             }
             let id = self.cows[index].id;
             self.push_entities(EntityKey::Cow(id), &*world, game_time, ticks);
+            self.horse_outputs(index, horse_outputs);
+            let breeding_partner = breeding_partner.filter(|&partner| !self.breed_horses(index, partner));
             if let Some(partner_id) = breeding_partner {
                 if let Some(partner_index) = self.cows.iter().position(|e| e.id == partner_id) {
                     let parent_variant = self.cows[index]
@@ -7444,7 +7494,7 @@ impl EntityWorld {
                     }
                     let p = entity.cow.body.position;
                     let below = (p.x.floor() as i32, p.y.floor() as i32 - 1, p.z.floor() as i32);
-                    if !horse.eating && entity.random.next_int(300) == 0 && world.block(below).is_some_and(|b| b.id == "minecraft:grass_block") {
+                    if !horse.eating && horse.kind.can_eat_grass() && entity.random.next_int(300) == 0 && world.block(below).is_some_and(|b| b.id == "minecraft:grass_block") {
                         horse.eating = true;
                     }
                     if horse.eating {
@@ -7457,6 +7507,7 @@ impl EntityWorld {
                 }
                 horse.tick_animation();
             }
+            entity.tick_trader_despawn();
         }
         if let Some(tick) = riding.take() {
             self.end_ride_tick(tick, &*world);
@@ -7481,7 +7532,7 @@ impl EntityWorld {
         self.villagers
             .retain(|entity| entity.villager.damage.death_ticks < 20);
         self.cows
-            .retain(|entity| entity.cow.damage.death_ticks < 20);
+            .retain(|entity| entity.cow.damage.death_ticks < 20 && !entity.horse.as_ref().is_some_and(|h| h.despawned()));
         self.sheep.retain(|entity| entity.damage.death_ticks < 20);
         self.pigs
             .retain(|entity| entity.pig.damage.death_ticks < 20);
@@ -7496,6 +7547,7 @@ impl EntityWorld {
         self.piglins.retain(|entity| entity.piglin.damage.death_ticks < 20);
         self.shulkers.retain(|entity| entity.shulker.damage.death_ticks < 20);
         self.shulker_bullets.retain(|entity| entity.bullet.alive);
+        self.llama_spits.retain(|entity| entity.spit.alive);
         let alive_ids: HashSet<_> = self
             .bats
             .iter()
@@ -7525,6 +7577,7 @@ impl EntityWorld {
             .chain(self.piglins.iter().map(|entity| entity.id))
             .chain(self.shulkers.iter().map(|entity| entity.id))
             .chain(self.shulker_bullets.iter().map(|entity| entity.id))
+            .chain(self.llama_spits.iter().map(|entity| entity.id))
             .collect();
         self.sections.retain_mobs(|id| alive_ids.contains(&id));
         self.order.retain(|key| match key {
@@ -7553,7 +7606,8 @@ impl EntityWorld {
             | EntityKey::Piglin(id)
             | EntityKey::Shulker(id)
             | EntityKey::ShulkerBullet(id)
-            | EntityKey::Feline(id) => alive_ids.contains(id),
+            | EntityKey::Feline(id)
+            | EntityKey::LlamaSpit(id) => alive_ids.contains(id),
         });
         self.prune_riding();
     }
@@ -7690,7 +7744,7 @@ impl EntityWorld {
                     }
                     (MobHit::Feline(id), &entity.feline.body)
                 }
-                EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => continue,
+                EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) => continue,
                 EntityKey::Ghast(id) => {
                     let Some(entity) = self.ghasts.iter().find(|entity| entity.id == id) else {
                         continue;

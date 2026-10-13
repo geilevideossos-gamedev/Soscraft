@@ -6701,9 +6701,9 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
-    const HATCHING_EGGS: [&str; 39] = [
-        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "magma_cube", "mooshroom", "ocelot", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
-        "villager", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
+    const HATCHING_EGGS: [&str; 42] = [
+        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
+        "trader_llama", "villager", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
     ];
 
     #[test]
@@ -6737,6 +6737,28 @@ mod tests {
         }
         assert_eq!(eggs.len(), 88);
         assert_eq!(hatched, HATCHING_EGGS);
+    }
+
+    #[test]
+    fn summoned_llamas_draw_their_strength_and_coat_and_mules_and_trader_llamas_live() {
+        use minecraftoss_entities::horse::HorseKind;
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        for i in 0..12 {
+            server.summon("minecraft:llama", [8.5 + f64::from(i) * 0.1, 200.0, 8.5], None, 0.0).unwrap();
+        }
+        server.summon("minecraft:mule", [6.5, 200.0, 8.5], None, 0.0).unwrap();
+        server.summon("minecraft:trader_llama", [10.5, 200.0, 8.5], None, 0.0).unwrap();
+        let equines: Vec<_> = server.mobs.cows().iter().filter_map(|e| e.horse.clone()).collect();
+        let llamas: Vec<_> = equines.iter().filter(|h| h.kind == HorseKind::Llama).collect();
+        assert_eq!(llamas.len(), 12);
+        assert!(llamas.iter().all(|h| (1..=5).contains(&h.strength) && (0..4).contains(&h.variant) && (15.0..=30.0).contains(&h.max_health)));
+        assert!(llamas.iter().any(|h| h.variant != llamas[0].variant), "the coat is drawn");
+        assert!(equines.iter().any(|h| h.kind == HorseKind::Mule));
+        let trader = equines.iter().find(|h| h.kind == HorseKind::TraderLlama).expect("a trader llama");
+        assert!((1..=5).contains(&trader.strength));
+        assert_eq!(trader.despawn_delay, minecraftoss_entities::horse::TRADER_DESPAWN_DELAY);
+        assert!(server.mobs.cows().iter().filter(|e| e.horse.is_some()).all(|e| e.cow.health == e.cow.max_health), "they come at full health");
     }
 
     #[test]

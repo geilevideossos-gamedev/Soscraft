@@ -34,6 +34,8 @@ pub mod health;
 pub mod hoglin;
 pub mod hoglin_brain;
 pub mod horse;
+pub mod llama_ai;
+pub mod llama_spit;
 pub mod inside_blocks;
 pub mod villager_brain;
 pub mod villager_inventory;

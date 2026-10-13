@@ -554,6 +554,7 @@ impl EntityWorld {
         self.shulkers.retain(|e| !gone(e.id));
         self.fireballs.retain(|e| !gone(e.id));
         self.shulker_bullets.retain(|e| !gone(e.id));
+        self.llama_spits.retain(|e| !gone(e.id));
         self.potions.retain(|e| !gone(e.id));
         self.order.retain(|key| !gone(key.id()));
         self.sections.retain_mobs(|id| !gone(id));

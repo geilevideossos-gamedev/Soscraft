@@ -136,6 +136,11 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
     let held = actor.inventory.slots.get(selected).and_then(Option::as_ref).map(|stack| stack.id.clone());
     let mut outcome = MobOutcome::default();
     match hit {
+        MobHit::Cow(id) if world.cows().iter().any(|e| e.id == id && e.horse.is_some()) => {
+            if world.horse_interact(id, actor.player, actor.inventory, selected, infinite) == InteractionResult::Pass {
+                return outcome;
+            }
+        }
         MobHit::Cow(id) => {
             let Some(entity) = world.cow_mut(id) else { return outcome };
             let position = entity.cow.body.position;
@@ -439,7 +444,31 @@ mod tests {
         other.owner = Some(78);
         let other = world.spawn_feline(other, true);
         let ocelot = world.spawn_feline(Feline::new(FelineKind::Ocelot, at), true);
+        use minecraftoss_entities::horse::{HorseKind, HorseState};
+        let equine = |world: &mut EntityWorld, kind: HorseKind, tame: bool| {
+            let mut horse = HorseState::new(kind);
+            horse.tame = tame;
+            let mut cow = Cow::new(at);
+            cow.max_health = 20.0;
+            cow.health = 20.0;
+            world.spawn_horse(cow, horse, true)
+        };
+        let wild_llama = equine(&mut world, HorseKind::Llama, false);
+        let llama = equine(&mut world, HorseKind::Llama, true);
+        let mule = equine(&mut world, HorseKind::Mule, true);
+        let horse = equine(&mut world, HorseKind::Horse, true);
         let cases: &[(MobHit, Option<&str>, bool)] = &[
+            (MobHit::Cow(wild_llama), Some("minecraft:hay_block"), true),
+            (MobHit::Cow(wild_llama), Some("minecraft:chest"), true),
+            (MobHit::Cow(wild_llama), None, false),
+            (MobHit::Cow(llama), Some("minecraft:chest"), true),
+            (MobHit::Cow(llama), Some("minecraft:white_carpet"), true),
+            (MobHit::Cow(llama), Some("minecraft:carrot"), false),
+            (MobHit::Cow(mule), Some("minecraft:chest"), true),
+            (MobHit::Cow(mule), Some("minecraft:white_carpet"), false),
+            (MobHit::Cow(mule), Some("minecraft:bucket"), false),
+            (MobHit::Cow(horse), Some("minecraft:golden_carrot"), true),
+            (MobHit::Cow(horse), Some("minecraft:chest"), false),
             (MobHit::Feline(stray), Some("minecraft:cod"), true),
             (MobHit::Feline(stray), Some("minecraft:stick"), false),
             (MobHit::Feline(pet), None, true),

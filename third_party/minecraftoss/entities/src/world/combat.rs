@@ -331,7 +331,11 @@ impl EntityWorld {
             let time = self.game_time;
             e.hurt_from(amount, "minecraft:player_attack", Some(crate::monster_ai::Target::Player(player)), time)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
-            e.hurt(amount, source)
+            let hit = e.hurt(amount, source);
+            if hit.applied {
+                e.note_attacker(crate::monster_ai::Target::Player(player));
+            }
+            hit
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, source)
         } else if let Some(e) = self.pigs.iter_mut().find(|e| e.id == id) {

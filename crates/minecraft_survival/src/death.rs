@@ -70,6 +70,7 @@ pub enum MobAttack {
     SmallFireball,
     MobProjectile,
     Trident,
+    Spit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,7 +103,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident => None,
+            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -156,6 +157,7 @@ impl DamageCause {
                 MobAttack::Fireball | MobAttack::SmallFireball => "minecraft:fireball",
                 MobAttack::MobProjectile => "minecraft:mob_projectile",
                 MobAttack::Trident => "minecraft:trident",
+                MobAttack::Spit => "minecraft:spit",
             },
         }
     }
@@ -182,7 +184,7 @@ impl DamageCause {
             Self::OutOfWorld => "outOfWorld",
             Self::BadRespawnPoint => "badRespawnPoint",
             Self::Mob {
-                attack: MobAttack::Melee | MobAttack::MobProjectile,
+                attack: MobAttack::Melee | MobAttack::MobProjectile | MobAttack::Spit,
                 ..
             } => "mob",
             Self::Mob {
@@ -707,6 +709,7 @@ mod tests {
             ("entity.minecraft.piglin_brute", "Piglin Brute"),
             ("entity.minecraft.shulker", "Shulker"),
             ("entity.minecraft.drowned", "Drowned"),
+            ("entity.minecraft.llama", "Llama"),
             ("death.attack.trident", "%1$s was impaled by %2$s"),
             ("death.attack.fireball", "%1$s was fireballed by %2$s"),
             ("entity.minecraft.arrow", "Arrow"),
@@ -949,6 +952,16 @@ mod tests {
         tracker.record(1, trident, 8.0, None, 0.0);
         assert_eq!(line(&tracker), says("%1$s was impaled by Drowned", "Drowned"));
         assert_eq!(DamageCause::mob(MobAttack::Trident, None, None), DamageCause::Generic);
+    }
+
+    #[test]
+    fn a_llama_s_spit_slays_the_player_by_the_llama() {
+        let mut tracker = CombatTracker::default();
+        let spit = DamageCause::mob(MobAttack::Spit, Some(5), Some("minecraft:llama"));
+        assert_eq!(spit.damage_type(), "minecraft:spit");
+        tracker.record(1, spit, 1.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was slain by Llama", "Llama"));
+        assert_eq!(DamageCause::mob(MobAttack::Spit, None, None), DamageCause::Generic);
     }
 
     #[test]

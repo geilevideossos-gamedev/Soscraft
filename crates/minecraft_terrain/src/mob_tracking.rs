@@ -12,7 +12,7 @@ use crate::client_mobs::{ServerMob, server_mobs};
 pub const LOOK_TICKS: u64 = 10;
 pub const DEFAULT_RANGE: i32 = 5;
 
-const VOLATILE: [&str; 29] = [
+const VOLATILE: [&str; 30] = [
     "Pos",
     "Motion",
     "Rotation",
@@ -42,6 +42,7 @@ const VOLATILE: [&str; 29] = [
     "active_effects",
     "Brain",
     "ConversionTime",
+    "DespawnDelay",
 ];
 
 const ARM_POSES: [ArmPose; 6] = [
@@ -265,16 +266,16 @@ pub fn tracking_range(kind: &str) -> i32 {
         "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf" | "ocelot"
         | "villager" | "iron_golem" | "ghast" | "slime" | "strider" | "shulker"
         | "ender_dragon" | "tnt" | "falling_block" | "item_frame" | "glow_item_frame"
-        | "area_effect_cloud" => 10,
+        | "area_effect_cloud" | "llama" | "trader_llama" => 10,
         "zombie" | "husk" | "drowned" | "zombie_villager" | "zombified_piglin" | "skeleton"
         | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
-        | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" => 8,
+        | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" | "mule" => 8,
         "item" | "experience_orb" => 6,
         "arrow" | "spectral_arrow" | "snowball" | "egg" | "ender_pearl" | "eye_of_ender"
         | "trident" | "fireball" | "small_fireball" | "dragon_fireball" | "splash_potion"
         | "lingering_potion" | "experience_bottle" | "firework_rocket" | "wither_skull"
-        | "wind_charge" => 4,
+        | "wind_charge" | "llama_spit" => 4,
         _ => DEFAULT_RANGE,
     }
 }
@@ -448,6 +449,9 @@ pub fn projectiles(world: &EntityWorld) -> Vec<ServerMob> {
     for e in world.potions().iter().filter(|e| e.potion.alive) {
         push(e.id, e.potion.position, (0.0, 0.0), 0.25);
     }
+    for e in world.llama_spits().iter().filter(|e| e.spit.alive) {
+        push(e.id, e.spit.position, (e.spit.yaw, e.spit.pitch), minecraftoss_entities::llama_spit::SIZE);
+    }
     out
 }
 
@@ -455,6 +459,7 @@ pub fn is_projectile(world: &EntityWorld, id: u64) -> bool {
     world.fireballs().iter().any(|e| e.id == id)
         || world.shulker_bullets().iter().any(|e| e.id == id)
         || world.potions().iter().any(|e| e.id == id)
+        || world.llama_spits().iter().any(|e| e.id == id)
 }
 
 fn place(previous: &mut DVec3, body: &mut Body, mob: &ServerMob) {
@@ -580,6 +585,14 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.potion_mut(id) {
         e.previous_position = e.potion.position;
         e.potion.position = mob.position;
+    }
+    if let Some(e) = world.llama_spit_mut(id) {
+        e.previous_position = e.spit.position;
+        e.spit.position = mob.position;
+        e.spit.yaw_o = e.spit.yaw;
+        e.spit.pitch_o = e.spit.pitch;
+        e.spit.yaw = mob.y_rot;
+        e.spit.pitch = mob.x_rot;
     }
 }
 
@@ -788,7 +801,7 @@ mod tests {
         for _ in 0..LOOK_TICKS * 3 {
             looks.extend(update(&mut trackers, &world, &watchers).events);
         }
-        assert_eq!(looks.len(), 1, "{looks:?}");
+        assert_eq!(looks.len(), 1, "only the llama looks new, not the trader llama's clock: {looks:?}");
         let MobEvent::Look(id, tag) = &looks[0].1 else {
             panic!("{looks:?}");
         };
@@ -928,6 +941,79 @@ mod tests {
         assert!(shown.lying && shown.relax_state_one && !shown.sitting && shown.lie_down_amount > 0.0);
         assert!(shown.lying_on_sleeping_player);
         assert!(friend.feline_mut(ocelot).unwrap().feline.crouching);
+    }
+
+    #[test]
+    fn a_friend_sees_mules_and_llamas_from_their_look_tags_and_their_new_chests_and_carpets() {
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(700);
+        let (mule, mule_tag) = spawn(&mut host, "{id:\"minecraft:mule\",Pos:[2.5d,64.0d,0.5d],ChestedHorse:1b,Age:-24000}");
+        let (llama, llama_tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:llama\",Pos:[5.5d,64.0d,0.5d],Variant:3,Strength:2,Tame:1b,equipment:{body:{id:\"minecraft:white_carpet\",count:1}}}",
+        );
+        let (trader, trader_tag) = spawn(&mut host, "{id:\"minecraft:trader_llama\",Pos:[8.5d,64.0d,0.5d],Variant:1}");
+        assert_eq!(
+            (tracking_range("minecraft:mule"), tracking_range("minecraft:llama"), tracking_range("minecraft:trader_llama"), tracking_range("minecraft:llama_spit")),
+            (8, 10, 10, 4)
+        );
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(mule, mule_tag), (llama, llama_tag), (trader, trader_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+        }
+        let horse = |world: &mut EntityWorld, id: u64| world.cow_mut(id).unwrap().horse.clone().unwrap();
+        let m = horse(&mut friend, mule);
+        assert!(m.chest && friend.cow_mut(mule).unwrap().cow.age.baby());
+        let l = horse(&mut friend, llama);
+        assert_eq!((l.variant, l.strength, l.body_item.as_deref(), l.chest), (3, 2, Some("minecraft:white_carpet"), false));
+        assert_eq!(horse(&mut friend, trader).kind, minecraftoss_entities::horse::HorseKind::TraderLlama);
+        {
+            let h = host.cow_mut(llama).unwrap().horse.as_mut().unwrap();
+            h.chest = true;
+            h.body_item = Some("minecraft:black_carpet".to_owned());
+        }
+        host.cow_mut(trader).unwrap().horse.as_mut().unwrap().despawn_delay -= 5;
+        let mut looks = Vec::new();
+        for _ in 0..LOOK_TICKS {
+            trackers.tick();
+            looks.extend(trackers.update(&host, &originals, &[watcher(3, 0.5)]).events);
+        }
+        assert_eq!(looks.len(), 1, "only the llama looks new, not the trader llama's clock: {looks:?}");
+        let (_, MobEvent::Look(id, sent)) = &looks[0] else { panic!("{looks:?}") };
+        assert!(spawn_tracked(&mut friend, *id, sent));
+        let l = horse(&mut friend, llama);
+        assert_eq!((l.chest, l.body_item.as_deref()), (true, Some("minecraft:black_carpet")));
+    }
+
+    #[test]
+    fn a_friend_sees_llama_spit_fly() {
+        let mut host = EntityWorld::default();
+        let (spit, _) = spawn(&mut host, "{id:\"minecraft:llama_spit\",Pos:[3.5d,66.0d,0.5d],Motion:[0.0d,0.0d,1.5d],Rotation:[0.0f,0.0f]}");
+        let mut trackers = Trackers::default();
+        let watchers = [watcher(2, 0.5)];
+        let first = update(&mut trackers, &host, &watchers);
+        let mut friend = EntityWorld::default();
+        for event in first.events_of(2) {
+            let MobEvent::Add(id, tag) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, tag));
+        }
+        assert!(is_projectile(&friend, spit));
+        {
+            let e = host.llama_spit_mut(spit).unwrap();
+            e.spit.position = DVec3::new(3.5, 66.0, 2.0);
+            e.spit.yaw = 45.0;
+        }
+        let later = update(&mut trackers, &host, &watchers);
+        for mob in later.moves_of(2).unwrap() {
+            show_on(&mut friend, mob);
+        }
+        let shown = &friend.llama_spits()[0];
+        assert_eq!((shown.spit.position, shown.spit.yaw, shown.previous_position), (DVec3::new(3.5, 66.0, 2.0), 45.0, DVec3::new(3.5, 66.0, 0.5)));
     }
 
     #[test]

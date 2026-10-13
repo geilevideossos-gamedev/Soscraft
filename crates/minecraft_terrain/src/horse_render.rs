@@ -25,6 +25,8 @@ pub fn texture_ids(horse: &HorseState, baby: bool) -> (ResourceId, Option<Resour
     let suffix = if baby { "_baby" } else { "" };
     match horse.kind {
         HorseKind::Donkey => (ResourceId::parse(&format!("minecraft:entity/horse/donkey{suffix}")).unwrap(), None),
+        HorseKind::Mule => (ResourceId::parse(&format!("minecraft:entity/horse/mule{suffix}")).unwrap(), None),
+        HorseKind::Llama | HorseKind::TraderLlama => (ResourceId::parse(&llama_texture(horse.variant, baby)).unwrap(), None),
         HorseKind::Horse => {
             const COATS: [&str; 7] = ["white", "creamy", "chestnut", "brown", "black", "gray", "darkbrown"];
             const MARKINGS: [Option<&str>; 5] = [None, Some("white"), Some("whitefield"), Some("whitedots"), Some("blackdots")];
@@ -38,11 +40,18 @@ pub fn texture_ids(horse: &HorseState, baby: bool) -> (ResourceId, Option<Resour
     }
 }
 
+pub fn llama_texture(variant: i32, baby: bool) -> String {
+    const COATS: [&str; 4] = ["creamy", "white", "brown", "gray"];
+    let coat = COATS[variant.clamp(0, 3) as usize];
+    let suffix = if baby { "_baby" } else { "" };
+    format!("minecraft:entity/llama/llama_{coat}{suffix}")
+}
+
 /// Every equine texture the renderers can ask for.
 pub fn all_textures() -> Vec<ResourceId> {
     let mut out = Vec::new();
     for suffix in ["", "_baby"] {
-        for name in ["horse_white", "horse_creamy", "horse_chestnut", "horse_brown", "horse_black", "horse_gray", "horse_darkbrown", "horse_markings_white", "horse_markings_whitefield", "horse_markings_whitedots", "horse_markings_blackdots", "donkey"] {
+        for name in ["horse_white", "horse_creamy", "horse_chestnut", "horse_brown", "horse_black", "horse_gray", "horse_darkbrown", "horse_markings_white", "horse_markings_whitefield", "horse_markings_whitedots", "horse_markings_blackdots", "donkey", "mule"] {
             out.push(ResourceId::parse(&format!("minecraft:entity/horse/{name}{suffix}")).unwrap());
         }
     }
@@ -190,7 +199,7 @@ fn model(kind: HorseKind, baby: bool, chest: bool, anim: &Anim) -> Vec<(Part, Cu
             out.push((body, Cube { grow: 0.05, ..cube([-5.0, -8.0, -17.0], [10.0, 10.0, 22.0], [0.0, 32.0]) }));
             let tail = body.child([0.0, -5.0 + p.tail_offset[0], 2.0 + p.tail_offset[1]], [p.tail[0], p.tail[1], 0.0]);
             out.push((tail, Cube { grow: g, ..cube([-1.5, 0.0, 0.0], [3.0, 14.0, 4.0], [42.0, 36.0]) }));
-            if kind == HorseKind::Donkey && chest {
+            if matches!(kind, HorseKind::Donkey | HorseKind::Mule) && chest {
                 let chest = cube([-4.0, 0.0, -2.0], [8.0, 8.0, 3.0], [26.0, 21.0]);
                 out.push((body.child([6.0, -8.0, 0.0], [0.0, -PI / 2.0, 0.0]), cube(chest.from, chest.size, chest.uv)));
                 out.push((body.child([-6.0, -8.0, 0.0], [0.0, PI / 2.0, 0.0]), chest));
@@ -207,7 +216,8 @@ fn model(kind: HorseKind, baby: bool, chest: bool, anim: &Anim) -> Vec<(Part, Cu
                     out.push((head, Cube { grow: -0.001, ..cube([0.55, -13.0, 4.0], [2.0, 3.0, 1.0], [19.0, 16.0]) }));
                     out.push((head, Cube { grow: -0.001, ..cube([-2.55, -13.0, 4.0], [2.0, 3.0, 1.0], [19.0, 16.0]) }));
                 }
-                HorseKind::Donkey => {
+                HorseKind::Llama | HorseKind::TraderLlama => {}
+                HorseKind::Donkey | HorseKind::Mule => {
                     let ear = || cube([-1.0, -7.0, 0.0], [2.0, 7.0, 1.0], [0.0, 12.0]);
                     out.push((head.child([1.25, -10.0, 4.0], [PI / 12.0, 0.0, PI / 12.0]), ear()));
                     out.push((head.child([-1.25, -10.0, 4.0], [PI / 12.0, 0.0, -PI / 12.0]), ear()));
@@ -240,7 +250,8 @@ fn model(kind: HorseKind, baby: bool, chest: bool, anim: &Anim) -> Vec<(Part, Cu
             out.push((head.child([2.0, -4.2484, 1.9451], [0.0, 0.0, 0.2618]), cube([-1.0, -2.5, -0.8], [2.0, 3.0, 1.0], [0.0, 4.0])));
             out.push((head.child([-2.0, -4.2484, 1.645], [0.0, 0.0, -0.2618]), cube([-1.0, -2.5, -0.5], [2.0, 3.0, 1.0], [0.0, 0.0])));
         }
-        (HorseKind::Donkey, true) => {
+        (HorseKind::Llama | HorseKind::TraderLlama, true) => {}
+        (HorseKind::Donkey | HorseKind::Mule, true) => {
             let mut p = setup(anim, BABY_DONKEY, [3.5, -5.3]);
             // `BabyDonkeyModel.setupAnim` pitches the head again from a
             // fixed -30 degrees, without the walk's nod.
@@ -276,6 +287,8 @@ fn layer_scale(kind: HorseKind, baby: bool) -> f32 {
         (_, true) => 1.0,
         (HorseKind::Horse, false) => 1.1,
         (HorseKind::Donkey, false) => 0.87,
+        (HorseKind::Mule, false) => 0.92,
+        (HorseKind::Llama | HorseKind::TraderLlama, false) => 1.0,
     }
 }
 
@@ -290,7 +303,7 @@ pub fn append_horses<'a>(
 ) {
     let mut marks = Vec::new();
     for entity in horses {
-        let Some(horse) = &entity.horse else { continue };
+        let Some(horse) = entity.horse.as_ref().filter(|h| !h.kind.is_llama()) else { continue };
         let Some(mob) = poses.pose(entity.id, partial) else { continue };
         marks.push((mesh.vertices.len(), mob.overlay(0.0)));
         let baby = entity.cow.age.baby();
@@ -374,5 +387,20 @@ mod tests {
         let (coat, markings) = texture_ids(&HorseState::new(HorseKind::Donkey), true);
         assert_eq!(coat, ResourceId::parse("minecraft:entity/horse/donkey_baby").unwrap());
         assert!(markings.is_none());
+    }
+
+    #[test]
+    fn a_mule_is_a_donkey_scaled_to_0_92_in_its_own_coat() {
+        let (coat, markings) = texture_ids(&HorseState::new(HorseKind::Mule), false);
+        assert_eq!(coat, ResourceId::parse("minecraft:entity/horse/mule").unwrap());
+        assert!(markings.is_none());
+        let (baby, _) = texture_ids(&HorseState::new(HorseKind::Mule), true);
+        assert_eq!(baby, ResourceId::parse("minecraft:entity/horse/mule_baby").unwrap());
+        assert_eq!(layer_scale(HorseKind::Mule, false), 0.92);
+        let mule = model(HorseKind::Mule, false, true, &still());
+        let donkey = model(HorseKind::Donkey, false, true, &still());
+        assert_eq!(mule.len(), donkey.len());
+        assert_eq!(model(HorseKind::Mule, true, false, &still()).len(), model(HorseKind::Donkey, true, false, &still()).len());
+        assert!(all_textures().contains(&ResourceId::parse("minecraft:entity/horse/mule_baby").unwrap()));
     }
 }
