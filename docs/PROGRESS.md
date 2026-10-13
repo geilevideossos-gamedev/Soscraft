@@ -32,7 +32,7 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 |---|---|---|
 | A. Multiplayer fixes | track-a | **merged** 2db4cf47 + 57302e99 (5 conflicts with B, all both-sides; the message round-trip test counted one new message too few). 17 commits from the run (its own review stopped early with a progress note), then a second review (5 areas, 2 skeptics per finding) confirmed 7 defects, fixed e578f44f..d990a882 (rider head swing, frozen dragon for friends, sneak edge, ladders, adventure respawn, two log steps). Full suite green apart from that test, which passed after the fix; worktree and target removed; owner steps `docs/round9/track-a-log.md` and `docs/round9/release-1-tests.md` |
 | B. Items and the screen | track-b | **merged** 2e13b78c (full suite green, 10.2 min); 12 commits f7cfddd4..fa5d1bf0: faint 0.5 s hit flash and no pain vision on Minecraft maps (B10), potion colours in icons, hands, drops, frames, other players and effect swirls (B9), books read from the hand, edit and sign screens, friends through the host, tooltips (B8); review fixed 1 defect (an owner step asked for a friend's first-person potion); worktree and target removed; owner steps `docs/round9/track-b-log.md` (not in this branch any more: in minecraft-survival) |
-| C. Guns and grenades as real items | track-c | c1 running |
+| C. Guns and grenades as real items | track-c | c1 done (21 commits up to d69f2140: fork item table, saving as vanilla carriers with custom_data, arsenal, drops and first-join loadout, recipes, attachments, recipe book, creative; review fixed 1 defect, rustfmt on a new file; clippy fixes). Then minecraft-survival (A and B) merged into track-c (12 conflicting files; PROTOCOL 5, since release 1 shipped 4), checked by a second agent, tag `r9-c2-base`; then c2 (ammo ... damage-totem) with base `r9-c2-base`. Workflow script `run-c2b.js` in the scratchpad. |
 | D. Finish survival | track-d | d1 running |
 
 ## Release builds
@@ -49,6 +49,7 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 - Four tracks at once in gentle mode: D: had 45 GB free; a watchdog warns below 10 GB.
 
 ## Log
+- 2026-10-13: track C c1 done; A and B being merged into track C, then c2.
 - 2026-10-13: track A merged (57302e99); release 1 built and copied in; test steps `docs/round9/release-1-tests.md`.
 - 2026-10-13: track B merged (2e13b78c), full suite green.
 - 2026-10-13: briefs done (28 agents); tracks A, B, C (c1) and D (d1) started.
