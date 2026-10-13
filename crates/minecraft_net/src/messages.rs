@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 3;
+pub const PROTOCOL: u16 = 4;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -462,9 +462,10 @@ pub enum MenuKind {
     Dispenser,
     Dropper,
     Beacon,
+    Merchant,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum MenuExtras {
     #[default]
     None,
@@ -476,6 +477,30 @@ pub enum MenuExtras {
         cost: i32,
         name: Option<String>,
     },
+    Merchant {
+        villager: u64,
+        profession: String,
+        level: i32,
+        xp: i32,
+        future_xp: i32,
+        show_progress: bool,
+        selected: Option<u16>,
+        offers: Vec<NetOffer>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NetOffer {
+    pub cost_a: Nbt,
+    pub cost_b: Option<Nbt>,
+    pub result: Nbt,
+    pub uses: i32,
+    pub max_uses: i32,
+    pub xp: i32,
+    pub special_price: i32,
+    pub demand: i32,
+    pub price_multiplier: f32,
+    pub reward_exp: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -12,7 +12,7 @@ use crate::client_mobs::{ServerMob, server_mobs};
 pub const LOOK_TICKS: u64 = 10;
 pub const DEFAULT_RANGE: i32 = 5;
 
-const VOLATILE: [&str; 26] = [
+const VOLATILE: [&str; 28] = [
     "Pos",
     "Motion",
     "Rotation",
@@ -35,6 +35,8 @@ const VOLATILE: [&str; 26] = [
     "LastRestock",
     "RestocksToday",
     "Gossips",
+    "Offers",
+    "Xp",
     "LastGossipDecay",
     "FoodLevel",
     "active_effects",
@@ -755,6 +757,21 @@ mod tests {
             .and_then(|saddle| saddle.get("id"))
             .and_then(Tag::as_str);
         assert_eq!(saddle, Some("minecraft:saddle"));
+    }
+
+    #[test]
+    fn a_trade_changes_no_look_but_a_new_level_does() {
+        let before = saved(
+            "{id:\"minecraft:villager\",Xp:0,Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1}}]},VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1}}",
+        );
+        let traded = saved(
+            "{id:\"minecraft:villager\",Xp:2,Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1},uses:1}]},VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1}}",
+        );
+        assert_eq!(look(&before), look(&traded));
+        let levelled = saved(
+            "{id:\"minecraft:villager\",Xp:10,VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:2}}",
+        );
+        assert_ne!(look(&before), look(&levelled), "the badge shows the level");
     }
 
     #[test]

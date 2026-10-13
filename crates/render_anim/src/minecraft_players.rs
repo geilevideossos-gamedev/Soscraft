@@ -1852,7 +1852,7 @@ pub(crate) fn friend_menus(
         || entities.random_float(),
     );
     let at = player.place.map_or([0.0; 3], |place| place.feet);
-    let traded = minecraft_survival::menus::merchant(player, entities, at, false, !player.dead);
+    let traded = minecraft_survival::menus::merchant(player, entities, at, true, !player.dead);
     clicked.thrown.extend(traded.thrown);
     let Some(ps) = ps else {
         if let Some(feet) = player.place.map(|place| place.feet) {

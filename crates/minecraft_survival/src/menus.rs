@@ -1,7 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 
 use minecraft_commands::Text;
-use minecraft_net::messages::{Click, MenuAction, MenuExtras, MenuKind, MenuSlot, MenuView, Nbt};
+use minecraft_net::messages::{
+    Click, MenuAction, MenuExtras, MenuKind, MenuSlot, MenuView, Nbt, NetOffer,
+};
 use minecraft_net::{Dimension, PlayerUuid, ToClient};
 use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::crafting::{self, Grid, Spot};
@@ -9,7 +11,10 @@ use minecraft_terrain::openers::RECHECK_TICKS;
 use minecraft_terrain::scene::{BlockPos, HandcraftedScene, Scene};
 use minecraft_terrain::server::{MerchantOp, MerchantView};
 use minecraft_terrain::stations::{Bench, Context, StationBook, Taken, Workshop};
+use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::enchant::Enchantments;
+use minecraftoss_entities::trading::{ItemCost, MerchantOffer, TradeItem};
+use minecraftoss_entities::villager::Profession;
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
@@ -1196,8 +1201,135 @@ fn kind_of(open: &Open) -> MenuKind {
             Workshop::Anvil => MenuKind::Anvil,
             Workshop::Enchanting => MenuKind::Enchanting,
         },
-        Open::Merchant(_) => MenuKind::Inventory,
+        Open::Merchant(_) => MenuKind::Merchant,
     }
+}
+
+fn net_item(id: &str, count: i32, components: Option<&serde_json::Value>) -> Nbt {
+    let mut map = std::collections::BTreeMap::from([
+        ("id".to_owned(), Tag::String(id.to_owned())),
+        ("count".to_owned(), Tag::Int(count)),
+    ]);
+    if let Some(components) = components.and_then(minecraft_terrain::item_nbt::components_tag) {
+        map.insert("components".to_owned(), components);
+    }
+    Nbt(minecraftoss_core::nbt::write(&Tag::Compound(map), ""))
+}
+
+fn item_of(nbt: &Nbt) -> Option<(String, i32, Option<serde_json::Value>)> {
+    let tag = minecraftoss_core::nbt::read(&nbt.0).ok()?;
+    let id = tag.get("id")?.as_str()?.to_owned();
+    let count = tag.get("count").and_then(Tag::as_i64).unwrap_or(1);
+    let components = tag
+        .get("components")
+        .and_then(minecraft_terrain::item_nbt::saved_components)
+        .map(|components| minecraft_terrain::item_nbt::tag_json(&components));
+    Some((id, i32::try_from(count).ok()?, components))
+}
+
+pub fn net_offer(offer: &MerchantOffer) -> NetOffer {
+    let sold = (!offer.sell.components.is_empty())
+        .then(|| serde_json::Value::Object(offer.sell.components.clone()));
+    NetOffer {
+        cost_a: net_item(&offer.buy.id, offer.buy.count, offer.buy.components.as_ref()),
+        cost_b: offer
+            .buy_b
+            .as_ref()
+            .map(|cost| net_item(&cost.id, cost.count, cost.components.as_ref())),
+        result: net_item(&offer.sell.id, offer.sell.count, sold.as_ref()),
+        uses: offer.uses,
+        max_uses: offer.max_uses,
+        xp: offer.xp,
+        special_price: offer.special_price,
+        demand: offer.demand,
+        price_multiplier: offer.price_multiplier,
+        reward_exp: offer.reward_exp,
+    }
+}
+
+pub fn offer_of(offer: &NetOffer) -> Option<MerchantOffer> {
+    let cost = |nbt: &Nbt| {
+        item_of(nbt).map(|(id, count, components)| ItemCost {
+            id,
+            count,
+            components,
+        })
+    };
+    let (id, count, components) = item_of(&offer.result)?;
+    let components = match components {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    Some(MerchantOffer {
+        buy: cost(&offer.cost_a)?,
+        buy_b: offer.cost_b.as_ref().and_then(cost),
+        sell: TradeItem {
+            id,
+            count,
+            components,
+        },
+        uses: offer.uses,
+        max_uses: offer.max_uses,
+        reward_exp: offer.reward_exp,
+        special_price: offer.special_price,
+        demand: offer.demand,
+        price_multiplier: offer.price_multiplier,
+        xp: offer.xp,
+    })
+}
+
+fn merchant_extras(screen: &MerchantScreen) -> MenuExtras {
+    let view = &screen.view;
+    MenuExtras::Merchant {
+        villager: view.villager,
+        profession: view.profession.to_owned(),
+        level: view.level,
+        xp: view.xp,
+        future_xp: view.future_xp,
+        show_progress: true,
+        selected: screen
+            .selected
+            .and_then(|selected| u16::try_from(selected).ok()),
+        offers: view.offers.iter().map(net_offer).collect(),
+    }
+}
+
+fn mirror_merchant(view: &MenuView, cells: &[Option<ItemStack>]) -> Option<Open> {
+    let MenuExtras::Merchant {
+        villager,
+        profession,
+        level,
+        xp,
+        future_xp,
+        selected,
+        offers,
+        ..
+    } = &view.extras
+    else {
+        return None;
+    };
+    let profession = Profession::ALL
+        .iter()
+        .map(|known| known.id())
+        .find(|id| id == profession)
+        .unwrap_or(Profession::None.id());
+    let cell = |index: usize| cells.get(index).cloned().flatten();
+    Some(Open::Merchant(MerchantScreen {
+        view: MerchantView {
+            villager: *villager,
+            profession,
+            level: *level,
+            xp: *xp,
+            offers: offers.iter().filter_map(offer_of).collect(),
+            payment: [cell(0), cell(1)],
+            result: cell(2),
+            future_xp: *future_xp,
+            max_stacks: Vec::new(),
+            name: None,
+        },
+        selected: selected.map(usize::from),
+        held: VecDeque::new(),
+    }))
 }
 
 struct Viewer<'a> {
@@ -1234,6 +1366,7 @@ fn snapshot(menu: &Menu, viewer: &Viewer<'_>, containers: &mut Containers, carri
                 name: bench.name.clone(),
             }
         }
+        Open::Merchant(screen) => merchant_extras(screen),
         _ => MenuExtras::None,
     };
     Sent {
@@ -1540,6 +1673,7 @@ fn mirror_open(view: &MenuView, cells: &[Option<ItemStack>], data: [i32; 4]) -> 
         MenuKind::Grindstone => bench(Workshop::Grindstone),
         MenuKind::Smithing => bench(Workshop::Smithing),
         MenuKind::Stonecutter => bench(Workshop::Stonecutter),
+        MenuKind::Merchant => mirror_merchant(view, cells),
         MenuKind::Loom
         | MenuKind::Cartography
         | MenuKind::Hopper
@@ -2298,7 +2432,7 @@ mod tests {
     }
 
     #[test]
-    fn the_server_closes_the_trading_screen_and_friends_turn_it_down_for_now() {
+    fn the_server_closes_the_trading_screen_and_a_player_who_cannot_show_it_turns_it_down() {
         let mut chat = CommandServer::new(crate::commands::HOST);
         let mut steve = trading(&mut chat);
         let shown = merchant_news(&mut steve, vec![MerchantNews::Closing], true, false);
@@ -2338,5 +2472,161 @@ mod tests {
             Some(Open::Table(_))
         ));
         assert_eq!(sent(&mut busy), [MerchantOp::Close]);
+    }
+    fn offer(buy: (&str, i32), sell: (&str, i32), uses: i32) -> MerchantOffer {
+        MerchantOffer {
+            buy: ItemCost {
+                id: buy.0.to_owned(),
+                count: buy.1,
+                components: None,
+            },
+            buy_b: None,
+            sell: TradeItem {
+                id: sell.0.to_owned(),
+                count: sell.1,
+                components: serde_json::Map::new(),
+            },
+            uses,
+            max_uses: 12,
+            reward_exp: true,
+            special_price: 0,
+            demand: 0,
+            price_multiplier: 0.05,
+            xp: 2,
+        }
+    }
+
+    #[test]
+    fn an_offer_crosses_the_network_with_its_costs_components_and_prices() {
+        let mut book = offer(("minecraft:emerald", 10), ("minecraft:enchanted_book", 1), 3);
+        book.buy_b = Some(ItemCost {
+            id: "minecraft:book".to_owned(),
+            count: 1,
+            components: None,
+        });
+        book.sell.components.insert(
+            "minecraft:stored_enchantments".to_owned(),
+            serde_json::json!({"minecraft:mending": 1}),
+        );
+        book.buy.components = Some(serde_json::json!({"minecraft:custom_name": "Coin"}));
+        book.special_price = -3;
+        book.demand = 5;
+        book.reward_exp = false;
+        book.xp = 10;
+        let back = offer_of(&net_offer(&book)).expect("the offer");
+        assert_eq!(back, book);
+        assert_eq!(back.cost_a_count(64), book.cost_a_count(64));
+        let sold_out = offer(("minecraft:wheat", 20), ("minecraft:emerald", 1), 12);
+        let back = offer_of(&net_offer(&sold_out)).expect("the offer");
+        assert!(back.out_of_stock());
+        assert_eq!(back, sold_out);
+    }
+
+    #[test]
+    fn a_friend_s_trading_screen_is_sent_and_mirrored_with_its_offers() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut alex = player(&mut chat, 1, "Alex");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let mut view = trade_view(9);
+        let mut cheap = offer(("minecraft:wheat", 20), ("minecraft:emerald", 1), 0);
+        cheap.special_price = -4;
+        view.offers = vec![
+            cheap,
+            offer(("minecraft:emerald", 1), ("minecraft:bread", 6), 12),
+        ];
+        view.level = 2;
+        view.xp = 15;
+        let shown = merchant_news(&mut alex, vec![MerchantNews::Opened(view.clone())], true, false);
+        assert!(shown.opened, "a friend's screen opens on the host");
+        let out = changes(&mut alex, &mut containers, books(&book));
+        let views = opened_views(&out);
+        let first = views.last().expect("the trading screen is sent");
+        assert_eq!(first.kind, MenuKind::Merchant);
+        assert_eq!(first.slots.len(), 3);
+        let MenuExtras::Merchant {
+            villager,
+            profession,
+            level,
+            xp,
+            offers,
+            selected: None,
+            ..
+        } = &first.extras
+        else {
+            panic!("{:?}", first.extras);
+        };
+        assert_eq!((*villager, profession.as_str(), *level, *xp), (9, "minecraft:farmer", 2, 15));
+        assert_eq!(offers.len(), 2);
+        let recipes = RecipeBook::default();
+        let Some(Open::Merchant(mirrored)) = mirror(Some(first), &recipes).open else {
+            panic!("the friend mirrors a trading screen");
+        };
+        assert_eq!(mirrored.view.offers, view.offers);
+        assert_eq!(mirrored.view.profession, "minecraft:farmer");
+        assert_eq!((mirrored.view.level, mirrored.view.xp), (2, 15));
+        assert!(mirrored.view.offers[1].out_of_stock());
+        assert_eq!(mirrored.view.offers[0].cost_a_count(64), 16);
+        let _ = apply(
+            &mut alex,
+            &mut containers,
+            books(&book),
+            &MenuAction::Choose(1),
+            0.5,
+        );
+        assert_eq!(sent(&mut alex), [MerchantOp::Select(1)]);
+        let mut paid = view.clone();
+        paid.payment[0] = Some(ItemStack::new("minecraft:emerald", 1));
+        paid.result = Some(ItemStack::new("minecraft:bread", 6));
+        paid.future_xp = 17;
+        let _ = merchant_news(&mut alex, vec![answer(Some(paid))], true, false);
+        let out = changes(&mut alex, &mut containers, books(&book));
+        let views = opened_views(&out);
+        let resent = views.last().expect("new extras resend the screen");
+        assert_eq!(resent.menu, first.menu);
+        let Some(Open::Merchant(mirrored)) = mirror(Some(resent), &recipes).open else {
+            panic!("still trading");
+        };
+        assert_eq!(mirrored.selected, Some(1));
+        assert_eq!(mirrored.view.future_xp, 17);
+        assert_eq!(
+            mirrored.view.payment[0].as_ref().map(|stack| stack.id.as_str()),
+            Some("minecraft:emerald")
+        );
+        assert_eq!(
+            mirrored.view.result.as_ref().map(|stack| stack.count),
+            Some(6)
+        );
+        let message = Click {
+            menu: resent.menu,
+            state: resent.state,
+            action: MenuAction::Slot {
+                slot: MenuSlot::Output,
+                right: false,
+                shift: true,
+            },
+        };
+        let _ = click(&mut alex, &mut containers, books(&book), &message, 0.5);
+        assert_eq!(
+            sent(&mut alex),
+            [MerchantOp::Result { shift: true }],
+            "the friend's click reaches the same trade"
+        );
+        assert!(close_requested(&mut alex, resent.menu).is_empty());
+        let _ = merchant_news(&mut alex, vec![answer(None)], true, false);
+        assert_eq!(sent(&mut alex), [MerchantOp::Close]);
+        let out = changes(&mut alex, &mut containers, books(&book));
+        assert!(
+            out.iter()
+                .all(|message| !matches!(message, ToClient::MenuClose { .. })),
+            "the friend closed it, so no close goes back"
+        );
+        let _ = merchant_news(&mut alex, vec![MerchantNews::Opened(view)], true, false);
+        let out = changes(&mut alex, &mut containers, books(&book));
+        let again = opened_views(&out).last().map(|view| view.menu).expect("reopened");
+        let shown = merchant_news(&mut alex, vec![MerchantNews::Closing], true, false);
+        assert!(shown.closed);
+        let out = changes(&mut alex, &mut containers, books(&book));
+        assert!(out.contains(&ToClient::MenuClose { menu: again }), "{out:?}");
     }
 }

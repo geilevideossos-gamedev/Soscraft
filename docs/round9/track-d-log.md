@@ -256,18 +256,93 @@ After 0535f063.
 IW4L_MINECRAFT_KIT=minecraft:emerald*64,minecraft:emerald*64,minecraft:emerald*64,minecraft:paper*64,minecraft:paper*64,minecraft:book*64,minecraft:wheat*64,minecraft:string*64,minecraft:stick*64,minecraft:coal*64,minecraft:rotten_flesh*64,minecraft:iron_ingot*32,minecraft:villager_spawn_egg*4,minecraft:composter,minecraft:lectern,minecraft:fletching_table,minecraft:red_bed,minecraft:oak_fence*64,minecraft:cobblestone*64,minecraft:cooked_beef*32
 ```
 
+## Group trading-friend
+
+### 1. Friends trade with Minecraft villagers
+
+After ec8dd240.
+
+- **Vanilla (26.3):** `ClientboundMerchantOffersPacket` carries the container id, the offers, the villager level, its xp, `showProgress` and `canRestock`. `MerchantOffer.STREAM_CODEC` sends per offer the first cost (`ItemCost`: item, count, component predicate), the result stack, the optional second cost, out of stock, uses, max uses, xp, special price, price multiplier and demand. The client works out the discounted first cost itself (`getModifiedCostCount` with the item's max stack size) and keeps the picked offer (`shopItem`) locally, telling the server with `ServerboundSelectTradePacket`. The server runs every click on the real `MerchantMenu`.
+- **Changed:**
+  - `minecraft_net/src/messages.rs`:
+    - **`PROTOCOL` goes from 3 to 4.** This is track D's only bump.
+    - New `MenuKind::Merchant`.
+    - New `MenuExtras::Merchant { villager, profession, level, xp, future_xp, show_progress, selected, offers: Vec<NetOffer> }`.
+    - New `NetOffer`: the first cost, the second cost and the result as item NBT (`id`, `count` as an int, `components`), uses, max uses, xp, special price, demand, price multiplier and the reward flag.
+    - `MenuExtras` is no longer `Eq`, because the price multiplier is a float. Nothing needed it.
+  - `minecraft_survival/src/menus.rs`:
+    - `kind_of` gives `MenuKind::Merchant` for a trading screen (it gave the never-sent `Inventory`).
+    - `snapshot` builds the merchant extras from the player's `MerchantScreen`: `net_offer` for each offer, and the picked offer as `selected`.
+    - `sync` already sends a fresh `MenuOpen` when the extras change. So every trade, level-up, payment (future xp) and picked offer reaches the friend. The payment and result cells go as the menu's three slots, and the cursor as `carried`.
+    - `mirror_open` builds `Open::Merchant` on the friend (`mirror_merchant`):
+      - the offers come back through `offer_of`;
+      - the profession is matched to `Profession::ALL` (`minecraft:none` when unknown);
+      - the payments and result come from the slots, `selected` from the extras, and there are no held clicks;
+      - `max_stacks` stays empty: the friend's screen takes each item's stack size from its own recipe book, as the vanilla client takes it from its item registry.
+    - New public `net_offer` and `offer_of`.
+  - `render_anim/src/minecraft_players.rs`: `friend_menus` lets the trading news open a friend's screen (`shows` is now true).
+    - A friend's right-click on a villager opens the same level-thread menu the host uses, keyed by the friend's player id.
+    - The friend's clicks already came to `menus::click` on the host and become the same `MerchantOp`s.
+    - Death, leaving the level and a disconnect already closed a friend's screen through `close_merchant_now`.
+  - The friend's side needed no new code: `show_menus` and the inventory publishing in `render_anim` already turn `mirror` into the HUD's `McScreen::Merchant` and `ui.merchant`.
+  - `minecraft_terrain/src/mob_tracking.rs`: `Offers` and `Xp` are in `VOLATILE`, so a trade no longer resends the villager's look tag to every watcher. A level change still does, for the badge.
+- **Tests:**
+  - `codec::tests::every_message_to_the_client_round_trips` now holds a merchant menu with two offers:
+    - a discounted one (special price -3, demand 4, a second cost);
+    - a sold-out one (16 of 16 uses, no second cost, no reward).
+  - `codec::tests::a_trading_screen_keeps_its_discounted_and_sold_out_offers`: the decoded extras keep the villager, the profession, the picked offer, and both offers' prices, uses and flags. An empty merchant round-trips too.
+  - `menus::tests::an_offer_crosses_the_network_with_its_costs_components_and_prices`: an enchanted book offer comes back equal, with the same discounted first cost. It has a component cost, a second cost, a special price, demand and no reward. A sold-out offer stays sold out.
+  - `menus::tests::a_friend_s_trading_screen_is_sent_and_mirrored_with_its_offers`:
+    - The host opens a friend's screen and sends `MenuKind::Merchant` with three slots and the extras.
+    - The mirror gives `Open::Merchant` with equal offers, the discounted cost (20 - 4 = 16) and the sold-out flag.
+    - The friend's pick goes out as `Select`. After the answer, a fresh `MenuOpen` with the same menu id carries the pick, the future xp, the payment and the result.
+    - A friend's shift-click on the result becomes `Result { shift: true }`.
+    - The friend's own close sends `Close` and no `MenuClose` back. The level's close sends `MenuClose`.
+  - `menus::tests::the_server_closes_the_trading_screen_and_a_player_who_cannot_show_it_turns_it_down`: renamed from `..._and_friends_turn_it_down_for_now`, with the same checks. A player whose screen cannot show still answers `Close`.
+  - `mob_tracking::tests::a_trade_changes_no_look_but_a_new_level_does`.
+  - Runs: `minecraft_net` 16, `minecraft_survival` lib 601, `render_anim` lib 150 and `minecraft_terrain` lib 1130 (3 ignored), all green. `check -p launcher` is green.
+- **Decisions:**
+  - **The picked offer travels in the extras (`selected`)** instead of living on the friend.
+    - The host already keeps it in `MerchantScreen.selected`, and the HUD reads it as `ui.chosen`. So the friend's highlight and the big sold-out cross follow the host after one round trip.
+    - Vanilla keeps it on the client. The outcome on screen is the same.
+  - `NetOffer` also carries the offer's xp, as vanilla's codec does, besides the reward flag the brief named. So the friend's offer equals the host's.
+  - Costs and results go as NBT built from the offer's id, count and components. The count is an int, so counts above a stack survive. They don't go through `slot_nbt`, which caps counts at 99 and would need an `ItemStack`.
+  - `show_progress` is always true until the wandering trader (group `wandering-trader`) exists. Like the host's, the friend's screen still shows the bar for every merchant.
+  - Each change of the extras resends the whole menu (three slots plus the offers), as the anvil and enchanting extras already do. A friend's click made before the resend arrives is stale: it still acts and asks for a resend, as for every menu.
+- **Test steps:** two windows, survival, difficulty normal. Start them with `scripts\mp-local.ps1 -Exe iw4l-survival.exe -World mp-r9-trading -Fresh -FriendKit`.
+  1. Host: put a composter down and hatch a villager egg next to it, wait until it is a farmer, and fence it in. Friend: walk up and right-click it. The friend gets the same vanilla trading screen: "Farmer - Novice", the offer buttons, the payment and result slots and the experience bar (**21_friend_trading_screen**).
+  2. Friend: hover the offers to see the tooltips, then click one.
+     - It stays highlighted, the payments move from the friend's inventory into the slots, and the result shows.
+     - Take the result, then shift-click it to trade as often as the items last.
+     - The friend's emeralds or wheat change in the hotbar and the bar fills. Green particles show over the villager when it levels up (**22_friend_trade_done**).
+  3. Host, while the friend's screen is open: right-click the same villager. Nothing opens, because it trades with the friend. Friend: press Escape. Host: right-click again. The host's screen opens and shows the uses the friend's trades used up (**23_host_after_friend**).
+  4. Friend: buy one cheap offer until it is sold out. Its arrow gets the red cross. While it is picked, the big cross between the payments and the result shows (**24_friend_sold_out**).
+  5. Friend: put payments in, then walk 8 blocks away with the screen open. It closes and the payments are back in the friend's inventory.
+  6. Friend: hit the villager once and right-click it again. The friend's screen shows the old price struck through with the higher one next to it. Reputation is per player, so the host's prices stay as they were (**25_friend_price_up**).
+  7. Friend: open the screen with payments in the slots, then the host runs `/kill <friend's name>`. The screen closes, and the payments are in the friend's death drop.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:emerald*64,minecraft:emerald*64,minecraft:emerald*64,minecraft:paper*64,minecraft:book*64,minecraft:wheat*64,minecraft:wheat*64,minecraft:string*64,minecraft:stick*64,minecraft:coal*64,minecraft:rotten_flesh*64,minecraft:iron_ingot*32,minecraft:villager_spawn_egg*4,minecraft:composter,minecraft:lectern,minecraft:fletching_table,minecraft:red_bed,minecraft:oak_fence*64,minecraft:cobblestone*64,minecraft:cooked_beef*32
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
 - `docs/MINECRAFT-SURVIVAL.md`: right-clicking an adult villager with a job opens its vanilla trading screen for the host: the offer buttons with their payments, arrows and results, the struck-through old price on a changed price, a crossed arrow on a sold-out offer, the scroller beyond 7 offers (wheel and drag), the experience bar with the coming experience, and the title "<Profession or name> - <Level>". Picking an offer fills the payments from the inventory, the result trades once or, shift-clicked, as often as the items last, and a shift-click moves stacks between inventory and hotbar. Trades give the villager experience, level it up with new offers and Regeneration, and drop experience orbs (3 to 6, 5 more on a level-up). Prices follow reputation and Hero of the Village. The screen closes when the villager is out of reach (8 blocks), dies or sleeps, and the payments return to the inventory (or drop when it is full); dying or leaving the level closes it the same way. Babies shake their heads. Friends cannot trade yet.
+- `docs/MINECRAFT-SURVIVAL.md`: friends trade with villagers like the host: the same trading screen, prices, experience, level-ups and closing rules. A villager trades with one player at a time. This replaces "Friends cannot trade yet" above.
+- `docs/MULTIPLAYER.md`:
+  - `minecraft_net::PROTOCOL` is 4 (track D, round 9: `MenuKind::Merchant`, `MenuExtras::Merchant` and `NetOffer`). The code block at line 162 and the note at line 1415 read 4.
+  - Section 20 and the leftover lists at lines 1303 and 1331 drop "trading screens". New wording: "A friend opens a villager's trading screen on the host's level thread. The offers, level, xp, coming xp and picked offer ride in `MenuExtras::Merchant`, and the friend's clicks run on the host."
+- `CLAUDE.md` roadmap item 2: drop "trading screens" from the multiplayer leftovers.
 
 ## Vendored files
 
-Patched by track D: 6 (`entities/src/lib.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/zombie.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`). Added: 1 (`entities/src/drowned_ai.rs`).
+Unchanged by group `trading-friend`. Patched by track D: 6 (`entities/src/lib.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/zombie.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`). Added: 1 (`entities/src/drowned_ai.rs`).
 
 ## Left for later
 
 - Ocean ruin drowned: the generator's `finalize_spawn` (`generator/src/feature/entities.rs`) gives them only `Mob.finalizeSpawn`; vanilla runs `Drowned.finalizeSpawn` with the `STRUCTURE` reason (trident roll, shell, zombie nautilus jockey).
 - Zombie nautilus jockeys for natural drowned with tridents (needs mob 38, group `nautiluses`).
 - The drowned's raised trident uses the plain held model; vanilla draws `item/trident_throwing` while the item is in use (`minecraft:using_item`), which needs a using flag on `mesh::HeldItem`.
-- Trading: friends' screens (group `trading-friend`); number keys, Q, double-click gathering and drags on the payment and result slots.
+- Trading: number keys, Q, double-click gathering and drags on the payment and result slots.
