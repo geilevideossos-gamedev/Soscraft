@@ -457,10 +457,10 @@ impl EntityView {
         self.growls
             .retain(|id, _| drawn.iter().any(|dragon| dragon.id == *id));
         for dragon in &drawn {
-            if flaps
-                .iter()
-                .any(|&(id, _, flapped)| id == dragon.id && flapped)
-            {
+            let Some(&(_, _, flapped)) = flaps.iter().find(|&&(id, _, _)| id == dragon.id) else {
+                continue;
+            };
+            if flapped {
                 let pitch = 0.8 + self.random.next_float() * 0.3;
                 self.sounds
                     .push((FLAP_SOUND.to_owned(), dragon.position, SOUND_VOLUME, pitch));
@@ -1082,5 +1082,60 @@ impl EntityView {
             out.shadows = shadows;
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minecraft_terrain::ender_dragon::{DragonView, FLAP_SOUND, GROWL_SOUND};
+
+    fn dragon(tick_count: i32) -> DragonView {
+        let flap_time = tick_count as f32 * 0.1;
+        DragonView {
+            id: 3,
+            uuid: [0; 4],
+            position: DVec3::new(0.0, 80.0, 0.0),
+            previous_position: DVec3::new(0.0, 80.0, 0.0),
+            y_rot: 0.0,
+            flap_time,
+            o_flap_time: flap_time - 0.1,
+            history: Vec::new(),
+            health: 200.0,
+            hurt_time: 0,
+            death_time: 0,
+            sitting: false,
+            phase: 0,
+            parts: [DVec3::new(0.0, 80.0, 0.0); 8],
+            tick_count,
+            nearest_crystal: None,
+        }
+    }
+
+    fn voices(frozen: bool) -> usize {
+        let mut view = EntityView::new(7);
+        for tick in 0..400 {
+            let mut snapshot = EntitySnapshot {
+                dragons: vec![dragon(if frozen { 0 } else { tick })],
+                ..Default::default()
+            };
+            view.receive(&mut snapshot, &[]);
+            view.advance(
+                0.05,
+                crate::tick_rate::ClientTiming::default(),
+                &[],
+                DVec3::ZERO,
+            );
+        }
+        view.sounds
+            .iter()
+            .filter(|(sound, ..)| sound == FLAP_SOUND || sound == GROWL_SOUND)
+            .count()
+    }
+
+    #[test]
+    fn a_dragon_frozen_on_the_host_makes_no_flap_or_growl_on_the_client() {
+        assert!(voices(false) > 0);
+        assert_eq!(voices(true), 0);
     }
 }

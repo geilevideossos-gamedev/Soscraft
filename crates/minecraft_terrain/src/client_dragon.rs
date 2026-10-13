@@ -28,6 +28,8 @@ struct ClientDragon {
     tick_count: i32,
     death_time: i32,
     recorded: bool,
+    host_tick: Option<i32>,
+    held: bool,
 }
 
 impl ClientDragon {
@@ -41,10 +43,19 @@ impl ClientDragon {
             tick_count: view.tick_count,
             death_time: view.death_time,
             recorded: false,
+            host_tick: None,
+            held: false,
         }
     }
 
     fn receive(&mut self, view: &DragonView) {
+        self.held = self.host_tick == Some(view.tick_count);
+        self.host_tick = Some(view.tick_count);
+        if self.held {
+            self.o_flap_time = self.flap_time;
+            self.latest = view.clone();
+            return;
+        }
         self.step = view.flap_time - view.o_flap_time;
         if (self.tick_count - view.tick_count).abs() > RESYNC_TICKS {
             self.tick_count = view.tick_count;
@@ -121,6 +132,10 @@ impl ClientDragons {
             let Some(body) = self.bodies.get(dragon.latest.id) else {
                 continue;
             };
+            if dragon.held {
+                dragon.o_flap_time = dragon.flap_time;
+                continue;
+            }
             dragon.tick_count += 1;
             dragon.o_flap_time = dragon.flap_time;
             if dragon.dying() {
@@ -173,6 +188,8 @@ struct ClientFireball {
     position: DVec3,
     previous_position: DVec3,
     velocity: DVec3,
+    host: DVec3,
+    held: bool,
 }
 
 impl ClientFireball {
@@ -200,6 +217,14 @@ impl ClientFireballs {
                 .find(|fireball| fireball.id == view.id)
             {
                 Some(fireball) => {
+                    fireball.held = fireball.host == view.position;
+                    fireball.host = view.position;
+                    if fireball.held {
+                        fireball.position = view.position;
+                        fireball.previous_position = view.position;
+                        fireball.velocity = DVec3::ZERO;
+                        continue;
+                    }
                     if !fireball.on_track(view.position) {
                         fireball.position = view.position;
                         fireball.previous_position = view.previous_position;
@@ -211,6 +236,8 @@ impl ClientFireballs {
                     position: view.position,
                     previous_position: view.previous_position,
                     velocity,
+                    host: view.position,
+                    held: false,
                 }),
             }
         }
@@ -218,7 +245,7 @@ impl ClientFireballs {
 
     pub fn tick(&mut self) {
         use minecraftoss_entities::fireball::{ACCELERATION_POWER, INERTIA, normalize};
-        for fireball in &mut self.fireballs {
+        for fireball in self.fireballs.iter_mut().filter(|fireball| !fireball.held) {
             fireball.velocity = (fireball.velocity
                 + normalize(fireball.velocity) * ACCELERATION_POWER)
                 * f64::from(INERTIA);
@@ -390,6 +417,7 @@ mod tests {
         let before = drawn(&dragons).history;
         for tick in 9..14 {
             let mut next = dying.clone();
+            next.tick_count = tick;
             next.position.y += f64::from(tick - 8);
             dragons.receive(&[next]);
             dragons.tick();
@@ -418,6 +446,7 @@ mod tests {
         }
         assert_eq!(flaps, 1, "one beat in ten ticks at a step of 0.1");
         let mut held = view.clone();
+        held.tick_count = 1;
         held.flap_time = 0.5;
         held.o_flap_time = 0.5;
         dragons.receive(&[held]);
@@ -514,6 +543,7 @@ mod tests {
         dragons.receive(&[view.clone()]);
         assert_eq!(drawn(&dragons).tick_count, 110, "resynced to the host");
         let mut dying = view.clone();
+        dying.tick_count = 111;
         dying.health = 0.0;
         dying.death_time = 5;
         dying.hurt_time = 3;
@@ -528,12 +558,15 @@ mod tests {
             (0.0, 3),
             "the host's own values"
         );
+        dying.tick_count = 112;
         dying.death_time = 8;
         dragons.receive(&[dying.clone()]);
         assert_eq!(drawn(&dragons).death_time, 9);
+        dying.tick_count = 113;
         dying.death_time = 30;
         dragons.receive(&[dying.clone()]);
         assert_eq!(drawn(&dragons).death_time, 30);
+        dying.tick_count = 114;
         dying.death_time = DEATH_TICKS;
         dragons.receive(&[dying]);
         for _ in 0..5 {
@@ -615,6 +648,85 @@ mod tests {
         assert!(fireballs.views().is_empty(), "a gone fireball is forgotten");
         fireballs.tick();
         assert!(fireballs.views().is_empty());
+    }
+
+    #[test]
+    fn a_frozen_host_dragon_and_its_fireballs_hold_still_on_the_client() {
+        let mut dragons = ClientDragons::default();
+        let mut fireballs = ClientFireballs::default();
+        let mut host = HostFireball {
+            position: DVec3::new(0.0, 80.0, 0.0),
+            velocity: DVec3::new(1.9, 0.0, 0.0),
+        };
+        let mut shot = host.tick();
+        for tick in 0..=5 {
+            let mut view = flying(1, tick);
+            view.flap_time = 0.3 + 0.1 * tick as f32;
+            view.o_flap_time = view.flap_time - 0.1;
+            view.nearest_crystal = Some(4);
+            dragons.receive(&[view]);
+            dragons.tick();
+            shot = host.tick();
+            fireballs.receive(&[shot]);
+            fireballs.tick();
+        }
+        let mut frozen = flying(1, 5);
+        frozen.flap_time = 0.8;
+        frozen.o_flap_time = 0.7;
+        frozen.nearest_crystal = Some(4);
+        dragons.receive(&[frozen.clone()]);
+        fireballs.receive(&[shot]);
+        let still = drawn(&dragons);
+        assert_eq!(still.o_flap_time, still.flap_time);
+        assert_eq!(
+            fireballs.views(),
+            vec![FireballView {
+                previous_position: shot.position,
+                ..shot
+            }]
+        );
+        for _ in 0..12 {
+            assert!(
+                dragons.tick().is_empty(),
+                "no flap sound and no growl clock"
+            );
+            fireballs.tick();
+            dragons.receive(&[frozen.clone()]);
+            fireballs.receive(&[shot]);
+            let shown = drawn(&dragons);
+            assert_eq!(
+                (
+                    shown.flap_time,
+                    shown.o_flap_time,
+                    shown.tick_count,
+                    shown.death_time
+                ),
+                (
+                    still.flap_time,
+                    still.flap_time,
+                    still.tick_count,
+                    still.death_time
+                )
+            );
+            assert_eq!(shown.history, still.history);
+            let ball = fireballs.views()[0];
+            assert_eq!(
+                (ball.position, ball.previous_position),
+                (shot.position, shot.position)
+            );
+        }
+        let mut resumed = flying(1, 6);
+        resumed.flap_time = 0.9;
+        resumed.o_flap_time = 0.8;
+        dragons.receive(&[resumed]);
+        assert_eq!(dragons.tick().len(), 1);
+        let shown = drawn(&dragons);
+        assert_eq!(shown.tick_count, still.tick_count + 1);
+        assert!(shown.flap_time > still.flap_time);
+        let moved = host.tick();
+        fireballs.receive(&[moved]);
+        fireballs.tick();
+        assert!(fireballs.views()[0].position.x > shot.position.x);
     }
 
     fn at_fireball(view: &FireballView, partial: f64) -> DVec3 {
