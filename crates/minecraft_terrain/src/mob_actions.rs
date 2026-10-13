@@ -37,6 +37,7 @@ pub struct MobOutcome {
     pub inventory_changed: bool,
     pub broken: Vec<String>,
     pub mount: Option<u64>,
+    pub mount_inventory: Option<u64>,
 }
 
 impl MobOutcome {
@@ -137,6 +138,11 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
     let mut outcome = MobOutcome::default();
     match hit {
         MobHit::Cow(id) if world.cows().iter().any(|e| e.id == id && e.horse.is_some()) => {
+            if world.vehicle_of(minecraftoss_entities::world::Rider::Player(actor.player)).is_none() && world.horse_opens_inventory(id, actor.player) {
+                outcome.handled = true;
+                outcome.mount_inventory = Some(id);
+                return outcome;
+            }
             if world.horse_rides_on_use(id, actor.player, held.as_deref()) {
                 outcome.handled = true;
                 outcome.mount = Some(id);
@@ -656,7 +662,8 @@ mod tests {
         let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:stick");
         assert_eq!(outcome.mount, Some(id), "a tame horse is ridden with any other item");
         world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }]);
-        assert!(!would_interact(&world, MobHit::Cow(id), &holding(None), 0, false, 0), "crouching on a tame horse is for its inventory");
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:stick");
+        assert_eq!((outcome.mount, outcome.mount_inventory), (None, Some(id)), "crouching on a tame horse opens its inventory");
         world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, ..Default::default() }]);
         assert!(world.force_riding(minecraftoss_entities::world::Rider::Player(7), id));
         let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:stick");

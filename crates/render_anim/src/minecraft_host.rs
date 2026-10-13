@@ -153,6 +153,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
                     session.push_menu(MenuInput::Close(menu));
                 }
             }
+            Ok(ToServer::OpenMountInventory) => {
+                if let Some(session) = host.sessions.sessions.get_mut(&client) {
+                    session.push_menu(MenuInput::OpenMount);
+                }
+            }
             Ok(ToServer::CreditsDone) => {
                 if host.sessions.sessions.contains_key(&client) {
                     host.credits_done.push(client);

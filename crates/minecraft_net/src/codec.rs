@@ -214,6 +214,7 @@ mod tests {
             ToServer::CreditsDone => 9,
             ToServer::Lectern { .. } => 10,
             ToServer::LeaveBed => 11,
+            ToServer::OpenMountInventory => 12,
         }
     }
 
@@ -300,6 +301,7 @@ mod tests {
                 button: None,
             },
             ToServer::LeaveBed,
+            ToServer::OpenMountInventory,
         ]
     }
 
@@ -506,6 +508,18 @@ mod tests {
                 Text::literal("Bob"),
                 trades(),
             ),
+            menu(
+                11,
+                MenuKind::Mount,
+                Text::translate("entity.minecraft.llama", Vec::new()),
+                MenuExtras::Mount {
+                    mount: u64::MAX - 7,
+                    columns: 5,
+                    saddle: false,
+                    armor: true,
+                    llama: true,
+                },
+            ),
             ToClient::MenuSlots {
                 menu: 7,
                 state: 2,
@@ -627,7 +641,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 12];
+        let mut seen = [false; 13];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -703,6 +717,42 @@ mod tests {
             offers: Vec::new(),
         };
         round_trip(Lane::Reliable, &menu(5, MenuKind::Merchant, Text::literal(""), empty));
+    }
+
+    #[test]
+    fn a_horse_inventory_keeps_its_columns_and_slots() {
+        let mut message = menu(
+            6,
+            MenuKind::Mount,
+            Text::translate("entity.minecraft.donkey", Vec::new()),
+            MenuExtras::Mount {
+                mount: 42,
+                columns: 5,
+                saddle: true,
+                armor: false,
+                llama: false,
+            },
+        );
+        if let ToClient::MenuOpen(view) = &mut message {
+            view.slots = vec![None; 17];
+            view.slots[0] = Some(Nbt(vec![10, 0, 0, 0]));
+        }
+        let bytes = encode(Lane::Reliable, &message).unwrap();
+        let ToClient::MenuOpen(view) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+            panic!("a menu");
+        };
+        assert_eq!(view.kind, MenuKind::Mount);
+        assert_eq!(
+            view.extras,
+            MenuExtras::Mount {
+                mount: 42,
+                columns: 5,
+                saddle: true,
+                armor: false,
+                llama: false
+            }
+        );
+        assert_eq!((view.slots.len(), view.slots[0].is_some()), (17, true));
     }
 
     #[test]

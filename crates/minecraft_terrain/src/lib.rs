@@ -90,6 +90,7 @@ pub mod mob_tracking;
 pub mod armor_render;
 pub mod horse_render;
 pub mod llama_render;
+pub mod mount_inventory;
 pub mod poof_particles;
 pub mod portal_particles;
 pub mod spell_particles;

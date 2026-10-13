@@ -1884,6 +1884,8 @@ pub(crate) fn friend_menus(
             ps.origin[2] + ps.view_height_current,
         ],
     );
+    let mounted = minecraft_survival::menus::mount(player, entities, eye, false, !player.dead);
+    clicked.thrown.extend(mounted.thrown);
     let invalid = player
         .menus
         .open

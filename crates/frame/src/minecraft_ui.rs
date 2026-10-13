@@ -80,6 +80,12 @@ pub enum McScreen {
     Creative(crate::McTabKind),
     Lectern,
     Merchant,
+    Mount {
+        columns: u8,
+        saddle: bool,
+        armor: bool,
+        llama: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -246,6 +252,7 @@ pub struct MinecraftUi {
     pub effects: Vec<McEffect>,
     pub ui_sounds: Vec<&'static str>,
     pub jump_bar: Option<f32>,
+    pub inventory_key_opened: bool,
 }
 
 impl MinecraftUi {

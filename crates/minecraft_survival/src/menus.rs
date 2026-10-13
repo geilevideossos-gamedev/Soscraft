@@ -7,6 +7,7 @@ use minecraft_net::messages::{
 use minecraft_net::{Dimension, PlayerUuid, ToClient};
 use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::crafting::{self, Grid, Spot};
+use minecraft_terrain::mount_inventory::MountInventory;
 use minecraft_terrain::openers::RECHECK_TICKS;
 use minecraft_terrain::scene::{BlockPos, HandcraftedScene, Scene};
 use minecraft_terrain::server::{MerchantOp, MerchantView};
@@ -41,6 +42,7 @@ pub enum Open {
     Block(Opened),
     Bench(BlockPos, Bench),
     Merchant(MerchantScreen),
+    Mount(MountInventory),
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +113,8 @@ pub struct Menus {
     told: Option<u8>,
     merchant_ops: Vec<MerchantOp>,
     merchant_waiting: bool,
+    mount_updates: Vec<MountInventory>,
+    mount_key: bool,
 }
 
 impl Default for Menus {
@@ -128,6 +132,8 @@ impl Default for Menus {
             told: None,
             merchant_ops: Vec::new(),
             merchant_waiting: false,
+            mount_updates: Vec::new(),
+            mount_key: false,
         }
     }
 }
@@ -192,6 +198,7 @@ pub enum MenuInput {
     Click(Click),
     Rename(String),
     Close(u8),
+    OpenMount,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -345,7 +352,7 @@ pub fn still_valid(menu: &Menu, scene: &HandcraftedScene, eye: [f64; 3]) -> bool
         Open::Bench(pos, bench) => {
             near(*pos) && Scene::block(scene, *pos).and_then(Workshop::of) == Some(bench.kind)
         }
-        Open::Merchant(_) => true,
+        Open::Merchant(_) | Open::Mount(_) => true,
     }
 }
 
@@ -424,6 +431,7 @@ fn stack_at(
         MenuSlot::Container(index) => match &menu?.open {
             Open::Block(opened) => containers.cells(opened).get(usize::from(index))?.clone(),
             Open::Bench(_, bench) => bench.cells.get(usize::from(index))?.clone(),
+            Open::Mount(mount) => mount.cells.get(usize::from(index))?.clone(),
             _ => None,
         },
         MenuSlot::Result | MenuSlot::WorkbenchResult | MenuSlot::Output => None,
@@ -458,6 +466,7 @@ fn valid_slot(menu: Option<&Menu>, containers: &mut Containers, slot: MenuSlot) 
         Some(Open::Block(opened)) => containers.cells(opened).len(),
         Some(Open::Bench(_, bench)) => bench.cells.len(),
         Some(Open::Merchant(_)) => 3,
+        Some(Open::Mount(mount)) => mount.cells.len(),
         _ => 0,
     };
     let table = matches!(menu.map(|menu| &menu.open), Some(Open::Table(_)));
@@ -727,6 +736,40 @@ fn merchant_local(action: &MenuAction) -> bool {
     }
 }
 
+fn mount_action(
+    mount: &mut MountInventory,
+    inventory: &mut Inventory,
+    action: &MenuAction,
+    thrown: &mut Vec<ItemStack>,
+) {
+    match action {
+        MenuAction::Slot {
+            slot: MenuSlot::Inventory(index),
+            shift: true,
+            ..
+        } => mount.quick_move_from_player(inventory, usize::from(*index)),
+        MenuAction::Slot {
+            slot: MenuSlot::Container(index),
+            right,
+            shift,
+        } => mount.click(inventory, usize::from(*index), *right, *shift),
+        MenuAction::Swap {
+            slot: MenuSlot::Container(index),
+            hotbar,
+        } => mount.swap(inventory, usize::from(*index), usize::from(*hotbar)),
+        MenuAction::Throw {
+            slot: MenuSlot::Container(index),
+            whole,
+        } => {
+            if inventory.cursor.is_none() {
+                thrown.extend(mount.throw(usize::from(*index), *whole));
+            }
+        }
+        _ if merchant_local(action) => grid_action(action, inventory, Grid::Inventory, thrown),
+        _ => {}
+    }
+}
+
 fn merchant_action(
     screen: &mut MerchantScreen,
     ops: &mut Vec<MerchantOp>,
@@ -785,6 +828,18 @@ pub fn apply(
                 busy,
                 &mut clicked.thrown,
             );
+            return;
+        }
+        if let Some(Menu {
+            open: Open::Mount(mount),
+            ..
+        }) = menus.open.as_mut()
+        {
+            let before = mount.cells.clone();
+            mount_action(mount, inventory, action, &mut clicked.thrown);
+            if mount.cells != before {
+                menus.mount_updates.push(mount.clone());
+            }
             return;
         }
         let grid = match menus.open.as_ref().map(|menu| &menu.open) {
@@ -956,6 +1011,7 @@ pub fn take_inputs(
             }
             MenuInput::Rename(name) => rename(player, &name, language),
             MenuInput::Close(menu) => clicked.thrown.extend(close_requested(player, menu)),
+            MenuInput::OpenMount => player.menus.mount_key = true,
         }
     }
     clicked
@@ -1151,6 +1207,7 @@ fn contents(
             cells.push(screen.view.result.clone());
             (cells, [0; 4])
         }
+        Open::Mount(mount) => (mount.cells.clone(), [0; 4]),
     }
 }
 
@@ -1202,6 +1259,7 @@ fn kind_of(open: &Open) -> MenuKind {
             Workshop::Enchanting => MenuKind::Enchanting,
         },
         Open::Merchant(_) => MenuKind::Merchant,
+        Open::Mount(_) => MenuKind::Mount,
     }
 }
 
@@ -1367,6 +1425,13 @@ fn snapshot(menu: &Menu, viewer: &Viewer<'_>, containers: &mut Containers, carri
             }
         }
         Open::Merchant(screen) => merchant_extras(screen),
+        Open::Mount(mount) => MenuExtras::Mount {
+            mount: mount.vehicle,
+            columns: u8::try_from(mount.columns).unwrap_or(u8::MAX),
+            saddle: mount.saddle,
+            armor: mount.armor,
+            llama: mount.llama,
+        },
         _ => MenuExtras::None,
     };
     Sent {
@@ -1674,6 +1739,7 @@ fn mirror_open(view: &MenuView, cells: &[Option<ItemStack>], data: [i32; 4]) -> 
         MenuKind::Smithing => bench(Workshop::Smithing),
         MenuKind::Stonecutter => bench(Workshop::Stonecutter),
         MenuKind::Merchant => mirror_merchant(view, cells),
+        MenuKind::Mount => mirror_mount(view, cells),
         MenuKind::Loom
         | MenuKind::Cartography
         | MenuKind::Hopper
@@ -1681,6 +1747,93 @@ fn mirror_open(view: &MenuView, cells: &[Option<ItemStack>], data: [i32; 4]) -> 
         | MenuKind::Dropper
         | MenuKind::Beacon => None,
     }
+}
+
+fn mirror_mount(view: &MenuView, cells: &[Option<ItemStack>]) -> Option<Open> {
+    let MenuExtras::Mount {
+        mount,
+        columns,
+        saddle,
+        armor,
+        llama,
+    } = view.extras
+    else {
+        return None;
+    };
+    let columns = usize::from(columns);
+    let mut cells = cells.to_vec();
+    cells.resize(minecraft_terrain::mount_inventory::CHEST + columns * 3, None);
+    Some(Open::Mount(MountInventory {
+        vehicle: mount,
+        columns,
+        saddle,
+        armor,
+        llama,
+        cells,
+    }))
+}
+
+pub fn mount_title(world: &minecraftoss_entities::world::EntityWorld, vehicle: u64) -> Text {
+    let kind = world
+        .entity_type(vehicle)
+        .unwrap_or("minecraft:horse")
+        .rsplit(':')
+        .next()
+        .unwrap_or("horse");
+    Text::translate(format!("entity.minecraft.{kind}"), Vec::new())
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MountShown {
+    pub opened: bool,
+    pub closed: bool,
+    pub thrown: Vec<ItemStack>,
+}
+
+pub fn mount(
+    player: &mut Player,
+    entities: &mut Entities,
+    eye: [f64; 3],
+    riding_key: bool,
+    alive: bool,
+) -> MountShown {
+    let id = u64::from(player.id.0);
+    let mut shown = MountShown::default();
+    let mut wanted = entities.take_mount_menus(id);
+    let riding_key = std::mem::take(&mut player.menus.mount_key) || riding_key;
+    if riding_key
+        && let Some(vehicle) = player.riding.map(|ride| ride.vehicle)
+        && entities.view.world.horse_opens_inventory(vehicle, id)
+    {
+        wanted.push(vehicle);
+    }
+    for vehicle in wanted {
+        if !alive || player.menus.open.is_some() {
+            continue;
+        }
+        let Some(inventory) =
+            MountInventory::of(&entities.view.world, vehicle, &player.inventory.recipes)
+        else {
+            continue;
+        };
+        let title = mount_title(&entities.view.world, vehicle);
+        shown.opened |= open(player, Open::Mount(inventory), title, 0);
+    }
+    let invalid = match player.menus.open.as_ref().map(|menu| &menu.open) {
+        Some(Open::Mount(inventory)) => {
+            !alive
+                || !inventory.still_valid(&entities.view.world, glam::DVec3::from_array(eye))
+        }
+        _ => false,
+    };
+    if invalid {
+        shown.thrown = close(player);
+        shown.closed = true;
+    }
+    for update in std::mem::take(&mut player.menus.mount_updates) {
+        entities.set_mount_inventory(&update);
+    }
+    shown
 }
 
 pub fn stacks(slots: &[Option<Nbt>], recipes: &RecipeBook) -> Vec<Option<ItemStack>> {
@@ -2520,6 +2673,74 @@ mod tests {
         let back = offer_of(&net_offer(&sold_out)).expect("the offer");
         assert!(back.out_of_stock());
         assert_eq!(back, sold_out);
+    }
+
+    #[test]
+    fn a_horse_inventory_turns_clicks_into_level_updates_and_a_friend_mirrors_it() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut alex = player(&mut chat, 1, "Alex");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let donkey = MountInventory {
+            vehicle: 33,
+            columns: 5,
+            saddle: true,
+            armor: false,
+            llama: false,
+            cells: vec![None; 17],
+        };
+        assert!(open(
+            &mut alex,
+            Open::Mount(donkey),
+            Text::translate("entity.minecraft.donkey", Vec::new()),
+            0
+        ));
+        alex.inventory.slots[0] = Some(ItemStack::new("minecraft:saddle", 1));
+        alex.inventory.slots[9] = Some(ItemStack::new("minecraft:wheat", 16));
+        let shift = |slot: u8| MenuAction::Slot {
+            slot: MenuSlot::Inventory(slot),
+            right: false,
+            shift: true,
+        };
+        let _ = apply(&mut alex, &mut containers, books(&book), &shift(0), 0.5);
+        let _ = apply(&mut alex, &mut containers, books(&book), &shift(9), 0.5);
+        let _ = apply(
+            &mut alex,
+            &mut containers,
+            books(&book),
+            &MenuAction::Slot {
+                slot: MenuSlot::Inventory(20),
+                right: false,
+                shift: false,
+            },
+            0.5,
+        );
+        let updates = std::mem::take(&mut alex.menus.mount_updates);
+        assert_eq!(updates.len(), 2, "only the clicks that changed the donkey go to the level");
+        assert!(updates[1].saddled() && updates[1].items()[0].as_ref().is_some_and(|s| s.count == 16));
+        assert!(alex.inventory.slots[0].is_none() && alex.inventory.slots[9].is_none());
+        let out = changes(&mut alex, &mut containers, books(&book));
+        let views = opened_views(&out);
+        let view = views.last().expect("the horse inventory is sent");
+        assert_eq!((view.kind, view.slots.len()), (MenuKind::Mount, 17));
+        assert_eq!(
+            view.extras,
+            MenuExtras::Mount {
+                mount: 33,
+                columns: 5,
+                saddle: true,
+                armor: false,
+                llama: false
+            }
+        );
+        let recipes = RecipeBook::default();
+        let Some(Open::Mount(mirrored)) = mirror(Some(view), &recipes).open else {
+            panic!("the friend mirrors the horse inventory");
+        };
+        assert_eq!((mirrored.vehicle, mirrored.columns, mirrored.cells.len()), (33, 5, 17));
+        assert!(mirrored.saddled());
+        assert!(close(&mut alex).is_empty());
+        assert!(alex.menus.open.is_none());
     }
 
     #[test]

@@ -187,6 +187,7 @@ pub(crate) struct PlayerQueue {
     mob_slots: Vec<Vec<(usize, Option<ItemStack>)>>,
     broken: Vec<String>,
     mounts: Vec<u64>,
+    mount_menus: Vec<u64>,
     dismounts: Vec<(u64, Option<DVec3>)>,
     boost_waiting: Option<(usize, String)>,
     boosts_done: Vec<(usize, String)>,
@@ -312,6 +313,7 @@ impl PlayerQueues {
                 queue.mob_slots.push(result.slots.clone());
                 queue.broken.extend(result.broken.iter().cloned());
                 queue.mounts.extend(result.mounted);
+                queue.mount_menus.extend(result.mount_inventory);
                 queue.merchant_routed.extend(result.merchant.clone().map(MerchantNews::Opened));
             }
         }
@@ -879,6 +881,14 @@ impl Entities {
 
     pub fn take_mounts(&mut self, player: u64) -> Vec<u64> {
         self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.mounts))
+    }
+
+    pub fn take_mount_menus(&mut self, player: u64) -> Vec<u64> {
+        self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.mount_menus))
+    }
+
+    pub fn set_mount_inventory(&mut self, inventory: &minecraft_terrain::mount_inventory::MountInventory) {
+        self.server.mount_inventory(inventory);
     }
 
     pub fn take_dismounts(&mut self, player: u64) -> Vec<(u64, Option<DVec3>)> {

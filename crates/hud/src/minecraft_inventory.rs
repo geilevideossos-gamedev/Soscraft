@@ -253,6 +253,7 @@ pub(crate) fn update_minecraft_hud(
         ui.inventory_open = true;
     }
     if ui.inventory_open && !open_before {
+        ui.inventory_key_opened = true;
         ui.screen = McScreen::Inventory;
         if ui.game_mode == McGameMode::Creative
             && let Some(screen) = crate::minecraft_creative::screen_of(&ui.creative)

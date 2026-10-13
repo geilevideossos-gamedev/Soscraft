@@ -138,6 +138,7 @@ pub struct MobResult {
     pub merchant: Option<MerchantView>,
     pub broken: Vec<String>,
     pub mounted: Option<u64>,
+    pub mount_inventory: Option<u64>,
 }
 
 /// A player's trading screen as the client shows it: the villager's
@@ -442,7 +443,7 @@ impl ServerSim {
             .collect();
         self.spawn_trade_experience();
         let mounted = outcome.mount.filter(|&vehicle| self.mount(player, vehicle));
-        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(player), broken: outcome.broken, mounted }
+        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(player), broken: outcome.broken, mounted, mount_inventory: outcome.mount_inventory }
     }
 
     fn mount(&mut self, player: u64, vehicle: u64) -> bool {
@@ -2889,6 +2890,7 @@ pub enum Command {
     WakeVillagerIn(BlockPos),
     AngerPiglins { player: u64, feet: [f64; 3], sight: bool },
     Boost { player: u64 },
+    MountInventory { vehicle: u64, saddled: bool, body: Option<String>, items: Vec<Option<minecraftoss_player::inventory::ItemStack>> },
     RootVehicle { player: u64, remove: bool },
     Reattach { player: u64, root: Box<minecraftoss_core::nbt::Tag> },
     Job(Job),
@@ -3281,6 +3283,10 @@ impl ServerHandle {
         self.send(Command::Boost { player });
     }
 
+    pub fn mount_inventory(&mut self, inventory: &crate::mount_inventory::MountInventory) {
+        self.send(Command::MountInventory { vehicle: inventory.vehicle, saddled: inventory.saddled(), body: inventory.body(), items: inventory.items() });
+    }
+
     pub fn root_vehicle(&mut self, player: u64, remove: bool) {
         self.send(Command::RootVehicle { player, remove });
     }
@@ -3518,6 +3524,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::AngerPiglins { player, feet, sight } => sim.mobs.anger_nearby_piglins(player, glam::DVec3::from_array(feet), sight),
                 Command::Boost { player } => out.boosts.push((player, sim.mobs.boost_ride(player))),
+                Command::MountInventory { vehicle, saddled, body, items } => sim.mobs.set_mount_inventory(vehicle, saddled, body, items),
                 Command::RootVehicle { player, remove } => out.root_vehicles.push((player, sim.root_vehicle(player, remove))),
                 Command::Reattach { player, root } => out.mounts.extend(sim.reattach(player, &root).map(|vehicle| (player, vehicle))),
                 Command::WeatherData(data) => sim.set_weather_data(&data),

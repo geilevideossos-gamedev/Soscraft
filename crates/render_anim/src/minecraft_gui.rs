@@ -16,7 +16,7 @@ const GUTTER: u32 = 1;
 const SPRITES: &str = "assets/minecraft/textures/gui/sprites/";
 const MOB_EFFECTS: &str = "assets/minecraft/textures/mob_effect/";
 
-pub(crate) const CONTAINER_SHEETS: [&str; 17] = [
+pub(crate) const CONTAINER_SHEETS: [&str; 18] = [
     "inventory",
     "crafting_table",
     "generic_54",
@@ -31,12 +31,13 @@ pub(crate) const CONTAINER_SHEETS: [&str; 17] = [
     "stonecutter",
     "smithing",
     "villager",
+    "horse",
     "creative_inventory/tab_items",
     "creative_inventory/tab_item_search",
     "creative_inventory/tab_inventory",
 ];
 
-const SPRITE_FOLDERS: [&str; 14] = [
+const SPRITE_FOLDERS: [&str; 15] = [
     "container/slot/",
     "container/anvil/",
     "container/brewing_stand/",
@@ -49,11 +50,13 @@ const SPRITE_FOLDERS: [&str; 14] = [
     "container/blast_furnace/",
     "container/creative_inventory/",
     "container/villager/",
+    "container/horse/",
     "hud/heart/",
     "tooltip/",
 ];
 
-const LOOSE_SPRITES: [&str; 11] = [
+const LOOSE_SPRITES: [&str; 12] = [
+    "container/slot",
     "container/slot_highlight_back",
     "container/slot_highlight_front",
     "boss_bar/pink_background",
@@ -645,6 +648,10 @@ mod tests {
         assert!(gui.sheets.contains_key("villager"));
         assert_eq!(gui.sprites["container/villager/scroller"].rect[2..], [6, 27]);
         assert_eq!(gui.sprites["container/villager/discount_strikethrough"].rect[2..], [9, 2]);
+        assert!(gui.sheets.contains_key("horse"));
+        assert_eq!(gui.sprites["container/horse/chest_slots"].rect[2..], [90, 54]);
+        assert_eq!(gui.sprites["container/slot"].rect[2..], [18, 18]);
+        assert!(gui.sprites.contains_key("container/slot/llama_armor") && gui.sprites.contains_key("hud/jump_bar_progress"));
         assert_eq!(gui.sprites["container/creative_inventory/tab_top_selected_7"].rect[2..], [26, 32]);
         assert_eq!(gui.sprites["container/creative_inventory/tab_bottom_unselected_1"].rect[2..], [26, 32]);
         assert_eq!(gui.sprites["container/creative_inventory/scroller"].rect[2..], [12, 15]);

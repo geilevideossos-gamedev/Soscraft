@@ -612,6 +612,7 @@ pub(crate) fn screen_for(open: Option<&Open>) -> McScreen {
         Some(Open::Block(opened)) => screen_of(opened),
         Some(Open::Bench(_, bench)) => bench_screen(bench.kind),
         Some(Open::Merchant(_)) => McScreen::Merchant,
+        Some(Open::Mount(mount)) => McScreen::Mount { columns: u8::try_from(mount.columns).unwrap_or(u8::MAX), saddle: mount.saddle, armor: mount.armor, llama: mount.llama },
         Some(Open::Inventory) | None => McScreen::Inventory,
     }
 }
@@ -678,6 +679,11 @@ fn droppable(
         }
         McScreen::CraftingTable => out.extend((0..9).map(|i| (McSlot::Workbench(i), max))),
         McScreen::Merchant => out.extend((0..2).map(|i| (McSlot::Container(i), max))),
+        McScreen::Mount { columns, saddle, armor, llama } => {
+            let columns = usize::from(columns);
+            let mount = minecraft_terrain::mount_inventory::MountInventory { vehicle: 0, columns, saddle, armor, llama, cells: vec![None; minecraft_terrain::mount_inventory::CHEST + columns * 3] };
+            out.extend((0..mount.cells.len()).filter_map(|i| Some((McSlot::Container(i), mount.capacity(i, carried)?.min(max)))));
+        }
         McScreen::Creative(frame::McTabKind::Inventory) => {
             for index in 36..40 {
                 if armor_slot(index).is_some_and(|slot| inventory.recipes.equipment_slot(carried) == Some(slot)) {

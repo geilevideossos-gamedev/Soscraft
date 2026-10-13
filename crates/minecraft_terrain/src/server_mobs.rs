@@ -609,13 +609,15 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 horse.jump_strength = jump;
             }
             cow.health = health.unwrap_or(horse.max_health).min(horse.max_health);
+            horse.resize_inventory();
             if horse.chest {
                 for saved in tag.get("Items").and_then(Tag::as_list).into_iter().flatten() {
                     let Some(item) = text(saved, "id") else { continue };
+                    let Some(slot) = int(saved, "Slot").and_then(|slot| usize::try_from(slot).ok()).filter(|&slot| slot < horse.inventory.len()) else { continue };
                     let max = world.item_max_stack(item).clamp(1, 99) as u8;
                     let count = int(saved, "count").unwrap_or(1).clamp(1, i32::from(max)) as u8;
                     let components = saved.get("components").map(tag_json);
-                    horse.inventory.push(minecraftoss_player::inventory::ItemStack { id: item.to_owned(), count, max, components });
+                    horse.inventory[slot] = Some(minecraftoss_player::inventory::ItemStack { id: item.to_owned(), count, max, components });
                 }
             }
             let id = world.spawn_horse(cow, horse, no_ai);
@@ -1556,6 +1558,22 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
             if let Some(owner) = horse.owner {
                 fields.push(("Owner", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec())));
             }
+            if horse.chest {
+                let items = horse
+                    .inventory
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, stack)| {
+                        let stack = stack.as_ref()?;
+                        let mut item: std::collections::BTreeMap<String, Tag> = [("Slot".to_owned(), Tag::Byte(slot as i8)), ("id".to_owned(), text_tag(&stack.id)), ("count".to_owned(), Tag::Int(i32::from(stack.count)))].into_iter().collect();
+                        if let Some(components) = stack.components.as_ref() {
+                            item.insert("components".to_owned(), json_tag(components));
+                        }
+                        Some(Tag::Compound(item))
+                    })
+                    .collect();
+                fields.push(("Items", Tag::List(items)));
+            }
             let worn = body_equipment(originals.get(&e.id), horse.body_item.as_deref()).map(|slots| Tag::Compound([("equipment".to_owned(), slots)].into_iter().collect()));
             if let Some(equipment) = saddle_equipment(worn.as_ref().or(originals.get(&e.id)), horse.saddled) {
                 fields.push(("equipment", equipment));
@@ -2402,7 +2420,8 @@ mod tests {
         let horse_of = |world: &mut EntityWorld, id: u64| world.cow_mut(id).unwrap().horse.clone().unwrap();
         let m = horse_of(&mut world, ids[0]);
         assert!(m.chest && m.tame && m.temper == 40 && m.max_health == 22.0);
-        assert_eq!(m.inventory.iter().map(|s| (s.id.as_str(), s.count)).collect::<Vec<_>>(), [("minecraft:diamond", 3)]);
+        assert_eq!(m.inventory.iter().map(|s| s.as_ref().map(|s| (s.id.as_str(), s.count))).collect::<Vec<_>>()[..3], [None, None, Some(("minecraft:diamond", 3))]);
+        assert_eq!(m.inventory.len(), 15);
         let l = horse_of(&mut world, ids[1]);
         assert_eq!((l.kind, l.variant, l.strength, l.body_item.as_deref()), (HorseKind::Llama, 2, 4, Some("minecraft:red_carpet")));
         let t = horse_of(&mut world, ids[2]);
@@ -2414,12 +2433,15 @@ mod tests {
             h.body_item = Some("minecraft:blue_carpet".to_owned());
         }
         world.cow_mut(ids[2]).unwrap().horse.as_mut().unwrap().body_item = Some("minecraft:lime_carpet".to_owned());
+        world.cow_mut(ids[0]).unwrap().horse.as_mut().unwrap().inventory[4] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:apple", 5));
         let originals: std::collections::HashMap<u64, Tag> = ids.iter().copied().zip([mule, llama, trader]).collect();
         let saved = mob_tags_where(&world, |_, _| true, &originals, true);
         let tag_of = |id: u64| saved.iter().find(|(saved_id, _)| *saved_id == id).map(|(_, tag)| tag.clone()).unwrap();
         let mule_tag = tag_of(ids[0]);
         assert_eq!((int(&mule_tag, "ChestedHorse"), int(&mule_tag, "Temper"), int(&mule_tag, "Tame")), (Some(1), Some(40), Some(1)));
-        assert!(mule_tag.get("Items").is_some(), "the chest's items stay");
+        let items = mule_tag.get("Items").and_then(Tag::as_list).expect("the chest's items stay");
+        let slots: Vec<_> = items.iter().map(|item| (int(item, "Slot"), text(item, "id"), int(item, "count"))).collect();
+        assert_eq!(slots, [(Some(2), Some("minecraft:diamond"), Some(3)), (Some(4), Some("minecraft:apple"), Some(5))]);
         let llama_tag = tag_of(ids[1]);
         assert_eq!((int(&llama_tag, "Variant"), int(&llama_tag, "Strength"), int(&llama_tag, "ChestedHorse"), int(&llama_tag, "Age")), (Some(2), Some(4), Some(1), Some(-500)));
         let equipment = llama_tag.get("equipment").unwrap();

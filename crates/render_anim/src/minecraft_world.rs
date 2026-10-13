@@ -1302,12 +1302,22 @@ fn update(
         if traded.closed {
             ui.inventory_open = false;
         }
+        let riding_key = std::mem::take(&mut ui.inventory_key_opened) && player.riding.is_some();
+        let mounted = minecraft_survival::menus::mount(player, entities, eye, riding_key, alive);
+        if mounted.opened
+            && let Some(menu) = player.menus.open.as_ref()
+        {
+            inventory_ui.show_menu(&mut ui, menu);
+        }
+        if mounted.closed {
+            ui.inventory_open = false;
+        }
         for event in std::mem::take(&mut ui.ui_sounds) {
             if let Some(sounds) = sounds.as_mut() {
                 sounds.play_local(&world.packs, event, None, 1.0, 1.0);
             }
         }
-        let thrown: Vec<_> = creative_thrown.into_iter().chain(clicked.thrown).chain(traded.thrown).collect();
+        let thrown: Vec<_> = creative_thrown.into_iter().chain(clicked.thrown).chain(traded.thrown).chain(mounted.thrown).collect();
         if !ui.inventory_open
             && minecraft_survival::menus::open_station(player, containers, terrain, globals, &entities.recipes, open_table, open_block.take(), open_bench.take())
             && let Some(menu) = player.menus.open.as_ref()

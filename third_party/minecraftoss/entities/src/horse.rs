@@ -196,7 +196,7 @@ pub struct HorseState {
     pub jump_strength: f64,
     pub strength: i32,
     pub body_item: Option<String>,
-    pub inventory: Vec<minecraftoss_player::inventory::ItemStack>,
+    pub inventory: Vec<Option<minecraftoss_player::inventory::ItemStack>>,
     pub leashed: bool,
     pub despawn_delay: i32,
     pub fight: LlamaFight,
@@ -374,6 +374,11 @@ impl HorseState {
 
     pub fn set_strength(&mut self, strength: i32) {
         self.strength = strength.clamp(1, MAX_STRENGTH);
+    }
+
+    pub fn resize_inventory(&mut self) {
+        let size = (self.inventory_columns().max(0) * 3) as usize;
+        self.inventory.resize(size, None);
     }
 
     pub fn inventory_columns(&self) -> i32 {

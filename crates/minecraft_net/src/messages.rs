@@ -54,6 +54,7 @@ pub enum ToServer {
         button: Option<i32>,
     },
     LeaveBed,
+    OpenMountInventory,
 }
 
 impl ToServer {
@@ -465,6 +466,7 @@ pub enum MenuKind {
     Dropper,
     Beacon,
     Merchant,
+    Mount,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -488,6 +490,13 @@ pub enum MenuExtras {
         show_progress: bool,
         selected: Option<u16>,
         offers: Vec<NetOffer>,
+    },
+    Mount {
+        mount: u64,
+        columns: u8,
+        saddle: bool,
+        armor: bool,
+        llama: bool,
     },
 }
 

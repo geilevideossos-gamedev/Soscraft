@@ -88,7 +88,7 @@ pub(super) fn horse_death_equipment(horse: &HorseState, mob_drops: bool) -> Vec<
         out.push(ItemStack::new("minecraft:saddle", 1));
     }
     if horse.chest {
-        out.extend(horse.inventory.iter().cloned());
+        out.extend(horse.inventory.iter().flatten().cloned());
         out.push(ItemStack::new("minecraft:chest", 1));
     }
     out
@@ -701,6 +701,7 @@ impl EntityWorld {
         }
         if kind.is_chested() && !horse.chest && item == "minecraft:chest" {
             horse.chest = true;
+            horse.resize_inventory();
             if let Some(event) = horse_event(kind, baby, "chest") {
                 let (a, b) = (entity.random.next_float(), entity.random.next_float());
                 entity
@@ -746,6 +747,64 @@ impl EntityWorld {
             return InteractionResult::SuccessPredicted;
         }
         InteractionResult::Pass
+    }
+
+    pub fn horse_opens_inventory(&self, id: u64, player: u64) -> bool {
+        let Some(entity) = self.cows.iter().find(|e| e.id == id) else {
+            return false;
+        };
+        let riding = self.vehicle_of(Rider::Player(player));
+        entity.horse.as_ref().is_some_and(|h| h.tame)
+            && entity.cow.health > 0.0
+            && !entity.cow.age.baby()
+            && match riding {
+                Some(vehicle) => vehicle == id,
+                None => {
+                    self.passengers_of(id).is_empty()
+                        && self.player_controls(player).is_some_and(|c| c.sneaking)
+                }
+            }
+    }
+
+    pub fn set_mount_inventory(
+        &mut self,
+        id: u64,
+        saddled: bool,
+        body: Option<String>,
+        items: Vec<Option<ItemStack>>,
+    ) {
+        let Some(entity) = self.cows.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        let position = entity.cow.body.position;
+        let Some(horse) = entity.horse.as_mut() else {
+            return;
+        };
+        let mut sounds = Vec::new();
+        if horse.kind.saddleable() && horse.saddled != saddled {
+            horse.saddled = saddled;
+            if saddled {
+                sounds.push("entity.horse.saddle");
+            }
+        }
+        if horse.body_item != body {
+            if body.is_some() {
+                sounds.push(if horse.kind.is_llama() {
+                    "entity.llama.swag"
+                } else {
+                    "entity.horse.armor"
+                });
+            }
+            horse.body_item = body;
+        }
+        if horse.chest && items.len() == horse.inventory.len() {
+            horse.inventory = items;
+        }
+        for event in sounds {
+            entity
+                .voices
+                .push((Voice::Event(event, 1.0, 1.0), position));
+        }
     }
 
     pub fn horse_rides_on_use(&self, id: u64, player: u64, held: Option<&str>) -> bool {
@@ -1295,5 +1354,42 @@ mod tests {
         assert_eq!(world.controlling_player(id), None);
         let point = world.passenger_point(id).unwrap();
         assert!((point.y - f64::from(1.37_f32)).abs() < 1.0e-6 && (point.z + f64::from(0.3_f32)).abs() < 1.0e-6, "{point}");
+    }
+
+    #[test]
+    fn a_tame_horse_s_inventory_opens_on_a_crouching_click_or_from_its_saddle_and_the_screen_sets_its_slots() {
+        let mut world = EntityWorld::default();
+        let wild = equine(&mut world, HorseKind::Donkey, DVec3::new(0.5, 64.0, 0.5));
+        let donkey = equine(&mut world, HorseKind::Donkey, DVec3::new(4.5, 64.0, 0.5));
+        world.cow_mut(donkey).unwrap().horse.as_mut().unwrap().tame = true;
+        assert!(!world.horse_opens_inventory(donkey, 0), "a plain click rides it");
+        world.set_player_controls(&[crate::controls::PlayerControls {
+            id: 0,
+            sneaking: true,
+            ..Default::default()
+        }]);
+        assert!(world.horse_opens_inventory(donkey, 0));
+        assert!(!world.horse_opens_inventory(wild, 0), "a wild one has no inventory for you");
+        world.set_player_controls(&[crate::controls::PlayerControls {
+            id: 0,
+            ..Default::default()
+        }]);
+        assert!(world.start_riding(Rider::Player(0), donkey, &Floor));
+        assert!(world.horse_opens_inventory(donkey, 0), "its rider opens it with the inventory key");
+        let mut chest = holding("minecraft:chest");
+        world.drop_player(0);
+        world.horse_interact(donkey, 0, &mut chest, 0, false);
+        assert_eq!(world.cow_mut(donkey).unwrap().horse.as_ref().unwrap().inventory.len(), 15);
+        let mut items = vec![None; 15];
+        items[14] = Some(ItemStack::new("minecraft:wheat", 9));
+        world.set_mount_inventory(donkey, true, Some("minecraft:iron_horse_armor".to_owned()), items.clone());
+        let horse = world.cow_mut(donkey).unwrap().horse.clone().unwrap();
+        assert!(horse.saddled && horse.inventory == items);
+        assert_eq!(horse.body_item.as_deref(), Some("minecraft:iron_horse_armor"));
+        world.set_mount_inventory(donkey, true, None, vec![None; 3]);
+        assert_eq!(world.cow_mut(donkey).unwrap().horse.as_ref().unwrap().inventory, items, "a stale screen of another size is ignored");
+        let drops = horse_death_equipment(&world.cow_mut(donkey).unwrap().horse.clone().unwrap(), true);
+        let ids: Vec<_> = drops.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["minecraft:saddle", "minecraft:wheat", "minecraft:chest"]);
     }
 }

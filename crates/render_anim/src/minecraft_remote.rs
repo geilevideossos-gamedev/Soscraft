@@ -1144,6 +1144,9 @@ fn show_menus(
     if menu.is_none() && matches!(ui.screen, frame::McScreen::Creative(_)) {
         ui.screen = frame::McScreen::Inventory;
     }
+    if std::mem::take(&mut ui.inventory_key_opened) && menu.is_none() {
+        out.push(ToServer::OpenMountInventory);
+    }
     let (id, state) = menu
         .as_ref()
         .or(inventory_menu)
