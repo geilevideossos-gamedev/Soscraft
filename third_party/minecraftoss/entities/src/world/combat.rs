@@ -173,6 +173,9 @@ impl EntityWorld {
         if let Some(e) = self.snow_golems.iter().find(|e| e.id == id) {
             return Some((e.golem.body.clone(), e.golem.health));
         }
+        if let Some(e) = self.illagers.iter().find(|e| e.id == id) {
+            return Some((e.illager.body.clone(), e.illager.health));
+        }
         if let Some(e) = self.cows.iter().find(|e| e.id == id) {
             return Some((e.cow.body.clone(), e.cow.health));
         }
@@ -238,6 +241,8 @@ impl EntityWorld {
             (&mut e.trader.body, &mut e.random)
         } else if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == id) {
             (&mut e.golem.body, &mut e.random)
+        } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
+            (&mut e.illager.body, &mut e.random)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             (&mut e.cow.body, &mut e.random)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
@@ -344,6 +349,12 @@ impl EntityWorld {
             let time = self.game_time;
             e.hurt_from(amount, "minecraft:player_attack", Some(crate::monster_ai::Target::Player(player)), time)
         } else if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == id) {
+            let hit = e.hurt(amount);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
+            }
+            hit
+        } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
             if hit.applied {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));

@@ -7,11 +7,16 @@ use crate::wandering_trader::{self as trader, Drink};
 use glam::DVec3;
 use minecraftoss_player::{Pos, World};
 
-pub const GOAL_NAMES: [&str; 13] = [
+pub const GOAL_NAMES: [&str; 18] = [
     "FloatGoal",
     "UseItemGoal",
     "UseItemGoal",
     "TradeWithPlayerGoal",
+    "AvoidEntityGoal",
+    "AvoidEntityGoal",
+    "AvoidEntityGoal",
+    "AvoidEntityGoal",
+    "AvoidEntityGoal",
     "AvoidEntityGoal",
     "AvoidEntityGoal",
     "PanicGoal",
@@ -57,6 +62,12 @@ pub fn trader_goals() -> GoalSelector<MonsterGoalContext> {
             "minecraft:zombified_piglin",
         ]),
     );
+    for (illager, range) in trader::ILLAGERS_AVOIDED {
+        selector.add(
+            1,
+            AvoidEntityGoal::new(illager, range, trader::FLEE_SPEED, trader::FLEE_SPEED),
+        );
+    }
     let (zoglin, zoglin_range) = trader::AVOIDED[5];
     selector.add(
         1,

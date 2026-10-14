@@ -46,6 +46,13 @@ pub const AVOIDED: [(&str, f64); 6] = [
     ("minecraft:zombified_piglin", 8.0),
     ("minecraft:zoglin", 10.0),
 ];
+pub const ILLAGERS_AVOIDED: [(&str, f64); 5] = [
+    ("minecraft:evoker", 12.0),
+    ("minecraft:vindicator", 8.0),
+    ("minecraft:vex", 8.0),
+    ("minecraft:pillager", 15.0),
+    ("minecraft:illusioner", 12.0),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Drink {

@@ -34,6 +34,8 @@ pub mod health;
 pub mod hoglin;
 pub mod hoglin_brain;
 pub mod horse;
+pub mod illager;
+pub mod illager_ai;
 pub mod llama_ai;
 pub mod trader_ai;
 pub mod wandering_trader;

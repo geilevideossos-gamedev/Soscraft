@@ -739,6 +739,7 @@ impl EntityWorld {
         self.felines.retain(|e| !gone(e.id));
         self.wandering_traders.retain(|e| !gone(e.id));
         self.snow_golems.retain(|e| !gone(e.id));
+        self.illagers.retain(|e| !gone(e.id));
         self.villagers.retain(|e| !gone(e.id));
         self.cows.retain(|e| !gone(e.id));
         self.sheep.retain(|e| !gone(e.id));
