@@ -42,6 +42,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:piglin",
     "minecraft:piglin_brute",
     "minecraft:pillager",
+    "minecraft:ravager",
     "minecraft:sheep",
     "minecraft:shulker",
     "minecraft:skeleton",
@@ -376,6 +377,9 @@ impl Shown {
             }
             "minecraft:vex" => {
                 crate::vex_render::append_vexes(models, w.vexes().iter(), poses, atlas, light, partial);
+            }
+            "minecraft:ravager" => {
+                crate::ravager_render::append_ravagers(models, w.ravagers().iter(), poses, atlas, light, partial);
             }
             "minecraft:wolf" => wolf_render::append_wolves(
                 models,
@@ -928,6 +932,7 @@ mod tests {
             ("minecraft:vindicator", 0.05),
             ("minecraft:evoker", 0.05),
             ("minecraft:vex", 0.05),
+            ("minecraft:ravager", 0.1),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);

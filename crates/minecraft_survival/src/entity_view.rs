@@ -60,6 +60,7 @@ pub struct EntityView {
     pub(crate) random: minecraftoss_player::rng::LegacyRandom,
     shown: HashSet<u64>,
     fang_crits: HashSet<u64>,
+    ravager_roars: HashSet<u64>,
 }
 
 impl EntityView {
@@ -107,6 +108,7 @@ impl EntityView {
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             shown: HashSet::new(),
             fang_crits: HashSet::new(),
+            ravager_roars: HashSet::new(),
         }
     }
 
@@ -139,6 +141,7 @@ impl EntityView {
             self.client.tick();
             self.spell_casts();
             self.fang_crits();
+            self.ravager_effects();
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);
             self.drawn_fireballs.tick();
@@ -231,6 +234,27 @@ impl EntityView {
                     (self.random.next_double() * 2.0 - 1.0) * 0.3,
                 );
                 self.ambient.add(minecraft_terrain::ambient_particles::Kind::Crit, DVec3::new(x, y + 1.0, z), motion);
+            }
+        }
+    }
+
+    fn ravager_effects(&mut self) {
+        use minecraftoss_entities::ravager::{ROAR_AT, ROAR_PARTICLES, ROAR_SPREAD, STUNNED_COLOR};
+        let ravagers: Vec<(u64, minecraftoss_entities::ravager::Ravager)> = self.world.ravagers().iter().map(|e| (e.id, e.ravager.clone())).collect();
+        self.ravager_roars.retain(|id| ravagers.iter().any(|(ravager, r)| ravager == id && r.roar_tick > 0 && r.roar_tick <= ROAR_AT));
+        for (id, ravager) in ravagers {
+            if ravager.stunned_tick > 0 {
+                let body_yaw = self.client.pose(id, 1.0).map_or(ravager.yaw, |mob| mob.body_rot);
+                if let Some(at) = ravager.stun_particle(&mut self.random, body_yaw) {
+                    self.spell.spawn(minecraft_terrain::spell_particles::SpellKind::Effect, at, DVec3::ZERO, STUNNED_COLOR, 1.0);
+                }
+            }
+            if ravager.roar_tick > 0 && ravager.roar_tick <= ROAR_AT && self.ravager_roars.insert(id) {
+                let center = ravager.body.position + DVec3::new(0.0, f64::from(ravager.body.height) / 2.0, 0.0);
+                for _ in 0..ROAR_PARTICLES {
+                    let motion = DVec3::new(self.random.next_gaussian() * ROAR_SPREAD, self.random.next_gaussian() * ROAR_SPREAD, self.random.next_gaussian() * ROAR_SPREAD);
+                    self.ambient.add(minecraft_terrain::ambient_particles::Kind::Poof, center, motion);
+                }
             }
         }
     }
@@ -1004,6 +1028,14 @@ impl EntityView {
             light,
             partial,
         );
+        minecraft_terrain::ravager_render::append_ravagers(
+            &mut out.models,
+            w.ravagers().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
         shulker_render::append_shulkers(
             &mut out.models,
             w.shulkers().iter(),
@@ -1299,5 +1331,29 @@ mod tests {
     fn a_dragon_frozen_on_the_host_makes_no_flap_or_growl_on_the_client() {
         assert!(voices(false) > 0);
         assert_eq!(voices(true), 0);
+    }
+
+    #[test]
+    fn a_stunned_ravager_swirls_now_and_then_and_its_roar_puffs_once() {
+        let mut view = EntityView::new(7);
+        let ravager = minecraftoss_entities::ravager::Ravager::new(DVec3::new(0.5, 64.0, 0.5));
+        let id = view.world.spawn_ravager(ravager, true);
+        view.world.ravager_mut(id).unwrap().ravager.stunned_tick = 30;
+        for _ in 0..60 {
+            view.ravager_effects();
+        }
+        let swirls = view.spell.len();
+        assert!((3..=25).contains(&swirls), "about one tick in six: {swirls}");
+        assert_eq!(view.ambient.len(), 0);
+        let mut puffs = Vec::new();
+        for roar in [15, 11, 10, 9, 5, 0, 10] {
+            let entity = view.world.ravager_mut(id).unwrap();
+            entity.ravager.stunned_tick = 0;
+            entity.ravager.roar_tick = roar;
+            view.ravager_effects();
+            puffs.push(view.ambient.len());
+        }
+        assert_eq!(puffs, vec![0, 0, 40, 40, 40, 40, 80]);
+        assert_eq!(view.spell.len(), swirls, "no swirls once the stun is over");
     }
 }

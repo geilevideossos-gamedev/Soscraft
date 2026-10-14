@@ -501,6 +501,16 @@ pub fn spawn_saved_all(world: &mut EntityWorld, tag: &Tag) -> Vec<(u64, Tag)> {
     let Some(id) = spawn_saved(world, &Tag::Compound(bare)) else { return Vec::new() };
     let mut out = vec![(id, tag.clone())];
     for rider in &riders {
+        let placed;
+        let rider = match (rider, map.get("Pos")) {
+            (Tag::Compound(fields), Some(pos)) if !fields.contains_key("Pos") => {
+                let mut fields = fields.clone();
+                fields.insert("Pos".to_owned(), pos.clone());
+                placed = Tag::Compound(fields);
+                &placed
+            }
+            _ => rider,
+        };
         let spawned = spawn_saved_all(world, rider);
         if let Some(&(rider_id, _)) = spawned.first() {
             world.force_riding(Rider::Mob(rider_id), id);
@@ -2820,6 +2830,18 @@ mod tests {
         let reloaded = spawn_saved_all(&mut again, &saved[0].1);
         assert_eq!(reloaded.len(), 2);
         assert_eq!(again.vehicle_of(Rider::Mob(reloaded[1].0)), Some(reloaded[0].0));
+    }
+
+    #[test]
+    fn a_summoned_rider_without_a_position_sits_on_its_ravager() {
+        let summoned = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[4.5d,64.0d,2.5d],UUID:[I;4,5,6,23],Passengers:[{id:\"minecraft:pillager\",equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}]}").unwrap();
+        let mut world = EntityWorld::default();
+        let spawned = spawn_saved_all(&mut world, &summoned);
+        assert_eq!(spawned.len(), 2, "the rider comes along");
+        let (mount, rider) = (spawned[0].0, spawned[1].0);
+        assert_eq!(world.vehicle_of(Rider::Mob(rider)), Some(mount));
+        let seat = world.seat(Rider::Mob(rider)).unwrap();
+        assert!((seat.x - 4.5).abs() < 0.1 && (seat.z - 2.5).abs() < 0.1, "{seat}");
     }
 
     #[test]
