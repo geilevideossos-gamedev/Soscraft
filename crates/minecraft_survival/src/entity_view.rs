@@ -605,6 +605,9 @@ impl EntityView {
         for e in w.vexes().iter().filter(|e| e.vex.health > 0.0) {
             add(MobHit::Vex(e.id), &e.vex.body);
         }
+        for e in w.ravagers().iter().filter(|e| e.ravager.health > 0.0) {
+            add(MobHit::Ravager(e.id), &e.ravager.body);
+        }
         for e in w.iron_golems().iter().filter(|e| e.golem.health > 0.0) {
             add(MobHit::IronGolem(e.id), &e.golem.body);
         }

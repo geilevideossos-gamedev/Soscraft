@@ -771,6 +771,15 @@ pub(crate) fn struck(
             .map_or(0.0, |_| {
                 minecraft_survival::offhand::blocked_damage(mc_yaw, toward, amount)
             });
+        if let minecraft_survival::death::DamageCause::Mob {
+            id,
+            attack: minecraft_survival::death::MobAttack::Melee,
+            ..
+        } = cause
+            && blocked > 0.0
+        {
+            entities.shield_blocked(id, player_id, feet);
+        }
         if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
             if inventory.wear_tool(
                 blocking.slot,

@@ -95,6 +95,10 @@ pub struct WorldItem {
 pub trait World {
     fn block(&self, pos: Pos) -> Option<Block>;
     fn set_block(&mut self, pos: Pos, block: Option<Block>);
+    fn destroy_block(&mut self, pos: Pos) -> bool {
+        self.set_block(pos, None);
+        true
+    }
     /// The item entities whose boxes meet the box from `min` to `max`
     /// (`getEntitiesOfClass(ItemEntity.class, box)`), in the level's order.
     /// Worlds without item entities have none.

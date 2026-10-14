@@ -255,6 +255,10 @@ impl PlayerWorld for MobWorld<'_> {
         self.level.borrow_mut().set_block(minecraftoss_core::BlockPos::new(x, y, z), state, update::ALL, update::LIMIT);
     }
 
+    fn destroy_block(&mut self, (x, y, z): (i32, i32, i32)) -> bool {
+        self.level.borrow_mut().destroy_block_drops(minecraftoss_core::BlockPos::new(x, y, z), true, update::LIMIT)
+    }
+
     fn block_in_tag(&self, pos: (i32, i32, i32), tag: &str) -> bool {
         let state = self.state(pos);
         let level = self.level.borrow();
@@ -453,6 +457,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:piglin",
     "minecraft:piglin_brute",
     "minecraft:pillager",
+    "minecraft:ravager",
     "minecraft:sheep",
     "minecraft:shulker",
     "minecraft:skeleton",
@@ -475,7 +480,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:zombified_piglin",
 ];
 
-const VEHICLES: &[&str] = &["minecraft:strider", "minecraft:horse", "minecraft:donkey", "minecraft:mule", "minecraft:llama", "minecraft:trader_llama"];
+const VEHICLES: &[&str] = &["minecraft:strider", "minecraft:horse", "minecraft:donkey", "minecraft:mule", "minecraft:llama", "minecraft:trader_llama", "minecraft:ravager"];
 
 fn carries(tag: &Tag) -> bool {
     text(tag, "id").is_some_and(|id| VEHICLES.contains(&id))
@@ -699,6 +704,10 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
         "minecraft:vex" if tag.get("Passengers").is_none() => {
             let saved = crate::vex_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::vex_save::spawn(world, tag, saved)?
+        }
+        "minecraft:ravager" if tag.get("Passengers").is_none() => {
+            let saved = crate::ravager_save::Saved { pos, yaw, health, persistent, no_ai, random };
+            crate::ravager_save::spawn(world, tag, saved)?
         }
         "minecraft:hoglin" | "minecraft:zoglin" => {
             use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
@@ -1778,6 +1787,10 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         let vex = &e.vex;
         add(e.id, minecraftoss_entities::vex::TYPE_ID, &vex.body, vex.yaw, vex.health, vex.persistence_required, crate::vex_save::fields(world, e));
     }
+    for e in world.ravagers() {
+        let ravager = &e.ravager;
+        add(e.id, minecraftoss_entities::ravager::TYPE_ID, &ravager.body, ravager.yaw, ravager.health, ravager.persistence_required, crate::ravager_save::fields(e));
+    }
     for e in world.chickens() {
         let chicken = &e.chicken;
         let mut fields = age(&chicken.age);
@@ -2758,6 +2771,55 @@ mod tests {
         let f = &fresh.evoker_fangs_mut(back).unwrap().fangs;
         assert_eq!((f.warmup, f.yaw), (6, 45.0));
         assert_eq!(f.owner_uuid, Some(world.uuid_of(evoker)));
+    }
+
+    #[test]
+    fn a_ravager_saves_and_loads_mid_stun_with_its_raider_state() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:ravager"));
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,20],Health:80.0f,Rotation:[30.0f,0.0f],AttackTick:0,StunTick:17,RoarTick:0,CanJoinRaid:1b,Wave:2,RaidId:5,Patrolling:1b,patrol_target:[I;10,64,-20]}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("ravagers load");
+        assert_eq!(world.entity_type(id), Some("minecraft:ravager"));
+        {
+            let r = &world.ravager_mut(id).unwrap().ravager;
+            assert_eq!((r.health, r.stunned_tick, r.yaw), (80.0, 17, 30.0));
+            assert!(r.raider.can_join_raid && r.raider.patrolling);
+            assert_eq!((r.raider.wave, r.raider.raid_id, r.raider.patrol_target), (2, Some(5), Some((10, 64, -20))));
+        }
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(i, _)| *i == id).collect();
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("StunTick"), Some(&Tag::Int(17)));
+        assert_eq!(saved.get("RoarTick"), Some(&Tag::Int(0)));
+        assert_eq!(saved.get("RaidId"), Some(&Tag::Int(5)));
+        assert_eq!(saved.get("patrol_target"), Some(&Tag::IntArray(vec![10, 64, -20])));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved ravager loads");
+        assert_eq!(fresh.ravager_mut(back).unwrap().ravager.stunned_tick, 17);
+    }
+
+    #[test]
+    fn a_pillager_on_a_ravager_loads_rides_and_saves_inside_it() {
+        let jockey = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,21],Passengers:[{id:\"minecraft:pillager\",Pos:[1.5d,65.6d,2.5d],UUID:[I;4,5,6,22],equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}]}").unwrap();
+        assert!(carries(&jockey));
+        assert_eq!(spawn_saved(&mut EntityWorld::default(), &jockey), None, "the ravager alone refuses its rider");
+        let mut world = EntityWorld::default();
+        let spawned = spawn_saved_all(&mut world, &jockey);
+        assert_eq!(spawned.len(), 2);
+        let (mount, rider) = (spawned[0].0, spawned[1].0);
+        assert_eq!(world.entity_type(rider), Some("minecraft:pillager"));
+        assert_eq!(world.vehicle_of(Rider::Mob(rider)), Some(mount));
+        assert_eq!(world.controlling_mob(mount), None, "the ravager keeps its own will under a raider");
+        let seat = world.seat(Rider::Mob(rider)).unwrap();
+        assert!((seat.y - (64.0 + 2.2625 - f64::from(0.6_f32))).abs() < 1.0e-6, "{seat}");
+        let originals: std::collections::HashMap<u64, Tag> = spawned.into_iter().collect();
+        let saved = mob_tags(&world, |_| true, &originals);
+        assert_eq!(saved.len(), 1, "the rider saves inside its ravager");
+        let riders = saved[0].1.get("Passengers").and_then(Tag::as_list).expect("its rider");
+        assert_eq!(riders[0].get("id").and_then(Tag::as_str), Some("minecraft:pillager"));
+        let mut again = EntityWorld::default();
+        let reloaded = spawn_saved_all(&mut again, &saved[0].1);
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(again.vehicle_of(Rider::Mob(reloaded[1].0)), Some(reloaded[0].0));
     }
 
     #[test]

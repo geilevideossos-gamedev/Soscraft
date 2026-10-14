@@ -183,6 +183,7 @@ impl EntityWorld {
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (&mut e.hoglin.body, e.hoglin.health > 0.0)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (&mut e.piglin.body, e.piglin.health > 0.0)),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (&mut e.shulker.body, e.shulker.health > 0.0)),
+            EntityKey::Ravager(id) => self.ravagers.iter_mut().find(|e| e.id == id).map(|e| (&mut e.ravager.body, e.ravager.health > 0.0)),
             EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) | EntityKey::Vex(_) => None,
         }
     }
@@ -214,6 +215,7 @@ impl EntityWorld {
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Ravager(id) => self.ravagers.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) | EntityKey::Vex(_) => None,
         }
     }
@@ -352,6 +354,7 @@ impl EntityWorld {
                 EntityKey::Strider(id) => self.striders.iter().find(|e| e.id == id).map(|e| &e.strider.body),
                 EntityKey::Hoglin(id) => self.hoglins.iter().find(|e| e.id == id).map(|e| &e.hoglin.body),
                 EntityKey::Piglin(id) => self.piglins.iter().find(|e| e.id == id).map(|e| &e.piglin.body),
+                EntityKey::Ravager(id) => self.ravagers.iter().find(|e| e.id == id).map(|e| &e.ravager.body),
                 EntityKey::Shulker(_) | EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) | EntityKey::Vex(_) => None,
             };
             let Some(body) = body else { continue };

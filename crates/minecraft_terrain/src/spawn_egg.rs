@@ -433,6 +433,13 @@ mod tests {
     }
 
     #[test]
+    fn a_ravager_egg_hatches_as_wide_as_the_ravager_and_lands_on_a_ladder_edge() {
+        assert!((mob_width("minecraft:ravager") - 1.95).abs() < 1.0e-6);
+        let world = world(&[((0, 0, 0), "minecraft:ladder")]);
+        assert_eq!(spawn_rise(&world, (0, 1, 0), true, mob_width("minecraft:ravager")), 0.0);
+    }
+
+    #[test]
     fn shapes_of_neighbouring_cells_outside_the_cell_are_ignored() {
         let world = world(&[((1, 0, 0), "minecraft:oak_fence")]);
         assert_eq!(spawn_rise(&world, (0, 1, 0), true, 1.4), -1.0);

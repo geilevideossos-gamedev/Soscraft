@@ -98,7 +98,7 @@ impl MobCategory {
         Some(match kind.trim_start_matches("minecraft:") {
             "zombie" | "zombie_villager" | "zombie_horse" | "skeleton" | "creeper" | "spider" | "enderman" | "witch" | "slime" | "husk" | "stray" | "drowned"
             | "bogged" | "parched" | "camel_husk" | "cave_spider" | "silverfish" | "phantom" | "blaze" | "ghast" | "magma_cube" | "piglin" | "hoglin"
-            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" | "vindicator" | "evoker" | "vex" => Self::Monster,
+            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" | "vindicator" | "evoker" | "vex" | "ravager" => Self::Monster,
             "cow" | "pig" | "sheep" | "chicken" | "horse" | "donkey" | "mule" | "mooshroom" | "rabbit" | "wolf" | "fox" | "goat" | "llama" | "panda"
             | "polar_bear" | "cat" | "ocelot" | "parrot" | "frog" | "camel" | "armadillo" | "turtle" | "strider" => Self::Creature,
             "bat" => Self::Ambient,
@@ -387,7 +387,7 @@ fn follow_range_base(kind: &str) -> f64 {
         "minecraft:ghast" => 100.0,
         "minecraft:blaze" => 48.0,
         "minecraft:piglin_brute" => 12.0,
-        "minecraft:pillager" => 32.0,
+        "minecraft:pillager" | "minecraft:ravager" => 32.0,
         "minecraft:vindicator" | "minecraft:evoker" => 12.0,
         _ => 16.0,
     }
@@ -1139,6 +1139,11 @@ impl CreatureSpawns {
             "minecraft:vindicator" => Self::finalize_vindicator(level, &mut tag, difficulty, true),
             "minecraft:evoker" => {
                 Self::finalize_raider(level, &mut tag, true, false);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:ravager" => {
+                set(&mut tag, "CanJoinRaid", byte(true));
+                let _ = level.random().next_f32();
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
             "minecraft:vex" => {
@@ -2002,6 +2007,40 @@ mod tests {
             }
         }
         assert!((15..=60).contains(&leaders), "about 6 %: {leaders}");
+    }
+
+    #[test]
+    fn a_summoned_ravager_can_join_raids_but_never_leads() {
+        use minecraftoss_core::nbt::Tag;
+        let info = super::type_info("minecraft:ravager").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.fire_immune, info.rules), (1.95, 2.2, super::super::Placement::OnGround, false, super::Rules::Monster));
+        assert_eq!(MobCategory::of_type("minecraft:ravager"), Some(MobCategory::Monster));
+        assert_eq!(super::follow_range_base("minecraft:ravager"), 32.0);
+        let Some((spawns, column)) = river() else { return };
+        let mut land = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let mut context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        for _ in 0..60 {
+            let tag = spawns.summon(&mut land, &mut context, "minecraft:ravager", [0.5, 65.0, 0.5], None, 0.0).expect("a ravager");
+            assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+            assert_ne!(tag.get("PatrolLeader").and_then(Tag::as_i64), Some(1), "a ravager never leads");
+            assert!(tag.get("equipment").and_then(|e| e.get("head")).is_none());
+        }
     }
 
     #[test]

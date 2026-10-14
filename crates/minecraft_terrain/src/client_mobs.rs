@@ -1184,6 +1184,7 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         .chain(world.piglins().iter().map(|e| (e.id, e.swings)))
         .chain(world.illagers().iter().map(|e| (e.id, e.ai.state.melee.swings)))
         .chain(world.vexes().iter().map(|e| (e.id, e.ai.state.melee.swings)))
+        .chain(world.ravagers().iter().map(|e| (e.id, e.ai.state.melee.swings)))
         .collect();
     for e in world.zombies() {
         push(e.id, e.yaw, &e.look_control, &e.zombie.body, e.zombie.baby, e.zombie.eye_height());
@@ -1232,6 +1233,9 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.vexes() {
         push(e.id, e.vex.yaw, &e.ai.state.look_control, &e.vex.body, false, minecraftoss_entities::vex::EYE_HEIGHT);
     }
+    for e in world.ravagers() {
+        push(e.id, e.ravager.yaw, &e.ai.state.look_control, &e.ravager.body, false, minecraftoss_entities::ravager::EYE_HEIGHT);
+    }
     for e in world.wandering_traders() {
         push(e.id, e.trader.yaw, &e.ai.state.look_control, &e.trader.body, false, e.trader.eye_height());
     }
@@ -1254,6 +1258,7 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         push(e.id, 0.0, &e.ai.state.look_control, &e.shulker.body, false, e.shulker.eye_height());
     }
     let shulkers: std::collections::HashSet<u64> = world.shulkers().iter().map(|e| e.id).collect();
+    let ravagers: std::collections::HashSet<u64> = world.ravagers().iter().map(|e| e.id).collect();
     let shows = crate::mob_tracking::shows(world);
     for mob in &mut out {
         if let Some(show) = shows.get(&mob.id) {
@@ -1262,6 +1267,9 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         mob.vehicle = world.seat_offset(minecraftoss_entities::world::Rider::Mob(mob.id));
         if shulkers.contains(&mob.id) {
             mob.max_head_y_rot = 180.0;
+        }
+        if ravagers.contains(&mob.id) {
+            mob.max_head_y_rot = minecraftoss_entities::ravager::MAX_HEAD_Y_ROT;
         }
         mob.resting = resting_bats.contains(&mob.id);
         if let Some(damage) = world.damage_state(mob.id) {

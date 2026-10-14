@@ -12,7 +12,7 @@ use crate::client_mobs::{ServerMob, server_mobs};
 pub const LOOK_TICKS: u64 = 10;
 pub const DEFAULT_RANGE: i32 = 5;
 
-const VOLATILE: [&str; 33] = [
+const VOLATILE: [&str; 36] = [
     "Pos",
     "Motion",
     "Rotation",
@@ -46,6 +46,9 @@ const VOLATILE: [&str; 33] = [
     "SpellTicks",
     "Warmup",
     "life_ticks",
+    "AttackTick",
+    "StunTick",
+    "RoarTick",
 ];
 
 const ARM_POSES: [ArmPose; 6] = [
@@ -80,6 +83,7 @@ pub struct MobShow {
     pub pumpkin: bool,
     pub spell: u8,
     pub bite: [i32; 2],
+    pub ravager: [i32; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -275,7 +279,7 @@ pub fn tracking_range(kind: &str) -> i32 {
         "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf" | "ocelot"
         | "villager" | "iron_golem" | "ghast" | "slime" | "strider" | "shulker"
         | "ender_dragon" | "tnt" | "falling_block" | "item_frame" | "glow_item_frame"
-        | "area_effect_cloud" | "llama" | "trader_llama" | "wandering_trader" => 10,
+        | "area_effect_cloud" | "llama" | "trader_llama" | "wandering_trader" | "ravager" => 10,
         "zombie" | "husk" | "drowned" | "zombie_villager" | "zombified_piglin" | "skeleton"
         | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
@@ -432,6 +436,16 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             e.id,
             MobShow {
                 charging: e.vex.charging,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.ravagers() {
+        let ravager = &e.ravager;
+        put(
+            e.id,
+            MobShow {
+                ravager: [ravager.attack_tick, ravager.stunned_tick, ravager.roar_tick],
                 ..MobShow::default()
             },
         );
@@ -651,6 +665,13 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.vex_mut(id) {
         place(&mut e.previous_position, &mut e.vex.body, mob);
         e.vex.charging = show.charging;
+    }
+    if let Some(e) = world.ravager_mut(id) {
+        place(&mut e.previous_position, &mut e.ravager.body, mob);
+        let [attack, stunned, roar] = show.ravager;
+        e.ravager.attack_tick = attack;
+        e.ravager.stunned_tick = stunned;
+        e.ravager.roar_tick = roar;
     }
     if let Some(e) = world.ghast_mut(id) {
         place(&mut e.previous_position, &mut e.ghast.body, mob);
@@ -1399,6 +1420,51 @@ mod tests {
         assert!(host_fangs.sent_spike && friend_fangs.sent_spike);
         assert_eq!(friend_fangs.bite_progress(0.5), host_fangs.bite_progress(0.5));
         assert!(friend_fangs.bite_progress(0.5) > 0.0);
+    }
+
+    #[test]
+    fn a_friend_sees_a_ravager_and_its_rider_and_watches_it_bite_stagger_and_roar() {
+        let mut host = EntityWorld::default();
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[2.5d,64.0d,0.5d],UUID:[I;1,2,3,9],NoAI:1b,Passengers:[{id:\"minecraft:pillager\",Pos:[2.5d,65.6d,0.5d],UUID:[I;1,2,3,10],NoAI:1b,equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}]}").unwrap();
+        let spawned = crate::server_mobs::spawn_saved_all(&mut host, &tag);
+        assert_eq!(spawned.len(), 2);
+        let (ravager, pillager) = (spawned[0].0, spawned[1].0);
+        assert_eq!(tracking_range("minecraft:ravager"), 10);
+        let originals: HashMap<u64, Tag> = spawned.into_iter().collect();
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let tracked = trackers.update(&host, &originals, &[watcher(4, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(4) {
+            let MobEvent::Add(id, tag) = event else {
+                panic!("{event:?}");
+            };
+            assert!(spawn_tracked(&mut friend, *id, tag), "{tag:?}");
+        }
+        assert_eq!(friend.entity_type(ravager), Some("minecraft:ravager"));
+        assert_eq!(friend.entity_type(pillager), Some("minecraft:pillager"));
+        let ticks = [(7, 0, 0), (0, 25, 0), (0, 0, 12)];
+        for (attack, stunned, roar) in ticks {
+            {
+                let e = host.ravager_mut(ravager).unwrap();
+                e.ravager.attack_tick = attack;
+                e.ravager.stunned_tick = stunned;
+                e.ravager.roar_tick = roar;
+            }
+            for mob in server_mobs(&host) {
+                show_on(&mut friend, &mob);
+            }
+            let seen = &friend.ravagers()[0].ravager;
+            assert_eq!((seen.attack_tick, seen.stunned_tick, seen.roar_tick), (attack, stunned, roar));
+        }
+        let rider = server_mobs(&host).into_iter().find(|m| m.id == pillager).unwrap();
+        assert_eq!(rider.vehicle.map(|(vehicle, _)| vehicle), Some(ravager));
+        let mut saved = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[2.5d,64.0d,0.5d],StunTick:30}").unwrap();
+        let quiet = look(&saved);
+        if let Tag::Compound(map) = &mut saved {
+            map.insert("StunTick".to_owned(), Tag::Int(29));
+        }
+        assert_eq!(look(&saved), quiet, "the clocks never resend the look");
     }
 
     #[test]

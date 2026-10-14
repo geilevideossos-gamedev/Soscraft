@@ -231,6 +231,7 @@ exposed!(super::traders::TraderEntity, trader, |e, h, a, w, t| e.hurt_from(a, h.
 exposed!(super::snow_golems::SnowGolemEntity, golem, |e, h, a, w, t| e.hurt(a).applied);
 exposed!(super::illagers::IllagerEntity, illager, |e, h, a, w, t| e.hurt(a).applied);
 exposed!(super::vexes::VexEntity, vex, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
+exposed!(super::ravagers::RavagerEntity, ravager, |e, h, a, w, t| e.hurt(a).applied);
 exposed!(super::ghasts::GhastEntity, ghast, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 exposed!(super::blazes::BlazeEntity, blaze, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 exposed!(super::striders::StriderEntity, strider, |e, h, a, w, t| e.hurt(a, animal_source(h)).applied, |_s| true);

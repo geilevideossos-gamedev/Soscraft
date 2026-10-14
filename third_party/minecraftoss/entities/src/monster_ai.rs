@@ -61,6 +61,7 @@ pub enum MonsterKind {
     Vindicator,
     Evoker,
     Vex,
+    Ravager,
 }
 
 impl MonsterKind {
@@ -89,6 +90,7 @@ impl MonsterKind {
             Self::Vindicator => &crate::illager_ai::VINDICATOR_GOAL_NAMES,
             Self::Evoker => &crate::illager_ai::EVOKER_GOAL_NAMES,
             Self::Vex => &crate::vex_ai::GOAL_NAMES,
+            Self::Ravager => &crate::ravager_ai::GOAL_NAMES,
         }
     }
 
@@ -116,6 +118,7 @@ impl MonsterKind {
             Self::Vindicator => &crate::illager_ai::VINDICATOR_TARGET_NAMES,
             Self::Evoker => &crate::illager_ai::EVOKER_TARGET_NAMES,
             Self::Vex => &crate::vex_ai::TARGET_NAMES,
+            Self::Ravager => &crate::ravager_ai::TARGET_NAMES,
         }
     }
 }
@@ -384,6 +387,7 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:vindicator"
             | "minecraft:evoker"
             | "minecraft:vex"
+            | "minecraft:ravager"
     )
 }
 
@@ -644,7 +648,7 @@ impl MonsterGoalContext {
         if self.kind == MonsterKind::Cat && matches!(target.target, Target::Player(id) if self.feline.tame && self.feline.owner == Some(id)) {
             return false;
         }
-        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker) && matches!(target.target, Target::Villager(id) if self.villagers.iter().any(|v| v.id == id && v.baby)) {
+        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Ravager) && matches!(target.target, Target::Villager(id) if self.villagers.iter().any(|v| v.id == id && v.baby)) {
             return false;
         }
         if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker) && self.kind_of(target.target).is_some_and(crate::illager::is_illager) {
@@ -766,7 +770,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex | MonsterKind::Ravager, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -778,7 +782,7 @@ impl MonsterGoalContext {
     /// `Mob.isWithinMeleeAttackRange`: the reach-inflated box meets the
     /// target's.
     pub(crate) fn within_melee_range(&self, target: TargetInfo) -> bool {
-        let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32);
+        let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32) - if self.kind == MonsterKind::Ravager { crate::ravager::ATTACK_REACH_SHRINK } else { 0.0 };
         let half = f64::from(self.body.width / 2.0);
         let p = self.body.position;
         let (min_x, max_x) = (p.x - half - reach, p.x + half + reach);
@@ -832,7 +836,7 @@ impl MonsterAi {
             walk.clear_malus(PathType::Fire);
         }
         // `FloatGoal` lets the navigation float.
-        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex);
+        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex | MonsterKind::Ravager);
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::WitherSkeleton => FOLLOW_RANGE,
             MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
@@ -848,6 +852,7 @@ impl MonsterAi {
             MonsterKind::Vindicator => crate::illager::IllagerKind::Vindicator.follow_range(),
             MonsterKind::Evoker => crate::illager::IllagerKind::Evoker.follow_range(),
             MonsterKind::Vex => crate::vex::FOLLOW_RANGE,
+            MonsterKind::Ravager => crate::ravager::FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -882,6 +887,10 @@ impl MonsterAi {
         if kind == MonsterKind::Pillager {
             walk.walk_target = WalkTarget::Zero;
         }
+        if kind == MonsterKind::Ravager {
+            walk.set_malus(PathType::Leaves, 0.0);
+            walk.max_up_step = crate::ravager::STEP_HEIGHT;
+        }
         if kind == MonsterKind::IronGolem {
             // A `PathfinderMob` with a one-block step (`STEP_HEIGHT`) whose
             // spots are all alike (`getWalkTargetValue` 0).
@@ -904,6 +913,7 @@ impl MonsterAi {
             MonsterKind::Vindicator => (crate::illager_ai::vindicator_goals(), crate::illager_ai::vindicator_targets(), crate::illager::EYE_HEIGHT),
             MonsterKind::Evoker => (crate::illager_ai::evoker_goals(), crate::illager_ai::evoker_targets(), crate::illager::EYE_HEIGHT),
             MonsterKind::Vex => (crate::vex_ai::vex_goals(), crate::vex_ai::vex_targets(), crate::vex::EYE_HEIGHT),
+            MonsterKind::Ravager => (crate::ravager_ai::ravager_goals(), crate::ravager_ai::ravager_targets(), crate::ravager::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -1010,6 +1020,12 @@ impl MonsterAi {
         self.yaw = self.state.yaw;
         if let Some((forward, sideways)) = self.state.strafe.take() {
             self.move_control.strafe(forward, sideways);
+        }
+    }
+
+    pub fn set_steered(&mut self, steered: bool) {
+        for control in [Control::Move, Control::Jump, Control::Look, Control::Target] {
+            self.goals.set_enabled(control, !steered);
         }
     }
 

@@ -319,10 +319,11 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "pillager" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "vindicator" | "evoker" => (0.6, 1.95, Placement::NoRestrictions, MotionBlockingNoLeaves, false, false),
         "vex" => (0.4, 0.8, Placement::NoRestrictions, MotionBlockingNoLeaves, true, false),
+        "ravager" => (1.95, 2.2, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute" | "drowned" | "pillager" | "vindicator" | "evoker" | "vex");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute" | "drowned" | "pillager" | "vindicator" | "evoker" | "vex" | "ravager");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),

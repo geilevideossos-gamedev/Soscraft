@@ -179,6 +179,9 @@ impl EntityWorld {
         if let Some(e) = self.vexes.iter().find(|e| e.id == id) {
             return Some((e.vex.body.clone(), e.vex.health));
         }
+        if let Some(e) = self.ravagers.iter().find(|e| e.id == id) {
+            return Some((e.ravager.body.clone(), e.ravager.health));
+        }
         if let Some(e) = self.cows.iter().find(|e| e.id == id) {
             return Some((e.cow.body.clone(), e.cow.health));
         }
@@ -215,6 +218,7 @@ impl EntityWorld {
     /// `LivingEntity.knockback` on a mob, by ID.
     pub(super) fn knock_back(&mut self, id: u64, power: f64, xd: f64, zd: f64) {
         let power = if self.hoglins.iter().any(|e| e.id == id) { power * (1.0 - crate::hoglin::KNOCKBACK_RESISTANCE) } else { power };
+        let power = if self.ravagers.iter().any(|e| e.id == id) { power * (1.0 - crate::ravager::KNOCKBACK_RESISTANCE) } else { power };
         let (body, random) = if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
             (&mut e.witch.body, &mut e.random)
         } else if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
@@ -248,6 +252,8 @@ impl EntityWorld {
             (&mut e.illager.body, &mut e.random)
         } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
             (&mut e.vex.body, &mut e.random)
+        } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
+            (&mut e.ravager.body, &mut e.random)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             (&mut e.cow.body, &mut e.random)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
@@ -366,6 +372,12 @@ impl EntityWorld {
             }
             hit
         } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
+            let hit = e.hurt(amount);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
+            }
+            hit
+        } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
             if hit.applied {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));

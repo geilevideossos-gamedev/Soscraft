@@ -3080,6 +3080,7 @@ pub enum Command {
     ChestOpeners { pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
     LeashFence { player: u64, pos: BlockPos, sneaking: bool },
+    ShieldBlock { attacker: u64, player: u64, feet: [f64; 3] },
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
@@ -3465,6 +3466,10 @@ impl ServerHandle {
         self.send(Command::Boost { player });
     }
 
+    pub fn shield_block(&mut self, attacker: u64, player: u64, feet: [f64; 3]) {
+        self.send(Command::ShieldBlock { attacker, player, feet });
+    }
+
     pub fn mount_inventory(&mut self, inventory: &crate::mount_inventory::MountInventory) {
         self.send(Command::MountInventory { vehicle: inventory.vehicle, saddled: inventory.saddled(), body: inventory.body(), items: inventory.items() });
     }
@@ -3710,6 +3715,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::AngerPiglins { player, feet, sight } => sim.mobs.anger_nearby_piglins(player, glam::DVec3::from_array(feet), sight),
                 Command::Boost { player } => out.boosts.push((player, sim.mobs.boost_ride(player))),
+                Command::ShieldBlock { attacker, player, feet } => out.players_pushed.extend(sim.mobs.blocked_by_shield(attacker, player, glam::DVec3::from_array(feet))),
                 Command::MountInventory { vehicle, saddled, body, items } => sim.mobs.set_mount_inventory(vehicle, saddled, body, items),
                 Command::RootVehicle { player, remove } => out.root_vehicles.push((player, sim.root_vehicle(player, remove))),
                 Command::Reattach { player, root } => out.mounts.extend(sim.reattach(player, &root).map(|vehicle| (player, vehicle))),
@@ -3843,6 +3849,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.player_splashes.extend(witch_splashes);
     out.players_struck.extend(sim.take_players_struck());
     out.players_pushed.extend(sim.take_players_pushed());
+    out.players_pushed.extend(sim.mobs.take_player_pushes());
     out.potion_breaks.extend(sim.take_potion_breaks());
     out.explosions.extend(sim.take_explosions());
     sim.break_blasted_frames();
@@ -7033,8 +7040,8 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
-    const HATCHING_EGGS: [&str; 48] = [
-        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "evoker", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "pillager", "sheep", "shulker", "skeleton", "slime", "snow_golem", "spider", "stray", "strider",
+    const HATCHING_EGGS: [&str; 49] = [
+        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "evoker", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "pillager", "ravager", "sheep", "shulker", "skeleton", "slime", "snow_golem", "spider", "stray", "strider",
         "trader_llama", "vex", "villager", "vindicator", "wandering_trader", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
     ];
 

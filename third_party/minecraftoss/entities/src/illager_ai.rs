@@ -138,7 +138,7 @@ pub struct IllagerState {
     pub spell_sounds: Vec<&'static str>,
 }
 
-fn raider_goals() -> GoalSelector<MonsterGoalContext> {
+pub(crate) fn raider_goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(
         4,

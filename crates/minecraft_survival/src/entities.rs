@@ -1020,6 +1020,10 @@ impl Entities {
             && self.view.world.striders().iter().any(|e| e.id == vehicle && !e.strider.steering.boosting)
     }
 
+    pub fn shield_blocked(&mut self, attacker: u64, player: u64, feet: [f64; 3]) {
+        self.server.shield_block(attacker, player, feet);
+    }
+
     pub fn boost(&mut self, player: u64, slot: usize, held: String) {
         self.server.boost(player);
         self.players.queue(player).boost_waiting = Some((slot, held));
@@ -1844,6 +1848,7 @@ pub(crate) fn encode(hit: MobHit) -> u64 {
         MobHit::SnowGolem(_) => SNOW_GOLEM_KEY,
         MobHit::Illager(_) => ILLAGER_KEY,
         MobHit::Vex(_) => VEX_KEY,
+        MobHit::Ravager(_) => RAVAGER_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1878,6 +1883,7 @@ pub(crate) fn decode(key: u64) -> Option<MobHit> {
         SNOW_GOLEM_KEY => MobHit::SnowGolem(id),
         ILLAGER_KEY => MobHit::Illager(id),
         VEX_KEY => MobHit::Vex(id),
+        RAVAGER_KEY => MobHit::Ravager(id),
         _ => return None,
     })
 }
@@ -1894,6 +1900,7 @@ const WANDERING_TRADER_KEY: u64 = 30;
 const SNOW_GOLEM_KEY: u64 = 31;
 const ILLAGER_KEY: u64 = 32;
 const VEX_KEY: u64 = 33;
+const RAVAGER_KEY: u64 = 34;
 pub(crate) const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
@@ -2255,6 +2262,13 @@ mod tests {
         assert_eq!(fireball_of(key), None);
         assert_eq!(crystal_of(key), None);
         assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
+    fn a_ravager_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Ravager(91));
+        assert_eq!(key >> 56, 34);
+        assert_eq!(decode(key), Some(MobHit::Ravager(91)));
     }
 
     #[test]
