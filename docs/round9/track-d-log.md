@@ -2692,6 +2692,20 @@ After 2b9614a3.
 IW4L_MINECRAFT_KIT=minecraft:iron_sword,minecraft:lava_bucket,minecraft:cooked_beef*16
 ```
 
+## Final verification (d6)
+
+### 1. Track D's skater code passes clippy
+
+After cf2136d3.
+
+- **Checked:** clippy on the crates touched since `r9-d6-base` (`frame`, `minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `net`, `render_anim`, `sim`, `minecraftoss-entities` and `minecraftoss-world`; `--all-targets`, `-A clippy::approx_constant`) warned on two lines added since `r9-d6-base`; every other warning is older than the segment.
+  - `render_anim/src/skate.rs` (group friend-skating, 0a36201a, and review fix 1): `type_complexity` on `update`'s tuple of the authority world, the client prediction and the Minecraft world view. It is now the type `SkateBodies<'w>`, next to `KeyboardInput<'w>`.
+  - `render_anim/src/minecraft_skaters.rs` (group skater-poses, 3476d774): `unwrap_or(Vec::new())` in `relayed` (`clippy::unwrap_or_default`, while `unwrap_or_default` itself is disallowed by `clippy.toml`). It is now `map_or(Blob::default(), Blob)`, the same empty blob the function already sends when no skater is shown.
+- The three `.rs` files added since `r9-d6-base` (`minecraft_survival/src/pvp.rs`, `minecraft_terrain/src/melee.rs`, `render_anim/src/minecraft_skaters.rs`) pass `rustfmt --check` on their staged content (edition 2024, 2021 for `minecraft_terrain`), and no added line has a comment.
+- **Tests:** none new; behaviour is unchanged. `test -p` on the nine crates, all green: `frame` 28, `minecraft_net` 24, `minecraft_survival` 751 and `vanilla_world` 1, `minecraft_terrain` 1357 (3 ignored), `minecraftoss-entities` 377, `minecraftoss-world` 96, `net` 17, `render_anim` 211, `sim` 157; doc-tests green (the minecraftoss crates with the stand-in `third_party/scenarios` files of `scriptsull-suite.ps1`, removed afterwards). `check -p launcher` green.
+- **Changed:** the two lines above, and this log: the d6 combined kit under "Combined kit".
+- **Test steps:** none; the steps of each d6 commit hold.
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2704,6 +2718,12 @@ d2 groups (pillagers, patrols-vindicators, evokers-vexes, ravagers, raids, raid-
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:pillager_spawn_egg*16,minecraft:vindicator_spawn_egg*8,minecraft:evoker_spawn_egg*8,minecraft:vex_spawn_egg*4,minecraft:ravager_spawn_egg*4,minecraft:witch_spawn_egg*2,minecraft:villager_spawn_egg*8,minecraft:iron_golem_spawn_egg*2,minecraft:sheep_spawn_egg*4,minecraft:cow_spawn_egg*2,minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell,minecraft:lever*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:spyglass,minecraft:oak_leaves*64
+```
+
+d6 groups (friend-hand, friend-portal-music, pvp-melee, friend-skating, skater-poses, strider-freeze, tnt, small-not-vanilla and the d6 review), 27 stacks. Both windows get it (the friend when joining). The items of the d6 steps that do not fit (the swiftness potion, bow, arrows, ender pearls, water bucket, the other iron armour pieces, hay block, netherrack, end crystals, the creeper, zombie, pig, hoglin, ghast, blaze and piglin eggs, the spawner, enchanting table, lapis, books and the M4 with its ammo) come from that commit's own kit or the creative inventory. Skating also needs `IW4L_SKATE_ASSETS` in both role folders.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:iron_sword+knockback=2,minecraft:iron_sword,minecraft:iron_axe,minecraft:shield,minecraft:trident,minecraft:spyglass,minecraft:totem_of_undying,minecraft:iron_chestplate,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:dried_kelp*16,minecraft:cobblestone*64,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_pickaxe,minecraft:white_bed,minecraft:cow_spawn_egg*8,minecraft:oak_stairs*64,minecraft:tnt*16,minecraft:redstone_block*4,minecraft:anvil,minecraft:experience_bottle*32,minecraft:lava_bucket,minecraft:strider_spawn_egg*4,minecraft:saddle,minecraft:warped_fungus_on_a_stick
 ```
 
 ## Protocol

@@ -459,7 +459,7 @@ pub(crate) fn relayed(skaters: &[(u32, Dimension, NetPose)], to: u32, level: Dim
     if shown.0.is_empty() {
         return Blob::default();
     }
-    Blob(minecraft_net::encode(Lane::State, &shown).unwrap_or(Vec::new()))
+    minecraft_net::encode(Lane::State, &shown).map_or(Blob::default(), Blob)
 }
 
 pub(crate) fn heard_skaters(blob: &Blob) -> Skaters {

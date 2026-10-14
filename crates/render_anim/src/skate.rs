@@ -443,7 +443,7 @@ fn update(
     local: Res<net::LocalPresentClient>,
     presented: Res<net::PresentedSnapshot>,
     clip: Res<crate::DynEntPhysClip>,
-    (mut authority, mut prediction, world_view): (Option<ResMut<net::AuthorityWorld>>, Option<ResMut<net::ClientPredictionState>>, Option<Res<crate::minecraft_world::MinecraftWorldView>>),
+    (mut authority, mut prediction, world_view): SkateBodies<'_>,
     mut mode: ResMut<SkateMode>,
     mut host: ResMut<Host>,
     (gamepads, active): (Query<&bevy::input::gamepad::Gamepad>, Option<Res<frame::ActivePad>>),
@@ -755,6 +755,12 @@ struct KeySample {
     left_mouse: bool,
     right_mouse: bool,
 }
+
+type SkateBodies<'w> = (
+    Option<ResMut<'w, net::AuthorityWorld>>,
+    Option<ResMut<'w, net::ClientPredictionState>>,
+    Option<Res<'w, crate::minecraft_world::MinecraftWorldView>>,
+);
 
 type KeyboardInput<'w> = (
     Option<Res<'w, ButtonInput<KeyCode>>>,
