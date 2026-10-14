@@ -1048,6 +1048,21 @@ impl EntityView {
             light,
             partial,
         );
+        for e in w.illagers().iter().filter(|e| w.glowing(e.id)) {
+            let mut mob = minecraft_terrain::mesh::ChunkMesh::default();
+            let _ = minecraft_terrain::illager_render::append_illagers(&mut mob, std::iter::once(e), poses, atlas, light, partial);
+            minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, &mob);
+        }
+        for e in w.ravagers().iter().filter(|e| w.glowing(e.id)) {
+            let mut mob = minecraft_terrain::mesh::ChunkMesh::default();
+            minecraft_terrain::ravager_render::append_ravagers(&mut mob, std::iter::once(e), poses, atlas, light, partial);
+            minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, &mob);
+        }
+        for e in w.witches().iter().filter(|e| w.glowing(e.id)) {
+            let mut mob = minecraft_terrain::mesh::ChunkMesh::default();
+            let _ = witch_render::append_witches(&mut mob, std::iter::once(e), poses, atlas, light, partial);
+            minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, &mob);
+        }
         shulker_render::append_shulkers(
             &mut out.models,
             w.shulkers().iter(),

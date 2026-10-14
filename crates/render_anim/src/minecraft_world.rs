@@ -60,7 +60,7 @@ pub struct MinecraftWorldView {
     pub armor_glint_texture: Option<Arc<image::RgbaImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
     /// shadows, as `mesh::Vertex` bytes and indices.
-    pub entity_meshes: [(Vec<u8>, Vec<u32>); 4],
+    pub entity_meshes: [(Vec<u8>, Vec<u32>); 6],
     /// The black card behind the inventory's character, in blocks.
     pub backdrop: Option<[[f32; 3]; 4]>,
     pub puppet_gear: (Vec<u8>, Vec<u32>),
@@ -1538,6 +1538,8 @@ fn update(
             raw(&meshes.culled),
             raw(&meshes.translucent),
             raw(&meshes.shadows),
+            raw(&meshes.glow),
+            raw(&meshes.glow_cover),
         ];
         let mesh = meshes.items;
         let (bytes, indices) = &mut view.particles;

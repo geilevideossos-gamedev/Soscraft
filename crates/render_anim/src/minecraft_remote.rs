@@ -1687,6 +1687,8 @@ fn present_entities(
         raw(&meshes.culled),
         raw(&meshes.translucent),
         raw(&meshes.shadows),
+        raw(&meshes.glow),
+        raw(&meshes.glow_cover),
     ];
     let (bytes, indices) = &mut view.particles;
     let vertex = std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>();

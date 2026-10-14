@@ -90,7 +90,7 @@ pub struct MinecraftWorldFrame {
     pub armor_glint_texture: Option<Arc<MinecraftAtlasImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
     /// shadows: MinecraftOSS `Vertex` bytes (44 each) and indices.
-    pub entity_meshes: [(Vec<u8>, Vec<u32>); 4],
+    pub entity_meshes: [(Vec<u8>, Vec<u32>); 6],
     /// A black card to draw, in blocks: behind the inventory's character.
     pub backdrop: Option<[[f32; 3]; 4]>,
     pub puppet_gear: (Vec<u8>, Vec<u32>),
@@ -158,7 +158,7 @@ struct TerrainGpu {
     particles: Option<(Buffer, Buffer, u32)>,
     cracks: Option<(Buffer, Buffer, u32)>,
     /// This frame's entity meshes, in `MinecraftWorldFrame::entity_meshes` order.
-    entities: [Option<(Buffer, Buffer, u32)>; 4],
+    entities: [Option<(Buffer, Buffer, u32)>; 6],
     backdrop: Option<Buffer>,
     puppet_gear: Option<(Buffer, Buffer, u32)>,
     hand: Option<(Buffer, Buffer, u32)>,
@@ -168,7 +168,7 @@ struct TerrainGpu {
     bind: Option<BindGroup>,
     sections: HashMap<[i32; 3], SectionGpu>,
     visible: Vec<[i32; 3]>,
-    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 13]>,
+    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 14]>,
 }
 
 pub(super) fn register(app: &mut App) {
@@ -765,7 +765,7 @@ fn draw_terrain(
     let (target, depth, extracted_view, msaa) = view.into_inner();
     let format = target.main_texture_format();
     let samples = msaa.map_or(1, Msaa::samples);
-    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand, sections, weather] = gpu
+    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand, sections, weather, glow] = gpu
         .pipelines
         .entry((format, samples))
         .or_insert_with(|| pipelines(&device, &registry, format, samples))
@@ -873,6 +873,14 @@ fn draw_terrain(
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
         pass.draw_indexed(0..*count, 0, 0..1);
+    }
+    for (pipeline, mesh) in [(&glow, &gpu.entities[4]), (&entity, &gpu.entities[5])] {
+        if let Some((vertices, indices, count)) = mesh.as_ref() {
+            pass.set_render_pipeline(pipeline);
+            pass.set_vertex_buffer(0, vertices.slice(..));
+            pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
+            pass.draw_indexed(0..*count, 0, 0..1);
+        }
     }
     // The hand in front of everything, as the view model is.
     if let Some((vertices, indices, count)) = gpu.hand.as_ref() {
@@ -1280,6 +1288,15 @@ fn entity_fragment(in: EntityOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn glow_fragment(in: EntityOut) -> @location(0) vec4<f32> {
+    let texel = textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
+    if texel.a < 0.1 {
+        discard;
+    }
+    return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+}
+
+@fragment
 fn entity_translucent_fragment(in: EntityOut) -> @location(0) vec4<f32> {
     let texel = textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
     if texel.a < 0.1 {
@@ -1405,7 +1422,7 @@ fn pipelines(
     registry: &ExactPipelineRegistry,
     format: TextureFormat,
     samples: u32,
-) -> [RenderPipeline; 13] {
+) -> [RenderPipeline; 14] {
     let shader = unsafe {
         device.create_shader_module(ShaderModuleDescriptor {
             label: Some("iw4l_minecraft_terrain"),
@@ -1696,6 +1713,7 @@ fn pipelines(
             Some(BlendState::ALPHA_BLENDING),
             None,
         ),
+        make("entity_vertex", "glow_fragment", &entity_buffers, false, CompareFunction::Always, None, None),
     ]
 }
 
@@ -1707,6 +1725,13 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module)
             .unwrap();
+    }
+
+    #[test]
+    fn glowing_mobs_draw_through_walls_in_white_with_their_cover_after() {
+        let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
+        assert!(module.entry_points.iter().any(|entry| entry.name == "glow_fragment"));
+        assert_eq!(std::mem::size_of::<[(Vec<u8>, Vec<u32>); 6]>(), std::mem::size_of_val(&super::MinecraftWorldFrame::default().entity_meshes));
     }
 
     #[test]

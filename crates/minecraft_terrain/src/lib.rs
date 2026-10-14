@@ -101,6 +101,7 @@ pub mod raids;
 pub mod bells;
 pub mod firework_rocket;
 pub mod firework_particles;
+pub mod glow_render;
 pub mod flame_render;
 pub mod client_mobs;
 pub mod client_dragon;

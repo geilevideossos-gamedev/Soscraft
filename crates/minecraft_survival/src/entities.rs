@@ -118,6 +118,8 @@ pub struct MobMeshes {
     pub translucent: ChunkMesh,
     pub shadows: ChunkMesh,
     pub items: ChunkMesh,
+    pub glow: ChunkMesh,
+    pub glow_cover: ChunkMesh,
 }
 
 /// The player as the mobs see it this frame.
