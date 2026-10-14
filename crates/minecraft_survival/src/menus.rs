@@ -1815,7 +1815,12 @@ pub fn mount(
         wanted.push(vehicle);
     }
     for vehicle in wanted {
-        if !alive || player.menus.open.is_some() {
+        if !alive
+            || player.menus.open.is_some()
+            || entities
+                .mount_viewer(vehicle)
+                .is_some_and(|viewer| viewer != id)
+        {
             continue;
         }
         let Some(inventory) =
@@ -1840,6 +1845,11 @@ pub fn mount(
     for update in std::mem::take(&mut player.menus.mount_updates) {
         entities.set_mount_inventory(&update);
     }
+    let viewing = match player.menus.open.as_ref().map(|menu| &menu.open) {
+        Some(Open::Mount(inventory)) => Some(inventory.vehicle),
+        _ => None,
+    };
+    entities.set_mount_viewer(id, viewing);
     shown
 }
 
@@ -2767,6 +2777,72 @@ mod tests {
         assert!(mirrored.saddled());
         assert!(close(&mut alex).is_empty());
         assert!(alex.menus.open.is_none());
+    }
+
+    #[test]
+    fn a_horse_inventory_opens_for_one_player_at_a_time() {
+        use minecraftoss_entities::cow::Cow;
+        use minecraftoss_entities::horse::{HorseKind, HorseState};
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        let Ok(terrain) = crate::level::Terrain::open(
+            std::sync::Arc::new(registries),
+            0,
+            2,
+            Dimension::Overworld,
+            None,
+            None,
+        ) else {
+            return;
+        };
+        let data = GameData::default();
+        let mut entities = Entities::new(
+            &terrain.stream,
+            Dimension::Overworld,
+            0,
+            &data,
+            None,
+            None,
+        );
+        let mut horse = HorseState::new(HorseKind::Donkey);
+        horse.tame = true;
+        horse.chest = true;
+        horse.resize_inventory();
+        let mut cow = Cow::new(glam::DVec3::new(0.5, 200.0, 0.5));
+        cow.max_health = 20.0;
+        cow.health = 20.0;
+        let donkey = entities.view.world.spawn_horse(cow, horse, true);
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut steve = player(&mut chat, 0, "Steve");
+        let mut alex = player(&mut chat, 1, "Alex");
+        let eye = [2.5, 201.6, 0.5];
+        entities.want_mount_menu(1, donkey);
+        assert!(mount(&mut alex, &mut entities, eye, false, true).opened);
+        assert_eq!(entities.mount_viewer(donkey), Some(1));
+        entities.want_mount_menu(0, donkey);
+        let refused = mount(&mut steve, &mut entities, eye, false, true);
+        assert!(
+            !refused.opened && steve.menus.open.is_none(),
+            "a second player would get a copy of the same chest"
+        );
+        assert!(!mount(&mut alex, &mut entities, eye, false, true).closed);
+        assert!(close(&mut alex).is_empty());
+        let _ = mount(&mut alex, &mut entities, eye, false, true);
+        assert_eq!(entities.mount_viewer(donkey), None, "closing lets it go");
+        entities.want_mount_menu(0, donkey);
+        assert!(mount(&mut steve, &mut entities, eye, false, true).opened);
+        assert_eq!(entities.mount_viewer(donkey), Some(0));
+        let mut inventory = Inventory::default();
+        let _ = entities.leave(0, &mut inventory, 0, None);
+        assert_eq!(
+            entities.mount_viewer(donkey),
+            None,
+            "leaving the level lets it go"
+        );
     }
 
     #[test]

@@ -99,6 +99,7 @@ pub struct Entities {
     friend_snapshot: Option<EntitySnapshot>,
     pub heard: crate::heard::HeardLog,
     pub spawner_tags: Vec<((i32, i32, i32), minecraftoss_core::nbt::Tag)>,
+    mount_viewers: HashMap<u64, u64>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -436,6 +437,7 @@ impl Entities {
             friend_snapshot: None,
             heard: Default::default(),
             spawner_tags: Vec::new(),
+            mount_viewers: HashMap::new(),
         }
     }
 
@@ -891,6 +893,22 @@ impl Entities {
         self.server.mount_inventory(inventory);
     }
 
+    #[cfg(test)]
+    pub(crate) fn want_mount_menu(&mut self, player: u64, vehicle: u64) {
+        self.players.queue(player).mount_menus.push(vehicle);
+    }
+
+    pub fn mount_viewer(&self, vehicle: u64) -> Option<u64> {
+        self.mount_viewers.get(&vehicle).copied()
+    }
+
+    pub fn set_mount_viewer(&mut self, player: u64, vehicle: Option<u64>) {
+        self.mount_viewers.retain(|_, viewer| *viewer != player);
+        if let Some(vehicle) = vehicle {
+            self.mount_viewers.insert(vehicle, player);
+        }
+    }
+
     pub fn take_dismounts(&mut self, player: u64) -> Vec<(u64, Option<DVec3>)> {
         self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.dismounts))
     }
@@ -1016,6 +1034,7 @@ impl Entities {
     }
 
     pub fn leave(&mut self, player: u64, inventory: &mut Inventory, selected: usize, feet: Option<[f64; 3]>) -> u32 {
+        self.set_mount_viewer(player, None);
         self.server.player_left(player);
         self.server.wait_idle();
         self.poll_jobs();

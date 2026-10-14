@@ -1321,11 +1321,33 @@ After 3fb8ee1f.
 - **Changed:** `third_party/minecraftoss/entities/src/world.rs` (`take_deaths`, the drowned branch): the base is 12 for a baby, 5 for an adult, and the equipment bonus is added after.
 - **Tests:** `world::tests::a_baby_drowned_s_kill_gives_twelve_experience_and_its_kept_trident_adds_one_to_three`.
 - **Test steps (survival):**
-  1. `/summon minecraft:drowned ~ ~ ~3 {IsBaby:1b,equipment:{mainhand:{id:"minecraft:trident",count:1}}}` and kill it with the sword. Count the orbs: 13 to 15 experience in all (vanilla's split, often 10 + 3 or so), never 16 or more (**117_baby_drowned_experience**).
+  1. `/summon minecraft:drowned ~ ~ ~3 {IsBaby:1b,equipment:{mainhand:{id:"minecraft:trident",count:1}}}` and kill it with the sword. Count the orbs: 13 to 15 experience in all (vanilla's split, often 10 + 3 or so), never 16 or more; exactly 12 when it dropped the trident (**117_baby_drowned_experience**).
 - **Kit:**
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:diamond_sword
+```
+
+### 3. A Minecraft horse inventory opens for one player at a time
+
+After 31d0d242. It also corrects step 1 of the entry above (a baby drowned that drops its trident gives exactly 12).
+
+- **Defect (multiplayer item duplication):** each player's horse inventory screen is a copy of the mount's saddle, armour and chest taken when it opens, and every click writes the whole copy back to the level (`Command::MountInventory`). Two players could open the same tame donkey at once (the host by crouch-click, a friend by crouch-click or from its saddle). Then player A takes the diamonds and A's copy is written back without them. Player B's copy still shows them, so B takes them again, and both players end up with the diamonds.
+- **Changed:**
+  - `crates/minecraft_survival/src/entities.rs`: the level's `Entities` keeps which player has each mount's inventory open (`mount_viewer`, `set_mount_viewer`), and `leave` lets a leaving player's go.
+  - `crates/minecraft_survival/src/menus.rs`: `mount` refuses to open a mount's inventory that another player has open, and records each player's open mount screen at the end of every call (none once it closes, dies or goes out of reach).
+- **Decision:** vanilla shares one `SimpleContainer` between all viewers, so two players can have it open at once. The fork's screen is a per-player copy written back as a whole, so the vanilla-like safe option is one viewer at a time. Villager trading already works this way, and vanilla allows one trader per villager too. A second player's crouch-click does nothing while the screen is open, and works once it is closed.
+- **Left open:** another player's right-click that saddles, armours or chests the mount while its screen is open is not merged into the open copy. The next click in the screen writes the copy back and can remove that saddle or armour. The window between a mount's death and the screen closing (one server tick) is also open. Both are listed under "Left for later".
+- **Tests:** `menus::tests::a_horse_inventory_opens_for_one_player_at_a_time` (gated on the 26.3 data). It covers the first opener, the refused second player, the release on close and the release on leaving the level. It fails without the fix.
+- **Test steps (host and a friend, survival):**
+  1. Host: `/summon minecraft:donkey ~ ~ ~2 {Tame:1b,ChestedHorse:1b}`, crouch and right-click it, and put the 64 diamonds in its chest. Leave the screen open (**118_donkey_open_host**).
+  2. Friend: crouch and right-click the same donkey. No screen opens (**119_donkey_refused_friend**).
+  3. Host: close the screen. Friend: crouch and right-click again. The donkey's screen opens with the 64 diamonds. Take them (**120_donkey_friend_takes**).
+  4. Host: crouch and right-click the donkey once the friend has closed it. The chest is empty, and the diamonds exist only once, in the friend's inventory (**121_donkey_no_copy**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond*64
 ```
 
 ## State doc changes
@@ -1380,6 +1402,7 @@ Patched by track D: 33 (`entities/src/movement.rs`, `entities/src/effects.rs`, `
 - Ambient player effects (conduit power, later beacons): `EffectInstance` has no ambient flag, so the ambient frame and order never show.
 - Wolves flee llamas (`Wolf.WolfAvoidEntityGoal`: a wild wolf avoids a llama within 24 blocks when the llama's strength beats `nextInt(5)`): the wolf's goal context has no llama strength yet; the slot stays the idle goal in `wolf_ai.rs`.
 - Leads: punching a knot off (a left click on the fence digs it; vanilla's knot entity takes the hit), the leash turning its mob (`Leashable.angularMomentum`), the home radius round the holder (`PathfinderMob.whenLeashedTo`), the fall distance an elastic pull keeps (`onElasticLeashPull`), the `entity_drops` game rule for dropped leads, and the first-person rope end (vanilla draws it from the hand in view).
+- Mount inventories: another player saddling, armouring or chesting a mount while its inventory screen is open (the open copy should be refreshed or closed), and a click in the one tick between the mount's death and its screen closing. Review fix 3 lets only one player open a mount's inventory at a time.
 - The mount drawn in its inventory screen's box (`InventoryScreen.extractEntityInInventoryFollowsMouse`); a mount's custom name as the screen title; components on a saddle or horse armour put in through the screen.
 - Riding leftovers: the rider takes fall damage with its horse (`AbstractHorse.causeFallDamage` hurts the passengers), the gallop and breathe sounds of a ridden horse (`playStepSound` with `gallopSoundCounter`), the taming hearts and the bucking smoke (entity events 7 and 6 are sent, the client draws no entity-event particles yet), the vehicle's hearts in place of the food bar (`Gui.renderVehicleHealth`, in `hud/minecraft_vitals.rs`, track B's file), dyed leather horse armour.
 - The seven `spit` particles when llama spit appears (`LlamaSpit.recreateFromPacket`): the client has no particle for a newly tracked projectile yet.
