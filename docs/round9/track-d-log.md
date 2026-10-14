@@ -1350,6 +1350,18 @@ After 31d0d242. It also corrects step 1 of the entry above (a baby drowned that 
 IW4L_MINECRAFT_KIT=minecraft:diamond*64
 ```
 
+### 4. The wandering trader spawner test no longer depends on the clock
+
+After 2ac3b93b.
+
+- **Defect (flaky test):** `server::tests::the_trader_spawner_brings_a_trader_within_48_blocks_with_two_trader_llamas_on_leads` failed in about 1 run in 12. The loot-functions group had listed it under "Left for later". The spawner's own random is seeded from the clock, as vanilla's `RandomSource.create()` is, so every run picked other spots on seed 0's hilly terrain.
+  - Debug output from the failing runs showed the trader at y 56 with a trader llama at y 38 (and once the other way round). Their box centres were 18 blocks apart, so the first leash pass snapped the lead, as vanilla's `Leashable.tickLeash` does beyond 12 blocks.
+  - One run found only one llama spot in vanilla's 10 tries.
+  - Both are vanilla behaviour (`findSpawnPositionNear` takes any surface spot within 4 blocks), not a code defect.
+- **Changed:** `crates/minecraft_terrain/src/server.rs`, the test only: it seeds the trader spawner's random with 5, so the trader and both llamas land on the same level ground every run.
+- **Tests:** the test itself, run 20 times in a row with no failure. The line under "Left for later" is removed.
+- **Test steps:** none (a test-only change).
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -1411,4 +1423,3 @@ Patched by track D: 33 (`entities/src/movement.rs`, `entities/src/effects.rs`, `
 - Explorer maps (`exploration_map`: the structure search, the filled map and its decorations): the abandoned camp, shipwreck map and ocean ruin chests roll nothing until it lands.
 - Chest minecarts (the abandoned mineshaft's loot with its `sulfur_caves` disc): the fork has no minecarts that carry loot.
 - A pillager captain's ominous bottle needs `EntityLootContext.captain` set when a captain dies (group `pillagers`).
-- A flaky test from group wandering-trader: `server::tests::the_trader_spawner_brings_a_trader_within_48_blocks_with_two_trader_llamas_on_leads` failed once during the loot-functions run. It was the full `minecraft_terrain` suite with cargo's default thread count, and the failing check was `leash_holder` against `LeashHolder::Mob(trader)` at `server.rs:11312`. It passes alone (15 of 15) and in two full runs with 8 test threads. The likely cause is an order-dependent step (a `HashSet`/`HashMap` walk in the leash pass) or shared state under heavy parallel load.

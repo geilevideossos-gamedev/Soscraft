@@ -11285,6 +11285,7 @@ mod tests {
         let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
         let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
         let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        server.custom_spawners.traders.as_mut().unwrap().random = minecraftoss_core::random::LegacyRandom::new(5);
         for x in -4..=4 {
             for z in -4..=4 {
                 server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
