@@ -174,7 +174,8 @@ impl IllagerEntity {
         }
         self.illager.spell_casting_ticks = ai.state.illager.spell_ticks;
         for event in ai.state.illager.spell_sounds.drain(..) {
-            self.voices.push((Voice::Event(event, 1.0, 1.0), body.position));
+            self.voices
+                .push((Voice::Event(event, 1.0, 1.0), body.position));
         }
         let shot = ai.state.illager.shot.take();
         let strike = ai.state.attack.take();
@@ -466,7 +467,11 @@ impl EntityWorld {
                 self.cast_fangs(id, world, target);
             }
             SpellCast::Wololo(sheep) => {
-                if let Some(e) = self.sheep.iter_mut().find(|e| e.id == sheep && e.health > 0.0) {
+                if let Some(e) = self
+                    .sheep
+                    .iter_mut()
+                    .find(|e| e.id == sheep && e.health > 0.0)
+                {
                     e.sheep.wool.set_color(WOLOLO_RED);
                 }
             }
@@ -1129,10 +1134,17 @@ mod tests {
             world.tick(&mut Field);
         }
         let entity = world.illagers().iter().find(|e| e.id == plain).unwrap();
-        assert_eq!(entity.ai.state.target, None, "a plain vindicator leaves cows alone");
+        assert_eq!(
+            entity.ai.state.target, None,
+            "a plain vindicator leaves cows alone"
+        );
         let mut world = EntityWorld::default();
         let johnny = vindicator_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
-        world.illager_mut(johnny).unwrap().illager.set_custom_name(il::JOHNNY);
+        world
+            .illager_mut(johnny)
+            .unwrap()
+            .illager
+            .set_custom_name(il::JOHNNY);
         let pillager = pillager_at(&mut world, DVec3::new(3.5, 64.0, 0.5), true);
         let cow = world.spawn_cow(crate::cow::Cow::new(cow_at), true);
         let mut targeted = None;
@@ -1141,7 +1153,10 @@ mod tests {
             world.tick(&mut Field);
             let entity = world.illagers().iter().find(|e| e.id == johnny).unwrap();
             targeted = targeted.or(entity.ai.state.target);
-            hurt |= world.cows().iter().any(|c| c.id == cow && c.cow.health < 10.0);
+            hurt |= world
+                .cows()
+                .iter()
+                .any(|c| c.id == cow && c.cow.health < 10.0);
             if hurt {
                 break;
             }
@@ -1162,7 +1177,12 @@ mod tests {
             raider.patrolling = true;
             raider.patrol_target = Some((200, 64, 0));
         }
-        world.illager_mut(follower).unwrap().illager.raider.patrolling = true;
+        world
+            .illager_mut(follower)
+            .unwrap()
+            .illager
+            .raider
+            .patrolling = true;
         for _ in 0..400 {
             world.tick(&mut Field);
         }
@@ -1172,11 +1192,20 @@ mod tests {
         assert!(moved.x > 5.0, "{moved}");
         assert!(lead.illager.raider.patrolling);
         assert_eq!(lead.illager.raider.patrol_target, Some((200, 64, 0)));
-        let ordered = follow.illager.raider.patrol_target.expect("the leader's step");
+        let ordered = follow
+            .illager
+            .raider
+            .patrol_target
+            .expect("the leader's step");
         assert_eq!(ordered.1, 64, "on the ground: {ordered:?}");
         assert!(follow.illager.raider.patrolling);
         assert!(
-            follow.illager.body.position.distance(lead.illager.body.position) < 16.0,
+            follow
+                .illager
+                .body
+                .position
+                .distance(lead.illager.body.position)
+                < 16.0,
             "{} {}",
             follow.illager.body.position,
             lead.illager.body.position
@@ -1217,8 +1246,14 @@ mod tests {
                 break;
             }
         }
-        assert!(world.illagers().iter().all(|e| e.id != idle), "an idle monster goes in time");
-        assert!(world.illagers().iter().any(|e| e.id == patrol), "a patroller stays");
+        assert!(
+            world.illagers().iter().all(|e| e.id != idle),
+            "an idle monster goes in time"
+        );
+        assert!(
+            world.illagers().iter().any(|e| e.id == patrol),
+            "a patroller stays"
+        );
         world.check_despawn(&[DVec3::new(140.5, 64.0, 0.5)], false, &|_| true);
         assert!(world.illagers().is_empty(), "beyond 128 blocks it goes");
     }
@@ -1262,7 +1297,11 @@ mod tests {
         assert_eq!(world.entity_type(id), Some(il::EVOKER));
         let entity = &world.illagers()[0];
         assert_eq!(
-            (entity.illager.body.width, entity.illager.body.height, entity.illager.health),
+            (
+                entity.illager.body.width,
+                entity.illager.body.height,
+                entity.illager.health
+            ),
             (0.6, 1.95, 24.0)
         );
         assert_eq!(entity.ai.state.follow_range, 12.0);
@@ -1297,13 +1336,32 @@ mod tests {
             }
         }
         assert!(casting, "it raises its arms to cast");
-        for event in [il::PREPARE_SUMMON_SOUND, il::PREPARE_ATTACK_SOUND, il::CAST_SPELL_SOUND] {
+        for event in [
+            il::PREPARE_SUMMON_SOUND,
+            il::PREPARE_ATTACK_SOUND,
+            il::CAST_SPELL_SOUND,
+        ] {
             assert!(sounds.iter().any(|s| s == event), "{event}: {sounds:?}");
         }
         assert!(fangs.len() == 16 || fangs.len() == 13, "{}", fangs.len());
-        assert!(fangs.iter().all(|f| f.fangs.owner == Some(id) && f.fangs.position.y == 64.0));
-        let evoker = world.illagers().iter().find(|e| e.id == id).unwrap().illager.body.position;
-        assert!(fangs.iter().all(|f| f.fangs.position.distance(evoker) <= 20.5));
+        assert!(
+            fangs
+                .iter()
+                .all(|f| f.fangs.owner == Some(id) && f.fangs.position.y == 64.0)
+        );
+        let evoker = world
+            .illagers()
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap()
+            .illager
+            .body
+            .position;
+        assert!(
+            fangs
+                .iter()
+                .all(|f| f.fangs.position.distance(evoker) <= 20.5)
+        );
     }
 
     #[test]
@@ -1313,7 +1371,12 @@ mod tests {
         let pillager = pillager_at(&mut world, DVec3::new(0.5, 64.0, 0.5), true);
         let cow = world.spawn_cow(crate::cow::Cow::new(DVec3::new(0.6, 64.0, 0.4)), true);
         let at = DVec3::new(0.5, 64.0, 0.5);
-        world.spawn_evoker_fangs(crate::evoker_fangs::EvokerFangs::new(at, 0.0, 0, Some(evoker)));
+        world.spawn_evoker_fangs(crate::evoker_fangs::EvokerFangs::new(
+            at,
+            0.0,
+            0,
+            Some(evoker),
+        ));
         let players = [player_at(1, 0.5, 0.5)];
         let mut hits = Vec::new();
         let mut sounds = Vec::new();
@@ -1326,9 +1389,33 @@ mod tests {
         assert_eq!(hits[0].damage, 6.0);
         assert_eq!(hits[0].source, Some(evoker));
         assert!(matches!(hits[0].kind, PlayerHitKind::Magic { .. }));
-        assert_eq!(sounds.iter().filter(|s| *s == crate::evoker_fangs::ATTACK_SOUND).count(), 1);
-        assert_eq!(world.illagers().iter().find(|e| e.id == pillager).unwrap().illager.health, 24.0);
-        assert!(world.cows().iter().find(|e| e.id == cow).unwrap().cow.health < 10.0);
+        assert_eq!(
+            sounds
+                .iter()
+                .filter(|s| *s == crate::evoker_fangs::ATTACK_SOUND)
+                .count(),
+            1
+        );
+        assert_eq!(
+            world
+                .illagers()
+                .iter()
+                .find(|e| e.id == pillager)
+                .unwrap()
+                .illager
+                .health,
+            24.0
+        );
+        assert!(
+            world
+                .cows()
+                .iter()
+                .find(|e| e.id == cow)
+                .unwrap()
+                .cow
+                .health
+                < 10.0
+        );
         assert!(world.evoker_fangs().is_empty(), "the fangs are gone");
     }
 
@@ -1341,11 +1428,24 @@ mod tests {
             let mut blue = crate::sheep::Sheep::default();
             blue.wool.set_color(11);
             let blue = world.spawn_sheep(blue, DVec3::new(0.5, 64.0, 6.5), true);
-            let white = world.spawn_sheep(crate::sheep::Sheep::default(), DVec3::new(-5.5, 64.0, 0.5), true);
+            let white = world.spawn_sheep(
+                crate::sheep::Sheep::default(),
+                DVec3::new(-5.5, 64.0, 0.5),
+                true,
+            );
             for _ in 0..600 {
                 world.tick(&mut Field);
             }
-            let color = |id: u64| world.sheep().iter().find(|e| e.id == id).unwrap().sheep.wool.color();
+            let color = |id: u64| {
+                world
+                    .sheep()
+                    .iter()
+                    .find(|e| e.id == id)
+                    .unwrap()
+                    .sheep
+                    .wool
+                    .color()
+            };
             assert_eq!(color(blue), if griefing { "red" } else { "blue" });
             assert_eq!(color(white), "white");
         }

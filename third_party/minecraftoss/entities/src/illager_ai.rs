@@ -145,12 +145,7 @@ pub struct IllagerState {
 
 pub(crate) fn raider_goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
-    selector.add(
-        4,
-        LongDistancePatrolGoal {
-            cooldown_until: -1,
-        },
-    );
+    selector.add(4, LongDistancePatrolGoal { cooldown_until: -1 });
     selector.add(
         1,
         NeverGoal {
@@ -525,8 +520,10 @@ impl Goal<MonsterGoalContext> for RangedCrossbowAttackGoal {
 }
 
 pub fn find_patrol_target(from: Pos, random: &mut minecraftoss_player::rng::LegacyRandom) -> Pos {
-    let x = from.0 - il::PATROL_TARGET_SPREAD + random.next_int(il::PATROL_TARGET_SPREAD as u32 * 2) as i32;
-    let z = from.2 - il::PATROL_TARGET_SPREAD + random.next_int(il::PATROL_TARGET_SPREAD as u32 * 2) as i32;
+    let x = from.0 - il::PATROL_TARGET_SPREAD
+        + random.next_int(il::PATROL_TARGET_SPREAD as u32 * 2) as i32;
+    let z = from.2 - il::PATROL_TARGET_SPREAD
+        + random.next_int(il::PATROL_TARGET_SPREAD as u32 * 2) as i32;
     (x, from.1, z)
 }
 
@@ -615,10 +612,8 @@ impl Goal<MonsterGoalContext> for LongDistancePatrolGoal {
             f64::from(patrol_target.2) + 0.5,
         );
         if leader && centre.distance_squared(position) < il::PATROL_ARRIVED * il::PATROL_ARRIVED {
-            ctx.illager.patrol_target = Some(find_patrol_target(
-                block_of(position),
-                &mut ctx.random,
-            ));
+            ctx.illager.patrol_target =
+                Some(find_patrol_target(block_of(position), &mut ctx.random));
             ctx.illager.patrolling = true;
             return;
         }
@@ -627,7 +622,8 @@ impl Goal<MonsterGoalContext> for LongDistancePatrolGoal {
             f64::from(patrol_target.1),
             f64::from(patrol_target.2) + 0.5,
         );
-        let swerved = y_rot(position - bottom, il::PATROL_SWERVE_ANGLE) * il::PATROL_SWERVE + bottom;
+        let swerved =
+            y_rot(position - bottom, il::PATROL_SWERVE_ANGLE) * il::PATROL_SWERVE + bottom;
         let step = normalize(swerved - position) * il::PATROL_STEP + position;
         let (x, _, z) = block_of(step);
         let at = (x, world.motion_blocking_no_leaves_height(x, z), z);
@@ -1040,7 +1036,9 @@ impl Goal<MonsterGoalContext> for SpellGoal {
         let cast = match self.spell {
             il::IllagerSpell::SummonVex => Some(SpellCast::SummonVex),
             il::IllagerSpell::Wololo => ctx.illager.wololo_target.map(SpellCast::Wololo),
-            _ => ctx.target().map(|t| SpellCast::Fangs { target: t.position }),
+            _ => ctx
+                .target()
+                .map(|t| SpellCast::Fangs { target: t.position }),
         };
         ctx.illager.casts.extend(cast);
         ctx.illager.spell_sounds.push(il::CAST_SPELL_SOUND);

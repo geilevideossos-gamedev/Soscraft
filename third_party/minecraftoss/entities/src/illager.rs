@@ -453,7 +453,10 @@ mod tests {
         assert_eq!(vindicator.kind.follow_range(), 12.0);
         assert_eq!(vindicator.kind.attack_damage(), 5.0);
         assert_eq!(vindicator.health, 24.0);
-        assert_eq!(vindicator.main_hand().map(|s| s.id.as_str()), Some(IRON_AXE));
+        assert_eq!(
+            vindicator.main_hand().map(|s| s.id.as_str()),
+            Some(IRON_AXE)
+        );
         assert!(!vindicator.can_pick_up_loot);
         assert_eq!(vindicator.arm_pose(), IllagerArmPose::Crossed);
         assert!(!vindicator.shows_held_items());

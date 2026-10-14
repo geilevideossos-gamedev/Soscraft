@@ -1980,6 +1980,22 @@ After 15926d5f.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2
 ```
 
+## Review (D2)
+
+Adversarial review of everything since `r9-d2-base` (groups pillagers to raid-villagers), after 3f359895.
+
+### 1. Track D's new illager files pass rustfmt
+
+- **Found:** `entities/src/illager.rs`, `entities/src/illager_ai.rs` and `entities/src/world/illagers.rs` (added by groups pillagers to evokers-vexes, edited by group raids) did not pass `rustfmt --check --edition 2021` on their committed content: long calls and asserts were left on one line.
+- **Changed:** the three files formatted with `rustfmt --edition 2021` (they are new in this track); no change in the game.
+- **Tests:** none new; the three files now pass `rustfmt --check --edition 2021`, as do all 26 `.rs` files track D added since `r9-d2-base`.
+- **Test steps:** none.
+- **Kit:** group raid-villagers' last kit.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision), and groups pillagers, patrols-vindicators, raids and raid-villagers keep their own kits (their last commits).
