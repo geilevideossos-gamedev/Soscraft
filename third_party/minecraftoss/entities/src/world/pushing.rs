@@ -58,7 +58,7 @@ impl PlayerBox {
 }
 
 /// A player's width and height for the pose its eyes tell.
-fn player_size(eye_height: f32) -> (f32, f32) {
+pub(super) fn player_size(eye_height: f32) -> (f32, f32) {
     match eye_height {
         e if e >= 1.5 => (0.6, 1.8),
         e if e >= 1.0 => (0.6, 1.5),
@@ -168,6 +168,10 @@ impl EntityWorld {
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| (&mut e.witch.body, e.witch.health > 0.0)),
             EntityKey::IronGolem(id) => self.iron_golems.iter_mut().find(|e| e.id == id).map(|e| (&mut e.golem.body, e.golem.health > 0.0)),
             EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| (&mut e.wolf.body, e.wolf.health > 0.0)),
+            EntityKey::Feline(id) => self.felines.iter_mut().find(|e| e.id == id).map(|e| (&mut e.feline.body, e.feline.health > 0.0)),
+            EntityKey::Trader(id) => self.wandering_traders.iter_mut().find(|e| e.id == id).map(|e| (&mut e.trader.body, e.trader.health > 0.0)),
+            EntityKey::SnowGolem(id) => self.snow_golems.iter_mut().find(|e| e.id == id).map(|e| (&mut e.golem.body, e.golem.health > 0.0)),
+            EntityKey::Illager(id) => self.illagers.iter_mut().find(|e| e.id == id).map(|e| (&mut e.illager.body, e.illager.health > 0.0)),
             EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| (&mut e.villager.body, e.villager.health > 0.0)),
             EntityKey::Cow(id) => self.cows.iter_mut().find(|e| e.id == id).map(|e| (&mut e.cow.body, e.cow.health > 0.0)),
             EntityKey::Sheep(id) => self.sheep.iter_mut().find(|e| e.id == id).map(|e| (&mut e.body, e.health > 0.0)),
@@ -179,7 +183,8 @@ impl EntityWorld {
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (&mut e.hoglin.body, e.hoglin.health > 0.0)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (&mut e.piglin.body, e.piglin.health > 0.0)),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (&mut e.shulker.body, e.shulker.health > 0.0)),
-            EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
+            EntityKey::Ravager(id) => self.ravagers.iter_mut().find(|e| e.id == id).map(|e| (&mut e.ravager.body, e.ravager.health > 0.0)),
+            EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) | EntityKey::Vex(_) => None,
         }
     }
 
@@ -195,6 +200,10 @@ impl EntityWorld {
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::IronGolem(id) => self.iron_golems.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Feline(id) => self.felines.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Trader(id) => self.wandering_traders.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::SnowGolem(id) => self.snow_golems.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Illager(id) => self.illagers.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Cow(id) => self.cows.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Sheep(id) => self.sheep.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
@@ -206,7 +215,8 @@ impl EntityWorld {
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
-            EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
+            EntityKey::Ravager(id) => self.ravagers.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) | EntityKey::Vex(_) => None,
         }
     }
 
@@ -330,6 +340,10 @@ impl EntityWorld {
                 EntityKey::Witch(id) => self.witches.iter().find(|e| e.id == id).map(|e| &e.witch.body),
                 EntityKey::IronGolem(id) => self.iron_golems.iter().find(|e| e.id == id).map(|e| &e.golem.body),
                 EntityKey::Wolf(id) => self.wolves.iter().find(|e| e.id == id).map(|e| &e.wolf.body),
+                EntityKey::Feline(id) => self.felines.iter().find(|e| e.id == id).map(|e| &e.feline.body),
+                EntityKey::Trader(id) => self.wandering_traders.iter().find(|e| e.id == id).map(|e| &e.trader.body),
+                EntityKey::SnowGolem(id) => self.snow_golems.iter().find(|e| e.id == id).map(|e| &e.golem.body),
+                EntityKey::Illager(id) => self.illagers.iter().find(|e| e.id == id).map(|e| &e.illager.body),
                 EntityKey::Villager(id) => self.villagers.iter().find(|e| e.id == id).map(|e| &e.villager.body),
                 EntityKey::Cow(id) => self.cows.iter().find(|e| e.id == id).map(|e| &e.cow.body),
                 EntityKey::Sheep(id) => self.sheep.iter().find(|e| e.id == id).map(|e| &e.body),
@@ -340,7 +354,8 @@ impl EntityWorld {
                 EntityKey::Strider(id) => self.striders.iter().find(|e| e.id == id).map(|e| &e.strider.body),
                 EntityKey::Hoglin(id) => self.hoglins.iter().find(|e| e.id == id).map(|e| &e.hoglin.body),
                 EntityKey::Piglin(id) => self.piglins.iter().find(|e| e.id == id).map(|e| &e.piglin.body),
-                EntityKey::Shulker(_) | EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
+                EntityKey::Ravager(id) => self.ravagers.iter().find(|e| e.id == id).map(|e| &e.ravager.body),
+                EntityKey::Shulker(_) | EntityKey::Bat(_) | EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) | EntityKey::Vex(_) => None,
             };
             let Some(body) = body else { continue };
             let p = body.position;

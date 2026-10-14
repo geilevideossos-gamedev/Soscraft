@@ -98,7 +98,7 @@ impl MobCategory {
         Some(match kind.trim_start_matches("minecraft:") {
             "zombie" | "zombie_villager" | "zombie_horse" | "skeleton" | "creeper" | "spider" | "enderman" | "witch" | "slime" | "husk" | "stray" | "drowned"
             | "bogged" | "parched" | "camel_husk" | "cave_spider" | "silverfish" | "phantom" | "blaze" | "ghast" | "magma_cube" | "piglin" | "hoglin"
-            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" => Self::Monster,
+            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" | "vindicator" | "evoker" | "vex" | "ravager" => Self::Monster,
             "cow" | "pig" | "sheep" | "chicken" | "horse" | "donkey" | "mule" | "mooshroom" | "rabbit" | "wolf" | "fox" | "goat" | "llama" | "panda"
             | "polar_bear" | "cat" | "ocelot" | "parrot" | "frog" | "camel" | "armadillo" | "turtle" | "strider" => Self::Creature,
             "bat" => Self::Ambient,
@@ -110,6 +110,8 @@ impl MobCategory {
         })
     }
 }
+
+pub const BLACK_CAT_STRUCTURES: [&str; 1] = ["minecraft:swamp_hut"];
 
 /// `EntityType.canSpawnFarFromPlayer`: creature (and misc) types, pillagers
 /// and shulkers.
@@ -222,6 +224,55 @@ fn byte(value: bool) -> Tag {
     Tag::Byte(i8::from(value))
 }
 
+pub const PATROL_LEADER_CHANCE: f32 = 0.06;
+pub const PATROL_TARGET_SPREAD: i32 = 500;
+pub const OMINOUS_BANNER_NAME: &str = "block.minecraft.ominous_banner";
+pub const OMINOUS_BANNER_PATTERNS: [(&str, &str); 8] = [
+    ("rhombus", "cyan"),
+    ("stripe_bottom", "light_gray"),
+    ("stripe_center", "gray"),
+    ("border", "light_gray"),
+    ("stripe_middle", "black"),
+    ("half_horizontal", "light_gray"),
+    ("circle", "light_gray"),
+    ("border", "black"),
+];
+
+pub const RAID_GROUPS_EASY: i32 = 3;
+pub const RAID_GROUPS_NORMAL: i32 = 5;
+
+fn enchant_main_hand(tag: &mut Tag, enchantment: &str, level: i32) {
+    let levels = Tag::Compound(BTreeMap::from([(enchantment.to_owned(), Tag::Int(level))]));
+    let components = Tag::Compound(BTreeMap::from([("minecraft:enchantments".to_owned(), levels)]));
+    if let Tag::Compound(map) = tag
+        && let Some(Tag::Compound(slots)) = map.get_mut("equipment")
+        && let Some(Tag::Compound(hand)) = slots.get_mut("mainhand")
+    {
+        hand.insert("components".to_owned(), components);
+    }
+}
+
+pub fn ominous_banner() -> Tag {
+    let text = |value: &str| Tag::String(value.to_owned());
+    let layers = OMINOUS_BANNER_PATTERNS
+        .iter()
+        .map(|(pattern, color)| Tag::Compound(BTreeMap::from([("color".to_owned(), text(color)), ("pattern".to_owned(), text(&format!("minecraft:{pattern}")))])))
+        .collect();
+    let hidden = Tag::Compound(BTreeMap::from([("hidden_components".to_owned(), Tag::List(vec![text("minecraft:banner_patterns")]))]));
+    let name = Tag::Compound(BTreeMap::from([("translate".to_owned(), text(OMINOUS_BANNER_NAME))]));
+    let components = BTreeMap::from([
+        ("minecraft:banner_patterns".to_owned(), Tag::List(layers)),
+        ("minecraft:tooltip_display".to_owned(), hidden),
+        ("minecraft:item_name".to_owned(), name),
+        ("minecraft:rarity".to_owned(), text("uncommon")),
+    ]);
+    Tag::Compound(BTreeMap::from([
+        ("components".to_owned(), Tag::Compound(components)),
+        ("count".to_owned(), Tag::Int(1)),
+        ("id".to_owned(), text("minecraft:white_banner")),
+    ]))
+}
+
 fn hoglin_spawns_as_baby(random: &mut dyn RandomSource, group: &mut MonsterGroup) -> bool {
     let baby = random.next_f32() < 0.2;
     if matches!(group, MonsterGroup::None) {
@@ -262,6 +313,31 @@ pub(super) fn piglin_spawn(level: &mut dyn RandomSource, own: &mut impl RandomSo
         }
     }
     PiglinSpawn { baby, weapon, hunted, armor }
+}
+
+fn drowned_weapon(random: &mut dyn RandomSource) -> Option<&'static str> {
+    if f64::from(random.next_f32()) > 0.9 {
+        Some(if random.next_i32_bound(16) < 10 { "minecraft:trident" } else { "minecraft:fishing_rod" })
+    } else {
+        None
+    }
+}
+
+fn drowned_shell(random: &mut dyn RandomSource) -> bool {
+    random.next_f32() < 0.03
+}
+
+fn drowned_of(root: &mut Tag) -> Option<&mut Tag> {
+    if root.get("id").and_then(Tag::as_str) == Some("minecraft:drowned") {
+        return Some(root);
+    }
+    match root {
+        Tag::Compound(map) => match map.get_mut("Passengers") {
+            Some(Tag::List(riders)) => riders.first_mut(),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 pub(super) fn piglin_may_stand_on(below: &str) -> bool {
@@ -325,6 +401,8 @@ fn follow_range_base(kind: &str) -> f64 {
         "minecraft:ghast" => 100.0,
         "minecraft:blaze" => 48.0,
         "minecraft:piglin_brute" => 12.0,
+        "minecraft:pillager" | "minecraft:ravager" => 32.0,
+        "minecraft:vindicator" | "minecraft:evoker" => 12.0,
         _ => 16.0,
     }
 }
@@ -633,6 +711,7 @@ impl CreatureSpawns {
             Rules::SurfaceMonster => self.dark_enough(level, context, pos) && level.sky_brightness(pos) >= 15,
             Rules::Ghast => level.random().next_i32_bound(20) == 0,
             Rules::AnyLightMonster => true,
+            Rules::Drowned => self.dark_enough(level, context, pos),
             _ => self.natural_spawn_rules(level, context, kind, &info, pos),
         };
         if !rules {
@@ -677,8 +756,12 @@ impl CreatureSpawns {
                 pos.y <= level.sea_level() - 33 && level.raw_brightness(pos, 0) == 0 && water
             }
             Rules::Strider => self.strider_spawn_rules(level, pos),
+            Rules::Drowned => self.drowned_spawn_rules(level, context, pos),
             Rules::Hoglin => self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str() != "minecraft:nether_wart_block",
             Rules::Piglin => piglin_may_stand_on(self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str()),
+            Rules::Ocelot => level.random().next_i32_bound(3) != 0,
+            Rules::Unrestricted => true,
+            Rules::Patrolling => level.block_brightness(pos) <= 8 && context.difficulty != 0 && self.mob_spawn_rules(level, kind, info, pos),
             Rules::Other => {
                 level.note_unsupported(&format!("spawn rules of {kind}"));
                 false
@@ -698,6 +781,19 @@ impl CreatureSpawns {
         let darkening = if context.thundering { 10 } else { level.sky_darken() };
         let brightness = level.raw_brightness(pos, darkening);
         brightness <= level.random().next_i32_bound(self.monster_light_test_max + 1)
+    }
+
+    fn drowned_spawn_rules(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, pos: BlockPos) -> bool {
+        let water = |level: &mut dyn SpawnLevel, at: BlockPos| self.registries.blocks.state(level.block(at)).fluid.is_some_and(|f| f.kind == minecraftoss_core::block::FluidKind::Water);
+        if !water(level, pos.below()) {
+            return false;
+        }
+        let biome = level.biome(pos);
+        let can_spawn = context.difficulty != 0 && self.dark_enough(level, context, pos) && water(level, pos);
+        if self.more_frequent_drowned.is_some_and(|t| self.registries.biome_in_tag(biome, t)) {
+            return level.random().next_i32_bound(15) == 0 && can_spawn;
+        }
+        level.random().next_i32_bound(40) == 0 && pos.y < level.sea_level() - 5 && can_spawn
     }
 
     /// `Bat.checkBatSpawnRules`.
@@ -812,6 +908,11 @@ impl CreatureSpawns {
             return Ok(tag);
         }
         let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+        if kind == "minecraft:cat" {
+            let black = (context.structures)(pos).iter().any(|s| s.in_piece && BLACK_CAT_STRUCTURES.contains(&s.name.as_str()));
+            self.finalize_cat(level, &mut tag, black, context.moon_brightness);
+            return Ok(tag);
+        }
         match type_info(kind) {
             Some(info) if info.rules == Rules::Strider => {
                 let difficulty = Self::difficulty_at(level, context, pos);
@@ -887,6 +988,163 @@ impl CreatureSpawns {
         }
     }
 
+    fn finalize_pillager(level: &mut dyn SpawnLevel, tag: &mut Tag, difficulty: DifficultyInstance, rolls_leader: bool, patrol: bool) {
+        equip(tag, "mainhand", "minecraft:crossbow");
+        Self::roll_enchantments(level, tag, difficulty);
+        if level.random().next_i32_bound(300) == 0 {
+            let piercing = Tag::Compound(BTreeMap::from([("minecraft:piercing".to_owned(), Tag::Int(1))]));
+            let components = Tag::Compound(BTreeMap::from([("minecraft:enchantments".to_owned(), piercing)]));
+            if let Tag::Compound(map) = tag
+                && let Some(Tag::Compound(slots)) = map.get_mut("equipment")
+                && let Some(Tag::Compound(hand)) = slots.get_mut("mainhand")
+            {
+                hand.insert("components".to_owned(), components);
+            }
+        }
+        Self::finalize_raider(level, tag, rolls_leader, patrol);
+        finalize_mob(tag, &mut RandomRef(level.random()));
+    }
+
+    fn finalize_raider(level: &mut dyn SpawnLevel, tag: &mut Tag, rolls_leader: bool, patrol: bool) {
+        set(tag, "CanJoinRaid", byte(true));
+        if rolls_leader && level.random().next_f32() < PATROL_LEADER_CHANCE {
+            set(tag, "PatrolLeader", byte(true));
+        }
+        if tag.get("PatrolLeader").and_then(Tag::as_i64).is_some_and(|leader| leader != 0) {
+            if let Tag::Compound(map) = tag {
+                let slots = map.entry("equipment".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new()));
+                if let Tag::Compound(slots) = slots {
+                    slots.insert("head".to_owned(), ominous_banner());
+                }
+                let chances = map.entry("drop_chances".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new()));
+                if let Tag::Compound(chances) = chances {
+                    chances.insert("head".to_owned(), Tag::Float(2.0));
+                }
+            }
+        }
+        if patrol {
+            set(tag, "Patrolling", byte(true));
+        }
+    }
+
+    fn finalize_vindicator(level: &mut dyn SpawnLevel, tag: &mut Tag, difficulty: DifficultyInstance, rolls_leader: bool) {
+        Self::finalize_raider(level, tag, rolls_leader, false);
+        finalize_mob(tag, &mut RandomRef(level.random()));
+        equip(tag, "mainhand", "minecraft:iron_axe");
+        Self::roll_enchantments(level, tag, difficulty);
+    }
+
+    pub fn spawn_patrol(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, start: BlockPos) -> Vec<Tag> {
+        let size = f64::from(Self::difficulty_at(level, context, start).effective).ceil() as i32 + 1;
+        let mut pos = start;
+        let mut members = Vec::new();
+        for index in 0..size {
+            pos.y = level.height(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, pos.x, pos.z);
+            match self.patrol_member(level, context, pos, index == 0) {
+                Some(member) => members.push(member),
+                None if index == 0 => break,
+                None => {}
+            }
+            pos.x += level.random().next_i32_bound(5) - level.random().next_i32_bound(5);
+            pos.z += level.random().next_i32_bound(5) - level.random().next_i32_bound(5);
+        }
+        members
+    }
+
+    fn patrol_member(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, pos: BlockPos, leader: bool) -> Option<Tag> {
+        let kind = "minecraft:pillager";
+        let info = type_info(kind)?;
+        if !self.is_valid_empty_spawn_block(&self.registries, level.block(pos), kind, &info) {
+            return None;
+        }
+        if level.block_brightness(pos) > 8 || context.difficulty == 0 || !self.mob_spawn_rules(level, kind, &info, pos) {
+            return None;
+        }
+        let mut tag = self.registries.entities.as_ref()?.default_tag(kind)?;
+        let uuid = level.next_uuid();
+        if leader {
+            let mut own = entity_random(uuid);
+            let x = -PATROL_TARGET_SPREAD + own.next_i32_bound(PATROL_TARGET_SPREAD * 2);
+            let z = -PATROL_TARGET_SPREAD + own.next_i32_bound(PATROL_TARGET_SPREAD * 2);
+            set(&mut tag, "PatrolLeader", byte(true));
+            set(&mut tag, "Patrolling", byte(true));
+            set(&mut tag, "patrol_target", Tag::IntArray(vec![x, 0, z]));
+        }
+        place(&mut tag, [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)], 0.0, 0.0, uuid);
+        let _ = attribute(&mut tag, "minecraft:follow_range", follow_range_base(kind));
+        let difficulty = Self::difficulty_at(level, context, pos);
+        Self::finalize_pillager(level, &mut tag, difficulty, false, true);
+        Some(tag)
+    }
+
+    pub fn raid_spawn_ok(&self, level: &mut dyn SpawnLevel, pos: BlockPos) -> bool {
+        let kind = "minecraft:ravager";
+        let Some(info) = type_info(kind) else { return false };
+        if self.is_spawn_position_ok(level, kind, &info, pos) {
+            return true;
+        }
+        let blocks = &self.registries.blocks;
+        let name = |state: minecraftoss_core::BlockStateId| blocks.block(blocks.block_of(state)).name.as_str();
+        name(level.block(pos.below())) == "minecraft:snow" && matches!(name(level.block(pos)), "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn raid_member(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, kind: &str, pos: BlockPos, wave: i32, raid: i32, leader: bool, enchant_odds: f32) -> Option<Tag> {
+        let mut tag = self.registries.entities.as_ref()?.default_tag(kind)?;
+        let uuid = level.next_uuid();
+        place(&mut tag, [f64::from(pos.x) + 0.5, f64::from(pos.y) + 1.0, f64::from(pos.z) + 0.5], 0.0, 0.0, uuid);
+        let _ = attribute(&mut tag, "minecraft:follow_range", follow_range_base(kind));
+        if leader {
+            set(&mut tag, "PatrolLeader", byte(true));
+        }
+        set(&mut tag, "Wave", Tag::Int(wave));
+        set(&mut tag, "RaidId", Tag::Int(raid));
+        let difficulty = Self::difficulty_at(level, context, pos);
+        match kind {
+            "minecraft:pillager" => Self::finalize_pillager(level, &mut tag, difficulty, false, false),
+            "minecraft:vindicator" => Self::finalize_vindicator(level, &mut tag, difficulty, false),
+            "minecraft:evoker" => {
+                Self::finalize_raider(level, &mut tag, false, false);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:witch" | "minecraft:ravager" => {
+                set(&mut tag, "CanJoinRaid", byte(true));
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            _ => return None,
+        }
+        set(&mut tag, "CanJoinRaid", byte(true));
+        let mut own = entity_random(uuid);
+        match kind {
+            "minecraft:pillager" => {
+                if own.next_f32() <= enchant_odds {
+                    let quick_charge = if wave > RAID_GROUPS_NORMAL {
+                        Some(2)
+                    } else if wave > RAID_GROUPS_EASY {
+                        Some(1)
+                    } else {
+                        None
+                    };
+                    if let Some(charge) = quick_charge {
+                        equip(&mut tag, "mainhand", "minecraft:crossbow");
+                        enchant_main_hand(&mut tag, "minecraft:quick_charge", charge);
+                    }
+                }
+            }
+            "minecraft:vindicator" => {
+                let enchanted = own.next_f32() <= enchant_odds;
+                equip(&mut tag, "mainhand", "minecraft:iron_axe");
+                if enchanted {
+                    let sharpness = if wave > RAID_GROUPS_NORMAL { 2 } else { 1 };
+                    enchant_main_hand(&mut tag, "minecraft:sharpness", sharpness);
+                }
+            }
+            _ => {}
+        }
+        set(&mut tag, "OnGround", byte(true));
+        Some(tag)
+    }
+
     /// The monsters' `finalizeSpawn` (with `Mob.finalizeSpawn`'s common
     /// part), returning the entity to add: the mob, or the chicken it rides.
     #[allow(clippy::too_many_arguments)]
@@ -927,6 +1185,11 @@ impl CreatureSpawns {
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
                 return self.finalize_zombie(level, context, tag, pos, difficulty, group, &mut own);
             }
+            "minecraft:drowned" => {
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+                let root = self.finalize_zombie(level, context, tag, pos, difficulty, group, &mut own);
+                return self.finalize_drowned(level, root, pos, natural);
+            }
             // `AbstractSkeleton.finalizeSpawn`, which strays, bogged and
             // parched do not override.
             "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton" => {
@@ -954,6 +1217,28 @@ impl CreatureSpawns {
                 }
             }
             "minecraft:cave_spider" => {}
+            "minecraft:pillager" => Self::finalize_pillager(level, &mut tag, difficulty, true, false),
+            "minecraft:vindicator" => Self::finalize_vindicator(level, &mut tag, difficulty, true),
+            "minecraft:evoker" => {
+                Self::finalize_raider(level, &mut tag, true, false);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:ravager" => {
+                set(&mut tag, "CanJoinRaid", byte(true));
+                let _ = level.random().next_f32();
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:vex" => {
+                equip(&mut tag, "mainhand", "minecraft:iron_sword");
+                if let Tag::Compound(map) = &mut tag {
+                    let chances = map.entry("drop_chances".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new()));
+                    if let Tag::Compound(chances) = chances {
+                        chances.insert("mainhand".to_owned(), Tag::Float(0.0));
+                    }
+                }
+                Self::roll_enchantments(level, &mut tag, difficulty);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
             "minecraft:witch" => {
                 // `Raider.finalizeSpawn`, then `PatrollingMonster`'s leader
                 // roll (witches never lead), then `Mob`'s part.
@@ -1106,6 +1391,7 @@ impl CreatureSpawns {
     ) -> Tag {
         let special = difficulty.special_multiplier();
         let piglin = tag.get("id").and_then(Tag::as_str) == Some("minecraft:zombified_piglin");
+        let drowned = tag.get("id").and_then(Tag::as_str) == Some("minecraft:drowned");
         let loot = level.random().next_f32() < 0.55 * special;
         set(&mut tag, "CanPickUpLoot", byte(loot));
         if matches!(group, MonsterGroup::None) {
@@ -1137,12 +1423,16 @@ impl CreatureSpawns {
             if piglin {
                 let item = if level.random().next_i32_bound(20) == 0 { "minecraft:golden_spear" } else { "minecraft:golden_sword" };
                 equip(&mut tag, "mainhand", item);
+            } else if drowned {
+                if let Some(item) = drowned_weapon(level.random()) {
+                    equip(&mut tag, "mainhand", item);
+                }
             } else {
                 Self::populate_armor(level, &mut tag, difficulty);
             }
             // `Zombie.populateDefaultEquipmentSlots`: a rare iron weapon.
             let weapon_chance = if difficulty.base == 3 { 0.05 } else { 0.01 };
-            if !piglin && level.random().next_f32() < weapon_chance {
+            if !piglin && !drowned && level.random().next_f32() < weapon_chance {
                 let item = match level.random().next_i32_bound(6) {
                     0 => "minecraft:iron_sword",
                     1 => "minecraft:iron_spear",
@@ -1154,20 +1444,7 @@ impl CreatureSpawns {
         }
         Self::halloween_head(level, context, &mut tag);
         // `handleAttributes`, from the zombie's own random.
-        let reinforcements = if piglin { 0.0 } else { own.next_f64() * f64::from(0.1f32) };
-        set_attribute_base(&mut tag, "minecraft:spawn_reinforcements", reinforcements);
-        add_modifier(&mut tag, "minecraft:knockback_resistance", 0.0, "minecraft:random_spawn_bonus", own.next_f64() * f64::from(0.05f32), "add_value");
-        let follow = own.next_f64() * 1.5 * f64::from(special);
-        if follow > 1.0 {
-            add_modifier(&mut tag, "minecraft:follow_range", 35.0, "minecraft:zombie_random_spawn_bonus", follow, "add_multiplied_total");
-        }
-        if own.next_f32() < special * 0.05 {
-            add_modifier(&mut tag, "minecraft:spawn_reinforcements", 0.0, "minecraft:leader_zombie_bonus", own.next_f64() * 0.25 + 0.5, "add_value");
-            let bonus = own.next_f64() * 3.0 + 1.0;
-            add_modifier(&mut tag, "minecraft:max_health", 20.0, "minecraft:leader_zombie_bonus", bonus, "add_multiplied_total");
-            set(&mut tag, "Health", Tag::Float((20.0 * (1.0 + bonus)).clamp(1.0, 1024.0) as f32));
-            set(&mut tag, "CanBreakDoors", byte(true));
-        }
+        Self::zombie_attributes(&mut tag, own, special, piglin);
         match vehicle {
             Some(mut chicken) => {
                 set(&mut chicken, "Passengers", Tag::List(vec![tag]));
@@ -1175,6 +1452,61 @@ impl CreatureSpawns {
             }
             None => tag,
         }
+    }
+
+    fn zombie_attributes(tag: &mut Tag, own: &mut LegacyRandom, special: f32, piglin: bool) {
+        let reinforcements = if piglin { 0.0 } else { own.next_f64() * f64::from(0.1f32) };
+        set_attribute_base(tag, "minecraft:spawn_reinforcements", reinforcements);
+        add_modifier(tag, "minecraft:knockback_resistance", 0.0, "minecraft:random_spawn_bonus", own.next_f64() * f64::from(0.05f32), "add_value");
+        let follow = own.next_f64() * 1.5 * f64::from(special);
+        if follow > 1.0 {
+            add_modifier(tag, "minecraft:follow_range", 35.0, "minecraft:zombie_random_spawn_bonus", follow, "add_multiplied_total");
+        }
+        if own.next_f32() < special * 0.05 {
+            add_modifier(tag, "minecraft:spawn_reinforcements", 0.0, "minecraft:leader_zombie_bonus", own.next_f64() * 0.25 + 0.5, "add_value");
+            let bonus = own.next_f64() * 3.0 + 1.0;
+            add_modifier(tag, "minecraft:max_health", 20.0, "minecraft:leader_zombie_bonus", bonus, "add_multiplied_total");
+            set(tag, "Health", Tag::Float((20.0 * (1.0 + bonus)).clamp(1.0, 1024.0) as f32));
+            set(tag, "CanBreakDoors", byte(true));
+        }
+    }
+
+    pub fn finalize_conversion(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, mut tag: Tag) -> Tag {
+        let at = Self::position(&tag);
+        let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+        if tag.get("UUID").is_none() {
+            let uuid = level.next_uuid();
+            set(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+        }
+        let kind = tag.get("id").and_then(Tag::as_str).map(str::to_owned);
+        match kind.as_deref() {
+            Some("minecraft:zombie_villager") => {
+                set(&mut tag, "VillagerDataFinalized", byte(true));
+                let _ = attribute(&mut tag, "minecraft:follow_range", follow_range_base("minecraft:zombie_villager"));
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+                let special = Self::difficulty_at(level, context, pos).special_multiplier();
+                let doors = level.random().next_f32() < special * 0.1;
+                set(&mut tag, "CanBreakDoors", byte(doors));
+                Self::halloween_head(level, context, &mut tag);
+                let mut own = entity_random(Self::uuid(&tag));
+                Self::zombie_attributes(&mut tag, &mut own, special, false);
+            }
+            Some("minecraft:villager") => {
+                if tag.get("VillagerDataFinalized").and_then(Tag::as_i64).unwrap_or(0) == 0 {
+                    let biome = self.biome_name(level.biome(pos));
+                    if let Tag::Compound(map) = &mut tag {
+                        if let Some(Tag::Compound(data)) = map.get_mut("VillagerData") {
+                            data.insert("type".to_owned(), Tag::String(villager_type(&biome).to_owned()));
+                        }
+                    }
+                    set(&mut tag, "VillagerDataFinalized", byte(true));
+                }
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            Some(_) => finalize_mob(&mut tag, &mut RandomRef(level.random())),
+            None => {}
+        }
+        tag
     }
 
     /// `Husk.finalizeSpawn` after the zombie's part: a second loot roll,
@@ -1233,6 +1565,23 @@ impl CreatureSpawns {
         self.finalize_skeleton(level, context, &mut parched, difficulty);
         set(&mut camel, "Passengers", Tag::List(vec![root, parched]));
         camel
+    }
+
+    fn finalize_drowned(&self, level: &mut dyn SpawnLevel, mut root: Tag, pos: BlockPos, natural: bool) -> Tag {
+        let biome = level.biome(pos);
+        let frequent = self.more_frequent_drowned.is_some_and(|t| self.registries.biome_in_tag(biome, t));
+        let Some(drowned) = drowned_of(&mut root) else { return root };
+        if !has_equipment(drowned, "offhand") && drowned_shell(level.random()) {
+            equip(drowned, "offhand", "minecraft:nautilus_shell");
+            let chances = [("offhand".to_owned(), Tag::Float(2.0))].into_iter().collect();
+            set(drowned, "drop_chances", Tag::Compound(chances));
+        }
+        let trident = drowned.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str) == Some("minecraft:trident");
+        let baby = drowned.get("IsBaby").and_then(Tag::as_i64) == Some(1);
+        if natural && trident && level.random().next_f32() < 0.5 && !baby && !frequent {
+            level.note_unsupported("zombie nautilus jockey");
+        }
+        root
     }
 
     fn finalize_strider(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, mut tag: Tag, pos: BlockPos, difficulty: DifficultyInstance) -> Tag {
@@ -1346,6 +1695,20 @@ mod tests {
     }
 
     #[test]
+    fn ocelots_spawn_by_their_own_rules_and_cats_have_none() {
+        let ocelot = super::type_info("minecraft:ocelot").unwrap();
+        assert_eq!((ocelot.width, ocelot.height, ocelot.cluster, ocelot.fire_immune, ocelot.remove_far), (0.6, 0.7, 4, false, false));
+        assert_eq!((ocelot.placement, ocelot.rules), (crate::natural_spawner::Placement::OnGround, super::Rules::Ocelot));
+        assert!(matches!(ocelot.heightmap, minecraftoss_core::chunk::HeightmapKind::MotionBlocking));
+        assert!(matches!(ocelot.walk, super::Walk::Animal) && ocelot.rules.creature());
+        let cat = super::type_info("minecraft:cat").unwrap();
+        assert_eq!((cat.width, cat.height, cat.remove_far), (0.6, 0.7, false));
+        assert_eq!((cat.placement, cat.rules), (crate::natural_spawner::Placement::NoRestrictions, super::Rules::Unrestricted));
+        assert!(cat.rules.creature());
+        assert_eq!(super::BLACK_CAT_STRUCTURES, ["minecraft:swamp_hut"]);
+    }
+
+    #[test]
     fn a_cave_spider_spawns_by_the_spider_rules_at_its_own_size() {
         let spider = super::type_info("minecraft:spider").unwrap();
         let cave = super::type_info("minecraft:cave_spider").unwrap();
@@ -1424,6 +1787,167 @@ mod tests {
         assert_eq!(super::follow_range_base("minecraft:ghast"), 100.0);
     }
 
+    struct Column {
+        solid_top: i32,
+        water_top: i32,
+        floor: minecraftoss_core::BlockStateId,
+        water: minecraftoss_core::BlockStateId,
+        biome: minecraftoss_core::BiomeId,
+        darken: i32,
+        random: minecraftoss_core::random::LegacyRandom,
+        made: i32,
+        added: Vec<minecraftoss_core::nbt::Tag>,
+    }
+
+    impl super::SpawnLevel for Column {
+        fn block(&self, pos: minecraftoss_core::BlockPos) -> minecraftoss_core::BlockStateId {
+            if pos.y <= self.solid_top {
+                self.floor
+            } else if pos.y <= self.water_top {
+                self.water
+            } else {
+                minecraftoss_core::BlockStateId::AIR
+            }
+        }
+        fn height(&self, _kind: minecraftoss_core::chunk::HeightmapKind, _x: i32, _z: i32) -> i32 {
+            self.water_top.max(self.solid_top) + 1
+        }
+        fn biome(&self, _pos: minecraftoss_core::BlockPos) -> minecraftoss_core::BiomeId {
+            self.biome
+        }
+        fn noise_biome(&self, _qx: i32, _qy: i32, _qz: i32) -> minecraftoss_core::BiomeId {
+            self.biome
+        }
+        fn raw_brightness(&mut self, pos: minecraftoss_core::BlockPos, darkening: i32) -> i32 {
+            (self.sky_brightness(pos) - darkening).max(0)
+        }
+        fn sky_brightness(&mut self, pos: minecraftoss_core::BlockPos) -> i32 {
+            if pos.y <= self.solid_top {
+                0
+            } else if pos.y <= self.water_top {
+                (15 - (self.water_top + 1 - pos.y)).max(0)
+            } else {
+                15
+            }
+        }
+        fn block_brightness(&mut self, _pos: minecraftoss_core::BlockPos) -> i32 {
+            0
+        }
+        fn sky_darken(&self) -> i32 {
+            self.darken
+        }
+        fn min_y(&self) -> i32 {
+            -64
+        }
+        fn random(&mut self) -> &mut dyn minecraftoss_core::random::RandomSource {
+            &mut self.random
+        }
+        fn next_uuid(&mut self) -> [i32; 4] {
+            self.made += 1;
+            [self.made, 0, 0, 1]
+        }
+        fn add_entity(&mut self, entity: minecraftoss_core::nbt::Tag) {
+            self.added.push(entity);
+        }
+    }
+
+    fn river() -> Option<(std::sync::Arc<super::CreatureSpawns>, Column)> {
+        let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
+        let registries = minecraftoss_core::Registries::load(&paths).ok()?;
+        registries.entities.as_ref()?;
+        let biome = registries.biomes.id("minecraft:river")?;
+        let floor = registries.blocks.parse_state("minecraft:sand").ok()?;
+        let water = registries.blocks.parse_state("minecraft:water").ok()?;
+        let spawns = super::CreatureSpawns::load(std::sync::Arc::new(registries), "minecraft:overworld", false).ok()?;
+        let column = Column { solid_top: 49, water_top: 62, floor, water, biome, darken: 11, random: minecraftoss_core::random::LegacyRandom::new(9), made: 0, added: Vec::new() };
+        Some((std::sync::Arc::new(spawns), column))
+    }
+
+    fn spawn_monsters(spawns: &super::CreatureSpawns, column: &mut Column, y: i32, rounds: usize) {
+        let players = [[8.5, 63.0, 48.5]];
+        for _ in 0..rounds {
+            let mut context = super::SpawnContext {
+                players: &players,
+                respawn: None,
+                difficulty: 2,
+                overworld_time: 0,
+                moon_brightness: 0.0,
+                raining: false,
+                thundering: false,
+                seed: 0,
+                surface_slime_chance: &|_| 0.0,
+                halloween: false,
+                can_spawn_in_chunk: &|_| true,
+                obstacles: Vec::new(),
+                chickens: Vec::new(),
+                structures: &|_| Vec::new(),
+                spawning_monsters: true,
+            };
+            spawns.spawn_category_for_position(column, &mut context, &mut super::Unlimited, MobCategory::Monster, minecraftoss_core::ChunkPos::new(0, 0), minecraftoss_core::BlockPos::new(8, y, 8));
+        }
+    }
+
+    #[test]
+    fn a_drowned_spawns_in_a_river_column_at_night_and_never_on_dry_land() {
+        let Some((spawns, mut column)) = river() else { return };
+        spawn_monsters(&spawns, &mut column, 55, 2000);
+        let kinds: Vec<&str> = column.added.iter().filter_map(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str)).collect();
+        assert!(kinds.len() > 20, "{}", kinds.len());
+        assert!(kinds.iter().all(|kind| *kind == "minecraft:drowned"), "{kinds:?}");
+        for tag in &column.added {
+            let y = tag.get("Pos").and_then(minecraftoss_core::nbt::Tag::as_list).and_then(|p| p.get(1)).and_then(minecraftoss_core::nbt::Tag::as_f64).unwrap();
+            assert!((50.0..=62.0).contains(&y), "{y}");
+        }
+        let mut dry = Column { solid_top: 64, water_top: 64, added: Vec::new(), ..column };
+        spawn_monsters(&spawns, &mut dry, 65, 2000);
+        assert!(!dry.added.is_empty(), "other monsters spawn on the bank");
+        assert!(dry.added.iter().all(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) != Some("minecraft:drowned")));
+        let info = super::type_info("minecraft:drowned").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.rules, info.walk, info.remove_far, info.cluster), (0.6, 1.95, super::super::Placement::InWater, super::Rules::Drowned, super::Walk::Monster, true, 4));
+        let mut puddle = Column { solid_top: 61, water_top: 62, added: Vec::new(), ..dry };
+        let context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 0,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let at = minecraftoss_core::BlockPos::new(8, 62, 8);
+        assert!((0..500).all(|_| !spawns.natural_spawn_rules(&mut puddle, &context, "minecraft:drowned", &info, at)), "a drowned needs water below its feet");
+    }
+
+    #[test]
+    fn a_drowned_rolls_a_trident_or_fishing_rod_one_time_in_ten_and_a_nautilus_shell_three_in_a_hundred() {
+        let mut random = minecraftoss_core::random::LegacyRandom::new(21);
+        let rolls = 40_000;
+        let (mut tridents, mut rods, mut shells) = (0, 0, 0);
+        for _ in 0..rolls {
+            match super::drowned_weapon(&mut random) {
+                Some("minecraft:trident") => tridents += 1,
+                Some("minecraft:fishing_rod") => rods += 1,
+                None => {}
+                other => panic!("{other:?}"),
+            }
+            if super::drowned_shell(&mut random) {
+                shells += 1;
+            }
+        }
+        let share = |n: i32| f64::from(n) / f64::from(rolls);
+        assert!((share(tridents) - 0.1 * 10.0 / 16.0).abs() < 0.005, "{tridents}");
+        assert!((share(rods) - 0.1 * 6.0 / 16.0).abs() < 0.005, "{rods}");
+        assert!((share(shells) - 0.03).abs() < 0.004, "{shells}");
+    }
+
     #[test]
     fn a_blaze_spawns_as_a_monster_in_any_light() {
         let info = super::type_info("minecraft:blaze").unwrap();
@@ -1431,5 +1955,278 @@ mod tests {
         assert_eq!(info.rules, super::Rules::AnyLightMonster);
         assert!(matches!(info.walk, super::Walk::Monster));
         assert_eq!(super::follow_range_base("minecraft:blaze"), 48.0);
+    }
+
+    #[test]
+    fn a_patrol_is_a_captain_with_the_ominous_banner_and_pillagers_on_patrol() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((spawns, column)) = river() else { return };
+        let mut land = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let mut context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let members = spawns.spawn_patrol(&mut land, &mut context, minecraftoss_core::BlockPos::new(30, 90, -40));
+        assert_eq!(members.len(), 3, "ceil(1.5) + 1 on a new world on normal");
+        let flag = |tag: &Tag, key: &str| tag.get(key).and_then(Tag::as_i64) == Some(1);
+        let captain = &members[0];
+        assert!(flag(captain, "PatrolLeader") && flag(captain, "Patrolling"));
+        let target = captain.get("patrol_target").and_then(Tag::as_ints).expect("a patrol target");
+        assert!(target[0].abs() <= 500 && target[2].abs() <= 500 && target[1] == 0, "found before it is placed: {target:?}");
+        let head = captain.get("equipment").and_then(|e| e.get("head")).expect("the banner");
+        assert_eq!(head.get("id").and_then(Tag::as_str), Some("minecraft:white_banner"));
+        let components = head.get("components").expect("banner components");
+        assert_eq!(components.get("minecraft:banner_patterns").and_then(Tag::as_list).map(<[Tag]>::len), Some(8));
+        assert_eq!(components.get("minecraft:item_name").and_then(|n| n.get("translate")).and_then(Tag::as_str), Some(super::OMINOUS_BANNER_NAME));
+        assert_eq!(components.get("minecraft:rarity").and_then(Tag::as_str), Some("uncommon"));
+        assert_eq!(captain.get("drop_chances").and_then(|c| c.get("head")).and_then(Tag::as_f64), Some(2.0));
+        let pos = |tag: &Tag| tag.get("Pos").and_then(Tag::as_list).map(|p| p.iter().filter_map(Tag::as_f64).collect::<Vec<f64>>()).unwrap();
+        assert_eq!(pos(captain), [30.0, 65.0, -40.0], "on the ground at the block corner");
+        for member in &members[1..] {
+            assert!(flag(member, "Patrolling") && !flag(member, "PatrolLeader"));
+            assert!(member.get("patrol_target").is_none());
+            assert!(member.get("equipment").and_then(|e| e.get("head")).is_none());
+            let at = pos(member);
+            assert!((at[0] - 30.0).abs() <= 8.0 && (at[2] + 40.0).abs() <= 8.0 && at[1] == 65.0, "{at:?}");
+        }
+        for member in &members {
+            assert_eq!(member.get("equipment").and_then(|e| e.get("mainhand")).and_then(|h| h.get("id")).and_then(Tag::as_str), Some("minecraft:crossbow"));
+            assert!(flag(member, "CanJoinRaid"));
+        }
+        context.difficulty = 0;
+        assert!(spawns.spawn_patrol(&mut land, &mut context, minecraftoss_core::BlockPos::new(30, 90, -40)).is_empty(), "no patrol in peaceful");
+        context.difficulty = 2;
+        let mut flooded = Column { solid_top: 60, water_top: 64, ..land };
+        assert!(spawns.spawn_patrol(&mut flooded, &mut context, minecraftoss_core::BlockPos::new(30, 90, -40)).is_empty(), "no captain in water, no patrol");
+    }
+
+    #[test]
+    fn a_summoned_vindicator_carries_an_iron_axe_and_sometimes_leads_with_the_banner() {
+        use minecraftoss_core::nbt::Tag;
+        let info = super::type_info("minecraft:vindicator").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.rules, info.remove_far), (0.6, 1.95, super::super::Placement::NoRestrictions, super::Rules::Monster, true));
+        assert_eq!(MobCategory::of_type("minecraft:vindicator"), Some(MobCategory::Monster));
+        assert_eq!(super::follow_range_base("minecraft:vindicator"), 12.0);
+        let Some((spawns, column)) = river() else { return };
+        let mut land = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let mut context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let mut leaders = 0;
+        for _ in 0..600 {
+            let tag = spawns.summon(&mut land, &mut context, "minecraft:vindicator", [0.5, 65.0, 0.5], None, 0.0).expect("a vindicator");
+            assert_eq!(tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|h| h.get("id")).and_then(Tag::as_str), Some("minecraft:iron_axe"));
+            assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+            assert_ne!(tag.get("Patrolling").and_then(Tag::as_i64), Some(1));
+            if tag.get("PatrolLeader").and_then(Tag::as_i64) == Some(1) {
+                leaders += 1;
+                assert_eq!(tag.get("equipment").and_then(|e| e.get("head")).and_then(|h| h.get("id")).and_then(Tag::as_str), Some("minecraft:white_banner"));
+            }
+        }
+        assert!((15..=60).contains(&leaders), "about 6 %: {leaders}");
+    }
+
+    #[test]
+    fn a_summoned_evoker_holds_nothing_can_join_raids_and_sometimes_leads() {
+        use minecraftoss_core::nbt::Tag;
+        let info = super::type_info("minecraft:evoker").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.rules, info.remove_far), (0.6, 1.95, super::super::Placement::NoRestrictions, super::Rules::Monster, true));
+        assert_eq!(MobCategory::of_type("minecraft:evoker"), Some(MobCategory::Monster));
+        assert_eq!(super::follow_range_base("minecraft:evoker"), 12.0);
+        let Some((spawns, column)) = river() else { return };
+        let mut land = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let mut context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let mut leaders = 0;
+        for _ in 0..600 {
+            let tag = spawns.summon(&mut land, &mut context, "minecraft:evoker", [0.5, 65.0, 0.5], None, 0.0).expect("an evoker");
+            assert!(tag.get("equipment").and_then(|e| e.get("mainhand")).is_none());
+            assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+            if tag.get("PatrolLeader").and_then(Tag::as_i64) == Some(1) {
+                leaders += 1;
+            }
+        }
+        assert!((15..=60).contains(&leaders), "about 6 %: {leaders}");
+    }
+
+    #[test]
+    fn a_summoned_ravager_can_join_raids_but_never_leads() {
+        use minecraftoss_core::nbt::Tag;
+        let info = super::type_info("minecraft:ravager").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.fire_immune, info.rules), (1.95, 2.2, super::super::Placement::OnGround, false, super::Rules::Monster));
+        assert_eq!(MobCategory::of_type("minecraft:ravager"), Some(MobCategory::Monster));
+        assert_eq!(super::follow_range_base("minecraft:ravager"), 32.0);
+        let Some((spawns, column)) = river() else { return };
+        let mut land = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let mut context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        for _ in 0..60 {
+            let tag = spawns.summon(&mut land, &mut context, "minecraft:ravager", [0.5, 65.0, 0.5], None, 0.0).expect("a ravager");
+            assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+            assert_ne!(tag.get("PatrolLeader").and_then(Tag::as_i64), Some(1), "a ravager never leads");
+            assert!(tag.get("equipment").and_then(|e| e.get("head")).is_none());
+        }
+    }
+
+    #[test]
+    fn a_summoned_vex_carries_an_iron_sword_it_never_drops() {
+        use minecraftoss_core::nbt::Tag;
+        let info = super::type_info("minecraft:vex").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.fire_immune, info.rules), (0.4, 0.8, super::super::Placement::NoRestrictions, true, super::Rules::Monster));
+        assert_eq!(MobCategory::of_type("minecraft:vex"), Some(MobCategory::Monster));
+        let Some((spawns, column)) = river() else { return };
+        let mut land = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let mut context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let tag = spawns.summon(&mut land, &mut context, "minecraft:vex", [0.5, 65.0, 0.5], None, 0.0).expect("a vex");
+        assert_eq!(tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|h| h.get("id")).and_then(Tag::as_str), Some("minecraft:iron_sword"));
+        assert_eq!(tag.get("drop_chances").and_then(|c| c.get("mainhand")).and_then(Tag::as_f64), Some(0.0));
+        assert!(tag.get("life_ticks").is_none(), "a summoned vex lives on");
+    }
+
+    #[test]
+    fn pillagers_spawn_alone_in_a_pillager_outpost_by_day_with_a_crossbow() {
+        use minecraftoss_core::nbt::Tag;
+        let info = super::type_info("minecraft:pillager").unwrap();
+        assert_eq!((info.width, info.height, info.cluster, info.fire_immune, info.remove_far), (0.6, 1.95, 1, false, true));
+        assert_eq!(info.rules, super::Rules::Patrolling);
+        assert!(matches!(info.walk, super::Walk::Neutral));
+        assert_eq!(super::follow_range_base("minecraft:pillager"), 32.0);
+        let Some((spawns, column)) = river() else { return };
+        let mut day = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let players = [[8.5, 65.0, 48.5]];
+        let outpost = |_: minecraftoss_core::BlockPos| vec![super::StructureHere { name: "minecraft:pillager_outpost".to_owned(), in_box: true, in_piece: false }];
+        let rounds = 3000;
+        for _ in 0..rounds {
+            let mut context = super::SpawnContext {
+                players: &players,
+                respawn: None,
+                difficulty: 2,
+                overworld_time: 6000,
+                moon_brightness: 0.0,
+                raining: false,
+                thundering: false,
+                seed: 0,
+                surface_slime_chance: &|_| 0.0,
+                halloween: false,
+                can_spawn_in_chunk: &|_| true,
+                obstacles: Vec::new(),
+                chickens: Vec::new(),
+                structures: &outpost,
+                spawning_monsters: true,
+            };
+            let before = day.added.len();
+            spawns.spawn_category_for_position(&mut day, &mut context, &mut super::Unlimited, MobCategory::Monster, minecraftoss_core::ChunkPos::new(0, 0), minecraftoss_core::BlockPos::new(8, 65, 8));
+            assert!(day.added.len() - before <= 1, "pillagers spawn alone");
+        }
+        let kinds: Vec<&str> = day.added.iter().filter_map(|tag| tag.get("id").and_then(Tag::as_str)).collect();
+        assert!(kinds.len() > 100, "{}", kinds.len());
+        assert!(kinds.iter().all(|kind| *kind == "minecraft:pillager"), "{kinds:?}");
+        let leaders = day.added.iter().filter(|tag| tag.get("PatrolLeader").and_then(Tag::as_i64) == Some(1)).count();
+        let share = leaders as f64 / kinds.len() as f64;
+        assert!(share > 0.0 && share < 0.15, "{leaders} of {}", kinds.len());
+        for tag in &day.added {
+            let hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|h| h.get("id")).and_then(Tag::as_str);
+            assert_eq!(hand, Some("minecraft:crossbow"));
+            assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+            let leader = tag.get("PatrolLeader").and_then(Tag::as_i64) == Some(1);
+            let head = tag.get("equipment").and_then(|e| e.get("head")).and_then(|h| h.get("id")).and_then(Tag::as_str);
+            assert_eq!(head, leader.then_some("minecraft:white_banner"), "a leader carries the ominous banner");
+            assert_ne!(tag.get("Patrolling").and_then(Tag::as_i64), Some(1), "an outpost pillager is no patroller");
+        }
+        let mut elsewhere = Column { added: Vec::new(), ..day };
+        let mut context = super::SpawnContext {
+            players: &players,
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        for _ in 0..500 {
+            spawns.spawn_category_for_position(&mut elsewhere, &mut context, &mut super::Unlimited, MobCategory::Monster, minecraftoss_core::ChunkPos::new(0, 0), minecraftoss_core::BlockPos::new(8, 65, 8));
+        }
+        assert!(elsewhere.added.is_empty(), "no monsters by day outside the outpost");
     }
 }

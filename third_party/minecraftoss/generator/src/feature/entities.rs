@@ -60,7 +60,7 @@ impl CatVariants {
 
     /// `PriorityProvider.select`: the variants of the highest priority whose
     /// condition holds, in registry order.
-    fn candidates(&self, black_cat_structure: bool, moon_brightness: f64) -> Vec<&str> {
+    pub fn candidates(&self, black_cat_structure: bool, moon_brightness: f64) -> Vec<&str> {
         let mut unpacked: Vec<(&str, i32, &CatCondition)> =
             self.variants.iter().flat_map(|(id, selectors)| selectors.iter().map(move |(p, c)| (id.as_str(), *p, c))).collect();
         unpacked.sort_by(|a, b| b.1.cmp(&a.1));
@@ -81,6 +81,10 @@ impl CatVariants {
             }
         }
         out
+    }
+
+    pub fn sounds(&self) -> &[String] {
+        &self.sounds
     }
 }
 
@@ -147,8 +151,21 @@ pub fn finalize_spawn(ctx: &mut Ctx, tag: &mut Tag, black_cat_structure: bool) {
             map.insert("IsBaby".to_owned(), Tag::Byte(1));
         }
     }
+    if matches!(kind.as_str(), "minecraft:vindicator" | "minecraft:evoker") {
+        set(tag, [("CanJoinRaid", Tag::Byte(1))]);
+    }
     // `AgeableMob.finalizeSpawn` draws nothing for the first of a group.
     finalize_mob(tag, ctx.region.level_random());
+    if kind == "minecraft:vindicator" {
+        let axe = Tag::Compound([("count".to_owned(), Tag::Int(1)), ("id".to_owned(), Tag::String("minecraft:iron_axe".to_owned()))].into_iter().collect());
+        if let Tag::Compound(map) = tag {
+            let equipment = map.entry("equipment".to_owned()).or_insert_with(|| Tag::Compound(Default::default()));
+            if let Tag::Compound(slots) = equipment {
+                slots.insert("mainhand".to_owned(), axe);
+            }
+        }
+        let _ = ctx.region.level_random().next_f32();
+    }
     if kind == "minecraft:cat" {
         let lib = ctx.lib;
         // Generation runs on day 0: a full moon (`MOON_BRIGHTNESS_PER_PHASE[0]`).

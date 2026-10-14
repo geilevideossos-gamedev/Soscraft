@@ -30,6 +30,7 @@ pub struct EntityLootContext {
     pub this_type: Option<&'static str>,
     /// A cube mob's size (`type_specific/cube_mob`).
     pub cube_size: Option<i32>,
+    pub captain: bool,
 }
 
 pub struct EntityLootBook {
@@ -80,6 +81,26 @@ impl ShearingLootBook {
             sequences: HashMap::new(),
             world_seed,
         })
+    }
+
+    pub fn roll_items(&mut self, id: &str) -> Option<Vec<ItemStack>> {
+        let table = self.tables.get(id)?;
+        if table["type"] != "minecraft:shearing" {
+            return None;
+        }
+        let mut out = Vec::new();
+        for pool in table["pools"].as_array()? {
+            let rolls = pool["rolls"].as_u64()?;
+            let entries = pool["entries"].as_array()?;
+            if entries.len() != 1 || entries[0]["type"] != "minecraft:item" || entries[0].get("functions").is_some() || entries[0].get("conditions").is_some() || pool.get("conditions").is_some() {
+                return None;
+            }
+            let item = entries[0]["name"].as_str()?;
+            for _ in 0..rolls {
+                out.push(ItemStack::new(item.to_owned(), 1));
+            }
+        }
+        Some(out)
     }
 
     pub fn roll_sheep(&mut self, color: &str) -> Option<Vec<ItemStack>> {
@@ -245,6 +266,16 @@ impl EntityLootBook {
     pub fn roll_barter(&mut self) -> Option<Vec<ItemStack>> {
         let context = EntityLootContext { this_type: Some("minecraft:piglin"), ..Default::default() };
         self.roll_of_type("minecraft:gameplay/piglin_bartering", "minecraft:barter", context)
+    }
+
+    pub fn roll_cat_gift(&mut self) -> Option<Vec<ItemStack>> {
+        let context = EntityLootContext { this_type: Some("minecraft:cat"), ..Default::default() };
+        self.roll_of_type(crate::feline::GIFT_TABLE, "minecraft:gift", context)
+    }
+
+    pub fn roll_hero_gift(&mut self, table: &str) -> Option<Vec<ItemStack>> {
+        let context = EntityLootContext { this_type: Some("minecraft:villager"), ..Default::default() };
+        self.roll_of_type(table, "minecraft:gift", context)
     }
 
     fn roll_of_type(&mut self, entity_id: &str, kind: &str, context: EntityLootContext) -> Option<Vec<ItemStack>> {
@@ -473,6 +504,7 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
             let mut count: i64 = 1;
             let mut potion = None;
             let mut enchantments = Vec::new();
+            let mut ominous = None;
             let functions: Vec<&Value> = match leaf.get("modifier").or_else(|| leaf.get("functions")) {
                 Some(Value::Array(list)) => list.iter().collect(),
                 Some(single) => vec![single],
@@ -492,6 +524,7 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
                     "minecraft:furnace_smelt" => item = data.smelting.get(&item)?.clone(),
                     // `SetPotionFunction`: the potion contents component.
                     "minecraft:set_potion" => potion = Some(function["id"].as_str()?.to_owned()),
+                    "minecraft:set_ominous_bottle_amplifier" => ominous = Some(int_provider(&function["amplifier"], random)?.clamp(0, 4)),
                     "minecraft:enchant_randomly" => {
                         if let Some(enchantment) = data.enchant_randomly(function, &item, random)? {
                             if item == "minecraft:book" {
@@ -517,6 +550,14 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
                     for (id, level) in enchantments {
                         crate::enchant::add_enchantment(&stack.id, &mut components, &id, level);
                     }
+                    stack.components = Some(Value::Object(components));
+                }
+                if let Some(amplifier) = ominous.filter(|a| *a > 0) {
+                    let mut components = match stack.components.take() {
+                        Some(Value::Object(existing)) => existing,
+                        _ => serde_json::Map::new(),
+                    };
+                    components.insert("minecraft:ominous_bottle_amplifier".to_owned(), Value::from(amplifier));
                     stack.components = Some(Value::Object(components));
                 }
                 out.push(stack);
@@ -629,6 +670,16 @@ fn entity_properties(data: &LootData, value: &Value, context: EntityLootContext)
                     "minecraft:entity_type" => data.type_matches(test.as_str()?, context.this_type),
                     "minecraft:vehicle" => data.type_matches(test["minecraft:entity_type"].as_str()?, context.vehicle),
                     "minecraft:type_specific/sheep" => test["sheared"].as_bool()? == context.sheep_sheared,
+                    "minecraft:type_specific/raider" => {
+                        let mut holds = true;
+                        for (field, wanted) in test.as_object()? {
+                            match field.as_str() {
+                                "is_captain" => holds &= wanted.as_bool()? == context.captain,
+                                _ => return None,
+                            }
+                        }
+                        holds
+                    }
                     // `CubeMobPredicate`: its size, exact or a range.
                     "minecraft:type_specific/cube_mob" => {
                         let size = context.cube_size?;
@@ -841,6 +892,31 @@ mod tests {
     }
 
     #[test]
+    fn every_hero_gift_table_rolls_vanillas_gifts() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let farmer: Vec<String> = (0..60)
+            .flat_map(|_| book.roll_hero_gift("minecraft:gameplay/hero_of_the_village/farmer_gift").expect("a farmer's gift"))
+            .map(|s| s.id)
+            .collect();
+        for item in ["minecraft:bread", "minecraft:pumpkin_pie", "minecraft:cookie"] {
+            assert!(farmer.iter().any(|id| id == item), "{item} in {farmer:?}");
+        }
+        assert!(farmer.iter().all(|id| ["minecraft:bread", "minecraft:pumpkin_pie", "minecraft:cookie"].contains(&id.as_str())));
+        let baby = book.roll_hero_gift("minecraft:gameplay/hero_of_the_village/baby_gift").unwrap();
+        assert_eq!(baby.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["minecraft:poppy"]);
+        let fletcher: Vec<ItemStack> = (0..200).flat_map(|_| book.roll_hero_gift("minecraft:gameplay/hero_of_the_village/fletcher_gift").unwrap()).collect();
+        assert!(fletcher.iter().any(|s| s.id == "minecraft:arrow"));
+        assert!(fletcher.iter().any(|s| s.id == "minecraft:tipped_arrow" && potion(s).is_some()));
+        for profession in crate::villager::Profession::ALL {
+            let table = crate::villager_brain::hero_gift_table(false, profession);
+            assert!(book.roll_hero_gift(table).is_some(), "{table}");
+        }
+        assert!(book.roll_hero_gift("minecraft:piglin").is_none(), "an entity table is no gift");
+    }
+
+    #[test]
     fn an_entity_roll_never_reads_the_barter_table() {
         let Some(mut book) = jar_book() else {
             return;
@@ -852,5 +928,39 @@ mod tests {
         assert_eq!(fresh.roll_barter().unwrap()[0].id, first[0].id);
         book.tables.get_mut("minecraft:gameplay/piglin_bartering").unwrap()["type"] = Value::from("minecraft:entity");
         assert!(book.roll_barter().is_none());
+    }
+
+    #[test]
+    fn a_pillager_captain_drops_an_ominous_bottle_of_level_one_to_five() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let pillager = EntityLootContext { this_type: Some("minecraft:pillager"), ..Default::default() };
+        assert_eq!(book.roll("minecraft:pillager", pillager).map(|d| d.len()), Some(0));
+        let captain = EntityLootContext { captain: true, ..pillager };
+        let mut seen = [false; 5];
+        for _ in 0..200 {
+            let drops = book.roll("minecraft:pillager", captain).expect("a captain's loot");
+            assert_eq!(drops.len(), 1);
+            assert_eq!((drops[0].id.as_str(), drops[0].count), ("minecraft:ominous_bottle", 1));
+            let amplifier = drops[0].components.as_ref().map_or(0, |c| c["minecraft:ominous_bottle_amplifier"].as_i64().unwrap());
+            assert!((0..=4).contains(&amplifier));
+            seen[amplifier as usize] = true;
+        }
+        assert_eq!(seen, [true; 5]);
+    }
+
+    #[test]
+    fn an_evoker_always_drops_a_totem_of_undying() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let evoker = EntityLootContext { this_type: Some("minecraft:evoker"), ..Default::default() };
+        for _ in 0..20 {
+            let drops = book.roll("minecraft:evoker", evoker).expect("an evoker's loot");
+            assert!(drops.iter().any(|d| d.id == "minecraft:totem_of_undying" && d.count == 1));
+            assert!(drops.iter().all(|d| d.id != "minecraft:emerald"), "emeralds need a player's kill");
+        }
+        assert!(book.roll("minecraft:vex", EntityLootContext::default()).is_none_or(|d| d.is_empty()));
     }
 }

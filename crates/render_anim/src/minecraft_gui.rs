@@ -14,8 +14,9 @@ use serde_json::Value;
 const ATLAS_WIDTH: u32 = 2048;
 const GUTTER: u32 = 1;
 const SPRITES: &str = "assets/minecraft/textures/gui/sprites/";
+const MOB_EFFECTS: &str = "assets/minecraft/textures/mob_effect/";
 
-pub(crate) const CONTAINER_SHEETS: [&str; 16] = [
+pub(crate) const CONTAINER_SHEETS: [&str; 18] = [
     "inventory",
     "crafting_table",
     "generic_54",
@@ -29,12 +30,14 @@ pub(crate) const CONTAINER_SHEETS: [&str; 16] = [
     "grindstone",
     "stonecutter",
     "smithing",
+    "villager",
+    "horse",
     "creative_inventory/tab_items",
     "creative_inventory/tab_item_search",
     "creative_inventory/tab_inventory",
 ];
 
-const SPRITE_FOLDERS: [&str; 14] = [
+const SPRITE_FOLDERS: [&str; 17] = [
     "container/slot/",
     "container/anvil/",
     "container/brewing_stand/",
@@ -46,9 +49,12 @@ const SPRITE_FOLDERS: [&str; 14] = [
     "container/smoker/",
     "container/blast_furnace/",
     "container/creative_inventory/",
+    "container/villager/",
+    "container/horse/",
     "hud/heart/",
     "tooltip/",
     "recipe_book/",
+    "boss_bar/",
 ];
 
 const LOOSE_SPRITES: [&str; 14] = [
@@ -71,7 +77,7 @@ const LOOSE_SPRITES: [&str; 14] = [
 pub(crate) const BOOK_SHEET: &str = "book";
 pub(crate) const RECIPE_BOOK_SHEET: &str = "recipe_book";
 
-const TEXT_PREFIXES: [&str; 13] = [
+const TEXT_PREFIXES: [&str; 14] = [
     "container.",
     "itemGroup.",
     "inventory.",
@@ -83,6 +89,7 @@ const TEXT_PREFIXES: [&str; 13] = [
     "book.",
     "lectern.",
     "gui.done",
+    "merchant.",
     "gui.cancel",
     "gui.recipebook.",
 ];
@@ -273,6 +280,16 @@ fn build_atlas(
         let scaling = sprite_scaling(meta.as_ref());
         pieces.push((Piece::Sprite(name, scaling), sprite));
     }
+    for name in mob_effect_names(&packs.list("minecraft", "textures/mob_effect/")?) {
+        let id = ResourceId::parse(&format!("minecraft:mob_effect/{name}"))?;
+        let Some(bytes) = packs.texture(&id)? else {
+            continue;
+        };
+        pieces.push((
+            Piece::Sprite(format!("mob_effect/{name}"), McScaling::Stretch),
+            decode(&bytes)?,
+        ));
+    }
     let mut fonts = FontPages::default();
     load_font(packs, "minecraft:default", false, &mut fonts, 0)?;
     load_font(packs, "minecraft:alt", true, &mut fonts, 0)?;
@@ -345,6 +362,19 @@ fn build_atlas(
     gui.font = default;
     gui.alt_font = alt;
     Ok((atlas, gui))
+}
+
+fn mob_effect_names(paths: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(MOB_EFFECTS))
+        .filter(|rest| !rest.contains('/'))
+        .filter_map(|rest| rest.strip_suffix(".png"))
+        .map(str::to_owned)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn sprite_names(paths: &[String], folder: &str) -> Vec<String> {
@@ -626,6 +656,13 @@ mod tests {
         assert!(atlas.height() <= 2048);
         assert_eq!(gui.sheets.len(), CONTAINER_SHEETS.len() + 2);
         assert!(gui.sheets.contains_key("creative_inventory/tab_item_search"));
+        assert!(gui.sheets.contains_key("villager"));
+        assert_eq!(gui.sprites["container/villager/scroller"].rect[2..], [6, 27]);
+        assert_eq!(gui.sprites["container/villager/discount_strikethrough"].rect[2..], [9, 2]);
+        assert!(gui.sheets.contains_key("horse"));
+        assert_eq!(gui.sprites["container/horse/chest_slots"].rect[2..], [90, 54]);
+        assert_eq!(gui.sprites["container/slot"].rect[2..], [18, 18]);
+        assert!(gui.sprites.contains_key("container/slot/llama_armor") && gui.sprites.contains_key("hud/jump_bar_progress"));
         assert_eq!(gui.sprites["container/creative_inventory/tab_top_selected_7"].rect[2..], [26, 32]);
         assert_eq!(gui.sprites["container/creative_inventory/tab_bottom_unselected_1"].rect[2..], [26, 32]);
         assert_eq!(gui.sprites["container/creative_inventory/scroller"].rect[2..], [12, 15]);
@@ -743,6 +780,36 @@ mod tests {
         assert_eq!(gui.text("gui.cancel"), "Cancel");
         assert!(!gui.texts.contains_key("gui.yes"));
         assert!(gui.sprites.contains_key("widget/button_disabled"));
+    }
+
+    #[test]
+    fn every_mob_effect_icon_and_the_effect_frames_load() {
+        assert_eq!(
+            mob_effect_names(&[
+                format!("{MOB_EFFECTS}speed.png"),
+                format!("{MOB_EFFECTS}bad_omen.png"),
+                format!("{MOB_EFFECTS}speed.png"),
+                format!("{MOB_EFFECTS}old/speed.png"),
+                format!("{SPRITES}hud/hotbar.png"),
+            ]),
+            ["bad_omen", "speed"]
+        );
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let (atlas, gui) = build_atlas(&packs, &HashMap::new()).unwrap();
+        assert!(atlas.height() <= 2048);
+        for effect in ["darkness", "bad_omen", "raid_omen", "trial_omen", "hero_of_the_village", "speed", "breath_of_the_nautilus"] {
+            assert_eq!(gui.sprites[&format!("mob_effect/{effect}")].rect[2..], [18, 18], "{effect}");
+        }
+        assert!(gui.sprites.keys().filter(|name| name.starts_with("mob_effect/")).count() >= 40);
+        assert_eq!(gui.sprites["hud/effect_background"].rect[2..], [24, 24]);
+        assert_eq!(gui.sprites["hud/effect_background_ambient"].rect[2..], [24, 24]);
     }
 
     #[test]

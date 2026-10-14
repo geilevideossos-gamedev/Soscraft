@@ -99,6 +99,7 @@ pub struct Entities {
     friend_snapshot: Option<EntitySnapshot>,
     pub heard: crate::heard::HeardLog,
     pub spawner_tags: Vec<((i32, i32, i32), minecraftoss_core::nbt::Tag)>,
+    mount_viewers: HashMap<u64, u64>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -117,6 +118,8 @@ pub struct MobMeshes {
     pub translucent: ChunkMesh,
     pub shadows: ChunkMesh,
     pub items: ChunkMesh,
+    pub glow: ChunkMesh,
+    pub glow_cover: ChunkMesh,
 }
 
 /// The player as the mobs see it this frame.
@@ -133,7 +136,14 @@ pub struct PlayerView {
     pub main_hand: Option<String>,
     pub offhand: Option<String>,
     pub sneaking: bool,
+    pub hero: Option<i32>,
+    pub sleeping: Option<(i32, i32, i32)>,
+    pub sleep_timer: i32,
+    pub forward: f32,
+    pub strafe: f32,
+    pub jumping: bool,
     pub swirl: Option<minecraft_terrain::spell_particles::SwirlView>,
+    pub omens: minecraft_terrain::server::PlayerOmens,
 }
 
 fn player_controls(id: u64, player: &PlayerView, inventory: &Inventory) -> minecraftoss_entities::controls::PlayerControls {
@@ -145,6 +155,11 @@ fn player_controls(id: u64, player: &PlayerView, inventory: &Inventory) -> minec
         offhand: player.offhand.clone(),
         sneaking: player.sneaking,
         armor: [36, 37, 38, 39].map(|slot| inventory.slots[slot].as_ref().map(|stack| stack.id.clone())),
+        sleeping: player.sleeping,
+        sleep_timer: player.sleep_timer,
+        forward: player.forward,
+        strafe: player.strafe,
+        jumping: player.jumping,
     }
 }
 
@@ -162,6 +177,10 @@ pub struct PlayerOutputs {
     pub potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
     pub pushes: Vec<DVec3>,
     pub item_uses_done: Vec<SentItemUse>,
+    pub raid_omens: Vec<(i32, (i32, i32, i32))>,
+    pub raid_heroes: Vec<i32>,
+    pub raid_horns: Vec<DVec3>,
+    pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
 }
 
 #[derive(Default)]
@@ -177,11 +196,42 @@ pub(crate) struct PlayerQueue {
     mob_slots: Vec<Vec<(usize, Option<ItemStack>)>>,
     broken: Vec<String>,
     mounts: Vec<u64>,
+    mount_menus: Vec<u64>,
     dismounts: Vec<(u64, Option<DVec3>)>,
     boost_waiting: Option<(usize, String)>,
     boosts_done: Vec<(usize, String)>,
     lecterns: Vec<minecraft_terrain::lectern::LecternView>,
+    merchant_routed: Vec<MerchantNews>,
+    merchant: Vec<MerchantNews>,
+    merchant_waiting: usize,
+    raid_omens_waiting: Vec<(i32, (i32, i32, i32))>,
     pub(crate) out: PlayerOutputs,
+}
+
+#[derive(Clone, Debug)]
+pub enum MerchantNews {
+    Opened(minecraft_terrain::server::MerchantView),
+    Answer(minecraft_terrain::server::MerchantUpdate),
+    Closing,
+}
+
+fn apply_merchant_answer(inventory: &mut Inventory, update: &minecraft_terrain::server::MerchantUpdate) {
+    for (slot, stack) in &update.slots {
+        if let Some(held) = inventory.slots.get_mut(*slot) {
+            *held = stack.clone();
+        }
+    }
+    inventory.cursor = update.cursor.clone();
+}
+
+fn settle_merchant_news(queue: &mut PlayerQueue, inventory: &mut Inventory) {
+    for news in std::mem::take(&mut queue.merchant_routed) {
+        if let MerchantNews::Answer(update) = &news {
+            apply_merchant_answer(inventory, update);
+            queue.merchant_waiting = queue.merchant_waiting.saturating_sub(1);
+        }
+        queue.merchant.push(news);
+    }
 }
 
 #[derive(Default)]
@@ -262,11 +312,24 @@ impl PlayerQueues {
                 queue.out.hits.push(hit);
             }
         }
+        let (closings, answers): (Vec<_>, Vec<_>) = std::mem::take(&mut output.merchant).into_iter().partition(|(_, update)| update.closing);
+        for (player, update) in answers {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.merchant_routed.push(MerchantNews::Answer(update));
+            }
+        }
         for (player, result) in &output.mob_results {
             if let Some(queue) = self.0.get_mut(player) {
                 queue.mob_slots.push(result.slots.clone());
                 queue.broken.extend(result.broken.iter().cloned());
                 queue.mounts.extend(result.mounted);
+                queue.mount_menus.extend(result.mount_inventory);
+                queue.merchant_routed.extend(result.merchant.clone().map(MerchantNews::Opened));
+            }
+        }
+        for (player, _) in closings {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.merchant_routed.push(MerchantNews::Closing);
             }
         }
         for &(player, vehicle, spot) in &output.dismounts {
@@ -289,6 +352,26 @@ impl PlayerQueues {
         for view in std::mem::take(&mut output.lecterns) {
             if let Some(queue) = self.0.get_mut(&view.player) {
                 queue.lecterns.push(view);
+            }
+        }
+        for (player, amplifier, at) in std::mem::take(&mut output.raid_omens) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.raid_omens.push((amplifier, at));
+            }
+        }
+        for (player, amplifier) in std::mem::take(&mut output.raid_heroes) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.raid_heroes.push(amplifier);
+            }
+        }
+        for (player, at) in std::mem::take(&mut output.raid_horns) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.raid_horns.push(DVec3::from_array(at));
+            }
+        }
+        for (player, bars) in output.raid_bars.take().into_iter().flatten() {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.raid_bars = Some(bars);
             }
         }
         unclaimed
@@ -383,6 +466,7 @@ impl Entities {
             friend_snapshot: None,
             heard: Default::default(),
             spawner_tags: Vec::new(),
+            mount_viewers: HashMap::new(),
         }
     }
 
@@ -803,6 +887,10 @@ impl Entities {
         self.server.attack_block(scene, pos)
     }
 
+    pub fn ring_bell(&mut self, pos: (i32, i32, i32), face: &'static str) {
+        self.server.ring_bell(pos, face);
+    }
+
     pub fn item_on_block(&mut self, player: u64, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
         self.server.item_on_block(player, pos, action);
         self.players.queue(player).item_use_waiting = Some(sent);
@@ -830,6 +918,30 @@ impl Entities {
         self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.mounts))
     }
 
+    pub fn take_mount_menus(&mut self, player: u64) -> Vec<u64> {
+        self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.mount_menus))
+    }
+
+    pub fn set_mount_inventory(&mut self, inventory: &minecraft_terrain::mount_inventory::MountInventory) {
+        self.server.mount_inventory(inventory);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn want_mount_menu(&mut self, player: u64, vehicle: u64) {
+        self.players.queue(player).mount_menus.push(vehicle);
+    }
+
+    pub fn mount_viewer(&self, vehicle: u64) -> Option<u64> {
+        self.mount_viewers.get(&vehicle).copied()
+    }
+
+    pub fn set_mount_viewer(&mut self, player: u64, vehicle: Option<u64>) {
+        self.mount_viewers.retain(|_, viewer| *viewer != player);
+        if let Some(vehicle) = vehicle {
+            self.mount_viewers.insert(vehicle, player);
+        }
+    }
+
     pub fn take_dismounts(&mut self, player: u64) -> Vec<(u64, Option<DVec3>)> {
         self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.dismounts))
     }
@@ -840,6 +952,47 @@ impl Entities {
 
     pub fn take_lecterns(&mut self, player: u64) -> Vec<minecraft_terrain::lectern::LecternView> {
         self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.lecterns))
+    }
+
+    pub fn merchant(&mut self, player: u64, op: minecraft_terrain::server::MerchantOp, inventory: &Inventory, selected: usize, feet: [f64; 3]) {
+        self.server.merchant(player, op, inventory, selected, feet);
+        self.players.queue(player).merchant_waiting += 1;
+    }
+
+    pub fn take_merchant(&mut self, player: u64) -> Vec<MerchantNews> {
+        self.players.0.get_mut(&player).map_or_else(Vec::new, |queue| std::mem::take(&mut queue.merchant))
+    }
+
+    pub fn awaits_merchant(&self, player: u64) -> bool {
+        self.players.0.get(&player).is_some_and(|queue| queue.merchant_waiting > 0)
+    }
+
+    pub fn close_merchant_now(&mut self, player: u64, inventory: &mut Inventory, selected: usize, feet: [f64; 3]) {
+        self.settle_merchant_now(player, inventory);
+        self.server.merchant(player, minecraft_terrain::server::MerchantOp::Close, inventory, selected, feet);
+        self.settle_merchant_now(player, inventory);
+    }
+
+    fn settle_merchant_now(&mut self, player: u64, inventory: &mut Inventory) {
+        self.server.wait_idle();
+        self.poll_jobs();
+        let mut answers = Vec::new();
+        for output in &mut self.unread {
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut output.merchant).into_iter().partition(|(each, update)| *each == player && !update.closing);
+            output.merchant = rest;
+            answers.extend(mine.into_iter().map(|(_, update)| update));
+        }
+        let queue = self.players.queue(player);
+        for news in std::mem::take(&mut queue.merchant_routed) {
+            if let MerchantNews::Answer(update) = news {
+                apply_merchant_answer(inventory, &update);
+            }
+        }
+        for update in &answers {
+            apply_merchant_answer(inventory, update);
+        }
+        queue.merchant.clear();
+        queue.merchant_waiting = 0;
     }
 
     pub fn vehicle_uuid(&self, vehicle: u64) -> u128 {
@@ -853,10 +1006,10 @@ impl Entities {
         let mob = self.view.client.get(vehicle)?;
         let partial = (self.view.clock / self.view.tick_seconds).clamp(0.0, 1.0);
         let pose = mob.pose(partial as f32);
-        let baby = self.view.world.striders().iter().any(|e| e.id == vehicle && e.strider.age.baby());
-        let attachment = minecraftoss_entities::strider::Strider::riding_attachment(baby);
-        let bob = crate::riding::bob(pose.walk_position, pose.walk_speed);
-        Some(crate::riding::seat(mob.old_position, mob.position, partial, attachment, bob))
+        let point = self.view.world.passenger_point(vehicle)?;
+        let strider = self.view.world.striders().iter().any(|e| e.id == vehicle);
+        let bob = if strider { crate::riding::bob(pose.walk_position, pose.walk_speed) } else { 0.0 };
+        Some(crate::riding::seat(mob.old_position, mob.position, partial, point.y, bob) + DVec3::new(point.x, 0.0, point.z))
     }
 
     pub fn dismount(&mut self, player: u64) {
@@ -899,6 +1052,10 @@ impl Entities {
             && self.view.world.striders().iter().any(|e| e.id == vehicle && !e.strider.steering.boosting)
     }
 
+    pub fn shield_blocked(&mut self, attacker: u64, player: u64, feet: [f64; 3]) {
+        self.server.shield_block(attacker, player, feet);
+    }
+
     pub fn boost(&mut self, player: u64, slot: usize, held: String) {
         self.server.boost(player);
         self.players.queue(player).boost_waiting = Some((slot, held));
@@ -914,6 +1071,7 @@ impl Entities {
     }
 
     pub fn leave(&mut self, player: u64, inventory: &mut Inventory, selected: usize, feet: Option<[f64; 3]>) -> u32 {
+        self.set_mount_viewer(player, None);
         self.server.player_left(player);
         self.server.wait_idle();
         self.poll_jobs();
@@ -1030,6 +1188,23 @@ impl Entities {
 
     pub fn track_body(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
         self.view.track_body(key, feet, width, height);
+    }
+
+    pub fn hold_rope(&mut self, key: u128, feet: [f64; 3], yaw: f32, height: f64) {
+        self.view.hold_rope(key, feet, yaw, height);
+    }
+
+    pub fn leash_fence(&mut self, player: u64, pos: (i32, i32, i32), sneaking: bool) -> bool {
+        let mut world = self.view.world.clone();
+        if !world.leash_fence(player, pos, sneaking) {
+            return false;
+        }
+        self.server.leash_fence(player, pos, sneaking);
+        true
+    }
+
+    pub fn has_knot(&self, pos: (i32, i32, i32)) -> bool {
+        self.view.world.has_knot(pos)
     }
 
     pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
@@ -1201,8 +1376,10 @@ impl Entities {
         let presenter = actors.first().map(|actor| actor.id);
         self.presenter = presenter;
         let presenter_feet = actors.first().map_or([0.0; 3], |actor| actor.view.feet);
-        for actor in actors.iter() {
-            self.players.queue(actor.id).feet = Some(actor.view.feet);
+        for actor in actors.iter_mut() {
+            let queue = self.players.queue(actor.id);
+            queue.feet = Some(actor.view.feet);
+            queue.raid_omens_waiting.append(&mut actor.view.omens.raid_omens);
         }
         let orb_pickup_target = DVec3::from_array(presenter_feet) + DVec3::Y * f64::from(EYE_HEIGHT / 2.0);
         let near: Vec<DVec3> = actors.iter().filter(|actor| actor.view.alive && !actor.view.spectator).map(|actor| DVec3::from_array(actor.view.feet)).collect();
@@ -1225,6 +1402,7 @@ impl Entities {
                 simulation_centres: actors.iter().map(|actor| centre(actor.view.feet)).collect(),
                 simulation_distance: 8,
                 mob_players: actors.iter().map(|actor| player_candidate(actor.id, &actor.view)).collect(),
+                heroes: actors.iter().map(|actor| (actor.id, actor.view.hero)).collect(),
                 mob_views: actors
                     .iter()
                     .map(|actor| {
@@ -1256,6 +1434,13 @@ impl Entities {
                 player_hurts: Vec::new(),
                 spawn_mobs: self.spawn_mobs,
                 controls: actors.iter().filter(|actor| actor.view.alive).map(|actor| player_controls(actor.id, &actor.view, actor.inventory)).collect(),
+                omens: actors
+                    .iter()
+                    .map(|actor| {
+                        let raid_omens = std::mem::take(&mut self.players.queue(actor.id).raid_omens_waiting);
+                        (actor.id, minecraft_terrain::server::PlayerOmens { bad_omen: actor.view.omens.bad_omen, raid_omens })
+                    })
+                    .collect(),
             }, batch.normal.clone());
         }
         let mut changes = Vec::new();
@@ -1407,6 +1592,7 @@ impl Entities {
                     }
                 }
             }
+            settle_merchant_news(queue, actor.inventory);
             let broken = std::mem::take(&mut queue.broken);
             if presenter == Some(actor.id) {
                 self.broken_items.extend(broken);
@@ -1584,13 +1770,16 @@ fn mob_hit(
 ) -> Option<Hit> {
     let from = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
+        PlayerHitKind::Fireworks { at } => Some(at.to_array()),
         _ => None,
     };
     let toward = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
-        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } => [-velocity.x, -velocity.z],
+        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
         PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
+        PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at } => [at.x - feet[0], at.z - feet[2]],
     };
+    let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. })).then_some(toward);
     let attack = match hit.kind {
         PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
         PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
@@ -1598,9 +1787,15 @@ fn mob_hit(
         PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
         PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
         PlayerHitKind::ShulkerBullet { .. } => crate::death::MobAttack::MobProjectile,
+        PlayerHitKind::Trident { .. } => crate::death::MobAttack::Trident,
+        PlayerHitKind::Spit { .. } => crate::death::MobAttack::Spit,
+        PlayerHitKind::Magic { .. } => crate::death::MobAttack::Magic,
+        PlayerHitKind::Fireworks { .. } => crate::death::MobAttack::Fireworks,
     };
     let cause = match hit.kind {
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
+        PlayerHitKind::Magic { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
+        PlayerHitKind::Fireworks { .. } if hit.source.is_none() || type_id.is_none() => crate::death::DamageCause::Fireworks,
         _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
     };
     let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
@@ -1610,7 +1805,7 @@ fn mob_hit(
         PlayerHitKind::ShulkerBullet { .. } => Some((EffectKind::Levitation, minecraftoss_entities::shulker_bullet::LEVITATION_TICKS)),
         _ => None,
     };
-    (damage > 0.0).then_some((damage, from, Some(toward), cause, melee_push(&hit.kind), effect))
+    (damage > 0.0).then_some((damage, from, toward, cause, melee_push(&hit.kind), effect))
 }
 
 fn bullet_puff_particle(kind: minecraftoss_entities::world::BulletPuffKind) -> minecraft_terrain::ambient_particles::Kind {
@@ -1692,6 +1887,12 @@ pub(crate) fn encode(hit: MobHit) -> u64 {
         MobHit::Hoglin(_) => HOGLIN_KEY,
         MobHit::Piglin(_) => PIGLIN_KEY,
         MobHit::Shulker(_) => 26,
+        MobHit::Feline(_) => FELINE_KEY,
+        MobHit::WanderingTrader(_) => WANDERING_TRADER_KEY,
+        MobHit::SnowGolem(_) => SNOW_GOLEM_KEY,
+        MobHit::Illager(_) => ILLAGER_KEY,
+        MobHit::Vex(_) => VEX_KEY,
+        MobHit::Ravager(_) => RAVAGER_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1721,6 +1922,12 @@ pub(crate) fn decode(key: u64) -> Option<MobHit> {
         HOGLIN_KEY => MobHit::Hoglin(id),
         PIGLIN_KEY => MobHit::Piglin(id),
         26 => MobHit::Shulker(id),
+        FELINE_KEY => MobHit::Feline(id),
+        WANDERING_TRADER_KEY => MobHit::WanderingTrader(id),
+        SNOW_GOLEM_KEY => MobHit::SnowGolem(id),
+        ILLAGER_KEY => MobHit::Illager(id),
+        VEX_KEY => MobHit::Vex(id),
+        RAVAGER_KEY => MobHit::Ravager(id),
         _ => return None,
     })
 }
@@ -1732,6 +1939,12 @@ const DRAGON_KEY: u64 = 20 << 56;
 const STRIDER_KEY: u64 = 23;
 const HOGLIN_KEY: u64 = 22;
 const PIGLIN_KEY: u64 = 21;
+const FELINE_KEY: u64 = 29;
+const WANDERING_TRADER_KEY: u64 = 30;
+const SNOW_GOLEM_KEY: u64 = 31;
+const ILLAGER_KEY: u64 = 32;
+const VEX_KEY: u64 = 33;
+const RAVAGER_KEY: u64 = 34;
 pub(crate) const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
@@ -1860,7 +2073,14 @@ mod tests {
             main_hand: None,
             offhand: None,
             sneaking: false,
+            hero: None,
+            sleeping: None,
+            sleep_timer: 0,
+            forward: 0.0,
+            strafe: 0.0,
+            jumping: false,
             swirl: None,
+            omens: Default::default(),
         };
         let survival = player_candidate(HOST, &view(true, false));
         assert!(survival.alive && survival.attackable && !survival.spectator);
@@ -1974,7 +2194,7 @@ mod tests {
         entities.summon(minecraft_commands::PlayerId(0), "minecraft:pig".to_owned(), [0.5, 200.0, 2.5], Some(nbt));
         let mut inventory = Inventory::default();
         inventory.slots[3] = Some(ItemStack::new("minecraft:saddle", 1));
-        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, swirl: None };
+        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default() };
         let started = std::time::Instant::now();
         let tick = |entities: &mut Entities, inventory: &mut Inventory| {
             assert!(started.elapsed().as_secs() < 60, "the server answers");
@@ -2064,9 +2284,63 @@ mod tests {
         let mut inventory = Inventory::default();
         inventory.slots[36] = Some(ItemStack::new("minecraft:golden_boots", 1));
         inventory.slots[39] = Some(ItemStack::new("minecraft:chainmail_helmet", 1));
-        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, swirl: None };
+        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default() };
         let controls = player_controls(HOST, &view, &inventory);
         assert_eq!(controls.armor, [Some("minecraft:golden_boots".to_owned()), None, None, Some("minecraft:chainmail_helmet".to_owned())]);
+    }
+
+    #[test]
+    fn a_cat_and_an_ocelot_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Feline(77));
+        assert_eq!(key >> 56, 29);
+        assert_eq!(decode(key), Some(MobHit::Feline(77)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
+    fn a_pillager_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Illager(83));
+        assert_eq!(key >> 56, 32);
+        assert_eq!(decode(key), Some(MobHit::Illager(83)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
+    fn a_ravager_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Ravager(91));
+        assert_eq!(key >> 56, 34);
+        assert_eq!(decode(key), Some(MobHit::Ravager(91)));
+    }
+
+    #[test]
+    fn a_vex_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Vex(84));
+        assert_eq!(key >> 56, 33);
+        assert_eq!(decode(key), Some(MobHit::Vex(84)));
+    }
+
+    #[test]
+    fn a_snow_golem_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::SnowGolem(77));
+        assert_eq!(key >> 56, 31);
+        assert_eq!(decode(key), Some(MobHit::SnowGolem(77)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
+    fn a_wandering_trader_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::WanderingTrader(91));
+        assert_eq!(key >> 56, 30);
+        assert_eq!(decode(key), Some(MobHit::WanderingTrader(91)));
+        assert_eq!(fireball_of(key), None);
+        assert_eq!(crystal_of(key), None);
+        assert_eq!(end_target_of(key), None);
     }
 
     #[test]
@@ -2136,6 +2410,27 @@ mod tests {
         use minecraftoss_entities::world::BulletPuffKind;
         assert_eq!((bullet_puff_particle(BulletPuffKind::Hit), BulletPuffKind::Hit.count()), (Kind::Explosion, 2));
         assert_eq!((bullet_puff_particle(BulletPuffKind::Hurt), BulletPuffKind::Hurt.count()), (Kind::Crit, 15));
+    }
+
+    #[test]
+    fn evoker_fangs_bite_past_shields_as_the_evokers_indirect_magic() {
+        let hit = minecraftoss_entities::world::PlayerHit {
+            player_id: HOST,
+            damage: 6.0,
+            kind: PlayerHitKind::Magic { at: DVec3::new(1.0, 64.0, 0.0) },
+            source: Some(9),
+        };
+        let damage = |difficulty| mob_hit(&hit, [0.0, 64.0, 0.0], difficulty, Some("minecraft:evoker")).map(|h| h.0);
+        assert_eq!((damage(0), damage(1), damage(2), damage(3)), (None, Some(4.0), Some(6.0), Some(9.0)));
+        let (_, _, toward, cause, _, effect) = mob_hit(&hit, [0.0, 64.0, 0.0], 2, Some("minecraft:evoker")).unwrap();
+        assert_eq!(toward, None, "no shield blocks it");
+        assert_eq!(cause, crate::death::DamageCause::Mob { id: 9, type_id: "minecraft:evoker", attack: crate::death::MobAttack::Magic });
+        assert_eq!(cause.damage_type(), "minecraft:indirect_magic");
+        assert!(cause.bypasses_armor() && effect.is_none());
+        assert_eq!(crate::offhand::blocked_damage(0.0, toward, 6.0), 0.0);
+        let ownerless = minecraftoss_entities::world::PlayerHit { source: None, ..hit };
+        let (damage, _, _, cause, _, _) = mob_hit(&ownerless, [0.0, 64.0, 0.0], 3, None).unwrap();
+        assert_eq!((damage, cause), (6.0, crate::death::DamageCause::Magic));
     }
 
     #[test]
@@ -2354,6 +2649,44 @@ mod tests {
     }
 
     #[test]
+    fn trading_screens_reach_only_their_player_and_set_the_slots_before_anything_else() {
+        use minecraft_terrain::server::{MerchantUpdate, MerchantView, MobResult};
+        let view = |villager: u64| MerchantView { villager, profession: "minecraft:farmer", level: 1, xp: 0, offers: Vec::new(), payment: [None, None], result: None, future_xp: 0, max_stacks: Vec::new(), name: None, trader: false };
+        let mut queues = two_queues();
+        queues.queue(FRIEND).merchant_waiting = 2;
+        let mut output = minecraft_terrain::server::Output { mob_results: vec![(FRIEND, MobResult { merchant: Some(view(9)), ..Default::default() })], ..Default::default() };
+        let wheat = ItemStack::new("minecraft:wheat", 20);
+        let answer = MerchantUpdate { view: Some(view(9)), slots: vec![(4, None), (12, Some(wheat.clone()))], cursor: Some(ItemStack::new("minecraft:emerald", 1)), closing: false };
+        let closing = MerchantUpdate { view: None, slots: Vec::new(), cursor: None, closing: true };
+        output.merchant = vec![(FRIEND, closing), (FRIEND, answer)];
+        let _ = queues.route(&mut output, 2, |_| None);
+        assert!(output.merchant.is_empty());
+        assert!(queues.queue(HOST).merchant_routed.is_empty(), "the host traded nothing");
+        let friend = queues.queue(FRIEND);
+        assert!(friend.merchant.is_empty(), "nothing shows before its slots are set");
+        let order: Vec<&str> = friend
+            .merchant_routed
+            .iter()
+            .map(|news| match news {
+                MerchantNews::Answer(_) => "answer",
+                MerchantNews::Opened(_) => "opened",
+                MerchantNews::Closing => "closing",
+            })
+            .collect();
+        assert_eq!(order, ["answer", "opened", "closing"], "answers to the player's clicks, then a screen the tick opened, then the tick's end check");
+        let mut inventory = Inventory::default();
+        inventory.slots[4] = Some(ItemStack::new("minecraft:wheat", 3));
+        inventory.cursor = Some(ItemStack::new("minecraft:dirt", 5));
+        settle_merchant_news(friend, &mut inventory);
+        assert_eq!(inventory.slots[4], None);
+        assert_eq!(inventory.slots[12], Some(wheat));
+        assert_eq!(inventory.cursor, Some(ItemStack::new("minecraft:emerald", 1)));
+        assert_eq!(friend.merchant_waiting, 1, "one answer came of the two in flight");
+        assert_eq!(friend.merchant.len(), 3);
+        assert!(friend.merchant_routed.is_empty());
+    }
+
+    #[test]
     fn outputs_for_a_player_no_longer_in_the_level_go_back_to_the_world() {
         let mut queues = two_queues();
         queues.0.remove(&FRIEND);
@@ -2415,7 +2748,14 @@ mod tests {
             main_hand: None,
             offhand: None,
             sneaking: false,
+            hero: None,
+            sleeping: None,
+            sleep_timer: 0,
+            forward: 0.0,
+            strafe: 0.0,
+            jumping: false,
             swirl: None,
+            omens: Default::default(),
         };
         let batch = crate::tick_rate::TickBatch {
             normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },
@@ -2456,7 +2796,14 @@ mod tests {
                 main_hand: None,
                 offhand: None,
                 sneaking: false,
+                hero: None,
+                sleeping: None,
+                sleep_timer: 0,
+                forward: 0.0,
+                strafe: 0.0,
+                jumping: false,
                 swirl,
+                omens: Default::default(),
             };
             let batch = crate::tick_rate::TickBatch {
                 normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },

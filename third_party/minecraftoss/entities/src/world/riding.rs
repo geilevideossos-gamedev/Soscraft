@@ -134,6 +134,46 @@ pub fn dismount_spot(
     DVec3::new(p.x, top, p.z)
 }
 
+pub fn horse_dismount_spot(
+    world: &(impl World + ?Sized),
+    body: &Body,
+    yaw: f32,
+    rider_width: f32,
+    rider_heights: &[f32],
+) -> DVec3 {
+    let p = body.position;
+    let half = f64::from(rider_width) / 2.0;
+    for turn in [90.0, -90.0] {
+        let offset = escape_vector(body.width, rider_width, yaw + turn);
+        let x = p.x + offset.x;
+        let z = p.z + offset.z;
+        let ceiling = p.y + f64::from(body.height) + 0.75;
+        for &height in rider_heights {
+            let mut y = p.y.floor() as i32;
+            loop {
+                let pos = (x.floor() as i32, y, z.floor() as i32);
+                let floor = floor_height(world, pos);
+                if f64::from(y) + floor > ceiling {
+                    break;
+                }
+                if floor.is_finite() && floor < 1.0 {
+                    let spot = DVec3::new(x, f64::from(y) + floor, z);
+                    let min = spot - DVec3::new(half, 0.0, half);
+                    let max = spot + DVec3::new(half, f64::from(height), half);
+                    if minecraftoss_player::collision::no_block_collision(world, min, max) {
+                        return spot;
+                    }
+                }
+                y += 1;
+                if f64::from(y) >= ceiling {
+                    break;
+                }
+            }
+        }
+    }
+    p
+}
+
 impl EntityWorld {
     pub fn passengers_of(&self, vehicle: u64) -> &[Rider] {
         self.passengers.get(&vehicle).map_or(&[], Vec::as_slice)
@@ -170,7 +210,66 @@ impl EntityWorld {
         self.striders.iter().find(|e| e.id == vehicle)
     }
 
+    fn vehicle_horse(&self, vehicle: u64) -> Option<&CowEntity> {
+        self.cows
+            .iter()
+            .find(|e| e.id == vehicle && e.horse.is_some())
+    }
+
+    fn vehicle_ravager(&self, vehicle: u64) -> Option<&super::RavagerEntity> {
+        self.ravagers.iter().find(|e| e.id == vehicle)
+    }
+
+    pub fn carries_riders(&self, vehicle: u64) -> bool {
+        self.vehicle_strider(vehicle).is_some() || self.vehicle_horse(vehicle).is_some() || self.vehicle_ravager(vehicle).is_some()
+    }
+
+    pub fn passenger_point(&self, vehicle: u64) -> Option<DVec3> {
+        if let Some(entity) = self.vehicle_strider(vehicle) {
+            let strider = &entity.strider;
+            let attachment = if strider.age.baby() {
+                strider::BABY_PASSENGER_ATTACHMENT
+            } else {
+                f64::from(strider.body.height)
+            };
+            return Some(DVec3::new(0.0, attachment, 0.0));
+        }
+        if let Some(entity) = self.vehicle_ravager(vehicle) {
+            return Some(crate::ravager::passenger_point(entity.ravager.yaw));
+        }
+        let entity = self.vehicle_horse(vehicle)?;
+        let horse = entity.horse.as_ref()?;
+        let scale = if entity.cow.age.baby() {
+            horse.kind.dimensions().2
+        } else {
+            1.0
+        };
+        let (y, z) = horse.kind.passenger_attachment();
+        let stand = horse.stand_anim_o * scale;
+        let y = f64::from(y * scale) + 0.15 * f64::from(stand);
+        let z = f64::from(z * scale) - 0.7 * f64::from(stand);
+        let angle = f64::from(-entity.cow.yaw * 0.017_453_292_f32);
+        Some(DVec3::new(
+            z * f64::from(minecraftoss_player::mth::sin(angle)),
+            y,
+            z * f64::from(minecraftoss_player::mth::cos(angle)),
+        ))
+    }
+
     pub fn controlling_mob(&self, vehicle: u64) -> Option<u64> {
+        if let Some(entity) = self.vehicle_horse(vehicle) {
+            if entity.no_ai {
+                return None;
+            }
+            return match *self.passengers_of(vehicle).first()? {
+                Rider::Mob(id) if !NON_CONTROLLING_RIDERS.contains(&self.entity_type(id)?) => {
+                    let steers = self.zombies.iter().any(|e| e.id == id && e.ai.is_some())
+                        || self.skeletons.iter().any(|e| e.id == id);
+                    steers.then_some(id)
+                }
+                _ => None,
+            };
+        }
         let entity = self.vehicle_strider(vehicle)?;
         if entity.no_ai {
             return None;
@@ -186,6 +285,15 @@ impl EntityWorld {
     }
 
     pub fn controlling_player(&self, vehicle: u64) -> Option<u64> {
+        if let Some(entity) = self.vehicle_horse(vehicle) {
+            if !entity.horse.as_ref()?.saddled || entity.cow.health <= 0.0 {
+                return None;
+            }
+            let Rider::Player(player) = *self.passengers_of(vehicle).first()? else {
+                return None;
+            };
+            return Some(player);
+        }
         let entity = self.vehicle_strider(vehicle)?;
         if !entity.strider.saddled {
             return None;
@@ -227,6 +335,8 @@ impl EntityWorld {
                 | "minecraft:piglin_brute",
             ) => f64::from(0.7_f32),
             Some("minecraft:wither_skeleton") => f64::from(0.875_f32),
+            Some("minecraft:pillager" | "minecraft:vindicator" | "minecraft:evoker" | "minecraft:illusioner") => f64::from(0.6_f32),
+            Some("minecraft:vex") => -f64::from(0.04_f32),
             Some("minecraft:ghast") => -f64::from(0.5_f32),
             _ => 0.0,
         };
@@ -234,29 +344,38 @@ impl EntityWorld {
         if baby { offset * 0.5 } else { offset }
     }
 
-    pub fn seat_offset(&self, rider: Rider) -> Option<(u64, f64)> {
+    fn seat_point(&self, rider: Rider) -> Option<(u64, DVec3)> {
         let vehicle = self.vehicle_of(rider)?;
-        let strider = &self.vehicle_strider(vehicle)?.strider;
-        let attachment = if strider.age.baby() {
-            strider::BABY_PASSENGER_ATTACHMENT
-        } else {
-            f64::from(strider.body.height)
-        };
+        let point = self.passenger_point(vehicle)?;
         let lift = match rider {
             Rider::Mob(id) => self.mob_vehicle_attachment(id),
             Rider::Player(_) => PLAYER_VEHICLE_ATTACHMENT,
         };
-        Some((vehicle, attachment - lift))
+        Some((vehicle, point - DVec3::new(0.0, lift, 0.0)))
+    }
+
+    pub fn seat_offset(&self, rider: Rider) -> Option<(u64, f64)> {
+        let (vehicle, point) = self.seat_point(rider)?;
+        Some((vehicle, point.y))
+    }
+
+    fn vehicle_body(&self, vehicle: u64) -> Option<&Body> {
+        if let Some(entity) = self.vehicle_ravager(vehicle) {
+            return Some(&entity.ravager.body);
+        }
+        match self.vehicle_strider(vehicle) {
+            Some(entity) => Some(&entity.strider.body),
+            None => Some(&self.vehicle_horse(vehicle)?.cow.body),
+        }
     }
 
     pub fn seat(&self, rider: Rider) -> Option<DVec3> {
-        let (vehicle, offset) = self.seat_offset(rider)?;
-        let strider = &self.vehicle_strider(vehicle)?.strider;
-        Some(strider.body.position + DVec3::new(0.0, offset, 0.0))
+        let (vehicle, point) = self.seat_point(rider)?;
+        Some(self.vehicle_body(vehicle)?.position + point)
     }
 
     fn can_ride(&mut self, rider: Rider, vehicle: u64) -> bool {
-        if rider == Rider::Mob(vehicle) || self.vehicle_strider(vehicle).is_none() {
+        if rider == Rider::Mob(vehicle) || !self.carries_riders(vehicle) {
             return false;
         }
         if let Rider::Mob(id) = rider {
@@ -281,10 +400,16 @@ impl EntityWorld {
         self.unlink(rider);
         self.passengers.entry(vehicle).or_default().push(rider);
         self.seat_mob(rider);
+        if let Rider::Mob(id) = rider {
+            self.drop_leash(id, true);
+        }
         true
     }
 
     pub fn start_riding(&mut self, rider: Rider, vehicle: u64, world: &impl World) -> bool {
+        if self.vehicle_horse(vehicle).is_some() || self.vehicle_ravager(vehicle).is_some() {
+            return self.passengers_of(vehicle).is_empty() && self.force_riding(rider, vehicle);
+        }
         let Some(entity) = self.vehicle_strider(vehicle) else {
             return false;
         };
@@ -297,7 +422,7 @@ impl EntityWorld {
         self.force_riding(rider, vehicle)
     }
 
-    fn unlink(&mut self, rider: Rider) -> Option<u64> {
+    pub(super) fn unlink(&mut self, rider: Rider) -> Option<u64> {
         let vehicle = self.vehicle_of(rider)?;
         if let Some(riders) = self.passengers.get_mut(&vehicle) {
             riders.retain(|r| *r != rider);
@@ -317,10 +442,23 @@ impl EntityWorld {
             }
             Rider::Player(_) => None,
         };
-        let strider = self.vehicle_strider(vehicle)?.strider.clone();
-        let spot = match size {
-            Some((width, height)) => dismount_spot(world, &strider, width, &[height], yaw),
-            None => dismount_spot(world, &strider, PLAYER_WIDTH, &PLAYER_DISMOUNT_HEIGHTS, yaw),
+        let (width, heights) = match size {
+            Some((width, height)) => (width, vec![height]),
+            None => (PLAYER_WIDTH, PLAYER_DISMOUNT_HEIGHTS.to_vec()),
+        };
+        let ravager_top = self.vehicle_ravager(vehicle).map(|entity| {
+            let body = &entity.ravager.body;
+            body.position + DVec3::new(0.0, f64::from(body.height), 0.0)
+        });
+        let spot = match self.vehicle_horse(vehicle) {
+            Some(entity) => {
+                horse_dismount_spot(world, &entity.cow.body, entity.cow.yaw, width, &heights)
+            }
+            None if ravager_top.is_some() => ravager_top?,
+            None => {
+                let strider = self.vehicle_strider(vehicle)?.strider.clone();
+                dismount_spot(world, &strider, width, &heights, yaw)
+            }
         };
         self.unlink(rider);
         if let Rider::Mob(id) = rider {
@@ -441,6 +579,26 @@ impl EntityWorld {
         orders: &[StriderGoalEffect],
         world: &impl World,
     ) {
+        if let Some(entity) = self
+            .cows
+            .iter_mut()
+            .find(|e| e.id == vehicle && e.horse.is_some())
+        {
+            let fluid = entity.fluid;
+            for order in orders {
+                match *order {
+                    StriderGoalEffect::Navigate { target, speed } => {
+                        let _ = entity.cow.navigate_to(world, fluid, target, speed);
+                    }
+                    StriderGoalEffect::NavigateToEntity { target, speed } => {
+                        let _ = entity.cow.navigate_to_entity(world, fluid, target, speed);
+                    }
+                    StriderGoalEffect::StopNavigation => entity.cow.navigation.stop(),
+                    _ => {}
+                }
+            }
+            return;
+        }
         let Some(entity) = self.striders.iter_mut().find(|e| e.id == vehicle) else {
             return;
         };
@@ -475,7 +633,7 @@ impl EntityWorld {
             if !alive.contains(vehicle) {
                 for rider in riders.iter() {
                     if let Rider::Player(player) = rider {
-                        dismounts.push((*player, *vehicle));
+                        dismounts.push((*player, *vehicle, None));
                     }
                 }
             }
@@ -483,8 +641,63 @@ impl EntityWorld {
         });
     }
 
-    pub fn take_player_dismounts(&mut self) -> Vec<(u64, u64)> {
+    pub fn take_player_dismounts(&mut self) -> Vec<(u64, u64, Option<DVec3>)> {
         std::mem::take(&mut self.player_dismounts)
+    }
+
+    pub fn eject_passengers(&mut self, vehicle: u64, world: &impl World) {
+        for rider in self.passengers_of(vehicle).to_vec() {
+            let spot = self.stop_riding(rider, 0.0, world);
+            if let Rider::Player(player) = rider {
+                self.player_dismounts.push((player, vehicle, spot));
+            }
+        }
+    }
+
+    pub fn ride_jump_scale(&self, player: u64) -> Option<f32> {
+        let vehicle = self.vehicle_of(Rider::Player(player))?;
+        (self.jumpable_by(vehicle) == Some(player))
+            .then(|| self.ride_jumps.get(&player).map_or(0.0, |jump| jump.scale))
+    }
+
+    fn jumpable_by(&self, vehicle: u64) -> Option<u64> {
+        self.vehicle_horse(vehicle)?;
+        self.controlling_player(vehicle)
+    }
+
+    pub(super) fn tick_ride_jumps(&mut self) {
+        let controls: Vec<(u64, bool)> = self
+            .player_controls
+            .iter()
+            .map(|c| (c.id, c.jumping))
+            .collect();
+        self.ride_jumps
+            .retain(|player, _| controls.iter().any(|(id, _)| id == player));
+        for (player, jumping) in controls {
+            let vehicle = self.vehicle_of(Rider::Player(player));
+            let jumpable = vehicle.is_some_and(|v| self.jumpable_by(v) == Some(player));
+            let released = self
+                .ride_jumps
+                .entry(player)
+                .or_default()
+                .tick(jumpable, jumping);
+            let (Some(power), Some(vehicle)) = (released, vehicle) else {
+                continue;
+            };
+            let Some(entity) = self.cows.iter_mut().find(|e| e.id == vehicle) else {
+                continue;
+            };
+            let position = entity.cow.body.position;
+            let Some(horse) = entity.horse.as_mut() else {
+                continue;
+            };
+            horse.on_player_jump(power);
+            if horse.saddled && power > 0 {
+                entity
+                    .voices
+                    .push((Voice::Event("entity.horse.jump", 0.4, 1.0), position));
+            }
+        }
     }
 
     pub fn dismount_player(
@@ -540,6 +753,12 @@ impl EntityWorld {
         self.witches.retain(|e| !gone(e.id));
         self.iron_golems.retain(|e| !gone(e.id));
         self.wolves.retain(|e| !gone(e.id));
+        self.felines.retain(|e| !gone(e.id));
+        self.wandering_traders.retain(|e| !gone(e.id));
+        self.snow_golems.retain(|e| !gone(e.id));
+        self.illagers.retain(|e| !gone(e.id));
+        self.vexes.retain(|e| !gone(e.id));
+        self.ravagers.retain(|e| !gone(e.id));
         self.villagers.retain(|e| !gone(e.id));
         self.cows.retain(|e| !gone(e.id));
         self.sheep.retain(|e| !gone(e.id));
@@ -553,6 +772,8 @@ impl EntityWorld {
         self.shulkers.retain(|e| !gone(e.id));
         self.fireballs.retain(|e| !gone(e.id));
         self.shulker_bullets.retain(|e| !gone(e.id));
+        self.llama_spits.retain(|e| !gone(e.id));
+        self.evoker_fangs.retain(|e| !gone(e.id));
         self.potions.retain(|e| !gone(e.id));
         self.order.retain(|key| !gone(key.id()));
         self.sections.retain_mobs(|id| !gone(id));
@@ -560,6 +781,7 @@ impl EntityWorld {
             riders.retain(|rider| !matches!(rider, Rider::Mob(id) if gone(*id)));
             !gone(*vehicle) && !riders.is_empty()
         });
+        self.leashes.retain(|id, _| !gone(*id));
     }
 }
 

@@ -103,6 +103,9 @@ impl Potion {
             MobEffect::Nausea => 5578058,
             MobEffect::Levitation => 13565951,
             MobEffect::SlowFalling => 15978425,
+            MobEffect::Strength => 16762624,
+            MobEffect::Invisibility => 16185078,
+            MobEffect::Glowing => 9740385,
         }
     }
 }

@@ -152,6 +152,10 @@ impl EntityWorld {
     /// `AbstractVillager.notifyTradeUpdated`: yes or no, if it has not
     /// spoken in the last second.
     pub(super) fn villager_trade_updated(&mut self, id: u64, valid: bool) {
+        if self.is_wandering_trader(id) {
+            self.wandering_trader_trade_updated(id, valid);
+            return;
+        }
         let Some(entity) = self.villager_mut(id) else { return };
         if entity.ambient_sound_time > -80 + 20 {
             entity.ambient_sound_time = -80;
@@ -166,6 +170,10 @@ impl EntityWorld {
     /// regeneration), and an orb of 3 to 6 (8 more on a new level) unless
     /// the offer gives none.
     pub(super) fn villager_notify_trade(&mut self, id: u64, index: usize) {
+        if self.is_wandering_trader(id) {
+            self.wandering_trader_notify_trade(id, index);
+            return;
+        }
         let book = self.trades.clone();
         let Some(entity) = self.villagers.iter_mut().find(|e| e.id == id) else { return };
         let Some(offer) = entity.offers.as_mut().and_then(|o| o.get_mut(index)) else { return };
@@ -202,6 +210,9 @@ impl EntityWorld {
     /// `AbstractVillager.stopTrading`: its trader gone. In 26.3 the special
     /// prices stay (and are saved) until the next `updateSpecialPrices`.
     pub(super) fn villager_stop_trading(&mut self, id: u64) {
+        if let Some(entity) = self.wandering_trader_mut(id) {
+            entity.trading_player = None;
+        }
         if let Some(entity) = self.villager_mut(id) {
             entity.trading_player = None;
         }
@@ -223,11 +234,16 @@ impl EntityWorld {
     /// (seven blocks from `eyes` to its box).
     pub fn merchant_still_valid(&self, player: u64, eyes: DVec3) -> bool {
         let Some(menu) = self.merchant_menus.get(&player) else { return false };
-        let Some(e) = self.villagers.iter().find(|e| e.id == menu.villager) else { return false };
-        if e.trading_player != Some(player) || e.villager.health <= 0.0 {
+        let (trading, health, body) = match self.villagers.iter().find(|e| e.id == menu.villager) {
+            Some(e) => (e.trading_player, e.villager.health, &e.villager.body),
+            None => {
+                let Some(e) = self.wandering_traders.iter().find(|e| e.id == menu.villager) else { return false };
+                (e.trading_player, e.trader.health, &e.trader.body)
+            }
+        };
+        if trading != Some(player) || health <= 0.0 {
             return false;
         }
-        let body = &e.villager.body;
         let half = f64::from(body.width) / 2.0;
         let (min, max) = (body.position - DVec3::new(half, 0.0, half), body.position + DVec3::new(half, f64::from(body.height), half));
         let outside = |v: f64, lo: f64, hi: f64| (lo - v).max(v - hi).max(0.0);
@@ -273,7 +289,7 @@ impl EntityWorld {
         let villager = menu.villager;
         // `setTradingPlayer(null)` stops a villager that was trading.
         menu.close(inventory, selected, || {
-            if self.villagers.iter().any(|e| e.id == villager && e.trading_player.is_some()) {
+            if self.villagers.iter().any(|e| e.id == villager && e.trading_player.is_some()) || self.wandering_traders.iter().any(|e| e.id == villager && e.trading_player.is_some()) {
                 self.villager_stop_trading(villager);
             }
         })

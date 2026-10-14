@@ -12,7 +12,7 @@ use crate::client_mobs::{ServerMob, server_mobs};
 pub const LOOK_TICKS: u64 = 10;
 pub const DEFAULT_RANGE: i32 = 5;
 
-const VOLATILE: [&str; 26] = [
+const VOLATILE: [&str; 36] = [
     "Pos",
     "Motion",
     "Rotation",
@@ -35,10 +35,20 @@ const VOLATILE: [&str; 26] = [
     "LastRestock",
     "RestocksToday",
     "Gossips",
+    "Offers",
+    "Xp",
     "LastGossipDecay",
     "FoodLevel",
     "active_effects",
     "Brain",
+    "ConversionTime",
+    "DespawnDelay",
+    "SpellTicks",
+    "Warmup",
+    "life_ticks",
+    "AttackTick",
+    "StunTick",
+    "RoarTick",
 ];
 
 const ARM_POSES: [ArmPose; 6] = [
@@ -61,6 +71,20 @@ pub struct MobShow {
     pub peek: [f32; 2],
     pub arm_pose: u8,
     pub using_item: Option<i32>,
+    pub sitting: bool,
+    pub lying: bool,
+    pub relaxed: bool,
+    pub crouching: bool,
+    pub sprinting: bool,
+    pub on_sleeper: bool,
+    pub ridden: bool,
+    pub invisible: bool,
+    pub drink: u8,
+    pub pumpkin: bool,
+    pub spell: u8,
+    pub bite: [i32; 2],
+    pub ravager: [i32; 3],
+    pub glowing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -253,19 +277,21 @@ pub fn tracking_range(kind: &str) -> i32 {
     match kind.strip_prefix("minecraft:").unwrap_or(kind) {
         "player" => 32,
         "end_crystal" => 16,
-        "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf"
+        "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf" | "ocelot"
         | "villager" | "iron_golem" | "ghast" | "slime" | "strider" | "shulker"
         | "ender_dragon" | "tnt" | "falling_block" | "item_frame" | "glow_item_frame"
-        | "area_effect_cloud" => 10,
+        | "area_effect_cloud" | "llama" | "trader_llama" | "wandering_trader" | "ravager" => 10,
         "zombie" | "husk" | "drowned" | "zombie_villager" | "zombified_piglin" | "skeleton"
         | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
-        | "piglin" | "piglin_brute" | "shulker_bullet" => 8,
+        | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" | "mule" | "snow_golem"
+        | "pillager" | "vindicator" | "evoker" | "vex" => 8,
+        "evoker_fangs" => 6,
         "item" | "experience_orb" => 6,
         "arrow" | "spectral_arrow" | "snowball" | "egg" | "ender_pearl" | "eye_of_ender"
         | "trident" | "fireball" | "small_fireball" | "dragon_fireball" | "splash_potion"
         | "lingering_potion" | "experience_bottle" | "firework_rocket" | "wither_skull"
-        | "wind_charge" => 4,
+        | "wind_charge" | "llama_spit" => 4,
         _ => DEFAULT_RANGE,
     }
 }
@@ -302,6 +328,7 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             e.id,
             MobShow {
                 aggressive: e.aggressive,
+                converting: e.zombie.shaking(),
                 ..MobShow::default()
             },
         );
@@ -338,6 +365,88 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             e.id,
             MobShow {
                 angry: e.angry(world.game_time()),
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.felines() {
+        let f = &e.feline;
+        put(
+            e.id,
+            MobShow {
+                sitting: f.sitting,
+                lying: f.lying,
+                relaxed: f.relax_state_one,
+                crouching: f.crouching,
+                sprinting: f.sprinting,
+                on_sleeper: f.lying_on_sleeping_player,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.cows() {
+        if let Some(horse) = &e.horse {
+            put(
+                e.id,
+                MobShow {
+                    ridden: horse.ridden,
+                    ..MobShow::default()
+                },
+            );
+        }
+    }
+    for e in world.wandering_traders() {
+        let drink = match e.trader.held {
+            Some(minecraftoss_entities::wandering_trader::Drink::Invisibility) => 1,
+            Some(minecraftoss_entities::wandering_trader::Drink::Milk) => 2,
+            None => 0,
+        };
+        put(
+            e.id,
+            MobShow {
+                invisible: e.invisible(),
+                drink,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.snow_golems() {
+        put(
+            e.id,
+            MobShow {
+                pumpkin: e.golem.pumpkin,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.illagers() {
+        put(
+            e.id,
+            MobShow {
+                aggressive: e.illager.aggressive,
+                charging: e.illager.charging_crossbow,
+                arm_pose: minecraftoss_entities::illager::arm_pose_index(e.arm_pose),
+                using_item: e.using_item,
+                spell: e.illager.spell.id(),
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.vexes() {
+        put(
+            e.id,
+            MobShow {
+                charging: e.vex.charging,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.ravagers() {
+        let ravager = &e.ravager;
+        put(
+            e.id,
+            MobShow {
+                ravager: [ravager.attack_tick, ravager.stunned_tick, ravager.roar_tick],
                 ..MobShow::default()
             },
         );
@@ -385,6 +494,11 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             },
         );
     }
+    for raider in world.raiders() {
+        if world.glowing(raider.id) {
+            out.entry(raider.id).or_default().glowing = true;
+        }
+    }
     out
 }
 
@@ -423,6 +537,17 @@ pub fn projectiles(world: &EntityWorld) -> Vec<ServerMob> {
     for e in world.potions().iter().filter(|e| e.potion.alive) {
         push(e.id, e.potion.position, (0.0, 0.0), 0.25);
     }
+    for e in world.llama_spits().iter().filter(|e| e.spit.alive) {
+        push(e.id, e.spit.position, (e.spit.yaw, e.spit.pitch), minecraftoss_entities::llama_spit::SIZE);
+    }
+    for e in world.evoker_fangs().iter().filter(|e| e.fangs.alive) {
+        push(e.id, e.fangs.position, (e.fangs.yaw, 0.0), minecraftoss_entities::evoker_fangs::WIDTH);
+    }
+    for mob in &mut out {
+        if let Some(e) = world.evoker_fangs().iter().find(|e| e.id == mob.id) {
+            mob.show.bite = [e.fangs.warmup, e.fangs.life_ticks];
+        }
+    }
     out
 }
 
@@ -430,6 +555,8 @@ pub fn is_projectile(world: &EntityWorld, id: u64) -> bool {
     world.fireballs().iter().any(|e| e.id == id)
         || world.shulker_bullets().iter().any(|e| e.id == id)
         || world.potions().iter().any(|e| e.id == id)
+        || world.llama_spits().iter().any(|e| e.id == id)
+        || world.evoker_fangs().iter().any(|e| e.id == id)
 }
 
 fn place(previous: &mut DVec3, body: &mut Body, mob: &ServerMob) {
@@ -443,6 +570,9 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     let (id, show) = (mob.id, mob.show);
     if let Some(e) = world.cow_mut(id) {
         place(&mut e.previous_position, &mut e.cow.body, mob);
+        if let Some(horse) = e.horse.as_mut() {
+            horse.ridden = show.ridden;
+        }
     }
     if let Some(e) = world.sheep_mut(id) {
         place(&mut e.previous_position, &mut e.body, mob);
@@ -460,6 +590,13 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.zombie_mut(id) {
         place(&mut e.previous_position, &mut e.zombie.body, mob);
         e.aggressive = show.aggressive;
+        if e.zombie.shaking() != show.converting {
+            if e.zombie.kind == minecraftoss_entities::zombie::ZombieKind::ZombieVillager {
+                e.zombie.villager_conversion_time = if show.converting { 0 } else { -1 };
+            } else {
+                e.zombie.underwater_converting = show.converting;
+            }
+        }
     }
     if let Some(e) = world.skeleton_mut(id) {
         place(&mut e.previous_position, &mut e.skeleton.body, mob);
@@ -491,6 +628,56 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.wolf_mut(id) {
         place(&mut e.previous_position, &mut e.wolf.body, mob);
         e.ai.state.enderman.anger_end_time = if show.angry { i64::MAX } else { i64::MIN };
+    }
+    if let Some(e) = world.feline_mut(id) {
+        place(&mut e.previous_position, &mut e.feline.body, mob);
+        let f = &mut e.feline;
+        f.sitting = show.sitting;
+        f.lying = show.lying;
+        f.relax_state_one = show.relaxed;
+        f.crouching = show.crouching;
+        f.sprinting = show.sprinting;
+        f.lying_on_sleeping_player = show.on_sleeper;
+        f.update_lie_down_amount();
+        f.update_relax_state_one_amount();
+    }
+    if let Some(e) = world.wandering_trader_mut(id) {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_entities::wandering_trader::Drink;
+        place(&mut e.previous_position, &mut e.trader.body, mob);
+        if show.invisible {
+            e.effects.add(EffectInstance::new(MobEffect::Invisibility, -1, 0));
+        } else {
+            e.effects.remove(MobEffect::Invisibility);
+        }
+        e.trader.held = match show.drink {
+            1 => Some(Drink::Invisibility),
+            2 => Some(Drink::Milk),
+            _ => None,
+        };
+    }
+    if let Some(e) = world.snow_golem_mut(id) {
+        place(&mut e.previous_position, &mut e.golem.body, mob);
+        e.golem.pumpkin = show.pumpkin;
+    }
+    if let Some(e) = world.illager_mut(id) {
+        place(&mut e.previous_position, &mut e.illager.body, mob);
+        e.illager.aggressive = show.aggressive;
+        e.illager.charging_crossbow = show.charging;
+        e.arm_pose = minecraftoss_entities::illager::arm_pose_of(show.arm_pose);
+        e.using_item = show.using_item;
+        e.illager.spell = minecraftoss_entities::illager::IllagerSpell::from_id(show.spell);
+    }
+    if let Some(e) = world.vex_mut(id) {
+        place(&mut e.previous_position, &mut e.vex.body, mob);
+        e.vex.charging = show.charging;
+    }
+    if let Some(e) = world.ravager_mut(id) {
+        place(&mut e.previous_position, &mut e.ravager.body, mob);
+        let [attack, stunned, roar] = show.ravager;
+        e.ravager.attack_tick = attack;
+        e.ravager.stunned_tick = stunned;
+        e.ravager.roar_tick = roar;
     }
     if let Some(e) = world.ghast_mut(id) {
         place(&mut e.previous_position, &mut e.ghast.body, mob);
@@ -536,6 +723,28 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.potion_mut(id) {
         e.previous_position = e.potion.position;
         e.potion.position = mob.position;
+    }
+    if let Some(e) = world.evoker_fangs_mut(id) {
+        e.fangs.position = mob.position;
+        e.fangs.yaw = mob.y_rot;
+        [e.fangs.warmup, e.fangs.life_ticks] = show.bite;
+        e.fangs.sent_spike = show.bite[0] < 0;
+    }
+    if let Some(e) = world.llama_spit_mut(id) {
+        e.previous_position = e.spit.position;
+        e.spit.position = mob.position;
+        e.spit.yaw_o = e.spit.yaw;
+        e.spit.pitch_o = e.spit.pitch;
+        e.spit.yaw = mob.y_rot;
+        e.spit.pitch = mob.x_rot;
+    }
+    if show.glowing != world.glowing(id) {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        if show.glowing {
+            world.add_mob_effect(id, EffectInstance::new(MobEffect::Glowing, -1, 0));
+        } else if let Some((effects, _, _)) = world.mob_effects_mut(id) {
+            effects.remove(MobEffect::Glowing);
+        }
     }
 }
 
@@ -744,7 +953,7 @@ mod tests {
         for _ in 0..LOOK_TICKS * 3 {
             looks.extend(update(&mut trackers, &world, &watchers).events);
         }
-        assert_eq!(looks.len(), 1, "{looks:?}");
+        assert_eq!(looks.len(), 1, "only the llama looks new, not the trader llama's clock: {looks:?}");
         let MobEvent::Look(id, tag) = &looks[0].1 else {
             panic!("{looks:?}");
         };
@@ -755,6 +964,21 @@ mod tests {
             .and_then(|saddle| saddle.get("id"))
             .and_then(Tag::as_str);
         assert_eq!(saddle, Some("minecraft:saddle"));
+    }
+
+    #[test]
+    fn a_trade_changes_no_look_but_a_new_level_does() {
+        let before = saved(
+            "{id:\"minecraft:villager\",Xp:0,Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1}}]},VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1}}",
+        );
+        let traded = saved(
+            "{id:\"minecraft:villager\",Xp:2,Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1},uses:1}]},VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1}}",
+        );
+        assert_eq!(look(&before), look(&traded));
+        let levelled = saved(
+            "{id:\"minecraft:villager\",Xp:10,VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:2}}",
+        );
+        assert_ne!(look(&before), look(&levelled), "the badge shows the level");
     }
 
     #[test]
@@ -792,6 +1016,250 @@ mod tests {
         );
         assert!(spawn_tracked(&mut friend, zombie, &saved(zombie_text)));
         assert_eq!(friend.zombies().len(), 1, "a second add replaces the mob");
+    }
+
+    #[test]
+    fn a_friend_sees_a_drowned() {
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(700);
+        let (drowned, tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:drowned\",Pos:[3.5d,64.0d,0.5d],Health:9.0f,IsBaby:1b,equipment:{mainhand:{id:\"minecraft:trident\",count:1}}}",
+        );
+        assert_eq!(tracking_range("minecraft:drowned"), 8);
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(drowned, tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let added: Vec<(u64, Tag)> = tracked
+            .events_of(3)
+            .map(|event| match event {
+                MobEvent::Add(id, tag) => (*id, tag.clone()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(added.len(), 1);
+        let (id, sent) = &added[0];
+        assert_eq!(*id, drowned);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, drowned, sent));
+        assert_eq!(friend.entity_type(drowned), Some("minecraft:drowned"));
+        let shown = friend.zombie_mut(drowned).unwrap();
+        assert!(shown.zombie.baby);
+        assert_eq!(shown.zombie.main_hand.as_deref(), Some("minecraft:trident"));
+        assert_eq!(shown.zombie.body.step_height, 1.0);
+    }
+
+    #[test]
+    fn a_friend_sees_a_cat_and_an_ocelot_from_their_look_tags() {
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(900);
+        let (cat, cat_tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:cat\",Pos:[3.5d,64.0d,0.5d],variant:\"minecraft:calico\",sound_variant:\"minecraft:royal\",CollarColor:11b,Owner:[I;1,2,3,4],Sitting:1b,Age:-24000}",
+        );
+        let (ocelot, ocelot_tag) = spawn(&mut host, "{id:\"minecraft:ocelot\",Pos:[5.5d,64.0d,0.5d],Trusting:1b}");
+        assert_eq!((tracking_range("minecraft:cat"), tracking_range("minecraft:ocelot")), (8, 10));
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(cat, cat_tag), (ocelot, ocelot_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+        }
+        let shown = &friend.feline_mut(cat).unwrap().feline;
+        assert_eq!((shown.variant.as_str(), shown.sound_variant.as_str(), shown.collar), ("calico", "royal", 11));
+        assert!(shown.tame && shown.ordered_to_sit && shown.sitting && shown.baby() && shown.shows_collar());
+        assert!(friend.feline_mut(ocelot).unwrap().feline.trusting);
+        {
+            let f = &mut host.feline_mut(ocelot).unwrap().feline;
+            f.crouching = true;
+        }
+        {
+            let f = &mut host.feline_mut(cat).unwrap().feline;
+            f.lying = true;
+            f.relax_state_one = true;
+            f.sitting = false;
+            f.lying_on_sleeping_player = true;
+        }
+        let seen = shows(&host);
+        assert!(seen[&cat].lying && seen[&cat].relaxed && !seen[&cat].sitting && seen[&ocelot].crouching);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let shown = &friend.feline_mut(cat).unwrap().feline;
+        assert!(shown.lying && shown.relax_state_one && !shown.sitting && shown.lie_down_amount > 0.0);
+        assert!(shown.lying_on_sleeping_player);
+        assert!(friend.feline_mut(ocelot).unwrap().feline.crouching);
+    }
+
+    #[test]
+    fn a_friend_sees_mules_and_llamas_from_their_look_tags_and_their_new_chests_and_carpets() {
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(700);
+        let (mule, mule_tag) = spawn(&mut host, "{id:\"minecraft:mule\",Pos:[2.5d,64.0d,0.5d],ChestedHorse:1b,Age:-24000}");
+        let (llama, llama_tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:llama\",Pos:[5.5d,64.0d,0.5d],Variant:3,Strength:2,Tame:1b,equipment:{body:{id:\"minecraft:white_carpet\",count:1}}}",
+        );
+        let (trader, trader_tag) = spawn(&mut host, "{id:\"minecraft:trader_llama\",Pos:[8.5d,64.0d,0.5d],Variant:1}");
+        assert_eq!(
+            (tracking_range("minecraft:mule"), tracking_range("minecraft:llama"), tracking_range("minecraft:trader_llama"), tracking_range("minecraft:llama_spit")),
+            (8, 10, 10, 4)
+        );
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(mule, mule_tag), (llama, llama_tag), (trader, trader_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+        }
+        let horse = |world: &mut EntityWorld, id: u64| world.cow_mut(id).unwrap().horse.clone().unwrap();
+        let m = horse(&mut friend, mule);
+        assert!(m.chest && friend.cow_mut(mule).unwrap().cow.age.baby());
+        let l = horse(&mut friend, llama);
+        assert_eq!((l.variant, l.strength, l.body_item.as_deref(), l.chest), (3, 2, Some("minecraft:white_carpet"), false));
+        assert_eq!(horse(&mut friend, trader).kind, minecraftoss_entities::horse::HorseKind::TraderLlama);
+        {
+            let h = host.cow_mut(llama).unwrap().horse.as_mut().unwrap();
+            h.chest = true;
+            h.body_item = Some("minecraft:black_carpet".to_owned());
+        }
+        host.cow_mut(trader).unwrap().horse.as_mut().unwrap().despawn_delay -= 5;
+        let mut looks = Vec::new();
+        for _ in 0..LOOK_TICKS {
+            trackers.tick();
+            looks.extend(trackers.update(&host, &originals, &[watcher(3, 0.5)]).events);
+        }
+        assert_eq!(looks.len(), 1, "only the llama looks new, not the trader llama's clock: {looks:?}");
+        let (_, MobEvent::Look(id, sent)) = &looks[0] else { panic!("{looks:?}") };
+        assert!(spawn_tracked(&mut friend, *id, sent));
+        let l = horse(&mut friend, llama);
+        assert_eq!((l.chest, l.body_item.as_deref()), (true, Some("minecraft:black_carpet")));
+    }
+
+    #[test]
+    fn a_friend_sees_a_horse_get_its_saddle_and_armour_and_a_rider() {
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(800);
+        let (horse, horse_tag) = spawn(&mut host, "{id:\"minecraft:horse\",Pos:[2.5d,64.0d,0.5d],Tame:1b}");
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(horse, horse_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+        }
+        assert!(!friend.cow_mut(horse).unwrap().horse.as_ref().unwrap().saddled);
+        {
+            let h = host.cow_mut(horse).unwrap().horse.as_mut().unwrap();
+            h.saddled = true;
+            h.body_item = Some("minecraft:golden_horse_armor".to_owned());
+        }
+        let mut looks = Vec::new();
+        for _ in 0..LOOK_TICKS {
+            trackers.tick();
+            looks.extend(trackers.update(&host, &originals, &[watcher(3, 0.5)]).events);
+        }
+        let (_, MobEvent::Look(id, sent)) = &looks[0] else { panic!("{looks:?}") };
+        assert!(spawn_tracked(&mut friend, *id, sent));
+        let h = friend.cow_mut(horse).unwrap().horse.clone().unwrap();
+        assert!(h.saddled && h.body_item.as_deref() == Some("minecraft:golden_horse_armor"));
+        host.cow_mut(horse).unwrap().horse.as_mut().unwrap().ridden = true;
+        let show = shows(&host)[&horse];
+        assert!(show.ridden);
+        let moved = crate::client_mobs::server_mobs(&host).into_iter().find(|m| m.id == horse).map(|m| ServerMob { show, ..m }).unwrap();
+        show_on(&mut friend, &moved);
+        assert!(friend.cow_mut(horse).unwrap().horse.as_ref().unwrap().ridden, "the reins show while someone rides it");
+    }
+
+    #[test]
+    fn a_friend_sees_llama_spit_fly() {
+        let mut host = EntityWorld::default();
+        let (spit, _) = spawn(&mut host, "{id:\"minecraft:llama_spit\",Pos:[3.5d,66.0d,0.5d],Motion:[0.0d,0.0d,1.5d],Rotation:[0.0f,0.0f]}");
+        let mut trackers = Trackers::default();
+        let watchers = [watcher(2, 0.5)];
+        let first = update(&mut trackers, &host, &watchers);
+        let mut friend = EntityWorld::default();
+        for event in first.events_of(2) {
+            let MobEvent::Add(id, tag) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, tag));
+        }
+        assert!(is_projectile(&friend, spit));
+        {
+            let e = host.llama_spit_mut(spit).unwrap();
+            e.spit.position = DVec3::new(3.5, 66.0, 2.0);
+            e.spit.yaw = 45.0;
+        }
+        let later = update(&mut trackers, &host, &watchers);
+        for mob in later.moves_of(2).unwrap() {
+            show_on(&mut friend, mob);
+        }
+        let shown = &friend.llama_spits()[0];
+        assert_eq!((shown.spit.position, shown.spit.yaw, shown.previous_position), (DVec3::new(3.5, 66.0, 2.0), 45.0, DVec3::new(3.5, 66.0, 0.5)));
+    }
+
+    #[test]
+    fn a_friend_sees_a_drowned_raise_its_trident() {
+        let mut host = EntityWorld::default();
+        let (drowned, tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:drowned\",Pos:[2.5d,64.0d,0.5d],equipment:{mainhand:{id:\"minecraft:trident\",count:1}}}",
+        );
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, drowned, &tag));
+        assert!(!crate::zombie_render::raises_trident(friend.zombie_mut(drowned).unwrap()));
+        host.zombie_mut(drowned).unwrap().aggressive = true;
+        assert!(shows(&host)[&drowned].aggressive);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(crate::zombie_render::raises_trident(friend.zombie_mut(drowned).unwrap()));
+        host.zombie_mut(drowned).unwrap().aggressive = false;
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(!crate::zombie_render::raises_trident(friend.zombie_mut(drowned).unwrap()));
+    }
+
+    #[test]
+    fn a_friend_sees_a_zombie_villager_shake_while_it_is_cured_and_a_zombie_while_it_drowns() {
+        let mut host = EntityWorld::default();
+        let (villager, tag) = spawn(
+            &mut host,
+            "{id:\"minecraft:zombie_villager\",Pos:[2.5d,64.0d,0.5d],VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1},ConversionTime:-1}",
+        );
+        let (zombie, zombie_tag) = spawn(&mut host, "{id:\"minecraft:zombie\",Pos:[6.5d,64.0d,0.5d]}");
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, villager, &tag));
+        assert!(spawn_tracked(&mut friend, zombie, &zombie_tag));
+        assert!(!friend.zombie_mut(villager).unwrap().zombie.shaking());
+        host.zombie_mut(villager).unwrap().zombie.villager_conversion_time = 4000;
+        host.zombie_mut(zombie).unwrap().zombie.underwater_converting = true;
+        assert!(shows(&host)[&villager].converting && shows(&host)[&zombie].converting);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(friend.zombie_mut(villager).unwrap().zombie.shaking());
+        assert!(friend.zombie_mut(zombie).unwrap().zombie.shaking());
+        host.zombie_mut(villager).unwrap().zombie.villager_conversion_time = -1;
+        host.zombie_mut(zombie).unwrap().zombie.underwater_converting = false;
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(!friend.zombie_mut(villager).unwrap().zombie.shaking());
+        assert!(!friend.zombie_mut(zombie).unwrap().zombie.shaking());
+        let mut curing = tag.clone();
+        if let Tag::Compound(map) = &mut curing {
+            map.insert("ConversionTime".to_owned(), Tag::Int(3999));
+        }
+        assert_eq!(look(&curing), look(&tag), "the countdown resends no look");
     }
 
     #[test]
@@ -849,5 +1317,270 @@ mod tests {
         assert_eq!(shown.previous_position, DVec3::new(2.5, 64.0, 0.5));
         assert_eq!(friend.burning().len(), 1, "the burning creeper's flames");
         assert!(friend.zombies()[0].aggressive, "the zombie raises its arms");
+    }
+
+    #[test]
+    fn a_friend_sees_the_wandering_trader_drink_and_vanish() {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_entities::wandering_trader::Drink;
+        let mut host = EntityWorld::default();
+        let (trader, trader_tag) = spawn(&mut host, "{id:\"minecraft:wandering_trader\",Pos:[2.5d,64.0d,0.5d],NoAI:1b}");
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, trader, &trader_tag));
+        assert_eq!(friend.entity_type(trader), Some("minecraft:wandering_trader"));
+        host.wandering_trader_mut(trader).unwrap().trader.held = Some(Drink::Invisibility);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert_eq!(friend.wandering_traders()[0].trader.held, Some(Drink::Invisibility));
+        assert!(!friend.wandering_traders()[0].invisible());
+        {
+            let e = host.wandering_trader_mut(trader).unwrap();
+            e.trader.held = None;
+            e.effects.add(EffectInstance::new(MobEffect::Invisibility, 3600, 0));
+        }
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(friend.wandering_traders()[0].invisible(), "the friend loses sight of it too");
+        assert_eq!(friend.wandering_traders()[0].trader.held, None);
+        host.wandering_trader_mut(trader).unwrap().effects.remove(MobEffect::Invisibility);
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(!friend.wandering_traders()[0].invisible());
+    }
+
+    #[test]
+    fn a_friend_sees_a_pillager_from_its_look_tag_with_its_crossbow() {
+        use minecraftoss_entities::illager::IllagerArmPose;
+        let mut host = EntityWorld::default();
+        let (pillager, tag) = spawn(&mut host, "{id:\"minecraft:pillager\",Pos:[2.5d,64.0d,0.5d],NoAI:1b,equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}");
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, pillager, &tag));
+        assert_eq!(friend.entity_type(pillager), Some("minecraft:pillager"));
+        let seen = &friend.illagers()[0];
+        assert!(seen.illager.holds_crossbow());
+        assert_eq!(seen.arm_pose, IllagerArmPose::CrossbowHold);
+    }
+
+    #[test]
+    fn a_friend_sees_a_patrol_captain_with_its_ominous_banner() {
+        let mut host = EntityWorld::default();
+        let (captain, tag) = spawn(&mut host, "{id:\"minecraft:pillager\",Pos:[2.5d,64.0d,0.5d],NoAI:1b,PatrolLeader:1b,Patrolling:1b,patrol_target:[I;100,0,-40],equipment:{mainhand:{id:\"minecraft:crossbow\",count:1},head:{id:\"minecraft:white_banner\",count:1,components:{\"minecraft:item_name\":{translate:\"block.minecraft.ominous_banner\"}}}},drop_chances:{head:2.0f}}");
+        assert!(host.illagers()[0].is_captain());
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, captain, &tag));
+        let seen = &friend.illagers()[0];
+        assert!(seen.is_captain());
+        assert_eq!(
+            seen.illager.equipment[minecraftoss_entities::illager::HEAD].as_ref().map(|s| s.id.as_str()),
+            Some("minecraft:white_banner")
+        );
+        assert!(crate::illager_render::worn_on_head("minecraft:white_banner"));
+    }
+
+    #[test]
+    fn a_friend_sees_a_vindicator_cross_its_arms_and_then_raise_its_axe() {
+        use minecraftoss_entities::illager::IllagerArmPose;
+        let mut host = EntityWorld::default();
+        let (vindicator, tag) = spawn(&mut host, "{id:\"minecraft:vindicator\",Pos:[2.5d,64.0d,0.5d],NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_axe\",count:1}}}");
+        assert_eq!(tracking_range("minecraft:vindicator"), 8);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, vindicator, &tag));
+        assert_eq!(friend.entity_type(vindicator), Some("minecraft:vindicator"));
+        assert_eq!(friend.illagers()[0].arm_pose, IllagerArmPose::Crossed);
+        assert!(!friend.illagers()[0].illager.shows_held_items());
+        {
+            let e = host.illager_mut(vindicator).unwrap();
+            e.illager.aggressive = true;
+            e.arm_pose = e.illager.arm_pose();
+        }
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.illagers()[0];
+        assert_eq!(seen.arm_pose, IllagerArmPose::Attacking);
+        assert!(seen.illager.shows_held_items(), "the axe shows while it attacks");
+    }
+
+    #[test]
+    fn a_friend_sees_an_evoker_cast_and_its_fangs_bite() {
+        use minecraftoss_entities::illager::{IllagerArmPose, IllagerSpell};
+        let mut host = EntityWorld::default();
+        let (evoker, tag) = spawn(&mut host, "{id:\"minecraft:evoker\",Pos:[2.5d,64.0d,0.5d],NoAI:1b}");
+        let (fangs, fangs_tag) = spawn(&mut host, "{id:\"minecraft:evoker_fangs\",Pos:[4.5d,64.0d,0.5d],Warmup:0}");
+        assert_eq!(tracking_range("minecraft:evoker"), 8);
+        assert_eq!(tracking_range("minecraft:evoker_fangs"), 6);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, evoker, &tag));
+        assert!(spawn_tracked(&mut friend, fangs, &fangs_tag));
+        assert!(is_projectile(&friend, fangs));
+        {
+            let e = host.illager_mut(evoker).unwrap();
+            e.illager.spell = IllagerSpell::Wololo;
+            e.arm_pose = e.illager.arm_pose();
+        }
+        for _ in 0..5 {
+            host.evoker_fangs_mut(fangs).unwrap().fangs.tick();
+        }
+        for mob in server_mobs(&host).iter().chain(&projectiles(&host)) {
+            show_on(&mut friend, mob);
+        }
+        let seen = &friend.illagers()[0];
+        assert_eq!(seen.arm_pose, IllagerArmPose::Spellcasting);
+        assert_eq!(seen.illager.spell, IllagerSpell::Wololo);
+        let (host_fangs, friend_fangs) = (&host.evoker_fangs()[0].fangs, &friend.evoker_fangs()[0].fangs);
+        assert!(host_fangs.sent_spike && friend_fangs.sent_spike);
+        assert_eq!(friend_fangs.bite_progress(0.5), host_fangs.bite_progress(0.5));
+        assert!(friend_fangs.bite_progress(0.5) > 0.0);
+    }
+
+    #[test]
+    fn a_friend_sees_a_ravager_and_its_rider_and_watches_it_bite_stagger_and_roar() {
+        let mut host = EntityWorld::default();
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[2.5d,64.0d,0.5d],UUID:[I;1,2,3,9],NoAI:1b,Passengers:[{id:\"minecraft:pillager\",Pos:[2.5d,65.6d,0.5d],UUID:[I;1,2,3,10],NoAI:1b,equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}]}").unwrap();
+        let spawned = crate::server_mobs::spawn_saved_all(&mut host, &tag);
+        assert_eq!(spawned.len(), 2);
+        let (ravager, pillager) = (spawned[0].0, spawned[1].0);
+        assert_eq!(tracking_range("minecraft:ravager"), 10);
+        let originals: HashMap<u64, Tag> = spawned.into_iter().collect();
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let tracked = trackers.update(&host, &originals, &[watcher(4, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(4) {
+            let MobEvent::Add(id, tag) = event else {
+                panic!("{event:?}");
+            };
+            assert!(spawn_tracked(&mut friend, *id, tag), "{tag:?}");
+        }
+        assert_eq!(friend.entity_type(ravager), Some("minecraft:ravager"));
+        assert_eq!(friend.entity_type(pillager), Some("minecraft:pillager"));
+        let ticks = [(7, 0, 0), (0, 25, 0), (0, 0, 12)];
+        for (attack, stunned, roar) in ticks {
+            {
+                let e = host.ravager_mut(ravager).unwrap();
+                e.ravager.attack_tick = attack;
+                e.ravager.stunned_tick = stunned;
+                e.ravager.roar_tick = roar;
+            }
+            for mob in server_mobs(&host) {
+                show_on(&mut friend, &mob);
+            }
+            let seen = &friend.ravagers()[0].ravager;
+            assert_eq!((seen.attack_tick, seen.stunned_tick, seen.roar_tick), (attack, stunned, roar));
+        }
+        let rider = server_mobs(&host).into_iter().find(|m| m.id == pillager).unwrap();
+        assert_eq!(rider.vehicle.map(|(vehicle, _)| vehicle), Some(ravager));
+        let mut saved = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[2.5d,64.0d,0.5d],StunTick:30}").unwrap();
+        let quiet = look(&saved);
+        if let Tag::Compound(map) = &mut saved {
+            map.insert("StunTick".to_owned(), Tag::Int(29));
+        }
+        assert_eq!(look(&saved), quiet, "the clocks never resend the look");
+    }
+
+    #[test]
+    fn a_friend_sees_a_vex_charge() {
+        let mut host = EntityWorld::default();
+        let (vex, tag) = spawn(&mut host, "{id:\"minecraft:vex\",Pos:[2.5d,66.0d,0.5d],NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1}}}");
+        assert_eq!(tracking_range("minecraft:vex"), 8);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, vex, &tag));
+        assert_eq!(friend.entity_type(vex), Some("minecraft:vex"));
+        assert!(!friend.vexes()[0].vex.charging);
+        host.vex_mut(vex).unwrap().vex.charging = true;
+        host.vex_mut(vex).unwrap().vex.body.position.y = 67.5;
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.vexes()[0].vex;
+        assert!(seen.charging, "the charging texture shows");
+        assert_eq!(seen.body.position.y, 67.5);
+        assert_eq!(seen.main_hand().map(|s| s.id.as_str()), Some("minecraft:iron_sword"));
+    }
+
+    #[test]
+    fn a_friend_sees_a_pillager_charge_and_then_hold_its_crossbow() {
+        use minecraftoss_entities::illager::{Illager, IllagerArmPose};
+        let at = DVec3::new(2.5, 64.0, 0.5);
+        let mut host = EntityWorld::default();
+        let id = host.spawn_illager(Illager::pillager(at), true);
+        let mut friend = EntityWorld::default();
+        assert_eq!(friend.spawn_illager(Illager::pillager(at), true), id);
+        assert_eq!(tracking_range("minecraft:pillager"), 8);
+        {
+            let e = host.illager_mut(id).unwrap();
+            e.illager.charging_crossbow = true;
+            e.arm_pose = IllagerArmPose::CrossbowCharge;
+            e.using_item = Some(12);
+        }
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.illagers()[0];
+        assert_eq!((seen.arm_pose, seen.using_item), (IllagerArmPose::CrossbowCharge, Some(12)));
+        assert!(seen.illager.charging_crossbow);
+        {
+            let e = host.illager_mut(id).unwrap();
+            e.illager.charging_crossbow = false;
+            e.arm_pose = IllagerArmPose::CrossbowHold;
+            e.using_item = None;
+            e.illager.aggressive = true;
+        }
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.illagers()[0];
+        assert_eq!((seen.arm_pose, seen.using_item), (IllagerArmPose::CrossbowHold, None));
+        assert!(seen.illager.aggressive && !seen.illager.charging_crossbow);
+    }
+
+    #[test]
+    fn a_friend_sees_a_snow_golem_from_its_look_tag_and_loses_its_pumpkin_to_shears() {
+        let mut host = EntityWorld::default();
+        let (golem, golem_tag) = spawn(&mut host, "{id:\"minecraft:snow_golem\",Pos:[2.5d,64.0d,0.5d],NoAI:1b,Pumpkin:1b}");
+        assert_eq!(tracking_range("minecraft:snow_golem"), 8);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, golem, &golem_tag));
+        assert_eq!(friend.entity_type(golem), Some("minecraft:snow_golem"));
+        assert!(friend.snow_golems()[0].golem.pumpkin);
+        host.shear_snow_golem(golem).expect("sheared");
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(!friend.snow_golems()[0].golem.pumpkin, "the friend sees its bare head");
+        assert_eq!(friend.snow_golems()[0].golem.body.position, DVec3::new(2.5, 64.0, 0.5));
+    }
+
+    #[test]
+    fn a_friend_sees_a_cow_tied_to_the_host_and_then_to_a_fence_knot() {
+        use crate::leash_render::{rope_ends, RopeEnd};
+        use minecraftoss_entities::world::LeashHolder;
+        let mut host = EntityWorld::default();
+        let (cow, cow_tag) = spawn(&mut host, "{id:\"minecraft:cow\",Pos:[2.5d,64.0d,0.5d]}");
+        host.set_player_uuid(0, 0x5eed);
+        host.set_leash(cow, LeashHolder::Player(0));
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(cow, cow_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+        }
+        assert_eq!(rope_ends(&friend), [(cow, RopeEnd::Player(0x5eed))]);
+        host.set_leash(cow, LeashHolder::Knot((4, 64, 0)));
+        let mut looks = Vec::new();
+        for _ in 0..LOOK_TICKS {
+            trackers.tick();
+            looks.extend(trackers.update(&host, &originals, &[watcher(3, 0.5)]).events);
+        }
+        let (_, MobEvent::Look(id, sent)) = &looks[0] else { panic!("{looks:?}") };
+        assert!(spawn_tracked(&mut friend, *id, sent));
+        assert_eq!(rope_ends(&friend), [(cow, RopeEnd::Knot((4, 64, 0)))]);
+        assert_eq!(friend.knots(), [(4, 64, 0)]);
     }
 }

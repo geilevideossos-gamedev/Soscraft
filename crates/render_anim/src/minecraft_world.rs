@@ -60,7 +60,7 @@ pub struct MinecraftWorldView {
     pub armor_glint_texture: Option<Arc<image::RgbaImage>>,
     /// Mob models (cut out, back-face culled, translucent) and entity
     /// shadows, as `mesh::Vertex` bytes and indices.
-    pub entity_meshes: [(Vec<u8>, Vec<u32>); 4],
+    pub entity_meshes: [(Vec<u8>, Vec<u32>); 6],
     /// The black card behind the inventory's character, in blocks.
     pub backdrop: Option<[[f32; 3]; 4]>,
     pub puppet_gear: (Vec<u8>, Vec<u32>),
@@ -1073,7 +1073,7 @@ fn update(
             let _ = minecraft_survival::actions::harvest(friend, level, globals, (mined, Vec::new()), &[], at);
         }
     }
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, .. } = &mut *player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, sleeping: host_sleeping, sleep_timer: host_sleep_timer, .. } = &mut *player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, shots, pending_batch, .. } = &mut *level;
     if let Some(entities) = entities.as_mut() {
         entities.broken_items.extend(harvest.worn_out);
@@ -1118,6 +1118,7 @@ fn update(
     // The mobs: a server tick when due, the blocks it changed, its hits on
     // the player, the mobs' boxes for bullets and their meshes.
     if let Some(entities) = entities.as_mut() {
+        let host_ride = crate::minecraft_riding::ride_input(&authority.0, local.0);
         let viewer = minecraft_survival::entities::PlayerView {
             feet,
             alive,
@@ -1130,7 +1131,14 @@ fn update(
             main_hand: inventory.slots[*selected].as_ref().filter(|_| ui.holding_item).map(|stack| stack.id.clone()),
             offhand: inventory.slots[minecraft_survival::offhand::OFFHAND].as_ref().map(|stack| stack.id.clone()),
             sneaking: ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0,
+            hero: survival.status.effect(minecraftoss_player::survival::EffectKind::HeroOfTheVillage).map(|effect| i32::from(effect.amplifier)),
+            sleeping: host_sleeping.map(|sleeping| sleeping.head),
+            sleep_timer: *host_sleep_timer,
+            forward: host_ride.0,
+            strafe: host_ride.1,
+            jumping: host_ride.2,
             swirl: minecraft_survival::swirls::player_swirl(&survival.status, feet, ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0),
+            omens: survival.omens(),
         };
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
@@ -1245,8 +1253,12 @@ fn update(
             show_chat(&mut ui.chat, inventory_ui, &world.packs, std::slice::from_ref(&told));
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
+        ui.jump_bar = player.jump_bar.filter(|_| alive);
+        let raid_language = ui.chat.language.clone();
+        crate::minecraft_raids::show_raid_bars(&mut ui, &player.raid_bars, &raid_language, dt as f32);
         let minecraft_survival::player::Player { name: player_name, survival, mode: player_mode, inventory, selected, hand, menus, drop_throttle, arsenal, tags, dimension: player_dimension, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
+        ui.effects = if alive { mc_effects(&minecraft_survival::views::effect_views(&survival.status)) } else { Vec::new() };
         ui.fire_frames = fire_frames.clone();
         // The inventory: MW2 guns as items, the HUD's clicks, the hotbar's
         // gun, and what the HUD shows.
@@ -1305,12 +1317,31 @@ fn update(
         for (pos, action) in inventory_ui.take_lectern_actions() {
             entities.lectern(host_id, pos, action, None);
         }
+        let traded = minecraft_survival::menus::merchant(player, entities, feet, true, alive);
+        if traded.opened
+            && let Some(menu) = player.menus.open.as_ref()
+        {
+            inventory_ui.show_menu(&mut ui, menu);
+        }
+        if traded.closed {
+            ui.inventory_open = false;
+        }
+        let riding_key = std::mem::take(&mut ui.inventory_key_opened) && player.riding.is_some();
+        let mounted = minecraft_survival::menus::mount(player, entities, eye, riding_key, alive);
+        if mounted.opened
+            && let Some(menu) = player.menus.open.as_ref()
+        {
+            inventory_ui.show_menu(&mut ui, menu);
+        }
+        if mounted.closed {
+            ui.inventory_open = false;
+        }
         for event in std::mem::take(&mut ui.ui_sounds) {
             if let Some(sounds) = sounds.as_mut() {
                 sounds.play_local(&world.packs, event, None, 1.0, 1.0);
             }
         }
-        let thrown: Vec<_> = creative_thrown.into_iter().chain(clicked.thrown).collect();
+        let thrown: Vec<_> = creative_thrown.into_iter().chain(clicked.thrown).chain(traded.thrown).chain(mounted.thrown).collect();
         if !ui.inventory_open
             && minecraft_survival::menus::open_station(player, containers, terrain, globals, &entities.recipes, open_table, open_block.take(), open_bench.take())
             && let Some(menu) = player.menus.open.as_ref()
@@ -1507,6 +1538,8 @@ fn update(
             raw(&meshes.culled),
             raw(&meshes.translucent),
             raw(&meshes.shadows),
+            raw(&meshes.glow),
+            raw(&meshes.glow_cover),
         ];
         let mesh = meshes.items;
         let (bytes, indices) = &mut view.particles;
@@ -2153,6 +2186,18 @@ fn ui_game_mode(mode: minecraftoss_player::GameMode) -> frame::McGameMode {
     }
 }
 
+pub(crate) fn mc_effects(effects: &[minecraft_net::messages::EffectView]) -> Vec<frame::minecraft_ui::McEffect> {
+    effects
+        .iter()
+        .map(|effect| frame::minecraft_ui::McEffect {
+            id: effect.kind.clone(),
+            amplifier: effect.amplifier,
+            duration: if effect.duration == i32::MAX { -1 } else { effect.duration },
+            ambient: effect.ambient,
+        })
+        .collect()
+}
+
 pub(crate) fn mc_vitals(vitals: minecraft_survival::survival::Vitals) -> frame::McVitals {
     frame::McVitals {
         air: vitals.air,
@@ -2399,6 +2444,9 @@ fn leave_level(
 ) {
     ui.inventory_open = false;
     if let Some(entities) = level.entities.as_mut() {
+        if let Some(feet) = player.place.map(|place| place.feet) {
+            minecraft_survival::menus::close_merchant_now(player, entities, feet);
+        }
         let experience = entities.leave(u64::from(player.id.0), &mut player.inventory, player.selected, player.place.map(|place| place.feet));
         let _ = player.survival.gain_experience(experience);
         let roll = entities.random_float();

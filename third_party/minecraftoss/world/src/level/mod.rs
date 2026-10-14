@@ -17,6 +17,7 @@ pub mod entity;
 pub mod explosion;
 pub mod falling;
 pub mod fire;
+pub mod golem_build;
 pub mod grow;
 pub mod ice;
 pub mod lectern;
@@ -201,6 +202,7 @@ pub struct Level<'a> {
     pub frame_outputs: HashMap<BlockPos, Vec<(Direction, i32)>>,
     pub chest_openers: HashMap<BlockPos, i32>,
     pub level_events: Vec<(i32, BlockPos, i32)>,
+    pub bell_rings: Vec<(BlockPos, Direction)>,
     /// Entity-ticking chunks in vanilla's iteration order, when known.
     pub ticking_chunks: Option<Vec<ChunkPos>>,
     /// Chunk light solved for readers without `&mut` (`World::light`).
@@ -294,6 +296,7 @@ impl<'a> Level<'a> {
             frame_outputs: HashMap::new(),
             chest_openers: HashMap::new(),
             level_events: Vec::new(),
+            bell_rings: Vec::new(),
             ticking_chunks: None,
             random_counts: Default::default(),
             lazy_light: std::cell::RefCell::new(Default::default()),
@@ -696,6 +699,8 @@ impl<'a> Level<'a> {
             self.schedule_block_tick_priority(pos, block, 1, redstone::priority::NORMAL);
         } else if self.is_a(state, "FrostedIceBlock") {
             self.frosted_ice_on_place(state, pos);
+        } else if golem_build::is_pumpkin(self.name(state)) && self.block_id(old) != self.block_id(state) {
+            self.carved_pumpkin_on_place(pos);
         }
     }
 

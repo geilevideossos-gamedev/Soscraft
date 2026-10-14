@@ -157,6 +157,7 @@ impl WitchEntity {
         let ai = &mut self.ai;
         let body = &mut self.witch.body;
         ai.state.witch.drinking = drinking;
+        ai.state.witch.heal_cooldown = self.witch.heal_cooldown;
         ai.state.random = std::mem::take(&mut self.random);
         // `Raider.updateNoActionTime`: the idle clock runs double, light or
         // dark.
@@ -172,6 +173,7 @@ impl WitchEntity {
         ai.state.no_action_time = self.no_action_time;
         let full = self.tick_count <= 1 || (self.tick_count + self.id as i32) % 2 == 0;
         ai.tick_goals(world, full);
+        self.witch.heal_cooldown = ai.state.witch.heal_cooldown;
         let thrown = ai.state.witch.throw.take();
         if let Some((_, pitch)) = thrown {
             self.voices.push((Voice::Event("entity.witch.throw", 1.0, pitch), position));
@@ -298,8 +300,13 @@ impl EntityWorld {
         let (game_time, difficulty, bright_outside) = (self.game_time, self.difficulty, self.bright_outside);
         let vitals = self.player_vitals.clone();
         let mobs = self.mob_candidates();
+        let raid = self.witches.iter().find(|e| e.id == id).and_then(|e| self.raid_view(e.witch.raider.raid_id));
+        let raiders = if raid.is_some_and(|raid| raid.active) { self.raiders().into_iter().filter(|r| r.id != id).map(|r| (r.id, r.health, r.velocity)).collect() } else { Vec::new() };
         let Some(entity) = self.witches.iter_mut().find(|e| e.id == id) else { return };
         entity.ai.state.mobs = mobs;
+        entity.ai.state.illager.raid = raid;
+        entity.ai.state.illager.has_raid = raid.is_some_and(|raid| raid.active);
+        entity.ai.state.witch.raiders = raiders;
         entity.previous_position = entity.witch.body.position;
         entity.tick_count += 1;
         base_tick_fluid(&mut entity.witch.body, &*world, entity.tick_count == 1, &mut entity.random, &mut entity.voices, WITCH_SOUNDS);
@@ -341,7 +348,20 @@ impl EntityWorld {
             let yaw = entity.witch.yaw;
             let _ = super::living::dying_travel(&mut entity.witch.body, &*world, yaw, entity.tick_count, &mut entity.random, &mut entity.voices, WITCH_SOUNDS, Some(true));
         } else if !entity.no_ai {
+            entity.ai.state.pois = raid.map(|_| std::mem::take(&mut self.pois));
             thrown = entity.tick_ai(&*world, players, &vitals, game_time, difficulty, bright_outside);
+            if let Some(pois) = entity.ai.state.pois.take() {
+                self.pois = pois;
+            }
+            if std::mem::take(&mut entity.ai.state.illager.reset_idle) {
+                entity.no_action_time = 0;
+            }
+            entity.witch.raider.celebrating = entity.ai.state.illager.celebrating;
+            if std::mem::take(&mut entity.ai.state.illager.celebrate_sound) {
+                let pitch = adult_pitch(&mut entity.random);
+                let position = entity.position();
+                entity.voices.push((Voice::Event("entity.witch.celebrate", 1.0, pitch), position));
+            }
         } else {
             entity.witch.body.trim_small_velocity();
             monster_idle_without_ai(&*world, players, entity.witch.body.position, witch::EYE_HEIGHT, &mut entity.no_action_time);
@@ -489,6 +509,24 @@ impl EntityWorld {
         if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
+        if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
+        if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
+        if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
+        if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
+        if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
+        if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
         if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
@@ -532,6 +570,12 @@ impl EntityWorld {
             .or_else(|| self.villagers.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.iron_golems.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.wolves.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.felines.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.wandering_traders.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.snow_golems.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.illagers.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.vexes.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.ravagers.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.cows.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.pigs.iter().find(|e| e.id == id).map(|e| &e.effects))
@@ -603,6 +647,18 @@ impl EntityWorld {
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
             let max = e.wolf.max_health();
             (&mut e.wolf.health, max)
+        } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
+            (&mut e.feline.health, crate::feline::MAX_HEALTH)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            (&mut e.trader.health, crate::wandering_trader::MAX_HEALTH)
+        } else if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == id) {
+            (&mut e.golem.health, crate::snow_golem::MAX_HEALTH)
+        } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
+            (&mut e.illager.health, crate::illager::MAX_HEALTH)
+        } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
+            (&mut e.vex.health, crate::vex::MAX_HEALTH)
+        } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
+            (&mut e.ravager.health, crate::ravager::MAX_HEALTH)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             (&mut e.cow.health, 10.0)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
@@ -628,7 +684,7 @@ impl EntityWorld {
 
     /// `hurtServer` with `indirect_magic` (from a potion thrown by `owner`)
     /// on a mob, by ID: past armor (`#bypasses_armor`); animals panic.
-    fn hurt_mob_by_magic(&mut self, id: u64, amount: f32, owner: Option<u64>) -> Option<DamageResult> {
+    pub(super) fn hurt_mob_by_magic(&mut self, id: u64, amount: f32, owner: Option<u64>) -> Option<DamageResult> {
         let source = DamageSourceKind::Magic;
         let result = if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, true, owner == Some(id))
@@ -658,6 +714,42 @@ impl EntityWorld {
             let kind = if owner.is_some() { "minecraft:indirect_magic" } else { "minecraft:magic" };
             let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
             e.hurt_from(amount, kind, by, self.game_time)
+        } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
+            let kind = if owner.is_some() { "minecraft:indirect_magic" } else { "minecraft:magic" };
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            e.hurt_from(amount, kind, by, self.game_time)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            let kind = if owner.is_some() { "minecraft:indirect_magic" } else { "minecraft:magic" };
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            e.hurt_from(amount, kind, by, self.game_time)
+        } else if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == id) {
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            let hit = e.hurt(amount);
+            if let (true, Some(by)) = (hit.applied, by) {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            hit
+        } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            let hit = e.hurt(amount);
+            if let (true, Some(by)) = (hit.applied, by) {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            hit
+        } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            let hit = e.hurt(amount);
+            if let (true, Some(by)) = (hit.applied, by) {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            hit
+        } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            let hit = e.hurt(amount);
+            if let (true, Some(by)) = (hit.applied, by) {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            hit
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, source)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {

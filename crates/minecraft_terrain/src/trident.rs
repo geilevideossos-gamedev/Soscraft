@@ -139,6 +139,7 @@ pub fn riptide_push(yaw: f32, pitch: f32, strength: f32) -> DVec3 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pickup {
+    Disallowed,
     Allowed,
     CreativeOnly,
 }
@@ -184,6 +185,7 @@ pub struct ThrownTrident {
     pub id: i32,
     pub owner: u64,
     pub owner_uuid: Option<u128>,
+    pub mob_owner: Option<u64>,
     pub stack: ItemStack,
     pub pickup: Pickup,
     pub loyalty: i32,
@@ -273,6 +275,7 @@ impl ThrownTrident {
             id: 0,
             owner: throw.owner,
             owner_uuid: None,
+            mob_owner: None,
             loyalty: loyalty(&stack),
             foil: crate::glint::has_glint(&stack),
             stack,
@@ -300,6 +303,49 @@ impl ThrownTrident {
             alive: true,
             last_state: None,
             random: LegacyRandom::new(random.next_long()),
+        }
+    }
+
+    pub fn thrown_by_mob(
+        owner: u64,
+        owner_uuid: u128,
+        item: &str,
+        position: DVec3,
+        velocity: DVec3,
+    ) -> Self {
+        let mut stack = ItemStack::new(item, 1);
+        stack.max = 1;
+        let (yaw, pitch) = heading(velocity);
+        Self {
+            id: 0,
+            owner: UNKNOWN_OWNER,
+            owner_uuid: Some(owner_uuid),
+            mob_owner: Some(owner),
+            loyalty: 0,
+            foil: false,
+            stack,
+            pickup: Pickup::Disallowed,
+            position,
+            previous: position,
+            velocity,
+            yaw,
+            pitch,
+            previous_yaw: yaw,
+            previous_pitch: pitch,
+            in_ground: false,
+            in_ground_time: 0,
+            life: 0,
+            shake: 0,
+            dealt_damage: false,
+            no_physics: false,
+            left_owner: false,
+            returning: 0,
+            tick_count: 0,
+            alive: true,
+            last_state: None,
+            random: LegacyRandom::new(
+                position.x.to_bits() ^ velocity.z.to_bits().rotate_left(13) ^ owner,
+            ),
         }
     }
 
@@ -552,6 +598,7 @@ impl ThrownTrident {
             return None;
         }
         match self.pickup {
+            Pickup::Disallowed => None,
             Pickup::Allowed => Some(Some(self.stack.clone())),
             Pickup::CreativeOnly => Some(None),
         }
@@ -600,6 +647,7 @@ impl ThrownTrident {
         map.insert(
             "pickup".to_owned(),
             Tag::Byte(match self.pickup {
+                Pickup::Disallowed => 0,
                 Pickup::Allowed => 1,
                 Pickup::CreativeOnly => 2,
             }),
@@ -688,13 +736,14 @@ impl ThrownTrident {
             id: 0,
             owner: UNKNOWN_OWNER,
             owner_uuid,
+            mob_owner: None,
             loyalty: loyalty(&stack),
             foil: crate::glint::has_glint(&stack),
             stack,
-            pickup: if number("pickup") == 2 {
-                Pickup::CreativeOnly
-            } else {
-                Pickup::Allowed
+            pickup: match number("pickup") {
+                0 => Pickup::Disallowed,
+                2 => Pickup::CreativeOnly,
+                _ => Pickup::Allowed,
             },
             position,
             previous: position,
@@ -1210,6 +1259,34 @@ mod tests {
         assert!(thrown.touched_by(&near) && !thrown.touched_by(&far));
         thrown.pickup = Pickup::CreativeOnly;
         assert_eq!(thrown.taken_by(4, true), Some(None));
+    }
+
+    #[test]
+    fn a_trident_a_drowned_threw_flies_like_a_thrown_one_and_nobody_picks_it_up() {
+        let world = floor();
+        let velocity = DVec3::new(0.0, 0.2, 1.6);
+        let mut thrown =
+            ThrownTrident::thrown_by_mob(9, 77, ITEM, DVec3::new(0.5, 62.0, 0.5), velocity);
+        assert_eq!(
+            (thrown.mob_owner, thrown.owner, thrown.pickup, thrown.loyalty),
+            (Some(9), UNKNOWN_OWNER, Pickup::Disallowed, 0)
+        );
+        assert!(thrown.yaw.abs() < 1.0e-3, "{}", thrown.yaw);
+        while !thrown.in_ground {
+            thrown.tick(&world, &[], None);
+        }
+        for _ in 0..10 {
+            thrown.tick(&world, &[], None);
+        }
+        assert_eq!(thrown.taken_by(4, false), None);
+        let tag = thrown.to_tag(thrown.owner_uuid);
+        assert_eq!(tag.get("pickup"), Some(&Tag::Byte(0)));
+        let back = ThrownTrident::from_tag(&tag).expect("a trident");
+        assert_eq!((back.pickup, back.owner_uuid), (Pickup::Disallowed, Some(77)));
+        for _ in 0..DESPAWN_TICKS {
+            thrown.tick(&world, &[], None);
+        }
+        assert!(!thrown.alive, "an unpickable trident despawns");
     }
 
     #[test]

@@ -34,6 +34,7 @@ const SWIM_EXHAUSTION: f32 = 0.01;
 const SPRINT_FOOD: u8 = 6;
 const SAFE_FALL: f64 = 3.0;
 const MAX_STRIDE: f64 = 2.0;
+const BAD_OMEN_SOUND: &str = "minecraft:event.mob_effect.bad_omen";
 pub(crate) const DAMAGE_BLINK: u64 = 20;
 pub(crate) const SETTLE_DISPLAY: u64 = 20;
 
@@ -165,6 +166,8 @@ pub struct Survival {
     freeze_immune: bool,
     melted: Vec<(i32, i32, i32)>,
     totem_grace_until: Option<u64>,
+    pub raid_omen_position: Option<(i32, i32, i32)>,
+    pub raid_omens_fired: Vec<(i32, (i32, i32, i32))>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -188,6 +191,7 @@ pub enum Bite {
         sound: String,
         overflow: Option<ItemStack>,
         fed: bool,
+        heard: Vec<&'static str>,
     },
 }
 
@@ -202,6 +206,39 @@ fn scale(max_health: i32) -> f32 {
 }
 
 impl Survival {
+    pub fn fire_raid_omen(&mut self) {
+        let Some(omen) = self.status.effect(EffectKind::RaidOmen).filter(|omen| omen.duration == 1) else {
+            return;
+        };
+        if let Some(at) = self.raid_omen_position.take() {
+            self.raid_omens_fired.push((i32::from(omen.amplifier), at));
+        }
+    }
+
+    pub fn omens(&mut self) -> minecraft_terrain::server::PlayerOmens {
+        minecraft_terrain::server::PlayerOmens {
+            bad_omen: self.status.effect(EffectKind::BadOmen).map(|omen| i32::from(omen.amplifier)),
+            raid_omens: std::mem::take(&mut self.raid_omens_fired),
+        }
+    }
+
+    pub fn turn_bad_omen(&mut self, amplifier: i32, at: (i32, i32, i32)) -> bool {
+        if self.status.effect(EffectKind::BadOmen).is_none() {
+            return false;
+        }
+        self.status.remove_effect(EffectKind::BadOmen);
+        let fresh = self.status.effect(EffectKind::RaidOmen).is_none();
+        let amplifier = amplifier.clamp(0, i32::from(u8::MAX)) as u8;
+        self.status.add_effect(EffectKind::RaidOmen, minecraft_terrain::raids::RAID_OMEN_TICKS, amplifier);
+        self.raid_omen_position = Some(at);
+        fresh
+    }
+
+    pub fn become_hero(&mut self, amplifier: i32) {
+        let amplifier = amplifier.clamp(0, i32::from(u8::MAX)) as u8;
+        self.status.add_effect(EffectKind::HeroOfTheVillage, minecraft_terrain::raids::HERO_TICKS, amplifier);
+    }
+
     pub fn respawn(&mut self) {
         *self = Self {
             blocked_sprint: self.blocked_sprint,
@@ -347,6 +384,7 @@ impl Survival {
         let withering = self.status.effect(EffectKind::Wither).is_some_and(|effect| {
             effect.duration % (40_u32 >> effect.amplifier.min(31)).max(1) == 0
         });
+        self.fire_raid_omen();
         self.status.tick_effects();
         if self.invulnerable {
             self.status.health = self.status.health.max(before);
@@ -725,6 +763,7 @@ impl Survival {
             HURT_EXHAUSTION
         };
         let protection = self.protection.against(cause.damage_type());
+        let armor = if cause.bypasses_armor() { Armor::default() } else { armor };
         let landed = self.status.hurt_protected(damage, armor, protection, exhaustion).is_some();
         if landed {
             self.combat.hurt_by(self.tick, cause);
@@ -951,11 +990,17 @@ impl Survival {
                 if id == minecraft_terrain::bottle::MILK_BUCKET {
                     self.clear_effects();
                 }
+                let heard = if id == minecraft_terrain::bottle::OMINOUS_BOTTLE {
+                    self.drink_ominous_bottle(components.as_ref())
+                } else {
+                    Vec::new()
+                };
                 let fed = minecraftoss_player::food::catalog().contains_key(&id);
                 Bite::Done {
                     sound,
                     overflow,
                     fed,
+                    heard,
                 }
             }
             FoodUseTick::Cancelled => {
@@ -985,6 +1030,21 @@ impl Survival {
         self.status.add_effect(EffectKind::FireResistance, 800, 0);
         self.totem_grace_until = Some(self.tick + TOTEM_GRACE_TICKS);
         true
+    }
+
+    pub fn drink_ominous_bottle(&mut self, components: Option<&serde_json::Value>) -> Vec<&'static str> {
+        let fresh = self.status.effect(EffectKind::BadOmen).is_none();
+        self.status.add_effect(
+            EffectKind::BadOmen,
+            minecraft_terrain::bottle::BAD_OMEN_TICKS,
+            minecraft_terrain::bottle::ominous_amplifier(components),
+        );
+        let mut heard = Vec::new();
+        if fresh && self.status.effect(EffectKind::BadOmen).is_some() {
+            heard.push(BAD_OMEN_SOUND);
+        }
+        heard.push(minecraft_terrain::bottle::OMINOUS_DISPOSE_SOUND);
+        heard
     }
 
     pub fn totem_grace(&self) -> bool {
@@ -1260,6 +1320,37 @@ mod tests {
     }
 
     #[test]
+    fn bad_omen_turns_into_a_raid_omen_that_fires_once_where_it_was_given() {
+        let mut survival = fresh();
+        assert!(!survival.turn_bad_omen(2, (1, 64, 2)), "no bad omen to turn");
+        survival.status.add_effect(EffectKind::BadOmen, 120000, 2);
+        assert_eq!(survival.omens().bad_omen, Some(2));
+        assert!(survival.turn_bad_omen(2, (1, 64, 2)), "a new raid omen sounds");
+        assert!(survival.status.effect(EffectKind::BadOmen).is_none());
+        assert_eq!(survival.status.effect(EffectKind::RaidOmen).map(|e| (e.duration, e.amplifier)), Some((600, 2)));
+        assert_eq!(survival.raid_omen_position, Some((1, 64, 2)));
+        assert!(!survival.turn_bad_omen(2, (1, 64, 2)), "the omen turns only once");
+        let motion = Motion { on_ground: true, ..Motion::default() };
+        for _ in 0..599 {
+            survival.tick(&motion);
+        }
+        assert!(survival.omens().raid_omens.is_empty(), "not before its last tick");
+        survival.tick(&motion);
+        assert!(survival.status.effect(EffectKind::RaidOmen).is_none());
+        let fired = survival.omens();
+        assert_eq!((fired.bad_omen, fired.raid_omens), (None, vec![(2, (1, 64, 2))]));
+        assert!(survival.omens().raid_omens.is_empty(), "it is handed over once");
+        assert_eq!(survival.raid_omen_position, None);
+        survival.status.add_effect(EffectKind::RaidOmen, 5, 0);
+        for _ in 0..5 {
+            survival.tick(&motion);
+        }
+        assert!(survival.omens().raid_omens.is_empty(), "a raid omen from /effect has no place to raid");
+        survival.become_hero(3);
+        assert_eq!(survival.status.effect(EffectKind::HeroOfTheVillage).map(|e| (e.duration, e.amplifier)), Some((48000, 3)));
+    }
+
+    #[test]
     fn a_wither_skeleton_s_blow_withers_and_wither_hurts_every_two_seconds_to_the_end() {
         let mut survival = fresh();
         let blow = DamageCause::mob(
@@ -1286,6 +1377,19 @@ mod tests {
             fast.tick_effects();
         }
         assert_eq!(fast.health, 18.0, "every 20 ticks at level II");
+    }
+
+    #[test]
+    fn magic_from_evoker_fangs_goes_past_armor() {
+        let fangs = DamageCause::mob(crate::death::MobAttack::Magic, Some(4), Some("minecraft:evoker"));
+        let armor = Armor { value: Some((20.0, 8.0)) };
+        let mut bitten = fresh();
+        assert!(bitten.hurt(6.0, armor, None, fangs));
+        assert_eq!(bitten.status.health, 14.0);
+        let blow = DamageCause::mob(crate::death::MobAttack::Melee, Some(4), Some("minecraft:vindicator"));
+        let mut struck = fresh();
+        assert!(struck.hurt(6.0, armor, None, blow));
+        assert!(struck.status.health > 14.0, "{}", struck.status.health);
     }
 
     #[test]
@@ -2078,13 +2182,60 @@ mod tests {
         }
         assert!(survival.status.effect(EffectKind::Poison).is_some());
         let done = survival.chew(&mut inventory, 4, || 0.5);
-        assert_eq!(done, Bite::Done { sound: "minecraft:entity.generic.drink".to_owned(), overflow: None, fed: false });
+        assert_eq!(done, Bite::Done { sound: "minecraft:entity.generic.drink".to_owned(), overflow: None, fed: false, heard: Vec::new() });
         assert_eq!(survival.status.effect(EffectKind::Poison), None);
         assert_eq!(survival.status.effect(EffectKind::Haste), None);
         assert_eq!(survival.status.effect(EffectKind::MiningFatigue), None);
         assert_eq!(survival.status.effect(EffectKind::ConduitPower), None);
         assert_eq!(survival.status.absorption, 0.0);
         assert_eq!(inventory.slots[40].as_ref().map(|s| s.id.as_str()), Some("minecraft:bucket"));
+    }
+
+    #[test]
+    fn an_ominous_bottle_is_drunk_away_and_gives_bad_omen_at_its_amplifier() {
+        use minecraft_terrain::bottle::{OMINOUS_BOTTLE, OMINOUS_DISPOSE_SOUND, drink_ominous};
+        let bottle = |amplifier: Option<i64>| {
+            let mut stack = ItemStack::new(OMINOUS_BOTTLE, 2);
+            stack.max = 64;
+            stack.components = amplifier.map(|a| serde_json::json!({"minecraft:ominous_bottle_amplifier": a}));
+            stack
+        };
+        let drink = |survival: &mut Survival, inventory: &mut Inventory| {
+            let stack = inventory.slots[4].clone().expect("a bottle");
+            survival.start_using(drink_ominous(4, &stack));
+            let using = survival.eating().expect("drinking");
+            assert!(using.info.animation.eq_ignore_ascii_case("drink"));
+            assert_eq!(using.info.consume_ticks, 32, "Consumables.defaultDrink: 1.6 seconds");
+            for _ in 1..32 {
+                assert!(!matches!(survival.chew(inventory, 4, || 0.5), Bite::Done { .. }));
+            }
+            survival.chew(inventory, 4, || 0.5)
+        };
+        let mut survival = fresh();
+        let mut inventory = Inventory::default();
+        inventory.slots[4] = Some(bottle(Some(3)));
+        let done = drink(&mut survival, &mut inventory);
+        assert_eq!(
+            done,
+            Bite::Done {
+                sound: "minecraft:entity.generic.drink".to_owned(),
+                overflow: None,
+                fed: false,
+                heard: vec![BAD_OMEN_SOUND, OMINOUS_DISPOSE_SOUND]
+            }
+        );
+        assert_eq!(survival.status.effect(EffectKind::BadOmen).map(|e| (e.duration, e.amplifier)), Some((120000, 3)));
+        assert_eq!(inventory.slots[4].as_ref().map(|s| (s.id.as_str(), s.count)), Some((OMINOUS_BOTTLE, 1)), "one bottle used, no glass bottle back");
+        let Bite::Done { heard, .. } = drink(&mut survival, &mut inventory) else { panic!("drunk") };
+        assert_eq!(heard, vec![OMINOUS_DISPOSE_SOUND], "an omen already there plays no omen sound");
+        assert_eq!(inventory.slots[4], None);
+        let mut plain = fresh();
+        inventory.slots[4] = Some(bottle(None));
+        drink(&mut plain, &mut inventory);
+        assert_eq!(plain.status.effect(EffectKind::BadOmen).map(|e| (e.duration, e.amplifier)), Some((120000, 0)));
+        inventory.slots[4] = Some(bottle(Some(9)));
+        drink(&mut plain, &mut inventory);
+        assert_eq!(plain.status.effect(EffectKind::BadOmen).map(|e| e.amplifier), Some(4), "the component holds 0 to 4");
     }
 
     #[test]

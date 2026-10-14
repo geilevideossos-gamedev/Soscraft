@@ -78,6 +78,8 @@ pub(crate) struct ScreenInput {
     scroll: f32,
     scrolling: bool,
     choice_focus: usize,
+    trade_scroll: usize,
+    trade_row: Option<usize>,
     cyclers: [Cycler; 3],
     cycle_clock: f64,
     highlight: crate::minecraft_hotbar::Highlight,
@@ -253,6 +255,7 @@ pub(crate) fn update_minecraft_hud(
         ui.inventory_open = true;
     }
     if ui.inventory_open && !open_before {
+        ui.inventory_key_opened = true;
         ui.screen = McScreen::Inventory;
         if ui.game_mode == McGameMode::Creative
             && let Some(screen) = crate::minecraft_creative::screen_of(&ui.creative)
@@ -428,6 +431,8 @@ pub(crate) fn update_minecraft_hud(
             input.scroll = 0.0;
             input.scrolling = false;
             input.choice_focus = 0;
+            input.trade_scroll = 0;
+            input.trade_row = None;
             input.cyclers = Default::default();
         }
         let mouse_hovered = rel_mouse.and_then(|rel| layout.slot_at(rel)).filter(|_| !covered);
@@ -600,7 +605,7 @@ pub(crate) fn update_minecraft_hud(
             McScreen::Enchanting => enchant_row_at(rel),
             _ => None,
         });
-        let focused_choice = pad_pointer.then_some(input.choice_focus).filter(|_| matches!(ui.screen, McScreen::Enchanting | McScreen::Stonecutter));
+        let focused_choice = pad_pointer.then_some(input.choice_focus).filter(|_| matches!(ui.screen, McScreen::Enchanting | McScreen::Stonecutter | McScreen::Merchant));
         let level = ui.vitals.as_ref().map_or(0, |v| v.experience_level);
         let cursor_on = ((now - input.name_since) * 1000.0 / 300.0) as i64 % 2 == 0 && typing;
         let screen_title = title(&ui, &gui);
@@ -627,6 +632,8 @@ pub(crate) fn update_minecraft_hud(
                 cyclers: &input.cyclers,
                 partial: (input.cycle_clock / TICK) as f32,
                 level,
+                trade_scroll: input.trade_scroll,
+                trade_row: if pad_pointer { focused_choice.and_then(|index| index.checked_sub(input.trade_scroll)).filter(|&row| row < crate::minecraft_merchant::OFFER_BUTTONS) } else { input.trade_row },
             },
         };
         let puppet_box = match ui.screen {
@@ -673,6 +680,11 @@ pub(crate) fn update_minecraft_hud(
             .and_then(|index| ui.choices.get(index))
             .and_then(|choice| choice.icon.as_ref())
             .map(|stack| (tooltip_lines(stack, &ui, weapons, strings, &mut gaps), true));
+        let offer_tooltip = pointer
+            .filter(|_| !pad_pointer && ui.screen == McScreen::Merchant)
+            .and_then(|_| crate::minecraft_merchant::hovered_stack(&ui, [pointer_gui[0] - origin[0], pointer_gui[1] - origin[1]], input.trade_scroll))
+            .map(|stack| (tooltip_lines(stack, &ui, weapons, strings, &mut gaps), true));
+        let recipe_tooltip = recipe_tooltip.or(offer_tooltip);
         let creative_tooltip = || {
             let rel = rel_mouse.filter(|_| matches!(ui.screen, McScreen::Creative(_)))?;
             crate::minecraft_creative::tooltip(&painter, &ui, rel, hovered).map(|lines| (lines, false))
@@ -747,6 +759,44 @@ fn station_input(
                 let step = i32::from(next) - i32::from(previous);
                 input.choice_focus = (input.choice_focus as i32 + step).rem_euclid(choices.min(3) as i32) as usize;
                 if confirm && ui.choices.get(input.choice_focus).is_some_and(|choice| choice.enabled) {
+                    ui.clicks.push(McClick::Choose(input.choice_focus));
+                }
+            }
+        }
+        McScreen::Merchant => {
+            use crate::minecraft_merchant as trades;
+            let count = ui.merchant.as_ref().map_or(0, |merchant| merchant.offers.len());
+            input.trade_scroll = input.trade_scroll.min(trades::max_scroll(count));
+            if let Some(rel) = mouse.filter(|_| pressed) {
+                if let Some(index) = trades::offer_at(rel, input.trade_scroll, count).filter(|_| buttons.pressed[0]) {
+                    ui.clicks.push(McClick::Choose(index));
+                    input.choice_focus = index;
+                    input.trade_row = Some(index - input.trade_scroll);
+                    consumed[0] = true;
+                } else if trades::can_scroll(count) && trades::over_scroller(rel) {
+                    input.scrolling = true;
+                }
+            }
+            if buttons.released.contains(&true) || !buttons.held.contains(&true) {
+                input.scrolling = false;
+            }
+            if input.scrolling
+                && trades::can_scroll(count)
+                && let Some(rel) = mouse
+            {
+                input.trade_scroll = trades::drag_scroll(rel[1], count);
+            }
+            if wheel != 0 && trades::can_scroll(count) {
+                input.trade_scroll = trades::wheel_scroll(input.trade_scroll, wheel, count);
+            }
+            if count > 0 {
+                let step = i32::from(next) - i32::from(previous);
+                input.choice_focus = (input.choice_focus as i32 + step).rem_euclid(count as i32) as usize;
+                if step != 0 {
+                    let rows = trades::OFFER_BUTTONS;
+                    input.trade_scroll = input.trade_scroll.clamp((input.choice_focus + 1).saturating_sub(rows), input.choice_focus).min(trades::max_scroll(count));
+                }
+                if confirm {
                     ui.clicks.push(McClick::Choose(input.choice_focus));
                 }
             }

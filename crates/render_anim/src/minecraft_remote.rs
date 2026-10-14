@@ -758,6 +758,7 @@ fn follow_boss_bars(
         });
         shown.name = name(&bar.name);
         (shown.world_fog, shown.music) = (fog, music);
+        (shown.color, shown.overlay) = (bar.color.sprite_name(), bar.overlay.sprite_name());
         shown.set_progress(bar.progress);
         shown.advance(seconds);
     }
@@ -873,6 +874,16 @@ fn track_bodies(friend: &mut Friend, presented: &net::PresentedSnapshot) {
                 .view
                 .track_body(u128::from(client), feet, width, height);
         }
+    }
+    for (&client, (_, uuid)) in &remote.players {
+        let Some((feet, height)) = body_of(presented, client, level.origin) else {
+            continue;
+        };
+        let yaw = presented
+            .player(sim::ClientId(client))
+            .map_or(0.0, |ps| crate::minecraft_world::minecraft_yaw(ps.viewangles[1]));
+        let key = minecraft_survival::level::opener_key(uuid);
+        level.view.hold_rope(key, feet, yaw, height);
     }
 }
 
@@ -1095,6 +1106,7 @@ fn show_player(
     }
     let Some(ps) = alive else {
         ui.vitals = None;
+        ui.effects.clear();
         ui.weapon_request = None;
         ui.holding_item = false;
         ui.empty_hand = false;
@@ -1112,6 +1124,8 @@ fn show_player(
     let eye_in_lava = sim::voxel::eye_in_lava(ps.origin, ps.view_height_current);
     let vitals = hud.vitals(view, dt, eye_in_water, eye_in_lava);
     ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));
+    ui.effects = crate::minecraft_world::mc_effects(&hud.effects(view));
+    ui.jump_bar = view.jump_bar;
     ui.fire_frames = fire_frames.clone();
     let mut guns = [None; minecraft_survival::guns::HOTBAR];
     for (gun, stack) in guns.iter_mut().zip(&inventory.slots) {
@@ -1265,6 +1279,9 @@ fn show_menus(
         ui.inventory_open = true;
         ui.screen_opened = true;
         *screen_open = true;
+    }
+    if std::mem::take(&mut ui.inventory_key_opened) && menu.is_none() {
+        out.push(ToServer::OpenMountInventory);
     }
     let (id, state) = menu
         .as_ref()
@@ -1670,6 +1687,8 @@ fn present_entities(
         raw(&meshes.culled),
         raw(&meshes.translucent),
         raw(&meshes.shadows),
+        raw(&meshes.glow),
+        raw(&meshes.glow_cover),
     ];
     let (bytes, indices) = &mut view.particles;
     let vertex = std::mem::size_of::<minecraft_terrain::mesh::SectionVertex>();

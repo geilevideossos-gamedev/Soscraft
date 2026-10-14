@@ -238,9 +238,13 @@ enum Rules {
     Bat,
     /// `GlowSquid.checkGlowSquidSpawnRules` (deep, dark water).
     GlowSquid,
+    Drowned,
     Strider,
     Hoglin,
     Piglin,
+    Ocelot,
+    Unrestricted,
+    Patrolling,
     /// Rules not ported yet: the type is not spawned.
     Other,
 }
@@ -248,7 +252,7 @@ enum Rules {
 impl Rules {
     /// Creatures finalize as animals (`finalize_spawn`), not as monsters.
     fn creature(self) -> bool {
-        matches!(self, Self::Animal | Self::SpawnableOn(_))
+        matches!(self, Self::Animal | Self::SpawnableOn(_) | Self::Ocelot | Self::Unrestricted)
     }
 }
 
@@ -288,6 +292,8 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "mooshroom" => (0.9, 1.4, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "strider" => (0.9, 1.7, Placement::InLava, MotionBlockingNoLeaves, true, false),
         "axolotl" => (0.75, 0.42, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "ocelot" => (0.6, 0.7, Placement::OnGround, MotionBlocking, false, false),
+        "cat" => (0.6, 0.7, Placement::NoRestrictions, MotionBlockingNoLeaves, false, false),
         // Monsters (`EntityTypes` sizes; `Monster.checkMonsterSpawnRules`).
         "zombie" | "zombie_villager" | "witch" | "husk" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "skeleton" | "stray" | "bogged" | "parched" => (0.6, 1.99, Placement::OnGround, MotionBlockingNoLeaves, false, false),
@@ -309,10 +315,15 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "zombie_horse" => (1.396_484_4, 1.6, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "bat" => (0.5, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "glow_squid" => (0.8, 0.8, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "drowned" => (0.6, 1.95, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "pillager" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "vindicator" | "evoker" => (0.6, 1.95, Placement::NoRestrictions, MotionBlockingNoLeaves, false, false),
+        "vex" => (0.4, 0.8, Placement::NoRestrictions, MotionBlockingNoLeaves, true, false),
+        "ravager" => (1.95, 2.2, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute" | "drowned" | "pillager" | "vindicator" | "evoker" | "vex" | "ravager");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),
@@ -333,11 +344,16 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "piglin_brute" => Rules::Other,
         "bat" => Rules::Bat,
         "glow_squid" => Rules::GlowSquid,
+        "drowned" => Rules::Drowned,
         "strider" => Rules::Strider,
+        "ocelot" => Rules::Ocelot,
+        "cat" => Rules::Unrestricted,
+        "pillager" => Rules::Patrolling,
         _ if monster => Rules::Monster,
         _ => Rules::Other,
     };
     let walk = match short {
+        "pillager" => Walk::Neutral,
         _ if monster => Walk::Monster,
         // Cube mobs and squid keep `PathfinderMob`'s 0; bats are no
         // pathfinders (`Mob.checkSpawnRules`).
@@ -349,7 +365,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
     let cluster = match short {
         "horse" | "donkey" | "mule" | "llama" | "camel" | "zombie_horse" => 6,
         "wolf" => 8,
-        "ghast" => 1,
+        "ghast" | "pillager" => 1,
         _ => 4,
     };
     Some(TypeInfo { width, height, placement, heightmap, fire_immune, rules, walk, remove_far, cluster })
@@ -378,6 +394,7 @@ pub struct CreatureSpawns {
     monster_light_test_max: i32,
     /// `#minecraft:allows_surface_slime_spawns`.
     surface_slimes: Option<TagId>,
+    more_frequent_drowned: Option<TagId>,
     /// `#minecraft:bats_spawnable_on`.
     bats_spawnable_on: Option<TagId>,
     probability: Vec<f32>,
@@ -389,6 +406,7 @@ pub struct CreatureSpawns {
     chicken_sounds: Vec<String>,
     wolf_variants: VariantRegistry,
     wolf_sounds: Vec<String>,
+    cats: minecraftoss_generator::feature::entities::CatVariants,
     /// `#spawns_snow_foxes`, `#spawns_white_rabbits`, `#spawns_gold_rabbits`.
     snow_foxes: TagId,
     white_rabbits: TagId,
@@ -515,6 +533,7 @@ impl CreatureSpawns {
             monster_block_light_limit: dimension["monster_spawn_block_light_limit"].as_i64().unwrap_or(0) as i32,
             monster_light_test_max,
             surface_slimes: registries.biome_tags.id("minecraft:allows_surface_slime_spawns"),
+            more_frequent_drowned: registries.biome_tags.id("minecraft:more_frequent_drowned_spawns"),
             bats_spawnable_on: registries.block_tags.id("minecraft:bats_spawnable_on"),
             probability,
             pig_variants: VariantRegistry::load(registries, "pig_variant")?,
@@ -525,6 +544,7 @@ impl CreatureSpawns {
             chicken_sounds: sounds("chicken_sound_variant")?,
             wolf_variants: VariantRegistry::load(registries, "wolf_variant")?,
             wolf_sounds: sounds("wolf_sound_variant")?,
+            cats: minecraftoss_generator::feature::entities::CatVariants::load(pack)?,
             snow_foxes: tag(&registries.biome_tags, "minecraft:spawns_snow_foxes")?,
             white_rabbits: tag(&registries.biome_tags, "minecraft:spawns_white_rabbits")?,
             gold_rabbits: tag(&registries.biome_tags, "minecraft:spawns_gold_rabbits")?,
@@ -651,6 +671,21 @@ impl CreatureSpawns {
         }
     }
 
+    pub fn on_ground_spawn_ok(&self, level: &mut dyn SpawnLevel, kind: &str, pos: BlockPos, width: f32, height: f32) -> bool {
+        let info = TypeInfo {
+            width,
+            height,
+            placement: Placement::OnGround,
+            heightmap: HeightmapKind::MotionBlockingNoLeaves,
+            fire_immune: false,
+            rules: Rules::Other,
+            walk: Walk::Neutral,
+            remove_far: false,
+            cluster: 1,
+        };
+        self.is_spawn_position_ok(level, kind, &info, pos)
+    }
+
     /// `SpawnPlacements.isSpawnPositionOk` (the world border is far away).
     fn is_spawn_position_ok(&self, level: &mut dyn SpawnLevel, kind: &str, info: &TypeInfo, pos: BlockPos) -> bool {
         let registries = &*self.registries;
@@ -726,6 +761,12 @@ impl CreatureSpawns {
         if info.rules == Rules::Strider {
             return self.strider_spawn_rules(level, pos);
         }
+        if info.rules == Rules::Ocelot {
+            return level.random().next_i32_bound(3) != 0;
+        }
+        if info.rules == Rules::Unrestricted {
+            return true;
+        }
         // `Animal.checkAnimalSpawnRules` and the rules with their own block
         // tag (other creatures approximated by the animals' rules).
         let spawnable_on = match info.rules {
@@ -777,8 +818,20 @@ impl CreatureSpawns {
     /// box (entities never obstruct in a generation region; the server's
     /// spawner tests them itself).
     fn check_spawn_obstruction(&self, level: &mut dyn SpawnLevel, info: &TypeInfo, x: f64, y: f64, z: f64) -> bool {
-        if info.rules == Rules::Strider {
+        if matches!(info.rules, Rules::Strider | Rules::Drowned) {
             return true;
+        }
+        if info.rules == Rules::Ocelot {
+            let pos = BlockPos::new(x.floor() as i32, y.floor() as i32, z.floor() as i32);
+            if pos.y < level.sea_level() {
+                return false;
+            }
+            let below = level.block(pos.below());
+            let registries = &*self.registries;
+            let ground = registries.blocks.block_of(below) == self.grass_block || registries.block_in_tag(below, self.leaves);
+            if !ground {
+                return false;
+            }
         }
         let half = f64::from(info.width) / 2.0;
         let (min, max) = ([x - half, y, z - half], [x + half, y + f64::from(info.height), z + half]);
@@ -945,7 +998,7 @@ impl CreatureSpawns {
             }
             // `Llama.finalizeSpawn`: strength, the group's variant, then
             // `AbstractChestedHorse.randomizeAttributes` (health).
-            "minecraft:llama" => {
+            "minecraft:llama" | "minecraft:trader_llama" => {
                 let random = level.random();
                 let max = if random.next_f32() < 0.04 { 5 } else { 3 };
                 set(tag, "Strength", Tag::Int(1 + random.next_i32_bound(max)));
@@ -964,6 +1017,7 @@ impl CreatureSpawns {
             // `Armadillo`: no override (its scute timer is its own random's).
             "minecraft:armadillo" => ageable(level, tag, group, 0.05),
             "minecraft:strider" => ageable(level, tag, group, 0.05),
+            "minecraft:ocelot" => ageable(level, tag, group, 1.0),
             "minecraft:sheep" => {
                 let color = self.sheep_color(registries, biome, level.random());
                 set(tag, "Color", Tag::Byte(color));
@@ -1000,6 +1054,21 @@ impl CreatureSpawns {
             level.note_unsupported("variant conditions");
         }
         finalize_mob(tag, &mut RandomRef(level.random()));
+    }
+
+    pub fn finalize_cat(&self, level: &mut dyn SpawnLevel, tag: &mut Tag, black_cat_structure: bool, moon_brightness: f32) {
+        ageable(level, tag, &mut Group::None, 0.05);
+        finalize_mob(tag, &mut RandomRef(level.random()));
+        let candidates = self.cats.candidates(black_cat_structure, f64::from(moon_brightness));
+        if !candidates.is_empty() {
+            let variant = candidates[level.random().next_i32_bound(candidates.len() as i32) as usize].to_owned();
+            set(tag, "variant", Tag::String(variant));
+        }
+        let sounds = self.cats.sounds();
+        if !sounds.is_empty() {
+            let sound = sounds[level.random().next_i32_bound(sounds.len() as i32) as usize].clone();
+            set(tag, "sound_variant", Tag::String(sound));
+        }
     }
 
     /// `SheepColorSpawnRules.getSheepColor`: the climate's weighted colours,

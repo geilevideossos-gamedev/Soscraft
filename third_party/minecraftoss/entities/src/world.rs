@@ -24,6 +24,22 @@ mod emissions;
 mod endermen;
 mod golems;
 mod wolves;
+mod felines;
+pub use felines::FelineEntity;
+mod traders;
+pub use traders::TraderEntity;
+mod snow_golems;
+pub use snow_golems::{SnowGolemEntity, SnowballShot};
+mod illagers;
+pub use illagers::{is_ominous_banner, IllagerEntity};
+mod evoker_fangs;
+pub use evoker_fangs::EvokerFangsEntity;
+mod vexes;
+pub use vexes::VexEntity;
+mod ravagers;
+pub use ravagers::RavagerEntity;
+mod raiders;
+pub use raiders::{celebrate_sound, FireworkLaunch, HeroGift, RaidVillagerEvents, RaiderMut, RaiderView, GIFT_PICKUP_DELAY};
 mod hazards;
 mod living;
 mod pushing;
@@ -42,8 +58,12 @@ mod piglins;
 pub use piglins::{BarterThrow, PICKUP_DELAY as BARTER_PICKUP_DELAY, PiglinConversion, PiglinEntity};
 mod riding;
 pub use riding::Rider;
+mod leashes;
+pub use leashes::{is_fence, knot_position, Leash, LeashHolder, LeashPlayer, LeashUse, SavedLeash, LEAD, SNAP_DISTANCE};
 mod shulkers;
 mod shulker_bullets;
+mod equines;
+pub use equines::{horse_event, is_carpet, LlamaSpitEntity};
 pub use ghasts::GhastEntity;
 pub use shulker_bullets::{BulletPuff, BulletPuffKind, ShulkerBulletEntity};
 pub use blazes::BlazeEntity;
@@ -309,6 +329,7 @@ pub struct ZombieEntity {
     /// The zombie's goal and target selectors (`Zombie.registerGoals`), for
     /// zombies on the goal framework.
     pub ai: Option<Box<MonsterAi>>,
+    pub drowned: Option<crate::drowned_ai::DrownedGoals>,
 }
 
 #[derive(Clone)]
@@ -597,6 +618,10 @@ pub enum PlayerHitKind {
     Fireball { velocity: DVec3, ignite_ticks: i32 },
     BadRespawnPoint { knockback: DVec3 },
     ShulkerBullet { velocity: DVec3 },
+    Trident { velocity: DVec3 },
+    Spit { velocity: DVec3 },
+    Magic { at: DVec3 },
+    Fireworks { at: DVec3 },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,
@@ -737,6 +762,7 @@ pub struct PlayerFights {
 
 /// Arrow target IDs above this are players (the rest are entity IDs).
 const PLAYER_TARGET: u64 = u64::MAX / 2;
+pub const ZOMBIE_VILLAGER_CURE_SOUND: &str = "entity.zombie_villager.cure";
 
 impl VillagerEntity {
     /// Where it stands (its feet).
@@ -893,14 +919,18 @@ impl PigEntity {
 impl CowEntity {
     fn movement_sounds(&self) -> MovementSounds {
         if let Some(horse) = &self.horse {
-            let family = horse.kind.sound_family(self.cow.age.baby());
-            let step = match family {
-                "baby_horse" => "entity.baby_horse.step",
-                _ => "entity.horse.step",
-            };
-            return MovementSounds { horse_step: Some((step, "entity.horse.step_wood")), ..MovementSounds::creature(None) };
+            return equines::horse_movement_sounds(horse, self.cow.age.baby());
         }
         cow_sounds(self.mooshroom.is_some(), self.cow.sound_variant)
+    }
+
+    fn goal_names(&self) -> &'static [&'static str] {
+        match self.horse.as_ref().map(|h| h.kind) {
+            Some(crate::horse::HorseKind::TraderLlama) => &crate::cow_ai::TRADER_LLAMA_GOAL_NAMES,
+            Some(crate::horse::HorseKind::Llama) => &crate::cow_ai::LLAMA_GOAL_NAMES,
+            Some(_) => &HORSE_GOAL_NAMES,
+            None => &GOAL_NAMES,
+        }
     }
 
     /// `getAmbientSoundInterval`.
@@ -1507,6 +1537,33 @@ impl ZombieEntity {
         play_movement(&mut self.zombie.body, self.tick_count, &mut self.random, &mut self.voices, sounds);
     }
 
+    fn swim_to(&mut self, world: &impl World, target: DVec3) -> Option<bool> {
+        navigate_amphibious_to_with_accuracy(&self.zombie.body, &mut self.navigation, &MeasuredWaterFloorTerrain(world), target, 1.0, 1)
+    }
+
+    fn drowned_profile(&self) -> WalkProfile {
+        let mut profile = monster_profile(&self.zombie.body, 35.0, self.zombie.health, 20.0, false);
+        profile.set_malus(PathType::Water, 0.0);
+        profile.walk_target = crate::walk_path::WalkTarget::Monster;
+        profile
+    }
+
+    fn stop_melee(&mut self) {
+        if self.attack_goal_running {
+            self.attack_goal_running = false;
+            self.aggressive = false;
+            self.navigation.stop();
+        }
+    }
+
+    fn stop_drowned_move(&mut self, goals: &mut crate::drowned_ai::DrownedGoals) {
+        if goals.running == crate::drowned_ai::DrownedMove::Trident {
+            goals.stop_trident();
+            self.aggressive = false;
+        }
+        goals.running = crate::drowned_ai::DrownedMove::None;
+    }
+
     /// Source: 26.3 NearestAttackableTargetGoal, MeleeAttackGoal, ZombieAttackGoal,
     /// DrownedAttackGoal, and Mob.serverAiStep. The caller isolates the relevant
     /// melee action goal while leaving the target selector registered.
@@ -1518,6 +1575,8 @@ impl ZombieEntity {
         game_time: i64,
         bright_outside: bool,
     ) {
+        use crate::drowned_ai::DrownedMove;
+        let mut drowned = self.drowned.take();
         let position = self.zombie.body.position;
         if players.iter().any(|player| {
             player.alive
@@ -1628,6 +1687,38 @@ impl ZombieEntity {
         });
         let can_attack_target = target.is_some()
             && (self.zombie.kind != ZombieKind::Drowned || !bright_outside || target_in_water);
+        let wet = FluidFrame::sample(world, position, self.zombie.body.width, self.zombie.body.height).in_water();
+        let trident = self.zombie.main_hand.as_deref() == Some("minecraft:trident");
+        if let Some(goals) = drowned.as_mut().filter(|_| full_goal_tick) {
+            let stop = match goals.running {
+                DrownedMove::Water | DrownedMove::Stroll => self.navigation.is_done(),
+                DrownedMove::Trident => target.is_none() && self.navigation.is_done(),
+                DrownedMove::Beach => !goals.beach_continues(world),
+                DrownedMove::None => false,
+            };
+            if stop {
+                self.stop_drowned_move(goals);
+            }
+            if goals.swim_up.is_some_and(|stuck| stuck || !goals.swim_up_can_use(bright_outside, wet, position.y)) {
+                goals.swim_up = None;
+                goals.searching_for_land = false;
+            }
+            if goals.running != DrownedMove::Water && bright_outside && !wet {
+                if let Some(water) = crate::drowned_ai::water_position(world, position, &mut self.random) {
+                    self.stop_drowned_move(goals);
+                    self.stop_melee();
+                    goals.running = DrownedMove::Water;
+                    let _ = self.swim_to(world, water);
+                }
+            }
+            let idle = matches!(goals.running, DrownedMove::None | DrownedMove::Beach | DrownedMove::Stroll) && !self.attack_goal_running;
+            if idle && target.is_some() && trident {
+                self.stop_drowned_move(goals);
+                goals.running = DrownedMove::Trident;
+                self.aggressive = true;
+                self.pathed_target = DVec3::ZERO;
+            }
+        }
         if full_goal_tick
             && self.attack_goal_running
             && (!can_attack_target || self.navigation.is_done())
@@ -1636,11 +1727,14 @@ impl ZombieEntity {
             self.aggressive = false;
             self.navigation.stop();
         }
-        if full_goal_tick && !self.attack_goal_running && game_time - self.last_can_use_check >= 20
+        if full_goal_tick && !self.attack_goal_running && drowned.as_ref().is_none_or(|goals| matches!(goals.running, DrownedMove::None | DrownedMove::Beach | DrownedMove::Stroll)) && game_time - self.last_can_use_check >= 20
         {
             self.last_can_use_check = game_time;
             if let Some(target) = target.filter(|_| can_attack_target) {
                 if self.navigate_to_pursuit_target(world, target.position) == Some(true) {
+                    if let Some(goals) = drowned.as_mut() {
+                        self.stop_drowned_move(goals);
+                    }
                     self.attack_goal_running = true;
                     self.ticks_until_next_path_recalculation = 0;
                     self.ticks_until_next_attack = 0;
@@ -1678,6 +1772,72 @@ impl ZombieEntity {
                 self.aggressive = self.raise_arm_ticks >= 5 && self.ticks_until_next_attack < 10;
             }
         }
+        if let Some(goals) = drowned.as_mut() {
+            if full_goal_tick {
+                let profile = self.drowned_profile();
+                let open = matches!(goals.running, DrownedMove::None | DrownedMove::Stroll) && !self.attack_goal_running;
+                if open && goals.beach_can_use(world, position, bright_outside, wet, &mut self.random) {
+                    self.stop_drowned_move(goals);
+                    if let Some(goal) = goals.start_beach(&mut self.random) {
+                        let _ = self.swim_to(world, goal);
+                    }
+                }
+                if goals.swim_up.is_none() && goals.swim_up_can_use(bright_outside, wet, position.y) {
+                    goals.swim_up = Some(false);
+                    goals.searching_for_land = true;
+                }
+                if goals.running == DrownedMove::None && !self.attack_goal_running && self.no_action_time < 100 && self.random.next_int(60) == 0 {
+                    if let Some(wanted) = crate::stroll::amphibious_random_position(world, &profile, position, 10, 7, &mut self.random) {
+                        goals.running = DrownedMove::Stroll;
+                        let _ = self.swim_to(world, wanted);
+                    }
+                }
+                if goals.swim_up == Some(false) && position.y < f64::from(goals.sea_level - 1) {
+                    let close = self.navigation.path_target.is_some_and(|(x, y, z)| position.distance_squared(DVec3::new(f64::from(x), f64::from(y), f64::from(z))) < 4.0);
+                    if self.navigation.is_done() || close {
+                        let towards = DVec3::new(position.x, f64::from(goals.sea_level - 1), position.z);
+                        match crate::stroll::amphibious_random_position_towards(world, &profile, position, 4, 8, towards, std::f32::consts::FRAC_PI_2, &mut self.random) {
+                            Some(wanted) => {
+                                let _ = self.swim_to(world, wanted);
+                            }
+                            None => goals.swim_up = Some(true),
+                        }
+                    }
+                }
+            }
+            match goals.running {
+                DrownedMove::Trident => {
+                    if let Some(target) = target {
+                        let eye = position + DVec3::Y * f64::from(self.zombie.eye_height());
+                        let target_eye = target.position + DVec3::Y * f64::from(target.eye_height);
+                        let sees = crate::sight::line_of_sight(world, eye, target_eye);
+                        let (near, power) = goals.tick_trident(position.distance_squared(target.position), sees);
+                        if near {
+                            self.navigation.stop();
+                        } else if self.navigation.is_done() || target.position.distance_squared(self.pathed_target) >= 1.0 {
+                            self.pathed_target = target.position;
+                            let _ = self.navigate_to_pursuit_target(world, target.position);
+                        }
+                        self.look_control.set_look_at_with_limits(target_eye, 30.0, 30.0);
+                        if power.is_some() {
+                            let seed = position.x.to_bits() ^ position.z.to_bits().rotate_left(17) ^ (self.tick_count as u64).rotate_left(40);
+                            let shot = Arrow::skeleton_shot(position, self.zombie.eye_height(), target.position, target.height, crate::drowned_ai::uncertainty(goals.difficulty), &mut LegacyRandom::new(seed));
+                            goals.throw = Some((shot.position, shot.velocity));
+                            let pitch = crate::drowned_ai::shoot_pitch(&mut self.random);
+                            self.voices.push((Voice::Event(crate::drowned_ai::SHOOT_SOUND, 1.0, pitch), position));
+                        }
+                    }
+                }
+                DrownedMove::Beach => {
+                    if let Some(goal) = goals.tick_beach(position) {
+                        let _ = self.swim_to(world, goal);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let swim = drowned.as_ref().map_or(target_in_water, |goals| goals.wants_to_swim(target_in_water));
+        let searching = drowned.as_ref().is_some_and(|goals| goals.searching_for_land);
         let in_water = FluidFrame::sample(
             world,
             self.zombie.body.position,
@@ -1711,12 +1871,12 @@ impl ZombieEntity {
         // delegating to MoveControl whenever the drowned is airborne on land.
         if self.zombie.kind == ZombieKind::Drowned
             && !self.zombie.body.on_ground
-            && !(target_in_water && in_water && self.underwater_last_tick)
+            && !(swim && in_water && self.underwater_last_tick)
         {
             self.zombie.body.velocity.y -= 0.008;
         }
         let swimming_control = self.zombie.kind == ZombieKind::Drowned
-            && target_in_water
+            && swim
             && in_water
             && self.underwater_last_tick;
         let control = if swimming_control {
@@ -1727,7 +1887,7 @@ impl ZombieEntity {
                 self.sideways,
                 self.effects.movement_speed(0.23_f32 as f64),
                 self.navigation.is_done(),
-                target.is_some_and(|target| target.position.y > position.y),
+                searching || target.is_some_and(|target| target.position.y > position.y),
                 &mut self.zombie.body.velocity,
             )
         } else {
@@ -1758,13 +1918,14 @@ impl ZombieEntity {
             self.body_rotation.body_yaw,
             !self.navigation.is_done(),
         );
-        self.travel_controlled(world, target_in_water);
+        self.travel_controlled(world, swim);
         self.body_rotation.tick(
             self.yaw,
             &mut self.look_control,
             self.previous_position,
             self.zombie.body.position,
         );
+        self.drowned = drowned;
     }
 
     fn within_melee_range(&self, target: PursuitTarget) -> bool {
@@ -1917,6 +2078,14 @@ enum EntityKey {
     Piglin(u64),
     Shulker(u64),
     ShulkerBullet(u64),
+    Feline(u64),
+    LlamaSpit(u64),
+    Trader(u64),
+    SnowGolem(u64),
+    Illager(u64),
+    EvokerFangs(u64),
+    Vex(u64),
+    Ravager(u64),
 }
 
 impl EntityKey {
@@ -1946,7 +2115,15 @@ impl EntityKey {
             | Self::Hoglin(id)
             | Self::Piglin(id)
             | Self::Shulker(id)
-            | Self::ShulkerBullet(id) => id,
+            | Self::ShulkerBullet(id)
+            | Self::Feline(id)
+            | Self::LlamaSpit(id)
+            | Self::Trader(id)
+            | Self::SnowGolem(id)
+            | Self::Illager(id)
+            | Self::EvokerFangs(id)
+            | Self::Vex(id)
+            | Self::Ravager(id) => id,
         }
     }
 }
@@ -1975,13 +2152,19 @@ pub enum MobHit {
     Hoglin(u64),
     Piglin(u64),
     Shulker(u64),
+    Feline(u64),
+    WanderingTrader(u64),
+    SnowGolem(u64),
+    Illager(u64),
+    Vex(u64),
+    Ravager(u64),
 }
 
 impl MobHit {
     /// The hit mob's entity ID.
     pub fn id(self) -> u64 {
         match self {
-            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) => id,
+            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) | Self::Feline(id) | Self::WanderingTrader(id) | Self::SnowGolem(id) | Self::Illager(id) | Self::Vex(id) | Self::Ravager(id) => id,
         }
     }
 }
@@ -2113,12 +2296,12 @@ impl CowEntity {
     }
 
     pub fn running_goals(&self) -> Vec<&'static str> {
-        let names: &[&str] = if self.horse.is_some() { &HORSE_GOAL_NAMES } else { &GOAL_NAMES };
+        let names = self.goal_names();
         self.goals.running_ids().map(|id| names[id]).collect()
     }
 
     pub fn retain_goals(&mut self, names: &[&str]) {
-        let all: &[&str] = if self.horse.is_some() { &HORSE_GOAL_NAMES } else { &GOAL_NAMES };
+        let all = self.goal_names();
         let ids: Vec<_> = all
             .iter()
             .enumerate()
@@ -2306,6 +2489,14 @@ pub struct EntityWorld {
     witches: Vec<WitchEntity>,
     iron_golems: Vec<IronGolemEntity>,
     wolves: Vec<WolfEntity>,
+    felines: Vec<FelineEntity>,
+    wandering_traders: Vec<TraderEntity>,
+    snow_golems: Vec<SnowGolemEntity>,
+    illagers: Vec<IllagerEntity>,
+    vexes: Vec<VexEntity>,
+    ravagers: Vec<RavagerEntity>,
+    player_pushes: Vec<(u64, DVec3)>,
+    snowball_shots: Vec<SnowballShot>,
     ghasts: Vec<GhastEntity>,
     fireballs: Vec<FireballEntity>,
     fireball_blasts: Vec<FireballBlast>,
@@ -2318,6 +2509,8 @@ pub struct EntityWorld {
     shulkers: Vec<ShulkerEntity>,
     shulker_teleports: Vec<(minecraftoss_player::Pos, minecraftoss_player::Pos)>,
     shulker_bullets: Vec<ShulkerBulletEntity>,
+    llama_spits: Vec<LlamaSpitEntity>,
+    evoker_fangs: Vec<EvokerFangsEntity>,
     bullet_puffs: Vec<BulletPuff>,
     fireball_fires: Vec<(i32, i32, i32)>,
     /// Where the players look, for endermen.
@@ -2361,6 +2554,11 @@ pub struct EntityWorld {
     barter_throws: Vec<piglins::BarterThrow>,
     piglin_angers: Vec<piglins::PiglinAnger>,
     piglin_conversions: Vec<piglins::PiglinConversion>,
+    zombie_conversions: Vec<(u64, u64)>,
+    villager_infections: Vec<(u64, u64)>,
+    zombie_cures: Vec<u64>,
+    trident_throws: Vec<crate::drowned_ai::TridentThrow>,
+    sea_level: i32,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
@@ -2380,6 +2578,8 @@ pub struct EntityWorld {
     seed_uniquifier: u64,
     /// The level's points of interest (`PoiManager`).
     pub pois: crate::poi::PoiManager,
+    raids: Vec<crate::raid::RaidView>,
+    raid_villager_events: raiders::RaidVillagerEvents,
     /// A pinned random for the next golem villagers summon.
     summoned_golem_seed: Option<u64>,
     /// Pinned randoms for the next babies villagers make, in turn, and the
@@ -2404,6 +2604,8 @@ pub struct EntityWorld {
     /// Players' Hero of the Village levels, their trading screens, and the
     /// experience trades dropped.
     player_heroes: HashMap<u64, i32>,
+    cat_gift_chance: f32,
+    cat_gifts: Vec<(DVec3, f32)>,
     merchant_menus: HashMap<u64, crate::merchant::MerchantMenu>,
     trade_experience: Vec<(DVec3, i32)>,
     /// Players' main-hand items, as villagers see them.
@@ -2412,7 +2614,12 @@ pub struct EntityWorld {
     /// 13 anger, 14 happiness).
     entity_events: Vec<(u64, u8)>,
     passengers: std::collections::BTreeMap<u64, Vec<Rider>>,
-    player_dismounts: Vec<(u64, u64)>,
+    player_dismounts: Vec<(u64, u64, Option<DVec3>)>,
+    ride_jumps: HashMap<u64, crate::horse::RideJump>,
+    leashes: std::collections::BTreeMap<u64, Leash>,
+    knots: std::collections::BTreeMap<minecraftoss_player::Pos, i32>,
+    leash_players: Vec<LeashPlayer>,
+    lead_drops: Vec<DVec3>,
 }
 
 impl Default for EntityWorld {
@@ -2428,6 +2635,14 @@ impl Default for EntityWorld {
             witches: Vec::new(),
             iron_golems: Vec::new(),
             wolves: Vec::new(),
+            felines: Vec::new(),
+            wandering_traders: Vec::new(),
+            snow_golems: Vec::new(),
+            illagers: Vec::new(),
+            vexes: Vec::new(),
+            ravagers: Vec::new(),
+            player_pushes: Vec::new(),
+            snowball_shots: Vec::new(),
             ghasts: Vec::new(),
             fireballs: Vec::new(),
             fireball_blasts: Vec::new(),
@@ -2440,6 +2655,8 @@ impl Default for EntityWorld {
             shulkers: Vec::new(),
             shulker_teleports: Vec::new(),
             shulker_bullets: Vec::new(),
+            llama_spits: Vec::new(),
+            evoker_fangs: Vec::new(),
             bullet_puffs: Vec::new(),
             fireball_fires: Vec::new(),
             player_views: Vec::new(),
@@ -2473,6 +2690,11 @@ impl Default for EntityWorld {
             barter_throws: Vec::new(),
             piglin_angers: Vec::new(),
             piglin_conversions: Vec::new(),
+            zombie_conversions: Vec::new(),
+            villager_infections: Vec::new(),
+            zombie_cures: Vec::new(),
+            trident_throws: Vec::new(),
+            sea_level: 63,
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: true,
@@ -2482,6 +2704,8 @@ impl Default for EntityWorld {
             day_time: 0,
             seed_uniquifier: 8_682_522_807_148_012,
             pois: crate::poi::PoiManager::new(-4, 19),
+            raids: Vec::new(),
+            raid_villager_events: Default::default(),
             summoned_golem_seed: None,
             summoned_golems: Vec::new(),
             born_seeds: Default::default(),
@@ -2493,12 +2717,19 @@ impl Default for EntityWorld {
             uuids: HashMap::new(),
             uuid_salt: 0,
             player_heroes: HashMap::new(),
+            cat_gift_chance: 0.0,
+            cat_gifts: Vec::new(),
             merchant_menus: HashMap::new(),
             trade_experience: Vec::new(),
             player_main_hands: HashMap::new(),
             entity_events: Vec::new(),
             passengers: std::collections::BTreeMap::new(),
             player_dismounts: Vec::new(),
+            ride_jumps: HashMap::new(),
+            leashes: std::collections::BTreeMap::new(),
+            knots: std::collections::BTreeMap::new(),
+            leash_players: Vec::new(),
+            lead_drops: Vec::new(),
         }
     }
 }
@@ -2685,6 +2916,18 @@ impl EntityWorld {
                 let e = self.wolves.iter().find(|e| e.id == id)?;
                 (e.wolf.body.clone(), e.wolf.eye_height())
             }
+            EntityKey::Feline(id) => {
+                let e = self.felines.iter().find(|e| e.id == id)?;
+                (e.feline.body.clone(), e.feline.eye_height())
+            }
+            EntityKey::Trader(id) => {
+                let e = self.wandering_traders.iter().find(|e| e.id == id)?;
+                (e.trader.body.clone(), e.trader.eye_height())
+            }
+            EntityKey::SnowGolem(id) => (self.snow_golems.iter().find(|e| e.id == id)?.golem.body.clone(), crate::snow_golem::EYE_HEIGHT),
+            EntityKey::Illager(id) => (self.illagers.iter().find(|e| e.id == id)?.illager.body.clone(), crate::illager::EYE_HEIGHT),
+            EntityKey::Vex(id) => (self.vexes.iter().find(|e| e.id == id)?.vex.body.clone(), crate::vex::EYE_HEIGHT),
+            EntityKey::Ravager(id) => (self.ravagers.iter().find(|e| e.id == id)?.ravager.body.clone(), crate::ravager::EYE_HEIGHT),
             EntityKey::Villager(id) => {
                 let e = self.villagers.iter().find(|e| e.id == id)?;
                 (e.villager.body.clone(), e.villager.eye_height())
@@ -2728,7 +2971,7 @@ impl EntityWorld {
                 let e = self.shulkers.iter().find(|e| e.id == id)?;
                 (e.shulker.body.clone(), e.shulker.eye_height())
             }
-            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => return None,
+            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => return None,
         })
     }
 
@@ -2749,6 +2992,8 @@ impl EntityWorld {
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, false, false), &mut e.witch.body)),
             EntityKey::IronGolem(id) => self.iron_golems.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.golem.body)),
             EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.wolf.body)),
+            EntityKey::Feline(id) => self.felines.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.feline.body)),
+            EntityKey::Trader(id) => self.wandering_traders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.trader.body)),
             EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.villager_attacker(), time), &mut e.villager.body)),
             EntityKey::Cow(id) => self.cows.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.cow.body)),
             EntityKey::Sheep(id) => self.sheep.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.body)),
@@ -2756,11 +3001,15 @@ impl EntityWorld {
             EntityKey::Chicken(id) => self.chickens.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_with_source(damage, source), &mut e.chicken.body)),
             EntityKey::Ghast(id) => self.ghasts.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.ghast.body)),
             EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.blaze.body)),
+            EntityKey::SnowGolem(id) => self.snow_golems.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.golem.body)),
+            EntityKey::Illager(id) => self.illagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.illager.body)),
+            EntityKey::Vex(id) => self.vexes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.vex.body)),
+            EntityKey::Ravager(id) => self.ravagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.ravager.body)),
             EntityKey::Strider(id) => self.striders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.strider.body)),
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.hoglin.body)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.piglin.body)),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.shulker.body)),
-            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => None,
+            EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => None,
         }?;
         if !matches!(key, EntityKey::Shulker(_)) {
             body.velocity += push;
@@ -2846,6 +3095,26 @@ impl EntityWorld {
             }
             EntityKey::Blaze(id) => {
                 if let Some(e) = self.blazes.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::SnowGolem(id) => {
+                if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Illager(id) => {
+                if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Vex(id) => {
+                if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Ravager(id) => {
+                if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
                     e.ai.state.hurt_by = Some((target, e.tick_count));
                 }
             }
@@ -3029,6 +3298,30 @@ impl EntityWorld {
                         let entity = self.wolves.iter().find(|entity| entity.id == id)?;
                         (id, &entity.wolf.body, entity.wolf.health)
                     }
+                    EntityKey::Feline(id) => {
+                        let entity = self.felines.iter().find(|entity| entity.id == id)?;
+                        (id, &entity.feline.body, entity.feline.health)
+                    }
+                    EntityKey::Trader(id) => {
+                        let entity = self.wandering_traders.iter().find(|entity| entity.id == id)?;
+                        (id, &entity.trader.body, entity.trader.health)
+                    }
+                    EntityKey::SnowGolem(id) => {
+                        let entity = self.snow_golems.iter().find(|entity| entity.id == id)?;
+                        (id, &entity.golem.body, entity.golem.health)
+                    }
+                    EntityKey::Illager(id) => {
+                        let entity = self.illagers.iter().find(|entity| entity.id == id)?;
+                        (id, &entity.illager.body, entity.illager.health)
+                    }
+                    EntityKey::Vex(id) => {
+                        let entity = self.vexes.iter().find(|entity| entity.id == id)?;
+                        (id, &entity.vex.body, entity.vex.health)
+                    }
+                    EntityKey::Ravager(id) => {
+                        let entity = self.ravagers.iter().find(|entity| entity.id == id)?;
+                        (id, &entity.ravager.body, entity.ravager.health)
+                    }
                     EntityKey::Villager(id) => {
                         let entity = self.villagers.iter().find(|entity| entity.id == id)?;
                         (id, &entity.villager.body, entity.villager.health)
@@ -3077,7 +3370,7 @@ impl EntityWorld {
                         let (min, max) = entity.shulker.bounding_box();
                         return Some(ArrowTarget { id, min, max });
                     }
-                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => return None,
+                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => return None,
                 };
                 if id == owner_id || health <= 0.0 {
                     return None;
@@ -3238,10 +3531,25 @@ impl EntityWorld {
             if result.applied {
                 projectile_knockback(&mut entity.wolf.body, &mut entity.random, hit.velocity);
             }
+        } else if let Some(entity) = self.felines.iter_mut().find(|entity| entity.id == id) {
+            let time = self.game_time;
+            let result = entity.hurt_from(hit.damage, "minecraft:arrow", Some(crate::monster_ai::Target::Mob(owner)), time);
+            outcome = Some(result);
+            if result.applied {
+                projectile_knockback(&mut entity.feline.body, &mut entity.random, hit.velocity);
+            }
+        } else if let Some(entity) = self.wandering_traders.iter_mut().find(|entity| entity.id == id) {
+            let time = self.game_time;
+            let result = entity.hurt_from(hit.damage, "minecraft:arrow", Some(crate::monster_ai::Target::Mob(owner)), time);
+            outcome = Some(result);
+            if result.applied {
+                projectile_knockback(&mut entity.trader.body, &mut entity.random, hit.velocity);
+            }
         } else if let Some(entity) = self.cows.iter_mut().find(|entity| entity.id == id) {
             let result = entity.hurt(hit.damage, source);
             outcome = Some(result);
             if result.applied {
+                entity.note_attacker(crate::monster_ai::Target::Mob(owner));
                 projectile_knockback(&mut entity.cow.body, &mut entity.random, hit.velocity);
             }
         } else if let Some(entity) = self.sheep.iter_mut().find(|entity| entity.id == id) {
@@ -3275,6 +3583,34 @@ impl EntityWorld {
             if result.applied {
                 entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
                 projectile_knockback(&mut entity.blaze.body, &mut entity.random, hit.velocity);
+            }
+        } else if let Some(entity) = self.snow_golems.iter_mut().find(|entity| entity.id == id) {
+            let result = entity.hurt(hit.damage);
+            outcome = Some(result);
+            if result.applied {
+                entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
+                projectile_knockback(&mut entity.golem.body, &mut entity.random, hit.velocity);
+            }
+        } else if let Some(entity) = self.illagers.iter_mut().find(|entity| entity.id == id) {
+            let result = entity.hurt(hit.damage);
+            outcome = Some(result);
+            if result.applied {
+                entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
+                projectile_knockback(&mut entity.illager.body, &mut entity.random, hit.velocity);
+            }
+        } else if let Some(entity) = self.vexes.iter_mut().find(|entity| entity.id == id) {
+            let result = entity.hurt(hit.damage);
+            outcome = Some(result);
+            if result.applied {
+                entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
+                projectile_knockback(&mut entity.vex.body, &mut entity.random, hit.velocity);
+            }
+        } else if let Some(entity) = self.ravagers.iter_mut().find(|entity| entity.id == id) {
+            let result = entity.hurt(hit.damage);
+            outcome = Some(result);
+            if result.applied {
+                entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
+                projectile_knockback(&mut entity.ravager.body, &mut entity.random, hit.velocity * (1.0 - crate::ravager::KNOCKBACK_RESISTANCE));
             }
         } else if let Some(entity) = self.striders.iter_mut().find(|entity| entity.id == id) {
             let result = entity.hurt(hit.damage, source);
@@ -3377,6 +3713,7 @@ impl EntityWorld {
             pathed_target: DVec3::ZERO,
             raise_arm_ticks: 0,
             ai: None,
+            drowned: None,
         });
         self.order.push(EntityKey::Zombie(id));
         self.file_in_section(EntityKey::Zombie(id));
@@ -3430,16 +3767,102 @@ impl EntityWorld {
         // `ConversionParams.keepEquipment`.
         zombie.head_item = old.zombie.head_item;
         zombie.main_hand = old.zombie.main_hand.clone();
+        zombie.off_hand = old.zombie.off_hand.clone();
+        zombie.hand_drop_chances = old.zombie.hand_drop_chances;
+        zombie.armor = old.zombie.armor.clone();
         let yaw = old.yaw;
         // A zombie off the goal framework (the drowning model) converts
         // into another.
-        if old.ai.is_none() {
-            return self.spawn_zombie_internal(zombie, old.no_ai, false);
-        }
-        self.spawn_zombie_active(zombie, yaw)
+        let id = if old.ai.is_none() {
+            self.spawn_zombie_internal(zombie, old.no_ai, false)
+        } else {
+            self.spawn_zombie_active(zombie, yaw)
+        };
+        self.zombie_conversions.push((old_id, id));
+        id
     }
 
-    fn convert_zombie_to_drowned(&mut self, old_id: u64) -> u64 {
+    pub fn take_zombie_conversions(&mut self) -> Vec<(u64, u64)> {
+        std::mem::take(&mut self.zombie_conversions)
+    }
+
+    pub fn take_villager_infections(&mut self) -> Vec<(u64, u64)> {
+        std::mem::take(&mut self.villager_infections)
+    }
+
+    pub fn take_zombie_cures(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.zombie_cures)
+    }
+
+    pub fn start_curing(&mut self, id: u64, player: u64) -> Option<bool> {
+        let starter = self.uuid_of(PLAYER_TARGET + player);
+        let difficulty = self.difficulty;
+        let entity = self.zombies.iter_mut().find(|e| e.id == id && e.zombie.kind == ZombieKind::ZombieVillager && e.zombie.health > 0.0)?;
+        if !entity.effects.has(MobEffect::Weakness) {
+            return Some(false);
+        }
+        let time = entity.random.next_int(2401) as i32 + 3600;
+        entity.zombie.conversion_starter = Some(starter);
+        entity.zombie.villager_conversion_time = time;
+        entity.effects.remove(MobEffect::Weakness);
+        entity.effects.add(crate::effects::EffectInstance::new(MobEffect::Strength, time, (difficulty - 1).min(0)));
+        let (volume, pitch) = (1.0 + entity.random.next_float(), entity.random.next_float() * 0.7 + 0.3);
+        let eye = entity.zombie.body.position + DVec3::Y * f64::from(entity.zombie.eye_height());
+        entity.voices.push((Voice::Event(ZOMBIE_VILLAGER_CURE_SOUND, volume, pitch), eye));
+        Some(true)
+    }
+
+    fn tick_zombie_cure(&mut self, id: u64, world: &impl World) -> bool {
+        let Some(entity) = self.zombies.iter_mut().find(|e| e.id == id) else { return false };
+        if entity.zombie.health <= 0.0 || !entity.zombie.curing() {
+            return false;
+        }
+        let random = &mut entity.random;
+        let progress = crate::zombie::cure_progress(entity.zombie.body.position, || random.next_float(), |x, y, z| world.block((x, y, z)).is_some_and(|b| b.id == "minecraft:iron_bars" || villagers::is_bed(&b.id)));
+        entity.zombie.villager_conversion_time -= progress;
+        if entity.zombie.villager_conversion_time > 0 {
+            return false;
+        }
+        entity.zombie.villager_conversion_time = -1;
+        self.zombie_cures.push(id);
+        true
+    }
+
+    fn zombie_killed_villager(&mut self, zombie: u64, villager: u64) {
+        let difficulty = self.difficulty;
+        if difficulty < 2 {
+            return;
+        }
+        let Some(killer) = self.zombies.iter_mut().find(|e| e.id == zombie) else { return };
+        if difficulty != 3 && killer.random.next_boolean() {
+            return;
+        }
+        let Some(victim) = self.villagers.iter_mut().find(|e| e.id == villager) else { return };
+        victim.villager.damage.death = None;
+        self.release_villager_pois(villager);
+        self.villager_infections.push((zombie, villager));
+    }
+
+    pub fn take_trident_throws(&mut self) -> Vec<crate::drowned_ai::TridentThrow> {
+        std::mem::take(&mut self.trident_throws)
+    }
+
+    pub fn set_sea_level(&mut self, sea_level: i32) {
+        self.sea_level = sea_level;
+    }
+
+    pub fn spawn_drowned(&mut self, drowned: Zombie) -> u64 {
+        let id = self.spawn_drowned_pursuit(drowned);
+        self.zombie_mut(id).unwrap().drowned = Some(crate::drowned_ai::DrownedGoals::default());
+        id
+    }
+
+    pub fn mob_shot_mob(&mut self, attacker: u64, victim: u64, damage: f32, velocity: DVec3) -> bool {
+        let Some(from) = self.mob_body(victim).map(|(body, _)| body.position - velocity) else { return false };
+        self.mob_hits_mob(attacker, victim, damage, from, 0.0).is_some_and(|hit| hit.applied)
+    }
+
+    pub fn convert_zombie_to_drowned(&mut self, old_id: u64) -> u64 {
         let index = self
             .zombies
             .iter()
@@ -3461,7 +3884,15 @@ impl EntityWorld {
         // `ConversionParams.keepEquipment`.
         drowned.head_item = old.zombie.head_item;
         drowned.main_hand = old.zombie.main_hand.clone();
-        self.spawn_zombie_internal(drowned, old.no_ai, false)
+        drowned.off_hand = old.zombie.off_hand.clone();
+        drowned.hand_drop_chances = old.zombie.hand_drop_chances;
+        drowned.armor = old.zombie.armor.clone();
+        let id = self.spawn_zombie_internal(drowned, old.no_ai, old.ai.is_some());
+        if old.ai.is_some() {
+            self.zombie_mut(id).unwrap().drowned = Some(crate::drowned_ai::DrownedGoals::default());
+        }
+        self.zombie_conversions.push((old_id, id));
+        id
     }
 
     /// The next spawned entity takes `id` (vanilla's `ENTITY_COUNTER` in a
@@ -3645,6 +4076,24 @@ impl EntityWorld {
         for e in &self.wolves {
             add(e.id, "minecraft:wolf", &e.wolf.body, e.wolf.eye_height(), e.wolf.health > 0.0, e.wolf.baby());
         }
+        for e in &self.felines {
+            add(e.id, e.feline.kind.type_id(), &e.feline.body, e.feline.eye_height(), e.feline.health > 0.0, e.feline.baby());
+        }
+        for e in &self.wandering_traders {
+            add(e.id, crate::wandering_trader::TYPE_ID, &e.trader.body, e.trader.eye_height(), e.trader.health > 0.0, false);
+        }
+        for e in &self.snow_golems {
+            add(e.id, crate::snow_golem::TYPE_ID, &e.golem.body, crate::snow_golem::EYE_HEIGHT, e.golem.health > 0.0, false);
+        }
+        for e in &self.illagers {
+            add(e.id, e.illager.kind.type_id(), &e.illager.body, crate::illager::EYE_HEIGHT, e.illager.health > 0.0, false);
+        }
+        for e in &self.vexes {
+            add(e.id, crate::vex::TYPE_ID, &e.vex.body, crate::vex::EYE_HEIGHT, e.vex.health > 0.0, false);
+        }
+        for e in &self.ravagers {
+            add(e.id, crate::ravager::TYPE_ID, &e.ravager.body, crate::ravager::EYE_HEIGHT, e.ravager.health > 0.0, false);
+        }
         for e in &self.sheep {
             let baby = e.sheep.age.baby();
             add(e.id, "minecraft:sheep", &e.body, if baby { 0.6175 } else { 1.235 }, e.health > 0.0, baby);
@@ -3753,13 +4202,48 @@ impl EntityWorld {
             if hit.applied {
                 self.villager_hurt_by(victim, attacker);
             }
+            if hit.died && self.zombies.iter().any(|z| z.id == attacker) {
+                self.zombie_killed_villager(attacker, victim);
+            }
             (hit, false)
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == victim) {
             (e.hurt_from(damage, "minecraft:mob_attack", Some(by), time), false)
+        } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == victim) {
+            (e.hurt_from(damage, "minecraft:mob_attack", Some(by), time), false)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == victim) {
+            (e.hurt_from(damage, "minecraft:mob_attack", Some(by), time), false)
+        } else if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == victim) {
+            let hit = e.hurt(damage);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            (hit, false)
+        } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == victim) {
+            let hit = e.hurt(damage);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            (hit, false)
+        } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == victim) {
+            let hit = e.hurt(damage);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            (hit, false)
+        } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == victim) {
+            let hit = e.hurt(damage);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            (hit, false)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == victim) {
             (e.hurt(damage, DamageSourceKind::MobAttack), false)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == victim) {
-            (e.hurt(damage, DamageSourceKind::MobAttack), false)
+            let hit = e.hurt(damage, DamageSourceKind::MobAttack);
+            if hit.applied {
+                e.note_attacker(by);
+            }
+            (hit, false)
         } else if let Some(e) = self.pigs.iter_mut().find(|e| e.id == victim) {
             (e.hurt(damage, DamageSourceKind::MobAttack), false)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == victim) {
@@ -3949,6 +4433,38 @@ impl EntityWorld {
                     }
                 }
             }
+            if e.zombie.kind == ZombieKind::Drowned {
+                let killed_by_player = death.context.killed_by_player;
+                let chances = e.zombie.hand_drop_chances;
+                for (hand, chance) in [&mut e.zombie.main_hand, &mut e.zombie.off_hand].into_iter().zip(chances) {
+                    let preserve = chance > 1.0;
+                    if !mob_drops || chance == 0.0 || hand.is_none() || !(preserve || killed_by_player) || e.random.next_float() >= chance {
+                        continue;
+                    }
+                    let item = hand.take().unwrap_or_default();
+                    let mut stack = ItemStack::new(&item, 1);
+                    let durability = match item.as_str() {
+                        "minecraft:trident" => 250,
+                        "minecraft:fishing_rod" => 64,
+                        _ => 0,
+                    };
+                    if !preserve && durability > 0 {
+                        stack.max = 1;
+                        let spread = e.random.next_int((durability - 3).max(1));
+                        let wear = durability - e.random.next_int(1 + spread);
+                        stack.components = Some(serde_json::json!({ "minecraft:damage": wear }));
+                    }
+                    death.equipment.push(stack);
+                }
+                if earns(&death, true) {
+                    let worn = [(&e.zombie.main_hand, chances[0]), (&e.zombie.off_hand, chances[1])].into_iter().filter(|(hand, chance)| hand.is_some() && *chance <= 1.0).count() + e.zombie.armor.iter().flatten().count();
+                    let mut experience = if e.zombie.baby { 12 } else { 5 };
+                    for _ in 0..worn {
+                        experience += 1 + e.random.next_int(3) as i32;
+                    }
+                    death.experience = experience;
+                }
+            }
             deaths.push((order, death));
         }
         for e in &mut self.skeletons {
@@ -4037,6 +4553,67 @@ impl EntityWorld {
             // `Mob.xpReward` stays 0 for golems.
             deaths.extend(death_of(e.id, &mut e.golem.damage, "minecraft:iron_golem", Some("minecraft:iron_golem"), plain));
         }
+        for e in &mut self.snow_golems {
+            let kind = crate::snow_golem::TYPE_ID;
+            deaths.extend(death_of(e.id, &mut e.golem.damage, kind, Some(kind), plain));
+        }
+        for e in &mut self.illagers {
+            let kind = e.illager.kind.type_id();
+            let captain = e.is_captain();
+            let Some((order, mut death)) = death_of(e.id, &mut e.illager.damage, kind, Some(kind), EntityLootContext { captain, ..plain }) else { continue };
+            for slot in 0..e.illager.equipment.len() {
+                let chance = e.illager.drop_chances[slot];
+                let preserve = chance > 1.0;
+                if !mob_drops || e.illager.equipment[slot].is_none() || !(death.context.killed_by_player || preserve) || e.random.next_float() >= chance {
+                    continue;
+                }
+                let Some(mut stack) = e.illager.equipment[slot].take() else { continue };
+                if !preserve && stack.id == crate::illager::CROSSBOW {
+                    let max = crate::illager::CROSSBOW_DURABILITY;
+                    let spread = e.random.next_int(max - 3);
+                    let wear = max - e.random.next_int(1 + spread);
+                    let mut components = match stack.components.take() {
+                        Some(serde_json::Value::Object(map)) => map,
+                        _ => serde_json::Map::new(),
+                    };
+                    components.insert("minecraft:damage".to_owned(), serde_json::json!(wear));
+                    stack.components = Some(serde_json::Value::Object(components));
+                }
+                death.equipment.push(stack);
+            }
+            if earns(&death, true) {
+                let mut experience = e.illager.experience();
+                for slot in 0..e.illager.equipment.len() {
+                    if e.illager.equipment[slot].is_some() && e.illager.drop_chances[slot] <= 1.0 {
+                        experience += 1 + e.random.next_int(3) as i32;
+                    }
+                }
+                death.experience = experience;
+            }
+            deaths.push((order, death));
+        }
+        for e in &mut self.ravagers {
+            let kind = crate::ravager::TYPE_ID;
+            let Some((order, mut death)) = death_of(e.id, &mut e.ravager.damage, kind, Some(kind), plain) else { continue };
+            if earns(&death, true) {
+                death.experience = crate::ravager::EXPERIENCE;
+            }
+            deaths.push((order, death));
+        }
+        for e in &mut self.vexes {
+            let kind = crate::vex::TYPE_ID;
+            let Some((order, mut death)) = death_of(e.id, &mut e.vex.damage, kind, Some(kind), plain) else { continue };
+            if earns(&death, true) {
+                let mut experience = crate::vex::EXPERIENCE;
+                for slot in 0..e.vex.equipment.len() {
+                    if e.vex.equipment[slot].is_some() && e.vex.drop_chances[slot] <= 1.0 {
+                        experience += 1 + e.random.next_int(3) as i32;
+                    }
+                }
+                death.experience = experience;
+            }
+            deaths.push((order, death));
+        }
         for e in &mut self.slimes {
             let context = EntityLootContext { cube_size: Some(e.slime.size), ..plain };
             let kind = e.slime.type_id();
@@ -4061,10 +4638,17 @@ impl EntityWorld {
             deaths.extend(death_of(e.id, &mut e.villager.damage, "minecraft:villager", table, EntityLootContext { baby: e.villager.age.baby(), ..plain }));
         }
         for e in &mut self.cows {
-            let kind = if e.mooshroom.is_some() { "minecraft:mooshroom" } else { "minecraft:cow" };
+            let kind = match &e.horse {
+                Some(horse) => horse.kind.type_id(),
+                None if e.mooshroom.is_some() => "minecraft:mooshroom",
+                None => "minecraft:cow",
+            };
             let baby = e.cow.age.baby();
             let Some((order, mut death)) = death_of(e.id, &mut e.cow.damage, kind, adult(baby, kind), EntityLootContext { baby, ..plain }) else { continue };
             animal(&mut death, &mut e.random);
+            if let Some(horse) = &e.horse {
+                death.equipment = equines::horse_death_equipment(horse, mob_drops);
+            }
             deaths.push((order, death));
         }
         for e in &mut self.wolves {
@@ -4072,6 +4656,17 @@ impl EntityWorld {
             let Some((order, mut death)) = death_of(e.id, &mut e.wolf.damage, "minecraft:wolf", adult(baby, "minecraft:wolf"), EntityLootContext { baby, ..plain }) else { continue };
             animal(&mut death, &mut e.random);
             deaths.push((order, death));
+        }
+        for e in &mut self.felines {
+            let baby = e.feline.baby();
+            let kind = e.feline.kind.type_id();
+            let Some((order, mut death)) = death_of(e.id, &mut e.feline.damage, kind, adult(baby, kind), EntityLootContext { baby, ..plain }) else { continue };
+            animal(&mut death, &mut e.random);
+            deaths.push((order, death));
+        }
+        for e in &mut self.wandering_traders {
+            let kind = crate::wandering_trader::TYPE_ID;
+            deaths.extend(death_of(e.id, &mut e.trader.damage, kind, adult(false, kind), EntityLootContext { baby: false, ..plain }));
         }
         for e in &mut self.sheep {
             let baby = e.sheep.age.baby();
@@ -4180,6 +4775,24 @@ impl EntityWorld {
         if self.iron_golems.iter().any(|e| e.id == id) {
             return Some("minecraft:iron_golem");
         }
+        if let Some(e) = self.felines.iter().find(|e| e.id == id) {
+            return Some(e.feline.kind.type_id());
+        }
+        if self.wandering_traders.iter().any(|e| e.id == id) {
+            return Some(crate::wandering_trader::TYPE_ID);
+        }
+        if self.snow_golems.iter().any(|e| e.id == id) {
+            return Some(crate::snow_golem::TYPE_ID);
+        }
+        if let Some(e) = self.illagers.iter().find(|e| e.id == id) {
+            return Some(e.illager.kind.type_id());
+        }
+        if self.vexes.iter().any(|e| e.id == id) {
+            return Some(crate::vex::TYPE_ID);
+        }
+        if self.ravagers.iter().any(|e| e.id == id) {
+            return Some(crate::ravager::TYPE_ID);
+        }
         if self.wolves.iter().any(|e| e.id == id) {
             return Some("minecraft:wolf");
         }
@@ -4234,6 +4847,12 @@ impl EntityWorld {
         if self.shulker_bullets.iter().any(|e| e.id == id) {
             return Some("minecraft:shulker_bullet");
         }
+        if self.llama_spits.iter().any(|e| e.id == id) {
+            return Some("minecraft:llama_spit");
+        }
+        if self.evoker_fangs.iter().any(|e| e.id == id) {
+            return Some(crate::evoker_fangs::TYPE_ID);
+        }
         None
     }
 
@@ -4249,6 +4868,12 @@ impl EntityWorld {
             .chain(self.witches.iter_mut().map(|e| &mut e.witch.body))
             .chain(self.iron_golems.iter_mut().map(|e| &mut e.golem.body))
             .chain(self.wolves.iter_mut().map(|e| &mut e.wolf.body))
+            .chain(self.felines.iter_mut().map(|e| &mut e.feline.body))
+            .chain(self.wandering_traders.iter_mut().map(|e| &mut e.trader.body))
+            .chain(self.snow_golems.iter_mut().map(|e| &mut e.golem.body))
+            .chain(self.illagers.iter_mut().map(|e| &mut e.illager.body))
+            .chain(self.vexes.iter_mut().map(|e| &mut e.vex.body))
+            .chain(self.ravagers.iter_mut().map(|e| &mut e.ravager.body))
             .chain(self.villagers.iter_mut().map(|e| &mut e.villager.body))
             .chain(self.cows.iter_mut().map(|e| &mut e.cow.body))
             .chain(self.sheep.iter_mut().map(|e| &mut e.body))
@@ -4284,6 +4909,18 @@ impl EntityWorld {
             Some(&mut e.golem.body)
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
             Some(&mut e.wolf.body)
+        } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.feline.body)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.trader.body)
+        } else if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.golem.body)
+        } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.illager.body)
+        } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.vex.body)
+        } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.ravager.body)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.villager.body)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
@@ -4323,6 +4960,12 @@ impl EntityWorld {
             .or_else(|| self.witches.iter().find(|e| e.id == id).map(|e| &e.witch.damage))
             .or_else(|| self.iron_golems.iter().find(|e| e.id == id).map(|e| &e.golem.damage))
             .or_else(|| self.wolves.iter().find(|e| e.id == id).map(|e| &e.wolf.damage))
+            .or_else(|| self.felines.iter().find(|e| e.id == id).map(|e| &e.feline.damage))
+            .or_else(|| self.wandering_traders.iter().find(|e| e.id == id).map(|e| &e.trader.damage))
+            .or_else(|| self.snow_golems.iter().find(|e| e.id == id).map(|e| &e.golem.damage))
+            .or_else(|| self.illagers.iter().find(|e| e.id == id).map(|e| &e.illager.damage))
+            .or_else(|| self.vexes.iter().find(|e| e.id == id).map(|e| &e.vex.damage))
+            .or_else(|| self.ravagers.iter().find(|e| e.id == id).map(|e| &e.ravager.damage))
             .or_else(|| self.villagers.iter().find(|e| e.id == id).map(|e| &e.villager.damage))
             .or_else(|| self.cows.iter().find(|e| e.id == id).map(|e| &e.cow.damage))
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| &e.damage))
@@ -4358,6 +5001,18 @@ impl EntityWorld {
             Some(&mut e.golem.damage)
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
             Some(&mut e.wolf.damage)
+        } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.feline.damage)
+        } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.trader.damage)
+        } else if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.golem.damage)
+        } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.illager.damage)
+        } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.vex.damage)
+        } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.ravager.damage)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.villager.damage)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
@@ -4445,6 +5100,25 @@ impl EntityWorld {
         for e in &mut self.wolves {
             resolve_voices(&mut out, &mut e.voices, "wolf", crate::wolf::SOUND_VOLUME, "friendly_volume");
         }
+        for e in &mut self.felines {
+            let family = if e.feline.is_cat() { "cat" } else { "ocelot" };
+            resolve_voices(&mut out, &mut e.voices, family, 1.0, "neutral_volume");
+        }
+        for e in &mut self.wandering_traders {
+            resolve_voices(&mut out, &mut e.voices, "wandering_trader", 1.0, "neutral_volume");
+        }
+        for e in &mut self.snow_golems {
+            resolve_voices(&mut out, &mut e.voices, "snow_golem", 1.0, "neutral_volume");
+        }
+        for e in &mut self.illagers {
+            resolve_voices(&mut out, &mut e.voices, e.illager.kind.sound_family(), 1.0, "hostile_volume");
+        }
+        for e in &mut self.vexes {
+            resolve_voices(&mut out, &mut e.voices, "vex", 1.0, "hostile_volume");
+        }
+        for e in &mut self.ravagers {
+            resolve_voices(&mut out, &mut e.voices, "ravager", 1.0, "hostile_volume");
+        }
         for e in &mut self.cows {
             if let Some(horse) = &e.horse {
                 resolve_voices(&mut out, &mut e.voices, horse.kind.sound_family(e.cow.age.baby()), crate::horse::SOUND_VOLUME, "neutral_volume");
@@ -4491,7 +5165,7 @@ impl EntityWorld {
 
     /// Every living entity's ID, in world order (arrows excluded).
     pub fn mob_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.order.iter().filter(|key| !matches!(key, EntityKey::Arrow(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_))).map(|key| key.id())
+        self.order.iter().filter(|key| !matches!(key, EntityKey::Arrow(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_))).map(|key| key.id())
     }
     pub fn set_recipe_book(&mut self, recipes: Arc<RecipeBook>) {
         self.recipes = Some(recipes);
@@ -4518,8 +5192,12 @@ impl EntityWorld {
         cow.body.step_height = 1.0;
         let id = self.spawn_cow_with_kind(cow, None, no_ai);
         let entity = self.cows.iter_mut().find(|e| e.id == id).expect("just spawned");
+        entity.goals = match horse.kind {
+            crate::horse::HorseKind::Llama => crate::cow_ai::registered_llama_goals(false),
+            crate::horse::HorseKind::TraderLlama => crate::cow_ai::registered_llama_goals(true),
+            _ => registered_horse_goals(),
+        };
         entity.horse = Some(horse);
-        entity.goals = registered_horse_goals();
         id
     }
 
@@ -4784,6 +5462,12 @@ impl EntityWorld {
             .chain(self.witches.iter().map(|e| (e.id, e.witch.body.position)))
             .chain(self.iron_golems.iter().map(|e| (e.id, e.golem.body.position)))
             .chain(self.wolves.iter().map(|e| (e.id, e.wolf.body.position)))
+            .chain(self.felines.iter().map(|e| (e.id, e.feline.body.position)))
+            .chain(self.wandering_traders.iter().map(|e| (e.id, e.trader.body.position)))
+            .chain(self.snow_golems.iter().map(|e| (e.id, e.golem.body.position)))
+            .chain(self.illagers.iter().map(|e| (e.id, e.illager.body.position)))
+            .chain(self.vexes.iter().map(|e| (e.id, e.vex.body.position)))
+            .chain(self.ravagers.iter().map(|e| (e.id, e.ravager.body.position)))
             .chain(self.arrows.iter().map(|e| (e.id, e.arrow.position)))
             .chain(self.potions.iter().map(|e| (e.id, e.potion.position)))
             .chain(self.villagers.iter().map(|e| (e.id, e.villager.body.position)))
@@ -4799,6 +5483,8 @@ impl EntityWorld {
             .chain(self.piglins.iter().map(|e| (e.id, e.piglin.body.position)))
             .chain(self.shulkers.iter().map(|e| (e.id, e.shulker.body.position)))
             .chain(self.shulker_bullets.iter().map(|e| (e.id, e.bullet.position)))
+            .chain(self.llama_spits.iter().map(|e| (e.id, e.spit.position)))
+            .chain(self.evoker_fangs.iter().map(|e| (e.id, e.fangs.position)))
     }
 
     /// The burning mobs (`displayFireAnimation`), for their flames: where
@@ -4820,6 +5506,12 @@ impl EntityWorld {
         self.witches.iter().for_each(|e| add(e.previous_position, &e.witch.body));
         self.iron_golems.iter().for_each(|e| add(e.previous_position, &e.golem.body));
         self.wolves.iter().for_each(|e| add(e.previous_position, &e.wolf.body));
+        self.felines.iter().for_each(|e| add(e.previous_position, &e.feline.body));
+        self.wandering_traders.iter().for_each(|e| add(e.previous_position, &e.trader.body));
+        self.snow_golems.iter().for_each(|e| add(e.previous_position, &e.golem.body));
+        self.illagers.iter().for_each(|e| add(e.previous_position, &e.illager.body));
+        self.vexes.iter().for_each(|e| add(e.previous_position, &e.vex.body));
+        self.ravagers.iter().for_each(|e| add(e.previous_position, &e.ravager.body));
         self.villagers.iter().for_each(|e| add(e.previous_position, &e.villager.body));
         self.cows.iter().for_each(|e| add(e.previous_position, &e.cow.body));
         self.sheep.iter().for_each(|e| add(e.previous_position, &e.body));
@@ -4854,6 +5546,12 @@ impl EntityWorld {
         let witches: Vec<WitchEntity> = self.witches.iter().filter(|e| keep(e.witch.body.position)).cloned().collect();
         let iron_golems: Vec<IronGolemEntity> = self.iron_golems.iter().filter(|e| keep(e.golem.body.position)).cloned().collect();
         let wolves: Vec<WolfEntity> = self.wolves.iter().filter(|e| keep(e.wolf.body.position)).cloned().collect();
+        let felines: Vec<FelineEntity> = self.felines.iter().filter(|e| keep(e.feline.body.position)).cloned().collect();
+        let wandering_traders: Vec<TraderEntity> = self.wandering_traders.iter().filter(|e| keep(e.trader.body.position)).cloned().collect();
+        let snow_golems: Vec<SnowGolemEntity> = self.snow_golems.iter().filter(|e| keep(e.golem.body.position)).cloned().collect();
+        let illagers: Vec<IllagerEntity> = self.illagers.iter().filter(|e| keep(e.illager.body.position)).cloned().collect();
+        let vexes: Vec<VexEntity> = self.vexes.iter().filter(|e| keep(e.vex.body.position)).cloned().collect();
+        let ravagers: Vec<RavagerEntity> = self.ravagers.iter().filter(|e| keep(e.ravager.body.position)).cloned().collect();
         let arrows: Vec<ArrowEntity> = self.arrows.iter().filter(|e| keep(e.arrow.position)).cloned().collect();
         let potions: Vec<PotionEntity> = self.potions.iter().filter(|e| keep(e.potion.position)).cloned().collect();
         let villagers: Vec<VillagerEntity> = self.villagers.iter().filter(|e| keep(e.villager.body.position)).cloned().collect();
@@ -4869,6 +5567,8 @@ impl EntityWorld {
         let piglins: Vec<PiglinEntity> = self.piglins.iter().filter(|e| keep(e.piglin.body.position)).cloned().collect();
         let shulkers: Vec<ShulkerEntity> = self.shulkers.iter().filter(|e| keep(e.shulker.body.position)).cloned().collect();
         let shulker_bullets: Vec<ShulkerBulletEntity> = self.shulker_bullets.iter().filter(|e| keep(e.bullet.position)).cloned().collect();
+        let llama_spits: Vec<LlamaSpitEntity> = self.llama_spits.iter().filter(|e| keep(e.spit.position)).cloned().collect();
+        let evoker_fangs: Vec<EvokerFangsEntity> = self.evoker_fangs.iter().filter(|e| keep(e.fangs.position)).cloned().collect();
         let mut copy = Self {
             bats,
             zombies,
@@ -4880,6 +5580,14 @@ impl EntityWorld {
             witches,
             iron_golems,
             wolves,
+            felines,
+            wandering_traders,
+            snow_golems,
+            illagers,
+            vexes,
+            ravagers,
+            player_pushes: Vec::new(),
+            snowball_shots: Vec::new(),
             ghasts,
             fireballs,
             fireball_blasts: Vec::new(),
@@ -4892,6 +5600,8 @@ impl EntityWorld {
             shulkers,
             shulker_teleports: Vec::new(),
             shulker_bullets,
+            llama_spits,
+            evoker_fangs,
             bullet_puffs: Vec::new(),
             fireball_fires: Vec::new(),
             player_views: self.player_views.clone(),
@@ -4925,6 +5635,11 @@ impl EntityWorld {
             barter_throws: Vec::new(),
             piglin_angers: Vec::new(),
             piglin_conversions: Vec::new(),
+            zombie_conversions: Vec::new(),
+            villager_infections: Vec::new(),
+            zombie_cures: Vec::new(),
+            trident_throws: Vec::new(),
+            sea_level: self.sea_level,
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: self.mob_drops,
@@ -4934,6 +5649,8 @@ impl EntityWorld {
             day_time: self.day_time,
             seed_uniquifier: self.seed_uniquifier,
             pois: self.pois.clone(),
+            raids: self.raids.clone(),
+            raid_villager_events: Default::default(),
             summoned_golem_seed: self.summoned_golem_seed,
             summoned_golems: Vec::new(),
             born_seeds: self.born_seeds.clone(),
@@ -4945,17 +5662,25 @@ impl EntityWorld {
             uuids: self.uuids.clone(),
             uuid_salt: self.uuid_salt,
             player_heroes: self.player_heroes.clone(),
+            cat_gift_chance: self.cat_gift_chance,
+            cat_gifts: Vec::new(),
             merchant_menus: HashMap::new(),
             trade_experience: Vec::new(),
             player_main_hands: self.player_main_hands.clone(),
             entity_events: Vec::new(),
             passengers: self.passengers.clone(),
             player_dismounts: Vec::new(),
+            ride_jumps: self.ride_jumps.clone(),
+            leashes: self.leashes.clone(),
+            knots: self.knots.clone(),
+            leash_players: self.leash_players.clone(),
+            lead_drops: Vec::new(),
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
         copy.order = self.order.iter().copied().filter(|key| kept.contains(&key.id())).collect();
         copy.sections.retain_mobs(|id| kept.contains(&id));
         copy.prune_riding();
+        copy.leashes.retain(|id, _| kept.contains(id));
         copy
     }
 
@@ -4973,7 +5698,7 @@ impl EntityWorld {
     /// obstruction test.
     pub fn census(&self) -> Vec<CensusEntry> {
         let entry = |id: u64, kind: &'static str, body: &crate::movement::Body, persistent: bool| {
-            let passenger = self.vehicle_of(Rider::Mob(id)).is_some();
+            let passenger = self.vehicle_of(Rider::Mob(id)).is_some() || self.leash_holder(id).is_some();
             CensusEntry {
                 kind,
                 position: body.position,
@@ -4998,6 +5723,12 @@ impl EntityWorld {
         out.extend(self.witches.iter().map(|e| entry(e.id, "minecraft:witch", &e.witch.body, e.witch.persistence_required)));
         out.extend(self.iron_golems.iter().map(|e| entry(e.id, "minecraft:iron_golem", &e.golem.body, e.golem.persistence_required)));
         out.extend(self.wolves.iter().map(|e| entry(e.id, "minecraft:wolf", &e.wolf.body, e.wolf.persistence_required || e.wolf.tame)));
+        out.extend(self.felines.iter().map(|e| entry(e.id, e.feline.kind.type_id(), &e.feline.body, e.feline.persistence_required || !e.feline.wild())));
+        out.extend(self.wandering_traders.iter().map(|e| entry(e.id, crate::wandering_trader::TYPE_ID, &e.trader.body, e.trader.persistence_required)));
+        out.extend(self.snow_golems.iter().map(|e| entry(e.id, crate::snow_golem::TYPE_ID, &e.golem.body, e.golem.persistence_required)));
+        out.extend(self.illagers.iter().map(|e| entry(e.id, e.illager.kind.type_id(), &e.illager.body, e.illager.persistence_required)));
+        out.extend(self.vexes.iter().map(|e| entry(e.id, crate::vex::TYPE_ID, &e.vex.body, e.vex.persistence_required)));
+        out.extend(self.ravagers.iter().map(|e| entry(e.id, crate::ravager::TYPE_ID, &e.ravager.body, e.ravager.persistence_required)));
         out.extend(self.villagers.iter().map(|e| entry(e.id, "minecraft:villager", &e.villager.body, e.villager.persistence_required)));
         out.extend(self.cows.iter().map(|e| {
             let kind = if e.mooshroom.is_some() { "minecraft:mooshroom" } else { "minecraft:cow" };
@@ -5027,10 +5758,11 @@ impl EntityWorld {
     pub fn check_despawn(&mut self, players: &[DVec3], peaceful: bool, listed: &dyn Fn(DVec3) -> bool) -> usize {
         // Despawn distance, `removeWhenFarAway`, `isAllowedInPeaceful`.
         const MONSTER: (f64, bool, bool) = (128.0, true, false);
+        const KEPT_MONSTER: (f64, bool, bool) = (128.0, false, false);
         const CREATURE: (f64, bool, bool) = (128.0, false, true);
         const AMBIENT: (f64, bool, bool) = (128.0, true, true);
         const VILLAGER: (f64, bool, bool) = (128.0, false, true);
-        let riders: HashSet<u64> = self.riding_mobs().map(|(rider, _)| rider).collect();
+        let riders: HashSet<u64> = self.riding_mobs().map(|(rider, _)| rider).chain(self.leashes.iter().filter(|(_, leash)| leash.holder.is_some()).map(|(&id, _)| id)).collect();
         let check = |id: u64, position: DVec3, persistent: bool, rule: (f64, bool, bool), no_action_time: &mut i32, random: &mut LegacyRandom| -> bool {
             let persistent = persistent || riders.contains(&id);
             if !listed(position) {
@@ -5051,7 +5783,7 @@ impl EntityWorld {
         };
         let before = self.order.len();
         self.bats.retain_mut(|e| !check(e.id, e.bat.body.position, e.bat.persistence_required, AMBIENT, &mut e.no_action_time, &mut e.random));
-        self.zombies.retain_mut(|e| !check(e.id, e.zombie.body.position, e.zombie.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.zombies.retain_mut(|e| !check(e.id, e.zombie.body.position, e.zombie.persistence_required, if e.zombie.villager_xp != 0 || e.zombie.curing() { KEPT_MONSTER } else { MONSTER }, &mut e.no_action_time, &mut e.random));
         self.skeletons.retain_mut(|e| !check(e.id, e.skeleton.body.position, e.skeleton.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.creepers.retain_mut(|e| !check(e.id, e.creeper.body.position, e.creeper.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.spiders.retain_mut(|e| !check(e.id, e.spider.body.position, e.spider.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
@@ -5060,11 +5792,41 @@ impl EntityWorld {
             let persistent = e.enderman.persistence_required || e.ai.state.enderman.carried.is_some();
             !check(e.id, e.enderman.body.position, persistent, MONSTER, &mut e.no_action_time, &mut e.random)
         });
-        self.witches.retain_mut(|e| !check(e.id, e.witch.body.position, e.witch.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.witches.retain_mut(|e| {
+            let in_raid = e.witch.raider.raid_id.is_some();
+            if in_raid && listed(e.witch.body.position) {
+                e.no_action_time = 0;
+            }
+            !check(e.id, e.witch.body.position, e.witch.persistence_required || in_raid, MONSTER, &mut e.no_action_time, &mut e.random)
+        });
         // `AbstractGolem.removeWhenFarAway` is false, yet the idle roll draws.
         self.iron_golems.retain_mut(|e| !check(e.id, e.golem.body.position, e.golem.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         // `TamableAnimal`: a tame wolf never goes.
         self.wolves.retain_mut(|e| !check(e.id, e.wolf.body.position, e.wolf.persistence_required || e.wolf.tame, CREATURE, &mut e.no_action_time, &mut e.random));
+        self.felines.retain_mut(|e| !check(e.id, e.feline.body.position, e.feline.persistence_required, (128.0, e.feline.wild() && e.tick_count > 2400, true), &mut e.no_action_time, &mut e.random));
+        self.wandering_traders.retain_mut(|e| !check(e.id, e.trader.body.position, e.trader.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
+        self.snow_golems.retain_mut(|e| !check(e.id, e.golem.body.position, e.golem.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
+        self.illagers.retain_mut(|e| {
+            let position = e.illager.body.position;
+            let near = players.iter().map(|p| p.distance_squared(position)).min_by(f64::total_cmp).is_some_and(|d| d <= crate::illager::PATROL_KEEP_RANGE * crate::illager::PATROL_KEEP_RANGE);
+            let rule = if e.illager.raider.patrolling && near { KEPT_MONSTER } else { MONSTER };
+            let in_raid = e.illager.raider.raid_id.is_some();
+            if in_raid && listed(position) {
+                e.no_action_time = 0;
+            }
+            !check(e.id, position, e.illager.persistence_required || in_raid, rule, &mut e.no_action_time, &mut e.random)
+        });
+        self.vexes.retain_mut(|e| !check(e.id, e.vex.body.position, e.vex.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.ravagers.retain_mut(|e| {
+            let position = e.ravager.body.position;
+            let near = players.iter().map(|p| p.distance_squared(position)).min_by(f64::total_cmp).is_some_and(|d| d <= crate::illager::PATROL_KEEP_RANGE * crate::illager::PATROL_KEEP_RANGE);
+            let rule = if e.ravager.raider.patrolling && near { KEPT_MONSTER } else { MONSTER };
+            let in_raid = e.ravager.raider.raid_id.is_some();
+            if in_raid && listed(position) {
+                e.no_action_time = 0;
+            }
+            !check(e.id, position, e.ravager.persistence_required || in_raid, rule, &mut e.no_action_time, &mut e.random)
+        });
         self.villagers.retain_mut(|e| !check(e.id, e.villager.body.position, e.villager.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         self.cows.retain_mut(|e| !check(e.id, e.cow.body.position, e.cow.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
         self.sheep.retain_mut(|e| !check(e.id, e.body.position, e.sheep.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
@@ -5097,6 +5859,12 @@ impl EntityWorld {
         self.witches.retain(|e| !remove(e.witch.body.position));
         self.iron_golems.retain(|e| !remove(e.golem.body.position));
         self.wolves.retain(|e| !remove(e.wolf.body.position));
+        self.felines.retain(|e| !remove(e.feline.body.position));
+        self.wandering_traders.retain(|e| !remove(e.trader.body.position));
+        self.snow_golems.retain(|e| !remove(e.golem.body.position));
+        self.illagers.retain(|e| !remove(e.illager.body.position));
+        self.vexes.retain(|e| !remove(e.vex.body.position));
+        self.ravagers.retain(|e| !remove(e.ravager.body.position));
         self.arrows.retain(|e| !remove(e.arrow.position));
         self.potions.retain(|e| !remove(e.potion.position));
         self.villagers.retain(|e| !remove(e.villager.body.position));
@@ -5112,6 +5880,8 @@ impl EntityWorld {
         self.piglins.retain(|e| !remove(e.piglin.body.position));
         self.shulkers.retain(|e| !remove(e.shulker.body.position));
         self.shulker_bullets.retain(|e| !remove(e.bullet.position));
+        self.llama_spits.retain(|e| !remove(e.spit.position));
+        self.evoker_fangs.retain(|e| !remove(e.fangs.position));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
         self.prune_riding();
@@ -5130,8 +5900,10 @@ impl EntityWorld {
         self.game_time += 1;
         let game_time = self.game_time;
         self.set_pushing_players(players);
+        self.tick_ride_jumps();
         self.resolve_piglin_angers(players);
         let ticking: HashSet<u64> = self.positions().filter(|&(_, position)| ticks(position)).map(|(id, _)| id).collect();
+        self.tick_leashes(&*world, players, &ticking);
         // Snapshot membership: newborns join the world immediately but start
         // ticking on the next game tick, in global insertion order.
         let mut order = self.order.clone();
@@ -5217,6 +5989,9 @@ impl EntityWorld {
                     continue;
                 }
                 EntityKey::Zombie(id) => {
+                    if self.tick_zombie_cure(id, &*world) {
+                        continue;
+                    }
                     let villagers: Vec<_> = self
                         .villagers
                         .iter()
@@ -5229,8 +6004,18 @@ impl EntityWorld {
                             alive: entity.villager.health > 0.0,
                             baby: entity.villager.age.baby(),
                         })
+                        .chain(self.wandering_traders.iter().map(|entity| VillagerCandidate {
+                            id: entity.id,
+                            position: entity.trader.body.position,
+                            eye_height: entity.trader.eye_height(),
+                            width: entity.trader.body.width,
+                            height: entity.trader.body.height,
+                            alive: entity.trader.health > 0.0,
+                            baby: false,
+                        }))
                         .collect();
                     let bright_outside = self.bright_outside;
+                    let sea_level = self.sea_level;
                     let monsters_burn = self.monsters_burn;
                     let (difficulty, mob_griefing) = (self.difficulty, self.mob_griefing);
                     let mobs = self.mob_candidates();
@@ -5355,6 +6140,10 @@ impl EntityWorld {
                                     entity.hurt(damage);
                                 }
                             } else if entity.zombie.health > 0.0 && !entity.no_ai {
+                                if let Some(goals) = entity.drowned.as_mut() {
+                                    goals.sea_level = sea_level;
+                                    goals.difficulty = difficulty;
+                                }
                                 if entity.attack_only {
                                     entity.tick_pursuit(
                                         world,
@@ -5382,6 +6171,11 @@ impl EntityWorld {
                             entity.zombie.tick_drowning(eye_in_water, entity.no_ai);
                         (entity.pending_attack_villager.take(), entity.pending_attack_player.take(), conversion_due, !removed)
                     };
+                    let throw = self.zombie_mut(id).and_then(|e| Some((e.drowned.as_mut()?.throw.take()?, e.zombie.main_hand.clone())));
+                    if let Some(((position, velocity), item)) = throw {
+                        let item = item.unwrap_or_else(|| "minecraft:trident".to_owned());
+                        self.trident_throws.push(crate::drowned_ai::TridentThrow { owner: id, position, velocity, item });
+                    }
                     if let Some((player_id, attacker)) = pending_player {
                         // `Zombie.createAttributes`: 3 attack damage; an
                         // empty-handed husk's bite adds 140 ticks of hunger
@@ -5401,6 +6195,7 @@ impl EntityWorld {
                         self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0, throw: glam::DVec3::ZERO, disable_shield_seconds: 0.0 }, source: Some(id) });
                     }
                     let damage = self.zombies.iter().find(|e| e.id == id).map_or(3.0, |e| zombie_attack_damage(&e.zombie));
+                    let mut killed_villager = None;
                     if let Some((victim_id, attacker_position)) = pending_attack {
                         if let Some(victim) = self.villager_mut(victim_id) {
                             let result = victim.hurt_from(damage, "minecraft:mob_attack", Some(id), game_time);
@@ -5408,9 +6203,17 @@ impl EntityWorld {
                                 victim.knockback_from(attacker_position);
                                 self.villager_hurt_by(victim_id, id);
                             }
+                            if result.died {
+                                killed_villager = Some(victim_id);
+                            }
+                        } else if self.is_wandering_trader(victim_id) {
+                            self.mob_hits_mob(id, victim_id, damage, attacker_position, 0.0);
                         }
                     }
                     self.pois = lent_pois.expect("the points of interest come back");
+                    if let Some(villager) = killed_villager {
+                        self.zombie_killed_villager(id, villager);
+                    }
                     if let Some((victim, attacker_position)) = pending_mob {
                         self.mob_hits_mob(id, victim, damage, attacker_position, 0.0);
                     }
@@ -5729,6 +6532,30 @@ impl EntityWorld {
                     self.tick_wolf(id, world, players, ticks);
                     continue;
                 }
+                EntityKey::Feline(id) => {
+                    self.tick_feline(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::Trader(id) => {
+                    self.tick_wandering_trader(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::SnowGolem(id) => {
+                    self.tick_snow_golem(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::Illager(id) => {
+                    self.tick_illager(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::Vex(id) => {
+                    self.tick_vex(id, world, players);
+                    continue;
+                }
+                EntityKey::Ravager(id) => {
+                    self.tick_ravager(id, world, players, ticks);
+                    continue;
+                }
                 EntityKey::Potion(id) => {
                     self.tick_potion(id, world, players);
                     continue;
@@ -5763,6 +6590,14 @@ impl EntityWorld {
                 }
                 EntityKey::ShulkerBullet(id) => {
                     self.tick_shulker_bullet(id, world, players);
+                    continue;
+                }
+                EntityKey::LlamaSpit(id) => {
+                    self.tick_llama_spit(id, world, players);
+                    continue;
+                }
+                EntityKey::EvokerFangs(id) => {
+                    self.tick_evoker_fangs(id, players);
                     continue;
                 }
                 EntityKey::Arrow(id) => {
@@ -6725,9 +7560,16 @@ impl EntityWorld {
                     panicking: entity.panic.running,
                 })
                 .collect();
+            let horse_inputs = self.horse_inputs(index, &candidates, players);
+            let mut horse_outputs = equines::HorseOutputs::default();
             let mut breeding_partner = None;
+            let ride = self.horse_ride(index);
             let entity = &mut self.cows[index];
+            for control in [crate::goals::Control::Move, crate::goals::Control::Jump, crate::goals::Control::Look] {
+                entity.goals.set_enabled(control, !ride.mob_controlled);
+            }
             entity.tick_count += 1;
+            entity.forget_old_attacker();
             entity.update_fluid(world);
             hazards::burn(entity, &*world, game_time);
             let eye = entity.eye_height();
@@ -6790,7 +7632,11 @@ impl EntityWorld {
                 // `LivingEntity.aiStep` still settles small motion.
                 entity.cow.body.trim_small_velocity();
             }
-            if !entity.no_ai && immobile {
+            let ridden = ride.player.filter(|_| !entity.no_ai);
+            if let Some(controls) = &ridden {
+                entity.ride_tick(&*world, controls);
+            }
+            if !entity.no_ai && immobile && ridden.is_none() {
                 entity.cow.body.trim_small_velocity();
                 if players.iter().any(|player| player.alive && !player.spectator && player.position.distance_squared(entity.cow.body.position) < 32.0 * 32.0) {
                     entity.no_action_time = 0;
@@ -6811,8 +7657,7 @@ impl EntityWorld {
                     fall = fall_damage(&cow.body, &*world, fallen, false, &mut entity.voices);
                 }
                 let sounds = if let Some(horse) = &entity.horse {
-                    let family = horse.kind.sound_family(cow.age.baby());
-                    MovementSounds { horse_step: Some((if family == "baby_horse" { "entity.baby_horse.step" } else { "entity.horse.step" }, "entity.horse.step_wood")), ..MovementSounds::creature(None) }
+                    equines::horse_movement_sounds(horse, cow.age.baby())
                 } else {
                     cow_sounds(false, cow.sound_variant)
                 };
@@ -6826,7 +7671,7 @@ impl EntityWorld {
                     entity.hurt(damage, DamageSourceKind::Generic);
                 }
             }
-            if !entity.no_ai && !immobile {
+            if !entity.no_ai && !immobile && ridden.is_none() {
                 entity.cow.body.trim_small_velocity();
                 // Mob.checkDespawn clears inactivity near a player before serverAiStep.
                 if players.iter().any(|player| {
@@ -6867,6 +7712,10 @@ impl EntityWorld {
                     navigation_done: cow.navigation.is_done(),
                     random: std::mem::take(&mut entity.random),
                     effects: Vec::new(),
+                    mates: horse_inputs.mates,
+                    tempters: horse_inputs.tempters,
+                    llama: horse_inputs.llama,
+                    crazy: ride.crazy,
                 };
                 if full_goal_tick {
                     entity.goals.tick(&mut context, &*world);
@@ -6883,6 +7732,9 @@ impl EntityWorld {
                 entity.random = context.random;
                 if let (Some(horse), Some(stand)) = (&mut entity.horse, context.stand) {
                     horse.next_stand = stand.next_stand;
+                }
+                if let (Some(horse), Some(llama)) = (&mut entity.horse, context.llama.take()) {
+                    horse.fight = llama.fight;
                 }
                 let mut jump_queued = false;
                 for effect in context.effects {
@@ -6905,6 +7757,16 @@ impl EntityWorld {
                             breeding_partner = Some(partner_id);
                         }
                         CowGoalEffect::Jump => jump_queued = true,
+                        CowGoalEffect::Spit { aim } => horse_outputs.spit = Some(aim),
+                        CowGoalEffect::Tame(player) => horse_outputs.tamed = Some(player),
+                        CowGoalEffect::Temper(by) => {
+                            if let Some(horse) = &mut entity.horse {
+                                horse.modify_temper(by);
+                            }
+                        }
+                        CowGoalEffect::Buck => horse_outputs.buck = true,
+                        CowGoalEffect::JoinCaravan(head) => horse_outputs.join.push(head),
+                        CowGoalEffect::LeaveCaravan(head) => horse_outputs.leave.push(head),
                         CowGoalEffect::Stand => {
                             // `RandomStandGoal.start`: rear, and the ambient
                             // stand sound (`playSound(sound)`: volume and
@@ -6980,8 +7842,7 @@ impl EntityWorld {
                     fall = fall_damage(&cow.body, &*world, fallen, false, &mut entity.voices);
                 }
                 let sounds = if let Some(horse) = &entity.horse {
-                    let family = horse.kind.sound_family(cow.age.baby());
-                    MovementSounds { horse_step: Some((if family == "baby_horse" { "entity.baby_horse.step" } else { "entity.horse.step" }, "entity.horse.step_wood")), ..MovementSounds::creature(None) }
+                    equines::horse_movement_sounds(horse, cow.age.baby())
                 } else {
                     cow_sounds(entity.mooshroom.is_some(), cow.sound_variant)
                 };
@@ -7010,6 +7871,8 @@ impl EntityWorld {
             }
             let id = self.cows[index].id;
             self.push_entities(EntityKey::Cow(id), &*world, game_time, ticks);
+            self.horse_outputs(index, horse_outputs, &*world);
+            let breeding_partner = breeding_partner.filter(|&partner| !self.breed_horses(index, partner));
             if let Some(partner_id) = breeding_partner {
                 if let Some(partner_index) = self.cows.iter().position(|e| e.id == partner_id) {
                     let parent_variant = self.cows[index]
@@ -7079,7 +7942,7 @@ impl EntityWorld {
                     }
                     let p = entity.cow.body.position;
                     let below = (p.x.floor() as i32, p.y.floor() as i32 - 1, p.z.floor() as i32);
-                    if !horse.eating && entity.random.next_int(300) == 0 && world.block(below).is_some_and(|b| b.id == "minecraft:grass_block") {
+                    if !horse.eating && horse.kind.can_eat_grass() && !ride.carrying && entity.random.next_int(300) == 0 && world.block(below).is_some_and(|b| b.id == "minecraft:grass_block") {
                         horse.eating = true;
                     }
                     if horse.eating {
@@ -7091,7 +7954,9 @@ impl EntityWorld {
                     }
                 }
                 horse.tick_animation();
+                horse.ridden = ride.carrying;
             }
+            entity.tick_trader_despawn();
         }
         if let Some(tick) = riding.take() {
             self.end_ride_tick(tick, &*world);
@@ -7111,11 +7976,17 @@ impl EntityWorld {
         self.witches.retain(|entity| entity.witch.damage.death_ticks < 20);
         self.iron_golems.retain(|entity| entity.golem.damage.death_ticks < 20);
         self.wolves.retain(|entity| entity.wolf.damage.death_ticks < 20);
+        self.felines.retain(|entity| entity.feline.damage.death_ticks < 20);
+        self.wandering_traders.retain(|entity| entity.trader.damage.death_ticks < 20);
+        self.snow_golems.retain(|entity| entity.golem.damage.death_ticks < 20);
+        self.illagers.retain(|entity| entity.illager.damage.death_ticks < 20);
+        self.vexes.retain(|entity| entity.vex.damage.death_ticks < 20);
+        self.ravagers.retain(|entity| entity.ravager.damage.death_ticks < 20);
         self.potions.retain(|entity| entity.potion.alive);
         self.villagers
             .retain(|entity| entity.villager.damage.death_ticks < 20);
         self.cows
-            .retain(|entity| entity.cow.damage.death_ticks < 20);
+            .retain(|entity| entity.cow.damage.death_ticks < 20 && !entity.horse.as_ref().is_some_and(|h| h.despawned()));
         self.sheep.retain(|entity| entity.damage.death_ticks < 20);
         self.pigs
             .retain(|entity| entity.pig.damage.death_ticks < 20);
@@ -7130,6 +8001,8 @@ impl EntityWorld {
         self.piglins.retain(|entity| entity.piglin.damage.death_ticks < 20);
         self.shulkers.retain(|entity| entity.shulker.damage.death_ticks < 20);
         self.shulker_bullets.retain(|entity| entity.bullet.alive);
+        self.llama_spits.retain(|entity| entity.spit.alive);
+        self.evoker_fangs.retain(|entity| entity.fangs.alive);
         let alive_ids: HashSet<_> = self
             .bats
             .iter()
@@ -7144,6 +8017,12 @@ impl EntityWorld {
             .chain(self.witches.iter().map(|entity| entity.id))
             .chain(self.iron_golems.iter().map(|entity| entity.id))
             .chain(self.wolves.iter().map(|entity| entity.id))
+            .chain(self.felines.iter().map(|entity| entity.id))
+            .chain(self.wandering_traders.iter().map(|entity| entity.id))
+            .chain(self.snow_golems.iter().map(|entity| entity.id))
+            .chain(self.illagers.iter().map(|entity| entity.id))
+            .chain(self.vexes.iter().map(|entity| entity.id))
+            .chain(self.ravagers.iter().map(|entity| entity.id))
             .chain(self.arrows.iter().map(|entity| entity.id))
             .chain(self.potions.iter().map(|entity| entity.id))
             .chain(self.villagers.iter().map(|entity| entity.id))
@@ -7158,6 +8037,8 @@ impl EntityWorld {
             .chain(self.piglins.iter().map(|entity| entity.id))
             .chain(self.shulkers.iter().map(|entity| entity.id))
             .chain(self.shulker_bullets.iter().map(|entity| entity.id))
+            .chain(self.llama_spits.iter().map(|entity| entity.id))
+            .chain(self.evoker_fangs.iter().map(|entity| entity.id))
             .collect();
         self.sections.retain_mobs(|id| alive_ids.contains(&id));
         self.order.retain(|key| match key {
@@ -7185,7 +8066,15 @@ impl EntityWorld {
             | EntityKey::Hoglin(id)
             | EntityKey::Piglin(id)
             | EntityKey::Shulker(id)
-            | EntityKey::ShulkerBullet(id) => alive_ids.contains(id),
+            | EntityKey::ShulkerBullet(id)
+            | EntityKey::Feline(id)
+            | EntityKey::LlamaSpit(id)
+            | EntityKey::Trader(id)
+            | EntityKey::SnowGolem(id)
+            | EntityKey::Illager(id)
+            | EntityKey::EvokerFangs(id)
+            | EntityKey::Vex(id)
+            | EntityKey::Ravager(id) => alive_ids.contains(id),
         });
         self.prune_riding();
     }
@@ -7313,7 +8202,61 @@ impl EntityWorld {
                     }
                     (MobHit::Wolf(id), &entity.wolf.body)
                 }
-                EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) => continue,
+                EntityKey::Feline(id) => {
+                    let Some(entity) = self.felines.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.feline.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::Feline(id), &entity.feline.body)
+                }
+                EntityKey::Trader(id) => {
+                    let Some(entity) = self.wandering_traders.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.trader.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::WanderingTrader(id), &entity.trader.body)
+                }
+                EntityKey::SnowGolem(id) => {
+                    let Some(entity) = self.snow_golems.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.golem.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::SnowGolem(id), &entity.golem.body)
+                }
+                EntityKey::Illager(id) => {
+                    let Some(entity) = self.illagers.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.illager.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::Illager(id), &entity.illager.body)
+                }
+                EntityKey::Vex(id) => {
+                    let Some(entity) = self.vexes.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.vex.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::Vex(id), &entity.vex.body)
+                }
+                EntityKey::Ravager(id) => {
+                    let Some(entity) = self.ravagers.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.ravager.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::Ravager(id), &entity.ravager.body)
+                }
+                EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => continue,
                 EntityKey::Ghast(id) => {
                     let Some(entity) = self.ghasts.iter().find(|entity| entity.id == id) else {
                         continue;
@@ -7711,6 +8654,145 @@ mod tests {
     }
 
     #[test]
+    fn a_drowned_always_drops_its_nautilus_shell_and_a_player_s_kill_sometimes_its_worn_trident() {
+        let mut world = EntityWorld::default();
+        let (mut tridents, mut kept) = (0, 0);
+        for n in 0..400_u32 {
+            let mut drowned = Zombie::new(DVec3::new(f64::from(n) * 3.0 + 0.5, 1.0, 0.5));
+            drowned.kind = ZombieKind::Drowned;
+            drowned.main_hand = Some("minecraft:trident".to_owned());
+            drowned.off_hand = Some("minecraft:nautilus_shell".to_owned());
+            drowned.hand_drop_chances[1] = 2.0;
+            let id = world.spawn_zombie(drowned, true);
+            world.zombie_mut(id).unwrap().random = LegacyRandom::new(u64::from(n));
+            let center = DVec3::new(f64::from(n) * 3.0 + 0.5, 1.0, 2.5);
+            let player = (n % 4 != 0).then_some(7);
+            assert!(world.player_blast(player, id, 100.0, center, 0.0).unwrap().died);
+            for death in world.take_deaths() {
+                assert_eq!(death.table, Some("minecraft:drowned"));
+                assert_eq!(death.equipment.iter().filter(|stack| stack.id == "minecraft:nautilus_shell").count(), 1, "a guaranteed drop");
+                match death.equipment.iter().find(|stack| stack.id == "minecraft:trident") {
+                    Some(trident) => {
+                        assert!(player.is_some(), "only a player's kill drops the trident");
+                        let wear = trident.components.as_ref().and_then(|c| c["minecraft:damage"].as_u64()).unwrap();
+                        assert!((1..=250).contains(&wear), "{wear}");
+                        assert_eq!(death.experience, 5);
+                        tridents += 1;
+                    }
+                    None if player.is_some() => {
+                        assert!((6..=8).contains(&death.experience), "{}", death.experience);
+                        kept += 1;
+                    }
+                    None => {}
+                }
+            }
+        }
+        assert!(tridents > 10 && kept > 200, "{tridents} dropped, {kept} kept");
+    }
+
+    #[test]
+    fn a_baby_drowned_s_kill_gives_twelve_experience_and_its_kept_trident_adds_one_to_three() {
+        let mut world = EntityWorld::default();
+        let (mut bare, mut armed) = (0, 0);
+        for n in 0..200_u32 {
+            let mut drowned = Zombie::new(DVec3::new(f64::from(n) * 3.0 + 0.5, 1.0, 0.5));
+            drowned.kind = ZombieKind::Drowned;
+            drowned.set_baby(true);
+            if n % 2 == 0 {
+                drowned.main_hand = Some("minecraft:trident".to_owned());
+            }
+            let id = world.spawn_zombie(drowned, true);
+            world.zombie_mut(id).unwrap().random = LegacyRandom::new(u64::from(n));
+            let center = DVec3::new(f64::from(n) * 3.0 + 0.5, 1.0, 2.5);
+            assert!(world.player_blast(Some(7), id, 100.0, center, 0.0).unwrap().died);
+            for death in world.take_deaths() {
+                if death.equipment.iter().any(|stack| stack.id == "minecraft:trident") || n % 2 == 1 {
+                    assert_eq!(death.experience, 12, "a baby's 5 times 2.5, rounded down");
+                    bare += 1;
+                } else {
+                    assert!((13..=15).contains(&death.experience), "{}", death.experience);
+                    armed += 1;
+                }
+            }
+        }
+        assert!(bare > 100 && armed > 50, "{bare} bare, {armed} armed");
+    }
+
+    #[test]
+    fn a_drowned_with_a_trident_throws_it_from_range() {
+        let mut world = EntityWorld::default();
+        world.set_bright_outside(false);
+        let mut armed = Zombie::new(DVec3::new(0.5, 1.0, 0.5));
+        armed.main_hand = Some("minecraft:trident".to_owned());
+        let id = world.spawn_drowned(armed);
+        world.zombie_mut(id).unwrap().set_random_seed(5);
+        let bare = world.spawn_drowned(Zombie::new(DVec3::new(0.5, 1.0, 30.5)));
+        let player = candidate(7, DVec3::new(8.5, 1.0, 0.5));
+        let mut throws = Vec::new();
+        let mut aggressive = false;
+        for tick in 0..240 {
+            world.tick_with_players(&mut Floor, &[player]);
+            throws.extend(world.take_trident_throws().into_iter().map(|throw| (tick, throw)));
+            aggressive |= world.zombies().iter().any(|e| e.id == id && e.aggressive);
+        }
+        assert!(throws.len() >= 3, "{}", throws.len());
+        assert!(aggressive, "it raises the trident while its goal runs");
+        assert!(throws.iter().all(|(_, throw)| throw.owner == id && throw.item == "minecraft:trident"), "{bare} never throws");
+        for pair in throws.windows(2) {
+            assert_eq!(pair[1].0 - pair[0].0, crate::drowned_ai::TRIDENT_INTERVAL);
+        }
+        let (_, first) = &throws[0];
+        let from = world.zombies().iter().find(|e| e.id == id).unwrap().position();
+        assert!((first.position.y - (from.y + 1.74 - f64::from(0.1_f32))).abs() < 1.0e-6, "{:?}", first.position);
+        assert!(first.velocity.x > 1.4 && (first.velocity.length() - 1.6).abs() < 0.2, "{:?}", first.velocity);
+        let voices: Vec<_> = world.take_sounds().into_iter().filter(|s| s.event == crate::drowned_ai::SHOOT_SOUND).collect();
+        assert_eq!(voices.len(), throws.len());
+    }
+
+    struct ShoreWorld;
+    impl World for ShoreWorld {
+        fn block(&self, (x, y, _): minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            if y < 1 || (x >= 5 && y <= 1) {
+                Some(minecraftoss_player::Block::new("minecraft:stone"))
+            } else if y == 1 {
+                Some(minecraftoss_player::Block::new("minecraft:water").with("level", "0"))
+            } else {
+                None
+            }
+        }
+        fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    #[test]
+    fn a_drowned_heads_for_water_by_day_and_the_beach_by_night() {
+        let mut world = EntityWorld::default();
+        world.set_sea_level(3);
+        world.set_bright_outside(true);
+        let id = world.spawn_drowned(Zombie::new(DVec3::new(9.5, 2.0, 0.5)));
+        world.zombie_mut(id).unwrap().set_random_seed(11);
+        let running = |world: &EntityWorld| world.zombies().iter().find(|e| e.id == id).and_then(|e| e.drowned.as_ref()).map(|goals| goals.running);
+        let mut watered = false;
+        for _ in 0..400 {
+            world.tick_with_players(&mut ShoreWorld, &[]);
+            watered |= running(&world) == Some(crate::drowned_ai::DrownedMove::Water);
+        }
+        assert!(watered);
+        let by_day = world.zombie_mut(id).unwrap().position();
+        assert!(by_day.x < 5.0 && by_day.y < 2.0, "by day it walks into the water: {by_day}");
+        world.set_bright_outside(false);
+        let mut beached = false;
+        for _ in 0..400 {
+            world.tick_with_players(&mut ShoreWorld, &[]);
+            beached |= running(&world) == Some(crate::drowned_ai::DrownedMove::Beach);
+        }
+        assert!(beached);
+        let entity = world.zombie_mut(id).unwrap();
+        let by_night = entity.position();
+        assert!(by_night.x >= 5.0 && by_night.y >= 2.0, "by night it climbs onto the beach: {by_night}");
+        assert_eq!(entity.drowned.as_ref().map(|goals| goals.searching_for_land), Some(false));
+    }
+
+    #[test]
     fn a_magma_cube_is_an_armoured_fire_proof_slime_that_hurts_even_when_tiny_and_splits_into_magma() {
         let big = crate::slime::Slime::magma(DVec3::new(0.5, 1.0, 0.5), 4);
         assert_eq!((big.type_id(), big.attack_damage(), big.armor()), ("minecraft:magma_cube", 6.0, 12.0));
@@ -7908,6 +8990,139 @@ mod tests {
         );
         assert!(world.villager_mut(villager).unwrap().hurt(21.0).died);
         assert!(world.mob_on_ray(eye, DVec3::Z, 5.0).is_none());
+    }
+
+    #[test]
+    fn a_zombie_s_killing_blow_infects_a_villager_always_on_hard_half_the_time_on_normal_and_never_below() {
+        let infections = |difficulty: i32| {
+            let mut world = EntityWorld::default();
+            world.set_difficulty(difficulty);
+            let zombie = world.spawn_zombie(Zombie::new(DVec3::new(0.0, 1.0, 0.0)), true);
+            let mut infected = 0;
+            for _ in 0..200 {
+                let villager = world.spawn_villager(Villager::new(DVec3::new(0.0, 1.0, 1.0)), true);
+                assert!(world.mob_shot_mob(zombie, villager, 100.0, DVec3::Z));
+                let taken = world.take_villager_infections();
+                let died = world.take_deaths().iter().any(|death| death.id == villager);
+                if taken.is_empty() {
+                    assert!(died, "a villager that stays dead leaves its death");
+                } else {
+                    assert_eq!(taken, vec![(zombie, villager)]);
+                    assert!(!died, "an infected villager drops nothing");
+                    infected += 1;
+                }
+                world.remove_mobs(&[villager]);
+            }
+            infected
+        };
+        assert_eq!(infections(3), 200);
+        let normal = infections(2);
+        assert!((70..=130).contains(&normal), "{normal}");
+        assert_eq!(infections(1), 0);
+        assert_eq!(infections(0), 0);
+        let mut world = EntityWorld::default();
+        world.set_difficulty(3);
+        let skeleton = world.spawn_skeleton(crate::skeleton::Skeleton::new(DVec3::ZERO), true);
+        let villager = world.spawn_villager(Villager::new(DVec3::new(0.0, 1.0, 1.0)), true);
+        assert!(world.mob_shot_mob(skeleton, villager, 100.0, DVec3::Z));
+        assert!(world.take_villager_infections().is_empty(), "only zombies infect");
+    }
+
+    #[test]
+    fn a_zombie_villager_that_was_a_traded_villager_never_despawns_far_away() {
+        let mut world = EntityWorld::default();
+        let mut traded = Zombie::new(DVec3::new(200.0, 1.0, 0.0));
+        traded.kind = ZombieKind::ZombieVillager;
+        traded.villager_xp = 12;
+        let traded = world.spawn_zombie(traded, true);
+        let mut plain = Zombie::new(DVec3::new(200.0, 1.0, 2.0));
+        plain.kind = ZombieKind::ZombieVillager;
+        let plain = world.spawn_zombie(plain, true);
+        world.check_despawn(&[DVec3::ZERO], false, &|_| true);
+        assert!(world.zombies().iter().any(|e| e.id == traded));
+        assert!(world.zombies().iter().all(|e| e.id != plain));
+    }
+
+    struct Barred(bool);
+    impl World for Barred {
+        fn block(&self, (x, y, z): minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            if y < 1 {
+                return Some(minecraftoss_player::Block::new("minecraft:stone"));
+            }
+            (self.0 && y == 1 && (2..=3).contains(&x.abs()) && z.abs() <= 3).then(|| minecraftoss_player::Block::new(if x > 0 { "minecraft:iron_bars" } else { "minecraft:red_bed" }))
+        }
+        fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    fn zombie_villager(time: i32) -> Zombie {
+        let mut zombie = Zombie::new(DVec3::new(0.5, 1.0, 0.5));
+        zombie.kind = ZombieKind::ZombieVillager;
+        zombie.villager_conversion_time = time;
+        zombie
+    }
+
+    #[test]
+    fn a_golden_apple_starts_curing_only_a_weakened_zombie_villager() {
+        let mut world = EntityWorld::default();
+        world.set_player_uuid(0, 0xC0FFEE);
+        let id = world.spawn_zombie(zombie_villager(-1), true);
+        let plain = world.spawn_zombie(Zombie::new(DVec3::new(5.5, 1.0, 0.5)), true);
+        assert_eq!(world.start_curing(plain, 0), None, "only zombie villagers");
+        assert_eq!(world.start_curing(id, 0), Some(false), "not without weakness");
+        assert!(world.zombies().iter().all(|e| !e.zombie.curing()));
+        assert!(world.add_mob_effect(id, crate::effects::EffectInstance::new(MobEffect::Weakness, 1800, 0)));
+        world.zombie_mut(id).unwrap().voices.clear();
+        assert_eq!(world.start_curing(id, 0), Some(true));
+        let entity = world.zombie_mut(id).unwrap();
+        let time = entity.zombie.villager_conversion_time;
+        assert!((3600..=6000).contains(&time), "{time}");
+        assert_eq!(entity.zombie.conversion_starter, Some(0xC0FFEE));
+        assert!(!entity.effects.has(MobEffect::Weakness));
+        assert_eq!(entity.effects.get(MobEffect::Strength).map(|e| (e.duration, e.amplifier)), Some((time, 0)));
+        let cured = matches!(entity.voices.as_slice(), [(Voice::Event(ZOMBIE_VILLAGER_CURE_SOUND, volume, pitch), _)] if (1.0..2.0).contains(volume) && (0.3..1.0).contains(pitch));
+        assert!(cured, "{:?}", entity.voices);
+        assert_eq!(world.start_curing(id, 0), Some(false), "its weakness is gone");
+        let times: Vec<i32> = (0..500)
+            .map(|seed| {
+                let id = world.spawn_zombie(zombie_villager(-1), true);
+                world.zombie_mut(id).unwrap().random = LegacyRandom::new(seed);
+                world.add_mob_effect(id, crate::effects::EffectInstance::new(MobEffect::Weakness, 1800, 0));
+                world.start_curing(id, 0);
+                world.zombie_mut(id).unwrap().zombie.villager_conversion_time
+            })
+            .collect();
+        let (low, high) = (*times.iter().min().unwrap(), *times.iter().max().unwrap());
+        assert!(low >= 3600 && high <= 6000 && low < 3700 && high > 5900, "{low}..{high}");
+    }
+
+    #[test]
+    fn a_curing_zombie_villager_counts_down_faster_beside_iron_bars_and_beds_and_is_handed_over() {
+        let countdown = |barred: bool| {
+            let mut world = EntityWorld::default();
+            world.spawn_zombie(zombie_villager(6000), true);
+            let mut level = Barred(barred);
+            for _ in 0..3000 {
+                world.tick(&mut level);
+            }
+            6000 - world.zombies()[0].zombie.villager_conversion_time
+        };
+        assert_eq!(countdown(false), 3000, "one a tick");
+        let faster = countdown(true);
+        assert!(faster > 3040, "{faster}");
+        let mut world = EntityWorld::default();
+        let id = world.spawn_zombie(zombie_villager(2), true);
+        world.tick(&mut Barred(false));
+        assert!(world.take_zombie_cures().is_empty());
+        world.tick(&mut Barred(false));
+        assert_eq!(world.take_zombie_cures(), vec![id]);
+        assert!(!world.zombies()[0].zombie.curing(), "handed over once");
+        world.tick(&mut Barred(false));
+        assert!(world.take_zombie_cures().is_empty());
+        let mut far = zombie_villager(3000);
+        far.body.position = DVec3::new(200.0, 1.0, 0.0);
+        let far = world.spawn_zombie(far, true);
+        world.check_despawn(&[DVec3::ZERO], false, &|_| true);
+        assert!(world.zombies().iter().any(|e| e.id == far), "a curing zombie villager stays");
     }
 
     #[test]

@@ -223,6 +223,107 @@ impl Level<'_> {
         self.natural_spawning = Some(natural);
         result
     }
+
+    pub fn spawn_patrol(&mut self, start: BlockPos) -> Vec<Tag> {
+        let Some(natural) = self.natural_spawning.take() else { return Vec::new() };
+        let inputs = self.spawn_inputs(&natural.players);
+        let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
+        let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let mut context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
+        let spawns = natural.spawns.clone();
+        let members = spawns.spawn_patrol(self, &mut context, start);
+        self.natural_spawning = Some(natural);
+        members
+    }
+
+    pub fn raid_member(&mut self, kind: &str, pos: BlockPos, wave: i32, raid: i32, leader: bool, enchant_odds: f32) -> Option<Tag> {
+        let natural = self.natural_spawning.take()?;
+        let inputs = self.spawn_inputs(&natural.players);
+        let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
+        let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
+        let spawns = natural.spawns.clone();
+        let member = spawns.raid_member(self, &context, kind, pos, wave, raid, leader, enchant_odds);
+        self.natural_spawning = Some(natural);
+        member
+    }
+
+    pub fn raid_spawn_ok(&mut self, pos: BlockPos) -> bool {
+        let Some(natural) = self.natural_spawning.take() else { return false };
+        let spawns = natural.spawns.clone();
+        self.natural_spawning = Some(natural);
+        spawns.raid_spawn_ok(self, pos)
+    }
+
+    pub fn spawner_cat(&mut self, pos: BlockPos, persistent: bool) -> Option<Tag> {
+        let natural = self.natural_spawning.take()?;
+        let spawns = natural.spawns.clone();
+        self.natural_spawning = Some(natural);
+        let mut tag = self.registries().entities.as_ref()?.default_tag("minecraft:cat")?;
+        let uuid = SpawnLevel::next_uuid(self);
+        minecraftoss_core::entity_data::place(&mut tag, [0.0, 0.0, 0.0], 0.0, 0.0, uuid);
+        let moon = MOON_BRIGHTNESS_PER_PHASE[self.moon_phase()];
+        spawns.finalize_cat(self, &mut tag, false, moon);
+        let at = [f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5];
+        minecraftoss_core::entity_data::place(&mut tag, at, 0.0, 0.0, uuid);
+        if persistent {
+            if let Tag::Compound(map) = &mut tag {
+                map.insert("PersistenceRequired".to_owned(), Tag::Byte(1));
+            }
+        }
+        Some(tag)
+    }
+
+    pub fn wandering_trader_spot(&mut self, center: BlockPos, radius: i32, random: &mut dyn RandomSource) -> Option<BlockPos> {
+        let natural = self.natural_spawning.take()?;
+        let spawns = natural.spawns.clone();
+        self.natural_spawning = Some(natural);
+        for _ in 0..10 {
+            let x = center.x + random.next_i32_bound(radius * 2) - radius;
+            let z = center.z + random.next_i32_bound(radius * 2) - radius;
+            let y = World::height_at(self, HeightmapKind::MotionBlockingNoLeaves, x, z);
+            let pos = BlockPos::new(x, y, z);
+            if spawns.on_ground_spawn_ok(self, "minecraft:wandering_trader", pos, 0.6, 1.95) {
+                return Some(pos);
+            }
+        }
+        None
+    }
+
+    pub fn has_room_for_trader(&self, pos: BlockPos) -> bool {
+        (0..=1).all(|dx| (0..=2).all(|dy| (0..=1).all(|dz| self.registries().blocks.collision_boxes(self.block(BlockPos::new(pos.x + dx, pos.y + dy, pos.z + dz))).is_empty())))
+    }
+
+    pub fn biome_in_tag_at(&self, pos: BlockPos, tag: &str) -> bool {
+        let registries = self.registries();
+        let Some(tag) = registries.biome_tags.id(tag) else { return false };
+        registries.biome_in_tag(SpawnLevel::biome(self, pos), tag)
+    }
+
+    pub fn in_structure_piece(&self, pos: BlockPos, names: &[&str]) -> bool {
+        let Some(finder) = self.natural_spawning.as_ref().and_then(|natural| natural.structures.clone()) else {
+            return false;
+        };
+        finder(pos).iter().any(|s| s.in_piece && names.contains(&s.name.as_str()))
+    }
+
+    pub fn finalize_conversion(&mut self, tag: Tag) -> Tag {
+        let Some(natural) = self.natural_spawning.take() else { return tag };
+        let inputs = self.spawn_inputs(&natural.players);
+        let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
+        let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let mut context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
+        let spawns = natural.spawns.clone();
+        let result = spawns.finalize_conversion(self, &mut context, tag);
+        self.natural_spawning = Some(natural);
+        result
+    }
 }
 
 struct Spawner {

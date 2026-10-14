@@ -93,6 +93,7 @@ pub struct ServerSim {
     end_random: minecraftoss_player::rng::LegacyRandom,
     end_sounds: Vec<minecraftoss_entities::world::MobSound>,
     end_hits: Vec<minecraftoss_entities::world::PlayerHit>,
+    mob_trident_hits: Vec<minecraftoss_entities::world::PlayerHit>,
     dragons_killed: Vec<[i32; 4]>,
     egg_teleports: Vec<(BlockPos, BlockPos)>,
     fight: FightLink,
@@ -108,6 +109,104 @@ pub struct ServerSim {
     lectern_viewers: std::collections::HashMap<u64, BlockPos>,
     lecterns: Vec<crate::lectern::LecternView>,
     trackers: crate::mob_tracking::Trackers,
+    custom_spawners: crate::custom_spawners::CustomSpawners,
+    raids: crate::raids::Raids,
+    raids_rule: bool,
+    bells: crate::bells::Bells,
+    rockets: Vec<crate::firework_rocket::Rocket>,
+    firework_bursts: Vec<crate::firework_rocket::Burst>,
+    rocket_hits: Vec<minecraftoss_entities::world::PlayerHit>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayerOmens {
+    pub bad_omen: Option<i32>,
+    pub raid_omens: Vec<(i32, (i32, i32, i32))>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RaidTick {
+    pub omens: Vec<(u64, i32, (i32, i32, i32))>,
+    pub heroes: Vec<(u64, i32)>,
+    pub horns: Vec<(u64, [f64; 3])>,
+    pub bars: Vec<(u64, Vec<crate::raids::RaidBar>)>,
+}
+
+struct RaidSim<'a> {
+    level: &'a mut Level<'static>,
+    mobs: &'a mut minecraftoss_entities::world::EntityWorld,
+    mob_tags: &'a mut std::collections::HashMap<u64, minecraftoss_core::nbt::Tag>,
+    ticking: std::collections::HashSet<ChunkPos>,
+}
+
+impl crate::raids::RaidLevel for RaidSim<'_> {
+    fn difficulty(&self) -> i32 {
+        self.level.difficulty
+    }
+
+    fn is_village(&mut self, pos: (i32, i32, i32)) -> bool {
+        self.mobs.pois.is_village(pos)
+    }
+
+    fn has_chunk(&self, pos: (i32, i32, i32)) -> bool {
+        self.level.chunk(ChunkPos::new(pos.0 >> 4, pos.2 >> 4)).is_some()
+    }
+
+    fn has_chunks(&self, from: (i32, i32), to: (i32, i32)) -> bool {
+        (from.0 >> 4..=to.0 >> 4).all(|cx| (from.1 >> 4..=to.1 >> 4).all(|cz| self.level.chunk(ChunkPos::new(cx, cz)).is_some()))
+    }
+
+    fn entity_ticking(&self, pos: (i32, i32, i32)) -> bool {
+        self.ticking.contains(&ChunkPos::new(pos.0 >> 4, pos.2 >> 4))
+    }
+
+    fn surface(&self, x: i32, z: i32) -> i32 {
+        minecraftoss_generator::feature::World::height_at(&*self.level, minecraftoss_core::chunk::HeightmapKind::WorldSurface, x, z)
+    }
+
+    fn spawn_ok(&mut self, pos: (i32, i32, i32)) -> bool {
+        self.level.raid_spawn_ok(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2))
+    }
+
+    fn can_start_raid(&self, pos: (i32, i32, i32)) -> bool {
+        self.level.can_start_raid_at(pos.0, pos.1, pos.2)
+    }
+
+    fn occupied_village_pois(&self, pos: (i32, i32, i32), radius: i32) -> Vec<(i32, i32, i32)> {
+        let village = |kind: minecraftoss_entities::poi::PoiType| kind.village();
+        self.mobs.pois.in_range(&village, pos, radius, minecraftoss_entities::poi::Occupancy::IsOccupied).into_iter().map(|record| record.pos).collect()
+    }
+
+    fn player_uuid(&self, player: u64) -> u128 {
+        self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player)
+    }
+
+    fn raiders(&self) -> Vec<minecraftoss_entities::world::RaiderView> {
+        self.mobs.raiders()
+    }
+
+    fn raider_mut(&mut self, id: u64) -> Option<minecraftoss_entities::world::RaiderMut<'_>> {
+        self.mobs.raider_mut(id)
+    }
+
+    fn spawn_raider(&mut self, member: crate::raids::RaidMember) -> Vec<u64> {
+        use minecraftoss_core::nbt::Tag;
+        let pos = minecraftoss_core::BlockPos::new(member.pos.0, member.pos.1, member.pos.2);
+        let Some(mut tag) = self.level.raid_member(member.kind, pos, member.wave, member.raid, member.leader, member.enchant_odds) else { return Vec::new() };
+        if let Some(kind) = member.rider {
+            if let Some(Tag::Compound(mut rider)) = self.level.raid_member(kind, pos, member.wave, member.raid, false, member.enchant_odds) {
+                rider.remove("Pos");
+                if let Tag::Compound(map) = &mut tag {
+                    map.insert("Passengers".to_owned(), Tag::List(vec![Tag::Compound(rider)]));
+                }
+            }
+        }
+        self.mobs.set_day_time(self.level.overworld_clock());
+        let spawned = crate::server_mobs::spawn_saved_all(self.mobs, &tag);
+        let ids = spawned.iter().map(|(id, _)| *id).collect();
+        self.mob_tags.extend(spawned);
+        ids
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -136,6 +235,7 @@ pub struct MobResult {
     pub merchant: Option<MerchantView>,
     pub broken: Vec<String>,
     pub mounted: Option<u64>,
+    pub mount_inventory: Option<u64>,
 }
 
 /// A player's trading screen as the client shows it: the villager's
@@ -154,6 +254,8 @@ pub struct MerchantView {
     /// Items' maximum stack sizes the offers name, for the client's
     /// prices.
     pub max_stacks: Vec<(String, i32)>,
+    pub name: Option<String>,
+    pub trader: bool,
 }
 
 /// What the player does on the trading screen.
@@ -165,6 +267,7 @@ pub enum MerchantOp {
     Payment { slot: usize, right: bool, shift: bool },
     /// The result clicked (shift: traded as often as it goes).
     Result { shift: bool },
+    QuickMove(usize),
     Close,
 }
 
@@ -239,6 +342,7 @@ pub struct EntitySnapshot {
     pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
     pub dragon_explosions: Vec<(glam::DVec3, bool)>,
     pub swirls: Vec<crate::spell_particles::SwirlView>,
+    pub firework_bursts: Vec<crate::firework_rocket::Burst>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -359,6 +463,7 @@ impl ServerSim {
             end_random: minecraftoss_player::rng::LegacyRandom::new(0x00D2_A60E_5EED),
             end_sounds: Vec::new(),
             end_hits: Vec::new(),
+            mob_trident_hits: Vec::new(),
             dragons_killed: Vec::new(),
             egg_teleports: Vec::new(),
             fight: FightLink::default(),
@@ -374,6 +479,13 @@ impl ServerSim {
             lectern_viewers: std::collections::HashMap::new(),
             lecterns: Vec::new(),
             trackers: Default::default(),
+            custom_spawners: crate::custom_spawners::CustomSpawners::for_dimension(dimension_type),
+            raids: crate::raids::Raids::default(),
+            raids_rule: true,
+            bells: crate::bells::Bells::default(),
+            rockets: Vec::new(),
+            firework_bursts: Vec::new(),
+            rocket_hits: Vec::new(),
         }
     }
 
@@ -438,7 +550,7 @@ impl ServerSim {
             .collect();
         self.spawn_trade_experience();
         let mounted = outcome.mount.filter(|&vehicle| self.mount(player, vehicle));
-        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(player), broken: outcome.broken, mounted }
+        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(player), broken: outcome.broken, mounted, mount_inventory: outcome.mount_inventory }
     }
 
     fn mount(&mut self, player: u64, vehicle: u64) -> bool {
@@ -461,7 +573,7 @@ impl ServerSim {
     }
 
     pub fn take_vehicle_losses(&mut self) -> Vec<(u64, u64, Option<[f64; 3]>)> {
-        self.mobs.take_player_dismounts().into_iter().map(|(player, vehicle)| (player, vehicle, None)).collect()
+        self.mobs.take_player_dismounts().into_iter().map(|(player, vehicle, spot)| (player, vehicle, spot.map(|spot| spot.to_array()))).collect()
     }
 
     pub fn dismount(&mut self, player: u64) {
@@ -519,7 +631,12 @@ impl ServerSim {
     pub fn merchant_view(&mut self, player: u64) -> Option<MerchantView> {
         let menu = self.mobs.merchant_menu(player)?.clone();
         let offers = self.mobs.villager_offers(menu.villager).map(<[_]>::to_vec).unwrap_or_default();
-        let villager = self.mobs.villagers().iter().find(|e| e.id == menu.villager)?;
+        let trader = self.mobs.is_wandering_trader(menu.villager);
+        let (profession, level, xp) = match self.mobs.villagers().iter().find(|e| e.id == menu.villager) {
+            Some(villager) => (villager.villager.profession.id(), villager.villager.level, villager.villager.xp),
+            None if trader => (minecraftoss_entities::villager::Profession::None.id(), 1, 0),
+            None => return None,
+        };
         let mut max_stacks = Vec::new();
         for offer in &offers {
             for id in std::iter::once(&offer.buy.id).chain(offer.buy_b.as_ref().map(|b| &b.id)).chain(std::iter::once(&offer.sell.id)) {
@@ -530,14 +647,19 @@ impl ServerSim {
         }
         Some(MerchantView {
             villager: menu.villager,
-            profession: villager.villager.profession.id(),
-            level: villager.villager.level,
-            xp: villager.villager.xp,
+            profession,
+            level,
+            xp,
             offers,
             payment: menu.payment.clone(),
             result: menu.result.clone(),
             future_xp: menu.future_xp,
             max_stacks,
+            name: self.mob_tags.get(&menu.villager).and_then(|tag| tag.get("CustomName")).map(crate::item_nbt::tag_json).and_then(|name| match name {
+                serde_json::Value::String(text) => Some(text),
+                other => other.get("text").and_then(serde_json::Value::as_str).map(str::to_owned),
+            }),
+            trader,
         })
     }
 
@@ -552,6 +674,7 @@ impl ServerSim {
             MerchantOp::Select(index) => self.mobs.merchant_select(player, index, &mut inventory),
             MerchantOp::Payment { slot, right, shift } => self.mobs.merchant_click_payment(player, slot, right, shift, &mut inventory),
             MerchantOp::Result { shift } => self.mobs.merchant_click_result(player, shift, &mut inventory),
+            MerchantOp::QuickMove(index) => self.mobs.merchant_quick_move_inventory(player, index, &mut inventory),
             MerchantOp::Close => {
                 for stack in self.mobs.merchant_close(player, &mut inventory, selected) {
                     let components = stack.components.as_ref().map(|c| c.to_string());
@@ -604,6 +727,12 @@ impl ServerSim {
         self.mobs.forget_player(player);
     }
 
+    fn set_heroes(&mut self, heroes: &[(u64, Option<i32>)]) {
+        for &(player, amplifier) in heroes {
+            self.mobs.set_player_hero(player, amplifier);
+        }
+    }
+
     /// The orbs trades dropped, each whole into the level.
     fn spawn_trade_experience(&mut self) {
         for (position, value) in self.mobs.take_trade_experience() {
@@ -614,6 +743,95 @@ impl ServerSim {
     /// Where the level's entities are saved (the chunk map's storage).
     pub fn set_entity_storage(&mut self, storage: Option<Arc<minecraftoss_world::storage::ChunkStorage>>) {
         self.storage = storage;
+        let saved = self.trader_data_path().and_then(|path| minecraftoss_world::level_storage::read_saved_at(&path).ok().flatten());
+        if let (Some(traders), Some(tag)) = (self.custom_spawners.traders.as_mut(), saved) {
+            traders.data = crate::custom_spawners::TraderData::read(&tag);
+        }
+        let raids = self.raids_path().and_then(|path| minecraftoss_world::level_storage::read_saved_at(&path).ok().flatten());
+        if let Some(tag) = raids {
+            self.raids = crate::raids::Raids::read(&tag);
+            self.mobs.set_raids(self.raids.views());
+        }
+    }
+
+    fn raids_path(&self) -> Option<std::path::PathBuf> {
+        let dimension = self.storage.as_ref()?.dimension_dir()?;
+        Some(dimension.join("data").join("minecraft").join(crate::raids::RAIDS_FILE))
+    }
+
+    pub fn raids(&self) -> &crate::raids::Raids {
+        &self.raids
+    }
+
+    pub fn raids_mut(&mut self) -> &mut crate::raids::Raids {
+        &mut self.raids
+    }
+
+    fn save_raids(&self) {
+        let Some(path) = self.raids_path() else { return };
+        if let Err(e) = minecraftoss_world::level_storage::write_saved_at(&path, self.raids.write()) {
+            eprintln!("raids write failed: {e}");
+        }
+    }
+
+    fn raid_sim(&mut self) -> RaidSim<'_> {
+        let ticking = self.level.ticking_chunks.iter().flatten().copied().collect();
+        RaidSim { level: &mut self.level, mobs: &mut self.mobs, mob_tags: &mut self.mob_tags, ticking }
+    }
+
+    pub fn tick_raids(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], omens: &[(u64, PlayerOmens)], normal: bool) -> RaidTick {
+        let mut out = RaidTick::default();
+        let raid_players: Vec<crate::raids::RaidPlayer> = players
+            .iter()
+            .map(|p| crate::raids::RaidPlayer { id: p.id, uuid: self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + p.id), feet: p.position.to_array(), alive: p.alive, spectator: p.spectator })
+            .collect();
+        let rule = self.raids_rule;
+        let game_time = self.level.game_time;
+        let mut raids = std::mem::take(&mut self.raids);
+        for (player, omen) in omens {
+            let Some(raid_player) = raid_players.iter().find(|p| p.id == *player) else { continue };
+            for &(amplifier, at) in &omen.raid_omens {
+                let seed = self.sound_random.next_long();
+                raids.create_or_extend(&mut self.raid_sim(), raid_player, at, amplifier, rule, seed);
+            }
+            if let Some(amplifier) = omen.bad_omen {
+                if raids.omen_turns(&mut self.raid_sim(), raid_player) {
+                    out.omens.push((*player, amplifier, raid_player.block()));
+                }
+            }
+        }
+        if normal {
+            let tick = raids.tick(&mut self.raid_sim(), &raid_players, rule, game_time);
+            out.heroes = tick.heroes;
+            out.horns = tick.horns;
+        }
+        self.mobs.set_raids(raids.views());
+        out.bars = raid_players.iter().map(|p| (p.id, raids.bars_for(p.id))).collect();
+        self.raids = raids;
+        out
+    }
+
+    fn trader_data_path(&self) -> Option<std::path::PathBuf> {
+        self.custom_spawners.traders.as_ref()?;
+        let world = self.storage.as_ref()?.world_dir()?;
+        Some(world.join("data").join("minecraft").join(crate::custom_spawners::TRADER_DATA))
+    }
+
+    pub fn trader_data(&self) -> Option<crate::custom_spawners::TraderData> {
+        self.custom_spawners.traders.as_ref().map(|traders| traders.data)
+    }
+
+    pub fn set_trader_data(&mut self, data: crate::custom_spawners::TraderData) {
+        if let Some(traders) = self.custom_spawners.traders.as_mut() {
+            traders.data = data;
+        }
+    }
+
+    fn save_trader_data(&self) {
+        let (Some(path), Some(data)) = (self.trader_data_path(), self.trader_data()) else { return };
+        if let Err(e) = minecraftoss_world::level_storage::write_saved_at(&path, data.write()) {
+            eprintln!("wandering trader data write failed: {e}");
+        }
     }
 
     /// A chunk joins the level with its entities (`EntityStorage`): those
@@ -742,6 +960,8 @@ impl ServerSim {
                 eprintln!("entity storage write failed: {e}");
             }
         }
+        self.save_trader_data();
+        self.save_raids();
     }
 
     /// Before the level ticks: natural spawning's players (registered with
@@ -813,6 +1033,9 @@ impl ServerSim {
         self.mobs.set_bright_outside(bright_outside);
         self.mobs.set_monsters_burn(self.level.monsters_burn());
         self.mobs.set_piglins_zombify(self.level.piglins_zombify());
+        self.mobs.set_cat_gift_chance(self.level.cat_gift_chance());
+        self.mobs.set_sea_level(self.level.sea_level);
+        self.mobs.set_difficulty(self.level.difficulty);
         let Self { level, states, mobs, mob_tables, .. } = self;
         let mut world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
         let ticks = |p: glam::DVec3| ticking.contains(&ChunkPos::new((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4));
@@ -846,13 +1069,377 @@ impl ServerSim {
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
         self.throw_barters();
+        self.drop_cat_gifts();
+        self.drop_leads();
+        self.raid_villager_events();
+        for gone in self.mobs.take_departed_traders() {
+            self.mob_tags.remove(&gone);
+        }
         for conversion in self.mobs.take_piglin_conversions() {
             self.mob_tags.insert(conversion.zombified, crate::piglin_save::converted_tag(&conversion));
         }
+        self.carry_zombie_conversions();
+        self.infect_villagers();
+        self.cure_zombie_villagers(players);
+        self.throw_mob_tridents();
+        self.throw_mob_snowballs();
         self.explode_creepers();
         self.explode_fireballs();
         self.explode_blasts(players);
         self.sound_potion_breaks();
+    }
+
+    fn throw_mob_tridents(&mut self) {
+        for throw in self.mobs.take_trident_throws() {
+            let uuid = self.mobs.uuid_of(throw.owner);
+            self.throw_trident(crate::trident::ThrownTrident::thrown_by_mob(throw.owner, uuid, &throw.item, throw.position, throw.velocity));
+        }
+    }
+
+    fn throw_mob_snowballs(&mut self) {
+        use minecraftoss_entities::snow_golem::{SNOWBALL, SNOWBALL_POWER, SNOWBALL_UNCERTAINTY};
+        for shot in self.mobs.take_snowball_shots() {
+            if let Some(thrown) = crate::thrown::Thrown::shot_by_mob(SNOWBALL, shot.shooter, shot.from, shot.direction, SNOWBALL_POWER, SNOWBALL_UNCERTAINTY, &mut self.sound_random) {
+                self.throw(thrown);
+            }
+        }
+    }
+
+    fn mob_trident_struck(&mut self, mob: u64, target: u64, velocity: glam::DVec3) {
+        match crate::thrown::struck_player(target) {
+            Some(player_id) => self.mob_trident_hits.push(minecraftoss_entities::world::PlayerHit { player_id, damage: crate::trident::DAMAGE, kind: minecraftoss_entities::world::PlayerHitKind::Trident { velocity }, source: Some(mob) }),
+            None => {
+                self.mobs.mob_shot_mob(mob, target, crate::trident::DAMAGE, velocity);
+            }
+        }
+    }
+
+    fn carry_zombie_conversions(&mut self) {
+        for (old, new) in self.mobs.take_zombie_conversions() {
+            if let Some(tag) = self.mob_tags.remove(&old) {
+                self.mob_tags.insert(new, crate::server_mobs::converted_zombie_tag(&tag));
+            }
+        }
+    }
+
+    fn infect_villagers(&mut self) {
+        for (zombie, villager) in self.mobs.take_villager_infections() {
+            let Some(tag) = crate::server_mobs::infected_villager_tag(&self.mobs, villager, self.mob_tags.get(&villager)) else { continue };
+            let tag = self.level.finalize_conversion(tag);
+            self.mobs.remove_mobs(&[villager]);
+            self.mob_tags.remove(&villager);
+            let silent = self.mob_tags.get(&zombie).and_then(|tag| tag.get("Silent")).and_then(minecraftoss_core::nbt::Tag::as_i64).is_some_and(|silent| silent != 0);
+            let at = self.mobs.zombies().iter().find(|e| e.id == zombie).map(|e| e.zombie.body.position.floor().as_ivec3());
+            self.add_saved_entity(tag);
+            if let Some(at) = at.filter(|_| !silent) {
+                self.level.level_events.push((crate::level_events::ZOMBIE_INFECT, minecraftoss_core::BlockPos::new(at.x, at.y, at.z), 0));
+            }
+        }
+    }
+
+    fn cure_zombie_villagers(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_entities::gossip::GossipType;
+        for zombie in self.mobs.take_zombie_cures() {
+            let Some((_, saved)) = crate::server_mobs::mob_tags_where(&self.mobs, |id, _| id == zombie, &self.mob_tags, false).into_iter().next() else { continue };
+            let Some((position, starter)) = self.mobs.zombies().iter().find(|e| e.id == zombie).map(|e| (e.zombie.body.position, e.zombie.conversion_starter)) else { continue };
+            let (tag, dropped) = crate::server_mobs::cured_villager_tag(&saved);
+            for (item, count, components) in dropped {
+                self.level.spawn_at_location(position.to_array(), stack_of(&item, count, components.as_deref()));
+            }
+            let tag = self.level.finalize_conversion(tag);
+            self.mobs.remove_mobs(&[zombie]);
+            self.mob_tags.remove(&zombie);
+            let silent = saved.get("Silent").and_then(minecraftoss_core::nbt::Tag::as_i64).is_some_and(|silent| silent != 0);
+            let uuid = tag_uuid(&tag);
+            self.add_saved_entity(tag);
+            if let Some(villager) = uuid.and_then(|uuid| self.mobs.mob_with_uuid(uuid)) {
+                let present = |starter: &u128| players.iter().any(|p| self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + p.id) == *starter);
+                if let Some(starter) = starter.filter(present) {
+                    if let Some(cured) = self.mobs.villager_mut(villager) {
+                        let gossips = std::sync::Arc::make_mut(&mut cured.gossips);
+                        gossips.add(starter, GossipType::MajorPositive, 20);
+                        gossips.add(starter, GossipType::MinorPositive, 25);
+                    }
+                }
+                self.mobs.add_mob_effect(villager, EffectInstance::new(MobEffect::Nausea, 200, 0));
+            }
+            if !silent {
+                let at = position.floor().as_ivec3();
+                self.level.level_events.push((crate::level_events::ZOMBIE_VILLAGER_CONVERTED, minecraftoss_core::BlockPos::new(at.x, at.y, at.z), 0));
+            }
+        }
+    }
+
+    pub fn tick_custom_spawners(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        use crate::custom_spawners as spawners;
+        if !self.level.natural_spawning.as_ref().is_some_and(|natural| natural.spawn_mobs) {
+            return;
+        }
+        let Some(cats) = self.custom_spawners.cats.as_mut() else { return };
+        let alive: Vec<glam::DVec3> = players.iter().filter(|p| p.alive).map(|p| p.position).collect();
+        let Some(pos) = cats.next_spot(&mut self.level.random, &alive) else { return };
+        if !spawners::chunks_around(pos).into_iter().all(|(cx, cz)| self.level.chunk(ChunkPos::new(cx, cz)).is_some()) {
+            return;
+        }
+        let section = (pos.0 >> 4, pos.1 >> 4, pos.2 >> 4);
+        let near_village = self.mobs.pois.sections_to_village(section) <= spawners::VILLAGE_SECTIONS;
+        let homes = self.mobs.pois.in_range(&|kind| kind == minecraftoss_entities::poi::PoiType::Home, pos, 48, minecraftoss_entities::poi::Occupancy::IsOccupied).len();
+        let cats_in = |reach: (f64, f64)| {
+            let (min, max) = spawners::reach_box(pos, reach);
+            self.mobs
+                .felines()
+                .iter()
+                .filter(|e| e.feline.is_cat())
+                .filter(|e| {
+                    let b = &e.feline.body;
+                    let half = f64::from(b.width / 2.0);
+                    let p = b.position;
+                    p.x - half < max.x && p.x + half > min.x && p.y < max.y && p.y + f64::from(b.height) > min.y && p.z - half < max.z && p.z + half > min.z
+                })
+                .count()
+        };
+        let persistent = if near_village {
+            if !spawners::village_wants_cat(homes, cats_in(spawners::VILLAGE_REACH)) {
+                return;
+            }
+            false
+        } else if self.level.in_structure_piece(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), &spawners::CAT_SPAWNS_IN) {
+            if !spawners::hut_wants_cat(cats_in(spawners::HUT_REACH)) {
+                return;
+            }
+            true
+        } else {
+            return;
+        };
+        if let Some(tag) = self.level.spawner_cat(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), persistent) {
+            self.add_saved_entity(tag);
+        }
+    }
+
+    pub fn tick_patrol_spawner(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], bright_outside: bool) {
+        use crate::custom_spawners as spawners;
+        use minecraftoss_core::random::RandomSource;
+        let Some(natural) = self.level.natural_spawning.as_ref() else { return };
+        if !natural.spawn_mobs || !natural.spawn_monsters || !self.custom_spawners.spawn_patrols {
+            return;
+        }
+        let Some(patrols) = self.custom_spawners.patrols.as_mut() else { return };
+        if !patrols.due(&mut self.level.random, bright_outside) || players.is_empty() {
+            return;
+        }
+        let player = &players[self.level.random.next_i32_bound(players.len() as i32) as usize];
+        if player.spectator {
+            return;
+        }
+        let feet = (player.position.x.floor() as i32, player.position.y.floor() as i32, player.position.z.floor() as i32);
+        if spawners::near_village(self.mobs.pois.sections_to_village((feet.0 >> 4, feet.1 >> 4, feet.2 >> 4))) {
+            return;
+        }
+        let (dx, dz) = spawners::patrol_offset(&mut self.level.random);
+        let start = (feet.0 + dx, feet.1, feet.2 + dz);
+        if !spawners::chunks_around(start).into_iter().all(|(cx, cz)| self.level.chunk(ChunkPos::new(cx, cz)).is_some()) {
+            return;
+        }
+        if !self.level.can_pillager_patrol_spawn_at(start.0, start.1, start.2) {
+            return;
+        }
+        for member in self.level.spawn_patrol(minecraftoss_core::BlockPos::new(start.0, start.1, start.2)) {
+            self.add_saved_entity(member);
+        }
+    }
+
+    pub fn tick_trader_spawner(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        let spawn_mobs = self.level.natural_spawning.as_ref().is_some_and(|natural| natural.spawn_mobs);
+        let rule = self.custom_spawners.spawn_wandering_traders;
+        let Some(traders) = self.custom_spawners.traders.as_mut() else { return };
+        if !traders.due(rule, spawn_mobs) {
+            return;
+        }
+        if self.spawn_wandering_trader(players) {
+            if let Some(traders) = self.custom_spawners.traders.as_mut() {
+                traders.spawned();
+            }
+        }
+    }
+
+    fn spawn_wandering_trader(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) -> bool {
+        use crate::custom_spawners as spawners;
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_core::random::RandomSource;
+        let alive: Vec<glam::DVec3> = players.iter().filter(|p| p.alive).map(|p| p.position).collect();
+        if alive.is_empty() {
+            return true;
+        }
+        let player = alive[self.level.random.next_i32_bound(alive.len() as i32) as usize];
+        let Self { level, custom_spawners, mobs, .. } = self;
+        let Some(traders) = custom_spawners.traders.as_mut() else { return false };
+        if !traders.tries() {
+            return false;
+        }
+        let feet = (player.x.floor() as i32, player.y.floor() as i32, player.z.floor() as i32);
+        let meeting = |kind: minecraftoss_entities::poi::PoiType| kind == minecraftoss_entities::poi::PoiType::Meeting;
+        let center = mobs.pois.find_first(&meeting, &|_| true, feet, spawners::TRADER_RANGE, minecraftoss_entities::poi::Occupancy::Any).unwrap_or(feet);
+        let center_pos = minecraftoss_core::BlockPos::new(center.0, center.1, center.2);
+        let Some(spot) = level.wandering_trader_spot(center_pos, spawners::TRADER_RANGE, &mut traders.random) else { return false };
+        if !level.has_room_for_trader(spot) || level.biome_in_tag_at(spot, spawners::NO_TRADER_BIOMES) {
+            return false;
+        }
+        let yaw = minecraftoss_core::entity_data::wrap_degrees(level.random.next_f32() * 360.0);
+        let at = |pos: minecraftoss_core::BlockPos| [f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5];
+        let Ok(mut trader) = level.summon_mob(minecraftoss_entities::wandering_trader::TYPE_ID, at(spot), None, yaw) else { return false };
+        let mut llamas = Vec::new();
+        for _ in 0..spawners::TRADER_LLAMAS {
+            let Some(near) = level.wandering_trader_spot(spot, spawners::LLAMA_RANGE, &mut traders.random) else { continue };
+            let yaw = minecraftoss_core::entity_data::wrap_degrees(level.random.next_f32() * 360.0);
+            if let Ok(llama) = level.summon_mob("minecraft:trader_llama", at(near), None, yaw) {
+                llamas.push(llama);
+            }
+        }
+        let uuid = trader.get("UUID").cloned();
+        if let Tag::Compound(map) = &mut trader {
+            map.insert("DespawnDelay".to_owned(), Tag::Int(minecraftoss_entities::wandering_trader::DESPAWN_DELAY));
+            map.insert("wander_target".to_owned(), Tag::IntArray(vec![center.0, center.1, center.2]));
+            map.insert("home_pos".to_owned(), Tag::IntArray(vec![center.0, center.1, center.2]));
+            map.insert("home_radius".to_owned(), Tag::Int(minecraftoss_entities::wandering_trader::HOME_RADIUS));
+        }
+        self.add_saved_entity(trader);
+        for mut llama in llamas {
+            if let (Tag::Compound(map), Some(uuid)) = (&mut llama, uuid.clone()) {
+                map.insert("Age".to_owned(), Tag::Int(0));
+                map.insert("leash".to_owned(), Tag::Compound([("UUID".to_owned(), uuid)].into_iter().collect()));
+            }
+            self.add_saved_entity(llama);
+        }
+        true
+    }
+
+    fn drop_cat_gifts(&mut self) {
+        for (at, body_yaw) in self.mobs.take_cat_gifts() {
+            let Some(stacks) = self.entity_loot.as_mut().and_then(|loot| loot.roll_cat_gift()) else { continue };
+            let radians = body_yaw * 0.017_453_292;
+            let x = at.x - f64::from(minecraftoss_player::mth::sin(f64::from(radians)));
+            let z = at.z + f64::from(minecraftoss_player::mth::cos(f64::from(radians)));
+            for stack in stacks {
+                let components = stack.components.as_ref().map(|c| c.to_string());
+                let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
+                self.level.spawn_at_location([x, at.y, z], stack);
+            }
+        }
+    }
+
+    fn hear_bells(&mut self) {
+        let game_time = self.level.game_time;
+        for (pos, _) in std::mem::take(&mut self.level.bell_rings) {
+            self.bells.ring((pos.x, pos.y, pos.z), game_time, &mut self.mobs);
+        }
+    }
+
+    pub fn ring_bell(&mut self, pos: BlockPos, face: Option<&str>) -> bool {
+        let direction = face.and_then(minecraftoss_core::pos::Direction::from_name);
+        self.level.ring_bell(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), direction)
+    }
+
+    pub fn tick_bells(&mut self) {
+        let game_time = self.level.game_time;
+        let level = &self.level;
+        let blocks = &level.registries().blocks;
+        let is_bell = |(x, y, z): BlockPos| blocks.block_by_name(crate::bells::BELL) == Some(blocks.block_of(level.block(minecraftoss_core::BlockPos::new(x, y, z))));
+        let resonated = self.bells.tick(game_time, is_bell, &mut self.mobs);
+        for pos in resonated {
+            self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::bells::RESONATE_SOUND, pos: crate::bells::center(pos).to_array(), volume: 1.0, pitch: 1.0 });
+        }
+    }
+
+    pub fn tick_rockets(&mut self, players: &[crate::thrown::PlayerBody]) {
+        use crate::firework_rocket::RocketEvent;
+        let mut rockets = std::mem::take(&mut self.rockets);
+        for rocket in &mut rockets {
+            let chunk = ChunkPos::new((rocket.position.x.floor() as i32) >> 4, (rocket.position.z.floor() as i32) >> 4);
+            if self.level.chunk(chunk).is_none() {
+                continue;
+            }
+            let events = {
+                let Self { level, states, mob_tables, .. } = self;
+                let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+                rocket.tick(&world)
+            };
+            for event in events {
+                match event {
+                    RocketEvent::Launched => {
+                        self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::firework::LAUNCH_SOUND, pos: rocket.position.to_array(), volume: crate::firework::LAUNCH_VOLUME, pitch: 1.0 });
+                    }
+                    RocketEvent::Exploded => {
+                        self.firework_bursts.push(rocket.burst());
+                        self.rocket_blast(rocket, players);
+                    }
+                }
+            }
+        }
+        rockets.retain(|rocket| rocket.alive);
+        rockets.append(&mut self.rockets);
+        self.rockets = rockets;
+    }
+
+    fn rocket_blast(&mut self, rocket: &crate::firework_rocket::Rocket, players: &[crate::thrown::PlayerBody]) {
+        let damages: Vec<(u64, f32)> = {
+            let Self { level, states, mob_tables, mobs, .. } = self;
+            let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+            let mut hits: Vec<(u64, f32)> = crate::client_mobs::server_mobs(mobs)
+                .iter()
+                .filter(|mob| !mob.dead)
+                .filter_map(|mob| rocket.damage_to(&world, mob.position, f64::from(mob.size.1)).map(|damage| (mob.id, damage)))
+                .collect();
+            hits.extend(players.iter().filter(|p| p.targetable()).filter_map(|p| rocket.damage_to(&world, p.feet, 1.8).map(|damage| (crate::thrown::PLAYER_TARGET + p.id, damage))));
+            hits
+        };
+        for (id, damage) in damages {
+            match crate::thrown::struck_player(id) {
+                Some(player) => self.rocket_hits.push(minecraftoss_entities::world::PlayerHit { player_id: player, damage, kind: minecraftoss_entities::world::PlayerHitKind::Fireworks { at: rocket.position }, source: rocket.owner }),
+                None => {
+                    self.mobs.player_blast(None, id, damage, rocket.position, 0.0);
+                }
+            }
+        }
+        self.drop_death_loot();
+    }
+
+    pub fn take_rocket_hits(&mut self) -> Vec<minecraftoss_entities::world::PlayerHit> {
+        std::mem::take(&mut self.rocket_hits)
+    }
+
+    pub fn rocket_views(&self) -> Vec<crate::thrown::ThrownView> {
+        self.rockets.iter().map(crate::firework_rocket::Rocket::view).collect()
+    }
+
+    fn raid_villager_events(&mut self) {
+        for pos in self.mobs.take_bell_rings() {
+            self.ring_bell(pos, None);
+        }
+        for launch in self.mobs.take_fireworks() {
+            let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
+            self.rockets.push(crate::firework_rocket::Rocket::launch(Some(launch.villager), launch.position, vec![launch.color], launch.flight, &mut random));
+        }
+        for gift in self.mobs.take_hero_gifts() {
+            let Some(stacks) = self.entity_loot.as_mut().and_then(|loot| loot.roll_hero_gift(gift.table)) else { continue };
+            for stack in stacks.into_iter().filter(|stack| stack.count > 0) {
+                let components = stack.components.as_ref().map(|c| c.to_string());
+                let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
+                self.level.spawn_item_with(gift.position.to_array(), stack, gift.velocity.to_array(), minecraftoss_entities::world::GIFT_PICKUP_DELAY, 0);
+            }
+        }
+    }
+
+    fn drop_leads(&mut self) {
+        for at in self.mobs.take_lead_drops() {
+            self.level.spawn_at_location(at.to_array(), stack_of(minecraftoss_entities::world::LEAD, 1, None));
+        }
+    }
+
+    pub fn leash_fence(&mut self, player: u64, pos: BlockPos, sneaking: bool) -> bool {
+        let tied = self.mobs.leash_fence(player, pos, sneaking);
+        self.drop_leads();
+        tied
     }
 
     fn throw_barters(&mut self) {
@@ -1249,7 +1836,11 @@ impl ServerSim {
             let mut targets = mob_targets.clone();
             targets.extend(crate::thrown::player_targets(players, trident.owner));
             targets.extend(self.frames.targets());
-            let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of);
+            let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of).or_else(|| {
+                let thrower = targets.iter_mut().find(|t| Some(t.id) == trident.mob_owner)?;
+                thrower.owner = true;
+                Some(crate::trident::TridentOwner { eye: (thrower.min + thrower.max) / 2.0, alive: true, spectator: false, bounds: (thrower.min, thrower.max) })
+            });
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -1262,6 +1853,7 @@ impl ServerSim {
                             self.frame_action(frame, crate::item_frame::FrameAction::Shot { infinite: false });
                         }
                     }
+                    TridentEvent::Struck { target, velocity } if trident.mob_owner.is_some() => self.mob_trident_struck(trident.mob_owner.unwrap_or(0), target, velocity),
                     TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
                         Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
                         None => {
@@ -1400,6 +1992,7 @@ impl ServerSim {
         let frame_targets = self.frames.targets();
         let mut frame_hits = Vec::new();
         let mut struck = Vec::new();
+        let mut shot_by_mobs = Vec::new();
         let mut hatched = Vec::new();
         let mut awards = Vec::new();
         let mut splashes = Vec::new();
@@ -1413,7 +2006,15 @@ impl ServerSim {
                 let mut targets = mob_targets.clone();
                 targets.extend(crate::thrown::player_targets(players, t.owner));
                 targets.extend(frame_targets.iter().cloned());
-                let landed = t.tick(&world, &targets, crate::thrown::owner_box(players, t.owner));
+                let mut owner_box = crate::thrown::owner_box(players, t.owner);
+                if let Some(shooter) = t.shooter {
+                    owner_box = None;
+                    for target in targets.iter_mut().filter(|target| target.id == shooter) {
+                        target.owner = true;
+                        owner_box = Some((target.min, target.max));
+                    }
+                }
+                let landed = t.tick(&world, &targets, owner_box);
                 if t.kind == Throwable::EnderPearl {
                     let to = landed.as_ref().map_or_else(|| t.position(), |landed| landed.at);
                     let through = crate::end_gateway::pearl_gateway(t.previous.to_array(), to.to_array(), |pos| match gateways.trigger_cooldown(pos) {
@@ -1434,7 +2035,10 @@ impl ServerSim {
                 let frame = landed.mob.and_then(crate::item_frame::struck_frame);
                 frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
-                    struck.push((mob, landed.velocity, t.owner, t.random().next_long()));
+                    match t.shooter {
+                        Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
+                        None => struck.push((mob, landed.velocity, t.owner, t.random().next_long())),
+                    }
                 }
                 if hurts {
                     thrown_hits.push(crate::thrown::ThrownHit { item: t.item.clone(), kind: t.kind, at: landed.at });
@@ -1521,6 +2125,9 @@ impl ServerSim {
         }
         for (mob, velocity, owner, seed) in struck {
             crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+        }
+        for (shooter, mob, velocity) in shot_by_mobs {
+            self.mobs.snowball_hits_mob(shooter, mob, velocity);
         }
         for (at, yaw, variant) in hatched {
             if let Ok(nbt) = minecraftoss_core::snbt::parse_compound(&format!("{{Age:-24000,variant:\"{variant}\"}}")) {
@@ -2421,6 +3028,9 @@ impl ServerSim {
         if let Some(natural) = &mut self.level.natural_spawning {
             natural.spawner_blocks_work = rules.bool("spawner_blocks_work");
         }
+        self.custom_spawners.spawn_wandering_traders = rules.bool("spawn_wandering_traders");
+        self.custom_spawners.spawn_patrols = rules.bool("spawn_patrols");
+        self.raids_rule = rules.bool("raids");
     }
 
     pub fn weather(&mut self, feet: Option<[f64; 3]>) -> WeatherView {
@@ -2435,6 +3045,7 @@ impl ServerSim {
     pub fn tick(&mut self) {
         let bursting: Vec<(i32, [f64; 3])> = self.level.entities.iter().filter(|e| e.tnt_data().is_some_and(|d| d.fuse <= 1)).map(|e| (e.id, e.pos)).collect();
         self.level.tick();
+        self.hear_bells();
         self.level.tick_spawners();
         self.level.unsupported.clear();
         for (id, position) in bursting {
@@ -2687,6 +3298,7 @@ pub enum Command {
     PlayerBreaks(Vec<BlockPos>),
     PlayerMines(Vec<(BlockPos, HowBroken)>),
     UseBlock { pos: BlockPos, facing: &'static str },
+    RingBell { pos: BlockPos, face: &'static str },
     BoneMeal { pos: BlockPos, face: &'static str },
     Attack(BlockPos),
     ItemOnBlock { player: u64, pos: BlockPos, action: ItemOnBlock },
@@ -2732,6 +3344,7 @@ pub enum Command {
     WakeVillagerIn(BlockPos),
     AngerPiglins { player: u64, feet: [f64; 3], sight: bool },
     Boost { player: u64 },
+    MountInventory { vehicle: u64, saddled: bool, body: Option<String>, items: Vec<Option<minecraftoss_player::inventory::ItemStack>> },
     RootVehicle { player: u64, remove: bool },
     Reattach { player: u64, root: Box<minecraftoss_core::nbt::Tag> },
     Job(Job),
@@ -2739,6 +3352,8 @@ pub enum Command {
     FrameAction { player: u64, id: u64, action: crate::item_frame::FrameAction },
     ChestOpeners { pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
+    LeashFence { player: u64, pos: BlockPos, sneaking: bool },
+    ShieldBlock { attacker: u64, player: u64, feet: [f64; 3] },
 }
 
 pub type Job = Box<dyn FnOnce(&mut ServerSim) -> Box<dyn std::any::Any + Send> + Send>;
@@ -2832,6 +3447,7 @@ pub struct TickInput {
     pub simulation_distance: i32,
     /// The player as mobs see it (held food, whether it can be targeted).
     pub mob_players: Vec<minecraftoss_entities::tempt::PlayerCandidate>,
+    pub heroes: Vec<(u64, Option<i32>)>,
     /// Where each of those players looks (endermen read stares from it).
     pub mob_views: Vec<(u64, minecraftoss_entities::enderman::PlayerView)>,
     /// Each of those players' health, effects and motion (witches pick
@@ -2848,16 +3464,35 @@ pub struct TickInput {
     /// The `spawn_mobs` game rule.
     pub spawn_mobs: bool,
     pub controls: Vec<minecraftoss_entities::controls::PlayerControls>,
+    pub omens: Vec<(u64, PlayerOmens)>,
 }
 
 impl TickInput {
+    pub fn carry_omens(&mut self, older: &mut TickInput) {
+        for (player, omen) in &mut older.omens {
+            let fired = std::mem::take(&mut omen.raid_omens);
+            if fired.is_empty() {
+                continue;
+            }
+            match self.omens.iter_mut().find(|(id, _)| id == player) {
+                Some((_, newer)) => {
+                    let later = std::mem::replace(&mut newer.raid_omens, fired);
+                    newer.raid_omens.extend(later);
+                }
+                None => self.omens.push((*player, PlayerOmens { bad_omen: None, raid_omens: fired })),
+            }
+        }
+    }
+
     pub fn remove_player(&mut self, player: u64) {
         self.players.retain(|p| p.id != player);
         self.mob_players.retain(|p| p.id != player);
+        self.heroes.retain(|(id, _)| *id != player);
         self.mob_views.retain(|(id, _)| *id != player);
         self.mob_vitals.retain(|(id, _)| *id != player);
         self.player_hurts.retain(|(id, _, _)| *id != player);
         self.controls.retain(|controls| controls.id != player);
+        self.omens.retain(|(id, _)| *id != player);
     }
 }
 
@@ -2936,6 +3571,10 @@ pub struct Output {
     pub eye_answers: Vec<crate::eye_of_ender::EyeAnswer>,
     pub lecterns: Vec<crate::lectern::LecternView>,
     pub tracked: crate::mob_tracking::Tracked,
+    pub raid_omens: Vec<(u64, i32, (i32, i32, i32))>,
+    pub raid_heroes: Vec<(u64, i32)>,
+    pub raid_horns: Vec<(u64, [f64; 3])>,
+    pub raid_bars: Option<Vec<(u64, Vec<crate::raids::RaidBar>)>>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -3029,6 +3668,10 @@ impl ServerHandle {
         self.send(Command::BoneMeal { pos, face });
     }
 
+    pub fn ring_bell(&mut self, pos: BlockPos, face: &'static str) {
+        self.send(Command::RingBell { pos, face });
+    }
+
     /// A player's attack; true (and sent) when the level acts on the block.
     pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: BlockPos) -> bool {
         let handled = self.state_in(scene, pos).is_some_and(|s| self.attacks.get(usize::from(s.0)).copied().unwrap_or(false));
@@ -3120,6 +3763,14 @@ impl ServerHandle {
 
     pub fn boost(&mut self, player: u64) {
         self.send(Command::Boost { player });
+    }
+
+    pub fn shield_block(&mut self, attacker: u64, player: u64, feet: [f64; 3]) {
+        self.send(Command::ShieldBlock { attacker, player, feet });
+    }
+
+    pub fn mount_inventory(&mut self, inventory: &crate::mount_inventory::MountInventory) {
+        self.send(Command::MountInventory { vehicle: inventory.vehicle, saddled: inventory.saddled(), body: inventory.body(), items: inventory.items() });
     }
 
     pub fn root_vehicle(&mut self, player: u64, remove: bool) {
@@ -3216,6 +3867,10 @@ impl ServerHandle {
         self.send(Command::Lectern { player, pos, action });
     }
 
+    pub fn leash_fence(&mut self, player: u64, pos: BlockPos, sneaking: bool) {
+        self.send(Command::LeashFence { player, pos, sneaking });
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -3293,6 +3948,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.use_block(pos, facing);
                     out.egg_teleports.extend(sim.take_egg_teleports());
                 }
+                Command::RingBell { pos, face } => {
+                    sim.ring_bell(pos, Some(face));
+                }
                 Command::BoneMeal { pos, face } => {
                     if sim.bone_meal(pos, face) {
                         out.bone_meal_used.push(pos);
@@ -3359,6 +4017,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::AngerPiglins { player, feet, sight } => sim.mobs.anger_nearby_piglins(player, glam::DVec3::from_array(feet), sight),
                 Command::Boost { player } => out.boosts.push((player, sim.mobs.boost_ride(player))),
+                Command::ShieldBlock { attacker, player, feet } => out.players_pushed.extend(sim.mobs.blocked_by_shield(attacker, player, glam::DVec3::from_array(feet))),
+                Command::MountInventory { vehicle, saddled, body, items } => sim.mobs.set_mount_inventory(vehicle, saddled, body, items),
                 Command::RootVehicle { player, remove } => out.root_vehicles.push((player, sim.root_vehicle(player, remove))),
                 Command::Reattach { player, root } => out.mounts.extend(sim.reattach(player, &root).map(|vehicle| (player, vehicle))),
                 Command::WeatherData(data) => sim.set_weather_data(&data),
@@ -3378,6 +4038,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         out.item_uses.push((player, placed));
                     }
                 }
+                Command::LeashFence { player, pos, sneaking } => {
+                    sim.leash_fence(player, pos, sneaking);
+                }
                 Command::Save => {
                     sim.ticks_since_save = 0;
                     sim.save_all_entities();
@@ -3385,7 +4048,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::Tick(_, normal) if normal.is_empty() => {}
                 Command::Tick(input, normal) => match batch.as_mut() {
                     Some((running, flags)) => {
-                        *running = *input;
+                        let mut input = *input;
+                        input.carry_omens(running);
+                        *running = input;
                         flags.extend(normal);
                     }
                     None => {
@@ -3431,9 +4096,19 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     if let Some(natural) = &mut sim.level.natural_spawning {
         natural.spawn_mobs = input.spawn_mobs;
     }
+    let omens = std::mem::take(&mut input.omens);
+    let raid = sim.tick_raids(&input.mob_players, &omens, normal);
+    input.omens = omens.into_iter().map(|(id, omen)| (id, PlayerOmens { bad_omen: omen.bad_omen, raid_omens: Vec::new() })).collect();
+    out.raid_omens.extend(raid.omens);
+    out.raid_heroes.extend(raid.heroes);
+    out.raid_horns.extend(raid.horns);
+    out.raid_bars = Some(raid.bars);
     if normal {
         sim.prepare_spawning(&input.mob_players);
         sim.tick();
+        sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
+        sim.tick_custom_spawners(&input.mob_players);
+        sim.tick_trader_spawner(&input.mob_players);
     }
     let mobs_started = std::time::Instant::now();
     if normal {
@@ -3448,6 +4123,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     }
     sim.mobs.set_player_views(input.mob_views.clone());
     sim.mobs.set_player_vitals(input.mob_vitals.clone());
+    sim.set_heroes(&input.heroes);
     for player in &input.players {
         sim.mobs.set_player_main_hand(player.id, player.main_hand.as_deref());
     }
@@ -3456,6 +4132,8 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
     if normal {
         sim.tick_mobs(&input.mob_players, input.bright_outside);
+        sim.tick_bells();
+        sim.tick_rockets(&bodies);
         sim.tick_clouds(&bodies);
         sim.tick_thrown(&bodies);
         sim.tick_tridents(&bodies);
@@ -3465,6 +4143,8 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     }
     out.dismounts.extend(sim.take_vehicle_losses());
     out.player_hits.extend(sim.take_end_hits());
+    out.player_hits.extend(sim.take_rocket_hits());
+    out.player_hits.append(&mut sim.mob_trident_hits);
     out.mob_sounds.extend(sim.take_end_sounds());
     out.mob_sounds.extend(sim.take_frame_sounds());
     out.dragons_killed.extend(sim.take_dragons_killed());
@@ -3483,6 +4163,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.player_splashes.extend(witch_splashes);
     out.players_struck.extend(sim.take_players_struck());
     out.players_pushed.extend(sim.take_players_pushed());
+    out.players_pushed.extend(sim.mobs.take_player_pushes());
     out.potion_breaks.extend(sim.take_potion_breaks());
     out.explosions.extend(sim.take_explosions());
     sim.break_blasted_frames();
@@ -3549,7 +4230,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views() });
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -4283,24 +4964,7 @@ mod tests {
     #[test]
     fn players_trade_with_villagers() {
         use minecraftoss_player::inventory::{Inventory, ItemStack};
-        let Ok(paths) = DataPaths::discover() else { return };
-        let Ok(registries) = Registries::load(&paths) else { return };
-        let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../harness/.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-common-1fad6b3808/26.3/minecraft-common-1fad6b3808-26.3.jar");
-        if !jar.exists() || registries.entities.is_none() {
-            return;
-        }
-        let registries = Arc::new(registries);
-        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
-        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
-        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
-        server.load_loot(&jar, 1234);
-        let nbt = minecraftoss_core::snbt::parse_compound(
-            "{NoAI:1b,Xp:8,VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1},Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1},maxUses:16,xp:2,priceMultiplier:0.05f}]}}",
-        )
-        .unwrap();
-        server.summon("minecraft:villager", [0.5, 100.0, 0.5], Some(&nbt), 0.0).unwrap();
-        let id = server.mobs.villagers()[0].id;
+        let Some((mut server, id)) = trading_server() else { return };
         let mut inventory = Inventory::default();
         let mut wheat = ItemStack::new("minecraft:wheat", 50);
         wheat.max = 64;
@@ -4327,11 +4991,151 @@ mod tests {
         assert_eq!((view.level, view.xp), (2, 12), "the first trade levelled the farmer up");
         assert!(view.offers.len() > 1, "with its next level's offers");
         assert!(server.level.experience_total() > 0, "trades dropped experience");
+        let mut orbs: Vec<i32> = server.orbs().iter().map(|orb| orb.value).collect();
+        orbs.sort_unstable();
+        assert_eq!(orbs.len(), 2, "one orb a trade");
+        assert!((3..=6).contains(&orbs[0]), "a plain trade drops 3 to 6: {orbs:?}");
+        assert!((8..=11).contains(&orbs[1]), "the levelling trade drops 5 more: {orbs:?}");
+        assert!(server.mobs.villagers()[0].effects.has(minecraftoss_entities::effects::MobEffect::Regeneration), "a new level brings regeneration");
         let update = server.merchant(0, MerchantOp::Close, inventory.clone(), 0, [0.0; 3]);
         apply(&mut inventory, &update);
         assert!(update.view.is_none(), "closed");
         assert_eq!(inventory.count("minecraft:wheat"), 10, "the rest came back");
         assert!(server.mobs.villagers()[0].trading_player.is_none());
+    }
+
+    #[test]
+    fn hero_of_the_village_from_the_tick_input_lowers_that_player_s_prices() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let price = |server: &mut ServerSim, player: u64, heroes: Vec<(u64, Option<i32>)>| {
+            let mut input = TickInput { heroes, ..idle_input() };
+            run_ticks(server, &mut input, false, 1);
+            let view = server.mob_action(player, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.expect("its trades open");
+            server.merchant(player, MerchantOp::Close, Inventory::default(), 0, [0.5, 100.0, 0.5]);
+            view.offers[0].cost_a_count(64)
+        };
+        assert_eq!(price(&mut server, 0, vec![(0, None)]), 20);
+        assert_eq!(price(&mut server, 0, vec![(0, Some(0))]), 14, "level one takes 30 % off");
+        assert_eq!(price(&mut server, 1, vec![(0, Some(0)), (1, None)]), 20, "only for the hero");
+        assert_eq!(price(&mut server, 0, vec![(0, Some(4))]), 9, "level five takes 55 % off");
+        assert_eq!(price(&mut server, 0, vec![(0, None)]), 20, "and the price comes back when it ends");
+    }
+
+    fn trading_server() -> Option<(ServerSim, u64)> {
+        let paths = DataPaths::discover().ok()?;
+        let registries = Registries::load(&paths).ok()?;
+        let jar = std::env::var_os("MINECRAFTOSS_ROOT")
+            .map(|root| std::path::Path::new(&root).join("client.jar"))
+            .filter(|jar| jar.exists())
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../harness/.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-common-1fad6b3808/26.3/minecraft-common-1fad6b3808-26.3.jar")
+            });
+        if !jar.exists() || registries.entities.is_none() {
+            return None;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        server.load_loot(&jar, 1234);
+        let nbt = minecraftoss_core::snbt::parse_compound(
+            "{NoAI:1b,Xp:8,VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1},Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1},maxUses:16,xp:2,priceMultiplier:0.05f}]}}",
+        )
+        .unwrap();
+        server.summon("minecraft:villager", [0.5, 100.0, 0.5], Some(&nbt), 0.0).unwrap();
+        let id = server.mobs.villagers()[0].id;
+        Some((server, id))
+    }
+
+    fn wheat(count: u8) -> minecraftoss_player::inventory::ItemStack {
+        let mut wheat = minecraftoss_player::inventory::ItemStack::new("minecraft:wheat", count);
+        wheat.max = 64;
+        wheat
+    }
+
+    #[test]
+    fn a_shift_click_in_the_trading_screen_moves_between_inventory_and_hotbar() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let mut inventory = Inventory::default();
+        inventory.slots[12] = Some(wheat(30));
+        inventory.slots[2] = Some(wheat(5));
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false).merchant.is_some());
+        let update = server.merchant(0, MerchantOp::QuickMove(12), inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(2, Some(wheat(35))), (12, None)], "from the inventory onto the hotbar's wheat");
+        let view = update.view.expect("still open");
+        assert!(view.payment.iter().all(Option::is_none), "a shift-click never fills the payments");
+        for (slot, stack) in update.slots {
+            inventory.slots[slot] = stack;
+        }
+        let update = server.merchant(0, MerchantOp::QuickMove(2), inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(2, None), (9, Some(wheat(35)))], "and back from the hotbar into the inventory");
+        assert!(server.merchant(0, MerchantOp::QuickMove(36), inventory.clone(), 0, [0.0; 3]).slots.is_empty(), "armour stays");
+    }
+
+    #[test]
+    fn closing_the_trading_screen_gives_the_payments_back_and_drops_what_does_not_fit() {
+        use minecraftoss_player::inventory::{Inventory, ItemStack};
+        let Some((mut server, id)) = trading_server() else { return };
+        let mut inventory = Inventory::default();
+        inventory.slots[9] = Some(wheat(40));
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false).merchant.is_some());
+        let update = server.merchant(0, MerchantOp::Select(0), inventory.clone(), 0, [0.0; 3]);
+        for (slot, stack) in update.slots {
+            inventory.slots[slot] = stack;
+        }
+        assert_eq!(update.view.expect("open").payment[0].as_ref().map(|s| s.count), Some(40));
+        assert!(inventory.slots[9].is_none());
+        let mut full = inventory.clone();
+        for slot in 0..36 {
+            full.slots[slot] = Some(ItemStack { max: 64, ..ItemStack::new("minecraft:dirt", 64) });
+        }
+        full.cursor = Some(ItemStack { max: 64, ..ItemStack::new("minecraft:stone", 3) });
+        let feet = [4.5, 101.0, 0.5];
+        let update = server.merchant(0, MerchantOp::Close, full.clone(), 0, feet);
+        assert!(update.view.is_none() && update.slots.is_empty() && update.cursor.is_none(), "nothing fit and the cursor left");
+        let mut dropped: Vec<(String, i32)> = server.items().iter().map(|item| (item.item.clone(), item.count)).collect();
+        dropped.sort();
+        assert_eq!(dropped, vec![("minecraft:stone".to_owned(), 3), ("minecraft:wheat".to_owned(), 40)], "both dropped at the feet");
+        assert!(server.items().iter().all(|item| (item.position[0] - feet[0]).abs() < 1.0 && (item.position[2] - feet[2]).abs() < 1.0));
+        assert!(server.mobs.villagers()[0].trading_player.is_none());
+        assert!(server.merchant(0, MerchantOp::Close, inventory.clone(), 0, feet).slots.is_empty(), "a second close finds nothing");
+    }
+
+    #[test]
+    fn the_trading_screen_closes_once_its_villager_is_out_of_reach() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.is_some());
+        let at = |z: f64| candidate(0, [0.5, 100.0, z]);
+        assert!(server.check_merchant(&[at(7.0)]).is_empty(), "within reach plus four");
+        let closing = server.check_merchant(&[at(8.5)]);
+        assert_eq!(closing.len(), 1);
+        assert!(closing[0].1.closing && closing[0].1.view.is_none());
+        assert!(server.check_merchant(&[at(9.0)]).is_empty(), "asked once");
+        server.merchant(0, MerchantOp::Close, Inventory::default(), 0, [0.5, 100.0, 9.0]);
+        assert!(server.mobs.merchant_menu(0).is_none());
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.is_some());
+        assert_eq!(server.check_merchant(&[at(9.0)]).len(), 1, "a new screen is asked again");
+    }
+
+    #[test]
+    fn a_named_villager_s_trading_screen_carries_its_name() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let view = server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.expect("open");
+        assert_eq!(view.name, None);
+        let nbt = minecraftoss_core::snbt::parse_compound(
+            "{NoAI:1b,CustomName:\"Bob\",VillagerData:{type:\"minecraft:plains\",profession:\"minecraft:farmer\",level:1},Offers:{Recipes:[{buy:{id:\"minecraft:wheat\",count:20},sell:{id:\"minecraft:emerald\",count:1},maxUses:16,xp:2,priceMultiplier:0.05f}]}}",
+        )
+        .unwrap();
+        server.summon("minecraft:villager", [2.5, 100.0, 0.5], Some(&nbt), 0.0).unwrap();
+        let bob = server.mobs.villagers().iter().map(|villager| villager.id).find(|&other| other != id).unwrap();
+        let view = server.mob_action(1, minecraftoss_entities::world::MobHit::Villager(bob), None, Inventory::default(), 0, false).merchant.expect("open");
+        assert_eq!(view.name.as_deref(), Some("Bob"));
+        assert_eq!(view.profession, "minecraft:farmer");
     }
 
     /// A villager claims the bed and bell placed near it by day, and sleeps
@@ -5206,6 +6010,127 @@ mod tests {
     }
 
     #[test]
+    fn a_carved_pumpkin_on_an_iron_t_builds_a_player_made_iron_golem() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let iron = || Block::new("minecraft:iron_block");
+        place(&mut server, &mut scene, (8, 200, 8), iron());
+        for x in 7..=9 {
+            place(&mut server, &mut scene, (x, 201, 8), iron());
+        }
+        server.take_changes();
+        server.take_destroyed();
+        place(&mut server, &mut scene, (8, 202, 8), Block::new("minecraft:carved_pumpkin").with("facing", "south"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for pos in [(8, 200, 8), (7, 201, 8), (8, 201, 8), (9, 201, 8), (8, 202, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?} is cleared");
+        }
+        let mut destroyed: Vec<_> = server.take_destroyed().into_iter().map(|(pos, block)| (pos, block.id.key())).collect();
+        destroyed.sort();
+        assert_eq!(destroyed.len(), 5, "each block breaks with its particles and sound: {destroyed:?}");
+        assert!(destroyed.contains(&((8, 202, 8), "minecraft:carved_pumpkin".to_owned())));
+        assert!(server.mobs.iron_golems().is_empty(), "the golem joins with the spawned mobs");
+        server.take_spawned();
+        let golems = server.mobs.iron_golems();
+        assert_eq!(golems.len(), 1);
+        assert!(golems[0].golem.player_created, "built by a player");
+        assert_eq!(golems[0].position(), glam::DVec3::new(8.5, 200.05, 8.5));
+        assert_eq!(golems[0].golem.yaw, 0.0);
+    }
+
+    #[test]
+    fn two_snow_blocks_and_a_carved_pumpkin_build_a_snow_golem_that_leaves_snow() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 6..=10 {
+            for z in 6..=10 {
+                place(&mut server, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:snow_block"));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:snow_block"));
+        server.take_changes();
+        server.take_destroyed();
+        place(&mut server, &mut scene, (8, 202, 8), Block::new("minecraft:carved_pumpkin").with("facing", "east"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for pos in [(8, 200, 8), (8, 201, 8), (8, 202, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?} is cleared");
+        }
+        assert_eq!(server.take_destroyed().len(), 3);
+        server.take_spawned();
+        assert!(server.mobs.iron_golems().is_empty());
+        let golems = server.mobs.snow_golems();
+        assert_eq!(golems.len(), 1);
+        assert!(golems[0].golem.pumpkin);
+        assert_eq!(golems[0].position(), glam::DVec3::new(8.5, 200.05, 8.5));
+        let melts = server.level.snow_golem_melts_at(8, 200, 8);
+        server.set_simulation_area((0, 0), 1);
+        let mut snow = std::collections::HashSet::new();
+        for _ in 0..10 {
+            server.tick_mobs(&[], true);
+            for (pos, block) in server.take_changes() {
+                if block.is_some_and(|b| b.id.key() == "minecraft:snow") {
+                    snow.insert(pos);
+                }
+            }
+        }
+        if melts {
+            assert!(server.mobs.snow_golems().first().is_none_or(|g| g.golem.health < 4.0), "a warm biome melts it");
+        } else {
+            assert!(snow.contains(&(8, 200, 8)), "it leaves a snow layer under its feet: {snow:?}");
+        }
+    }
+
+    #[test]
+    fn a_snow_golem_s_snowball_flies_with_the_thrown_items_and_turns_a_zombie_on_it() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 6..=10 {
+            for z in 4..=16 {
+                place(&mut server, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        server.take_changes();
+        if server.level.snow_golem_melts_at(8, 200, 8) {
+            return;
+        }
+        server.set_players(&[[8.5, 200.0, 30.5]], 2);
+        server.set_simulation_area((0, 0), 1);
+        server.summon("minecraft:snow_golem", [8.5, 200.0, 5.5], None, 0.0).unwrap();
+        server.summon("minecraft:husk", [8.5, 200.0, 10.5], None, 180.0).unwrap();
+        server.take_spawned();
+        let golem = server.mobs.snow_golems()[0].id;
+        let zombie = server.mobs.zombies()[0].id;
+        let mut seen_snowball = false;
+        let mut turned = false;
+        for _ in 0..1200 {
+            server.tick_mobs(&[], false);
+            server.tick_thrown(&[]);
+            seen_snowball |= server.thrown_views().iter().any(|t| t.item == "minecraft:snowball" && t.owner == crate::thrown::MOB_THROWER);
+            let hurt_by = server.mobs.zombies().iter().find(|e| e.id == zombie).and_then(|e| e.ai.as_ref()).and_then(|ai| ai.state.hurt_by);
+            if hurt_by.is_some_and(|(by, _)| by == minecraftoss_entities::monster_ai::Target::Mob(golem)) {
+                turned = true;
+                break;
+            }
+        }
+        assert!(seen_snowball, "the golem's snowballs fly as thrown items");
+        assert!(turned, "a snowball strikes the zombie, which turns on the golem");
+        assert_eq!(server.mobs.zombies().iter().find(|e| e.id == zombie).map(|e| e.zombie.health), Some(20.0), "snowballs do it no harm");
+    }
+
+    #[test]
+    fn a_carved_pumpkin_on_an_incomplete_t_stays_a_pumpkin() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:iron_block"));
+        place(&mut server, &mut scene, (7, 201, 8), Block::new("minecraft:iron_block"));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:iron_block"));
+        place(&mut server, &mut scene, (9, 201, 8), Block::new("minecraft:gold_block"));
+        server.take_changes();
+        place(&mut server, &mut scene, (8, 202, 8), Block::new("minecraft:jack_o_lantern").with("facing", "north"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert!(!changes.contains_key(&(8, 200, 8)), "nothing is cleared");
+        server.take_spawned();
+        assert!(server.mobs.iron_golems().is_empty());
+    }
+
+    #[test]
     fn columns_break_block_by_block_when_their_ground_goes() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:sand"));
@@ -6022,6 +6947,61 @@ mod tests {
     }
 
     #[test]
+    fn a_drowned_throws_its_trident_at_a_player_and_it_hits_them_for_the_drowned() {
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=20 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        server.take_changes();
+        server.set_players(&[[8.5, 201.0, 16.5]], 2);
+        server.set_simulation_area((0, 0), 4);
+        server.set_time(18000);
+        let nbt = minecraftoss_core::snbt::parse_compound(r#"{equipment:{mainhand:{id:"minecraft:trident",count:1}}}"#).unwrap();
+        server.summon("minecraft:drowned", [8.5, 201.0, 8.5], Some(&nbt), 0.0).unwrap();
+        let drowned = server.mobs.zombies().last().expect("a drowned").id;
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(8.5, 201.0, 16.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let body = player_at(0, [8.5, 201.0, 16.5], true);
+        let mut hits = Vec::new();
+        let mut thrown = 0;
+        for _ in 0..200 {
+            server.tick_mobs(&[player], false);
+            thrown = thrown.max(server.trident_views().len());
+            server.tick_tridents(&[body]);
+            hits.append(&mut server.mob_trident_hits);
+        }
+        assert!(thrown > 0 && !hits.is_empty(), "{thrown} thrown, {} hits", hits.len());
+        for hit in &hits {
+            assert_eq!((hit.player_id, hit.damage, hit.source), (0, crate::trident::DAMAGE, Some(drowned)));
+            assert!(matches!(hit.kind, minecraftoss_entities::world::PlayerHitKind::Trident { velocity } if velocity.z > 0.5), "{:?}", hit.kind);
+        }
+        assert_eq!(server.mobs.zombies().iter().find(|e| e.id == drowned).map(|e| e.zombie.health), Some(20.0), "its own trident leaves it alone");
+        assert!(server.pickup_tridents(&body, &[body], |_| true).is_empty(), "nobody picks up a drowned's trident");
+        let tags: Vec<_> = server.tridents.iter().map(|t| t.to_tag(t.owner_uuid)).collect();
+        assert!(tags.iter().all(|tag| tag.get("pickup") == Some(&minecraftoss_core::nbt::Tag::Byte(0))));
+    }
+
+    #[test]
     fn a_saved_trident_comes_back_and_still_knows_its_thrower() {
         let Some((mut server, _)) = door_world() else { return };
         server.throw_trident(trident_down(0, None, 5));
@@ -6374,9 +7354,9 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
-    const HATCHING_EGGS: [&str; 36] = [
-        "bat", "blaze", "bogged", "cave_spider", "chicken", "cow", "creeper", "donkey", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "magma_cube", "mooshroom", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "spider", "stray", "strider",
-        "villager", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
+    const HATCHING_EGGS: [&str; 49] = [
+        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "evoker", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "pillager", "ravager", "sheep", "shulker", "skeleton", "slime", "snow_golem", "spider", "stray", "strider",
+        "trader_llama", "vex", "villager", "vindicator", "wandering_trader", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
     ];
 
     #[test]
@@ -6410,6 +7390,256 @@ mod tests {
         }
         assert_eq!(eggs.len(), 88);
         assert_eq!(hatched, HATCHING_EGGS);
+    }
+
+    #[test]
+    fn summoned_llamas_draw_their_strength_and_coat_and_mules_and_trader_llamas_live() {
+        use minecraftoss_entities::horse::HorseKind;
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        for i in 0..12 {
+            server.summon("minecraft:llama", [8.5 + f64::from(i) * 0.1, 200.0, 8.5], None, 0.0).unwrap();
+        }
+        server.summon("minecraft:mule", [6.5, 200.0, 8.5], None, 0.0).unwrap();
+        server.summon("minecraft:trader_llama", [10.5, 200.0, 8.5], None, 0.0).unwrap();
+        let equines: Vec<_> = server.mobs.cows().iter().filter_map(|e| e.horse.clone()).collect();
+        let llamas: Vec<_> = equines.iter().filter(|h| h.kind == HorseKind::Llama).collect();
+        assert_eq!(llamas.len(), 12);
+        assert!(llamas.iter().all(|h| (1..=5).contains(&h.strength) && (0..4).contains(&h.variant) && (15.0..=30.0).contains(&h.max_health)));
+        assert!(llamas.iter().any(|h| h.variant != llamas[0].variant), "the coat is drawn");
+        assert!(equines.iter().any(|h| h.kind == HorseKind::Mule));
+        let trader = equines.iter().find(|h| h.kind == HorseKind::TraderLlama).expect("a trader llama");
+        assert!((1..=5).contains(&trader.strength));
+        assert_eq!(trader.despawn_delay, minecraftoss_entities::horse::TRADER_DESPAWN_DELAY);
+        assert!(server.mobs.cows().iter().filter(|e| e.horse.is_some()).all(|e| e.cow.health == e.cow.max_health), "they come at full health");
+    }
+
+    #[test]
+    fn summoned_cats_draw_their_variants_and_voices_and_summoned_ocelots_live() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        for i in 0..20 {
+            server.summon("minecraft:cat", [8.5 + f64::from(i) * 0.1, 200.0, 8.5], None, 0.0).unwrap();
+        }
+        server.summon("minecraft:ocelot", [6.5, 200.0, 8.5], None, 0.0).unwrap();
+        let cats: Vec<_> = server.mobs.felines().iter().filter(|e| e.feline.is_cat()).map(|e| e.feline.clone()).collect();
+        assert_eq!(cats.len(), 20);
+        assert!(cats.iter().all(|cat| minecraftoss_entities::feline::CAT_VARIANTS.contains(&cat.variant.as_str())));
+        assert!(cats.iter().any(|cat| cat.variant != minecraftoss_entities::feline::DEFAULT_CAT_VARIANT), "the variant is drawn");
+        assert!(cats.iter().all(|cat| minecraftoss_entities::feline::CAT_SOUND_VARIANTS.contains(&cat.sound_variant.as_str())));
+        assert!(server.mobs.felines().iter().any(|e| e.feline.kind == minecraftoss_entities::feline::FelineKind::Ocelot));
+    }
+
+    #[test]
+    fn the_cat_spawner_brings_cats_to_a_village_with_more_than_four_occupied_homes() {
+        let Some(paths) = DataPaths::discover().ok() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let Ok(terrain) = TerrainGenerator::overworld(registries.clone(), 0) else { return };
+        let worldgen = Arc::new(WorldGen::new(Arc::new(terrain)).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -3..=3 {
+            for z in -3..=3 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                server.load_chunk(&chunk);
+            }
+        }
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(8.5, 200.0, 8.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let cats = |server: &ServerSim| server.mobs.felines().iter().filter(|e| e.feline.is_cat()).count();
+        server.tick_custom_spawners(&[player]);
+        assert_eq!(cats(&server), 0, "no village, no cat");
+        for x in [-24, -8, 8, 24, 40] {
+            for z in [-24, -8, 8, 24, 40] {
+                let home = (x, 200, z);
+                assert!(server.mobs.pois.add(home, minecraftoss_entities::poi::PoiType::Home));
+                assert!(server.mobs.pois.acquire(home));
+            }
+        }
+        for _ in 0..crate::custom_spawners::CAT_TICK_DELAY - 1 {
+            server.tick_custom_spawners(&[player]);
+        }
+        assert_eq!(cats(&server), 0, "the spawner waits a minute");
+        server.tick_custom_spawners(&[player]);
+        assert_eq!(cats(&server), 1, "then a cat comes to the village");
+        let cat = server.mobs.felines().iter().find(|e| e.feline.is_cat()).unwrap();
+        assert!(!cat.feline.persistence_required, "a village cat may wander off");
+        assert!(minecraftoss_entities::feline::CAT_VARIANTS.contains(&cat.feline.variant.as_str()));
+        for _ in 0..crate::custom_spawners::CAT_TICK_DELAY * 8 {
+            server.tick_custom_spawners(&[player]);
+            let ids: Vec<u64> = server.mobs.felines().iter().map(|e| e.id).collect();
+            for id in ids {
+                server.mobs.feline_mut(id).unwrap().feline.body.position = player.position;
+            }
+        }
+        assert_eq!(cats(&server), crate::custom_spawners::VILLAGE_CATS, "no more than five");
+        server.level.natural_spawning.as_mut().unwrap().spawn_mobs = false;
+        for _ in 0..crate::custom_spawners::CAT_TICK_DELAY * 2 {
+            server.tick_custom_spawners(&[player]);
+        }
+        assert_eq!(cats(&server), crate::custom_spawners::VILLAGE_CATS);
+    }
+
+    #[test]
+    fn a_zombie_that_drowns_keeps_its_equipment_and_name_as_a_drowned() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        let nbt = minecraftoss_core::snbt::parse_compound(r#"{CustomName:"Bob",equipment:{mainhand:{id:"minecraft:trident",count:1,components:{"minecraft:damage":7}}}}"#).unwrap();
+        server.summon("minecraft:zombie", [8.5, 200.0, 8.5], Some(&nbt), 0.0).unwrap();
+        let zombie = server.mobs.zombies().last().expect("a zombie").id;
+        let drowned = server.mobs.convert_zombie_to_drowned(zombie);
+        server.carry_zombie_conversions();
+        assert!(!server.mob_tags.contains_key(&zombie));
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = tags.iter().find(|(id, _)| *id == drowned).expect("the drowned is saved");
+        assert_eq!(tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:drowned"));
+        assert_eq!(tag.get("CustomName").and_then(minecraftoss_core::nbt::Tag::as_str), Some("Bob"));
+        let hand = tag.get("equipment").and_then(|e| e.get("mainhand")).expect("the trident is saved");
+        assert_eq!(hand.get("id").and_then(minecraftoss_core::nbt::Tag::as_str), Some("minecraft:trident"));
+        assert_eq!(hand.get("components").and_then(|c| c.get("minecraft:damage")).and_then(minecraftoss_core::nbt::Tag::as_i64), Some(7));
+    }
+
+    #[test]
+    fn a_zombie_turns_the_villager_it_kills_into_a_zombie_villager_with_its_trades() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 3);
+        let nbt = minecraftoss_core::snbt::parse_compound(
+            r#"{NoAI:1b,CustomName:"Bob",Xp:12,VillagerData:{type:"minecraft:desert",profession:"minecraft:farmer",level:2},Offers:{Recipes:[{buy:{id:"minecraft:wheat",count:20},sell:{id:"minecraft:emerald",count:1},maxUses:16,xp:2,priceMultiplier:0.05f}]}}"#,
+        )
+        .unwrap();
+        server.summon("minecraft:villager", [8.5, 200.0, 8.5], Some(&nbt), 0.0).unwrap();
+        let villager = server.mobs.villagers().last().expect("a villager").id;
+        let old_uuid = server.mobs.uuid_of(villager);
+        std::sync::Arc::make_mut(&mut server.mobs.villager_mut(villager).unwrap().gossips).add(7, minecraftoss_entities::gossip::GossipType::Trading, 12);
+        server.summon("minecraft:zombie", [9.5, 200.0, 8.5], Some(&minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap()), 0.0).unwrap();
+        let zombie = server.mobs.zombies().last().expect("a zombie").id;
+        server.level.level_events.clear();
+        server.mobs.set_difficulty(3);
+        assert!(server.mobs.mob_shot_mob(zombie, villager, 100.0, glam::DVec3::X));
+        server.infect_villagers();
+        assert!(server.mobs.villagers().is_empty() && !server.mob_tags.contains_key(&villager), "the villager is gone");
+        let converted = server.mobs.zombies().iter().find(|e| e.zombie.kind == minecraftoss_entities::zombie::ZombieKind::ZombieVillager).expect("a zombie villager");
+        assert_eq!(converted.zombie.villager, Some(("minecraft:desert".to_owned(), "minecraft:farmer".to_owned())));
+        assert_eq!((converted.zombie.villager_xp, converted.zombie.health), (12, 20.0));
+        assert_eq!(converted.zombie.body.position.to_array(), [8.5, 200.0, 8.5]);
+        assert!(converted.no_ai, "NoAI is kept");
+        let id = converted.id;
+        assert_eq!(std::mem::take(&mut server.level.level_events), vec![(1026, minecraftoss_core::BlockPos::new(9, 200, 8), 0)]);
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, tag) = tags.iter().find(|(tag_id, _)| *tag_id == id).expect("the zombie villager is saved");
+        assert_eq!(tag.get("id").and_then(Tag::as_str), Some("minecraft:zombie_villager"));
+        assert_eq!(tag.get("CustomName").and_then(Tag::as_str), Some("Bob"));
+        assert_eq!(tag.get("Xp").and_then(Tag::as_i64), Some(12));
+        assert_eq!(tag.get("VillagerData").and_then(|d| d.get("level")).and_then(Tag::as_i64), Some(2));
+        assert_eq!(tag.get("VillagerDataFinalized").and_then(Tag::as_i64), Some(1));
+        assert_eq!(tag.get("Offers").and_then(|o| o.get("Recipes")).and_then(Tag::as_list).map(|recipes| recipes.len()), Some(1));
+        let gossips = tag.get("Gossips").and_then(Tag::as_list).expect("its gossip");
+        assert!(gossips.iter().any(|g| g.get("Type").and_then(Tag::as_str) == Some("trading") && g.get("Value").and_then(Tag::as_i64) == Some(12)), "{gossips:?}");
+        assert_ne!(server.mobs.uuid_of(id), old_uuid, "a new UUID");
+        assert!(tag.get("Health").and_then(Tag::as_f64).is_some_and(|h| h == 20.0));
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, tag).expect("zombie villagers load");
+        let back = loaded.zombie_mut(back).unwrap();
+        assert_eq!(back.zombie.villager, Some(("minecraft:desert".to_owned(), "minecraft:farmer".to_owned())));
+        assert_eq!(back.zombie.villager_xp, 12);
+        server.set_players(&[[8.5, 200.0, 11.5]], 1);
+        server.mobs.set_difficulty(1);
+        server.summon("minecraft:villager", [8.5, 200.0, 6.5], Some(&nbt), 0.0).unwrap();
+        let spared = server.mobs.villagers().last().unwrap().id;
+        assert!(server.mobs.mob_shot_mob(zombie, spared, 100.0, glam::DVec3::X));
+        server.infect_villagers();
+        assert_eq!(server.mobs.zombies().iter().filter(|e| e.zombie.kind == minecraftoss_entities::zombie::ZombieKind::ZombieVillager).count(), 1, "easy never infects");
+        assert!(server.level.level_events.is_empty());
+    }
+
+    #[test]
+    fn a_golden_apple_cures_a_weakened_zombie_villager_into_the_same_villager_that_trades_cheaper_with_its_curer() {
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_player::inventory::{Inventory, ItemStack};
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=16 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        server.take_changes();
+        let (curer, other) = ([8.5, 201.0, 12.5], [8.5, 201.0, 4.5]);
+        server.set_players(&[curer, other], 2);
+        server.set_simulation_area((0, 0), 4);
+        server.set_player_uuid(0, 0xA11CE);
+        server.set_player_uuid(1, 0xB0B);
+        let nbt = minecraftoss_core::snbt::parse_compound(
+            r#"{NoAI:1b,PersistenceRequired:1b,CustomName:"Bob",Xp:12,VillagerData:{type:"minecraft:desert",profession:"minecraft:farmer",level:2},Offers:{Recipes:[{buy:{id:"minecraft:wheat",count:20},sell:{id:"minecraft:emerald",count:1},maxUses:16,xp:2,priceMultiplier:0.05f}]}}"#,
+        )
+        .unwrap();
+        server.summon("minecraft:zombie_villager", [8.5, 201.0, 8.5], Some(&nbt), 0.0).unwrap();
+        let zombie = server.mobs.zombies().last().expect("a zombie villager").id;
+        let mut inventory = Inventory::default();
+        let mut apples = ItemStack::new("minecraft:golden_apple", 2);
+        apples.max = 64;
+        inventory.slots[0] = Some(apples);
+        let result = server.mob_action(0, minecraftoss_entities::world::MobHit::Zombie(zombie), None, inventory.clone(), 0, false);
+        assert!(result.slots.is_empty(), "no apple without weakness");
+        assert!(server.mobs.add_mob_effect(zombie, EffectInstance::new(MobEffect::Weakness, 1800, 0)));
+        let result = server.mob_action(0, minecraftoss_entities::world::MobHit::Zombie(zombie), None, inventory.clone(), 0, false);
+        assert_eq!(result.slots.first().and_then(|(_, stack)| stack.as_ref()).map(|s| s.count), Some(1), "one apple is used");
+        let time = server.mobs.zombie_mut(zombie).unwrap().zombie.villager_conversion_time;
+        assert!((3600..=6000).contains(&time), "{time}");
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, saved) = tags.iter().find(|(id, _)| *id == zombie).expect("saved");
+        assert_eq!(saved.get("ConversionTime").and_then(Tag::as_i64), Some(i64::from(time)));
+        assert_eq!(saved.get("ConversionPlayer").and_then(Tag::as_ints).map(|ints| ints.to_vec()), Some(minecraftoss_entities::gossip::uuid_to_ints(0xA11CE).to_vec()));
+        assert!(!crate::dormant::removed_when_far_away("minecraft:zombie_villager", saved), "a curing one stays");
+        let mut loaded = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut loaded, saved).unwrap();
+        let back = &loaded.zombie_mut(back).unwrap().zombie;
+        assert_eq!((back.villager_conversion_time, back.conversion_starter), (time, Some(0xA11CE)), "the cure survives a reload");
+        server.mobs.zombie_mut(zombie).unwrap().zombie.villager_conversion_time = 1;
+        server.level.level_events.clear();
+        server.tick_mobs(&[candidate(0, curer), candidate(1, other)], false);
+        assert!(server.mobs.zombies().iter().all(|e| e.id != zombie) && !server.mob_tags.contains_key(&zombie), "the zombie villager is gone");
+        let cured = server.mobs.villagers().last().expect("a villager");
+        let id = cured.id;
+        assert_eq!((cured.villager.kind.as_str(), cured.villager.profession.id(), cured.villager.level, cured.villager.xp), ("minecraft:desert", "minecraft:farmer", 2, 12));
+        assert_eq!(cured.villager.body.position.to_array(), [8.5, 201.0, 8.5]);
+        assert_eq!(cured.offers.as_ref().map(Vec::len), Some(1));
+        assert!(cured.effects.get(MobEffect::Nausea).is_some_and(|e| e.duration == 200), "nausea");
+        assert!(cured.effects.has(MobEffect::Strength), "its effects come along");
+        let about_curer: Vec<_> = cured.gossips.unpack().into_iter().filter(|(target, _, _)| *target == 0xA11CE).map(|(_, kind, value)| (kind.id(), value)).collect();
+        assert!(about_curer.contains(&("major_positive", 20)) && about_curer.contains(&("minor_positive", 25)), "{about_curer:?}");
+        assert!(server.level.level_events.contains(&(1027, minecraftoss_core::BlockPos::new(8, 201, 8), 0)), "{:?}", server.level.level_events);
+        let tags = crate::server_mobs::mob_tags(&server.mobs, |_| true, &server.mob_tags);
+        let (_, villager) = tags.iter().find(|(tag_id, _)| *tag_id == id).expect("the villager is saved");
+        assert_eq!(villager.get("CustomName").and_then(Tag::as_str), Some("Bob"));
+        let price = |server: &mut ServerSim, player: u64| {
+            let view = server.mob_action(player, minecraftoss_entities::world::MobHit::Villager(id), None, Inventory::default(), 0, false).merchant.expect("its trades open");
+            server.merchant(player, MerchantOp::Close, Inventory::default(), 0, [8.5, 201.0, 8.5]);
+            view.offers[0].cost_a_count(64)
+        };
+        assert_eq!(price(&mut server, 1), 20);
+        assert_eq!(price(&mut server, 0), 14, "125 reputation off a 0.05 multiplier");
     }
 
     fn spawner_with_egg(difficulty: i32, rule: bool) -> Option<ServerSim> {
@@ -6580,9 +7810,9 @@ mod tests {
         let Some((mut server, _)) = door_world() else { return };
         let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
         server.summon("minecraft:shulker", [8.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
-        server.summon("minecraft:pillager", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
+        server.summon("minecraft:silverfish", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
         let kinds = |server: &ServerSim| server.dormant.iter().map(|(group, _)| group[0].kind.clone()).collect::<Vec<_>>();
-        assert_eq!(kinds(&server), ["minecraft:pillager"]);
+        assert_eq!(kinds(&server), ["minecraft:silverfish"]);
         assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are simulated");
         let player = minecraftoss_entities::tempt::PlayerCandidate {
             id: 0,
@@ -7601,6 +8831,67 @@ mod tests {
         let biome = kinds(&mut server, between, &netherrack, MobCategory::Monster);
         assert_ne!(biome, enemies, "elsewhere in the bounds the biome decides");
         assert!(kinds(&mut server, inside, &netherrack, MobCategory::Creature).iter().all(|kind| kind == "minecraft:strider"), "only monsters are overridden");
+    }
+
+    #[test]
+    fn pillager_outposts_spawn_pillagers_with_crossbows_by_day() {
+        use minecraftoss_world::natural_spawner::spawning::{MobCategory, Unlimited};
+        type BlockPos = minecraftoss_core::BlockPos;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let at = match crate::locate::nearest_structure(&worldgen, &["minecraft:pillager_outpost".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no pillager outpost near the origin of seed 1234: {other:?}"),
+        };
+        let outpost = worldgen.structures.id("minecraft:pillager_outpost").unwrap();
+        let start = worldgen.structures.starts_in(&worldgen.library, &worldgen.terrain, ChunkPos::new(at[0] >> 4, at[2] >> 4)).iter().find(|start| start.structure == outpost).cloned().expect("the outpost starts in its chunk");
+        let bbox = start.bounding_box();
+        for x in (bbox.min_x >> 4) - 1..=(bbox.max_x >> 4) + 1 {
+            for z in (bbox.min_z >> 4) - 1..=(bbox.max_z >> 4) + 1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let natural = server.level.natural_spawning.as_ref().unwrap();
+        let (spawns, finder) = (natural.spawns.clone(), natural.structures.clone().unwrap());
+        let ground = |server: &ServerSim, x: i32, z: i32| minecraftoss_generator::feature::World::height_at(&server.level, minecraftoss_core::chunk::HeightmapKind::MotionBlocking, x, z);
+        let (cx, cz) = ((bbox.min_x + bbox.max_x) / 2, (bbox.min_z + bbox.max_z) / 2);
+        let centre = BlockPos::new(cx, ground(&server, cx, cz), cz);
+        assert!(finder(centre).iter().any(|s| s.name == "minecraft:pillager_outpost" && s.in_box));
+        assert_eq!(spawns.kinds_at(&server.level, &*finder, MobCategory::Monster, centre), ["minecraft:pillager"]);
+        let far = BlockPos::new(cx + 400, 70, cz + 400);
+        assert!(!spawns.kinds_at(&server.level, &*finder, MobCategory::Monster, far).contains(&"minecraft:pillager".to_owned()));
+        let players = [[f64::from(bbox.max_x) + 30.5, f64::from(centre.y), f64::from(cz) + 0.5]];
+        let mut context = spawn_context(&players, true);
+        context.overworld_time = 6000;
+        context.structures = &*finder;
+        let before: std::collections::HashSet<u64> = server.mobs.mob_ids().collect();
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        for _ in 0..600 {
+            let x = bbox.min_x + random.next_int((bbox.max_x - bbox.min_x + 1) as u32) as i32;
+            let z = bbox.min_z + random.next_int((bbox.max_z - bbox.min_z + 1) as u32) as i32;
+            let y = ground(&server, x, z);
+            spawns.spawn_category_for_position(&mut server.level, &mut context, &mut Unlimited, MobCategory::Monster, ChunkPos::new(x >> 4, z >> 4), BlockPos::new(x, y, z));
+        }
+        server.take_spawned();
+        let new: Vec<u64> = server.mobs.mob_ids().filter(|id| !before.contains(id)).collect();
+        assert!(new.iter().all(|&id| server.mobs.entity_type(id) == Some("minecraft:pillager")), "only pillagers by day in an outpost");
+        let pillagers: Vec<_> = server.mobs.illagers().iter().filter(|e| new.contains(&e.id)).collect();
+        assert!(pillagers.len() >= 3, "{}", pillagers.len());
+        for e in pillagers {
+            let p = e.illager.body.position;
+            assert!(bbox.is_inside(BlockPos::new(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)), "{p}");
+            assert!(e.illager.holds_crossbow());
+            assert!(e.illager.raider.can_join_raid);
+        }
     }
 
     #[test]
@@ -9508,6 +10799,7 @@ mod tests {
             simulation_centres: vec![(0, 0)],
             simulation_distance: 2,
             mob_players: Vec::new(),
+            heroes: Vec::new(),
             mob_views: Vec::new(),
             mob_vitals: Vec::new(),
             bright_outside: true,
@@ -9516,6 +10808,7 @@ mod tests {
             player_hurts: Vec::new(),
             spawn_mobs: false,
             controls: Vec::new(),
+            omens: Vec::new(),
         }
     }
 
@@ -10428,5 +11721,467 @@ mod tests {
         assert!(crate::item_frame::struck_frame(crate::thrown::PLAYER_TARGET).is_none());
         assert_eq!(crate::item_frame::struck_frame(crate::item_frame::FRAME_TARGET + 3), Some(3));
         assert_eq!(crate::item_frame::struck_frame(3), None);
+    }
+
+    #[test]
+    fn a_cow_on_a_lead_ties_to_a_fence_saves_its_knot_and_drops_the_lead_when_it_snaps() {
+        use minecraftoss_entities::world::{LeashHolder, MobHit};
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=30 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        server.player_edit_block((8, 201, 10), Some(&Block::new("minecraft:oak_fence")), PlayerEdit::Place);
+        server.take_changes();
+        server.set_players(&[[8.5, 201.0, 8.5]], 2);
+        server.set_simulation_area((0, 0), 4);
+        server.summon("minecraft:cow", [8.5, 201.0, 6.5], None, 0.0).unwrap();
+        let cow = server.mobs.cows().last().expect("a cow").id;
+        let me = candidate(0, [8.5, 201.0, 8.5]);
+        server.tick_mobs(&[me], true);
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.slots[0] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:lead", 2));
+        let result = server.mob_action(0, MobHit::Cow(cow), None, inventory, 0, false);
+        assert_eq!(result.slots, [(0, Some(minecraftoss_player::inventory::ItemStack::new("minecraft:lead", 1)))]);
+        assert_eq!(server.mobs.leash_holder(cow), Some(LeashHolder::Player(0)));
+        assert!(server.leash_fence(0, (8, 201, 10), false));
+        assert_eq!(server.mobs.leash_holder(cow), Some(LeashHolder::Knot((8, 201, 10))));
+        let saved = crate::server_mobs::mob_tags_where(&server.mobs, |id, _| id == cow, &server.mob_tags, false);
+        assert_eq!(saved[0].1.get("leash"), Some(&minecraftoss_core::nbt::Tag::IntArray(vec![8, 201, 10])));
+        for _ in 0..40 {
+            server.tick_mobs(&[me], true);
+        }
+        assert_eq!(server.mobs.leash_holder(cow), Some(LeashHolder::Knot((8, 201, 10))), "the fence holds it");
+        assert!(server.leash_fence(0, (8, 201, 10), false), "the player takes it back");
+        let far = candidate(0, [8.5, 201.0, 28.5]);
+        server.tick_mobs(&[far], true);
+        assert_eq!(server.mobs.leash_holder(cow), None, "beyond twelve blocks the lead snaps");
+        assert!(item_ids(&server).contains(&"minecraft:lead".to_owned()));
+        assert!(server.mobs.take_sounds().iter().any(|s| s.event == "item.lead.break"));
+    }
+
+    #[test]
+    fn a_wandering_trader_sells_two_buying_two_uncommon_and_five_common_trades_with_no_experience_bar() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, _)) = trading_server() else { return };
+        server.summon("minecraft:wandering_trader", [2.5, 100.0, 0.5], Some(&minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap()), 0.0).unwrap();
+        let trader = server.mobs.wandering_traders()[0].id;
+        let hit = minecraftoss_entities::world::MobHit::WanderingTrader(trader);
+        let view = server.mob_action(0, hit, None, Inventory::default(), 0, false).merchant.expect("its trading screen opens");
+        assert!(view.trader);
+        assert_eq!((view.profession, view.level, view.xp), ("minecraft:none", 1, 0));
+        assert_eq!(view.offers.len(), 9, "{:?}", view.offers);
+        assert!(view.offers[..2].iter().all(|offer| offer.sell.id == "minecraft:emerald"), "it buys first");
+        assert!(view.offers[2..].iter().all(|offer| offer.buy.id == "minecraft:emerald"), "then sells for emeralds");
+        let mut sold: Vec<&str> = view.offers.iter().map(|offer| offer.sell.id.as_str()).collect();
+        sold.dedup();
+        assert_eq!(sold.len(), view.offers.len() - 1, "no trade twice");
+        assert!(server.mobs.wandering_traders()[0].trading_player.is_some());
+        assert!(server.mob_action(1, hit, None, Inventory::default(), 0, false).merchant.is_none(), "one customer at a time");
+        server.merchant(0, MerchantOp::Close, Inventory::default(), 0, [2.5, 100.0, 1.5]);
+        let again = server.mob_action(1, hit, None, Inventory::default(), 0, false).merchant.expect("the next customer");
+        assert_eq!(again.offers.iter().map(|o| o.sell.id.clone()).collect::<Vec<_>>(), view.offers.iter().map(|o| o.sell.id.clone()).collect::<Vec<_>>(), "the same wares");
+    }
+
+    #[test]
+    fn a_trade_with_a_wandering_trader_drops_three_to_six_experience_and_teaches_it_nothing() {
+        use minecraftoss_player::inventory::{Inventory, ItemStack};
+        let Some((mut server, _)) = trading_server() else { return };
+        let nbt = minecraftoss_core::snbt::parse_compound("{NoAI:1b,Offers:{Recipes:[{buy:{id:\"minecraft:emerald\",count:1},sell:{id:\"minecraft:blue_ice\",count:1},maxUses:6,xp:1,priceMultiplier:0.05f}]}}").unwrap();
+        server.summon("minecraft:wandering_trader", [2.5, 100.0, 0.5], Some(&nbt), 0.0).unwrap();
+        let trader = server.mobs.wandering_traders()[0].id;
+        let mut inventory = Inventory::default();
+        inventory.slots[9] = Some(ItemStack { max: 64, ..ItemStack::new("minecraft:emerald", 5) });
+        let view = server.mob_action(0, minecraftoss_entities::world::MobHit::WanderingTrader(trader), None, inventory.clone(), 0, false).merchant.expect("open");
+        assert_eq!(view.offers.len(), 1, "its saved offers");
+        let apply = |inventory: &mut Inventory, update: &MerchantUpdate| {
+            for (slot, stack) in &update.slots {
+                inventory.slots[*slot] = stack.clone();
+            }
+            inventory.cursor = update.cursor.clone();
+        };
+        let update = server.merchant(0, MerchantOp::Select(0), inventory.clone(), 0, [2.5, 100.0, 1.5]);
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Result { shift: false }, inventory.clone(), 0, [2.5, 100.0, 1.5]);
+        apply(&mut inventory, &update);
+        let view = update.view.expect("still open");
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.id.as_str()), Some("minecraft:blue_ice"));
+        assert_eq!((view.trader, view.level, view.xp), (true, 1, 0), "a trader never levels");
+        assert_eq!(view.offers[0].uses, 1);
+        let orbs: Vec<i32> = server.orbs().iter().map(|orb| orb.value).collect();
+        assert_eq!(orbs.len(), 1);
+        assert!((3..=6).contains(&orbs[0]), "{orbs:?}");
+    }
+
+    #[test]
+    fn the_trader_spawner_brings_a_trader_within_48_blocks_with_two_trader_llamas_on_leads() {
+        use minecraftoss_entities::world::LeashHolder;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        server.custom_spawners.traders.as_mut().unwrap().random = minecraftoss_core::random::LegacyRandom::new(5);
+        for x in -4..=4 {
+            for z in -4..=4 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let me = candidate(0, [8.5, 200.0, 8.5]);
+        let mut tries = 0;
+        while server.mobs.wandering_traders().is_empty() {
+            tries += 1;
+            assert!(tries < 400, "a trader comes once in ten tries");
+            assert!(server.spawn_wandering_trader(&[me]) == !server.mobs.wandering_traders().is_empty());
+        }
+        let trader = &server.mobs.wandering_traders()[0];
+        let (id, at) = (trader.id, trader.position());
+        assert!((at.x - 8.5).abs() <= 48.0 && (at.z - 8.5).abs() <= 48.0, "{at}");
+        assert_eq!(trader.trader.despawn_delay, 48000);
+        assert_eq!(trader.trader.home, Some(((8, 200, 8), 16)));
+        assert_eq!(trader.trader.wander_target, Some((8, 200, 8)));
+        server.set_players(&[[8.5, 200.0, 8.5]], 2);
+        server.set_simulation_area((0, 0), 6);
+        server.tick_mobs(&[me], true);
+        let llamas: Vec<u64> = server.mobs.cows().iter().filter(|e| e.horse.as_ref().is_some_and(|h| h.kind == minecraftoss_entities::horse::HorseKind::TraderLlama)).map(|e| e.id).collect();
+        assert_eq!(llamas.len(), 2);
+        for llama in llamas {
+            assert_eq!(server.mobs.leash_holder(llama), Some(LeashHolder::Mob(id)));
+            let cow = server.mobs.cow_mut(llama).unwrap();
+            assert!(!cow.cow.age.baby());
+            let position = cow.cow.body.position;
+            assert!((position.x - at.x).abs() <= 5.0 && (position.z - at.z).abs() <= 5.0, "{position} {at}");
+        }
+        assert!(server.custom_spawners.traders.is_some());
+        assert!(server.spawn_wandering_trader(&[]), "no player counts as a spawn, as in vanilla");
+        assert_eq!(server.mobs.wandering_traders().len(), 1, "but brings no trader");
+    }
+
+    #[test]
+    fn patrols_come_by_day_away_from_villages_with_a_banner_captain_who_drops_an_ominous_bottle() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -5..=5 {
+            for z in -5..=5 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        server.set_players(&[[8.5, 200.0, 8.5]], 2);
+        let me = candidate(0, [8.5, 200.0, 8.5]);
+        let tries = |server: &mut ServerSim, bright: bool, times: usize| {
+            for _ in 0..times {
+                if !server.mobs.illagers().is_empty() {
+                    return;
+                }
+                server.custom_spawners.patrols.as_mut().unwrap().next_tick = 1;
+                server.tick_patrol_spawner(&[me], bright);
+            }
+        };
+        tries(&mut server, true, 300);
+        assert!(server.mobs.illagers().is_empty(), "not before the fifth day");
+        server.set_clocks(ClockTicks { overworld: 130_000, the_end: 0 });
+        tries(&mut server, false, 300);
+        assert!(server.mobs.illagers().is_empty(), "never at night");
+        let bell = (8, 200, 8);
+        assert!(server.mobs.pois.add(bell, minecraftoss_entities::poi::PoiType::Meeting));
+        assert!(server.mobs.pois.acquire(bell), "a village centre has a claimed point");
+        tries(&mut server, true, 300);
+        assert!(server.mobs.illagers().is_empty(), "never near a village");
+        server.mobs.pois.remove(bell);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("spawn_patrols", "false").unwrap();
+        server.apply_game_rules(&rules);
+        tries(&mut server, true, 300);
+        assert!(server.mobs.illagers().is_empty(), "the rule turns patrols off");
+        rules.set("spawn_patrols", "true").unwrap();
+        server.apply_game_rules(&rules);
+        tries(&mut server, true, 600);
+        let patrol: Vec<u64> = server.mobs.illagers().iter().map(|e| e.id).collect();
+        assert!((1..=4).contains(&patrol.len()), "{}", patrol.len());
+        let captain = &server.mobs.illagers()[0];
+        assert!(captain.is_captain(), "the first one leads with the ominous banner");
+        assert_eq!(captain.illager.drop_chances[minecraftoss_entities::illager::HEAD], 2.0);
+        let at = captain.position();
+        for offset in [at.x.floor() - 8.0, at.z.floor() - 8.0] {
+            assert!((24.0..=47.0).contains(&offset.abs()), "{at}");
+        }
+        assert!(server.mobs.illagers().iter().all(|e| e.illager.raider.patrolling && e.illager.holds_crossbow()));
+        assert!(server.mobs.illagers().iter().skip(1).all(|e| !e.illager.raider.patrol_leader && e.illager.raider.patrol_target.is_none()));
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        server.load_loot(&jar, 0);
+        let id = patrol[0];
+        let attack = minecraftoss_entities::world::PlayerAttack {
+            player_id: 0,
+            position: at + glam::DVec3::X,
+            yaw: 90.0,
+            attack_damage: 100.0,
+            strength: 1.0,
+            sprinting: false,
+            can_critical: false,
+            can_sweep: false,
+        };
+        server.mob_action(0, minecraftoss_entities::world::MobHit::Illager(id), Some(attack), minecraftoss_player::inventory::Inventory::default(), 0, false);
+        for _ in 0..25 {
+            server.tick_mobs(&[], true);
+        }
+        let dropped: Vec<String> = server.items().into_iter().map(|item| item.item).collect();
+        assert!(dropped.iter().any(|item| item == "minecraft:ominous_bottle"), "{dropped:?}");
+        assert!(dropped.iter().any(|item| item == "minecraft:white_banner"), "{dropped:?}");
+    }
+
+    #[test]
+    fn a_raid_omen_in_a_village_brings_waves_of_raiders_with_a_bar_and_a_horn() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -5..=5 {
+            for z in -5..=5 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let y = minecraftoss_generator::feature::World::height_at(&server.level, minecraftoss_core::chunk::HeightmapKind::MotionBlocking, 8, 8);
+        let feet = [8.5, f64::from(y), 8.5];
+        server.set_players(&[feet], 2);
+        server.set_simulation_area((0, 0), 5);
+        let bell = (8, y, 8);
+        assert!(server.mobs.pois.add(bell, minecraftoss_entities::poi::PoiType::Meeting));
+        assert!(server.mobs.pois.acquire(bell));
+        let me = candidate(0, feet);
+        let bad = [(0, PlayerOmens { bad_omen: Some(1), raid_omens: Vec::new() })];
+        let tick = server.tick_raids(&[me], &bad, true);
+        assert_eq!(tick.omens, [(0, 1, bell)], "bad omen turns into raid omen at the player's block");
+        let away = candidate(0, [300.5, f64::from(y), 8.5]);
+        assert!(server.tick_raids(&[away], &bad, true).omens.is_empty(), "not outside the village");
+        let fired = [(0, PlayerOmens { bad_omen: None, raid_omens: vec![(1, bell)] })];
+        server.tick_raids(&[me], &fired, true);
+        assert_eq!(server.raids().raids.len(), 1, "the raid omen ends in a raid");
+        let id = *server.raids().raids.keys().next().unwrap();
+        assert_eq!(server.raids().raids[&id].raid_omen_level, 2);
+        let mut horns = Vec::new();
+        let mut bars = Vec::new();
+        for _ in 0..400 {
+            let tick = server.tick_raids(&[me], &[], true);
+            horns.extend(tick.horns);
+            bars.extend(tick.bars.into_iter().flat_map(|(player, bars)| bars.into_iter().map(move |bar| (player, bar.name))));
+            if !server.mobs.illagers().is_empty() {
+                break;
+            }
+        }
+        assert!(!server.mobs.illagers().is_empty(), "the first wave came");
+        assert!(horns.iter().any(|(player, _)| *player == 0), "the horn sounded for the player");
+        assert!(bars.contains(&(0, crate::raids::BarName::Raid)), "the player sees the Raid bar");
+        let wave: Vec<&minecraftoss_entities::world::IllagerEntity> = server.mobs.illagers().iter().collect();
+        assert!((4..=5).contains(&wave.len()), "four pillagers and one at most more on normal: {}", wave.len());
+        assert!(wave.iter().all(|e| e.illager.kind == minecraftoss_entities::illager::IllagerKind::Pillager && e.illager.holds_crossbow()));
+        assert!(wave.iter().all(|e| e.illager.raider.raid_id == Some(id) && e.illager.raider.wave == 1 && e.illager.raider.can_join_raid));
+        assert_eq!(wave.iter().filter(|e| e.is_captain()).count(), 1, "one captain with the ominous banner");
+        let raid = &server.raids().raids[&id];
+        assert_eq!((raid.groups_spawned, raid.raiders_alive()), (1, wave.len()));
+        assert!(raid.total_health > 0.0);
+        let saved = crate::server_mobs::mob_tags_where(&server.mobs, |_, _| true, &server.mob_tags, false);
+        let raiders: Vec<&minecraftoss_core::nbt::Tag> = saved.iter().map(|(_, tag)| tag).filter(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:pillager")).collect();
+        assert_eq!(raiders.len(), wave.len());
+        assert!(raiders.iter().all(|tag| tag.get("RaidId").and_then(minecraftoss_core::nbt::Tag::as_i64) == Some(i64::from(id))));
+        let written = server.raids().write();
+        let back = crate::raids::Raids::read(&written);
+        assert_eq!(back.raids[&id].groups_spawned, 1);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("raids", "false").unwrap();
+        server.apply_game_rules(&rules);
+        server.tick_raids(&[me], &[], true);
+        assert!(server.raids().raids.is_empty(), "the raids rule stops it");
+        assert!(server.mobs.illagers().iter().all(|e| e.illager.raider.raid_id.is_none()));
+    }
+
+    #[test]
+    fn a_rung_bell_wakes_the_villagers_and_lights_up_the_raiders() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        let bell = (8, 200, 8);
+        place(&mut server, &mut scene, bell, Block::new("minecraft:bell").with("attachment", "floor").with("facing", "north"));
+        server.summon("minecraft:villager", [8.5, 200.0, 10.5], None, 0.0).unwrap();
+        server.summon("minecraft:pillager", [20.5, 200.0, 8.5], None, 0.0).unwrap();
+        server.summon("minecraft:pillager", [80.5, 200.0, 8.5], None, 0.0).unwrap();
+        let (near, far) = (server.mobs.illagers()[0].id, server.mobs.illagers()[1].id);
+        server.level.sounds.clear();
+        assert!(!server.ring_bell((8, 199, 8), None), "stone is no bell");
+        assert!(server.ring_bell(bell, Some("east")));
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::bells::USE_SOUND && s.volume == 2.0));
+        server.tick();
+        let heard = |server: &ServerSim| server.mobs.villagers()[0].ai.as_ref().unwrap().brain.memories.heard_bell_time.get().copied();
+        let first = heard(&server).expect("the villager heard the bell");
+        let mut resonated = 0;
+        for _ in 0..50 {
+            server.level.sounds.clear();
+            server.tick();
+            server.tick_bells();
+            resonated += server.level.sounds.iter().filter(|s| s.event == crate::bells::RESONATE_SOUND).count();
+        }
+        assert_eq!(resonated, 1, "it resonates once with a raider near");
+        assert!(server.mobs.glowing(near) && !server.mobs.glowing(far));
+        let shows = crate::mob_tracking::shows(&server.mobs);
+        assert!(shows[&near].glowing && !shows.get(&far).is_some_and(|show| show.glowing));
+        server.level.sounds.clear();
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:redstone_block"));
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::bells::USE_SOUND), "redstone rings it");
+        server.tick();
+        assert!(heard(&server).is_some_and(|time| time > first));
+        server.set_simulation_area((0, 0), 1);
+        for _ in 0..61 {
+            server.tick();
+            server.tick_mobs(&[], true);
+        }
+        assert!(!server.mobs.glowing(near), "the glow lasts three seconds");
+    }
+
+    #[test]
+    fn a_villager_s_rocket_climbs_bursts_under_a_roof_and_hurts_who_is_near() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        place(&mut server, &mut scene, (8, 204, 8), Block::new("minecraft:stone"));
+        server.summon("minecraft:pillager", [8.5, 200.0, 10.5], None, 0.0).unwrap();
+        let pillager = server.mobs.illagers()[0].id;
+        let health = server.mobs.illagers()[0].illager.health;
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(2);
+        server.rockets.push(crate::firework_rocket::Rocket::launch(Some(77), glam::DVec3::new(8.5, 201.6, 8.5), vec![2437522], 1, &mut random));
+        assert_eq!(server.rocket_views().len(), 1);
+        assert!(crate::firework_rocket::is_rocket(&server.rocket_views()[0]));
+        let player = crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(8.5, 200.0, 7.5), alive: true, spectator: false };
+        server.level.sounds.clear();
+        let mut ticks = 0;
+        while !server.rockets.is_empty() && ticks < 40 {
+            server.tick_rockets(&[player]);
+            ticks += 1;
+        }
+        assert!(ticks < 20, "the roof stops it early: {ticks}");
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::firework::LAUNCH_SOUND && s.volume == 3.0));
+        assert_eq!(server.firework_bursts.len(), 1);
+        assert_eq!(server.firework_bursts[0].colors, [2437522]);
+        assert!((server.firework_bursts[0].position.y - 204.0).abs() < 1e-6);
+        let hits = server.take_rocket_hits();
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].player_id, hits[0].source), (4, Some(77)));
+        assert!(matches!(hits[0].kind, minecraftoss_entities::world::PlayerHitKind::Fireworks { .. }));
+        assert!(hits[0].damage > 0.0 && hits[0].damage < 7.0);
+        let hurt = server.mobs.illagers().iter().find(|e| e.id == pillager).map_or(0.0, |e| e.illager.health);
+        assert!(hurt < health, "the pillager below is hurt too");
+    }
+
+    #[test]
+    fn raid_members_carry_their_wave_raid_and_raid_buffs() {
+        let Some((mut server, _)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        use minecraftoss_core::nbt::Tag;
+        let pos = minecraftoss_core::BlockPos::new(8, 200, 8);
+        let main_hand = |tag: &Tag| tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|hand| hand.get("id")).and_then(Tag::as_str).map(str::to_owned);
+        let enchantments = |tag: &Tag| tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|hand| hand.get("components")).and_then(|c| c.get("minecraft:enchantments")).cloned();
+        let vindicator = server.level.raid_member("minecraft:vindicator", pos, 6, 3, true, 1.0).expect("a raid vindicator");
+        assert_eq!(main_hand(&vindicator).as_deref(), Some("minecraft:iron_axe"), "its axe comes from the raid");
+        assert_eq!(enchantments(&vindicator).and_then(|e| e.get("minecraft:sharpness").and_then(Tag::as_i64)), Some(2), "past wave five: sharpness II");
+        assert_eq!((vindicator.get("Wave"), vindicator.get("RaidId")), (Some(&Tag::Int(6)), Some(&Tag::Int(3))));
+        assert_eq!(vindicator.get("CanJoinRaid"), Some(&Tag::Byte(1)));
+        assert!(vindicator.get("equipment").and_then(|e| e.get("head")).is_some(), "the wave's captain wears the banner");
+        assert_eq!(vindicator.get("Pos").and_then(Tag::as_list).map(|p| p.iter().filter_map(Tag::as_f64).collect::<Vec<_>>()), Some(vec![8.5, 201.0, 8.5]));
+        let plain = server.level.raid_member("minecraft:vindicator", pos, 2, 3, false, 0.0).unwrap();
+        assert_eq!(main_hand(&plain).as_deref(), Some("minecraft:iron_axe"));
+        assert_eq!(enchantments(&plain), None, "no enchantment without raid omen odds");
+        assert!(plain.get("equipment").and_then(|e| e.get("head")).is_none());
+        let pillager = server.level.raid_member("minecraft:pillager", pos, 4, 3, false, 1.0).unwrap();
+        assert_eq!(main_hand(&pillager).as_deref(), Some("minecraft:crossbow"));
+        assert_eq!(enchantments(&pillager).and_then(|e| e.get("minecraft:quick_charge").and_then(Tag::as_i64)), Some(1));
+        let witch = server.level.raid_member("minecraft:witch", pos, 4, 3, false, 0.0).unwrap();
+        assert_eq!(witch.get("CanJoinRaid"), Some(&Tag::Byte(1)), "a raid witch can join raids");
+        assert!(server.level.raid_member("minecraft:zombie", pos, 1, 3, false, 0.0).is_none());
+    }
+
+    #[test]
+    fn raids_are_saved_in_the_dimension_s_data_folder_and_read_back() {
+        let Some((mut server, _)) = door_world() else { return };
+        let dir = std::env::temp_dir().join(format!("iw4l-raids-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let registries = Arc::new(Registries::load(&DataPaths::discover().unwrap()).unwrap());
+        let storage = |registries: &Arc<Registries>| Some(Arc::new(minecraftoss_world::storage::ChunkStorage::new(&dir, "minecraft:overworld", registries.clone(), -64, 384)));
+        server.set_entity_storage(storage(&registries));
+        assert!(server.raids().raids.is_empty());
+        let mut raid = crate::raids::Raid::new((8, 70, 8), 2, 5);
+        raid.started = true;
+        raid.groups_spawned = 3;
+        raid.raid_omen_level = 2;
+        raid.heroes.insert(0xA11CE);
+        server.raids_mut().raids.insert(2, raid);
+        server.raids_mut().next_id = 2;
+        server.save_all_entities();
+        let path = dir.join("dimensions").join("minecraft").join("overworld").join("data").join("minecraft").join("raids.dat");
+        let saved = minecraftoss_world::level_storage::read_saved_at(&path).unwrap().expect("raids.dat in the overworld's data folder");
+        assert_eq!(crate::raids::Raids::read(&saved).raids[&2].groups_spawned, 3);
+        let Some((mut fresh, _)) = door_world() else { return };
+        fresh.set_entity_storage(storage(&registries));
+        let back = &fresh.raids().raids[&2];
+        assert_eq!((back.center, back.groups_spawned, back.raid_omen_level, back.heroes.contains(&0xA11CE)), ((8, 70, 8), 3, 2, true));
+        assert_eq!(fresh.raids().next_id, 2);
+        assert_eq!(fresh.mobs.raids().iter().map(|view| view.id).collect::<Vec<_>>(), [2], "its raiders find it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_trader_spawner_waits_for_its_rule_and_its_saved_day() {
+        let Some((mut server, _)) = door_world() else { return };
+        let traders = server.custom_spawners.traders.as_mut().expect("the overworld has one");
+        traders.data = crate::custom_spawners::TraderData { spawn_delay: 1200, spawn_chance: 75 };
+        traders.tick_delay = 1;
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("spawn_wandering_traders", "false").unwrap();
+        server.apply_game_rules(&rules);
+        let me = candidate(0, [8.5, 200.0, 8.5]);
+        server.tick_trader_spawner(&[me]);
+        assert_eq!(server.trader_data().unwrap().spawn_delay, 1200, "the rule off stops it");
+        rules.set("spawn_wandering_traders", "true").unwrap();
+        server.apply_game_rules(&rules);
+        server.tick_trader_spawner(&[me]);
+        let data = server.trader_data().unwrap();
+        assert_eq!(data.spawn_delay, 24000);
+        assert!(data.spawn_chance == 75 || data.spawn_chance == 25, "{data:?}");
+        let dir = std::env::temp_dir().join(format!("iw4l-trader-data-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("data").join("minecraft").join(crate::custom_spawners::TRADER_DATA);
+        let wanted = crate::custom_spawners::TraderData { spawn_delay: 3600, spawn_chance: 50 };
+        minecraftoss_world::level_storage::write_saved_at(&path, wanted.write()).unwrap();
+        let registries = Arc::new(Registries::load(&DataPaths::discover().unwrap()).unwrap());
+        server.set_entity_storage(Some(Arc::new(minecraftoss_world::storage::ChunkStorage::new(&dir, "minecraft:overworld", registries, -64, 384))));
+        assert_eq!(server.trader_data(), Some(wanted), "the world's wandering_trader.dat is read");
+        let later = crate::custom_spawners::TraderData { spawn_delay: 1200, spawn_chance: 75 };
+        server.set_trader_data(later);
+        server.save_all_entities();
+        let saved = minecraftoss_world::level_storage::read_saved_at(&path).unwrap().expect("written back");
+        assert_eq!(crate::custom_spawners::TraderData::read(&saved), later);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

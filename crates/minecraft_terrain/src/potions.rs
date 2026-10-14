@@ -243,6 +243,11 @@ impl PotionEffect {
             "conduit_power" => EffectKind::ConduitPower,
             "levitation" => EffectKind::Levitation,
             "slow_falling" => EffectKind::SlowFalling,
+            "darkness" => EffectKind::Darkness,
+            "bad_omen" => EffectKind::BadOmen,
+            "raid_omen" => EffectKind::RaidOmen,
+            "trial_omen" => EffectKind::TrialOmen,
+            "hero_of_the_village" => EffectKind::HeroOfTheVillage,
             _ => return None,
         })
     }
@@ -563,7 +568,11 @@ mod tests {
         );
         assert_eq!(PotionEffect::of_mob(&mob), poison);
         assert_eq!(poison.player_effect(), Some(EffectKind::Poison));
-        assert_eq!(PotionEffect::new("strength", 100, 0).mob_effect(), None);
+        assert_eq!(PotionEffect::new("luck", 100, 0).mob_effect(), None);
+        assert_eq!(
+            PotionEffect::new("glowing", 100, 0).mob_effect().map(|e| e.effect),
+            Some(MobEffect::Glowing)
+        );
         assert_eq!(PotionEffect::new("speed", 100, 0).player_effect(), None);
         assert_eq!(
             PotionEffect::new("minecraft:haste", 100, 0).player_effect(),

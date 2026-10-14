@@ -6,6 +6,11 @@ use serde_json::{Value, json};
 pub const GLASS_BOTTLE: &str = "minecraft:glass_bottle";
 pub const POTION: &str = "minecraft:potion";
 pub const MILK_BUCKET: &str = "minecraft:milk_bucket";
+pub const OMINOUS_BOTTLE: &str = "minecraft:ominous_bottle";
+pub const OMINOUS_AMPLIFIER: &str = "minecraft:ominous_bottle_amplifier";
+pub const OMINOUS_DISPOSE_SOUND: &str = "minecraft:item.ominous_bottle.dispose";
+pub const BAD_OMEN_TICKS: u32 = 120000;
+const MAX_OMINOUS_AMPLIFIER: i64 = 4;
 pub const DRAGON_BREATH: &str = "minecraft:dragon_breath";
 pub const BREATH_SOUND: &str = "minecraft:item.bottle.fill_dragonbreath";
 pub const FILL_SOUND: &str = "minecraft:item.bottle.fill";
@@ -126,6 +131,19 @@ pub fn drink_milk(slot: usize, stack: &ItemStack) -> FoodUse {
     let mut using = drink(slot, stack);
     using.info.remainder = Some(ItemStack::new(crate::bucket::BUCKET, 1));
     using
+}
+
+pub fn drink_ominous(slot: usize, stack: &ItemStack) -> FoodUse {
+    let mut using = drink(slot, stack);
+    using.info.remainder = None;
+    using
+}
+
+pub fn ominous_amplifier(components: Option<&Value>) -> u8 {
+    components
+        .and_then(|c| c.get(OMINOUS_AMPLIFIER))
+        .and_then(Value::as_i64)
+        .map_or(0, |amplifier| amplifier.clamp(0, MAX_OMINOUS_AMPLIFIER) as u8)
 }
 
 #[derive(Clone, Debug, PartialEq)]

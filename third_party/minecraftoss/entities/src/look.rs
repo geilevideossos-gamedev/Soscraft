@@ -138,6 +138,10 @@ impl LookControl {
     }
 
     pub fn tick(&mut self, position: DVec3, eye_height: f32, body_yaw: f32, navigating: bool) {
+        self.tick_limited(position, eye_height, body_yaw, navigating, 75.0);
+    }
+
+    pub fn tick_limited(&mut self, position: DVec3, eye_height: f32, body_yaw: f32, navigating: bool, max_head_y_rot: f32) {
         self.pitch = 0.0;
         if self.cooldown > 0 {
             self.cooldown -= 1;
@@ -158,7 +162,7 @@ impl LookControl {
             self.head_yaw = rotate_towards(self.head_yaw, body_yaw, 10.0);
         }
         if navigating {
-            self.head_yaw = rotate_if_necessary(self.head_yaw, body_yaw, 75.0);
+            self.head_yaw = rotate_if_necessary(self.head_yaw, body_yaw, max_head_y_rot);
         }
     }
 }
@@ -179,22 +183,26 @@ impl BodyRotation {
     }
 
     pub fn tick(&mut self, yaw: f32, look: &mut LookControl, old_pos: DVec3, pos: DVec3) {
+        self.tick_limited(yaw, look, old_pos, pos, 75.0);
+    }
+
+    pub fn tick_limited(&mut self, yaw: f32, look: &mut LookControl, old_pos: DVec3, pos: DVec3, max_head_y_rot: f32) {
         let xd = pos.x - old_pos.x;
         let zd = pos.z - old_pos.z;
         if xd * xd + zd * zd > 2.5000003e-7_f32 as f64 {
             self.body_yaw = yaw;
-            look.head_yaw = rotate_if_necessary(look.head_yaw, self.body_yaw, 75.0);
+            look.head_yaw = rotate_if_necessary(look.head_yaw, self.body_yaw, max_head_y_rot);
             self.last_stable_head_yaw = look.head_yaw;
             self.stable_time = 0;
         } else if (look.head_yaw - self.last_stable_head_yaw).abs() > 15.0 {
             self.stable_time = 0;
             self.last_stable_head_yaw = look.head_yaw;
-            self.body_yaw = rotate_if_necessary(self.body_yaw, look.head_yaw, 75.0);
+            self.body_yaw = rotate_if_necessary(self.body_yaw, look.head_yaw, max_head_y_rot);
         } else {
             self.stable_time += 1;
             if self.stable_time > 10 {
                 let fraction = ((self.stable_time - 10) as f32 / 10.0).clamp(0.0, 1.0);
-                let remaining = 75.0 * (1.0 - fraction);
+                let remaining = max_head_y_rot * (1.0 - fraction);
                 self.body_yaw = rotate_if_necessary(self.body_yaw, look.head_yaw, remaining);
             }
         }

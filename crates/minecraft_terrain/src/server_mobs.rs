@@ -255,6 +255,10 @@ impl PlayerWorld for MobWorld<'_> {
         self.level.borrow_mut().set_block(minecraftoss_core::BlockPos::new(x, y, z), state, update::ALL, update::LIMIT);
     }
 
+    fn destroy_block(&mut self, (x, y, z): (i32, i32, i32)) -> bool {
+        self.level.borrow_mut().destroy_block_drops(minecraftoss_core::BlockPos::new(x, y, z), true, update::LIMIT)
+    }
+
     fn block_in_tag(&self, pos: (i32, i32, i32), tag: &str) -> bool {
         let state = self.state(pos);
         let level = self.level.borrow();
@@ -354,6 +358,16 @@ impl PlayerWorld for MobWorld<'_> {
         self.level.borrow_mut().is_raining_at(minecraftoss_core::BlockPos::new(x, y, z))
     }
 
+    fn snow_golem_melts(&self, (x, y, z): (i32, i32, i32)) -> bool {
+        self.level.borrow().snow_golem_melts_at(x, y, z)
+    }
+
+    fn block_survives(&self, (x, y, z): (i32, i32, i32), block: &PlayerBlock) -> bool {
+        let Ok(id) = crate::pack::ResourceId::parse(&block.id) else { return false };
+        let Some(state) = self.states.state_of(&Block { id, properties: block.properties.clone() }) else { return false };
+        self.level.borrow().can_survive_at(state, minecraftoss_core::BlockPos::new(x, y, z))
+    }
+
     fn light_path_cost(&self, (x, y, z): (i32, i32, i32)) -> f32 {
         let mut level = self.level.borrow_mut();
         let brightness = level.max_local_raw_brightness(minecraftoss_core::BlockPos::new(x, y, z));
@@ -370,6 +384,16 @@ impl PlayerWorld for MobWorld<'_> {
 
     fn max_y(&self) -> i32 {
         self.level.borrow().max_y()
+    }
+
+    fn motion_blocking_no_leaves_height(&self, x: i32, z: i32) -> i32 {
+        let level = self.level.borrow();
+        minecraftoss_generator::feature::World::height_at(&**level, minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z)
+    }
+
+    fn motion_blocking_height(&self, x: i32, z: i32) -> i32 {
+        let level = self.level.borrow();
+        minecraftoss_generator::feature::World::height_at(&**level, minecraftoss_core::chunk::HeightmapKind::MotionBlocking, x, z)
     }
 }
 
@@ -410,14 +434,17 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:bat",
     "minecraft:blaze",
     "minecraft:bogged",
+    "minecraft:cat",
     "minecraft:cave_spider",
     "minecraft:chicken",
     "minecraft:cow",
     "minecraft:creeper",
     "minecraft:donkey",
+    "minecraft:drowned",
     "minecraft:end_crystal",
     "minecraft:ender_dragon",
     "minecraft:enderman",
+    "minecraft:evoker",
     "minecraft:ghast",
     "minecraft:glow_item_frame",
     "minecraft:hoglin",
@@ -425,20 +452,30 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:husk",
     "minecraft:iron_golem",
     "minecraft:item_frame",
+    "minecraft:llama",
     "minecraft:magma_cube",
     "minecraft:mooshroom",
+    "minecraft:mule",
+    "minecraft:ocelot",
     "minecraft:parched",
     "minecraft:pig",
     "minecraft:piglin",
     "minecraft:piglin_brute",
+    "minecraft:pillager",
+    "minecraft:ravager",
     "minecraft:sheep",
     "minecraft:shulker",
     "minecraft:skeleton",
     "minecraft:slime",
+    "minecraft:snow_golem",
     "minecraft:spider",
     "minecraft:stray",
     "minecraft:strider",
+    "minecraft:trader_llama",
+    "minecraft:vex",
     "minecraft:villager",
+    "minecraft:vindicator",
+    "minecraft:wandering_trader",
     "minecraft:witch",
     "minecraft:wither_skeleton",
     "minecraft:wolf",
@@ -448,8 +485,10 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:zombified_piglin",
 ];
 
+const VEHICLES: &[&str] = &["minecraft:strider", "minecraft:horse", "minecraft:donkey", "minecraft:mule", "minecraft:llama", "minecraft:trader_llama", "minecraft:ravager"];
+
 fn carries(tag: &Tag) -> bool {
-    text(tag, "id") == Some("minecraft:strider")
+    text(tag, "id").is_some_and(|id| VEHICLES.contains(&id))
         && tag.get("Passengers").and_then(Tag::as_list).is_some_and(|riders| {
             riders.iter().all(|rider| {
                 let kind = text(rider, "id").unwrap_or("");
@@ -467,6 +506,16 @@ pub fn spawn_saved_all(world: &mut EntityWorld, tag: &Tag) -> Vec<(u64, Tag)> {
     let Some(id) = spawn_saved(world, &Tag::Compound(bare)) else { return Vec::new() };
     let mut out = vec![(id, tag.clone())];
     for rider in &riders {
+        let placed;
+        let rider = match (rider, map.get("Pos")) {
+            (Tag::Compound(fields), Some(pos)) if !fields.contains_key("Pos") => {
+                let mut fields = fields.clone();
+                fields.insert("Pos".to_owned(), pos.clone());
+                placed = Tag::Compound(fields);
+                &placed
+            }
+            _ => rider,
+        };
         let spawned = spawn_saved_all(world, rider);
         if let Some(&(rider_id, _)) = spawned.first() {
             world.force_riding(Rider::Mob(rider_id), id);
@@ -565,7 +614,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             world.cow_mut(id)?.random = random;
             id
         }
-        "minecraft:horse" | "minecraft:donkey" => {
+        "minecraft:horse" | "minecraft:donkey" | "minecraft:mule" | "minecraft:llama" | "minecraft:trader_llama" if tag.get("Passengers").is_none() => {
             use minecraftoss_entities::horse::{HorseKind, HorseState};
             let mut cow = Cow::new(pos);
             cow.yaw = yaw;
@@ -576,8 +625,16 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             // `AbstractHorse.readAdditionalSaveData` (and `Horse`'s variant,
             // `AbstractChestedHorse`'s chest); its attributes as saved.
-            let mut horse = HorseState::new(if kind == "minecraft:horse" { HorseKind::Horse } else { HorseKind::Donkey });
+            let mut horse = HorseState::new(HorseKind::from_type_id(kind)?);
             horse.variant = int(tag, "Variant").unwrap_or(0);
+            if horse.kind.is_llama() {
+                horse.variant = horse.variant.clamp(0, 3);
+                horse.set_strength(int(tag, "Strength").unwrap_or(0));
+                horse.despawn_delay = int(tag, "DespawnDelay").unwrap_or(minecraftoss_entities::horse::TRADER_DESPAWN_DELAY);
+            }
+            horse.body_item = tag.get("equipment").and_then(|e| e.get("body")).and_then(|b| b.get("id")).and_then(Tag::as_str).map(str::to_owned);
+            horse.saddled = horse.kind.saddleable() && tag.get("equipment").and_then(|e| e.get("saddle")).and_then(|b| b.get("id")).and_then(Tag::as_str) == Some("minecraft:saddle");
+            horse.owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
             horse.chest = int(tag, "ChestedHorse").unwrap_or(0) != 0;
             horse.tame = int(tag, "Tame").unwrap_or(0) != 0;
             horse.bred = int(tag, "Bred").unwrap_or(0) != 0;
@@ -591,6 +648,18 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             if let Some(jump) = attribute_base(tag, "minecraft:jump_strength") {
                 horse.jump_strength = jump;
+            }
+            cow.health = health.unwrap_or(horse.max_health).min(horse.max_health);
+            horse.resize_inventory();
+            if horse.chest {
+                for saved in tag.get("Items").and_then(Tag::as_list).into_iter().flatten() {
+                    let Some(item) = text(saved, "id") else { continue };
+                    let Some(slot) = int(saved, "Slot").and_then(|slot| usize::try_from(slot).ok()).filter(|&slot| slot < horse.inventory.len()) else { continue };
+                    let max = world.item_max_stack(item).clamp(1, 99) as u8;
+                    let count = int(saved, "count").unwrap_or(1).clamp(1, i32::from(max)) as u8;
+                    let components = saved.get("components").map(tag_json);
+                    horse.inventory[slot] = Some(minecraftoss_player::inventory::ItemStack { id: item.to_owned(), count, max, components });
+                }
             }
             let id = world.spawn_horse(cow, horse, no_ai);
             world.cow_mut(id)?.random = random;
@@ -641,6 +710,19 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let kind = minecraftoss_entities::piglin::PiglinKind::from_type(kind)?;
             let saved = crate::piglin_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::piglin_save::spawn(world, tag, kind, saved)?
+        }
+        "minecraft:pillager" | "minecraft:vindicator" | "minecraft:evoker" if tag.get("Passengers").is_none() => {
+            let kind = minecraftoss_entities::illager::IllagerKind::from_type(kind)?;
+            let saved = crate::illager_save::Saved { pos, yaw, health, persistent, no_ai, random };
+            crate::illager_save::spawn(world, tag, kind, saved)?
+        }
+        "minecraft:vex" if tag.get("Passengers").is_none() => {
+            let saved = crate::vex_save::Saved { pos, yaw, health, persistent, no_ai, random };
+            crate::vex_save::spawn(world, tag, saved)?
+        }
+        "minecraft:ravager" if tag.get("Passengers").is_none() => {
+            let saved = crate::ravager_save::Saved { pos, yaw, health, persistent, no_ai, random };
+            crate::ravager_save::spawn(world, tag, saved)?
         }
         "minecraft:hoglin" | "minecraft:zoglin" => {
             use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
@@ -711,21 +793,36 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
         }
         // Monsters and bats natural spawning makes. Riders (jockeys) wait
         // dormant with their vehicle.
-        "minecraft:zombie" | "minecraft:husk" | "minecraft:zombie_villager" | "minecraft:zombified_piglin" if tag.get("Passengers").is_none() => {
+        "minecraft:zombie" | "minecraft:husk" | "minecraft:drowned" | "minecraft:zombie_villager" | "minecraft:zombified_piglin" if tag.get("Passengers").is_none() => {
             let mut zombie = minecraftoss_entities::zombie::Zombie::new(pos);
             zombie.kind = match kind {
                 "minecraft:husk" => ZombieKind::Husk,
+                "minecraft:drowned" => ZombieKind::Drowned,
                 "minecraft:zombie_villager" => ZombieKind::ZombieVillager,
                 "minecraft:zombified_piglin" => ZombieKind::ZombifiedPiglin,
                 _ => ZombieKind::Zombie,
             };
+            if zombie.kind == ZombieKind::Drowned {
+                zombie.body.step_height = 1.0;
+            }
             if zombie.kind == ZombieKind::ZombieVillager {
                 let data = tag.get("VillagerData");
                 let field = |key: &str, default: &str| data.and_then(|d| text(d, key)).unwrap_or(default).to_owned();
                 zombie.villager = Some((field("type", "minecraft:plains"), field("profession", "minecraft:none")));
+                zombie.villager_xp = int(tag, "Xp").unwrap_or(0);
+                if let Some(time) = int(tag, "ConversionTime").filter(|time| *time != -1) {
+                    zombie.villager_conversion_time = time.max(0);
+                    zombie.conversion_starter = tag.get("ConversionPlayer").and_then(Tag::as_ints).filter(|i| i.len() == 4).map(|i| minecraftoss_entities::gossip::uuid_from_ints([i[0], i[1], i[2], i[3]]));
+                }
             }
             zombie.head_item = head_item(tag);
             zombie.main_hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
+            zombie.off_hand = tag.get("equipment").and_then(|e| e.get("offhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
+            for (chance, slot) in zombie.hand_drop_chances.iter_mut().zip(["mainhand", "offhand"]) {
+                if let Some(saved) = tag.get("drop_chances").and_then(|d| d.get(slot)).and_then(Tag::as_f64) {
+                    *chance = saved as f32;
+                }
+            }
             zombie.armor = armor_slots(tag);
             zombie.set_baby(int(tag, "IsBaby").unwrap_or(0) != 0);
             zombie.can_break_doors = int(tag, "CanBreakDoors").unwrap_or(0) != 0;
@@ -733,7 +830,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             if let Some(health) = health {
                 zombie.health = health;
             }
-            let id = if no_ai { world.spawn_zombie(zombie, true) } else { world.spawn_zombie_active(zombie, yaw) };
+            let id = if no_ai { world.spawn_zombie(zombie, true) } else if zombie.kind == ZombieKind::Drowned { world.spawn_drowned(zombie) } else { world.spawn_zombie_active(zombie, yaw) };
             let entity = world.zombie_mut(id)?;
             entity.random = random;
             // `Entity.load` turns the body and head to the saved yaw.
@@ -874,6 +971,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let mut witch = minecraftoss_entities::witch::Witch::new(pos);
             witch.yaw = yaw;
             witch.persistence_required = persistent;
+            witch.raider = crate::illager_save::read_raider(tag);
             if let Some(health) = health {
                 witch.health = health;
             }
@@ -901,6 +999,21 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             if let Some(end) = tag.get("anger_end_time").and_then(Tag::as_i64) {
                 entity.ai.state.enderman.anger_end_time = end;
             }
+            id
+        }
+        "minecraft:snow_golem" => {
+            use minecraftoss_entities::snow_golem::{SnowGolem, MAX_HEALTH};
+            let mut golem = SnowGolem::new(pos);
+            golem.yaw = yaw;
+            golem.persistence_required = persistent;
+            golem.pumpkin = int(tag, "Pumpkin").unwrap_or(1) != 0;
+            if let Some(health) = health {
+                golem.health = health.min(MAX_HEALTH);
+            }
+            let id = world.spawn_snow_golem(golem, no_ai);
+            let entity = world.snow_golem_mut(id)?;
+            entity.random = random;
+            entity.ai.body_rotation.body_yaw = yaw;
             id
         }
         "minecraft:wolf" => {
@@ -931,6 +1044,33 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             if let Some(end) = tag.get("anger_end_time").and_then(Tag::as_i64) {
                 entity.ai.state.enderman.anger_end_time = end;
             }
+            if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
+                entity.ai.state.follow_range = range;
+            }
+            id
+        }
+        "minecraft:cat" | "minecraft:ocelot" => {
+            let kind = minecraftoss_entities::feline::FelineKind::of_type(kind)?;
+            let mut feline = minecraftoss_entities::feline::Feline::new(kind, pos);
+            feline.yaw = yaw;
+            feline.persistence_required = persistent;
+            feline.set_age(age);
+            let short = |key: &str, default: &str| text(tag, key).map_or(default, |v| v.trim_start_matches("minecraft:")).to_owned();
+            feline.variant = short("variant", minecraftoss_entities::feline::DEFAULT_CAT_VARIANT);
+            feline.sound_variant = short("sound_variant", minecraftoss_entities::feline::CAT_SOUND_VARIANTS[0]);
+            feline.collar = int(tag, "CollarColor").map_or(minecraftoss_entities::feline::DEFAULT_COLLAR, |c| c as u8);
+            feline.owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+            feline.tame = kind == minecraftoss_entities::feline::FelineKind::Cat && feline.owner.is_some();
+            feline.ordered_to_sit = int(tag, "Sitting").unwrap_or(0) != 0;
+            feline.sitting = feline.ordered_to_sit;
+            feline.trusting = int(tag, "Trusting").unwrap_or(0) != 0;
+            feline.in_love = int(tag, "InLove").unwrap_or(0);
+            if let Some(health) = health {
+                feline.health = health;
+            }
+            let id = world.spawn_feline(feline, no_ai);
+            let entity = world.feline_mut(id)?;
+            entity.random = random;
             if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
                 entity.ai.state.follow_range = range;
             }
@@ -1013,6 +1153,40 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             return Some(id);
         }
+        "minecraft:llama_spit" => {
+            let uuid = |key: &str| tag.get(key).and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+            let motion = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
+            let pitch = tag.get("Rotation").and_then(Tag::as_list).and_then(|r| r.get(1)).and_then(Tag::as_f64).map_or(0.0, |p| p as f32);
+            let spit = minecraftoss_entities::llama_spit::LlamaSpit {
+                position: pos,
+                velocity: motion,
+                yaw,
+                pitch,
+                yaw_o: yaw,
+                pitch_o: pitch,
+                owner: None,
+                owner_uuid: uuid("Owner"),
+                left_owner: int(tag, "LeftOwner").unwrap_or(0) != 0,
+                tick_count: 0,
+                alive: true,
+            };
+            let id = world.spawn_llama_spit(spit);
+            if let Some(own) = uuid("UUID") {
+                world.set_uuid(id, own);
+            }
+            return Some(id);
+        }
+        "minecraft:evoker_fangs" => {
+            let owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+            let mut fangs = minecraftoss_entities::evoker_fangs::EvokerFangs::new(pos, 0.0, int(tag, "Warmup").unwrap_or(0), None);
+            fangs.yaw = yaw;
+            fangs.owner_uuid = owner;
+            let id = world.spawn_evoker_fangs(fangs);
+            if let Some(own) = tag.get("UUID").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints) {
+                world.set_uuid(id, own);
+            }
+            return Some(id);
+        }
         "minecraft:splash_potion" => {
             // A potion in flight (`ThrowableItemProjectile.Item`), its thrower
             // forgotten.
@@ -1044,6 +1218,25 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             entity.yaw = yaw;
             entity.look_control.head_yaw = yaw;
             entity.body_rotation.body_yaw = yaw;
+            id
+        }
+        "minecraft:wandering_trader" => {
+            use minecraftoss_entities::wandering_trader::WanderingTrader;
+            let mut trader = WanderingTrader::new(pos);
+            trader.yaw = yaw;
+            trader.persistence_required = persistent;
+            trader.age = age.max(0);
+            trader.despawn_delay = int(tag, "DespawnDelay").unwrap_or(0);
+            let block = |key: &str| tag.get(key).and_then(Tag::as_ints).and_then(|ints| <[i32; 3]>::try_from(ints).ok()).map(|[x, y, z]| (x, y, z));
+            trader.wander_target = block("wander_target");
+            trader.home = int(tag, "home_radius").filter(|radius| *radius >= 0).map(|radius| (block("home_pos").unwrap_or((0, 0, 0)), radius));
+            if let Some(health) = health {
+                trader.health = health.min(minecraftoss_entities::wandering_trader::MAX_HEALTH);
+            }
+            let id = world.spawn_wandering_trader(trader, no_ai);
+            let entity = world.wandering_trader_mut(id)?;
+            entity.random = random;
+            entity.offers = tag.get("Offers").and_then(offers_of);
             id
         }
         "minecraft:villager" => {
@@ -1124,6 +1317,9 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
     // `Entity.load`: the UUID gossip about it is kept by.
     if let Some(ints) = tag.get("UUID").and_then(Tag::as_ints).filter(|i| i.len() == 4) {
         world.set_uuid(id, minecraftoss_entities::gossip::uuid_from_ints([ints[0], ints[1], ints[2], ints[3]]));
+    }
+    if let Some(leash) = tag.get("leash").and_then(saved_leash_of) {
+        world.load_leash(id, leash);
     }
     // `LivingEntity.readAdditionalSaveData`: its effects as saved.
     if let (Some(list), Some((effects, _, _))) = (tag.get("active_effects").and_then(Tag::as_list), world.mob_effects_mut(id)) {
@@ -1210,6 +1406,23 @@ fn effect_tag(effect: &minecraftoss_entities::effects::EffectInstance, with_id: 
     Tag::Compound(map)
 }
 
+pub fn saved_leash_of(tag: &Tag) -> Option<minecraftoss_entities::world::SavedLeash> {
+    use minecraftoss_entities::world::SavedLeash;
+    if let Some(ints) = tag.as_ints() {
+        let [x, y, z] = <[i32; 3]>::try_from(ints).ok()?;
+        return Some(SavedLeash::Knot((x, y, z)));
+    }
+    let ints = <[i32; 4]>::try_from(tag.get("UUID").and_then(Tag::as_ints)?).ok()?;
+    Some(SavedLeash::Uuid(minecraftoss_entities::gossip::uuid_from_ints(ints)))
+}
+
+pub fn leash_tag(leash: minecraftoss_entities::world::SavedLeash) -> Tag {
+    match leash {
+        minecraftoss_entities::world::SavedLeash::Knot((x, y, z)) => Tag::IntArray(vec![x, y, z]),
+        minecraftoss_entities::world::SavedLeash::Uuid(uuid) => Tag::Compound([("UUID".to_owned(), Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec()))].into_iter().collect()),
+    }
+}
+
 /// Doubles as an NBT list.
 fn doubles(values: [f64; 3]) -> Tag {
     Tag::List(values.into_iter().map(Tag::Double).collect())
@@ -1229,6 +1442,25 @@ fn fresh_uuid(id: u64, position: DVec3) -> Tag {
     let a = mix(salt ^ id ^ position.x.to_bits().rotate_left(17) ^ position.y.to_bits() ^ position.z.to_bits().rotate_left(41));
     let b = mix(a);
     Tag::IntArray(vec![(a >> 32) as i32, a as i32, (b >> 32) as i32, b as i32])
+}
+
+fn body_equipment(original: Option<&Tag>, body: Option<&str>) -> Option<Tag> {
+    let mut slots = match original.and_then(|tag| tag.get("equipment")) {
+        Some(Tag::Compound(slots)) => slots.clone(),
+        _ if body.is_none() => return None,
+        _ => std::collections::BTreeMap::new(),
+    };
+    match body {
+        Some(item) => {
+            let kept = slots.remove("body").filter(|b| b.get("id").and_then(Tag::as_str) == Some(item));
+            let worn = kept.unwrap_or_else(|| Tag::Compound([("id".to_owned(), Tag::String(item.to_owned())), ("count".to_owned(), Tag::Int(1))].into_iter().collect()));
+            slots.insert("body".to_owned(), worn);
+        }
+        None => {
+            slots.remove("body");
+        }
+    }
+    Some(Tag::Compound(slots))
 }
 
 fn saddle_equipment(original: Option<&Tag>, saddled: bool) -> Option<Tag> {
@@ -1279,8 +1511,19 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         map.insert("PersistenceRequired".into(), Tag::Byte(i8::from(persistent)));
         // The UUID gossip about it is kept by.
         map.entry("UUID".into()).or_insert_with(|| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(world.uuid_of(id)).to_vec()));
+        if fields.iter().any(|(key, _)| *key == "Wave") && !fields.iter().any(|(key, _)| *key == "RaidId") {
+            map.remove("RaidId");
+        }
         for (key, value) in fields {
             map.insert(key.to_owned(), value);
+        }
+        match world.saved_leash(id) {
+            Some(leash) => {
+                map.insert("leash".into(), leash_tag(leash));
+            }
+            None => {
+                map.remove("leash");
+            }
         }
         out.push((id, Tag::Compound(map)));
     };
@@ -1294,6 +1537,12 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         let mut fields = vec![("IsBaby", Tag::Byte(i8::from(e.zombie.baby))), ("CanBreakDoors", Tag::Byte(i8::from(e.zombie.can_break_doors)))];
         if let (ZombieKind::ZombifiedPiglin, Some(ai)) = (e.zombie.kind, e.ai.as_deref()) {
             fields.push(("anger_end_time", Tag::Long(ai.state.enderman.anger_end_time)));
+        }
+        if e.zombie.kind == ZombieKind::ZombieVillager {
+            fields.push(("ConversionTime", Tag::Int(if e.zombie.curing() { e.zombie.villager_conversion_time } else { -1 })));
+            if let Some(starter) = e.zombie.conversion_starter.filter(|_| e.zombie.curing()) {
+                fields.push(("ConversionPlayer", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(starter).to_vec())));
+            }
         }
         add(e.id, kind, &e.zombie.body, e.yaw, e.zombie.health, e.zombie.persistence_required, fields);
     }
@@ -1318,7 +1567,7 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
     }
     for e in world.witches() {
         let w = &e.witch;
-        add(e.id, "minecraft:witch", &w.body, w.yaw, w.health, w.persistence_required, Vec::new());
+        add(e.id, "minecraft:witch", &w.body, w.yaw, w.health, w.persistence_required, crate::illager_save::raider_fields(&w.raider));
     }
     for e in world.ghasts() {
         let g = &e.ghast;
@@ -1343,6 +1592,11 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         let fields = vec![("PlayerCreated", Tag::Byte(i8::from(g.player_created))), ("anger_end_time", Tag::Long(e.ai.state.enderman.anger_end_time))];
         add(e.id, "minecraft:iron_golem", &g.body, g.yaw, g.health, g.persistence_required, fields);
     }
+    for e in world.snow_golems() {
+        let g = &e.golem;
+        let fields = vec![("Pumpkin", Tag::Byte(i8::from(g.pumpkin)))];
+        add(e.id, minecraftoss_entities::snow_golem::TYPE_ID, &g.body, g.yaw, g.health, g.persistence_required, fields);
+    }
     for e in world.wolves() {
         let w = &e.wolf;
         let mut fields = vec![
@@ -1359,6 +1613,24 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
             fields.push(("Owner", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec())));
         }
         add(e.id, "minecraft:wolf", &w.body, w.yaw, w.health, w.persistence_required, fields);
+    }
+    for e in world.felines() {
+        let f = &e.feline;
+        let mut fields = age(&f.age);
+        fields.push(("InLove", Tag::Int(f.in_love)));
+        match f.kind {
+            minecraftoss_entities::feline::FelineKind::Cat => {
+                fields.push(("variant", text_tag(&format!("minecraft:{}", f.variant))));
+                fields.push(("sound_variant", text_tag(&format!("minecraft:{}", f.sound_variant))));
+                fields.push(("CollarColor", Tag::Byte(f.collar as i8)));
+                fields.push(("Sitting", Tag::Byte(i8::from(f.ordered_to_sit))));
+                if let Some(owner) = f.owner {
+                    fields.push(("Owner", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec())));
+                }
+            }
+            minecraftoss_entities::feline::FelineKind::Ocelot => fields.push(("Trusting", Tag::Byte(i8::from(f.trusting)))),
+        }
+        add(e.id, f.kind.type_id(), &f.body, f.yaw, f.health, f.persistence_required, fields);
     }
     for e in world.slimes() {
         let slime = &e.slime;
@@ -1380,6 +1652,28 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
     }
     for e in world.spiders() {
         add(e.id, e.spider.type_id(), &e.spider.body, e.spider.yaw, e.spider.health, e.spider.persistence_required, Vec::new());
+    }
+    for e in world.wandering_traders() {
+        let t = &e.trader;
+        let mut fields = vec![("DespawnDelay", Tag::Int(t.despawn_delay)), ("Age", Tag::Int(t.age))];
+        if let Some((x, y, z)) = t.wander_target {
+            fields.push(("wander_target", Tag::IntArray(vec![x, y, z])));
+        }
+        if let Some(((x, y, z), radius)) = t.home {
+            fields.push(("home_pos", Tag::IntArray(vec![x, y, z])));
+            fields.push(("home_radius", Tag::Int(radius)));
+        }
+        if let Some(offers) = &e.offers {
+            fields.push(("Offers", offers_tag(offers)));
+        }
+        if let Some(drink) = t.held {
+            let mut stack: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), text_tag(drink.item())), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
+            if let Some(components) = drink.components() {
+                stack.insert("components".to_owned(), json_tag(&components));
+            }
+            fields.push(("equipment", Tag::Compound([("mainhand".to_owned(), Tag::Compound(stack))].into_iter().collect())));
+        }
+        add(e.id, minecraftoss_entities::wandering_trader::TYPE_ID, &t.body, t.yaw, t.health, t.persistence_required, fields);
     }
     for e in world.villagers() {
         let v = &e.villager;
@@ -1413,7 +1707,37 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
             fields.push(("Tame", Tag::Byte(i8::from(horse.tame))));
             match horse.kind {
                 HorseKind::Horse => fields.push(("Variant", Tag::Int(horse.variant))),
-                HorseKind::Donkey => fields.push(("ChestedHorse", Tag::Byte(i8::from(horse.chest)))),
+                _ => fields.push(("ChestedHorse", Tag::Byte(i8::from(horse.chest)))),
+            }
+            if horse.kind.is_llama() {
+                fields.push(("Variant", Tag::Int(horse.variant)));
+                fields.push(("Strength", Tag::Int(horse.strength)));
+            }
+            if let Some(owner) = horse.owner {
+                fields.push(("Owner", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec())));
+            }
+            if horse.chest {
+                let items = horse
+                    .inventory
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, stack)| {
+                        let stack = stack.as_ref()?;
+                        let mut item: std::collections::BTreeMap<String, Tag> = [("Slot".to_owned(), Tag::Byte(slot as i8)), ("id".to_owned(), text_tag(&stack.id)), ("count".to_owned(), Tag::Int(i32::from(stack.count)))].into_iter().collect();
+                        if let Some(components) = stack.components.as_ref() {
+                            item.insert("components".to_owned(), json_tag(components));
+                        }
+                        Some(Tag::Compound(item))
+                    })
+                    .collect();
+                fields.push(("Items", Tag::List(items)));
+            }
+            let worn = body_equipment(originals.get(&e.id), horse.body_item.as_deref()).map(|slots| Tag::Compound([("equipment".to_owned(), slots)].into_iter().collect()));
+            if let Some(equipment) = saddle_equipment(worn.as_ref().or(originals.get(&e.id)), horse.saddled) {
+                fields.push(("equipment", equipment));
+            }
+            if horse.kind == HorseKind::TraderLlama {
+                fields.push(("DespawnDelay", Tag::Int(horse.despawn_delay)));
             }
             add(e.id, horse.kind.type_id(), &cow.body, cow.yaw, cow.health, cow.persistence_required, fields);
             continue;
@@ -1473,6 +1797,18 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
     for e in world.piglins() {
         let piglin = &e.piglin;
         add(e.id, piglin.kind.type_id(), &piglin.body, piglin.yaw, piglin.health, piglin.persistence_required, crate::piglin_save::fields(e));
+    }
+    for e in world.illagers() {
+        let illager = &e.illager;
+        add(e.id, illager.kind.type_id(), &illager.body, illager.yaw, illager.health, illager.persistence_required, crate::illager_save::fields(e));
+    }
+    for e in world.vexes() {
+        let vex = &e.vex;
+        add(e.id, minecraftoss_entities::vex::TYPE_ID, &vex.body, vex.yaw, vex.health, vex.persistence_required, crate::vex_save::fields(world, e));
+    }
+    for e in world.ravagers() {
+        let ravager = &e.ravager;
+        add(e.id, minecraftoss_entities::ravager::TYPE_ID, &ravager.body, ravager.yaw, ravager.health, ravager.persistence_required, crate::ravager_save::fields(e));
     }
     for e in world.chickens() {
         let chicken = &e.chicken;
@@ -1592,6 +1928,41 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         }
         out.push((b.id, Tag::Compound(map)));
     }
+    for l in world.llama_spits() {
+        let spit = &l.spit;
+        if !keep(l.id, spit.position) || !spit.alive {
+            continue;
+        }
+        let uuid = |uuid: u128| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec());
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String("minecraft:llama_spit".to_owned()));
+        map.insert("Pos".to_owned(), doubles(spit.position.to_array()));
+        map.insert("Motion".to_owned(), doubles(spit.velocity.to_array()));
+        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(spit.yaw), Tag::Float(spit.pitch)]));
+        map.insert("UUID".to_owned(), uuid(world.uuid_of(l.id)));
+        map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(spit.left_owner)));
+        if let Some(owner) = spit.owner.map(|o| world.uuid_of(o)).or(spit.owner_uuid) {
+            map.insert("Owner".to_owned(), uuid(owner));
+        }
+        out.push((l.id, Tag::Compound(map)));
+    }
+    for f in world.evoker_fangs() {
+        let fangs = &f.fangs;
+        if !keep(f.id, fangs.position) || !fangs.alive {
+            continue;
+        }
+        let uuid = |uuid: u128| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec());
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String(minecraftoss_entities::evoker_fangs::TYPE_ID.to_owned()));
+        map.insert("Pos".to_owned(), doubles(fangs.position.to_array()));
+        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(fangs.yaw), Tag::Float(0.0)]));
+        map.insert("UUID".to_owned(), uuid(world.uuid_of(f.id)));
+        map.insert("Warmup".to_owned(), Tag::Int(fangs.warmup));
+        if let Some(owner) = fangs.owner.map(|o| world.uuid_of(o)).or(fangs.owner_uuid) {
+            map.insert("Owner".to_owned(), uuid(owner));
+        }
+        out.push((f.id, Tag::Compound(map)));
+    }
     // Splash potions in flight (`ThrowableItemProjectile`).
     for p in world.potions() {
         let potion = &p.potion;
@@ -1610,6 +1981,21 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         map.insert("Item".to_owned(), Tag::Compound(item.into_iter().collect()));
         map.insert("UUID".to_owned(), fresh_uuid(p.id, potion.position));
         out.push((p.id, Tag::Compound(map)));
+    }
+    for e in world.wandering_traders() {
+        let Some(Tag::Compound(map)) = out.iter_mut().find(|(id, _)| *id == e.id).map(|(_, tag)| tag) else { continue };
+        if e.trader.wander_target.is_none() {
+            map.remove("wander_target");
+        }
+        if e.trader.home.is_none() {
+            map.remove("home_pos");
+            map.remove("home_radius");
+        }
+        if e.trader.held.is_none() {
+            if let Some(Tag::Compound(equipment)) = map.get_mut("equipment") {
+                equipment.remove("mainhand");
+            }
+        }
     }
     out
 }
@@ -1783,6 +2169,102 @@ fn attribute_value(tag: &Tag, id: &str) -> Option<f64> {
 
 /// The head slot's item, when there is one: whether it can be damaged
 /// (armor can; pumpkins and heads cannot).
+pub fn converted_zombie_tag(original: &Tag) -> Tag {
+    const KEPT: [&str; 14] = ["equipment", "drop_chances", "CanPickUpLoot", "LeftHanded", "NoAI", "PersistenceRequired", "CustomName", "CustomNameVisible", "Invulnerable", "NoGravity", "PortalCooldown", "Silent", "Tags", "leash"];
+    let Tag::Compound(map) = original else { return Tag::Compound(std::collections::BTreeMap::new()) };
+    Tag::Compound(map.iter().filter(|(key, _)| KEPT.contains(&key.as_str())).map(|(key, value)| (key.clone(), value.clone())).collect())
+}
+
+pub fn infected_villager_tag(world: &EntityWorld, villager: u64, original: Option<&Tag>) -> Option<Tag> {
+    let e = world.villagers().iter().find(|v| v.id == villager)?;
+    let v = &e.villager;
+    let Tag::Compound(mut map) = original.map_or_else(|| Tag::Compound(std::collections::BTreeMap::new()), converted_zombie_tag) else { return None };
+    let text_tag = |s: &str| Tag::String(s.to_owned());
+    let body = &v.body;
+    map.insert("id".to_owned(), text_tag("minecraft:zombie_villager"));
+    map.insert("Pos".to_owned(), doubles(body.position.to_array()));
+    map.insert("Motion".to_owned(), doubles(body.velocity.to_array()));
+    map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(e.ai.as_deref().map_or(e.yaw, |ai| ai.yaw)), Tag::Float(0.0)]));
+    map.insert("OnGround".to_owned(), Tag::Byte(i8::from(body.on_ground)));
+    map.insert("fall_distance".to_owned(), Tag::Double(body.fall_distance));
+    map.insert("IsBaby".to_owned(), Tag::Byte(i8::from(v.age.baby())));
+    map.insert("PersistenceRequired".to_owned(), Tag::Byte(i8::from(v.persistence_required)));
+    map.insert("CanPickUpLoot".to_owned(), Tag::Byte(i8::from(e.can_pick_up_loot)));
+    let data = [("type".to_owned(), text_tag(&v.kind)), ("profession".to_owned(), text_tag(v.profession.id())), ("level".to_owned(), Tag::Int(v.level))];
+    map.insert("VillagerData".to_owned(), Tag::Compound(data.into_iter().collect()));
+    map.insert("Xp".to_owned(), Tag::Int(v.xp));
+    if let Some(offers) = &e.offers {
+        map.insert("Offers".to_owned(), offers_tag(offers));
+    }
+    let gossips = e
+        .gossips
+        .unpack()
+        .into_iter()
+        .map(|(target, kind, value)| {
+            let entry = [
+                ("Target".to_owned(), Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(target).to_vec())),
+                ("Type".to_owned(), Tag::String(kind.id().to_owned())),
+                ("Value".to_owned(), Tag::Int(value)),
+            ];
+            Tag::Compound(entry.into_iter().collect())
+        })
+        .collect();
+    map.insert("Gossips".to_owned(), Tag::List(gossips));
+    if let Some(item) = &e.held_item {
+        let mut stack: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), text_tag(&item.id)), ("count".to_owned(), Tag::Int(item.count))].into_iter().collect();
+        if !item.components.is_empty() {
+            stack.insert("components".to_owned(), json_tag(&serde_json::Value::Object(item.components.clone())));
+        }
+        map.insert("equipment".to_owned(), Tag::Compound([("mainhand".to_owned(), Tag::Compound(stack))].into_iter().collect()));
+    }
+    if let Some(effects) = world.mob_effects(villager).filter(|effects| !effects.is_empty()) {
+        map.insert("active_effects".to_owned(), Tag::List(effects.iter().map(|e| effect_tag(e, true)).collect()));
+    }
+    Some(Tag::Compound(map))
+}
+
+pub fn cured_villager_tag(zombie: &Tag) -> (Tag, Vec<(String, i32, Option<String>)>) {
+    const KEPT: [&str; 21] = [
+        "Pos",
+        "Motion",
+        "Rotation",
+        "OnGround",
+        "fall_distance",
+        "active_effects",
+        "LeftHanded",
+        "NoAI",
+        "PersistenceRequired",
+        "CustomName",
+        "CustomNameVisible",
+        "Invulnerable",
+        "NoGravity",
+        "PortalCooldown",
+        "Silent",
+        "Tags",
+        "leash",
+        "VillagerData",
+        "Gossips",
+        "Offers",
+        "Xp",
+    ];
+    let Tag::Compound(map) = zombie else { return (Tag::Compound(std::collections::BTreeMap::new()), Vec::new()) };
+    let mut out: std::collections::BTreeMap<String, Tag> = map.iter().filter(|(key, _)| KEPT.contains(&key.as_str())).map(|(key, value)| (key.clone(), value.clone())).collect();
+    out.insert("id".to_owned(), Tag::String("minecraft:villager".to_owned()));
+    let finalized = int(zombie, "VillagerDataFinalized").is_some_and(|f| f != 0) || zombie.get("VillagerData").is_some();
+    out.insert("VillagerDataFinalized".to_owned(), Tag::Byte(i8::from(finalized)));
+    let baby = int(zombie, "IsBaby").is_some_and(|b| b != 0);
+    out.insert("Age".to_owned(), Tag::Int(if baby { -24000 } else { 0 }));
+    let mut dropped = Vec::new();
+    for slot in ["mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle"] {
+        let chance = zombie.get("drop_chances").and_then(|d| d.get(slot)).and_then(Tag::as_f64).unwrap_or(0.0);
+        let Some(item) = zombie.get("equipment").and_then(|e| e.get(slot)).filter(|_| chance > 1.0) else { continue };
+        let Some(id) = text(item, "id") else { continue };
+        let components = item.get("components").map(|c| crate::item_nbt::tag_json(c).to_string());
+        dropped.push((id.to_owned(), int(item, "count").unwrap_or(1), components));
+    }
+    (Tag::Compound(out), dropped)
+}
+
 /// The head, chest, legs and feet slots' item IDs from `equipment`.
 fn armor_slots(tag: &Tag) -> [Option<String>; 4] {
     ["head", "chest", "legs", "feet"].map(|slot| tag.get("equipment")?.get(slot)?.get("id")?.as_str().map(str::to_owned))
@@ -1872,6 +2354,44 @@ mod tests {
         assert_eq!(reloaded.len(), 3);
         assert_eq!(again.vehicle_of(Rider::Mob(reloaded[1].0)), Some(reloaded[0].0));
         assert!(again.census().iter().all(|entry| entry.riding));
+    }
+
+    #[test]
+    fn a_jockey_on_a_horse_loads_and_a_saddled_horse_keeps_its_saddle_armour_and_owner() {
+        let horse = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:horse\",Pos:[1.5d,64.0d,2.5d],Tame:1b,Owner:[I;1,2,3,4],equipment:{saddle:{id:\"minecraft:saddle\",count:1},body:{id:\"minecraft:iron_horse_armor\",count:1}},Passengers:[{id:\"minecraft:skeleton\",Pos:[1.5d,65.0d,2.5d],UUID:[I;5,6,7,8]}]}").unwrap();
+        assert!(carries(&horse), "a skeleton on a horse loads like a strider jockey");
+        assert_eq!(spawn_saved(&mut EntityWorld::default(), &horse), None, "the horse alone refuses its rider");
+        let mut world = EntityWorld::default();
+        let spawned = spawn_saved_all(&mut world, &horse);
+        assert_eq!(spawned.len(), 2);
+        let (mount, rider) = (spawned[0].0, spawned[1].0);
+        assert_eq!(world.entity_type(rider), Some("minecraft:skeleton"));
+        assert_eq!(world.vehicle_of(Rider::Mob(rider)), Some(mount));
+        assert_eq!(world.controlling_mob(mount), Some(rider));
+        let h = world.cow_mut(mount).unwrap().horse.clone().unwrap();
+        assert!(h.saddled && h.tame && h.body_item.as_deref() == Some("minecraft:iron_horse_armor"));
+        assert_eq!(h.owner, Some(minecraftoss_entities::gossip::uuid_from_ints([1, 2, 3, 4])));
+        let seat = world.seat(Rider::Mob(rider)).unwrap();
+        assert!((seat.y - (64.0 + f64::from(1.44375_f32) - f64::from(0.7_f32))).abs() < 1.0e-6, "{seat}");
+        {
+            let h = world.cow_mut(mount).unwrap().horse.as_mut().unwrap();
+            h.saddled = false;
+            h.body_item = Some("minecraft:diamond_horse_armor".to_owned());
+        }
+        let originals: std::collections::HashMap<u64, Tag> = spawned.into_iter().collect();
+        let saved = mob_tags(&world, |_| true, &originals);
+        assert_eq!(saved.len(), 1, "the rider saves inside its horse");
+        let back = &saved[0].1;
+        let equipment = back.get("equipment").unwrap();
+        assert!(equipment.get("saddle").is_none());
+        assert_eq!(equipment.get("body").and_then(|b| b.get("id")).and_then(Tag::as_str), Some("minecraft:diamond_horse_armor"));
+        assert_eq!(back.get("Owner").and_then(Tag::as_ints), Some(vec![1, 2, 3, 4]));
+        assert_eq!(back.get("Passengers").and_then(Tag::as_list).map(|riders| riders.len()), Some(1));
+        let llama = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:llama\",Pos:[1.5d,64.0d,2.5d],equipment:{saddle:{id:\"minecraft:saddle\",count:1}},Passengers:[{id:\"minecraft:zombie\",Pos:[1.5d,65.0d,2.5d]}]}").unwrap();
+        let mut world = EntityWorld::default();
+        let spawned = spawn_saved_all(&mut world, &llama);
+        assert_eq!(spawned.len(), 2, "a zombie rides a llama too");
+        assert!(!world.cow_mut(spawned[0].0).unwrap().horse.as_ref().unwrap().saddled, "a llama never takes a saddle");
     }
 
     #[test]
@@ -2023,5 +2543,444 @@ mod tests {
         assert!(again.hoglin_mut(id).is_none());
         assert_eq!(again.hoglins().len(), 1);
         assert_eq!(again.entity_type(again.hoglins()[0].id), Some("minecraft:zoglin"));
+    }
+
+    #[test]
+    fn a_drowned_saves_and_loads_as_a_drowned() {
+        let zombie = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:zombie\",Pos:[1.5d,64.0d,2.5d],UUID:[I;1,2,3,4],CustomName:\"Bob\",InWaterTime:600,attributes:[{id:\"minecraft:max_health\",base:20.0d}],equipment:{mainhand:{id:\"minecraft:trident\",count:1,components:{\"minecraft:damage\":7}},head:{id:\"minecraft:iron_helmet\",count:1}}}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &zombie).expect("zombies load");
+        let drowned = world.convert_zombie_to_drowned(id);
+        assert_eq!(world.take_zombie_conversions(), vec![(id, drowned)]);
+        assert!(world.take_zombie_conversions().is_empty());
+        world.zombie_mut(drowned).unwrap().zombie.health = 11.0;
+        assert_eq!(world.zombie_mut(drowned).unwrap().zombie.armor[0].as_deref(), Some("minecraft:iron_helmet"));
+        let originals: std::collections::HashMap<u64, Tag> = [(drowned, converted_zombie_tag(&zombie))].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        assert_eq!(saved.len(), 1);
+        let tag = &saved[0].1;
+        assert_eq!(text(tag, "id"), Some("minecraft:drowned"));
+        assert_eq!(text(tag, "CustomName"), Some("Bob"));
+        assert!(tag.get("InWaterTime").is_none() && tag.get("attributes").is_none());
+        assert_ne!(tag.get("UUID").and_then(Tag::as_ints), Some(vec![1, 2, 3, 4]), "a conversion is a new entity");
+        let hand = tag.get("equipment").and_then(|e| e.get("mainhand")).expect("the trident is saved");
+        assert_eq!(text(hand, "id"), Some("minecraft:trident"));
+        assert_eq!(hand.get("components").and_then(|c| c.get("minecraft:damage")).and_then(Tag::as_i64), Some(7));
+        assert!(SIMULATED_KINDS.contains(&"minecraft:drowned"));
+        let mut fresh = EntityWorld::default();
+        let loaded = spawn_saved(&mut fresh, tag).expect("a drowned loads");
+        assert_eq!(fresh.entity_type(loaded), Some("minecraft:drowned"));
+        let e = fresh.zombie_mut(loaded).unwrap();
+        assert_eq!(e.zombie.kind, ZombieKind::Drowned);
+        assert_eq!(e.zombie.health, 11.0);
+        assert_eq!(e.zombie.main_hand.as_deref(), Some("minecraft:trident"));
+        assert_eq!(e.zombie.armor[0].as_deref(), Some("minecraft:iron_helmet"));
+        assert_eq!(e.zombie.body.step_height, 1.0);
+        assert!(e.attack_only && e.ai.is_none() && !e.no_ai, "a loaded drowned fights with its attack goal");
+        assert!(e.drowned.is_some(), "and has its water, beach and trident goals");
+    }
+
+    #[test]
+    fn a_cat_and_an_ocelot_save_and_load_with_variant_collar_owner_sitting_and_trust() {
+        let cat = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cat\",Pos:[1.5d,64.0d,2.5d],UUID:[I;5,6,7,8],variant:\"minecraft:siamese\",sound_variant:\"minecraft:royal\",CollarColor:3b,Owner:[I;1,2,3,4],Sitting:1b,Health:7.0f,Age:-1200,PersistenceRequired:1b}").unwrap();
+        let ocelot = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ocelot\",Pos:[4.5d,64.0d,2.5d],Trusting:1b}").unwrap();
+        assert!(SIMULATED_KINDS.contains(&"minecraft:cat") && SIMULATED_KINDS.contains(&"minecraft:ocelot"));
+        let mut world = EntityWorld::default();
+        let cat_id = spawn_saved(&mut world, &cat).expect("cats load");
+        let ocelot_id = spawn_saved(&mut world, &ocelot).expect("ocelots load");
+        assert_eq!((world.entity_type(cat_id), world.entity_type(ocelot_id)), (Some("minecraft:cat"), Some("minecraft:ocelot")));
+        let originals: std::collections::HashMap<u64, Tag> = [(cat_id, cat), (ocelot_id, ocelot)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let tag_of = |id: u64| saved.iter().find(|(saved_id, _)| *saved_id == id).map(|(_, tag)| tag.clone()).unwrap();
+        let cat_tag = tag_of(cat_id);
+        assert_eq!((text(&cat_tag, "variant"), text(&cat_tag, "sound_variant")), (Some("minecraft:siamese"), Some("minecraft:royal")));
+        assert_eq!((int(&cat_tag, "CollarColor"), int(&cat_tag, "Sitting"), int(&cat_tag, "Age")), (Some(3), Some(1), Some(-1200)));
+        assert_eq!(cat_tag.get("Owner").and_then(Tag::as_ints), Some(vec![1, 2, 3, 4]));
+        assert_eq!(int(&tag_of(ocelot_id), "Trusting"), Some(1));
+        let mut fresh = EntityWorld::default();
+        let loaded = spawn_saved(&mut fresh, &cat_tag).expect("a saved cat loads");
+        let e = &fresh.feline_mut(loaded).unwrap().feline;
+        assert_eq!((e.variant.as_str(), e.sound_variant.as_str(), e.collar, e.health), ("siamese", "royal", 3, 7.0));
+        assert!(e.tame && e.ordered_to_sit && e.sitting && e.baby() && e.persistence_required);
+        assert_eq!(e.owner, Some(minecraftoss_entities::gossip::uuid_from_ints([1, 2, 3, 4])));
+        let loaded = spawn_saved(&mut fresh, &tag_of(ocelot_id)).expect("a saved ocelot loads");
+        let e = &fresh.feline_mut(loaded).unwrap().feline;
+        assert!(e.trusting && !e.tame && e.kind == minecraftoss_entities::feline::FelineKind::Ocelot);
+    }
+
+    #[test]
+    fn a_mule_a_llama_and_a_trader_llama_save_and_load_with_variant_strength_carpet_and_chest() {
+        use minecraftoss_entities::horse::HorseKind;
+        let mule = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:mule\",Pos:[1.5d,64.0d,2.5d],ChestedHorse:1b,Tame:1b,Temper:40,Items:[{Slot:2b,id:\"minecraft:diamond\",count:3}],attributes:[{id:\"minecraft:max_health\",base:22.0d}]}").unwrap();
+        let llama = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:llama\",Pos:[4.5d,64.0d,2.5d],Variant:2,Strength:4,Tame:1b,ChestedHorse:0b,equipment:{body:{id:\"minecraft:red_carpet\",count:1},head:{id:\"minecraft:carved_pumpkin\",count:1}},Age:-500}").unwrap();
+        let trader = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:trader_llama\",Pos:[7.5d,64.0d,2.5d],Variant:9,Strength:0,DespawnDelay:1200}").unwrap();
+        for kind in ["minecraft:mule", "minecraft:llama", "minecraft:trader_llama"] {
+            assert!(SIMULATED_KINDS.contains(&kind), "{kind}");
+        }
+        let mut world = EntityWorld::default();
+        let ids: Vec<u64> = [&mule, &llama, &trader].iter().map(|tag| spawn_saved(&mut world, tag).expect("it loads")).collect();
+        let types: Vec<_> = ids.iter().map(|&id| world.entity_type(id)).collect();
+        assert_eq!(types, [Some("minecraft:mule"), Some("minecraft:llama"), Some("minecraft:trader_llama")]);
+        let horse_of = |world: &mut EntityWorld, id: u64| world.cow_mut(id).unwrap().horse.clone().unwrap();
+        let m = horse_of(&mut world, ids[0]);
+        assert!(m.chest && m.tame && m.temper == 40 && m.max_health == 22.0);
+        assert_eq!(m.inventory.iter().map(|s| s.as_ref().map(|s| (s.id.as_str(), s.count))).collect::<Vec<_>>()[..3], [None, None, Some(("minecraft:diamond", 3))]);
+        assert_eq!(m.inventory.len(), 15);
+        let l = horse_of(&mut world, ids[1]);
+        assert_eq!((l.kind, l.variant, l.strength, l.body_item.as_deref()), (HorseKind::Llama, 2, 4, Some("minecraft:red_carpet")));
+        let t = horse_of(&mut world, ids[2]);
+        assert_eq!((t.variant, t.strength, t.despawn_delay), (3, 1, 1200));
+        {
+            let e = world.cow_mut(ids[1]).unwrap();
+            let h = e.horse.as_mut().unwrap();
+            h.chest = true;
+            h.body_item = Some("minecraft:blue_carpet".to_owned());
+        }
+        world.cow_mut(ids[2]).unwrap().horse.as_mut().unwrap().body_item = Some("minecraft:lime_carpet".to_owned());
+        world.cow_mut(ids[0]).unwrap().horse.as_mut().unwrap().inventory[4] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:apple", 5));
+        let originals: std::collections::HashMap<u64, Tag> = ids.iter().copied().zip([mule, llama, trader]).collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let tag_of = |id: u64| saved.iter().find(|(saved_id, _)| *saved_id == id).map(|(_, tag)| tag.clone()).unwrap();
+        let mule_tag = tag_of(ids[0]);
+        assert_eq!((int(&mule_tag, "ChestedHorse"), int(&mule_tag, "Temper"), int(&mule_tag, "Tame")), (Some(1), Some(40), Some(1)));
+        let items = mule_tag.get("Items").and_then(Tag::as_list).expect("the chest's items stay");
+        let slots: Vec<_> = items.iter().map(|item| (int(item, "Slot"), text(item, "id"), int(item, "count"))).collect();
+        assert_eq!(slots, [(Some(2), Some("minecraft:diamond"), Some(3)), (Some(4), Some("minecraft:apple"), Some(5))]);
+        let llama_tag = tag_of(ids[1]);
+        assert_eq!((int(&llama_tag, "Variant"), int(&llama_tag, "Strength"), int(&llama_tag, "ChestedHorse"), int(&llama_tag, "Age")), (Some(2), Some(4), Some(1), Some(-500)));
+        let equipment = llama_tag.get("equipment").unwrap();
+        assert_eq!(equipment.get("body").and_then(|b| b.get("id")).and_then(Tag::as_str), Some("minecraft:blue_carpet"));
+        assert_eq!(equipment.get("head").and_then(|b| b.get("id")).and_then(Tag::as_str), Some("minecraft:carved_pumpkin"), "other slots stay");
+        let trader_tag = tag_of(ids[2]);
+        assert_eq!((int(&trader_tag, "DespawnDelay"), int(&trader_tag, "Variant")), (Some(1200), Some(3)));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, &llama_tag).expect("a saved llama loads");
+        let l = fresh.cow_mut(back).unwrap();
+        assert!(l.cow.age.baby());
+        let l = l.horse.clone().unwrap();
+        assert_eq!((l.variant, l.strength, l.chest, l.body_item.as_deref()), (2, 4, true, Some("minecraft:blue_carpet")));
+        let back = spawn_saved(&mut fresh, &trader_tag).expect("a saved trader llama loads");
+        assert_eq!(fresh.cow_mut(back).unwrap().horse.as_ref().unwrap().body_item.as_deref(), Some("minecraft:lime_carpet"));
+    }
+
+    #[test]
+    fn llama_spit_in_flight_saves_and_loads_with_its_owner() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:llama_spit\",Pos:[1.5d,65.0d,2.5d],Motion:[0.0d,0.1d,1.2d],Rotation:[10.0f,-5.0f],Owner:[I;1,2,3,4],UUID:[I;9,9,9,9],LeftOwner:1b}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("spit loads");
+        assert_eq!(world.entity_type(id), Some("minecraft:llama_spit"));
+        let saved = mob_tags_where(&world, |_, _| true, &std::collections::HashMap::new(), true);
+        let back = &saved.iter().find(|(saved_id, _)| *saved_id == id).unwrap().1;
+        assert_eq!(back.get("Owner").and_then(Tag::as_ints), Some(vec![1, 2, 3, 4]));
+        assert_eq!(back.get("UUID").and_then(Tag::as_ints), Some(vec![9, 9, 9, 9]));
+        assert_eq!(int(back, "LeftOwner"), Some(1));
+        let spit = &world.llama_spits()[0].spit;
+        assert_eq!((spit.velocity.z, spit.yaw, spit.pitch), (1.2, 10.0, -5.0));
+    }
+
+    #[test]
+    fn a_drowned_loads_its_nautilus_shell_with_its_guaranteed_drop() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:drowned\",Pos:[1.5d,64.0d,2.5d],equipment:{mainhand:{id:\"minecraft:fishing_rod\",count:1},offhand:{id:\"minecraft:nautilus_shell\",count:1}},drop_chances:{offhand:2.0f}}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("a drowned loads");
+        let zombie = &world.zombie_mut(id).unwrap().zombie;
+        assert_eq!((zombie.main_hand.as_deref(), zombie.off_hand.as_deref()), (Some("minecraft:fishing_rod"), Some("minecraft:nautilus_shell")));
+        assert_eq!(zombie.hand_drop_chances, [0.085, 2.0]);
+    }
+
+    #[test]
+    fn a_wandering_trader_saves_and_loads_its_stay_wander_target_home_offers_and_potion() {
+        use minecraftoss_entities::effects::MobEffect;
+        use minecraftoss_entities::wandering_trader::Drink;
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wandering_trader\",Pos:[1.5d,64.0d,2.5d],UUID:[I;1,2,3,9],DespawnDelay:47000,wander_target:[I;10,64,-3],home_pos:[I;10,64,-3],home_radius:16,Health:15.0f,active_effects:[{id:\"minecraft:invisibility\",duration:900,amplifier:0b}],Offers:{Recipes:[{buy:{id:\"minecraft:emerald\",count:5},sell:{id:\"minecraft:blue_ice\",count:1},maxUses:6,uses:2,xp:1,priceMultiplier:0.05f}]}}").unwrap();
+        assert!(SIMULATED_KINDS.contains(&"minecraft:wandering_trader"));
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("wandering traders load");
+        assert_eq!(world.entity_type(id), Some("minecraft:wandering_trader"));
+        {
+            let e = world.wandering_trader_mut(id).unwrap();
+            assert_eq!((e.trader.despawn_delay, e.trader.wander_target, e.trader.home, e.trader.health), (47000, Some((10, 64, -3)), Some(((10, 64, -3), 16)), 15.0));
+            assert!(e.invisible(), "the potion it drank stays on");
+            assert_eq!(e.offers.as_ref().map(Vec::len), Some(1));
+            e.trader.held = Some(Drink::Milk);
+        }
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let saved = &saved[0].1;
+        assert_eq!((int(saved, "DespawnDelay"), int(saved, "home_radius")), (Some(47000), Some(16)));
+        assert_eq!(saved.get("wander_target").and_then(Tag::as_ints), Some(vec![10, 64, -3]));
+        assert_eq!(saved.get("equipment").and_then(|e| e.get("mainhand")).and_then(|m| text(m, "id")), Some("minecraft:milk_bucket"));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved trader loads");
+        let e = fresh.wandering_trader_mut(back).unwrap();
+        assert_eq!((e.trader.despawn_delay, e.trader.wander_target, e.trader.home), (47000, Some((10, 64, -3)), Some(((10, 64, -3), 16))));
+        assert!(e.effects.get(MobEffect::Invisibility).is_some());
+        let offer = &e.offers.as_ref().unwrap()[0];
+        assert_eq!((offer.sell.id.as_str(), offer.buy.count, offer.uses), ("minecraft:blue_ice", 5, 2));
+        e.trader.wander_target = None;
+        e.trader.home = None;
+        e.trader.held = None;
+        let originals: std::collections::HashMap<u64, Tag> = [(back, saved.clone())].into_iter().collect();
+        let again = mob_tags_where(&fresh, |_, _| true, &originals, true);
+        let again = &again[0].1;
+        assert!(again.get("wander_target").is_none() && again.get("home_pos").is_none() && again.get("home_radius").is_none(), "{again:?}");
+        assert!(again.get("equipment").and_then(|e| e.get("mainhand")).is_none(), "the empty hand saves no bucket");
+    }
+
+    #[test]
+    fn a_vindicator_saves_and_loads_with_its_axe_and_stays_johnny() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:vindicator"));
+        let named = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vindicator\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,9],Health:22.0f,CustomName:\"Johnny\",CanJoinRaid:1b,equipment:{mainhand:{id:\"minecraft:iron_axe\",count:1}}}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &named).expect("vindicators load");
+        assert_eq!(world.entity_type(id), Some("minecraft:vindicator"));
+        {
+            let i = &world.illager_mut(id).unwrap().illager;
+            assert!(i.johnny, "named Johnny");
+            assert_eq!(i.health, 22.0);
+            assert_eq!(i.main_hand().map(|s| s.id.as_str()), Some("minecraft:iron_axe"));
+            assert!(!i.can_pick_up_loot);
+        }
+        let originals: std::collections::HashMap<u64, Tag> = [(id, named)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("Johnny"), Some(&Tag::Byte(1)));
+        let mut unnamed = saved.clone();
+        if let Tag::Compound(map) = &mut unnamed {
+            map.remove("CustomName");
+        }
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, &unnamed).expect("a saved vindicator loads");
+        assert!(fresh.illager_mut(back).unwrap().illager.johnny, "the Johnny flag is saved");
+        let plain = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vindicator\",Pos:[1.5d,64.0d,2.5d],CustomName:{text:\"Bob\"}}").unwrap();
+        let id = spawn_saved(&mut fresh, &plain).unwrap();
+        assert!(!fresh.illager_mut(id).unwrap().illager.johnny);
+    }
+
+    #[test]
+    fn an_evoker_saves_and_loads_mid_spell() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:evoker"));
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:evoker\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,10],Health:20.0f,SpellTicks:37,CanJoinRaid:1b}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("evokers load");
+        assert_eq!(world.entity_type(id), Some("minecraft:evoker"));
+        let i = &world.illager_mut(id).unwrap().illager;
+        assert_eq!((i.spell_casting_ticks, i.health), (37, 20.0));
+        assert!(i.raider.can_join_raid);
+        let saved = mob_tags_where(&world, |_, _| true, &Default::default(), true);
+        assert_eq!(saved[0].1.get("SpellTicks"), Some(&Tag::Int(37)));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, &saved[0].1).expect("a saved evoker loads");
+        assert_eq!(fresh.illager_mut(back).unwrap().illager.spell_casting_ticks, 37);
+    }
+
+    #[test]
+    fn evoker_fangs_save_and_load_with_their_warmup_and_owner() {
+        let mut world = EntityWorld::default();
+        let evoker = spawn_saved(&mut world, &minecraftoss_core::snbt::parse_compound("{id:\"minecraft:evoker\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,11]}").unwrap()).unwrap();
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:evoker_fangs\",Pos:[3.25d,64.0d,2.5d],Rotation:[45.0f,0.0f],Warmup:6,Owner:[I;4,5,6,11],UUID:[I;1,2,3,4]}").unwrap();
+        let fangs = spawn_saved(&mut world, &tag).expect("fangs load");
+        assert_eq!(world.entity_type(fangs), Some("minecraft:evoker_fangs"));
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(id, _)| *id == fangs).collect();
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("Warmup"), Some(&Tag::Int(6)));
+        assert_eq!(saved.get("Owner"), Some(&Tag::IntArray(vec![4, 5, 6, 11])));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("saved fangs load");
+        let f = &fresh.evoker_fangs_mut(back).unwrap().fangs;
+        assert_eq!((f.warmup, f.yaw), (6, 45.0));
+        assert_eq!(f.owner_uuid, Some(world.uuid_of(evoker)));
+    }
+
+    #[test]
+    fn a_ravager_saves_and_loads_mid_stun_with_its_raider_state() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:ravager"));
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,20],Health:80.0f,Rotation:[30.0f,0.0f],AttackTick:0,StunTick:17,RoarTick:0,CanJoinRaid:1b,Wave:2,RaidId:5,Patrolling:1b,patrol_target:[I;10,64,-20]}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("ravagers load");
+        assert_eq!(world.entity_type(id), Some("minecraft:ravager"));
+        {
+            let r = &world.ravager_mut(id).unwrap().ravager;
+            assert_eq!((r.health, r.stunned_tick, r.yaw), (80.0, 17, 30.0));
+            assert!(r.raider.can_join_raid && r.raider.patrolling);
+            assert_eq!((r.raider.wave, r.raider.raid_id, r.raider.patrol_target), (2, Some(5), Some((10, 64, -20))));
+        }
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(i, _)| *i == id).collect();
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("StunTick"), Some(&Tag::Int(17)));
+        assert_eq!(saved.get("RoarTick"), Some(&Tag::Int(0)));
+        assert_eq!(saved.get("RaidId"), Some(&Tag::Int(5)));
+        assert_eq!(saved.get("patrol_target"), Some(&Tag::IntArray(vec![10, 64, -20])));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved ravager loads");
+        assert_eq!(fresh.ravager_mut(back).unwrap().ravager.stunned_tick, 17);
+    }
+
+    #[test]
+    fn a_witch_saves_and_loads_its_raid_and_forgets_a_raid_it_left() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:witch\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,30],Health:26.0f,CanJoinRaid:1b,Wave:4,RaidId:2,PatrolLeader:0b}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("witches load");
+        let raider = world.raiders().into_iter().find(|view| view.id == id).unwrap().raider;
+        assert_eq!((raider.wave, raider.raid_id, raider.can_join_raid), (4, Some(2), true));
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag.clone())].into_iter().collect();
+        let saved = |world: &EntityWorld| mob_tags_where(world, |_, _| true, &originals, true).into_iter().find(|(i, _)| *i == id).unwrap().1;
+        let kept = saved(&world);
+        assert_eq!((kept.get("Wave"), kept.get("RaidId")), (Some(&Tag::Int(4)), Some(&Tag::Int(2))));
+        world.raider_mut(id).unwrap().raider.raid_id = None;
+        let left = saved(&world);
+        assert_eq!(left.get("RaidId"), None, "a raider out of its raid saves no RaidId");
+        assert_eq!(left.get("CanJoinRaid"), Some(&Tag::Byte(1)));
+    }
+
+    #[test]
+    fn a_pillager_on_a_ravager_loads_rides_and_saves_inside_it() {
+        let jockey = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,21],Passengers:[{id:\"minecraft:pillager\",Pos:[1.5d,65.6d,2.5d],UUID:[I;4,5,6,22],equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}]}").unwrap();
+        assert!(carries(&jockey));
+        assert_eq!(spawn_saved(&mut EntityWorld::default(), &jockey), None, "the ravager alone refuses its rider");
+        let mut world = EntityWorld::default();
+        let spawned = spawn_saved_all(&mut world, &jockey);
+        assert_eq!(spawned.len(), 2);
+        let (mount, rider) = (spawned[0].0, spawned[1].0);
+        assert_eq!(world.entity_type(rider), Some("minecraft:pillager"));
+        assert_eq!(world.vehicle_of(Rider::Mob(rider)), Some(mount));
+        assert_eq!(world.controlling_mob(mount), None, "the ravager keeps its own will under a raider");
+        let seat = world.seat(Rider::Mob(rider)).unwrap();
+        assert!((seat.y - (64.0 + 2.2625 - f64::from(0.6_f32))).abs() < 1.0e-6, "{seat}");
+        let originals: std::collections::HashMap<u64, Tag> = spawned.into_iter().collect();
+        let saved = mob_tags(&world, |_| true, &originals);
+        assert_eq!(saved.len(), 1, "the rider saves inside its ravager");
+        let riders = saved[0].1.get("Passengers").and_then(Tag::as_list).expect("its rider");
+        assert_eq!(riders[0].get("id").and_then(Tag::as_str), Some("minecraft:pillager"));
+        let mut again = EntityWorld::default();
+        let reloaded = spawn_saved_all(&mut again, &saved[0].1);
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(again.vehicle_of(Rider::Mob(reloaded[1].0)), Some(reloaded[0].0));
+    }
+
+    #[test]
+    fn a_summoned_rider_without_a_position_sits_on_its_ravager() {
+        let summoned = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:ravager\",Pos:[4.5d,64.0d,2.5d],UUID:[I;4,5,6,23],Passengers:[{id:\"minecraft:pillager\",equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}]}").unwrap();
+        let mut world = EntityWorld::default();
+        let spawned = spawn_saved_all(&mut world, &summoned);
+        assert_eq!(spawned.len(), 2, "the rider comes along");
+        let (mount, rider) = (spawned[0].0, spawned[1].0);
+        assert_eq!(world.vehicle_of(Rider::Mob(rider)), Some(mount));
+        let seat = world.seat(Rider::Mob(rider)).unwrap();
+        assert!((seat.x - 4.5).abs() < 0.1 && (seat.z - 2.5).abs() < 0.1, "{seat}");
+    }
+
+    #[test]
+    fn a_summoned_vex_saves_and_loads_with_its_owner_origin_and_life() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:vex"));
+        let mut world = EntityWorld::default();
+        let evoker = spawn_saved(&mut world, &minecraftoss_core::snbt::parse_compound("{id:\"minecraft:evoker\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,12]}").unwrap()).unwrap();
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vex\",Pos:[2.5d,66.0d,2.5d],UUID:[I;4,5,6,13],Health:12.0f,LeftHanded:1b,bound_pos:[I;2,65,2],life_ticks:900,owner:[I;4,5,6,12],equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1}},drop_chances:{mainhand:0.0f}}").unwrap();
+        let id = spawn_saved(&mut world, &tag).expect("vexes load");
+        assert_eq!(world.entity_type(id), Some("minecraft:vex"));
+        {
+            let owner = world.uuid_of(evoker);
+            let v = &world.vex_mut(id).unwrap().vex;
+            assert_eq!((v.health, v.life_ticks, v.bound_origin), (12.0, Some(900), Some((2, 65, 2))));
+            assert!(v.left_handed);
+            assert_eq!(v.owner_uuid, Some(owner));
+            assert_eq!(v.main_hand().map(|s| s.id.as_str()), Some("minecraft:iron_sword"));
+            assert_eq!(v.drop_chances[0], 0.0);
+        }
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(i, _)| *i == id).collect();
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("life_ticks"), Some(&Tag::Int(900)));
+        assert_eq!(saved.get("bound_pos"), Some(&Tag::IntArray(vec![2, 65, 2])));
+        assert_eq!(saved.get("owner"), Some(&Tag::IntArray(vec![4, 5, 6, 12])));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved vex loads");
+        assert_eq!(fresh.vex_mut(back).unwrap().vex.life_ticks, Some(900));
+        let wild = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vex\",Pos:[2.5d,66.0d,2.5d]}").unwrap();
+        let id = spawn_saved(&mut fresh, &wild).unwrap();
+        assert_eq!(fresh.vex_mut(id).unwrap().vex.life_ticks, None, "a vex from an egg lives on");
+    }
+
+    #[test]
+    fn a_pillager_saves_and_loads_with_its_crossbow_and_raider_state() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:pillager\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,8],Health:20.0f,Rotation:[45.0f,0.0f],LeftHanded:1b,CanJoinRaid:1b,Wave:3,PatrolLeader:1b,Patrolling:1b,patrol_target:[I;10,64,-20],equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}},drop_chances:{mainhand:0.5f},Inventory:[{id:\"minecraft:white_banner\",count:1}]}").unwrap();
+        assert!(SIMULATED_KINDS.contains(&"minecraft:pillager"));
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("pillagers load");
+        assert_eq!(world.entity_type(id), Some("minecraft:pillager"));
+        {
+            let e = world.illager_mut(id).unwrap();
+            let i = &e.illager;
+            assert_eq!((i.health, i.yaw, i.left_handed, i.can_pick_up_loot), (20.0, 45.0, true, true));
+            assert!(i.holds_crossbow() && !i.crossbow_charged());
+            assert_eq!(i.drop_chances[0], 0.5);
+            assert_eq!(i.inventory[0].as_ref().map(|s| s.id.as_str()), Some("minecraft:white_banner"));
+            let r = &i.raider;
+            assert_eq!((r.wave, r.can_join_raid, r.patrol_leader, r.patrolling, r.patrol_target), (3, true, true, true, Some((10, 64, -20))));
+            e.illager.set_crossbow_charged(true);
+        }
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("PatrolLeader"), Some(&Tag::Byte(1)));
+        assert_eq!(saved.get("patrol_target"), Some(&Tag::IntArray(vec![10, 64, -20])));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved pillager loads");
+        let e = fresh.illager_mut(back).unwrap();
+        assert!(e.illager.crossbow_charged(), "a loaded crossbow stays loaded");
+        assert_eq!((e.illager.health, e.illager.raider.wave), (20.0, 3));
+        assert_eq!(e.illager.drop_chances[0], 0.5);
+    }
+
+    #[test]
+    fn a_snow_golem_saves_and_loads_with_its_pumpkin_and_health() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:snow_golem\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,7],Health:3.0f,Rotation:[90.0f,0.0f]}").unwrap();
+        assert!(SIMULATED_KINDS.contains(&"minecraft:snow_golem"));
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("snow golems load");
+        assert_eq!(world.entity_type(id), Some("minecraft:snow_golem"));
+        {
+            let e = world.snow_golem_mut(id).unwrap();
+            assert!(e.golem.pumpkin, "a golem saved without the field wears its pumpkin");
+            assert_eq!((e.golem.health, e.golem.yaw), (3.0, 90.0));
+            e.golem.pumpkin = false;
+        }
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("Pumpkin"), Some(&Tag::Byte(0)));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved snow golem loads");
+        let e = fresh.snow_golem_mut(back).unwrap();
+        assert!(!e.golem.pumpkin, "a sheared golem stays bare");
+        assert_eq!(e.golem.health, 3.0);
+    }
+
+    #[test]
+    fn a_leashed_cow_saves_and_loads_its_leash_to_a_player_a_mob_or_a_knot() {
+        use minecraftoss_entities::world::{LeashHolder, SavedLeash};
+        let to_knot = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[1.5d,64.0d,2.5d],leash:[I;3,64,-2]}").unwrap();
+        let to_player = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[4.5d,64.0d,2.5d],leash:{UUID:[I;1,2,3,4]}}").unwrap();
+        let loose = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:pig\",Pos:[6.5d,64.0d,2.5d],leash:{UUID:[I;9,9,9,9]}}").unwrap();
+        let mut world = EntityWorld::default();
+        let ids: Vec<u64> = [&to_knot, &to_player, &loose].iter().map(|tag| spawn_saved(&mut world, tag).expect("it loads")).collect();
+        assert_eq!(world.saved_leash(ids[0]), Some(SavedLeash::Knot((3, 64, -2))));
+        let player_uuid = minecraftoss_entities::gossip::uuid_from_ints([1, 2, 3, 4]);
+        assert_eq!(world.saved_leash(ids[1]), Some(SavedLeash::Uuid(player_uuid)));
+        world.set_leash(ids[1], LeashHolder::Mob(ids[0]));
+        world.drop_leash(ids[2], false);
+        world.set_leash(ids[2], LeashHolder::Mob(ids[0]));
+        world.drop_leash(ids[2], false);
+        let originals: std::collections::HashMap<u64, Tag> = ids.iter().copied().zip([to_knot, to_player, loose]).collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let tag_of = |id: u64| saved.iter().find(|(saved_id, _)| *saved_id == id).map(|(_, tag)| tag.clone()).unwrap();
+        assert_eq!(tag_of(ids[0]).get("leash"), Some(&Tag::IntArray(vec![3, 64, -2])));
+        let to_mob = tag_of(ids[1]);
+        let holder = to_mob.get("leash").and_then(|l| l.get("UUID")).and_then(Tag::as_ints).unwrap();
+        assert_eq!(minecraftoss_entities::gossip::uuid_from_ints(<[i32; 4]>::try_from(holder).unwrap()), world.uuid_of(ids[0]));
+        assert!(tag_of(ids[2]).get("leash").is_none(), "an untied pig saves no leash");
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, &tag_of(ids[0])).unwrap();
+        assert_eq!(fresh.saved_leash(back), Some(SavedLeash::Knot((3, 64, -2))));
+        assert_eq!(saved_leash_of(&leash_tag(SavedLeash::Uuid(player_uuid))), Some(SavedLeash::Uuid(player_uuid)));
     }
 }

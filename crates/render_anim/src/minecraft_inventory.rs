@@ -504,6 +504,7 @@ impl InventoryUi {
             _ => None,
         };
         let (mut choices, mut chosen, mut cost, mut name) = (Vec::new(), None, None, None);
+        let mut shown_merchant = None;
         let bench = match &screen.open {
             Some(Open::Bench(_, bench)) if ui.inventory_open => Some(bench),
             _ => None,
@@ -555,7 +556,36 @@ impl InventoryUi {
                     _ => (cells.iter().map(&mut convert).collect(), None, [0; 4]),
                 }
             }
-            (None, None) => (Vec::new(), None, [0; 4]),
+            (None, None) => match &screen.open {
+                Some(Open::Merchant(merchant)) if ui.inventory_open => {
+                    let view = &merchant.view;
+                    let offers = view
+                        .offers
+                        .iter()
+                        .map(|offer| {
+                            let [cost_a, cost_b, result] = offer_stacks(&inventory.recipes, &view.max_stacks, offer);
+                            frame::McOffer {
+                                cost_a: convert(&cost_a),
+                                base_count: u8::try_from(offer.buy.count.max(1)).unwrap_or(u8::MAX),
+                                cost_b: convert(&cost_b),
+                                result: convert(&result),
+                                out_of_stock: offer.out_of_stock(),
+                            }
+                        })
+                        .collect();
+                    shown_merchant = Some(frame::McMerchant {
+                        offers,
+                        level: view.level,
+                        xp: view.xp,
+                        future_xp: view.future_xp,
+                        show_progress: !view.trader,
+                        can_restock: !view.trader,
+                    });
+                    chosen = merchant.selected;
+                    (merchant.view.payment.iter().map(&mut convert).collect(), convert(&merchant.view.result), [0; 4])
+                }
+                _ => (Vec::new(), None, [0; 4]),
+            },
         };
         ui.choices = choices;
         ui.chosen = chosen;
@@ -564,6 +594,7 @@ impl InventoryUi {
         ui.container = container;
         ui.output = output;
         ui.data = data;
+        ui.merchant = shown_merchant;
         let book_grid = crate::minecraft_recipe_book::grid_of(ui.screen).filter(|_| ui.inventory_open);
         let unlocked = self.unlocked.as_ref().unwrap_or(&inventory.unlocked_recipes);
         if let Some(built) = self.recipe_book.build(&ui.recipe_book, inventory, unlocked, book_grid, lang) {
@@ -753,6 +784,8 @@ pub(crate) fn screen_for(open: Option<&Open>) -> McScreen {
         Some(Open::Table(_)) => McScreen::CraftingTable,
         Some(Open::Block(opened)) => screen_of(opened),
         Some(Open::Bench(_, bench)) => bench_screen(bench.kind),
+        Some(Open::Merchant(_)) => McScreen::Merchant,
+        Some(Open::Mount(mount)) => McScreen::Mount { columns: u8::try_from(mount.columns).unwrap_or(u8::MAX), saddle: mount.saddle, armor: mount.armor, llama: mount.llama },
         Some(Open::Inventory) | None => McScreen::Inventory,
     }
 }
@@ -819,6 +852,12 @@ fn droppable(
             out.extend((0..4).map(|i| (McSlot::Crafting(i), max)));
         }
         McScreen::CraftingTable => out.extend((0..9).map(|i| (McSlot::Workbench(i), max))),
+        McScreen::Merchant => out.extend((0..2).map(|i| (McSlot::Container(i), max))),
+        McScreen::Mount { columns, saddle, armor, llama } => {
+            let columns = usize::from(columns);
+            let mount = minecraft_terrain::mount_inventory::MountInventory { vehicle: 0, columns, saddle, armor, llama, cells: vec![None; minecraft_terrain::mount_inventory::CHEST + columns * 3] };
+            out.extend((0..mount.cells.len()).filter_map(|i| Some((McSlot::Container(i), mount.capacity(i, carried)?.min(max)))));
+        }
         McScreen::Creative(frame::McTabKind::Inventory) => {
             for index in 36..40 {
                 if armor_slot(index).is_some_and(|slot| inventory.recipes.equipment_slot(carried) == Some(slot)) {
@@ -901,6 +940,20 @@ fn display_name(language: &HashMap<String, String>, stack: &ItemStack) -> Option
     language.get(&format!("item.minecraft.{item}.effect.{effect}")).cloned()
 }
 
+fn offer_stacks(recipes: &minecraftoss_player::crafting::RecipeBook, max_stacks: &[(String, i32)], offer: &minecraftoss_entities::trading::MerchantOffer) -> [Option<ItemStack>; 3] {
+    let stack = |id: &str, count: i32, components: Option<serde_json::Value>| ItemStack {
+        id: id.to_owned(),
+        count: u8::try_from(count.max(1)).unwrap_or(u8::MAX),
+        max: recipes.max_stack(id),
+        components,
+    };
+    let max_a = max_stacks.iter().find(|(id, _)| *id == offer.buy.id).map_or_else(|| i32::from(recipes.max_stack(&offer.buy.id)), |&(_, max)| max);
+    let cost_a = stack(&offer.buy.id, offer.cost_a_count(max_a), offer.buy.components.clone());
+    let cost_b = offer.buy_b.as_ref().map(|cost| stack(&cost.id, cost.count, cost.components.clone()));
+    let result = stack(&offer.sell.id, offer.sell.count, (!offer.sell.components.is_empty()).then(|| serde_json::Value::Object(offer.sell.components.clone())));
+    [Some(cost_a), cost_b, Some(result)]
+}
+
 fn written_content(stack: &ItemStack) -> Option<&serde_json::Value> {
     stack.components.as_ref()?.get(minecraft_survival::books::WRITTEN_BOOK_CONTENT)
 }
@@ -971,6 +1024,36 @@ mod tests {
         assert_eq!(screen_for(Some(&Open::Table((0, 0, 0)))), McScreen::CraftingTable);
         let chest = Opened { station: Station::Chest, cells: vec![(0, 0, 0), (1, 0, 0)] };
         assert_eq!(screen_for(Some(&Open::Block(chest))), McScreen::Chest { rows: 6 });
+    }
+
+    #[test]
+    fn a_trading_offer_shows_its_discounted_first_cost_its_second_cost_and_what_it_sells() {
+        use minecraftoss_entities::trading::{ItemCost, MerchantOffer, TradeItem};
+        let recipes = minecraftoss_player::crafting::RecipeBook::default();
+        let mut sells = serde_json::Map::new();
+        sells.insert("minecraft:stored_enchantments".to_owned(), serde_json::json!({"minecraft:mending": 1}));
+        let offer = MerchantOffer {
+            buy: ItemCost { id: "minecraft:emerald".to_owned(), count: 10, components: None },
+            buy_b: Some(ItemCost { id: "minecraft:book".to_owned(), count: 1, components: None }),
+            sell: TradeItem { id: "minecraft:enchanted_book".to_owned(), count: 1, components: sells },
+            uses: 0,
+            max_uses: 12,
+            reward_exp: true,
+            special_price: -3,
+            demand: 0,
+            price_multiplier: 0.2,
+            xp: 1,
+        };
+        let [a, b, result] = offer_stacks(&recipes, &[("minecraft:emerald".to_owned(), 64)], &offer);
+        assert_eq!(a.map(|s| (s.id, s.count)), Some(("minecraft:emerald".to_owned(), 7)));
+        assert_eq!(b.map(|s| (s.id, s.count)), Some(("minecraft:book".to_owned(), 1)));
+        let result = result.unwrap();
+        assert_eq!((result.id.as_str(), result.count), ("minecraft:enchanted_book", 1));
+        assert!(result.components.is_some_and(|c| c.get("minecraft:stored_enchantments").is_some()));
+        let pricey = MerchantOffer { special_price: 80, buy_b: None, ..offer };
+        let [a, b, _] = offer_stacks(&recipes, &[("minecraft:emerald".to_owned(), 64)], &pricey);
+        assert_eq!(a.map(|s| s.count), Some(64));
+        assert!(b.is_none());
     }
 
     #[test]

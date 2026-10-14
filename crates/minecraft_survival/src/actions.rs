@@ -432,7 +432,8 @@ pub fn act(
                     sound,
                     overflow,
                     fed,
-                } => (sound, Some((overflow, fed))),
+                    heard,
+                } => (sound, Some((overflow, fed, heard))),
             };
             if crumbs {
                 let count = if finished.is_some() { 16 } else { 5 };
@@ -451,7 +452,10 @@ pub fn act(
                 (if r1 < 0.5 { 0.5 } else { 1.0 }, (r1 - r2) * 0.2 + 1.0)
             };
             effects.push(sound(&chewed, None, volume, chew_pitch));
-            if let Some((overflow, fed)) = finished {
+            if let Some((overflow, fed, heard)) = finished {
+                for event in heard {
+                    effects.push(sound(event, None, 1.0, 1.0));
+                }
                 if fed {
                     effects.push(sound(
                         "minecraft:entity.player.burp",
@@ -751,7 +755,32 @@ pub fn act(
                         .is_some()
                 })
             });
+            let leashed_fence = main
+                && player
+                    .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
+                    .map(|hit| hit.pos)
+                    .filter(|&pos| {
+                        Scene::block(&terrain.scene, pos)
+                            .is_some_and(minecraft_terrain::leash_render::is_fence_block)
+                    })
+                    .filter(|&pos| entities.has_knot(pos) || !(player.crouching && has_item))
+                    .is_some_and(|pos| entities.leash_fence(player_id, pos, player.crouching));
+            let bell = main
+                && !leashed_fence
+                && !(player.crouching && has_item)
+                && player
+                    .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
+                    .filter(|hit| {
+                        minecraftoss_player::World::block(&terrain.scene, hit.pos).is_some_and(|block| {
+                            minecraft_terrain::bells::is_bell(&block)
+                                && minecraft_terrain::bells::proper_hit(&block, hit.face, hit.point.y - f64::from(hit.pos.1))
+                        })
+                    })
+                    .map(|hit| entities.ring_bell(hit.pos, minecraft_terrain::bells::face_name(hit.face)))
+                    .is_some();
             let used = if main
+                && !leashed_fence
+                && !bell
                 && table.is_none()
                 && station.is_none()
                 && workshop.is_none()
@@ -906,6 +935,9 @@ pub fn act(
                     &mut effects,
                 )
                 .or(bed);
+                hand.swing = Some(0.0);
+                HandUse::Consumed
+            } else if leashed_fence || bell {
                 hand.swing = Some(0.0);
                 HandUse::Consumed
             } else if let Some(pos) = used {
@@ -1316,6 +1348,12 @@ pub fn act(
                 .filter(|s| s.id == minecraft_terrain::bottle::MILK_BUCKET)
             {
                 survival.start_using(minecraft_terrain::bottle::drink_milk(slot, stack));
+                HandUse::Consumed
+            } else if let Some(stack) = held
+                .as_ref()
+                .filter(|s| s.id == minecraft_terrain::bottle::OMINOUS_BOTTLE)
+            {
+                survival.start_using(minecraft_terrain::bottle::drink_ominous(slot, stack));
                 HandUse::Consumed
             } else if held
                 .as_ref()
@@ -2122,7 +2160,14 @@ pub(crate) mod tests {
                 main_hand: None,
                 offhand: None,
                 sneaking: false,
+                hero: None,
+                sleeping: None,
+                sleep_timer: 0,
+                forward: 0.0,
+                strafe: 0.0,
+                jumping: false,
                 swirl: None,
+                omens: Default::default(),
             };
             let mut actors = [TickActor {
                 id: 0,

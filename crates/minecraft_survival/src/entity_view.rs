@@ -30,6 +30,7 @@ pub struct EntityView {
     pub(crate) spell: minecraft_terrain::spell_particles::SpellParticles,
     pub(crate) ambient: minecraft_terrain::ambient_particles::AmbientParticles,
     pub(crate) bodies: HashMap<u128, minecraft_terrain::ambient_particles::Body>,
+    pub(crate) rope_holders: HashMap<u128, minecraft_terrain::leash_render::RopeHolder>,
     pub(crate) items: ItemVisuals,
     pub(crate) clock: f64,
     pub(crate) tick_seconds: f64,
@@ -58,6 +59,10 @@ pub struct EntityView {
     pub sounds: Vec<(String, DVec3, f32, f32)>,
     pub(crate) random: minecraftoss_player::rng::LegacyRandom,
     shown: HashSet<u64>,
+    fang_crits: HashSet<u64>,
+    ravager_roars: HashSet<u64>,
+    fireworks: minecraft_terrain::firework_particles::FireworkParticles,
+    firework_camera: DVec3,
 }
 
 impl EntityView {
@@ -73,6 +78,7 @@ impl EntityView {
                 (seed ^ 0xa3b1) as u64,
             ),
             bodies: HashMap::new(),
+            rope_holders: HashMap::new(),
             items: ItemVisuals::default(),
             clock: 0.0,
             tick_seconds: TICK_SECONDS,
@@ -103,6 +109,10 @@ impl EntityView {
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             shown: HashSet::new(),
+            fang_crits: HashSet::new(),
+            ravager_roars: HashSet::new(),
+            fireworks: minecraft_terrain::firework_particles::FireworkParticles::new((seed ^ 0xf14e) as u64),
+            firework_camera: DVec3::ZERO,
         }
     }
 
@@ -133,6 +143,9 @@ impl EntityView {
             self.lids.tick();
             self.spawners.tick(near, &mut self.ambient);
             self.client.tick();
+            self.spell_casts();
+            self.fang_crits();
+            self.ravager_effects();
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);
             self.drawn_fireballs.tick();
@@ -181,6 +194,75 @@ impl EntityView {
         ticked
     }
 
+    fn spell_casts(&mut self) {
+        use minecraftoss_entities::illager::IllagerSpell;
+        use minecraftoss_player::mth;
+        for evoker in self.world.illagers() {
+            if evoker.illager.spell == IllagerSpell::None {
+                continue;
+            }
+            let Some(mob) = self.client.pose(evoker.id, 1.0) else {
+                continue;
+            };
+            let [r, g, b] = evoker.illager.spell.color();
+            let turn = mob.body_rot * 0.017_453_292 + mth::cos(f64::from(mob.age_in_ticks * 0.6662)) * 0.25;
+            let (cos, sin) = (f64::from(mth::cos(f64::from(turn))), f64::from(mth::sin(f64::from(turn))));
+            for side in [1.0, -1.0] {
+                let at = mob.feet + DVec3::new(side * cos * 0.6, 1.8, side * sin * 0.6);
+                self.spell.spawn(
+                    minecraft_terrain::spell_particles::SpellKind::Effect,
+                    at,
+                    DVec3::ZERO,
+                    [r as f32, g as f32, b as f32],
+                    1.0,
+                );
+            }
+        }
+    }
+
+    fn fang_crits(&mut self) {
+        use minecraftoss_entities::evoker_fangs::{CRIT_LIFE, WIDTH};
+        let fangs: Vec<(u64, DVec3, i32)> = self.world.evoker_fangs().iter().filter(|e| e.fangs.sent_spike).map(|e| (e.id, e.fangs.position, e.fangs.life_ticks)).collect();
+        self.fang_crits.retain(|id| fangs.iter().any(|(fang, ..)| fang == id));
+        for (id, at, life) in fangs {
+            if life > CRIT_LIFE || !self.fang_crits.insert(id) {
+                continue;
+            }
+            for _ in 0..12 {
+                let x = at.x + (self.random.next_double() * 2.0 - 1.0) * WIDTH * 0.5;
+                let y = at.y + 0.05 + self.random.next_double();
+                let z = at.z + (self.random.next_double() * 2.0 - 1.0) * WIDTH * 0.5;
+                let motion = DVec3::new(
+                    (self.random.next_double() * 2.0 - 1.0) * 0.3,
+                    0.3 + self.random.next_double() * 0.3,
+                    (self.random.next_double() * 2.0 - 1.0) * 0.3,
+                );
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::Crit, DVec3::new(x, y + 1.0, z), motion);
+            }
+        }
+    }
+
+    fn ravager_effects(&mut self) {
+        use minecraftoss_entities::ravager::{ROAR_AT, ROAR_PARTICLES, ROAR_SPREAD, STUNNED_COLOR};
+        let ravagers: Vec<(u64, minecraftoss_entities::ravager::Ravager)> = self.world.ravagers().iter().map(|e| (e.id, e.ravager.clone())).collect();
+        self.ravager_roars.retain(|id| ravagers.iter().any(|(ravager, r)| ravager == id && r.roar_tick > 0 && r.roar_tick <= ROAR_AT));
+        for (id, ravager) in ravagers {
+            if ravager.stunned_tick > 0 {
+                let body_yaw = self.client.pose(id, 1.0).map_or(ravager.yaw, |mob| mob.body_rot);
+                if let Some(at) = ravager.stun_particle(&mut self.random, body_yaw) {
+                    self.spell.spawn(minecraft_terrain::spell_particles::SpellKind::Effect, at, DVec3::ZERO, STUNNED_COLOR, 1.0);
+                }
+            }
+            if ravager.roar_tick > 0 && ravager.roar_tick <= ROAR_AT && self.ravager_roars.insert(id) {
+                let center = ravager.body.position + DVec3::new(0.0, f64::from(ravager.body.height) / 2.0, 0.0);
+                for _ in 0..ROAR_PARTICLES {
+                    let motion = DVec3::new(self.random.next_gaussian() * ROAR_SPREAD, self.random.next_gaussian() * ROAR_SPREAD, self.random.next_gaussian() * ROAR_SPREAD);
+                    self.ambient.add(minecraft_terrain::ambient_particles::Kind::Poof, center, motion);
+                }
+            }
+        }
+    }
+
     pub fn bursts(&mut self, snapshot: &mut EntitySnapshot) {
         let shattered = std::mem::take(&mut snapshot.eyes.shattered);
         self.eyes.shatter(shattered, &mut self.portal, &mut self.item_crumbs);
@@ -197,6 +279,10 @@ impl EntityView {
                 minecraft_terrain::ambient_particles::Kind::Explosion
             };
             self.ambient.add(kind, at, DVec3::ZERO);
+        }
+        for burst in std::mem::take(&mut snapshot.firework_bursts) {
+            let (event, volume, pitch) = self.fireworks.burst(&burst, self.firework_camera);
+            self.sounds.push((event.to_owned(), burst.position, volume, pitch));
         }
     }
 
@@ -354,6 +440,15 @@ impl EntityView {
             height,
         };
         self.bodies.insert(key, body);
+    }
+
+    pub fn hold_rope(&mut self, key: u128, feet: [f64; 3], yaw: f32, height: f64) {
+        let holder = minecraft_terrain::leash_render::RopeHolder {
+            feet: DVec3::from_array(feet),
+            yaw,
+            height,
+        };
+        self.rope_holders.insert(key, holder);
     }
 
     pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
@@ -536,11 +631,29 @@ impl EntityView {
         for e in w.witches().iter().filter(|e| e.witch.health > 0.0) {
             add(MobHit::Witch(e.id), &e.witch.body);
         }
+        for e in w.illagers().iter().filter(|e| e.illager.health > 0.0) {
+            add(MobHit::Illager(e.id), &e.illager.body);
+        }
+        for e in w.vexes().iter().filter(|e| e.vex.health > 0.0) {
+            add(MobHit::Vex(e.id), &e.vex.body);
+        }
+        for e in w.ravagers().iter().filter(|e| e.ravager.health > 0.0) {
+            add(MobHit::Ravager(e.id), &e.ravager.body);
+        }
         for e in w.iron_golems().iter().filter(|e| e.golem.health > 0.0) {
             add(MobHit::IronGolem(e.id), &e.golem.body);
         }
         for e in w.wolves().iter().filter(|e| e.wolf.health > 0.0) {
             add(MobHit::Wolf(e.id), &e.wolf.body);
+        }
+        for e in w.felines().iter().filter(|e| e.feline.health > 0.0) {
+            add(MobHit::Feline(e.id), &e.feline.body);
+        }
+        for e in w.wandering_traders().iter().filter(|e| e.trader.health > 0.0) {
+            add(MobHit::WanderingTrader(e.id), &e.trader.body);
+        }
+        for e in w.snow_golems().iter().filter(|e| e.golem.health > 0.0) {
+            add(MobHit::SnowGolem(e.id), &e.golem.body);
         }
         for e in w.villagers().iter().filter(|e| e.villager.health > 0.0) {
             add(MobHit::Villager(e.id), &e.villager.body);
@@ -644,6 +757,10 @@ impl EntityView {
 
     pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
         for _ in 0..ticks {
+            for rocket in self.thrown.iter().filter(|view| minecraft_terrain::firework_rocket::is_rocket(view)) {
+                self.fireworks.trail(rocket.position, rocket.position.y - rocket.previous.y);
+            }
+            self.fireworks.tick(|cell| !minecraftoss_player::World::collision_boxes(scene, cell).is_empty());
             self.poof.tick(scene);
             let bodies = &self.bodies;
             self.ambient.tick_emitters(|key| bodies.get(&key).copied());
@@ -767,9 +884,25 @@ impl EntityView {
             light,
             partial,
         );
+        let trader_items = villager_render::append_wandering_traders(
+            &mut out.models,
+            w.wandering_traders().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
         horse_render::append_horses(
             &mut out.models,
             &mut out.translucent,
+            w.cows().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        llama_render::append_llamas(
+            &mut out.models,
             w.cows().iter(),
             poses,
             atlas,
@@ -891,6 +1024,45 @@ impl EntityView {
             light,
             partial,
         );
+        let illager_items = minecraft_terrain::illager_render::append_illagers(
+            &mut out.models,
+            w.illagers().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        let vex_items = minecraft_terrain::vex_render::append_vexes(
+            &mut out.models,
+            w.vexes().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        minecraft_terrain::ravager_render::append_ravagers(
+            &mut out.models,
+            w.ravagers().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        for e in w.illagers().iter().filter(|e| w.glowing(e.id)) {
+            let mut mob = minecraft_terrain::mesh::ChunkMesh::default();
+            let _ = minecraft_terrain::illager_render::append_illagers(&mut mob, std::iter::once(e), poses, atlas, light, partial);
+            minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, &mob);
+        }
+        for e in w.ravagers().iter().filter(|e| w.glowing(e.id)) {
+            let mut mob = minecraft_terrain::mesh::ChunkMesh::default();
+            minecraft_terrain::ravager_render::append_ravagers(&mut mob, std::iter::once(e), poses, atlas, light, partial);
+            minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, &mob);
+        }
+        for e in w.witches().iter().filter(|e| w.glowing(e.id)) {
+            let mut mob = minecraft_terrain::mesh::ChunkMesh::default();
+            let _ = witch_render::append_witches(&mut mob, std::iter::once(e), poses, atlas, light, partial);
+            minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, &mob);
+        }
         shulker_render::append_shulkers(
             &mut out.models,
             w.shulkers().iter(),
@@ -909,9 +1081,31 @@ impl EntityView {
             atlas,
             partial,
         );
+        llama_render::append_spits(
+            &mut out.models,
+            w.llama_spits().iter().filter(|e| near(e.spit.position)),
+            atlas,
+            light,
+            partial,
+        );
+        minecraft_terrain::evoker_fangs_render::append_fangs(
+            &mut out.models,
+            w.evoker_fangs().iter().filter(|e| near(e.fangs.position)),
+            atlas,
+            light,
+            partial,
+        );
         let poppies = golem_render::append_iron_golems(
             &mut out.models,
             w.iron_golems().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        let pumpkins = minecraft_terrain::snow_golem_render::append_snow_golems(
+            &mut out.models,
+            w.snow_golems().iter(),
             poses,
             atlas,
             light,
@@ -925,6 +1119,24 @@ impl EntityView {
             light,
             partial,
             w.game_time(),
+        );
+        cat_render::append_felines(
+            &mut out.models,
+            w.felines().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
+        leash_render::append_knots(&mut out.models, &w.knots(), atlas, light);
+        leash_render::append_ropes(
+            &mut out.models,
+            w,
+            poses,
+            &self.rope_holders,
+            atlas,
+            light,
+            partial,
         );
         flame_render::append_flames(
             &mut out.items,
@@ -1060,18 +1272,24 @@ impl EntityView {
             .append_mesh(&mut out.items, atlas, forward, partial, light);
         self.spell
             .append_mesh(&mut out.translucent, atlas, forward, partial, light);
+        self.firework_camera = camera;
+        self.fireworks
+            .append_mesh(&mut out.translucent, atlas, forward, partial, light);
         let held: Vec<_> = skeleton_items
             .into_iter()
             .chain(zombie_items)
             .chain(villager_items)
+            .chain(trader_items)
             .chain(witch_items)
             .chain(piglin_items)
+            .chain(illager_items)
+            .chain(vex_items)
             .chain(placed_items.iter().cloned())
             .collect();
         let _ = self
             .items
             .append_held_items(&mut out.items, &held, packs, atlas, light);
-        let carried: Vec<_> = carried.into_iter().chain(poppies).collect();
+        let carried: Vec<_> = carried.into_iter().chain(poppies).chain(pumpkins).collect();
         let _ = self
             .items
             .append_posed_blocks(&mut out.items, &carried, packs, atlas, light);
@@ -1143,5 +1361,45 @@ mod tests {
     fn a_dragon_frozen_on_the_host_makes_no_flap_or_growl_on_the_client() {
         assert!(voices(false) > 0);
         assert_eq!(voices(true), 0);
+    }
+
+    #[test]
+    fn a_stunned_ravager_swirls_now_and_then_and_its_roar_puffs_once() {
+        let mut view = EntityView::new(7);
+        let ravager = minecraftoss_entities::ravager::Ravager::new(DVec3::new(0.5, 64.0, 0.5));
+        let id = view.world.spawn_ravager(ravager, true);
+        view.world.ravager_mut(id).unwrap().ravager.stunned_tick = 30;
+        for _ in 0..60 {
+            view.ravager_effects();
+        }
+        let swirls = view.spell.len();
+        assert!((3..=25).contains(&swirls), "about one tick in six: {swirls}");
+        assert_eq!(view.ambient.len(), 0);
+        let mut puffs = Vec::new();
+        for roar in [15, 11, 10, 9, 5, 0, 10] {
+            let entity = view.world.ravager_mut(id).unwrap();
+            entity.ravager.stunned_tick = 0;
+            entity.ravager.roar_tick = roar;
+            view.ravager_effects();
+            puffs.push(view.ambient.len());
+        }
+        assert_eq!(puffs, vec![0, 0, 40, 40, 40, 40, 80]);
+        assert_eq!(view.spell.len(), swirls, "no swirls once the stun is over");
+    }
+
+    #[test]
+    fn a_firework_burst_bangs_and_sparkles_for_whoever_sees_it() {
+        use minecraft_terrain::firework_rocket::{Burst, BLAST_FAR_SOUND, BLAST_SOUND};
+        let mut view = EntityView::new(3);
+        let burst = Burst { position: DVec3::new(0.5, 80.0, 0.5), velocity: DVec3::new(0.0, 0.9, 0.0), colors: vec![4312372] };
+        let mut snapshot = EntitySnapshot { firework_bursts: vec![burst.clone()], ..EntitySnapshot::default() };
+        view.bursts(&mut snapshot);
+        assert!(snapshot.firework_bursts.is_empty());
+        assert_eq!(view.fireworks.len(), minecraft_terrain::firework_particles::BURST_SPARKS);
+        assert_eq!(view.sounds.last().map(|(event, at, volume, _)| (event.as_str(), *at, *volume)), Some((BLAST_FAR_SOUND, burst.position, 20.0)));
+        view.firework_camera = DVec3::new(0.5, 75.0, 0.5);
+        let mut near = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
+        view.bursts(&mut near);
+        assert_eq!(view.sounds.last().map(|(event, ..)| event.as_str()), Some(BLAST_SOUND));
     }
 }

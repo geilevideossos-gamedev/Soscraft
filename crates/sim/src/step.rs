@@ -650,6 +650,7 @@ fn finalize_system(ecs: &mut World) {
         emit_attack_events(&mut world, tick, &[(id, cmd)]);
         if world.client_meta(id).is_some() {
             world.set_old_cmd(id, cmd.buttons, cmd.angles);
+            world.set_old_moves(id, [cmd.forwardmove, cmd.rightmove]);
         }
     }
 

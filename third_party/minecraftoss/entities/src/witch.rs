@@ -50,6 +50,7 @@ pub struct Witch {
     pub heal_cooldown: i32,
     /// When fire last hurt it (`getLastDamageSource` within 40 ticks).
     pub last_fire_damage: Option<i64>,
+    pub raider: crate::illager::Raider,
 }
 
 impl Witch {
@@ -65,6 +66,7 @@ impl Witch {
             using_time: 0,
             heal_cooldown: 0,
             last_fire_damage: None,
+            raider: crate::illager::Raider::default(),
         }
     }
 
@@ -138,6 +140,27 @@ pub fn aim(position: DVec3, target: ThrowTarget, random: &mut LegacyRandom) -> T
         Potion::Harming
     };
     Throw { potion, direction: DVec3::new(xd, yd + dist * 0.2, zd), power: if dist <= 2.0 { 0.45 } else { 0.75 } }
+}
+
+pub const HEAL_COOLDOWN: i32 = 100;
+pub const HEAL_HEALTH: f32 = 4.0;
+
+pub fn heal(position: DVec3, target: ThrowTarget) -> Throw {
+    let mut throw = aim_line(position, target);
+    throw.potion = if target.health <= HEAL_HEALTH {
+        Potion::Healing
+    } else {
+        Potion::Regeneration
+    };
+    throw
+}
+
+fn aim_line(position: DVec3, target: ThrowTarget) -> Throw {
+    let xd = target.position.x + target.velocity.x - position.x;
+    let yd = target.position.y + f64::from(target.eye_height) - f64::from(1.1_f32) - position.y;
+    let zd = target.position.z + target.velocity.z - position.z;
+    let dist = (xd * xd + zd * zd).sqrt();
+    Throw { potion: Potion::Harming, direction: DVec3::new(xd, yd + dist * 0.2, zd), power: if dist <= 2.0 { 0.45 } else { 0.75 } }
 }
 
 /// `Witch.getDamageAfterMagicAbsorb`: its own potions do nothing to it,

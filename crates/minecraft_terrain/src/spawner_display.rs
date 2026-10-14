@@ -20,30 +20,42 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:bat",
     "minecraft:blaze",
     "minecraft:bogged",
+    "minecraft:cat",
     "minecraft:chicken",
     "minecraft:cow",
     "minecraft:creeper",
     "minecraft:donkey",
     "minecraft:enderman",
+    "minecraft:evoker",
     "minecraft:ghast",
     "minecraft:hoglin",
     "minecraft:horse",
     "minecraft:husk",
     "minecraft:iron_golem",
+    "minecraft:llama",
     "minecraft:magma_cube",
     "minecraft:mooshroom",
+    "minecraft:mule",
+    "minecraft:ocelot",
     "minecraft:parched",
     "minecraft:pig",
     "minecraft:piglin",
     "minecraft:piglin_brute",
+    "minecraft:pillager",
+    "minecraft:ravager",
     "minecraft:sheep",
     "minecraft:shulker",
     "minecraft:skeleton",
     "minecraft:slime",
+    "minecraft:snow_golem",
     "minecraft:spider",
     "minecraft:stray",
     "minecraft:strider",
+    "minecraft:trader_llama",
+    "minecraft:vex",
     "minecraft:villager",
+    "minecraft:vindicator",
+    "minecraft:wandering_trader",
     "minecraft:witch",
     "minecraft:wither_skeleton",
     "minecraft:wolf",
@@ -196,7 +208,7 @@ impl Shown {
             "minecraft:cow" | "minecraft:mooshroom" => {
                 cow_render::append_cows(models, w.cows().iter(), poses, atlas, light, partial)
             }
-            "minecraft:horse" | "minecraft:donkey" => horse_render::append_horses(
+            "minecraft:horse" | "minecraft:donkey" | "minecraft:mule" => horse_render::append_horses(
                 models,
                 translucent,
                 w.cows().iter(),
@@ -205,6 +217,9 @@ impl Shown {
                 light,
                 partial,
             ),
+            "minecraft:llama" | "minecraft:trader_llama" => {
+                llama_render::append_llamas(models, w.cows().iter(), poses, atlas, light, partial)
+            }
             "minecraft:sheep" => {
                 sheep_render::append_sheep(models, w.sheep().iter(), poses, atlas, light, partial)
             }
@@ -276,6 +291,16 @@ impl Shown {
                     partial,
                 );
             }
+            "minecraft:wandering_trader" => {
+                villager_render::append_wandering_traders(
+                    models,
+                    w.wandering_traders().iter(),
+                    poses,
+                    atlas,
+                    light,
+                    partial,
+                );
+            }
             "minecraft:slime" => slime_render::append_slimes(
                 models,
                 translucent,
@@ -330,6 +355,32 @@ impl Shown {
                     partial,
                 );
             }
+            "minecraft:snow_golem" => {
+                crate::snow_golem_render::append_snow_golems(
+                    models,
+                    w.snow_golems().iter(),
+                    poses,
+                    atlas,
+                    light,
+                    partial,
+                );
+            }
+            "minecraft:pillager" | "minecraft:vindicator" | "minecraft:evoker" => {
+                crate::illager_render::append_illagers(
+                    models,
+                    w.illagers().iter(),
+                    poses,
+                    atlas,
+                    light,
+                    partial,
+                );
+            }
+            "minecraft:vex" => {
+                crate::vex_render::append_vexes(models, w.vexes().iter(), poses, atlas, light, partial);
+            }
+            "minecraft:ravager" => {
+                crate::ravager_render::append_ravagers(models, w.ravagers().iter(), poses, atlas, light, partial);
+            }
             "minecraft:wolf" => wolf_render::append_wolves(
                 models,
                 w.wolves().iter(),
@@ -338,6 +389,14 @@ impl Shown {
                 light,
                 partial,
                 0,
+            ),
+            "minecraft:cat" | "minecraft:ocelot" => crate::cat_render::append_felines(
+                models,
+                w.felines().iter(),
+                poses,
+                atlas,
+                light,
+                partial,
             ),
             "minecraft:strider" => strider_render::append_striders(
                 models,
@@ -863,6 +922,17 @@ mod tests {
             ("minecraft:piglin", 0.05),
             ("minecraft:piglin_brute", 0.05),
             ("minecraft:shulker", 0.1),
+            ("minecraft:cat", 0.1),
+            ("minecraft:ocelot", 0.25),
+            ("minecraft:mule", 0.05),
+            ("minecraft:llama", 0.05),
+            ("minecraft:trader_llama", 0.05),
+            ("minecraft:snow_golem", 0.05),
+            ("minecraft:pillager", 0.05),
+            ("minecraft:vindicator", 0.05),
+            ("minecraft:evoker", 0.05),
+            ("minecraft:vex", 0.05),
+            ("minecraft:ravager", 0.1),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);

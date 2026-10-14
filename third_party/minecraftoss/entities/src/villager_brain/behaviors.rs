@@ -29,7 +29,50 @@ pub(super) fn packages(baby: bool, profession: Profession) -> Vec<(Activity, Pac
     out.push((Activity::Rest, rest()));
     out.push((Activity::Idle, idle()));
     out.push((Activity::Panic, panic()));
+    out.push((Activity::PreRaid, pre_raid()));
+    out.push((Activity::Raid, raid()));
+    out.push((Activity::Hide, hide()));
     out
+}
+
+fn pre_raid() -> Package {
+    let speed = 0.5_f32 * 1.5;
+    vec![
+        (0, boxed(RingBell)),
+        (
+            0,
+            boxed(TriggerGate::new(vec![
+                (boxed(SetWalkTargetFromBlockMemory { memory: PoiMemory::MeetingPoint, speed, close_enough: 2, too_far: 150, too_long: 200 }), 6),
+                (boxed(VillageBoundRandomStroll::new(speed, 10, 7)), 2),
+            ])),
+        ),
+        (5, boxed(minimal_look())),
+        (99, boxed(ResetRaidStatus)),
+    ]
+}
+
+fn raid() -> Package {
+    vec![
+        (
+            0,
+            boxed(Sequence {
+                when: RaidCheck::Victory,
+                then: Box::new(TriggerGate::new(vec![(boxed(MoveToSkySeeingSpot { speed: 0.5 }), 5), (boxed(VillageBoundRandomStroll::new(0.5_f32 * 1.1, 10, 7)), 2)])),
+            }),
+        ),
+        (0, boxed(CelebrateVillagersSurvivedRaid::default())),
+        (2, boxed(Sequence { when: RaidCheck::Active, then: Box::new(LocateHidingPlace { radius: 24, speed: 0.5_f32 * 1.4, close_enough: 1 }) })),
+        (5, boxed(minimal_look())),
+        (99, boxed(ResetRaidStatus)),
+    ]
+}
+
+fn hide() -> Package {
+    vec![
+        (0, boxed(SetHiddenState { stay_hidden: 15 * 20, close_enough: 3, ticks_hidden: 0 })),
+        (1, boxed(LocateHidingPlace { radius: 32, speed: 0.5_f32 * 1.25, close_enough: 2 })),
+        (5, boxed(minimal_look())),
+    ]
 }
 
 /// `getMeetPackage`: at the meeting point, strolling about it or
@@ -46,7 +89,7 @@ fn meet() -> Package {
         (10, boxed(ShowTradesToPlayer::default())),
         (10, boxed(SetLookAndInteractWithPlayer)),
         (2, boxed(SetWalkTargetFromBlockMemory { memory: PoiMemory::MeetingPoint, speed: 0.5, close_enough: 6, too_far: 100, too_long: 200 })),
-        (3, boxed(Never::new())), // GiveGiftToHero: no hero.
+        (3, boxed(GiveGiftToHero::default())),
         (3, boxed(ValidateNearbyPoi { kinds: PoiKinds::Meeting, memory: PoiMemory::MeetingPoint })),
         (3, boxed(Gate::ordered(Erase::InteractionTarget, vec![(boxed(TradeWithVillager::default()), 1)]))),
         (5, boxed(full_look())),
@@ -106,7 +149,7 @@ fn work(profession: Profession) -> Package {
         (10, boxed(ShowTradesToPlayer::default())),
         (10, boxed(SetLookAndInteractWithPlayer)),
         (2, boxed(SetWalkTargetFromBlockMemory { memory: PoiMemory::JobSite, speed: 0.5, close_enough: 9, too_far: 100, too_long: 1200 })),
-        (3, boxed(Never::new())), // GiveGiftToHero: no hero.
+        (3, boxed(GiveGiftToHero::default())),
         (99, boxed(UpdateActivityFromSchedule)),
     ]
 }
@@ -119,7 +162,7 @@ fn core(profession: Profession) -> Package {
         (0, boxed(LookAtTargetSink::new(45, 90))),
         (0, boxed(PanicTrigger::default())),
         (0, boxed(WakeUp)),
-        (0, boxed(Never::new())), // ReactToBell: no bell heard.
+        (0, boxed(ReactToBell)),
         (0, boxed(SetRaidStatus::default())),
         (0, boxed(ValidateNearbyPoi { kinds: PoiKinds::Held(profession), memory: PoiMemory::JobSite })),
         (0, boxed(ValidateNearbyPoi { kinds: PoiKinds::Acquirable(profession), memory: PoiMemory::PotentialJobSite })),
@@ -155,7 +198,7 @@ fn idle() -> Package {
                 ],
             )),
         ),
-        (3, boxed(Never::new())), // GiveGiftToHero: no hero.
+        (3, boxed(GiveGiftToHero::default())),
         (3, boxed(SetLookAndInteractWithPlayer)),
         (3, boxed(ShowTradesToPlayer::default())),
         (3, boxed(Gate::ordered(Erase::InteractionTarget, vec![(boxed(TradeWithVillager::default()), 1)]))),
@@ -236,34 +279,6 @@ fn minimal_look() -> Gate {
 fn duration(ctx: &mut Ctx, min: i32, max: i32) -> i64 {
     // Java's int arithmetic: `Integer.MAX_VALUE + 1 - Integer.MAX_VALUE` is 1.
     i64::from(min) + i64::from(ctx.level_random.next_int(max.wrapping_add(1).wrapping_sub(min) as u32))
-}
-
-/// A behavior whose conditions cannot hold here (it needs a point of
-/// interest, a player, an item or a bed this villager does not have).
-#[derive(Clone)]
-struct Never;
-
-impl Never {
-    fn new() -> Self {
-        Self
-    }
-}
-
-impl Behavior for Never {
-    fn status(&self) -> Status {
-        Status::Stopped
-    }
-    fn try_start(&mut self, _: &mut Ctx, _: i64) -> bool {
-        false
-    }
-    fn tick_or_stop(&mut self, _: &mut Ctx, _: i64) {}
-    fn do_stop(&mut self, _: &mut Ctx, _: i64) {}
-    fn describe(&self) -> String {
-        "Never".into()
-    }
-    fn clone_box(&self) -> Box<dyn Behavior> {
-        Box::new(self.clone())
-    }
 }
 
 /// A one-shot behavior (`OneShot`): it runs when its trigger fires and
@@ -515,10 +530,395 @@ struct SetRaidStatus;
 
 impl SetRaidStatus {
     fn trigger(&mut self, ctx: &mut Ctx, _: i64) -> bool {
-        ctx.level_random.next_int(20) == 0
+        if ctx.level_random.next_int(20) != 0 {
+            return false;
+        }
+        if let Some(raid) = raid_here(ctx) {
+            let activity = if raid.groups_spawned > 0 && !raid.between_waves { Activity::Raid } else { Activity::PreRaid };
+            ctx.activities.default = activity;
+            ctx.activities.set_active_if_possible(activity, ctx.mem);
+        }
+        true
     }
 }
 one_shot!(SetRaidStatus);
+
+fn raid_here(ctx: &Ctx) -> Option<crate::raid::RaidView> {
+    crate::raid::nearby_raid(ctx.raids, block_of(ctx.me.body.position)).copied()
+}
+
+#[derive(Clone)]
+struct ResetRaidStatus;
+
+impl ResetRaidStatus {
+    fn trigger(&mut self, ctx: &mut Ctx, _: i64) -> bool {
+        if ctx.level_random.next_int(20) != 0 {
+            return false;
+        }
+        if raid_here(ctx).is_none_or(|raid| raid.stopped || raid.loss) {
+            ctx.activities.default = Activity::Idle;
+            ctx.activities.update_from_schedule(ctx.time, ctx.day_time, ctx.mem);
+        }
+        true
+    }
+}
+one_shot!(ResetRaidStatus);
+
+#[derive(Clone)]
+struct ReactToBell;
+
+impl ReactToBell {
+    fn trigger(&mut self, ctx: &mut Ctx, _: i64) -> bool {
+        if !ctx.mem.heard_bell_time.present() {
+            return false;
+        }
+        if raid_here(ctx).is_none() {
+            ctx.activities.set_active_if_possible(Activity::Hide, ctx.mem);
+        }
+        true
+    }
+}
+one_shot!(ReactToBell);
+
+#[derive(Clone)]
+struct RingBell;
+
+impl RingBell {
+    fn trigger(&mut self, ctx: &mut Ctx, _: i64) -> bool {
+        let Some(bell) = ctx.mem.meeting_point.get().copied() else { return false };
+        if ctx.level_random.next_float() <= 0.95 {
+            return false;
+        }
+        let here = block_of(ctx.me.body.position);
+        let near = dist_sqr(bell, here) < 9.0;
+        if near && ctx.block_at(bell).is_some_and(|b| b.id == "minecraft:bell") {
+            ctx.remote.push(Remote::RingBell { pos: bell });
+        }
+        true
+    }
+}
+one_shot!(RingBell);
+
+#[derive(Clone, Copy)]
+enum RaidCheck {
+    Victory,
+    Active,
+}
+
+#[derive(Clone)]
+struct Sequence {
+    when: RaidCheck,
+    then: Box<dyn Behavior>,
+}
+
+impl Sequence {
+    fn trigger(&mut self, ctx: &mut Ctx, time: i64) -> bool {
+        let raid = raid_here(ctx);
+        let passes = match self.when {
+            RaidCheck::Victory => raid.is_some_and(|raid| raid.victory),
+            RaidCheck::Active => raid.is_some_and(|raid| raid.active && !raid.over),
+        };
+        passes && self.then.try_start(ctx, time)
+    }
+}
+
+impl Behavior for Sequence {
+    fn status(&self) -> Status {
+        Status::Stopped
+    }
+    fn try_start(&mut self, ctx: &mut Ctx, time: i64) -> bool {
+        self.trigger(ctx, time)
+    }
+    fn tick_or_stop(&mut self, _: &mut Ctx, _: i64) {}
+    fn do_stop(&mut self, _: &mut Ctx, _: i64) {}
+    fn describe(&self) -> String {
+        format!("Sequence:{}", self.then.describe())
+    }
+    fn shuffles(&mut self) -> Vec<&mut LegacyRandom> {
+        self.then.shuffles()
+    }
+    fn clone_box(&self) -> Box<dyn Behavior> {
+        Box::new(self.clone())
+    }
+}
+
+#[derive(Clone)]
+struct LocateHidingPlace {
+    radius: i32,
+    speed: f32,
+    close_enough: i32,
+}
+
+impl LocateHidingPlace {
+    fn trigger(&mut self, ctx: &mut Ctx, _: i64) -> bool {
+        if ctx.mem.walk_target.present() {
+            return false;
+        }
+        let position = ctx.me.body.position;
+        let here = block_of(position);
+        let close = f64::from(self.close_enough);
+        let home = |t: PoiType| t == PoiType::Home;
+        let near = ctx.pois.find_first(&home, &|_| true, here, self.close_enough + 1, Occupancy::Any).filter(|&pos| closer_to_center(pos, position, close));
+        let found = near
+            .or_else(|| {
+                let mut homes: Vec<Pos> = ctx.pois.in_range(&home, here, self.radius, Occupancy::Any).into_iter().map(|r| r.pos).collect();
+                crate::raid::shuffle(&mut homes, ctx.me.random);
+                homes.first().copied()
+            })
+            .or_else(|| ctx.mem.home.get().copied());
+        if let Some(pos) = found {
+            ctx.mem.path.erase();
+            ctx.mem.look_target.erase();
+            ctx.mem.breed_target.erase();
+            ctx.mem.interaction_target.erase();
+            ctx.mem.hiding_place.set(pos);
+            if !closer_to_center(pos, position, close) {
+                ctx.mem.walk_target.set(WalkTarget { target: Tracker::Block(pos), speed: self.speed, close_enough: self.close_enough });
+            }
+        }
+        true
+    }
+}
+one_shot!(LocateHidingPlace);
+
+#[derive(Clone)]
+struct SetHiddenState {
+    stay_hidden: i32,
+    close_enough: i32,
+    ticks_hidden: i32,
+}
+
+impl SetHiddenState {
+    fn trigger(&mut self, ctx: &mut Ctx, time: i64) -> bool {
+        let (Some(&heard), Some(&place)) = (ctx.mem.heard_bell_time.get(), ctx.mem.hiding_place.get()) else { return false };
+        let timed_out = heard + 300 <= time;
+        if self.ticks_hidden <= self.stay_hidden && !timed_out {
+            let here = block_of(ctx.me.body.position);
+            let reach = f64::from(self.close_enough);
+            if dist_sqr(place, here) < reach * reach {
+                self.ticks_hidden += 1;
+            }
+        } else {
+            ctx.mem.heard_bell_time.erase();
+            ctx.mem.hiding_place.erase();
+            ctx.activities.update_from_schedule(ctx.time, ctx.day_time, ctx.mem);
+            self.ticks_hidden = 0;
+        }
+        true
+    }
+}
+one_shot!(SetHiddenState);
+
+fn has_no_blocks_above(ctx: &Ctx, pos: Pos) -> bool {
+    ctx.world.can_see_sky(pos) && f64::from(ctx.world.motion_blocking_height(pos.0, pos.2)) <= ctx.me.body.position.y
+}
+
+#[derive(Clone)]
+struct MoveToSkySeeingSpot {
+    speed: f32,
+}
+
+impl MoveToSkySeeingSpot {
+    fn trigger(&mut self, ctx: &mut Ctx, _: i64) -> bool {
+        if ctx.mem.walk_target.present() {
+            return false;
+        }
+        let here = block_of(ctx.me.body.position);
+        if ctx.world.can_see_sky(here) {
+            return false;
+        }
+        let mut found = None;
+        for _ in 0..10 {
+            let random = &mut *ctx.me.random;
+            let dx = random.next_int(20) as i32 - 10;
+            let dy = random.next_int(6) as i32 - 3;
+            let dz = random.next_int(20) as i32 - 10;
+            let pos = (here.0 + dx, here.1 + dy, here.2 + dz);
+            if has_no_blocks_above(ctx, pos) {
+                found = Some(pos);
+                break;
+            }
+        }
+        if let Some(pos) = found {
+            let at = DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1), f64::from(pos.2) + 0.5);
+            ctx.mem.walk_target.set(WalkTarget::at(at, self.speed, 0));
+        }
+        true
+    }
+}
+one_shot!(MoveToSkySeeingSpot);
+
+pub const FIREWORK_COLORS: [i32; 16] = [15790320, 15435844, 12801229, 6719955, 14602026, 4312372, 14188952, 4408131, 11250603, 2651799, 8073150, 2437522, 5320730, 3887386, 11743532, 1973019];
+
+#[derive(Clone, Default)]
+struct CelebrateVillagersSurvivedRaid {
+    running: bool,
+    end: i64,
+    raid: Option<i32>,
+}
+
+impl CelebrateVillagersSurvivedRaid {
+    fn raid_lasts(&self, ctx: &Ctx) -> bool {
+        self.raid.is_some_and(|id| ctx.raids.iter().any(|raid| raid.id == id && !raid.stopped))
+    }
+}
+
+impl Behavior for CelebrateVillagersSurvivedRaid {
+    fn status(&self) -> Status {
+        if self.running { Status::Running } else { Status::Stopped }
+    }
+    fn try_start(&mut self, ctx: &mut Ctx, time: i64) -> bool {
+        let here = block_of(ctx.me.body.position);
+        let raid = raid_here(ctx);
+        self.raid = raid.map(|raid| raid.id);
+        if !(raid.is_some_and(|raid| raid.victory) && has_no_blocks_above(ctx, here)) {
+            return false;
+        }
+        self.running = true;
+        self.end = time + duration(ctx, 600, 600);
+        true
+    }
+    fn tick_or_stop(&mut self, ctx: &mut Ctx, time: i64) {
+        if time > self.end || !self.raid_lasts(ctx) {
+            self.do_stop(ctx, time);
+            return;
+        }
+        if ctx.me.random.next_int(100) == 0 {
+            let random = &mut *ctx.me.random;
+            let pitch = if ctx.me.baby { (random.next_float() - random.next_float()) * 0.2 + 1.5 } else { (random.next_float() - random.next_float()) * 0.2 + 1.0 };
+            ctx.me.sounds.push(("entity.villager.celebrate", pitch));
+        }
+        if ctx.me.random.next_int(200) == 0 && has_no_blocks_above(ctx, block_of(ctx.me.body.position)) {
+            let color = FIREWORK_COLORS[ctx.me.random.next_int(16) as usize];
+            let flight = ctx.me.random.next_int(3) as i32;
+            let me = ctx.me.body.position;
+            let position = DVec3::new(me.x, me.y + f64::from(ctx.me.eye_height), me.z);
+            ctx.remote.push(Remote::Firework { villager: ctx.me.id, position, color, flight });
+        }
+    }
+    fn do_stop(&mut self, ctx: &mut Ctx, _: i64) {
+        self.running = false;
+        self.raid = None;
+        ctx.activities.update_from_schedule(ctx.time, ctx.day_time, ctx.mem);
+    }
+    fn describe(&self) -> String {
+        "CelebrateVillagersSurvivedRaid".into()
+    }
+    fn clone_box(&self) -> Box<dyn Behavior> {
+        Box::new(self.clone())
+    }
+}
+
+#[derive(Clone)]
+struct GiveGiftToHero {
+    running: bool,
+    end: i64,
+    time_until_next_gift: i32,
+    gift_given: bool,
+    time_since_start: i64,
+}
+
+impl Default for GiveGiftToHero {
+    fn default() -> Self {
+        Self { running: false, end: 0, time_until_next_gift: 600, gift_given: false, time_since_start: 0 }
+    }
+}
+
+pub fn hero_gift_table(baby: bool, profession: Profession) -> &'static str {
+    if baby {
+        return "minecraft:gameplay/hero_of_the_village/baby_gift";
+    }
+    match profession {
+        Profession::Armorer => "minecraft:gameplay/hero_of_the_village/armorer_gift",
+        Profession::Butcher => "minecraft:gameplay/hero_of_the_village/butcher_gift",
+        Profession::Cartographer => "minecraft:gameplay/hero_of_the_village/cartographer_gift",
+        Profession::Cleric => "minecraft:gameplay/hero_of_the_village/cleric_gift",
+        Profession::Farmer => "minecraft:gameplay/hero_of_the_village/farmer_gift",
+        Profession::Fisherman => "minecraft:gameplay/hero_of_the_village/fisherman_gift",
+        Profession::Fletcher => "minecraft:gameplay/hero_of_the_village/fletcher_gift",
+        Profession::Leatherworker => "minecraft:gameplay/hero_of_the_village/leatherworker_gift",
+        Profession::Librarian => "minecraft:gameplay/hero_of_the_village/librarian_gift",
+        Profession::Mason => "minecraft:gameplay/hero_of_the_village/mason_gift",
+        Profession::Shepherd => "minecraft:gameplay/hero_of_the_village/shepherd_gift",
+        Profession::Toolsmith => "minecraft:gameplay/hero_of_the_village/toolsmith_gift",
+        Profession::Weaponsmith => "minecraft:gameplay/hero_of_the_village/weaponsmith_gift",
+        Profession::None | Profession::Nitwit => "minecraft:gameplay/hero_of_the_village/unemployed_gift",
+    }
+}
+
+impl GiveGiftToHero {
+    fn hero(ctx: &Ctx) -> Option<u64> {
+        let id = *ctx.mem.nearest_visible_player.get()?;
+        ctx.seen(id).is_some_and(|s| s.hero).then_some(id)
+    }
+
+    fn throw_gift(ctx: &mut Ctx, hero: u64) {
+        let Some(to) = ctx.seen(hero).map(|s| s.position) else { return };
+        let me = ctx.me.body.position;
+        let position = DVec3::new(me.x, me.y + f64::from(ctx.me.eye_height) - f64::from(0.3_f32), me.z);
+        let way = to - me;
+        let length = way.length();
+        let unit = if length < f64::from(1.0e-5_f32) { DVec3::ZERO } else { DVec3::new(way.x / length, way.y / length, way.z / length) };
+        let velocity = unit * f64::from(0.3_f32);
+        let table = hero_gift_table(ctx.me.baby, *ctx.me.profession);
+        ctx.remote.push(Remote::HeroGift { table, position, velocity });
+    }
+}
+
+impl Behavior for GiveGiftToHero {
+    fn status(&self) -> Status {
+        if self.running { Status::Running } else { Status::Stopped }
+    }
+    fn try_start(&mut self, ctx: &mut Ctx, time: i64) -> bool {
+        if !ctx.mem.nearest_visible_player.present() {
+            return false;
+        }
+        let Some(hero) = Self::hero(ctx) else { return false };
+        if self.time_until_next_gift > 0 {
+            self.time_until_next_gift -= 1;
+            return false;
+        }
+        self.running = true;
+        self.end = time + duration(ctx, 100, 100);
+        self.gift_given = false;
+        self.time_since_start = time;
+        ctx.mem.interaction_target.set(hero);
+        ctx.mem.look_target.set(Tracker::Entity { id: hero, eyes: true });
+        true
+    }
+    fn tick_or_stop(&mut self, ctx: &mut Ctx, time: i64) {
+        let hero = Self::hero(ctx);
+        let Some(hero) = hero.filter(|_| time <= self.end && !self.gift_given) else {
+            self.do_stop(ctx, time);
+            return;
+        };
+        ctx.mem.look_target.set(Tracker::Entity { id: hero, eyes: true });
+        let mine = block_of(ctx.me.body.position);
+        let theirs = ctx.seen(hero).map(|s| block_of(s.position));
+        if theirs.is_some_and(|theirs| dist_sqr(mine, theirs) < 25.0) {
+            if time - self.time_since_start > 20 {
+                Self::throw_gift(ctx, hero);
+                self.gift_given = true;
+            }
+        } else {
+            ctx.mem.look_target.set(Tracker::Entity { id: hero, eyes: true });
+            ctx.mem.walk_target.set(WalkTarget { target: Tracker::Entity { id: hero, eyes: false }, speed: 0.5, close_enough: 5 });
+        }
+    }
+    fn do_stop(&mut self, ctx: &mut Ctx, _: i64) {
+        self.running = false;
+        self.time_until_next_gift = 600 + ctx.level_random.next_int(6001) as i32;
+        ctx.mem.interaction_target.erase();
+        ctx.mem.walk_target.erase();
+        ctx.mem.look_target.erase();
+    }
+    fn describe(&self) -> String {
+        "GiveGiftToHero".into()
+    }
+    fn clone_box(&self) -> Box<dyn Behavior> {
+        Box::new(self.clone())
+    }
+}
 
 /// A memory of a point of interest (a `GlobalPos`; this dimension's).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

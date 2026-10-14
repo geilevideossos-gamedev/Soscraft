@@ -68,6 +68,7 @@ pub enum ToServer {
         filtering: bool,
     },
     RecipeSeen(Vec<String>),
+    OpenMountInventory,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -449,6 +450,7 @@ pub struct PlayerView {
     pub selected: u8,
     pub cooldowns: Vec<CooldownView>,
     pub using: Option<UsingView>,
+    pub jump_bar: Option<f32>,
 }
 
 impl Default for PlayerView {
@@ -473,6 +475,7 @@ impl Default for PlayerView {
             selected: 0,
             cooldowns: Vec::new(),
             using: None,
+            jump_bar: None,
         }
     }
 }
@@ -499,9 +502,11 @@ pub enum MenuKind {
     Dispenser,
     Dropper,
     Beacon,
+    Merchant,
+    Mount,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum MenuExtras {
     #[default]
     None,
@@ -513,6 +518,37 @@ pub enum MenuExtras {
         cost: i32,
         name: Option<String>,
     },
+    Merchant {
+        villager: u64,
+        profession: String,
+        level: i32,
+        xp: i32,
+        future_xp: i32,
+        show_progress: bool,
+        selected: Option<u16>,
+        offers: Vec<NetOffer>,
+    },
+    Mount {
+        mount: u64,
+        columns: u8,
+        saddle: bool,
+        armor: bool,
+        llama: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NetOffer {
+    pub cost_a: Nbt,
+    pub cost_b: Option<Nbt>,
+    pub result: Nbt,
+    pub uses: i32,
+    pub max_uses: i32,
+    pub xp: i32,
+    pub special_price: i32,
+    pub demand: i32,
+    pub price_multiplier: f32,
+    pub reward_exp: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -563,6 +599,32 @@ pub enum BossBarOverlay {
     Notched10,
     Notched12,
     Notched20,
+}
+
+impl BossBarColor {
+    pub fn sprite_name(self) -> &'static str {
+        match self {
+            BossBarColor::Pink => "pink",
+            BossBarColor::Blue => "blue",
+            BossBarColor::Red => "red",
+            BossBarColor::Green => "green",
+            BossBarColor::Yellow => "yellow",
+            BossBarColor::Purple => "purple",
+            BossBarColor::White => "white",
+        }
+    }
+}
+
+impl BossBarOverlay {
+    pub fn sprite_name(self) -> &'static str {
+        match self {
+            BossBarOverlay::Progress => "progress",
+            BossBarOverlay::Notched6 => "notched_6",
+            BossBarOverlay::Notched10 => "notched_10",
+            BossBarOverlay::Notched12 => "notched_12",
+            BossBarOverlay::Notched20 => "notched_20",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

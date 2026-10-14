@@ -231,11 +231,30 @@ impl Level<'_> {
         sky.environment.value_named("gameplay/monsters_burn", &sample) == minecraftoss_core::environment::Value::Bool(true)
     }
 
+    pub fn cat_gift_chance(&self) -> f32 {
+        self.environment_value("gameplay/cat_waking_up_gift_chance", 0)
+    }
+
     pub fn piglins_zombify(&self) -> bool {
         let Some(sky) = &self.sky else { return false };
         let clocks = |clock: &str| sky.clocks.get(clock).copied().unwrap_or(0);
         let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder_level, biome_weights: None, biome: 0 };
         sky.environment.value_named("gameplay/piglins_zombify", &sample) == minecraftoss_core::environment::Value::Bool(true)
+    }
+
+    pub fn snow_golem_melts_at(&self, x: i32, y: i32, z: i32) -> bool {
+        let biome = minecraftoss_generator::feature::World::biome(self, x, y, z).map_or(0, |b| b.0);
+        self.environment_flag("gameplay/snow_golem_melts", biome)
+    }
+
+    pub fn can_pillager_patrol_spawn_at(&self, x: i32, y: i32, z: i32) -> bool {
+        let biome = minecraftoss_generator::feature::World::biome(self, x, y, z).map_or(0, |b| b.0);
+        self.environment_flag("gameplay/can_pillager_patrol_spawn", biome)
+    }
+
+    pub fn can_start_raid_at(&self, x: i32, y: i32, z: i32) -> bool {
+        let biome = minecraftoss_generator::feature::World::biome(self, x, y, z).map_or(0, |b| b.0);
+        self.environment_flag("gameplay/can_start_raid", biome)
     }
 
     /// A float attribute's value in a biome.

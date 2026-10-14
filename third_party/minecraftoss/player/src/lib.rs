@@ -95,6 +95,10 @@ pub struct WorldItem {
 pub trait World {
     fn block(&self, pos: Pos) -> Option<Block>;
     fn set_block(&mut self, pos: Pos, block: Option<Block>);
+    fn destroy_block(&mut self, pos: Pos) -> bool {
+        self.set_block(pos, None);
+        true
+    }
     /// The item entities whose boxes meet the box from `min` to `max`
     /// (`getEntitiesOfClass(ItemEntity.class, box)`), in the level's order.
     /// Worlds without item entities have none.
@@ -185,6 +189,12 @@ pub trait World {
     fn rain_at(&self, _pos: Pos) -> bool {
         false
     }
+    fn snow_golem_melts(&self, _pos: Pos) -> bool {
+        false
+    }
+    fn block_survives(&self, _pos: Pos, _block: &Block) -> bool {
+        true
+    }
     /// The lowest block Y (`LevelHeightAccessor.getMinY`).
     fn min_y(&self) -> i32 {
         -64
@@ -192,6 +202,31 @@ pub trait World {
     /// The highest block Y (`LevelHeightAccessor.getMaxY`).
     fn max_y(&self) -> i32 {
         319
+    }
+    fn motion_blocking_no_leaves_height(&self, x: i32, z: i32) -> i32 {
+        let mut y = self.max_y();
+        while y >= self.min_y() {
+            let pos = (x, y, z);
+            if let Some(block) = self.block(pos) {
+                let blocks = !self.collision_boxes(pos).is_empty() || self.floatable_fluid(pos) || self.fluid_is_lava(pos);
+                if blocks && !block.id.ends_with("_leaves") {
+                    return y + 1;
+                }
+            }
+            y -= 1;
+        }
+        self.min_y()
+    }
+    fn motion_blocking_height(&self, x: i32, z: i32) -> i32 {
+        let mut y = self.max_y();
+        while y >= self.min_y() {
+            let pos = (x, y, z);
+            if self.block(pos).is_some() && (!self.collision_boxes(pos).is_empty() || self.floatable_fluid(pos) || self.fluid_is_lava(pos)) {
+                return y + 1;
+            }
+            y -= 1;
+        }
+        self.min_y()
     }
     fn replaceable(&self, block: &Block) -> bool {
         authored_replaceable(block)

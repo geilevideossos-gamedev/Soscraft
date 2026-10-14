@@ -6,6 +6,7 @@ use minecraft_net::messages::{
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::ItemStack;
+use minecraftoss_player::survival::SurvivalStatus;
 
 use crate::guns::{HOTBAR, WEAPON_PREFIX, weapon_item, weapon_of};
 use crate::offhand::OFFHAND;
@@ -63,18 +64,7 @@ pub fn player_view(player: &Player) -> PlayerView {
             fly_speed: abilities.flying_speed,
             walk_speed: abilities.walking_speed,
         },
-        effects: EFFECTS
-            .iter()
-            .filter_map(|&(kind, id)| {
-                let effect = status.effect(kind)?;
-                Some(EffectView {
-                    kind: id.to_owned(),
-                    amplifier: effect.amplifier,
-                    duration: count(effect.duration),
-                    ambient: false,
-                })
-            })
-            .collect(),
+        effects: effect_views(status),
         slots: (0..PLAYER_SLOTS)
             .map(|slot| {
                 player
@@ -98,7 +88,23 @@ pub fn player_view(player: &Player) -> PlayerView {
             })
             .collect(),
         using: using(player),
+        jump_bar: player.jump_bar,
     }
+}
+
+pub fn effect_views(status: &SurvivalStatus) -> Vec<EffectView> {
+    EFFECTS
+        .iter()
+        .filter_map(|&(kind, id)| {
+            let effect = status.effect(kind)?;
+            Some(EffectView {
+                kind: id.to_owned(),
+                amplifier: effect.amplifier,
+                duration: count(effect.duration),
+                ambient: false,
+            })
+        })
+        .collect()
 }
 
 fn using(player: &Player) -> Option<UsingView> {
@@ -178,6 +184,8 @@ pub struct HudClock {
     blink_until: u64,
     changed_at: u64,
     display_health: i32,
+    effects_seen: Vec<EffectView>,
+    effects_at: u64,
 }
 
 impl HudClock {
@@ -229,6 +237,28 @@ impl HudClock {
             frozen: percent_frozen(view.frozen),
             fully_frozen: view.frozen >= TICKS_TO_FREEZE,
         }
+    }
+
+    pub fn effects(&mut self, view: &PlayerView) -> Vec<EffectView> {
+        if self.effects_seen != view.effects {
+            self.effects_seen = view.effects.clone();
+            self.effects_at = self.tick;
+        }
+        let passed = i32::try_from(self.tick - self.effects_at).unwrap_or(i32::MAX);
+        view.effects
+            .iter()
+            .filter_map(|effect| {
+                let duration = if effect.duration == i32::MAX {
+                    i32::MAX
+                } else {
+                    effect.duration.saturating_sub(passed)
+                };
+                (duration > 0).then(|| EffectView {
+                    duration,
+                    ..effect.clone()
+                })
+            })
+            .collect()
     }
 
     fn update(&mut self, health: i32) {
@@ -436,6 +466,36 @@ mod tests {
         );
         view.food = 19;
         assert_ne!(sent_key(&view), key);
+    }
+
+    #[test]
+    fn a_friend_s_effects_count_down_between_views_and_restart_from_a_new_one() {
+        let mut clock = HudClock::default();
+        let mut view = PlayerView::default();
+        let effect = |kind: &str, duration: i32| EffectView {
+            kind: kind.to_owned(),
+            amplifier: 1,
+            duration,
+            ambient: false,
+        };
+        view.effects = vec![effect(REGENERATION, 230), effect(HUNGER, i32::MAX)];
+        clock.vitals(&view, 0.0, false, false);
+        assert_eq!(clock.effects(&view), view.effects);
+        clock.vitals(&view, 1.5, false, false);
+        let shown = clock.effects(&view);
+        assert_eq!(
+            shown.iter().map(|e| e.duration).collect::<Vec<_>>(),
+            [200, i32::MAX],
+            "thirty ticks later, and the unending one stays"
+        );
+        view.effects[0].duration = 120;
+        assert_eq!(clock.effects(&view)[0].duration, 120, "a new view is taken as it is");
+        clock.vitals(&view, 6.0, false, false);
+        assert_eq!(
+            clock.effects(&view),
+            vec![effect(HUNGER, i32::MAX)],
+            "a run-out effect is gone before the host says so"
+        );
     }
 
     #[test]

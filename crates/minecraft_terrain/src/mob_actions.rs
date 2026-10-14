@@ -10,7 +10,7 @@ use minecraftoss_entities::cow::{CowEvent, InteractionResult};
 use minecraftoss_entities::loot::{EntityLootBook, ShearingLootBook};
 use minecraftoss_entities::mooshroom::flower_effects;
 use minecraftoss_entities::sheep::ShearsResult;
-use minecraftoss_entities::world::{EntityWorld, MobHit, PlayerAttack};
+use minecraftoss_entities::world::{EntityWorld, LeashUse, MobHit, PlayerAttack};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 /// A sound a mob action plays, with its sound category option.
@@ -37,6 +37,7 @@ pub struct MobOutcome {
     pub inventory_changed: bool,
     pub broken: Vec<String>,
     pub mount: Option<u64>,
+    pub mount_inventory: Option<u64>,
 }
 
 impl MobOutcome {
@@ -135,7 +136,42 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
     let recipes = actor.inventory.recipes.clone();
     let held = actor.inventory.slots.get(selected).and_then(Option::as_ref).map(|stack| stack.id.clone());
     let mut outcome = MobOutcome::default();
+    let sneaking = world.player_controls(actor.player).is_some_and(|controls| controls.sneaking);
+    let leashed = world.leash_interact(hit.id(), actor.player, held.as_deref(), sneaking, infinite);
+    if leashed != LeashUse::Pass {
+        outcome.handled = true;
+        match leashed {
+            LeashUse::Tied if !infinite => {
+                minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+                outcome.inventory_changed = true;
+            }
+            LeashUse::Snipped if !infinite => {
+                if actor.inventory.wear_tool(selected, 1) {
+                    outcome.broken.push("minecraft:shears".to_owned());
+                }
+                outcome.inventory_changed = true;
+            }
+            _ => {}
+        }
+        outcome.drops.extend(world.take_lead_drops().into_iter().map(|at| (ItemStack::new(minecraftoss_entities::world::LEAD, 1), at)));
+        return outcome;
+    }
     match hit {
+        MobHit::Cow(id) if world.cows().iter().any(|e| e.id == id && e.horse.is_some()) => {
+            if world.vehicle_of(minecraftoss_entities::world::Rider::Player(actor.player)).is_none() && world.horse_opens_inventory(id, actor.player) {
+                outcome.handled = true;
+                outcome.mount_inventory = Some(id);
+                return outcome;
+            }
+            if world.horse_rides_on_use(id, actor.player, held.as_deref()) {
+                outcome.handled = true;
+                outcome.mount = Some(id);
+                return outcome;
+            }
+            if world.horse_interact(id, actor.player, actor.inventory, selected, infinite) == InteractionResult::Pass {
+                return outcome;
+            }
+        }
         MobHit::Cow(id) => {
             let Some(entity) = world.cow_mut(id) else { return outcome };
             let position = entity.cow.body.position;
@@ -234,6 +270,17 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
         }
+        MobHit::SnowGolem(id) if held.as_deref() == Some("minecraft:shears") => {
+            use minecraftoss_entities::snow_golem::{SHEAR_LOOT, SHEAR_SOUND};
+            let Some((position, eye)) = world.shear_snow_golem(id) else { return outcome };
+            outcome.sound(SHEAR_SOUND, position, 1.0, "players_volume");
+            let at = position + DVec3::new(0.0, f64::from(eye), 0.0);
+            let drops = actor.shearing_loot.as_deref_mut().and_then(|loot| loot.roll_items(SHEAR_LOOT));
+            outcome.drops.extend(drops.into_iter().flatten().map(|stack| (stack, at)));
+            if !infinite && actor.inventory.wear_tool(selected, 1) {
+                outcome.broken.push("minecraft:shears".to_owned());
+            }
+        }
         MobHit::Mooshroom(id) if held.as_deref() == Some("minecraft:shears") => {
             let Some(position) = world.mooshroom_mut(id).map(|entity| entity.cow.body.position) else { return outcome };
             let Some(shearing) = world.shear_mooshroom(id) else { return outcome };
@@ -272,6 +319,13 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             outcome.handled = true;
             return outcome;
         }
+        MobHit::WanderingTrader(id) => {
+            if world.wandering_trader_interact(id, actor.player, held.as_deref()) == minecraftoss_entities::world::VillagerUse::Pass {
+                return outcome;
+            }
+            outcome.handled = true;
+            return outcome;
+        }
         MobHit::Wolf(id) => {
             // `Wolf.mobInteract`: taming with bones, feeding, collar dyes,
             // love, and its owner's orders to sit or stand.
@@ -279,9 +333,20 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 return outcome;
             }
         }
+        MobHit::Feline(id) => {
+            if world.feline_interact(id, actor.player, actor.inventory, selected, infinite) == InteractionResult::Pass {
+                return outcome;
+            }
+        }
         MobHit::Piglin(id) => {
             let Some(drops) = world.piglin_admire_held(id, actor.inventory, selected, infinite) else { return outcome };
             outcome.drops.extend(drops);
+        }
+        MobHit::Zombie(id) if held.as_deref() == Some("minecraft:golden_apple") => {
+            let Some(started) = world.start_curing(id, actor.player) else { return outcome };
+            if started && !infinite {
+                minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+            }
         }
         MobHit::IronGolem(id) if held.as_deref() == Some("minecraft:iron_ingot") => {
             let Some(entity) = world.iron_golem_mut(id) else { return outcome };
@@ -302,7 +367,6 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
 pub fn would_interact(world: &EntityWorld, hit: MobHit, inventory: &Inventory, selected: usize, infinite: bool, player: u64) -> bool {
     let held = inventory.slots.get(selected).and_then(Option::as_ref).map(|stack| stack.id.as_str());
     match hit {
-        MobHit::Villager(_) => false,
         MobHit::Sheep(id) if held == Some("minecraft:shears") => world.sheep().iter().any(|e| e.id == id),
         _ => {
             let mut world = world.clone();
@@ -375,6 +439,30 @@ mod tests {
         hurt.health = 50.0;
         let hurt_golem = world.spawn_iron_golem(hurt, true);
         let villager = world.spawn_villager(Villager::new(at), true);
+        let offer = minecraftoss_entities::trading::MerchantOffer {
+            buy: minecraftoss_entities::trading::ItemCost { id: "minecraft:wheat".to_owned(), count: 20, components: None },
+            buy_b: None,
+            sell: minecraftoss_entities::trading::TradeItem { id: "minecraft:emerald".to_owned(), count: 1, components: serde_json::Map::new() },
+            uses: 0,
+            max_uses: 16,
+            reward_exp: true,
+            special_price: 0,
+            demand: 0,
+            price_multiplier: 0.05,
+            xp: 2,
+        };
+        let trader = world.spawn_villager(Villager::new(at), true);
+        world.villager_mut(trader).unwrap().offers = Some(vec![offer.clone()]);
+        let mut young = Villager::new(at);
+        young.age = baby(young.age);
+        let young_villager = world.spawn_villager(young, true);
+        world.villager_mut(young_villager).unwrap().offers = Some(vec![offer.clone()]);
+        let sleeper = world.spawn_villager(Villager::new(at), true);
+        world.villager_mut(sleeper).unwrap().offers = Some(vec![offer.clone()]);
+        world.villager_mut(sleeper).unwrap().sleeping = Some((0, 64, 0));
+        let busy = world.spawn_villager(Villager::new(at), true);
+        world.villager_mut(busy).unwrap().offers = Some(vec![offer]);
+        world.villager_mut(busy).unwrap().trading_player = Some(9);
         let wolf = world.spawn_wolf(Wolf::new(at), true);
         let chicken = world.spawn_chicken(minecraftoss_entities::chicken::Chicken::new(at), true);
         let hoglin = world.spawn_hoglin(Hoglin::new(HoglinKind::Hoglin, at), true);
@@ -393,7 +481,53 @@ mod tests {
         world.piglin_mut(admiring).unwrap().brain.admire_for(50);
         let sulking = world.spawn_piglin(Piglin::new(PiglinKind::Piglin, at), true);
         world.piglin_mut(sulking).unwrap().brain.memories.admiring_disabled.set_for((), 400);
+        use minecraftoss_entities::feline::{Feline, FelineKind};
+        world.set_player_uuid(0, 77);
+        let stray = world.spawn_feline(Feline::new(FelineKind::Cat, at), true);
+        let mut pet = Feline::new(FelineKind::Cat, at);
+        pet.tame = true;
+        pet.owner = Some(77);
+        let pet = world.spawn_feline(pet, true);
+        let mut other = Feline::new(FelineKind::Cat, at);
+        other.tame = true;
+        other.owner = Some(78);
+        let other = world.spawn_feline(other, true);
+        let ocelot = world.spawn_feline(Feline::new(FelineKind::Ocelot, at), true);
+        use minecraftoss_entities::horse::{HorseKind, HorseState};
+        let equine = |world: &mut EntityWorld, kind: HorseKind, tame: bool| {
+            let mut horse = HorseState::new(kind);
+            horse.tame = tame;
+            let mut cow = Cow::new(at);
+            cow.max_health = 20.0;
+            cow.health = 20.0;
+            world.spawn_horse(cow, horse, true)
+        };
+        let wild_llama = equine(&mut world, HorseKind::Llama, false);
+        let llama = equine(&mut world, HorseKind::Llama, true);
+        let mule = equine(&mut world, HorseKind::Mule, true);
+        let horse = equine(&mut world, HorseKind::Horse, true);
         let cases: &[(MobHit, Option<&str>, bool)] = &[
+            (MobHit::Cow(wild_llama), Some("minecraft:hay_block"), true),
+            (MobHit::Cow(wild_llama), Some("minecraft:chest"), true),
+            (MobHit::Cow(wild_llama), None, true),
+            (MobHit::Cow(llama), Some("minecraft:chest"), true),
+            (MobHit::Cow(llama), Some("minecraft:white_carpet"), true),
+            (MobHit::Cow(llama), Some("minecraft:carrot"), true),
+            (MobHit::Cow(mule), Some("minecraft:chest"), true),
+            (MobHit::Cow(mule), Some("minecraft:white_carpet"), true),
+            (MobHit::Cow(mule), Some("minecraft:bucket"), true),
+            (MobHit::Cow(horse), Some("minecraft:golden_carrot"), true),
+            (MobHit::Cow(horse), Some("minecraft:chest"), true),
+            (MobHit::Cow(horse), Some("minecraft:saddle"), true),
+            (MobHit::Cow(wild_llama), Some("minecraft:saddle"), true),
+            (MobHit::Feline(stray), Some("minecraft:cod"), true),
+            (MobHit::Feline(stray), Some("minecraft:stick"), false),
+            (MobHit::Feline(pet), None, true),
+            (MobHit::Feline(pet), Some("minecraft:red_dye"), true),
+            (MobHit::Feline(pet), Some("minecraft:blue_dye"), true),
+            (MobHit::Feline(other), None, false),
+            (MobHit::Feline(ocelot), Some("minecraft:salmon"), true),
+            (MobHit::Feline(ocelot), None, false),
             (MobHit::Cow(cow), Some("minecraft:wheat"), true),
             (MobHit::Cow(cow), Some("minecraft:bucket"), true),
             (MobHit::Cow(cow), Some("minecraft:carrot"), false),
@@ -417,8 +551,13 @@ mod tests {
             (MobHit::Chicken(chicken), Some("minecraft:wheat"), false),
             (MobHit::Wolf(wolf), Some("minecraft:bone"), true),
             (MobHit::Wolf(wolf), Some("minecraft:stick"), false),
-            (MobHit::Villager(villager), Some("minecraft:emerald"), false),
-            (MobHit::Villager(villager), None, false),
+            (MobHit::Villager(trader), Some("minecraft:emerald"), true),
+            (MobHit::Villager(trader), None, true),
+            (MobHit::Villager(trader), Some("minecraft:villager_spawn_egg"), false),
+            (MobHit::Villager(villager), None, true),
+            (MobHit::Villager(young_villager), None, true),
+            (MobHit::Villager(sleeper), None, false),
+            (MobHit::Villager(busy), Some("minecraft:emerald"), false),
             (MobHit::Hoglin(hoglin), Some("minecraft:crimson_fungus"), true),
             (MobHit::Hoglin(hoglin), Some("minecraft:warped_fungus"), false),
             (MobHit::Hoglin(hoglet), Some("minecraft:crimson_fungus"), true),
@@ -440,15 +579,15 @@ mod tests {
                 let mut used = inventory.clone();
                 let mut actor = Actor { inventory: &mut used, selected: 0, infinite, entity_loot: None, shearing_loot: None, player: 0 };
                 let handled = interact(&mut copy, hit, &mut actor).handled;
-                if !matches!(hit, MobHit::Villager(_)) {
-                    assert_eq!(would, handled, "{hit:?} with {held:?}");
-                }
+                assert_eq!(would, handled, "{hit:?} with {held:?}");
                 assert_eq!(would, expected, "{hit:?} with {held:?}");
             }
         }
         assert!(would_interact(&world, MobHit::Sheep(sheep), &holding(Some("minecraft:shears")), 0, false, 0), "shears always take on a sheep");
         assert!(!would_interact(&world, MobHit::Sheep(sheep + 1000), &holding(Some("minecraft:shears")), 0, false, 0));
         assert!(world.pig_mut(pig).is_some_and(|e| !e.pig.saddled), "the predicate leaves the world alone");
+        assert!(world.villagers().iter().all(|e| e.id == busy || e.trading_player.is_none()), "nor starts a trade");
+        assert!(world.merchant_menu(0).is_none());
     }
 
     #[test]
@@ -536,6 +675,36 @@ mod tests {
         world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, ..Default::default() }]);
         assert!(world.force_riding(minecraftoss_entities::world::Rider::Player(7), saddled));
         let (outcome, _) = use_on(&mut world, MobHit::Strider(saddled), "minecraft:warped_fungus_on_a_stick");
+        assert!(outcome.mount.is_none(), "one rider at a time");
+    }
+
+    #[test]
+    fn right_click_mounts_a_horse_and_a_saddle_goes_on_a_tame_one() {
+        use minecraftoss_entities::horse::{HorseKind, HorseState};
+        let mut world = EntityWorld::default();
+        let mut horse = HorseState::new(HorseKind::Horse);
+        horse.max_health = 20.0;
+        let id = world.spawn_horse(Cow::new(DVec3::new(0.5, 64.0, 0.5)), horse, false);
+        let mut inventory = holding(None);
+        let mut actor = Actor { inventory: &mut inventory, selected: 0, infinite: false, entity_loot: None, shearing_loot: None, player: 0 };
+        let outcome = interact(&mut world, MobHit::Cow(id), &mut actor);
+        assert!(outcome.handled && outcome.mount == Some(id), "an empty hand mounts a wild horse to tame it");
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:saddle");
+        assert!(outcome.handled && outcome.mount.is_none(), "a wild horse rears at the saddle");
+        assert!(!world.cow_mut(id).unwrap().horse.as_ref().unwrap().saddled);
+        world.cow_mut(id).unwrap().horse.as_mut().unwrap().tame = true;
+        let (outcome, inventory) = use_on(&mut world, MobHit::Cow(id), "minecraft:saddle");
+        assert!(outcome.handled && outcome.mount.is_none());
+        assert!(world.cow_mut(id).unwrap().horse.as_ref().unwrap().saddled);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3));
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:stick");
+        assert_eq!(outcome.mount, Some(id), "a tame horse is ridden with any other item");
+        world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }]);
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:stick");
+        assert_eq!((outcome.mount, outcome.mount_inventory), (None, Some(id)), "crouching on a tame horse opens its inventory");
+        world.set_player_controls(&[minecraftoss_entities::controls::PlayerControls { id: 0, ..Default::default() }]);
+        assert!(world.force_riding(minecraftoss_entities::world::Rider::Player(7), id));
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(id), "minecraft:stick");
         assert!(outcome.mount.is_none(), "one rider at a time");
     }
 
@@ -669,5 +838,102 @@ mod tests {
         assert!(inventory.slots[0].is_none());
         assert!(world.pig_mut(pig).unwrap().pig.saddled);
         assert_eq!(outcome.sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["entity.pig.saddle"]);
+    }
+
+    #[test]
+    fn a_golden_apple_cures_only_a_weakened_zombie_villager_and_is_used_up_then() {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        use minecraftoss_entities::zombie::{Zombie, ZombieKind};
+        let mut world = EntityWorld::default();
+        let mut villager = Zombie::new(DVec3::new(0.5, 1.0, 2.0));
+        villager.kind = ZombieKind::ZombieVillager;
+        let villager = world.spawn_zombie(villager, true);
+        let plain = world.spawn_zombie(Zombie::new(DVec3::new(4.5, 1.0, 2.0)), true);
+        let apple = "minecraft:golden_apple";
+        let (outcome, inventory) = use_on(&mut world, MobHit::Zombie(plain), apple);
+        assert!(!outcome.handled && inventory.slots[0].as_ref().map(|s| s.count) == Some(4), "a plain zombie lets the player eat");
+        assert!(!would_interact(&world, MobHit::Zombie(plain), &holding(Some(apple)), 0, false, 0));
+        let (outcome, inventory) = use_on(&mut world, MobHit::Zombie(villager), apple);
+        assert!(outcome.handled && inventory.slots[0].as_ref().map(|s| s.count) == Some(4), "without weakness the click is taken and the apple kept");
+        assert!(!world.zombie_mut(villager).unwrap().zombie.curing());
+        assert!(world.add_mob_effect(villager, EffectInstance::new(MobEffect::Weakness, 1800, 0)));
+        assert!(would_interact(&world, MobHit::Zombie(villager), &holding(Some(apple)), 0, false, 0));
+        assert!(!world.zombie_mut(villager).unwrap().zombie.curing(), "asking changes nothing");
+        let (outcome, inventory) = use_on(&mut world, MobHit::Zombie(villager), apple);
+        assert!(outcome.handled && outcome.inventory_changed);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3), "one apple is used");
+        assert!(world.zombie_mut(villager).unwrap().zombie.curing());
+        let (_, inventory) = use_on(&mut world, MobHit::Zombie(villager), "minecraft:apple");
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4), "other food does nothing");
+    }
+
+    #[test]
+    fn shears_take_a_snow_golem_s_pumpkin_once_and_drop_it_at_its_eyes() {
+        use minecraftoss_entities::snow_golem::{SnowGolem, EYE_HEIGHT};
+        let mut world = EntityWorld::default();
+        let golem = world.spawn_snow_golem(SnowGolem::new(DVec3::new(2.5, 64.0, 0.5)), true);
+        let inventory = holding(Some("minecraft:shears"));
+        assert!(would_interact(&world, MobHit::SnowGolem(golem), &inventory, 0, false, 0));
+        assert!(!would_interact(&world, MobHit::SnowGolem(golem), &holding(Some("minecraft:stick")), 0, false, 0));
+        let mut loot = std::env::var_os("MINECRAFTOSS_ROOT").and_then(|root| ShearingLootBook::from_jar(&std::path::Path::new(&root).join("client.jar"), 0).ok());
+        let mut inventory = holding(Some("minecraft:shears"));
+        let mut actor = Actor { inventory: &mut inventory, selected: 0, infinite: false, entity_loot: None, shearing_loot: loot.as_mut(), player: 0 };
+        let outcome = interact(&mut world, MobHit::SnowGolem(golem), &mut actor);
+        assert!(outcome.handled);
+        assert!(outcome.sounds.iter().any(|s| s.event == "entity.snow_golem.shear" && s.category == "players_volume"));
+        assert!(!world.snow_golems()[0].golem.pumpkin);
+        if loot.is_some() {
+            assert_eq!(outcome.drops.len(), 1);
+            assert_eq!(outcome.drops[0].0.id, "minecraft:carved_pumpkin");
+            assert_eq!(outcome.drops[0].1, DVec3::new(2.5, 64.0 + f64::from(EYE_HEIGHT), 0.5));
+        }
+        let (again, _) = use_on(&mut world, MobHit::SnowGolem(golem), "minecraft:shears");
+        assert!(!again.handled, "a bare snow golem has nothing to shear");
+    }
+
+    #[test]
+    fn a_lead_ties_a_sheep_to_the_player_and_any_click_lets_it_go_with_its_lead() {
+        use minecraftoss_entities::world::LeashHolder;
+        let mut world = EntityWorld::default();
+        let sheep = world.spawn_sheep_no_ai(Sheep::default(), DVec3::new(2.5, 64.0, 0.5));
+        let zombie = world.spawn_zombie(minecraftoss_entities::zombie::Zombie::new(DVec3::new(1.5, 64.0, 0.5)), true);
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: DVec3::new(0.5, 64.0, 0.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        world.set_leash_players(&[player]);
+        let inventory = holding(Some("minecraft:lead"));
+        assert!(would_interact(&world, MobHit::Sheep(sheep), &inventory, 0, false, 0));
+        assert!(!would_interact(&world, MobHit::Zombie(zombie), &inventory, 0, false, 0), "monsters take no lead");
+        assert_eq!(world.leash_holder(sheep), None, "would_interact leaves the world alone");
+        let (outcome, inventory) = use_on(&mut world, MobHit::Sheep(sheep), "minecraft:lead");
+        assert!(outcome.handled && outcome.inventory_changed);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(3), "one lead used");
+        assert_eq!(world.leash_holder(sheep), Some(LeashHolder::Player(0)));
+        let (outcome, _) = use_on(&mut world, MobHit::Sheep(sheep), "minecraft:shears");
+        assert!(outcome.handled);
+        assert_eq!(world.leash_holder(sheep), None, "shears cut the lead before the wool");
+        assert_eq!(outcome.drops.iter().map(|(stack, _)| stack.id.as_str()).collect::<Vec<_>>(), ["minecraft:lead"]);
+        use_on(&mut world, MobHit::Sheep(sheep), "minecraft:lead");
+        let (outcome, inventory) = use_on(&mut world, MobHit::Sheep(sheep), "minecraft:wheat");
+        assert!(outcome.handled && outcome.drops.len() == 1);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4), "untying feeds nothing");
+        assert_eq!(world.leash_holder(sheep), None);
     }
 }

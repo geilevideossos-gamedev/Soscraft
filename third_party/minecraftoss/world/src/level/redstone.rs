@@ -68,6 +68,7 @@ pub enum Kind {
     /// `LightningRodBlock`.
     LightningRod,
     Lectern,
+    Bell,
 }
 
 /// Block ids by redstone behaviour.
@@ -114,6 +115,7 @@ impl Kinds {
             ("BasePressurePlateBlock", Kind::PressurePlate),
             ("LightningRodBlock", Kind::LightningRod),
             ("LecternBlock", Kind::Lectern),
+            ("BellBlock", Kind::Bell),
         ];
         let mut by_block = HashMap::new();
         for (id, info) in registries.blocks.blocks() {
@@ -757,8 +759,31 @@ impl Level<'_> {
                     self.set_block_and_update(pos, next);
                 }
             }
+            Kind::Bell => {
+                let signal = self.has_neighbor_signal(pos);
+                if signal != self.flag(state, "powered") {
+                    if signal {
+                        self.ring_bell(pos, None);
+                    }
+                    let next = self.with_bool(state, "powered", signal);
+                    self.set_block_and_update(pos, next);
+                }
+            }
             _ => {}
         }
+    }
+
+    pub fn ring_bell(&mut self, pos: BlockPos, direction: Option<Direction>) -> bool {
+        let state = self.block(pos);
+        if self.redstone_kind(state) != Some(Kind::Bell) {
+            return false;
+        }
+        let direction = direction.unwrap_or_else(|| self.facing(state));
+        let block = self.block_id(state);
+        self.block_event(pos, block, 1, direction.index() as i32);
+        let center = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+        self.sounds.push(super::burning::LevelSound { event: "minecraft:block.bell.use", pos: center, volume: 2.0, pitch: 1.0 });
+        true
     }
 
     /// `tick` for redstone blocks.

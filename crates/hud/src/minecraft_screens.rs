@@ -237,6 +237,46 @@ pub(crate) fn layout(screen: McScreen) -> Layout {
         }
         McScreen::Creative(kind) => return crate::minecraft_creative::layout(kind, 0),
         McScreen::Lectern | McScreen::BookEdit | McScreen::BookSign => size = [192, 192],
+        McScreen::Mount {
+            columns,
+            saddle,
+            armor,
+            llama,
+        } => {
+            if saddle {
+                slots.push(SlotSpec {
+                    empty: Some("container/slot/saddle"),
+                    ..cell(0, 8, 18)
+                });
+            }
+            if armor {
+                slots.push(SlotSpec {
+                    empty: Some(if llama {
+                        "container/slot/llama_armor"
+                    } else {
+                        "container/slot/horse_armor"
+                    }),
+                    ..cell(1, 8, 36)
+                });
+            }
+            let columns = usize::from(columns);
+            for i in 0..columns * 3 {
+                slots.push(cell(
+                    2 + i,
+                    80 + 18 * (i % columns) as i32,
+                    18 + 18 * (i / columns) as i32,
+                ));
+            }
+            player_inventory(&mut slots, 84);
+        }
+        McScreen::Merchant => {
+            size = crate::minecraft_merchant::SIZE;
+            slots.extend([cell(0, 136, 37), cell(1, 162, 37), output(220, 37)]);
+            player_inventory(&mut slots, 84);
+            for spec in slots.iter_mut().filter(|spec| spec.group == Group::Player) {
+                spec.x += 100;
+            }
+        }
     }
     Layout {
         screen,
@@ -284,6 +324,8 @@ impl Layout {
             McScreen::Anvil => "anvil",
             McScreen::Grindstone => "grindstone",
             McScreen::Stonecutter => "stonecutter",
+            McScreen::Merchant => "villager",
+            McScreen::Mount { .. } => "horse",
             McScreen::Smithing => "smithing",
             McScreen::Creative(_) => "creative_inventory/tab_items",
             McScreen::Lectern | McScreen::BookEdit | McScreen::BookSign => "book",
@@ -421,6 +463,8 @@ pub(crate) struct Station<'a> {
     pub cyclers: &'a [Cycler; 3],
     pub partial: f32,
     pub level: u32,
+    pub trade_scroll: usize,
+    pub trade_row: Option<usize>,
 }
 
 pub(crate) struct Screen<'a> {
@@ -478,8 +522,30 @@ pub(crate) fn draw_background(p: &mut Painter<'_>, s: &Screen<'_>) {
             }
         }
         McScreen::Stonecutter => stonecutter(p, s),
+        McScreen::Merchant => crate::minecraft_merchant::draw_background(p, s),
         McScreen::Smithing => smithing(p, s),
+        McScreen::Mount {
+            columns,
+            saddle,
+            armor,
+            ..
+        } => mount(p, s, i32::from(columns), saddle, armor),
         _ => {}
+    }
+}
+
+fn mount(p: &mut Painter<'_>, s: &Screen<'_>, columns: i32, saddle: bool, armor: bool) {
+    if columns > 0 {
+        let (x, y) = s.at(79, 17);
+        p.sprite_part("container/horse/chest_slots", 90, 54, 0, 0, x, y, columns * 18, 54);
+    }
+    if saddle {
+        let (x, y) = s.at(7, 17);
+        p.sprite("container/slot", x, y, 18, 18);
+    }
+    if armor {
+        let (x, y) = s.at(7, 35);
+        p.sprite("container/slot", x, y, 18, 18);
     }
 }
 
@@ -778,6 +844,9 @@ fn smithing(p: &mut Painter<'_>, s: &Screen<'_>) {
 }
 
 pub(crate) fn draw_labels(p: &mut Painter<'_>, s: &Screen<'_>) {
+    if s.layout.screen == McScreen::Merchant {
+        return crate::minecraft_merchant::draw_labels(p, s);
+    }
     let [w, h] = s.layout.size;
     let (x, y) = match s.layout.screen {
         McScreen::Inventory => (97, 6),
@@ -988,6 +1057,7 @@ pub(crate) fn station_tooltip(p: &Painter<'_>, s: &Screen<'_>) -> Option<(Vec<Te
                 false,
             ))
         }
+        McScreen::Merchant => crate::minecraft_merchant::tooltip(p, s),
         _ => None,
     }
 }
@@ -1114,6 +1184,42 @@ mod tests {
     }
 
     #[test]
+    fn a_horse_inventory_puts_saddle_armour_and_chest_slots_where_vanilla_does() {
+        let horse = layout(McScreen::Mount {
+            columns: 0,
+            saddle: true,
+            armor: true,
+            llama: false,
+        });
+        assert_eq!(horse.sheet(), "horse");
+        assert_eq!(horse.size, [176, 166]);
+        assert_eq!(at(&horse, McSlot::Container(0)), (8, 18));
+        assert_eq!(at(&horse, McSlot::Container(1)), (8, 36));
+        assert_eq!(horse.spec(McSlot::Container(1)).and_then(|s| s.empty), Some("container/slot/horse_armor"));
+        assert_eq!(at(&horse, McSlot::Inventory(9)), (8, 84));
+        assert_eq!(horse.slots.len(), 2 + 36);
+        let donkey = layout(McScreen::Mount {
+            columns: 5,
+            saddle: true,
+            armor: false,
+            llama: false,
+        });
+        assert!(donkey.spec(McSlot::Container(1)).is_none(), "a donkey has no armour slot");
+        assert_eq!(at(&donkey, McSlot::Container(2)), (80, 18));
+        assert_eq!(at(&donkey, McSlot::Container(16)), (152, 54));
+        let llama = layout(McScreen::Mount {
+            columns: 2,
+            saddle: false,
+            armor: true,
+            llama: true,
+        });
+        assert!(llama.spec(McSlot::Container(0)).is_none());
+        assert_eq!(llama.spec(McSlot::Container(1)).and_then(|s| s.empty), Some("container/slot/llama_armor"));
+        assert_eq!(at(&llama, McSlot::Container(5)), (98, 36));
+        assert_eq!(llama.slots.len(), 1 + 6 + 36);
+    }
+
+    #[test]
     fn station_slots_sit_where_vanilla_puts_them() {
         let furnace = layout(McScreen::Furnace(McOven::Smoker));
         assert_eq!(at(&furnace, McSlot::Container(1)), (56, 53));
@@ -1131,6 +1237,15 @@ mod tests {
             at(&layout(McScreen::Stonecutter), McSlot::Output),
             (143, 33)
         );
+        let merchant = layout(McScreen::Merchant);
+        assert_eq!((merchant.size, merchant.sheet()), ([276, 166], "villager"));
+        assert_eq!(at(&merchant, McSlot::Container(0)), (136, 37));
+        assert_eq!(at(&merchant, McSlot::Container(1)), (162, 37));
+        assert_eq!(at(&merchant, McSlot::Output), (220, 37));
+        assert_eq!(at(&merchant, McSlot::Inventory(9)), (108, 84));
+        assert_eq!(at(&merchant, McSlot::Inventory(35)), (252, 120));
+        assert_eq!(at(&merchant, McSlot::Inventory(0)), (108, 142));
+        assert_eq!(merchant.slots.len(), 39);
         assert_eq!(
             at(&layout(McScreen::Smithing), McSlot::Container(2)),
             (44, 48)

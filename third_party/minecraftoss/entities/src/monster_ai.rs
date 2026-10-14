@@ -53,6 +53,15 @@ pub enum MonsterKind {
     Ghast,
     Blaze,
     Shulker,
+    Cat,
+    Ocelot,
+    WanderingTrader,
+    SnowGolem,
+    Pillager,
+    Vindicator,
+    Evoker,
+    Vex,
+    Ravager,
 }
 
 impl MonsterKind {
@@ -73,6 +82,15 @@ impl MonsterKind {
             Self::Ghast => &GHAST_GOAL_NAMES,
             Self::Blaze => &BLAZE_GOAL_NAMES,
             Self::Shulker => &SHULKER_GOAL_NAMES,
+            Self::Cat => &crate::feline_ai::CAT_GOAL_NAMES,
+            Self::Ocelot => &crate::feline_ai::OCELOT_GOAL_NAMES,
+            Self::WanderingTrader => &crate::trader_ai::GOAL_NAMES,
+            Self::SnowGolem => &crate::snow_golem_ai::GOAL_NAMES,
+            Self::Pillager => &crate::illager_ai::PILLAGER_GOAL_NAMES,
+            Self::Vindicator => &crate::illager_ai::VINDICATOR_GOAL_NAMES,
+            Self::Evoker => &crate::illager_ai::EVOKER_GOAL_NAMES,
+            Self::Vex => &crate::vex_ai::GOAL_NAMES,
+            Self::Ravager => &crate::ravager_ai::GOAL_NAMES,
         }
     }
 
@@ -92,6 +110,15 @@ impl MonsterKind {
             Self::Ghast => &GHAST_TARGET_NAMES,
             Self::Blaze => &BLAZE_TARGET_NAMES,
             Self::Shulker => &SHULKER_TARGET_NAMES,
+            Self::Cat => &crate::feline_ai::CAT_TARGET_NAMES,
+            Self::Ocelot => &crate::feline_ai::OCELOT_TARGET_NAMES,
+            Self::WanderingTrader => &crate::trader_ai::TARGET_NAMES,
+            Self::SnowGolem => &crate::snow_golem_ai::TARGET_NAMES,
+            Self::Pillager => &crate::illager_ai::PILLAGER_TARGET_NAMES,
+            Self::Vindicator => &crate::illager_ai::VINDICATOR_TARGET_NAMES,
+            Self::Evoker => &crate::illager_ai::EVOKER_TARGET_NAMES,
+            Self::Vex => &crate::vex_ai::TARGET_NAMES,
+            Self::Ravager => &crate::ravager_ai::TARGET_NAMES,
         }
     }
 }
@@ -205,11 +232,13 @@ pub struct WitchState {
     pub see_time: i32,
     /// The potion thrown this tick and the throw sound's pitch.
     pub throw: Option<(crate::witch::Throw, f32)>,
+    pub heal_cooldown: i32,
+    pub raiders: Vec<(u64, f32, DVec3)>,
 }
 
 impl Default for WitchState {
     fn default() -> Self {
-        Self { drinking: false, ranged_target: None, attack_time: -1, see_time: 0, throw: None }
+        Self { drinking: false, ranged_target: None, attack_time: -1, see_time: 0, throw: None, heal_cooldown: 0, raiders: Vec::new() }
     }
 }
 
@@ -356,6 +385,11 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:piglin"
             | "minecraft:piglin_brute"
             | "minecraft:shulker"
+            | "minecraft:pillager"
+            | "minecraft:vindicator"
+            | "minecraft:evoker"
+            | "minecraft:vex"
+            | "minecraft:ravager"
     )
 }
 
@@ -391,6 +425,10 @@ pub(crate) enum Prey {
     /// `AbstractSkeleton`s.
     Skeleton,
     Piglin,
+    Chicken,
+    Monster,
+    Living,
+    HealableRaider,
 }
 
 /// `MeleeAttackGoal`'s state (and `ZombieAttackGoal`'s raised arms).
@@ -511,6 +549,11 @@ pub struct MonsterGoalContext {
     pub golem: crate::golem_ai::GolemState,
     /// A wolf's own state (`wolf_ai`).
     pub wolf: crate::wolf_ai::WolfState,
+    pub feline: crate::feline_ai::FelineState,
+    pub trader: crate::trader_ai::TraderState,
+    pub snow_golem: crate::snow_golem_ai::SnowGolemState,
+    pub illager: crate::illager_ai::IllagerState,
+    pub vex: crate::vex_ai::VexState,
     /// The level's points of interest and random, lent while it ticks (to
     /// iron golems and zombies).
     pub pois: Option<crate::poi::PoiManager>,
@@ -603,6 +646,15 @@ impl MonsterGoalContext {
         }
         // `TamableAnimal.canAttack`: never its owner.
         if self.kind == MonsterKind::Wolf && matches!(target.target, Target::Player(id) if self.wolf.owner == Some(id)) {
+            return false;
+        }
+        if self.kind == MonsterKind::Cat && matches!(target.target, Target::Player(id) if self.feline.tame && self.feline.owner == Some(id)) {
+            return false;
+        }
+        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Ravager) && matches!(target.target, Target::Villager(id) if self.villagers.iter().any(|v| v.id == id && v.baby)) {
+            return false;
+        }
+        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker) && self.kind_of(target.target).is_some_and(crate::illager::is_illager) {
             return false;
         }
         target.alive && target.player_ok && !(player && self.difficulty == 0)
@@ -721,7 +773,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex | MonsterKind::Ravager, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -733,7 +785,7 @@ impl MonsterGoalContext {
     /// `Mob.isWithinMeleeAttackRange`: the reach-inflated box meets the
     /// target's.
     pub(crate) fn within_melee_range(&self, target: TargetInfo) -> bool {
-        let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32);
+        let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32) - if self.kind == MonsterKind::Ravager { crate::ravager::ATTACK_REACH_SHRINK } else { 0.0 };
         let half = f64::from(self.body.width / 2.0);
         let p = self.body.position;
         let (min_x, max_x) = (p.x - half - reach, p.x + half + reach);
@@ -781,12 +833,13 @@ impl MonsterAi {
         // `Monster`: none of an animal's fire maluses; the creeper's
         // `FloatGoal` lets its navigation float; it walks towards darkness.
         let mut walk = WalkProfile::animal(body.width, body.height);
-        if kind != MonsterKind::Wolf {
+        let animal = matches!(kind, MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader);
+        if !animal {
             walk.clear_malus(PathType::FireInNeighbor);
             walk.clear_malus(PathType::Fire);
         }
         // `FloatGoal` lets the navigation float.
-        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf);
+        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex | MonsterKind::Ravager);
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::WitherSkeleton => FOLLOW_RANGE,
             MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
@@ -795,10 +848,18 @@ impl MonsterAi {
             MonsterKind::Ghast => crate::ghast::FOLLOW_RANGE,
             MonsterKind::Blaze => crate::blaze::FOLLOW_RANGE,
             MonsterKind::Shulker => FOLLOW_RANGE,
+            MonsterKind::Cat | MonsterKind::Ocelot => crate::feline::FOLLOW_RANGE,
+            MonsterKind::WanderingTrader => crate::wandering_trader::FOLLOW_RANGE,
+            MonsterKind::SnowGolem => crate::snow_golem::FOLLOW_RANGE,
+            MonsterKind::Pillager => crate::illager::IllagerKind::Pillager.follow_range(),
+            MonsterKind::Vindicator => crate::illager::IllagerKind::Vindicator.follow_range(),
+            MonsterKind::Evoker => crate::illager::IllagerKind::Evoker.follow_range(),
+            MonsterKind::Vex => crate::vex::FOLLOW_RANGE,
+            MonsterKind::Ravager => crate::ravager::FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
-        if kind != MonsterKind::Wolf {
+        if !animal {
             walk.walk_target = WalkTarget::Monster;
         }
         if kind == MonsterKind::Wolf {
@@ -820,6 +881,19 @@ impl MonsterAi {
             walk.set_malus(PathType::Water, -1.0);
             walk.set_malus(PathType::Lava, 8.0);
         }
+        if kind == MonsterKind::WanderingTrader {
+            walk.walk_target = WalkTarget::Zero;
+        }
+        if kind == MonsterKind::SnowGolem {
+            walk.walk_target = WalkTarget::Zero;
+        }
+        if kind == MonsterKind::Pillager {
+            walk.walk_target = WalkTarget::Zero;
+        }
+        if kind == MonsterKind::Ravager {
+            walk.set_malus(PathType::Leaves, 0.0);
+            walk.max_up_step = crate::ravager::STEP_HEIGHT;
+        }
         if kind == MonsterKind::IronGolem {
             // A `PathfinderMob` with a one-block step (`STEP_HEIGHT`) whose
             // spots are all alike (`getWalkTargetValue` 0).
@@ -834,6 +908,15 @@ impl MonsterAi {
             MonsterKind::Ghast => (ghast_goals(), ghast_targets(), crate::ghast::EYE_HEIGHT),
             MonsterKind::Blaze => (blaze_goals(), blaze_targets(), crate::blaze::EYE_HEIGHT),
             MonsterKind::Shulker => (shulker_goals(), shulker_targets(), crate::shulker::EYE_HEIGHT),
+            MonsterKind::Cat => (crate::feline_ai::cat_goals(), crate::feline_ai::cat_targets(), crate::feline::CAT_EYE_HEIGHT),
+            MonsterKind::Ocelot => (crate::feline_ai::ocelot_goals(), crate::feline_ai::ocelot_targets(), crate::feline::OCELOT_EYE_HEIGHT),
+            MonsterKind::WanderingTrader => (crate::trader_ai::trader_goals(), crate::trader_ai::trader_targets(), crate::wandering_trader::EYE_HEIGHT),
+            MonsterKind::SnowGolem => (crate::snow_golem_ai::snow_golem_goals(), crate::snow_golem_ai::snow_golem_targets(), crate::snow_golem::EYE_HEIGHT),
+            MonsterKind::Pillager => (crate::illager_ai::pillager_goals(), crate::illager_ai::pillager_targets(), crate::illager::EYE_HEIGHT),
+            MonsterKind::Vindicator => (crate::illager_ai::vindicator_goals(), crate::illager_ai::vindicator_targets(), crate::illager::EYE_HEIGHT),
+            MonsterKind::Evoker => (crate::illager_ai::evoker_goals(), crate::illager_ai::evoker_targets(), crate::illager::EYE_HEIGHT),
+            MonsterKind::Vex => (crate::vex_ai::vex_goals(), crate::vex_ai::vex_targets(), crate::vex::EYE_HEIGHT),
+            MonsterKind::Ravager => (crate::ravager_ai::ravager_goals(), crate::ravager_ai::ravager_targets(), crate::ravager::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -896,6 +979,11 @@ impl MonsterAi {
                 witch: WitchState::default(),
                 golem: Default::default(),
                 wolf: Default::default(),
+                feline: Default::default(),
+                trader: Default::default(),
+                snow_golem: Default::default(),
+                illager: Default::default(),
+                vex: Default::default(),
                 pois: None,
                 level_random: None,
                 can_break_doors: false,
@@ -938,6 +1026,12 @@ impl MonsterAi {
         }
     }
 
+    pub fn set_steered(&mut self, steered: bool) {
+        for control in [Control::Move, Control::Jump, Control::Look, Control::Target] {
+            self.goals.set_enabled(control, !steered);
+        }
+    }
+
     /// Keeps only the named goals (the harness's `entity_keep_goal`),
     /// before the first tick.
     pub fn retain_goals(&mut self, names: &[&str]) {
@@ -962,8 +1056,8 @@ pub fn creeper_goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(1, FloatGoal);
     selector.add(2, SwellGoal { target: None });
-    selector.add(3, NeverGoal { controls: &[Control::Move] });
-    selector.add(3, NeverGoal { controls: &[Control::Move] });
+    selector.add(3, AvoidEntityGoal::new("minecraft:ocelot", 6.0, 1.0, 1.2));
+    selector.add(3, AvoidEntityGoal::new("minecraft:cat", 6.0, 1.0, 1.2));
     selector.add(4, MeleeAttackGoal { hits: false, raises_arms: false, follow_unseen: false, gives_up_in_light: false, speed: 1.0 });
     selector.add(5, StrollGoal { speed: 0.8, probability: 0.001 });
     selector.add(6, LookAtPlayerGoal { range: 8.0 });
@@ -1632,6 +1726,7 @@ impl Goal<MonsterGoalContext> for FleeSunGoal {
 #[derive(Clone)]
 pub(crate) struct AvoidEntityGoal {
     kind: &'static str,
+    also: &'static [&'static str],
     max_dist: f64,
     walk: f64,
     sprint: f64,
@@ -1640,7 +1735,11 @@ pub(crate) struct AvoidEntityGoal {
 }
 impl AvoidEntityGoal {
     pub(crate) fn new(kind: &'static str, max_dist: f64, walk: f64, sprint: f64) -> Self {
-        Self { kind, max_dist, walk, sprint, to_avoid: None, path: None }
+        Self { kind, also: &[], max_dist, walk, sprint, to_avoid: None, path: None }
+    }
+
+    pub(crate) fn also(self, also: &'static [&'static str]) -> Self {
+        Self { also, ..self }
     }
 }
 impl Goal<MonsterGoalContext> for AvoidEntityGoal {
@@ -1659,7 +1758,7 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
         let range = self.max_dist.max(2.0);
         let mut best: Option<(f64, TargetInfo)> = None;
         for m in ctx.mobs.clone() {
-            if m.kind != self.kind {
+            if m.kind != self.kind && !self.also.contains(&m.kind) {
                 continue;
             }
             let mh = f64::from(m.width / 2.0);
@@ -1675,6 +1774,20 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
             }
             if best.is_none_or(|(d, _)| distance < d) {
                 best = Some((distance, info));
+            }
+        }
+        if self.kind == "minecraft:player" {
+            for player in ctx.players.clone() {
+                let q = player.position;
+                let inside = q.x - 0.3 < max.x && q.x + 0.3 > min.x && q.y < max.y && q.y + 1.8 > min.y && q.z - 0.3 < max.z && q.z + 0.3 > min.z;
+                let Some(info) = ctx.info(Target::Player(player.id)).filter(|_| inside) else { continue };
+                let distance = p.distance_squared(info.position);
+                if !ctx.can_attack(info) || distance > range * range || !ctx.sees(world, info) {
+                    continue;
+                }
+                if best.is_none_or(|(d, _)| distance < d) {
+                    best = Some((distance, info));
+                }
             }
         }
         let Some((_, avoid)) = best else { return false };
@@ -1796,7 +1909,7 @@ impl Goal<MonsterGoalContext> for BowGoal {
 
 /// `Mob.lookAt(entity, yMax, xMax)`: the body and pitch turn straight at
 /// the target's eyes, by at most the given steps.
-fn look_at(ctx: &mut MonsterGoalContext, target: TargetInfo, y_max: f32, x_max: f32) {
+pub(crate) fn look_at(ctx: &mut MonsterGoalContext, target: TargetInfo, y_max: f32, x_max: f32) {
     let p = ctx.body.position;
     let xd = target.position.x - p.x;
     let zd = target.position.z - p.z;
@@ -2323,12 +2436,7 @@ impl Goal<MonsterGoalContext> for RandomLookGoal {
 /// `PatrollingMonster`'s and `Raider`'s goals (none can start outside a
 /// patrol or raid, and none draws), then the witch's own.
 pub fn witch_goals() -> GoalSelector<MonsterGoalContext> {
-    let mut selector = GoalSelector::default();
-    selector.add(4, NeverGoal { controls: &[Control::Move] });
-    selector.add(1, NeverGoal { controls: &[Control::Move] });
-    selector.add(3, NeverGoal { controls: &[Control::Move] });
-    selector.add(4, NeverGoal { controls: &[Control::Move] });
-    selector.add(5, NeverGoal { controls: &[Control::Move] });
+    let mut selector = crate::illager_ai::raider_goals();
     selector.add(1, FloatGoal);
     selector.add(2, RangedAttackGoal { speed: 1.0, interval_min: crate::witch::ATTACK_INTERVAL, interval_max: crate::witch::ATTACK_INTERVAL, radius: crate::witch::ATTACK_RADIUS });
     selector.add(2, StrollGoal { speed: 1.0, probability: 0.001 });
@@ -2342,22 +2450,54 @@ pub fn witch_goals() -> GoalSelector<MonsterGoalContext> {
 pub fn witch_targets() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: false });
-    selector.add(2, HealRaidersGoal);
-    selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Player, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector.add(2, HealRaidersGoal { finder: NearestTargetGoal::every(Prey::HealableRaider, true, 0) });
+    selector.add(3, WitchPlayersGoal(NearestTargetGoal { interval: 5, prey: Prey::Player, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false }));
     selector
 }
 
-/// `NearestHealableRaiderTargetGoal`: off its cooldown (always, outside a
-/// raid) it flips a coin, then finds no raid.
 #[derive(Clone)]
-struct HealRaidersGoal;
+struct HealRaidersGoal {
+    finder: NearestTargetGoal,
+}
 impl Goal<MonsterGoalContext> for HealRaidersGoal {
     fn controls(&self) -> Controls {
         Controls::new(&[Control::Target])
     }
-    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
-        let _ = ctx.random.next_boolean();
-        false
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        if ctx.witch.heal_cooldown > 0 || !ctx.random.next_boolean() || !ctx.illager.has_raid {
+            return false;
+        }
+        self.finder.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.finder.can_continue(ctx, world)
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.witch.heal_cooldown = crate::witch::HEAL_COOLDOWN;
+        self.finder.start(ctx);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.finder.stop(ctx);
+    }
+}
+
+#[derive(Clone)]
+struct WitchPlayersGoal(NearestTargetGoal);
+impl Goal<MonsterGoalContext> for WitchPlayersGoal {
+    fn controls(&self) -> Controls {
+        self.0.controls()
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        ctx.witch.heal_cooldown <= 0 && self.0.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.0.can_continue(ctx, world)
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.start(ctx);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.stop(ctx);
     }
 }
 
@@ -2365,11 +2505,11 @@ impl Goal<MonsterGoalContext> for HealRaidersGoal {
 /// until it has seen it for 5 ticks within the radius, looks at it, and
 /// attacks every `min` to `max` ticks (by distance) while in sight.
 #[derive(Clone)]
-struct RangedAttackGoal {
-    speed: f64,
-    interval_min: i32,
-    interval_max: i32,
-    radius: f32,
+pub(crate) struct RangedAttackGoal {
+    pub(crate) speed: f64,
+    pub(crate) interval_min: i32,
+    pub(crate) interval_max: i32,
+    pub(crate) radius: f32,
 }
 impl Goal<MonsterGoalContext> for RangedAttackGoal {
     fn controls(&self) -> Controls {
@@ -2434,7 +2574,24 @@ impl Goal<MonsterGoalContext> for RangedAttackGoal {
 /// splash potion for the target, and the throw sound's pitch from its
 /// random.
 fn perform_ranged_attack(ctx: &mut MonsterGoalContext, target: TargetInfo) {
+    if ctx.kind == MonsterKind::SnowGolem {
+        let pitch = crate::snow_golem::SnowGolem::shoot_pitch(ctx.random.next_float());
+        ctx.snow_golem.shot = Some((target.position, target.eye_height, pitch));
+        return;
+    }
     if ctx.witch.drinking {
+        return;
+    }
+    let raider = match target.target {
+        Target::Mob(id) => ctx.witch.raiders.iter().find(|(r, _, _)| *r == id).copied(),
+        _ => None,
+    };
+    if let Some((_, health, velocity)) = raider {
+        let aim = crate::witch::ThrowTarget { position: target.position, eye_height: target.eye_height, velocity, health, slowed: false, poisoned: false, weakened: false };
+        let throw = crate::witch::heal(ctx.body.position, aim);
+        ctx.clear_target();
+        let pitch = 0.8 + ctx.random.next_float() * 0.4;
+        ctx.witch.throw = Some((throw, pitch));
         return;
     }
     let vitals = match target.target {
@@ -2776,13 +2933,13 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
         Controls::new(&[Control::Target])
     }
     fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
-        if self.wild_only && ctx.wolf.tame {
+        if self.wild_only && (ctx.wolf.tame || ctx.feline.tame) {
             return false;
         }
         if self.dark_only && ctx.in_light(world) {
             return false;
         }
-        if ctx.random.next_int(self.interval) != 0 {
+        if self.interval > 0 && ctx.random.next_int(self.interval) != 0 {
             return false;
         }
         let (range, eye) = (ctx.follow_range.max(2.0), ctx.eye());
@@ -2796,6 +2953,16 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
             Prey::WolfPrey => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:sheep" | "minecraft:rabbit" | "minecraft:fox")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Skeleton => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Piglin => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:piglin" | "minecraft:piglin_brute")).map(|m| Target::Mob(m.id)).collect(),
+            Prey::Chicken => ctx.mobs.iter().filter(|m| m.kind == "minecraft:chicken").map(|m| Target::Mob(m.id)).collect(),
+            Prey::Monster => ctx.mobs.iter().filter(|m| is_enemy(m.kind)).map(|m| Target::Mob(m.id)).collect(),
+            Prey::HealableRaider => ctx.mobs.iter().filter(|m| crate::illager::is_raider(m.kind) && m.kind != "minecraft:witch").map(|m| Target::Mob(m.id)).collect(),
+            Prey::Living => ctx
+                .players
+                .iter()
+                .map(|p| Target::Player(p.id))
+                .chain(ctx.villagers.iter().filter(|v| ctx.mobs.iter().all(|m| m.id != v.id)).map(|v| Target::Villager(v.id)))
+                .chain(ctx.mobs.iter().filter(|m| m.id != ctx.illager.id).map(|m| Target::Mob(m.id)))
+                .collect(),
         };
         let mut best: Option<(f64, Target)> = None;
         for target in candidates {

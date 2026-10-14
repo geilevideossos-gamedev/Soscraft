@@ -25,6 +25,8 @@ pub fn texture_ids(horse: &HorseState, baby: bool) -> (ResourceId, Option<Resour
     let suffix = if baby { "_baby" } else { "" };
     match horse.kind {
         HorseKind::Donkey => (ResourceId::parse(&format!("minecraft:entity/horse/donkey{suffix}")).unwrap(), None),
+        HorseKind::Mule => (ResourceId::parse(&format!("minecraft:entity/horse/mule{suffix}")).unwrap(), None),
+        HorseKind::Llama | HorseKind::TraderLlama => (ResourceId::parse(&llama_texture(horse.variant, baby)).unwrap(), None),
         HorseKind::Horse => {
             const COATS: [&str; 7] = ["white", "creamy", "chestnut", "brown", "black", "gray", "darkbrown"];
             const MARKINGS: [Option<&str>; 5] = [None, Some("white"), Some("whitefield"), Some("whitedots"), Some("blackdots")];
@@ -38,13 +40,47 @@ pub fn texture_ids(horse: &HorseState, baby: bool) -> (ResourceId, Option<Resour
     }
 }
 
+pub fn saddle_texture(kind: HorseKind) -> Option<ResourceId> {
+    let folder = match kind {
+        HorseKind::Horse => "horse_saddle",
+        HorseKind::Donkey => "donkey_saddle",
+        HorseKind::Mule => "mule_saddle",
+        HorseKind::Llama | HorseKind::TraderLlama => return None,
+    };
+    ResourceId::parse(&format!("minecraft:entity/equipment/{folder}/saddle")).ok()
+}
+
+pub fn armor_texture(item: &str) -> Option<(ResourceId, [f32; 3])> {
+    let material = item.strip_prefix("minecraft:")?.strip_suffix("_horse_armor")?;
+    let (material, tint) = match material {
+        "golden" => ("gold", [1.0; 3]),
+        "leather" => ("leather", [160.0 / 255.0, 101.0 / 255.0, 64.0 / 255.0]),
+        "copper" | "iron" | "diamond" | "netherite" => (material, [1.0; 3]),
+        _ => return None,
+    };
+    Some((ResourceId::parse(&format!("minecraft:entity/equipment/horse_body/{material}")).ok()?, tint))
+}
+
+pub fn llama_texture(variant: i32, baby: bool) -> String {
+    const COATS: [&str; 4] = ["creamy", "white", "brown", "gray"];
+    let coat = COATS[variant.clamp(0, 3) as usize];
+    let suffix = if baby { "_baby" } else { "" };
+    format!("minecraft:entity/llama/llama_{coat}{suffix}")
+}
+
 /// Every equine texture the renderers can ask for.
 pub fn all_textures() -> Vec<ResourceId> {
     let mut out = Vec::new();
     for suffix in ["", "_baby"] {
-        for name in ["horse_white", "horse_creamy", "horse_chestnut", "horse_brown", "horse_black", "horse_gray", "horse_darkbrown", "horse_markings_white", "horse_markings_whitefield", "horse_markings_whitedots", "horse_markings_blackdots", "donkey"] {
+        for name in ["horse_white", "horse_creamy", "horse_chestnut", "horse_brown", "horse_black", "horse_gray", "horse_darkbrown", "horse_markings_white", "horse_markings_whitefield", "horse_markings_whitedots", "horse_markings_blackdots", "donkey", "mule"] {
             out.push(ResourceId::parse(&format!("minecraft:entity/horse/{name}{suffix}")).unwrap());
         }
+    }
+    for kind in [HorseKind::Horse, HorseKind::Donkey, HorseKind::Mule] {
+        out.extend(saddle_texture(kind));
+    }
+    for material in ["copper", "iron", "golden", "diamond", "netherite", "leather"] {
+        out.extend(armor_texture(&format!("minecraft:{material}_horse_armor")).map(|(id, _)| id));
     }
     out
 }
@@ -180,17 +216,23 @@ fn setup(anim: &Anim, tuning: Tuning, front: [f32; 2]) -> Posed {
 
 /// The posed model's cuboids, each with its part.
 fn model(kind: HorseKind, baby: bool, chest: bool, anim: &Anim) -> Vec<(Part, Cube)> {
+    model_layer(kind, baby, chest, anim, 0.0, None)
+}
+
+fn model_layer(kind: HorseKind, baby: bool, chest: bool, anim: &Anim, g: f32, saddle: Option<bool>) -> Vec<(Part, Cube)> {
     let mut out = Vec::new();
     let root = Part::ROOT;
     match (kind, baby) {
         (_, false) => {
             let p = setup(anim, ADULT, [14.0, -10.0]);
-            let g = 0.0;
             let body = root.child([0.0, 11.0, 5.0], [p.body_x, 0.0, 0.0]);
             out.push((body, Cube { grow: 0.05, ..cube([-5.0, -8.0, -17.0], [10.0, 10.0, 22.0], [0.0, 32.0]) }));
+            if saddle.is_some() {
+                out.push((body, Cube { grow: 0.5, ..cube([-5.0, -8.0, -9.0], [10.0, 9.0, 9.0], [26.0, 0.0]) }));
+            }
             let tail = body.child([0.0, -5.0 + p.tail_offset[0], 2.0 + p.tail_offset[1]], [p.tail[0], p.tail[1], 0.0]);
             out.push((tail, Cube { grow: g, ..cube([-1.5, 0.0, 0.0], [3.0, 14.0, 4.0], [42.0, 36.0]) }));
-            if kind == HorseKind::Donkey && chest {
+            if matches!(kind, HorseKind::Donkey | HorseKind::Mule) && chest {
                 let chest = cube([-4.0, 0.0, -2.0], [8.0, 8.0, 3.0], [26.0, 21.0]);
                 out.push((body.child([6.0, -8.0, 0.0], [0.0, -PI / 2.0, 0.0]), cube(chest.from, chest.size, chest.uv)));
                 out.push((body.child([-6.0, -8.0, 0.0], [0.0, PI / 2.0, 0.0]), chest));
@@ -201,21 +243,33 @@ fn model(kind: HorseKind, baby: bool, chest: bool, anim: &Anim) -> Vec<(Part, Cu
             let head_parts = root.child([0.0, head_parts_y, head_parts_z], [p.head_x, p.head_y, 0.0]);
             out.push((head_parts, cube([-2.05, -6.0, -2.0], [4.0, 12.0, 7.0], [0.0, 35.0])));
             let head = head_parts.child([0.0; 3], [0.0; 3]);
-            out.push((head, cube([-3.0, -11.0, -2.0], [6.0, 5.0, 7.0], [0.0, 13.0])));
+            out.push((head, Cube { grow: g, ..cube([-3.0, -11.0, -2.0], [6.0, 5.0, 7.0], [0.0, 13.0]) }));
+            if let Some(ridden) = saddle {
+                out.push((head_parts, cube([2.0, -9.0, -6.0], [1.0, 2.0, 2.0], [29.0, 5.0])));
+                out.push((head_parts, cube([-3.0, -9.0, -6.0], [1.0, 2.0, 2.0], [29.0, 5.0])));
+                if ridden {
+                    let line = head_parts.child([0.0; 3], [-0.523_598_8, 0.0, 0.0]);
+                    out.push((line, cube([3.1, -6.0, -8.0], [0.0, 3.0, 16.0], [32.0, 2.0])));
+                    out.push((line, cube([-3.1, -6.0, -8.0], [0.0, 3.0, 16.0], [32.0, 2.0])));
+                }
+                out.push((head_parts, Cube { grow: 0.22, ..cube([-3.0, -11.0, -1.9], [6.0, 5.0, 6.0], [1.0, 1.0]) }));
+                out.push((head_parts, Cube { grow: 0.2, ..cube([-2.0, -11.0, -4.0], [4.0, 5.0, 2.0], [19.0, 0.0]) }));
+            }
             match kind {
                 HorseKind::Horse => {
                     out.push((head, Cube { grow: -0.001, ..cube([0.55, -13.0, 4.0], [2.0, 3.0, 1.0], [19.0, 16.0]) }));
                     out.push((head, Cube { grow: -0.001, ..cube([-2.55, -13.0, 4.0], [2.0, 3.0, 1.0], [19.0, 16.0]) }));
                 }
-                HorseKind::Donkey => {
+                HorseKind::Llama | HorseKind::TraderLlama => {}
+                HorseKind::Donkey | HorseKind::Mule => {
                     let ear = || cube([-1.0, -7.0, 0.0], [2.0, 7.0, 1.0], [0.0, 12.0]);
                     out.push((head.child([1.25, -10.0, 4.0], [PI / 12.0, 0.0, PI / 12.0]), ear()));
                     out.push((head.child([-1.25, -10.0, 4.0], [PI / 12.0, 0.0, -PI / 12.0]), ear()));
                 }
             }
-            out.push((head_parts, cube([-1.0, -11.0, 5.01], [2.0, 16.0, 2.0], [56.0, 36.0])));
-            out.push((head_parts, cube([-2.0, -11.0, -7.0], [4.0, 5.0, 5.0], [0.0, 25.0])));
-            let leg = |uv_mirror: bool, from: [f32; 3]| Cube { mirror: uv_mirror, ..cube(from, [4.0, 11.0, 4.0], [48.0, 21.0]) };
+            out.push((head_parts, Cube { grow: g, ..cube([-1.0, -11.0, 5.01], [2.0, 16.0, 2.0], [56.0, 36.0]) }));
+            out.push((head_parts, Cube { grow: g, ..cube([-2.0, -11.0, -7.0], [4.0, 5.0, 5.0], [0.0, 25.0]) }));
+            let leg = |uv_mirror: bool, from: [f32; 3]| Cube { mirror: uv_mirror, grow: g, ..cube(from, [4.0, 11.0, 4.0], [48.0, 21.0]) };
             out.push((root.child([4.0, 14.0, 7.0], [p.legs[0], 0.0, 0.0]), leg(true, [-3.0, -1.01, -1.0])));
             out.push((root.child([-4.0, 14.0, 7.0], [p.legs[1], 0.0, 0.0]), leg(false, [-1.0, -1.01, -1.0])));
             out.push((root.child([4.0, p.front_y, p.front_z], [p.legs[2], 0.0, 0.0]), leg(true, [-3.0, -1.01, -1.9])));
@@ -240,7 +294,8 @@ fn model(kind: HorseKind, baby: bool, chest: bool, anim: &Anim) -> Vec<(Part, Cu
             out.push((head.child([2.0, -4.2484, 1.9451], [0.0, 0.0, 0.2618]), cube([-1.0, -2.5, -0.8], [2.0, 3.0, 1.0], [0.0, 4.0])));
             out.push((head.child([-2.0, -4.2484, 1.645], [0.0, 0.0, -0.2618]), cube([-1.0, -2.5, -0.5], [2.0, 3.0, 1.0], [0.0, 0.0])));
         }
-        (HorseKind::Donkey, true) => {
+        (HorseKind::Llama | HorseKind::TraderLlama, true) => {}
+        (HorseKind::Donkey | HorseKind::Mule, true) => {
             let mut p = setup(anim, BABY_DONKEY, [3.5, -5.3]);
             // `BabyDonkeyModel.setupAnim` pitches the head again from a
             // fixed -30 degrees, without the walk's nod.
@@ -276,6 +331,8 @@ fn layer_scale(kind: HorseKind, baby: bool) -> f32 {
         (_, true) => 1.0,
         (HorseKind::Horse, false) => 1.1,
         (HorseKind::Donkey, false) => 0.87,
+        (HorseKind::Mule, false) => 0.92,
+        (HorseKind::Llama | HorseKind::TraderLlama, false) => 1.0,
     }
 }
 
@@ -290,7 +347,7 @@ pub fn append_horses<'a>(
 ) {
     let mut marks = Vec::new();
     for entity in horses {
-        let Some(horse) = &entity.horse else { continue };
+        let Some(horse) = entity.horse.as_ref().filter(|h| !h.kind.is_llama()) else { continue };
         let Some(mob) = poses.pose(entity.id, partial) else { continue };
         marks.push((mesh.vertices.len(), mob.overlay(0.0)));
         let baby = entity.cow.age.baby();
@@ -315,17 +372,23 @@ pub fn append_horses<'a>(
         let block = light.get_block(pos) as f32;
         let (texture, markings) = texture_ids(horse, baby);
         let cubes = model(horse.kind, baby, horse.chest, &anim);
-        let emit = |target: &mut ChunkMesh, texture: &ResourceId| {
+        let emit = |target: &mut ChunkMesh, texture: &ResourceId, cubes: &[(Part, Cube)], tint: [f32; 3]| {
             let region = atlas.entity_region(texture);
-            for (part, c) in &cubes {
+            for (part, c) in cubes {
                 let from = c.from.map(|v| v - c.grow);
                 let to = [c.from[0] + c.size[0] + c.grow, c.from[1] + c.size[1] + c.grow, c.from[2] + c.size[2] + c.grow];
-                cube_scaled(target, mob.feet, rotation, scale, region, sky, block, from, to, c.uv, part.pivot.to_array(), part.rotation, [1.0; 3], [64.0; 2], Some(c.size), c.mirror);
+                cube_scaled(target, mob.feet, rotation, scale, region, sky, block, from, to, c.uv, part.pivot.to_array(), part.rotation, tint, [64.0; 2], Some(c.size), c.mirror);
             }
         };
-        emit(mesh, &texture);
+        emit(mesh, &texture, &cubes, [1.0; 3]);
         if let Some(markings) = markings {
-            emit(translucent, &markings);
+            emit(translucent, &markings, &cubes, [1.0; 3]);
+        }
+        if let Some((armor, tint)) = horse.body_item.as_deref().filter(|_| !baby && horse.kind.wears_armor()).and_then(armor_texture) {
+            emit(mesh, &armor, &model_layer(horse.kind, false, false, &anim, 0.1, None), tint);
+        }
+        if let Some(saddle) = saddle_texture(horse.kind).filter(|_| horse.saddled && !baby) {
+            emit(mesh, &saddle, &model_layer(horse.kind, false, false, &anim, 0.0, Some(horse.ridden)), [1.0; 3]);
         }
     }
     crate::cow_render::apply_overlays(mesh, &marks);
@@ -374,5 +437,40 @@ mod tests {
         let (coat, markings) = texture_ids(&HorseState::new(HorseKind::Donkey), true);
         assert_eq!(coat, ResourceId::parse("minecraft:entity/horse/donkey_baby").unwrap());
         assert!(markings.is_none());
+    }
+
+    #[test]
+    fn the_saddle_adds_its_seat_and_bridle_and_reins_only_while_ridden() {
+        let plain = model(HorseKind::Horse, false, false, &still()).len();
+        let parked = model_layer(HorseKind::Horse, false, false, &still(), 0.0, Some(false));
+        let ridden = model_layer(HorseKind::Horse, false, false, &still(), 0.0, Some(true));
+        assert_eq!(parked.len(), plain + 5);
+        assert_eq!(ridden.len(), plain + 7);
+        let (_, seat) = &parked[1];
+        assert_eq!((seat.from, seat.size, seat.uv, seat.grow), ([-5.0, -8.0, -9.0], [10.0, 9.0, 9.0], [26.0, 0.0], 0.5));
+        let armor = model_layer(HorseKind::Horse, false, false, &still(), 0.1, None);
+        assert_eq!(armor.len(), plain);
+        assert_eq!(armor[0].1.grow, 0.05, "the body keeps its own growth");
+        assert!(armor.iter().filter(|(_, c)| c.grow == 0.1).count() >= 7, "head, mane, mouth, tail and legs grow");
+        assert_eq!(saddle_texture(HorseKind::Mule), ResourceId::parse("minecraft:entity/equipment/mule_saddle/saddle").ok());
+        assert_eq!(saddle_texture(HorseKind::Llama), None);
+        assert_eq!(armor_texture("minecraft:golden_horse_armor").map(|(id, _)| id), ResourceId::parse("minecraft:entity/equipment/horse_body/gold").ok());
+        assert_eq!(armor_texture("minecraft:saddle"), None);
+        assert!(all_textures().contains(&ResourceId::parse("minecraft:entity/equipment/horse_body/netherite").unwrap()));
+    }
+
+    #[test]
+    fn a_mule_is_a_donkey_scaled_to_0_92_in_its_own_coat() {
+        let (coat, markings) = texture_ids(&HorseState::new(HorseKind::Mule), false);
+        assert_eq!(coat, ResourceId::parse("minecraft:entity/horse/mule").unwrap());
+        assert!(markings.is_none());
+        let (baby, _) = texture_ids(&HorseState::new(HorseKind::Mule), true);
+        assert_eq!(baby, ResourceId::parse("minecraft:entity/horse/mule_baby").unwrap());
+        assert_eq!(layer_scale(HorseKind::Mule, false), 0.92);
+        let mule = model(HorseKind::Mule, false, true, &still());
+        let donkey = model(HorseKind::Donkey, false, true, &still());
+        assert_eq!(mule.len(), donkey.len());
+        assert_eq!(model(HorseKind::Mule, true, false, &still()).len(), model(HorseKind::Donkey, true, false, &still()).len());
+        assert!(all_textures().contains(&ResourceId::parse("minecraft:entity/horse/mule_baby").unwrap()));
     }
 }

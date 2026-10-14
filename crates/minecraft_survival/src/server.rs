@@ -721,6 +721,9 @@ impl Server {
                     if player.riding.is_some() {
                         player.saved_vehicle = entities.root_vehicle(u64::from(player.id.0), true);
                     }
+                    if let Some(feet) = feet {
+                        crate::menus::close_merchant_now(&mut player, entities, feet);
+                    }
                     let experience = entities.leave(
                         u64::from(player.id.0),
                         &mut player.inventory,
@@ -866,6 +869,7 @@ pub fn join_from(
     player.sleep_timer = saved.sleep_timer.unwrap_or(0);
     player.time_since_rest = saved.time_since_rest.unwrap_or(0);
     player.saved_in_bed = saved.sleeping_pos;
+    player.survival.raid_omen_position = saved.raid_omen_position;
     player.tags = saved.tags.into_iter().flatten().collect();
     player.recipe_book = recipe_book;
     player.dead = dead;

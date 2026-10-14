@@ -750,6 +750,8 @@ pub(crate) fn struck(
         steps,
         riding,
         reattach,
+        jump_bar,
+        raid_bars,
         ..
     } = player;
     let local_uuid = &*uuid;
@@ -770,6 +772,15 @@ pub(crate) fn struck(
             .map_or(0.0, |_| {
                 minecraft_survival::offhand::blocked_damage(mc_yaw, toward, amount)
             });
+        if let minecraft_survival::death::DamageCause::Mob {
+            id,
+            attack: minecraft_survival::death::MobAttack::Melee,
+            ..
+        } = cause
+            && blocked > 0.0
+        {
+            entities.shield_blocked(id, player_id, feet);
+        }
         if let Some(blocking) = hand.blocking.filter(|_| blocked > 0.0) {
             if inventory.wear_tool(
                 blocking.slot,
@@ -853,6 +864,7 @@ pub(crate) fn struck(
     crate::minecraft_riding::step(
         riding, reattach, steps, entities, authority, rider, origin, present,
     );
+    *jump_bar = riding.and_then(|_| entities.view.world.ride_jump_scale(player_id));
     for to in teleports
         .iter()
         .filter(|(uuid, _)| alive && uuid == local_uuid)
@@ -905,7 +917,28 @@ pub(crate) fn struck(
             sounds.play(packs, sound.event, None, sound.volume, sound.pitch);
         }
     }
+    for (amplifier, omen_at) in outputs.raid_omens.into_iter().filter(|_| alive) {
+        if survival.turn_bad_omen(amplifier, omen_at)
+            && let Some(sounds) = sounds.as_mut()
+        {
+            sounds.play(packs, RAID_OMEN_SOUND, Some(at(feet)), 1.0, 1.0);
+        }
+    }
+    for amplifier in outputs.raid_heroes {
+        survival.become_hero(amplifier);
+    }
+    for horn in outputs.raid_horns {
+        if let Some(sounds) = sounds.as_mut() {
+            let horn = at(horn.to_array());
+            sounds.play(packs, minecraft_terrain::raids::HORN_SOUND, Some(horn), minecraft_terrain::raids::HORN_VOLUME, 1.0);
+        }
+    }
+    if let Some(bars) = outputs.raid_bars {
+        *raid_bars = bars;
+    }
 }
+
+const RAID_OMEN_SOUND: &str = "minecraft:event.mob_effect.raid_omen";
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn settle(
@@ -1080,6 +1113,12 @@ pub(crate) fn track_body(
         PLAYER_WIDTH,
         f64::from(maxs[2] / sim::voxel::BLOCK),
     );
+    entities.hold_rope(
+        key,
+        feet,
+        minecraft_yaw(ps.viewangles[1]),
+        f64::from(maxs[2] / sim::voxel::BLOCK),
+    );
 }
 
 fn place(
@@ -1138,6 +1177,8 @@ pub(crate) fn tick_actor<'a>(
     }
     let ps = authority.player(sim::ClientId(player.id.0))?;
     let alive = ps.pm_type == 0;
+    let (forward, strafe, jumping) =
+        crate::minecraft_riding::ride_input(authority, sim::ClientId(player.id.0));
     let view = minecraft_survival::entities::PlayerView {
         feet: sim::voxel::to_block(origin, ps.origin),
         alive,
@@ -1161,12 +1202,23 @@ pub(crate) fn tick_actor<'a>(
         sneaking: ps.pm_flags
             & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
             != 0,
+        hero: player
+            .survival
+            .status
+            .effect(minecraftoss_player::survival::EffectKind::HeroOfTheVillage)
+            .map(|effect| i32::from(effect.amplifier)),
+        sleeping: player.sleeping.map(|sleeping| sleeping.head),
+        sleep_timer: player.sleep_timer,
+        forward,
+        strafe,
+        jumping,
         swirl: minecraft_survival::swirls::player_swirl(
             &player.survival.status,
             sim::voxel::to_block(origin, ps.origin),
             ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
                 != 0,
         ),
+        omens: player.survival.omens(),
     };
     let actor = TickActor {
         id: u64::from(player.id.0),
@@ -1303,6 +1355,9 @@ fn leave_level(player: &mut Player, level: &mut Level) {
         .place
         .filter(|place| place.dimension == level.dimension)
         .map(|place| place.feet);
+    if let (Some(entities), Some(feet)) = (level.entities.as_mut(), feet) {
+        minecraft_survival::menus::close_merchant_now(player, entities, feet);
+    }
     let thrown = minecraft_survival::menus::close(player);
     if let Some(entities) = level.entities.as_mut() {
         let id = u64::from(player.id.0);
@@ -1556,6 +1611,7 @@ pub(crate) fn step_friend(
         }
         stepped.books.extend(lectern.books);
         if !life.alive {
+            minecraft_survival::menus::close_merchant_now(player, entities, feet);
             let yaw = minecraft_yaw(ps.viewangles[1]);
             for stack in minecraft_survival::menus::close(player) {
                 let eye = glam::DVec3::from_array(eye);
@@ -1909,6 +1965,9 @@ pub(crate) fn friend_menus(
         &known,
         || entities.random_float(),
     );
+    let at = player.place.map_or([0.0; 3], |place| place.feet);
+    let traded = minecraft_survival::menus::merchant(player, entities, at, true, !player.dead);
+    clicked.thrown.extend(traded.thrown);
     let Some(ps) = ps else {
         if let Some(feet) = player.place.map(|place| place.feet) {
             for stack in &clicked.thrown {
@@ -1925,6 +1984,8 @@ pub(crate) fn friend_menus(
             ps.origin[2] + ps.view_height_current,
         ],
     );
+    let mounted = minecraft_survival::menus::mount(player, entities, eye, false, !player.dead);
+    clicked.thrown.extend(mounted.thrown);
     let invalid = player
         .menus
         .open

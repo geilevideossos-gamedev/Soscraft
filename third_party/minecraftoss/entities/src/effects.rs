@@ -28,10 +28,13 @@ pub enum MobEffect {
     Nausea,
     Levitation,
     SlowFalling,
+    Strength,
+    Invisibility,
+    Glowing,
 }
 
 impl MobEffect {
-    pub const ALL: [MobEffect; 13] = [
+    pub const ALL: [MobEffect; 16] = [
         Self::Speed,
         Self::Slowness,
         Self::InstantHealth,
@@ -45,6 +48,9 @@ impl MobEffect {
         Self::Nausea,
         Self::Levitation,
         Self::SlowFalling,
+        Self::Strength,
+        Self::Invisibility,
+        Self::Glowing,
     ];
 
     /// Its registry ID.
@@ -63,6 +69,9 @@ impl MobEffect {
             Self::Nausea => "minecraft:nausea",
             Self::Levitation => "minecraft:levitation",
             Self::SlowFalling => "minecraft:slow_falling",
+            Self::Strength => "minecraft:strength",
+            Self::Invisibility => "minecraft:invisibility",
+            Self::Glowing => "minecraft:glowing",
         }
     }
 
@@ -326,7 +335,13 @@ impl MobEffects {
 
     /// `ATTACK_DAMAGE`'s `ADD_VALUE` modifiers: weakness's -4 a level.
     pub fn attack_damage_modifier(&self) -> f64 {
-        self.get(MobEffect::Weakness).map_or(0.0, |e| -4.0 * f64::from(e.amplifier + 1))
+        self.get(MobEffect::Weakness).map_or(0.0, |e| -4.0 * f64::from(e.amplifier + 1)) + self.get(MobEffect::Strength).map_or(0.0, |e| 3.0 * f64::from(e.amplifier + 1))
+    }
+
+    pub fn remove(&mut self, effect: MobEffect) -> bool {
+        let before = self.active.len();
+        self.active.retain(|e| e.effect != effect);
+        self.active.len() != before
     }
 }
 

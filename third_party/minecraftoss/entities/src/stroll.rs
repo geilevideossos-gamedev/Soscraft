@@ -196,6 +196,29 @@ pub fn default_random_position_towards(world: &dyn World, profile: &WalkProfile,
     })
 }
 
+fn amphibious_unstable_or_outside(world: &dyn World, (x, y, z): BlockPos) -> bool {
+    let air = world.block((x, y - 1, z)).is_none_or(|block| matches!(block.id.as_str(), "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"));
+    y < world.min_y() || y > world.max_y() || air
+}
+
+pub fn amphibious_random_position(world: &dyn World, profile: &WalkProfile, position: DVec3, horizontal: u32, vertical: u32, random: &mut LegacyRandom) -> Option<DVec3> {
+    best_of(world, profile, || {
+        let direction = random_direction(random, horizontal, vertical);
+        let pos = toward(position, direction);
+        (!amphibious_unstable_or_outside(world, pos) && !has_malus(world, profile, pos)).then_some(pos)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn amphibious_random_position_towards(world: &dyn World, profile: &WalkProfile, position: DVec3, horizontal: u32, vertical: u32, towards: DVec3, max_radians: f32, random: &mut LegacyRandom) -> Option<DVec3> {
+    let dir = towards - position;
+    best_of(world, profile, || {
+        let direction = random_direction_within(random, 0.0, f64::from(horizontal), vertical, dir.x, dir.z, f64::from(max_radians))?;
+        let pos = toward(position, direction);
+        (!amphibious_unstable_or_outside(world, pos) && !has_malus(world, profile, pos)).then_some(pos)
+    })
+}
+
 /// `DefaultRandomPos.getPosAway`: a stable, free spot within a quarter turn
 /// of straight away from `avoid` (`mob.position().subtract(avoidPos)`).
 pub fn default_random_position_away(world: &dyn World, profile: &WalkProfile, position: DVec3, horizontal: u32, vertical: u32, avoid: DVec3, random: &mut LegacyRandom) -> Option<DVec3> {

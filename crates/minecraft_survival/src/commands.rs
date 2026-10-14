@@ -170,6 +170,11 @@ pub fn effect_kind(effect: &str) -> Option<EffectKind> {
         "conduit_power" => EffectKind::ConduitPower,
         "levitation" => EffectKind::Levitation,
         "slow_falling" => EffectKind::SlowFalling,
+        "darkness" => EffectKind::Darkness,
+        "bad_omen" => EffectKind::BadOmen,
+        "raid_omen" => EffectKind::RaidOmen,
+        "trial_omen" => EffectKind::TrialOmen,
+        "hero_of_the_village" => EffectKind::HeroOfTheVillage,
         _ => return None,
     })
 }
@@ -2650,6 +2655,55 @@ pub(crate) mod tests {
         assert!(status.effect(EffectKind::SlowFalling).is_none());
         assert_eq!(effect_kind("minecraft:levitation"), Some(EffectKind::Levitation));
         assert_eq!(effect_kind("minecraft:slow_falling"), Some(EffectKind::SlowFalling));
+    }
+
+    #[test]
+    fn darkness_the_omens_and_hero_of_the_village_are_given_and_cleared_by_command() {
+        let kinds = [
+            ("minecraft:darkness", EffectKind::Darkness),
+            ("minecraft:bad_omen", EffectKind::BadOmen),
+            ("minecraft:raid_omen", EffectKind::RaidOmen),
+            ("minecraft:trial_omen", EffectKind::TrialOmen),
+            ("minecraft:hero_of_the_village", EffectKind::HeroOfTheVillage),
+        ];
+        let mut parts = Parts::new();
+        parts.server.registries_mut().effects = kinds.map(|(id, _)| id.to_owned()).to_vec();
+        let (delivered, _) = parts.send(
+            HOST,
+            &[
+                "/effect give @s minecraft:darkness 12",
+                "/effect give @s minecraft:bad_omen 6000 4",
+                "/effect give @s minecraft:raid_omen 30 2",
+                "/effect give @s minecraft:trial_omen 900 1",
+                "/effect give @s minecraft:hero_of_the_village 2400 3",
+            ],
+        );
+        assert_eq!(delivered.len(), 5);
+        let status = &parts.player(HOST).survival.status;
+        let given: Vec<_> = kinds
+            .iter()
+            .map(|(_, kind)| status.effect(*kind).map(|e| (e.duration, e.amplifier)))
+            .collect();
+        assert_eq!(
+            given,
+            [
+                Some((240, 0)),
+                Some((120000, 4)),
+                Some((600, 2)),
+                Some((18000, 1)),
+                Some((48000, 3))
+            ]
+        );
+        parts.send(HOST, &["/effect clear @s minecraft:bad_omen"]);
+        let status = &parts.player(HOST).survival.status;
+        assert!(status.effect(EffectKind::BadOmen).is_none());
+        assert!(status.effect(EffectKind::HeroOfTheVillage).is_some());
+        parts.send(HOST, &["/effect clear @s"]);
+        let status = &parts.player(HOST).survival.status;
+        assert!(kinds.iter().all(|(_, kind)| status.effect(*kind).is_none()));
+        for (id, kind) in kinds {
+            assert_eq!(effect_kind(id), Some(kind));
+        }
     }
 
     #[test]

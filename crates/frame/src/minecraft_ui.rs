@@ -82,6 +82,13 @@ pub enum McScreen {
     Enchanting,
     Creative(crate::McTabKind),
     Lectern,
+    Merchant,
+    Mount {
+        columns: u8,
+        saddle: bool,
+        armor: bool,
+        llama: bool,
+    },
     BookEdit,
     BookSign,
 }
@@ -121,6 +128,33 @@ pub struct McChoice {
     pub cost: u32,
     pub enabled: bool,
     pub runes: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McOffer {
+    pub cost_a: Option<McStack>,
+    pub base_count: u8,
+    pub cost_b: Option<McStack>,
+    pub result: Option<McStack>,
+    pub out_of_stock: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McEffect {
+    pub id: String,
+    pub amplifier: u8,
+    pub duration: i32,
+    pub ambient: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct McMerchant {
+    pub offers: Vec<McOffer>,
+    pub level: i32,
+    pub xp: i32,
+    pub future_xp: i32,
+    pub show_progress: bool,
+    pub can_restock: bool,
 }
 
 /// What the player did on the inventory screen, applied with vanilla's
@@ -233,10 +267,15 @@ pub struct MinecraftUi {
     pub overlay_message: Option<McOverlayMessage>,
     pub sleep: Option<McSleep>,
     pub boss_bars: Vec<McBossBar>,
+    pub raid_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
     pub book: Option<McBook>,
+    pub merchant: Option<McMerchant>,
+    pub effects: Vec<McEffect>,
     pub book_edit: Option<McBookEdit>,
     pub ui_sounds: Vec<&'static str>,
+    pub jump_bar: Option<f32>,
+    pub inventory_key_opened: bool,
     pub pumpkin_blur: Option<Handle<Image>>,
     pub camera_overlay: bool,
 }
@@ -259,6 +298,9 @@ pub struct McBossBar {
     pub elapsed: f32,
     pub world_fog: bool,
     pub music: bool,
+    pub color: &'static str,
+    pub overlay: &'static str,
+    pub key: u64,
 }
 
 impl McBossBar {
@@ -272,7 +314,16 @@ impl McBossBar {
             elapsed: Self::LERP_SECONDS,
             world_fog,
             music,
+            color: "pink",
+            overlay: "progress",
+            key: 0,
         }
+    }
+
+    pub fn styled(mut self, color: &'static str, overlay: &'static str) -> Self {
+        self.color = color;
+        self.overlay = overlay;
+        self
     }
 
     pub fn progress(&self) -> f32 {

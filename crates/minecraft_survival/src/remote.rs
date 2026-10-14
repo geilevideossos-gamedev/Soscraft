@@ -1707,7 +1707,14 @@ mod tests {
                 main_hand: None,
                 offhand: None,
                 sneaking: false,
+                hero: None,
+                sleeping: None,
+                sleep_timer: 0,
+                forward: 0.0,
+                strafe: 0.0,
+                jumping: false,
                 swirl: None,
+                omens: Default::default(),
             };
             let mut actors = [crate::entities::TickActor {
                 id: 1,

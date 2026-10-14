@@ -53,6 +53,7 @@ pub enum TemptItems {
     CowFood,
     /// `#horse_tempt_items`.
     HorseTempt,
+    LlamaTempt,
 }
 
 impl Species {
@@ -61,7 +62,8 @@ impl Species {
 
     /// `AbstractHorse.registerGoals` and `addBehaviourGoals`.
     pub fn horse(kind: crate::horse::HorseKind) -> Species {
-        Species { panic_speed: 1.2, stroll_speed: 0.7, tempt_speed: 1.25, follow_parent_speed: 1.0, breed_speed: 1.0, adult_eye: kind.eye_height(false), baby_eye: kind.eye_height(true), tempt: TemptItems::HorseTempt }
+        let tempt = if kind.is_llama() { TemptItems::LlamaTempt } else { TemptItems::HorseTempt };
+        Species { panic_speed: 1.2, stroll_speed: 0.7, tempt_speed: 1.25, follow_parent_speed: 1.0, breed_speed: 1.0, adult_eye: kind.eye_height(false), baby_eye: kind.eye_height(true), tempt }
     }
 
     fn eye(&self, age: i32) -> f32 {
@@ -104,6 +106,19 @@ pub struct CowGoalContext {
     pub navigation_done: bool,
     pub random: LegacyRandom,
     pub effects: Vec<CowGoalEffect>,
+    pub mates: Option<Vec<CowCandidate>>,
+    pub tempters: Vec<u64>,
+    pub llama: Option<crate::llama_ai::LlamaContext>,
+    pub crazy: Option<Crazy>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Crazy {
+    pub rider: Option<u64>,
+    pub mob_controlled: bool,
+    pub temper: i32,
+    pub max_temper: i32,
+    pub target: Option<DVec3>,
 }
 
 pub enum CowGoalEffect {
@@ -129,6 +144,14 @@ pub enum CowGoalEffect {
     Jump,
     /// `RandomStandGoal.start`: rear, with the ambient stand sound.
     Stand,
+    Spit {
+        aim: DVec3,
+    },
+    JoinCaravan(u64),
+    LeaveCaravan(u64),
+    Tame(u64),
+    Temper(i32),
+    Buck,
 }
 
 pub fn registered_goals() -> GoalSelector<CowGoalContext> {
@@ -334,10 +357,12 @@ impl Goal<CowGoalContext> for BreedGoal {
         Controls::new(&[Control::Move, Control::Look])
     }
     fn can_start(&mut self, ctx: &mut CowGoalContext, _world: &dyn World) -> bool {
-        ctx.breed.can_use(ctx.child, &ctx.candidates)
+        let mates = ctx.mates.as_deref().unwrap_or(&ctx.candidates);
+        ctx.breed.can_use(ctx.child, mates)
     }
     fn can_continue(&mut self, ctx: &mut CowGoalContext, _world: &dyn World) -> bool {
-        ctx.breed.can_continue(&ctx.candidates)
+        let mates = ctx.mates.as_deref().unwrap_or(&ctx.candidates);
+        ctx.breed.can_continue(mates)
     }
     fn start(&mut self, ctx: &mut CowGoalContext) {
         ctx.breed.start();
@@ -346,9 +371,9 @@ impl Goal<CowGoalContext> for BreedGoal {
         ctx.breed.stop();
     }
     fn tick(&mut self, ctx: &mut CowGoalContext) {
-        if let Some((target, partner)) = ctx.breed.tick(ctx.child, &ctx.candidates) {
-            if let Some(candidate) = ctx
-                .candidates
+        let mates = ctx.mates.as_deref().unwrap_or(&ctx.candidates);
+        if let Some((target, partner)) = ctx.breed.tick(ctx.child, mates) {
+            if let Some(candidate) = mates
                 .iter()
                 .find(|p| Some(p.id) == ctx.breed.partner_id)
             {
@@ -401,7 +426,18 @@ impl Goal<CowGoalContext> for FollowParentGoal {
 fn tempt_can_use(ctx: &mut CowGoalContext) -> bool {
     match ctx.species.tempt {
         TemptItems::CowFood => ctx.tempt.can_use(ctx.child, &ctx.players),
-        TemptItems::HorseTempt => ctx.tempt.can_use_matching(ctx.child, &ctx.players, |p| p.main_hand_horse_tempt || p.offhand_horse_tempt),
+        TemptItems::HorseTempt => {
+            let tempters = std::mem::take(&mut ctx.tempters);
+            let found = ctx.tempt.can_use_matching(ctx.child, &ctx.players, |p| p.main_hand_horse_tempt || p.offhand_horse_tempt || tempters.contains(&p.id));
+            ctx.tempters = tempters;
+            found
+        }
+        TemptItems::LlamaTempt => {
+            let tempters = std::mem::take(&mut ctx.tempters);
+            let found = ctx.tempt.can_use_matching(ctx.child, &ctx.players, |p| tempters.contains(&p.id));
+            ctx.tempters = tempters;
+            found
+        }
     }
 }
 
@@ -420,6 +456,94 @@ pub const HORSE_GOAL_NAMES: [&str; 10] = [
     "TemptGoal",
 ];
 
+pub const LLAMA_GOAL_NAMES: [&str; 13] = [
+    "LlamaHurtByTargetGoal",
+    "LlamaAttackWolfGoal",
+    "FloatGoal",
+    "RunAroundLikeCrazyGoal",
+    "LlamaFollowCaravanGoal",
+    "RangedAttackGoal",
+    "PanicGoal",
+    "BreedGoal",
+    "TemptGoal",
+    "FollowParentGoal",
+    "WaterAvoidingRandomStrollGoal",
+    "LookAtPlayerGoal",
+    "RandomLookAroundGoal",
+];
+
+pub const TRADER_LLAMA_GOAL_NAMES: [&str; 17] = [
+    "LlamaHurtByTargetGoal",
+    "LlamaAttackWolfGoal",
+    "TraderLlamaDefendWanderingTraderGoal",
+    "NearestAttackableTargetGoal",
+    "NearestAttackableTargetGoal",
+    "FloatGoal",
+    "RunAroundLikeCrazyGoal",
+    "LlamaFollowCaravanGoal",
+    "RangedAttackGoal",
+    "PanicGoal",
+    "BreedGoal",
+    "TemptGoal",
+    "FollowParentGoal",
+    "WaterAvoidingRandomStrollGoal",
+    "LookAtPlayerGoal",
+    "RandomLookAroundGoal",
+    "PanicGoal",
+];
+
+pub fn registered_llama_goals(trader: bool) -> GoalSelector<CowGoalContext> {
+    use crate::llama_ai::{
+        CaravanGoal, DefendTraderGoal, HurtByGoal, NearestFoeGoal, NoTargetGoal, SpitGoal,
+    };
+    let mut selector = GoalSelector::default();
+    selector.add(1, HurtByGoal);
+    selector.add(2, NearestFoeGoal::wolves());
+    if trader {
+        selector.add(1, DefendTraderGoal);
+        selector.add(2, NearestFoeGoal::zombies());
+        selector.add(2, NoTargetGoal);
+    }
+    selector.add(0, FloatGoal);
+    selector.add(1, RunAroundLikeCrazyGoal);
+    selector.add(2, CaravanGoal);
+    selector.add(3, SpitGoal { target: None });
+    selector.add(3, PanicGoal);
+    selector.add(4, BreedGoal);
+    selector.add(5, TemptGoal);
+    selector.add(6, FollowParentGoal);
+    selector.add(7, StrollGoal);
+    selector.add(8, LookAtPlayerGoal);
+    selector.add(9, RandomLookGoal);
+    if trader {
+        selector.add(1, SpeedPanicGoal(2.0));
+    }
+    selector
+}
+
+#[derive(Clone)]
+struct SpeedPanicGoal(f64);
+impl Goal<CowGoalContext> for SpeedPanicGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move])
+    }
+    fn can_start(&mut self, ctx: &mut CowGoalContext, world: &dyn World) -> bool {
+        PanicGoal.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut CowGoalContext, _world: &dyn World) -> bool {
+        !ctx.navigation_done
+    }
+    fn start(&mut self, ctx: &mut CowGoalContext) {
+        ctx.panic.running = true;
+        if let Some(target) = ctx.panic.wanted {
+            ctx.effects.push(CowGoalEffect::Navigate { target, speed: self.0 });
+        }
+    }
+    fn stop(&mut self, ctx: &mut CowGoalContext) {
+        ctx.panic.running = false;
+    }
+}
+
 pub fn registered_horse_goals() -> GoalSelector<CowGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(1, RunAroundLikeCrazyGoal);
@@ -435,16 +559,42 @@ pub fn registered_horse_goals() -> GoalSelector<CowGoalContext> {
     selector
 }
 
-/// `RunAroundLikeCrazyGoal`: only for a rider on an untamed horse, which
-/// this simulation has none of (its test draws nothing otherwise).
 #[derive(Clone)]
 struct RunAroundLikeCrazyGoal;
 impl Goal<CowGoalContext> for RunAroundLikeCrazyGoal {
     fn controls(&self) -> Controls {
         Controls::new(&[Control::Move])
     }
-    fn can_start(&mut self, _ctx: &mut CowGoalContext, _world: &dyn World) -> bool {
-        false
+    fn can_start(&mut self, ctx: &mut CowGoalContext, world: &dyn World) -> bool {
+        let Some(crazy) = ctx.crazy.as_mut() else { return false };
+        if crazy.mob_controlled || crazy.rider.is_none() {
+            return false;
+        }
+        crazy.target = crate::stroll::default_random_position(world, &ctx.walk, ctx.child.position, 5, 4, &mut ctx.random);
+        crazy.target.is_some()
+    }
+    fn can_continue(&mut self, ctx: &mut CowGoalContext, _world: &dyn World) -> bool {
+        ctx.crazy.is_some_and(|c| c.rider.is_some()) && !ctx.navigation_done
+    }
+    fn start(&mut self, ctx: &mut CowGoalContext) {
+        if let Some(target) = ctx.crazy.and_then(|c| c.target) {
+            ctx.effects.push(CowGoalEffect::Navigate { target, speed: 1.2 });
+        }
+    }
+    fn tick(&mut self, ctx: &mut CowGoalContext) {
+        let Some(crazy) = ctx.crazy else { return };
+        if ctx.random.next_int(25) != 0 {
+            return;
+        }
+        let Some(rider) = crazy.rider else { return };
+        if crazy.max_temper > 0 && (ctx.random.next_int(crazy.max_temper as u32) as i32) < crazy.temper {
+            ctx.effects.push(CowGoalEffect::Tame(rider));
+            ctx.crazy = None;
+            return;
+        }
+        ctx.effects.push(CowGoalEffect::Temper(5));
+        ctx.effects.push(CowGoalEffect::Buck);
+        ctx.crazy = None;
     }
 }
 

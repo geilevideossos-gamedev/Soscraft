@@ -218,6 +218,7 @@ mod tests {
             ToServer::CreativeSlot { .. } => 13,
             ToServer::RecipeBookSettings { .. } => 14,
             ToServer::RecipeSeen(_) => 15,
+            ToServer::OpenMountInventory => 16,
         }
     }
 
@@ -353,6 +354,7 @@ mod tests {
                     all: true,
                 },
             }),
+            ToServer::OpenMountInventory,
         ]
     }
 
@@ -392,6 +394,7 @@ mod tests {
                 hand: Hand::Off,
                 ticks: 9,
             }),
+            jump_bar: Some(0.75),
             ..PlayerView::default()
         };
         view.slots[0] = Some(Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0]));
@@ -412,6 +415,41 @@ mod tests {
             data: vec![(0, 5), (9, -1)],
             extras,
         })
+    }
+
+    fn trades() -> MenuExtras {
+        let discounted = NetOffer {
+            cost_a: Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0]),
+            cost_b: Some(Nbt(vec![10, 0, 0, 0])),
+            result: Nbt(vec![10, 1, 0]),
+            uses: 2,
+            max_uses: 12,
+            xp: 10,
+            special_price: -3,
+            demand: 4,
+            price_multiplier: 0.05,
+            reward_exp: true,
+        };
+        let sold_out = NetOffer {
+            cost_b: None,
+            uses: 16,
+            max_uses: 16,
+            special_price: 0,
+            demand: -2,
+            price_multiplier: 0.2,
+            reward_exp: false,
+            ..discounted.clone()
+        };
+        MenuExtras::Merchant {
+            villager: u64::MAX - 1,
+            profession: "minecraft:librarian".to_string(),
+            level: 2,
+            xp: 15,
+            future_xp: 25,
+            show_progress: true,
+            selected: Some(1),
+            offers: vec![discounted, sold_out],
+        }
     }
 
     fn boss(operation: BossBarOperation) -> ToClient {
@@ -518,6 +556,24 @@ mod tests {
                 MenuExtras::Anvil {
                     cost: 3,
                     name: Some("Pick".to_string()),
+                },
+            ),
+            menu(
+                10,
+                MenuKind::Merchant,
+                Text::literal("Bob"),
+                trades(),
+            ),
+            menu(
+                11,
+                MenuKind::Mount,
+                Text::translate("entity.minecraft.llama", Vec::new()),
+                MenuExtras::Mount {
+                    mount: u64::MAX - 7,
+                    columns: 5,
+                    saddle: false,
+                    armor: true,
+                    llama: true,
                 },
             ),
             ToClient::MenuSlots {
@@ -654,7 +710,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 16];
+        let mut seen = [false; 17];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -687,6 +743,85 @@ mod tests {
                 messages,
             },
         );
+    }
+
+    #[test]
+    fn a_trading_screen_keeps_its_discounted_and_sold_out_offers() {
+        let message = menu(4, MenuKind::Merchant, Text::literal("Bob"), trades());
+        let bytes = encode(Lane::Reliable, &message).unwrap();
+        let ToClient::MenuOpen(view) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+            panic!("a menu");
+        };
+        assert_eq!(view.kind, MenuKind::Merchant);
+        let MenuExtras::Merchant {
+            villager,
+            profession,
+            selected,
+            offers,
+            ..
+        } = view.extras
+        else {
+            panic!("{:?}", view.extras);
+        };
+        assert_eq!((villager, profession.as_str()), (u64::MAX - 1, "minecraft:librarian"));
+        assert_eq!(selected, Some(1));
+        let [discounted, sold_out] = &offers[..] else {
+            panic!("{offers:?}");
+        };
+        assert_eq!(
+            (discounted.special_price, discounted.demand, discounted.price_multiplier),
+            (-3, 4, 0.05)
+        );
+        assert!(discounted.cost_b.is_some() && discounted.reward_exp);
+        assert_eq!((sold_out.uses, sold_out.max_uses), (16, 16));
+        assert!(sold_out.cost_b.is_none() && !sold_out.reward_exp);
+        let empty = MenuExtras::Merchant {
+            villager: 0,
+            profession: String::new(),
+            level: 0,
+            xp: 0,
+            future_xp: 0,
+            show_progress: false,
+            selected: None,
+            offers: Vec::new(),
+        };
+        round_trip(Lane::Reliable, &menu(5, MenuKind::Merchant, Text::literal(""), empty));
+    }
+
+    #[test]
+    fn a_horse_inventory_keeps_its_columns_and_slots() {
+        let mut message = menu(
+            6,
+            MenuKind::Mount,
+            Text::translate("entity.minecraft.donkey", Vec::new()),
+            MenuExtras::Mount {
+                mount: 42,
+                columns: 5,
+                saddle: true,
+                armor: false,
+                llama: false,
+            },
+        );
+        if let ToClient::MenuOpen(view) = &mut message {
+            view.slots = vec![None; 17];
+            view.slots[0] = Some(Nbt(vec![10, 0, 0, 0]));
+        }
+        let bytes = encode(Lane::Reliable, &message).unwrap();
+        let ToClient::MenuOpen(view) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+            panic!("a menu");
+        };
+        assert_eq!(view.kind, MenuKind::Mount);
+        assert_eq!(
+            view.extras,
+            MenuExtras::Mount {
+                mount: 42,
+                columns: 5,
+                saddle: true,
+                armor: false,
+                llama: false
+            }
+        );
+        assert_eq!((view.slots.len(), view.slots[0].is_some()), (17, true));
     }
 
     #[test]

@@ -198,6 +198,9 @@ pub fn near(
             has_chunk(chunk_of(swirl.feet))
                 && tracks(swirl.range, view_distance, feet.to_array(), swirl.feet)
         }),
+        firework_bursts: filtered(&snapshot.firework_bursts, |burst| {
+            keeps(THROWN, burst.position)
+        }),
     }
 }
 
@@ -206,6 +209,7 @@ pub fn take_bursts(snapshot: &mut EntitySnapshot) -> EntitySnapshot {
         breath_bursts: std::mem::take(&mut snapshot.breath_bursts),
         dragon_breath: std::mem::take(&mut snapshot.dragon_breath),
         dragon_explosions: std::mem::take(&mut snapshot.dragon_explosions),
+        firework_bursts: std::mem::take(&mut snapshot.firework_bursts),
         ..EntitySnapshot::default()
     };
     bursts.eyes.shattered = std::mem::take(&mut snapshot.eyes.shattered);
@@ -217,6 +221,7 @@ fn add_bursts(into: &mut EntitySnapshot, from: EntitySnapshot) {
     into.breath_bursts.extend(from.breath_bursts);
     into.dragon_breath.extend(from.dragon_breath);
     into.dragon_explosions.extend(from.dragon_explosions);
+    into.firework_bursts.extend(from.firework_bursts);
 }
 
 pub fn keep_bursts(older: &mut EntitySnapshot, newer: &mut EntitySnapshot) {
@@ -229,7 +234,8 @@ pub fn has_bursts(snapshot: &EntitySnapshot) -> bool {
     !(snapshot.eyes.shattered.is_empty()
         && snapshot.breath_bursts.is_empty()
         && snapshot.dragon_breath.is_empty()
-        && snapshot.dragon_explosions.is_empty())
+        && snapshot.dragon_explosions.is_empty()
+        && snapshot.firework_bursts.is_empty())
 }
 
 pub fn bursts_message(
