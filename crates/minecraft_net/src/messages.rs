@@ -97,16 +97,28 @@ pub struct HandState {
     pub target: Target,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SkateReport {
     pub tick: u32,
     pub on: bool,
     pub airborne: bool,
     pub origin: [f32; 3],
     pub yaw: f32,
+    pub pose: Option<Box<SkatePose>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub const SKATE_BONES: usize = 23;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SkatePose {
+    pub root: [f32; 12],
+    pub bones: [[f32; 12]; SKATE_BONES],
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Skaters(pub Vec<(u32, SkatePose)>);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StateUp {
     Hand(HandState),
     Skate(SkateReport),
@@ -386,6 +398,7 @@ pub struct StateFrame {
     pub epoch: u32,
     pub mobs: Blob,
     pub entities: Blob,
+    pub skaters: Blob,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -270,6 +270,16 @@ mod tests {
             airborne: on,
             origin: [-12.5, 3600.25, 70.0],
             yaw: -135.5,
+            pose: on.then(|| Box::new(skate_pose(1.0))),
+        }
+    }
+
+    fn skate_pose(seed: f32) -> SkatePose {
+        SkatePose {
+            root: std::array::from_fn(|i| seed + i as f32 * 0.5),
+            bones: std::array::from_fn(|bone| {
+                std::array::from_fn(|i| seed * -2.0 + bone as f32 + i as f32 * 0.125)
+            }),
         }
     }
 
@@ -960,8 +970,33 @@ mod tests {
                 epoch: 3,
                 mobs: Blob(vec![7; 2000]),
                 entities: Blob(Vec::new()),
+                skaters: Blob(vec![9; 1153]),
             },
         );
+    }
+
+    #[test]
+    fn skater_poses_ride_the_state_frame_at_1152_bytes_a_skater() {
+        let pose = skate_pose(3.0);
+        assert_eq!(encode(Lane::State, &pose).unwrap().len(), 1152);
+        assert_eq!(1152, (1 + SKATE_BONES) * 12 * 4);
+        let skaters = Skaters(vec![(0, pose), (3, skate_pose(-1.5))]);
+        let bytes = encode(Lane::State, &skaters).unwrap();
+        assert_eq!(bytes.len(), 1 + 2 * (1 + 1152));
+        round_trip(Lane::State, &skaters);
+        round_trip(Lane::State, &Skaters::default());
+        let frame = StateFrame {
+            tick: 8,
+            epoch: 1,
+            skaters: Blob(bytes.clone()),
+            ..StateFrame::default()
+        };
+        let back = decode::<StateFrame>(Lane::State, &encode(Lane::State, &frame).unwrap()).unwrap();
+        assert_eq!(decode::<Skaters>(Lane::State, &back.skaters.0).unwrap(), skaters);
+        let report = StateUp::Skate(skate_report(true));
+        assert_eq!(encode(Lane::State, &report).unwrap().len(), 1 + 19 + 1 + 1152);
+        let off = ToServer::Skate(skate_report(false));
+        assert_eq!(encode(Lane::Reliable, &off).unwrap().len(), 1 + 19 + 1);
     }
 
     #[test]

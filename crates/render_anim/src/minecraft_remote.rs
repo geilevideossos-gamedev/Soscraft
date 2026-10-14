@@ -178,6 +178,7 @@ pub(crate) struct Friend {
     portal: crate::minecraft_portal::FriendPortal,
     music: crate::minecraft_music::MusicManager,
     skate_report: crate::minecraft_skaters::Reporter,
+    skaters: crate::minecraft_skaters::SkaterTracks,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -214,9 +215,10 @@ fn stop(
     friend: &mut Friend,
     view: &mut MinecraftWorldView,
     ui: &mut frame::MinecraftUi,
-    music: &mut audio::McMusic,
+    (music, poses): (&mut audio::McMusic, &mut frame::SkatePoses),
 ) {
     music.wanted = None;
+    friend.skaters.forget(poses);
     if view.active {
         sim::voxel::deactivate();
         crate::minecraft_world::clear_view(view);
@@ -248,7 +250,11 @@ fn report_skate(
         .skate_report
         .follow(skate.active, pose, (origin, yaw), seconds);
     match report {
-        Some(crate::minecraft_skaters::Report::State(report)) => {
+        Some(crate::minecraft_skaters::Report::State(mut report)) => {
+            report.pose = frame::SkatePose::of(skate)
+                .as_ref()
+                .and_then(crate::minecraft_skaters::net_pose)
+                .map(Box::new);
             match minecraft_net::encode(Lane::State, &StateUp::Skate(report)) {
                 Ok(bytes) => {
                     wire.send_state(HOST, &bytes);
@@ -282,8 +288,8 @@ fn line(text: &str) -> Clientbound {
 fn exchange(
     friend: &mut Friend,
     wire: &mut net::MinecraftWire,
-    now: Instant,
-    now_ms: u64,
+    (now, now_ms): (Instant, u64),
+    own: u32,
 ) -> Vec<Clientbound> {
     let Friend {
         prepared: Some(prepared),
@@ -293,6 +299,7 @@ fn exchange(
         ready_at,
         host_heard,
         told,
+        skaters,
         ..
     } = friend
     else {
@@ -309,7 +316,10 @@ fn exchange(
     }
     for (_, bytes) in wire.take_state() {
         if let Ok(frame) = minecraft_net::decode::<StateFrame>(Lane::State, &bytes) {
-            remote.apply_state(frame);
+            let heard = crate::minecraft_skaters::heard_skaters(&frame.skaters);
+            if remote.apply_state(frame) {
+                skaters.heard_all(&heard, own, now_ms as f64 / 1000.0);
+            }
         }
     }
     for blob in wire.take_batches() {
@@ -380,12 +390,13 @@ pub(crate) fn friend(
     mut prediction: Option<ResMut<net::ClientPredictionState>>,
     (local, presented): (Res<net::LocalPresentClient>, Res<net::PresentedSnapshot>),
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    (mut skate, cameras, mc_camera, ui_draw, settings): (
+    (mut skate, cameras, mc_camera, ui_draw, settings, mut poses): (
         ResMut<frame::SkateMode>,
         Query<&Transform, With<render_scene::FlyCamera>>,
         Option<Res<frame::McCamera>>,
         Option<Res<frame::UiDraw>>,
         Option<Res<frame::GameSettings>>,
+        ResMut<frame::SkatePoses>,
     ),
     mut ui: ResMut<frame::MinecraftUi>,
     mut view: ResMut<MinecraftWorldView>,
@@ -410,6 +421,9 @@ pub(crate) fn friend(
         if ui.chat_only {
             ui.chat_only = false;
         }
+        if !friend.skaters.is_empty() {
+            friend.skaters.forget(&mut poses);
+        }
         return;
     }
     let friend = &mut *friend;
@@ -417,10 +431,10 @@ pub(crate) fn friend(
         *sleepers = frame::McSleepers::default();
     }
     for _ in torn_down.read() {
-        stop(friend, &mut view, &mut ui, &mut mc_music);
+        stop(friend, &mut view, &mut ui, (&mut mc_music, &mut poses));
     }
     for match_ in installed.read() {
-        stop(friend, &mut view, &mut ui, &mut mc_music);
+        stop(friend, &mut view, &mut ui, (&mut mc_music, &mut poses));
         if assets::minecraft_map::is_minecraft(&match_.zone) {
             let (send, receive) = mpsc::channel();
             friend.loader = std::thread::Builder::new()
@@ -489,7 +503,7 @@ pub(crate) fn friend(
             }
             Err(error) => {
                 diag::warn!(World, "Minecraft world failed to load: {error}");
-                stop(friend, &mut view, &mut ui, &mut mc_music);
+                stop(friend, &mut view, &mut ui, (&mut mc_music, &mut poses));
                 return;
             }
         }
@@ -498,7 +512,7 @@ pub(crate) fn friend(
     let sent = std::mem::take(&mut ui.chat.sent);
     let mut wire = wire.filter(|wire| wire.role() == Some(net::WireRole::Friend));
     if let Some(wire) = wire.as_mut() {
-        let lines = exchange(friend, wire, now, now_ms);
+        let lines = exchange(friend, wire, (now, now_ms), local.0.0);
         if let Some(prepared) = friend.prepared.as_ref().filter(|_| !lines.is_empty()) {
             crate::minecraft_chat::show(&mut ui.chat, &lines, &prepared.language);
             show_overlays(&mut ui, &lines, &prepared.language);
@@ -656,6 +670,7 @@ pub(crate) fn friend(
         }
         report_skate(friend, wire, &mut skate, seconds);
     }
+    friend.skaters.show(&mut poses, now_ms as f64 / 1000.0);
     ui.board_allowed &= sleepers.camera.is_none();
     let gate = HandGate {
         skating: skate.active,
@@ -2161,7 +2176,7 @@ mod tests {
         };
         let mut friend = Friend::default();
         let mut view = MinecraftWorldView::default();
-        stop(&mut friend, &mut view, &mut ui, &mut music);
+        stop(&mut friend, &mut view, &mut ui, (&mut music, &mut frame::SkatePoses::default()));
         assert!(music.wanted.is_none());
     }
 

@@ -1001,6 +1001,7 @@ mod tests {
                 minecraft_net::encode(Lane::State, &mobs.to_vec()).unwrap(),
             ),
             entities: minecraft_net::messages::Blob(Vec::new()),
+            skaters: minecraft_net::messages::Blob(Vec::new()),
         }
     }
 
@@ -1385,6 +1386,7 @@ mod tests {
                 entities: minecraft_net::messages::Blob(
                     minecraft_net::encode(Lane::State, &snapshot).unwrap(),
                 ),
+                skaters: minecraft_net::messages::Blob(Vec::new()),
             }
         };
         let timing = crate::tick_rate::ClientTiming::default();

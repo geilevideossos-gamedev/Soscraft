@@ -35,7 +35,7 @@ pub use ui::{
 };
 
 pub mod skate;
-pub use skate::SkateMode;
+pub use skate::{SkateMode, SkatePose, SkatePoses};
 pub mod minecraft_ui;
 pub use minecraft_ui::{InventoryPuppet, McAction, McActionInput, McCamera, McCameraType, McBook, McBookEdit, McChoice, McClick, McGameMode, McLevelLoading, McLoadingReason, McMerchant, McOffer, McOven, McScreen, McSleepCamera, McSleepers, McSlot, McStack, McVitals, MinecraftUi};
 pub mod minecraft_credits;

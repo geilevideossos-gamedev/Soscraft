@@ -90,6 +90,7 @@ pub(crate) struct HostSessions {
     leave_beds: Vec<u32>,
     edit_books: BTreeMap<u32, BookEdits>,
     skaters: BTreeMap<u32, crate::minecraft_skaters::Skater>,
+    poses: crate::minecraft_skaters::SkaterTracks,
 }
 
 impl HostSessions {
@@ -104,6 +105,7 @@ impl HostSessions {
             && self.leave_beds.is_empty()
             && self.edit_books.is_empty()
             && self.skaters.is_empty()
+            && self.poses.is_empty()
     }
 }
 
@@ -370,10 +372,12 @@ pub(crate) fn host(
     mut host: NonSendMut<HostSessions>,
     mut ui: ResMut<frame::MinecraftUi>,
     mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
+    (skate, mut poses): (Res<frame::SkateMode>, ResMut<frame::SkatePoses>),
 ) {
     let relayed = std::mem::take(&mut runtime.relayed);
     let Some(mut wire) = wire.filter(|wire| wire.role() == Some(net::WireRole::Host)) else {
         if !host.idle() {
+            host.poses.forget(&mut poses);
             *host = HostSessions::default();
         }
         return;
@@ -390,6 +394,7 @@ pub(crate) fn host(
         host.leave_beds.retain(|leaving| leaving != client);
         host.edit_books.remove(client);
         host.skaters.remove(client);
+        host.poses.leave(*client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
         sim::voxel::forget_gun_guard(*client);
@@ -516,6 +521,11 @@ pub(crate) fn host(
             let (skate, refused) =
                 crate::minecraft_skaters::ride(skater, player, world.authority, id, seconds);
             session.outbox.extend(refused);
+            if let Some(pose) = skater.take_fresh() {
+                host.poses.heard(session.client, &pose, seconds);
+            } else if !skater.skating().active {
+                host.poses.leave(session.client);
+            }
             let stepped = crate::minecraft_players::step_friend(
                 player,
                 &mut world,
@@ -566,6 +576,7 @@ pub(crate) fn host(
             }));
         }
         host.sessions.deliver(&server.globals.chat, &told, true);
+        host.poses.show(&mut poses, seconds);
         for player in server.players.values() {
             if player.uuid == *view.local {
                 continue;
@@ -641,7 +652,11 @@ pub(crate) fn host(
                 player.id.0
             };
             let gear = minecraft_survival::gear::player_gear(player);
-            let skating = player.uuid != *view.local && skating(&host.skaters, client);
+            let skating = if player.uuid == *view.local {
+                skate.active
+            } else {
+                skating(&host.skaters, client)
+            };
             (client, crate::minecraft_skaters::board_view(gear, skating))
         })
         .collect();
@@ -649,11 +664,36 @@ pub(crate) fn host(
     let books = Books::of(&server.globals.data);
     host.sessions
         .send_menus(&mut server.players, &mut server.levels, books);
-    let frames = host.sessions.send_mobs(
+    let mut frames = host.sessions.send_mobs(
         &server.players,
         &mut server.levels,
         crate::minecraft_world::VIEW_DISTANCE,
     );
+    let mut skaters = Vec::new();
+    if let Some(me) = server.players.get(view.local)
+        && let Some(pose) = frame::SkatePose::of(&skate)
+            .as_ref()
+            .and_then(crate::minecraft_skaters::net_pose)
+    {
+        skaters.push((local.0.0, me.dimension, pose));
+    }
+    for session in host.sessions.sessions.values() {
+        let pose = host.skaters.get(&session.client).and_then(|skater| skater.shown());
+        if let (Some(pose), Some(player)) = (pose, server.players.get(&session.uuid)) {
+            skaters.push((session.client, player.dimension, pose));
+        }
+    }
+    for (client, frame) in &mut frames {
+        let level = host
+            .sessions
+            .sessions
+            .get(client)
+            .and_then(|session| server.players.get(&session.uuid))
+            .map(|player| player.dimension);
+        if let Some(level) = level {
+            frame.skaters = crate::minecraft_skaters::relayed(&skaters, *client, level);
+        }
+    }
     host.sessions
         .send_heard(&server.players, &mut server.levels);
     for (client, frame) in frames {

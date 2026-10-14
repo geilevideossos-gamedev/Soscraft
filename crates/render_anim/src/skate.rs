@@ -102,6 +102,7 @@ impl SkateBody for net::ClientPredictionState {
 pub fn register(app: &mut App) {
     app.init_resource::<SkateMode>()
         .init_resource::<Host>()
+        .init_resource::<frame::SkatePoses>()
         .add_systems(
             Update,
             update
@@ -109,7 +110,24 @@ pub fn register(app: &mut App) {
                 .before(crate::sync_camera_from_presented)
                 .before(render_scene::GfxSceneAdd)
                 .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
+            publish
+                .after(update)
+                .before(render_scene::GfxSceneAdd)
+                .in_set(frame::ClientSet::Present),
         );
+}
+
+fn publish(mode: Res<SkateMode>, mut poses: ResMut<frame::SkatePoses>, mut written: Local<Option<u32>>) {
+    if let Some(client) = written.take() {
+        poses.0.remove(&client);
+    }
+    if let Some(pose) = frame::SkatePose::of(&mode) {
+        poses.0.insert(mode.client, pose);
+        *written = Some(mode.client);
+    }
 }
 
 fn preload_assets(mode: &mut SkateMode) {
