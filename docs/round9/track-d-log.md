@@ -2461,6 +2461,28 @@ After 4e171e63.
 IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:cow_spawn_egg*8,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:golden_apple*8
 ```
 
+### 2. Minecraft explosions push players like vanilla
+
+After 1ed1d4f7. Not in the brief's list of three: the brief took the pushes for granted (its owner steps say "you lose hearts and are pushed"), but no explosion pushed a player in the fork (track C's second review found the same, `docs/WEAPONS.md:621`). Without it a player spared by pvp (commit 3) would get no push at all.
+
+- **Vanilla (26.3, javap of `ServerExplosion.hurtEntities`; the jar's `#minecraft:no_knockback` damage type tag):**
+  - After `hurtServer`, every entity is pushed by direction × (1 − distance) × exposure (× (1 − `explosion_knockback_resistance`) for a living one) through `pushFromExplosion`, whether the hurt landed or not. A player that is neither a spectator nor a flying creative player also gets it in `hitPlayers`, which the explode packet hands its client.
+  - `explosion`, `player_explosion` and `bad_respawn_point` are in `#minecraft:no_knockback`, so the hurt itself adds no 0.4 knockback: the blast's push is the only one.
+- **Changed:** `minecraft_survival/src/entities.rs`: `route` turns the knockback of every `PlayerHitKind::Explosion` and `BadRespawnPoint` hit into that player's `out.pushes` (the same blocks-a-tick motion `players_pushed` already carries for wind bursts and the dragon), before the hit is converted, so a hit that does no damage (peaceful, a totem's grace, a creative player) still pushes. `render_anim/src/minecraft_players.rs` applies it through `launch_velocity` and `push_velocity` as before, and skips dead, spectating and creative-flying players. Creepers, ghast fireballs, beds and respawn anchors, end crystals and TNT all push now.
+- **Tests:** `minecraft_survival`: `entities::tests::an_explosion_pushes_the_player_it_hit_even_when_it_does_no_damage` (the friend's TNT hit gives one push and one hit; a bad respawn point pushes the host; an arrow adds no push here; on peaceful the hit is gone but the push stays). Runs: `minecraft_survival` 745 (+1 world test), green. `check -p launcher` green.
+- **Decisions:**
+  - Blast Protection's `explosion_knockback_resistance` is still not applied to the push (`docs/MINECRAFT-SURVIVAL.md:423` already lists it), and MW2 blasts still push no player.
+- **Test steps** (single player, `r9-tnt`, survival):
+  1. Stand 3 blocks from TNT and light it: you lose hearts and are thrown away from it, a little up (**223_tnt_push**).
+  2. Hatch a creeper and let it blow up beside you: you are pushed too (**224_creeper_push**).
+  3. `/gamemode creative`, fly (double jump) next to lit TNT: no push. Land beside another one: pushed, no hearts lost. `/gamemode survival`.
+  4. Hold a totem of undying in the offhand, take a TNT blast with half a heart left so the totem pops, then stand by a second TNT within 4 seconds: no damage, but the push (**225_totem_push**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*4,minecraft:cobblestone*64,minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:cooked_beef*32,minecraft:golden_apple*8
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2560,6 +2582,8 @@ Group skater-poses changed `SkateReport` (new `pose`) and `StateFrame` (new `ska
 - `CLAUDE.md` (group strider-freeze): roadmap item 2's last sentence drops ", such as a ridden strider standing still under `/tick freeze`".
 - `docs/PROGRESS.md` (group strider-freeze): the open not-vanilla item "ridden strider under `/tick freeze`" (line 10) is done by track D, group strider-freeze; it answers `docs/round8/decisions.md:23`.
 - `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 1): line 430 ("TNT explosions don't hurt mobs or players; only creeper explosions do.") is removed. The TNT item at line 126 ("TNT explodes.") becomes: "TNT explodes and hurts the mobs and players around it like vanilla, with their exposure taken before its blocks break; the mobs it kills drop their loot after the blast."
+- `docs/WEAPONS.md` (group tnt, commit 2; track C's file): line 621 becomes "- Explosion knockback still pushes the player: a Minecraft blast's push reaches the player as `out.pushes` whether the hurt lands or not, as vanilla pushes an entity whose hurt is refused. MW2 blasts push no player."; line 748's step 3 ends "no damage (and no push: MW2 blasts push no player)"; line 796's row reads "Bullets and explosions, MW2 and Minecraft, 80 ticks; a Minecraft blast still pushes".
+- `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 2): the explosions item at line 33 gains: "Minecraft explosions (TNT, creepers, fireballs, beds, anchors, crystals) push every player they reach away from the centre like vanilla, even when the hit does no damage; a flying creative player is not pushed."
 - `docs/PROGRESS.md` (group tnt, commit 1): line 57 ("TNT with pvp off (track D): the brief found that TNT hurts nobody today...") becomes: "TNT (track D, group tnt): TNT now hurts players and mobs everywhere, single player too; tell the owner."
 
 ## Vendored files

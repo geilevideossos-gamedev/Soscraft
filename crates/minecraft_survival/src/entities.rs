@@ -307,6 +307,7 @@ impl PlayerQueues {
             let Some(queue) = self.0.get_mut(&hit.player_id) else {
                 continue;
             };
+            queue.out.pushes.extend(explosion_push(&hit.kind));
             let Some(feet) = queue.feet else {
                 continue;
             };
@@ -1830,6 +1831,13 @@ fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) 
     (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, Default::default(), None)
 }
 
+fn explosion_push(kind: &PlayerHitKind) -> Option<DVec3> {
+    match *kind {
+        PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => Some(knockback),
+        _ => None,
+    }
+}
+
 fn melee_push(kind: &PlayerHitKind) -> crate::impulse::MeleePush {
     match *kind {
         PlayerHitKind::Melee { throw, lift, disable_shield_seconds, .. } => crate::impulse::MeleePush { throw, lift: f64::from(lift), disable_shield_ticks: crate::offhand::disable_ticks(disable_shield_seconds) },
@@ -2659,6 +2667,30 @@ mod tests {
         let hits = std::mem::take(&mut queues.queue(FRIEND).out.hits);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0], (4.0, None, Some([2.0, -0.0]), crate::death::DamageCause::mob(crate::death::MobAttack::Arrow, Some(77), Some("minecraft:skeleton")), Default::default(), None));
+    }
+
+    #[test]
+    fn an_explosion_pushes_the_player_it_hit_even_when_it_does_no_damage() {
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output::default();
+        let knockback = DVec3::new(0.6, 0.3, 0.0);
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback }, source: None });
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: HOST, damage: 9.0, kind: PlayerHitKind::BadRespawnPoint { knockback: DVec3::Z }, source: None });
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: HOST, damage: 4.0, kind: PlayerHitKind::Arrow { velocity: DVec3::X, effect: None }, source: None });
+        queues.route(&mut output, 2, |_| None);
+        let friend = queues.queue(FRIEND);
+        assert_eq!(friend.out.pushes, [knockback]);
+        assert_eq!(friend.out.hits.len(), 1);
+        assert_eq!(friend.out.hits[0].3, crate::death::DamageCause::Explosion);
+        assert_eq!(queues.queue(HOST).out.pushes, [DVec3::Z], "an arrow pushes through its hit, not here");
+        assert_eq!(queues.queue(HOST).out.hits.len(), 2);
+        let mut output = minecraft_terrain::server::Output::default();
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback }, source: None });
+        let mut queues = two_queues();
+        queues.route(&mut output, 0, |_| None);
+        let friend = queues.queue(FRIEND);
+        assert!(friend.out.hits.is_empty(), "no damage on peaceful");
+        assert_eq!(friend.out.pushes, [knockback], "the blast still pushes");
     }
 
     #[test]
