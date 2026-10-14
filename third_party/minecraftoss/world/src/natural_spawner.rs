@@ -244,6 +244,7 @@ enum Rules {
     Piglin,
     Ocelot,
     Unrestricted,
+    Patrolling,
     /// Rules not ported yet: the type is not spawned.
     Other,
 }
@@ -315,10 +316,11 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "bat" => (0.5, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "glow_squid" => (0.8, 0.8, Placement::InWater, MotionBlockingNoLeaves, false, false),
         "drowned" => (0.6, 1.95, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "pillager" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute" | "drowned");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute" | "drowned" | "pillager");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),
@@ -343,10 +345,12 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "strider" => Rules::Strider,
         "ocelot" => Rules::Ocelot,
         "cat" => Rules::Unrestricted,
+        "pillager" => Rules::Patrolling,
         _ if monster => Rules::Monster,
         _ => Rules::Other,
     };
     let walk = match short {
+        "pillager" => Walk::Neutral,
         _ if monster => Walk::Monster,
         // Cube mobs and squid keep `PathfinderMob`'s 0; bats are no
         // pathfinders (`Mob.checkSpawnRules`).
@@ -358,7 +362,7 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
     let cluster = match short {
         "horse" | "donkey" | "mule" | "llama" | "camel" | "zombie_horse" => 6,
         "wolf" => 8,
-        "ghast" => 1,
+        "ghast" | "pillager" => 1,
         _ => 4,
     };
     Some(TypeInfo { width, height, placement, heightmap, fire_immune, rules, walk, remove_far, cluster })

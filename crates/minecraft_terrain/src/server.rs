@@ -6999,8 +6999,8 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
-    const HATCHING_EGGS: [&str; 44] = [
-        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "sheep", "shulker", "skeleton", "slime", "snow_golem", "spider", "stray", "strider",
+    const HATCHING_EGGS: [&str; 45] = [
+        "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "pillager", "sheep", "shulker", "skeleton", "slime", "snow_golem", "spider", "stray", "strider",
         "trader_llama", "villager", "wandering_trader", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
     ];
 
@@ -7455,9 +7455,9 @@ mod tests {
         let Some((mut server, _)) = door_world() else { return };
         let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
         server.summon("minecraft:shulker", [8.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
-        server.summon("minecraft:pillager", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
+        server.summon("minecraft:silverfish", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
         let kinds = |server: &ServerSim| server.dormant.iter().map(|(group, _)| group[0].kind.clone()).collect::<Vec<_>>();
-        assert_eq!(kinds(&server), ["minecraft:pillager"]);
+        assert_eq!(kinds(&server), ["minecraft:silverfish"]);
         assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are simulated");
         let player = minecraftoss_entities::tempt::PlayerCandidate {
             id: 0,
@@ -8476,6 +8476,67 @@ mod tests {
         let biome = kinds(&mut server, between, &netherrack, MobCategory::Monster);
         assert_ne!(biome, enemies, "elsewhere in the bounds the biome decides");
         assert!(kinds(&mut server, inside, &netherrack, MobCategory::Creature).iter().all(|kind| kind == "minecraft:strider"), "only monsters are overridden");
+    }
+
+    #[test]
+    fn pillager_outposts_spawn_pillagers_with_crossbows_by_day() {
+        use minecraftoss_world::natural_spawner::spawning::{MobCategory, Unlimited};
+        type BlockPos = minecraftoss_core::BlockPos;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen.clone(), states, "minecraft:overworld");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let at = match crate::locate::nearest_structure(&worldgen, &["minecraft:pillager_outpost".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no pillager outpost near the origin of seed 1234: {other:?}"),
+        };
+        let outpost = worldgen.structures.id("minecraft:pillager_outpost").unwrap();
+        let start = worldgen.structures.starts_in(&worldgen.library, &worldgen.terrain, ChunkPos::new(at[0] >> 4, at[2] >> 4)).iter().find(|start| start.structure == outpost).cloned().expect("the outpost starts in its chunk");
+        let bbox = start.bounding_box();
+        for x in (bbox.min_x >> 4) - 1..=(bbox.max_x >> 4) + 1 {
+            for z in (bbox.min_z >> 4) - 1..=(bbox.max_z >> 4) + 1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let natural = server.level.natural_spawning.as_ref().unwrap();
+        let (spawns, finder) = (natural.spawns.clone(), natural.structures.clone().unwrap());
+        let ground = |server: &ServerSim, x: i32, z: i32| minecraftoss_generator::feature::World::height_at(&server.level, minecraftoss_core::chunk::HeightmapKind::MotionBlocking, x, z);
+        let (cx, cz) = ((bbox.min_x + bbox.max_x) / 2, (bbox.min_z + bbox.max_z) / 2);
+        let centre = BlockPos::new(cx, ground(&server, cx, cz), cz);
+        assert!(finder(centre).iter().any(|s| s.name == "minecraft:pillager_outpost" && s.in_box));
+        assert_eq!(spawns.kinds_at(&server.level, &*finder, MobCategory::Monster, centre), ["minecraft:pillager"]);
+        let far = BlockPos::new(cx + 400, 70, cz + 400);
+        assert!(!spawns.kinds_at(&server.level, &*finder, MobCategory::Monster, far).contains(&"minecraft:pillager".to_owned()));
+        let players = [[f64::from(bbox.max_x) + 30.5, f64::from(centre.y), f64::from(cz) + 0.5]];
+        let mut context = spawn_context(&players, true);
+        context.overworld_time = 6000;
+        context.structures = &*finder;
+        let before: std::collections::HashSet<u64> = server.mobs.mob_ids().collect();
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        for _ in 0..600 {
+            let x = bbox.min_x + random.next_int((bbox.max_x - bbox.min_x + 1) as u32) as i32;
+            let z = bbox.min_z + random.next_int((bbox.max_z - bbox.min_z + 1) as u32) as i32;
+            let y = ground(&server, x, z);
+            spawns.spawn_category_for_position(&mut server.level, &mut context, &mut Unlimited, MobCategory::Monster, ChunkPos::new(x >> 4, z >> 4), BlockPos::new(x, y, z));
+        }
+        server.take_spawned();
+        let new: Vec<u64> = server.mobs.mob_ids().filter(|id| !before.contains(id)).collect();
+        assert!(new.iter().all(|&id| server.mobs.entity_type(id) == Some("minecraft:pillager")), "only pillagers by day in an outpost");
+        let pillagers: Vec<_> = server.mobs.illagers().iter().filter(|e| new.contains(&e.id)).collect();
+        assert!(pillagers.len() >= 3, "{}", pillagers.len());
+        for e in pillagers {
+            let p = e.illager.body.position;
+            assert!(bbox.is_inside(BlockPos::new(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)), "{p}");
+            assert!(e.illager.holds_crossbow());
+            assert!(e.illager.raider.can_join_raid);
+        }
     }
 
     #[test]

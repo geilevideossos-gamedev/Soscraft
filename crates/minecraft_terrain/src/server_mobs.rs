@@ -446,6 +446,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:pig",
     "minecraft:piglin",
     "minecraft:piglin_brute",
+    "minecraft:pillager",
     "minecraft:sheep",
     "minecraft:shulker",
     "minecraft:skeleton",
@@ -681,6 +682,11 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let kind = minecraftoss_entities::piglin::PiglinKind::from_type(kind)?;
             let saved = crate::piglin_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::piglin_save::spawn(world, tag, kind, saved)?
+        }
+        "minecraft:pillager" if tag.get("Passengers").is_none() => {
+            let kind = minecraftoss_entities::illager::IllagerKind::from_type(kind)?;
+            let saved = crate::illager_save::Saved { pos, yaw, health, persistent, no_ai, random };
+            crate::illager_save::spawn(world, tag, kind, saved)?
         }
         "minecraft:hoglin" | "minecraft:zoglin" => {
             use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
@@ -1741,6 +1747,10 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         let piglin = &e.piglin;
         add(e.id, piglin.kind.type_id(), &piglin.body, piglin.yaw, piglin.health, piglin.persistence_required, crate::piglin_save::fields(e));
     }
+    for e in world.illagers() {
+        let illager = &e.illager;
+        add(e.id, illager.kind.type_id(), &illager.body, illager.yaw, illager.health, illager.persistence_required, crate::illager_save::fields(e));
+    }
     for e in world.chickens() {
         let chicken = &e.chicken;
         let mut fields = age(&chicken.age);
@@ -2639,6 +2649,37 @@ mod tests {
         let again = &again[0].1;
         assert!(again.get("wander_target").is_none() && again.get("home_pos").is_none() && again.get("home_radius").is_none(), "{again:?}");
         assert!(again.get("equipment").and_then(|e| e.get("mainhand")).is_none(), "the empty hand saves no bucket");
+    }
+
+    #[test]
+    fn a_pillager_saves_and_loads_with_its_crossbow_and_raider_state() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:pillager\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,8],Health:20.0f,Rotation:[45.0f,0.0f],LeftHanded:1b,CanJoinRaid:1b,Wave:3,PatrolLeader:1b,Patrolling:1b,patrol_target:[I;10,64,-20],equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}},drop_chances:{mainhand:0.5f},Inventory:[{id:\"minecraft:white_banner\",count:1}]}").unwrap();
+        assert!(SIMULATED_KINDS.contains(&"minecraft:pillager"));
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("pillagers load");
+        assert_eq!(world.entity_type(id), Some("minecraft:pillager"));
+        {
+            let e = world.illager_mut(id).unwrap();
+            let i = &e.illager;
+            assert_eq!((i.health, i.yaw, i.left_handed, i.can_pick_up_loot), (20.0, 45.0, true, true));
+            assert!(i.holds_crossbow() && !i.crossbow_charged());
+            assert_eq!(i.drop_chances[0], 0.5);
+            assert_eq!(i.inventory[0].as_ref().map(|s| s.id.as_str()), Some("minecraft:white_banner"));
+            let r = &i.raider;
+            assert_eq!((r.wave, r.can_join_raid, r.patrol_leader, r.patrolling, r.patrol_target), (3, true, true, true, Some((10, 64, -20))));
+            e.illager.set_crossbow_charged(true);
+        }
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("PatrolLeader"), Some(&Tag::Byte(1)));
+        assert_eq!(saved.get("patrol_target"), Some(&Tag::IntArray(vec![10, 64, -20])));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved pillager loads");
+        let e = fresh.illager_mut(back).unwrap();
+        assert!(e.illager.crossbow_charged(), "a loaded crossbow stays loaded");
+        assert_eq!((e.illager.health, e.illager.raider.wave), (20.0, 3));
+        assert_eq!(e.illager.drop_chances[0], 0.5);
     }
 
     #[test]

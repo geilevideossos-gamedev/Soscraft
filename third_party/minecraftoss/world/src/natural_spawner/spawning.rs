@@ -352,6 +352,7 @@ fn follow_range_base(kind: &str) -> f64 {
         "minecraft:ghast" => 100.0,
         "minecraft:blaze" => 48.0,
         "minecraft:piglin_brute" => 12.0,
+        "minecraft:pillager" => 32.0,
         _ => 16.0,
     }
 }
@@ -710,6 +711,7 @@ impl CreatureSpawns {
             Rules::Piglin => piglin_may_stand_on(self.registries.blocks.block(self.registries.blocks.block_of(level.block(pos.below()))).name.as_str()),
             Rules::Ocelot => level.random().next_i32_bound(3) != 0,
             Rules::Unrestricted => true,
+            Rules::Patrolling => level.block_brightness(pos) <= 8 && context.difficulty != 0 && self.mob_spawn_rules(level, kind, info, pos),
             Rules::Other => {
                 level.note_unsupported(&format!("spawn rules of {kind}"));
                 false
@@ -1008,6 +1010,26 @@ impl CreatureSpawns {
                 }
             }
             "minecraft:cave_spider" => {}
+            "minecraft:pillager" => {
+                equip(&mut tag, "mainhand", "minecraft:crossbow");
+                Self::roll_enchantments(level, &tag, difficulty);
+                if level.random().next_i32_bound(300) == 0 {
+                    let piercing = Tag::Compound(BTreeMap::from([("minecraft:piercing".to_owned(), Tag::Int(1))]));
+                    let components = Tag::Compound(BTreeMap::from([("minecraft:enchantments".to_owned(), piercing)]));
+                    if let Tag::Compound(map) = &mut tag
+                        && let Some(Tag::Compound(slots)) = map.get_mut("equipment")
+                        && let Some(Tag::Compound(hand)) = slots.get_mut("mainhand")
+                    {
+                        hand.insert("components".to_owned(), components);
+                    }
+                }
+                set(&mut tag, "CanJoinRaid", byte(true));
+                if level.random().next_f32() < 0.06 {
+                    set(&mut tag, "PatrolLeader", byte(true));
+                    level.note_unsupported("the ominous banner of a patrol leader");
+                }
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
             "minecraft:witch" => {
                 // `Raider.finalizeSpawn`, then `PatrollingMonster`'s leader
                 // roll (witches never lead), then `Mob`'s part.
@@ -1724,5 +1746,75 @@ mod tests {
         assert_eq!(info.rules, super::Rules::AnyLightMonster);
         assert!(matches!(info.walk, super::Walk::Monster));
         assert_eq!(super::follow_range_base("minecraft:blaze"), 48.0);
+    }
+
+    #[test]
+    fn pillagers_spawn_alone_in_a_pillager_outpost_by_day_with_a_crossbow() {
+        use minecraftoss_core::nbt::Tag;
+        let info = super::type_info("minecraft:pillager").unwrap();
+        assert_eq!((info.width, info.height, info.cluster, info.fire_immune, info.remove_far), (0.6, 1.95, 1, false, true));
+        assert_eq!(info.rules, super::Rules::Patrolling);
+        assert!(matches!(info.walk, super::Walk::Neutral));
+        assert_eq!(super::follow_range_base("minecraft:pillager"), 32.0);
+        let Some((spawns, column)) = river() else { return };
+        let mut day = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let players = [[8.5, 65.0, 48.5]];
+        let outpost = |_: minecraftoss_core::BlockPos| vec![super::StructureHere { name: "minecraft:pillager_outpost".to_owned(), in_box: true, in_piece: false }];
+        let rounds = 3000;
+        for _ in 0..rounds {
+            let mut context = super::SpawnContext {
+                players: &players,
+                respawn: None,
+                difficulty: 2,
+                overworld_time: 6000,
+                moon_brightness: 0.0,
+                raining: false,
+                thundering: false,
+                seed: 0,
+                surface_slime_chance: &|_| 0.0,
+                halloween: false,
+                can_spawn_in_chunk: &|_| true,
+                obstacles: Vec::new(),
+                chickens: Vec::new(),
+                structures: &outpost,
+                spawning_monsters: true,
+            };
+            let before = day.added.len();
+            spawns.spawn_category_for_position(&mut day, &mut context, &mut super::Unlimited, MobCategory::Monster, minecraftoss_core::ChunkPos::new(0, 0), minecraftoss_core::BlockPos::new(8, 65, 8));
+            assert!(day.added.len() - before <= 1, "pillagers spawn alone");
+        }
+        let kinds: Vec<&str> = day.added.iter().filter_map(|tag| tag.get("id").and_then(Tag::as_str)).collect();
+        assert!(kinds.len() > 100, "{}", kinds.len());
+        assert!(kinds.iter().all(|kind| *kind == "minecraft:pillager"), "{kinds:?}");
+        let leaders = day.added.iter().filter(|tag| tag.get("PatrolLeader").and_then(Tag::as_i64) == Some(1)).count();
+        let share = leaders as f64 / kinds.len() as f64;
+        assert!(share > 0.0 && share < 0.15, "{leaders} of {}", kinds.len());
+        for tag in &day.added {
+            let hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|h| h.get("id")).and_then(Tag::as_str);
+            assert_eq!(hand, Some("minecraft:crossbow"));
+            assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+        }
+        let mut elsewhere = Column { added: Vec::new(), ..day };
+        let mut context = super::SpawnContext {
+            players: &players,
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        for _ in 0..500 {
+            spawns.spawn_category_for_position(&mut elsewhere, &mut context, &mut super::Unlimited, MobCategory::Monster, minecraftoss_core::ChunkPos::new(0, 0), minecraftoss_core::BlockPos::new(8, 65, 8));
+        }
+        assert!(elsewhere.added.is_empty(), "no monsters by day outside the outpost");
     }
 }

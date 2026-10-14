@@ -40,6 +40,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:pig",
     "minecraft:piglin",
     "minecraft:piglin_brute",
+    "minecraft:pillager",
     "minecraft:sheep",
     "minecraft:shulker",
     "minecraft:skeleton",
@@ -354,6 +355,16 @@ impl Shown {
                 crate::snow_golem_render::append_snow_golems(
                     models,
                     w.snow_golems().iter(),
+                    poses,
+                    atlas,
+                    light,
+                    partial,
+                );
+            }
+            "minecraft:pillager" => {
+                crate::illager_render::append_illagers(
+                    models,
+                    w.illagers().iter(),
                     poses,
                     atlas,
                     light,
@@ -907,6 +918,7 @@ mod tests {
             ("minecraft:llama", 0.05),
             ("minecraft:trader_llama", 0.05),
             ("minecraft:snow_golem", 0.05),
+            ("minecraft:pillager", 0.05),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);

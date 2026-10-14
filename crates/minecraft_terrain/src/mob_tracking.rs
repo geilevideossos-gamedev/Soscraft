@@ -1281,6 +1281,19 @@ mod tests {
     }
 
     #[test]
+    fn a_friend_sees_a_pillager_from_its_look_tag_with_its_crossbow() {
+        use minecraftoss_entities::illager::IllagerArmPose;
+        let mut host = EntityWorld::default();
+        let (pillager, tag) = spawn(&mut host, "{id:\"minecraft:pillager\",Pos:[2.5d,64.0d,0.5d],NoAI:1b,equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}");
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, pillager, &tag));
+        assert_eq!(friend.entity_type(pillager), Some("minecraft:pillager"));
+        let seen = &friend.illagers()[0];
+        assert!(seen.illager.holds_crossbow());
+        assert_eq!(seen.arm_pose, IllagerArmPose::CrossbowHold);
+    }
+
+    #[test]
     fn a_friend_sees_a_pillager_charge_and_then_hold_its_crossbow() {
         use minecraftoss_entities::illager::{Illager, IllagerArmPose};
         let at = DVec3::new(2.5, 64.0, 0.5);
