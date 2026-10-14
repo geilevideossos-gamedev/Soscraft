@@ -2129,6 +2129,36 @@ After 29cafd82.
 IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:iron_pickaxe,minecraft:cobblestone*64,minecraft:cow_spawn_egg*4,minecraft:shield,minecraft:cooked_beef*32,minecraft:trident,minecraft:spyglass,minecraft:dried_kelp*16,minecraft:white_bed
 ```
 
+## Group friend-portal-music
+
+Segment d6 (friend fixes), brief D9.
+
+### 1. A friend sees the purple portal overlay while standing in a portal
+
+After cc6ff02d.
+
+- **Vanilla (26.3, javap):** `LocalPlayer.handlePortalTransitionEffect` runs on the client's own tick from its own portal state: while the player is inside a portal this tick it closes any screen not allowed in portals (`closeContainer` for a container screen), plays `block.portal.trigger` when the intensity is 0, and adds 0.0125; outside it takes 0.05 off while above 0; the intensity is clamped to 0..1 and drawn lerped between the last two ticks. `NetherPortalBlock.entityInside` marks the player inside only when `canUsePortal(false)`: alive, not a passenger and not sleeping. A dimension change makes a new `LocalPlayer`, so the intensity starts again at 0.
+- **Changed:**
+  - `render_anim/src/minecraft_portal.rs`: `FriendPortal` (the effect, a 20 Hz clock and the frame age), `friend_inside(feet, spectator, axis_at)` (the host's `portal::touched_portal` with `portal_axis_in`) and the pure `friend_portal_tick(portal, seconds, inside) -> (inside this tick, overlay)`, with the host's `PortalEffect` curve and `overlay_alpha`.
+  - `render_anim/src/minecraft_remote.rs`: the friend loads `ui.portal_frames` with its other overlays; a new `show_portal()` runs after `present()` each frame from the real frame time: inside while alive, not riding and not a spectator, on the friend's own streamed terrain. A tick inside closes the friend's open screen (`show_menus` then tells the host), and `ui.portal_overlay` follows the effect. The effect resets on a level rebuild (`present()`, a new level from the host) and `stop()` clears the overlay.
+  - The trigger and travel sounds stay as the host sends them (the host's `step_friend` runs the friend's real portal and its sounds).
+- **Tests:** `render_anim`: `minecraft_portal::tests::a_friends_portal_overlay_rises_inside_falls_outside_and_restarts_on_a_new_level` (0.0125 a tick inside, drawn between ticks, full after 80 ticks, gone within 20 ticks outside, the first tick inside closes the screen, a reset starts again from 0), `a_friend_is_inside_a_portal_only_alive_and_not_a_spectator`. Runs: `render_anim` 188, all green; `check -p launcher` green.
+- **Decisions:**
+  - The friend draws its own overlay from its own terrain and position, as vanilla's client does, instead of a new message; the host still decides the travel.
+  - A riding friend sees no overlay (vanilla `canUsePortal(false)` and the host's `may_use_portals`); a spectator sees none (the brief's rule; the host's own Nether portal check does not test the game mode, unchanged).
+  - The screen closes on every tick inside, not only the first, as vanilla closes it each tick and the host does each step.
+- **Test steps** (same new build in both windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r9-friend -Fresh -HostSound`; the friend gets the kit when joining):
+  1. Friend: build a 4×5 obsidian frame and light it with flint and steel.
+  2. Friend: open the inventory (E) and walk into the portal: the inventory closes, the purple swirl fades in with the trigger sound (**180_friend_portal_overlay**), and after 4 seconds the friend goes to the Nether.
+  3. Friend: walk in and step out at once: the swirl fades out within a second (**181_friend_portal_fade**).
+  4. Friend: back in the Overworld through the Nether portal: the swirl starts again from nothing when the friend steps into the portal once more.
+  5. Host window: stepping into the same portal shows the host's swirl as before (**182_host_portal_unchanged**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_pickaxe,minecraft:cobblestone*64,minecraft:cooked_beef*32
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2205,6 +2235,7 @@ Protocol 5 shipped in round 9 release 2. Group friend-hand (commit 1, `UsingView
 - `docs/MULTIPLAYER.md` (group friend-hand, commit 1): `minecraft_net::PROTOCOL` is 6 (the code block at line 162 and the note at line 1415). `PlayerView.using` (`UsingView`) now carries `kind: UseKind { Eat { duration }, Block, Charge, Scope }`. In section 20, "the friend's first-person hand" becomes: "A friend draws their own first-person held items like the host: the selected item, the offhand item while holding an item or using one, eating and drinking at the mouth, the raised shield, the trident pulled back and the spyglass hiding the items. The use comes from the friend's `PlayerView.using` and is counted on between views on the friend's own tick. The items hide in F5, in bed, while skating, dead or with the UI off. The swing is not shown yet." No vendored file changed.
 - `docs/MULTIPLAYER.md` (group friend-hand, commit 2): new message `ToClient::Animate { client, offhand }` (protocol 6). In the section 20 text of commit 1, "The swing is not shown yet." becomes: "A friend's own attack press swings at once on the friend, with vanilla's restart rule and the 10-tick miss time; every other swing the host starts for that friend (placing, using, digging) reaches only that friend as `ToClient::Animate`." Line 1303 drops "the friend's first-person hand", and the leftover item at line 1326 ("**The friend's first-person hand:** ...") is removed.
 - `CLAUDE.md` roadmap item 2: drop "the friend's first-person hand" from the multiplayer leftovers.
+- `docs/MULTIPLAYER.md` (group friend-portal-music, commit 1): section 20 and the leftover lists drop "the portal overlay" for friends. New wording: "A friend draws its own purple portal overlay from its own position on its streamed terrain (vanilla's client-side portal effect), closes its open screen inside a portal, and starts the effect again on a new level; the host still decides the travel and sends the trigger and travel sounds." No message change.
 
 ## Vendored files
 
@@ -2237,6 +2268,7 @@ Patched by track D: 40 (`entities/src/movement.rs`, `entities/src/effects.rs`, `
 - Banner patterns are not drawn (placed banners, held banners and the captain's ominous banner show their base colour only); skulls worn by illagers are not drawn (`CustomHeadLayer`'s skull branch).
 - The piglin's crossbow shot draws a pitch (`1 / (0.8..1.2)`) from its random; vanilla's single crossbow arrow plays at pitch 1 with no draw (`CrossbowItem.getShotPitch` index 0). The pillager does it the vanilla way; the piglin (round 8, `world/piglins.rs`) is unchanged.
 - The crossbow's loading start and middle sounds play in the shooter's category; vanilla plays them as `PLAYERS` sounds.
+- A friend never loads `ui.freeze_outline` (`minecraft_remote.rs`, next to the portal frames), so a friend in powder snow sees no frost outline; found in group friend-portal-music, outside its two commits.
 - Vexes: flight through water and lava (vanilla's `travelInFluid` drag) and drowning; the follow range bonus roll of a summoned vex; a summoned vex joining its evoker's team.
 - Evokers: the fangs' knockback (`LivingEntity.hurtServer` pushes 0.4 away from the fangs; the fork's indirect magic pushes nothing), a summoned vex joining its evoker's scoreboard team (the fork has no teams) (the celebrate sound landed with group `raids`).
 - A mob's held crossbow is drawn with its plain item model: a loaded crossbow shows no arrow and a charging one no pull (`mesh::HeldItem` carries no components); pillagers in spawner cages are drawn without their crossbow (the cage draws mob models only).

@@ -175,6 +175,7 @@ pub(crate) struct Friend {
     recipe_book: crate::minecraft_recipe_book::FriendBook,
     use_clock: crate::minecraft_hand::UseClock,
     swing: crate::minecraft_hand::FriendSwing,
+    portal: crate::minecraft_portal::FriendPortal,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -218,6 +219,7 @@ fn stop(friend: &mut Friend, view: &mut MinecraftWorldView, ui: &mut frame::Mine
     ui.chat_only = false;
     ui.credits = None;
     ui.boss_bars.clear();
+    ui.portal_overlay = None;
     ui.sleep = None;
     ui.chat.wake_up();
 }
@@ -418,6 +420,8 @@ pub(crate) fn friend(
                 );
                 friend.fire_frames = crate::minecraft_world::fire_frames(&prepared.look.packs)
                     .map(|(image, frames)| (images.add(image), frames));
+                ui.portal_frames =
+                    crate::minecraft_portal::frames(&prepared.look.packs, &mut images);
                 ui.spyglass_scope = crate::minecraft_portal::strip(
                     &prepared.look.packs,
                     &mut images,
@@ -530,6 +534,7 @@ pub(crate) fn friend(
         (dt, shown_ui),
         now_ms,
     );
+    show_portal(friend, &mut ui, player.as_ref(), real_time.delta_secs_f64());
     snowflakes(friend, &presented);
     if let Some(prediction) = prediction.as_deref_mut() {
         prediction
@@ -913,6 +918,42 @@ fn track_bodies(friend: &mut Friend, presented: &net::PresentedSnapshot) {
         let key = minecraft_survival::level::opener_key(uuid);
         level.view.hold_rope(key, feet, yaw, height);
     }
+}
+
+fn show_portal(
+    friend: &mut Friend,
+    ui: &mut frame::MinecraftUi,
+    ps: Option<&playerstate_iw4::PlayerState>,
+    seconds: f64,
+) {
+    let Friend {
+        remote: Some(remote),
+        portal,
+        ..
+    } = friend
+    else {
+        ui.portal_overlay = None;
+        return;
+    };
+    let Some(level) = remote.level.as_ref() else {
+        ui.portal_overlay = None;
+        return;
+    };
+    let spectator = remote
+        .player
+        .as_ref()
+        .is_some_and(|view| view.game_mode == GameMode::Spectator);
+    let feet = ps
+        .filter(|ps| ps.pm_type == 0 && ps.pm_flags & playerstate_iw4::pm_flags::MC_RIDING == 0)
+        .map(|ps| sim::voxel::to_block(level.origin, ps.origin));
+    let inside = crate::minecraft_portal::friend_inside(feet, spectator, |pos| {
+        minecraft_survival::portal::portal_axis_in(&level.terrain, pos)
+    });
+    let (closes, overlay) = crate::minecraft_portal::friend_portal_tick(portal, seconds, inside);
+    if closes {
+        ui.inventory_open = false;
+    }
+    ui.portal_overlay = overlay;
 }
 
 fn snowflakes(friend: &mut Friend, presented: &net::PresentedSnapshot) {
@@ -1379,6 +1420,7 @@ fn present(
         sounds,
         dimension,
         switch_screen,
+        portal,
         ..
     } = friend
     else {
@@ -1435,6 +1477,7 @@ fn present(
         *weather = remote.weather;
         *mining = crate::minecraft_mining::Mining::default();
         cracks.clear();
+        *portal = Default::default();
         spawn_gate.start(now_ms);
     }
     crate::minecraft_world::apply_streamed(
