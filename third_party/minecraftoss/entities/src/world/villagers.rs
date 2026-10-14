@@ -664,7 +664,7 @@ impl EntityWorld {
                 }
                 Remote::RingBell { pos } => self.raid_villager_events.bell_rings.push(pos),
                 Remote::HeroGift { table, position, velocity } => self.raid_villager_events.hero_gifts.push(super::HeroGift { table, position, velocity }),
-                Remote::Firework { position, color, flight } => self.raid_villager_events.fireworks.push(super::FireworkLaunch { position, color, flight }),
+                Remote::Firework { villager, position, color, flight } => self.raid_villager_events.fireworks.push(super::FireworkLaunch { villager, position, color, flight }),
             }
         }
     }

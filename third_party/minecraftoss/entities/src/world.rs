@@ -621,6 +621,7 @@ pub enum PlayerHitKind {
     Trident { velocity: DVec3 },
     Spit { velocity: DVec3 },
     Magic { at: DVec3 },
+    Fireworks { at: DVec3 },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,

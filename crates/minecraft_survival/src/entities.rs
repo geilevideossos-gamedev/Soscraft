@@ -1768,13 +1768,14 @@ fn mob_hit(
 ) -> Option<Hit> {
     let from = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
+        PlayerHitKind::Fireworks { at } => Some(at.to_array()),
         _ => None,
     };
     let toward = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
         PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
         PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
-        PlayerHitKind::Magic { at } => [at.x - feet[0], at.z - feet[2]],
+        PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at } => [at.x - feet[0], at.z - feet[2]],
     };
     let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. })).then_some(toward);
     let attack = match hit.kind {
@@ -1787,10 +1788,12 @@ fn mob_hit(
         PlayerHitKind::Trident { .. } => crate::death::MobAttack::Trident,
         PlayerHitKind::Spit { .. } => crate::death::MobAttack::Spit,
         PlayerHitKind::Magic { .. } => crate::death::MobAttack::Magic,
+        PlayerHitKind::Fireworks { .. } => crate::death::MobAttack::Fireworks,
     };
     let cause = match hit.kind {
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
         PlayerHitKind::Magic { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
+        PlayerHitKind::Fireworks { .. } if hit.source.is_none() || type_id.is_none() => crate::death::DamageCause::Fireworks,
         _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
     };
     let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();

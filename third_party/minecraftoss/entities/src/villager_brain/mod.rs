@@ -304,7 +304,7 @@ pub enum Remote {
     ThrowItem { stack: minecraftoss_player::inventory::ItemStack, position: DVec3, velocity: DVec3 },
     RingBell { pos: (i32, i32, i32) },
     HeroGift { table: &'static str, position: DVec3, velocity: DVec3 },
-    Firework { position: DVec3, color: i32, flight: i32 },
+    Firework { villager: u64, position: DVec3, color: i32, flight: i32 },
 }
 
 /// What a behavior works with.

@@ -113,6 +113,9 @@ pub struct ServerSim {
     raids: crate::raids::Raids,
     raids_rule: bool,
     bells: crate::bells::Bells,
+    rockets: Vec<crate::firework_rocket::Rocket>,
+    firework_bursts: Vec<crate::firework_rocket::Burst>,
+    rocket_hits: Vec<minecraftoss_entities::world::PlayerHit>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -339,6 +342,7 @@ pub struct EntitySnapshot {
     pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
     pub dragon_explosions: Vec<(glam::DVec3, bool)>,
     pub swirls: Vec<crate::spell_particles::SwirlView>,
+    pub firework_bursts: Vec<crate::firework_rocket::Burst>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -479,6 +483,9 @@ impl ServerSim {
             raids: crate::raids::Raids::default(),
             raids_rule: true,
             bells: crate::bells::Bells::default(),
+            rockets: Vec::new(),
+            firework_bursts: Vec::new(),
+            rocket_hits: Vec::new(),
         }
     }
 
@@ -1344,11 +1351,75 @@ impl ServerSim {
         }
     }
 
+    pub fn tick_rockets(&mut self, players: &[crate::thrown::PlayerBody]) {
+        use crate::firework_rocket::RocketEvent;
+        let mut rockets = std::mem::take(&mut self.rockets);
+        for rocket in &mut rockets {
+            let chunk = ChunkPos::new((rocket.position.x.floor() as i32) >> 4, (rocket.position.z.floor() as i32) >> 4);
+            if self.level.chunk(chunk).is_none() {
+                continue;
+            }
+            let events = {
+                let Self { level, states, mob_tables, .. } = self;
+                let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+                rocket.tick(&world)
+            };
+            for event in events {
+                match event {
+                    RocketEvent::Launched => {
+                        self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::firework::LAUNCH_SOUND, pos: rocket.position.to_array(), volume: crate::firework::LAUNCH_VOLUME, pitch: 1.0 });
+                    }
+                    RocketEvent::Exploded => {
+                        self.firework_bursts.push(rocket.burst());
+                        self.rocket_blast(rocket, players);
+                    }
+                }
+            }
+        }
+        rockets.retain(|rocket| rocket.alive);
+        rockets.append(&mut self.rockets);
+        self.rockets = rockets;
+    }
+
+    fn rocket_blast(&mut self, rocket: &crate::firework_rocket::Rocket, players: &[crate::thrown::PlayerBody]) {
+        let damages: Vec<(u64, f32)> = {
+            let Self { level, states, mob_tables, mobs, .. } = self;
+            let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+            let mut hits: Vec<(u64, f32)> = crate::client_mobs::server_mobs(mobs)
+                .iter()
+                .filter(|mob| !mob.dead)
+                .filter_map(|mob| rocket.damage_to(&world, mob.position, f64::from(mob.size.1)).map(|damage| (mob.id, damage)))
+                .collect();
+            hits.extend(players.iter().filter(|p| p.targetable()).filter_map(|p| rocket.damage_to(&world, p.feet, 1.8).map(|damage| (crate::thrown::PLAYER_TARGET + p.id, damage))));
+            hits
+        };
+        for (id, damage) in damages {
+            match crate::thrown::struck_player(id) {
+                Some(player) => self.rocket_hits.push(minecraftoss_entities::world::PlayerHit { player_id: player, damage, kind: minecraftoss_entities::world::PlayerHitKind::Fireworks { at: rocket.position }, source: rocket.owner }),
+                None => {
+                    self.mobs.player_blast(None, id, damage, rocket.position, 0.0);
+                }
+            }
+        }
+        self.drop_death_loot();
+    }
+
+    pub fn take_rocket_hits(&mut self) -> Vec<minecraftoss_entities::world::PlayerHit> {
+        std::mem::take(&mut self.rocket_hits)
+    }
+
+    pub fn rocket_views(&self) -> Vec<crate::thrown::ThrownView> {
+        self.rockets.iter().map(crate::firework_rocket::Rocket::view).collect()
+    }
+
     fn raid_villager_events(&mut self) {
         for pos in self.mobs.take_bell_rings() {
             self.ring_bell(pos, None);
         }
-        let _ = self.mobs.take_fireworks();
+        for launch in self.mobs.take_fireworks() {
+            let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long() as u64);
+            self.rockets.push(crate::firework_rocket::Rocket::launch(Some(launch.villager), launch.position, vec![launch.color], launch.flight, &mut random));
+        }
         for gift in self.mobs.take_hero_gifts() {
             let Some(stacks) = self.entity_loot.as_mut().and_then(|loot| loot.roll_hero_gift(gift.table)) else { continue };
             for stack in stacks.into_iter().filter(|stack| stack.count > 0) {
@@ -4062,6 +4133,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     if normal {
         sim.tick_mobs(&input.mob_players, input.bright_outside);
         sim.tick_bells();
+        sim.tick_rockets(&bodies);
         sim.tick_clouds(&bodies);
         sim.tick_thrown(&bodies);
         sim.tick_tridents(&bodies);
@@ -4071,6 +4143,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     }
     out.dismounts.extend(sim.take_vehicle_losses());
     out.player_hits.extend(sim.take_end_hits());
+    out.player_hits.extend(sim.take_rocket_hits());
     out.player_hits.append(&mut sim.mob_trident_hits);
     out.mob_sounds.extend(sim.take_end_sounds());
     out.mob_sounds.extend(sim.take_frame_sounds());
@@ -4157,7 +4230,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views() });
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -11983,6 +12056,41 @@ mod tests {
             server.tick_mobs(&[], true);
         }
         assert!(!server.mobs.glowing(near), "the glow lasts three seconds");
+    }
+
+    #[test]
+    fn a_villager_s_rocket_climbs_bursts_under_a_roof_and_hurts_who_is_near() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        place(&mut server, &mut scene, (8, 204, 8), Block::new("minecraft:stone"));
+        server.summon("minecraft:pillager", [8.5, 200.0, 10.5], None, 0.0).unwrap();
+        let pillager = server.mobs.illagers()[0].id;
+        let health = server.mobs.illagers()[0].illager.health;
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(2);
+        server.rockets.push(crate::firework_rocket::Rocket::launch(Some(77), glam::DVec3::new(8.5, 201.6, 8.5), vec![2437522], 1, &mut random));
+        assert_eq!(server.rocket_views().len(), 1);
+        assert!(crate::firework_rocket::is_rocket(&server.rocket_views()[0]));
+        let player = crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(8.5, 200.0, 7.5), alive: true, spectator: false };
+        server.level.sounds.clear();
+        let mut ticks = 0;
+        while !server.rockets.is_empty() && ticks < 40 {
+            server.tick_rockets(&[player]);
+            ticks += 1;
+        }
+        assert!(ticks < 20, "the roof stops it early: {ticks}");
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::firework::LAUNCH_SOUND && s.volume == 3.0));
+        assert_eq!(server.firework_bursts.len(), 1);
+        assert_eq!(server.firework_bursts[0].colors, [2437522]);
+        assert!((server.firework_bursts[0].position.y - 204.0).abs() < 1e-6);
+        let hits = server.take_rocket_hits();
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].player_id, hits[0].source), (4, Some(77)));
+        assert!(matches!(hits[0].kind, minecraftoss_entities::world::PlayerHitKind::Fireworks { .. }));
+        assert!(hits[0].damage > 0.0 && hits[0].damage < 7.0);
+        let hurt = server.mobs.illagers().iter().find(|e| e.id == pillager).map_or(0.0, |e| e.illager.health);
+        assert!(hurt < health, "the pillager below is hurt too");
     }
 
     #[test]

@@ -72,6 +72,7 @@ pub enum MobAttack {
     Trident,
     Spit,
     Magic,
+    Fireworks,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +90,7 @@ pub enum DamageCause {
     OutOfWorld,
     BadRespawnPoint,
     Explosion,
+    Fireworks,
     Mob {
         id: u64,
         type_id: &'static str,
@@ -112,7 +114,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit | MobAttack::Magic => None,
+            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit | MobAttack::Magic | MobAttack::Fireworks => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -161,6 +163,7 @@ impl DamageCause {
             Self::OutOfWorld => "minecraft:out_of_world",
             Self::BadRespawnPoint => "minecraft:bad_respawn_point",
             Self::Explosion => "minecraft:explosion",
+            Self::Fireworks => "minecraft:fireworks",
             Self::Mob { attack, .. } => match attack {
                 MobAttack::Melee => "minecraft:mob_attack",
                 MobAttack::Arrow => "minecraft:arrow",
@@ -170,6 +173,7 @@ impl DamageCause {
                 MobAttack::Trident => "minecraft:trident",
                 MobAttack::Spit => "minecraft:spit",
                 MobAttack::Magic => "minecraft:indirect_magic",
+                MobAttack::Fireworks => "minecraft:fireworks",
             },
         }
     }
@@ -196,6 +200,11 @@ impl DamageCause {
             Self::OutOfWorld => "outOfWorld",
             Self::BadRespawnPoint => "badRespawnPoint",
             Self::Explosion => "explosion",
+            Self::Fireworks
+            | Self::Mob {
+                attack: MobAttack::Fireworks,
+                ..
+            } => "fireworks",
             Self::Mob {
                 attack: MobAttack::Melee | MobAttack::MobProjectile | MobAttack::Spit,
                 ..
@@ -999,6 +1008,21 @@ mod tests {
         tracker.record(1, spit, 1.0, None, 0.0);
         assert_eq!(line(&tracker), says("%1$s was slain by Llama", "Llama"));
         assert_eq!(DamageCause::mob(MobAttack::Spit, None, None), DamageCause::Generic);
+    }
+
+    #[test]
+    fn a_villager_s_firework_makes_the_player_go_off_with_a_bang() {
+        let mut lang = language();
+        lang.insert("death.attack.fireworks".to_owned(), "%1$s went off with a bang".to_owned());
+        let bang = DamageCause::mob(MobAttack::Fireworks, Some(9), Some("minecraft:villager"));
+        assert_eq!(bang.damage_type(), "minecraft:fireworks");
+        assert!(bang.is_explosion() && DamageCause::Fireworks.is_explosion());
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, bang, 4.0, None, 0.0);
+        assert_eq!(tracker.death_line(&lang, |_| true).message, "%1$s went off with a bang");
+        let mut sourceless = CombatTracker::default();
+        sourceless.record(1, DamageCause::Fireworks, 4.0, None, 0.0);
+        assert_eq!(sourceless.death_line(&lang, |_| true).message, "%1$s went off with a bang");
     }
 
     #[test]

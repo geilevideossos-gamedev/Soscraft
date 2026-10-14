@@ -149,6 +149,7 @@ pub struct HeroGift {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FireworkLaunch {
+    pub villager: u64,
     pub position: DVec3,
     pub color: i32,
     pub flight: i32,

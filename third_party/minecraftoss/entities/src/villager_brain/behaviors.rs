@@ -793,7 +793,7 @@ impl Behavior for CelebrateVillagersSurvivedRaid {
             let flight = ctx.me.random.next_int(3) as i32;
             let me = ctx.me.body.position;
             let position = DVec3::new(me.x, me.y + f64::from(ctx.me.eye_height), me.z);
-            ctx.remote.push(Remote::Firework { position, color, flight });
+            ctx.remote.push(Remote::Firework { villager: ctx.me.id, position, color, flight });
         }
     }
     fn do_stop(&mut self, ctx: &mut Ctx, _: i64) {

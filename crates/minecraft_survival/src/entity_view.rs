@@ -61,6 +61,8 @@ pub struct EntityView {
     shown: HashSet<u64>,
     fang_crits: HashSet<u64>,
     ravager_roars: HashSet<u64>,
+    fireworks: minecraft_terrain::firework_particles::FireworkParticles,
+    firework_camera: DVec3,
 }
 
 impl EntityView {
@@ -109,6 +111,8 @@ impl EntityView {
             shown: HashSet::new(),
             fang_crits: HashSet::new(),
             ravager_roars: HashSet::new(),
+            fireworks: minecraft_terrain::firework_particles::FireworkParticles::new((seed ^ 0xf14e) as u64),
+            firework_camera: DVec3::ZERO,
         }
     }
 
@@ -275,6 +279,10 @@ impl EntityView {
                 minecraft_terrain::ambient_particles::Kind::Explosion
             };
             self.ambient.add(kind, at, DVec3::ZERO);
+        }
+        for burst in std::mem::take(&mut snapshot.firework_bursts) {
+            let (event, volume, pitch) = self.fireworks.burst(&burst, self.firework_camera);
+            self.sounds.push((event.to_owned(), burst.position, volume, pitch));
         }
     }
 
@@ -749,6 +757,10 @@ impl EntityView {
 
     pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
         for _ in 0..ticks {
+            for rocket in self.thrown.iter().filter(|view| minecraft_terrain::firework_rocket::is_rocket(view)) {
+                self.fireworks.trail(rocket.position, rocket.position.y - rocket.previous.y);
+            }
+            self.fireworks.tick(|cell| !minecraftoss_player::World::collision_boxes(scene, cell).is_empty());
             self.poof.tick(scene);
             let bodies = &self.bodies;
             self.ambient.tick_emitters(|key| bodies.get(&key).copied());
@@ -1245,6 +1257,9 @@ impl EntityView {
             .append_mesh(&mut out.items, atlas, forward, partial, light);
         self.spell
             .append_mesh(&mut out.translucent, atlas, forward, partial, light);
+        self.firework_camera = camera;
+        self.fireworks
+            .append_mesh(&mut out.translucent, atlas, forward, partial, light);
         let held: Vec<_> = skeleton_items
             .into_iter()
             .chain(zombie_items)
@@ -1355,5 +1370,21 @@ mod tests {
         }
         assert_eq!(puffs, vec![0, 0, 40, 40, 40, 40, 80]);
         assert_eq!(view.spell.len(), swirls, "no swirls once the stun is over");
+    }
+
+    #[test]
+    fn a_firework_burst_bangs_and_sparkles_for_whoever_sees_it() {
+        use minecraft_terrain::firework_rocket::{Burst, BLAST_FAR_SOUND, BLAST_SOUND};
+        let mut view = EntityView::new(3);
+        let burst = Burst { position: DVec3::new(0.5, 80.0, 0.5), velocity: DVec3::new(0.0, 0.9, 0.0), colors: vec![4312372] };
+        let mut snapshot = EntitySnapshot { firework_bursts: vec![burst.clone()], ..EntitySnapshot::default() };
+        view.bursts(&mut snapshot);
+        assert!(snapshot.firework_bursts.is_empty());
+        assert_eq!(view.fireworks.len(), minecraft_terrain::firework_particles::BURST_SPARKS);
+        assert_eq!(view.sounds.last().map(|(event, at, volume, _)| (event.as_str(), *at, *volume)), Some((BLAST_FAR_SOUND, burst.position, 20.0)));
+        view.firework_camera = DVec3::new(0.5, 75.0, 0.5);
+        let mut near = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
+        view.bursts(&mut near);
+        assert_eq!(view.sounds.last().map(|(event, ..)| event.as_str()), Some(BLAST_SOUND));
     }
 }
