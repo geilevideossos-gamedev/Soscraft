@@ -277,6 +277,7 @@ impl Player {
             last_death: self.last_death,
             portal_cooldown: Some(self.portal_cooldown),
             seen_credits: Some(self.seen_credits),
+            xp_seed: Some(self.enchantment_seed),
             root_vehicle: crate::riding::root_vehicle(
                 self.riding.is_some(),
                 self.saved_vehicle.as_ref(),

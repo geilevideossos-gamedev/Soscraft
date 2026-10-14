@@ -865,6 +865,9 @@ pub fn join_from(
     player.last_death = saved.last_death;
     player.portal_cooldown = saved.portal_cooldown.unwrap_or(0);
     player.seen_credits = saved.seen_credits.unwrap_or(false);
+    if let Some(seed) = saved.xp_seed {
+        player.enchantment_seed = seed;
+    }
     player.reattach = saved.root_vehicle.filter(|_| !dead);
     player.sleep_timer = saved.sleep_timer.unwrap_or(0);
     player.time_since_rest = saved.time_since_rest.unwrap_or(0);
@@ -1253,6 +1256,29 @@ pub(crate) mod tests {
         assert_eq!(again.saved_in_bed, Some((4, 70, -9)));
         assert!(again.sleeping.is_none(), "it stands up once its bed's chunk is in");
         assert_eq!((again.sleep_timer, again.time_since_rest), (100, 72_001));
+    }
+
+    #[test]
+    fn a_joining_player_keeps_the_enchanting_seed_their_file_saved() {
+        let (_dir, save) = world("xp_seed");
+        let recipes = Arc::new(RecipeBook::default());
+        let rules = GameRules::default();
+        let steve = profile("Steve");
+        let mode_only = PlayerData {
+            mode: Some(PlayerMode::new(GameMode::Survival)),
+            ..PlayerData::default()
+        };
+        save.write_player(&steve.uuid, &mode_only).unwrap();
+        let mut player = join(Some(&save), &recipes, &rules, joining(&steve));
+        let derived = crate::level::opener_key(&player.uuid) as i32;
+        assert_eq!(player.enchantment_seed, derived, "a file without XpSeed keeps the seed the UUID gives");
+        player.enchantment_seed = -123_456_789;
+        save.write_player(&steve.uuid, &player.data()).unwrap();
+        let again = join(Some(&save), &recipes, &rules, joining(&steve));
+        assert_eq!(again.enchantment_seed, -123_456_789);
+        let alex = profile("Alex");
+        let alex = join(Some(&save), &recipes, &rules, joining(&alex));
+        assert_eq!(alex.enchantment_seed, crate::level::opener_key(&alex.uuid) as i32, "each player has their own");
     }
 
     #[test]

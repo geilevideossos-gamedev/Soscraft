@@ -271,6 +271,7 @@ fn fill_player(player: &mut Player, data: &GameData) {
     }));
     player.portal_cooldown = 7;
     player.seen_credits = true;
+    player.enchantment_seed = 31_337;
 }
 
 fn stats_of(player: &Player) -> (f32, u8, f32, f32, u32, f32, u32, i32, f32, i32) {
@@ -329,6 +330,7 @@ fn check_player_file(path: &Path) {
             ("XpLevel", "int"),
             ("XpP", "float"),
             ("XpTotal", "int"),
+            ("XpSeed", "int"),
             ("abilities", "compound"),
             ("active_effects", "list"),
             ("attributes", "list"),
@@ -730,6 +732,7 @@ fn a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types() {
     assert_eq!(back.arrival, player.place);
     assert_eq!(back.respawn, player.respawn);
     assert_eq!((back.portal_cooldown, back.seen_credits), (7, true));
+    assert_eq!(back.enchantment_seed, 31_337);
     assert!(!back.dead);
 
     let mut map = chunk_map(&vanilla, &world);

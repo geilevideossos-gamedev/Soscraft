@@ -2585,6 +2585,28 @@ After 2886e3fa.
 IW4L_MINECRAFT_KIT=minecraft:spawner*2,minecraft:pig_spawn_egg*4,minecraft:zombie_spawn_egg*4,minecraft:cooked_beef*16
 ```
 
+### 2. The Minecraft enchanting seed is saved with the player
+
+After 5f6b7017.
+
+- **Vanilla (26.3, javap of `Player.addAdditionalSaveData` and `readAdditionalSaveData`):** the player file holds `XpSeed` as an int (`putInt("XpSeed", enchantmentSeed)`), read back with `getIntOr("XpSeed", 0)`. The enchanting table's three offers come from that seed and the bookshelves; the seed changes only when the player enchants.
+- **Changed:**
+  - `minecraft_survival/src/player_nbt.rs`: `PlayerData.xp_seed`, read from and written as `XpSeed` (`Tag::Int`). Like `PortalCooldown` it is not in `OWNED`, so a `PlayerData` without a seed keeps the one already in the file.
+  - `minecraft_survival/src/player.rs`: `Player::data` saves `enchantment_seed`.
+  - `minecraft_survival/src/server.rs`: `join_from` restores it when the file has one. Every player (host and friends) has their own file under `players/data/<uuid>.dat`, so the seed is per UUID.
+- **Tests:** `minecraft_survival`: `player_nbt::tests::the_enchanting_seed_is_an_int_named_xp_seed_like_vanilla` (an int, read back, missing reads as none, an unset seed keeps the file's, a set one replaces it); `server::tests::a_joining_player_keeps_the_enchanting_seed_their_file_saved` (a file without `XpSeed` gives the UUID-derived seed, a saved seed comes back, another player keeps their own); the world test `a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types` now expects `XpSeed` as an int in the player file and round-trips a seed. Runs: `minecraft_survival` 750 plus the world test, green. `check -p launcher` green.
+- **Decisions:** a file without `XpSeed` (every player file the fork wrote before this commit) gets the seed derived from the UUID, as `Player::new` already gave, instead of vanilla's 0. So a player's table offers stay what they were before the update, and two players of an old world do not share seed 0. A vanilla 26.3 file always has `XpSeed`, so for those nothing differs from vanilla.
+- **Test steps** (single player, then a friend):
+  1. Place the enchanting table, drink experience bottles to level 3 or more, put the iron sword and lapis in the table and note the three offers (**238_enchant_offers_before**).
+  2. Take the sword out, save and quit to the menu, load the world again and put the sword back: the same three offers (**239_enchant_offers_after**).
+  3. Enchant once: the offers change. Save, quit and load again: the new offers stay (**240_enchant_offers_kept**).
+  4. Friend window: the friend does steps 1 and 2 on the same table, leaving and rejoining instead of the host's restart: the friend sees their own offers, the same before and after, and the host's do not change (**241_enchant_offers_friend**, both windows).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:enchanting_table,minecraft:lapis_lazuli*32,minecraft:experience_bottle*32,minecraft:iron_sword,minecraft:iron_sword,minecraft:book*4
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2695,6 +2717,9 @@ Group skater-poses changed `SkateReport` (new `pose`) and `StateFrame` (new `ska
 - `docs/MULTIPLAYER.md` (group tnt, commit 5): next to the `DamageCause::Player` note (line 1427) add: "`DamageCause::PlayerExplosion { client }` is a player's blast (`minecraft:player_explosion`), named the same way."
 - `docs/PROGRESS.md` (group tnt, commit 1): line 57 ("TNT with pvp off (track D): the brief found that TNT hurts nobody today...") becomes: "TNT (track D, group tnt): TNT now hurts players and mobs everywhere, single player too; tell the owner."
 - `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 1): line 441's last sentence ("An egg refused by a spawner because `spawner_blocks_work` is off gives no chat message ...") is removed; line 120 gains: "An egg refused because `spawner_blocks_work` is off tells that player 'Spawner blocks are not enabled' in the chat, like vanilla."
+- `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 2): line 380's last sentence ("A player's enchanting seed is not saved ...") is removed; the player file paragraph gains: "Each player's enchanting seed is saved as vanilla's `XpSeed`, so a table offers the same enchantments after a restart; a player file from before round 9 keeps the seed the player's UUID gives."
+- `docs/MULTIPLAYER.md` (group small-not-vanilla, commit 2): the leftover at line 1352 ("The enchanting seed is per player since E14 but not saved ...") is removed.
+- `docs/round8/decisions.md:73` (enchanting seed) is answered by track D, group small-not-vanilla, commit 2.
 
 ## Vendored files
 
