@@ -20,6 +20,7 @@ const SWEEP_KNOCKBACK: f32 = 0.4;
 const SWEEP_SPREAD: [f64; 3] = [1.0, 0.25, 1.0];
 const SWEEP_REACH_SQUARED: f64 = 9.0;
 const HIGHEST_THROW: f64 = 0.4;
+const CUSTOM_NAME: &str = "minecraft:custom_name";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerBox {
@@ -246,6 +247,16 @@ pub fn hit(blow: &Blow, attacker: u64) -> crate::entities::Hit {
         blow.push,
         None,
     )
+}
+
+pub fn custom_name(stack: &ItemStack) -> Option<String> {
+    match stack.components.as_ref()?.get(CUSTOM_NAME)? {
+        serde_json::Value::String(text) => Some(text.clone()),
+        other => other
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    }
 }
 
 #[cfg(test)]
@@ -594,5 +605,17 @@ mod tests {
         );
         assert_eq!(inventory.slots[0], None);
         assert_eq!(wear_weapon(&mut inventory, 0), None);
+    }
+
+    #[test]
+    fn a_weapon_is_named_only_by_its_custom_name() {
+        let mut sword = ItemStack::new("minecraft:iron_sword", 1);
+        assert_eq!(custom_name(&sword), None);
+        sword.components = Some(serde_json::json!({"minecraft:custom_name": "Excalibur"}));
+        assert_eq!(custom_name(&sword).as_deref(), Some("Excalibur"));
+        sword.components = Some(serde_json::json!({"minecraft:custom_name": {"text": "Edge"}}));
+        assert_eq!(custom_name(&sword).as_deref(), Some("Edge"));
+        sword.components = Some(serde_json::json!({"minecraft:damage": 3}));
+        assert_eq!(custom_name(&sword), None);
     }
 }

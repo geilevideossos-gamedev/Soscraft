@@ -993,11 +993,16 @@ pub(crate) fn settle(
         if let Some((amount, from)) = settle.damage {
             let death = (survival.status.health <= 0.0).then(|| {
                 let line = match language {
-                    Some(language) => survival.death_line(language, |id| entities.mob_present(id)),
+                    Some(language) => survival.death_line(
+                        language,
+                        |id| entities.mob_present(id),
+                        |client| killer(globals, entities, client),
+                    ),
                     None => survival.death_line(
                         &minecraft_terrain::item_icons::language(packs)
                             .unwrap_or_else(|_| HashMap::new()),
                         |id| entities.mob_present(id),
+                        |client| killer(globals, entities, client),
                     ),
                 };
                 sim::voxel::MinecraftDeath {
@@ -1013,7 +1018,11 @@ pub(crate) fn settle(
             }
             if death.is_some() {
                 let name = globals.chat.name(*id).unwrap_or("Player");
-                let text = survival.death_text(name, |id| entities.mob_present(id));
+                let text = survival.death_text(
+                    name,
+                    |id| entities.mob_present(id),
+                    |client| killer(globals, entities, client),
+                );
                 told =
                     minecraft_survival::commands::tell_death(&globals.game_rules, survival, text);
             }
@@ -1045,6 +1054,16 @@ pub(crate) fn set_player_boxes(
     origins: &HashMap<Dimension, [f64; 3]>,
     (host, host_client): (&PlayerUuid, sim::ClientId),
 ) {
+    let names: HashMap<u64, String> = players
+        .values()
+        .filter_map(|player| {
+            let held = player.inventory.slots.get(player.selected)?.as_ref()?;
+            Some((
+                u64::from(player.id.0),
+                minecraft_survival::pvp::custom_name(held)?,
+            ))
+        })
+        .collect();
     for (dimension, level) in levels.iter_mut() {
         let Some(entities) = level.entities.as_mut() else {
             continue;
@@ -1064,7 +1083,22 @@ pub(crate) fn set_player_boxes(
                 .collect()
         });
         entities.set_player_boxes(boxes);
+        entities.set_held_names(names.clone());
     }
+}
+
+fn killer(
+    globals: &Globals,
+    entities: &Entities,
+    client: u32,
+) -> Option<minecraft_survival::death::Killer> {
+    Some(minecraft_survival::death::Killer {
+        name: globals
+            .chat
+            .name(minecraft_commands::PlayerId(client))?
+            .to_owned(),
+        weapon: entities.held_name(u64::from(client)),
+    })
 }
 
 fn player_box(

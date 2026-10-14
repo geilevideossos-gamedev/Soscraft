@@ -2234,6 +2234,51 @@ After 91dd9245.
 IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:iron_axe,minecraft:shield,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:iron_sword+knockback=2,minecraft:cow_spawn_egg*4,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:totem_of_undying
 ```
 
+### 2. Players killed by Minecraft melee get vanilla death lines
+
+After 2f0c9dee.
+
+- **Vanilla (26.3, javap of `DamageSource.getLocalizedDeathMessage`; `en_us.json`):**
+  - A `player_attack` source (message id `player`) reads "death.attack.player" ("%1$s was slain by %2$s") with the attacker's display name.
+  - The `.item` form ("%1$s was slain by %2$s using %3$s", the weapon as `[name]`) is used only when the attacker's main-hand item at the time of the message has `minecraft:custom_name`.
+  - `CombatTracker.getFallMessage` does the same for "death.fell.assist" and "death.fell.finish" (both have `.item` forms).
+  - A death from the world shortly after a player's hit names the kill credit: `getKillCredit` prefers `lastHurtByPlayer` (100 ticks) over the mob, as in "death.attack.lava.player".
+- **Changed:**
+  - `minecraft_survival/src/death.rs`:
+    - `DamageCause::Player` now has the message id `player`.
+    - New `Killer { name, weapon }`. `death_line` and `death_text` take a player lookup (`impl Fn(u32) -> Option<Killer>`).
+    - A player's last blow gives "death.attack.player". With a custom-named weapon it becomes "death.attack.player.item" with `[name]`.
+    - A player's hit before a long fall gives "death.fell.assist" (or `.item`).
+    - `CombatTracker` keeps `hurt_by_player` for 100 ticks, for the `.player` escape lines. A mob that strikes last is still the one named.
+    - A killer who is no longer in the game falls back to "death.attack.generic" or "death.fell.killer".
+    - The kill card's killer is the attacker's name.
+  - `minecraft_survival/src/survival.rs`: the `death_line` and `death_text` wrappers pass the lookup through.
+  - `minecraft_survival/src/pvp.rs`: `custom_name(stack)` reads the plain-string or `{"text": ...}` name.
+  - `minecraft_survival/src/entities.rs`: `set_held_names` and `held_name` hold each player's held custom name for the frame.
+  - `render_anim/src/minecraft_players.rs`:
+    - `set_player_boxes` also fills every level's held names.
+    - `settle()` builds the lookup from the chat's player names (`globals.chat.name`) and the held names, for the death line, the chat text and the kill card, for host and friends alike.
+  - No MW2 kill credit: the death still goes to the sim as a `MinecraftDeath` with no attacker.
+- **Tests:** `minecraft_survival`:
+  - `death::tests::a_players_blow_slays_by_name_and_names_only_a_custom_named_weapon` ("Friend was slain by Host", "... using [Excalibur]" only with a custom name, a killer who left gives "died", the damage type).
+  - `death::tests::a_player_dooms_a_fall_and_is_escaped_into_lava_for_five_seconds` (the fall assist with and without the named weapon, the lava escape and its 100-tick end, a zombie's last bite still named).
+  - `pvp::tests::a_weapon_is_named_only_by_its_custom_name`.
+  - Runs: `minecraft_survival` 742 and `render_anim` 190, all green. `check -p launcher` green.
+- **Decisions:**
+  - The weapon name is the attacker's held item when the death line is made, as vanilla reads `getMainHandItem()` at message time. Held names are refreshed every frame from all players.
+  - A killer in another dimension still has its name (from the chat roster), but not its weapon name.
+  - No message change. `PROTOCOL` stays 6.
+- **Test steps** (same build and setup as commit 1, `/gamerule pvp true`):
+  1. Host: place the anvil, drink experience bottles until level 5 or more, and rename the iron sword "Excalibur" in the anvil.
+  2. Host: kill the friend with Excalibur. Both chats show "Friend was slain by Host using [Excalibur]" once, with the host's real name (**192_pvp_named_kill**, both windows). The friend's kill card names the host.
+  3. Host: kill the friend with the plain diamond sword: "Friend was slain by Host" (**193_pvp_plain_kill**).
+  4. Friend: hit the host off a ledge at least 6 blocks high with Excalibur passed to the friend (drop it): "Host was doomed to fall by Friend using [Excalibur]" (**194_pvp_doomed_fall**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:iron_sword,minecraft:diamond_sword,minecraft:anvil,minecraft:experience_bottle*32,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:cobblestone*64,minecraft:cooked_beef*32
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2317,6 +2362,8 @@ Protocol 5 shipped in round 9 release 2. Group friend-hand (commit 1, `UsingView
 - `docs/MINECRAFT-SURVIVAL.md` (group pvp-melee, commit 1): line 374 drops "Minecraft melee against another player (swords and axes reach only mobs),"; line 425's shield note becomes "a mob's or a player's axe hit disables a raised shield for 5 seconds; MW2 bullets ignore it." New wording for the multiplayer section: "Minecraft melee hits other players like vanilla `Player.attack`: the attack strength scale, crits, sprint knockback, Sharpness and Knockback, the sword's sweep (players and mobs beside the target, and players beside a mob target), the shield and the axe's 5-second shield disable, armour, Protection and the totem. With the `pvp` game rule off a hit makes only the no-damage sound. Creative and spectator players cannot be hurt; spectators cannot be hit at all. Swords and axes wear by their `item_damage_per_attack` on mobs and players."
 - `docs/MULTIPLAYER.md` (group pvp-melee, commit 1): line 783 ("Not covered") drops its first two sentences about melee, line 1303 drops "and Minecraft melee between players", line 1321's leftover item is removed, and section 20 gains: "Minecraft melee between players runs on the host: each frame the host gives every level the boxes of its living, non-spectator players in that dimension's band; the attacker's `act()` hits the nearest of a frame, mob, End part, bullet, fireball or player before the block, and a hit is a `Hit` with `DamageCause::Player` in the victim's queue, which `struck()` applies with the shield, armour and totem. A friend aims at the other bodies it draws and sends `Target::Player`; the host checks reach. No message change."
 - `CLAUDE.md` roadmap item 2: drop "Minecraft melee between players" from the multiplayer leftovers.
+- `docs/MINECRAFT-SURVIVAL.md` (group pvp-melee, commit 2): line 374's "A gun hit followed by a fall or lava is told as a plain fall or lava death" stays for guns. New wording: "A player killed by another player's Minecraft melee gets vanilla's line: '<victim> was slain by <killer>', with 'using [<name>]' only for a custom-named weapon; a melee hit before a long fall gives 'was doomed to fall by <killer>', and lava, fire and the like within 5 seconds of a melee hit name the player escaped. Melee kills give no MW2 kill credit."
+- `docs/MULTIPLAYER.md` (group pvp-melee, commit 2): line 1427 ("There is no `DamageCause::Player`") becomes "`DamageCause::Player { client }` is the Minecraft melee cause; its death lines take the killer's name from the chat roster and the weapon's custom name from the killer's held item when the line is made. A gun kill's line is still built from the sim's death (E18)."
 
 ## Vendored files
 

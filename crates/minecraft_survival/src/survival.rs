@@ -541,12 +541,13 @@ impl Survival {
         &self,
         language: &std::collections::HashMap<String, String>,
         present: impl Fn(u64) -> bool,
+        killer: impl Fn(u32) -> Option<crate::death::Killer>,
     ) -> DeathLine {
-        self.combat.death_line(language, present)
+        self.combat.death_line(language, present, killer)
     }
 
-    pub fn death_text(&self, victim: &str, present: impl Fn(u64) -> bool) -> minecraft_commands::Text {
-        self.combat.death_text(victim, present)
+    pub fn death_text(&self, victim: &str, present: impl Fn(u64) -> bool, killer: impl Fn(u32) -> Option<crate::death::Killer>) -> minecraft_commands::Text {
+        self.combat.death_text(victim, present, killer)
     }
 
     pub fn last_feet(&self) -> Option<[f64; 3]> {
@@ -1915,7 +1916,7 @@ mod tests {
         assert_eq!(survival.status.food.exhaustion, exhaustion);
         assert_eq!(survival.source, Some([1.0, 64.0, 2.0]));
         assert_eq!(
-            survival.combat.death_line(&std::collections::HashMap::new(), |_| false).message,
+            survival.combat.death_line(&std::collections::HashMap::new(), |_| false, |_| None).message,
             "death.attack.magic"
         );
     }
@@ -2359,7 +2360,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
-        assert_eq!(survival.death_line(&language, |_| false).message, "%1$s was killed");
+        assert_eq!(survival.death_line(&language, |_| false, |_| None).message, "%1$s was killed");
         assert_eq!(survival.settle(100, 100).damage, Some((100, None)));
         survival.respawn();
         assert!(!survival.killed());
@@ -3119,7 +3120,7 @@ mod tests {
     }
 
     fn death(survival: &Survival) -> (String, String) {
-        let line = survival.death_line(&death_language(), |_| true);
+        let line = survival.death_line(&death_language(), |_| true, |_| None);
         (line.message, line.killer)
     }
 

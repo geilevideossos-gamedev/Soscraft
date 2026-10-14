@@ -101,6 +101,7 @@ pub struct Entities {
     pub spawner_tags: Vec<((i32, i32, i32), minecraftoss_core::nbt::Tag)>,
     mount_viewers: HashMap<u64, u64>,
     player_boxes: Vec<crate::pvp::PlayerBox>,
+    held_names: HashMap<u64, String>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -469,6 +470,7 @@ impl Entities {
             spawner_tags: Vec::new(),
             mount_viewers: HashMap::new(),
             player_boxes: Vec::new(),
+            held_names: HashMap::new(),
         }
     }
 
@@ -548,6 +550,14 @@ impl Entities {
 
     pub fn player_box(&self, id: u64) -> Option<[f64; 6]> {
         self.player_boxes.iter().find(|player| player.id == id).map(|player| player.bounds)
+    }
+
+    pub fn set_held_names(&mut self, names: HashMap<u64, String>) {
+        self.held_names = names;
+    }
+
+    pub fn held_name(&self, id: u64) -> Option<String> {
+        self.held_names.get(&id).cloned()
     }
 
     #[allow(clippy::too_many_arguments)]
