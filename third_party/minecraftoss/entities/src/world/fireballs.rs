@@ -362,6 +362,9 @@ impl EntityWorld {
                 else {
                     continue;
                 };
+                if let (true, Some(attacker)) = (result.applied, blaster.wolf_attacker()) {
+                    self.note_hoglin_hurt(key.id(), attacker);
+                }
                 match owner {
                     Some(Shooter::Mob(id)) => {
                         let kind = self.entity_type(id).unwrap_or("minecraft:fireball");

@@ -1764,4 +1764,57 @@ mod tests {
             "{sounds:?}"
         );
     }
+
+    #[test]
+    fn a_ghasts_fireball_blast_and_a_blazes_fireball_make_a_hoglin_fight_back() {
+        use crate::fireball::{Fireball, FireballKind, Shooter};
+        let mut blocks = wide_floor(20);
+        let mut world = EntityWorld::default();
+        let hoglin = seeded(&mut world, HoglinKind::Hoglin, false, DVec3::new(0.5, 64.0, 0.5), 11);
+        slowed(&mut world, hoglin);
+        let ghast = crate::ghast::Ghast::new(DVec3::new(0.5, 66.0, 10.5));
+        let ghast = world.spawn_ghast(ghast, true);
+        for _ in 0..25 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        world.spawn_fireball(Fireball::shoot(
+            FireballKind::Large { explosion_power: 1 },
+            Shooter::Mob(ghast),
+            DVec3::new(2.1, 65.0, 0.5),
+            DVec3::NEG_Y,
+        ));
+        for _ in 0..30 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let entity = world.hoglin_mut(hoglin).unwrap();
+        assert!(entity.hoglin.health < 40.0, "the blast beside it hurts it");
+        assert_eq!(
+            entity.brain.memories.attack_target.get(),
+            Some(&Target::Mob(ghast)),
+            "it goes for the ghast behind the blast"
+        );
+        let mut world = EntityWorld::default();
+        let hoglin = seeded(&mut world, HoglinKind::Hoglin, false, DVec3::new(0.5, 64.0, 0.5), 12);
+        slowed(&mut world, hoglin);
+        let blaze = crate::blaze::Blaze::new(DVec3::new(0.5, 64.0, -8.5));
+        let blaze = world.spawn_blaze(blaze, true);
+        for _ in 0..25 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        world.spawn_fireball(Fireball::shoot(
+            FireballKind::Small,
+            Shooter::Mob(blaze),
+            DVec3::new(0.5, 64.7, -2.0),
+            DVec3::Z,
+        ));
+        for _ in 0..30 {
+            world.tick_with_players(&mut blocks, &[]);
+        }
+        let entity = world.hoglin_mut(hoglin).unwrap();
+        assert!(entity.hoglin.health < 40.0, "the small fireball strikes it");
+        assert_eq!(
+            entity.brain.memories.attack_target.get(),
+            Some(&Target::Mob(blaze))
+        );
+    }
 }
