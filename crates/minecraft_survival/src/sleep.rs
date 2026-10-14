@@ -1499,6 +1499,33 @@ mod night_tests {
     }
 
     #[test]
+    fn a_gun_hit_wakes_the_sleeper_like_a_minecraft_hurt() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut room = Room::new(&registries);
+        let bed = room.bed("minecraft:red_bed", (0, 64, 0), "south");
+        let mut steve = player(0, [0.5, 64.0, 3.5]);
+        let mut alex = player(1, [2.5, 64.0, 3.5]);
+        let other = room.bed("minecraft:blue_bed", (2, 64, 0), "south");
+        let mut status = SleepStatus::default();
+        steve.survival.observe(100, 100);
+        alex.survival.observe(100, 100);
+        assert!(lie_down(&mut room, &registries, &mut steve, &bed));
+        assert!(lie_down(&mut room, &registries, &mut alex, &other));
+        steve.survival.observe(100, 100);
+        alex.survival.observe(100, 100);
+        tick(&mut room, &mut status, &mut [&mut steve, &mut alex], &night(100));
+        assert!(steve.sleeping.is_some() && alex.sleeping.is_some(), "an unchanged health wakes nobody");
+        steve.survival.observe(70, 100);
+        tick(&mut room, &mut status, &mut [&mut steve, &mut alex], &night(100));
+        assert!(steve.sleeping.is_none(), "the MW2 damage the survival state follows wakes the one it hit");
+        assert_eq!(steve.sleep_timer, 0, "at once, as a Minecraft hit does");
+        assert!(alex.sleeping.is_some(), "the other sleeper stays in bed");
+        assert_eq!(steve.survival.status.health, 14.0);
+    }
+
+    #[test]
     fn time_since_rest_counts_while_awake_and_resets_on_sleep_and_death() {
         let Some(registries) = registries() else {
             return;

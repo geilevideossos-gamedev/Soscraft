@@ -369,6 +369,7 @@ impl Survival {
             self.status.health = (self.status.health - lost).max(0.0);
             self.status.food.add_exhaustion(HURT_EXHAUSTION);
             self.synced = Some(health);
+            self.hurts += 1;
         }
     }
 

@@ -2607,6 +2607,25 @@ After 5f6b7017.
 IW4L_MINECRAFT_KIT=minecraft:enchanting_table,minecraft:lapis_lazuli*32,minecraft:experience_bottle*32,minecraft:iron_sword,minecraft:iron_sword,minecraft:book*4
 ```
 
+### 3. An MW2 gun hit wakes a sleeping Minecraft player
+
+After 83e369cf.
+
+- **Vanilla (26.3, javap of `LivingEntity.hurtServer`):** right after the invulnerability and `isDeadOrDying` checks, a sleeping entity calls `stopSleeping()`, before armour, absorption and the damage amount. So any accepted hit wakes a sleeper at once.
+- **Cause:** a sleeper wakes when `Survival::hurts()` changes (`sleep.rs`, the check next to the broken bed). Only Minecraft damage counted it (`Survival::record`). MW2 damage (bullets, grenades, knives) lowers the MW2 health, which `Survival::observe` follows each frame for every player on the host (`minecraft_players::life`, run for the host and for each friend), but it never counted as a hurt.
+- **Changed:** `minecraft_survival/src/survival.rs`: `observe` counts a hurt when the MW2 health drops (also when absorption takes it all, as vanilla wakes before absorption). Nothing in `sim/src/damage.rs` (track C's file) changed: the hook is on the Minecraft side, per player.
+- **Tests:** `minecraft_survival`: `sleep::night_tests::a_gun_hit_wakes_the_sleeper_like_a_minecraft_hurt` (two sleepers; an unchanged MW2 health wakes nobody; a 30-point MW2 drop takes 6 Minecraft health from the one hit and wakes them at once with the timer at 0, while the other stays in bed). Runs: `minecraft_survival` 751 plus the world test, green. `check -p launcher` green.
+- **Decisions:** `hurts` is read only by the sleep check, so the extra count changes nothing else.
+- **Test steps** (two windows, overworld, `/time set night`, `/gamerule pvp true`):
+  1. Host and friend each place a bed and the host lies down. The friend shoots the host once with the M4: the host gets up at once beside the bed, without the slow fade (**242_gun_wakes_host**, both windows).
+  2. The friend lies down and the host shoots the friend once: the friend gets up at once (**243_gun_wakes_friend**, both windows).
+  3. Both lie down again and nobody shoots: the night is skipped as before (**244_sleep_still_skips**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,minecraft:white_bed,minecraft:red_bed,minecraft:cooked_beef*16
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2720,6 +2739,9 @@ Group skater-poses changed `SkateReport` (new `pose`) and `StateFrame` (new `ska
 - `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 2): line 380's last sentence ("A player's enchanting seed is not saved ...") is removed; the player file paragraph gains: "Each player's enchanting seed is saved as vanilla's `XpSeed`, so a table offers the same enchantments after a restart; a player file from before round 9 keeps the seed the player's UUID gives."
 - `docs/MULTIPLAYER.md` (group small-not-vanilla, commit 2): the leftover at line 1352 ("The enchanting seed is per player since E14 but not saved ...") is removed.
 - `docs/round8/decisions.md:73` (enchanting seed) is answered by track D, group small-not-vanilla, commit 2.
+- `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 3): line 374 drops "A gun hit does not wake a sleeping player, the host included."; line 426 drops "; a gun hit does not wake anyone in bed (only Minecraft damage does)"; line 78's waking list reads "a hit that hurts (Minecraft damage or an MW2 gun, grenade or knife hit)".
+- `docs/MULTIPLAYER.md` (group small-not-vanilla, commit 3): the leftover at line 1324 ("a gun hit waking a sleeping player ...") is removed.
+- `docs/round8/decisions.md:72` (a gun hit doesn't wake a sleeping player) is answered by track D, group small-not-vanilla, commit 3.
 
 ## Vendored files
 
