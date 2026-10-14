@@ -37,7 +37,7 @@ const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
 pub const HOST_VIEW_DISTANCE: i32 = 8;
 const GUARDED_BY_PIGLINS: &str = "minecraft:guarded_by_piglins";
-pub type Hit = (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush, Option<(EffectKind, u32)>);
+pub type Hit = (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush, Option<(EffectKind, u32, u8)>);
 pub type Hits = Vec<Hit>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 type Picked = (i32, [f64; 3], String, i32, Option<String>);
@@ -1885,17 +1885,19 @@ fn mob_hit(
     };
     let toward = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
-        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
+        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::WitherSkull { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
         PlayerHitKind::Explosion { knockback, .. } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
         PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at } => [at.x - feet[0], at.z - feet[2]],
     };
-    let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. })).then_some(toward);
+    let ownerless_skull = matches!(hit.kind, PlayerHitKind::WitherSkull { .. }) && hit.source.is_none();
+    let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. }) && !ownerless_skull).then_some(toward);
     let attack = match hit.kind {
         PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
         PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
         PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. } => crate::death::MobAttack::Explosion,
         PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
         PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
+        PlayerHitKind::WitherSkull { .. } => crate::death::MobAttack::WitherSkull,
         PlayerHitKind::ShulkerBullet { .. } => crate::death::MobAttack::MobProjectile,
         PlayerHitKind::Trident { .. } => crate::death::MobAttack::Trident,
         PlayerHitKind::Spit { .. } => crate::death::MobAttack::Spit,
@@ -1904,7 +1906,7 @@ fn mob_hit(
     };
     let cause = match hit.kind {
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
-        PlayerHitKind::Magic { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
+        PlayerHitKind::Magic { .. } | PlayerHitKind::WitherSkull { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
         PlayerHitKind::Fireworks { .. } if hit.source.is_none() || type_id.is_none() => crate::death::DamageCause::Fireworks,
         PlayerHitKind::Explosion { by: Some(by), .. } => crate::death::DamageCause::PlayerExplosion { client: u32::try_from(by).unwrap_or(u32::MAX) },
         _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
@@ -1912,8 +1914,9 @@ fn mob_hit(
     let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
     let damage = difficulty_scaled(hit.damage, difficulty, scales);
     let effect = match hit.kind {
-        PlayerHitKind::Arrow { effect, .. } => effect,
-        PlayerHitKind::ShulkerBullet { .. } => Some((EffectKind::Levitation, minecraftoss_entities::shulker_bullet::LEVITATION_TICKS)),
+        PlayerHitKind::Arrow { effect, .. } => effect.map(|(kind, ticks)| (kind, ticks, 0)),
+        PlayerHitKind::ShulkerBullet { .. } => Some((EffectKind::Levitation, minecraftoss_entities::shulker_bullet::LEVITATION_TICKS, 0)),
+        PlayerHitKind::WitherSkull { wither_ticks, .. } => (wither_ticks > 0).then_some((EffectKind::Wither, wither_ticks, 1)),
         _ => None,
     };
     (damage > 0.0).then_some((damage, from, toward, cause, melee_push(&hit.kind), effect))
@@ -2567,10 +2570,34 @@ mod tests {
         let (_, from, toward, cause, _, effect) = mob_hit(&hit, [0.0; 3], 2, Some("minecraft:shulker")).unwrap();
         assert_eq!((from, toward), (None, Some([-0.15, -0.0])));
         assert_eq!(cause, crate::death::DamageCause::Mob { id: 9, type_id: "minecraft:shulker", attack: crate::death::MobAttack::MobProjectile });
-        assert_eq!(effect, Some((EffectKind::Levitation, 200)));
+        assert_eq!(effect, Some((EffectKind::Levitation, 200, 0)));
         let ownerless = minecraftoss_entities::world::PlayerHit { source: None, ..hit };
         let (damage, _, _, cause, _, effect) = mob_hit(&ownerless, [0.0; 3], 3, None).unwrap();
-        assert_eq!((damage, cause, effect), (4.0, crate::death::DamageCause::Generic, Some((EffectKind::Levitation, 200))));
+        assert_eq!((damage, cause, effect), (4.0, crate::death::DamageCause::Generic, Some((EffectKind::Levitation, 200, 0))));
+    }
+
+    #[test]
+    fn a_wither_skull_hurts_by_difficulty_and_withers_two_and_without_its_wither_is_magic() {
+        let hit = minecraftoss_entities::world::PlayerHit {
+            player_id: HOST,
+            damage: 8.0,
+            kind: PlayerHitKind::WitherSkull { velocity: DVec3::new(0.0, 0.0, 0.3), wither_ticks: 200 },
+            source: Some(9),
+        };
+        let damage = |difficulty| mob_hit(&hit, [0.0; 3], difficulty, Some("minecraft:wither")).map(|h| h.0);
+        assert_eq!((damage(0), damage(1), damage(2), damage(3)), (None, Some(5.0), Some(8.0), Some(12.0)));
+        let (_, from, toward, cause, _, effect) = mob_hit(&hit, [0.0; 3], 2, Some("minecraft:wither")).unwrap();
+        assert_eq!((from, toward), (None, Some([-0.0, -0.3])));
+        assert_eq!(cause, crate::death::DamageCause::Mob { id: 9, type_id: "minecraft:wither", attack: crate::death::MobAttack::WitherSkull });
+        assert_eq!(cause.damage_type(), "minecraft:wither_skull");
+        assert!(!cause.bypasses_armor());
+        assert_eq!(effect, Some((EffectKind::Wither, 200, 1)));
+        let easy = minecraftoss_entities::world::PlayerHit { kind: PlayerHitKind::WitherSkull { velocity: DVec3::Z, wither_ticks: 0 }, ..hit };
+        assert_eq!(mob_hit(&easy, [0.0; 3], 1, Some("minecraft:wither")).unwrap().5, None);
+        let ownerless = minecraftoss_entities::world::PlayerHit { source: None, damage: 5.0, ..hit };
+        let (damage, _, toward, cause, _, effect) = mob_hit(&ownerless, [0.0; 3], 3, None).unwrap();
+        assert_eq!((damage, toward, cause), (5.0, None, crate::death::DamageCause::Magic));
+        assert_eq!(effect, Some((EffectKind::Wither, 200, 1)));
     }
 
     #[test]

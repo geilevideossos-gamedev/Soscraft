@@ -56,6 +56,19 @@ pub const SMOKE_SPREAD: f32 = 0.3;
 pub const POWERED_COLOR: [f32; 3] = [0.7, 0.7, 0.5];
 pub const CHARGE_COLOR: [f32; 3] = [0.7, 0.7, 0.9];
 pub const CHARGE_PARTICLE_HEIGHT: f32 = 3.3;
+pub const SHOOT_SOUND: &str = "entity.wither.shoot";
+pub const BREAK_BLOCK_SOUND: &str = "entity.wither.break_block";
+pub const EVENT_VOLUME: f32 = 2.0;
+pub const NETHER_STAR: &str = "minecraft:nether_star";
+pub const ARMOR_DEFLECTS: [&str; 3] = [
+    "minecraft:arrow",
+    "minecraft:trident",
+    "minecraft:wind_charge",
+];
+
+pub fn destroy_reach(width: f32, height: f32) -> (i32, i32) {
+    ((width / 2.0 + 1.0).floor() as i32, height.floor() as i32)
+}
 
 const UNDEAD: [&str; 17] = [
     "minecraft:skeleton",
@@ -325,6 +338,23 @@ impl Wither {
         damage_type == "minecraft:drown"
             || by_undead
             || (self.charging() && !bypasses_invulnerability)
+            || (self.powered() && ARMOR_DEFLECTS.contains(&damage_type))
+    }
+
+    pub fn destroy_blocks_step(&mut self) -> bool {
+        if self.destroy_blocks_tick <= 0 {
+            return false;
+        }
+        self.destroy_blocks_tick -= 1;
+        self.destroy_blocks_tick == 0
+    }
+
+    pub fn boss_progress(&self) -> f32 {
+        if self.charging() {
+            1.0 - self.invulnerable_ticks as f32 / INVULNERABLE_TICKS as f32
+        } else {
+            self.health / MAX_HEALTH
+        }
     }
 
     pub fn hurt_armored(&mut self, amount: f32) -> DamageResult {

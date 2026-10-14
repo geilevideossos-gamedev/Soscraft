@@ -551,7 +551,7 @@ pub fn projectiles(world: &EntityWorld) -> Vec<ServerMob> {
     };
     for e in world.fireballs().iter().filter(|e| e.fireball.alive) {
         let size = e.fireball.kind.size();
-        push(e.id, e.fireball.position, (0.0, 0.0), size);
+        push(e.id, e.fireball.position, (e.fireball.yaw, e.fireball.pitch), size);
     }
     for e in world.shulker_bullets().iter().filter(|e| e.bullet.alive) {
         let turn = (e.bullet.yaw, e.bullet.pitch);
@@ -744,6 +744,8 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.fireball_mut(id) {
         e.previous_position = e.fireball.position;
         e.fireball.position = mob.position;
+        e.fireball.yaw = mob.y_rot;
+        e.fireball.pitch = mob.x_rot;
     }
     if let Some(e) = world.shulker_bullet_mut(id) {
         e.previous_position = e.bullet.position;
@@ -1543,6 +1545,28 @@ mod tests {
             show_on(&mut friend, &mob);
         }
         assert!(friend.withers()[0].wither.powered(), "and comes back below half health");
+    }
+
+    #[test]
+    fn a_friend_sees_a_blue_wither_skull_turn_as_it_flies() {
+        let mut host = EntityWorld::default();
+        let (skull, tag) = spawn(&mut host, "{id:\"minecraft:wither_skull\",Pos:[2.5d,66.0d,0.5d],Motion:[0.0d,0.0d,0.3d],dangerous:1b}");
+        assert_eq!(tracking_range("minecraft:wither_skull"), 4);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, skull, &tag));
+        assert!(is_projectile(&friend, skull));
+        assert_eq!(friend.fireballs()[0].fireball.kind, minecraftoss_entities::fireball::FireballKind::WitherSkull { dangerous: true });
+        {
+            let e = host.fireball_mut(skull).unwrap();
+            e.fireball.position = DVec3::new(2.5, 66.0, 1.0);
+            e.fireball.yaw = 120.0;
+            e.fireball.pitch = -15.0;
+        }
+        for mob in projectiles(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.fireballs()[0].fireball;
+        assert_eq!((seen.position, seen.yaw, seen.pitch), (DVec3::new(2.5, 66.0, 1.0), 120.0, -15.0));
     }
 
     #[test]

@@ -848,14 +848,14 @@ impl Survival {
         }
     }
 
-    pub fn struck(&mut self, damage: f32, blocked: f32, armor: Armor, from: Option<[f64; 3]>, cause: DamageCause, effect: Option<(EffectKind, u32)>) -> bool {
+    pub fn struck(&mut self, damage: f32, blocked: f32, armor: Armor, from: Option<[f64; 3]>, cause: DamageCause, effect: Option<(EffectKind, u32, u8)>) -> bool {
         if damage <= blocked {
             self.hurt_blocked(cause);
             return false;
         }
         let landed = self.hurt(damage - blocked, armor, from, cause);
-        if let (true, Some((kind, ticks))) = (landed, effect) {
-            self.status.add_effect(kind, ticks, 0);
+        if let (true, Some((kind, ticks, amplifier))) = (landed, effect) {
+            self.status.add_effect(kind, ticks, amplifier);
         }
         landed
     }
@@ -1414,7 +1414,7 @@ mod tests {
     #[test]
     fn a_tipped_arrow_gives_its_effect_only_when_it_hurts() {
         let arrow = DamageCause::mob(crate::death::MobAttack::Arrow, Some(3), Some("minecraft:bogged"));
-        let poison = Some((EffectKind::Poison, 100));
+        let poison = Some((EffectKind::Poison, 100, 0));
         let mut survival = fresh();
         assert!(survival.struck(3.0, 0.0, Armor::default(), None, arrow, poison));
         assert_eq!(survival.status.effect(EffectKind::Poison).map(|e| (e.duration, e.amplifier)), Some((100, 0)));
@@ -1431,9 +1431,19 @@ mod tests {
     }
 
     #[test]
+    fn a_wither_skull_gives_wither_two_and_is_told_as_shot_by_a_skull() {
+        let skull = DamageCause::mob(crate::death::MobAttack::WitherSkull, Some(3), Some("minecraft:wither"));
+        let mut survival = fresh();
+        assert!(survival.struck(8.0, 0.0, Armor::default(), None, skull, Some((EffectKind::Wither, 200, 1))));
+        assert_eq!(survival.status.effect(EffectKind::Wither).map(|e| (e.duration, e.amplifier)), Some((200, 1)));
+        assert_eq!(survival.status.health, 12.0);
+        assert_eq!(skull.damage_type(), "minecraft:wither_skull");
+    }
+
+    #[test]
     fn a_shulker_bullet_lifts_the_player_only_when_it_hurts() {
         let bullet = DamageCause::mob(crate::death::MobAttack::MobProjectile, Some(3), Some("minecraft:shulker"));
-        let levitation = Some((EffectKind::Levitation, 200));
+        let levitation = Some((EffectKind::Levitation, 200, 0));
         let mut survival = fresh();
         assert!(survival.struck(4.0, 0.0, Armor::default(), None, bullet, levitation));
         assert_eq!(survival.status.effect(EffectKind::Levitation).map(|e| (e.duration, e.amplifier)), Some((200, 0)));

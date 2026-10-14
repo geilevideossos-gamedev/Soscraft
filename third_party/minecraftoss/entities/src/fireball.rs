@@ -9,11 +9,28 @@ pub const LARGE_DAMAGE: f32 = 6.0;
 pub const SMALL_DAMAGE: f32 = 5.0;
 pub const SMALL_IGNITE_TICKS: i32 = 100;
 pub const PICK_RADIUS: f64 = 1.0;
+pub const WITHER_SKULL_SIZE: f64 = 0.3125;
+pub const DANGEROUS_INERTIA: f32 = 0.73;
+pub const WITHER_SKULL_DAMAGE: f32 = 8.0;
+pub const OWNERLESS_SKULL_DAMAGE: f32 = 5.0;
+pub const SKULL_KILL_HEAL: f32 = 5.0;
+pub const SKULL_BLAST_POWER: f32 = 1.0;
+pub const DANGEROUS_RESISTANCE: f32 = 0.8;
+pub const ROTATION_LERP: f32 = 0.2;
+
+pub fn skull_wither_ticks(difficulty: i32) -> u32 {
+    match difficulty {
+        2 => 200,
+        3 => 800,
+        _ => 0,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FireballKind {
     Large { explosion_power: i32 },
     Small,
+    WitherSkull { dangerous: bool },
 }
 
 impl FireballKind {
@@ -21,6 +38,7 @@ impl FireballKind {
         match self {
             Self::Large { .. } => "minecraft:fireball",
             Self::Small => "minecraft:small_fireball",
+            Self::WitherSkull { .. } => "minecraft:wither_skull",
         }
     }
 
@@ -28,11 +46,23 @@ impl FireballKind {
         match self {
             Self::Large { .. } => 1.0,
             Self::Small => 0.3125,
+            Self::WitherSkull { .. } => WITHER_SKULL_SIZE,
         }
     }
 
     pub fn redirectable(self) -> bool {
         matches!(self, Self::Large { .. })
+    }
+
+    pub fn inertia(self) -> f32 {
+        match self {
+            Self::WitherSkull { dangerous: true } => DANGEROUS_INERTIA,
+            _ => INERTIA,
+        }
+    }
+
+    pub fn wither_skull(self) -> bool {
+        matches!(self, Self::WitherSkull { .. })
     }
 }
 
@@ -68,6 +98,19 @@ pub struct Fireball {
     pub left_owner: bool,
     pub in_water: bool,
     pub alive: bool,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+fn lerp_turn(from: f32, to: f32) -> f32 {
+    let mut from = from;
+    while to - from < -180.0 {
+        from -= 360.0;
+    }
+    while to - from >= 180.0 {
+        from += 360.0;
+    }
+    from + ROTATION_LERP * (to - from)
 }
 
 impl Fireball {
@@ -82,7 +125,22 @@ impl Fireball {
             left_owner: false,
             in_water: false,
             alive: true,
+            yaw: 0.0,
+            pitch: 0.0,
         }
+    }
+
+    pub fn rotate_towards_movement(&mut self) {
+        let m = self.velocity;
+        if m.length_squared() == 0.0 {
+            return;
+        }
+        let horizontal = (m.x * m.x + m.z * m.z).sqrt();
+        let yaw = (minecraftoss_player::mth::atan2(m.z, m.x) * 57.295_776_367_187_5) as f32 + 90.0;
+        let pitch =
+            (minecraftoss_player::mth::atan2(horizontal, m.y) * 57.295_776_367_187_5) as f32 - 90.0;
+        self.pitch = lerp_turn(self.pitch, pitch);
+        self.yaw = lerp_turn(self.yaw, yaw);
     }
 
     pub fn bounds(&self) -> (DVec3, DVec3) {
@@ -113,7 +171,7 @@ impl Fireball {
         let inertia = f64::from(if self.in_water {
             LIQUID_INERTIA
         } else {
-            INERTIA
+            self.kind.inertia()
         });
         self.velocity =
             (self.velocity + normalize(self.velocity) * self.acceleration_power) * inertia;
@@ -168,6 +226,7 @@ impl Fireball {
             }
             _ => None,
         };
+        self.rotate_towards_movement();
         self.position = match (entity, block) {
             (Some((_, at)), _) | (None, Some((_, at))) => at,
             _ => from + movement,
@@ -381,5 +440,50 @@ mod tests {
             (min, max),
             (DVec3::new(-1.5, -1.0, -1.5), DVec3::new(1.5, 2.0, 1.5))
         );
+    }
+
+    #[test]
+    fn a_dangerous_wither_skull_flies_slower_and_turns_its_face_along_its_flight() {
+        let speed = |dangerous| {
+            let mut skull = Fireball::shoot(
+                FireballKind::WitherSkull { dangerous },
+                Shooter::Mob(1),
+                DVec3::new(0.5, 70.0, 0.5),
+                DVec3::X,
+            );
+            for _ in 0..200 {
+                skull.tick(&Air, &[], None);
+            }
+            (skull.velocity.x, skull.yaw, skull.pitch)
+        };
+        let (plain, yaw, pitch) = speed(false);
+        let (blue, _, _) = speed(true);
+        assert!((plain - 1.9).abs() < 1e-3, "{plain}");
+        assert!((blue - 0.073 / 0.27).abs() < 1e-3, "{blue}");
+        assert!(
+            (yaw - 90.0).abs() < 1e-3 && pitch.abs() < 1e-3,
+            "{yaw} {pitch}"
+        );
+        let mut skull = Fireball::shoot(
+            FireballKind::WitherSkull { dangerous: false },
+            Shooter::Mob(1),
+            DVec3::new(0.5, 70.0, 0.5),
+            DVec3::Z,
+        );
+        skull.tick(&Air, &[], None);
+        assert!(
+            (skull.yaw - 324.0).abs() < 1e-3,
+            "a fifth of the way round: {}",
+            skull.yaw
+        );
+        assert_eq!(
+            (
+                FireballKind::WitherSkull { dangerous: true }.type_id(),
+                FireballKind::WitherSkull { dangerous: true }.size(),
+                FireballKind::WitherSkull { dangerous: true }.redirectable()
+            ),
+            ("minecraft:wither_skull", 0.3125, false)
+        );
+        assert_eq!([0, 1, 2, 3].map(skull_wither_ticks), [0, 0, 200, 800]);
     }
 }

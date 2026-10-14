@@ -39,7 +39,7 @@ pub use vexes::VexEntity;
 mod ravagers;
 pub use ravagers::RavagerEntity;
 mod withers;
-pub use withers::WitherEntity;
+pub use withers::{WitherBreak, WitherEntity};
 mod raiders;
 pub use raiders::{celebrate_sound, FireworkLaunch, HeroGift, RaidVillagerEvents, RaiderMut, RaiderView, GIFT_PICKUP_DELAY};
 mod hazards;
@@ -618,6 +618,7 @@ pub enum PlayerHitKind {
     /// push `ServerExplosion` hands the player (`hitPlayers`).
     Explosion { knockback: DVec3, by: Option<u64> },
     Fireball { velocity: DVec3, ignite_ticks: i32 },
+    WitherSkull { velocity: DVec3, wither_ticks: u32 },
     BadRespawnPoint { knockback: DVec3 },
     ShulkerBullet { velocity: DVec3 },
     Trident { velocity: DVec3 },
@@ -2501,6 +2502,7 @@ pub struct EntityWorld {
     vexes: Vec<VexEntity>,
     ravagers: Vec<RavagerEntity>,
     withers: Vec<WitherEntity>,
+    wither_breaks: Vec<WitherBreak>,
     player_pushes: Vec<(u64, DVec3)>,
     snowball_shots: Vec<SnowballShot>,
     ghasts: Vec<GhastEntity>,
@@ -2648,6 +2650,7 @@ impl Default for EntityWorld {
             vexes: Vec::new(),
             ravagers: Vec::new(),
             withers: Vec::new(),
+            wither_breaks: Vec::new(),
             player_pushes: Vec::new(),
             snowball_shots: Vec::new(),
             ghasts: Vec::new(),
@@ -2989,6 +2992,7 @@ impl EntityWorld {
     fn hurt_by_blast(&mut self, key: EntityKey, damage: f32, push: DVec3, blaster: Blaster) -> Option<DamageResult> {
         let time = self.game_time;
         let source = DamageSourceKind::Explosion;
+        let blaster_undead = matches!(blaster, Blaster::Mob(mob) if self.entity_type(mob).is_some_and(crate::wither::is_undead));
         let (result, body) = match key {
             EntityKey::Bat(id) => self.bats.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.bat.body)),
             EntityKey::Zombie(id) => self.zombies.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage_after_armor(damage, 2.0, 0.0)), &mut e.zombie.body)),
@@ -3013,7 +3017,7 @@ impl EntityWorld {
             EntityKey::Illager(id) => self.illagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.illager.body)),
             EntityKey::Vex(id) => self.vexes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.vex.body)),
             EntityKey::Ravager(id) => self.ravagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.ravager.body)),
-            EntityKey::Wither(id) => self.withers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_typed(damage, blaster.damage_type(), false, false), &mut e.wither.body)),
+            EntityKey::Wither(id) => self.withers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_typed(damage, blaster.damage_type(), blaster_undead, false), &mut e.wither.body)),
             EntityKey::Strider(id) => self.striders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.strider.body)),
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.hoglin.body)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.piglin.body)),
@@ -4642,6 +4646,9 @@ impl EntityWorld {
         for e in &mut self.withers {
             let kind = crate::wither::TYPE_ID;
             let Some((order, mut death)) = death_of(e.id, &mut e.wither.damage, kind, Some(kind), plain) else { continue };
+            if mob_drops {
+                death.equipment.push(ItemStack::new(crate::wither::NETHER_STAR, 1));
+            }
             if earns(&death, true) {
                 death.experience = crate::wither::EXPERIENCE;
             }
@@ -5649,6 +5656,7 @@ impl EntityWorld {
             vexes,
             ravagers,
             withers,
+            wither_breaks: Vec::new(),
             player_pushes: Vec::new(),
             snowball_shots: Vec::new(),
             ghasts,

@@ -748,6 +748,12 @@ pub fn hurt_by(
             e.ai.state.hurt_by = Some(blamed);
         }
         (hit, true)
+    } else if let Some(e) = world.wither_mut(id) {
+        let hit = e.hurt_typed(amount, kind, false, false);
+        if let Some(blamed) = blame(&hit, e.tick_count) {
+            e.ai.state.hurt_by = Some(blamed);
+        }
+        (hit, false)
     } else {
         return false;
     };
@@ -849,6 +855,20 @@ mod tests {
     use super::*;
     use minecraftoss_player::{Block, Pos};
     use std::collections::HashMap;
+
+    #[test]
+    fn a_trident_or_wind_charge_hurts_a_wither_until_its_armour_comes_at_half_health() {
+        let mut world = EntityWorld::default();
+        let id = world.spawn_wither(minecraftoss_entities::wither::Wither::new(DVec3::new(0.5, 64.0, 0.5)), true);
+        let mut random = LegacyRandom::new(1);
+        assert!(hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        assert_eq!(world.wither_mut(id).unwrap().ai.state.hurt_by.map(|(t, _)| t), Some(Target::Player(0)));
+        world.wither_mut(id).unwrap().wither.health = 150.0;
+        world.wither_mut(id).unwrap().wither.damage = Default::default();
+        assert!(!hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        assert!(!hurt_by(&mut world, id, 1.0, crate::wind::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        assert_eq!(world.withers()[0].wither.health, 150.0);
+    }
 
     #[test]
     fn a_closed_shulker_turns_tridents_away_and_is_struck_where_its_shell_is() {

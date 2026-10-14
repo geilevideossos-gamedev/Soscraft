@@ -1118,6 +1118,7 @@ impl ServerSim {
         self.throw_mob_snowballs();
         self.explode_creepers();
         self.explode_fireballs();
+        self.break_around_withers();
         if !frozen {
             self.explode_blasts(players);
         }
@@ -1493,9 +1494,13 @@ impl ServerSim {
     fn drop_death_loot(&mut self) {
         let (drops, experience) = crate::mob_actions::death_remains(&mut self.mobs, self.entity_loot.as_mut());
         for (stack, position) in drops {
+            let extended = stack.id == minecraftoss_entities::wither::NETHER_STAR;
             let components = stack.components.as_ref().map(|c| c.to_string());
             let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
-            self.level.spawn_at_location(position.to_array(), stack);
+            let id = self.level.spawn_at_location(position.to_array(), stack);
+            if extended {
+                crate::wither_save::extend_lifetime(&mut self.level, id);
+            }
         }
         for (position, amount) in experience {
             self.level.award_experience(position.to_array(), amount);
@@ -1604,11 +1609,34 @@ impl ServerSim {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         for blast in self.mobs.take_fireball_blasts() {
             let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
-            self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.power, fire: blast.fire, interaction, source: None, owner: None });
+            let explosion = Explosion { center: blast.position.to_array(), radius: blast.power, fire: blast.fire, interaction, source: None, owner: None };
+            if blast.dangerous {
+                self.level.explode_dangerous_skull(explosion);
+            } else {
+                self.level.explode(explosion);
+            }
             self.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: blast.position, radius: blast.power, powered: false });
         }
         for (x, y, z) in self.mobs.take_fireball_fires() {
             self.level.light_fire(minecraftoss_core::BlockPos::new(x, y, z));
+        }
+    }
+
+    fn break_around_withers(&mut self) {
+        for broken in self.mobs.take_wither_breaks() {
+            let mut any = false;
+            for (x, y, z) in broken.cells() {
+                let pos = minecraftoss_core::BlockPos::new(x, y, z);
+                if self.level.wither_can_destroy(self.level.block(pos)) {
+                    any |= self.level.destroy_block_drops(pos, true, update::LIMIT);
+                }
+            }
+            if any {
+                let (a, b) = (self.sound_random.next_float(), self.sound_random.next_float());
+                let (x, y, z) = broken.at;
+                let at = glam::DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
+                self.end_sounds.push(minecraftoss_entities::world::MobSound { event: minecraftoss_entities::wither::BREAK_BLOCK_SOUND.to_owned(), position: at, volume: minecraftoss_entities::wither::EVENT_VOLUME, pitch: (a - b) * 0.2 + 1.0, category: "hostile" });
+            }
         }
     }
 
@@ -6203,6 +6231,128 @@ mod tests {
         let w = &withers[0].wither;
         assert_eq!(w.body.position, glam::DVec3::new(8.5, 200.55, 8.5));
         assert_eq!((w.invulnerable_ticks, w.health, w.yaw, w.body_yaw), (220, 100.0, 90.0, 90.0));
+    }
+
+    fn wither_at(server: &mut ServerSim, at: [f64; 3], no_ai: bool) -> u64 {
+        server.summon("minecraft:wither", at, None, 0.0).unwrap();
+        let id = server.mobs.withers().last().unwrap().id;
+        server.mobs.wither_mut(id).unwrap().no_ai = no_ai;
+        server.set_players(&[[8.5, 200.0, -40.5]], 2);
+        server.set_simulation_area((0, 0), 4);
+        id
+    }
+
+    fn block_id(server: &ServerSim, pos: BlockPos) -> String {
+        let state = server.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+        server.states.block(state).map_or_else(String::new, |block| block.id.key())
+    }
+
+    #[test]
+    fn a_blue_wither_skull_blasts_through_obsidian_but_not_bedrock_and_a_black_one_breaks_neither() {
+        use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+        let shoot = |dangerous: bool| {
+            let (mut server, mut scene) = door_world()?;
+            for x in 6..=10 {
+                for y in 200..=204 {
+                    let id = if (x, y) == (7, 201) { "minecraft:bedrock" } else { "minecraft:obsidian" };
+                    place(&mut server, &mut scene, (x, y, 12), Block::new(id));
+                }
+            }
+            server.take_changes();
+            let wither = wither_at(&mut server, [8.5, 200.0, -6.5], true);
+            server.mobs.spawn_fireball(Fireball::shoot(FireballKind::WitherSkull { dangerous }, Shooter::Mob(wither), glam::DVec3::new(8.5, 201.4, 8.0), glam::DVec3::Z));
+            let mut blasts = Vec::new();
+            for _ in 0..40 {
+                server.tick();
+                server.tick_mobs(&[], false);
+                blasts.extend(server.take_explosions());
+            }
+            let mut obsidian = 0;
+            for x in 6..=10 {
+                for y in 200..=204 {
+                    obsidian += usize::from(block_id(&server, (x, y, 12)) == "minecraft:obsidian");
+                }
+            }
+            Some((blasts, obsidian, block_id(&server, (7, 201, 12)), server.mobs.fireballs().len()))
+        };
+        let Some((blasts, obsidian, middle, flying)) = shoot(false) else { return };
+        assert_eq!((blasts.len(), flying), (1, 0), "the skull bursts on the wall");
+        assert_eq!(blasts[0].radius, 1.0);
+        assert_eq!((obsidian, middle.as_str()), (24, "minecraft:bedrock"), "a black skull's blast is too weak for obsidian");
+        let (blasts, obsidian, middle, _) = shoot(true).unwrap();
+        assert_eq!(blasts.len(), 1);
+        assert!(obsidian < 24, "a blue skull's blast breaks obsidian: {obsidian} left");
+        assert_eq!(middle, "minecraft:bedrock", "bedrock is wither immune");
+    }
+
+    #[test]
+    fn a_hurt_wither_breaks_the_blocks_around_it_but_not_bedrock_and_they_drop() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 7..=9 {
+            for z in 7..=9 {
+                for y in 200..=203 {
+                    if (x, z) == (8, 8) {
+                        continue;
+                    }
+                    let id = if (x, y, z) == (7, 201, 7) { "minecraft:bedrock" } else { "minecraft:obsidian" };
+                    place(&mut server, &mut scene, (x, y, z), Block::new(id));
+                }
+            }
+        }
+        place(&mut server, &mut scene, (8, 204, 8), Block::new("minecraft:obsidian"));
+        server.take_changes();
+        server.take_destroyed();
+        let wither = wither_at(&mut server, [8.5, 200.0, 8.5], false);
+        server.tick();
+        server.tick_mobs(&[], false);
+        assert!(server.mobs.wither_mut(wither).unwrap().hurt(1.0).applied);
+        let mut destroyed = Vec::new();
+        let mut sounds = Vec::new();
+        for _ in 0..25 {
+            server.tick();
+            server.tick_mobs(&[], false);
+            destroyed.extend(server.take_destroyed());
+            sounds.extend(server.take_end_sounds());
+        }
+        assert_eq!(server.mobs.withers()[0].wither.body.position.y.floor(), 200.0, "the cage held it");
+        assert_eq!(destroyed.len(), 31, "{destroyed:?}");
+        assert!(destroyed.iter().all(|(_, block)| block.id.key() == "minecraft:obsidian"));
+        assert_eq!(block_id(&server, (7, 201, 7)), "minecraft:bedrock");
+        assert_eq!(block_id(&server, (8, 204, 8)), "minecraft:obsidian", "the lid is out of its reach");
+        let breaks: Vec<_> = sounds.iter().filter(|s| s.event == minecraftoss_entities::wither::BREAK_BLOCK_SOUND).collect();
+        assert_eq!(breaks.len(), 1);
+        assert_eq!((breaks[0].position, breaks[0].volume), (glam::DVec3::new(8.5, 200.5, 8.5), 2.0));
+        let obsidian: i32 = server.items().iter().filter(|item| item.item == "minecraft:obsidian").map(|item| i32::from(item.count)).sum();
+        assert_eq!(obsidian, 31, "the broken blocks drop");
+    }
+
+    #[test]
+    fn a_dead_wither_leaves_a_nether_star_that_lasts_fifteen_minutes() {
+        let Some((mut server, _)) = door_world() else { return };
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        server.load_loot(&std::path::Path::new(&root).join("client.jar"), 1);
+        if server.entity_loot.is_none() {
+            return;
+        }
+        let wither = wither_at(&mut server, [8.5, 200.0, 8.5], true);
+        let attack = minecraftoss_entities::world::PlayerAttack {
+            player_id: 1,
+            position: glam::DVec3::new(8.5, 200.0, 11.5),
+            yaw: 180.0,
+            attack_damage: 1000.0,
+            strength: 1.0,
+            sprinting: false,
+            can_critical: false,
+            can_sweep: false,
+        };
+        assert!(server.mobs.player_attack(&attack, wither).died);
+        for _ in 0..3 {
+            server.tick();
+            server.tick_mobs(&[], false);
+        }
+        let stars: Vec<_> = server.items().into_iter().filter(|item| item.item == "minecraft:nether_star").collect();
+        assert_eq!(stars.len(), 1);
+        assert!(stars[0].age < -5990, "an extended lifetime: {}", stars[0].age);
     }
 
     #[test]

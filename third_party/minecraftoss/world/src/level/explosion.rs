@@ -132,15 +132,24 @@ impl Level<'_> {
 
     /// `ServerExplosion.explode`; returns the number of blocks it picked.
     pub fn explode(&mut self, ex: Explosion) -> usize {
-        self.explode_from(ex, None)
+        self.explode_from(ex, None, false)
     }
 
     pub fn explode_shielded(&mut self, ex: Explosion, shield: BlockPos) -> usize {
-        self.explode_from(ex, Some(shield))
+        self.explode_from(ex, Some(shield), false)
     }
 
-    fn explode_from(&mut self, ex: Explosion, shield: Option<BlockPos>) -> usize {
-        let mut to_blow = self.exploded_positions(&ex, shield);
+    pub fn explode_dangerous_skull(&mut self, ex: Explosion) -> usize {
+        self.explode_from(ex, None, true)
+    }
+
+    pub fn wither_can_destroy(&self, state: BlockStateId) -> bool {
+        let registries = self.registries();
+        !registries.blocks.is_air(state) && !registries.block_tags.id("minecraft:wither_immune").is_some_and(|tag| registries.block_in_tag(state, tag))
+    }
+
+    fn explode_from(&mut self, ex: Explosion, shield: Option<BlockPos>, dangerous: bool) -> usize {
+        let mut to_blow = self.exploded_positions(&ex, shield, dangerous);
         self.hurt_entities(&ex);
         if ex.interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&ex, &mut to_blow);
@@ -194,7 +203,7 @@ impl Level<'_> {
 
     /// `ServerExplosion.calculateExplodedPositions`, in the iteration order
     /// of vanilla's `HashSet`.
-    fn exploded_positions(&mut self, ex: &Explosion, shield: Option<BlockPos>) -> Vec<BlockPos> {
+    fn exploded_positions(&mut self, ex: &Explosion, shield: Option<BlockPos>, dangerous: bool) -> Vec<BlockPos> {
         let mut seen = HashSet::new();
         let mut inserted = Vec::new();
         for xx in 0..16 {
@@ -219,6 +228,7 @@ impl Level<'_> {
                             break;
                         }
                         let resistance = if shield == Some(pos) { Some(WATER_RESISTANCE) } else { self.explosion_resistance(state) };
+                        let resistance = if dangerous && self.wither_can_destroy(state) { resistance.map(|r| r.min(0.8)) } else { resistance };
                         if let Some(resistance) = resistance {
                             remaining -= (resistance + 0.3f32) * 0.3f32;
                         }

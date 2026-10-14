@@ -1,5 +1,6 @@
 use super::emissions::{MovementSounds, play_movement};
 use super::*;
+use crate::fireball::{Fireball, FireballKind, Shooter};
 use crate::monster_ai::{MobCandidate, MonsterGoalContext, MonsterKind, Target, TargetInfo};
 use crate::wither::{self as wt, SkullShot, Wither};
 
@@ -233,7 +234,7 @@ impl WitherEntity {
         villagers: &[MobCandidate],
         game_time: i64,
         difficulty: i32,
-    ) -> bool {
+    ) -> (bool, bool) {
         self.no_action_time = 0;
         let health = self.wither.health;
         let powered = self.wither.powered();
@@ -285,6 +286,7 @@ impl WitherEntity {
             .flight
             .tick(position, wither.body.width, wt::SPEED as f32);
         let mut explode = false;
+        let mut breaks = false;
         if wither.charging() {
             explode = wither.charge_step(self.tick_count).explode;
         } else {
@@ -296,6 +298,7 @@ impl WitherEntity {
                 self.tick_count,
             ));
             self.main_target = ai.state.target().map(|t| t.target);
+            breaks = wither.destroy_blocks_step();
             if self.tick_count % wt::HEAL_INTERVAL == 0 {
                 wither.heal(wt::HEAL);
             }
@@ -342,7 +345,65 @@ impl WitherEntity {
         );
         wither.yaw = ai.yaw;
         wither.body_yaw = ai.body_rotation.body_yaw;
-        explode
+        (explode, breaks)
+    }
+
+    fn fire_skulls(&mut self) -> Vec<Fireball> {
+        let mut skulls = Vec::new();
+        for shot in self.shots.clone() {
+            let p = self.position();
+            let at = DVec3::new(p.x.floor() + 0.5, p.y.floor() + 0.5, p.z.floor() + 0.5);
+            let pitch = (self.random.next_float() - self.random.next_float()) * 0.2 + 1.0;
+            self.voices
+                .push((Voice::Event(wt::SHOOT_SOUND, wt::EVENT_VOLUME, pitch), at));
+            let head = self.wither.head(shot.head);
+            let mut skull = Fireball::shoot(
+                FireballKind::WitherSkull {
+                    dangerous: shot.dangerous,
+                },
+                Shooter::Mob(self.id),
+                head,
+                shot.target - head,
+            );
+            skull.yaw = self.wither.yaw;
+            skull.pitch = self.ai.state.look_control.pitch;
+            skulls.push(skull);
+        }
+        skulls
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WitherBreak {
+    pub wither: u64,
+    pub min: (i32, i32, i32),
+    pub max: (i32, i32, i32),
+    pub at: (i32, i32, i32),
+}
+
+impl WitherBreak {
+    pub fn around(wither: u64, body: &Body) -> Self {
+        let (reach, height) = wt::destroy_reach(body.width, body.height);
+        let p = body.position;
+        let at = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        Self {
+            wither,
+            min: (at.0 - reach, at.1, at.2 - reach),
+            max: (at.0 + reach, at.1 + height, at.2 + reach),
+            at,
+        }
+    }
+
+    pub fn cells(&self) -> Vec<(i32, i32, i32)> {
+        let mut cells = Vec::new();
+        for z in self.min.2..=self.max.2 {
+            for y in self.min.1..=self.max.1 {
+                for x in self.min.0..=self.max.0 {
+                    cells.push((x, y, z));
+                }
+            }
+        }
+        cells
     }
 }
 
@@ -377,6 +438,10 @@ impl EntityWorld {
 
     pub fn withers(&self) -> &[WitherEntity] {
         &self.withers
+    }
+
+    pub fn take_wither_breaks(&mut self) -> Vec<WitherBreak> {
+        std::mem::take(&mut self.wither_breaks)
     }
 
     pub fn wither_mut(&mut self, id: u64) -> Option<&mut WitherEntity> {
@@ -424,8 +489,9 @@ impl EntityWorld {
             return;
         }
         let mut explode = false;
+        let mut breaks = false;
         if entity.wither.health > 0.0 && !entity.no_ai {
-            explode = entity.tick_ai(&*world, players, &villagers, game_time, difficulty);
+            (explode, breaks) = entity.tick_ai(&*world, players, &villagers, game_time, difficulty);
         } else if entity.no_ai {
             monster_idle_without_ai(
                 &*world,
@@ -437,6 +503,13 @@ impl EntityWorld {
         }
         let old = entity.previous_position;
         super::hazards::blocks_act(entity, &*world, old, game_time);
+        let skulls = entity.fire_skulls();
+        let broken =
+            (breaks && self.mob_griefing).then(|| WitherBreak::around(id, &entity.wither.body));
+        self.wither_breaks.extend(broken);
+        for skull in skulls {
+            self.spawn_fireball(skull);
+        }
         if explode {
             let entity = self
                 .withers
@@ -655,5 +728,275 @@ mod tests {
                 .flatten()
                 .all(|t| *t == Target::Player(1) || *t == Target::Mob(cow))
         );
+    }
+
+    fn skull(world: &mut EntityWorld, owner: Option<u64>, from: DVec3, dangerous: bool) -> u64 {
+        let mut skull = Fireball::shoot(
+            FireballKind::WitherSkull { dangerous },
+            Shooter::Mob(owner.unwrap_or(0)),
+            from,
+            DVec3::Z,
+        );
+        skull.owner = owner.map(Shooter::Mob);
+        world.spawn_fireball(skull)
+    }
+
+    fn skull_hits(difficulty: i32, owned: bool) -> (Vec<PlayerHit>, u64) {
+        let mut world = EntityWorld::default();
+        world.set_players_pickable(true);
+        world.set_difficulty(difficulty);
+        let id = world.spawn_wither(Wither::new(DVec3::new(0.5, 70.0, -12.5)), true);
+        skull(
+            &mut world,
+            owned.then_some(id),
+            DVec3::new(0.5, 65.0, 0.5),
+            false,
+        );
+        let players = [player_at(1, 0.5, 64.0, 4.5)];
+        let mut hits = Vec::new();
+        for _ in 0..20 {
+            world.tick_with_players(&mut Field, &players);
+            hits.extend(world.take_player_hits());
+        }
+        let skulls = hits
+            .into_iter()
+            .filter(|h| matches!(h.kind, PlayerHitKind::WitherSkull { .. }))
+            .collect();
+        (skulls, id)
+    }
+
+    #[test]
+    fn its_heads_fire_wither_skulls_with_the_shoot_sound() {
+        let mut world = EntityWorld::default();
+        let id = wither_at(&mut world, Wither::new(DVec3::new(0.5, 66.0, 0.5)));
+        let players = [player_at(1, 0.5, 64.0, 12.5)];
+        let mut sounds = Vec::new();
+        let mut skulls = Vec::new();
+        for _ in 0..200 {
+            world.tick_with_players(&mut Field, &players);
+            sounds.extend(world.take_sounds());
+            for f in world.fireballs() {
+                if !skulls.contains(&f.id) {
+                    assert_eq!(f.fireball.owner, Some(Shooter::Mob(id)));
+                    assert!(f.fireball.kind.wither_skull());
+                    skulls.push(f.id);
+                }
+            }
+        }
+        assert!(skulls.len() >= 3, "{} skulls", skulls.len());
+        let shots = sounds
+            .iter()
+            .filter(|s| s.event == wt::SHOOT_SOUND && s.volume == 2.0)
+            .count();
+        assert!(
+            shots >= skulls.len(),
+            "{shots} shots for {} skulls",
+            skulls.len()
+        );
+    }
+
+    #[test]
+    fn a_skull_hits_a_player_for_eight_and_withers_them_ten_or_forty_seconds() {
+        let wither_ticks = |hits: &[PlayerHit]| match hits {
+            [
+                PlayerHit {
+                    kind:
+                        PlayerHitKind::WitherSkull {
+                            wither_ticks,
+                            velocity,
+                        },
+                    ..
+                },
+            ] => {
+                assert!(velocity.z > 0.0);
+                Some(*wither_ticks)
+            }
+            _ => None,
+        };
+        let (easy, _) = skull_hits(1, true);
+        let (normal, id) = skull_hits(2, true);
+        let (hard, _) = skull_hits(3, true);
+        assert_eq!(
+            [
+                wither_ticks(&easy),
+                wither_ticks(&normal),
+                wither_ticks(&hard)
+            ],
+            [Some(0), Some(200), Some(800)]
+        );
+        assert_eq!((normal[0].damage, normal[0].source), (8.0, Some(id)));
+        let (ownerless, _) = skull_hits(2, false);
+        assert_eq!(
+            (ownerless[0].damage, ownerless[0].source),
+            (5.0, None),
+            "a skull without its wither hurts as magic for five"
+        );
+    }
+
+    #[test]
+    fn a_skull_withers_a_mob_and_heals_its_wither_when_it_kills() {
+        let mut world = EntityWorld::default();
+        let id = world.spawn_wither(Wither::new(DVec3::new(0.5, 70.0, -12.5)), true);
+        world.wither_mut(id).unwrap().wither.health = 200.0;
+        let golem = world.spawn_iron_golem(
+            crate::iron_golem::IronGolem::new(DVec3::new(0.5, 64.0, 4.5)),
+            true,
+        );
+        skull(&mut world, Some(id), DVec3::new(0.5, 65.0, 0.5), false);
+        for _ in 0..20 {
+            world.tick_with_players(&mut Field, &[]);
+        }
+        let wither = world
+            .mob_effects(golem)
+            .and_then(|effects| effects.get(crate::effects::MobEffect::Wither))
+            .map(|effect| (effect.amplifier, effect.duration));
+        assert!(
+            matches!(wither, Some((1, 180..=200))),
+            "Wither II for ten seconds: {wither:?}"
+        );
+        assert_eq!(world.withers()[0].wither.health, 200.0);
+        let chicken = world.spawn_chicken(
+            crate::chicken::Chicken::new(DVec3::new(10.5, 64.0, 4.5)),
+            true,
+        );
+        skull(&mut world, Some(id), DVec3::new(10.5, 64.2, 0.5), false);
+        for _ in 0..20 {
+            world.tick_with_players(&mut Field, &[]);
+        }
+        assert!(
+            world
+                .chickens()
+                .iter()
+                .all(|e| e.id != chicken || e.chicken.health <= 0.0),
+            "the skull kills the chicken"
+        );
+        assert_eq!(
+            world.withers()[0].wither.health,
+            205.0,
+            "a kill heals the wither five"
+        );
+    }
+
+    #[test]
+    fn a_dangerous_skull_blast_is_marked_for_the_level_and_a_plain_one_is_not() {
+        for dangerous in [false, true] {
+            let mut world = EntityWorld::default();
+            let id = world.spawn_wither(Wither::new(DVec3::new(0.5, 70.0, -12.5)), true);
+            skull(&mut world, Some(id), DVec3::new(0.5, 63.5, 0.5), dangerous);
+            for _ in 0..5 {
+                world.tick_with_players(&mut Field, &[]);
+            }
+            let blasts = world.take_fireball_blasts();
+            assert_eq!(blasts.len(), 1);
+            assert_eq!(
+                (blasts[0].power, blasts[0].fire, blasts[0].dangerous),
+                (1.0, false, dangerous)
+            );
+        }
+    }
+
+    #[test]
+    fn arrows_tridents_and_wind_charges_bounce_off_its_armour_below_half_health() {
+        let mut world = EntityWorld::default();
+        let id = wither_at(&mut world, Wither::new(DVec3::new(0.5, 70.0, 0.5)));
+        let e = world.wither_mut(id).unwrap();
+        for kind in wt::ARMOR_DEFLECTS {
+            assert!(
+                e.hurt_typed(1.0, kind, false, false).applied,
+                "{kind} at full health"
+            );
+            e.wither.damage = Default::default();
+        }
+        e.wither.health = 150.0;
+        for kind in wt::ARMOR_DEFLECTS {
+            assert!(
+                !e.hurt_typed(1.0, kind, false, false).applied,
+                "{kind} at half health"
+            );
+        }
+        assert!(
+            !e.hurt_typed(1.0, "minecraft:player_explosion", true, false)
+                .applied,
+            "the undead's blasts do not hurt it"
+        );
+        assert!(
+            e.hurt_typed(1.0, "minecraft:player_attack", false, false)
+                .applied
+        );
+    }
+
+    #[test]
+    fn its_own_skull_blast_does_not_hurt_it() {
+        let mut world = EntityWorld::default();
+        let id = world.spawn_wither(Wither::new(DVec3::new(0.5, 64.0, 2.5)), true);
+        skull(&mut world, Some(id), DVec3::new(0.5, 63.5, 0.5), false);
+        for _ in 0..5 {
+            world.tick_with_players(&mut Field, &[]);
+        }
+        assert_eq!(world.take_fireball_blasts().len(), 1);
+        assert_eq!(world.withers()[0].wither.health, wt::MAX_HEALTH);
+    }
+
+    #[test]
+    fn a_hurt_wither_breaks_the_blocks_around_it_a_second_later_if_mobs_may_grief() {
+        for griefing in [true, false] {
+            let mut world = EntityWorld::default();
+            world.set_mob_griefing(griefing);
+            let id = wither_at(&mut world, Wither::new(DVec3::new(0.5, 64.0, 0.5)));
+            world.tick_with_players(&mut Field, &[]);
+            assert!(world.wither_mut(id).unwrap().hurt(1.0).applied);
+            let mut when = Vec::new();
+            for tick in 1..=40 {
+                world.tick_with_players(&mut Field, &[]);
+                for broken in world.take_wither_breaks() {
+                    when.push((tick, broken));
+                }
+            }
+            if !griefing {
+                assert!(when.is_empty());
+                continue;
+            }
+            assert_eq!(when.len(), 1, "{when:?}");
+            let (tick, broken) = when[0];
+            assert_eq!((tick, broken.wither), (20, id));
+            let (x, y, z) = broken.at;
+            assert_eq!(broken.min, (x - 1, y, z - 1));
+            assert_eq!(broken.max, (x + 1, y + 3, z + 1));
+            let cells = broken.cells();
+            assert_eq!(cells.len(), 36);
+            assert_eq!(&cells[..2], &[(x - 1, y, z - 1), (x, y, z - 1)]);
+            assert_eq!(cells[3], (x - 1, y + 1, z - 1));
+        }
+    }
+
+    #[test]
+    fn a_dead_wither_drops_a_nether_star_when_mobs_drop_loot() {
+        for drops in [true, false] {
+            let mut world = EntityWorld::default();
+            world.set_mob_drops(drops);
+            let id = wither_at(&mut world, Wither::new(DVec3::new(0.5, 70.0, 0.5)));
+            let attack = PlayerAttack {
+                player_id: 1,
+                position: DVec3::new(0.5, 70.0, 3.5),
+                yaw: 180.0,
+                attack_damage: 1000.0,
+                strength: 1.0,
+                sprinting: false,
+                can_critical: false,
+                can_sweep: false,
+            };
+            assert!(world.player_attack(&attack, id).died);
+            let deaths = world.take_deaths();
+            let stars: Vec<&str> = deaths
+                .iter()
+                .flat_map(|death| death.equipment.iter().map(|s| s.id.as_str()))
+                .collect();
+            let expected: Vec<&str> = if drops {
+                vec![wt::NETHER_STAR]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(stars, expected);
+        }
     }
 }

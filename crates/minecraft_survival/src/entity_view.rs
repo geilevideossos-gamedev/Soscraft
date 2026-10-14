@@ -1252,6 +1252,21 @@ impl EntityView {
             atlas,
             forward,
         );
+        minecraft_terrain::wither_render::append_skulls(
+            &mut out.models,
+            w.fireballs()
+                .iter()
+                .filter(|f| f.fireball.alive && near(f.fireball.position))
+                .map(|f| {
+                    (
+                        f,
+                        f.previous_position
+                            .lerp(f.fireball.position, f64::from(partial)),
+                    )
+                }),
+            atlas,
+            light,
+        );
         if let Ok(items) = self
             .items
             .mesh(&self.world_items, packs, atlas, light, partial)

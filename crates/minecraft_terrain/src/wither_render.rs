@@ -4,8 +4,9 @@ use crate::mesh::{Atlas, ChunkMesh, Vertex};
 use crate::pack::ResourceId;
 use crate::posed_cube::{Cube, Skin, append, part_pose};
 use glam::{Mat4, Vec2, Vec3};
+use minecraftoss_entities::fireball::FireballKind;
 use minecraftoss_entities::wither::{INVULNERABLE_TICKS, Wither};
-use minecraftoss_entities::world::WitherEntity;
+use minecraftoss_entities::world::{FireballEntity, WitherEntity};
 use std::f32::consts::PI;
 
 pub const TEXTURE: &str = "minecraft:entity/wither/wither";
@@ -34,6 +35,7 @@ enum Part {
 }
 
 const SIDE_HEAD: Cube = Cube::new([-4.0, -4.0, -4.0], [6.0, 6.0, 6.0], [32.0, 0.0]);
+pub const SKULL: Cube = Cube::new([-4.0, -8.0, -4.0], [8.0, 8.0, 8.0], [0.0, 35.0]);
 
 const CUBES: [(Part, Cube); 9] = [
     (
@@ -359,6 +361,51 @@ pub fn append_withers<'a>(
     crate::cow_render::apply_overlays(mesh, &marks);
 }
 
+pub fn skull_texture(kind: FireballKind) -> Option<&'static str> {
+    match kind {
+        FireballKind::WitherSkull { dangerous: true } => Some(INVULNERABLE_TEXTURE),
+        FireballKind::WitherSkull { dangerous: false } => Some(TEXTURE),
+        _ => None,
+    }
+}
+
+pub fn skull_root(at: glam::DVec3, yaw: f32, pitch: f32) -> Mat4 {
+    Mat4::from_translation(at.as_vec3())
+        * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+        * part_pose([0.0; 3], [pitch * DEG, yaw * DEG, 0.0])
+}
+
+pub fn append_skulls<'a>(
+    mesh: &mut ChunkMesh,
+    skulls: impl IntoIterator<Item = (&'a FireballEntity, glam::DVec3)>,
+    atlas: &Atlas,
+    light: &SkyLight,
+) {
+    for (entity, at) in skulls {
+        let Some(texture) = skull_texture(entity.fireball.kind) else {
+            continue;
+        };
+        let Ok(texture) = ResourceId::parse(texture) else {
+            continue;
+        };
+        let block = (
+            at.x.floor() as i32,
+            at.y.floor() as i32,
+            at.z.floor() as i32,
+        );
+        let skin = Skin {
+            region: atlas.entity_region(&texture),
+            texture_size: TEXTURE_SIZE,
+            sky: light.get(block) as f32,
+            block: FULL_BRIGHT,
+            alpha: 1.0,
+            shaded: true,
+        };
+        let root = skull_root(at, entity.fireball.yaw, entity.fireball.pitch);
+        append(mesh, root, &skin, &SKULL);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,5 +584,41 @@ mod tests {
             lo < mlo && hi > mhi,
             "the armour sits half a pixel outside the body"
         );
+    }
+
+    #[test]
+    fn a_wither_skull_is_the_head_cube_half_a_block_high_and_blue_when_dangerous() {
+        let mut mesh = ChunkMesh::default();
+        append(
+            &mut mesh,
+            skull_root(glam::DVec3::new(0.0, 64.0, 0.0), 0.0, 0.0),
+            &skin(),
+            &SKULL,
+        );
+        assert_eq!(mesh.faces, 6);
+        let (low, high) = span(&mesh, 1);
+        assert!(
+            (low - 64.0).abs() < 1e-4 && (high - 64.5).abs() < 1e-4,
+            "{low} {high}"
+        );
+        let (left, right) = span(&mesh, 0);
+        assert!((left + 0.25).abs() < 1e-4 && (right - 0.25).abs() < 1e-4);
+        let mut turned = ChunkMesh::default();
+        append(
+            &mut turned,
+            skull_root(glam::DVec3::new(0.0, 64.0, 0.0), 90.0, 0.0),
+            &skin(),
+            &SKULL,
+        );
+        assert_ne!(mesh.vertices[0].position, turned.vertices[0].position);
+        assert_eq!(
+            skull_texture(FireballKind::WitherSkull { dangerous: true }),
+            Some(INVULNERABLE_TEXTURE)
+        );
+        assert_eq!(
+            skull_texture(FireballKind::WitherSkull { dangerous: false }),
+            Some(TEXTURE)
+        );
+        assert_eq!(skull_texture(FireballKind::Small), None);
     }
 }

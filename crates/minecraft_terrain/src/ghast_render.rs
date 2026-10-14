@@ -105,6 +105,7 @@ pub fn fireball_scale(entity: &FireballEntity) -> f32 {
     match entity.fireball.kind {
         minecraftoss_entities::fireball::FireballKind::Large { .. } => 3.0,
         minecraftoss_entities::fireball::FireballKind::Small => 0.75,
+        minecraftoss_entities::fireball::FireballKind::WitherSkull { .. } => 0.0,
     }
 }
 
@@ -124,6 +125,9 @@ pub fn append_fireballs<'a>(
     let right = forward.cross(Vec3::Y).normalize_or_zero();
     let up = right.cross(forward).normalize_or_zero();
     for (entity, at) in fireballs {
+        if entity.fireball.kind.wither_skull() {
+            continue;
+        }
         let scale = fireball_scale(entity);
         let center = at.as_vec3() + up * 0.125 * scale;
         let half = 0.25 * scale;

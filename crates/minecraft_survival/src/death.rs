@@ -75,6 +75,7 @@ pub enum MobAttack {
     Spit,
     Magic,
     Fireworks,
+    WitherSkull,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,7 +123,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit | MobAttack::Magic | MobAttack::Fireworks => None,
+            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit | MobAttack::Magic | MobAttack::Fireworks | MobAttack::WitherSkull => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -184,6 +185,7 @@ impl DamageCause {
                 MobAttack::Spit => "minecraft:spit",
                 MobAttack::Magic => "minecraft:indirect_magic",
                 MobAttack::Fireworks => "minecraft:fireworks",
+                MobAttack::WitherSkull => "minecraft:wither_skull",
             },
         }
     }
@@ -241,6 +243,10 @@ impl DamageCause {
                 attack: MobAttack::Magic,
                 ..
             } => "indirectMagic",
+            Self::Mob {
+                attack: MobAttack::WitherSkull,
+                ..
+            } => "witherSkull",
         }
     }
 
@@ -875,6 +881,8 @@ mod tests {
             ("entity.minecraft.piglin", "Piglin"),
             ("entity.minecraft.piglin_brute", "Piglin Brute"),
             ("entity.minecraft.shulker", "Shulker"),
+            ("entity.minecraft.wither", "Wither"),
+            ("death.attack.witherSkull", "%1$s was shot by a skull from %2$s"),
             ("entity.minecraft.drowned", "Drowned"),
             ("entity.minecraft.llama", "Llama"),
             ("death.attack.trident", "%1$s was impaled by %2$s"),
@@ -1109,6 +1117,17 @@ mod tests {
         tracker.record(1, bullet, 4.0, None, 0.0);
         assert_eq!(line(&tracker), says("%1$s was slain by Shulker", "Shulker"));
         assert_eq!(DamageCause::mob(MobAttack::MobProjectile, None, None), DamageCause::Generic);
+    }
+
+    #[test]
+    fn a_wither_skull_shoots_the_player_by_the_wither() {
+        let mut tracker = CombatTracker::default();
+        let skull = DamageCause::mob(MobAttack::WitherSkull, Some(4), Some("minecraft:wither"));
+        assert_eq!((skull.damage_type(), skull.message_id()), ("minecraft:wither_skull", "witherSkull"));
+        assert!(!skull.burns() && !skull.is_explosion());
+        tracker.record(1, skull, 8.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was shot by a skull from Wither", "Wither"));
+        assert_eq!(DamageCause::mob(MobAttack::WitherSkull, None, None), DamageCause::Generic);
     }
 
     #[test]
