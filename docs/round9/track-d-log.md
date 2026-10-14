@@ -2053,12 +2053,29 @@ After 30a2d1cb.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2,minecraft:cow_spawn_egg*2
 ```
 
+## Final verification (D2)
+
+### 1. Track D's log gets a combined kit for the raid groups
+
+After 1fa0ce90.
+
+- **Checked:** clippy on the crates touched since `r9-d2-base` (`frame`, `hud`, `minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `render_gpu` and `minecraftoss-entities`, `-generator`, `-player`, `-world`; `--all-targets`, `-A clippy::approx_constant`, with the stand-in `third_party/scenarios` files of `scripts\full-suite.ps1`, removed afterwards) warns on no line added since `r9-d2-base`; every warning is older. The 26 `.rs` files added since `r9-d2-base` pass `rustfmt --check` (edition 2021) on their committed content, and no added line has a comment.
+- **Tests:** none new. `test -p` on the eleven crates all green: `frame` 28, `hud` 186, `minecraft_net` 20, `minecraft_survival` 725 and `vanilla_world` 1, `minecraft_terrain` 1348 (3 ignored), `minecraftoss-entities` 374, `-generator` 30, `-player` 198, `-world` 96, `render_anim` 178, `render_gpu` 39; doc-tests green. `check -p launcher` green.
+- **Changed:** this log only: the d2 combined kit below, so groups pillagers to raid-villagers are tested with one kit.
+- **Test steps:** none; the steps of each group's commits hold.
+
 ## Combined kit
 
-One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision), and groups pillagers, patrols-vindicators, raids and raid-villagers keep their own kits (their last commits).
+One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:drowned_spawn_egg*16,minecraft:villager_spawn_egg*8,minecraft:zombie_spawn_egg*8,minecraft:zombie_villager_spawn_egg*4,minecraft:composter,minecraft:emerald*64,minecraft:wheat*64,minecraft:splash_potion@weakness,minecraft:golden_apple*16,minecraft:ominous_bottle[ominous_bottle_amplifier=4]*2,minecraft:milk_bucket,minecraft:cat_spawn_egg*8,minecraft:cod*64,minecraft:horse_spawn_egg*4,minecraft:donkey_spawn_egg*2,minecraft:llama_spawn_egg*4,minecraft:saddle*4,minecraft:golden_carrot*16,minecraft:chest*4,minecraft:lead*16,minecraft:oak_fence*16,minecraft:wandering_trader_spawn_egg*2,minecraft:iron_block*8,minecraft:carved_pumpkin*4,minecraft:snow_block*4,minecraft:shears,minecraft:cooked_beef*32
+```
+
+d2 groups (pillagers, patrols-vindicators, evokers-vexes, ravagers, raids, raid-villagers), 27 stacks:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:pillager_spawn_egg*16,minecraft:vindicator_spawn_egg*8,minecraft:evoker_spawn_egg*8,minecraft:vex_spawn_egg*4,minecraft:ravager_spawn_egg*4,minecraft:witch_spawn_egg*2,minecraft:villager_spawn_egg*8,minecraft:iron_golem_spawn_egg*2,minecraft:sheep_spawn_egg*4,minecraft:cow_spawn_egg*2,minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell,minecraft:lever*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:spyglass,minecraft:oak_leaves*64
 ```
 
 ## Protocol
