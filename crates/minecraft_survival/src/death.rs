@@ -303,6 +303,10 @@ impl DamageCause {
         matches!(self, Self::Fall | Self::EnderPearl)
     }
 
+    fn has_direct_source(self) -> bool {
+        self == Self::Explosion
+    }
+
     fn always_most_significant_fall(self) -> bool {
         self == Self::OutOfWorld
     }
@@ -546,6 +550,14 @@ impl CombatTracker {
             return DeathKey {
                 key,
                 attacker: Some(attacker),
+                cause: Some(last.cause),
+                player: None,
+            };
+        }
+        if last.cause.has_direct_source() {
+            return DeathKey {
+                key,
+                attacker: None,
                 cause: Some(last.cause),
                 player: None,
             };
@@ -1602,6 +1614,35 @@ mod tests {
             language.insert(key.to_owned(), text.to_owned());
         }
         language
+    }
+
+    #[test]
+    fn an_explosion_with_no_attacker_blew_up_even_right_after_a_hit() {
+        let mut language = with_player_lines();
+        language.insert("death.attack.explosion".to_owned(), "%1$s blew up".to_owned());
+        let lang = |key: &str| language.get(key).cloned();
+        let blow = DamageCause::Player { client: 0 };
+        let blast = DamageCause::mob(MobAttack::Explosion, None, None);
+        let mut tracker = CombatTracker::default();
+        tracker.hurt_by(1, zombie_bite());
+        tracker.record(1, zombie_bite(), 3.0, None, 0.0);
+        tracker.hurt_by(2, blow);
+        tracker.record(2, blow, 2.0, None, 0.0);
+        tracker.record(3, blast, 30.0, None, 0.0);
+        assert_eq!(
+            tracker.death_line(&language, |_| true, host(None)),
+            says("%1$s blew up", "blew up")
+        );
+        let text = tracker.death_text("Friend", |_| true, host(None));
+        assert_eq!(text.resolve(&lang).text, "Friend blew up");
+        let mut escaping = CombatTracker::default();
+        escaping.hurt_by(1, blow);
+        escaping.record(1, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
+        assert_eq!(
+            escaping.death_line(&language, |_| true, host(None)).message,
+            "%1$s tried to swim in lava to escape Host",
+            "a death with no direct source still names the last attacker"
+        );
     }
 
     #[test]

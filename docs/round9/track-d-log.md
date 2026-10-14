@@ -2519,6 +2519,24 @@ After 21862eeb. (Commit 2's log said `minecraft_survival` 745; the run there was
 IW4L_MINECRAFT_KIT=minecraft:tnt*32,minecraft:flint_and_steel,minecraft:flint_and_steel,minecraft:redstone_block*4,minecraft:cow_spawn_egg*8,minecraft:end_crystal*4,minecraft:obsidian*8,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:golden_apple*8
 ```
 
+### 4. An explosion with no attacker is told as "blew up"
+
+After fa83bb5e.
+
+- **Vanilla (26.3, `DamageSource.getLocalizedDeathMessage`; `en_us.json`):** only a source with neither a causing nor a direct entity falls back to the kill credit (`getKillCredit`, the `.player` form such as "was blown up by Zombie"). A TNT or end crystal blast with no owner is `explosion(tnt, null)`: its direct entity is the TNT or the crystal, so the line is `death.attack.explosion` with that entity's name, whose template ignores it: "%1$s blew up", even right after a mob's or a player's hit.
+- **Found:** the brief's cause ("an explosion with no source is told as a generic death") was already fixed by track C (7660486d, `DamageCause::Explosion` with the message id `explosion`). What was left: a player or mob that hit the victim in the 5 seconds before the blast turned it into "<victim> was blown up by <them>" through the kill-credit escape.
+- **Changed:** `minecraft_survival/src/death.rs`: `DamageCause::has_direct_source()` (true for `Explosion`, the fork's ownerless TNT and crystal blast); `death_key` gives such a cause its own key before the `hurt_by_player` and `hurt_by` escapes.
+- **Tests:** `minecraft_survival`: `death::tests::an_explosion_with_no_attacker_blew_up_even_right_after_a_hit` (a zombie's bite and the host's blow, then an ownerless blast: "%1$s blew up", killer "blew up", resolved "Friend blew up"; lava after the host's blow still says "to escape Host"). Runs: `minecraft_survival` 746 (+1 world test), green. `check -p launcher` green.
+- **Decisions:** fireworks with no shooter keep the escape for now (their direct entity is the rocket too, but the fork's `DamageCause::Fireworks` also covers a rocket whose shooter is gone); left for later.
+- **Test steps** (two windows as in commit 3; host: `/gamerule pvp true`, `/gamerule show_death_messages true`):
+  1. Host: put a TNT and a redstone block in the inventory hotbar. With 2 hearts left, the friend hits the host once with a fist, and within 5 seconds the host places the TNT and the redstone block beside it and stays: the chat reads "<host> blew up", not "was blown up by <friend>" (**231_tnt_blew_up**, both windows).
+  2. A zombie hits the friend, then the friend dies to a redstone-primed TNT: "<friend> blew up" (**232_tnt_blew_up_zombie**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:redstone_block*8,minecraft:zombie_spawn_egg*2,minecraft:cobblestone*64,minecraft:cooked_beef*16
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2624,6 +2642,7 @@ Group skater-poses changed `SkateReport` (new `pose`) and `StateFrame` (new `ska
 - `docs/MULTIPLAYER.md` (group tnt, commit 3): line 783 drops its last sentence ("TNT lit by a player still hurts other players with pvp off: ..."), and the leftover at line 1323 ("TNT lit by a player honouring `pvp`: ...") is removed. Section 20 gains: "With `pvp` off the host takes every explosion hit caused by a player (`PlayerHitKind::Explosion.by`) out of the routed hits and pushes the victim instead."
 - `docs/round8/decisions.md:71` is answered: TNT lit by a player honours `pvp` (track D, group tnt).
 - `docs/PROGRESS.md` (group tnt, commit 3): the open not-vanilla item "TNT lit by another player with pvp off" (line 10) is done by track D, group tnt.
+- `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 4): the death lines paragraph gains: "A blast with nobody behind it (TNT nobody lit, an end crystal nobody popped) reads '<victim> blew up', even right after another player's or a mob's hit, as vanilla."
 - `docs/PROGRESS.md` (group tnt, commit 1): line 57 ("TNT with pvp off (track D): the brief found that TNT hurts nobody today...") becomes: "TNT (track D, group tnt): TNT now hurts players and mobs everywhere, single player too; tell the owner."
 
 ## Vendored files
