@@ -2320,6 +2320,7 @@ impl ServerSim {
         self.level.set_block(at, target, flags, update::LIMIT);
         if matches!(edit, PlayerEdit::Place) {
             self.power_placed_opening(at, block);
+            self.level.wither_skull_placed(at);
         }
     }
 
@@ -6177,6 +6178,59 @@ mod tests {
     }
 
     #[test]
+    fn three_wither_skeleton_skulls_on_a_soul_sand_t_build_a_charging_wither() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let sand = || Block::new("minecraft:soul_sand");
+        place(&mut server, &mut scene, (8, 200, 8), sand());
+        place(&mut server, &mut scene, (7, 201, 8), Block::new("minecraft:soul_soil"));
+        place(&mut server, &mut scene, (8, 201, 8), sand());
+        place(&mut server, &mut scene, (9, 201, 8), sand());
+        place(&mut server, &mut scene, (7, 202, 8), Block::new("minecraft:wither_skeleton_skull"));
+        place(&mut server, &mut scene, (8, 202, 8), Block::new("minecraft:wither_skeleton_skull"));
+        server.take_changes();
+        server.take_destroyed();
+        server.take_spawned();
+        assert!(server.mobs.withers().is_empty(), "two skulls build nothing");
+        place(&mut server, &mut scene, (9, 202, 8), Block::new("minecraft:wither_skeleton_skull").with("rotation", "4"));
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        for pos in [(8, 200, 8), (7, 201, 8), (8, 201, 8), (9, 201, 8), (7, 202, 8), (8, 202, 8), (9, 202, 8)] {
+            assert_eq!(changes.get(&pos), Some(&None), "{pos:?} is cleared");
+        }
+        assert_eq!(server.take_destroyed().len(), 7, "each block breaks with its particles and sound");
+        server.take_spawned();
+        let withers = server.mobs.withers();
+        assert_eq!(withers.len(), 1);
+        let w = &withers[0].wither;
+        assert_eq!(w.body.position, glam::DVec3::new(8.5, 200.55, 8.5));
+        assert_eq!((w.invulnerable_ticks, w.health, w.yaw, w.body_yaw), (220, 100.0, 90.0, 90.0));
+    }
+
+    #[test]
+    fn wither_skulls_set_by_a_command_or_on_peaceful_build_no_wither() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for (x, y) in [(8, 200), (7, 201), (8, 201), (9, 201)] {
+            place(&mut server, &mut scene, (x, y, 8), Block::new("minecraft:soul_sand"));
+        }
+        for x in 7..=9 {
+            let skull = Block::new("minecraft:wither_skeleton_skull");
+            scene.set((x, 202, 8), Some(skull.clone()));
+            server.player_edit_block((x, 202, 8), Some(&skull), PlayerEdit::Break);
+        }
+        server.take_spawned();
+        assert!(server.mobs.withers().is_empty(), "only a placed skull checks the pattern");
+        take(&mut server, &mut scene, (9, 202, 8));
+        server.level.difficulty = 0;
+        place(&mut server, &mut scene, (9, 202, 8), Block::new("minecraft:wither_skeleton_skull"));
+        server.take_spawned();
+        assert!(server.mobs.withers().is_empty(), "no wither on peaceful");
+        server.level.difficulty = 2;
+        take(&mut server, &mut scene, (9, 202, 8));
+        place(&mut server, &mut scene, (9, 202, 8), Block::new("minecraft:wither_skeleton_skull"));
+        server.take_spawned();
+        assert_eq!(server.mobs.withers().len(), 1);
+    }
+
+    #[test]
     fn a_carved_pumpkin_on_an_incomplete_t_stays_a_pumpkin() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:iron_block"));
@@ -7415,9 +7469,9 @@ mod tests {
         assert!(answers[2].is_err());
     }
 
-    const HATCHING_EGGS: [&str; 49] = [
+    const HATCHING_EGGS: [&str; 50] = [
         "bat", "blaze", "bogged", "cat", "cave_spider", "chicken", "cow", "creeper", "donkey", "drowned", "ender_dragon", "enderman", "evoker", "ghast", "hoglin", "horse", "husk", "iron_golem", "llama", "magma_cube", "mooshroom", "mule", "ocelot", "parched", "pig", "piglin", "piglin_brute", "pillager", "ravager", "sheep", "shulker", "skeleton", "slime", "snow_golem", "spider", "stray", "strider",
-        "trader_llama", "vex", "villager", "vindicator", "wandering_trader", "witch", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
+        "trader_llama", "vex", "villager", "vindicator", "wandering_trader", "witch", "wither", "wither_skeleton", "wolf", "zoglin", "zombie", "zombie_villager", "zombified_piglin",
     ];
 
     #[test]

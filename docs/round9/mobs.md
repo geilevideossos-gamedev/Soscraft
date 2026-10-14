@@ -60,7 +60,7 @@ Sizes: S, M, L, XL. "Exists" lists only what goes beyond the default: a texture,
 | 48 | Creaking | pale garden | `player_views` from endermen (`world.rs:2324`) | heart link, frozen while looked at, keyframes | L | `creakings` | | left | |
 | 49 | Sulfur cube | sulfur caves (26.3) | `AbstractCubeMob` like the slime | bucket, shearing, archetypes, fuse | M-L | `sulfur-cubes` | | left | |
 | 50 | Happy ghast | dried ghast (26.3) | ghast model | ghastling, harness, P3, four riders | L | `happy-ghasts` | | left | |
-| 51 | Wither | built boss | dragon boss bar | everything | XL | `wither-live`, `wither-fight` | | left | |
+| 51 | Wither | built boss | `withers` store (`WitherEntity`, `wither.rs`, `wither_ai.rs`, `world/withers.rs`): built from three wither skeleton skulls on a soul sand or soul soil T in any of the 24 orientations (`wither_build.rs`, a placed skull checks the pattern, not on peaceful), the 220-tick invulnerable charge-up at a third of its health that heals 10 every 10 ticks and ends in a radius 7 mob blast and the spawn sound heard everywhere; saved (`Invul`), loaded, hatched from its egg (no charge) and seen by friends with both side heads' yaw and pitch, the charge clock and the half-health armour through `MobShow.wither`; vanilla's goals (do nothing while charging, `RangedAttackGoal` flight, hover stroll, looks) and targets (attackers, the nearest living that is not undead), flight (`FlyingMoveControl`, straight paths), the chase above its target, side heads choosing their own targets within 20 blocks and turning to them, undead and drowning never hurt it, 4 armour, 50 experience, iron golems hunt it | wither skulls and the shots of all three heads (commit seam `WitherEntity.shots`), the half-health arrow shield, block breaking, the boss bar, the nether star, `WitherBossModel` (commit 2) | XL | `wither-live`, `wither-fight` | 35 (wither store) | live | "Minecraft withers are built from soul sand and skulls" (after 81f6f353) |
 | 52 | Breeze | trial chambers | wind charge burst (`wind.rs`) | brain, wind charges, `BreezeModel`, keyframes | L | `breezes`, `breeze-render` | | left | |
 
 The last group (`mobs-wrapup`) checks that every spawn egg in the game hatches.
@@ -81,7 +81,8 @@ A MW2 bullet finds a mob through one number: the kind in the top byte and the en
 | 32 | `illagers` (`IllagerEntity`, `MobHit::Illager`) | 9 pillager, 10 vindicator, 11 evoker | `pillagers` |
 | 33 | `vexes` (`VexEntity`, `MobHit::Vex`) | 12 vex | `evokers-vexes` |
 | 34 | `ravagers` (`RavagerEntity`, `MobHit::Ravager`) | 13 ravager | `ravagers` |
-| 35 | (next free) | | |
+| 35 | `withers` (`WitherEntity`, `MobHit::Wither`) | 51 wither | `wither-live` |
+| 36 | (next free) | | |
 
 ## The batching rule
 

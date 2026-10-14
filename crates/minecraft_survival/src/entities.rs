@@ -2004,6 +2004,7 @@ pub(crate) fn encode(hit: MobHit) -> u64 {
         MobHit::Illager(_) => ILLAGER_KEY,
         MobHit::Vex(_) => VEX_KEY,
         MobHit::Ravager(_) => RAVAGER_KEY,
+        MobHit::Wither(_) => WITHER_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -2039,6 +2040,7 @@ pub(crate) fn decode(key: u64) -> Option<MobHit> {
         ILLAGER_KEY => MobHit::Illager(id),
         VEX_KEY => MobHit::Vex(id),
         RAVAGER_KEY => MobHit::Ravager(id),
+        WITHER_KEY => MobHit::Wither(id),
         _ => return None,
     })
 }
@@ -2056,6 +2058,7 @@ const SNOW_GOLEM_KEY: u64 = 31;
 const ILLAGER_KEY: u64 = 32;
 const VEX_KEY: u64 = 33;
 const RAVAGER_KEY: u64 = 34;
+const WITHER_KEY: u64 = 35;
 pub(crate) const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
@@ -2418,6 +2421,13 @@ mod tests {
         assert_eq!(fireball_of(key), None);
         assert_eq!(crystal_of(key), None);
         assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
+    fn a_wither_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Wither(93));
+        assert_eq!(key >> 56, 35);
+        assert_eq!(decode(key), Some(MobHit::Wither(93)));
     }
 
     #[test]

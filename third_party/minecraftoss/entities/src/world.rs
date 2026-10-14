@@ -38,6 +38,8 @@ mod vexes;
 pub use vexes::VexEntity;
 mod ravagers;
 pub use ravagers::RavagerEntity;
+mod withers;
+pub use withers::WitherEntity;
 mod raiders;
 pub use raiders::{celebrate_sound, FireworkLaunch, HeroGift, RaidVillagerEvents, RaiderMut, RaiderView, GIFT_PICKUP_DELAY};
 mod hazards;
@@ -2086,6 +2088,7 @@ enum EntityKey {
     EvokerFangs(u64),
     Vex(u64),
     Ravager(u64),
+    Wither(u64),
 }
 
 impl EntityKey {
@@ -2123,7 +2126,8 @@ impl EntityKey {
             | Self::Illager(id)
             | Self::EvokerFangs(id)
             | Self::Vex(id)
-            | Self::Ravager(id) => id,
+            | Self::Ravager(id)
+            | Self::Wither(id) => id,
         }
     }
 }
@@ -2158,13 +2162,14 @@ pub enum MobHit {
     Illager(u64),
     Vex(u64),
     Ravager(u64),
+    Wither(u64),
 }
 
 impl MobHit {
     /// The hit mob's entity ID.
     pub fn id(self) -> u64 {
         match self {
-            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) | Self::Feline(id) | Self::WanderingTrader(id) | Self::SnowGolem(id) | Self::Illager(id) | Self::Vex(id) | Self::Ravager(id) => id,
+            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) | Self::Feline(id) | Self::WanderingTrader(id) | Self::SnowGolem(id) | Self::Illager(id) | Self::Vex(id) | Self::Ravager(id) | Self::Wither(id) => id,
         }
     }
 }
@@ -2495,6 +2500,7 @@ pub struct EntityWorld {
     illagers: Vec<IllagerEntity>,
     vexes: Vec<VexEntity>,
     ravagers: Vec<RavagerEntity>,
+    withers: Vec<WitherEntity>,
     player_pushes: Vec<(u64, DVec3)>,
     snowball_shots: Vec<SnowballShot>,
     ghasts: Vec<GhastEntity>,
@@ -2641,6 +2647,7 @@ impl Default for EntityWorld {
             illagers: Vec::new(),
             vexes: Vec::new(),
             ravagers: Vec::new(),
+            withers: Vec::new(),
             player_pushes: Vec::new(),
             snowball_shots: Vec::new(),
             ghasts: Vec::new(),
@@ -2928,6 +2935,7 @@ impl EntityWorld {
             EntityKey::Illager(id) => (self.illagers.iter().find(|e| e.id == id)?.illager.body.clone(), crate::illager::EYE_HEIGHT),
             EntityKey::Vex(id) => (self.vexes.iter().find(|e| e.id == id)?.vex.body.clone(), crate::vex::EYE_HEIGHT),
             EntityKey::Ravager(id) => (self.ravagers.iter().find(|e| e.id == id)?.ravager.body.clone(), crate::ravager::EYE_HEIGHT),
+            EntityKey::Wither(id) => (self.withers.iter().find(|e| e.id == id)?.wither.body.clone(), crate::wither::EYE_HEIGHT),
             EntityKey::Villager(id) => {
                 let e = self.villagers.iter().find(|e| e.id == id)?;
                 (e.villager.body.clone(), e.villager.eye_height())
@@ -3005,6 +3013,7 @@ impl EntityWorld {
             EntityKey::Illager(id) => self.illagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.illager.body)),
             EntityKey::Vex(id) => self.vexes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.vex.body)),
             EntityKey::Ravager(id) => self.ravagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.ravager.body)),
+            EntityKey::Wither(id) => self.withers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_typed(damage, blaster.damage_type(), false, false), &mut e.wither.body)),
             EntityKey::Strider(id) => self.striders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.strider.body)),
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.hoglin.body)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.piglin.body)),
@@ -3115,6 +3124,11 @@ impl EntityWorld {
             }
             EntityKey::Ravager(id) => {
                 if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Wither(id) => {
+                if let Some(e) = self.withers.iter_mut().find(|e| e.id == id) {
                     e.ai.state.hurt_by = Some((target, e.tick_count));
                 }
             }
@@ -3326,6 +3340,10 @@ impl EntityWorld {
                         let entity = self.ravagers.iter().find(|entity| entity.id == id)?;
                         (id, &entity.ravager.body, entity.ravager.health)
                     }
+                    EntityKey::Wither(id) => {
+                        let entity = self.withers.iter().find(|entity| entity.id == id)?;
+                        (id, &entity.wither.body, entity.wither.health)
+                    }
                     EntityKey::Villager(id) => {
                         let entity = self.villagers.iter().find(|entity| entity.id == id)?;
                         (id, &entity.villager.body, entity.villager.health)
@@ -3467,6 +3485,7 @@ impl EntityWorld {
         let source = DamageSourceKind::Projectile;
         let mut outcome = None;
         let mut resisted_knockback = false;
+        let owner_undead = self.entity_type(owner).is_some_and(crate::wither::is_undead);
         if let Some(entity) = self.bats.iter_mut().find(|entity| entity.id == id) {
             let result = entity.hurt(hit.damage);
             outcome = Some(result);
@@ -3615,6 +3634,13 @@ impl EntityWorld {
             if result.applied {
                 entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
                 projectile_knockback(&mut entity.ravager.body, &mut entity.random, hit.velocity * (1.0 - crate::ravager::KNOCKBACK_RESISTANCE));
+            }
+        } else if let Some(entity) = self.withers.iter_mut().find(|entity| entity.id == id) {
+            let result = entity.hurt_typed(hit.damage, "minecraft:arrow", owner_undead, false);
+            outcome = Some(result);
+            if result.applied {
+                entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
+                projectile_knockback(&mut entity.wither.body, &mut entity.random, hit.velocity);
             }
         } else if let Some(entity) = self.striders.iter_mut().find(|entity| entity.id == id) {
             let result = entity.hurt(hit.damage, source);
@@ -4098,6 +4124,9 @@ impl EntityWorld {
         for e in &self.ravagers {
             add(e.id, crate::ravager::TYPE_ID, &e.ravager.body, crate::ravager::EYE_HEIGHT, e.ravager.health > 0.0, false);
         }
+        for e in &self.withers {
+            add(e.id, crate::wither::TYPE_ID, &e.wither.body, crate::wither::EYE_HEIGHT, e.wither.health > 0.0, false);
+        }
         for e in &self.sheep {
             let baby = e.sheep.age.baby();
             add(e.id, "minecraft:sheep", &e.body, if baby { 0.6175 } else { 1.235 }, e.health > 0.0, baby);
@@ -4236,6 +4265,12 @@ impl EntityWorld {
             (hit, false)
         } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == victim) {
             let hit = e.hurt(damage);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            (hit, false)
+        } else if let Some(e) = self.withers.iter_mut().find(|e| e.id == victim) {
+            let hit = e.hurt_by(damage, Some(attacker_kind));
             if hit.applied {
                 e.ai.state.hurt_by = Some((by, e.tick_count));
             }
@@ -4604,6 +4639,14 @@ impl EntityWorld {
             }
             deaths.push((order, death));
         }
+        for e in &mut self.withers {
+            let kind = crate::wither::TYPE_ID;
+            let Some((order, mut death)) = death_of(e.id, &mut e.wither.damage, kind, Some(kind), plain) else { continue };
+            if earns(&death, true) {
+                death.experience = crate::wither::EXPERIENCE;
+            }
+            deaths.push((order, death));
+        }
         for e in &mut self.vexes {
             let kind = crate::vex::TYPE_ID;
             let Some((order, mut death)) = death_of(e.id, &mut e.vex.damage, kind, Some(kind), plain) else { continue };
@@ -4797,6 +4840,9 @@ impl EntityWorld {
         if self.ravagers.iter().any(|e| e.id == id) {
             return Some(crate::ravager::TYPE_ID);
         }
+        if self.withers.iter().any(|e| e.id == id) {
+            return Some(crate::wither::TYPE_ID);
+        }
         if self.wolves.iter().any(|e| e.id == id) {
             return Some("minecraft:wolf");
         }
@@ -4878,6 +4924,7 @@ impl EntityWorld {
             .chain(self.illagers.iter_mut().map(|e| &mut e.illager.body))
             .chain(self.vexes.iter_mut().map(|e| &mut e.vex.body))
             .chain(self.ravagers.iter_mut().map(|e| &mut e.ravager.body))
+            .chain(self.withers.iter_mut().map(|e| &mut e.wither.body))
             .chain(self.villagers.iter_mut().map(|e| &mut e.villager.body))
             .chain(self.cows.iter_mut().map(|e| &mut e.cow.body))
             .chain(self.sheep.iter_mut().map(|e| &mut e.body))
@@ -4925,6 +4972,8 @@ impl EntityWorld {
             Some(&mut e.vex.body)
         } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.ravager.body)
+        } else if let Some(e) = self.withers.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.wither.body)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.villager.body)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
@@ -4970,6 +5019,7 @@ impl EntityWorld {
             .or_else(|| self.illagers.iter().find(|e| e.id == id).map(|e| &e.illager.damage))
             .or_else(|| self.vexes.iter().find(|e| e.id == id).map(|e| &e.vex.damage))
             .or_else(|| self.ravagers.iter().find(|e| e.id == id).map(|e| &e.ravager.damage))
+            .or_else(|| self.withers.iter().find(|e| e.id == id).map(|e| &e.wither.damage))
             .or_else(|| self.villagers.iter().find(|e| e.id == id).map(|e| &e.villager.damage))
             .or_else(|| self.cows.iter().find(|e| e.id == id).map(|e| &e.cow.damage))
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| &e.damage))
@@ -5017,6 +5067,8 @@ impl EntityWorld {
             Some(&mut e.vex.damage)
         } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.ravager.damage)
+        } else if let Some(e) = self.withers.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.wither.damage)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.villager.damage)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
@@ -5122,6 +5174,9 @@ impl EntityWorld {
         }
         for e in &mut self.ravagers {
             resolve_voices(&mut out, &mut e.voices, "ravager", 1.0, "hostile_volume");
+        }
+        for e in &mut self.withers {
+            resolve_voices(&mut out, &mut e.voices, "wither", 1.0, "hostile_volume");
         }
         for e in &mut self.cows {
             if let Some(horse) = &e.horse {
@@ -5472,6 +5527,7 @@ impl EntityWorld {
             .chain(self.illagers.iter().map(|e| (e.id, e.illager.body.position)))
             .chain(self.vexes.iter().map(|e| (e.id, e.vex.body.position)))
             .chain(self.ravagers.iter().map(|e| (e.id, e.ravager.body.position)))
+            .chain(self.withers.iter().map(|e| (e.id, e.wither.body.position)))
             .chain(self.arrows.iter().map(|e| (e.id, e.arrow.position)))
             .chain(self.potions.iter().map(|e| (e.id, e.potion.position)))
             .chain(self.villagers.iter().map(|e| (e.id, e.villager.body.position)))
@@ -5516,6 +5572,7 @@ impl EntityWorld {
         self.illagers.iter().for_each(|e| add(e.previous_position, &e.illager.body));
         self.vexes.iter().for_each(|e| add(e.previous_position, &e.vex.body));
         self.ravagers.iter().for_each(|e| add(e.previous_position, &e.ravager.body));
+        self.withers.iter().for_each(|e| add(e.previous_position, &e.wither.body));
         self.villagers.iter().for_each(|e| add(e.previous_position, &e.villager.body));
         self.cows.iter().for_each(|e| add(e.previous_position, &e.cow.body));
         self.sheep.iter().for_each(|e| add(e.previous_position, &e.body));
@@ -5556,6 +5613,7 @@ impl EntityWorld {
         let illagers: Vec<IllagerEntity> = self.illagers.iter().filter(|e| keep(e.illager.body.position)).cloned().collect();
         let vexes: Vec<VexEntity> = self.vexes.iter().filter(|e| keep(e.vex.body.position)).cloned().collect();
         let ravagers: Vec<RavagerEntity> = self.ravagers.iter().filter(|e| keep(e.ravager.body.position)).cloned().collect();
+        let withers: Vec<WitherEntity> = self.withers.iter().filter(|e| keep(e.wither.body.position)).cloned().collect();
         let arrows: Vec<ArrowEntity> = self.arrows.iter().filter(|e| keep(e.arrow.position)).cloned().collect();
         let potions: Vec<PotionEntity> = self.potions.iter().filter(|e| keep(e.potion.position)).cloned().collect();
         let villagers: Vec<VillagerEntity> = self.villagers.iter().filter(|e| keep(e.villager.body.position)).cloned().collect();
@@ -5590,6 +5648,7 @@ impl EntityWorld {
             illagers,
             vexes,
             ravagers,
+            withers,
             player_pushes: Vec::new(),
             snowball_shots: Vec::new(),
             ghasts,
@@ -5733,6 +5792,7 @@ impl EntityWorld {
         out.extend(self.illagers.iter().map(|e| entry(e.id, e.illager.kind.type_id(), &e.illager.body, e.illager.persistence_required)));
         out.extend(self.vexes.iter().map(|e| entry(e.id, crate::vex::TYPE_ID, &e.vex.body, e.vex.persistence_required)));
         out.extend(self.ravagers.iter().map(|e| entry(e.id, crate::ravager::TYPE_ID, &e.ravager.body, e.ravager.persistence_required)));
+        out.extend(self.withers.iter().map(|e| entry(e.id, crate::wither::TYPE_ID, &e.wither.body, e.wither.persistence_required)));
         out.extend(self.villagers.iter().map(|e| entry(e.id, "minecraft:villager", &e.villager.body, e.villager.persistence_required)));
         out.extend(self.cows.iter().map(|e| {
             let kind = if e.mooshroom.is_some() { "minecraft:mooshroom" } else { "minecraft:cow" };
@@ -5831,6 +5891,7 @@ impl EntityWorld {
             }
             !check(e.id, position, e.ravager.persistence_required || in_raid, rule, &mut e.no_action_time, &mut e.random)
         });
+        self.withers.retain(|e| !(peaceful && listed(e.wither.body.position)));
         self.villagers.retain_mut(|e| !check(e.id, e.villager.body.position, e.villager.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         self.cows.retain_mut(|e| !check(e.id, e.cow.body.position, e.cow.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
         self.sheep.retain_mut(|e| !check(e.id, e.body.position, e.sheep.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
@@ -5869,6 +5930,7 @@ impl EntityWorld {
         self.illagers.retain(|e| !remove(e.illager.body.position));
         self.vexes.retain(|e| !remove(e.vex.body.position));
         self.ravagers.retain(|e| !remove(e.ravager.body.position));
+        self.withers.retain(|e| !remove(e.wither.body.position));
         self.arrows.retain(|e| !remove(e.arrow.position));
         self.potions.retain(|e| !remove(e.potion.position));
         self.villagers.retain(|e| !remove(e.villager.body.position));
@@ -6571,6 +6633,10 @@ impl EntityWorld {
                 }
                 EntityKey::Ravager(id) => {
                     self.tick_ravager(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::Wither(id) => {
+                    self.tick_wither(id, world, players);
                     continue;
                 }
                 EntityKey::Potion(id) => {
@@ -7999,6 +8065,7 @@ impl EntityWorld {
         self.illagers.retain(|entity| entity.illager.damage.death_ticks < 20);
         self.vexes.retain(|entity| entity.vex.damage.death_ticks < 20);
         self.ravagers.retain(|entity| entity.ravager.damage.death_ticks < 20);
+        self.withers.retain(|entity| entity.wither.damage.death_ticks < 20);
         self.potions.retain(|entity| entity.potion.alive);
         self.villagers
             .retain(|entity| entity.villager.damage.death_ticks < 20);
@@ -8040,6 +8107,7 @@ impl EntityWorld {
             .chain(self.illagers.iter().map(|entity| entity.id))
             .chain(self.vexes.iter().map(|entity| entity.id))
             .chain(self.ravagers.iter().map(|entity| entity.id))
+            .chain(self.withers.iter().map(|entity| entity.id))
             .chain(self.arrows.iter().map(|entity| entity.id))
             .chain(self.potions.iter().map(|entity| entity.id))
             .chain(self.villagers.iter().map(|entity| entity.id))
@@ -8091,7 +8159,8 @@ impl EntityWorld {
             | EntityKey::Illager(id)
             | EntityKey::EvokerFangs(id)
             | EntityKey::Vex(id)
-            | EntityKey::Ravager(id) => alive_ids.contains(id),
+            | EntityKey::Ravager(id)
+            | EntityKey::Wither(id) => alive_ids.contains(id),
         });
         self.prune_riding();
     }
@@ -8272,6 +8341,15 @@ impl EntityWorld {
                         continue;
                     }
                     (MobHit::Ravager(id), &entity.ravager.body)
+                }
+                EntityKey::Wither(id) => {
+                    let Some(entity) = self.withers.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.wither.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::Wither(id), &entity.wither.body)
                 }
                 EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => continue,
                 EntityKey::Ghast(id) => {

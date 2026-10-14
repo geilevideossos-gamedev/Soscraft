@@ -12,7 +12,7 @@ use crate::client_mobs::{ServerMob, server_mobs};
 pub const LOOK_TICKS: u64 = 10;
 pub const DEFAULT_RANGE: i32 = 5;
 
-const VOLATILE: [&str; 36] = [
+const VOLATILE: [&str; 37] = [
     "Pos",
     "Motion",
     "Rotation",
@@ -49,6 +49,7 @@ const VOLATILE: [&str; 36] = [
     "AttackTick",
     "StunTick",
     "RoarTick",
+    "Invul",
 ];
 
 const ARM_POSES: [ArmPose; 6] = [
@@ -85,6 +86,14 @@ pub struct MobShow {
     pub bite: [i32; 2],
     pub ravager: [i32; 3],
     pub glowing: bool,
+    pub wither: WitherShow,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WitherShow {
+    pub heads: [f32; 4],
+    pub invulnerable: i32,
+    pub powered: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -280,7 +289,7 @@ pub fn tracking_range(kind: &str) -> i32 {
         "cow" | "mooshroom" | "horse" | "donkey" | "sheep" | "pig" | "chicken" | "wolf" | "ocelot"
         | "villager" | "iron_golem" | "ghast" | "slime" | "strider" | "shulker"
         | "ender_dragon" | "tnt" | "falling_block" | "item_frame" | "glow_item_frame"
-        | "area_effect_cloud" | "llama" | "trader_llama" | "wandering_trader" | "ravager" => 10,
+        | "area_effect_cloud" | "llama" | "trader_llama" | "wandering_trader" | "ravager" | "wither" => 10,
         "zombie" | "husk" | "drowned" | "zombie_villager" | "zombified_piglin" | "skeleton"
         | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
@@ -447,6 +456,20 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             e.id,
             MobShow {
                 ravager: [ravager.attack_tick, ravager.stunned_tick, ravager.roar_tick],
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.withers() {
+        let w = &e.wither;
+        put(
+            e.id,
+            MobShow {
+                wither: WitherShow {
+                    heads: [w.head_x_rots[0], w.head_y_rots[0], w.head_x_rots[1], w.head_y_rots[1]],
+                    invulnerable: w.invulnerable_ticks,
+                    powered: w.powered(),
+                },
                 ..MobShow::default()
             },
         );
@@ -678,6 +701,17 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
         e.ravager.attack_tick = attack;
         e.ravager.stunned_tick = stunned;
         e.ravager.roar_tick = roar;
+    }
+    if let Some(e) = world.wither_mut(id) {
+        use minecraftoss_entities::wither::MAX_HEALTH;
+        place(&mut e.previous_position, &mut e.wither.body, mob);
+        let [x0, y0, x1, y1] = show.wither.heads;
+        e.wither.head_x_rots = [x0, x1];
+        e.wither.head_y_rots = [y0, y1];
+        e.wither.invulnerable_ticks = show.wither.invulnerable;
+        if show.wither.powered != e.wither.powered() {
+            e.wither.health = if show.wither.powered { MAX_HEALTH / 2.0 } else { MAX_HEALTH };
+        }
     }
     if let Some(e) = world.ghast_mut(id) {
         place(&mut e.previous_position, &mut e.ghast.body, mob);
@@ -1479,6 +1513,36 @@ mod tests {
             map.insert("StunTick".to_owned(), Tag::Int(29));
         }
         assert_eq!(look(&saved), quiet, "the clocks never resend the look");
+    }
+
+    #[test]
+    fn a_friend_sees_a_wither_charge_and_turn_its_three_heads() {
+        let mut host = EntityWorld::default();
+        let (wither, tag) = spawn(&mut host, "{id:\"minecraft:wither\",Pos:[2.5d,66.0d,0.5d],NoAI:1b,Health:100.0f,Invul:200}");
+        assert_eq!(tracking_range("minecraft:wither"), 10);
+        assert!(look(&tag).get("Invul").is_none(), "the charge clock is not a look change");
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, wither, &tag));
+        assert_eq!(friend.entity_type(wither), Some("minecraft:wither"));
+        {
+            let w = &mut host.wither_mut(wither).unwrap().wither;
+            w.invulnerable_ticks = 150;
+            w.head_x_rots = [10.0, -20.0];
+            w.head_y_rots = [45.0, -60.0];
+            w.health = 300.0;
+        }
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.withers()[0].wither;
+        assert_eq!(seen.invulnerable_ticks, 150);
+        assert_eq!((seen.head_x_rots, seen.head_y_rots), ([10.0, -20.0], [45.0, -60.0]));
+        assert!(!seen.powered(), "its armour goes once healed");
+        host.wither_mut(wither).unwrap().wither.health = 120.0;
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        assert!(friend.withers()[0].wither.powered(), "and comes back below half health");
     }
 
     #[test]

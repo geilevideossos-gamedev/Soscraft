@@ -62,6 +62,7 @@ pub enum MonsterKind {
     Evoker,
     Vex,
     Ravager,
+    Wither,
 }
 
 impl MonsterKind {
@@ -91,6 +92,7 @@ impl MonsterKind {
             Self::Evoker => &crate::illager_ai::EVOKER_GOAL_NAMES,
             Self::Vex => &crate::vex_ai::GOAL_NAMES,
             Self::Ravager => &crate::ravager_ai::GOAL_NAMES,
+            Self::Wither => &crate::wither_ai::GOAL_NAMES,
         }
     }
 
@@ -119,6 +121,7 @@ impl MonsterKind {
             Self::Evoker => &crate::illager_ai::EVOKER_TARGET_NAMES,
             Self::Vex => &crate::vex_ai::TARGET_NAMES,
             Self::Ravager => &crate::ravager_ai::TARGET_NAMES,
+            Self::Wither => &crate::wither_ai::TARGET_NAMES,
         }
     }
 }
@@ -390,6 +393,7 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:evoker"
             | "minecraft:vex"
             | "minecraft:ravager"
+            | "minecraft:wither"
     )
 }
 
@@ -554,6 +558,7 @@ pub struct MonsterGoalContext {
     pub snow_golem: crate::snow_golem_ai::SnowGolemState,
     pub illager: crate::illager_ai::IllagerState,
     pub vex: crate::vex_ai::VexState,
+    pub wither: crate::wither_ai::WitherState,
     /// The level's points of interest and random, lent while it ticks (to
     /// iron golems and zombies).
     pub pois: Option<crate::poi::PoiManager>,
@@ -773,7 +778,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex | MonsterKind::Ravager, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex | MonsterKind::Ravager | MonsterKind::Wither, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -856,6 +861,7 @@ impl MonsterAi {
             MonsterKind::Evoker => crate::illager::IllagerKind::Evoker.follow_range(),
             MonsterKind::Vex => crate::vex::FOLLOW_RANGE,
             MonsterKind::Ravager => crate::ravager::FOLLOW_RANGE,
+            MonsterKind::Wither => crate::wither::FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -917,6 +923,7 @@ impl MonsterAi {
             MonsterKind::Evoker => (crate::illager_ai::evoker_goals(), crate::illager_ai::evoker_targets(), crate::illager::EYE_HEIGHT),
             MonsterKind::Vex => (crate::vex_ai::vex_goals(), crate::vex_ai::vex_targets(), crate::vex::EYE_HEIGHT),
             MonsterKind::Ravager => (crate::ravager_ai::ravager_goals(), crate::ravager_ai::ravager_targets(), crate::ravager::EYE_HEIGHT),
+            MonsterKind::Wither => (crate::wither_ai::wither_goals(), crate::wither_ai::wither_targets(), crate::wither::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -984,6 +991,7 @@ impl MonsterAi {
                 snow_golem: Default::default(),
                 illager: Default::default(),
                 vex: Default::default(),
+                wither: Default::default(),
                 pois: None,
                 level_random: None,
                 can_break_doors: false,

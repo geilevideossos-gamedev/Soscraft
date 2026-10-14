@@ -477,6 +477,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:vindicator",
     "minecraft:wandering_trader",
     "minecraft:witch",
+    "minecraft:wither",
     "minecraft:wither_skeleton",
     "minecraft:wolf",
     "minecraft:zoglin",
@@ -723,6 +724,10 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
         "minecraft:ravager" if tag.get("Passengers").is_none() => {
             let saved = crate::ravager_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::ravager_save::spawn(world, tag, saved)?
+        }
+        "minecraft:wither" => {
+            let saved = crate::wither_save::Saved { pos, yaw, health, persistent, no_ai, random };
+            crate::wither_save::spawn(world, tag, saved)?
         }
         "minecraft:hoglin" | "minecraft:zoglin" => {
             use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
@@ -1810,6 +1815,10 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         let ravager = &e.ravager;
         add(e.id, minecraftoss_entities::ravager::TYPE_ID, &ravager.body, ravager.yaw, ravager.health, ravager.persistence_required, crate::ravager_save::fields(e));
     }
+    for e in world.withers() {
+        let wither = &e.wither;
+        add(e.id, minecraftoss_entities::wither::TYPE_ID, &wither.body, wither.yaw, wither.health, wither.persistence_required, crate::wither_save::fields(e));
+    }
     for e in world.chickens() {
         let chicken = &e.chicken;
         let mut fields = age(&chicken.age);
@@ -2790,6 +2799,31 @@ mod tests {
         let f = &fresh.evoker_fangs_mut(back).unwrap().fangs;
         assert_eq!((f.warmup, f.yaw), (6, 45.0));
         assert_eq!(f.owner_uuid, Some(world.uuid_of(evoker)));
+    }
+
+    #[test]
+    fn a_wither_saves_and_loads_mid_charge_with_its_health() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:wither"));
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wither\",Pos:[1.5d,70.0d,2.5d],UUID:[I;4,5,6,30],Health:140.0f,Rotation:[90.0f,0.0f],Invul:117}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("withers load");
+        assert_eq!(world.entity_type(id), Some("minecraft:wither"));
+        {
+            let w = &world.wither_mut(id).unwrap().wither;
+            assert_eq!((w.health, w.invulnerable_ticks, w.yaw, w.body_yaw), (140.0, 117, 90.0, 90.0));
+            assert!(w.charging() && w.powered());
+        }
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(i, _)| *i == id).collect();
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("Invul"), Some(&Tag::Int(117)));
+        assert_eq!(saved.get("Health"), Some(&Tag::Float(140.0)));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved wither loads");
+        assert_eq!(fresh.wither_mut(back).unwrap().wither.invulnerable_ticks, 117);
+        let plain = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wither\",Pos:[1.5d,70.0d,2.5d]}").unwrap();
+        let summoned = spawn_saved(&mut fresh, &plain).unwrap();
+        let w = &fresh.wither_mut(summoned).unwrap().wither;
+        assert_eq!((w.health, w.invulnerable_ticks), (300.0, 0), "a summoned wither does not charge");
     }
 
     #[test]

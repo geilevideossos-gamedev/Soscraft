@@ -265,3 +265,61 @@ fn land_random_position_in_direction(world: &dyn World, profile: &WalkProfile, p
         (!world.floatable_fluid(pos) && !has_malus(world, profile, pos)).then_some(pos)
     })
 }
+
+fn random_direction_lowered(random: &mut LegacyRandom, max: f64, vertical: u32, lowered: i32, x_dir: f64, z_dir: f64, max_radians: f64) -> Option<BlockPos> {
+    let (x, y, z) = random_direction_within(random, 0.0, max, vertical, x_dir, z_dir, max_radians)?;
+    Some((x, y + lowered, z))
+}
+
+fn move_up_out_of_solid(world: &dyn World, (x, mut y, z): BlockPos) -> BlockPos {
+    if world.solid((x, y, z)) {
+        y += 1;
+        while y <= world.max_y() && world.solid((x, y, z)) {
+            y += 1;
+        }
+    }
+    (x, y, z)
+}
+
+fn move_up_to_above_solid(world: &dyn World, (x, y, z): BlockPos, above: i32) -> BlockPos {
+    if !world.solid((x, y, z)) {
+        return (x, y, z);
+    }
+    let mut free = y + 1;
+    while free <= world.max_y() && world.solid((x, free, z)) {
+        free += 1;
+    }
+    let mut top = free;
+    while top <= world.max_y() && top - free < above {
+        if world.solid((x, top + 1, z)) {
+            return (x, top, z);
+        }
+        top += 1;
+    }
+    (x, top, z)
+}
+
+pub fn hover_random_position(world: &dyn World, profile: &WalkProfile, position: DVec3, view: DVec3, random: &mut LegacyRandom) -> Option<DVec3> {
+    best_of(world, profile, || {
+        let direction = random_direction_within(random, 0.0, 8.0, 7, view.x, view.z, f64::from(std::f32::consts::FRAC_PI_2))?;
+        let (x, y, z) = toward(position, direction);
+        if y < world.min_y() || y > world.max_y() || !world.solid_render((x, y, z)) {
+            return None;
+        }
+        let above = random.next_int(3) as i32 + 1;
+        let pos = move_up_to_above_solid(world, (x, y, z), above);
+        (!world.floatable_fluid(pos) && !has_malus(world, profile, pos)).then_some(pos)
+    })
+}
+
+pub fn air_and_water_random_position(world: &dyn World, profile: &WalkProfile, position: DVec3, view: DVec3, random: &mut LegacyRandom) -> Option<DVec3> {
+    best_of(world, profile, || {
+        let direction = random_direction_lowered(random, 8.0, 4, -2, view.x, view.z, f64::from(std::f32::consts::FRAC_PI_2))?;
+        let (x, y, z) = toward(position, direction);
+        if y < world.min_y() || y > world.max_y() {
+            return None;
+        }
+        let pos = move_up_out_of_solid(world, (x, y, z));
+        (!has_malus(world, profile, pos)).then_some(pos)
+    })
+}

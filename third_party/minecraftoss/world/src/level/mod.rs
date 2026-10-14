@@ -18,6 +18,7 @@ pub mod explosion;
 pub mod falling;
 pub mod fire;
 pub mod golem_build;
+pub mod wither_build;
 pub mod grow;
 pub mod ice;
 pub mod lectern;

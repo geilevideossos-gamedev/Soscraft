@@ -232,6 +232,7 @@ exposed!(super::snow_golems::SnowGolemEntity, golem, |e, h, a, w, t| e.hurt(a).a
 exposed!(super::illagers::IllagerEntity, illager, |e, h, a, w, t| e.hurt(a).applied);
 exposed!(super::vexes::VexEntity, vex, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 exposed!(super::ravagers::RavagerEntity, ravager, |e, h, a, w, t| e.hurt(a).applied);
+exposed!(super::withers::WitherEntity, wither, |e, h, a, w, t| e.hurt_typed(a, h.damage_type(), false, h.bypasses_armor()).applied, |_s| true);
 exposed!(super::ghasts::GhastEntity, ghast, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 exposed!(super::blazes::BlazeEntity, blaze, |e, h, a, w, t| e.hurt(a).applied, |_s| true);
 exposed!(super::striders::StriderEntity, strider, |e, h, a, w, t| e.hurt(a, animal_source(h)).applied, |_s| true);

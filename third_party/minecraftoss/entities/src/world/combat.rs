@@ -193,6 +193,9 @@ impl EntityWorld {
         if let Some(e) = self.ravagers.iter().find(|e| e.id == id) {
             return Some((e.ravager.body.clone(), e.ravager.health));
         }
+        if let Some(e) = self.withers.iter().find(|e| e.id == id) {
+            return Some((e.wither.body.clone(), e.wither.health));
+        }
         if let Some(e) = self.cows.iter().find(|e| e.id == id) {
             return Some((e.cow.body.clone(), e.cow.health));
         }
@@ -265,6 +268,8 @@ impl EntityWorld {
             (&mut e.vex.body, &mut e.random)
         } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
             (&mut e.ravager.body, &mut e.random)
+        } else if let Some(e) = self.withers.iter_mut().find(|e| e.id == id) {
+            (&mut e.wither.body, &mut e.random)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             (&mut e.cow.body, &mut e.random)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
@@ -390,6 +395,12 @@ impl EntityWorld {
             hit
         } else if let Some(e) = self.ravagers.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
+            }
+            hit
+        } else if let Some(e) = self.withers.iter_mut().find(|e| e.id == id) {
+            let hit = e.hurt_typed(amount, "minecraft:player_attack", false, false);
             if hit.applied {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }

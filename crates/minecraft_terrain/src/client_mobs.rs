@@ -1288,6 +1288,9 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.ravagers() {
         push(e.id, e.ravager.yaw, &e.ai.state.look_control, &e.ravager.body, false, minecraftoss_entities::ravager::EYE_HEIGHT);
     }
+    for e in world.withers() {
+        push(e.id, e.wither.yaw, &e.ai.state.look_control, &e.wither.body, false, minecraftoss_entities::wither::EYE_HEIGHT);
+    }
     for e in world.wandering_traders() {
         push(e.id, e.trader.yaw, &e.ai.state.look_control, &e.trader.body, false, e.trader.eye_height());
     }

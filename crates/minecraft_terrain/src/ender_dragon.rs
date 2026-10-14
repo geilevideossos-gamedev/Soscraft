@@ -698,8 +698,12 @@ pub fn experience_share(total: i32, part: f32) -> i32 {
     (total as f32 * part).floor() as i32
 }
 
+pub fn heard_everywhere(event: &str) -> bool {
+    event == DRAGON_DEATH_SOUND || event.trim_start_matches("minecraft:") == minecraftoss_entities::wither::SPAWN_SOUND
+}
+
 pub fn heard_at(event: &str, position: DVec3, camera: DVec3) -> DVec3 {
-    if event != DRAGON_DEATH_SOUND {
+    if !heard_everywhere(event) {
         return position;
     }
     let center = position.floor() + DVec3::splat(0.5);
@@ -2577,6 +2581,17 @@ mod tests {
         assert!((heard - (camera + toward * 2.0)).length() < 1e-9);
         let elsewhere = DVec3::new(3.0, 4.0, 5.0);
         assert_eq!(heard_at(HURT_SOUND, elsewhere, camera), elsewhere);
+    }
+
+    #[test]
+    fn a_new_wither_is_heard_two_blocks_from_every_camera() {
+        let camera = DVec3::new(100.5, 50.62, 0.5);
+        for event in ["entity.wither.spawn", "minecraft:entity.wither.spawn"] {
+            assert!(heard_everywhere(event));
+            let heard = heard_at(event, DVec3::new(0.2, 80.7, 0.9), camera);
+            assert!((heard.distance(camera) - 2.0).abs() < 1e-9, "{event}");
+        }
+        assert!(!heard_everywhere("entity.wither.ambient"));
     }
 
     #[test]

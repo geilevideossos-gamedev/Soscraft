@@ -771,6 +771,7 @@ impl EntityWorld {
         self.illagers.retain(|e| !gone(e.id));
         self.vexes.retain(|e| !gone(e.id));
         self.ravagers.retain(|e| !gone(e.id));
+        self.withers.retain(|e| !gone(e.id));
         self.villagers.retain(|e| !gone(e.id));
         self.cows.retain(|e| !gone(e.id));
         self.sheep.retain(|e| !gone(e.id));

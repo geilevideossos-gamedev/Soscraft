@@ -76,6 +76,7 @@ impl Heard {
     fn range(&self) -> f64 {
         match self {
             Self::Sound { event, .. } if event == DRAGON_DEATH_SOUND => f64::INFINITY,
+            Self::Sound { event, .. } if minecraft_terrain::ender_dragon::heard_everywhere(event) => f64::INFINITY,
             Self::Sound { volume, .. } => SOUND_RANGE * f64::from(volume.max(1.0)),
             Self::Event { .. } => EVENT_RANGE,
             Self::Explosion { .. } => EXPLOSION_RANGE,
@@ -289,6 +290,8 @@ mod tests {
     fn the_dragon_dies_for_everyone_and_a_totem_pops_for_those_tracking_the_player() {
         let death = Heard::sound(DRAGON_DEATH_SOUND, [5000.0, 64.0, 0.0], 5.0, 1.0);
         assert!(death.reaches(FEET, 8));
+        let wither = Heard::sound("entity.wither.spawn", [5000.0, 64.0, 0.0], 1.0, 1.0);
+        assert!(wither.reaches(FEET, 8), "a new wither is heard everywhere");
         let totem = |x| Heard::Player {
             client: 2,
             event: TOTEM_EVENT,

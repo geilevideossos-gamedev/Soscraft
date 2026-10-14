@@ -95,6 +95,7 @@ pub mod vex_render;
 pub mod vex_save;
 pub mod ravager_save;
 pub mod ravager_render;
+pub mod wither_save;
 pub mod wolf_render;
 pub mod cat_render;
 pub mod custom_spawners;
