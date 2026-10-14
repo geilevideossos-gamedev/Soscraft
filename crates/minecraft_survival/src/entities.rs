@@ -1893,6 +1893,7 @@ fn mob_hit(
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
         PlayerHitKind::Magic { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
         PlayerHitKind::Fireworks { .. } if hit.source.is_none() || type_id.is_none() => crate::death::DamageCause::Fireworks,
+        PlayerHitKind::Explosion { by: Some(by), .. } => crate::death::DamageCause::PlayerExplosion { client: u32::try_from(by).unwrap_or(u32::MAX) },
         _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
     };
     let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
@@ -2705,6 +2706,11 @@ mod tests {
         let friend = queues.queue(FRIEND);
         assert!(friend.out.hits.is_empty(), "no damage on peaceful");
         assert_eq!(friend.out.pushes, [knockback], "the blast still pushes");
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output::default();
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback, by: Some(HOST) }, source: None });
+        queues.route(&mut output, 2, |_| None);
+        assert_eq!(queues.queue(FRIEND).out.hits[0].3, crate::death::DamageCause::PlayerExplosion { client: 0 }, "a player's TNT names them");
     }
 
     #[test]

@@ -13,7 +13,7 @@ const SIGNIFICANT_FALL: f32 = 5.0;
 const VICTIM: &str = "%1$s";
 const ATTACKER: &str = "%2$s";
 const WEAPON: &str = "%3$s";
-const ITEM_FORMS: [&str; 3] = [PLAYER_KILL, "death.fell.assist", "death.fell.finish"];
+const ITEM_FORMS: [&str; 4] = [PLAYER_KILL, "death.fell.assist", "death.fell.finish", "death.attack.explosion.player"];
 const OWNERLESS_ARROW: &str = "minecraft:arrow";
 const DEATH_EXPERIENCE_PER_LEVEL: u32 = 7;
 const MAX_DEATH_EXPERIENCE: u32 = 100;
@@ -101,6 +101,9 @@ pub enum DamageCause {
     Player {
         client: u32,
     },
+    PlayerExplosion {
+        client: u32,
+    },
 }
 
 pub const IS_EXPLOSION: [&str; 4] = [
@@ -170,6 +173,7 @@ impl DamageCause {
             Self::Explosion => "minecraft:explosion",
             Self::Fireworks => "minecraft:fireworks",
             Self::Player { .. } => "minecraft:player_attack",
+            Self::PlayerExplosion { .. } => "minecraft:player_explosion",
             Self::Mob { attack, .. } => match attack {
                 MobAttack::Melee => "minecraft:mob_attack",
                 MobAttack::Arrow => "minecraft:arrow",
@@ -188,6 +192,7 @@ impl DamageCause {
         match self {
             Self::Generic => "generic",
             Self::Player { .. } => "player",
+            Self::PlayerExplosion { .. } => "explosion.player",
             Self::Hazard(Hazard::InFire | Hazard::Campfire) => "inFire",
             Self::Hazard(Hazard::Lava) => "lava",
             Self::Hazard(Hazard::Cactus) => "cactus",
@@ -413,7 +418,7 @@ impl CombatTracker {
         });
         self.last_damage = tick;
         self.taking_damage = true;
-        if cause.living_attacker().is_some() || matches!(cause, DamageCause::Player { .. }) {
+        if cause.living_attacker().is_some() || matches!(cause, DamageCause::Player { .. } | DamageCause::PlayerExplosion { .. }) {
             self.in_combat = true;
         }
     }
@@ -422,7 +427,7 @@ impl CombatTracker {
         if let Some((id, type_id)) = cause.living_attacker() {
             self.hurt_by = Some((id, type_id, tick));
         }
-        if let DamageCause::Player { client } = cause {
+        if let DamageCause::Player { client } | DamageCause::PlayerExplosion { client } = cause {
             self.hurt_by_player = Some((client, tick));
         }
     }
@@ -512,7 +517,7 @@ impl CombatTracker {
                     player: None,
                 };
             }
-            if let DamageCause::Player { client } = fall.cause {
+            if let DamageCause::Player { client } | DamageCause::PlayerExplosion { client } = fall.cause {
                 return by_player(
                     "death.fell.assist",
                     client,
@@ -545,6 +550,9 @@ impl CombatTracker {
         }
         if let DamageCause::Player { client } = last.cause {
             return by_player(&key, client, last.cause, killer, "death.attack.generic");
+        }
+        if let DamageCause::PlayerExplosion { client } = last.cause {
+            return by_player(&key, client, last.cause, killer, "death.attack.explosion");
         }
         if let Some(attacker) = last.cause.entity() {
             return DeathKey {
@@ -1642,6 +1650,65 @@ mod tests {
             escaping.death_line(&language, |_| true, host(None)).message,
             "%1$s tried to swim in lava to escape Host",
             "a death with no direct source still names the last attacker"
+        );
+    }
+
+    #[test]
+    fn a_players_blast_blows_up_by_name_and_counts_as_their_hit() {
+        let mut language = with_player_lines();
+        for (key, text) in [
+            ("death.attack.explosion", "%1$s blew up"),
+            (
+                "death.attack.explosion.player.item",
+                "%1$s was blown up by %2$s using %3$s",
+            ),
+        ] {
+            language.insert(key.to_owned(), text.to_owned());
+        }
+        let lang = |key: &str| language.get(key).cloned();
+        let blast = DamageCause::PlayerExplosion { client: 0 };
+        assert_eq!(
+            (blast.damage_type(), blast.message_id()),
+            ("minecraft:player_explosion", "explosion.player")
+        );
+        assert!(blast.is_explosion());
+        let mut tracker = CombatTracker::default();
+        tracker.hurt_by(1, blast);
+        tracker.record(1, blast, 30.0, None, 0.0);
+        assert_eq!(
+            tracker.death_line(&language, |_| true, host(None)),
+            says("%1$s was blown up by Host", "Host")
+        );
+        let named = tracker.death_text("Friend", |_| true, host(Some("Excalibur")));
+        assert_eq!(
+            named.resolve(&lang).text,
+            "Friend was blown up by Host using [Excalibur]"
+        );
+        assert_eq!(
+            tracker.death_line(&language, |_| true, |_| None).message,
+            "%1$s blew up",
+            "an igniter who left"
+        );
+        let mut thrown = CombatTracker::default();
+        thrown.hurt_by(1, blast);
+        thrown.record(1, blast, 2.0, None, 0.0);
+        thrown.record(
+            2,
+            DamageCause::Fall,
+            20.0,
+            Some(FallLocation::Generic),
+            12.0,
+        );
+        assert_eq!(
+            thrown.death_line(&language, |_| true, host(None)).message,
+            "%1$s was doomed to fall by Host"
+        );
+        let mut escaping = CombatTracker::default();
+        escaping.hurt_by(1, blast);
+        escaping.record(1, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
+        assert_eq!(
+            escaping.death_line(&language, |_| true, host(None)).message,
+            "%1$s tried to swim in lava to escape Host"
         );
     }
 

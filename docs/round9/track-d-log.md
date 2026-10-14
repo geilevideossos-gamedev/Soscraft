@@ -2537,6 +2537,25 @@ After fa83bb5e.
 IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:redstone_block*8,minecraft:zombie_spawn_egg*2,minecraft:cobblestone*64,minecraft:cooked_beef*16
 ```
 
+### 5. A player's Minecraft TNT is told as "was blown up by <player>"
+
+After 8a834f02. Not in the brief's list: commit 3 names the igniter in the hit, and this commit gives that name to the death line and the kill credit.
+
+- **Vanilla (26.3, `DamageSource.getLocalizedDeathMessage`, `CombatTracker.getFallMessage`; the jar's `damage_type/player_explosion.json` and `en_us.json`):** `player_explosion` has the message id `explosion.player` and scales with difficulty always. With a causing player the line is `death.attack.explosion.player` ("%1$s was blown up by %2$s"), or its `.item` form ("... using %3$s") when the player's main-hand item has a custom name. The player becomes the victim's `lastHurtByPlayer`, so a fall right after is "doomed to fall by", and lava "to escape", that player.
+- **Changed:**
+  - `minecraft_survival/src/death.rs`: `DamageCause::PlayerExplosion { client }` (damage type `minecraft:player_explosion`, in `IS_EXPLOSION`, so a totem's grace refuses it too). It enters combat and sets the player kill credit like `Player`; its death line goes through `by_player` with the key `death.attack.explosion.player` (its `.item` form is added to `ITEM_FORMS`), and an igniter who left falls back to "blew up". A fall after it is "death.fell.assist" naming the player.
+  - `minecraft_survival/src/entities.rs`: `mob_hit` gives an explosion hit with `by` the cause `PlayerExplosion`.
+- **Tests:** `minecraft_survival`: `death::tests::a_players_blast_blows_up_by_name_and_counts_as_their_hit` (the damage type and message id; "%1$s was blown up by Host", with "using [Excalibur]"; "blew up" after the host left; "doomed to fall by Host"; lava "to escape Host"); `entities::tests::an_explosion_pushes_the_player_it_hit_even_when_it_does_no_damage` also checks that a hit with `by` routes as `PlayerExplosion`. Runs: `minecraft_survival` 747 (+1 world test), green. `check -p launcher` green.
+- **Decisions:** the client id is the server's player id (`u32::try_from`, as `pvp::hit` does), so the chat roster names it for host and friends alike.
+- **Test steps** (two windows as in commit 3; host: `/gamerule pvp true`):
+  1. The friend lights TNT next to the host, who stays: "<host> was blown up by <friend>" in both chats, and the host's kill card names the friend (**233_tnt_blown_up_by**).
+  2. The friend renames the flint and steel "Boom" in an anvil, holds it and lights TNT next to the host: "<host> was blown up by <friend> using [Boom]" (**234_tnt_blown_up_using**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:flint_and_steel,minecraft:anvil,minecraft:experience_bottle*16,minecraft:cobblestone*64,minecraft:cooked_beef*16
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2643,6 +2662,8 @@ Group skater-poses changed `SkateReport` (new `pose`) and `StateFrame` (new `ska
 - `docs/round8/decisions.md:71` is answered: TNT lit by a player honours `pvp` (track D, group tnt).
 - `docs/PROGRESS.md` (group tnt, commit 3): the open not-vanilla item "TNT lit by another player with pvp off" (line 10) is done by track D, group tnt.
 - `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 4): the death lines paragraph gains: "A blast with nobody behind it (TNT nobody lit, an end crystal nobody popped) reads '<victim> blew up', even right after another player's or a mob's hit, as vanilla."
+- `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 5): the death lines paragraph gains: "A blast a player caused (their TNT, a crystal they popped, a fireball they sent back) reads '<victim> was blown up by <player>' (with 'using [<name>]' for a custom-named held item), and counts as that player's hit for 'doomed to fall' and 'to escape' lines."
+- `docs/MULTIPLAYER.md` (group tnt, commit 5): next to the `DamageCause::Player` note (line 1427) add: "`DamageCause::PlayerExplosion { client }` is a player's blast (`minecraft:player_explosion`), named the same way."
 - `docs/PROGRESS.md` (group tnt, commit 1): line 57 ("TNT with pvp off (track D): the brief found that TNT hurts nobody today...") becomes: "TNT (track D, group tnt): TNT now hurts players and mobs everywhere, single player too; tell the owner."
 
 ## Vendored files
@@ -2696,3 +2717,4 @@ Group tnt added `world/src/level/explosion.rs` (commit 1: `tick_tnt` defers its 
 - Skater-pose leftovers (group skater-poses): other players' boards keep their trucks and wheels rigid on the deck (only `SKATEBOARD_ROOT` is sent); the poses ride the state frames, which the host sends with each server output of the receiver's level, so a gap of more than 1 s between frames (a host stall, a level without an entity world) shows other skaters as standing soldiers until the next frame.
 - Melee leftovers (group pvp-melee): the attacker's own slowdown after a sprint knockback hit (`causeExtraKnockback` multiplies the attacker's motion by 0.6 and stops the sprint), for mob and player hits alike; `EnchantmentHelper.doPostAttackEffects` (Fire Aspect and other post-attack enchantments) on players; a sweep round a mob reaches players before the entity world says whether the mob was hurt.
 - Strider-freeze leftovers (group strider-freeze): under `/tick freeze` a player on foot does not push a ridden strider or horse (vanilla's `pushEntities` still pushes a ticking carrier), and queued respawn-anchor and crystal blasts wait for the next normal tick (as before the group).
+- TNT leftovers (group tnt): a mob as TNT owner (a creeper's blast priming TNT; vanilla's `getIndirectSourceEntity` keeps any living source, so a chain would read "blown up by Creeper"); an end crystal destroyed by a player's TNT blast does not name that player for its own blast (`tick_end` passes no owner to `crystals.blast`); the direct hit of a fireball a player sent back (`PlayerHitKind::Fireball`) still hurts players with pvp off; Blast Protection's `explosion_knockback_resistance` on explosion pushes; fireworks with no shooter still use the kill-credit escape in death lines (vanilla names the rocket, so "went off with a bang").
