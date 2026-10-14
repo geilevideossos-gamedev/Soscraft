@@ -753,6 +753,7 @@ pub(crate) fn struck(
         reattach,
         jump_bar,
         raid_bars,
+        wither_bars,
         ..
     } = player;
     let local_uuid = &*uuid;
@@ -936,6 +937,9 @@ pub(crate) fn struck(
     }
     if let Some(bars) = outputs.raid_bars {
         *raid_bars = bars;
+    }
+    if let Some(bars) = outputs.wither_bars {
+        *wither_bars = bars;
     }
     outputs.told
 }

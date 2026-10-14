@@ -2898,6 +2898,45 @@ After c3ae9343.
 IW4L_MINECRAFT_KIT=minecraft:soul_sand*8,minecraft:wither_skeleton_skull*6,minecraft:wither_spawn_egg*2,minecraft:netherite_sword,minecraft:bow,minecraft:arrow*64,minecraft:trident,minecraft:wind_charge*16,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:milk_bucket*2,minecraft:obsidian*32,minecraft:bedrock*4,minecraft:cobblestone*64,minecraft:chicken_spawn_egg*4,minecraft:iron_golem_spawn_egg*2,minecraft:diamond_pickaxe,minecraft:totem_of_undying
 ```
 
+### 2. Minecraft withers show a purple boss bar to every player near them
+
+After 94bad055.
+
+- **Vanilla (javap, 26.3):**
+  - `WitherBoss.<init>`: `bossEvent = new ServerBossEvent(Mth.createInsecureUUID(random), getDisplayName(), BossBarColor.PURPLE, BossBarOverlay.PROGRESS)` with `setDarkenScreen(true)` (no boss music, no fog); `setCustomName` and `readAdditionalSaveData` rename it.
+  - `startSeenByPlayer` adds the player to the bar and `stopSeenByPlayer` removes them: a player has the bar exactly while the wither is tracked for them (`ChunkMap.TrackedEntity`: horizontal distance within `min(clientTrackingRange * 16, view distance * 16)`, 10 chunks for the wither).
+  - The progress: `makeInvulnerable` sets 0; while charging `customServerAiStep` sets `1 - invul / 220` (after the tick's decrement), then `health / maxHealth` every tick once charged. A new `BossEvent` starts at 1 (an egg's wither).
+- **Changed:**
+  - New `crates/minecraft_terrain/src/wither_bar.rs`: `WitherBar` (entity ID and progress), the level's withers with `Wither::boss_progress`, and `bars_for` (the withers a player at those feet tracks with that view distance, through `mob_tracking::tracks` and the wither's tracking range).
+  - `minecraft_terrain/src/server.rs`: `Output.wither_bars` (every player of the level gets its list each tick, empty when none), `TickInput.view_distance` (the host's; friends use their watcher's); `eye_of_ender.rs` test input; `lib.rs`.
+  - `minecraft_survival`: `entities.rs` (the host's view distance into the tick, each player's bars to its queue), `player.rs` (`Player.wither_bars`), `session.rs` (`wither_bar_id` from `WITHER_BARS` = 2^40 plus the entity ID, `wither_bar`: purple, progress, darkening the screen; `Session.send_wither_bars` adds, moves and removes each bar; `Sessions.send_wither_bars`).
+  - `render_anim`: `minecraft_players.rs` (the bars into the player), new `minecraft_wither.rs` (`show_wither_bars`: the host's bars named from the language file), `minecraft_world.rs` (the host shows them), `minecraft_host.rs` (friends are sent theirs), `lib.rs`.
+  - `frame/src/minecraft_ui.rs` (`MinecraftUi.wither_bars`), `hud/src/minecraft_boss.rs` (drawn after the dragon's and the raids').
+- **Tests:**
+  - `minecraft_terrain`: `wither_bar::tests::a_wither_shows_its_bar_to_the_players_that_track_it` (an empty bar when built, half at half health, filling as it charges, 10 chunks or the view distance), `server::tests::each_player_gets_the_bars_of_the_withers_it_tracks_within_its_view_distance` (host and friend by their own view distances, gone with the wither).
+  - `minecraft_survival`: `session::tests::a_friend_gets_a_purple_darkening_bar_for_each_wither_it_tracks` (add, unchanged, progress, a second bar, remove; ids clear of the dragon's and the raids').
+  - `render_anim`: `minecraft_wither::tests::the_host_sees_a_purple_bar_per_wither_it_tracks`.
+  - Runs: `minecraft_terrain` lib 1391 of 1394 (3 ignored), `minecraft_survival` lib 757, `render_anim` lib 212, `hud` lib 186, `frame` lib 28, all green. `check -p launcher` green. Clippy on `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain`, `minecraft_survival`, `render_anim`, `hud` and `frame` (`--all-targets`, `-A clippy::approx_constant`) finds nothing in this group's code (both commits). The new `wither_bar.rs` passes `rustfmt --check --edition 2021` and `minecraft_wither.rs` `--edition 2024`.
+- **Decisions:**
+  - One bar per wither, keyed by its entity ID (vanilla keys it by a random UUID; the fork's bar ids only need to be unique on the wire).
+  - The bar follows the fork's tracking rule (`mob_tracking::tracks`, horizontal distance within 10 chunks and the player's view distance), the same rule that decides whether the wither is drawn for that player; vanilla also needs the chunk sent, which within the view distance it is.
+  - The bar is always named "Wither": the fork has no name tags, so a wither has no custom name.
+  - `darken_screen` is sent to friends as vanilla's flag, but neither the host nor a friend darkens the sky for it yet (left for later).
+  - No `minecraft_net` change: the boss bar messages exist, so `PROTOCOL` stays 6.
+- **Vendored files:** none.
+- **Test steps (survival, Normal difficulty, by day, open flat ground in the Overworld; diamond armour on):**
+  1. Build a wither: a purple "Wither" bar appears at the top of the screen, empty, and fills over 11 seconds while it charges (**257_wither_bar_charging**).
+  2. After the blast the bar is full. Hit the wither: the bar drops; it creeps back up one health a second.
+  3. `/tp ~ ~ ~200` (or ride away more than 130 blocks): the bar goes; come back: it is there again with the wither.
+  4. Hatch a second wither from an egg: two purple bars, one under the other, the second full (**258_two_wither_bars**).
+  5. Kill one: its bar empties and goes as it dies; the other stays.
+  6. Friend window: the friend sees the same bars while near the withers and none from far away or in another dimension; their hits move the bar for both (**259_friend_wither_bar**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:soul_sand*8,minecraft:wither_skeleton_skull*6,minecraft:wither_spawn_egg*2,minecraft:netherite_sword,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:milk_bucket*2,minecraft:totem_of_undying,minecraft:cobblestone*64
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -3025,6 +3064,8 @@ Group skater-poses changed `SkateReport` (new `pose`) and `StateFrame` (new `ska
 - `docs/MINECRAFT-SURVIVAL.md` (group wither-live, commit 1): new paragraph "Withers: three wither skeleton skulls placed on a T of soul sand or soul soil (in any direction, standing or lying) build a wither, not on peaceful. It charges for 11 seconds at a third of its health, invulnerable and healing to full, then blows up (radius 7) with a roar heard everywhere in the dimension. It then flies after the nearest living thing that is not undead, staying about five blocks above it; its two side heads pick their own targets within 20 blocks and turn to them. Undead and drowning never hurt it; it takes no lasting effects. A wither egg or `/summon` gives one that does not charge. Withers are saved, and friends see them, their heads and the charge. They do not shoot skulls, break blocks, show a boss bar or drop a nether star yet."
 - `docs/MINECRAFT-SURVIVAL.md` (group wither-live, commit 2): the wither paragraph gains: "Withers are drawn like vanilla: the three-headed model at twice size, growing from 1.5 to 2 and flashing blue while it charges, the moving blue armour while at half health or less, smoke from its heads and blue sparks while charging, for the host and friends; they also turn in spawner cages."
 - `docs/MINECRAFT-SURVIVAL.md` (group wither-fight, commit 1): the wither paragraph's last sentence ("They do not shoot skulls, break blocks, show a boss bar or drop a nether star yet.") becomes: "Its three heads shoot wither skulls: black ones (8 damage and Wither II for 10 seconds on Normal, 40 on Hard) and now and then a slower blue one whose blast breaks obsidian. Below half health its armour turns away arrows, tridents and wind charges. A second after it is hurt it breaks the blocks around it (3 by 4 by 3), with their drops, but never bedrock or the other wither-immune blocks, and only with `mob_griefing`. Killed, it drops a nether star that lasts 15 minutes on the ground. Death by a skull reads 'was shot by a skull from Wither'. It shows no boss bar yet."
+- `docs/MINECRAFT-SURVIVAL.md` (group wither-fight, commit 2): the wither paragraph's "It shows no boss bar yet." becomes: "Every player within 10 chunks of a wither (and within their view distance) sees its purple boss bar: empty when it is built, filling while it charges, then its health. Friends see it too. The sky does not darken for it yet."
+- `docs/MULTIPLAYER.md` (group wither-fight, commit 2): boss bars: besides the dragon's (id 1) and the raids' (0x100 plus the raid), each wither a friend tracks sends a purple bar with id 2^40 plus the wither's entity ID (`ToClient::BossBar`, no protocol change).
 
 ## Vendored files
 
@@ -3085,4 +3126,4 @@ Group wither-fight added `entities/src/fireball.rs` (commit 1) to the patched li
 - Strider-freeze leftovers (group strider-freeze): under `/tick freeze` a player on foot does not push a ridden strider or horse (vanilla's `pushEntities` still pushes a ticking carrier), and queued respawn-anchor and crystal blasts wait for the next normal tick (as before the group).
 - TNT leftovers (group tnt): a mob as TNT owner (a creeper's blast priming TNT; vanilla's `getIndirectSourceEntity` keeps any living source, so a chain would read "blown up by Creeper"); an end crystal destroyed by a player's TNT blast does not name that player for its own blast (`tick_end` passes no owner to `crystals.blast`); the direct hit of a fireball a player sent back (`PlayerHitKind::Fireball`) still hurts players with pvp off; Blast Protection's `explosion_knockback_resistance` on explosion pushes.
 - Keyframe leftovers (group keyframes): no renderer holds an `AnimationLibrary` yet (the first one, group `warden-render`, creates it from `data_jar()`); the bat still samples its hand tables, which the gated `the_bat_tables_match_the_jar` keeps equal to the jar, and can move to `BatAnimation` once the client holds the library.
-- Wither leftovers (group wither-live): the skulls, the half-health shield, block breaking and the nether star landed with group `wither-fight` (commit 1); the purple boss bar is its commit 2. Also left: `FlyNodeEvaluator` paths (P3, group `parrots`; the wither flies straight), the dispenser's wither skull (`WitherSkullBlock.canSpawnMob` and `checkSpawn` from a dispenser; the fork's dispenser has no skull behaviour), and the `summoned_entity` advancement trigger.
+- Wither leftovers (group wither-live): the skulls, the half-health shield, block breaking, the nether star and the purple boss bar landed with group `wither-fight`. Still left from that group: the sky darkening under a wither's bar (`BossEvent.darkenScreen`, the lightmap's darken amount: the flag reaches friends but nothing reads it), smoke trails behind skulls and fireballs (`AbstractHurtingProjectile.createParticleTrail`), the owner of a skull loaded from a save, and a skull kill of a player healing its wither. Also left: `FlyNodeEvaluator` paths (P3, group `parrots`; the wither flies straight), the dispenser's wither skull (`WitherSkullBlock.canSpawnMob` and `checkSpawn` from a dispenser; the fork's dispenser has no skull behaviour), and the `summoned_entity` advancement trigger.

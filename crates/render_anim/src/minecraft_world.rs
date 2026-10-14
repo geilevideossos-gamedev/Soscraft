@@ -1260,6 +1260,7 @@ fn update(
         ui.jump_bar = player.jump_bar.filter(|_| alive);
         let raid_language = ui.chat.language.clone();
         crate::minecraft_raids::show_raid_bars(&mut ui, &player.raid_bars, &raid_language, dt as f32);
+        crate::minecraft_wither::show_wither_bars(&mut ui, &player.wither_bars, &raid_language, dt as f32);
         let minecraft_survival::player::Player { name: player_name, survival, mode: player_mode, inventory, selected, hand, menus, drop_throttle, arsenal, tags, dimension: player_dimension, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.effects = if alive { mc_effects(&minecraft_survival::views::effect_views(&survival.status)) } else { Vec::new() };

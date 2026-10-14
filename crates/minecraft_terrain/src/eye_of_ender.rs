@@ -693,6 +693,7 @@ mod tests {
             spawn_mobs: false,
             controls: Vec::new(),
             omens: Vec::new(),
+            view_distance: 8,
         }
     }
 

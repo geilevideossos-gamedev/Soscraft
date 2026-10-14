@@ -3546,6 +3546,7 @@ pub struct TickInput {
     pub spawn_mobs: bool,
     pub controls: Vec<minecraftoss_entities::controls::PlayerControls>,
     pub omens: Vec<(u64, PlayerOmens)>,
+    pub view_distance: i32,
 }
 
 impl TickInput {
@@ -3655,6 +3656,7 @@ pub struct Output {
     pub raid_heroes: Vec<(u64, i32)>,
     pub raid_horns: Vec<(u64, [f64; 3])>,
     pub raid_bars: Option<Vec<(u64, Vec<crate::raids::RaidBar>)>>,
+    pub wither_bars: Option<Vec<(u64, Vec<crate::wither_bar::WitherBar>)>>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -4263,6 +4265,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.egg_teleports.extend(sim.mobs.take_shulker_teleports());
     out.bullet_puffs.extend(sim.mobs.take_bullet_puffs());
     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
+    out.wither_bars = Some(wither_bars(sim, input));
     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
     for player in &mut input.players {
         let (id, feet) = (player.id, player.feet);
@@ -4290,6 +4293,18 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         out.orbs_taken.extend(sim.take_experience(id, pickup_feet).map(|(orb, at, value)| (id, orb, at, value)));
     }
     out.tick_nanos.push(started.elapsed().as_nanos() as u64);
+}
+
+fn wither_bars(sim: &ServerSim, input: &TickInput) -> Vec<(u64, Vec<crate::wither_bar::WitherBar>)> {
+    let withers = crate::wither_bar::withers(&sim.mobs);
+    input
+        .mob_players
+        .iter()
+        .map(|player| {
+            let view = input.watchers.iter().find(|watcher| watcher.id == player.id).map_or(input.view_distance, |watcher| watcher.view_distance);
+            (player.id, crate::wither_bar::bars_for(&withers, player.position.to_array(), view))
+        })
+        .collect()
 }
 
 fn player_left(sim: &mut ServerSim, running: Option<&mut TickInput>, player: u64) {
@@ -11074,6 +11089,7 @@ mod tests {
             spawn_mobs: false,
             controls: Vec::new(),
             omens: Vec::new(),
+            view_distance: 8,
         }
     }
 
@@ -11429,6 +11445,27 @@ mod tests {
             mob_players: vec![candidate(0, feet[0]), candidate(1, feet[1])],
             ..idle_input()
         }
+    }
+
+    #[test]
+    fn each_player_gets_the_bars_of_the_withers_it_tracks_within_its_view_distance() {
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        sim.summon("minecraft:wither", [8.5, 120.0, 8.5], None, 0.0).unwrap();
+        let id = sim.mobs.withers()[0].id;
+        sim.mobs.wither_mut(id).unwrap().no_ai = true;
+        sim.mobs.wither_mut(id).unwrap().wither.health = 75.0;
+        let mut input = two_players([[8.5, 120.0, 8.5], [8.5, 120.0, 108.5]]);
+        input.watchers = vec![crate::mob_tracking::Watcher { id: 1, feet: [8.5, 120.0, 108.5], view_distance: 4 }];
+        let bars = |out: Output| out.wither_bars.expect("bars every tick").into_iter().collect::<std::collections::HashMap<_, _>>();
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        assert_eq!(shown[&0], vec![crate::wither_bar::WitherBar { id, progress: 0.25 }]);
+        assert!(shown[&1].is_empty(), "four chunks do not reach it");
+        input.watchers[0].view_distance = 8;
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        assert_eq!(shown[&1], vec![crate::wither_bar::WitherBar { id, progress: 0.25 }]);
+        sim.mobs.remove_mobs(&[id]);
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        assert!(shown[&0].is_empty() && shown[&1].is_empty(), "a removed wither takes its bar");
     }
 
     fn held(player: &TickPlayer) -> Vec<(String, u8)> {

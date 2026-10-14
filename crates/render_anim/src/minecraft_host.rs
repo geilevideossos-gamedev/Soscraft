@@ -641,6 +641,7 @@ pub(crate) fn host(
         .and_then(|level| level.dragon_fight.as_ref());
     host.sessions.send_boss_bars(&server.players, fight);
     host.sessions.send_raid_bars(&server.players);
+    host.sessions.send_wither_bars(&server.players);
     host.sessions.send_views(&server.players);
     let gears: Vec<_> = server
         .players

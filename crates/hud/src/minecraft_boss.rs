@@ -36,7 +36,7 @@ pub(crate) fn sprites(bar: &frame::minecraft_ui::McBossBar) -> [Option<String>; 
 
 pub(crate) fn draw_boss_bars(p: &mut Painter<'_>, ui: &MinecraftUi) {
     let width = p.space.width;
-    let bars: Vec<&frame::minecraft_ui::McBossBar> = ui.boss_bars.iter().chain(ui.raid_bars.iter()).collect();
+    let bars: Vec<&frame::minecraft_ui::McBossBar> = ui.boss_bars.iter().chain(ui.raid_bars.iter()).chain(ui.wither_bars.iter()).collect();
     let rows = rows(bars.len(), p.space.height);
     for (bar, y) in bars.into_iter().zip(rows) {
         let x = width / 2 - 91;

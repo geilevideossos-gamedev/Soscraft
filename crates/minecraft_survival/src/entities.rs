@@ -183,6 +183,7 @@ pub struct PlayerOutputs {
     pub raid_heroes: Vec<i32>,
     pub raid_horns: Vec<DVec3>,
     pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
+    pub wither_bars: Option<Vec<minecraft_terrain::wither_bar::WitherBar>>,
     pub told: Vec<minecraft_commands::Clientbound>,
 }
 
@@ -393,6 +394,11 @@ impl PlayerQueues {
         for (player, bars) in output.raid_bars.take().into_iter().flatten() {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.out.raid_bars = Some(bars);
+            }
+        }
+        for (player, bars) in output.wither_bars.take().into_iter().flatten() {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.wither_bars = Some(bars);
             }
         }
         unclaimed
@@ -1535,6 +1541,7 @@ impl Entities {
                         (actor.id, minecraft_terrain::server::PlayerOmens { bad_omen: actor.view.omens.bad_omen, raid_omens })
                     })
                     .collect(),
+                view_distance: self.view_distance,
             }, batch.normal.clone());
         }
         let mut changes = Vec::new();

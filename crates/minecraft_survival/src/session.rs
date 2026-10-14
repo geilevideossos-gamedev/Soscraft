@@ -177,6 +177,7 @@ pub struct Session {
     cracks: BTreeMap<(u32, BlockPos), u8>,
     boss_bar: Option<f32>,
     raid_bars: BTreeMap<i32, minecraft_terrain::raids::RaidBar>,
+    wither_bars: BTreeMap<u64, f32>,
     credits: bool,
     sleepers: BTreeMap<u32, Lying>,
 }
@@ -204,6 +205,7 @@ impl Session {
             cracks: BTreeMap::new(),
             boss_bar: None,
             raid_bars: BTreeMap::new(),
+            wither_bars: BTreeMap::new(),
             credits: false,
             sleepers: BTreeMap::new(),
         }
@@ -275,6 +277,22 @@ impl Session {
             }
         }
         self.raid_bars = now;
+    }
+
+    pub fn send_wither_bars(&mut self, bars: &[minecraft_terrain::wither_bar::WitherBar]) {
+        let now: BTreeMap<u64, f32> = bars.iter().map(|bar| (bar.id, bar.progress)).collect();
+        for &id in self.wither_bars.keys().filter(|id| !now.contains_key(id)) {
+            self.outbox.push(ToClient::BossBar(BossBarUpdate { id: wither_bar_id(id), operation: BossBarOperation::Remove }));
+        }
+        for (&id, &progress) in &now {
+            let operation = match self.wither_bars.get(&id) {
+                None => wither_bar(progress),
+                Some(&shown) if shown != progress => BossBarOperation::Progress(progress),
+                Some(_) => continue,
+            };
+            self.outbox.push(ToClient::BossBar(BossBarUpdate { id: wither_bar_id(id), operation }));
+        }
+        self.wither_bars = now;
     }
 
     pub fn send_credits(&mut self, holding: bool) {
@@ -811,6 +829,25 @@ pub fn join_code_line(code: &str) -> Clientbound {
 }
 
 pub const RAID_BARS: u64 = 0x100;
+pub const WITHER_BARS: u64 = 1 << 40;
+
+pub fn wither_bar_id(wither: u64) -> u64 {
+    WITHER_BARS + wither
+}
+
+pub fn wither_bar(progress: f32) -> BossBarOperation {
+    BossBarOperation::Add {
+        name: Text::translate(minecraft_terrain::wither_bar::NAME, Vec::new()),
+        progress,
+        color: BossBarColor::Purple,
+        overlay: BossBarOverlay::Progress,
+        flags: BossBarFlags {
+            darken_screen: true,
+            play_music: false,
+            create_world_fog: false,
+        },
+    }
+}
 
 pub fn raid_bar_id(raid: i32) -> u64 {
     RAID_BARS + u64::from(raid as u32)
@@ -1256,6 +1293,13 @@ impl Sessions {
         for session in self.sessions.values_mut() {
             let bars = players.get(&session.uuid).map_or(&[][..], |player| player.raid_bars.as_slice());
             session.send_raid_bars(bars);
+        }
+    }
+
+    pub fn send_wither_bars(&mut self, players: &BTreeMap<PlayerUuid, Player>) {
+        for session in self.sessions.values_mut() {
+            let bars = players.get(&session.uuid).map_or(&[][..], |player| player.wither_bars.as_slice());
+            session.send_wither_bars(bars);
         }
     }
 
@@ -1979,6 +2023,41 @@ mod tests {
             sessions.sessions.insert(client, session);
         }
         sessions
+    }
+
+    #[test]
+    fn a_friend_gets_a_purple_darkening_bar_for_each_wither_it_tracks() {
+        use minecraft_terrain::wither_bar::WitherBar;
+        let mut session = Session::new(2, PlayerUuid("f".to_owned()), "Alex", 2);
+        let sent = |session: &mut Session| -> Vec<BossBarUpdate> {
+            std::mem::take(&mut session.outbox)
+                .into_iter()
+                .filter_map(|message| match message {
+                    ToClient::BossBar(update) => Some(update),
+                    _ => None,
+                })
+                .collect()
+        };
+        session.send_wither_bars(&[WitherBar { id: 7, progress: 0.0 }]);
+        let added = sent(&mut session);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].id, WITHER_BARS + 7);
+        let BossBarOperation::Add { name, progress, color, overlay, flags } = &added[0].operation else {
+            panic!("{added:?}");
+        };
+        assert_eq!((*progress, *color, *overlay), (0.0, BossBarColor::Purple, BossBarOverlay::Progress));
+        assert!(flags.darken_screen && !flags.play_music && !flags.create_world_fog);
+        assert_eq!(*name, Text::translate("entity.minecraft.wither", Vec::new()));
+        session.send_wither_bars(&[WitherBar { id: 7, progress: 0.0 }]);
+        assert!(sent(&mut session).is_empty(), "nothing changed");
+        session.send_wither_bars(&[WitherBar { id: 7, progress: 0.4 }, WitherBar { id: 8, progress: 1.0 }]);
+        let changed = sent(&mut session);
+        assert_eq!((changed[0].id, changed[0].operation.clone()), (WITHER_BARS + 7, BossBarOperation::Progress(0.4)));
+        assert!(matches!(changed[1].operation, BossBarOperation::Add { progress, .. } if progress == 1.0));
+        session.send_wither_bars(&[WitherBar { id: 8, progress: 1.0 }]);
+        let removed = sent(&mut session);
+        assert_eq!((removed.len(), removed[0].id, removed[0].operation.clone()), (1, WITHER_BARS + 7, BossBarOperation::Remove));
+        assert!(wither_bar_id(u64::from(u32::MAX)) > raid_bar_id(i32::MAX) && raid_bar_id(i32::MIN) > DRAGON_BAR);
     }
 
     #[test]

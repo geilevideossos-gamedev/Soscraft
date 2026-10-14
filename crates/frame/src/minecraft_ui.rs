@@ -268,6 +268,7 @@ pub struct MinecraftUi {
     pub sleep: Option<McSleep>,
     pub boss_bars: Vec<McBossBar>,
     pub raid_bars: Vec<McBossBar>,
+    pub wither_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
     pub book: Option<McBook>,
     pub merchant: Option<McMerchant>,
