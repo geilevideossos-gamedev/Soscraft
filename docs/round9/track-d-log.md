@@ -2011,6 +2011,20 @@ After 80af480a.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2
 ```
 
+### 3. A raider that joins a raid twice in one tick counts its health once
+
+After 8f623fdf.
+
+- **Found:** `Raids::tick` (`minecraft_terrain/src/raids.rs`) joined wandering raiders (vanilla's `Raider.aiStep`, every 20 game ticks) and then let recruiters call raiders near them (`PathfindToRaidGoal.recruitNearby`) from the same snapshot taken at the tick's start. A raider that walked into range on a tick that was both a multiple of 20 and a recruiter's call still looked raid-less to the recruiter and joined again: `addWaveMob` kept one copy of it but added its health to the raid's total twice, so the bar never filled to the raiders' real health. In vanilla the recruiter sees the live raider, whose `hasActiveRaid` is then true.
+- **Changed:** `crates/minecraft_terrain/src/raids.rs`: the raider snapshot is read again after the wanderers join, before the recruiters call.
+- **Tests:** `minecraft_terrain` `raids::tests::a_raider_that_wanders_in_and_is_recruited_on_the_same_tick_counts_once` (48 before the fix, 24 after). `raids::tests` (9) green; `check -p launcher` green.
+- **Test steps:** none in game (one tick in twenty, and the bar's fill is the only sign); group raids' steps 2 and 3 hold.
+- **Kit:** commit 1's.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision), and groups pillagers, patrols-vindicators, raids and raid-villagers keep their own kits (their last commits).

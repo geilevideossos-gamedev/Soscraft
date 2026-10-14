@@ -878,6 +878,11 @@ impl Raids {
         self.handle_deaths(level, &raiders);
         if game_time % 20 == 0 {
             self.join_nearby(level, &raiders);
+            raiders = level
+                .raiders()
+                .into_iter()
+                .map(|view| (view.id, view))
+                .collect();
         }
         self.recruit(level, &raiders);
         let ids: Vec<i32> = self.raids.keys().copied().collect();
@@ -1666,5 +1671,39 @@ mod tests {
         raids.tick(&mut village, &[], true, 21);
         assert_eq!(raids.raids[&id].raiders_alive(), 0);
         assert!(raids.raids[&id].heroes.contains(&1003));
+    }
+
+    #[test]
+    fn a_raider_that_wanders_in_and_is_recruited_on_the_same_tick_counts_once() {
+        let mut village = Village::new(2);
+        let (mut raids, id) = started(&mut village, 0);
+        let mut recruiter = minecraftoss_entities::illager::Illager::new(
+            minecraftoss_entities::illager::IllagerKind::Pillager,
+            DVec3::new(20.5, 64.0, 8.5),
+        );
+        recruiter.raider.can_join_raid = true;
+        recruiter.raider.raid_id = Some(id);
+        let recruiter = village.world.spawn_illager(recruiter, true);
+        *village.world.raider_mut(recruiter).unwrap().recruit = true;
+        let mut wanderer = minecraftoss_entities::illager::Illager::new(
+            minecraftoss_entities::illager::IllagerKind::Pillager,
+            DVec3::new(24.5, 64.0, 8.5),
+        );
+        wanderer.raider.can_join_raid = true;
+        let wanderer = village.world.spawn_illager(wanderer, true);
+        raids.tick(&mut village, &[], true, 20);
+        let raid = &raids.raids[&id];
+        assert_eq!(raid.raiders_alive(), 2);
+        let health = village
+            .world
+            .raiders()
+            .into_iter()
+            .find(|view| view.id == wanderer)
+            .unwrap()
+            .health;
+        assert_eq!(
+            raid.total_health, health,
+            "the wanderer's health counts once, the saved recruiter's not at all"
+        );
     }
 }
