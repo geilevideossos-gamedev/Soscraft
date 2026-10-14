@@ -69,10 +69,13 @@ fn knockback(body: &mut Body, random: &mut LegacyRandom, power: f64, mut xd: f64
 impl EntityWorld {
     /// `Player.attack` on the mob `target`.
     pub fn player_attack(&mut self, attack: &PlayerAttack, target: u64) -> AttackResult {
+        self.player_attack_with(attack, target, 0.0, 0.0)
+    }
+
+    pub fn player_attack_with(&mut self, attack: &PlayerAttack, target: u64, enchanted: f32, extra_knockback: f32) -> AttackResult {
         let mut result = AttackResult::default();
         let scale = attack.strength;
-        // Without enchantments there is no magic boost.
-        let magic = 0.0_f32;
+        let magic = enchanted * scale;
         let mut base = attack.attack_damage as f32 * (0.2 + scale * scale * 0.8);
         if !(base > 0.0 || magic > 0.0) {
             return result;
@@ -95,38 +98,46 @@ impl EntityWorld {
         fights.hurt_mob = Some((victim, fights.tick_count));
         // `causeExtraKnockback` along the player's facing.
         let (sin, cos) = minecraft_sin_cos(f64::from(attack.yaw));
-        if result.knockback {
-            self.knock_back(target, f64::from(0.5_f32), sin, -cos);
+        let knockback = extra_knockback + if result.knockback { 0.5 } else { 0.0 };
+        if knockback > 0.0 {
+            self.knock_back(target, f64::from(knockback), sin, -cos);
         }
         if result.sweep {
-            // `doSweepAttack`: 1 + SWEEPING_DAMAGE_RATIO (0) × base, scaled.
-            let damage = (1.0_f32 + 0.0 * base) * scale;
             let Some((target_body, _)) = self.mob_body(target) else { return result };
             let half = f64::from(target_body.width / 2.0);
             let p = target_body.position;
-            let min = DVec3::new(p.x - half - 1.0, p.y - 0.25, p.z - half - 1.0);
-            let max = DVec3::new(p.x + half + 1.0, p.y + f64::from(target_body.height) + 0.25, p.z + half + 1.0);
-            for key in self.order.clone() {
-                let id = key.id();
-                if id == target {
-                    continue;
-                }
-                let Some((body, _)) = self.mob_body(id) else { continue };
-                let half = f64::from(body.width / 2.0);
-                let q = body.position;
-                let touches = q.x - half < max.x && q.x + half > min.x && q.y < max.y && q.y + f64::from(body.height) > min.y && q.z - half < max.z && q.z + half > min.z;
-                if !touches || attack.position.distance_squared(q) >= 9.0 {
-                    continue;
-                }
-                if let Some(hit) = self.hurt_by_player(id, damage, attack) {
-                    if hit.applied {
-                        self.knock_back(id, f64::from(0.4_f32), sin, -cos);
-                        result.swept.push((id, hit.full, hit.died));
-                    }
+            let around = [p.x - half, p.y, p.z - half, p.x + half, p.y + f64::from(target_body.height), p.z + half];
+            result.swept = self.player_sweep(attack, around, Some(target), enchanted);
+        }
+        result
+    }
+
+    pub fn player_sweep(&mut self, attack: &PlayerAttack, around: [f64; 6], target: Option<u64>, enchanted: f32) -> Vec<(u64, bool, bool)> {
+        let damage = (1.0_f32 + enchanted) * attack.strength;
+        let (sin, cos) = minecraft_sin_cos(f64::from(attack.yaw));
+        let min = DVec3::new(around[0] - 1.0, around[1] - 0.25, around[2] - 1.0);
+        let max = DVec3::new(around[3] + 1.0, around[4] + 0.25, around[5] + 1.0);
+        let mut swept = Vec::new();
+        for key in self.order.clone() {
+            let id = key.id();
+            if Some(id) == target {
+                continue;
+            }
+            let Some((body, _)) = self.mob_body(id) else { continue };
+            let half = f64::from(body.width / 2.0);
+            let q = body.position;
+            let touches = q.x - half < max.x && q.x + half > min.x && q.y < max.y && q.y + f64::from(body.height) > min.y && q.z - half < max.z && q.z + half > min.z;
+            if !touches || attack.position.distance_squared(q) >= 9.0 {
+                continue;
+            }
+            if let Some(hit) = self.hurt_by_player(id, damage, attack) {
+                if hit.applied {
+                    self.knock_back(id, f64::from(0.4_f32), sin, -cos);
+                    swept.push((id, hit.full, hit.died));
                 }
             }
         }
-        result
+        swept
     }
 
     /// A living mob's body and health, by ID.

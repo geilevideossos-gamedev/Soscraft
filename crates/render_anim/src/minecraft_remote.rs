@@ -596,7 +596,7 @@ pub(crate) fn friend(
         let mut hands =
             crate::minecraft_input::host_hands(&ui, hud_input.as_deref(), &buttons, pad);
         hands.captured |= !ui.active;
-        let target = aim(friend, player.as_ref());
+        let target = aim(friend, player.as_ref(), &presented);
         let sampled = friend.hand.sample(hands, swap, drop, target, seconds);
         friend.swing.advance(dt, hands.attack_held && !hands.captured);
         let pressed = sampled
@@ -1015,7 +1015,11 @@ fn snowflakes(friend: &mut Friend, presented: &net::PresentedSnapshot) {
     flakes.feet = seen;
 }
 
-fn aim(friend: &Friend, ps: Option<&playerstate_iw4::PlayerState>) -> Target {
+fn aim(
+    friend: &Friend,
+    ps: Option<&playerstate_iw4::PlayerState>,
+    presented: &net::PresentedSnapshot,
+) -> Target {
     let Some(remote) = friend.remote.as_ref() else {
         return Target::Miss;
     };
@@ -1043,7 +1047,40 @@ fn aim(friend: &Friend, ps: Option<&playerstate_iw4::PlayerState>) -> Target {
         minecraft_terrain::game_mode::ENTITY_REACH
     };
     let block_distance = block.as_ref().map(|hit| hit.point.distance(aim.eye()));
-    if let Some((id, distance)) = level.view.mob_on_ray(aim.eye(), aim.look(), entity_reach)
+    let own = remote.login.as_ref().map(|login| login.client);
+    let bodies: Vec<_> = remote
+        .players
+        .keys()
+        .filter(|&&client| Some(client) != own)
+        .filter_map(|&client| {
+            let other = presented.player(sim::ClientId(client))?;
+            let here = other.pm_type == 0
+                && minecraft_survival::bands::holds(level.dimension, f64::from(other.origin[2]));
+            let (feet, height) = body_of(presented, client, level.origin).filter(|_| here)?;
+            Some(minecraft_survival::pvp::PlayerBox::standing(
+                u64::from(client),
+                feet,
+                height,
+                false,
+            ))
+        })
+        .collect();
+    let body = minecraft_survival::pvp::player_on_ray(
+        &bodies,
+        u64::MAX,
+        aim.eye(),
+        aim.look(),
+        entity_reach,
+    );
+    let mob = level.view.mob_on_ray(aim.eye(), aim.look(), entity_reach);
+    if let Some((client, distance)) = body
+        && block_distance.is_none_or(|block| distance < block)
+        && mob.is_none_or(|(_, nearest)| distance < nearest)
+        && let Ok(client) = u32::try_from(client)
+    {
+        return Target::Player { client };
+    }
+    if let Some((id, distance)) = mob
         && block_distance.is_none_or(|block| distance < block)
     {
         return Target::Mob { id };

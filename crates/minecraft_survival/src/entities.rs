@@ -100,6 +100,7 @@ pub struct Entities {
     pub heard: crate::heard::HeardLog,
     pub spawner_tags: Vec<((i32, i32, i32), minecraftoss_core::nbt::Tag)>,
     mount_viewers: HashMap<u64, u64>,
+    player_boxes: Vec<crate::pvp::PlayerBox>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -467,6 +468,7 @@ impl Entities {
             heard: Default::default(),
             spawner_tags: Vec::new(),
             mount_viewers: HashMap::new(),
+            player_boxes: Vec::new(),
         }
     }
 
@@ -538,6 +540,62 @@ impl Entities {
         self.view.lids.block_event(scene, pos, id, count);
         let param = i32::try_from(count).unwrap_or(i32::MAX);
         self.heard.push(crate::heard::Said::all(crate::heard::Heard::Block { pos: [pos.0, pos.1, pos.2], kind: id, param }));
+    }
+
+    pub fn set_player_boxes(&mut self, boxes: Vec<crate::pvp::PlayerBox>) {
+        self.player_boxes = boxes;
+    }
+
+    pub fn player_box(&self, id: u64) -> Option<[f64; 6]> {
+        self.player_boxes.iter().find(|player| player.id == id).map(|player| player.bounds)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pvp_attack(&self, player: u64, held: Option<&ItemStack>, eye: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: &Blow) -> crate::pvp::Attack {
+        crate::pvp::Attack {
+            attacker: player,
+            feet: eye - DVec3::Y * f64::from(EYE_HEIGHT),
+            yaw,
+            attack_damage,
+            strength,
+            sprinting: blow.sprinting,
+            can_critical: blow.can_critical,
+            can_sweep: blow.can_sweep,
+            bonus: minecraft_terrain::melee::weapon_bonus(held),
+            disable_shield_ticks: crate::pvp::shield_disable_ticks(&self.recipes, held),
+            pvp: self.pvp,
+        }
+    }
+
+    fn strike_players(&mut self, attacker: u64, blows: Vec<crate::pvp::Blow>) {
+        for blow in blows {
+            self.players.queue(blow.victim).out.hits.push(crate::pvp::hit(&blow, attacker));
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn punch_player(&mut self, player: u64, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: &Blow) -> Option<bool> {
+        let (victim, distance) = crate::pvp::player_on_ray(&self.player_boxes, player, eye, look, blow.reach)?;
+        let frame = minecraft_terrain::item_frame::on_ray(&self.view.frames, eye, look, blow.reach).map(|(_, distance)| distance);
+        let nearer = self.entity_distance(player, eye, look, blow.reach).into_iter().chain(frame).chain(blow.block).any(|other| other <= distance);
+        if nearer {
+            return None;
+        }
+        let victim = *self.player_boxes.iter().find(|box_| box_.id == victim)?;
+        let held = inventory.slots.get(selected).and_then(Option::as_ref);
+        let attack = self.pvp_attack(player, held, eye, yaw, attack_damage, strength, blow);
+        let hit = crate::pvp::melee(&attack, &victim);
+        for sound in &hit.sounds {
+            self.sound(sound, attack.feet, 1.0, 1.0);
+        }
+        let mut blows: Vec<_> = hit.blow.into_iter().collect();
+        if hit.hurt && hit.sweep {
+            blows.extend(crate::pvp::swept(&attack, victim.bounds, Some(victim.id), &self.player_boxes));
+            let swing = minecraftoss_entities::world::PlayerAttack { player_id: player, position: attack.feet, yaw, attack_damage, strength, sprinting: blow.sprinting, can_critical: blow.can_critical, can_sweep: blow.can_sweep };
+            self.server.mob_sweep(player, swing, victim.bounds, attack.bonus.damage);
+        }
+        self.strike_players(player, blows);
+        Some(hit.hurt)
     }
 
     pub fn mob_box(&self, id: u64) -> Option<[f64; 6]> {
@@ -806,13 +864,20 @@ impl Entities {
             can_critical: blow.can_critical,
             can_sweep: blow.can_sweep,
         };
-        self.server.mob_action(player, hit, Some(attack), inventory, selected, false);
+        self.server.mob_action(player, hit, Some(attack), inventory, selected, blow.creative);
+        let held = inventory.slots.get(selected).and_then(Option::as_ref);
+        let pvp = self.pvp_attack(player, held, eye, yaw, attack_damage, strength, &blow);
+        if let Some(bounds) = self.mob_box(hit.id()) {
+            let blows = crate::pvp::swept(&pvp, bounds, None, &self.player_boxes);
+            self.strike_players(player, blows);
+        }
         true
     }
 
     pub fn mob_distance(&self, player: u64, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         let frame = minecraft_terrain::item_frame::on_ray(&self.view.frames, eye, look, reach).map(|(_, distance)| distance);
-        self.entity_distance(player, eye, look, reach).into_iter().chain(frame).min_by(f64::total_cmp)
+        let other = crate::pvp::player_on_ray(&self.player_boxes, player, eye, look, reach).map(|(_, distance)| distance);
+        self.entity_distance(player, eye, look, reach).into_iter().chain(frame).chain(other).min_by(f64::total_cmp)
     }
 
     fn entity_distance(&self, player: u64, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
@@ -2921,6 +2986,40 @@ mod tests {
         assert!(moved.iter().any(|mob| mob.id == cow));
         assert!(entities.take_friend_snapshot().is_some(), "the level's items and projectiles go to the friend too");
         assert!(entities.view.client.get(cow).is_some(), "the host, 35 blocks away, shows the cow too");
+    }
+
+    #[test]
+    fn a_punch_queues_one_hit_on_the_player_in_front_and_none_without_pvp() {
+        let Some(mut entities) = friend_world() else {
+            return;
+        };
+        let feet = [10.5, 201.0, 10.5];
+        let host = crate::pvp::PlayerBox::standing(HOST, feet, 1.8, false);
+        let friend = crate::pvp::PlayerBox::standing(FRIEND, [10.5, 201.0, 12.5], 1.8, false);
+        let other = crate::pvp::PlayerBox::standing(2, [11.5, 201.0, 13.0], 1.8, false);
+        entities.set_player_boxes(vec![host, friend, other]);
+        let eye = DVec3::from_array(feet) + DVec3::Y * f64::from(EYE_HEIGHT);
+        let blow = Blow { sprinting: false, can_critical: false, can_sweep: false, reach: 3.0, block: None, creative: false };
+        let inventory = Inventory::default();
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, DVec3::Z, 0.0, 1.0, 1.0, &blow), Some(true));
+        let hits = entities.take_player_outputs(FRIEND).hits;
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].0, hits[0].3), (1.0, crate::death::DamageCause::Player { client: 0 }));
+        assert!(entities.take_player_outputs(HOST).hits.is_empty(), "never the attacker");
+        assert!(entities.take_player_outputs(2).hits.is_empty(), "no sweep without a sword");
+        assert_eq!(entities.mob_distance(HOST, eye, DVec3::Z, 3.0).map(|d| (d * 100.0).round()), Some(170.0));
+        let sweep = Blow { can_sweep: true, ..blow };
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, DVec3::Z, 0.0, 1.0, 1.0, &sweep), Some(true));
+        assert_eq!(entities.take_player_outputs(FRIEND).hits.len(), 1);
+        assert_eq!(entities.take_player_outputs(2).hits.len(), 1, "the sweep reaches the player beside the target");
+        let wall = Blow { block: Some(1.0), ..blow };
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, DVec3::Z, 0.0, 1.0, 1.0, &wall), None);
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, -DVec3::Z, 0.0, 1.0, 1.0, &blow), None);
+        entities.pvp = false;
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, DVec3::Z, 0.0, 1.0, 1.0, &sweep), Some(false));
+        assert!(entities.take_player_outputs(FRIEND).hits.is_empty());
+        assert!(entities.take_player_outputs(2).hits.is_empty());
+        assert!(entities.view.sounds.iter().any(|(event, ..)| event == crate::pvp::NO_DAMAGE_SOUND));
     }
 
     #[test]

@@ -1038,6 +1038,58 @@ pub(crate) struct Settled {
     pub(crate) popped: bool,
 }
 
+pub(crate) fn set_player_boxes(
+    levels: &mut BTreeMap<Dimension, Level>,
+    players: &BTreeMap<PlayerUuid, Player>,
+    authority: &sim::SimWorld,
+    origins: &HashMap<Dimension, [f64; 3]>,
+    (host, host_client): (&PlayerUuid, sim::ClientId),
+) {
+    for (dimension, level) in levels.iter_mut() {
+        let Some(entities) = level.entities.as_mut() else {
+            continue;
+        };
+        let boxes = origins.get(dimension).map_or_else(Vec::new, |&origin| {
+            players
+                .values()
+                .filter(|player| player.dimension == *dimension)
+                .filter_map(|player| {
+                    let client = if player.uuid == *host {
+                        host_client
+                    } else {
+                        sim::ClientId(player.id.0)
+                    };
+                    player_box(player, authority.player(client)?, origin)
+                })
+                .collect()
+        });
+        entities.set_player_boxes(boxes);
+    }
+}
+
+fn player_box(
+    player: &Player,
+    ps: &PlayerState,
+    origin: [f64; 3],
+) -> Option<minecraft_survival::pvp::PlayerBox> {
+    let present = !player.dead
+        && player.switching.is_none()
+        && player.arrival.is_none()
+        && ps.pm_type == 0
+        && player.mode.mode != minecraftoss_player::GameMode::Spectator
+        && minecraft_survival::bands::holds(player.dimension, f64::from(ps.origin[2]));
+    if !present {
+        return None;
+    }
+    let (_, maxs) = sim::voxel::player_hull(ps);
+    Some(minecraft_survival::pvp::PlayerBox::standing(
+        u64::from(player.id.0),
+        sim::voxel::to_block(origin, ps.origin),
+        f64::from(maxs[2] / sim::voxel::BLOCK),
+        player.mode.invulnerable(),
+    ))
+}
+
 pub(crate) fn tell_pvp_deaths(
     deaths: Vec<sim::voxel::PvpDeath>,
     players: &mut BTreeMap<PlayerUuid, Player>,
@@ -1415,10 +1467,19 @@ pub(crate) fn step_friend(
         .levels
         .get(&player.dimension)
         .and_then(|level| level.entities.as_ref());
+    let own = u64::from(player.id.0);
     let taken = hands.take(world.instant, |target| {
-        minecraft_survival::actions::allows(target, eye, &mode, |id| {
-            entities.and_then(|entities| entities.mob_box(id))
-        })
+        minecraft_survival::actions::allows(
+            target,
+            eye,
+            &mode,
+            |id| entities.and_then(|entities| entities.mob_box(id)),
+            |id| {
+                entities
+                    .filter(|_| id != own)
+                    .and_then(|entities| entities.player_box(id))
+            },
+        )
     });
     if let Some(slot) = selected {
         player.selected = usize::from(slot).min(minecraft_survival::guns::HOTBAR - 1);
@@ -2207,6 +2268,42 @@ mod tests {
         bodies.clear();
         lay_friends(&players, shown, &mut authority, &origins, &mut in_bed, &mut bodies);
         assert!(in_bed.is_empty() && bodies.is_empty());
+    }
+
+    #[test]
+    fn only_a_living_player_in_its_own_band_gets_a_melee_box() {
+        use minecraft_survival::commands::HOST;
+        use minecraft_terrain::game_mode::PlayerMode;
+        use minecraftoss_player::GameMode;
+        let mut chat = CommandServer::new(HOST);
+        chat.join(HOST, "Steve");
+        let mut player = Player::new(
+            chat.profile(HOST).unwrap(),
+            PlayerMode::default(),
+            minecraft_survival::survival::Survival::default(),
+            minecraftoss_player::inventory::Inventory::default(),
+        );
+        let origin = [0.0; 3];
+        let ps = PlayerState {
+            origin: sim::voxel::to_map(origin, [3.5, 64.0, 0.5]),
+            ..PlayerState::ZERO
+        };
+        let found = player_box(&player, &ps, origin).expect("a standing player");
+        assert_eq!(found.id, 0);
+        assert!(!found.invulnerable);
+        assert!((found.bounds[0] - 3.2).abs() < 1.0e-4, "{found:?}");
+        assert!((found.bounds[1] - 64.0).abs() < 1.0e-4, "{found:?}");
+        assert!((found.bounds[5] - 0.8).abs() < 1.0e-4, "{found:?}");
+        player.mode = PlayerMode::new(GameMode::Creative);
+        assert!(player_box(&player, &ps, origin).unwrap().invulnerable);
+        player.mode = PlayerMode::new(GameMode::Spectator);
+        assert_eq!(player_box(&player, &ps, origin), None, "a spectator");
+        player.mode = PlayerMode::default();
+        player.dead = true;
+        assert_eq!(player_box(&player, &ps, origin), None, "a dead player");
+        player.dead = false;
+        player.dimension = Dimension::Nether;
+        assert_eq!(player_box(&player, &ps, origin), None, "outside its own band");
     }
 
     #[test]

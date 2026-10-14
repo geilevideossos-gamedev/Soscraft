@@ -27,6 +27,7 @@ pub mod player;
 pub mod player_nbt;
 pub mod portal;
 pub mod portal_forcer;
+pub mod pvp;
 pub mod recipe_book;
 pub mod remote;
 pub mod respawn;

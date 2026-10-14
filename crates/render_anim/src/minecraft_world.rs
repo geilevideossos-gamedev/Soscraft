@@ -706,6 +706,7 @@ fn update(
     let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
     let clients: Vec<u32> = players.values().filter(|player| &player.uuid != local_uuid).map(|player| player.id.0).chain([local.0.0]).collect();
     queues.drain(|client| clients.contains(&client));
+    crate::minecraft_players::set_player_boxes(levels, players, &authority.0, origins, (local_uuid, local.0));
     sim::voxel::set_pvp(globals.game_rules.bool("pvp"));
     let weapon_name = |weapon: u32| {
         let key = weapon_names.0.as_deref()?.0.display_name_key_of(weapon)?;

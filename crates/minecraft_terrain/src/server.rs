@@ -553,6 +553,19 @@ impl ServerSim {
         MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(player), broken: outcome.broken, mounted, mount_inventory: outcome.mount_inventory }
     }
 
+    pub fn mob_sweep(&mut self, attack: &minecraftoss_entities::world::PlayerAttack, around: [f64; 6], enchanted: f32) -> MobResult {
+        let outcome = crate::mob_actions::sweep(&mut self.mobs, attack, around, enchanted, self.entity_loot.as_mut());
+        for (stack, position) in outcome.drops {
+            let components = stack.components.as_ref().map(|c| c.to_string());
+            let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
+            self.level.spawn_at_location(position.to_array(), stack);
+        }
+        for (position, amount) in outcome.experience {
+            self.level.award_experience(position.to_array(), amount);
+        }
+        MobResult { sounds: outcome.sounds, ..MobResult::default() }
+    }
+
     fn mount(&mut self, player: u64, vehicle: u64) -> bool {
         let Self { level, states, mobs, mob_tables, .. } = self;
         let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -3319,6 +3332,7 @@ pub enum Command {
     /// A player's hit (`attack`) or item use on a mob, with a copy of its
     /// inventory.
     MobAction { player: u64, hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
+    MobSweep { player: u64, attack: minecraftoss_entities::world::PlayerAttack, around: [f64; 6], enchanted: f32 },
     MobBlast { hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32 },
     WeaponBlast { center: [f64; 3], power: f32 },
     Blast(Blast),
@@ -3803,6 +3817,10 @@ impl ServerHandle {
         self.send(Command::MobAction { player, hit, attack, inventory: Box::new(inventory.clone()), selected, infinite });
     }
 
+    pub fn mob_sweep(&mut self, player: u64, attack: minecraftoss_entities::world::PlayerAttack, around: [f64; 6], enchanted: f32) {
+        self.send(Command::MobSweep { player, attack, around, enchanted });
+    }
+
     pub fn mob_blast(&mut self, hit: minecraftoss_entities::world::MobHit, damage: f32, center: [f64; 3], impact: f32, player: Option<u64>, slow_ticks: i32) {
         self.send(Command::MobBlast { hit, damage, center, impact, player, slow_ticks });
     }
@@ -3982,6 +4000,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::MobAction { player, hit, attack, inventory, selected, infinite } => {
                     out.mob_results.push((player, sim.mob_action(player, hit, attack, *inventory, selected, infinite)));
+                }
+                Command::MobSweep { player, attack, around, enchanted } => {
+                    out.mob_results.push((player, sim.mob_sweep(&attack, around, enchanted)));
                 }
                 Command::MobBlast { hit, damage, center, impact, player, slow_ticks } => sim.mob_blast(hit, damage, center, impact, player, slow_ticks),
                 Command::WeaponBlast { center, power } => sim.weapon_blast(center, power),

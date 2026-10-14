@@ -96,6 +96,9 @@ pub enum DamageCause {
         type_id: &'static str,
         attack: MobAttack,
     },
+    Player {
+        client: u32,
+    },
 }
 
 pub const IS_EXPLOSION: [&str; 4] = [
@@ -164,6 +167,7 @@ impl DamageCause {
             Self::BadRespawnPoint => "minecraft:bad_respawn_point",
             Self::Explosion => "minecraft:explosion",
             Self::Fireworks => "minecraft:fireworks",
+            Self::Player { .. } => "minecraft:player_attack",
             Self::Mob { attack, .. } => match attack {
                 MobAttack::Melee => "minecraft:mob_attack",
                 MobAttack::Arrow => "minecraft:arrow",
@@ -180,7 +184,7 @@ impl DamageCause {
 
     fn message_id(self) -> &'static str {
         match self {
-            Self::Generic => "generic",
+            Self::Generic | Self::Player { .. } => "generic",
             Self::Hazard(Hazard::InFire | Hazard::Campfire) => "inFire",
             Self::Hazard(Hazard::Lava) => "lava",
             Self::Hazard(Hazard::Cactus) => "cactus",
