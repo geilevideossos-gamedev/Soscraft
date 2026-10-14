@@ -157,6 +157,7 @@ impl WitchEntity {
         let ai = &mut self.ai;
         let body = &mut self.witch.body;
         ai.state.witch.drinking = drinking;
+        ai.state.witch.heal_cooldown = self.witch.heal_cooldown;
         ai.state.random = std::mem::take(&mut self.random);
         // `Raider.updateNoActionTime`: the idle clock runs double, light or
         // dark.
@@ -172,6 +173,7 @@ impl WitchEntity {
         ai.state.no_action_time = self.no_action_time;
         let full = self.tick_count <= 1 || (self.tick_count + self.id as i32) % 2 == 0;
         ai.tick_goals(world, full);
+        self.witch.heal_cooldown = ai.state.witch.heal_cooldown;
         let thrown = ai.state.witch.throw.take();
         if let Some((_, pitch)) = thrown {
             self.voices.push((Voice::Event("entity.witch.throw", 1.0, pitch), position));
@@ -299,10 +301,12 @@ impl EntityWorld {
         let vitals = self.player_vitals.clone();
         let mobs = self.mob_candidates();
         let raid = self.witches.iter().find(|e| e.id == id).and_then(|e| self.raid_view(e.witch.raider.raid_id));
+        let raiders = if raid.is_some_and(|raid| raid.active) { self.raiders().into_iter().filter(|r| r.id != id).map(|r| (r.id, r.health, r.velocity)).collect() } else { Vec::new() };
         let Some(entity) = self.witches.iter_mut().find(|e| e.id == id) else { return };
         entity.ai.state.mobs = mobs;
         entity.ai.state.illager.raid = raid;
         entity.ai.state.illager.has_raid = raid.is_some_and(|raid| raid.active);
+        entity.ai.state.witch.raiders = raiders;
         entity.previous_position = entity.witch.body.position;
         entity.tick_count += 1;
         base_tick_fluid(&mut entity.witch.body, &*world, entity.tick_count == 1, &mut entity.random, &mut entity.voices, WITCH_SOUNDS);

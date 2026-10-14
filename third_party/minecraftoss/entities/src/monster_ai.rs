@@ -232,11 +232,13 @@ pub struct WitchState {
     pub see_time: i32,
     /// The potion thrown this tick and the throw sound's pitch.
     pub throw: Option<(crate::witch::Throw, f32)>,
+    pub heal_cooldown: i32,
+    pub raiders: Vec<(u64, f32, DVec3)>,
 }
 
 impl Default for WitchState {
     fn default() -> Self {
-        Self { drinking: false, ranged_target: None, attack_time: -1, see_time: 0, throw: None }
+        Self { drinking: false, ranged_target: None, attack_time: -1, see_time: 0, throw: None, heal_cooldown: 0, raiders: Vec::new() }
     }
 }
 
@@ -426,6 +428,7 @@ pub(crate) enum Prey {
     Chicken,
     Monster,
     Living,
+    HealableRaider,
 }
 
 /// `MeleeAttackGoal`'s state (and `ZombieAttackGoal`'s raised arms).
@@ -2447,22 +2450,54 @@ pub fn witch_goals() -> GoalSelector<MonsterGoalContext> {
 pub fn witch_targets() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: false });
-    selector.add(2, HealRaidersGoal);
-    selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Player, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector.add(2, HealRaidersGoal { finder: NearestTargetGoal::every(Prey::HealableRaider, true, 0) });
+    selector.add(3, WitchPlayersGoal(NearestTargetGoal { interval: 5, prey: Prey::Player, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false }));
     selector
 }
 
-/// `NearestHealableRaiderTargetGoal`: off its cooldown (always, outside a
-/// raid) it flips a coin, then finds no raid.
 #[derive(Clone)]
-struct HealRaidersGoal;
+struct HealRaidersGoal {
+    finder: NearestTargetGoal,
+}
 impl Goal<MonsterGoalContext> for HealRaidersGoal {
     fn controls(&self) -> Controls {
         Controls::new(&[Control::Target])
     }
-    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
-        let _ = ctx.random.next_boolean();
-        false
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        if ctx.witch.heal_cooldown > 0 || !ctx.random.next_boolean() || !ctx.illager.has_raid {
+            return false;
+        }
+        self.finder.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.finder.can_continue(ctx, world)
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.witch.heal_cooldown = crate::witch::HEAL_COOLDOWN;
+        self.finder.start(ctx);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.finder.stop(ctx);
+    }
+}
+
+#[derive(Clone)]
+struct WitchPlayersGoal(NearestTargetGoal);
+impl Goal<MonsterGoalContext> for WitchPlayersGoal {
+    fn controls(&self) -> Controls {
+        self.0.controls()
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        ctx.witch.heal_cooldown <= 0 && self.0.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.0.can_continue(ctx, world)
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.start(ctx);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.stop(ctx);
     }
 }
 
@@ -2545,6 +2580,18 @@ fn perform_ranged_attack(ctx: &mut MonsterGoalContext, target: TargetInfo) {
         return;
     }
     if ctx.witch.drinking {
+        return;
+    }
+    let raider = match target.target {
+        Target::Mob(id) => ctx.witch.raiders.iter().find(|(r, _, _)| *r == id).copied(),
+        _ => None,
+    };
+    if let Some((_, health, velocity)) = raider {
+        let aim = crate::witch::ThrowTarget { position: target.position, eye_height: target.eye_height, velocity, health, slowed: false, poisoned: false, weakened: false };
+        let throw = crate::witch::heal(ctx.body.position, aim);
+        ctx.clear_target();
+        let pitch = 0.8 + ctx.random.next_float() * 0.4;
+        ctx.witch.throw = Some((throw, pitch));
         return;
     }
     let vitals = match target.target {
@@ -2908,6 +2955,7 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
             Prey::Piglin => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:piglin" | "minecraft:piglin_brute")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Chicken => ctx.mobs.iter().filter(|m| m.kind == "minecraft:chicken").map(|m| Target::Mob(m.id)).collect(),
             Prey::Monster => ctx.mobs.iter().filter(|m| is_enemy(m.kind)).map(|m| Target::Mob(m.id)).collect(),
+            Prey::HealableRaider => ctx.mobs.iter().filter(|m| crate::illager::is_raider(m.kind) && m.kind != "minecraft:witch").map(|m| Target::Mob(m.id)).collect(),
             Prey::Living => ctx
                 .players
                 .iter()

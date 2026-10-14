@@ -8,6 +8,7 @@ pub struct RaiderView {
     pub id: u64,
     pub kind: &'static str,
     pub position: DVec3,
+    pub velocity: DVec3,
     pub width: f32,
     pub height: f32,
     pub health: f32,
@@ -62,6 +63,7 @@ impl EntityWorld {
                 id: e.id,
                 kind: e.illager.kind.type_id(),
                 position: body.position,
+                velocity: body.velocity,
                 width: body.width,
                 height: body.height,
                 health: e.illager.health,
@@ -79,6 +81,7 @@ impl EntityWorld {
                 id: e.id,
                 kind: crate::ravager::TYPE_ID,
                 position: body.position,
+                velocity: body.velocity,
                 width: body.width,
                 height: body.height,
                 health: e.ravager.health,
@@ -96,6 +99,7 @@ impl EntityWorld {
                 id: e.id,
                 kind: "minecraft:witch",
                 position: body.position,
+                velocity: body.velocity,
                 width: body.width,
                 height: body.height,
                 health: e.witch.health,
@@ -303,6 +307,57 @@ mod tests {
             "{sounds:?}"
         );
         let _ = id;
+    }
+
+    fn raid_witch(world: &mut EntityWorld, at: DVec3) -> u64 {
+        let mut witch = crate::witch::Witch::new(at);
+        witch.raider.raid_id = Some(1);
+        witch.raider.can_join_raid = true;
+        let id = world.spawn_witch(witch, false);
+        world.witch_mut(id).unwrap().random = minecraftoss_player::rng::LegacyRandom::new(5);
+        id
+    }
+
+    fn thrown(world: &mut EntityWorld, ticks: usize) -> Vec<crate::potion::Potion> {
+        let mut potions = Vec::new();
+        for _ in 0..ticks {
+            world.tick(&mut Field);
+            for e in world.potions() {
+                if !potions.iter().any(|(id, _)| *id == e.id) {
+                    potions.push((e.id, e.potion.potion));
+                }
+            }
+        }
+        potions.into_iter().map(|(_, potion)| potion).collect()
+    }
+
+    #[test]
+    fn a_raid_witch_heals_a_badly_hurt_raider_and_gives_regeneration_to_a_scratched_one() {
+        for (health, wanted) in [
+            (3.0, crate::potion::Potion::Healing),
+            (20.0, crate::potion::Potion::Regeneration),
+        ] {
+            let mut world = EntityWorld::default();
+            world.set_raids(vec![raid((0, 64, 0), false)]);
+            raid_witch(&mut world, DVec3::new(0.5, 64.0, 0.5));
+            let pillager = raiding_pillager(&mut world, DVec3::new(5.5, 64.0, 0.5));
+            world.illager_mut(pillager).unwrap().illager.health = health;
+            world.illager_mut(pillager).unwrap().no_ai = true;
+            let potions = thrown(&mut world, 400);
+            assert!(!potions.is_empty(), "it throws at the raider");
+            assert_eq!(potions[0], wanted, "{potions:?}");
+        }
+    }
+
+    #[test]
+    fn a_witch_with_no_raid_leaves_raiders_alone() {
+        let mut world = EntityWorld::default();
+        let witch = raid_witch(&mut world, DVec3::new(0.5, 64.0, 0.5));
+        world.witch_mut(witch).unwrap().witch.raider.raid_id = None;
+        let pillager = raiding_pillager(&mut world, DVec3::new(5.5, 64.0, 0.5));
+        world.illager_mut(pillager).unwrap().illager.health = 3.0;
+        world.illager_mut(pillager).unwrap().no_ai = true;
+        assert!(thrown(&mut world, 400).is_empty());
     }
 
     #[test]
