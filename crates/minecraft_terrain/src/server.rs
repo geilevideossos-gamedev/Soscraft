@@ -1049,6 +1049,38 @@ impl ServerSim {
         }
     }
 
+    pub fn tick_patrol_spawner(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], bright_outside: bool) {
+        use crate::custom_spawners as spawners;
+        use minecraftoss_core::random::RandomSource;
+        let Some(natural) = self.level.natural_spawning.as_ref() else { return };
+        if !natural.spawn_mobs || !natural.spawn_monsters || !self.custom_spawners.spawn_patrols {
+            return;
+        }
+        let Some(patrols) = self.custom_spawners.patrols.as_mut() else { return };
+        if !patrols.due(&mut self.level.random, bright_outside) || players.is_empty() {
+            return;
+        }
+        let player = &players[self.level.random.next_i32_bound(players.len() as i32) as usize];
+        if player.spectator {
+            return;
+        }
+        let feet = (player.position.x.floor() as i32, player.position.y.floor() as i32, player.position.z.floor() as i32);
+        if spawners::near_village(self.mobs.pois.sections_to_village((feet.0 >> 4, feet.1 >> 4, feet.2 >> 4))) {
+            return;
+        }
+        let (dx, dz) = spawners::patrol_offset(&mut self.level.random);
+        let start = (feet.0 + dx, feet.1, feet.2 + dz);
+        if !spawners::chunks_around(start).into_iter().all(|(cx, cz)| self.level.chunk(ChunkPos::new(cx, cz)).is_some()) {
+            return;
+        }
+        if !self.level.can_pillager_patrol_spawn_at(start.0, start.1, start.2) {
+            return;
+        }
+        for member in self.level.spawn_patrol(minecraftoss_core::BlockPos::new(start.0, start.1, start.2)) {
+            self.add_saved_entity(member);
+        }
+    }
+
     pub fn tick_trader_spawner(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         let spawn_mobs = self.level.natural_spawning.as_ref().is_some_and(|natural| natural.spawn_mobs);
         let rule = self.custom_spawners.spawn_wandering_traders;
@@ -2727,6 +2759,7 @@ impl ServerSim {
             natural.spawner_blocks_work = rules.bool("spawner_blocks_work");
         }
         self.custom_spawners.spawn_wandering_traders = rules.bool("spawn_wandering_traders");
+        self.custom_spawners.spawn_patrols = rules.bool("spawn_patrols");
     }
 
     pub fn weather(&mut self, feet: Option<[f64; 3]>) -> WeatherView {
@@ -3756,6 +3789,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     if normal {
         sim.prepare_spawning(&input.mob_players);
         sim.tick();
+        sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
         sim.tick_custom_spawners(&input.mob_players);
         sim.tick_trader_spawner(&input.mob_players);
     }
@@ -11502,6 +11536,90 @@ mod tests {
         assert!(server.custom_spawners.traders.is_some());
         assert!(server.spawn_wandering_trader(&[]), "no player counts as a spawn, as in vanilla");
         assert_eq!(server.mobs.wandering_traders().len(), 1, "but brings no trader");
+    }
+
+    #[test]
+    fn patrols_come_by_day_away_from_villages_with_a_banner_captain_who_drops_an_ominous_bottle() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -5..=5 {
+            for z in -5..=5 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        server.set_players(&[[8.5, 200.0, 8.5]], 2);
+        let me = candidate(0, [8.5, 200.0, 8.5]);
+        let tries = |server: &mut ServerSim, bright: bool, times: usize| {
+            for _ in 0..times {
+                if !server.mobs.illagers().is_empty() {
+                    return;
+                }
+                server.custom_spawners.patrols.as_mut().unwrap().next_tick = 1;
+                server.tick_patrol_spawner(&[me], bright);
+            }
+        };
+        tries(&mut server, true, 300);
+        assert!(server.mobs.illagers().is_empty(), "not before the fifth day");
+        server.set_clocks(ClockTicks { overworld: 130_000, the_end: 0 });
+        tries(&mut server, false, 300);
+        assert!(server.mobs.illagers().is_empty(), "never at night");
+        let bell = (8, 200, 8);
+        assert!(server.mobs.pois.add(bell, minecraftoss_entities::poi::PoiType::Meeting));
+        assert!(server.mobs.pois.acquire(bell), "a village centre has a claimed point");
+        tries(&mut server, true, 300);
+        assert!(server.mobs.illagers().is_empty(), "never near a village");
+        server.mobs.pois.remove(bell);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("spawn_patrols", "false").unwrap();
+        server.apply_game_rules(&rules);
+        tries(&mut server, true, 300);
+        assert!(server.mobs.illagers().is_empty(), "the rule turns patrols off");
+        rules.set("spawn_patrols", "true").unwrap();
+        server.apply_game_rules(&rules);
+        tries(&mut server, true, 600);
+        let patrol: Vec<u64> = server.mobs.illagers().iter().map(|e| e.id).collect();
+        assert!((1..=4).contains(&patrol.len()), "{}", patrol.len());
+        let captain = &server.mobs.illagers()[0];
+        assert!(captain.is_captain(), "the first one leads with the ominous banner");
+        assert_eq!(captain.illager.drop_chances[minecraftoss_entities::illager::HEAD], 2.0);
+        let at = captain.position();
+        for offset in [at.x.floor() - 8.0, at.z.floor() - 8.0] {
+            assert!((24.0..=47.0).contains(&offset.abs()), "{at}");
+        }
+        assert!(server.mobs.illagers().iter().all(|e| e.illager.raider.patrolling && e.illager.holds_crossbow()));
+        assert!(server.mobs.illagers().iter().skip(1).all(|e| !e.illager.raider.patrol_leader && e.illager.raider.patrol_target.is_none()));
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        server.load_loot(&jar, 0);
+        let id = patrol[0];
+        let attack = minecraftoss_entities::world::PlayerAttack {
+            player_id: 0,
+            position: at + glam::DVec3::X,
+            yaw: 90.0,
+            attack_damage: 100.0,
+            strength: 1.0,
+            sprinting: false,
+            can_critical: false,
+            can_sweep: false,
+        };
+        server.mob_action(0, minecraftoss_entities::world::MobHit::Illager(id), Some(attack), minecraftoss_player::inventory::Inventory::default(), 0, false);
+        for _ in 0..25 {
+            server.tick_mobs(&[], true);
+        }
+        let dropped: Vec<String> = server.items().into_iter().map(|item| item.item).collect();
+        assert!(dropped.iter().any(|item| item == "minecraft:ominous_bottle"), "{dropped:?}");
+        assert!(dropped.iter().any(|item| item == "minecraft:white_banner"), "{dropped:?}");
     }
 
     #[test]

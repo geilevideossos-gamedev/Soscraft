@@ -224,6 +224,41 @@ fn byte(value: bool) -> Tag {
     Tag::Byte(i8::from(value))
 }
 
+pub const PATROL_LEADER_CHANCE: f32 = 0.06;
+pub const PATROL_TARGET_SPREAD: i32 = 500;
+pub const OMINOUS_BANNER_NAME: &str = "block.minecraft.ominous_banner";
+pub const OMINOUS_BANNER_PATTERNS: [(&str, &str); 8] = [
+    ("rhombus", "cyan"),
+    ("stripe_bottom", "light_gray"),
+    ("stripe_center", "gray"),
+    ("border", "light_gray"),
+    ("stripe_middle", "black"),
+    ("half_horizontal", "light_gray"),
+    ("circle", "light_gray"),
+    ("border", "black"),
+];
+
+pub fn ominous_banner() -> Tag {
+    let text = |value: &str| Tag::String(value.to_owned());
+    let layers = OMINOUS_BANNER_PATTERNS
+        .iter()
+        .map(|(pattern, color)| Tag::Compound(BTreeMap::from([("color".to_owned(), text(color)), ("pattern".to_owned(), text(&format!("minecraft:{pattern}")))])))
+        .collect();
+    let hidden = Tag::Compound(BTreeMap::from([("hidden_components".to_owned(), Tag::List(vec![text("minecraft:banner_patterns")]))]));
+    let name = Tag::Compound(BTreeMap::from([("translate".to_owned(), text(OMINOUS_BANNER_NAME))]));
+    let components = BTreeMap::from([
+        ("minecraft:banner_patterns".to_owned(), Tag::List(layers)),
+        ("minecraft:tooltip_display".to_owned(), hidden),
+        ("minecraft:item_name".to_owned(), name),
+        ("minecraft:rarity".to_owned(), text("uncommon")),
+    ]);
+    Tag::Compound(BTreeMap::from([
+        ("components".to_owned(), Tag::Compound(components)),
+        ("count".to_owned(), Tag::Int(1)),
+        ("id".to_owned(), text("minecraft:white_banner")),
+    ]))
+}
+
 fn hoglin_spawns_as_baby(random: &mut dyn RandomSource, group: &mut MonsterGroup) -> bool {
     let baby = random.next_f32() < 0.2;
     if matches!(group, MonsterGroup::None) {
@@ -938,6 +973,84 @@ impl CreatureSpawns {
         }
     }
 
+    fn finalize_pillager(level: &mut dyn SpawnLevel, tag: &mut Tag, difficulty: DifficultyInstance, rolls_leader: bool, patrol: bool) {
+        equip(tag, "mainhand", "minecraft:crossbow");
+        Self::roll_enchantments(level, tag, difficulty);
+        if level.random().next_i32_bound(300) == 0 {
+            let piercing = Tag::Compound(BTreeMap::from([("minecraft:piercing".to_owned(), Tag::Int(1))]));
+            let components = Tag::Compound(BTreeMap::from([("minecraft:enchantments".to_owned(), piercing)]));
+            if let Tag::Compound(map) = tag
+                && let Some(Tag::Compound(slots)) = map.get_mut("equipment")
+                && let Some(Tag::Compound(hand)) = slots.get_mut("mainhand")
+            {
+                hand.insert("components".to_owned(), components);
+            }
+        }
+        set(tag, "CanJoinRaid", byte(true));
+        if rolls_leader && level.random().next_f32() < PATROL_LEADER_CHANCE {
+            set(tag, "PatrolLeader", byte(true));
+        }
+        if tag.get("PatrolLeader").and_then(Tag::as_i64).is_some_and(|leader| leader != 0) {
+            if let Tag::Compound(map) = tag {
+                let slots = map.entry("equipment".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new()));
+                if let Tag::Compound(slots) = slots {
+                    slots.insert("head".to_owned(), ominous_banner());
+                }
+                let chances = map.entry("drop_chances".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new()));
+                if let Tag::Compound(chances) = chances {
+                    chances.insert("head".to_owned(), Tag::Float(2.0));
+                }
+            }
+        }
+        if patrol {
+            set(tag, "Patrolling", byte(true));
+        }
+        finalize_mob(tag, &mut RandomRef(level.random()));
+    }
+
+    pub fn spawn_patrol(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, start: BlockPos) -> Vec<Tag> {
+        let size = f64::from(Self::difficulty_at(level, context, start).effective).ceil() as i32 + 1;
+        let mut pos = start;
+        let mut members = Vec::new();
+        for index in 0..size {
+            pos.y = level.height(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, pos.x, pos.z);
+            match self.patrol_member(level, context, pos, index == 0) {
+                Some(member) => members.push(member),
+                None if index == 0 => break,
+                None => {}
+            }
+            pos.x += level.random().next_i32_bound(5) - level.random().next_i32_bound(5);
+            pos.z += level.random().next_i32_bound(5) - level.random().next_i32_bound(5);
+        }
+        members
+    }
+
+    fn patrol_member(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, pos: BlockPos, leader: bool) -> Option<Tag> {
+        let kind = "minecraft:pillager";
+        let info = type_info(kind)?;
+        if !self.is_valid_empty_spawn_block(&self.registries, level.block(pos), kind, &info) {
+            return None;
+        }
+        if level.block_brightness(pos) > 8 || context.difficulty == 0 || !self.mob_spawn_rules(level, kind, &info, pos) {
+            return None;
+        }
+        let mut tag = self.registries.entities.as_ref()?.default_tag(kind)?;
+        let uuid = level.next_uuid();
+        if leader {
+            let mut own = entity_random(uuid);
+            let x = -PATROL_TARGET_SPREAD + own.next_i32_bound(PATROL_TARGET_SPREAD * 2);
+            let z = -PATROL_TARGET_SPREAD + own.next_i32_bound(PATROL_TARGET_SPREAD * 2);
+            set(&mut tag, "PatrolLeader", byte(true));
+            set(&mut tag, "Patrolling", byte(true));
+            set(&mut tag, "patrol_target", Tag::IntArray(vec![x, 0, z]));
+        }
+        place(&mut tag, [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)], 0.0, 0.0, uuid);
+        let _ = attribute(&mut tag, "minecraft:follow_range", follow_range_base(kind));
+        let difficulty = Self::difficulty_at(level, context, pos);
+        Self::finalize_pillager(level, &mut tag, difficulty, false, true);
+        Some(tag)
+    }
+
     /// The monsters' `finalizeSpawn` (with `Mob.finalizeSpawn`'s common
     /// part), returning the entity to add: the mob, or the chicken it rides.
     #[allow(clippy::too_many_arguments)]
@@ -1010,26 +1123,7 @@ impl CreatureSpawns {
                 }
             }
             "minecraft:cave_spider" => {}
-            "minecraft:pillager" => {
-                equip(&mut tag, "mainhand", "minecraft:crossbow");
-                Self::roll_enchantments(level, &tag, difficulty);
-                if level.random().next_i32_bound(300) == 0 {
-                    let piercing = Tag::Compound(BTreeMap::from([("minecraft:piercing".to_owned(), Tag::Int(1))]));
-                    let components = Tag::Compound(BTreeMap::from([("minecraft:enchantments".to_owned(), piercing)]));
-                    if let Tag::Compound(map) = &mut tag
-                        && let Some(Tag::Compound(slots)) = map.get_mut("equipment")
-                        && let Some(Tag::Compound(hand)) = slots.get_mut("mainhand")
-                    {
-                        hand.insert("components".to_owned(), components);
-                    }
-                }
-                set(&mut tag, "CanJoinRaid", byte(true));
-                if level.random().next_f32() < 0.06 {
-                    set(&mut tag, "PatrolLeader", byte(true));
-                    level.note_unsupported("the ominous banner of a patrol leader");
-                }
-                finalize_mob(&mut tag, &mut RandomRef(level.random()));
-            }
+            "minecraft:pillager" => Self::finalize_pillager(level, &mut tag, difficulty, true, false),
             "minecraft:witch" => {
                 // `Raider.finalizeSpawn`, then `PatrollingMonster`'s leader
                 // roll (witches never lead), then `Mob`'s part.
@@ -1749,6 +1843,62 @@ mod tests {
     }
 
     #[test]
+    fn a_patrol_is_a_captain_with_the_ominous_banner_and_pillagers_on_patrol() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((spawns, column)) = river() else { return };
+        let mut land = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let mut context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let members = spawns.spawn_patrol(&mut land, &mut context, minecraftoss_core::BlockPos::new(30, 90, -40));
+        assert_eq!(members.len(), 3, "ceil(1.5) + 1 on a new world on normal");
+        let flag = |tag: &Tag, key: &str| tag.get(key).and_then(Tag::as_i64) == Some(1);
+        let captain = &members[0];
+        assert!(flag(captain, "PatrolLeader") && flag(captain, "Patrolling"));
+        let target = captain.get("patrol_target").and_then(Tag::as_ints).expect("a patrol target");
+        assert!(target[0].abs() <= 500 && target[2].abs() <= 500 && target[1] == 0, "found before it is placed: {target:?}");
+        let head = captain.get("equipment").and_then(|e| e.get("head")).expect("the banner");
+        assert_eq!(head.get("id").and_then(Tag::as_str), Some("minecraft:white_banner"));
+        let components = head.get("components").expect("banner components");
+        assert_eq!(components.get("minecraft:banner_patterns").and_then(Tag::as_list).map(<[Tag]>::len), Some(8));
+        assert_eq!(components.get("minecraft:item_name").and_then(|n| n.get("translate")).and_then(Tag::as_str), Some(super::OMINOUS_BANNER_NAME));
+        assert_eq!(components.get("minecraft:rarity").and_then(Tag::as_str), Some("uncommon"));
+        assert_eq!(captain.get("drop_chances").and_then(|c| c.get("head")).and_then(Tag::as_f64), Some(2.0));
+        let pos = |tag: &Tag| tag.get("Pos").and_then(Tag::as_list).map(|p| p.iter().filter_map(Tag::as_f64).collect::<Vec<f64>>()).unwrap();
+        assert_eq!(pos(captain), [30.0, 65.0, -40.0], "on the ground at the block corner");
+        for member in &members[1..] {
+            assert!(flag(member, "Patrolling") && !flag(member, "PatrolLeader"));
+            assert!(member.get("patrol_target").is_none());
+            assert!(member.get("equipment").and_then(|e| e.get("head")).is_none());
+            let at = pos(member);
+            assert!((at[0] - 30.0).abs() <= 8.0 && (at[2] + 40.0).abs() <= 8.0 && at[1] == 65.0, "{at:?}");
+        }
+        for member in &members {
+            assert_eq!(member.get("equipment").and_then(|e| e.get("mainhand")).and_then(|h| h.get("id")).and_then(Tag::as_str), Some("minecraft:crossbow"));
+            assert!(flag(member, "CanJoinRaid"));
+        }
+        context.difficulty = 0;
+        assert!(spawns.spawn_patrol(&mut land, &mut context, minecraftoss_core::BlockPos::new(30, 90, -40)).is_empty(), "no patrol in peaceful");
+        context.difficulty = 2;
+        let mut flooded = Column { solid_top: 60, water_top: 64, ..land };
+        assert!(spawns.spawn_patrol(&mut flooded, &mut context, minecraftoss_core::BlockPos::new(30, 90, -40)).is_empty(), "no captain in water, no patrol");
+    }
+
+    #[test]
     fn pillagers_spawn_alone_in_a_pillager_outpost_by_day_with_a_crossbow() {
         use minecraftoss_core::nbt::Tag;
         let info = super::type_info("minecraft:pillager").unwrap();
@@ -1793,6 +1943,10 @@ mod tests {
             let hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|h| h.get("id")).and_then(Tag::as_str);
             assert_eq!(hand, Some("minecraft:crossbow"));
             assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+            let leader = tag.get("PatrolLeader").and_then(Tag::as_i64) == Some(1);
+            let head = tag.get("equipment").and_then(|e| e.get("head")).and_then(|h| h.get("id")).and_then(Tag::as_str);
+            assert_eq!(head, leader.then_some("minecraft:white_banner"), "a leader carries the ominous banner");
+            assert_ne!(tag.get("Patrolling").and_then(Tag::as_i64), Some(1), "an outpost pillager is no patroller");
         }
         let mut elsewhere = Column { added: Vec::new(), ..day };
         let mut context = super::SpawnContext {

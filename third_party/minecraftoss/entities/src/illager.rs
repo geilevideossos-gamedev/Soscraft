@@ -42,6 +42,17 @@ pub const CREAKING_AVOID_RANGE: f64 = 8.0;
 pub const CREAKING_WALK_SPEED: f64 = 1.0;
 pub const CREAKING_SPRINT_SPEED: f64 = 1.2;
 pub const PATROL_LEADER_CHANCE: f32 = 0.06;
+pub const PATROL_SPEED: f64 = 0.7;
+pub const PATROL_LEADER_SPEED: f64 = 0.595;
+pub const PATROL_COMPANION_RANGE: f64 = 16.0;
+pub const PATROL_ARRIVED: f64 = 10.0;
+pub const PATROL_STEP: f64 = 10.0;
+pub const PATROL_SWERVE: f64 = 0.4;
+pub const PATROL_SWERVE_ANGLE: f32 = 90.0;
+pub const PATROL_COOLDOWN: i64 = 200;
+pub const PATROL_TARGET_SPREAD: i32 = 500;
+pub const PATROL_WANDER: i32 = 8;
+pub const PATROL_KEEP_RANGE: f64 = 128.0;
 pub const PIERCING_ROLL: i32 = 300;
 
 pub const MAINHAND: usize = 0;

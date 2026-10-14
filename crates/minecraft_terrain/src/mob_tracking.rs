@@ -1294,6 +1294,22 @@ mod tests {
     }
 
     #[test]
+    fn a_friend_sees_a_patrol_captain_with_its_ominous_banner() {
+        let mut host = EntityWorld::default();
+        let (captain, tag) = spawn(&mut host, "{id:\"minecraft:pillager\",Pos:[2.5d,64.0d,0.5d],NoAI:1b,PatrolLeader:1b,Patrolling:1b,patrol_target:[I;100,0,-40],equipment:{mainhand:{id:\"minecraft:crossbow\",count:1},head:{id:\"minecraft:white_banner\",count:1,components:{\"minecraft:item_name\":{translate:\"block.minecraft.ominous_banner\"}}}},drop_chances:{head:2.0f}}");
+        assert!(host.illagers()[0].is_captain());
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, captain, &tag));
+        let seen = &friend.illagers()[0];
+        assert!(seen.is_captain());
+        assert_eq!(
+            seen.illager.equipment[minecraftoss_entities::illager::HEAD].as_ref().map(|s| s.id.as_str()),
+            Some("minecraft:white_banner")
+        );
+        assert!(crate::illager_render::worn_on_head("minecraft:white_banner"));
+    }
+
+    #[test]
     fn a_friend_sees_a_pillager_charge_and_then_hold_its_crossbow() {
         use minecraftoss_entities::illager::{Illager, IllagerArmPose};
         let at = DVec3::new(2.5, 64.0, 0.5);

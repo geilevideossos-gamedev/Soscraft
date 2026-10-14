@@ -5651,7 +5651,12 @@ impl EntityWorld {
         self.felines.retain_mut(|e| !check(e.id, e.feline.body.position, e.feline.persistence_required, (128.0, e.feline.wild() && e.tick_count > 2400, true), &mut e.no_action_time, &mut e.random));
         self.wandering_traders.retain_mut(|e| !check(e.id, e.trader.body.position, e.trader.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         self.snow_golems.retain_mut(|e| !check(e.id, e.golem.body.position, e.golem.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
-        self.illagers.retain_mut(|e| !check(e.id, e.illager.body.position, e.illager.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.illagers.retain_mut(|e| {
+            let position = e.illager.body.position;
+            let near = players.iter().map(|p| p.distance_squared(position)).min_by(f64::total_cmp).is_some_and(|d| d <= crate::illager::PATROL_KEEP_RANGE * crate::illager::PATROL_KEEP_RANGE);
+            let rule = if e.illager.raider.patrolling && near { KEPT_MONSTER } else { MONSTER };
+            !check(e.id, position, e.illager.persistence_required, rule, &mut e.no_action_time, &mut e.random)
+        });
         self.villagers.retain_mut(|e| !check(e.id, e.villager.body.position, e.villager.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         self.cows.retain_mut(|e| !check(e.id, e.cow.body.position, e.cow.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
         self.sheep.retain_mut(|e| !check(e.id, e.body.position, e.sheep.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));

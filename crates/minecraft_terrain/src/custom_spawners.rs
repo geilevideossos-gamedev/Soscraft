@@ -19,12 +19,20 @@ pub const LLAMA_RANGE: i32 = 4;
 pub const TRADER_LLAMAS: usize = 2;
 pub const TRADER_DATA: &str = "wandering_trader.dat";
 pub const NO_TRADER_BIOMES: &str = "minecraft:without_wandering_trader_spawns";
+pub const PATROL_DELAY: i32 = 12000;
+pub const PATROL_DELAY_SPREAD: i32 = 1200;
+pub const PATROL_ONE_IN: i32 = 5;
+pub const PATROL_VILLAGE_SECTIONS: i32 = 2;
+pub const PATROL_MIN_DISTANCE: i32 = 24;
+pub const PATROL_DISTANCE_SPREAD: i32 = 24;
 
 #[derive(Clone, Debug)]
 pub struct CustomSpawners {
     pub cats: Option<CatSpawner>,
     pub traders: Option<TraderSpawner>,
     pub spawn_wandering_traders: bool,
+    pub patrols: Option<PatrolSpawner>,
+    pub spawn_patrols: bool,
 }
 
 impl Default for CustomSpawners {
@@ -33,6 +41,8 @@ impl Default for CustomSpawners {
             cats: None,
             traders: None,
             spawn_wandering_traders: true,
+            patrols: None,
+            spawn_patrols: true,
         }
     }
 }
@@ -44,6 +54,8 @@ impl CustomSpawners {
             cats: overworld.then(CatSpawner::default),
             traders: overworld.then(TraderSpawner::default),
             spawn_wandering_traders: true,
+            patrols: overworld.then(PatrolSpawner::default),
+            spawn_patrols: true,
         }
     }
 }
@@ -143,6 +155,35 @@ impl TraderSpawner {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PatrolSpawner {
+    pub next_tick: i32,
+}
+
+impl PatrolSpawner {
+    pub fn due(&mut self, random: &mut dyn RandomSource, bright_outside: bool) -> bool {
+        self.next_tick -= 1;
+        if self.next_tick > 0 {
+            return false;
+        }
+        self.next_tick += PATROL_DELAY + random.next_i32_bound(PATROL_DELAY_SPREAD);
+        bright_outside && random.next_i32_bound(PATROL_ONE_IN) == 0
+    }
+}
+
+pub fn patrol_offset(random: &mut dyn RandomSource) -> (i32, i32) {
+    let mut axis = || {
+        let distance = PATROL_MIN_DISTANCE + random.next_i32_bound(PATROL_DISTANCE_SPREAD);
+        distance * if random.next_bool() { -1 } else { 1 }
+    };
+    let x = axis();
+    (x, axis())
+}
+
+pub fn near_village(sections_to_village: i32) -> bool {
+    sections_to_village <= PATROL_VILLAGE_SECTIONS
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CatSpawner {
     pub next_tick: i32,
 }
@@ -227,6 +268,66 @@ mod tests {
         assert_eq!(
             alone.next_tick, CAT_TICK_DELAY,
             "no player still waits a minute"
+        );
+    }
+
+    #[test]
+    fn the_patrol_spawner_looks_every_ten_to_eleven_minutes_and_only_by_day() {
+        let mut spawner = PatrolSpawner::default();
+        let mut random = LegacyRandom::new(3);
+        assert!(!spawner.due(&mut random, false), "it looks at once, but not at night");
+        assert!(
+            (PATROL_DELAY - 1..PATROL_DELAY + PATROL_DELAY_SPREAD - 1).contains(&spawner.next_tick),
+            "{}",
+            spawner.next_tick
+        );
+        let (mut looks, mut night) = (0, 0);
+        for _ in 0..100 {
+            let wait = spawner.next_tick;
+            for _ in 0..wait - 1 {
+                assert!(!spawner.due(&mut random, true));
+            }
+            assert!(!spawner.due(&mut random, false));
+            night += 1;
+            let wait = spawner.next_tick;
+            for _ in 0..wait - 1 {
+                assert!(!spawner.due(&mut random, true));
+            }
+            if spawner.due(&mut random, true) {
+                looks += 1;
+            }
+            assert!(
+                (PATROL_DELAY..PATROL_DELAY + PATROL_DELAY_SPREAD).contains(&spawner.next_tick),
+                "{}",
+                spawner.next_tick
+            );
+        }
+        assert_eq!(night, 100);
+        assert!((8..=35).contains(&looks), "one day look in five: {looks}");
+    }
+
+    #[test]
+    fn patrols_start_24_to_47_blocks_away_on_both_axes_and_not_near_a_village() {
+        let mut random = LegacyRandom::new(9);
+        let (mut negative, mut positive) = (false, false);
+        for _ in 0..200 {
+            let (x, z) = patrol_offset(&mut random);
+            for axis in [x, z] {
+                assert!((24..=47).contains(&axis.abs()), "{axis}");
+                negative |= axis < 0;
+                positive |= axis > 0;
+            }
+        }
+        assert!(negative && positive);
+        assert!(near_village(0) && near_village(2));
+        assert!(!near_village(3));
+        let overworld = CustomSpawners::for_dimension("minecraft:overworld");
+        assert_eq!(overworld.patrols, Some(PatrolSpawner::default()));
+        assert!(overworld.spawn_patrols);
+        assert!(
+            CustomSpawners::for_dimension("minecraft:the_end")
+                .patrols
+                .is_none()
         );
     }
 

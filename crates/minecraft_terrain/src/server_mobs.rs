@@ -381,6 +381,11 @@ impl PlayerWorld for MobWorld<'_> {
     fn max_y(&self) -> i32 {
         self.level.borrow().max_y()
     }
+
+    fn motion_blocking_no_leaves_height(&self, x: i32, z: i32) -> i32 {
+        let level = self.level.borrow();
+        minecraftoss_generator::feature::World::height_at(&**level, minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z)
+    }
 }
 
 fn name_of(level: &Level<'static>, states: &BlockStates, state: BlockStateId) -> Option<PlayerBlock> {

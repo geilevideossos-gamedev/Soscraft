@@ -108,6 +108,8 @@ impl IllagerEntity {
         state.id = self.id;
         state.holds_crossbow = self.illager.holds_crossbow();
         state.patrolling = self.illager.raider.patrolling;
+        state.leader = self.illager.raider.patrol_leader;
+        state.patrol_target = self.illager.raider.patrol_target;
         state.has_raid = false;
         state.aggressive = self.illager.aggressive;
         state.charging = self.illager.charging_crossbow;
@@ -236,6 +238,8 @@ impl IllagerEntity {
         }
         self.illager.aggressive = self.ai.state.illager.aggressive;
         self.illager.charging_crossbow = self.ai.state.illager.charging;
+        self.illager.raider.patrolling = self.ai.state.illager.patrolling;
+        self.illager.raider.patrol_target = self.ai.state.illager.patrol_target;
         if let Some(damage) = landed.and_then(|fallen| {
             super::living::fall_damage(&self.illager.body, world, fallen, true, &mut self.voices)
         }) {
@@ -375,6 +379,34 @@ impl EntityWorld {
         }
     }
 
+    fn patrol_companions(&self, id: u64) -> Vec<u64> {
+        let Some(me) = self.illagers.iter().find(|e| e.id == id) else {
+            return Vec::new();
+        };
+        let body = &me.illager.body;
+        let (p, half, range) = (
+            body.position,
+            f64::from(body.width / 2.0),
+            il::PATROL_COMPANION_RANGE,
+        );
+        let height = f64::from(body.height);
+        self.illagers
+            .iter()
+            .filter(|other| other.id != id)
+            .filter(|other| {
+                let q = other.illager.body.position;
+                let other_half = f64::from(other.illager.body.width / 2.0);
+                q.x - other_half < p.x + half + range
+                    && q.x + other_half > p.x - half - range
+                    && q.y < p.y + height + range
+                    && q.y + f64::from(other.illager.body.height) > p.y - range
+                    && q.z - other_half < p.z + half + range
+                    && q.z + other_half > p.z - half - range
+            })
+            .map(|other| other.id)
+            .collect()
+    }
+
     fn illager_alerts(&mut self, id: u64, attacker: Target) {
         let Some((p, kind, range)) = self.illagers.iter().find(|e| e.id == id).map(|e| {
             (
@@ -409,12 +441,14 @@ impl EntityWorld {
         let (game_time, difficulty) = (self.game_time, self.difficulty);
         let mobs = self.mob_candidates();
         let villagers = self.illager_villagers();
+        let companions = self.patrol_companions(id);
         let mut level_random = std::mem::take(&mut self.level_random);
         let Some(entity) = self.illagers.iter_mut().find(|e| e.id == id) else {
             self.level_random = level_random;
             return;
         };
         entity.ai.state.mobs = mobs;
+        entity.ai.state.illager.companions = companions.clone();
         entity.previous_position = entity.illager.body.position;
         entity.tick_count += 1;
         base_tick_fluid(
@@ -517,6 +551,7 @@ impl EntityWorld {
         entity.arm_pose = entity.illager.arm_pose();
         let shout = entity.ai.state.illager.shout.take();
         let alert = entity.ai.state.alert.take();
+        let orders = entity.ai.state.illager.patrol_orders.take();
         let old = entity.previous_position;
         super::hazards::blocks_act(entity, &*world, old, game_time);
         self.level_random = level_random;
@@ -528,6 +563,16 @@ impl EntityWorld {
         }
         if let Some(attacker) = alert {
             self.illager_alerts(id, attacker);
+        }
+        if let Some(at) = orders {
+            for other in self
+                .illagers
+                .iter_mut()
+                .filter(|e| companions.contains(&e.id))
+            {
+                other.illager.raider.patrol_target = Some(at);
+                other.illager.raider.patrolling = true;
+            }
         }
         self.push_entities(EntityKey::Illager(id), &*world, game_time, ticks);
         self.file_in_section(EntityKey::Illager(id));
@@ -865,6 +910,78 @@ mod tests {
             }
         }
         assert!((5..=40).contains(&dropped), "{dropped}");
+    }
+
+    #[test]
+    fn a_patrol_leader_heads_for_its_target_and_its_companions_follow() {
+        let mut world = EntityWorld::default();
+        let leader = pillager_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+        let follower = pillager_at(&mut world, DVec3::new(2.5, 64.0, 2.5), false);
+        {
+            let raider = &mut world.illager_mut(leader).unwrap().illager.raider;
+            raider.patrol_leader = true;
+            raider.patrolling = true;
+            raider.patrol_target = Some((200, 64, 0));
+        }
+        world.illager_mut(follower).unwrap().illager.raider.patrolling = true;
+        for _ in 0..400 {
+            world.tick(&mut Field);
+        }
+        let find = |id: u64| world.illagers().iter().find(|e| e.id == id).unwrap();
+        let (lead, follow) = (find(leader), find(follower));
+        let moved = lead.illager.body.position - DVec3::new(0.5, 64.0, 0.5);
+        assert!(moved.x > 5.0, "{moved}");
+        assert!(lead.illager.raider.patrolling);
+        assert_eq!(lead.illager.raider.patrol_target, Some((200, 64, 0)));
+        let ordered = follow.illager.raider.patrol_target.expect("the leader's step");
+        assert_eq!(ordered.1, 64, "on the ground: {ordered:?}");
+        assert!(follow.illager.raider.patrolling);
+        assert!(
+            follow.illager.body.position.distance(lead.illager.body.position) < 16.0,
+            "{} {}",
+            follow.illager.body.position,
+            lead.illager.body.position
+        );
+    }
+
+    #[test]
+    fn a_patroller_without_companions_stops_patrolling() {
+        let mut world = EntityWorld::default();
+        let id = pillager_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+        {
+            let raider = &mut world.illager_mut(id).unwrap().illager.raider;
+            raider.patrolling = true;
+            raider.patrol_target = Some((60, 64, 0));
+        }
+        for _ in 0..20 {
+            world.tick(&mut Field);
+        }
+        assert!(!world.illagers()[0].illager.raider.patrolling);
+        let target = crate::illager_ai::find_patrol_target((10, 70, -5), &mut LegacyRandom::new(4));
+        assert!((-490..=509).contains(&target.0) && (-505..=494).contains(&target.2));
+        assert_eq!(target.1, 70);
+    }
+
+    #[test]
+    fn a_patrolling_illager_stays_while_a_player_is_within_128_blocks() {
+        let mut world = EntityWorld::default();
+        let patrol = pillager_at(&mut world, DVec3::new(0.5, 64.0, 0.5), true);
+        let idle = pillager_at(&mut world, DVec3::new(0.5, 64.0, 4.5), true);
+        world.illager_mut(patrol).unwrap().illager.raider.patrolling = true;
+        let players = [DVec3::new(100.5, 64.0, 0.5)];
+        for _ in 0..20_000 {
+            for e in world.illagers.iter_mut() {
+                e.no_action_time = 1000;
+            }
+            world.check_despawn(&players, false, &|_| true);
+            if world.illagers().iter().all(|e| e.id != idle) {
+                break;
+            }
+        }
+        assert!(world.illagers().iter().all(|e| e.id != idle), "an idle monster goes in time");
+        assert!(world.illagers().iter().any(|e| e.id == patrol), "a patroller stays");
+        world.check_despawn(&[DVec3::new(140.5, 64.0, 0.5)], false, &|_| true);
+        assert!(world.illagers().is_empty(), "beyond 128 blocks it goes");
     }
 
     #[test]

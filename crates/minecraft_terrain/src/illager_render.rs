@@ -280,6 +280,15 @@ pub fn hand_pose(root: Mat4, arm: Mat4, left: bool) -> Mat4 {
         * Mat4::from_translation(Vec3::new(side / 16.0, 0.125, -0.625))
 }
 
+pub fn head_item_pose(root: Mat4, head: Mat4) -> Mat4 {
+    crate::worn_head::item_pose(root * head * Mat4::from_scale(Vec3::splat(1.0 / 16.0)))
+}
+
+pub fn worn_on_head(id: &str) -> bool {
+    crate::special_models::worn_skull(id).is_none()
+        && !crate::armor_render::armor_asset(id).is_some_and(|(_, slot)| slot == 0)
+}
+
 pub fn texture(kind: IllagerKind) -> &'static str {
     match kind {
         IllagerKind::Pillager => PILLAGER_TEXTURE,
@@ -329,6 +338,18 @@ pub fn append_illagers<'a>(
             Mat4::from_translation(mob.feet.as_vec3()) * Mat4::from_quat(mob.body_rotation(90.0));
         let root = model_root(feet);
         append_model(mesh, root, &skin, &pose);
+        if let Some(stack) = illager.equipment[il::HEAD]
+            .as_ref()
+            .filter(|stack| worn_on_head(&stack.id))
+        {
+            held.push(HeldItem {
+                pose: head_item_pose(root, pose.head),
+                light: mob.light_probe.as_vec3(),
+                id: stack.id.clone(),
+                display: HeldDisplay::Head,
+                first_tint: None,
+            });
+        }
         if pose.crossed {
             continue;
         }
@@ -476,6 +497,22 @@ mod tests {
             "{shoulder} {hand}"
         );
         assert!(hand.x > 0.0, "the right hand is on the mob's right: {hand}");
+    }
+
+    #[test]
+    fn a_captain_wears_its_banner_above_its_head_but_no_helmet_or_skull() {
+        let pose = illager_pose(&standing(), look(IllagerArmPose::Crossed, 0.0));
+        let root = model_root(Mat4::IDENTITY);
+        let origin = head_item_pose(root, pose.head).transform_point3(Vec3::ZERO);
+        let neck = (24.016 - 24.016 * (1.0 - MODEL_SCALE)) / 16.0;
+        assert!(
+            (origin.y - (neck + 0.25 * MODEL_SCALE)).abs() < 1e-4,
+            "{origin}"
+        );
+        assert!(origin.x.abs() < 1e-5 && origin.z.abs() < 1e-5, "{origin}");
+        assert!(worn_on_head("minecraft:white_banner"));
+        assert!(!worn_on_head("minecraft:iron_helmet"));
+        assert!(!worn_on_head("minecraft:zombie_head"));
     }
 
     #[test]

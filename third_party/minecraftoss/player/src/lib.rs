@@ -199,6 +199,20 @@ pub trait World {
     fn max_y(&self) -> i32 {
         319
     }
+    fn motion_blocking_no_leaves_height(&self, x: i32, z: i32) -> i32 {
+        let mut y = self.max_y();
+        while y >= self.min_y() {
+            let pos = (x, y, z);
+            if let Some(block) = self.block(pos) {
+                let blocks = !self.collision_boxes(pos).is_empty() || self.floatable_fluid(pos) || self.fluid_is_lava(pos);
+                if blocks && !block.id.ends_with("_leaves") {
+                    return y + 1;
+                }
+            }
+            y -= 1;
+        }
+        self.min_y()
+    }
     fn replaceable(&self, block: &Block) -> bool {
         authored_replaceable(block)
     }

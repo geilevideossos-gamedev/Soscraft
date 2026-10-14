@@ -6,7 +6,7 @@ use crate::monster_ai::{
 };
 use crate::navigation::{navigate_walk_to, navigate_walk_to_entity};
 use glam::DVec3;
-use minecraftoss_player::World;
+use minecraftoss_player::{Pos, World};
 
 pub const PILLAGER_GOAL_NAMES: [&str; 12] = [
     "LongDistancePatrolGoal",
@@ -69,14 +69,18 @@ pub struct IllagerState {
     pub ambient: bool,
     pub look_mob: Option<Target>,
     pub look_mob_time: i32,
+    pub leader: bool,
+    pub patrol_target: Option<Pos>,
+    pub companions: Vec<u64>,
+    pub patrol_orders: Option<Pos>,
 }
 
 pub fn pillager_goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(
         4,
-        NeverGoal {
-            controls: &[Control::Move],
+        LongDistancePatrolGoal {
+            cooldown_until: -1,
         },
     );
     selector.add(
@@ -303,6 +307,127 @@ impl Goal<MonsterGoalContext> for RangedCrossbowAttackGoal {
                     ctx.illager.crossbow = CrossbowState::Uncharged;
                 }
             }
+        }
+    }
+}
+
+pub fn find_patrol_target(from: Pos, random: &mut minecraftoss_player::rng::LegacyRandom) -> Pos {
+    let x = from.0 - il::PATROL_TARGET_SPREAD + random.next_int(il::PATROL_TARGET_SPREAD as u32 * 2) as i32;
+    let z = from.2 - il::PATROL_TARGET_SPREAD + random.next_int(il::PATROL_TARGET_SPREAD as u32 * 2) as i32;
+    (x, from.1, z)
+}
+
+fn block_of(position: DVec3) -> Pos {
+    (
+        position.x.floor() as i32,
+        position.y.floor() as i32,
+        position.z.floor() as i32,
+    )
+}
+
+fn y_rot(v: DVec3, angle: f32) -> DVec3 {
+    let cos = f64::from(minecraftoss_player::mth::cos(f64::from(angle)));
+    let sin = f64::from(minecraftoss_player::mth::sin(f64::from(angle)));
+    DVec3::new(v.x * cos + v.z * sin, v.y, v.z * cos - v.x * sin)
+}
+
+fn normalize(v: DVec3) -> DVec3 {
+    let length = v.length();
+    if length < 1.0e-5 {
+        DVec3::ZERO
+    } else {
+        v / length
+    }
+}
+
+#[derive(Clone)]
+struct LongDistancePatrolGoal {
+    cooldown_until: i64,
+}
+
+impl LongDistancePatrolGoal {
+    fn move_to(ctx: &mut MonsterGoalContext, world: &dyn World, at: Pos, speed: f64) -> bool {
+        let profile = ctx.profile();
+        let target = DVec3::new(f64::from(at.0), f64::from(at.1), f64::from(at.2));
+        navigate_walk_to(
+            &ctx.body,
+            &mut ctx.navigation,
+            world,
+            &profile,
+            ctx.fluid,
+            target,
+            speed,
+            1,
+        )
+        .unwrap_or(false)
+    }
+
+    fn move_randomly(ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let from = block_of(ctx.body.position);
+        let spread = il::PATROL_WANDER as u32 * 2;
+        let x = from.0 - il::PATROL_WANDER + ctx.random.next_int(spread) as i32;
+        let z = from.2 - il::PATROL_WANDER + ctx.random.next_int(spread) as i32;
+        let y = world.motion_blocking_no_leaves_height(x, z);
+        Self::move_to(ctx, world, (x, y, z), il::PATROL_SPEED);
+    }
+}
+
+impl Goal<MonsterGoalContext> for LongDistancePatrolGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        let cooling = ctx.game_time < self.cooldown_until;
+        ctx.illager.patrolling
+            && ctx.target().is_none()
+            && ctx.illager.patrol_target.is_some()
+            && !cooling
+    }
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        if !ctx.navigation.is_done() {
+            return;
+        }
+        let leader = ctx.illager.leader;
+        let Some(patrol_target) = ctx.illager.patrol_target else {
+            return;
+        };
+        if ctx.illager.patrolling && ctx.illager.companions.is_empty() {
+            ctx.illager.patrolling = false;
+            return;
+        }
+        let position = ctx.body.position;
+        let centre = DVec3::new(
+            f64::from(patrol_target.0) + 0.5,
+            f64::from(patrol_target.1) + 0.5,
+            f64::from(patrol_target.2) + 0.5,
+        );
+        if leader && centre.distance_squared(position) < il::PATROL_ARRIVED * il::PATROL_ARRIVED {
+            ctx.illager.patrol_target = Some(find_patrol_target(
+                block_of(position),
+                &mut ctx.random,
+            ));
+            ctx.illager.patrolling = true;
+            return;
+        }
+        let bottom = DVec3::new(
+            f64::from(patrol_target.0) + 0.5,
+            f64::from(patrol_target.1),
+            f64::from(patrol_target.2) + 0.5,
+        );
+        let swerved = y_rot(position - bottom, il::PATROL_SWERVE_ANGLE) * il::PATROL_SWERVE + bottom;
+        let step = normalize(swerved - position) * il::PATROL_STEP + position;
+        let (x, _, z) = block_of(step);
+        let at = (x, world.motion_blocking_no_leaves_height(x, z), z);
+        let speed = if leader {
+            il::PATROL_LEADER_SPEED
+        } else {
+            il::PATROL_SPEED
+        };
+        if !Self::move_to(ctx, world, at, speed) {
+            Self::move_randomly(ctx, world);
+            self.cooldown_until = ctx.game_time + il::PATROL_COOLDOWN;
+        } else if leader {
+            ctx.illager.patrol_orders = Some(at);
         }
     }
 }

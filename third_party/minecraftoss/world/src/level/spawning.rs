@@ -224,6 +224,20 @@ impl Level<'_> {
         result
     }
 
+    pub fn spawn_patrol(&mut self, start: BlockPos) -> Vec<Tag> {
+        let Some(natural) = self.natural_spawning.take() else { return Vec::new() };
+        let inputs = self.spawn_inputs(&natural.players);
+        let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
+        let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let mut context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
+        let spawns = natural.spawns.clone();
+        let members = spawns.spawn_patrol(self, &mut context, start);
+        self.natural_spawning = Some(natural);
+        members
+    }
+
     pub fn spawner_cat(&mut self, pos: BlockPos, persistent: bool) -> Option<Tag> {
         let natural = self.natural_spawning.take()?;
         let spawns = natural.spawns.clone();
