@@ -454,11 +454,11 @@ pub(crate) fn skate_on_ground(skating: bool, airborne: bool, ground_entity: i32)
     if skating { !airborne } else { ground_entity != playerstate_iw4::ENTITYNUM_NONE }
 }
 
-fn board_gear(gear: minecraft_terrain::body_gear::BodyGear, skating: bool) -> minecraft_terrain::body_gear::BodyGear {
+pub(crate) fn board_gear(gear: minecraft_terrain::body_gear::BodyGear, skating: bool) -> minecraft_terrain::body_gear::BodyGear {
     if skating { minecraft_terrain::body_gear::BodyGear { main: None, off: None, ..gear } } else { gear }
 }
 
-fn board_allowed(alive: bool, spectator: bool, pm_flags: u32, eye_in_water: bool, asleep: bool, in_powder_snow: bool) -> bool {
+pub(crate) fn board_allowed(alive: bool, spectator: bool, pm_flags: u32, eye_in_water: bool, asleep: bool, in_powder_snow: bool) -> bool {
     alive && !spectator && pm_flags & (playerstate_iw4::pm_flags::MC_FLYING | playerstate_iw4::pm_flags::MC_GLIDING | playerstate_iw4::pm_flags::MC_RIDING) == 0 && !eye_in_water && !asleep && !in_powder_snow
 }
 

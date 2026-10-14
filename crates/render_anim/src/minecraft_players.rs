@@ -1324,6 +1324,7 @@ pub(crate) struct Stepped {
     pub(crate) books: Vec<Option<minecraft_net::messages::BookView>>,
     pub(crate) bed: Option<Bed>,
     pub(crate) open_book: Option<minecraft_survival::books::OpenBook>,
+    pub(crate) board_allowed: bool,
 }
 
 type Bed = minecraft_survival::respawn_block::Bed;
@@ -1479,7 +1480,7 @@ pub(crate) fn step_friend(
     world: &mut FriendWorld<'_>,
     client: sim::ClientId,
     origin: [f64; 3],
-    selected: Option<u8>,
+    (selected, skate): (Option<u8>, Skating),
     hands: &mut HandQueue,
     (open, clicks): LecternClicks<'_>,
 ) -> Stepped {
@@ -1629,12 +1630,20 @@ pub(crate) fn step_friend(
         client,
         origin,
         &ps,
-        (life.alive, Skating::default()),
+        (life.alive, skate),
         world.dt,
         &mut sounds,
         world.packs,
     );
     let feet = sim::voxel::to_block(origin, ps.origin);
+    stepped.board_allowed = crate::minecraft_world::board_allowed(
+        life.alive,
+        player.mode.mode == minecraftoss_player::GameMode::Spectator,
+        ps.pm_flags,
+        moved.eye_in_water,
+        player.sleeping.is_some(),
+        player.survival.in_powder_snow(),
+    );
     let walker = minecraft_survival::survival::walks_on_powder_snow(&player.inventory);
     world.authority.set_powder_snow_walker(client, walker);
     let frozen = player.survival.ticks_frozen();
@@ -1723,7 +1732,14 @@ pub(crate) fn step_friend(
         drop_on_death(death_watch, inventory, hand, entities);
     }
     let (effects, (table, block, bench), bed, open_book) = friend_hand(
-        player, world, client, origin, &ps, &moved, taken, life.alive,
+        player,
+        world,
+        client,
+        origin,
+        &ps,
+        &moved,
+        taken,
+        (life.alive, skate.active),
     );
     stepped.bed = bed;
     stepped.open_book = open_book;
@@ -1851,7 +1867,7 @@ fn friend_hand(
     ps: &PlayerState,
     moved: &Moved,
     taken: HandTake,
-    alive: bool,
+    (alive, skating): (bool, bool),
 ) -> (
     Vec<Effect>,
     Opens,
@@ -1869,7 +1885,8 @@ fn friend_hand(
         player.survival.stop_eating();
         player.hand.blocking = None;
     }
-    let actor = actor(ps, origin, alive);
+    let mut actor = actor(ps, origin, alive);
+    actor.skating = skating;
     if let Some(entities) = level.entities.as_mut().filter(|_| interacts) {
         for whole in taken.drops {
             let selected = player.selected;

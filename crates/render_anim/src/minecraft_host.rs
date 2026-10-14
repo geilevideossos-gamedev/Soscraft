@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use bevy::prelude::*;
 use minecraft_commands::{Outgoing, Recipient, Serverbound};
-use minecraft_net::messages::HandState;
+use minecraft_net::messages::StateUp;
 use minecraft_net::{Lane, PlayerUuid, ToClient, ToServer};
 use minecraft_survival::menus::{Books, MenuInput};
 use minecraft_survival::session::{BatchJob, EncodedBatch, Hello, JoinContext, Sessions};
@@ -89,6 +89,7 @@ pub(crate) struct HostSessions {
     lecterns: BTreeMap<u32, LecternClicks>,
     leave_beds: Vec<u32>,
     edit_books: BTreeMap<u32, BookEdits>,
+    skaters: BTreeMap<u32, crate::minecraft_skaters::Skater>,
 }
 
 impl HostSessions {
@@ -102,10 +103,15 @@ impl HostSessions {
             && self.lecterns.is_empty()
             && self.leave_beds.is_empty()
             && self.edit_books.is_empty()
+            && self.skaters.is_empty()
     }
 }
 
-fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Instant) {
+fn read_inbox(
+    host: &mut HostSessions,
+    wire: &mut net::MinecraftWire,
+    (now, seconds): (Instant, f64),
+) {
     for (client, bytes) in wire.take_inbox() {
         match minecraft_net::decode::<ToServer>(Lane::Reliable, &bytes) {
             Ok(ToServer::Hello {
@@ -193,6 +199,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
                     session.book_settings = Some((open, filtering));
                 }
             }
+            Ok(ToServer::Skate(report)) => {
+                if host.sessions.sessions.contains_key(&client) {
+                    host.skaters.entry(client).or_default().heard(report, seconds);
+                }
+            }
             Ok(ToServer::RecipeSeen(ids)) => {
                 if let Some(session) = host.sessions.sessions.get_mut(&client) {
                     let room = SEEN_RECIPES.saturating_sub(session.seen_recipes.len());
@@ -210,12 +221,25 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
         }
     }
     for (client, bytes) in wire.take_state() {
-        if let Ok(state) = minecraft_net::decode::<HandState>(Lane::State, &bytes)
-            && let Some(session) = host.sessions.sessions.get_mut(&client)
-        {
-            session.hands.state(state, now);
+        let Ok(up) = minecraft_net::decode::<StateUp>(Lane::State, &bytes) else {
+            continue;
+        };
+        let Some(session) = host.sessions.sessions.get_mut(&client) else {
+            continue;
+        };
+        match up {
+            StateUp::Hand(state) => session.hands.state(state, now),
+            StateUp::Skate(report) => {
+                host.skaters.entry(client).or_default().heard(report, seconds);
+            }
         }
     }
+}
+
+fn skating(skaters: &BTreeMap<u32, crate::minecraft_skaters::Skater>, client: u32) -> bool {
+    skaters
+        .get(&client)
+        .is_some_and(|skater| skater.skating().active)
 }
 
 fn told_swing(client: u32, hand: &mut minecraft_survival::player::Hand) -> Option<ToClient> {
@@ -365,12 +389,14 @@ pub(crate) fn host(
         host.lecterns.remove(client);
         host.leave_beds.retain(|leaving| leaving != client);
         host.edit_books.remove(client);
+        host.skaters.remove(client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
         sim::voxel::forget_gun_guard(*client);
         sim::voxel::forget_arsenal(*client);
     }
-    read_inbox(&mut host, &mut wire, now);
+    let seconds = time.elapsed_secs_f64();
+    read_inbox(&mut host, &mut wire, (now, seconds));
     let host = &mut *host;
     let Some(mut view) = crate::minecraft_world::host_view(&mut runtime) else {
         if !host.sessions.is_empty() {
@@ -486,15 +512,20 @@ pub(crate) fn host(
             edit_books(player, edits);
             let id = sim::ClientId(session.client);
             let was = player.menus.block().cloned();
+            let skater = host.skaters.entry(session.client).or_default();
+            let (skate, refused) =
+                crate::minecraft_skaters::ride(skater, player, world.authority, id, seconds);
+            session.outbox.extend(refused);
             let stepped = crate::minecraft_players::step_friend(
                 player,
                 &mut world,
                 id,
                 origin,
-                selected,
+                (selected, skate),
                 &mut session.hands,
                 (&mut session.lectern, clicks),
             );
+            skater.allowed = stepped.board_allowed;
             session
                 .outbox
                 .extend(told_swing(session.client, &mut player.hand));
@@ -549,6 +580,8 @@ pub(crate) fn host(
                 player.selected,
                 &player.mode,
             );
+            let skating = skating(&host.skaters, player.id.0);
+            let worn = worn.map(|gear| crate::minecraft_world::board_gear(gear, skating));
             body_gear.follow(player.id.0, pm_type, worn);
         }
         run_friend_commands(
@@ -607,7 +640,9 @@ pub(crate) fn host(
             } else {
                 player.id.0
             };
-            (client, minecraft_survival::gear::player_gear(player))
+            let gear = minecraft_survival::gear::player_gear(player);
+            let skating = player.uuid != *view.local && skating(&host.skaters, client);
+            (client, crate::minecraft_skaters::board_view(gear, skating))
         })
         .collect();
     host.sessions.send_gear(&gears);

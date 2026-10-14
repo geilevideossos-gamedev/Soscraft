@@ -69,6 +69,7 @@ pub enum ToServer {
     },
     RecipeSeen(Vec<String>),
     OpenMountInventory,
+    Skate(SkateReport),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +95,21 @@ pub struct HandState {
     pub attack: bool,
     pub use_item: bool,
     pub target: Target,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SkateReport {
+    pub tick: u32,
+    pub on: bool,
+    pub airborne: bool,
+    pub origin: [f32; 3],
+    pub yaw: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum StateUp {
+    Hand(HandState),
+    Skate(SkateReport),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -300,6 +316,9 @@ pub enum ToClient {
     Animate {
         client: u32,
         offhand: bool,
+    },
+    SkateRefused {
+        tick: u32,
     },
 }
 

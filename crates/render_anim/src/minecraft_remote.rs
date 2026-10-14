@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 use minecraft_commands::{Clientbound, Serverbound, Text};
 use minecraft_net::messages::{BookView, Click, CreativeTarget, MenuView};
-use minecraft_net::messages::{GameMode, HandEventKind, Target};
+use minecraft_net::messages::{GameMode, HandEventKind, StateUp, Target};
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
 use minecraft_survival::data::GameData;
 use minecraft_survival::guns::{Follow, weapon_of};
@@ -177,6 +177,7 @@ pub(crate) struct Friend {
     swing: crate::minecraft_hand::FriendSwing,
     portal: crate::minecraft_portal::FriendPortal,
     music: crate::minecraft_music::MusicManager,
+    skate_report: crate::minecraft_skaters::Reporter,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -229,6 +230,37 @@ fn stop(
     ui.portal_overlay = None;
     ui.sleep = None;
     ui.chat.wake_up();
+}
+
+fn report_skate(
+    friend: &mut Friend,
+    wire: &mut net::MinecraftWire,
+    skate: &mut frame::SkateMode,
+    seconds: f64,
+) {
+    if friend.skate_report.take_stop() {
+        skate.refused = true;
+    }
+    let origin = skate.root.w_axis.truncate().to_array();
+    let yaw = crate::minecraft_skaters::board_yaw(skate.root);
+    let pose = (skate.tick, skate.airborne);
+    let report = friend
+        .skate_report
+        .follow(skate.active, pose, (origin, yaw), seconds);
+    match report {
+        Some(crate::minecraft_skaters::Report::State(report)) => {
+            match minecraft_net::encode(Lane::State, &StateUp::Skate(report)) {
+                Ok(bytes) => {
+                    wire.send_state(HOST, &bytes);
+                }
+                Err(error) => diag::warn!(World, "Minecraft skate report not sent: {error}"),
+            }
+        }
+        Some(crate::minecraft_skaters::Report::Reliable(report)) => {
+            send(wire, &ToServer::Skate(report));
+        }
+        None => {}
+    }
 }
 
 fn send(wire: &mut net::MinecraftWire, message: &ToServer) {
@@ -348,8 +380,8 @@ pub(crate) fn friend(
     mut prediction: Option<ResMut<net::ClientPredictionState>>,
     (local, presented): (Res<net::LocalPresentClient>, Res<net::PresentedSnapshot>),
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    (skate, cameras, mc_camera, ui_draw, settings): (
-        Res<frame::SkateMode>,
+    (mut skate, cameras, mc_camera, ui_draw, settings): (
+        ResMut<frame::SkateMode>,
         Query<&Transform, With<render_scene::FlyCamera>>,
         Option<Res<frame::McCamera>>,
         Option<Res<frame::UiDraw>>,
@@ -615,14 +647,16 @@ pub(crate) fn friend(
             send(wire, &ToServer::Hand(sampled.events));
         }
         if let Some(state) = sampled.state {
-            match minecraft_net::encode(Lane::State, &state) {
+            match minecraft_net::encode(Lane::State, &StateUp::Hand(state)) {
                 Ok(bytes) => {
                     wire.send_state(HOST, &bytes);
                 }
                 Err(error) => diag::warn!(World, "Minecraft hand state not sent: {error}"),
             }
         }
+        report_skate(friend, wire, &mut skate, seconds);
     }
+    ui.board_allowed &= sleepers.camera.is_none();
     let gate = HandGate {
         skating: skate.active,
         detached: mc_detached,
@@ -684,6 +718,7 @@ fn show_effects(
         recipe_book,
         inventory_ui,
         swing,
+        skate_report,
         ..
     } = friend
     else {
@@ -736,6 +771,7 @@ fn show_effects(
                     swing.echo(offhand);
                 }
             }
+            ToClient::SkateRefused { tick } => skate_report.refused(tick),
             effect => {
                 if own_totem(&effect, own) {
                     let level = remote.level.as_mut();
@@ -1239,6 +1275,8 @@ fn show_player(
     }
     let (mins, maxs) = sim::voxel::player_hull(ps);
     let eye_in_water = sim::voxel::water(ps.origin, mins, maxs, ps.view_height_current).eye;
+    ui.board_allowed =
+        crate::minecraft_world::board_allowed(true, !interacts, ps.pm_flags, eye_in_water, false, false);
     let eye_in_lava = sim::voxel::eye_in_lava(ps.origin, ps.view_height_current);
     let vitals = hud.vitals(view, dt, eye_in_water, eye_in_lava);
     ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));

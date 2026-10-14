@@ -11,6 +11,7 @@ pub struct SkateMode {
     pub controller: Option<usize>,
     pub keyboard: bool,
     pub toggle_requested: bool,
+    pub refused: bool,
     pub input_blocked: bool,
     pub client: u32,
     pub root: Mat4,

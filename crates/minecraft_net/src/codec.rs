@@ -219,6 +219,7 @@ mod tests {
             ToServer::RecipeBookSettings { .. } => 14,
             ToServer::RecipeSeen(_) => 15,
             ToServer::OpenMountInventory => 16,
+            ToServer::Skate(_) => 17,
         }
     }
 
@@ -258,6 +259,17 @@ mod tests {
             ToClient::OpenBook { .. } => 31,
             ToClient::RecipeBook(_) => 32,
             ToClient::Animate { .. } => 33,
+            ToClient::SkateRefused { .. } => 34,
+        }
+    }
+
+    fn skate_report(on: bool) -> SkateReport {
+        SkateReport {
+            tick: 40,
+            on,
+            airborne: on,
+            origin: [-12.5, 3600.25, 70.0],
+            yaw: -135.5,
         }
     }
 
@@ -356,6 +368,7 @@ mod tests {
                 },
             }),
             ToServer::OpenMountInventory,
+            ToServer::Skate(skate_report(false)),
         ]
     }
 
@@ -702,6 +715,7 @@ mod tests {
                 client: 3,
                 offhand: true,
             },
+            ToClient::SkateRefused { tick: 41 },
         ]
     }
 
@@ -716,7 +730,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 17];
+        let mut seen = [false; 18];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -735,7 +749,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 34];
+        let mut seen = [false; 35];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -948,6 +962,30 @@ mod tests {
                 entities: Blob(Vec::new()),
             },
         );
+    }
+
+    #[test]
+    fn a_skate_report_rides_the_state_lane_beside_the_hand_on_protocol_6() {
+        assert_eq!(crate::PROTOCOL, 6);
+        let hand = StateUp::Hand(HandState {
+            tick: 7,
+            attack: false,
+            use_item: true,
+            target: Target::Mob { id: 3 },
+        });
+        let skate = StateUp::Skate(skate_report(true));
+        assert_eq!(encode(Lane::State, &hand).unwrap()[0], 0);
+        assert_eq!(encode(Lane::State, &skate).unwrap()[0], 1);
+        round_trip(Lane::State, &hand);
+        round_trip(Lane::State, &skate);
+        let off = ToServer::Skate(skate_report(false));
+        assert_eq!(server_index(&off), 17);
+        assert_eq!(encode(Lane::Reliable, &off).unwrap()[0], 17);
+        round_trip(Lane::Reliable, &off);
+        let refused = ToClient::SkateRefused { tick: 300 };
+        assert_eq!(client_index(&refused), 34);
+        assert_eq!(encode(Lane::Reliable, &refused).unwrap(), vec![34, 0xac, 2]);
+        round_trip(Lane::Reliable, &refused);
     }
 
     #[test]

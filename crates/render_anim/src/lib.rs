@@ -63,6 +63,7 @@ mod minecraft_remote;
 mod minecraft_respawn;
 mod minecraft_riding;
 mod minecraft_sleep;
+mod minecraft_skaters;
 mod minecraft_sounds;
 mod minecraft_spawn_gate;
 pub mod minecraft_spyglass;
