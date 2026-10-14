@@ -136,7 +136,7 @@ impl Bells {
                 bell.shaking = false;
                 bell.ticks = 0;
             }
-            let nearby = bell.nearby.clone().unwrap_or_default();
+            let nearby = bell.nearby.clone().unwrap_or_else(Vec::new);
             if bell.ticks >= TICKS_BEFORE_RESONATION
                 && bell.resonation_ticks == 0
                 && !world

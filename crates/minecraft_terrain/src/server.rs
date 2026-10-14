@@ -1417,7 +1417,7 @@ impl ServerSim {
             self.ring_bell(pos, None);
         }
         for launch in self.mobs.take_fireworks() {
-            let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long() as u64);
+            let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
             self.rockets.push(crate::firework_rocket::Rocket::launch(Some(launch.villager), launch.position, vec![launch.color], launch.flight, &mut random));
         }
         for gift in self.mobs.take_hero_gifts() {

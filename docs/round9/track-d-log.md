@@ -1967,6 +1967,19 @@ After 67f0254e.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2
 ```
 
+### 4. Track D's bells and rockets pass clippy
+
+After 15926d5f.
+
+- **Changed:** `crates/minecraft_terrain/src/bells.rs` (the listener list's empty fallback named, `unwrap_or_else(Vec::new)`, as the workspace's `clippy.toml` asks) and `crates/minecraft_terrain/src/server.rs` (a rocket's seed without the cast to its own type); no change in the game.
+- **Tests:** `bells::tests` and the firework tests (17) green. Clippy on `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain`, `minecraft_survival` and `render_gpu` (`--all-targets`, `-A clippy::approx_constant`) finds nothing else in group raid-villagers' code. `bells.rs` passes `rustfmt --check --edition 2021`.
+- **Test steps:** none; commits 1 to 3 hold.
+- **Kit:** commit 3's.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision), and groups pillagers, patrols-vindicators, raids and raid-villagers keep their own kits (their last commits).
