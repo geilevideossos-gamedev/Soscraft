@@ -112,7 +112,7 @@ impl IllagerEntity {
         state.leader = self.illager.raider.patrol_leader;
         state.johnny = self.illager.johnny;
         state.patrol_target = self.illager.raider.patrol_target;
-        state.has_raid = state.raid.is_some() || state.near_raid;
+        state.has_raid = state.raid.is_some();
         state.aggressive = self.illager.aggressive;
         state.charging = self.illager.charging_crossbow;
         state.spell_ticks = self.illager.spell_casting_ticks;
@@ -948,6 +948,38 @@ mod tests {
             first_z < 2.0,
             "it holds its ground beyond ten blocks: {first_z}"
         );
+    }
+
+    #[test]
+    fn a_patrolling_pillager_near_a_raid_it_is_not_in_still_holds_its_ground() {
+        let raid = crate::raid::RaidView {
+            id: 2,
+            center: (0, 64, 20),
+            active: true,
+            over: false,
+            loss: false,
+            groups_spawned: 1,
+            victory: false,
+            stopped: false,
+            between_waves: false,
+        };
+        let z_after = |raid_id: Option<i32>| {
+            let mut world = EntityWorld::default();
+            world.set_raids(vec![raid]);
+            let id = pillager_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+            let pillager = &mut world.illager_mut(id).unwrap().illager;
+            pillager.raider.patrolling = true;
+            pillager.raider.raid_id = raid_id;
+            let players = [player_at(1, 0.5, 14.5)];
+            for _ in 0..80 {
+                world.tick_with_players(&mut Field, &players);
+            }
+            world.illagers()[0].illager.body.position.z
+        };
+        let outside = z_after(None);
+        assert!(outside < 2.0, "getCurrentRaid is null: {outside}");
+        let inside = z_after(Some(2));
+        assert!(inside > 2.0, "a raid member closes in: {inside}");
     }
 
     #[test]

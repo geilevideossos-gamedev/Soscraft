@@ -1996,6 +1996,21 @@ Adversarial review of everything since `r9-d2-base` (groups pillagers to raid-vi
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2
 ```
 
+### 2. Patrolling pillagers near a raid they are not in hold their ground
+
+After 80af480a.
+
+- **Found:** group raids made an illager's `has_raid` true for an illager in a raid or merely within 96 blocks of an active raid (vanilla's unused `Raider.hasRaid`). The flag feeds `Raider.HoldGroundAttackGoal`, whose `canUse` (javap, 26.3) asks `getCurrentRaid() == null` only, so a patrolling pillager or vindicator that is not in the raid next door stopped holding its ground and walked up to its target.
+- **Changed:** vendored `entities/src/world/illagers.rs`: `has_raid` is the illager's own raid (`getCurrentRaid() != null`). `near_raid` (vanilla's `ServerLevel.isRaided`) stays in the goal state for the vindicator's door opening, which is not built yet.
+- **Tests:** vendored entities `world::illagers::tests::a_patrolling_pillager_near_a_raid_it_is_not_in_still_holds_its_ground` (fails before the fix: the pillager walked to the player). `minecraftoss-entities` lib 374, green.
+- **Test steps (survival, Normal, a village, a raid running):**
+  1. Hatch two pillagers about 60 blocks from the village centre (inside 96 blocks, outside the village) and make them a patrol: `/summon minecraft:pillager ~ ~ ~ {Patrolling:1b,CanJoinRaid:0b}` twice (so they cannot join the raid). Stand 14 blocks from them: they stay where they are, turn to you and one calls the other, then they come at you once you are within 10 blocks or hit one (**169_patrol_near_raid**).
+- **Kit:** commit 1's.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision), and groups pillagers, patrols-vindicators, raids and raid-villagers keep their own kits (their last commits).
