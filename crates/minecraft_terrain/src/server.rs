@@ -1549,7 +1549,7 @@ impl ServerSim {
                             self.frame_action(frame, crate::item_frame::FrameAction::Shot { infinite: false });
                         }
                     }
-                    TridentEvent::Struck { target, velocity } if trident.mob_owner.is_some() => self.mob_trident_struck(trident.mob_owner.unwrap_or_default(), target, velocity),
+                    TridentEvent::Struck { target, velocity } if trident.mob_owner.is_some() => self.mob_trident_struck(trident.mob_owner.unwrap_or(0), target, velocity),
                     TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
                         Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
                         None => {

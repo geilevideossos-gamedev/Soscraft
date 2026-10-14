@@ -275,8 +275,8 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             let Some((position, eye)) = world.shear_snow_golem(id) else { return outcome };
             outcome.sound(SHEAR_SOUND, position, 1.0, "players_volume");
             let at = position + DVec3::new(0.0, f64::from(eye), 0.0);
-            let drops = actor.shearing_loot.as_deref_mut().and_then(|loot| loot.roll_items(SHEAR_LOOT)).unwrap_or_else(Vec::new);
-            outcome.drops.extend(drops.into_iter().map(|stack| (stack, at)));
+            let drops = actor.shearing_loot.as_deref_mut().and_then(|loot| loot.roll_items(SHEAR_LOOT));
+            outcome.drops.extend(drops.into_iter().flatten().map(|stack| (stack, at)));
             if !infinite && actor.inventory.wear_tool(selected, 1) {
                 outcome.broken.push("minecraft:shears".to_owned());
             }

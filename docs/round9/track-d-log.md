@@ -1362,6 +1362,27 @@ After 2ac3b93b.
 - **Tests:** the test itself, run 20 times in a row with no failure. The line under "Left for later" is removed.
 - **Test steps:** none (a test-only change).
 
+## Final verification
+
+### 5. Track D's new code passes clippy
+
+After 1cf92f76.
+
+- **Defect:** clippy on the touched crates (`frame`, `hud`, `minecraft_commands`, `minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `sim` and the five minecraftoss crates, `--all-targets`) warned on three lines this track added; every other warning is older than the track.
+  - `crates/minecraft_terrain/src/mob_actions.rs` (group built-golems, bd2521c7): the snow golem's shearing loot used `unwrap_or_else(Vec::new)` (`clippy::unwrap_or_default`, while `unwrap_or_default` itself is disallowed by `clippy.toml`). It now flattens the optional loot.
+  - `crates/minecraft_terrain/src/server.rs` (group drowned): the struck mob trident used the disallowed `Option::unwrap_or_default` on an owner the match guard already checked. It now names its fallback with `unwrap_or(0)`.
+  - `crates/minecraft_survival/src/entities.rs` (group trading-friend, a test): `field_reassign_with_default` on the test's `Output`, now built with the field in its literal.
+- **Tests:** none new; behaviour is unchanged. The tests of all touched crates run green.
+- **Test steps:** none.
+
+## Combined kit
+
+One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision).
+
+```
+IW4L_MINECRAFT_KIT=minecraft:drowned_spawn_egg*16,minecraft:villager_spawn_egg*8,minecraft:zombie_spawn_egg*8,minecraft:zombie_villager_spawn_egg*4,minecraft:composter,minecraft:emerald*64,minecraft:wheat*64,minecraft:splash_potion@weakness,minecraft:golden_apple*16,minecraft:ominous_bottle[ominous_bottle_amplifier=4]*2,minecraft:milk_bucket,minecraft:cat_spawn_egg*8,minecraft:cod*64,minecraft:horse_spawn_egg*4,minecraft:donkey_spawn_egg*2,minecraft:llama_spawn_egg*4,minecraft:saddle*4,minecraft:golden_carrot*16,minecraft:chest*4,minecraft:lead*16,minecraft:oak_fence*16,minecraft:wandering_trader_spawn_egg*2,minecraft:iron_block*8,minecraft:carved_pumpkin*4,minecraft:snow_block*4,minecraft:shears,minecraft:cooked_beef*32
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
