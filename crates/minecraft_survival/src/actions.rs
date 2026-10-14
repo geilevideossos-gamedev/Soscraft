@@ -371,6 +371,7 @@ pub fn act(
         if holding_item && !skating && input.attack_pressed && !busy {
             hand.swing = Some(0.0);
             hand.swing_offhand = false;
+            hand.swing_predicted = true;
             let held = inventory.slots[*selected].clone();
             let (damage, speed) = entities.recipes.attack_attributes(held.as_ref());
             let speed = (speed * survival.status.attack_speed_multiplier()).clamp(0.0, 1024.0);
@@ -2269,6 +2270,40 @@ pub(crate) mod tests {
             stopped.survival.eating().is_none(),
             "letting go stops eating"
         );
+    }
+
+    #[test]
+    fn only_the_swing_of_an_attack_press_is_predicted_by_a_friend() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding("minecraft:cobblestone", 32);
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, [4.5, 201.0, 6.5]));
+        let mut step = |player: &mut Player, looking: &Actor, input: Hands| {
+            act(
+                player,
+                &mut level,
+                &globals,
+                &mut Flat,
+                looking,
+                input,
+                &moved(),
+                None,
+                0.0,
+            )
+        };
+        step(&mut player, &looking, press());
+        assert_eq!(player.hand.swing, Some(0.0));
+        assert!(!player.hand.swing_predicted, "a placing swing is the host's");
+        player.hand.swing = None;
+        let attack = Hands {
+            attack_pressed: true,
+            attack_held: true,
+            ..Hands::default()
+        };
+        step(&mut player, &actor(0.0, -60.0), attack);
+        assert_eq!(player.hand.swing, Some(0.0));
+        assert!(player.hand.swing_predicted, "the friend swung on its own press");
     }
 
     #[test]

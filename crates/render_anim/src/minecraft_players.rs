@@ -465,6 +465,7 @@ pub(crate) fn movement(
     steps.last = alive.then_some(feet);
 
     let dt_hand = dt;
+    hand.swing_predicted = false;
     if let Some(ticks) = hand.swing.as_mut() {
         *ticks += (dt_hand * 20.0) as f32;
         if *ticks >= crate::minecraft_hand::SWING_TICKS {

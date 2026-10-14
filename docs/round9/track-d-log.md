@@ -2099,6 +2099,36 @@ After f7432188.
 IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:dried_kelp*16,minecraft:trident,minecraft:spyglass,minecraft:potion@swiftness,minecraft:totem_of_undying,minecraft:white_bed,minecraft:cobblestone*64
 ```
 
+### 2. A friend's swing plays at once and follows the host's
+
+After 29cafd82.
+
+- **Vanilla (26.3, javap):** `Minecraft.startAttack` returns at once while `missTime > 0`; a miss (or a null hit result) sets `missTime = 10` when `MultiPlayerGameMode.hasMissTime()` (not creative), and every attack that gets past the early returns ends in `LocalPlayer.swing(MAIN_HAND, animation, false)` on the client itself. `continueAttack(false)` clears `missTime`; `Minecraft.tick` counts it down. `LivingEntity.swing(hand, animation, updateSelf)` starts a swing only through `SwingState.startIfAble`: when none runs, when its `ticks >= durationTicks / 2` or when `ticks <= 0` (the 6-tick swing restarts from tick 3 on). The server sends `ClientboundSwingAnimationPacket` to the tracking players, and to the swinger too only for swings it started itself (`sendToTrackingPlayersAndSelf` when `updateSelf`).
+- **Changed:**
+  - `minecraft_net`: `ToClient::Animate { client, offhand }` (codec index 33, protocol 6 from commit 1).
+  - `minecraft_survival`: `Hand.swing_predicted` (`player.rs`), set by the attack-press swing in `actions.rs` only.
+  - `render_anim/src/minecraft_players.rs`: `movement()` clears `swing_predicted` where it advances the swing, before the player acts.
+  - `render_anim/src/minecraft_host.rs`: after `step_friend`, `told_swing` puts `Animate` into that friend's own outbox for a swing that began this frame (`swing == Some(0.0)`) and was not predicted, and marks it told so a step that returns before `movement()` does not send it again.
+  - `render_anim/src/minecraft_hand.rs`: `FriendSwing` (the swing, its hand, the miss time and a tick clock), `may_restart` (vanilla's rule) and `swing_shown`.
+  - `render_anim/src/minecraft_remote.rs`: the friend advances `FriendSwing` each frame; on its own attack press (sent this frame, while holding an item, not using one, not skating and not throwing an MW2 grenade) it swings at once, and a press at a miss outside creative starts the 10-tick miss time; `Animate` for the friend's own client restarts the swing by the vanilla rule. `show_hand()` draws the swing on the held item and sets `ui.hand_swing` for the MW2 hands of an empty hand.
+- **Tests:** `minecraft_net`: `codec::tests::a_swing_takes_the_next_free_index_on_protocol_6` (and `Animate` in the every-message round trip); `minecraft_survival`: `actions::tests::only_the_swing_of_an_attack_press_is_predicted_by_a_friend`; `render_anim`: `minecraft_hand::tests::a_friends_swing_plays_at_once_and_an_echo_restarts_it_only_after_half_way`, `a_missed_swing_holds_the_next_press_for_ten_ticks_outside_creative`; `minecraft_host::tests::a_friend_is_told_only_of_its_own_swings_it_did_not_predict_once`. Runs: `minecraft_net` 22, `minecraft_survival` 727, `render_anim` 186, all green; `check -p launcher` green.
+- **Decisions:**
+  - `Animate` goes only to the swinging friend: other players do not draw Minecraft arm swings on bodies yet (the MW2 body has its own animations), so there is no one else to tell.
+  - The host keeps restarting its own attack-press swing at once (unchanged); the friend's prediction uses vanilla's restart rule, so a fast second click in the first half of a swing does not restart it on the friend.
+  - Swings that start outside the friend's step (none known) would be missed, because the next frame's `movement()` advances them before `told_swing` looks.
+- **Test steps** (same build and setup as commit 1):
+  1. Friend: select the diamond sword and left-click into the air: the sword swings at once, with no wait for the host (**176_friend_swing_air**). Click fast: each click swings; a click early in a swing does not restart it.
+  2. Friend: select an empty slot and left-click: the MW2 hands swing (**177_friend_empty_swing**).
+  3. Friend: hit a cow with the sword: one swing and the cow is hurt.
+  4. Friend: place cobblestone: the hand swings once (the host's swing reaches the friend) (**178_friend_place_swing**). Hold left-click on stone with the pickaxe: the hand keeps swinging while it digs.
+  5. Friend: `/gamemode creative` (the host runs it), left-click into the air twice fast: both swing.
+  6. Host window: the host's own swings are as before (**179_host_swing_unchanged**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:iron_pickaxe,minecraft:cobblestone*64,minecraft:cow_spawn_egg*4,minecraft:shield,minecraft:cooked_beef*32,minecraft:trident,minecraft:spyglass,minecraft:dried_kelp*16,minecraft:white_bed
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2173,6 +2203,8 @@ Protocol 5 shipped in round 9 release 2. Group friend-hand (commit 1, `UsingView
 - `docs/MULTIPLAYER.md`: a friend's bell use is a hand use on the host (no new message); glowing mobs reach friends as `MobShow.glowing`; hero gifts are item entities thrown on the host; firework rockets reach friends as thrown views and their bursts as `EntitySnapshot.firework_bursts`. Protocol 5.
 - `docs/MINECRAFT-SURVIVAL.md` (review fix 4): in the ravager paragraph, "Its roar hurts everything within 4 blocks but illagers for 6 and flings it all away, players too." becomes "Its roar hurts everything within 4 blocks but illagers for 6 and flings every mob away; players only take the blow."
 - `docs/MULTIPLAYER.md` (group friend-hand, commit 1): `minecraft_net::PROTOCOL` is 6 (the code block at line 162 and the note at line 1415). `PlayerView.using` (`UsingView`) now carries `kind: UseKind { Eat { duration }, Block, Charge, Scope }`. In section 20, "the friend's first-person hand" becomes: "A friend draws their own first-person held items like the host: the selected item, the offhand item while holding an item or using one, eating and drinking at the mouth, the raised shield, the trident pulled back and the spyglass hiding the items. The use comes from the friend's `PlayerView.using` and is counted on between views on the friend's own tick. The items hide in F5, in bed, while skating, dead or with the UI off. The swing is not shown yet." No vendored file changed.
+- `docs/MULTIPLAYER.md` (group friend-hand, commit 2): new message `ToClient::Animate { client, offhand }` (protocol 6). In the section 20 text of commit 1, "The swing is not shown yet." becomes: "A friend's own attack press swings at once on the friend, with vanilla's restart rule and the 10-tick miss time; every other swing the host starts for that friend (placing, using, digging) reaches only that friend as `ToClient::Animate`." Line 1303 drops "the friend's first-person hand", and the leftover item at line 1326 ("**The friend's first-person hand:** ...") is removed.
+- `CLAUDE.md` roadmap item 2: drop "the friend's first-person hand" from the multiplayer leftovers.
 
 ## Vendored files
 

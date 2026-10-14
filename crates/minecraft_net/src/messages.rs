@@ -297,6 +297,10 @@ pub enum ToClient {
         slot: u8,
     },
     RecipeBook(RecipeBookView),
+    Animate {
+        client: u32,
+        offhand: bool,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

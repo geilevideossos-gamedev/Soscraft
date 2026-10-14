@@ -218,6 +218,17 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
     }
 }
 
+fn told_swing(client: u32, hand: &mut minecraft_survival::player::Hand) -> Option<ToClient> {
+    if hand.swing != Some(0.0) || hand.swing_predicted {
+        return None;
+    }
+    hand.swing_predicted = true;
+    Some(ToClient::Animate {
+        client,
+        offhand: hand.swing_offhand,
+    })
+}
+
 fn edit_books(player: &mut minecraft_survival::player::Player, edits: BookEdits) {
     let minecraft_survival::player::Player { inventory, name, .. } = player;
     for (slot, pages, title) in edits {
@@ -486,6 +497,9 @@ pub(crate) fn host(
             );
             session
                 .outbox
+                .extend(told_swing(session.client, &mut player.hand));
+            session
+                .outbox
                 .extend(stepped.books.into_iter().map(ToClient::Lectern));
             if let Some(open) = stepped.open_book
                 && let Ok(slot) = u8::try_from(open.slot)
@@ -749,6 +763,29 @@ mod tests {
             identity: net::SessionIdentity::unassigned(1),
         };
         assert_eq!(room_code(&connecting), None);
+    }
+
+    #[test]
+    fn a_friend_is_told_only_of_its_own_swings_it_did_not_predict_once() {
+        let mut hand = minecraft_survival::player::Hand::default();
+        assert_eq!(told_swing(2, &mut hand), None, "no swing");
+        hand.swing = Some(0.0);
+        hand.swing_offhand = true;
+        assert_eq!(
+            told_swing(2, &mut hand),
+            Some(ToClient::Animate {
+                client: 2,
+                offhand: true
+            })
+        );
+        assert_eq!(told_swing(2, &mut hand), None, "told once");
+        hand.swing_predicted = false;
+        hand.swing = Some(1.5);
+        assert_eq!(told_swing(2, &mut hand), None, "a running swing was told when it began");
+        hand.swing = Some(0.0);
+        hand.swing_offhand = false;
+        hand.swing_predicted = true;
+        assert_eq!(told_swing(2, &mut hand), None, "the friend swung on its own press");
     }
 
     #[test]

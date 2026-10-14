@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 use minecraft_commands::{Clientbound, Serverbound, Text};
 use minecraft_net::messages::{BookView, Click, CreativeTarget, MenuView};
-use minecraft_net::messages::{GameMode, Target};
+use minecraft_net::messages::{GameMode, HandEventKind, Target};
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
 use minecraft_survival::data::GameData;
 use minecraft_survival::guns::{Follow, weapon_of};
@@ -174,6 +174,7 @@ pub(crate) struct Friend {
     activation_tick: u64,
     recipe_book: crate::minecraft_recipe_book::FriendBook,
     use_clock: crate::minecraft_hand::UseClock,
+    swing: crate::minecraft_hand::FriendSwing,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -583,6 +584,19 @@ pub(crate) fn friend(
         hands.captured |= !ui.active;
         let target = aim(friend, player.as_ref());
         let sampled = friend.hand.sample(hands, swap, drop, target, seconds);
+        friend.swing.advance(dt, hands.attack_held && !hands.captured);
+        let pressed = sampled
+            .events
+            .iter()
+            .any(|event| event.kind == HandEventKind::AttackPressed);
+        let creative = friend
+            .remote
+            .as_ref()
+            .and_then(|remote| remote.player.as_ref())
+            .is_some_and(|view| view.game_mode == GameMode::Creative);
+        if pressed && swing_allowed(friend, &ui, player.as_ref(), skate.active) {
+            friend.swing.attack(target == Target::Miss, creative);
+        }
         if !sampled.events.is_empty() {
             send(wire, &ToServer::Hand(sampled.events));
         }
@@ -652,6 +666,7 @@ fn show_effects(
         activation,
         recipe_book,
         inventory_ui,
+        swing,
         ..
     } = friend
     else {
@@ -698,6 +713,11 @@ fn show_effects(
             ToClient::RecipeBook(book) => {
                 let unlocked = recipe_book.receive(book, &mut ui.recipe_book);
                 inventory_ui.set_unlocked(unlocked);
+            }
+            ToClient::Animate { client, offhand } => {
+                if Some(client) == own {
+                    swing.echo(offhand);
+                }
             }
             effect => {
                 if own_totem(&effect, own) {
@@ -1596,6 +1616,23 @@ fn present(
     );
 }
 
+fn swing_allowed(
+    friend: &Friend,
+    ui: &frame::MinecraftUi,
+    ps: Option<&playerstate_iw4::PlayerState>,
+    skating: bool,
+) -> bool {
+    let idle = friend
+        .remote
+        .as_ref()
+        .and_then(|remote| remote.player.as_ref())
+        .is_some_and(|view| view.using.is_none());
+    let throwing = ps.is_none_or(|ps| {
+        crate::minecraft_players::actor(ps, [0.0; 3], true).mw2_offhand
+    });
+    ui.active && ui.holding_item && !skating && idle && !throwing
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct HandGate {
     skating: bool,
@@ -1633,6 +1670,7 @@ fn show_hand(
         activation,
         activation_tick,
         use_clock,
+        swing,
         ..
     } = friend
     else {
@@ -1656,7 +1694,8 @@ fn show_hand(
     let using = use_clock.follow(player.using, now, selection.slot);
     let alive = gate.alive && ui.active;
     ui.offhand_busy = alive && using.is_some();
-    ui.hand_swing = 0.0;
+    let (swing, swing_offhand) = swing.shown();
+    ui.hand_swing = if swing_offhand || !alive { 0.0 } else { swing };
     let recipes = &prepared.recipes;
     let stack_in = |slot: usize| {
         player
@@ -1672,8 +1711,8 @@ fn show_hand(
     let held = crate::minecraft_hand::Held {
         main: main.as_ref().map(|stack| (selection.slot, stack)),
         offhand: offhand.as_ref(),
-        swing: 0.0,
-        swing_offhand: false,
+        swing,
+        swing_offhand,
         using,
         partial,
         activation: pose,

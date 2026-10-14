@@ -244,6 +244,64 @@ impl UseClock {
     }
 }
 
+const MISS_TICKS: u32 = 10;
+
+pub(crate) fn may_restart(swing: Option<f32>) -> bool {
+    swing.is_none_or(|t| t <= 0.0 || t >= SWING_TICKS * 0.5)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FriendSwing {
+    swing: Option<f32>,
+    offhand: bool,
+    miss_time: u32,
+    clock: f64,
+}
+
+impl FriendSwing {
+    pub(crate) fn advance(&mut self, seconds: f64, attack_held: bool) {
+        if let Some(ticks) = self.swing.as_mut() {
+            *ticks += (seconds * 20.0) as f32;
+            if *ticks >= SWING_TICKS {
+                self.swing = None;
+            }
+        }
+        self.clock += seconds.max(0.0);
+        let ticks = (self.clock * 20.0).floor();
+        self.clock -= ticks / 20.0;
+        self.miss_time = self.miss_time.saturating_sub(ticks as u32);
+        if !attack_held {
+            self.miss_time = 0;
+        }
+    }
+
+    pub(crate) fn attack(&mut self, miss: bool, creative: bool) -> bool {
+        if self.miss_time > 0 {
+            return false;
+        }
+        if miss && !creative {
+            self.miss_time = MISS_TICKS;
+        }
+        self.start(false);
+        true
+    }
+
+    pub(crate) fn echo(&mut self, offhand: bool) {
+        self.start(offhand);
+    }
+
+    fn start(&mut self, offhand: bool) {
+        if may_restart(self.swing) {
+            self.swing = Some(0.0);
+            self.offhand = offhand;
+        }
+    }
+
+    pub(crate) fn shown(&self) -> (f32, bool) {
+        (swing_shown(self.swing), self.offhand)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +445,50 @@ mod tests {
         let shield = using(Hand::Off, 0, UseKind::Block);
         assert_eq!(clock.follow(shield, 20, 0), Some(HeldUse { slot: minecraft_survival::offhand::OFFHAND, kind: UseShown::Block }));
         assert_eq!(clock.follow(using(Hand::Main, 5, UseKind::Scope), 21, 7), Some(HeldUse { slot: 7, kind: UseShown::Scope }));
+    }
+
+    #[test]
+    fn a_friends_swing_plays_at_once_and_an_echo_restarts_it_only_after_half_way() {
+        let tick = 0.05;
+        let mut swing = FriendSwing::default();
+        assert_eq!(swing.shown(), (0.0, false));
+        assert!(swing.attack(false, false));
+        assert_eq!(swing.shown(), (0.0, false));
+        swing.advance(tick, true);
+        assert!((swing.shown().0 - 1.0 / SWING_TICKS).abs() < 1e-5, "it runs from the press");
+        swing.echo(false);
+        assert!(swing.shown().0 > 0.0, "the host's echo in the first half does not restart it");
+        swing.advance(2.0 * tick, true);
+        swing.echo(true);
+        assert_eq!(swing.shown(), (0.0, true), "past half way a host swing starts again, in its hand");
+        for _ in 0..6 {
+            swing.advance(tick, true);
+        }
+        assert_eq!(swing.shown(), (0.0, true), "a swing ends after six ticks");
+        swing.echo(false);
+        assert_eq!(swing.shown(), (0.0, false), "a host swing with none running starts at once");
+    }
+
+    #[test]
+    fn a_missed_swing_holds_the_next_press_for_ten_ticks_outside_creative() {
+        let tick = 0.05;
+        let mut swing = FriendSwing::default();
+        assert!(swing.attack(true, false));
+        for _ in 0..9 {
+            swing.advance(tick, true);
+            assert!(!swing.attack(false, false), "the miss time holds the press");
+        }
+        swing.advance(tick, true);
+        assert!(swing.attack(false, false), "ten ticks later it swings again");
+        let mut released = FriendSwing::default();
+        assert!(released.attack(true, false));
+        released.advance(tick, false);
+        assert!(released.attack(false, false), "letting go clears the miss time");
+        let mut creative = FriendSwing::default();
+        assert!(creative.attack(true, true));
+        assert!(creative.attack(true, true), "creative has no miss time");
+        assert!(may_restart(None) && may_restart(Some(0.0)) && may_restart(Some(3.0)));
+        assert!(!may_restart(Some(2.9)));
     }
 
     #[test]

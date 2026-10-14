@@ -74,6 +74,7 @@ pub struct Hand {
     pub charging: Option<crate::trident::Charging>,
     pub scoping: Option<crate::spyglass::Scoping>,
     pub swing_offhand: bool,
+    pub swing_predicted: bool,
     pub use_by_key: bool,
     pub offhand_key_was: bool,
     pub creative_delay: u32,

@@ -257,6 +257,7 @@ mod tests {
             ToClient::Sleeping { .. } => 30,
             ToClient::OpenBook { .. } => 31,
             ToClient::RecipeBook(_) => 32,
+            ToClient::Animate { .. } => 33,
         }
     }
 
@@ -697,6 +698,10 @@ mod tests {
                 open: true,
                 filtering: true,
             }),
+            ToClient::Animate {
+                client: 3,
+                offhand: true,
+            },
         ]
     }
 
@@ -730,7 +735,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 33];
+        let mut seen = [false; 34];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -876,6 +881,24 @@ mod tests {
         assert_eq!(back.slots[43], view.slots[43]);
         assert_eq!(back.slots[44], view.slots[44]);
         assert!(back.slots[43].is_some() && back.slots[44].is_some());
+    }
+
+    #[test]
+    fn a_swing_takes_the_next_free_index_on_protocol_6() {
+        assert_eq!(crate::PROTOCOL, 6);
+        let main = ToClient::Animate {
+            client: 2,
+            offhand: false,
+        };
+        assert_eq!(client_index(&main), 33);
+        assert_eq!(encode(Lane::Reliable, &main).unwrap(), vec![33, 2, 0]);
+        let off = ToClient::Animate {
+            client: 2,
+            offhand: true,
+        };
+        assert_eq!(encode(Lane::Reliable, &off).unwrap(), vec![33, 2, 1]);
+        round_trip(Lane::Reliable, &main);
+        round_trip(Lane::Reliable, &off);
     }
 
     #[test]
