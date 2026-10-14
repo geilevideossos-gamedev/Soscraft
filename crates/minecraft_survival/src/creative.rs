@@ -3,8 +3,33 @@ use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use serde_json::Value;
 
-pub const MENU_SLOTS: usize = 46;
+pub const MENU_SLOTS: usize = 48;
 pub const HOTBAR_MENU: usize = 36;
+pub const DROP_STEP: u32 = 20;
+pub const DROP_THRESHOLD: u32 = 1480;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DropThrottle {
+    pub count: u32,
+}
+
+impl DropThrottle {
+    pub fn tick(&mut self, ticks: u32) {
+        self.count = self.count.saturating_sub(ticks);
+    }
+
+    pub fn allow(&mut self, name: &str) -> bool {
+        if self.count >= DROP_THRESHOLD {
+            diag::warn!(
+                World,
+                "Player {name} was dropping items too fast in creative mode, ignoring."
+            );
+            return false;
+        }
+        self.count += DROP_STEP;
+        true
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CreativeSlot {
@@ -44,6 +69,8 @@ pub fn menu_place(menu: usize) -> Option<Place> {
         9..=35 => Some(Place::Slot(menu)),
         36..=44 => Some(Place::Slot(menu - HOTBAR_MENU)),
         45 => Some(Place::Slot(40)),
+        46 => Some(Place::Slot(crate::guns::LETHAL_SLOT)),
+        47 => Some(Place::Slot(crate::guns::TACTICAL_SLOT)),
         _ => None,
     }
 }
@@ -54,6 +81,8 @@ pub fn menu_index(slot: usize) -> Option<usize> {
         9..=35 => Some(slot),
         36..=39 => Some(44 - slot),
         40 => Some(45),
+        crate::guns::LETHAL_SLOT => Some(46),
+        crate::guns::TACTICAL_SLOT => Some(47),
         _ => None,
     }
 }
@@ -100,6 +129,18 @@ pub fn set_slot(
     match slot {
         CreativeSlot::Menu(index) => {
             match menu_place(index).ok_or(Refused::BadSlot(index))? {
+                Place::Slot(crate::offhand::OFFHAND)
+                    if stack.as_ref().is_some_and(crate::guns::is_gun) =>
+                {
+                    return Err(Refused::BadSlot(index));
+                }
+                Place::Slot(i)
+                    if stack
+                        .as_ref()
+                        .is_some_and(|stack| !crate::guns::fits(i, stack)) =>
+                {
+                    return Err(Refused::BadSlot(index));
+                }
                 Place::Slot(i) => inventory.slots[i] = stack,
                 Place::Crafting(i) => inventory.crafting[i] = stack,
             }
@@ -262,14 +303,17 @@ mod tests {
         assert_eq!(menu_place(36), Some(Place::Slot(0)));
         assert_eq!(menu_place(44), Some(Place::Slot(8)));
         assert_eq!(menu_place(45), Some(Place::Slot(40)));
-        assert_eq!(menu_place(46), None);
-        for slot in 0..=40 {
+        assert_eq!(menu_place(46), Some(Place::Slot(43)));
+        assert_eq!(menu_place(47), Some(Place::Slot(44)));
+        assert_eq!(menu_place(48), None);
+        for slot in (0..=40).chain([43, 44]) {
             assert_eq!(
                 menu_index(slot).and_then(menu_place),
                 Some(Place::Slot(slot))
             );
         }
         assert_eq!(menu_index(41), None);
+        assert_eq!(menu_index(42), None);
     }
 
     #[test]
@@ -368,6 +412,52 @@ mod tests {
             ),
             Err(Refused::TooMany { count: 2, max: 1 })
         );
+    }
+
+    #[test]
+    fn a_gun_never_goes_into_the_creative_offhand() {
+        let mut inventory = Inventory::default();
+        for gun in ["iw4l:m4", "iw4l:riotshield"] {
+            let stack = Some(ItemStack::new(gun, 1));
+            let set = set_slot(&creative(), &mut inventory, CreativeSlot::Menu(45), stack, &any);
+            assert_eq!(set, Err(Refused::BadSlot(45)));
+            let stack = Some(ItemStack::new(gun, 1));
+            let set = set_slot(&creative(), &mut inventory, CreativeSlot::Menu(36), stack, &any);
+            assert_eq!(set, Ok(None));
+        }
+        assert!(inventory.slots[40].is_none());
+        let grenade = Some(ItemStack::new("iw4l:frag_grenade", 3));
+        let set = set_slot(&creative(), &mut inventory, CreativeSlot::Menu(45), grenade, &any);
+        assert_eq!(set, Ok(None));
+        assert_eq!(inventory.slots[40].as_ref().map(|s| s.count), Some(3));
+    }
+
+    #[test]
+    fn creative_puts_only_grenades_of_the_right_kind_in_the_grenade_slots() {
+        let mut inventory = Inventory::default();
+        let mut set = |menu: usize, id: &str| {
+            let stack = Some(ItemStack::new(id, 5));
+            set_slot(&creative(), &mut inventory, CreativeSlot::Menu(menu), stack, &any)
+        };
+        for (menu, refused) in [
+            (46, "minecraft:dirt"),
+            (46, "iw4l:flash_grenade"),
+            (46, "iw4l:m4"),
+            (47, "iw4l:frag_grenade"),
+            (47, "minecraft:dirt"),
+        ] {
+            assert_eq!(set(menu, refused), Err(Refused::BadSlot(menu)), "{refused}");
+        }
+        assert_eq!(set(46, "iw4l:semtex"), Ok(None));
+        assert_eq!(set(47, "iw4l:concussion_grenade"), Ok(None));
+        assert_eq!(inventory.slots[43], Some(ItemStack::new("iw4l:semtex", 5)));
+        assert_eq!(
+            inventory.slots[44],
+            Some(ItemStack::new("iw4l:concussion_grenade", 5))
+        );
+        let emptied = set_slot(&creative(), &mut inventory, CreativeSlot::Menu(46), None, &any);
+        assert_eq!(emptied, Ok(None));
+        assert!(inventory.slots[43].is_none());
     }
 
     #[test]
@@ -481,18 +571,21 @@ mod tests {
     fn the_trash_deletes_the_carried_stack_and_shift_empties_the_inventory() {
         assert_eq!(trash_click(false), vec![(CreativeSlot::Carried, None)]);
         let all = trash_click(true);
-        assert_eq!(all.len(), 45);
+        assert_eq!(all.len(), 47);
         assert_eq!(all[0], (CreativeSlot::Menu(1), None));
         assert_eq!(all[44], (CreativeSlot::Menu(45), None));
+        assert_eq!(all[46], (CreativeSlot::Menu(47), None));
         let mut inventory = Inventory::default();
         for slot in inventory.slots.iter_mut().take(41) {
             *slot = Some(stone(3));
         }
+        inventory.slots[43] = Some(ItemStack::new("iw4l:frag_grenade", 7));
+        inventory.slots[44] = Some(ItemStack::new("iw4l:flash_grenade", 7));
         inventory.crafting[0] = Some(stone(1));
         inventory.cursor = Some(stone(9));
         let (dropped, refused) = apply(&creative(), &mut inventory, all, &any);
         assert!(dropped.is_empty() && refused.is_empty());
-        assert!(inventory.slots.iter().take(41).all(Option::is_none));
+        assert!(inventory.slots.iter().all(Option::is_none));
         assert_eq!(inventory.crafting[0], None);
         assert_eq!(inventory.cursor, Some(stone(9)));
     }

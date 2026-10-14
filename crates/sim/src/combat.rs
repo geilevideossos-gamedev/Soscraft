@@ -292,6 +292,7 @@ pub(crate) fn advance_weapon_command(
                 delayed_rechamber: false,
                 weapon_restrict_kick_time: ps.weapon_restrict_kick_time,
                 quick_reload,
+                loaded: 0,
             },
             WeaponHandState {
                 weapon: started_weapon,
@@ -308,6 +309,7 @@ pub(crate) fn advance_weapon_command(
                 delayed_rechamber: false,
                 weapon_restrict_kick_time: ps.weapon_restrict_kick_time_secondary,
                 quick_reload,
+                loaded: 0,
             },
         ];
         let locked_fire = world.missile_launch_facts(ps.weapon).is_none_or(|f| {
@@ -488,6 +490,19 @@ pub(crate) fn advance_weapon_command(
         };
         let clip_before = hands[0].clip;
         let events = weapon_hands(&mut hands, &facts, &mut wcmd, last_hand);
+        let held = &mut hands[..=last_hand.clamp(0, 1) as usize];
+        let loaded: i32 = if world.publishes_snapshot() && crate::voxel::publishes_arsenal(id.0) {
+            loaded_within_stock(held, stock)
+        } else {
+            held.iter().map(|hand| hand.loaded).sum()
+        };
+        if loaded > 0 && world.publishes_snapshot() && crate::voxel::active() {
+            crate::voxel::spend_rounds(id.0, ammo_weapon, loaded, |gun| {
+                world
+                    .combat_facts_for(gun)
+                    .map_or(0, |facts| facts.alternate_weapon)
+            });
+        }
         let hand0 = hands[0];
         for &(hand, event) in events.iter().flatten() {
             if hand != 0 {
@@ -762,20 +777,10 @@ pub(crate) fn advance_weapon_command(
                     weapon,
                     remaining_fuse_ms,
                 } => {
-                    let combat = world.weapon_combat_row(weapon);
-                    let meta = world.client_meta_mut(*id);
-                    let (clip, stock) = meta.ammo_for(weapon);
-                    if clip + stock > 0 {
-                        if clip > 0 {
-                            meta.set_ammo(weapon, clip - 1, stock);
-                        } else {
-                            meta.set_ammo(weapon, 0, stock - 1);
-                        }
-                    }
-                    if let Some(facts) = combat {
-                        if let Some(ps) = world.player_mut(*id) {
-                            spend_ps_offhand_round(ps, weapon, facts);
-                        }
+                    let minecraft = world.publishes_snapshot() && crate::voxel::active();
+                    use_offhand_round(world, *id, weapon, minecraft);
+                    if minecraft {
+                        plant_flare(world, *id, weapon);
                     }
                     if crate::equipment::spawn_offhand_projectile(
                         world,
@@ -806,21 +811,8 @@ pub(crate) fn advance_weapon_command(
                     }
                 }
                 WeaponTickEvent::OffhandCookedOff { weapon } => {
-                    let combat = world.weapon_combat_row(weapon);
-                    let meta = world.client_meta_mut(*id);
-                    let (clip, stock) = meta.ammo_for(weapon);
-                    if clip + stock > 0 {
-                        if clip > 0 {
-                            meta.set_ammo(weapon, clip - 1, stock);
-                        } else {
-                            meta.set_ammo(weapon, 0, stock - 1);
-                        }
-                    }
-                    if let Some(facts) = combat {
-                        if let Some(ps) = world.player_mut(*id) {
-                            spend_ps_offhand_round(ps, weapon, facts);
-                        }
-                    }
+                    let minecraft = world.publishes_snapshot() && crate::voxel::active();
+                    use_offhand_round(world, *id, weapon, minecraft);
                     crate::equipment::explode_offhand_in_hand(world, *id, weapon, tick);
                 }
                 WeaponTickEvent::ReloadStarted => {
@@ -926,6 +918,23 @@ pub(crate) fn advance_weapon_command(
         }
     }
     accepted
+}
+
+pub(crate) fn loaded_within_stock(hands: &mut [WeaponHandState], stock: i32) -> i32 {
+    let loaded: i32 = hands.iter().map(|hand| hand.loaded).sum();
+    let stock = stock.max(0);
+    if loaded <= stock {
+        return loaded;
+    }
+    let mut extra = loaded - stock;
+    for hand in hands.iter_mut().rev() {
+        let back = extra.min(hand.loaded);
+        hand.clip -= back;
+        hand.loaded -= back;
+        hand.stock = 0;
+        extra -= back;
+    }
+    stock
 }
 
 pub(crate) fn apply_player_anim_event(world: &mut FrameWorld, id: ClientId, event: u8) {
@@ -1787,6 +1796,46 @@ fn shot_collision_geometry(
 
 pub(crate) fn bullet_process_on_hit(collider: Option<ColliderId>) -> bool {
     collider.is_some()
+}
+
+pub(crate) fn use_offhand_round(world: &mut FrameWorld, id: ClientId, weapon: u32, minecraft: bool) {
+    let combat = world.weapon_combat_row(weapon);
+    let meta = world.client_meta_mut(id);
+    let (clip, stock) = meta.ammo_for(weapon);
+    if clip + stock > 0 {
+        if clip > 0 {
+            meta.set_ammo(weapon, clip - 1, stock);
+        } else {
+            meta.set_ammo(weapon, 0, stock - 1);
+        }
+    }
+    if let Some(facts) = combat
+        && let Some(ps) = world.player_mut(id)
+    {
+        spend_ps_offhand_round(ps, weapon, facts);
+    }
+    if minecraft {
+        crate::voxel::spend_grenade(id.0, weapon, -1);
+    }
+}
+
+const FLARE_GROUND_SEARCH: f32 = 2048.0;
+
+pub(crate) fn plant_flare(world: &FrameWorld, id: ClientId, weapon: u32) {
+    if world.weapon_script_name(weapon) != crate::voxel::FLARE_WEAPON {
+        return;
+    }
+    let Some(origin) = world.player(id).map(|ps| ps.origin) else {
+        return;
+    };
+    crate::voxel::plant_flare(id.0, flare_ground(origin));
+}
+
+fn flare_ground(origin: [f32; 3]) -> [f32; 3] {
+    let start = [origin[0], origin[1], origin[2] + 1.0];
+    let end = [origin[0], origin[1], origin[2] - FLARE_GROUND_SEARCH];
+    let ground = crate::voxel::trace(start, end, [0.0; 3], [0.0; 3]);
+    if ground.fraction < 1.0 { ground.endpos } else { origin }
 }
 
 fn spend_ps_offhand_round(ps: &mut PlayerState, weapon: u32, facts: weapon_iw4::WeaponCombatFacts) {

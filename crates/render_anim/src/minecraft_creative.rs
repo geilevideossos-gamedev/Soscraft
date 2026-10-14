@@ -6,7 +6,7 @@ use minecraft_survival::creative::{self, CreativeSlot, GridClick, SetSlot};
 use minecraft_terrain::creative_search::Searched;
 use minecraft_terrain::creative_tabs::{CreativeTab, CreativeTabs, Row, TabEntry, TabKind};
 use minecraft_terrain::creative_variants::VariantData;
-use minecraft_terrain::game_mode::PlayerMode;
+use minecraft_terrain::game_mode::{GameMode, PlayerMode};
 use minecraft_terrain::hotbars::{self, Hotbars};
 use minecraftoss_player::crafting::RecipeBook;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
@@ -176,6 +176,7 @@ pub(crate) struct CreativeUi {
     hotbars: Option<Hotbars>,
     hotbars_version: u64,
     texts: Option<(String, String)>,
+    hotbar_file: Option<std::path::PathBuf>,
 }
 
 pub(crate) fn kind_of(kind: TabKind) -> McTabKind {
@@ -232,6 +233,15 @@ pub(crate) fn entry_stacks(
     out
 }
 
+fn scratch(inventory: &Inventory) -> Inventory {
+    let mut copy = Inventory::default();
+    copy.slots = inventory.slots.clone();
+    copy.cursor = inventory.cursor.clone();
+    copy.crafting = inventory.crafting.clone();
+    copy.recipes = inventory.recipes.clone();
+    copy
+}
+
 pub(crate) fn tab_view(
     tab: &CreativeTab,
     language: Option<&HashMap<String, String>>,
@@ -264,7 +274,10 @@ impl CreativeUi {
                 let spawned = std::thread::Builder::new()
                     .name("minecraft-creative-tabs".into())
                     .spawn(move || {
-                        let tabs = minecraft_terrain::creative_tabs::creative_tabs(&jar);
+                        let mut tabs = minecraft_terrain::creative_tabs::creative_tabs(&jar);
+                        if !minecraft_terrain::fork_items::add_to_creative(&mut tabs) {
+                            eprintln!("creative tabs have no Combat tab for the guns");
+                        }
                         let variants = VariantData::read(&jar)
                             .map_err(|error| eprintln!("creative variants unavailable: {error:#}"))
                             .ok();
@@ -480,9 +493,13 @@ impl CreativeUi {
         }
     }
 
+    fn hotbar_file(&self) -> std::path::PathBuf {
+        self.hotbar_file.clone().unwrap_or_else(hotbar_path)
+    }
+
     fn hotbars(&mut self) -> &mut Hotbars {
-        self.hotbars
-            .get_or_insert_with(|| Hotbars::read(&hotbar_path()))
+        let file = self.hotbar_file();
+        self.hotbars.get_or_insert_with(|| Hotbars::read(&file))
     }
 
     pub(crate) fn name_items(&self, items: &mut [Option<frame::McStack>]) {
@@ -503,20 +520,27 @@ impl CreativeUi {
         inventory: &mut Inventory,
         known: &dyn Fn(&str) -> bool,
     ) {
+        let sets = self.hotbar_sets(ui, inventory);
+        let (_, refused) = creative::apply(mode, inventory, sets, known);
+        for why in refused {
+            diag::warn!(World, "Minecraft saved hotbar slot refused: {why:?}");
+        }
+    }
+
+    pub(crate) fn hotbar_sets(
+        &mut self,
+        ui: &mut MinecraftUi,
+        inventory: &Inventory,
+    ) -> Vec<SetSlot> {
         let Some((index, load)) = ui.creative.hotbar_key.take() else {
-            return;
+            return Vec::new();
         };
         if !self.creative_mode || index >= hotbars::GROUPS {
-            return;
+            return Vec::new();
         }
         if load {
             let stacks = self.hotbars().row(index).to_vec();
-            let (_, refused) =
-                creative::apply(mode, inventory, creative::load_hotbar(&stacks), known);
-            for why in refused {
-                diag::warn!(World, "Minecraft saved hotbar slot refused: {why:?}");
-            }
-            return;
+            return creative::load_hotbar(&stacks);
         }
         let stacks: Vec<Option<ItemStack>> = inventory.slots[..hotbars::SIZE]
             .iter()
@@ -527,7 +551,8 @@ impl CreativeUi {
             })
             .collect();
         self.hotbars().store(index, &stacks);
-        if let Err(error) = self.hotbars().write(&hotbar_path()) {
+        let file = self.hotbar_file();
+        if let Err(error) = self.hotbars().write(&file) {
             diag::warn!(World, "Failed to save creative mode options: {error}");
         }
         self.hotbars_version += 1;
@@ -536,6 +561,7 @@ impl CreativeUi {
             .as_ref()
             .map_or("inventory.hotbarSaved", |texts| texts.1.as_str());
         ui.creative.saved = Some(format_text(saved, &[LOAD_KEY, &(index + 1).to_string()]));
+        Vec::new()
     }
 
     pub(crate) fn take_tabs(&mut self) -> Option<Vec<(McCreativeTab, Option<ItemStack>)>> {
@@ -555,7 +581,7 @@ impl CreativeUi {
             * frame::minecraft_creative::MC_CREATIVE_ROWS;
         let tabs = ui.creative.tabs.iter().filter_map(|tab| tab.icon.as_ref());
         let items = ui.creative.items.iter().skip(first).take(window).flatten();
-        tabs.chain(items).map(|stack| stack.id.clone()).collect()
+        tabs.chain(items).map(|stack| stack.icon.clone()).collect()
     }
 
     fn grid(&self, inventory: &Inventory, index: usize, click: GridClick) -> Vec<SetSlot> {
@@ -580,12 +606,23 @@ impl CreativeUi {
         inventory: &mut Inventory,
         known: &dyn Fn(&str) -> bool,
     ) -> Vec<ItemStack> {
+        let sets = self.sets(ui, inventory);
+        let (dropped, refused) = creative::apply(mode, inventory, sets, known);
+        for why in refused {
+            diag::warn!(World, "Minecraft creative slot refused: {why:?}");
+        }
+        dropped
+    }
+
+    pub(crate) fn sets(&mut self, ui: &mut MinecraftUi, base: &Inventory) -> Vec<SetSlot> {
         let McScreen::Creative(kind) = ui.screen else {
             return Vec::new();
         };
-        let mut dropped = Vec::new();
+        let mut all = Vec::new();
+        let mut after: Option<Inventory> = None;
         let mut rest = Vec::new();
         for click in std::mem::take(&mut ui.clicks) {
+            let inventory = after.as_ref().unwrap_or(base);
             let sets = match &click {
                 McClick::Slot {
                     slot: McSlot::Creative(index),
@@ -646,17 +683,19 @@ impl CreativeUi {
                     continue;
                 }
             };
-            let (thrown, refused) = creative::apply(mode, inventory, sets, known);
-            dropped.extend(thrown);
-            for why in refused {
-                diag::warn!(World, "Minecraft creative slot refused: {why:?}");
+            if sets.is_empty() {
+                continue;
             }
+            let next = after.get_or_insert_with(|| scratch(base));
+            let mode = PlayerMode::new(GameMode::Creative);
+            creative::apply(&mode, next, sets.clone(), &|_| true);
+            all.extend(sets);
         }
         ui.clicks = rest;
         if !self.creative_mode {
             ui.screen = McScreen::Inventory;
         }
-        dropped
+        all
     }
 }
 
@@ -903,6 +942,130 @@ mod tests {
         assert_eq!(ui.screen, McScreen::Inventory);
         assert_eq!(ui.clicks.len(), 1);
         creative.apply(&mut ui, &survival_mode, &mut inventory, &|_| true);
+        assert_eq!(ui.screen, McScreen::Inventory);
+    }
+
+    #[test]
+    fn sets_take_creative_clicks_without_touching_the_inventory() {
+        let mut inventory = Inventory::default();
+        inventory.slots[2] = Some(ItemStack::new("minecraft:stone", 5));
+        inventory.slots[3] = Some(ItemStack::new("minecraft:dirt", 7));
+        let before = (inventory.slots.clone(), inventory.cursor.clone());
+        let mut ui = MinecraftUi {
+            screen: McScreen::Creative(McTabKind::Inventory),
+            ..MinecraftUi::default()
+        };
+        let plain = McClick::Slot {
+            slot: McSlot::Inventory(4),
+            right: false,
+            shift: false,
+        };
+        ui.clicks = vec![
+            McClick::Clone(McSlot::Inventory(2)),
+            McClick::Clone(McSlot::Inventory(3)),
+            plain.clone(),
+            McClick::Slot {
+                slot: McSlot::Trash,
+                right: false,
+                shift: false,
+            },
+        ];
+        let mut creative = CreativeUi {
+            started: true,
+            ..CreativeUi::default()
+        };
+        creative.prepare(true, false);
+        let sets = creative.sets(&mut ui, &inventory);
+        let stone = ItemStack {
+            count: 64,
+            ..ItemStack::new("minecraft:stone", 5)
+        };
+        assert_eq!(
+            sets,
+            vec![
+                (CreativeSlot::Carried, Some(stone)),
+                (CreativeSlot::Carried, None)
+            ]
+        );
+        assert_eq!((inventory.slots.clone(), inventory.cursor.clone()), before);
+        assert_eq!(ui.clicks, vec![plain]);
+        assert_eq!(ui.screen, McScreen::Creative(McTabKind::Inventory));
+    }
+
+    #[test]
+    fn hotbar_sets_load_nine_slots_and_save_locally() {
+        let file = std::env::temp_dir().join(format!(
+            "iw4l-creative-hotbar-test-{}.nbt",
+            std::process::id()
+        ));
+        let mut creative = CreativeUi {
+            started: true,
+            hotbars: Some(Hotbars::default()),
+            hotbar_file: Some(file.clone()),
+            ..CreativeUi::default()
+        };
+        creative.prepare(true, false);
+        let torch = ItemStack::new("minecraft:torch", 16);
+        let mut inventory = Inventory::default();
+        inventory.slots[4] = Some(torch.clone());
+        let before = inventory.slots.clone();
+        let mut ui = MinecraftUi::default();
+        ui.creative.hotbar_key = Some((1, false));
+        assert!(creative.hotbar_sets(&mut ui, &inventory).is_empty());
+        assert_eq!(inventory.slots, before);
+        assert!(ui.creative.saved.is_some());
+        let saved = Hotbars::read(&file);
+        let _ = std::fs::remove_file(&file);
+        let row = saved.row(1);
+        assert_eq!(
+            row[4].as_ref().map(|stack| (stack.id.as_str(), stack.count)),
+            Some(("minecraft:torch", 16))
+        );
+        ui.creative.hotbar_key = Some((1, true));
+        let sets = creative.hotbar_sets(&mut ui, &inventory);
+        assert!(ui.creative.hotbar_key.is_none());
+        assert_eq!(sets.len(), 9);
+        for (index, (slot, stack)) in sets.iter().enumerate() {
+            assert_eq!(*slot, CreativeSlot::Menu(36 + index));
+            assert_eq!(stack.is_some(), index == 4);
+        }
+        assert_eq!(sets[4].1, Some(torch));
+        creative.prepare(false, false);
+        ui.creative.hotbar_key = Some((1, true));
+        assert!(creative.hotbar_sets(&mut ui, &inventory).is_empty());
+    }
+
+    #[test]
+    fn a_loaded_creative_ui_turns_the_inventory_screen_into_the_creative_screen() {
+        let mut creative = CreativeUi {
+            started: true,
+            tabs: Some(Arc::new(CreativeTabs {
+                tabs: vec![category(
+                    "minecraft:building_blocks",
+                    "itemGroup.buildingBlocks",
+                    &["minecraft:stone"],
+                    false,
+                )],
+                ..CreativeTabs::default()
+            })),
+            ..CreativeUi::default()
+        };
+        let mut ui = MinecraftUi::default();
+        let recipes = RecipeBook::default();
+        creative.prepare(true, false);
+        creative.refresh(&mut ui, &recipes, None);
+        assert_eq!(ui.screen, McScreen::Inventory);
+        ui.creative.tabs = creative
+            .take_tabs()
+            .unwrap()
+            .into_iter()
+            .map(|(tab, _)| tab)
+            .collect();
+        creative.refresh(&mut ui, &recipes, None);
+        assert_eq!(ui.screen, McScreen::Creative(McTabKind::Category));
+        creative.prepare(false, false);
+        ui.screen = McScreen::Inventory;
+        creative.refresh(&mut ui, &recipes, None);
         assert_eq!(ui.screen, McScreen::Inventory);
     }
 

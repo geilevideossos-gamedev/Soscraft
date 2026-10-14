@@ -324,6 +324,7 @@ fn link_scene_ents(
     gfx: Res<HostGfxScene>,
     mut bits: ResMut<SceneEntCellBits>,
     mut cache: Local<SceneEntCellCache>,
+    mut reported: Local<bool>,
 ) {
     if !bits.is_ready() {
         return;
@@ -352,15 +353,42 @@ fn link_scene_ents(
         };
     }
     cache.linked.clear();
+    let every_cell = sim::voxel::active();
+    if every_cell
+        && !*reported
+        && let Some((ent_id, z)) = first_scene_ent_without_cell(&dpvs, &gfx.scene)
+    {
+        *reported = true;
+        diag::info!(
+            World,
+            "minecraft scene ents: entity {ent_id} at map z {z:.0} has no cell in the stand-in map, linked into every cell"
+        );
+    }
     for model in &gfx.scene.scene_models {
         if let Some(bounds) = scene_ent_pose_bounds(model.origin, model.radius, model.posed_bounds)
         {
-            cache.link(&dpvs, &mut bits.bits, bounds, scene_info_entnum(model.info));
+            if every_cell {
+                link_every_cell(
+                    &mut bits.bits,
+                    cull.dpvs.cell_count,
+                    scene_info_entnum(model.info),
+                );
+            } else {
+                cache.link(&dpvs, &mut bits.bits, bounds, scene_info_entnum(model.info));
+            }
         }
     }
     for dobj in &gfx.scene.scene_dobjs {
         if let Some(bounds) = scene_ent_pose_bounds(dobj.origin, dobj.radius, dobj.posed_bounds) {
-            cache.link(&dpvs, &mut bits.bits, bounds, scene_info_entnum(dobj.info));
+            if every_cell {
+                link_every_cell(
+                    &mut bits.bits,
+                    cull.dpvs.cell_count,
+                    scene_info_entnum(dobj.info),
+                );
+            } else {
+                cache.link(&dpvs, &mut bits.bits, bounds, scene_info_entnum(dobj.info));
+            }
         }
     }
     for brush in &gfx.scene.scene_brushes {
@@ -389,6 +417,40 @@ fn scene_ent_pose_bounds(
     posed_bounds: Option<Bounds>,
 ) -> Option<Bounds> {
     posed_bounds.or_else(|| radius.map(|r| Bounds::from_mid_half(origin, [r, r, r])))
+}
+
+fn link_every_cell(bits: &mut [u32], cell_count: usize, ent_id: u32) {
+    for cell in 0..cell_count {
+        dpvs_iw4::add_scene_ent_to_cell(bits, cell, ent_id);
+    }
+}
+
+fn first_scene_ent_without_cell(
+    dpvs: &DpvsPlanes<'_>,
+    scene: &render_frontend::GfxScene,
+) -> Option<(u32, f32)> {
+    let models = scene.scene_models.iter().map(|model| {
+        (
+            model.info,
+            scene_ent_pose_bounds(model.origin, model.radius, model.posed_bounds),
+        )
+    });
+    let dobjs = scene.scene_dobjs.iter().map(|dobj| {
+        (
+            dobj.info,
+            scene_ent_pose_bounds(dobj.origin, dobj.radius, dobj.posed_bounds),
+        )
+    });
+    models.chain(dobjs).find_map(|(info, bounds)| {
+        let bounds = bounds?;
+        let mut any = false;
+        dpvs_iw4::scene_ent_cells(dpvs, bounds, &mut |_| any = true);
+        (!any).then(|| (scene_info_entnum(info), bounds.mid()[2]))
+    })
+}
+
+fn cell_planes(planes: Option<DpvsPlanes<'_>>, minecraft: bool) -> Option<DpvsPlanes<'_>> {
+    planes.filter(|_| !minecraft)
 }
 
 fn reaches_cell(dpvs: Option<&DpvsPlanes<'_>>, bounds: Bounds, cell: usize) -> bool {
@@ -468,11 +530,14 @@ fn exec_cell_scene_ent_cmds(
         .unwrap_or_default();
     let mut pending: Vec<DpvsEntWorkerCmd> = Vec::new();
     let cull = world.as_ref().and_then(|w| w.cull.as_ref());
-    let dpvs = cull.map(|cull| DpvsPlanes {
-        planes: &cull.dpvs.planes,
-        nodes: &cull.dpvs.nodes,
-        cell_count: cull.dpvs.cell_count as u32,
-    });
+    let dpvs = cell_planes(
+        cull.map(|cull| DpvsPlanes {
+            planes: &cull.dpvs.planes,
+            nodes: &cull.dpvs.nodes,
+            cell_count: cull.dpvs.cell_count as u32,
+        }),
+        sim::voxel::active(),
+    );
     let inputs = &mut *skin_inputs;
     let cache = &mut *surface_cache;
     let scene = &mut gfx.scene;
@@ -604,11 +669,14 @@ fn drain_dpvs_ent_cmds(
         .map(|s| s.frustum_planes.clone())
         .unwrap_or_default();
     let cull = world.as_ref().and_then(|w| w.cull.as_ref());
-    let dpvs = cull.map(|cull| DpvsPlanes {
-        planes: &cull.dpvs.planes,
-        nodes: &cull.dpvs.nodes,
-        cell_count: cull.dpvs.cell_count as u32,
-    });
+    let dpvs = cell_planes(
+        cull.map(|cull| DpvsPlanes {
+            planes: &cull.dpvs.planes,
+            nodes: &cull.dpvs.nodes,
+            cell_count: cull.dpvs.cell_count as u32,
+        }),
+        sim::voxel::active(),
+    );
     let inputs = &mut *skin_inputs;
     let cache = &mut *surface_cache;
     let scene = &mut gfx.scene;
@@ -641,4 +709,91 @@ fn drain_dpvs_ent_cmds(
             skin_scene_ent_and_mark(scene, inputs, cache, entnum);
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dpvs_iw4::{CPlane, scene_ent_in_cell};
+
+    const PLANES: [CPlane; 1] = [CPlane {
+        normal: [0.0, 0.0, 1.0],
+        dist: 0.0,
+        r#type: 2,
+    }];
+    const NODES: [u16; 4] = [2, 3, 1, 0];
+
+    fn stand_in_map() -> DpvsPlanes<'static> {
+        DpvsPlanes {
+            planes: &PLANES,
+            nodes: &NODES,
+            cell_count: 1,
+        }
+    }
+
+    fn body_at(z: f32) -> Bounds {
+        Bounds::from_mid_half([100.0, 200.0, z], [16.0, 16.0, 36.0])
+    }
+
+    fn cells_of(dpvs: &DpvsPlanes<'_>, bounds: Bounds) -> Vec<u32> {
+        let mut cells = Vec::new();
+        dpvs_iw4::scene_ent_cells(dpvs, bounds, &mut |cell| cells.push(cell));
+        cells
+    }
+
+    #[test]
+    fn a_body_below_the_stand_in_map_reaches_no_cell() {
+        let dpvs = stand_in_map();
+        let nether = body_at(-45_000.0);
+        assert!(cells_of(&dpvs, nether).is_empty());
+        assert!(!reaches_cell(Some(&dpvs), nether, 0));
+        let end = body_at(43_000.0);
+        assert_eq!(cells_of(&dpvs, end), vec![0]);
+        assert!(reaches_cell(Some(&dpvs), end, 0));
+    }
+
+    #[test]
+    fn a_minecraft_world_links_every_scene_entity_into_every_cell() {
+        let mut bits = vec![0u32; scene_ent_cell_bits_len(1)];
+        link_every_cell(&mut bits, 1, 37);
+        assert!(scene_ent_in_cell(&bits, 0, 37));
+        assert!(!scene_ent_in_cell(&bits, 0, 36));
+        assert!(reaches_cell(None, body_at(-45_000.0), 0));
+
+        let mut three = vec![0u32; scene_ent_cell_bits_len(3)];
+        link_every_cell(&mut three, 3, 5);
+        assert!((0..3).all(|cell| scene_ent_in_cell(&three, cell, 5)));
+    }
+
+    #[test]
+    fn the_cell_planes_are_dropped_only_in_minecraft_worlds() {
+        assert!(cell_planes(Some(stand_in_map()), true).is_none());
+        let kept = cell_planes(Some(stand_in_map()), false).expect("MW2 maps keep their cells");
+        assert_eq!(kept.cell_count, 1);
+        assert!(cell_planes(None, false).is_none());
+        assert!(cell_planes(None, true).is_none());
+    }
+
+    #[test]
+    fn the_first_scene_entity_without_a_cell_is_found_below_the_map() {
+        let dpvs = stand_in_map();
+        let model = |entnum: u32, z: f32| render_frontend::GfxSceneModel {
+            origin: [0.0, 0.0, z],
+            lighting_origin: [0.0, 0.0, z],
+            radius: Some(16.0),
+            info: entnum << 7,
+            scale: 1.0,
+            quat: None,
+            posed_bounds: None,
+        };
+        let mut scene = render_frontend::GfxScene::default();
+        scene.scene_models.push(model(3, 100.0));
+        assert_eq!(first_scene_ent_without_cell(&dpvs, &scene), None);
+        scene.scene_models.push(model(9, -45_000.0));
+        scene.scene_models.push(model(11, -46_000.0));
+        assert_eq!(
+            first_scene_ent_without_cell(&dpvs, &scene),
+            Some((9, -45_000.0))
+        );
+    }
 }

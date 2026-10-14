@@ -140,6 +140,8 @@ pub struct RecipeBook {
     auto_unlocks: Vec<AutoUnlockRule>,
     display_indices: HashMap<String, Vec<u32>>,
     item_catalog: Option<Arc<ItemCatalog>>,
+    jar_ids: HashSet<String>,
+    reserved_slots: Option<fn(&str) -> Option<usize>>,
 }
 impl RecipeBook {
     pub fn from_jar(path: &Path) -> Result<Self> {
@@ -181,6 +183,16 @@ impl RecipeBook {
             }
         }
         raw_recipes.sort_by(|a, b| a.0.cmp(&b.0));
+        let jar_ids = raw_recipes
+            .iter()
+            .map(|(name, _)| {
+                format!(
+                    "minecraft:{}",
+                    name.trim_start_matches("data/minecraft/recipe/")
+                        .trim_end_matches(".json")
+                )
+            })
+            .collect();
         let mut recipes = Vec::new();
         let mut smelting = Vec::new();
         for (name, value) in raw_recipes {
@@ -262,7 +274,15 @@ impl RecipeBook {
             auto_unlocks,
             display_indices: HashMap::new(),
             item_catalog: None,
+            jar_ids,
+            reserved_slots: None,
         })
+    }
+
+    pub fn has_recipe(&self, id: &str) -> bool {
+        self.jar_ids.contains(id)
+            || self.recipes.iter().any(|recipe| recipe.id == id)
+            || self.smelting.iter().any(|entry| entry.id == id)
     }
 
     /// Load display IDs observed from the pinned server recipe manager. The
@@ -306,6 +326,30 @@ impl RecipeBook {
         Ok(self)
     }
 
+    pub fn with_extra(mut self, recipes: impl IntoIterator<Item = (String, Value)>) -> Self {
+        let vanilla = u32::try_from(self.recipes.len() + self.smelting.len()).unwrap_or(u32::MAX);
+        let mut next = self
+            .display_indices
+            .values()
+            .flatten()
+            .max()
+            .map_or(0, |index| index.saturating_add(1))
+            .max(vanilla);
+        for (id, value) in recipes {
+            let Some(mut recipe) = parse_recipe(&value) else {
+                continue;
+            };
+            if self.recipes.iter().any(|known| known.id == id) {
+                continue;
+            }
+            recipe.id = id.clone();
+            self.recipes.push(recipe);
+            self.display_indices.insert(id, vec![next]);
+            next = next.saturating_add(1);
+        }
+        self
+    }
+
     pub fn display_indices(&self, id: &str) -> Option<&[u32]> {
         self.display_indices.get(id).map(Vec::as_slice)
     }
@@ -338,6 +382,15 @@ impl RecipeBook {
         }
         self.item_catalog = Some(catalog);
         self
+    }
+
+    pub fn with_reserved_slots(mut self, slot: fn(&str) -> Option<usize>) -> Self {
+        self.reserved_slots = Some(slot);
+        self
+    }
+
+    pub fn reserved_slot(&self, id: &str) -> Option<usize> {
+        self.reserved_slots.and_then(|slot| slot(id))
     }
 
     pub fn item_catalog(&self) -> Option<&ItemCatalog> {
@@ -748,6 +801,21 @@ impl RecipeBook {
         })
     }
 
+    pub fn matching_id(
+        &self,
+        grid: &[Option<ItemStack>],
+        width: usize,
+        height: usize,
+    ) -> Option<&str> {
+        if grid.len() != width * height {
+            return None;
+        }
+        self.recipes
+            .iter()
+            .find(|recipe| self.recipe_matches(recipe, grid, width, height))
+            .map(|recipe| recipe.id.as_str())
+    }
+
     pub fn matches_crafting_id(
         &self,
         recipe_id: &str,
@@ -974,8 +1042,8 @@ fn parse_recipe(value: &Value) -> Option<Recipe> {
     };
     Some(Recipe {
         id: String::new(),
-        category: "misc".to_owned(),
-        group: None,
+        category: value.get("category").and_then(Value::as_str).unwrap_or("misc").to_owned(),
+        group: value.get("group").and_then(Value::as_str).filter(|group| !group.is_empty()).map(str::to_owned),
         kind,
         result,
     })
@@ -985,7 +1053,12 @@ fn parse_result(value: &Value) -> Option<ItemStack> {
     let result = value.get("result")?;
     let id = result.get("id")?.as_str()?;
     let count = u8::try_from(result.get("count").and_then(Value::as_u64).unwrap_or(1)).ok()?;
-    Some(ItemStack::new(id, count))
+    let mut stack = ItemStack::new(id, count);
+    stack.components = result
+        .get("components")
+        .filter(|components| components.as_object().is_some_and(|map| !map.is_empty()))
+        .cloned();
+    Some(stack)
 }
 
 fn trim_pattern(rows: Vec<Vec<Option<Ingredient>>>) -> Option<Vec<Vec<Option<Ingredient>>>> {
@@ -1111,6 +1184,128 @@ mod tests {
         assert_eq!(inv.count("minecraft:oak_log"), 3);
         assert!(inv.workbench.iter().all(Option::is_none));
     }
+    #[test]
+    fn a_recipe_result_keeps_its_components() {
+        let effects = serde_json::json!({"minecraft:suspicious_stew_effects": [{"duration": 60, "id": "minecraft:fire_resistance"}]});
+        let recipe = parse_recipe(&serde_json::json!({
+            "type": "minecraft:crafting_shapeless",
+            "ingredients": ["minecraft:bowl", "minecraft:allium"],
+            "result": {"id": "minecraft:suspicious_stew", "components": effects.clone()}
+        }))
+        .unwrap();
+        assert_eq!(recipe.result.components.as_ref(), Some(&effects));
+        let plain = parse_recipe(&serde_json::json!({
+            "type": "minecraft:crafting_shapeless",
+            "ingredients": ["minecraft:bowl"],
+            "result": {"id": "minecraft:mushroom_stew", "components": {}}
+        }))
+        .unwrap();
+        assert_eq!(plain.result.components, None);
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        let mut grid: [Option<ItemStack>; 9] = std::array::from_fn(|_| None);
+        grid[0] = Some(ItemStack::new("minecraft:bowl", 1));
+        grid[1] = Some(ItemStack::new("minecraft:red_mushroom", 1));
+        grid[2] = Some(ItemStack::new("minecraft:brown_mushroom", 1));
+        grid[4] = Some(ItemStack::new("minecraft:allium", 1));
+        let stew = book.matching(&grid, 3, 3).unwrap();
+        assert_eq!(stew.id, "minecraft:suspicious_stew");
+        assert_eq!(stew.components, Some(effects));
+        grid[4] = Some(ItemStack::new("minecraft:oxeye_daisy", 1));
+        let regeneration = book.matching(&grid, 3, 3).unwrap();
+        assert_eq!(
+            regeneration.components.as_ref().and_then(|c| c["minecraft:suspicious_stew_effects"][0]["id"].as_str()),
+            Some("minecraft:regeneration")
+        );
+        let mut planks: [Option<ItemStack>; 4] = std::array::from_fn(|_| None);
+        planks[0] = Some(ItemStack::new("minecraft:oak_log", 1));
+        assert_eq!(book.matching(&planks, 2, 2).map(|stack| stack.components), Some(None));
+    }
+
+    #[test]
+    fn extra_recipes_get_display_indices_after_vanilla() {
+        let mut book = RecipeBook::default();
+        for (id, pattern) in [("minecraft:a", "AA"), ("minecraft:b", "BB")] {
+            let mut recipe = parse_recipe(&serde_json::json!({
+                "type": "minecraft:crafting_shaped",
+                "key": {"A": "minecraft:stone", "B": "minecraft:dirt"},
+                "pattern": [pattern],
+                "result": {"id": id}
+            }))
+            .unwrap();
+            recipe.id = id.to_owned();
+            book.recipes.push(recipe);
+        }
+        book.display_indices.insert("minecraft:a".into(), vec![7]);
+        book.display_indices.insert("minecraft:b".into(), vec![40]);
+        let gun = serde_json::json!({
+            "type": "minecraft:crafting_shaped", "category": "equipment", "group": "fork_guns",
+            "key": {"I": "minecraft:iron_ingot", "G": "minecraft:gunpowder"},
+            "pattern": ["IG"], "result": {"id": "fork:gun"}
+        });
+        let ammo = serde_json::json!({
+            "type": "minecraft:crafting_shapeless", "category": "equipment",
+            "ingredients": ["minecraft:gunpowder", "minecraft:copper_ingot"], "result": {"id": "fork:ammo", "count": 16}
+        });
+        let book = book.with_extra([
+            ("fork:gun".to_owned(), gun),
+            ("minecraft:a".to_owned(), ammo.clone()),
+            ("fork:broken".to_owned(), serde_json::json!({"type": "minecraft:crafting_shaped"})),
+            ("fork:ammo".to_owned(), ammo),
+        ]);
+        assert_eq!(book.count(), 4);
+        assert_eq!(book.display_indices("fork:gun"), Some(&[41][..]));
+        assert_eq!(book.display_indices("fork:ammo"), Some(&[42][..]));
+        assert_eq!(book.display_indices("minecraft:a"), Some(&[7][..]));
+        assert_eq!(book.display_indices("fork:broken"), None);
+        let gun = book.crafting_recipes().find(|recipe| recipe.id == "fork:gun").unwrap();
+        assert_eq!((gun.category, gun.group, gun.width, gun.height), ("equipment", Some("fork_guns"), 2, 1));
+        let ammo = book.crafting_recipes().find(|recipe| recipe.id == "fork:ammo").unwrap();
+        assert_eq!((ammo.category, ammo.group, ammo.result.count), ("equipment", None, 16));
+        let grid = [
+            Some(ItemStack::new("minecraft:gunpowder", 1)),
+            Some(ItemStack::new("minecraft:iron_ingot", 1)),
+            None,
+            None,
+        ];
+        assert_eq!(book.matching(&grid, 2, 2).map(|stack| stack.id), Some("fork:gun".to_owned()));
+        let bare = RecipeBook::default().with_extra([("fork:gun".to_owned(), serde_json::json!({
+            "type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:stick"], "result": {"id": "fork:gun"}
+        }))]);
+        assert_eq!(bare.display_indices("fork:gun"), Some(&[0][..]));
+        let mut inventory = Inventory::default().with_recipes(book);
+        inventory.notice_item_changed(&ItemStack::new("minecraft:gunpowder", 1));
+        assert!(inventory.unlocked_recipes.is_empty());
+    }
+
+    #[test]
+    fn every_recipe_of_the_jar_and_every_extra_recipe_is_known() {
+        let book = RecipeBook::default().with_extra([("fork:gun".to_owned(), serde_json::json!({
+            "type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:stick"], "result": {"id": "fork:gun"}
+        }))]);
+        assert!(book.has_recipe("fork:gun"));
+        assert!(!book.has_recipe("minecraft:oak_planks"));
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        assert!(book.has_recipe("minecraft:oak_planks"));
+        assert!(book.has_recipe("minecraft:iron_ingot_from_smelting_raw_iron"));
+        assert!(book.has_recipe("minecraft:andesite_slab_from_andesite_stonecutting"));
+        assert!(!book.has_recipe("minecraft:andesite_slab_from_andesite_stonecutting_x"));
+        assert!(!book.has_recipe("minecraft:recipe/oak_planks"));
+    }
+
     #[test]
     fn pinned_jar_furnace_recipe_matches_when_available() {
         let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(

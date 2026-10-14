@@ -1157,6 +1157,7 @@ mod tests {
                             forward: 0.0,
                             strafe: 0.0,
                             jumping: false,
+                            swirl: None,
                         },
                         inventory: &mut minecraftoss_player::inventory::Inventory::default(),
                         selected: 0,

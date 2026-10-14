@@ -75,6 +75,13 @@ pub(crate) fn bar_color(damage: u32, max: u32) -> u32 {
     hsv_to_rgb(left / 3.0, 1.0, 1.0)
 }
 
+pub(crate) fn clip_bar(loaded: u32, capacity: u32) -> (i32, u32) {
+    let capacity = capacity.max(1);
+    let loaded = loaded.min(capacity);
+    let width = (1 + loaded as i32 * 12 / capacity as i32).min(13);
+    (width, bar_color(capacity - loaded, capacity))
+}
+
 pub(crate) fn cooldown_of(ui: &MinecraftUi, stack: &McStack) -> f32 {
     ui.cooldowns
         .iter()
@@ -683,7 +690,20 @@ impl<'a> Painter<'a> {
         y: i32,
         color: u32,
     ) {
-        let (x, y) = (x as f32, y as f32);
+        self.item_sized(ui, weapons, stack, [x as f32, y as f32], 16.0, color);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn item_sized(
+        &mut self,
+        ui: &MinecraftUi,
+        weapons: Option<&PreparedWeapons>,
+        stack: &McStack,
+        [x, y]: [f32; 2],
+        size: f32,
+        color: u32,
+    ) {
+        let half = size * 0.5;
         if let Some(weapon) = stack.weapon {
             let Some(registry) = weapons else { return };
             let namespace = registry
@@ -704,8 +724,8 @@ impl<'a> Painter<'a> {
                 _ => 1.0,
             };
             let flip = facts.as_ref().is_some_and(|f| f.flip_kill_icon);
-            let w: f32 = 18.0;
-            let h = (w / ratio).min(16.0);
+            let w: f32 = 18.0 * size / 16.0;
+            let h = (w / ratio).min(size);
             let st = if flip {
                 [1.0, 0.0, 0.0, 1.0]
             } else {
@@ -716,10 +736,10 @@ impl<'a> Painter<'a> {
                 &icon,
                 namespace,
                 [
-                    x + 8.0 - w * 0.5,
-                    y + 8.0 - h * 0.5,
-                    x + 8.0 + w * 0.5,
-                    y + 8.0 + h * 0.5,
+                    x + half - w * 0.5,
+                    y + half - h * 0.5,
+                    x + half + w * 0.5,
+                    y + half + h * 0.5,
                 ],
                 st,
                 argb(color),
@@ -728,24 +748,24 @@ impl<'a> Painter<'a> {
         }
         let icon = ui
             .animated_icon_rects
-            .get(&stack.id)
+            .get(&stack.icon)
             .map(|&st| (ANIMATED_ICON_MATERIAL, st))
-            .or_else(|| ui.icon_rects.get(&stack.id).map(|&st| (ICON_MATERIAL, st)));
+            .or_else(|| ui.icon_rects.get(&stack.icon).map(|&st| (ICON_MATERIAL, st)));
         if let Some((material, st)) = icon {
             self.rect(
                 material,
                 HUD_CHROME_NAMESPACE,
-                [x, y, x + 16.0, y + 16.0],
+                [x, y, x + size, y + size],
                 st,
                 argb(color),
             );
             if stack.glint {
-                self.glint(material, x, y, st);
+                self.glint(material, x, y, st, size);
             }
         }
     }
 
-    fn glint(&mut self, material: &str, x: f32, y: f32, st: [f32; 4]) {
+    fn glint(&mut self, material: &str, x: f32, y: f32, st: [f32; 4], size: f32) {
         let cell = |lo: f32, hi: f32| (lo / (hi - lo).max(f32::EPSILON)).round();
         let cell = [cell(st[0], st[2]), cell(st[1], st[3])];
         let shift = self.glint_shift;
@@ -762,7 +782,7 @@ impl<'a> Painter<'a> {
         self.rect(
             material,
             HUD_CHROME_NAMESPACE,
-            [x, y, x + 16.0, y + 16.0],
+            [x, y, x + size, y + size],
             st,
             [1.0, 1.0, 1.0, frame::minecraft_ui::GLINT_STRENGTH],
         );
@@ -792,6 +812,11 @@ impl<'a> Painter<'a> {
                 y + 14,
                 opaque(bar_color(damage, max)),
             );
+        }
+        if let Some((loaded, capacity)) = stack.clip {
+            let (width, color) = clip_bar(loaded, capacity);
+            self.fill(x + 2, y + 13, x + 15, y + 15, 0xff00_0000);
+            self.fill(x + 2, y + 13, x + 2 + width, y + 14, opaque(color));
         }
         if let Some([top, bottom]) = cooldown_rows(cooldown_of(ui, stack)) {
             self.fill(x, y + top, x + 16, y + bottom, 0x7FFF_FFFF);
@@ -966,6 +991,17 @@ mod tests {
     }
 
     #[test]
+    fn a_gun_s_clip_bar_is_green_when_full_and_red_when_empty() {
+        assert_eq!(clip_bar(30, 30), (13, 0x00FF00));
+        assert_eq!(clip_bar(0, 30), (1, 0xFF0000));
+        assert_eq!(clip_bar(15, 30).0, 7);
+        assert_eq!(clip_bar(29, 30).0, 12);
+        assert_eq!(clip_bar(17, 24).0, 9);
+        assert_eq!(clip_bar(40, 30), (13, 0x00FF00));
+        assert_eq!(clip_bar(0, 0), (1, 0xFF0000));
+    }
+
+    #[test]
     fn tooltips_flip_left_and_clamp_up() {
         assert_eq!(
             tooltip_position([400, 300], [100, 100], [50, 20]),
@@ -1081,6 +1117,9 @@ mod tests {
             contents: Vec::new(),
             more: None,
             glint: false,
+            icon: "minecraft:dirt".into(),
+            lore: Vec::new(),
+            clip: None,
         };
         let mut ui = MinecraftUi::default();
         painter.decorations(&ui, &stack, [0, 0], Some(("ab".into(), YELLOW)));
@@ -1140,6 +1179,9 @@ mod tests {
             contents: Vec::new(),
             more: None,
             glint,
+            icon: id.into(),
+            lore: Vec::new(),
+            clip: None,
         }
     }
 

@@ -244,6 +244,7 @@ pub struct EntitySnapshot {
     pub frames: Vec<crate::item_frame::FrameView>,
     pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
     pub dragon_explosions: Vec<(glam::DVec3, bool)>,
+    pub swirls: Vec<crate::spell_particles::SwirlView>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -293,6 +294,7 @@ impl ServerSim {
         let worldgen: &'static WorldGen = leaked;
         let range = states.vertical_range();
         let mut level = Level::new(&worldgen.library, range.start, range.end - range.start);
+        minecraftoss_world::level::burning::add_fire_resistant_items(crate::fork_items::fire_proof_ids());
         level.random_sequences = minecraftoss_core::loot::RandomSequences::new(worldgen.terrain.seed);
         level.destroyed = Some(Vec::new());
         if let Err(e) = level.set_dimension(dimension_type) {
@@ -1598,6 +1600,10 @@ impl ServerSim {
 
     pub fn cloud_views(&self) -> Vec<crate::effect_cloud::CloudView> {
         self.clouds.iter().map(crate::effect_cloud::EffectCloud::view).collect()
+    }
+
+    pub fn swirl_views(&self) -> Vec<crate::spell_particles::SwirlView> {
+        mob_swirls(&self.mobs)
     }
 
     fn douse_fire(&mut self, (x, y, z): BlockPos) {
@@ -3848,6 +3854,19 @@ fn player_left(sim: &mut ServerSim, running: Option<&mut TickInput>, player: u64
     sim.player_left(player);
 }
 
+pub fn mob_swirls(mobs: &minecraftoss_entities::world::EntityWorld) -> Vec<crate::spell_particles::SwirlView> {
+    crate::thrown::targets(mobs)
+        .iter()
+        .filter_map(|target| {
+            let effects = mobs.mob_effects(target.id).filter(|effects| !effects.is_empty())?;
+            let range = crate::mob_tracking::tracking_range(mobs.entity_type(target.id).unwrap_or(""));
+            let size = target.max - target.min;
+            let colors = effects.iter().map(|effect| (crate::potions::effect_color(effect.effect.id()).unwrap_or(0), effect.ambient, effect.visible));
+            crate::spell_particles::SwirlView::of_effects((crate::thrown::target_feet(target), size.x as f32, size.y as f32), colors, false, range)
+        })
+        .collect()
+}
+
 fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     let (centre, range) = input.tracking;
     let centres: Vec<[f64; 3]> = std::iter::once(centre).chain(input.watchers.iter().map(|watcher| watcher.feet)).collect();
@@ -3856,7 +3875,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views() });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -8160,6 +8179,24 @@ mod tests {
     }
 
     #[test]
+    fn a_netherite_gun_survives_lava_and_other_guns_burn() {
+        let Some((mut server, mut scene)) = burn_world() else { return };
+        lava_pool(&mut server, &mut scene, (5, 201, 5));
+        lava_pool(&mut server, &mut scene, (11, 201, 11));
+        let clip = Some(r#"{"minecraft:custom_data":{"iw4l":{"clip":5}}}"#);
+        let barrett = server.spawn_item("iw4l:barrett", 1, clip, [5.5, 202.5, 5.5], [0.0; 3], 10, 0);
+        let m4 = server.spawn_item("iw4l:m4", 1, clip, [11.5, 202.5, 11.5], [0.0; 3], 10, 0);
+        for _ in 0..300 {
+            server.tick();
+        }
+        assert!(alive(&server, m4).is_none(), "an iron gun burns up in lava");
+        let kept = alive(&server, barrett).expect("the Barrett is netherite and survives lava");
+        assert!(!kept.on_fire);
+        let components: serde_json::Value = serde_json::from_str(kept.components.as_deref().unwrap()).unwrap();
+        assert_eq!(components["minecraft:custom_data"]["iw4l"]["clip"], 5);
+    }
+
+    #[test]
     fn fire_and_soul_fire_burn_items_silently() {
         let Some((mut server, mut scene)) = burn_world() else { return };
         place(&mut server, &mut scene, (5, 201, 5), Block::new("minecraft:netherrack"));
@@ -8245,6 +8282,32 @@ mod tests {
         assert!(crate::server_mobs::load_level_entity(&mut server.level, &old));
         let resaved = sword(&server).expect("the old sword is saved again");
         assert_eq!(resaved.get("Item").and_then(|item| item.get("components")), Some(saved_components));
+    }
+
+    #[test]
+    fn a_dropped_gun_is_saved_as_a_vanilla_item_entity_and_comes_back() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = door_world() else { return };
+        let components = r#"{"minecraft:custom_data":{"iw4l":{"attachments":["reflex"],"clip":27}}}"#;
+        server.spawn_item("iw4l:m4", 1, Some(components), [8.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        server.spawn_item("iw4l:frag_grenade", 5, None, [9.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        server.spawn_item("iw4:weapon/12", 1, None, [10.5, 201.0, 8.5], [0.0; 3], 10, 0);
+        let saved = crate::server_mobs::level_entity_tags(&server.level, |_| true);
+        let items: Vec<&Tag> = saved.iter().filter_map(|tag| tag.get("Item")).collect();
+        let mut ids: Vec<&str> = items.iter().filter_map(|item| item.get("id").and_then(Tag::as_str)).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["minecraft:carrot_on_a_stick", "minecraft:poisonous_potato"], "the killstreak mirror is not saved");
+        let gun = items.iter().find(|item| item.get("id").and_then(Tag::as_str) == Some("minecraft:carrot_on_a_stick")).unwrap();
+        let state = gun.get("components").and_then(|c| c.get("minecraft:custom_data")).and_then(|c| c.get("iw4l"));
+        assert_eq!(state.and_then(|s| s.get("id")), Some(&Tag::String("iw4l:m4".to_owned())));
+        assert_eq!(state.and_then(|s| s.get("clip")), Some(&Tag::Int(27)));
+        server.level.entities.clear();
+        for tag in &saved {
+            assert!(crate::server_mobs::load_level_entity(&mut server.level, tag));
+        }
+        let mut back: Vec<(String, i32, Option<String>)> = server.items().into_iter().map(|i| (i.item, i.count, i.components)).collect();
+        back.sort();
+        assert_eq!(back, [("iw4l:frag_grenade".to_owned(), 5, None), ("iw4l:m4".to_owned(), 1, Some(components.to_owned()))]);
     }
 
     #[test]
@@ -9069,6 +9132,27 @@ mod tests {
     }
 
     #[test]
+    fn a_cow_with_poison_gives_off_a_poison_green_swirl() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[2.5d,64.0d,-3.5d],active_effects:[{id:\"minecraft:poison\",amplifier:0b,duration:900}]}").unwrap();
+        let plain = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[8.5d,64.0d,-3.5d]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        crate::server_mobs::spawn_saved(&mut world, &tag).expect("cows load");
+        crate::server_mobs::spawn_saved(&mut world, &plain).expect("cows load");
+        let swirls = mob_swirls(&world);
+        assert_eq!(swirls.len(), 1);
+        let swirl = &swirls[0];
+        assert_eq!(swirl.colors.iter().map(|c| c & 0xFF_FFFF).collect::<Vec<_>>(), vec![0x87A363]);
+        assert_eq!(swirl.colors, vec![0xFF87_A363]);
+        assert!(!swirl.ambient && !swirl.invisible);
+        assert!((swirl.feet - glam::DVec3::new(2.5, 64.0, -3.5)).length() < 1e-6, "{:?}", swirl.feet);
+        assert_eq!((swirl.width, swirl.height, swirl.range), (0.9, 1.4, 10));
+        let hidden = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:cow\",Pos:[2.5d,64.0d,-3.5d],active_effects:[{id:\"minecraft:poison\",amplifier:0b,duration:900,show_particles:0b}]}").unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        crate::server_mobs::spawn_saved(&mut world, &hidden).expect("cows load");
+        assert!(mob_swirls(&world).is_empty());
+    }
+
+    #[test]
     fn levitation_and_slow_falling_on_a_mob_round_trip_through_its_save() {
         let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:zombie\",Pos:[0.5d,64.0d,0.5d],active_effects:[{id:\"minecraft:levitation\",amplifier:1b,duration:200},{id:\"minecraft:slow_falling\",amplifier:0b,duration:4800}]}").unwrap();
         let mut world = minecraftoss_entities::world::EntityWorld::default();
@@ -9872,6 +9956,44 @@ mod tests {
         assert_eq!(server.blasts.iter().filter(|(_, source)| *source == BlastSource::KeepBlocks).count(), 4);
         let growls = server.take_end_sounds().iter().filter(|sound| sound.event == crate::ender_dragon::GROWL_SOUND && sound.volume == 64.0).count();
         assert_eq!(growls, 9 + 4 + 20);
+    }
+
+    fn place_rim_crystals(server: &mut ServerSim, at: BlockPos, spots: &[(i32, i32)]) {
+        for &(dx, dz) in spots {
+            let (x, y, z) = (at.0 + dx, at.1, at.2 + dz);
+            assert_eq!(block_named(server, (x, y, z)), "minecraft:bedrock", "the rim at {dx} {dz}");
+            assert!(server.item_on_block((x, y, z), ItemOnBlock::EndCrystal), "a crystal on the rim at {dx} {dz}");
+        }
+    }
+
+    #[test]
+    fn only_crystals_touching_the_four_side_cells_of_the_exit_portal_start_a_respawn() {
+        let Some((mut server, at)) = respawn_world() else { return };
+        let corners = [(2, -2), (2, 2), (-2, 2), (-2, -2)];
+        place_rim_crystals(&mut server, at, &corners);
+        assert!(server.respawn.is_none(), "the four corner crystals miss the side cells");
+        assert!(server.take_fight_reports().is_empty());
+        assert!(!server.item_on_block((at.0 + 1, at.1, at.2 - 3), ItemOnBlock::EndCrystal), "a corner crystal's box still fills the rim block beside it");
+        let cornered = |position: glam::DVec3| corners.iter().any(|&(dx, dz)| position.x.floor() as i32 == at.0 + dx && position.z.floor() as i32 == at.2 + dz && position.y.floor() as i32 == at.1 + 1);
+        server.crystals.remove_where(cornered);
+        place_rim_crystals(&mut server, at, &[(1, -3), (3, 1), (-1, 3)]);
+        assert!(server.respawn.is_none(), "three sides are not enough");
+        assert!(server.take_fight_reports().is_empty());
+        place_rim_crystals(&mut server, at, &[(-3, -1)]);
+        let reports = server.take_fight_reports();
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        let FightReport::Respawning { stage, crystals, exit_portal } = &reports[0] else { panic!("{reports:?}") };
+        assert_eq!((*stage, crystals.len(), *exit_portal), ("start", 4, at));
+        assert!(server.respawn.is_some());
+
+        let Some((mut server, at)) = respawn_world() else { return };
+        let obsidian = server.level.registries().blocks.parse_state(crate::end_crystal::OBSIDIAN).unwrap();
+        let (x, y, z) = crate::dragon_respawn::crystal_cells(at)[0];
+        server.level.set_block(minecraftoss_core::BlockPos::new(x, y, z), obsidian, update::CLIENTS, update::LIMIT);
+        assert!(server.item_on_block((x, y, z), ItemOnBlock::EndCrystal), "a crystal on obsidian over the rim");
+        place_rim_crystals(&mut server, at, &[(3, 0), (0, 3), (-3, 0)]);
+        assert!(server.respawn.is_none(), "a crystal raised a block misses its cell");
+        assert!(server.take_fight_reports().is_empty());
     }
 
     #[test]

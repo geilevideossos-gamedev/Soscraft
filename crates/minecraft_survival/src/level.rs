@@ -934,6 +934,7 @@ mod tests {
                         forward: 0.0,
                         strafe: 0.0,
                         jumping: false,
+                        swirl: None,
                     },
                     inventory: &mut *inventory,
                     selected: 0,

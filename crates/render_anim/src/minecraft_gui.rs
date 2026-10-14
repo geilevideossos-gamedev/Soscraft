@@ -37,7 +37,7 @@ pub(crate) const CONTAINER_SHEETS: [&str; 18] = [
     "creative_inventory/tab_inventory",
 ];
 
-const SPRITE_FOLDERS: [&str; 15] = [
+const SPRITE_FOLDERS: [&str; 16] = [
     "container/slot/",
     "container/anvil/",
     "container/brewing_stand/",
@@ -53,9 +53,10 @@ const SPRITE_FOLDERS: [&str; 15] = [
     "container/horse/",
     "hud/heart/",
     "tooltip/",
+    "recipe_book/",
 ];
 
-const LOOSE_SPRITES: [&str; 12] = [
+const LOOSE_SPRITES: [&str; 14] = [
     "container/slot",
     "container/slot_highlight_back",
     "container/slot_highlight_front",
@@ -68,11 +69,14 @@ const LOOSE_SPRITES: [&str; 12] = [
     "widget/button",
     "widget/button_highlighted",
     "widget/button_disabled",
+    "widget/text_field",
+    "widget/text_field_highlighted",
 ];
 
 pub(crate) const BOOK_SHEET: &str = "book";
+pub(crate) const RECIPE_BOOK_SHEET: &str = "recipe_book";
 
-const TEXT_PREFIXES: [&str; 12] = [
+const TEXT_PREFIXES: [&str; 14] = [
     "container.",
     "itemGroup.",
     "inventory.",
@@ -85,6 +89,8 @@ const TEXT_PREFIXES: [&str; 12] = [
     "lectern.",
     "gui.done",
     "merchant.",
+    "gui.cancel",
+    "gui.recipebook.",
 ];
 
 pub(crate) const PUPPET_HEIGHT: f32 = 60.0 / 70.0;
@@ -235,6 +241,10 @@ fn build_atlas(
         anyhow::bail!("missing textures/gui/{BOOK_SHEET}.png");
     };
     pieces.push((Piece::Sheet(BOOK_SHEET.to_owned()), decode(&bytes)?));
+    let id = ResourceId::parse(&format!("minecraft:gui/{RECIPE_BOOK_SHEET}"))?;
+    if let Some(bytes) = packs.texture(&id)? {
+        pieces.push((Piece::Sheet(RECIPE_BOOK_SHEET.to_owned()), decode(&bytes)?));
+    }
     let mut names: Vec<String> = LOOSE_SPRITES
         .iter()
         .map(|name| (*name).to_owned())
@@ -643,7 +653,7 @@ mod tests {
         let (atlas, gui) = build_atlas(&packs, &language).unwrap();
         assert_eq!(atlas.width(), ATLAS_WIDTH);
         assert!(atlas.height() <= 2048);
-        assert_eq!(gui.sheets.len(), CONTAINER_SHEETS.len() + 1);
+        assert_eq!(gui.sheets.len(), CONTAINER_SHEETS.len() + 2);
         assert!(gui.sheets.contains_key("creative_inventory/tab_item_search"));
         assert!(gui.sheets.contains_key("villager"));
         assert_eq!(gui.sprites["container/villager/scroller"].rect[2..], [6, 27]);
@@ -691,6 +701,43 @@ mod tests {
     }
 
     #[test]
+    fn the_recipe_book_sheet_sprites_and_texts_load() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let language = HashMap::from([
+            ("gui.recipebook.page".to_owned(), "%s/%s".to_owned()),
+            ("gui.recipebook.search_hint".to_owned(), "Search...".to_owned()),
+        ]);
+        let (atlas, gui) = build_atlas(&packs, &language).unwrap();
+        let [x, y] = gui.sheets[RECIPE_BOOK_SHEET];
+        assert!(atlas.width() >= x + 256 && atlas.height() >= y + 256);
+        for (name, size) in [
+            ("recipe_book/button", [20, 18]),
+            ("recipe_book/button_highlighted", [20, 18]),
+            ("recipe_book/tab", [35, 27]),
+            ("recipe_book/tab_selected", [35, 27]),
+            ("recipe_book/slot_craftable", [25, 25]),
+            ("recipe_book/slot_many_uncraftable", [25, 25]),
+            ("recipe_book/filter_enabled", [26, 16]),
+            ("recipe_book/page_forward", [12, 17]),
+            ("recipe_book/crafting_overlay_disabled", [24, 24]),
+        ] {
+            assert_eq!(gui.sprites[name].rect[2..], size, "{name}");
+        }
+        assert!(matches!(gui.sprites["recipe_book/overlay_recipe"].scaling, McScaling::NineSlice { border: [4, 4, 4, 4], .. }));
+        assert!(matches!(gui.sprites["widget/text_field"].scaling, McScaling::NineSlice { .. }));
+        assert!(gui.sprites.contains_key("widget/text_field_highlighted"));
+        assert_eq!(gui.format("gui.recipebook.page", &["2", "3"]), "2/3");
+        assert_eq!(gui.text("gui.recipebook.search_hint"), "Search...");
+    }
+
+    #[test]
     fn the_book_sheet_and_page_sprites_load() {
         let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
             return;
@@ -705,6 +752,7 @@ mod tests {
             ("lectern.take_book".to_owned(), "Take Book".to_owned()),
             ("gui.done".to_owned(), "Done".to_owned()),
             ("gui.cancel".to_owned(), "Cancel".to_owned()),
+            ("gui.yes".to_owned(), "Yes".to_owned()),
         ]);
         let (atlas, gui) = build_atlas(&packs, &language).unwrap();
         let [bx, by] = gui.sheets[BOOK_SHEET];
@@ -728,7 +776,9 @@ mod tests {
         assert_eq!(gui.format("book.pageIndicator", &["2", "3"]), "Page 2 of 3");
         assert_eq!(gui.text("lectern.take_book"), "Take Book");
         assert_eq!(gui.text("gui.done"), "Done");
-        assert!(!gui.texts.contains_key("gui.cancel"));
+        assert_eq!(gui.text("gui.cancel"), "Cancel");
+        assert!(!gui.texts.contains_key("gui.yes"));
+        assert!(gui.sprites.contains_key("widget/button_disabled"));
     }
 
     #[test]

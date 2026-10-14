@@ -482,7 +482,7 @@ fn register_death(registry: &mut NativeRegistry) {
         };
         let finish = {
             let mut frame = FrameWorld::from_world(world);
-            let finish = script_player::finish_damage(&mut frame, id, amount, dir);
+            let finish = script_player::finish_damage(&mut frame, tick, id, amount, dir);
             if finish == script_player::Finish::Killed {
                 script_player::kill(&mut frame, tick, id, attacker, commit);
             }
@@ -1398,8 +1398,9 @@ fn register_inventory(registry: &mut NativeRegistry) {
         let id = client_of(world, receiver)?;
         let weapon = player_weapon(world, id, args, 0)?;
         let frame = FrameWorld::from_world(world);
-        let any = script_player::ammo_clip(&frame, id, weapon) > 0
-            || script_player::ammo_stock(&frame, id, weapon) > 0;
+        let any = (script_player::ammo_clip(&frame, id, weapon) > 0
+            || script_player::ammo_stock(&frame, id, weapon) > 0)
+            && !crate::voxel::publishes_arsenal(id.0);
         Ok(Value::Int(any.into()))
     });
     registry.register(Method, "setperk", |world, receiver, args| {

@@ -202,6 +202,15 @@ pub trait CommandWorld {
     fn stop_sprinting(&mut self) -> Option<SprintReport> {
         None
     }
+    fn tags(&self, _player: PlayerId) -> Option<Vec<String>> {
+        None
+    }
+    fn add_tag(&mut self, _player: PlayerId, _tag: &str) -> bool {
+        false
+    }
+    fn remove_tag(&mut self, _player: PlayerId, _tag: &str) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -680,6 +689,7 @@ pub(crate) mod tests {
         pub(crate) dimension_teleports: Vec<(PlayerId, String, [f64; 3])>,
         pub(crate) kit: Option<String>,
         pub(crate) tick: Option<FakeTick>,
+        pub(crate) tags: Vec<(PlayerId, Vec<String>)>,
     }
 
     #[derive(Debug)]
@@ -1009,6 +1019,25 @@ pub(crate) mod tests {
                 ms_per_tick: 0.5,
             })
         }
+
+        fn tags(&self, player: PlayerId) -> Option<Vec<String>> {
+            let found = self.tags.iter().find(|(id, _)| *id == player);
+            found.map(|(_, tags)| tags.clone())
+        }
+
+        fn add_tag(&mut self, player: PlayerId, tag: &str) -> bool {
+            let Some((_, tags)) = self.tags.iter_mut().find(|(id, _)| *id == player) else {
+                return false;
+            };
+            crate::tag::add(tags, tag)
+        }
+
+        fn remove_tag(&mut self, player: PlayerId, tag: &str) -> bool {
+            let Some((_, tags)) = self.tags.iter_mut().find(|(id, _)| *id == player) else {
+                return false;
+            };
+            crate::tag::remove(tags, tag)
+        }
     }
 
     pub(crate) fn lang(key: &str) -> Option<String> {
@@ -1218,6 +1247,16 @@ pub(crate) mod tests {
             "commands.tick.step.stop.fail" => "No tick step in progress",
             "commands.tick.step.stop.success" => "Interrupted the current tick step",
             "commands.tick.step.success" => "Stepping %s tick(s)",
+            "commands.tag.add.failed" => "Target either already has the tag or has too many tags",
+            "commands.tag.add.success.multiple" => "Added tag '%s' to %s entities",
+            "commands.tag.add.success.single" => "Added tag '%s' to %s",
+            "commands.tag.list.multiple.empty" => "There are no tags on the %s entities",
+            "commands.tag.list.multiple.success" => "The %s entities have %s total tag(s): %s",
+            "commands.tag.list.single.empty" => "%s has no tags",
+            "commands.tag.list.single.success" => "%s has %s tag(s): %s",
+            "commands.tag.remove.failed" => "Target does not have this tag",
+            "commands.tag.remove.success.multiple" => "Removed tag '%s' from %s entities",
+            "commands.tag.remove.success.single" => "Removed tag '%s' from %s",
             _ => return None,
         };
         Some(text.to_owned())

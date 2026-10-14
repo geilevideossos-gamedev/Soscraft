@@ -130,6 +130,9 @@ pub fn registries(packs: &minecraft_terrain::pack::PackStack) -> CommandRegistri
         .filter(|name| !name.contains('/'))
         .map(|name| format!("minecraft:{name}"))
         .collect();
+    if !items.is_empty() {
+        items.extend(minecraft_terrain::fork_items::rows().iter().map(|row| row.id.to_owned()));
+    }
     items.sort();
     let mut effects: Vec<String> = minecraft_terrain::item_icons::language(packs)
         .unwrap_or_else(|_| HashMap::new())
@@ -367,7 +370,7 @@ impl CommandWorld for Host<'_> {
 
     fn give(&mut self, player: PlayerId, item: &ItemArg, count: u32) -> bool {
         let feet = self.presence(player).pose.map(|pose| pose.feet);
-        let stack = minecraft_terrain::crafting::with_components(
+        let mut stack = minecraft_terrain::crafting::with_components(
             minecraft_terrain::crafting::kit_potion_stack(
                 &self.data.recipes,
                 &item.id,
@@ -377,6 +380,8 @@ impl CommandWorld for Host<'_> {
             ),
             item.components.as_ref(),
         );
+        stack.components =
+            minecraft_terrain::fork_items::with_full_clip(&stack.id, stack.components.take());
         let Some((player, entities)) = self.player_in_level(player) else {
             return false;
         };
@@ -744,6 +749,20 @@ impl CommandWorld for Host<'_> {
         if let (Some(volume), Some(entities), Some(feet)) = (chime, entities, feet) {
             entities.sound(LEVEL_UP_SOUND, glam::DVec3::from_array(feet), volume, 1.0);
         }
+    }
+
+    fn tags(&self, player: PlayerId) -> Option<Vec<String>> {
+        self.player(player).map(|player| player.tags.clone())
+    }
+
+    fn add_tag(&mut self, player: PlayerId, tag: &str) -> bool {
+        self.player_mut(player)
+            .is_some_and(|player| minecraft_commands::tag::add(&mut player.tags, tag))
+    }
+
+    fn remove_tag(&mut self, player: PlayerId, tag: &str) -> bool {
+        self.player_mut(player)
+            .is_some_and(|player| minecraft_commands::tag::remove(&mut player.tags, tag))
     }
 }
 
@@ -2114,6 +2133,117 @@ pub(crate) mod tests {
                 .iter()
                 .any(|(id, _, _)| id == "minecraft:leather_chestplate")
         );
+    }
+
+    fn fork_parts() -> Parts {
+        let mut parts = Parts::new();
+        let dir = std::env::temp_dir().join(format!("iw4l-fork-pack-{}", std::process::id()));
+        let items = dir.join("assets/minecraft/items");
+        std::fs::create_dir_all(&items).unwrap();
+        std::fs::write(dir.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();
+        std::fs::write(items.join("stone.json"), "{}").unwrap();
+        let packs = minecraft_terrain::pack::PackStack::open(vec![dir.clone()]).unwrap();
+        *parts.server.registries_mut() = registries(&packs);
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut catalog = minecraftoss_player::item_catalog::ItemCatalog::default();
+        minecraft_terrain::fork_items::load(&mut catalog);
+        parts.data.recipes = std::sync::Arc::new(
+            minecraftoss_player::crafting::RecipeBook::default()
+                .with_item_catalog(std::sync::Arc::new(catalog)),
+        );
+        parts
+    }
+
+    fn iw4l_state(stack: &ItemStack) -> serde_json::Value {
+        stack.components.as_ref().unwrap()["minecraft:custom_data"]["iw4l"].clone()
+    }
+
+    #[test]
+    fn the_kit_and_give_accept_fork_items() {
+        let mut parts = fork_parts();
+        let items = &parts.server.registries().items;
+        for id in ["minecraft:stone", "iw4l:m4", "iw4l:frag_grenade", "iw4l:gun_barrel"] {
+            assert!(items.iter().any(|known| known == id), "{id}");
+        }
+        let path = std::env::temp_dir().join(format!("iw4l-kit-fork-{}.env", std::process::id()));
+        let line = r#"iw4l:m4,iw4l:rifle_ammo*70,iw4l:usp[minecraft:custom_data={iw4l:{attachments:["akimbo"]}}],iw4l:riotshield,iw4l:nothing"#;
+        std::fs::write(&path, format!("IW4L_MINECRAFT_KIT={line}
+")).unwrap();
+        parts.env_file = Some(path.clone());
+        let (lines, _) = parts.send(HOST, &["/kit"]);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        let slots = parts.player(HOST).inventory.slots.clone();
+        let find = |id: &str| slots.iter().flatten().filter(|stack| stack.id == id).cloned().collect::<Vec<_>>();
+        let m4 = find("iw4l:m4");
+        assert_eq!(m4.len(), 1);
+        assert_eq!(m4[0].max, 1);
+        assert_eq!(iw4l_state(&m4[0]), serde_json::json!({"clip": -1}));
+        let ammo = find("iw4l:rifle_ammo");
+        assert_eq!(ammo.iter().map(|stack| stack.count).collect::<Vec<_>>(), [64, 6]);
+        assert_eq!(ammo[0].components, None);
+        let usp = find("iw4l:usp");
+        assert_eq!(
+            iw4l_state(&usp[0]),
+            serde_json::json!({"attachments": ["akimbo"], "clip": -1, "clip_left": -1})
+        );
+        assert_eq!(find("iw4l:riotshield")[0].components, None);
+        assert!(find("iw4l:nothing").is_empty());
+
+        let (lines, _) = parts.send(
+            HOST,
+            &[
+                r#"/give @s iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex","gl"]}}] 2"#,
+                "/give @s iw4l:frag_grenade 40",
+            ],
+        );
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        let slots = parts.player(HOST).inventory.slots.clone();
+        let guns: Vec<_> = slots
+            .iter()
+            .flatten()
+            .filter(|stack| stack.id == "iw4l:m4" && stack.components.is_some())
+            .map(iw4l_state)
+            .collect();
+        assert_eq!(guns.len(), 3, "two given guns stay two items");
+        assert_eq!(
+            guns.iter().filter(|state| state["attachments"] == serde_json::json!(["reflex", "gl"])).count(),
+            2
+        );
+        assert!(guns.iter().filter(|state| state.get("attachments").is_some()).all(|state| state["clip"] == -1 && state["alt_clip"] == -1));
+        let frags: u32 = slots
+            .iter()
+            .flatten()
+            .filter(|stack| stack.id == "iw4l:frag_grenade")
+            .map(|stack| u32::from(stack.count))
+            .sum();
+        assert_eq!(frags, 40);
+
+        let (lines, _) = parts.send(HOST, &["/clear @s iw4l:m4"]);
+        assert_eq!(lines, vec!["Removed 3 item(s) from player Steve"]);
+        assert!(
+            !parts
+                .player(HOST)
+                .inventory
+                .slots
+                .iter()
+                .flatten()
+                .any(|stack| stack.id == "iw4l:m4")
+        );
+    }
+
+    #[test]
+    fn tag_adds_and_removes_tags_on_the_player() {
+        let mut parts = Parts::new();
+        parts.player(HOST).tags = vec!["other_pack".to_owned()];
+        parts.send(HOST, &["/tag @s add iw4l_loadout_given"]);
+        assert_eq!(parts.player(HOST).tags, ["other_pack", "iw4l_loadout_given"]);
+        assert_eq!(
+            parts.player(HOST).data().tags,
+            Some(vec!["other_pack".to_owned(), "iw4l_loadout_given".to_owned()])
+        );
+        parts.send(HOST, &["/tag @s remove iw4l_loadout_given"]);
+        assert_eq!(parts.player(HOST).tags, ["other_pack"]);
     }
 
     #[test]

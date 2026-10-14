@@ -35,6 +35,16 @@ pub(crate) fn player_damage(world: &mut World, tick: crate::Tick, hit: &crate::s
     {
         return;
     }
+    let minecraft = crate::voxel::active() && !runtime.minecraft_hit;
+    let scaled;
+    let hit = match gun_verdict(world, tick, minecraft, hit) {
+        crate::gun_damage::Verdict::Unchanged => hit,
+        crate::gun_damage::Verdict::Refused => return,
+        crate::gun_damage::Verdict::Amount(amount) => {
+            scaled = with_amount(hit, amount);
+            &scaled
+        }
+    };
     let attacker = match hit.attacker.map(|a| player_object(world, a.0)) {
         Some(attacker) if attacker != Value::Undefined => attacker,
         _ => world_entity(world),
@@ -69,6 +79,38 @@ pub(crate) fn player_damage(world: &mut World, tick: crate::Tick, hit: &crate::s
         // Deaths from this hit are settled before the caller continues.
         settle_deaths(world);
     }
+}
+
+fn gun_verdict(
+    world: &mut World,
+    tick: crate::Tick,
+    minecraft: bool,
+    hit: &crate::script_player::Hit,
+) -> crate::gun_damage::Verdict {
+    if !minecraft {
+        return crate::gun_damage::Verdict::Unchanged;
+    }
+    let max_health = FrameWorld::from_world(world)
+        .player(hit.victim)
+        .map(|ps| ps.max_health)
+        .filter(|max| *max > 0)
+        .unwrap_or(crate::gun_damage::DEFAULT_MAX_HEALTH);
+    let victim = crate::gun_damage::Victim {
+        guard: crate::voxel::gun_guard(hit.victim.0),
+        max_health,
+        totem_grace: crate::voxel::totem_grace(hit.victim.0, tick),
+    };
+    let pierce = crate::voxel::pierce(hit.weapon);
+    crate::gun_damage::verdict(minecraft, hit.means, hit.amount, pierce, victim)
+}
+
+fn with_amount(hit: &crate::script_player::Hit, amount: i32) -> crate::script_player::Hit {
+    let mut hit = hit.clone();
+    hit.amount = amount;
+    if let Some(commit) = hit.commit.as_mut() {
+        commit.amount = amount;
+    }
+    hit
 }
 
 pub(crate) fn minecraft_damage(

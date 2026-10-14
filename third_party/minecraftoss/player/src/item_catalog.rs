@@ -24,6 +24,25 @@ pub struct ItemProperties {
     pub weapon: Option<(u32, f32)>,
 }
 
+impl ItemProperties {
+    pub fn plain(max_stack: u8) -> Self {
+        Self {
+            fuel_component: false,
+            burn_ticks: 0,
+            speed_multiplier: 1.0,
+            max_stack,
+            remainder: None,
+            equippable_slot: None,
+            equipment_asset: None,
+            armor_points: 0.0,
+            max_damage: 0,
+            damage_per_block: 0,
+            attribute_modifiers: Vec::new(),
+            weapon: None,
+        }
+    }
+}
+
 /// `AttributeModifier.Operation`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModifierOperation {
@@ -86,7 +105,7 @@ pub fn attribute_value<'a>(base: f64, modifiers: impl IntoIterator<Item = &'a At
     value.clamp(range.0, range.1)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ItemCatalog {
     items: HashMap<String, ItemProperties>,
 }
@@ -282,5 +301,27 @@ impl ItemCatalog {
     }
     pub fn max_stack(&self, id: &str) -> u8 {
         self.get(id).map_or(64, |item| item.max_stack)
+    }
+    pub fn insert(&mut self, id: &str, properties: ItemProperties) {
+        self.items.insert(id.to_owned(), properties);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inserted_items_have_their_max_stack() {
+        let mut catalog = ItemCatalog::default();
+        catalog.insert("iw4l:m4", ItemProperties::plain(1));
+        catalog.insert("iw4l:rocket", ItemProperties::plain(16));
+        assert_eq!(catalog.max_stack("iw4l:m4"), 1);
+        assert_eq!(catalog.max_stack("iw4l:rocket"), 16);
+        assert_eq!(catalog.max_stack("iw4l:pistol_ammo"), 64);
+        let gun = catalog.get("iw4l:m4").unwrap();
+        assert!(!gun.fuel_component && gun.burn_ticks == 0 && gun.remainder.is_none());
+        assert_eq!(gun.max_damage, 0);
+        assert_eq!(gun.speed_multiplier, 1.0);
     }
 }

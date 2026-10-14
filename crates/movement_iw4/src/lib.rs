@@ -57,7 +57,7 @@ pub use dmgtimer::{
     damage_scale_walk, damage_window_open, update_damage_timer, walk_move_drop_damage_timer,
 };
 pub use drop_timers::drop_timers;
-pub use edge::{MAX_UP_STEP, back_off_from_edge};
+pub use edge::{MAX_UP_STEP, back_off_from_edge, kept_on_edge};
 pub use events::{SequencedPlayerEvent, add_event, add_predictable_event, consume_player_events};
 pub use float::{SLOW_FALLING, encode as encode_float, levitation, rise, slow_fall, slow_falling};
 pub use fly::{Flight, FlyTap, fly_move, prepare as prepare_flight};

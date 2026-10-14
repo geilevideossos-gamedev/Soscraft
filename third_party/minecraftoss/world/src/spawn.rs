@@ -120,7 +120,12 @@ pub fn player_spawn(map: &mut ChunkMap, world_spawn: (i32, i32, i32), radius: i3
             }
         }
     }
-    // `fixupSpawnHeight`: up out of anything solid, then down to the ground.
+    fixup_spawn_height(map, world_spawn)
+}
+
+pub fn fixup_spawn_height(map: &mut ChunkMap, world_spawn: (i32, i32, i32)) -> (f64, f64, f64) {
+    let generator = map.generator().clone();
+    let registries = generator.registries.clone();
     let (x, mut y, z) = world_spawn;
     let (min_y, max_y) = (generator.min_y, generator.min_y + generator.height - 1);
     while !fits_player(&registries, map, (x, y, z)) && y < max_y {

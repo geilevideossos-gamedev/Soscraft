@@ -14,6 +14,7 @@ pub mod reader;
 pub mod server;
 pub mod spawnpoint;
 pub mod suggest;
+pub mod tag;
 pub mod text;
 pub mod tick;
 pub mod tracker;

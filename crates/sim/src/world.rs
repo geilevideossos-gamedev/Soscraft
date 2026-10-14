@@ -256,6 +256,8 @@ pub(crate) struct PredictionRemoteBody {
     pub origin: [f32; 3],
     pub life_sequence: crate::LifeSequence,
     pub noclip: bool,
+    pub height: f32,
+    pub riding: bool,
 }
 
 /// Immutable definitions shared by independently mutable simulations.
@@ -1293,6 +1295,11 @@ impl SimState {
             .get(weapon as usize)
             .copied()
             .filter(|facts| facts.is_offhand())
+    }
+
+    pub fn offhand_class(&self, weapon: u32) -> i32 {
+        self.offhand_loadout_row(weapon)
+            .map_or(0, |facts| facts.offhand_class)
     }
 
     pub(crate) fn missile_launch_facts(&self, weapon: u32) -> Option<EquipmentRuntimeFacts> {
@@ -3215,6 +3222,8 @@ impl SimState {
                                 origin: ps.origin,
                                 life_sequence: meta.life_sequence,
                                 noclip: ps.pm_flags & playerstate_iw4::pm_flags::MC_NOCLIP != 0,
+                                height: crate::voxel::player_hull(ps).1[2],
+                                riding: ps.pm_flags & playerstate_iw4::pm_flags::MC_RIDING != 0,
                             },
                         )
                     }),

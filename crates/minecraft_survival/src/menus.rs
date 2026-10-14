@@ -2,12 +2,13 @@ use std::collections::{HashMap, VecDeque};
 
 use minecraft_commands::Text;
 use minecraft_net::messages::{
-    Click, MenuAction, MenuExtras, MenuKind, MenuSlot, MenuView, Nbt, NetOffer,
+    Click, CreativeTarget, MenuAction, MenuExtras, MenuKind, MenuSlot, MenuView, Nbt, NetOffer,
 };
 use minecraft_net::{Dimension, PlayerUuid, ToClient};
 use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::crafting::{self, Grid, Spot};
 use minecraft_terrain::mount_inventory::MountInventory;
+use minecraft_terrain::gun_mods::GunRules;
 use minecraft_terrain::openers::RECHECK_TICKS;
 use minecraft_terrain::scene::{BlockPos, HandcraftedScene, Scene};
 use minecraft_terrain::server::{MerchantOp, MerchantView};
@@ -20,9 +21,11 @@ use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 use crate::actions::{Body, Effect};
+use crate::creative::{CreativeSlot, set_slot};
 use crate::data::GameData;
 use crate::entities::{Entities, MerchantNews};
-use crate::guns::{HOTBAR, weapon_of};
+use crate::gun_crafting::Place;
+use crate::guns::{HOTBAR, fits, is_gun, weapon_of};
 use crate::level::Terrain;
 use crate::offhand::OFFHAND;
 use crate::player::Player;
@@ -32,8 +35,9 @@ use crate::views::{slot_nbt, view_stack};
 pub const INVENTORY_MENU: u8 = 0;
 pub const MENU_IDS: u8 = 100;
 pub const STATE_MASK: u16 = 0x7fff;
-pub const PLAYER_SLOTS: usize = 41;
+pub const PLAYER_SLOTS: usize = 45;
 pub const MENU_INPUTS: usize = 256;
+pub const RECIPE_ID_LIMIT: usize = 256;
 
 #[derive(Clone, Debug)]
 pub enum Open {
@@ -165,6 +169,7 @@ impl Menus {
 pub struct Books<'a> {
     pub stations: &'a StationBook,
     pub enchantments: Option<&'a Enchantments>,
+    pub guns: Option<&'a dyn GunRules>,
 }
 
 impl<'a> Books<'a> {
@@ -172,7 +177,12 @@ impl<'a> Books<'a> {
         Self {
             stations: &data.stations,
             enchantments: data.enchantments.as_deref(),
+            guns: None,
         }
+    }
+
+    pub fn with_guns(self, guns: Option<&'a dyn GunRules>) -> Self {
+        Self { guns, ..self }
     }
 }
 
@@ -199,6 +209,10 @@ pub enum MenuInput {
     Rename(String),
     Close(u8),
     OpenMount,
+    Creative {
+        slot: CreativeTarget,
+        stack: Option<Nbt>,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -224,6 +238,7 @@ fn context<'a>(
         bookshelves: shelves,
         seed,
         level,
+        guns: books.guns,
     }
 }
 
@@ -449,18 +464,92 @@ fn keeps_gun(
 ) -> bool {
     let offhand = MenuSlot::Inventory(OFFHAND as u8);
     let gun = |stack: Option<ItemStack>| stack.is_some_and(|stack| weapon_of(&stack).is_some());
+    let any_gun = |stack: Option<ItemStack>| stack.is_some_and(|stack| is_gun(&stack));
     match action {
         MenuAction::Swap { slot, hotbar } if usize::from(*hotbar) == OFFHAND => {
-            gun(stack_at(menu, inventory, containers, *slot))
+            any_gun(stack_at(menu, inventory, containers, *slot))
         }
         MenuAction::Swap { slot, hotbar } if *slot == offhand => {
-            gun(inventory.slots.get(usize::from(*hotbar)).cloned().flatten())
+            any_gun(inventory.slots.get(usize::from(*hotbar)).cloned().flatten())
         }
         MenuAction::Slot {
             slot, shift: false, ..
-        } if *slot == offhand => gun(inventory.cursor.clone()),
+        } if *slot == offhand => any_gun(inventory.cursor.clone()),
+        MenuAction::Spread { slots, .. }
+            if slots.contains(&offhand) && any_gun(inventory.cursor.clone()) =>
+        {
+            true
+        }
         MenuAction::Throw { slot, .. } => gun(stack_at(menu, inventory, containers, *slot)),
+        MenuAction::Slot {
+            slot: MenuSlot::Container(_),
+            shift: false,
+            ..
+        }
+        | MenuAction::Outside { .. } => gun(inventory.cursor.clone()),
+        MenuAction::Slot {
+            slot: slot @ MenuSlot::Inventory(_),
+            shift: true,
+            ..
+        } if menu.is_some_and(|menu| matches!(menu.open, Open::Block(_) | Open::Bench(..) | Open::Mount(_))) => {
+            gun(stack_at(menu, inventory, containers, *slot))
+        }
+        MenuAction::Swap {
+            slot: MenuSlot::Container(_),
+            hotbar,
+        } => gun(inventory.slots.get(usize::from(*hotbar)).cloned().flatten()),
+        MenuAction::Spread { slots, .. } => {
+            gun(inventory.cursor.clone())
+                && slots
+                    .iter()
+                    .any(|slot| matches!(slot, MenuSlot::Container(_)))
+        }
         _ => false,
+    }
+}
+
+fn misfits(inventory: &Inventory, action: &MenuAction) -> bool {
+    let misfit =
+        |slot: usize, stack: Option<&ItemStack>| stack.is_some_and(|stack| !fits(slot, stack));
+    let held = |slot: usize| inventory.slots.get(slot).and_then(Option::as_ref);
+    match action {
+        MenuAction::Slot {
+            slot: MenuSlot::Inventory(index),
+            shift: false,
+            ..
+        } => misfit(usize::from(*index), inventory.cursor.as_ref()),
+        MenuAction::Swap {
+            slot: MenuSlot::Inventory(index),
+            hotbar,
+        } => {
+            let (index, hotbar) = (usize::from(*index), usize::from(*hotbar));
+            misfit(index, held(hotbar)) || misfit(hotbar, held(index))
+        }
+        _ => false,
+    }
+}
+
+fn fitted_spread(inventory: &Inventory, action: &MenuAction) -> Option<MenuAction> {
+    let MenuAction::Spread { slots, right } = action else {
+        return None;
+    };
+    let carried = inventory.cursor.as_ref()?;
+    let fitting = |slot: &MenuSlot| match slot {
+        MenuSlot::Inventory(index) => fits(usize::from(*index), carried),
+        _ => true,
+    };
+    let kept: Vec<MenuSlot> = slots.iter().copied().filter(fitting).collect();
+    (kept.len() < slots.len()).then_some(MenuAction::Spread {
+        slots: kept,
+        right: *right,
+    })
+}
+
+fn book_grid(menu: Option<&Menu>) -> Option<bool> {
+    match menu.map(|menu| &menu.open) {
+        None | Some(Open::Inventory) => Some(false),
+        Some(Open::Table(_)) => Some(true),
+        _ => None,
     }
 }
 
@@ -497,6 +586,9 @@ fn valid(menu: Option<&Menu>, containers: &mut Containers, action: &MenuAction) 
             slots.len() <= PLAYER_SLOTS + 64 && slots.iter().all(|at| slot(*at))
         }
         MenuAction::Outside { .. } | MenuAction::Choose(_) => true,
+        MenuAction::PlaceRecipe { recipe, .. } => {
+            recipe.len() <= RECIPE_ID_LIMIT && book_grid(menu).is_some()
+        }
     }
 }
 
@@ -633,8 +725,12 @@ fn grid_action(
     action: &MenuAction,
     inventory: &mut Inventory,
     grid: Grid,
+    guns: Option<&dyn GunRules>,
     thrown: &mut Vec<ItemStack>,
 ) {
+    let special = |inventory: &mut Inventory, place| {
+        guns.and_then(|rules| crate::gun_crafting::take(inventory, grid, rules, place))
+    };
     match action {
         MenuAction::Slot {
             slot: MenuSlot::Inventory(index),
@@ -644,14 +740,22 @@ fn grid_action(
             let index = usize::from(*index);
             if *shift && grid == Grid::Table {
                 crafting::quick_move_into_table(inventory, index);
-            } else if let Some(stack) = inventory.click(Some(index), *right, *shift) {
+            } else if !(*shift && crate::guns::grenade_quick_move(inventory, index))
+                && let Some(stack) = inventory.click(Some(index), *right, *shift)
+            {
                 thrown.push(stack);
             }
         }
         MenuAction::Slot { slot, right, shift } => match spot(*slot, grid) {
             Some(Spot::Grid(cell)) => crafting::click_cell(inventory, grid, cell, *right, *shift),
             Some(Spot::Result) => {
-                crafting::click_result(inventory, grid, *shift);
+                let place = if *shift { Place::Inventory } else { Place::Cursor };
+                match special(inventory, place) {
+                    Some(rest) => thrown.extend(rest),
+                    None => {
+                        crafting::click_result(inventory, grid, *shift);
+                    }
+                }
             }
             _ => {}
         },
@@ -673,7 +777,13 @@ fn grid_action(
             let hotbar = usize::from(*hotbar);
             match spot(*slot, grid) {
                 Some(Spot::Grid(cell)) => crafting::swap(inventory, grid, Some(cell), hotbar),
-                Some(Spot::Result) => crafting::swap(inventory, grid, None, hotbar),
+                Some(Spot::Result) => match special(inventory, Place::Hotbar(hotbar)) {
+                    Some(rest) => {
+                        thrown.extend(rest);
+                        true
+                    }
+                    None => crafting::swap(inventory, grid, None, hotbar),
+                },
                 _ => false,
             };
         }
@@ -690,13 +800,14 @@ fn grid_action(
                 Some(Spot::Grid(cell)) => {
                     thrown.extend(crafting::throw_cell(inventory, grid, cell, *whole))
                 }
-                Some(Spot::Result) => {
-                    thrown.extend(crafting::throw_result(inventory, grid, *whole))
-                }
+                Some(Spot::Result) => match special(inventory, Place::Ground) {
+                    Some(rest) => thrown.extend(rest),
+                    None => thrown.extend(crafting::throw_result(inventory, grid, *whole)),
+                },
                 None => {}
             }
         }
-        MenuAction::Choose(_) => {}
+        MenuAction::Choose(_) | MenuAction::PlaceRecipe { .. } => {}
     }
 }
 
@@ -735,7 +846,7 @@ fn merchant_local(action: &MenuAction) -> bool {
         | MenuAction::Throw { slot, .. } => player(slot),
         MenuAction::Spread { slots, .. } => slots.iter().all(player),
         MenuAction::Outside { .. } => true,
-        MenuAction::Choose(_) => false,
+        MenuAction::Choose(_) | MenuAction::PlaceRecipe { .. } => false,
     }
 }
 
@@ -768,7 +879,7 @@ fn mount_action(
                 thrown.extend(mount.throw(usize::from(*index), *whole));
             }
         }
-        _ if merchant_local(action) => grid_action(action, inventory, Grid::Inventory, thrown),
+        _ if merchant_local(action) => grid_action(action, inventory, Grid::Inventory, None, thrown),
         _ => {}
     }
 }
@@ -791,7 +902,7 @@ fn merchant_action(
         }
         ops.push(op);
     } else if merchant_local(action) {
-        grid_action(action, inventory, Grid::Inventory, thrown);
+        grid_action(action, inventory, Grid::Inventory, None, thrown);
     }
 }
 
@@ -812,8 +923,18 @@ pub fn apply(
         enchantment_seed,
         ..
     } = player;
+    let fitted = fitted_spread(inventory, action);
+    let action = fitted.as_ref().unwrap_or(action);
     containers.with_ender(ender, |containers| {
-        if keeps_gun(menus.open.as_ref(), inventory, containers, action) {
+        if keeps_gun(menus.open.as_ref(), inventory, containers, action)
+            || misfits(inventory, action)
+        {
+            return;
+        }
+        if let MenuAction::PlaceRecipe { recipe, all } = action {
+            if let Some(table) = book_grid(menus.open.as_ref()) {
+                crate::recipe_book::place(inventory, table, recipe, *all);
+            }
             return;
         }
         if let Some(Menu {
@@ -882,7 +1003,7 @@ pub fn apply(
         {
             return;
         }
-        grid_action(action, inventory, grid, &mut clicked.thrown);
+        grid_action(action, inventory, grid, books.guns, &mut clicked.thrown);
     });
     let mut thrown = std::mem::take(&mut clicked.thrown);
     thrown.extend(inventory.take_pending_drops());
@@ -1004,6 +1125,7 @@ pub fn take_inputs(
     books: Books<'_>,
     inputs: Vec<MenuInput>,
     language: Option<&HashMap<String, String>>,
+    known: &dyn Fn(&str) -> bool,
     mut roll: impl FnMut() -> f32,
 ) -> Clicked {
     let mut clicked = Clicked::default();
@@ -1015,6 +1137,11 @@ pub fn take_inputs(
             MenuInput::Rename(name) => rename(player, &name, language),
             MenuInput::Close(menu) => clicked.thrown.extend(close_requested(player, menu)),
             MenuInput::OpenMount => player.menus.mount_key = true,
+            MenuInput::Creative { slot, stack } => {
+                clicked
+                    .thrown
+                    .extend(creative_set(player, slot, stack.as_ref(), known));
+            }
         }
     }
     clicked
@@ -1176,6 +1303,36 @@ pub fn close_merchant_now(player: &mut Player, entities: &mut Entities, feet: [f
     entities.close_merchant_now(id, &mut player.inventory, player.selected, feet);
     player.menus.merchant_ops.clear();
     player.menus.merchant_waiting = false;
+}
+
+fn creative_set(
+    player: &mut Player,
+    slot: CreativeTarget,
+    stack: Option<&Nbt>,
+    known: &dyn Fn(&str) -> bool,
+) -> Option<ItemStack> {
+    if player.dead {
+        return None;
+    }
+    let slot = match slot {
+        CreativeTarget::Menu(index) => CreativeSlot::Menu(usize::from(index)),
+        CreativeTarget::Carried => CreativeSlot::Carried,
+        CreativeTarget::Drop => CreativeSlot::Drop,
+    };
+    let stack = match stack {
+        Some(nbt) => Some(view_stack(nbt, &player.inventory.recipes)?),
+        None => None,
+    };
+    match set_slot(&player.mode, &mut player.inventory, slot, stack, known) {
+        Ok(drop) if slot == CreativeSlot::Drop => {
+            drop.filter(|_| player.drop_throttle.allow(&player.name))
+        }
+        Ok(drop) => drop,
+        Err(refused) => {
+            diag::debug!(World, "creative slot set from {} refused: {refused:?}", player.name);
+            None
+        }
+    }
 }
 
 fn oven_data(data: [i32; 4]) -> Vec<(u8, i32)> {
@@ -1915,7 +2072,7 @@ pub fn apply_slots(
 mod tests {
     use super::*;
     use minecraft_commands::{CommandServer, PlayerId};
-    use minecraft_terrain::game_mode::PlayerMode;
+    use minecraft_terrain::game_mode::{GameMode, PlayerMode};
 
     use crate::survival::Survival;
 
@@ -1934,6 +2091,7 @@ mod tests {
         Books {
             stations: book,
             enchantments: None,
+            guns: None,
         }
     }
 
@@ -2951,5 +3109,540 @@ mod tests {
         assert!(shown.closed);
         let out = changes(&mut alex, &mut containers, books(&book));
         assert!(out.contains(&ToClient::MenuClose { menu: again }), "{out:?}");
+    }
+
+    #[test]
+    fn killstreak_items_cannot_go_into_a_chest() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let killstreak = crate::guns::weapon_item(12);
+        host.inventory.slots[0] = Some(killstreak.clone());
+        host.inventory.slots[1] = Some(ItemStack::new("minecraft:dirt", 4));
+        assert!(open(
+            &mut host,
+            Open::Block(chest()),
+            Text::literal("Chest"),
+            0
+        ));
+        let mut act = |host: &mut Player, action: MenuAction| {
+            apply(host, &mut containers, books(&book), &action, 0.5)
+        };
+        act(&mut host, slot(0, true));
+        assert_eq!(host.inventory.slots[0], Some(killstreak.clone()));
+        let swap = MenuAction::Swap {
+            slot: MenuSlot::Container(3),
+            hotbar: 0,
+        };
+        act(&mut host, swap);
+        assert_eq!(host.inventory.slots[0], Some(killstreak.clone()));
+        act(&mut host, slot(0, false));
+        assert_eq!(host.inventory.cursor, Some(killstreak.clone()));
+        act(&mut host, cell(5));
+        let spread = MenuAction::Spread {
+            slots: vec![MenuSlot::Container(6), MenuSlot::Container(7)],
+            right: false,
+        };
+        act(&mut host, spread);
+        let dropped = act(&mut host, MenuAction::Outside { right: false });
+        assert!(dropped.thrown.is_empty(), "the cursor drop keeps it");
+        assert_eq!(host.inventory.cursor, Some(killstreak.clone()));
+        act(&mut host, slot(0, false));
+        assert_eq!(host.inventory.slots[0], Some(killstreak));
+        act(&mut host, slot(1, true));
+        assert!(host.inventory.slots[1].is_none(), "other items still go in");
+        let cells = containers.cells(&chest());
+        let held: Vec<&str> = cells.iter().flatten().map(|s| s.id.as_str()).collect();
+        assert_eq!(held, vec!["minecraft:dirt"]);
+    }
+
+    #[test]
+    fn fork_guns_drop_with_q_go_into_chests_and_stay_out_of_the_offhand() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let mut m4 = ItemStack::new("iw4l:m4", 1);
+        m4.components = Some(serde_json::json!({"minecraft:custom_data": {"iw4l": {"clip": 17}}}));
+        let usp = ItemStack::new("iw4l:usp", 1);
+        let shield = ItemStack::new("iw4l:riotshield", 1);
+        host.inventory.slots[0] = Some(m4.clone());
+        host.inventory.slots[1] = Some(usp.clone());
+        host.inventory.slots[2] = Some(shield.clone());
+        let mut act = |host: &mut Player, action: MenuAction| {
+            apply(host, &mut containers, books(&book), &action, 0.5)
+        };
+        let offhand = MenuSlot::Inventory(OFFHAND as u8);
+        act(&mut host, slot(1, false));
+        act(&mut host, MenuAction::Slot { slot: offhand, right: false, shift: false });
+        assert_eq!(host.inventory.cursor, Some(usp.clone()));
+        let spread = MenuAction::Spread {
+            slots: vec![offhand, MenuSlot::Inventory(20)],
+            right: true,
+        };
+        act(&mut host, spread);
+        assert_eq!(host.inventory.cursor, Some(usp.clone()));
+        act(&mut host, slot(1, false));
+        act(&mut host, MenuAction::Swap { slot: MenuSlot::Inventory(2), hotbar: OFFHAND as u8 });
+        act(&mut host, MenuAction::Swap { slot: offhand, hotbar: 2 });
+        assert_eq!(host.inventory.slots[2], Some(shield));
+        assert!(host.inventory.slots[OFFHAND].is_none());
+        let thrown = act(&mut host, MenuAction::Throw { slot: MenuSlot::Inventory(0), whole: false });
+        assert_eq!(thrown.thrown, vec![m4]);
+        assert!(host.inventory.slots[0].is_none());
+        assert!(open(&mut host, Open::Block(chest()), Text::literal("Chest"), 0));
+        let mut act = |host: &mut Player, action: MenuAction| {
+            apply(host, &mut containers, books(&book), &action, 0.5)
+        };
+        act(&mut host, slot(1, true));
+        assert!(host.inventory.slots[1].is_none());
+        act(&mut host, slot(2, false));
+        let dropped = act(&mut host, MenuAction::Outside { right: false });
+        assert_eq!(dropped.thrown.len(), 1);
+        assert!(host.inventory.cursor.is_none());
+        let cells = containers.cells(&chest());
+        assert_eq!(cells.iter().flatten().cloned().collect::<Vec<_>>(), vec![usp]);
+    }
+
+    fn held_at(player: &Player, slot: usize) -> Option<(&str, u8)> {
+        player.inventory.slots[slot]
+            .as_ref()
+            .map(|stack| (stack.id.as_str(), stack.count))
+    }
+
+    fn carried(player: &Player) -> Option<(&str, u8)> {
+        player
+            .inventory
+            .cursor
+            .as_ref()
+            .map(|stack| (stack.id.as_str(), stack.count))
+    }
+
+    fn put_with_cursor(host: &mut Player, slot: u8, id: &str) {
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        host.inventory.cursor = Some(ItemStack::new(id, 10));
+        let action = MenuAction::Slot {
+            slot: MenuSlot::Inventory(slot),
+            right: false,
+            shift: false,
+        };
+        apply(host, &mut containers, books(&book), &action, 0.5);
+    }
+
+    #[test]
+    fn only_a_lethal_grenade_goes_in_the_lethal_slot() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        for refused in ["minecraft:dirt", "iw4l:flash_grenade", "iw4l:m4", "iw4:weapon/7"] {
+            put_with_cursor(&mut host, 43, refused);
+            assert_eq!(held_at(&host, 43), None, "{refused}");
+            assert_eq!(carried(&host), Some((refused, 10)));
+        }
+        for lethal in ["iw4l:semtex", "iw4l:throwing_knife", "iw4l:claymore", "iw4l:c4", "iw4l:tactical_insertion"] {
+            host.inventory.slots[43] = None;
+            put_with_cursor(&mut host, 43, lethal);
+            assert_eq!(held_at(&host, 43), Some((lethal, 10)));
+            assert_eq!(carried(&host), None);
+        }
+        assert!(crate::guns::fits(43, &ItemStack::new("iw4l:frag_grenade", 64)));
+        assert!(!crate::guns::fits(43, &ItemStack::new("iw4l:frag_grenade", 65)));
+        assert!(crate::guns::fits(20, &ItemStack::new("minecraft:dirt", 64)));
+    }
+
+    #[test]
+    fn only_a_tactical_goes_in_the_tactical_slot() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        for refused in ["minecraft:dirt", "iw4l:frag_grenade", "iw4l:rifle_ammo", "iw4l:tactical_insertion"] {
+            put_with_cursor(&mut host, 44, refused);
+            assert_eq!(held_at(&host, 44), None, "{refused}");
+            assert_eq!(carried(&host), Some((refused, 10)));
+        }
+        for tactical in [
+            "iw4l:flash_grenade",
+            "iw4l:concussion_grenade",
+            "iw4l:smoke_grenade",
+        ] {
+            host.inventory.slots[44] = None;
+            put_with_cursor(&mut host, 44, tactical);
+            assert_eq!(held_at(&host, 44), Some((tactical, 10)));
+        }
+        for body in [41, 42] {
+            put_with_cursor(&mut host, body, "minecraft:saddle");
+            assert_eq!(held_at(&host, usize::from(body)), None);
+        }
+    }
+
+    #[test]
+    fn shift_click_moves_a_grenade_to_its_slot_and_back_out() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let mut act = |host: &mut Player, action: MenuAction| {
+            apply(host, &mut containers, books(&book), &action, 0.5);
+        };
+        host.inventory.slots[20] = Some(ItemStack::new("iw4l:semtex", 40));
+        host.inventory.slots[21] = Some(ItemStack::new("iw4l:semtex", 40));
+        host.inventory.slots[3] = Some(ItemStack::new("iw4l:flash_grenade", 7));
+        act(&mut host, slot(20, true));
+        assert_eq!(held_at(&host, 43), Some(("iw4l:semtex", 40)));
+        assert_eq!(held_at(&host, 20), None);
+        act(&mut host, slot(21, true));
+        assert_eq!(held_at(&host, 43), Some(("iw4l:semtex", 64)));
+        assert_eq!(held_at(&host, 21), Some(("iw4l:semtex", 16)));
+        act(&mut host, slot(21, true));
+        assert_eq!(held_at(&host, 0), Some(("iw4l:semtex", 16)), "a full slot");
+        act(&mut host, slot(3, true));
+        assert_eq!(held_at(&host, 44), Some(("iw4l:flash_grenade", 7)));
+        host.inventory.slots[0] = None;
+        host.inventory.slots[30] = Some(ItemStack::new("iw4l:frag_grenade", 5));
+        act(&mut host, slot(30, true));
+        assert_eq!(held_at(&host, 0), Some(("iw4l:frag_grenade", 5)), "another lethal");
+        assert_eq!(held_at(&host, 43), Some(("iw4l:semtex", 64)));
+        act(&mut host, slot(43, true));
+        assert_eq!(held_at(&host, 43), None);
+        assert_eq!(held_at(&host, 9), Some(("iw4l:semtex", 64)));
+        for main in 9..36 {
+            host.inventory.slots[main].get_or_insert(ItemStack::new("minecraft:stone", 64));
+        }
+        act(&mut host, slot(44, true));
+        assert_eq!(held_at(&host, 44), None);
+        assert_eq!(held_at(&host, 1), Some(("iw4l:flash_grenade", 7)));
+        host.inventory.slots[22] = Some(ItemStack::new("iw4l:smoke_grenade", 3));
+        assert!(open(&mut host, Open::Block(chest()), Text::literal("Chest"), 0));
+        let mut act = |host: &mut Player, action: MenuAction| {
+            apply(host, &mut containers, books(&book), &action, 0.5);
+        };
+        act(&mut host, slot(22, true));
+        assert_eq!(held_at(&host, 44), None, "a chest takes it instead");
+        assert_eq!(held_at(&host, 22), None);
+    }
+
+    #[test]
+    fn a_number_key_cannot_swap_dirt_into_a_grenade_slot() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let mut act = |host: &mut Player, slot: u8, hotbar: u8| {
+            let action = MenuAction::Swap {
+                slot: MenuSlot::Inventory(slot),
+                hotbar,
+            };
+            apply(host, &mut containers, books(&book), &action, 0.5);
+        };
+        host.inventory.slots[2] = Some(ItemStack::new("minecraft:dirt", 3));
+        act(&mut host, 43, 2);
+        assert_eq!(held_at(&host, 43), None);
+        assert_eq!(held_at(&host, 2), Some(("minecraft:dirt", 3)));
+        host.inventory.slots[43] = Some(ItemStack::new("iw4l:frag_grenade", 9));
+        act(&mut host, 43, 2);
+        assert_eq!(held_at(&host, 43), Some(("iw4l:frag_grenade", 9)));
+        host.inventory.slots[2] = Some(ItemStack::new("iw4l:semtex", 4));
+        act(&mut host, 43, 2);
+        assert_eq!(held_at(&host, 43), Some(("iw4l:semtex", 4)));
+        assert_eq!(held_at(&host, 2), Some(("iw4l:frag_grenade", 9)));
+        host.inventory.slots[2] = None;
+        act(&mut host, 43, 2);
+        assert_eq!(held_at(&host, 43), None);
+        assert_eq!(held_at(&host, 2), Some(("iw4l:semtex", 4)));
+        host.inventory.slots[OFFHAND] = Some(ItemStack::new("iw4l:smoke_grenade", 2));
+        act(&mut host, 44, OFFHAND as u8);
+        assert_eq!(held_at(&host, 44), Some(("iw4l:smoke_grenade", 2)));
+        assert_eq!(held_at(&host, OFFHAND), None);
+    }
+
+    #[test]
+    fn a_drag_spreads_only_into_grenade_slots_that_fit() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut host = player(&mut chat, 0, "Steve");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let spread = MenuAction::Spread {
+            slots: vec![
+                MenuSlot::Inventory(43),
+                MenuSlot::Inventory(44),
+                MenuSlot::Inventory(20),
+            ],
+            right: false,
+        };
+        host.inventory.cursor = Some(ItemStack::new("minecraft:dirt", 10));
+        apply(&mut host, &mut containers, books(&book), &spread, 0.5);
+        assert_eq!(held_at(&host, 20), Some(("minecraft:dirt", 10)));
+        assert_eq!((held_at(&host, 43), held_at(&host, 44)), (None, None));
+        host.inventory.slots[20] = None;
+        host.inventory.cursor = Some(ItemStack::new("iw4l:frag_grenade", 10));
+        apply(&mut host, &mut containers, books(&book), &spread, 0.5);
+        assert_eq!(held_at(&host, 43), Some(("iw4l:frag_grenade", 5)));
+        assert_eq!(held_at(&host, 20), Some(("iw4l:frag_grenade", 5)));
+        assert_eq!((held_at(&host, 44), carried(&host)), (None, None));
+    }
+
+    #[test]
+    fn a_friends_click_on_slot_44_is_valid() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = player(&mut chat, 1, "Alex");
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let _ = changes(&mut friend, &mut containers, books(&book));
+        friend.inventory.cursor = Some(ItemStack::new("iw4l:flash_grenade", 12));
+        let menu = (INVENTORY_MENU, friend.menus.current().state);
+        friend_click(&mut friend, &mut containers, &book, menu, slot(44, false));
+        assert_eq!(held_at(&friend, 44), Some(("iw4l:flash_grenade", 12)));
+        assert!(!friend.menus.current().resends());
+        friend.inventory.cursor = Some(ItemStack::new("minecraft:dirt", 1));
+        let menu = (INVENTORY_MENU, friend.menus.current().state);
+        friend_click(&mut friend, &mut containers, &book, menu, slot(45, false));
+        assert!(friend.menus.current().resends(), "no slot 45");
+        assert_eq!(carried(&friend), Some(("minecraft:dirt", 1)));
+    }
+
+    fn creative_player(chat: &mut CommandServer, mode: GameMode) -> Player {
+        let mut friend = player(chat, 1, "Alex");
+        friend.mode = PlayerMode::new(mode);
+        friend
+    }
+
+    fn known(id: &str) -> bool {
+        id.starts_with("minecraft:") && id != "minecraft:nope"
+    }
+
+    fn nbt(id: &str, count: u8) -> Option<Nbt> {
+        let mut stack = ItemStack::new(id, count);
+        if id.ends_with("_sword") {
+            stack.components = Some(serde_json::json!({"minecraft:max_stack_size": 1}));
+        }
+        slot_nbt(&stack)
+    }
+
+    fn set(slot: CreativeTarget, stack: Option<Nbt>) -> MenuInput {
+        MenuInput::Creative { slot, stack }
+    }
+
+    fn take(friend: &mut Player, containers: &mut Containers, inputs: Vec<MenuInput>) -> Clicked {
+        let book = StationBook::default();
+        take_inputs(
+            friend,
+            containers,
+            books(&book),
+            inputs,
+            None,
+            &known,
+            || 0.5,
+        )
+    }
+
+    fn held(slot: &Option<ItemStack>) -> Option<(&str, u8)> {
+        slot.as_ref().map(|stack| (stack.id.as_str(), stack.count))
+    }
+
+    #[test]
+    fn a_creative_friends_slot_set_reaches_their_inventory() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let book = StationBook::default();
+        assert!(!changes(&mut friend, &mut containers, books(&book)).is_empty());
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Menu(36), nbt("minecraft:stone", 64)),
+                set(CreativeTarget::Menu(5), nbt("minecraft:diamond_helmet", 1)),
+            ],
+        );
+        assert_eq!(clicked, Clicked::default());
+        assert_eq!(held(&friend.inventory.slots[0]), Some(("minecraft:stone", 64)));
+        assert_eq!(
+            held(&friend.inventory.slots[39]),
+            Some(("minecraft:diamond_helmet", 1))
+        );
+        changes(&mut friend, &mut containers, books(&book));
+        take(
+            &mut friend,
+            &mut containers,
+            vec![set(CreativeTarget::Carried, nbt("minecraft:torch", 16))],
+        );
+        let sent = changes(&mut friend, &mut containers, books(&book));
+        let [
+            ToClient::MenuSlots {
+                menu: INVENTORY_MENU,
+                carried: Some(carried),
+                ..
+            },
+        ] = &sent[..]
+        else {
+            panic!("{sent:?}");
+        };
+        assert_eq!(shown(carried), Some(("minecraft:torch".to_owned(), 16)));
+    }
+
+    #[test]
+    fn a_survival_or_spectator_friends_creative_sets_are_refused() {
+        for mode in [GameMode::Survival, GameMode::Adventure, GameMode::Spectator] {
+            let mut chat = CommandServer::new(crate::commands::HOST);
+            let mut friend = creative_player(&mut chat, mode);
+            let mut containers = Containers::default();
+            let clicked = take(
+                &mut friend,
+                &mut containers,
+                vec![
+                    set(CreativeTarget::Menu(36), nbt("minecraft:stone", 64)),
+                    set(CreativeTarget::Carried, nbt("minecraft:stone", 1)),
+                    set(CreativeTarget::Drop, nbt("minecraft:stone", 1)),
+                ],
+            );
+            assert!(clicked.thrown.is_empty(), "{mode:?}");
+            assert!(friend.inventory.slots.iter().all(Option::is_none), "{mode:?}");
+            assert!(friend.inventory.cursor.is_none(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn creative_sets_refuse_unknown_items_bad_slots_and_overfull_stacks() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let weapon = slot_nbt(&crate::guns::weapon_item(7));
+        assert!(weapon.is_some());
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Menu(36), nbt("minecraft:nope", 1)),
+                set(CreativeTarget::Menu(0), nbt("minecraft:stone", 1)),
+                set(CreativeTarget::Menu(46), nbt("minecraft:stone", 1)),
+                set(CreativeTarget::Menu(37), nbt("minecraft:stone", 65)),
+                set(CreativeTarget::Menu(38), nbt("minecraft:diamond_sword", 2)),
+                set(CreativeTarget::Menu(39), weapon),
+                set(CreativeTarget::Carried, Some(Nbt(vec![10, 0]))),
+            ],
+        );
+        assert!(clicked.thrown.is_empty());
+        assert!(friend.inventory.slots.iter().all(Option::is_none));
+        assert!(friend.inventory.crafting.iter().all(Option::is_none));
+        assert!(friend.inventory.cursor.is_none());
+        friend.inventory.slots[2] = Some(ItemStack::new("minecraft:stone", 5));
+        take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Menu(38), Some(Nbt(vec![1, 2, 3]))),
+                set(CreativeTarget::Menu(39), nbt("minecraft:diamond_sword", 1)),
+            ],
+        );
+        assert_eq!(held(&friend.inventory.slots[2]), Some(("minecraft:stone", 5)));
+        assert_eq!(
+            held(&friend.inventory.slots[3]),
+            Some(("minecraft:diamond_sword", 1))
+        );
+        take(
+            &mut friend,
+            &mut containers,
+            vec![set(CreativeTarget::Menu(38), None)],
+        );
+        assert!(friend.inventory.slots[2].is_none());
+    }
+
+    #[test]
+    fn a_creative_drop_is_thrown_not_stored() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Drop, nbt("minecraft:cobblestone", 64)),
+                set(CreativeTarget::Drop, None),
+            ],
+        );
+        assert_eq!(
+            clicked
+                .thrown
+                .iter()
+                .map(|stack| (stack.id.as_str(), stack.count))
+                .collect::<Vec<_>>(),
+            vec![("minecraft:cobblestone", 64)]
+        );
+        assert!(friend.inventory.slots.iter().all(Option::is_none));
+        assert!(friend.inventory.cursor.is_none());
+    }
+
+    #[test]
+    fn creative_drops_are_throttled_like_vanilla() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let drops = |count: usize| {
+            (0..count)
+                .map(|_| set(CreativeTarget::Drop, nbt("minecraft:cobblestone", 1)))
+                .collect::<Vec<_>>()
+        };
+        let clicked = take(&mut friend, &mut containers, drops(75));
+        assert_eq!(clicked.thrown.len(), 74);
+        assert_eq!(friend.drop_throttle.count, 1480);
+        friend.drop_throttle.tick(1);
+        assert_eq!(take(&mut friend, &mut containers, drops(2)).thrown.len(), 1);
+        assert_eq!(friend.drop_throttle.count, 1499);
+        friend.drop_throttle.tick(19);
+        assert!(take(&mut friend, &mut containers, drops(1)).thrown.is_empty());
+        friend.drop_throttle.tick(1);
+        assert_eq!(take(&mut friend, &mut containers, drops(2)).thrown.len(), 1);
+        let mut throttle = crate::creative::DropThrottle { count: 5 };
+        throttle.tick(9);
+        assert_eq!(throttle.count, 0);
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![set(CreativeTarget::Menu(36), nbt("minecraft:stone", 64))],
+        );
+        assert!(clicked.thrown.is_empty());
+        assert_eq!(held(&friend.inventory.slots[0]), Some(("minecraft:stone", 64)));
+    }
+
+    #[test]
+    fn creative_sets_and_clicks_apply_in_the_order_sent() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        let book = StationBook::default();
+        changes(&mut friend, &mut containers, books(&book));
+        let state = friend.menus.current().state;
+        take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Carried, nbt("minecraft:torch", 16)),
+                MenuInput::Click(Click {
+                    menu: INVENTORY_MENU,
+                    state,
+                    action: slot(3, false),
+                }),
+            ],
+        );
+        assert_eq!(held(&friend.inventory.slots[3]), Some(("minecraft:torch", 16)));
+        assert!(friend.inventory.cursor.is_none());
+    }
+
+    #[test]
+    fn a_dead_friends_creative_set_is_ignored() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut friend = creative_player(&mut chat, GameMode::Creative);
+        let mut containers = Containers::default();
+        friend.dead = true;
+        let clicked = take(
+            &mut friend,
+            &mut containers,
+            vec![
+                set(CreativeTarget::Menu(36), nbt("minecraft:stone", 64)),
+                set(CreativeTarget::Drop, nbt("minecraft:stone", 64)),
+            ],
+        );
+        assert!(clicked.thrown.is_empty());
+        assert!(friend.inventory.slots[0].is_none());
     }
 }

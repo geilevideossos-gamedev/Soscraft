@@ -452,6 +452,9 @@ pub fn take_team_switches() -> Vec<u32> {
 
 static DEATH_PROTECTED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 static TOTEM_POPS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+static TOTEM_GRACE: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
+
+pub const TOTEM_GRACE_TICKS: u32 = 80;
 
 pub fn set_death_protected(client: u32, protected: bool) {
     if let Ok(mut clients) = DEATH_PROTECTED.lock() {
@@ -462,7 +465,7 @@ pub fn set_death_protected(client: u32, protected: bool) {
     }
 }
 
-pub(crate) fn spend_death_protection(client: u32) -> bool {
+pub(crate) fn spend_death_protection(client: u32, tick: crate::Tick) -> bool {
     let spent = DEATH_PROTECTED.lock().is_ok_and(|mut clients| {
         let before = clients.len();
         clients.retain(|&c| c != client);
@@ -471,11 +474,272 @@ pub(crate) fn spend_death_protection(client: u32) -> bool {
     if spent && let Ok(mut pops) = TOTEM_POPS.lock() {
         pops.push(client);
     }
+    if spent && let Ok(mut grace) = TOTEM_GRACE.lock() {
+        grace.retain(|(c, _)| *c != client);
+        grace.push((client, tick.0.saturating_add(TOTEM_GRACE_TICKS)));
+    }
     spent
+}
+
+pub(crate) fn totem_grace(client: u32, tick: crate::Tick) -> bool {
+    TOTEM_GRACE.lock().is_ok_and(|grace| grace.iter().any(|&(c, until)| c == client && tick.0 < until))
 }
 
 pub fn take_totem_pops() -> Vec<u32> {
     TOTEM_POPS.lock().map_or_else(|_| Vec::new(), |mut pops| std::mem::take(&mut *pops))
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GunGuard {
+    pub armor: f32,
+    pub toughness: f32,
+    pub epf_bullet: f32,
+    pub epf_blast: f32,
+    pub epf_melee: f32,
+    pub resistance: u8,
+    pub totem_grace: bool,
+}
+
+static GUN_GUARDS: std::sync::Mutex<Vec<(u32, GunGuard)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_gun_guard(client: u32, guard: GunGuard) {
+    if let Ok(mut guards) = GUN_GUARDS.lock() {
+        match guards.iter_mut().find(|(c, _)| *c == client) {
+            Some((_, kept)) => *kept = guard,
+            None => guards.push((client, guard)),
+        }
+    }
+}
+
+pub fn forget_gun_guard(client: u32) {
+    if let Ok(mut guards) = GUN_GUARDS.lock() {
+        guards.retain(|(c, _)| *c != client);
+    }
+}
+
+pub(crate) fn gun_guard(client: u32) -> Option<GunGuard> {
+    GUN_GUARDS.lock().ok()?.iter().find(|(c, _)| *c == client).map(|(_, guard)| *guard)
+}
+
+static PIERCE: RwLock<Vec<f32>> = RwLock::new(Vec::new());
+
+pub fn set_pierce_table(table: Vec<f32>) {
+    if let Ok(mut pierce) = PIERCE.write() {
+        *pierce = table;
+    }
+}
+
+pub(crate) fn pierce(weapon: u32) -> f32 {
+    PIERCE.read().ok().and_then(|table| table.get(weapon as usize).copied()).unwrap_or(0.0)
+}
+
+pub const AMMO_TYPES: usize = 8;
+pub const NO_AMMO: u8 = u8::MAX;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GunSpec {
+    pub weapon: u32,
+    pub clip: i32,
+    pub clip_left: i32,
+    pub alt_clip: i32,
+    pub ammo: u8,
+    pub rebind: bool,
+    pub alt_ammo: u8,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Arsenal {
+    pub guns: Vec<GunSpec>,
+    pub selected: Option<u32>,
+    pub stock: [i32; AMMO_TYPES],
+    pub lethal: Option<(u32, i32)>,
+    pub tactical: Option<(u32, i32)>,
+    pub endless: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Spent {
+    Rounds { ammo: u8, rounds: i32 },
+    Grenade { weapon: u32, delta: i32 },
+    Clip { weapon: u32, clip: i32, clip_left: i32, alt_clip: i32 },
+    Flare { pos: [f32; 3] },
+    FlareGone,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Published {
+    pub(crate) arsenal: Arsenal,
+    pub(crate) held: u32,
+    pub(crate) scripted: bool,
+    pub(crate) offhands: [u32; 2],
+}
+
+static ARSENALS: std::sync::Mutex<Vec<(u32, Published)>> = std::sync::Mutex::new(Vec::new());
+static SPENT: std::sync::Mutex<Vec<(u32, Spent)>> = std::sync::Mutex::new(Vec::new());
+static FLARES: std::sync::Mutex<Vec<(u32, [f32; 3])>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) const FLARE_WEAPON: &str = "flare_mp";
+const FLARE_DESTROYING_DAMAGE: i32 = 20;
+
+pub fn set_arsenal(client: u32, arsenal: Arsenal) {
+    if let Ok(mut published) = ARSENALS.lock() {
+        match published.iter_mut().find(|(c, _)| *c == client) {
+            Some((_, held)) => held.arsenal = rebinds_kept(&held.arsenal, arsenal),
+            None => published.push((
+                client,
+                Published {
+                    arsenal,
+                    ..Published::default()
+                },
+            )),
+        }
+    }
+}
+
+fn rebinds_kept(old: &Arsenal, mut new: Arsenal) -> Arsenal {
+    for gun in &mut new.guns {
+        gun.rebind |= old.guns.iter().any(|was| was.weapon == gun.weapon && was.rebind);
+    }
+    new
+}
+
+pub fn forget_arsenal(client: u32) {
+    if let Ok(mut published) = ARSENALS.lock() {
+        published.retain(|(c, _)| *c != client);
+    }
+    let _ = take_spent(client);
+    forget_flare(client);
+}
+
+pub fn has_arsenal(client: u32) -> bool {
+    ARSENALS.lock().is_ok_and(|published| published.iter().any(|(c, _)| *c == client))
+}
+
+pub(crate) fn publishes_arsenal(client: u32) -> bool {
+    active() && has_arsenal(client)
+}
+
+pub fn take_spent(client: u32) -> Vec<Spent> {
+    let Ok(mut spent) = SPENT.lock() else {
+        return Vec::new();
+    };
+    let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *spent).into_iter().partition(|(c, _)| *c == client);
+    *spent = rest;
+    mine.into_iter().map(|(_, spent)| spent).collect()
+}
+
+pub(crate) fn spend_rounds(client: u32, weapon: u32, rounds: i32, alternate: impl Fn(u32) -> u32) {
+    if rounds <= 0 {
+        return;
+    }
+    let ammo = ARSENALS.lock().ok().and_then(|published| {
+        let (_, held) = published.iter().find(|(c, _)| *c == client)?;
+        if held.arsenal.endless {
+            return None;
+        }
+        held.arsenal.guns.iter().find_map(|gun| {
+            if gun.weapon == weapon {
+                Some(gun.ammo)
+            } else if alternate(gun.weapon) == weapon {
+                Some(gun.alt_ammo)
+            } else {
+                None
+            }
+        })
+    });
+    if let Some(ammo) = ammo.filter(|&ammo| usize::from(ammo) < AMMO_TYPES)
+        && let Ok(mut spent) = SPENT.lock()
+    {
+        spent.push((client, Spent::Rounds { ammo, rounds }));
+    }
+}
+
+pub(crate) fn spend_grenade(client: u32, weapon: u32, delta: i32) {
+    if delta == 0 || weapon == 0 {
+        return;
+    }
+    let counted = ARSENALS.lock().ok().is_some_and(|published| {
+        published.iter().find(|(c, _)| *c == client).is_some_and(|(_, held)| {
+            let slots = [held.arsenal.lethal, held.arsenal.tactical];
+            !held.arsenal.endless
+                && (delta > 0
+                    || held.offhands.contains(&weapon)
+                    || slots.iter().flatten().any(|(w, _)| *w == weapon))
+        })
+    });
+    if counted && let Ok(mut spent) = SPENT.lock() {
+        spent.push((client, Spent::Grenade { weapon, delta }));
+    }
+}
+
+pub(crate) fn plant_flare(client: u32, pos: [f32; 3]) {
+    if !has_arsenal(client) {
+        return;
+    }
+    if let Ok(mut flares) = FLARES.lock() {
+        flares.retain(|(c, _)| *c != client);
+        flares.push((client, pos));
+    }
+    if let Ok(mut spent) = SPENT.lock() {
+        spent.push((client, Spent::Flare { pos }));
+    }
+}
+
+pub(crate) fn forget_flare(client: u32) {
+    if let Ok(mut flares) = FLARES.lock() {
+        flares.retain(|(c, _)| *c != client);
+    }
+}
+
+pub(crate) fn blast_flares(damage_at: impl Fn([f32; 3]) -> i32) {
+    let Ok(mut flares) = FLARES.lock() else {
+        return;
+    };
+    let mut gone = Vec::new();
+    flares.retain(|&(client, pos)| {
+        let destroyed = damage_at(pos) >= FLARE_DESTROYING_DAMAGE;
+        if destroyed {
+            gone.push((client, Spent::FlareGone));
+        }
+        !destroyed
+    });
+    drop(flares);
+    if !gone.is_empty() && let Ok(mut spent) = SPENT.lock() {
+        spent.extend(gone);
+    }
+}
+
+pub(crate) fn queued_spent() -> Vec<(u32, Spent)> {
+    SPENT.lock().map_or_else(|_| Vec::new(), |spent| spent.clone())
+}
+
+pub(crate) fn script_set_clips(client: u32) {
+    if let Ok(mut published) = ARSENALS.lock()
+        && let Some((_, held)) = published.iter_mut().find(|(c, _)| *c == client)
+    {
+        held.scripted = true;
+    }
+}
+
+pub(crate) fn with_arsenals<T>(run: impl FnOnce(&mut Vec<(u32, Published)>) -> (T, Vec<(u32, Spent)>)) -> Option<T> {
+    let (out, spent) = run(&mut *ARSENALS.lock().ok()?);
+    if let Ok(mut queued) = SPENT.lock() {
+        queued.extend(spent);
+    }
+    Some(out)
+}
+
+pub fn is_killstreak_weapon(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with("killstreak_") || (name.starts_with("airdrop_") && name.contains("marker"))
+}
+
+pub fn kept_by_mw2(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    is_killstreak_weapon(&lower)
+        || ["ac130_", "briefcase_bomb"]
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
 }
 
 pub fn take_events() -> Vec<VoxelEvent> {
@@ -667,6 +931,21 @@ pub fn deactivate() {
     let _ = take_team_switches();
     if let Ok(mut clients) = DEATH_PROTECTED.lock() {
         clients.clear();
+    }
+    if let Ok(mut guards) = GUN_GUARDS.lock() {
+        guards.clear();
+    }
+    if let Ok(mut grace) = TOTEM_GRACE.lock() {
+        grace.clear();
+    }
+    if let Ok(mut published) = ARSENALS.lock() {
+        published.clear();
+    }
+    if let Ok(mut spent) = SPENT.lock() {
+        spent.clear();
+    }
+    if let Ok(mut flares) = FLARES.lock() {
+        flares.clear();
     }
     if let Ok(mut boxes) = MOB_BOXES.write() {
         boxes.iter_mut().for_each(Vec::clear);
@@ -2815,15 +3094,16 @@ mod tests {
     #[test]
     fn a_totem_saves_one_death_and_reports_it() {
         let client = 7_000_001;
-        assert!(!spend_death_protection(client));
+        let tick = crate::Tick(10);
+        assert!(!spend_death_protection(client, tick));
         set_death_protected(client, true);
         set_death_protected(client, true);
-        assert!(spend_death_protection(client));
-        assert!(!spend_death_protection(client));
+        assert!(spend_death_protection(client, tick));
+        assert!(!spend_death_protection(client, tick));
         assert_eq!(take_totem_pops().iter().filter(|&&c| c == client).count(), 1);
         set_death_protected(client, true);
         set_death_protected(client, false);
-        assert!(!spend_death_protection(client));
+        assert!(!spend_death_protection(client, tick));
     }
 
     #[test]

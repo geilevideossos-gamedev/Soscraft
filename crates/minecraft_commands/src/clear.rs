@@ -8,7 +8,7 @@ use crate::text::Text;
 use crate::tracker::Tracker;
 use crate::tree::Node;
 
-pub const PLAYER_SLOTS: usize = 41;
+pub const PLAYER_SLOTS: usize = 45;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ItemFilter {
@@ -204,20 +204,33 @@ mod tests {
     fn the_inventory_clears_storage_armour_offhand_crafting_grid_and_cursor() {
         let stone = filter(&["minecraft:stone"]);
         let mut counted = inventory();
-        assert_eq!(clear_inventory(&mut counted, &stone, 0), 103);
+        assert_eq!(clear_inventory(&mut counted, &stone, 0), 112);
         assert_eq!(counted.slots[0].as_ref().map(|s| s.count), Some(64));
         let mut some = inventory();
         assert_eq!(clear_inventory(&mut some, &stone, 70), 70);
         assert_eq!(some.slots[0], None);
         assert_eq!(some.slots[20].as_ref().map(|s| s.count), Some(24));
         let mut all = inventory();
-        assert_eq!(clear_inventory(&mut all, &stone, -1), 103);
+        assert_eq!(clear_inventory(&mut all, &stone, -1), 112);
         assert_eq!((all.cursor.clone(), all.crafting[1].clone()), (None, None));
-        assert_eq!(all.slots[42].as_ref().map(|s| s.count), Some(9));
+        assert_eq!(all.slots[42], None);
         assert_eq!(all.slots[5].as_ref().map(|s| s.count), Some(10));
         let mut everything = inventory();
-        assert_eq!(clear_inventory(&mut everything, &ItemFilter::Any, -1), 114);
+        assert_eq!(clear_inventory(&mut everything, &ItemFilter::Any, -1), 123);
         assert!(everything.slots[36].is_none());
+    }
+
+    #[test]
+    fn clear_empties_the_grenade_slots() {
+        let mut inventory = Inventory::default();
+        inventory.slots[43] = stack("iw4l:frag_grenade", 32);
+        inventory.slots[44] = stack("iw4l:flash_grenade", 20);
+        let frags = filter(&["iw4l:frag_grenade"]);
+        assert_eq!(clear_inventory(&mut inventory, &frags, 0), 32);
+        assert_eq!(clear_inventory(&mut inventory, &frags, 5), 5);
+        assert_eq!(inventory.slots[43].as_ref().map(|s| s.count), Some(27));
+        assert_eq!(clear_inventory(&mut inventory, &ItemFilter::Any, -1), 47);
+        assert!(inventory.slots.iter().all(Option::is_none));
     }
 
     #[test]
@@ -227,12 +240,12 @@ mod tests {
         let out = run(&mut server, &mut world, HOST, "clear @s minecraft:stone 0");
         assert_eq!(
             texts(&out),
-            vec!["Found 103 matching item(s) on player Steve"]
+            vec!["Found 112 matching item(s) on player Steve"]
         );
         let out = run(&mut server, &mut world, HOST, "clear @s stone 100");
         assert_eq!(texts(&out), vec!["Removed 100 item(s) from player Steve"]);
         let out = run(&mut server, &mut world, HOST, "clear Steve stone");
-        assert_eq!(texts(&out), vec!["Removed 3 item(s) from player Steve"]);
+        assert_eq!(texts(&out), vec!["Removed 12 item(s) from player Steve"]);
         let out = run(&mut server, &mut world, HOST, "clear @s stone");
         assert_eq!(texts(&out), vec!["No items were found on player Steve"]);
         assert_eq!(out[0].2, RED);

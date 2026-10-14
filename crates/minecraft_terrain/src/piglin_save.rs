@@ -1,4 +1,4 @@
-use crate::item_nbt::{saved_components, stack_tag, tag_json};
+use crate::item_nbt::{from_disk, saved_components, stack_tag, tag_json};
 use glam::DVec3;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::gossip::{uuid_from_ints, uuid_to_ints};
@@ -42,6 +42,8 @@ pub fn stack_of(tag: &Tag) -> Option<ItemStack> {
     if count <= 0 {
         return None;
     }
+    let (id, components) = from_disk(id, tag.get("components").and_then(saved_components));
+    let id = id.as_str();
     let mut stack = ItemStack::new(id, count.min(99) as u8);
     if piglin::max_damage(id).is_some()
         || piglin::armor_value(id).0 > 0.0
@@ -49,10 +51,7 @@ pub fn stack_of(tag: &Tag) -> Option<ItemStack> {
     {
         stack.max = 1;
     }
-    stack.components = tag
-        .get("components")
-        .and_then(saved_components)
-        .map(|components| tag_json(&components));
+    stack.components = components.map(|components| tag_json(&components));
     Some(stack)
 }
 

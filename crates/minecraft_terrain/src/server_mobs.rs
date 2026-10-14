@@ -1929,14 +1929,15 @@ pub fn level_entity_tags(level: &Level<'static>, keep: impl Fn(DVec3) -> bool) -
         map.insert("OnGround".into(), Tag::Byte(i8::from(e.on_ground)));
         map.insert("UUID".into(), fresh_uuid(e.id as u64, p));
         if let Some(item) = e.item_data() {
-            if item.stack.is_empty() {
+            if item.stack.is_empty() || item.stack.id.starts_with(crate::item_nbt::KILLSTREAK_PREFIX) {
                 continue;
             }
             map.insert("id".into(), Tag::String("minecraft:item".into()));
             let mut stack = std::collections::BTreeMap::new();
-            stack.insert("id".to_owned(), Tag::String(item.stack.id.clone()));
+            let (id, components) = crate::item_nbt::to_disk(&item.stack.id, item.stack.components.as_ref().and_then(saved_components));
+            stack.insert("id".to_owned(), Tag::String(id));
             stack.insert("count".to_owned(), Tag::Int(item.stack.count));
-            if let Some(components) = item.stack.components.as_ref().and_then(saved_components) {
+            if let Some(components) = components {
                 stack.insert("components".to_owned(), components);
             }
             map.insert("Item".into(), Tag::Compound(stack));
@@ -1966,8 +1967,9 @@ pub fn load_level_entity(level: &mut Level<'static>, tag: &Tag) -> bool {
         Some("minecraft:item") => {
             let Some(item) = tag.get("Item") else { return true };
             let (Some(id), count) = (text(item, "id"), int(item, "count").unwrap_or(1)) else { return true };
-            let mut stack = minecraftoss_core::item::ItemStack::new(id, count);
-            stack.components = item.get("components").and_then(saved_components);
+            let (id, components) = crate::item_nbt::from_disk(id, item.get("components").and_then(saved_components));
+            let mut stack = minecraftoss_core::item::ItemStack::new(&id, count);
+            stack.components = components;
             let id = level.spawn_item_with(pos.to_array(), stack, motion, int(tag, "PickupDelay").unwrap_or(0), int(tag, "Age").unwrap_or(0));
             if let Some(e) = level.entities.iter_mut().find(|e| e.id == id) {
                 e.remaining_fire_ticks = int(tag, "Fire").unwrap_or(0);

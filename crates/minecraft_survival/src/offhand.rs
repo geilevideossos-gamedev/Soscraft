@@ -108,7 +108,7 @@ pub fn swap_hands(inventory: &mut Inventory, selected: usize) -> bool {
     let gun = |slot: usize| {
         inventory.slots[slot]
             .as_ref()
-            .is_some_and(|stack| crate::guns::weapon_of(stack).is_some())
+            .is_some_and(crate::guns::is_gun)
     };
     if selected >= crate::guns::HOTBAR || gun(selected) || gun(OFFHAND) {
         return false;
@@ -330,6 +330,15 @@ mod tests {
         let mut armed = inventory(&[(0, "iw4:weapon/7"), (OFFHAND, SHIELD)]);
         assert!(!swap_hands(&mut armed, 0));
         assert!(armed.slots[0].is_some() && armed.slots[OFFHAND].is_some());
+        for gun in ["iw4l:m4", "iw4l:riotshield"] {
+            let mut armed = inventory(&[(0, gun), (OFFHAND, SHIELD)]);
+            assert!(!swap_hands(&mut armed, 0));
+            assert_eq!(armed.slots[0].as_ref().map(|s| s.id.as_str()), Some(gun));
+            let mut armed = inventory(&[(0, "minecraft:torch"), (OFFHAND, gun)]);
+            assert!(!swap_hands(&mut armed, 0));
+        }
+        let mut grenade = inventory(&[(0, "iw4l:frag_grenade")]);
+        assert!(swap_hands(&mut grenade, 0));
     }
 
     #[test]

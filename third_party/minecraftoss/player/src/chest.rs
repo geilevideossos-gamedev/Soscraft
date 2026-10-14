@@ -262,7 +262,7 @@ mod tests {
         let mut chest = Chest::default();
         let mut inventory = Inventory::default();
         inventory.cursor = Some(ItemStack::new("minecraft:stone", 9));
-        chest.distribute(&[43, 44, 0], false, &mut inventory);
+        chest.distribute(&[45, 46, 0], false, &mut inventory);
         assert_eq!(chest.slots[0].as_ref().unwrap().count, 3);
         assert_eq!(chest.slots[1].as_ref().unwrap().count, 3);
         assert_eq!(inventory.slots[0].as_ref().unwrap().count, 3);

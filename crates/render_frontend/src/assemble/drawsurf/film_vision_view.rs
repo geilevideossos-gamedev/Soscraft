@@ -224,6 +224,10 @@ pub fn register(app: &mut App) {
     );
 }
 
+fn pain_wanted(health: Option<f32>, scripted: bool, minecraft: bool) -> bool {
+    scripted && !minecraft && health.is_some_and(|health| health <= 0.5)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update_film_vision_view(
     view: Res<crate::prepare::scene::view_parms::PreparedSceneView>,
@@ -235,7 +239,9 @@ fn update_film_vision_view(
     local: Res<net::LocalPresentClient>,
     mut applied: ResMut<AppliedVision>,
     settings: Res<frame::GameSettings>,
+    minecraft: Option<Res<frame::MinecraftUi>>,
 ) {
+    let on_minecraft = minecraft.is_some_and(|ui| ui.active || ui.credits.is_some());
     if !view.ready {
         applied.vision = None;
     } else {
@@ -353,8 +359,8 @@ fn update_film_vision_view(
             .player(local.0)
             .filter(|ps| ps.health > 0 && ps.max_health > 0 && ps.pm_type < 5)
             .map(|ps| ps.health as f32 / ps.max_health as f32);
-        if let Some(health) = health.filter(|_| wanted.is_some()) {
-            if health <= 0.5 || applied.pain_strength > 0.0 {
+        if let Some(health) = health.filter(|_| wanted.is_some() && !on_minecraft) {
+            if pain_wanted(Some(health), wanted.is_some(), on_minecraft) || applied.pain_strength > 0.0 {
                 let target = (1.0 - health).clamp(0.0, 1.0);
                 applied.pain_strength = target.max(applied.pain_strength - clock.frametime_secs());
             }
@@ -543,4 +549,18 @@ fn apply_script_film_dvar(
         _ => return false,
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_mw2_pain_vision_on_minecraft_maps() {
+        assert!(!pain_wanted(Some(0.1), true, true));
+        assert!(pain_wanted(Some(0.1), true, false));
+        assert!(!pain_wanted(Some(0.9), true, false));
+        assert!(!pain_wanted(None, true, false));
+        assert!(!pain_wanted(Some(0.1), false, false));
+    }
 }

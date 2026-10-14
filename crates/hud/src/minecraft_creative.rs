@@ -18,6 +18,10 @@ const BLINK_MILLIS: f64 = 300.0;
 const OVERLAY_TICKS: f64 = 60.0;
 const TICK: f64 = 0.05;
 const BLUE: u32 = 0xFF55_55FF;
+pub(crate) const GRENADE_SLOTS: [(usize, i32, i32); 2] = [
+    (crate::minecraft_screens::LETHAL, 127, 20),
+    (crate::minecraft_screens::TACTICAL, 145, 20),
+];
 const DARK_PURPLE: u32 = 0xFFAA_00AA;
 
 fn spec(slot: McSlot, x: i32, y: i32, group: Group, empty: Option<&'static str>) -> SlotSpec {
@@ -65,6 +69,9 @@ pub(crate) fn layout(kind: McTabKind, first: usize) -> Layout {
             Group::Player,
             Some("container/slot/shield"),
         ));
+        for (slot, x, y) in GRENADE_SLOTS {
+            slots.push(spec(McSlot::Inventory(slot), x, y, Group::Player, None));
+        }
     } else {
         for i in 0..45 {
             slots.push(spec(
@@ -358,6 +365,7 @@ pub(crate) fn draw_background(
         p.blit(&sheet, left, top + by1, 0, by1, w, h - by1);
         p.blit(&sheet, left, top + by0, 0, by0, bx0, by1 - by0);
         p.blit(&sheet, left + bx1, top + by0, bx1, by0, w - bx1, by1 - by0);
+        crate::minecraft_screens::draw_grenade_frames(p, origin, GRENADE_SLOTS);
     } else {
         p.blit(&sheet, left, top, 0, 0, w, h);
     }
@@ -591,7 +599,7 @@ mod tests {
     #[test]
     fn the_inventory_tab_places_armor_offhand_and_trash_like_vanilla() {
         let layout = layout(McTabKind::Inventory, 0);
-        assert_eq!(layout.slots.len(), 4 + 27 + 1 + 9 + 1);
+        assert_eq!(layout.slots.len(), 4 + 27 + 1 + 2 + 9 + 1);
         assert_eq!(at(&layout, McSlot::Inventory(39)), Some((54, 6)));
         assert_eq!(at(&layout, McSlot::Inventory(38)), Some((54, 33)));
         assert_eq!(at(&layout, McSlot::Inventory(37)), Some((108, 6)));
@@ -613,6 +621,44 @@ mod tests {
                 .iter()
                 .any(|spec| matches!(spec.slot, McSlot::Creative(_)))
         );
+    }
+
+    #[test]
+    fn the_grenade_slots_sit_in_free_panel_space_and_left_of_the_offhand() {
+        let creative = layout(McTabKind::Inventory, 0);
+        assert_eq!(at(&creative, McSlot::Inventory(43)), Some((127, 20)));
+        assert_eq!(at(&creative, McSlot::Inventory(44)), Some((145, 20)));
+        let items = layout(McTabKind::Category, 0);
+        assert_eq!(at(&items, McSlot::Inventory(43)), None);
+        let inventory = crate::minecraft_screens::layout(McScreen::Inventory);
+        assert_eq!(at(&inventory, McSlot::Inventory(43)), Some((134, 62)));
+        assert_eq!(at(&inventory, McSlot::Inventory(44)), Some((152, 62)));
+        assert_eq!(
+            inventory.slot_at([135.0, 63.0]),
+            Some(McSlot::Inventory(43))
+        );
+        let table = crate::minecraft_screens::layout(McScreen::CraftingTable);
+        assert_eq!(at(&table, McSlot::Inventory(44)), None);
+        let (cx, h) = (240, 135);
+        let frames = crate::minecraft_hotbar::grenade_frames(cx, h);
+        assert_eq!(frames, [(43, cx - 149, h - 23), (44, cx - 178, h - 23)]);
+        assert!(
+            frames[0].1 + 29 <= cx - 91 - 29,
+            "left of the offhand frame"
+        );
+        let mut ui = MinecraftUi {
+            slots: vec![None; 45],
+            ..MinecraftUi::default()
+        };
+        let tip =|ui: &MinecraftUi, slot| {
+            crate::minecraft_screens::grenade_slot_tooltip(ui, Some(McSlot::Inventory(slot)))
+                .map(|(lines, _)| lines[0].text.clone())
+        };
+        assert_eq!(tip(&ui, 43).as_deref(), Some("Lethal"));
+        assert_eq!(tip(&ui, 44).as_deref(), Some("Tactical"));
+        assert_eq!(tip(&ui, 40), None);
+        ui.slots[43] = Some(stone());
+        assert_eq!(tip(&ui, 43), None, "a filled slot shows its item instead");
     }
 
     #[test]
@@ -702,6 +748,9 @@ mod tests {
             contents: Vec::new(),
             more: None,
             glint: false,
+            icon: "minecraft:stone".to_owned(),
+            lore: Vec::new(),
+            clip: None,
         }
     }
 

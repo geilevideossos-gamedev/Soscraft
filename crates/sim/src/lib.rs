@@ -13,6 +13,7 @@ mod entity_run;
 mod equipment;
 mod frame;
 mod gentity;
+pub mod gun_damage;
 pub mod hudelem;
 pub mod identities;
 pub mod input;

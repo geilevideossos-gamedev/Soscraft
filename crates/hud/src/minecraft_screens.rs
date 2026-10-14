@@ -68,6 +68,26 @@ pub(crate) struct Layout {
     pub slots: Vec<SlotSpec>,
 }
 
+pub(crate) const LETHAL: usize = 43;
+pub(crate) const TACTICAL: usize = 44;
+pub(crate) const GRENADE_SLOTS: [(usize, i32, i32); 2] = [(LETHAL, 134, 62), (TACTICAL, 152, 62)];
+
+pub(crate) fn draw_grenade_frames(p: &mut Painter<'_>, origin: [i32; 2], slots: [(usize, i32, i32); 2]) {
+    for (_, x, y) in slots {
+        p.sprite("container/slot", origin[0] + x - 1, origin[1] + y - 1, 18, 18);
+    }
+}
+
+pub(crate) fn grenade_slot_tooltip(ui: &MinecraftUi, hovered: Option<McSlot>) -> Option<(Vec<TextLine>, bool)> {
+    let text = match hovered? {
+        McSlot::Inventory(LETHAL) => "Lethal",
+        McSlot::Inventory(TACTICAL) => "Tactical",
+        _ => return None,
+    };
+    let empty = ui.cursor.is_none() && crate::minecraft_inventory::stack_at(ui, hovered?).is_none();
+    empty.then(|| (vec![TextLine::new(text, WHITE)], false))
+}
+
 fn spec(slot: McSlot, x: i32, y: i32, group: Group) -> SlotSpec {
     SlotSpec {
         slot,
@@ -137,6 +157,9 @@ pub(crate) fn layout(screen: McScreen) -> Layout {
                 empty: Some("container/slot/shield"),
                 ..spec(McSlot::Inventory(40), 77, 62, Group::Player)
             });
+            for (slot, x, y) in GRENADE_SLOTS {
+                slots.push(spec(McSlot::Inventory(slot), x, y, Group::Player));
+            }
         }
         McScreen::CraftingTable => {
             slots.push(spec(McSlot::WorkbenchResult, 124, 35, Group::Result));
@@ -213,7 +236,7 @@ pub(crate) fn layout(screen: McScreen) -> Layout {
             player_inventory(&mut slots, 84);
         }
         McScreen::Creative(kind) => return crate::minecraft_creative::layout(kind, 0),
-        McScreen::Lectern => size = [192, 192],
+        McScreen::Lectern | McScreen::BookEdit | McScreen::BookSign => size = [192, 192],
         McScreen::Mount {
             columns,
             saddle,
@@ -305,7 +328,7 @@ impl Layout {
             McScreen::Mount { .. } => "horse",
             McScreen::Smithing => "smithing",
             McScreen::Creative(_) => "creative_inventory/tab_items",
-            McScreen::Lectern => "book",
+            McScreen::Lectern | McScreen::BookEdit | McScreen::BookSign => "book",
         }
     }
 }
@@ -478,6 +501,7 @@ pub(crate) fn draw_background(p: &mut Painter<'_>, s: &Screen<'_>) {
             p.blit(sheet, left, top + by1, 0, by1, w, h - by1);
             p.blit(sheet, left, top + by0, 0, by0, bx0, by1 - by0);
             p.blit(sheet, left + bx1, top + by0, bx1, by0, w - bx1, by1 - by0);
+            draw_grenade_frames(p, s.origin, GRENADE_SLOTS);
         }
         McScreen::Chest { rows } => {
             let rows = i32::from(rows);
@@ -1121,7 +1145,7 @@ mod tests {
     #[test]
     fn the_inventory_screen_follows_the_vanilla_menu_order() {
         let layout = layout(McScreen::Inventory);
-        assert_eq!(layout.slots.len(), 46);
+        assert_eq!(layout.slots.len(), 48);
         assert_eq!(layout.slots[0].slot, McSlot::Result);
         assert_eq!(at(&layout, McSlot::Result), (154, 28));
         assert_eq!(at(&layout, McSlot::Crafting(3)), (116, 36));
@@ -1322,6 +1346,9 @@ mod tests {
             contents: Vec::new(),
             more: None,
             glint: false,
+            icon: id.into(),
+            lore: Vec::new(),
+            clip: None,
         };
         let netherite = stack("minecraft:netherite_upgrade_smithing_template");
         assert_eq!(

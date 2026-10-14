@@ -37,7 +37,7 @@ pub use ui::{
 pub mod skate;
 pub use skate::SkateMode;
 pub mod minecraft_ui;
-pub use minecraft_ui::{InventoryPuppet, McAction, McActionInput, McCamera, McCameraType, McBook, McChoice, McClick, McGameMode, McLevelLoading, McLoadingReason, McMerchant, McOffer, McOven, McScreen, McSleepCamera, McSleepers, McSlot, McStack, McVitals, MinecraftUi};
+pub use minecraft_ui::{InventoryPuppet, McAction, McActionInput, McCamera, McCameraType, McBook, McBookEdit, McChoice, McClick, McGameMode, McLevelLoading, McLoadingReason, McMerchant, McOffer, McOven, McScreen, McSleepCamera, McSleepers, McSlot, McStack, McVitals, MinecraftUi};
 pub mod minecraft_credits;
 pub mod minecraft_gui;
 pub use minecraft_gui::{McFont, McGlyph, McGui, McScaling, McSprite};
@@ -45,3 +45,5 @@ pub mod minecraft_chat;
 pub use minecraft_chat::{McChat, McChatLine};
 pub mod minecraft_creative;
 pub use minecraft_creative::{McCreative, McCreativeTab, McTabKind};
+pub mod minecraft_recipe_book;
+pub use minecraft_recipe_book::{McRecipeBook, McRecipeButton, McRecipeOption};

@@ -48,6 +48,7 @@ pub enum ArgKind {
     Rotation,
     ResourceOrTag(Registry),
     Float { min: f32, max: f32 },
+    Word,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,6 +179,7 @@ impl ArgKind {
                 reader.cursor = reader.input().len();
                 Ok(Arg::Text(rest))
             }
+            Self::Word => Ok(Arg::Text(reader.read_unquoted().to_owned())),
             Self::Int { min, max } => reader.read_bounded_int(min, max).map(Arg::Int),
             Self::Bool => reader.read_bool().map(Arg::Bool),
             Self::Item => item(reader).map(Arg::Item),
@@ -342,6 +344,7 @@ fn players(reader: &mut StringReader, single: bool) -> Result<Selector, CommandE
 pub const ENCHANTMENT_COMPONENTS: [&str; 2] =
     ["minecraft:enchantments", "minecraft:stored_enchantments"];
 pub const OMINOUS_AMPLIFIER: &str = "minecraft:ominous_bottle_amplifier";
+pub const CUSTOM_DATA: &str = "minecraft:custom_data";
 
 pub(crate) fn allowed_in_id(c: char) -> bool {
     c.is_ascii_digit() || c.is_ascii_lowercase() || matches!(c, '_' | ':' | '/' | '.' | '-')
@@ -397,7 +400,8 @@ fn components(
         let id = resource_id(reader)?;
         let book = book::CONTENT_COMPONENTS.contains(&id.as_str());
         let ominous = id == OMINOUS_AMPLIFIER;
-        if !book && !ominous && !ENCHANTMENT_COMPONENTS.contains(&id.as_str()) {
+        let custom = id == CUSTOM_DATA;
+        if !book && !ominous && !custom && !ENCHANTMENT_COMPONENTS.contains(&id.as_str()) {
             reader.cursor = start;
             return Err(
                 CommandError::new("arguments.item.component.unknown", vec![literal(&id)]).at(start),
@@ -416,6 +420,8 @@ fn components(
             book_content(reader, &id, books)?;
         } else if ominous {
             ominous_amplifier(reader, &id, books)?;
+        } else if custom {
+            custom_data(reader, books)?;
         } else {
             enchantment_levels(reader, &id, out)?;
         }
@@ -479,6 +485,51 @@ fn ominous_amplifier(
     }
     components.insert(component.to_owned(), serde_json::json!(amplifier));
     Ok(())
+}
+
+fn custom_data(
+    reader: &mut StringReader,
+    books: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CommandError> {
+    let start = reader.cursor;
+    let text = nbt(reader)?;
+    match minecraftoss_core::snbt::parse_compound(&text) {
+        Ok(tag) => {
+            books.insert(CUSTOM_DATA.to_owned(), tag_json(&tag));
+            Ok(())
+        }
+        Err(reason) => {
+            reader.cursor = start;
+            Err(CommandError::new(
+                "arguments.item.component.malformed",
+                vec![literal(CUSTOM_DATA), literal(reason)],
+            )
+            .at(start))
+        }
+    }
+}
+
+fn tag_json(tag: &minecraftoss_core::nbt::Tag) -> serde_json::Value {
+    use minecraftoss_core::nbt::Tag;
+    use serde_json::Value;
+    match tag {
+        Tag::Byte(v) => Value::from(*v),
+        Tag::Short(v) => Value::from(*v),
+        Tag::Int(v) => Value::from(*v),
+        Tag::Long(v) => Value::from(*v),
+        Tag::Float(v) => Value::from(f64::from(*v)),
+        Tag::Double(v) => Value::from(*v),
+        Tag::String(v) => Value::from(v.clone()),
+        Tag::ByteArray(a) => Value::Array(a.iter().map(|&v| Value::from(v)).collect()),
+        Tag::IntArray(a) => Value::Array(a.iter().map(|&v| Value::from(v)).collect()),
+        Tag::LongArray(a) => Value::Array(a.iter().map(|&v| Value::from(v)).collect()),
+        Tag::List(list) => Value::Array(list.iter().map(tag_json).collect()),
+        Tag::Compound(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), tag_json(value)))
+                .collect(),
+        ),
+    }
 }
 
 fn enchantment_levels(
@@ -1008,6 +1059,27 @@ mod tests {
             Some(serde_json::json!({"minecraft:writable_book_content": {"pages": [{"raw": "one"}, {"raw": "two"}]}}))
         );
         assert_eq!(parse_item("writable_book").unwrap().components, None);
+    }
+
+    #[test]
+    fn custom_data_is_parsed_as_snbt() {
+        let item =
+            parse_item(r#"iw4l:m4[minecraft:custom_data={iw4l:{attachments:["reflex"],clip:5b}}]"#)
+                .unwrap();
+        assert_eq!(item.id, "iw4l:m4");
+        assert_eq!(
+            item.components,
+            Some(serde_json::json!({"minecraft:custom_data": {"iw4l": {"attachments": ["reflex"], "clip": 5}}}))
+        );
+        let short = parse_item("stone[custom_data={a:1}]").unwrap();
+        assert_eq!(
+            short.components,
+            Some(serde_json::json!({"minecraft:custom_data": {"a": 1}}))
+        );
+        let text = "stone[custom_data={a:}]";
+        let error = parse_item(text).unwrap_err();
+        assert_eq!(key(&error), "arguments.item.component.malformed");
+        assert_eq!(error.cursor, text.find('{'));
     }
 
     #[test]

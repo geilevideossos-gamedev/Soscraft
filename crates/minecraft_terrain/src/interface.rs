@@ -51,6 +51,7 @@ fn item_model_leaf(value: &serde_json::Value) -> Option<&serde_json::Value> {
 pub(crate) fn item_model_tints(
     packs: &PackStack,
     model: &serde_json::Value,
+    potion: Option<u32>,
 ) -> Result<Vec<[u8; 3]>> {
     let Some(tints) = model.get("tints").or_else(|| item_model_leaf(model)?.get("tints")).and_then(serde_json::Value::as_array) else {
         return Ok(crate::special_models::special_tints(model));
@@ -63,7 +64,12 @@ pub(crate) fn item_model_tints(
                     .get("value")
                     .and_then(serde_json::Value::as_i64)
                     .map(|color| color as u32),
-                Some("minecraft:potion" | "minecraft:dye" | "minecraft:firework" | "minecraft:map_color" | "minecraft:team" | "minecraft:custom_model_data") => tint
+                Some("minecraft:potion") => potion.or_else(|| {
+                    tint.get("default")
+                        .and_then(serde_json::Value::as_i64)
+                        .map(|color| color as u32)
+                }),
+                Some("minecraft:dye" | "minecraft:firework" | "minecraft:map_color" | "minecraft:team" | "minecraft:custom_model_data") => tint
                     .get("default")
                     .and_then(serde_json::Value::as_i64)
                     .map(|color| color as u32),
@@ -128,15 +134,15 @@ mod tests {
             "fallback": {"type": "minecraft:model", "model": "minecraft:item/leather_helmet", "tints": [dye.clone()]}
         });
         assert_eq!(item_model_reference(&leather), Some("minecraft:item/leather_helmet"));
-        assert_eq!(item_model_tints(&packs, &leather).unwrap(), vec![[0xa0, 0x65, 0x40]]);
+        assert_eq!(item_model_tints(&packs, &leather, None).unwrap(), vec![[0xa0, 0x65, 0x40]]);
         let horse = json!({"type": "minecraft:model", "model": "minecraft:item/leather_horse_armor", "tints": [dye]});
-        assert_eq!(item_model_tints(&packs, &horse).unwrap(), vec![[0xa0, 0x65, 0x40]]);
+        assert_eq!(item_model_tints(&packs, &horse, None).unwrap(), vec![[0xa0, 0x65, 0x40]]);
         let star = json!({
             "type": "minecraft:model",
             "model": "minecraft:item/firework_star",
             "tints": [{"type": "minecraft:constant", "value": -1}, {"type": "minecraft:firework", "default": -7697782}]
         });
-        assert_eq!(item_model_tints(&packs, &star).unwrap(), vec![[0xff; 3], [0x8a; 3]]);
+        assert_eq!(item_model_tints(&packs, &star, None).unwrap(), vec![[0xff; 3], [0x8a; 3]]);
         let wolf = json!({
             "type": "minecraft:condition",
             "property": "minecraft:has_component",
@@ -145,9 +151,23 @@ mod tests {
             "on_true": {"type": "minecraft:model", "model": "minecraft:item/wolf_armor_dyed", "tints": [{"type": "minecraft:dye", "default": 0}]}
         });
         assert_eq!(item_model_reference(&wolf), Some("minecraft:item/wolf_armor"));
-        assert!(item_model_tints(&packs, &wolf).unwrap().is_empty());
+        assert!(item_model_tints(&packs, &wolf, None).unwrap().is_empty());
         let stonecutter = json!({"type": "minecraft:model", "model": "minecraft:block/stonecutter"});
-        assert!(item_model_tints(&packs, &stonecutter).unwrap().is_empty());
+        assert!(item_model_tints(&packs, &stonecutter, None).unwrap().is_empty());
+        assert_eq!(item_model_tints(&packs, &horse, Some(0xF82423)).unwrap(), vec![[0xa0, 0x65, 0x40]]);
+        assert_eq!(item_model_tints(&packs, &star, Some(0xF82423)).unwrap(), vec![[0xff; 3], [0x8a; 3]]);
+    }
+
+    #[test]
+    fn a_potion_tint_takes_the_stack_colour_or_its_default() {
+        let packs = PackStack::open(vec![]).unwrap();
+        let potion = json!({
+            "type": "minecraft:model",
+            "model": "minecraft:item/potion",
+            "tints": [{"type": "minecraft:potion", "default": -13083194}]
+        });
+        assert_eq!(item_model_tints(&packs, &potion, Some(0xF82423)).unwrap(), vec![[0xf8, 0x24, 0x23]]);
+        assert_eq!(item_model_tints(&packs, &potion, None).unwrap(), vec![[0x38, 0x5d, 0xc6]]);
     }
 
     #[test]

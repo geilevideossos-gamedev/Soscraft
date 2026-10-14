@@ -85,6 +85,7 @@ pub(crate) struct ScreenInput {
     highlight: crate::minecraft_hotbar::Highlight,
     creative: crate::minecraft_creative::CreativeInput,
     overlay: Option<(String, f64)>,
+    book: crate::minecraft_recipe_book::BookInput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,9 +153,9 @@ fn stack_name(
     gaps: &mut HudPresentationGaps,
 ) -> String {
     match stack.weapon {
-        Some(weapon) => crate::weapon_name::localized_weapon_name(weapon, weapons, strings, gaps)
+        Some(weapon) if !stack.named => crate::weapon_name::localized_weapon_name(weapon, weapons, strings, gaps)
             .unwrap_or_else(|| "Weapon".to_owned()),
-        None => stack.name.clone().or_else(|| ui.names.get(&stack.id).cloned()).unwrap_or_else(|| stack.id.clone()),
+        _ => stack.name.clone().or_else(|| ui.names.get(&stack.id).cloned()).unwrap_or_else(|| stack.id.clone()),
     }
 }
 
@@ -241,7 +242,8 @@ pub(crate) fn update_minecraft_hud(
     let open_before = ui.inventory_open;
     let hotbar = ui.game_mode.shows_hotbar();
     let searching = ui.inventory_open && ui.screen == McScreen::Creative(McTabKind::Search);
-    let typing = searching || (ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some));
+    let book_typing = ui.inventory_open && crate::minecraft_recipe_book::has_book(ui.screen) && ui.recipe_book.open && ui.recipe_book.focused;
+    let typing = searching || book_typing || (ui.inventory_open && ui.screen == McScreen::Anvil && ui.container.first().is_some_and(Option::is_some)) || crate::minecraft_book_edit::captures_typing(&ui);
     let events: Vec<bevy::input::keyboard::KeyboardInput> = typed.read().cloned().collect();
     let text: String = events.iter().filter(|event| event.state.is_pressed()).filter_map(|event| event.text.as_ref()).flat_map(|text| text.chars()).filter(|c| !c.is_control()).collect();
     let reading = ui.inventory_open && ui.screen == McScreen::Lectern;
@@ -266,6 +268,9 @@ pub(crate) fn update_minecraft_hud(
         ui.clicks.push(McClick::Close);
     }
     let opened = ui.inventory_open && (!input.open || input.screen != ui.screen || opened_by_world);
+    if opened {
+        ui.recipe_book.reopen();
+    }
     if ui.inventory_open != input.open || ui.screen != input.screen {
         input.clicks.reset();
     }
@@ -383,12 +388,41 @@ pub(crate) fn update_minecraft_hud(
             crate::minecraft_book::draw(&mut painter, book, mouse);
         }
         ui.character_box = None;
+    } else if crate::minecraft_book_edit::captures_typing(&ui) {
+        let mouse = window.physical_cursor_position().map(|m| space.mouse([m.x, m.y]));
+        if opened && let Some(edit) = ui.book_edit.as_mut() {
+            edit.since = now;
+        }
+        if !opened && !blocked {
+            let held = MODIFIERS.map(|code| crate::minecraft_chat::held_before(keys.pressed(code), keys.just_pressed(code), keys.just_released(code)));
+            let typed = crate::minecraft_chat::fold_typed(held, &events);
+            let mut none = ();
+            let clipboard: &mut dyn crate::minecraft_chat::ChatClipboard = match clipboard.as_deref_mut() {
+                Some(clipboard) => clipboard,
+                None => &mut none,
+            };
+            let press = crate::minecraft_book_edit::Press {
+                mouse,
+                click: buttons.just_pressed(MouseButton::Left),
+                shift,
+                page_up: keys.just_pressed(KeyCode::PageUp) || pad_just(GamepadButton::LeftTrigger),
+                page_down: keys.just_pressed(KeyCode::PageDown) || pad_just(GamepadButton::RightTrigger),
+            };
+            crate::minecraft_book_edit::input(&mut ui, &gui.font, space.width, press, &typed, clipboard);
+        }
+        painter.gradient([0, 0, space.width, space.height], None, 0xC010_1010, 0xD010_1010);
+        if let Some(edit) = ui.book_edit.as_ref() {
+            crate::minecraft_book_edit::draw(&mut painter, ui.screen, edit, mouse, now);
+        }
+        ui.character_box = None;
     } else if ui.inventory_open {
         let layout = match ui.screen {
             McScreen::Creative(kind) => crate::minecraft_creative::layout(kind, ui.creative.first_shown()),
             screen => crate::minecraft_screens::layout(screen),
         };
-        let origin = layout.origin([space.width, space.height]);
+        let gui_size = [space.width, space.height];
+        let origin = crate::minecraft_recipe_book::origin(&layout, gui_size, ui.recipe_book.open);
+        let covered = crate::minecraft_recipe_book::covered(&ui, gui_size);
         let mouse = window.physical_cursor_position().map(|m| space.mouse([m.x, m.y]));
         let rel_mouse = mouse.map(|[x, y]| [x - f64::from(origin[0]), y - f64::from(origin[1])]);
         if opened {
@@ -401,7 +435,7 @@ pub(crate) fn update_minecraft_hud(
             input.trade_row = None;
             input.cyclers = Default::default();
         }
-        let mouse_hovered = rel_mouse.and_then(|rel| layout.slot_at(rel));
+        let mouse_hovered = rel_mouse.and_then(|rel| layout.slot_at(rel)).filter(|_| !covered);
         if pad_pointer && !input.pad_pointer {
             input.focus = mouse_hovered.or(input.focus);
         }
@@ -422,7 +456,15 @@ pub(crate) fn update_minecraft_hud(
         let hovered = if pad_pointer { input.focus } else { mouse_hovered };
         let target = match (hovered, pointer) {
             (Some(slot), _) => Target::Slot(slot),
-            (None, Some(rel)) if layout.outside(rel) && !crate::minecraft_creative::over_tab(&ui, rel) => Target::Outside,
+            (None, Some(rel))
+                if layout.outside(rel)
+                    && !crate::minecraft_creative::over_tab(&ui, rel)
+                    && !(crate::minecraft_recipe_book::has_book(ui.screen)
+                        && ui.recipe_book.open
+                        && crate::minecraft_recipe_book::over(&ui.recipe_book, gui_size, [rel[0].floor() as i32 + origin[0], rel[1].floor() as i32 + origin[1]])) =>
+            {
+                Target::Outside
+            }
             _ => Target::Nothing,
         };
         let screen_buttons = screen_buttons(&buttons, pad);
@@ -471,6 +513,28 @@ pub(crate) fn update_minecraft_hud(
             } else {
                 [false; 2]
             };
+            let book_consumed = if crate::minecraft_recipe_book::has_book(ui.screen) {
+                let held = MODIFIERS.map(|code| crate::minecraft_chat::held_before(keys.pressed(code), keys.just_pressed(code), keys.just_released(code)));
+                let typed = crate::minecraft_chat::fold_typed(held, &events);
+                let mut none = ();
+                let clipboard: &mut dyn crate::minecraft_chat::ChatClipboard = match clipboard.as_deref_mut() {
+                    Some(clipboard) => clipboard,
+                    None => &mut none,
+                };
+                let frame = crate::minecraft_recipe_book::BookFrame {
+                    mouse: pointer.filter(|_| !pad_pointer).map(|[x, y]| [x.floor() as i32 + origin[0], y.floor() as i32 + origin[1]]),
+                    pressed: screen_buttons.pressed,
+                    typed: &typed,
+                    chat_key: mc(McAction::Chat),
+                    now,
+                    gui: gui_size,
+                    origin,
+                    shift,
+                };
+                crate::minecraft_recipe_book::input(&mut ui, &mut input.book, frame, Some(&gui.font), clipboard)
+            } else {
+                [false; 2]
+            };
             let consumed = station_input(
                 &mut ui,
                 &mut input,
@@ -510,7 +574,7 @@ pub(crate) fn update_minecraft_hud(
                 clicks.push(McClick::Clone(slot));
             }
             for (button, taken) in consumed.into_iter().enumerate() {
-                let taken = taken || creative_consumed[button];
+                let taken = taken || creative_consumed[button] || book_consumed[button];
                 if screen_buttons.pressed[button] && !taken {
                     let idle = input.clicks.drag.is_none();
                     clicks.extend(input.clicks.press(&view, target, button, shift, now));
@@ -526,6 +590,9 @@ pub(crate) fn update_minecraft_hud(
                 let swap = digit.or_else(|| mc(McAction::SwapHands).then_some(40));
                 let throw = mc(McAction::Drop).then_some(ctrl);
                 clicks.extend(input.clicks.key(&view, hovered, swap, throw));
+            }
+            if clicks.iter().any(crate::minecraft_recipe_book::touches_grid) {
+                ui.recipe_book.clear_ghost();
             }
             ui.clicks.extend(clicks);
         }
@@ -573,22 +640,29 @@ pub(crate) fn update_minecraft_hud(
             McScreen::Inventory => Some(PUPPET_BOX),
             McScreen::Creative(McTabKind::Inventory) => Some(crate::minecraft_creative::PUPPET_BOX),
             _ => None,
-        };
+        }
+        .filter(|_| !covered);
         let hole = puppet_box.map(|[x0, y0, x1, y1]| [origin[0] + x0, origin[1] + y0, origin[0] + x1, origin[1] + y1]);
         painter.gradient([0, 0, space.width, space.height], hole, 0xC010_1010, 0xD010_1010);
+        let look = crate::minecraft_recipe_book::Look { ui: &ui, weapons, origin, gui: gui_size, mouse: pointer.filter(|_| !pad_pointer).map(|_| pointer_gui), now };
         if matches!(ui.screen, McScreen::Creative(_)) {
             crate::minecraft_creative::draw_background(&mut painter, &ui, weapons, origin, &input.creative, now);
             crate::minecraft_creative::draw_labels(&mut painter, &ui, origin);
-        } else {
+        } else if !covered {
             crate::minecraft_screens::draw_background(&mut painter, &screen);
             crate::minecraft_screens::draw_labels(&mut painter, &screen);
         }
         if ui.screen == McScreen::Anvil {
             crate::minecraft_screens::anvil_cost(&mut painter, &screen);
         }
-        crate::minecraft_screens::draw_highlight(&mut painter, &screen, false);
-        crate::minecraft_screens::draw_slots(&mut painter, &screen);
-        crate::minecraft_screens::draw_highlight(&mut painter, &screen, true);
+        crate::minecraft_recipe_book::draw_button(&mut painter, &look);
+        if !covered {
+            crate::minecraft_screens::draw_highlight(&mut painter, &screen, false);
+            crate::minecraft_screens::draw_slots(&mut painter, &screen);
+            crate::minecraft_screens::draw_highlight(&mut painter, &screen, true);
+            crate::minecraft_recipe_book::draw_ghost(&mut painter, &look, &layout);
+        }
+        crate::minecraft_recipe_book::draw(&mut painter, &look, &input.book);
         if pointer.is_some() {
             crate::minecraft_screens::draw_carried(&mut painter, &screen, pointer_gui);
         }
@@ -615,7 +689,17 @@ pub(crate) fn update_minecraft_hud(
             let rel = rel_mouse.filter(|_| matches!(ui.screen, McScreen::Creative(_)))?;
             crate::minecraft_creative::tooltip(&painter, &ui, rel, hovered).map(|lines| (lines, false))
         };
-        let tooltip = item_tooltip.or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen)).or_else(creative_tooltip);
+        let book_tooltip = crate::minecraft_recipe_book::tooltip(&painter, &look, &layout, hovered).map(|tip| match tip {
+            crate::minecraft_recipe_book::Tip::Item(stack, more) => {
+                let mut lines = tooltip_lines(&stack, &ui, weapons, strings, &mut gaps);
+                if more {
+                    lines.push(crate::minecraft_recipe_book::more_line(&painter));
+                }
+                (lines, true)
+            }
+            crate::minecraft_recipe_book::Tip::Text(text) => (vec![TextLine::new(text, WHITE)], false),
+        });
+        let tooltip = item_tooltip.or(book_tooltip).or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen)).or_else(creative_tooltip).or_else(|| crate::minecraft_screens::grenade_slot_tooltip(&ui, hovered));
         if let (Some((lines, gap)), Some(_)) = (tooltip, pointer) {
             painter.tooltip(&lines, pointer_gui, gap);
         }
@@ -802,6 +886,7 @@ fn tooltip_lines(
     let mut lines = vec![TextLine { italic: stack.named, ..TextLine::new(name, crate::minecraft_hotbar::name_color(Some(stack))) }];
     lines.extend(stack.contents.iter().map(|line| TextLine::new(line.clone(), WHITE)));
     lines.extend(stack.more.iter().map(|line| TextLine { italic: true, ..TextLine::new(line.clone(), WHITE) }));
+    lines.extend(stack.lore.iter().map(|line| TextLine::new(line.clone(), GRAY)));
     lines.extend(stack.enchantments.iter().map(|name| TextLine::new(name.clone(), GRAY)));
     let extra = match (stack.weapon, stack.attack) {
         (Some(weapon), _) => weapons
@@ -1011,6 +1096,9 @@ mod tests {
             contents: (1..=5).map(|count| format!("{count} x Stone")).collect(),
             more: Some("and 2 more...".to_owned()),
             glint: false,
+            icon: "minecraft:shulker_box".to_owned(),
+            lore: Vec::new(),
+            clip: None,
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool)> = lines.iter().map(|line| (line.text.as_str(), line.italic)).collect();
@@ -1028,5 +1116,30 @@ mod tests {
             ]
         );
         assert!(lines[1..7].iter().all(|line| line.color == WHITE));
+    }
+
+    #[test]
+    fn a_written_book_tooltip_shows_its_lore_in_gray_after_the_name() {
+        let stack = McStack {
+            id: "minecraft:written_book".to_owned(),
+            count: 1,
+            weapon: None,
+            damage: None,
+            max: 16,
+            named: false,
+            name: Some("Diary".to_owned()),
+            attack: None,
+            enchantments: Vec::new(),
+            contents: Vec::new(),
+            more: None,
+            glint: true,
+            icon: "minecraft:written_book".to_owned(),
+            lore: vec!["by Alex".to_owned(), "Original".to_owned()],
+            clip: None,
+        };
+        let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
+        let shown: Vec<(&str, bool, u32)> = lines.iter().map(|line| (line.text.as_str(), line.italic, line.color)).collect();
+        assert_eq!(shown[1..], [("by Alex", false, GRAY), ("Original", false, GRAY)]);
+        assert_eq!((shown[0].0, shown[0].1), ("Diary", false));
     }
 }

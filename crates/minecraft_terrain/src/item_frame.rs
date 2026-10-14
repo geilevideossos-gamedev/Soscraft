@@ -151,6 +151,7 @@ pub struct FrameView {
     pub facing: Direction,
     pub position: DVec3,
     pub item: Option<String>,
+    pub potion: Option<u32>,
     pub glint: bool,
     pub rotation: i32,
     pub invisible: bool,
@@ -189,11 +190,12 @@ pub fn stack_of_tag(tag: &Tag) -> Option<ItemStack> {
     if count <= 0 || id == "minecraft:air" {
         return None;
     }
-    let mut stack = ItemStack::new(id, 1);
-    stack.components = tag
+    let components = tag
         .get("components")
-        .and_then(crate::item_nbt::saved_components)
-        .map(|components| crate::item_nbt::tag_json(&components));
+        .and_then(crate::item_nbt::saved_components);
+    let (id, components) = crate::item_nbt::from_disk(id, components);
+    let mut stack = ItemStack::new(id, 1);
+    stack.components = components.map(|components| crate::item_nbt::tag_json(&components));
     Some(stack)
 }
 
@@ -358,6 +360,10 @@ impl ItemFrame {
             facing: self.facing,
             position: self.position(),
             item: self.item.as_ref().map(|stack| stack.id.clone()),
+            potion: self
+                .item
+                .as_ref()
+                .and_then(|stack| crate::potions::stack_color(stack.components.as_ref())),
             glint: self.item.as_ref().is_some_and(crate::glint::has_glint),
             rotation: self.rotation,
             invisible: self.invisible,
@@ -799,6 +805,32 @@ mod tests {
     }
 
     #[test]
+    fn a_gun_in_a_frame_is_saved_as_its_carrier_and_comes_back() {
+        let mut frames = Frames::default();
+        let id = frames
+            .add(&frame_tag(false, (1, 64, 1), Direction::North))
+            .unwrap();
+        let mut frame = frames.get(id).unwrap().clone();
+        let mut gun = ItemStack::new("iw4l:m4", 1);
+        gun.components = Some(serde_json::json!({
+            "minecraft:custom_data": {"iw4l": {"attachments": ["acog"], "clip": 30}}
+        }));
+        frame.item = Some(gun.clone());
+        let saved = frame.to_tag();
+        assert_eq!(
+            saved
+                .get("Item")
+                .and_then(|i| i.get("id"))
+                .and_then(Tag::as_str),
+            Some("minecraft:carrot_on_a_stick")
+        );
+        let mut again = Frames::default();
+        let back = again.add(&saved).unwrap();
+        let loaded = again.get(back).unwrap().item.clone().unwrap();
+        assert_eq!((loaded.id, loaded.components), (gun.id, gun.components));
+    }
+
+    #[test]
     fn the_box_sits_against_the_support_for_every_facing() {
         for facing in Direction::ALL {
             let mut frames = Frames::default();
@@ -1050,6 +1082,20 @@ mod tests {
         frame.invisible = invisible;
         frame.item = Some(ItemStack::new("minecraft:elytra", 1));
         frame.view()
+    }
+
+    #[test]
+    fn a_framed_potion_view_carries_its_colour() {
+        let mut frame = ItemFrame::from_tag(&frame_tag(false, (4, 70, -9), Direction::North), 1).unwrap();
+        let mut potion = ItemStack::new("minecraft:potion", 1);
+        potion.components = Some(serde_json::json!({"minecraft:potion_contents": {"potion": "minecraft:night_vision"}}));
+        frame.item = Some(potion);
+        let view = frame.view();
+        assert_eq!(view.item.as_deref(), Some("minecraft:potion"));
+        assert_eq!(view.potion, Some(0xC2FF66));
+        frame.item = Some(ItemStack::new("minecraft:potion", 1));
+        assert_eq!(frame.view().potion, None);
+        assert_eq!(view_of(Direction::North, 0, false, false).potion, None);
     }
 
     #[test]

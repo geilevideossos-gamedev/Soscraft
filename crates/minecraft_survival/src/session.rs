@@ -168,6 +168,9 @@ pub struct Session {
     pub menu_inputs: Vec<crate::menus::MenuInput>,
     pub mobs: crate::mob_sender::MobSender,
     pub lectern: Option<BlockPos>,
+    pub book_settings: Option<(bool, bool)>,
+    pub seen_recipes: Vec<String>,
+    book: Option<(usize, usize, [bool; 8])>,
     gear: BTreeMap<u32, GearView>,
     command_level: Option<u8>,
     view: Option<PlayerView>,
@@ -191,6 +194,9 @@ impl Session {
             menu_inputs: Vec::new(),
             mobs: crate::mob_sender::MobSender::default(),
             lectern: None,
+            book_settings: None,
+            seen_recipes: Vec::new(),
+            book: None,
             gear: BTreeMap::new(),
             command_level: None,
             view: None,
@@ -306,6 +312,15 @@ impl Session {
         }
         self.view = Some(key);
         self.outbox.push(ToClient::Player(Box::new(view)));
+    }
+
+    pub fn send_recipe_book(&mut self, player: &Player) {
+        let book = &player.recipe_book;
+        let key = (player.inventory.unlocked_recipes.len(), book.highlight.len(), book.settings);
+        if self.book != Some(key) {
+            self.book = Some(key);
+            self.outbox.push(ToClient::RecipeBook(book.view(&player.inventory)));
+        }
     }
 
     pub fn send_gear(&mut self, gears: &[(u32, GearView)]) {
@@ -712,6 +727,7 @@ pub fn registry_fingerprint(registries: &Registries) -> u64 {
         write(blocks.state_to_string(BlockStateId(id)).as_bytes());
         write(&[0]);
     }
+    write(&minecraft_terrain::fork_items::table_hash().to_be_bytes());
     hash
 }
 
@@ -1134,6 +1150,7 @@ impl Sessions {
         for session in self.sessions.values_mut() {
             if let Some(player) = players.get(&session.uuid) {
                 session.send_view(player);
+                session.send_recipe_book(player);
             }
         }
     }
@@ -1761,6 +1778,38 @@ mod tests {
     }
 
     #[test]
+    fn a_friends_recipe_book_is_sent_once_for_each_change() {
+        let mut player = alex();
+        let mut session = Session::new(1, player.uuid.clone(), "Alex", 2);
+        let books = |session: &mut Session| {
+            std::mem::take(&mut session.outbox)
+                .into_iter()
+                .filter_map(|message| match message {
+                    ToClient::RecipeBook(book) => Some(book),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        session.send_recipe_book(&player);
+        session.send_recipe_book(&player);
+        assert_eq!(books(&mut session).len(), 1);
+        player.recipe_book.set_crafting(true, true);
+        player.inventory.unlocked_recipes.insert("minecraft:stick".to_owned());
+        player.inventory.unlocked_recipes.insert("iw4l:m4".to_owned());
+        player.recipe_book.update(&player.inventory);
+        session.send_recipe_book(&player);
+        session.send_recipe_book(&player);
+        let sent = books(&mut session);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].recipes, ["minecraft:stick"]);
+        assert_eq!(sent[0].highlight, ["minecraft:stick"]);
+        assert!(sent[0].open && sent[0].filtering);
+        player.recipe_book.seen(&["minecraft:stick".to_owned()]);
+        session.send_recipe_book(&player);
+        assert!(books(&mut session)[0].highlight.is_empty());
+    }
+
+    #[test]
     fn a_player_view_is_sent_once_for_each_change() {
         let mut player = alex();
         let mut session = Session::new(1, player.uuid.clone(), "Alex", 2);
@@ -1812,6 +1861,7 @@ mod tests {
                 id: "minecraft:iron_sword".to_owned(),
                 glint: false,
                 dye: None,
+                potion: None,
             }),
             hides_gun: true,
             ..GearView::default()

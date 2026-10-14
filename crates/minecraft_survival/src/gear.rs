@@ -3,15 +3,12 @@ use minecraft_terrain::body_gear::BodyGear;
 use minecraft_terrain::game_mode::PlayerMode;
 use minecraftoss_player::inventory::Inventory;
 
-use crate::guns::weapon_of;
+use crate::guns::is_gun;
 use crate::player::Player;
 
 pub fn body_gear(inventory: &Inventory, selected: usize, mode: &PlayerMode) -> Option<BodyGear> {
-    mode.interacts().then(|| {
-        minecraft_terrain::body_gear::body_gear(&inventory.slots, selected, |stack| {
-            weapon_of(stack).is_some()
-        })
-    })
+    mode.interacts()
+        .then(|| minecraft_terrain::body_gear::body_gear(&inventory.slots, selected, is_gun))
 }
 
 fn item_view(item: &minecraft_terrain::body_gear::GearItem) -> GearItem {
@@ -19,6 +16,7 @@ fn item_view(item: &minecraft_terrain::body_gear::GearItem) -> GearItem {
         id: item.id.clone(),
         glint: item.glint,
         dye: item.dye,
+        potion: item.potion,
     }
 }
 
@@ -27,6 +25,7 @@ fn item_of(view: &GearItem) -> minecraft_terrain::body_gear::GearItem {
         id: view.id.clone(),
         glint: view.glint,
         dye: view.dye,
+        potion: view.potion,
     }
 }
 
@@ -133,5 +132,23 @@ mod tests {
         player.mode = PlayerMode::new(GameMode::Spectator);
         assert_eq!(player_gear(&player), GearView::default());
         assert!(gear_of(&GearView::default()).is_bare());
+    }
+
+    #[test]
+    fn a_held_potion_keeps_its_colour_both_ways() {
+        let mut inventory = kitted();
+        let mut potion = ItemStack::new("minecraft:potion", 1);
+        potion.components = Some(serde_json::json!({
+            "minecraft:potion_contents": {"potion": "minecraft:healing"}
+        }));
+        inventory.slots[2] = Some(potion);
+        inventory.slots[40] = Some(ItemStack::new("minecraft:potion", 1));
+        let gear = body_gear(&inventory, 2, &PlayerMode::new(GameMode::Survival)).unwrap();
+        let view = gear_view(&gear);
+        assert_eq!(view.main.as_ref().unwrap().potion, Some(0xF82423));
+        assert_eq!(view.off.as_ref().unwrap().potion, None);
+        let back = gear_of(&view);
+        assert_eq!(back.main.as_ref().unwrap().potion, Some(0xF82423));
+        assert_eq!(back, gear);
     }
 }

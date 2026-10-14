@@ -193,6 +193,7 @@ fn build() -> Vec<Node> {
         crate::execute::node(),
         crate::kit::node(),
         crate::tick::node(),
+        crate::tag::node(),
     ])
 }
 
@@ -1023,6 +1024,7 @@ mod tests {
                 "/setblock <pos> <block> [destroy|keep|replace|strict]",
                 "/spawnpoint [<targets>]",
                 "/summon <entity> [<pos>]",
+                "/tag <targets> (add|list|remove)",
                 "/teleport (<destination>|<location>|<targets>)",
                 "/tell -> msg",
                 "/tick (freeze|query|rate|sprint|step|unfreeze)",
