@@ -309,7 +309,7 @@ impl DamageCause {
     }
 
     fn has_direct_source(self) -> bool {
-        self == Self::Explosion
+        matches!(self, Self::Explosion | Self::Fireworks)
     }
 
     fn always_most_significant_fall(self) -> bool {
@@ -1144,6 +1144,12 @@ mod tests {
         let mut sourceless = CombatTracker::default();
         sourceless.record(1, DamageCause::Fireworks, 4.0, None, 0.0);
         assert_eq!(sourceless.death_line(&lang, |_| true, |_| None).message, "%1$s went off with a bang");
+        let mut fighting = CombatTracker::default();
+        fighting.hurt_by(1, zombie_bite());
+        fighting.hurt_by(2, DamageCause::Player { client: 0 });
+        fighting.record(3, DamageCause::Fireworks, 4.0, None, 0.0);
+        let host = |client: u32| (client == 0).then(|| Killer { name: "Host".to_owned(), weapon: None });
+        assert_eq!(fighting.death_line(&lang, |_| true, host).message, "%1$s went off with a bang", "the rocket is the direct source, so no one is credited");
     }
 
     #[test]

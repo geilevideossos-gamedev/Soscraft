@@ -2676,6 +2676,22 @@ After 99e46d92.
 IW4L_MINECRAFT_KIT=minecraft:cooked_beef*16
 ```
 
+### 2. A rocket with no shooter is told as "went off with a bang" after a fight
+
+After 2b9614a3.
+
+- **Vanilla (26.3, `DamageSource.getLocalizedDeathMessage`):** the `.player` form ("... while fighting X", the kill credit of `getKillCredit`) is used only when the damage source has neither a causing nor a direct entity. A firework rocket is always the direct entity of its `fireworks` damage, so a rocket with no shooter reads "went off with a bang" even right after a player's or a mob's hit.
+- **Found:** group tnt (`8a834f02`) gave `DamageCause::Explosion` (TNT with no owner) its direct source, but `DamageCause::Fireworks` (a rocket with no shooter) still fell through to the kill credit, which group pvp-melee had just extended to players: "went off with a bang while fighting Host". The log listed it under the TNT leftovers.
+- **Changed:** `minecraft_survival/src/death.rs`: `has_direct_source` covers `Fireworks` as well as `Explosion`. The TNT leftover line drops the fireworks item.
+- **Tests:** `minecraft_survival`: `death::tests::a_villager_s_firework_makes_the_player_go_off_with_a_bang` now also bites, hits by a player and then kills by a sourceless rocket, and expects "went off with a bang". `check -p launcher` green.
+- **Test steps:** the fork launches no rocket without a shooter yet (raid villagers' rockets have one), so the case itself is covered by the unit test. To check that the kill credit still works (`/gamerule pvp true`):
+  1. Friend hits the host once with the sword; within 5 seconds the host walks into lava and dies. The chat reads "Host tried to swim in lava to escape Friend" (**250_lava_escape_still_named**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:iron_sword,minecraft:lava_bucket,minecraft:cooked_beef*16
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2848,4 +2864,4 @@ Group small-not-vanilla added `entities/src/world/hoglins.rs` (commit 4: a test)
 - Skater-pose leftovers (group skater-poses): other players' boards keep their trucks and wheels rigid on the deck (only `SKATEBOARD_ROOT` is sent); the poses ride the state frames, which the host sends with each server output of the receiver's level, so a gap of more than 1 s between frames (a host stall, a level without an entity world) shows other skaters as standing soldiers until the next frame.
 - Melee leftovers (group pvp-melee): the attacker's own slowdown after a sprint knockback hit (`causeExtraKnockback` multiplies the attacker's motion by 0.6 and stops the sprint), for mob and player hits alike; `EnchantmentHelper.doPostAttackEffects` (Fire Aspect and other post-attack enchantments) on players; a sweep round a mob reaches players before the entity world says whether the mob was hurt.
 - Strider-freeze leftovers (group strider-freeze): under `/tick freeze` a player on foot does not push a ridden strider or horse (vanilla's `pushEntities` still pushes a ticking carrier), and queued respawn-anchor and crystal blasts wait for the next normal tick (as before the group).
-- TNT leftovers (group tnt): a mob as TNT owner (a creeper's blast priming TNT; vanilla's `getIndirectSourceEntity` keeps any living source, so a chain would read "blown up by Creeper"); an end crystal destroyed by a player's TNT blast does not name that player for its own blast (`tick_end` passes no owner to `crystals.blast`); the direct hit of a fireball a player sent back (`PlayerHitKind::Fireball`) still hurts players with pvp off; Blast Protection's `explosion_knockback_resistance` on explosion pushes; fireworks with no shooter still use the kill-credit escape in death lines (vanilla names the rocket, so "went off with a bang").
+- TNT leftovers (group tnt): a mob as TNT owner (a creeper's blast priming TNT; vanilla's `getIndirectSourceEntity` keeps any living source, so a chain would read "blown up by Creeper"); an end crystal destroyed by a player's TNT blast does not name that player for its own blast (`tick_end` passes no owner to `crystals.blast`); the direct hit of a fireball a player sent back (`PlayerHitKind::Fireball`) still hurts players with pvp off; Blast Protection's `explosion_knockback_resistance` on explosion pushes.
