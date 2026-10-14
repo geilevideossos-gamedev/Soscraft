@@ -59,6 +59,7 @@ pub enum MonsterKind {
     SnowGolem,
     Pillager,
     Vindicator,
+    Evoker,
 }
 
 impl MonsterKind {
@@ -85,6 +86,7 @@ impl MonsterKind {
             Self::SnowGolem => &crate::snow_golem_ai::GOAL_NAMES,
             Self::Pillager => &crate::illager_ai::PILLAGER_GOAL_NAMES,
             Self::Vindicator => &crate::illager_ai::VINDICATOR_GOAL_NAMES,
+            Self::Evoker => &crate::illager_ai::EVOKER_GOAL_NAMES,
         }
     }
 
@@ -110,6 +112,7 @@ impl MonsterKind {
             Self::SnowGolem => &crate::snow_golem_ai::TARGET_NAMES,
             Self::Pillager => &crate::illager_ai::PILLAGER_TARGET_NAMES,
             Self::Vindicator => &crate::illager_ai::VINDICATOR_TARGET_NAMES,
+            Self::Evoker => &crate::illager_ai::EVOKER_TARGET_NAMES,
         }
     }
 }
@@ -636,10 +639,10 @@ impl MonsterGoalContext {
         if self.kind == MonsterKind::Cat && matches!(target.target, Target::Player(id) if self.feline.tame && self.feline.owner == Some(id)) {
             return false;
         }
-        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator) && matches!(target.target, Target::Villager(id) if self.villagers.iter().any(|v| v.id == id && v.baby)) {
+        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker) && matches!(target.target, Target::Villager(id) if self.villagers.iter().any(|v| v.id == id && v.baby)) {
             return false;
         }
-        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator) && self.kind_of(target.target).is_some_and(crate::illager::is_illager) {
+        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker) && self.kind_of(target.target).is_some_and(crate::illager::is_illager) {
             return false;
         }
         target.alive && target.player_ok && !(player && self.difficulty == 0)
@@ -758,7 +761,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -824,7 +827,7 @@ impl MonsterAi {
             walk.clear_malus(PathType::Fire);
         }
         // `FloatGoal` lets the navigation float.
-        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager | MonsterKind::Vindicator);
+        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker);
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::WitherSkeleton => FOLLOW_RANGE,
             MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
@@ -838,6 +841,7 @@ impl MonsterAi {
             MonsterKind::SnowGolem => crate::snow_golem::FOLLOW_RANGE,
             MonsterKind::Pillager => crate::illager::IllagerKind::Pillager.follow_range(),
             MonsterKind::Vindicator => crate::illager::IllagerKind::Vindicator.follow_range(),
+            MonsterKind::Evoker => crate::illager::IllagerKind::Evoker.follow_range(),
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -892,6 +896,7 @@ impl MonsterAi {
             MonsterKind::SnowGolem => (crate::snow_golem_ai::snow_golem_goals(), crate::snow_golem_ai::snow_golem_targets(), crate::snow_golem::EYE_HEIGHT),
             MonsterKind::Pillager => (crate::illager_ai::pillager_goals(), crate::illager_ai::pillager_targets(), crate::illager::EYE_HEIGHT),
             MonsterKind::Vindicator => (crate::illager_ai::vindicator_goals(), crate::illager_ai::vindicator_targets(), crate::illager::EYE_HEIGHT),
+            MonsterKind::Evoker => (crate::illager_ai::evoker_goals(), crate::illager_ai::evoker_targets(), crate::illager::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -1742,6 +1747,20 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
             }
             if best.is_none_or(|(d, _)| distance < d) {
                 best = Some((distance, info));
+            }
+        }
+        if self.kind == "minecraft:player" {
+            for player in ctx.players.clone() {
+                let q = player.position;
+                let inside = q.x - 0.3 < max.x && q.x + 0.3 > min.x && q.y < max.y && q.y + 1.8 > min.y && q.z - 0.3 < max.z && q.z + 0.3 > min.z;
+                let Some(info) = ctx.info(Target::Player(player.id)).filter(|_| inside) else { continue };
+                let distance = p.distance_squared(info.position);
+                if !ctx.can_attack(info) || distance > range * range || !ctx.sees(world, info) {
+                    continue;
+                }
+                if best.is_none_or(|(d, _)| distance < d) {
+                    best = Some((distance, info));
+                }
             }
         }
         let Some((_, avoid)) = best else { return false };

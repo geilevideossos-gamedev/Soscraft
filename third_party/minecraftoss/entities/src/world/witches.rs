@@ -652,7 +652,7 @@ impl EntityWorld {
 
     /// `hurtServer` with `indirect_magic` (from a potion thrown by `owner`)
     /// on a mob, by ID: past armor (`#bypasses_armor`); animals panic.
-    fn hurt_mob_by_magic(&mut self, id: u64, amount: f32, owner: Option<u64>) -> Option<DamageResult> {
+    pub(super) fn hurt_mob_by_magic(&mut self, id: u64, amount: f32, owner: Option<u64>) -> Option<DamageResult> {
         let source = DamageSourceKind::Magic;
         let result = if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, true, owner == Some(id))

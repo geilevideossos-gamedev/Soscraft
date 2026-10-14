@@ -1731,7 +1731,9 @@ fn mob_hit(
         PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
         PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
         PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
+        PlayerHitKind::Magic { at } => [at.x - feet[0], at.z - feet[2]],
     };
+    let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. })).then_some(toward);
     let attack = match hit.kind {
         PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
         PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
@@ -1741,9 +1743,11 @@ fn mob_hit(
         PlayerHitKind::ShulkerBullet { .. } => crate::death::MobAttack::MobProjectile,
         PlayerHitKind::Trident { .. } => crate::death::MobAttack::Trident,
         PlayerHitKind::Spit { .. } => crate::death::MobAttack::Spit,
+        PlayerHitKind::Magic { .. } => crate::death::MobAttack::Magic,
     };
     let cause = match hit.kind {
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
+        PlayerHitKind::Magic { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
         _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
     };
     let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
@@ -1753,7 +1757,7 @@ fn mob_hit(
         PlayerHitKind::ShulkerBullet { .. } => Some((EffectKind::Levitation, minecraftoss_entities::shulker_bullet::LEVITATION_TICKS)),
         _ => None,
     };
-    (damage > 0.0).then_some((damage, from, Some(toward), cause, melee_push(&hit.kind), effect))
+    (damage > 0.0).then_some((damage, from, toward, cause, melee_push(&hit.kind), effect))
 }
 
 fn bullet_puff_particle(kind: minecraftoss_entities::world::BulletPuffKind) -> minecraft_terrain::ambient_particles::Kind {
@@ -2337,6 +2341,27 @@ mod tests {
         use minecraftoss_entities::world::BulletPuffKind;
         assert_eq!((bullet_puff_particle(BulletPuffKind::Hit), BulletPuffKind::Hit.count()), (Kind::Explosion, 2));
         assert_eq!((bullet_puff_particle(BulletPuffKind::Hurt), BulletPuffKind::Hurt.count()), (Kind::Crit, 15));
+    }
+
+    #[test]
+    fn evoker_fangs_bite_past_shields_as_the_evokers_indirect_magic() {
+        let hit = minecraftoss_entities::world::PlayerHit {
+            player_id: HOST,
+            damage: 6.0,
+            kind: PlayerHitKind::Magic { at: DVec3::new(1.0, 64.0, 0.0) },
+            source: Some(9),
+        };
+        let damage = |difficulty| mob_hit(&hit, [0.0, 64.0, 0.0], difficulty, Some("minecraft:evoker")).map(|h| h.0);
+        assert_eq!((damage(0), damage(1), damage(2), damage(3)), (None, Some(4.0), Some(6.0), Some(9.0)));
+        let (_, _, toward, cause, _, effect) = mob_hit(&hit, [0.0, 64.0, 0.0], 2, Some("minecraft:evoker")).unwrap();
+        assert_eq!(toward, None, "no shield blocks it");
+        assert_eq!(cause, crate::death::DamageCause::Mob { id: 9, type_id: "minecraft:evoker", attack: crate::death::MobAttack::Magic });
+        assert_eq!(cause.damage_type(), "minecraft:indirect_magic");
+        assert!(cause.bypasses_armor() && effect.is_none());
+        assert_eq!(crate::offhand::blocked_damage(0.0, toward, 6.0), 0.0);
+        let ownerless = minecraftoss_entities::world::PlayerHit { source: None, ..hit };
+        let (damage, _, _, cause, _, _) = mob_hit(&ownerless, [0.0, 64.0, 0.0], 3, None).unwrap();
+        assert_eq!((damage, cause), (6.0, crate::death::DamageCause::Magic));
     }
 
     #[test]

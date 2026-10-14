@@ -59,6 +59,7 @@ pub struct EntityView {
     pub sounds: Vec<(String, DVec3, f32, f32)>,
     pub(crate) random: minecraftoss_player::rng::LegacyRandom,
     shown: HashSet<u64>,
+    fang_crits: HashSet<u64>,
 }
 
 impl EntityView {
@@ -105,6 +106,7 @@ impl EntityView {
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             shown: HashSet::new(),
+            fang_crits: HashSet::new(),
         }
     }
 
@@ -135,6 +137,8 @@ impl EntityView {
             self.lids.tick();
             self.spawners.tick(near, &mut self.ambient);
             self.client.tick();
+            self.spell_casts();
+            self.fang_crits();
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);
             self.drawn_fireballs.tick();
@@ -181,6 +185,54 @@ impl EntityView {
         }
 
         ticked
+    }
+
+    fn spell_casts(&mut self) {
+        use minecraftoss_entities::illager::IllagerSpell;
+        use minecraftoss_player::mth;
+        for evoker in self.world.illagers() {
+            if evoker.illager.spell == IllagerSpell::None {
+                continue;
+            }
+            let Some(mob) = self.client.pose(evoker.id, 1.0) else {
+                continue;
+            };
+            let [r, g, b] = evoker.illager.spell.color();
+            let turn = mob.body_rot * 0.017_453_292 + mth::cos(f64::from(mob.age_in_ticks * 0.6662)) * 0.25;
+            let (cos, sin) = (f64::from(mth::cos(f64::from(turn))), f64::from(mth::sin(f64::from(turn))));
+            for side in [1.0, -1.0] {
+                let at = mob.feet + DVec3::new(side * cos * 0.6, 1.8, side * sin * 0.6);
+                self.spell.spawn(
+                    minecraft_terrain::spell_particles::SpellKind::Effect,
+                    at,
+                    DVec3::ZERO,
+                    [r as f32, g as f32, b as f32],
+                    1.0,
+                );
+            }
+        }
+    }
+
+    fn fang_crits(&mut self) {
+        use minecraftoss_entities::evoker_fangs::{CRIT_LIFE, WIDTH};
+        let fangs: Vec<(u64, DVec3, i32)> = self.world.evoker_fangs().iter().filter(|e| e.fangs.sent_spike).map(|e| (e.id, e.fangs.position, e.fangs.life_ticks)).collect();
+        self.fang_crits.retain(|id| fangs.iter().any(|(fang, ..)| fang == id));
+        for (id, at, life) in fangs {
+            if life > CRIT_LIFE || !self.fang_crits.insert(id) {
+                continue;
+            }
+            for _ in 0..12 {
+                let x = at.x + (self.random.next_double() * 2.0 - 1.0) * WIDTH * 0.5;
+                let y = at.y + 0.05 + self.random.next_double();
+                let z = at.z + (self.random.next_double() * 2.0 - 1.0) * WIDTH * 0.5;
+                let motion = DVec3::new(
+                    (self.random.next_double() * 2.0 - 1.0) * 0.3,
+                    0.3 + self.random.next_double() * 0.3,
+                    (self.random.next_double() * 2.0 - 1.0) * 0.3,
+                );
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::Crit, DVec3::new(x, y + 1.0, z), motion);
+            }
+        }
     }
 
     pub fn bursts(&mut self, snapshot: &mut EntitySnapshot) {
@@ -959,6 +1011,13 @@ impl EntityView {
         llama_render::append_spits(
             &mut out.models,
             w.llama_spits().iter().filter(|e| near(e.spit.position)),
+            atlas,
+            light,
+            partial,
+        );
+        minecraft_terrain::evoker_fangs_render::append_fangs(
+            &mut out.models,
+            w.evoker_fangs().iter().filter(|e| near(e.fangs.position)),
             atlas,
             light,
             partial,

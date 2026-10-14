@@ -2,7 +2,7 @@ use crate::goals::{Control, Controls, Goal, GoalSelector};
 use crate::illager as il;
 use crate::monster_ai::{
     AvoidEntityGoal, FloatGoal, HurtByTargetGoal, MeleeAttackGoal, MonsterGoalContext,
-    NearestTargetGoal, NeverGoal, Prey, Target,
+    NearestTargetGoal, NeverGoal, Prey, Target, continue_target,
 };
 use crate::navigation::{navigate_walk_to, navigate_walk_to_entity};
 use glam::DVec3;
@@ -51,6 +51,29 @@ pub const VINDICATOR_TARGET_NAMES: [&str; 5] = [
     "NearestAttackableTargetGoal",
     "VindicatorJohnnyAttackGoal",
 ];
+pub const EVOKER_GOAL_NAMES: [&str; 15] = [
+    "LongDistancePatrolGoal",
+    "ObtainRaidLeaderBannerGoal",
+    "PathfindToRaidGoal",
+    "RaiderMoveThroughVillageGoal",
+    "RaiderCelebration",
+    "FloatGoal",
+    "EvokerCastingSpellGoal",
+    "AvoidEntityGoal",
+    "AvoidEntityGoal",
+    "EvokerSummonSpellGoal",
+    "EvokerAttackSpellGoal",
+    "EvokerWololoSpellGoal",
+    "RandomStrollGoal",
+    "LookAtPlayerGoal",
+    "LookAtPlayerGoal",
+];
+pub const EVOKER_TARGET_NAMES: [&str; 4] = [
+    "HurtByTargetGoal",
+    "NearestAttackableTargetGoal",
+    "NearestAttackableTargetGoal",
+    "NearestAttackableTargetGoal",
+];
 pub const PATH_DELAY_MIN: i32 = 20;
 pub const PATH_DELAY_MAX: i32 = 40;
 pub const ATTACK_DELAY_MIN: i32 = 20;
@@ -71,6 +94,13 @@ pub struct CrossbowShot {
     pub target: Target,
     pub position: DVec3,
     pub height: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SpellCast {
+    Fangs { target: DVec3 },
+    SummonVex,
+    Wololo(u64),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -99,6 +129,13 @@ pub struct IllagerState {
     pub johnny: bool,
     pub reset_idle: bool,
     pub melee_aggressive: bool,
+    pub spell_ticks: i32,
+    pub spell: il::IllagerSpell,
+    pub wololo_target: Option<u64>,
+    pub blue_sheep: Vec<u64>,
+    pub vexes_near: usize,
+    pub casts: Vec<SpellCast>,
+    pub spell_sounds: Vec<&'static str>,
 }
 
 fn raider_goals() -> GoalSelector<MonsterGoalContext> {
@@ -198,6 +235,80 @@ pub fn vindicator_targets() -> GoalSelector<MonsterGoalContext> {
         4,
         JohnnyAttackGoal(NearestTargetGoal::every(Prey::Living, true, 0)),
     );
+    selector
+}
+
+pub fn evoker_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = raider_goals();
+    selector.add(0, FloatGoal);
+    selector.add(1, CastingSpellGoal);
+    selector.add(
+        2,
+        AvoidEntityGoal::new(
+            "minecraft:player",
+            il::EVOKER_AVOID_RANGE,
+            il::EVOKER_AVOID_WALK,
+            il::EVOKER_AVOID_SPRINT,
+        ),
+    );
+    selector.add(
+        3,
+        AvoidEntityGoal::new(
+            "minecraft:creaking",
+            il::EVOKER_AVOID_RANGE,
+            il::EVOKER_AVOID_WALK,
+            il::EVOKER_AVOID_SPRINT,
+        ),
+    );
+    selector.add(4, SpellGoal::new(il::IllagerSpell::SummonVex));
+    selector.add(5, SpellGoal::new(il::IllagerSpell::Fangs));
+    selector.add(6, SpellGoal::new(il::IllagerSpell::Wololo));
+    selector.add(
+        8,
+        RandomStrollGoal {
+            speed: il::STROLL_SPEED,
+        },
+    );
+    selector.add(
+        9,
+        LookAtGoal {
+            range: il::VINDICATOR_PLAYER_LOOK_RANGE,
+            probability: 1.0,
+            players: true,
+        },
+    );
+    selector.add(
+        10,
+        LookAtGoal {
+            range: il::VINDICATOR_MOB_LOOK_RANGE,
+            probability: 0.02,
+            players: false,
+        },
+    );
+    selector
+}
+
+pub fn evoker_targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(
+        1,
+        RaiderHurtByGoal(HurtByTargetGoal {
+            timestamp: 0,
+            unseen_ticks: 0,
+            target_mob: None,
+            alert_others: true,
+        }),
+    );
+    selector.add(
+        2,
+        RememberingTargetGoal {
+            goal: NearestTargetGoal::every(Prey::Player, true, 5),
+            must_see: true,
+            unseen_ticks: 0,
+        },
+    );
+    selector.add(3, NearestTargetGoal::every(Prey::Villager, false, 5));
+    selector.add(3, NearestTargetGoal::every(Prey::Golem, false, 5));
     selector
 }
 
@@ -765,6 +876,195 @@ impl Goal<MonsterGoalContext> for LookAtGoal {
         let eye = info.position + DVec3::new(0.0, f64::from(info.eye_height), 0.0);
         ctx.look_control.set_look_at_with_limits(eye, 10.0, x_max);
         ctx.illager.look_mob_time -= 1;
+    }
+}
+
+#[derive(Clone)]
+struct CastingSpellGoal;
+
+const MAX_HEAD_Y_ROT: f32 = 75.0;
+
+impl Goal<MonsterGoalContext> for CastingSpellGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Look])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.illager.spell_ticks > 0
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.navigation.stop();
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.illager.spell = il::IllagerSpell::None;
+    }
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        let x_max = ctx.max_head_x_rot();
+        let looked = ctx.target().or_else(|| {
+            ctx.illager
+                .wololo_target
+                .and_then(|id| ctx.info(Target::Mob(id)))
+        });
+        if let Some(seen) = looked {
+            let eye = seen.position + DVec3::new(0.0, f64::from(seen.eye_height), 0.0);
+            ctx.look_control
+                .set_look_at_with_limits(eye, MAX_HEAD_Y_ROT, x_max);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SpellGoal {
+    spell: il::IllagerSpell,
+    warmup: i32,
+    next_attack_tick: i32,
+}
+
+impl SpellGoal {
+    fn new(spell: il::IllagerSpell) -> Self {
+        Self {
+            spell,
+            warmup: 0,
+            next_attack_tick: 0,
+        }
+    }
+
+    fn warmup_time(&self) -> i32 {
+        match self.spell {
+            il::IllagerSpell::Wololo => 40,
+            _ => 20,
+        }
+    }
+
+    fn casting_time(&self) -> i32 {
+        match self.spell {
+            il::IllagerSpell::SummonVex => 100,
+            il::IllagerSpell::Wololo => 60,
+            _ => 40,
+        }
+    }
+
+    fn interval(&self) -> i32 {
+        match self.spell {
+            il::IllagerSpell::SummonVex => 340,
+            il::IllagerSpell::Wololo => 140,
+            _ => 100,
+        }
+    }
+
+    fn prepare_sound(&self) -> &'static str {
+        match self.spell {
+            il::IllagerSpell::SummonVex => il::PREPARE_SUMMON_SOUND,
+            il::IllagerSpell::Wololo => il::PREPARE_WOLOLO_SOUND,
+            _ => il::PREPARE_ATTACK_SOUND,
+        }
+    }
+
+    fn ready(&self, ctx: &MonsterGoalContext) -> bool {
+        ctx.illager.spell_ticks <= 0 && ctx.tick_count >= self.next_attack_tick
+    }
+
+    fn wololo_candidates(ctx: &mut MonsterGoalContext, world: &dyn World) -> Vec<u64> {
+        let range = il::SPELL_RANGE;
+        let position = ctx.body.position;
+        let mut out = Vec::new();
+        for id in ctx.illager.blue_sheep.clone() {
+            let Some(info) = ctx.info(Target::Mob(id)) else {
+                continue;
+            };
+            if !info.alive
+                || position.distance_squared(info.position) > range * range
+                || !ctx.sees(world, info)
+            {
+                continue;
+            }
+            out.push(id);
+        }
+        out
+    }
+}
+
+impl Goal<MonsterGoalContext> for SpellGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        if self.spell == il::IllagerSpell::Wololo {
+            if ctx.target().is_some() || !self.ready(ctx) || !ctx.mob_griefing {
+                return false;
+            }
+            let sheep = Self::wololo_candidates(ctx, world);
+            if sheep.is_empty() {
+                return false;
+            }
+            let pick = ctx.random.next_int(sheep.len() as u32) as usize;
+            ctx.illager.wololo_target = Some(sheep[pick]);
+            return true;
+        }
+        if !ctx.target().is_some_and(|t| t.alive) || !self.ready(ctx) {
+            return false;
+        }
+        self.spell != il::IllagerSpell::SummonVex
+            || ctx.random.next_int(il::MAX_VEX_ROLL) as usize + 1 > ctx.illager.vexes_near
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        let going = if self.spell == il::IllagerSpell::Wololo {
+            ctx.illager.wololo_target.is_some()
+        } else {
+            ctx.target().is_some_and(|t| t.alive)
+        };
+        going && self.warmup > 0
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.warmup = (self.warmup_time() + 1) / 2;
+        ctx.illager.spell_ticks = self.casting_time();
+        self.next_attack_tick = ctx.tick_count + self.interval();
+        ctx.illager.spell_sounds.push(self.prepare_sound());
+        ctx.illager.spell = self.spell;
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        if self.spell == il::IllagerSpell::Wololo {
+            ctx.illager.wololo_target = None;
+        }
+    }
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        self.warmup -= 1;
+        if self.warmup != 0 {
+            return;
+        }
+        let cast = match self.spell {
+            il::IllagerSpell::SummonVex => Some(SpellCast::SummonVex),
+            il::IllagerSpell::Wololo => ctx.illager.wololo_target.map(SpellCast::Wololo),
+            _ => ctx.target().map(|t| SpellCast::Fangs { target: t.position }),
+        };
+        ctx.illager.casts.extend(cast);
+        ctx.illager.spell_sounds.push(il::CAST_SPELL_SOUND);
+    }
+}
+
+#[derive(Clone)]
+struct RememberingTargetGoal {
+    goal: NearestTargetGoal,
+    must_see: bool,
+    unseen_ticks: i32,
+}
+
+impl Goal<MonsterGoalContext> for RememberingTargetGoal {
+    fn controls(&self) -> Controls {
+        self.goal.controls()
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.goal.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        let memory = self.must_see.then_some(il::EVOKER_TARGET_MEMORY);
+        continue_target(ctx, world, None, &mut self.unseen_ticks, memory)
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.goal.start(ctx);
+        self.unseen_ticks = 0;
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.goal.stop(ctx);
     }
 }
 

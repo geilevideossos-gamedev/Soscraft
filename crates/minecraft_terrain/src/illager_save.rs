@@ -81,6 +81,9 @@ pub fn spawn(world: &mut EntityWorld, tag: &Tag, kind: IllagerKind, saved: Saved
     raider.patrol_leader = flag(tag, "PatrolLeader", false);
     raider.patrolling = flag(tag, "Patrolling", false);
     illager.johnny = flag(tag, "Johnny", false);
+    if kind == IllagerKind::Evoker {
+        illager.spell_casting_ticks = int(tag, "SpellTicks").unwrap_or(0);
+    }
     if let Some(name) = custom_name(tag) {
         illager.set_custom_name(&name);
     }
@@ -106,6 +109,9 @@ pub fn fields(entity: &IllagerEntity) -> Vec<(&'static str, Tag)> {
     ];
     if illager.johnny {
         fields.push(("Johnny", byte(true)));
+    }
+    if illager.kind == IllagerKind::Evoker {
+        fields.push(("SpellTicks", Tag::Int(illager.spell_casting_ticks)));
     }
     if let Some(raid) = raider.raid_id {
         fields.push(("RaidId", Tag::Int(raid)));

@@ -151,7 +151,7 @@ pub fn finalize_spawn(ctx: &mut Ctx, tag: &mut Tag, black_cat_structure: bool) {
             map.insert("IsBaby".to_owned(), Tag::Byte(1));
         }
     }
-    if kind == "minecraft:vindicator" {
+    if matches!(kind.as_str(), "minecraft:vindicator" | "minecraft:evoker") {
         set(tag, [("CanJoinRaid", Tag::Byte(1))]);
     }
     // `AgeableMob.finalizeSpawn` draws nothing for the first of a group.

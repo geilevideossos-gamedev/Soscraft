@@ -183,6 +183,7 @@ impl EntityWorld {
                         | EntityKey::Fireball(_)
                         | EntityKey::ShulkerBullet(_)
                         | EntityKey::LlamaSpit(_)
+                        | EntityKey::EvokerFangs(_)
                 ) {
                     return None;
                 }

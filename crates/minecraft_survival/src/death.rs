@@ -71,6 +71,7 @@ pub enum MobAttack {
     MobProjectile,
     Trident,
     Spit,
+    Magic,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,7 +112,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit => None,
+            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit | MobAttack::Magic => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -168,6 +169,7 @@ impl DamageCause {
                 MobAttack::MobProjectile => "minecraft:mob_projectile",
                 MobAttack::Trident => "minecraft:trident",
                 MobAttack::Spit => "minecraft:spit",
+                MobAttack::Magic => "minecraft:indirect_magic",
             },
         }
     }
@@ -214,7 +216,22 @@ impl DamageCause {
                 attack: MobAttack::Trident,
                 ..
             } => "trident",
+            Self::Mob {
+                attack: MobAttack::Magic,
+                ..
+            } => "indirectMagic",
         }
+    }
+
+    pub fn bypasses_armor(self) -> bool {
+        matches!(
+            self,
+            Self::Magic
+                | Self::Mob {
+                    attack: MobAttack::Magic,
+                    ..
+                }
+        )
     }
 
     pub fn is_explosion(self) -> bool {

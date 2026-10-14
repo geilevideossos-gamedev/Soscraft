@@ -2804,7 +2804,7 @@ mod tests {
     }
 
     #[test]
-    fn woodland_mansions_hold_vindicators_with_iron_axes() {
+    fn woodland_mansions_hold_vindicators_with_iron_axes_and_evokers() {
         use minecraftoss_core::nbt::Tag;
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };
@@ -2824,11 +2824,21 @@ mod tests {
         let start = gen.structures.starts_in(&gen.library, &gen.terrain, chunk).iter().find(|start| start.structure == mansion).cloned().expect("the located chunk starts a mansion");
         let bbox = start.bounding_box();
         let mut vindicators = Vec::new();
+        let mut evokers = Vec::new();
         for cx in (bbox.min_x >> 4)..=(bbox.max_x >> 4) {
             for cz in (bbox.min_z >> 4)..=(bbox.max_z >> 4) {
                 let chunk = stream.load_chunk_now(minecraftoss_core::ChunkPos::new(cx, cz));
                 vindicators.extend(chunk.generation.entities.iter().filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:vindicator")).cloned());
+                evokers.extend(chunk.generation.entities.iter().filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:evoker")).cloned());
             }
+        }
+        assert!(!evokers.is_empty(), "a mansion has mages");
+        for tag in &evokers {
+            assert_eq!(tag.get("PersistenceRequired").and_then(Tag::as_i64), Some(1));
+            assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+            let mut world = minecraftoss_entities::world::EntityWorld::default();
+            let id = crate::server_mobs::spawn_saved(&mut world, tag).expect("a mansion evoker comes alive");
+            assert_eq!(world.entity_type(id), Some("minecraft:evoker"));
         }
         assert!(!vindicators.is_empty(), "a mansion has warriors");
         for tag in &vindicators {

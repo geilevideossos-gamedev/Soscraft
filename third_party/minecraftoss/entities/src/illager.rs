@@ -60,6 +60,19 @@ pub const VINDICATOR_PLAYER_LOOK_RANGE: f64 = 3.0;
 pub const VINDICATOR_MOB_LOOK_RANGE: f64 = 8.0;
 pub const ILLAGERS: [&str; 4] = [PILLAGER, VINDICATOR, EVOKER, "minecraft:illusioner"];
 pub const PIERCING_ROLL: i32 = 300;
+pub const EVOKER_EXPERIENCE: i32 = 10;
+pub const CAST_SPELL_SOUND: &str = "entity.evoker.cast_spell";
+pub const PREPARE_ATTACK_SOUND: &str = "entity.evoker.prepare_attack";
+pub const PREPARE_SUMMON_SOUND: &str = "entity.evoker.prepare_summon";
+pub const PREPARE_WOLOLO_SOUND: &str = "entity.evoker.prepare_wololo";
+pub const EVOKER_AVOID_RANGE: f64 = 8.0;
+pub const EVOKER_AVOID_WALK: f64 = 0.6;
+pub const EVOKER_AVOID_SPRINT: f64 = 1.0;
+pub const SPELL_RANGE: f64 = 16.0;
+pub const WOLOLO_HEIGHT: f64 = 4.0;
+pub const MAX_VEX_ROLL: u32 = 8;
+pub const VEXES_SUMMONED: usize = 3;
+pub const EVOKER_TARGET_MEMORY: i32 = 150;
 
 pub const MAINHAND: usize = 0;
 pub const OFFHAND: usize = 1;
@@ -134,6 +147,47 @@ pub enum IllagerArmPose {
     Neutral,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IllagerSpell {
+    #[default]
+    None,
+    SummonVex,
+    Fangs,
+    Wololo,
+    Disappear,
+    Blindness,
+}
+
+pub const SPELLS: [IllagerSpell; 6] = [
+    IllagerSpell::None,
+    IllagerSpell::SummonVex,
+    IllagerSpell::Fangs,
+    IllagerSpell::Wololo,
+    IllagerSpell::Disappear,
+    IllagerSpell::Blindness,
+];
+
+impl IllagerSpell {
+    pub fn id(self) -> u8 {
+        SPELLS.iter().position(|&s| s == self).unwrap_or(0) as u8
+    }
+
+    pub fn from_id(id: u8) -> Self {
+        SPELLS.get(usize::from(id)).copied().unwrap_or_default()
+    }
+
+    pub fn color(self) -> [f64; 3] {
+        match self {
+            Self::None => [0.0, 0.0, 0.0],
+            Self::SummonVex => [0.7, 0.7, 0.8],
+            Self::Fangs => [0.4, 0.3, 0.35],
+            Self::Wololo => [0.7, 0.5, 0.2],
+            Self::Disappear => [0.3, 0.3, 0.8],
+            Self::Blindness => [0.1, 0.1, 0.2],
+        }
+    }
+}
+
 pub const ARM_POSES: [IllagerArmPose; 8] = [
     IllagerArmPose::Crossed,
     IllagerArmPose::Attacking,
@@ -174,6 +228,8 @@ pub struct Illager {
     pub charging_crossbow: bool,
     pub aggressive: bool,
     pub johnny: bool,
+    pub spell_casting_ticks: i32,
+    pub spell: IllagerSpell,
 }
 
 impl Illager {
@@ -194,6 +250,23 @@ impl Illager {
             charging_crossbow: false,
             aggressive: false,
             johnny: false,
+            spell_casting_ticks: 0,
+            spell: IllagerSpell::None,
+        }
+    }
+
+    pub fn evoker(position: DVec3) -> Self {
+        Self::new(IllagerKind::Evoker, position)
+    }
+
+    pub fn is_casting_spell(&self) -> bool {
+        self.spell_casting_ticks > 0
+    }
+
+    pub fn experience(&self) -> i32 {
+        match self.kind {
+            IllagerKind::Evoker => EVOKER_EXPERIENCE,
+            IllagerKind::Pillager | IllagerKind::Vindicator => EXPERIENCE,
         }
     }
 
@@ -279,12 +352,18 @@ impl Illager {
             IllagerKind::Pillager => IllagerArmPose::Neutral,
             IllagerKind::Vindicator if self.aggressive => IllagerArmPose::Attacking,
             IllagerKind::Vindicator if self.raider.celebrating => IllagerArmPose::Celebrating,
+            IllagerKind::Evoker if self.spell != IllagerSpell::None => IllagerArmPose::Spellcasting,
+            IllagerKind::Evoker if self.raider.celebrating => IllagerArmPose::Celebrating,
             IllagerKind::Vindicator | IllagerKind::Evoker => IllagerArmPose::Crossed,
         }
     }
 
     pub fn shows_held_items(&self) -> bool {
-        self.kind != IllagerKind::Vindicator || self.aggressive
+        match self.kind {
+            IllagerKind::Vindicator => self.aggressive,
+            IllagerKind::Evoker => self.spell != IllagerSpell::None,
+            IllagerKind::Pillager => true,
+        }
     }
 
     pub fn eye_height(&self) -> f32 {
@@ -411,5 +490,24 @@ mod tests {
             Some(IllagerKind::Pillager)
         );
         assert_eq!(IllagerKind::from_type("minecraft:villager"), None);
+    }
+
+    #[test]
+    fn an_evoker_crosses_its_arms_and_raises_them_while_it_casts() {
+        let mut evoker = Illager::evoker(DVec3::ZERO);
+        assert_eq!(evoker.kind.follow_range(), 12.0);
+        assert_eq!(evoker.kind.movement_speed(), 0.5);
+        assert_eq!(evoker.experience(), EVOKER_EXPERIENCE);
+        assert!(evoker.equipment.iter().all(Option::is_none));
+        assert_eq!(evoker.arm_pose(), IllagerArmPose::Crossed);
+        assert!(!evoker.shows_held_items());
+        evoker.spell = IllagerSpell::Fangs;
+        assert_eq!(evoker.arm_pose(), IllagerArmPose::Spellcasting);
+        assert!(evoker.shows_held_items());
+        for spell in SPELLS {
+            assert_eq!(IllagerSpell::from_id(spell.id()), spell);
+        }
+        assert_eq!(IllagerSpell::Wololo.id(), 3);
+        assert_eq!(IllagerSpell::Fangs.color(), [0.4, 0.3, 0.35]);
     }
 }

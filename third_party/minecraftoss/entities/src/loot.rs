@@ -919,4 +919,18 @@ mod tests {
         }
         assert_eq!(seen, [true; 5]);
     }
+
+    #[test]
+    fn an_evoker_always_drops_a_totem_of_undying() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let evoker = EntityLootContext { this_type: Some("minecraft:evoker"), ..Default::default() };
+        for _ in 0..20 {
+            let drops = book.roll("minecraft:evoker", evoker).expect("an evoker's loot");
+            assert!(drops.iter().any(|d| d.id == "minecraft:totem_of_undying" && d.count == 1));
+            assert!(drops.iter().all(|d| d.id != "minecraft:emerald"), "emeralds need a player's kill");
+        }
+        assert!(book.roll("minecraft:vex", EntityLootContext::default()).is_none_or(|d| d.is_empty()));
+    }
 }

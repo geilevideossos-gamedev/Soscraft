@@ -1,10 +1,11 @@
 use super::emissions::{MovementSounds, base_tick_fluid, play_movement};
 use super::*;
 use crate::illager::{self as il, Illager, IllagerArmPose};
-use crate::illager_ai::CrossbowShot;
+use crate::illager_ai::{CrossbowShot, SpellCast};
 use crate::monster_ai::{MobCandidate, MonsterKind, Target};
 
 const SOUNDS: MovementSounds = MovementSounds::monster(None);
+const WOLOLO_RED: u8 = 14;
 
 #[derive(Clone)]
 pub struct IllagerEntity {
@@ -114,6 +115,8 @@ impl IllagerEntity {
         state.has_raid = false;
         state.aggressive = self.illager.aggressive;
         state.charging = self.illager.charging_crossbow;
+        state.spell_ticks = self.illager.spell_casting_ticks;
+        state.spell = self.illager.spell;
         if self.ai.state.bow.using_item && !state.holds_crossbow {
             self.ai.state.bow.using_item = false;
             self.ai.state.bow.ticks_using_item = 0;
@@ -165,6 +168,14 @@ impl IllagerEntity {
         ai.state.random = std::mem::take(&mut self.random);
         let full = self.tick_count <= 1 || (self.tick_count + self.id as i32) % 2 == 0;
         ai.tick_goals(world, full);
+        self.illager.spell = ai.state.illager.spell;
+        if ai.state.illager.spell_ticks > 0 {
+            ai.state.illager.spell_ticks -= 1;
+        }
+        self.illager.spell_casting_ticks = ai.state.illager.spell_ticks;
+        for event in ai.state.illager.spell_sounds.drain(..) {
+            self.voices.push((Voice::Event(event, 1.0, 1.0), body.position));
+        }
         let shot = ai.state.illager.shot.take();
         let strike = ai.state.attack.take();
         let melee = ai.state.melee.aggressive;
@@ -266,7 +277,7 @@ impl EntityWorld {
         let kind = match illager.kind {
             il::IllagerKind::Pillager => MonsterKind::Pillager,
             il::IllagerKind::Vindicator => MonsterKind::Vindicator,
-            il::IllagerKind::Evoker => MonsterKind::Pillager,
+            il::IllagerKind::Evoker => MonsterKind::Evoker,
         };
         let mut ai = MonsterAi::of_kind(kind, &illager.body, illager.yaw);
         ai.state.max_health = il::MAX_HEALTH;
@@ -420,6 +431,49 @@ impl EntityWorld {
         }
     }
 
+    fn blue_sheep_near(&self, id: u64) -> Vec<u64> {
+        let Some(me) = self
+            .illagers
+            .iter()
+            .find(|e| e.id == id && e.illager.kind == il::IllagerKind::Evoker)
+        else {
+            return Vec::new();
+        };
+        let body = &me.illager.body;
+        let (p, half) = (body.position, f64::from(body.width / 2.0));
+        let (reach, up) = (il::SPELL_RANGE, il::WOLOLO_HEIGHT);
+        let height = f64::from(body.height);
+        self.sheep
+            .iter()
+            .filter(|e| e.health > 0.0 && e.sheep.wool.color() == "blue")
+            .filter(|e| {
+                let q = e.body.position;
+                let other = f64::from(e.body.width / 2.0);
+                q.x - other < p.x + half + reach
+                    && q.x + other > p.x - half - reach
+                    && q.y < p.y + height + up
+                    && q.y + f64::from(e.body.height) > p.y - up
+                    && q.z - other < p.z + half + reach
+                    && q.z + other > p.z - half - reach
+            })
+            .map(|e| e.id)
+            .collect()
+    }
+
+    fn evoker_casts(&mut self, id: u64, world: &dyn World, cast: SpellCast) {
+        match cast {
+            SpellCast::Fangs { target } => {
+                self.cast_fangs(id, world, target);
+            }
+            SpellCast::Wololo(sheep) => {
+                if let Some(e) = self.sheep.iter_mut().find(|e| e.id == sheep && e.health > 0.0) {
+                    e.sheep.wool.set_color(WOLOLO_RED);
+                }
+            }
+            SpellCast::SummonVex => {}
+        }
+    }
+
     fn patrol_companions(&self, id: u64) -> Vec<u64> {
         let Some(me) = self.illagers.iter().find(|e| e.id == id) else {
             return Vec::new();
@@ -483,6 +537,8 @@ impl EntityWorld {
         let mobs = self.mob_candidates();
         let villagers = self.illager_villagers();
         let companions = self.patrol_companions(id);
+        let blue_sheep = self.blue_sheep_near(id);
+        let mob_griefing = self.mob_griefing;
         let mut level_random = std::mem::take(&mut self.level_random);
         let Some(entity) = self.illagers.iter_mut().find(|e| e.id == id) else {
             self.level_random = level_random;
@@ -490,6 +546,8 @@ impl EntityWorld {
         };
         entity.ai.state.mobs = mobs;
         entity.ai.state.illager.companions = companions.clone();
+        entity.ai.state.illager.blue_sheep = blue_sheep;
+        entity.ai.state.mob_griefing = mob_griefing;
         entity.previous_position = entity.illager.body.position;
         entity.tick_count += 1;
         base_tick_fluid(
@@ -593,6 +651,7 @@ impl EntityWorld {
         let shout = entity.ai.state.illager.shout.take();
         let alert = entity.ai.state.alert.take();
         let orders = entity.ai.state.illager.patrol_orders.take();
+        let casts = std::mem::take(&mut entity.ai.state.illager.casts);
         let old = entity.previous_position;
         super::hazards::blocks_act(entity, &*world, old, game_time);
         self.level_random = level_random;
@@ -607,6 +666,9 @@ impl EntityWorld {
         }
         if let Some(attacker) = alert {
             self.illager_alerts(id, attacker);
+        }
+        for cast in casts {
+            self.evoker_casts(id, &*world, cast);
         }
         if let Some(at) = orders {
             for other in self
@@ -1156,5 +1218,107 @@ mod tests {
                 .any(|stack| stack.id == "minecraft:white_banner"),
             "the banner's chance of 2 always drops it"
         );
+    }
+
+    fn evoker_at(world: &mut EntityWorld, at: DVec3, no_ai: bool) -> u64 {
+        let id = world.spawn_illager(Illager::evoker(at), no_ai);
+        world.illager_mut(id).unwrap().set_random_seed(11);
+        id
+    }
+
+    #[test]
+    fn an_evoker_is_a_live_monster_of_its_size_and_health() {
+        let mut world = EntityWorld::default();
+        let id = evoker_at(&mut world, DVec3::new(0.5, 64.0, 0.5), true);
+        assert_eq!(world.entity_type(id), Some(il::EVOKER));
+        let entity = &world.illagers()[0];
+        assert_eq!(
+            (entity.illager.body.width, entity.illager.body.height, entity.illager.health),
+            (0.6, 1.95, 24.0)
+        );
+        assert_eq!(entity.ai.state.follow_range, 12.0);
+        assert_eq!(
+            MonsterKind::Evoker.goal_names().len(),
+            crate::illager_ai::EVOKER_GOAL_NAMES.len()
+        );
+        assert!(crate::monster_ai::is_enemy(il::EVOKER));
+        assert!(world.census().iter().any(|e| e.kind == il::EVOKER));
+        assert!(kill(&mut world, id));
+        let deaths = world.take_deaths();
+        assert_eq!(deaths[0].table, Some(il::EVOKER));
+        assert_eq!(deaths[0].experience, 10);
+    }
+
+    #[test]
+    fn an_evoker_casts_a_line_of_fangs_at_a_player_in_range() {
+        let mut world = EntityWorld::default();
+        let id = evoker_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+        let players = [player_at(1, 0.5, 6.5)];
+        let mut sounds = Vec::new();
+        let mut casting = false;
+        let mut fangs = Vec::new();
+        for _ in 0..300 {
+            world.tick_with_players(&mut Field, &players);
+            sounds.extend(world.take_sounds().into_iter().map(|s| s.event));
+            let entity = world.illagers().iter().find(|e| e.id == id).unwrap();
+            casting |= entity.arm_pose == IllagerArmPose::Spellcasting;
+            if !world.evoker_fangs().is_empty() {
+                fangs = world.evoker_fangs().to_vec();
+                break;
+            }
+        }
+        assert!(casting, "it raises its arms to cast");
+        for event in [il::PREPARE_SUMMON_SOUND, il::PREPARE_ATTACK_SOUND, il::CAST_SPELL_SOUND] {
+            assert!(sounds.iter().any(|s| s == event), "{event}: {sounds:?}");
+        }
+        assert!(fangs.len() == 16 || fangs.len() == 13, "{}", fangs.len());
+        assert!(fangs.iter().all(|f| f.fangs.owner == Some(id) && f.fangs.position.y == 64.0));
+        let evoker = world.illagers().iter().find(|e| e.id == id).unwrap().illager.body.position;
+        assert!(fangs.iter().all(|f| f.fangs.position.distance(evoker) <= 20.5));
+    }
+
+    #[test]
+    fn fangs_bite_a_player_once_and_a_cow_but_spare_illagers() {
+        let mut world = EntityWorld::default();
+        let evoker = evoker_at(&mut world, DVec3::new(10.5, 64.0, 10.5), true);
+        let pillager = pillager_at(&mut world, DVec3::new(0.5, 64.0, 0.5), true);
+        let cow = world.spawn_cow(crate::cow::Cow::new(DVec3::new(0.6, 64.0, 0.4)), true);
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        world.spawn_evoker_fangs(crate::evoker_fangs::EvokerFangs::new(at, 0.0, 0, Some(evoker)));
+        let players = [player_at(1, 0.5, 0.5)];
+        let mut hits = Vec::new();
+        let mut sounds = Vec::new();
+        for _ in 0..30 {
+            world.tick_with_players(&mut Field, &players);
+            hits.extend(world.take_player_hits());
+            sounds.extend(world.take_sounds().into_iter().map(|s| s.event));
+        }
+        assert_eq!(hits.len(), 1, "one bite");
+        assert_eq!(hits[0].damage, 6.0);
+        assert_eq!(hits[0].source, Some(evoker));
+        assert!(matches!(hits[0].kind, PlayerHitKind::Magic { .. }));
+        assert_eq!(sounds.iter().filter(|s| *s == crate::evoker_fangs::ATTACK_SOUND).count(), 1);
+        assert_eq!(world.illagers().iter().find(|e| e.id == pillager).unwrap().illager.health, 24.0);
+        assert!(world.cows().iter().find(|e| e.id == cow).unwrap().cow.health < 10.0);
+        assert!(world.evoker_fangs().is_empty(), "the fangs are gone");
+    }
+
+    #[test]
+    fn wololo_turns_only_a_blue_sheep_red_and_only_with_mob_griefing() {
+        for griefing in [true, false] {
+            let mut world = EntityWorld::default();
+            world.set_mob_griefing(griefing);
+            evoker_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+            let mut blue = crate::sheep::Sheep::default();
+            blue.wool.set_color(11);
+            let blue = world.spawn_sheep(blue, DVec3::new(0.5, 64.0, 6.5), true);
+            let white = world.spawn_sheep(crate::sheep::Sheep::default(), DVec3::new(-5.5, 64.0, 0.5), true);
+            for _ in 0..600 {
+                world.tick(&mut Field);
+            }
+            let color = |id: u64| world.sheep().iter().find(|e| e.id == id).unwrap().sheep.wool.color();
+            assert_eq!(color(blue), if griefing { "red" } else { "blue" });
+            assert_eq!(color(white), "white");
+        }
     }
 }

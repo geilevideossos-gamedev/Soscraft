@@ -435,6 +435,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:end_crystal",
     "minecraft:ender_dragon",
     "minecraft:enderman",
+    "minecraft:evoker",
     "minecraft:ghast",
     "minecraft:glow_item_frame",
     "minecraft:hoglin",
@@ -689,7 +690,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let saved = crate::piglin_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::piglin_save::spawn(world, tag, kind, saved)?
         }
-        "minecraft:pillager" | "minecraft:vindicator" if tag.get("Passengers").is_none() => {
+        "minecraft:pillager" | "minecraft:vindicator" | "minecraft:evoker" if tag.get("Passengers").is_none() => {
             let kind = minecraftoss_entities::illager::IllagerKind::from_type(kind)?;
             let saved = crate::illager_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::illager_save::spawn(world, tag, kind, saved)?
@@ -1141,6 +1142,17 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             };
             let id = world.spawn_llama_spit(spit);
             if let Some(own) = uuid("UUID") {
+                world.set_uuid(id, own);
+            }
+            return Some(id);
+        }
+        "minecraft:evoker_fangs" => {
+            let owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+            let mut fangs = minecraftoss_entities::evoker_fangs::EvokerFangs::new(pos, 0.0, int(tag, "Warmup").unwrap_or(0), None);
+            fangs.yaw = yaw;
+            fangs.owner_uuid = owner;
+            let id = world.spawn_evoker_fangs(fangs);
+            if let Some(own) = tag.get("UUID").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints) {
                 world.set_uuid(id, own);
             }
             return Some(id);
@@ -1892,6 +1904,23 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
             map.insert("Owner".to_owned(), uuid(owner));
         }
         out.push((l.id, Tag::Compound(map)));
+    }
+    for f in world.evoker_fangs() {
+        let fangs = &f.fangs;
+        if !keep(f.id, fangs.position) || !fangs.alive {
+            continue;
+        }
+        let uuid = |uuid: u128| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec());
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String(minecraftoss_entities::evoker_fangs::TYPE_ID.to_owned()));
+        map.insert("Pos".to_owned(), doubles(fangs.position.to_array()));
+        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(fangs.yaw), Tag::Float(0.0)]));
+        map.insert("UUID".to_owned(), uuid(world.uuid_of(f.id)));
+        map.insert("Warmup".to_owned(), Tag::Int(fangs.warmup));
+        if let Some(owner) = fangs.owner.map(|o| world.uuid_of(o)).or(fangs.owner_uuid) {
+            map.insert("Owner".to_owned(), uuid(owner));
+        }
+        out.push((f.id, Tag::Compound(map)));
     }
     // Splash potions in flight (`ThrowableItemProjectile`).
     for p in world.potions() {
@@ -2685,6 +2714,41 @@ mod tests {
         let plain = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vindicator\",Pos:[1.5d,64.0d,2.5d],CustomName:{text:\"Bob\"}}").unwrap();
         let id = spawn_saved(&mut fresh, &plain).unwrap();
         assert!(!fresh.illager_mut(id).unwrap().illager.johnny);
+    }
+
+    #[test]
+    fn an_evoker_saves_and_loads_mid_spell() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:evoker"));
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:evoker\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,10],Health:20.0f,SpellTicks:37,CanJoinRaid:1b}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("evokers load");
+        assert_eq!(world.entity_type(id), Some("minecraft:evoker"));
+        let i = &world.illager_mut(id).unwrap().illager;
+        assert_eq!((i.spell_casting_ticks, i.health), (37, 20.0));
+        assert!(i.raider.can_join_raid);
+        let saved = mob_tags_where(&world, |_, _| true, &Default::default(), true);
+        assert_eq!(saved[0].1.get("SpellTicks"), Some(&Tag::Int(37)));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, &saved[0].1).expect("a saved evoker loads");
+        assert_eq!(fresh.illager_mut(back).unwrap().illager.spell_casting_ticks, 37);
+    }
+
+    #[test]
+    fn evoker_fangs_save_and_load_with_their_warmup_and_owner() {
+        let mut world = EntityWorld::default();
+        let evoker = spawn_saved(&mut world, &minecraftoss_core::snbt::parse_compound("{id:\"minecraft:evoker\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,11]}").unwrap()).unwrap();
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:evoker_fangs\",Pos:[3.25d,64.0d,2.5d],Rotation:[45.0f,0.0f],Warmup:6,Owner:[I;4,5,6,11],UUID:[I;1,2,3,4]}").unwrap();
+        let fangs = spawn_saved(&mut world, &tag).expect("fangs load");
+        assert_eq!(world.entity_type(fangs), Some("minecraft:evoker_fangs"));
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(id, _)| *id == fangs).collect();
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("Warmup"), Some(&Tag::Int(6)));
+        assert_eq!(saved.get("Owner"), Some(&Tag::IntArray(vec![4, 5, 6, 11])));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("saved fangs load");
+        let f = &fresh.evoker_fangs_mut(back).unwrap().fangs;
+        assert_eq!((f.warmup, f.yaw), (6, 45.0));
+        assert_eq!(f.owner_uuid, Some(world.uuid_of(evoker)));
     }
 
     #[test]

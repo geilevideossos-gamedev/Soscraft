@@ -727,6 +727,7 @@ impl Survival {
             HURT_EXHAUSTION
         };
         let protection = self.protection.against(cause.damage_type());
+        let armor = if cause.bypasses_armor() { Armor::default() } else { armor };
         let landed = self.status.hurt_protected(damage, armor, protection, exhaustion).is_some();
         if landed {
             self.combat.hurt_by(self.tick, cause);
@@ -1309,6 +1310,19 @@ mod tests {
             fast.tick_effects();
         }
         assert_eq!(fast.health, 18.0, "every 20 ticks at level II");
+    }
+
+    #[test]
+    fn magic_from_evoker_fangs_goes_past_armor() {
+        let fangs = DamageCause::mob(crate::death::MobAttack::Magic, Some(4), Some("minecraft:evoker"));
+        let armor = Armor { value: Some((20.0, 8.0)) };
+        let mut bitten = fresh();
+        assert!(bitten.hurt(6.0, armor, None, fangs));
+        assert_eq!(bitten.status.health, 14.0);
+        let blow = DamageCause::mob(crate::death::MobAttack::Melee, Some(4), Some("minecraft:vindicator"));
+        let mut struck = fresh();
+        assert!(struck.hurt(6.0, armor, None, blow));
+        assert!(struck.status.health > 14.0, "{}", struck.status.health);
     }
 
     #[test]

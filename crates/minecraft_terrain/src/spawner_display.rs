@@ -26,6 +26,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:creeper",
     "minecraft:donkey",
     "minecraft:enderman",
+    "minecraft:evoker",
     "minecraft:ghast",
     "minecraft:hoglin",
     "minecraft:horse",
@@ -362,7 +363,7 @@ impl Shown {
                     partial,
                 );
             }
-            "minecraft:pillager" | "minecraft:vindicator" => {
+            "minecraft:pillager" | "minecraft:vindicator" | "minecraft:evoker" => {
                 crate::illager_render::append_illagers(
                     models,
                     w.illagers().iter(),
@@ -921,6 +922,7 @@ mod tests {
             ("minecraft:snow_golem", 0.05),
             ("minecraft:pillager", 0.05),
             ("minecraft:vindicator", 0.05),
+            ("minecraft:evoker", 0.05),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);

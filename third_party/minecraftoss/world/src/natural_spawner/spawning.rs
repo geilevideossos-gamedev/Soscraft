@@ -98,7 +98,7 @@ impl MobCategory {
         Some(match kind.trim_start_matches("minecraft:") {
             "zombie" | "zombie_villager" | "zombie_horse" | "skeleton" | "creeper" | "spider" | "enderman" | "witch" | "slime" | "husk" | "stray" | "drowned"
             | "bogged" | "parched" | "camel_husk" | "cave_spider" | "silverfish" | "phantom" | "blaze" | "ghast" | "magma_cube" | "piglin" | "hoglin"
-            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" | "vindicator" => Self::Monster,
+            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" | "vindicator" | "evoker" => Self::Monster,
             "cow" | "pig" | "sheep" | "chicken" | "horse" | "donkey" | "mule" | "mooshroom" | "rabbit" | "wolf" | "fox" | "goat" | "llama" | "panda"
             | "polar_bear" | "cat" | "ocelot" | "parrot" | "frog" | "camel" | "armadillo" | "turtle" | "strider" => Self::Creature,
             "bat" => Self::Ambient,
@@ -388,7 +388,7 @@ fn follow_range_base(kind: &str) -> f64 {
         "minecraft:blaze" => 48.0,
         "minecraft:piglin_brute" => 12.0,
         "minecraft:pillager" => 32.0,
-        "minecraft:vindicator" => 12.0,
+        "minecraft:vindicator" | "minecraft:evoker" => 12.0,
         _ => 16.0,
     }
 }
@@ -1137,6 +1137,10 @@ impl CreatureSpawns {
             "minecraft:cave_spider" => {}
             "minecraft:pillager" => Self::finalize_pillager(level, &mut tag, difficulty, true, false),
             "minecraft:vindicator" => Self::finalize_vindicator(level, &mut tag, difficulty, true),
+            "minecraft:evoker" => {
+                Self::finalize_raider(level, &mut tag, true, false);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
             "minecraft:witch" => {
                 // `Raider.finalizeSpawn`, then `PatrollingMonster`'s leader
                 // roll (witches never lead), then `Mob`'s part.
@@ -1946,6 +1950,44 @@ mod tests {
             if tag.get("PatrolLeader").and_then(Tag::as_i64) == Some(1) {
                 leaders += 1;
                 assert_eq!(tag.get("equipment").and_then(|e| e.get("head")).and_then(|h| h.get("id")).and_then(Tag::as_str), Some("minecraft:white_banner"));
+            }
+        }
+        assert!((15..=60).contains(&leaders), "about 6 %: {leaders}");
+    }
+
+    #[test]
+    fn a_summoned_evoker_holds_nothing_can_join_raids_and_sometimes_leads() {
+        use minecraftoss_core::nbt::Tag;
+        let info = super::type_info("minecraft:evoker").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.rules, info.remove_far), (0.6, 1.95, super::super::Placement::NoRestrictions, super::Rules::Monster, true));
+        assert_eq!(MobCategory::of_type("minecraft:evoker"), Some(MobCategory::Monster));
+        assert_eq!(super::follow_range_base("minecraft:evoker"), 12.0);
+        let Some((spawns, column)) = river() else { return };
+        let mut land = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let mut context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let mut leaders = 0;
+        for _ in 0..600 {
+            let tag = spawns.summon(&mut land, &mut context, "minecraft:evoker", [0.5, 65.0, 0.5], None, 0.0).expect("an evoker");
+            assert!(tag.get("equipment").and_then(|e| e.get("mainhand")).is_none());
+            assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+            if tag.get("PatrolLeader").and_then(Tag::as_i64) == Some(1) {
+                leaders += 1;
             }
         }
         assert!((15..=60).contains(&leaders), "about 6 %: {leaders}");

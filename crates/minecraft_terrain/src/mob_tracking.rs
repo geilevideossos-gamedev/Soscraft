@@ -12,7 +12,7 @@ use crate::client_mobs::{ServerMob, server_mobs};
 pub const LOOK_TICKS: u64 = 10;
 pub const DEFAULT_RANGE: i32 = 5;
 
-const VOLATILE: [&str; 30] = [
+const VOLATILE: [&str; 32] = [
     "Pos",
     "Motion",
     "Rotation",
@@ -43,6 +43,8 @@ const VOLATILE: [&str; 30] = [
     "Brain",
     "ConversionTime",
     "DespawnDelay",
+    "SpellTicks",
+    "Warmup",
 ];
 
 const ARM_POSES: [ArmPose; 6] = [
@@ -75,6 +77,8 @@ pub struct MobShow {
     pub invisible: bool,
     pub drink: u8,
     pub pumpkin: bool,
+    pub spell: u8,
+    pub bite: [i32; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -276,6 +280,7 @@ pub fn tracking_range(kind: &str) -> i32 {
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
         | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" | "mule" | "snow_golem"
         | "pillager" | "vindicator" | "evoker" => 8,
+        "evoker_fangs" => 6,
         "item" | "experience_orb" => 6,
         "arrow" | "spectral_arrow" | "snowball" | "egg" | "ender_pearl" | "eye_of_ender"
         | "trident" | "fireball" | "small_fireball" | "dragon_fireball" | "splash_potion"
@@ -416,6 +421,7 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
                 charging: e.illager.charging_crossbow,
                 arm_pose: minecraftoss_entities::illager::arm_pose_index(e.arm_pose),
                 using_item: e.using_item,
+                spell: e.illager.spell.id(),
                 ..MobShow::default()
             },
         );
@@ -504,6 +510,14 @@ pub fn projectiles(world: &EntityWorld) -> Vec<ServerMob> {
     for e in world.llama_spits().iter().filter(|e| e.spit.alive) {
         push(e.id, e.spit.position, (e.spit.yaw, e.spit.pitch), minecraftoss_entities::llama_spit::SIZE);
     }
+    for e in world.evoker_fangs().iter().filter(|e| e.fangs.alive) {
+        push(e.id, e.fangs.position, (e.fangs.yaw, 0.0), minecraftoss_entities::evoker_fangs::WIDTH);
+    }
+    for mob in &mut out {
+        if let Some(e) = world.evoker_fangs().iter().find(|e| e.id == mob.id) {
+            mob.show.bite = [e.fangs.warmup, e.fangs.life_ticks];
+        }
+    }
     out
 }
 
@@ -512,6 +526,7 @@ pub fn is_projectile(world: &EntityWorld, id: u64) -> bool {
         || world.shulker_bullets().iter().any(|e| e.id == id)
         || world.potions().iter().any(|e| e.id == id)
         || world.llama_spits().iter().any(|e| e.id == id)
+        || world.evoker_fangs().iter().any(|e| e.id == id)
 }
 
 fn place(previous: &mut DVec3, body: &mut Body, mob: &ServerMob) {
@@ -621,6 +636,7 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
         e.illager.charging_crossbow = show.charging;
         e.arm_pose = minecraftoss_entities::illager::arm_pose_of(show.arm_pose);
         e.using_item = show.using_item;
+        e.illager.spell = minecraftoss_entities::illager::IllagerSpell::from_id(show.spell);
     }
     if let Some(e) = world.ghast_mut(id) {
         place(&mut e.previous_position, &mut e.ghast.body, mob);
@@ -666,6 +682,12 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.potion_mut(id) {
         e.previous_position = e.potion.position;
         e.potion.position = mob.position;
+    }
+    if let Some(e) = world.evoker_fangs_mut(id) {
+        e.fangs.position = mob.position;
+        e.fangs.yaw = mob.y_rot;
+        [e.fangs.warmup, e.fangs.life_ticks] = show.bite;
+        e.fangs.sent_spike = show.bite[0] < 0;
     }
     if let Some(e) = world.llama_spit_mut(id) {
         e.previous_position = e.spit.position;
@@ -1331,6 +1353,38 @@ mod tests {
         let seen = &friend.illagers()[0];
         assert_eq!(seen.arm_pose, IllagerArmPose::Attacking);
         assert!(seen.illager.shows_held_items(), "the axe shows while it attacks");
+    }
+
+    #[test]
+    fn a_friend_sees_an_evoker_cast_and_its_fangs_bite() {
+        use minecraftoss_entities::illager::{IllagerArmPose, IllagerSpell};
+        let mut host = EntityWorld::default();
+        let (evoker, tag) = spawn(&mut host, "{id:\"minecraft:evoker\",Pos:[2.5d,64.0d,0.5d],NoAI:1b}");
+        let (fangs, fangs_tag) = spawn(&mut host, "{id:\"minecraft:evoker_fangs\",Pos:[4.5d,64.0d,0.5d],Warmup:0}");
+        assert_eq!(tracking_range("minecraft:evoker"), 8);
+        assert_eq!(tracking_range("minecraft:evoker_fangs"), 6);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, evoker, &tag));
+        assert!(spawn_tracked(&mut friend, fangs, &fangs_tag));
+        assert!(is_projectile(&friend, fangs));
+        {
+            let e = host.illager_mut(evoker).unwrap();
+            e.illager.spell = IllagerSpell::Wololo;
+            e.arm_pose = e.illager.arm_pose();
+        }
+        for _ in 0..5 {
+            host.evoker_fangs_mut(fangs).unwrap().fangs.tick();
+        }
+        for mob in server_mobs(&host).iter().chain(&projectiles(&host)) {
+            show_on(&mut friend, mob);
+        }
+        let seen = &friend.illagers()[0];
+        assert_eq!(seen.arm_pose, IllagerArmPose::Spellcasting);
+        assert_eq!(seen.illager.spell, IllagerSpell::Wololo);
+        let (host_fangs, friend_fangs) = (&host.evoker_fangs()[0].fangs, &friend.evoker_fangs()[0].fangs);
+        assert!(host_fangs.sent_spike && friend_fangs.sent_spike);
+        assert_eq!(friend_fangs.bite_progress(0.5), host_fangs.bite_progress(0.5));
+        assert!(friend_fangs.bite_progress(0.5) > 0.0);
     }
 
     #[test]
