@@ -25,6 +25,15 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
   - B: one run, 7 groups (`b10-overlay` ... `b9-swirls`).
   - C: c1 = 8 groups (`fork-items` ... `book-place-creative`), then c2 = 5 groups (`ammo` ... `damage-totem`).
   - D: 70 groups in six runs: d1 = groups 1-13 (`mobs-list-drowned-load` ... `loot-functions`), d2 = 14-19 (pillagers, raids), d3 = 20-27 (darkness ... shriekers), d4 = 28-52 (`rabbits` ... `happy-ghasts`), d5 = 53-61 (`wither-live` ... `lodestones`), d6 = 62-70 (`friend-hand` ... `mobs-wrapup`).
+- **New order (owner, 2026-10-14, weekly usage at 80 %):** after d2, merge track D into minecraft-survival (full suite), build release 2 (A, B, C, d1, d2), write `docs/round9/release-2-tests.md`. Then track-d continues from that merge in this order, each a track-runner run whose base is a tag set on track-d's HEAD just before it starts:
+  1. `run-n1-d6.js` (base `r9-d6-base`): d6 without `mobs-wrapup` (friend hand, portal and music, pvp melee, friend skating, skater poses, strider freeze, TNT, small not-vanilla items).
+  2. `run-n2-d5.js` (`r9-d5-base`): `keyframes` (moved from d3, breeze drawing needs it), then d5 (wither, breezes, trial spawners, vaults, lodestones).
+  3. `run-n3-d3.js` (`r9-d3-base`): d3 without `keyframes` (darkness, vibrations, warden, shriekers).
+  4. `run-n4-d4a.js` (`r9-d4a-base`): the common survival mobs (rabbits, foxes, phantoms, squids, fish, goats, silverfish and endermites, parrots, bees, guardians, turtles, dolphins, axolotls).
+  5. `run-n5-d4b.js` (`r9-d4b-base`): the less important mobs (frogs ... happy ghasts).
+  6. `run-n6-wrap.js` (`r9-dw-base`): `mobs-wrapup` last.
+  The scripts are made by `mkdnext.py` in the session scratchpad. PROTOCOL is 5 in release 2; the first later group that changes a message sets 6, once. Then the final review, merge, release 3, decisions.md, CLAUDE.md and MINECRAFT-SURVIVAL.md.
+- **If the usage limit hits:** stop cleanly. Commit only finished, tested groups (discard a half-done one), update this file with where it stopped, push.
 - If a session stops mid-run: in the worktree read the track log and `git status`, commit or discard a half-done group, then start the same segment again with only the groups not yet committed.
 
 ## Tracks
@@ -39,7 +48,8 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 | # | When | Commit | State |
 |---|---|---|---|
 | 1 | tracks A and B merged | 57302e99 | done 2026-10-13: 10.1 min at full speed (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, old one kept as `iw4l-survival-03e0c9b.exe`, relay copied too (unchanged); test steps `docs/round9/release-1-tests.md` |
-| 2 | end of the round | | |
+| 2 | after track D's d2 (owner's request, before the limit) | | planned |
+| 3 | end of the round | | |
 
 ## Decisions
 - Gentle mode from the start of round 9: the owner had two `iw4l-survival` windows open (their multiplayer test).
@@ -49,6 +59,7 @@ Started 2026-10-13 on `minecraft-survival` at f1dddf78. The owner's brief is the
 - Four tracks at once in gentle mode: D: had 45 GB free; a watchdog warns below 10 GB.
 
 ## Log
+- 2026-10-14: the owner reordered track D for the usage limit: release 2 after d2, then d6, d5, d3, d4 (important mobs first), mobs-wrapup last.
 - 2026-10-14: the session stopped again mid-run (VS Code closed); track D checked, the half-done raids group discarded, d2 relaunched for raids and raid-villagers.
 - 2026-10-14: track D d1 done; A, B and C being merged into track D, then d2.
 - 2026-10-13: track C merged (763466a2), full suite green.
