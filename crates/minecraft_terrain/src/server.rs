@@ -83,6 +83,7 @@ pub struct ServerSim {
     eyes: crate::eye_of_ender::Eyes,
     gateways: crate::end_gateway::Gateways,
     blasts: Vec<(Blast, BlastSource)>,
+    blast_players: Vec<minecraftoss_entities::tempt::PlayerCandidate>,
     block_explosion_drop_decay: bool,
     crystals: crate::end_crystal::Crystals,
     dragon_fight_level: bool,
@@ -400,6 +401,7 @@ impl ServerSim {
         }
         level.sea_level = worldgen.library.generation.sea_level;
         level.fast_lava = level.sky.as_ref().is_some_and(|sky| crate::environment::dimension_value(&sky.environment, "gameplay/fast_lava").as_bool());
+        level.defer_tnt_blasts = true;
         let dragon_fight_level = minecraftoss_core::ident::Identifier::parse(dimension_type).ok().and_then(|id| level.registries().datapack.read_json("dimension_type", &id).ok()).is_some_and(|json| json.get("has_ender_dragon_fight").and_then(|flag| flag.as_bool()).unwrap_or(false));
         let mob_tables = crate::server_mobs::MobTables::new(&level, &states);
         // Natural spawning, when the entity catalog can create mobs.
@@ -453,6 +455,7 @@ impl ServerSim {
             eyes: crate::eye_of_ender::Eyes::default(),
             gateways: crate::end_gateway::Gateways::default(),
             blasts: Vec::new(),
+            blast_players: Vec::new(),
             block_explosion_drop_decay: true,
             crystals: crate::end_crystal::Crystals::default(),
             dragon_fight_level,
@@ -1734,6 +1737,20 @@ impl ServerSim {
                 BlastSource::RespawnPoint { shield: Some((x, y, z)) } => self.level.explode_shielded(exploded, minecraftoss_core::BlockPos::new(x, y, z)),
                 _ => self.level.explode(exploded),
             };
+            self.explosions.push(explosion);
+        }
+    }
+
+    fn explode_tnt(&mut self) {
+        for exploded in std::mem::take(&mut self.level.tnt_blasts) {
+            let explosion = minecraftoss_entities::creeper::CreeperExplosion { position: glam::DVec3::from_array(exploded.center), radius: exploded.radius, powered: false };
+            {
+                let Self { level, states, mobs, mob_tables, blast_players, .. } = &mut *self;
+                let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+                mobs.blast(&world, explosion, blast_players);
+            }
+            self.level.explode(exploded);
+            self.drop_death_loot();
             self.explosions.push(explosion);
         }
     }
@@ -3075,16 +3092,11 @@ impl ServerSim {
     }
 
     pub fn tick(&mut self) {
-        let bursting: Vec<(i32, [f64; 3])> = self.level.entities.iter().filter(|e| e.tnt_data().is_some_and(|d| d.fuse <= 1)).map(|e| (e.id, e.pos)).collect();
         self.level.tick();
+        self.explode_tnt();
         self.hear_bells();
         self.level.tick_spawners();
         self.level.unsupported.clear();
-        for (id, position) in bursting {
-            if self.level.tnt_explodes && !self.level.entities.iter().any(|e| e.id == id) {
-                self.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: glam::DVec3::from_array(position), radius: TNT_BLAST_RADIUS, powered: false });
-            }
-        }
         self.tick_frames();
         self.check_lectern_viewers();
     }
@@ -3532,7 +3544,6 @@ impl TickInput {
 const PLAYER_HEIGHT: f64 = 1.8;
 const TRIDENT_IDS: i32 = 0x3000_0000;
 pub type PickedStack = (i32, [f64; 3], String, i32, Option<String>);
-const TNT_BLAST_RADIUS: f32 = 4.0;
 const STUN_SLOWNESS_AMPLIFIER: i32 = 3;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -4145,6 +4156,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.raid_bars = Some(raid.bars);
     if normal {
         sim.prepare_spawning(&input.mob_players);
+        sim.blast_players.clone_from(&input.mob_players);
         sim.tick();
         sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
         sim.tick_custom_spawners(&input.mob_players);
@@ -10995,6 +11007,61 @@ mod tests {
         finish_batch(&mut sim, &input, &mut out);
         let shown = out.entities.expect("a snapshot").gateways;
         assert_eq!(shown.iter().map(|view| (view.pos, view.age, view.cooldown)).collect::<Vec<_>>(), [(pos, 4, crate::end_gateway::COOLDOWN_TIME - 1)]);
+    }
+
+    fn tnt_test_world() -> Option<(ServerSim, HandcraftedScene, TickInput)> {
+        let (mut sim, mut scene) = door_world()?;
+        if let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") {
+            let jar = std::path::Path::new(&root).join("client.jar");
+            if jar.exists() {
+                sim.load_loot(&jar, 0);
+            }
+        }
+        for x in 3..=13 {
+            for z in 2..=14 {
+                place(&mut sim, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        for x in 7..=9 {
+            for y in 200..=202 {
+                place(&mut sim, &mut scene, (x, y, 6), Block::new("minecraft:cobblestone"));
+            }
+        }
+        place(&mut sim, &mut scene, (8, 200, 8), Block::new("minecraft:tnt"));
+        sim.take_changes();
+        let (open, shielded) = ([8.5, 200.0, 11.5], [8.5, 200.0, 5.5]);
+        let mut input = idle_input();
+        input.players = vec![standing(0, open, false), standing(1, shielded, false)];
+        input.mob_players = vec![candidate(0, open), candidate(1, shielded)];
+        Some((sim, scene, input))
+    }
+
+    #[test]
+    fn tnt_hurts_a_mob_and_a_player_before_its_blocks_break() {
+        let Some((mut sim, _, mut input)) = tnt_test_world() else { return };
+        if sim.summon("minecraft:cow", [10.5, 200.0, 8.5], None, 0.0).is_err() {
+            return;
+        }
+        assert!(sim.item_on_block((8, 200, 8), ItemOnBlock::PrimeTnt));
+        let out = run_ticks(&mut sim, &mut input, true, 79);
+        assert!(out.player_hits.is_empty() && out.explosions.is_empty(), "the fuse lasts 80 ticks");
+        let out = run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(out.explosions.len(), 1);
+        assert!((out.explosions[0].radius - 4.0).abs() < 1e-6);
+        let hits = |player: u64| out.player_hits.iter().filter(|hit| hit.player_id == player).map(|hit| (hit.damage, hit.source, matches!(hit.kind, minecraftoss_entities::world::PlayerHitKind::Explosion { .. }))).collect::<Vec<_>>();
+        let open = hits(0);
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert!(open[0].0 > 10.0 && open[0].1.is_none() && open[0].2, "{open:?}");
+        let shielded = hits(1);
+        assert_eq!(shielded.len(), 1, "{shielded:?}");
+        assert!(shielded[0].0 < 2.0, "the wall still stood when the blast looked through it: {shielded:?}");
+        let changes: std::collections::HashMap<_, _> = sim.take_changes().into_iter().collect();
+        assert!((7..=9).any(|x| (200..=202).any(|y| changes.get(&(x, y, 6)) == Some(&None))), "the blast breaks the wall it was shielded by");
+        assert!(sim.mobs.cows().iter().all(|cow| cow.cow.health <= 0.0), "the cow dies");
+        if sim.entity_loot.is_some() {
+            let items = sim.items();
+            assert!(items.iter().any(|item| item.item == "minecraft:beef"), "its loot drops after the blast and is not blown away: {items:?}");
+        }
     }
 
     #[test]

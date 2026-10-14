@@ -109,7 +109,12 @@ impl Level<'_> {
                 // `getY(0.0625)`: a sixteenth of the way up the box.
                 let y = e.pos[1] + f64::from(e.height) * 0.0625;
                 let interaction = if self.tnt_explosion_drop_decay { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Destroy };
-                self.explode(Explosion { center: [e.pos[0], y, e.pos[2]], radius: power, fire: false, interaction, source: Some(e.id) });
+                let explosion = Explosion { center: [e.pos[0], y, e.pos[2]], radius: power, fire: false, interaction, source: Some(e.id) };
+                if self.defer_tnt_blasts {
+                    self.tnt_blasts.push(explosion);
+                } else {
+                    self.explode(explosion);
+                }
             }
         } else {
             self.entity_update_fluid_interaction(e);
