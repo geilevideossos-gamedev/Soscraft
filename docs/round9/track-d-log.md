@@ -1313,6 +1313,21 @@ After 2b1160db.
 - **Tests:** none new; the formatting changes no behaviour.
 - **Test steps:** none.
 
+### 2. A baby Minecraft drowned gives vanilla's experience
+
+After 3fb8ee1f.
+
+- **Defect:** a baby drowned killed by a player multiplied its whole reward by 2.5, equipment bonus included, so a baby drowned that kept its trident gave 15 to 20 experience. javap of 26.3 `Zombie.getBaseExperienceReward`: a baby first sets `xpReward` to `(int) (5 * 2.5)` = 12, and only then `Mob.getBaseExperienceReward` adds `1 + nextInt(3)` for each held or worn item with a drop chance of at most 1. So the vanilla reward is 13 to 15.
+- **Changed:** `third_party/minecraftoss/entities/src/world.rs` (`take_deaths`, the drowned branch): the base is 12 for a baby, 5 for an adult, and the equipment bonus is added after.
+- **Tests:** `world::tests::a_baby_drowned_s_kill_gives_twelve_experience_and_its_kept_trident_adds_one_to_three`.
+- **Test steps (survival):**
+  1. `/summon minecraft:drowned ~ ~ ~3 {IsBaby:1b,equipment:{mainhand:{id:"minecraft:trident",count:1}}}` and kill it with the sword. Count the orbs: 13 to 15 experience in all (vanilla's split, often 10 + 3 or so), never 16 or more (**117_baby_drowned_experience**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.

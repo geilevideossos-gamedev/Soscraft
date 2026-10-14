@@ -4340,11 +4340,11 @@ impl EntityWorld {
                 }
                 if earns(&death, true) {
                     let worn = [(&e.zombie.main_hand, chances[0]), (&e.zombie.off_hand, chances[1])].into_iter().filter(|(hand, chance)| hand.is_some() && *chance <= 1.0).count() + e.zombie.armor.iter().flatten().count();
-                    let mut experience = 5;
+                    let mut experience = if e.zombie.baby { 12 } else { 5 };
                     for _ in 0..worn {
                         experience += 1 + e.random.next_int(3) as i32;
                     }
-                    death.experience = if e.zombie.baby { (experience as f32 * 2.5) as i32 } else { experience };
+                    death.experience = experience;
                 }
             }
             deaths.push((order, death));
@@ -8367,6 +8367,34 @@ mod tests {
             }
         }
         assert!(tridents > 10 && kept > 200, "{tridents} dropped, {kept} kept");
+    }
+
+    #[test]
+    fn a_baby_drowned_s_kill_gives_twelve_experience_and_its_kept_trident_adds_one_to_three() {
+        let mut world = EntityWorld::default();
+        let (mut bare, mut armed) = (0, 0);
+        for n in 0..200_u32 {
+            let mut drowned = Zombie::new(DVec3::new(f64::from(n) * 3.0 + 0.5, 1.0, 0.5));
+            drowned.kind = ZombieKind::Drowned;
+            drowned.set_baby(true);
+            if n % 2 == 0 {
+                drowned.main_hand = Some("minecraft:trident".to_owned());
+            }
+            let id = world.spawn_zombie(drowned, true);
+            world.zombie_mut(id).unwrap().random = LegacyRandom::new(u64::from(n));
+            let center = DVec3::new(f64::from(n) * 3.0 + 0.5, 1.0, 2.5);
+            assert!(world.player_blast(Some(7), id, 100.0, center, 0.0).unwrap().died);
+            for death in world.take_deaths() {
+                if death.equipment.iter().any(|stack| stack.id == "minecraft:trident") || n % 2 == 1 {
+                    assert_eq!(death.experience, 12, "a baby's 5 times 2.5, rounded down");
+                    bare += 1;
+                } else {
+                    assert!((13..=15).contains(&death.experience), "{}", death.experience);
+                    armed += 1;
+                }
+            }
+        }
+        assert!(bare > 100 && armed > 50, "{bare} bare, {armed} armed");
     }
 
     #[test]
