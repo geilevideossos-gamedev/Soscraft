@@ -12,6 +12,7 @@ use std::path::Path;
 pub struct ItemCatalog {
     max_stack: HashMap<String, i32>,
     fuel: HashMap<String, u32>,
+    max_damage: HashMap<String, i32>,
 }
 
 impl ItemCatalog {
@@ -27,6 +28,9 @@ impl ItemCatalog {
             if let Some(max) = item["max_stack"].as_i64() {
                 catalog.max_stack.insert(id.clone(), max as i32);
             }
+            if let Some(max) = item["max_damage"].as_i64() {
+                catalog.max_damage.insert(id.clone(), max as i32);
+            }
             if item["fuel_component"].as_bool() == Some(true) || item["burn_ticks"].as_u64().is_some_and(|t| t > 0) {
                 catalog.fuel.insert(id.clone(), item["burn_ticks"].as_u64().unwrap_or(0) as u32);
             }
@@ -37,6 +41,10 @@ impl ItemCatalog {
     /// The item's default `max_stack_size` component.
     pub fn max_stack(&self, id: &str) -> i32 {
         self.max_stack.get(id).copied().unwrap_or(64)
+    }
+
+    pub fn max_damage(&self, id: &str) -> Option<i32> {
+        self.max_damage.get(id).copied()
     }
 
     /// `FuelValues.isFuel` for the default stack.

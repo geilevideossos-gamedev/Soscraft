@@ -291,13 +291,16 @@ pub fn open_station(
                     .entities
                     .get(&pos)
                     .or_else(|| chunk.block_entities.pending.get(&pos))
-                && let Some((items, seed)) = minecraft_terrain::containers::structure_loot(
+                && let Some((items, seed)) = minecraft_terrain::containers::structure_loot_in(
                     &globals.registries,
                     entity,
                     pos,
                     globals.seed,
                     recipes,
                     globals.data.enchantments.clone(),
+                    Some(terrain.stream.states.biome_name(pos, |at| {
+                        terrain.scene.generated_chunk(at).map(|c| &**c)
+                    })),
                 )
             {
                 containers.fill(pos, items, seed);

@@ -672,6 +672,18 @@ pub fn structure_loot(
     recipes: &RecipeBook,
     enchanting: Option<Arc<minecraftoss_entities::enchant::Enchantments>>,
 ) -> Option<(Vec<ItemStack>, u64)> {
+    structure_loot_in(registries, entity, pos, world_seed, recipes, enchanting, None)
+}
+
+pub fn structure_loot_in(
+    registries: &minecraftoss_core::Registries,
+    entity: &minecraftoss_core::nbt::Tag,
+    pos: BlockPos,
+    world_seed: i64,
+    recipes: &RecipeBook,
+    enchanting: Option<Arc<minecraftoss_entities::enchant::Enchantments>>,
+    biome: Option<String>,
+) -> Option<(Vec<ItemStack>, u64)> {
     let table = entity.get("LootTable")?.as_str()?;
     let seed = entity
         .get("LootTableSeed")
@@ -692,6 +704,7 @@ pub fn structure_loot(
         enchanting: enchanting.map(|book| {
             Arc::new(LootEnchanting(book)) as Arc<dyn minecraftoss_core::loot::Enchanting>
         }),
+        biome,
         ..Default::default()
     };
     let mut sequences = minecraftoss_core::loot::RandomSequences::new(world_seed);
@@ -1902,6 +1915,43 @@ mod tests {
         let chest = loot_chest("minecraft:chests/simple_dungeon", seed);
         let (items, _) = structure_loot(&registries, &chest, (5, 30, 5), 7, &recipes, None).unwrap();
         assert!(items.iter().any(|item| item.id == "minecraft:book" && item.components.is_none()), "{items:?}");
+    }
+
+    #[test]
+    fn ancient_city_pyramid_and_trial_chamber_chests_roll_with_their_components() {
+        let Some((registries, enchantments)) = loot_data() else {
+            return;
+        };
+        let recipes = book();
+        let roll = |table: &str, seed: i64, biome: Option<&str>| {
+            let chest = loot_chest(table, seed);
+            structure_loot_in(&registries, &chest, (5, -40, 5), 7, &recipes, Some(enchantments.clone()), biome.map(str::to_owned)).unwrap().0
+        };
+        let (mut worn, mut regeneration, mut bottles) = (0, 0, 0);
+        for seed in 1..=100 {
+            let items = roll("minecraft:chests/ancient_city", seed, Some("minecraft:deep_dark"));
+            assert!(!items.is_empty(), "seed {seed} gives an empty ancient city chest");
+            for components in items.iter().filter_map(|item| item.components.as_ref()) {
+                if components.get("minecraft:damage").is_some() {
+                    worn += 1;
+                }
+                if components.get("minecraft:potion_contents").and_then(|p| p.get("potion")).and_then(Value::as_str) == Some("minecraft:strong_regeneration") {
+                    regeneration += 1;
+                }
+            }
+            assert!(!roll("minecraft:chests/desert_pyramid", seed, Some("minecraft:desert")).is_empty(), "seed {seed} gives an empty pyramid chest");
+            for bottle in roll("minecraft:chests/trial_chambers/reward_ominous_common", seed, None).iter().filter(|item| item.id == "minecraft:ominous_bottle") {
+                let amplifier = bottle.components.as_ref().and_then(|c| c.get("minecraft:ominous_bottle_amplifier")).and_then(Value::as_i64);
+                assert!(matches!(amplifier, Some(2..=4)), "seed {seed}: {bottle:?}");
+                bottles += 1;
+            }
+        }
+        assert!(worn > 10, "worn gear: {worn}");
+        assert!(regeneration > 0);
+        assert!(bottles > 0);
+        let discs = |biome: &str| (1..=100).flat_map(|seed| roll("minecraft:chests/abandoned_mineshaft", seed, Some(biome))).filter(|item| item.id == "minecraft:music_disc_bounce").count();
+        assert_eq!(discs("minecraft:plains"), 0);
+        assert!(discs("minecraft:sulfur_caves") > 0);
     }
 
     #[test]

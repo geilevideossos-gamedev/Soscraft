@@ -1189,6 +1189,89 @@ After e9cf2504.
 IW4L_MINECRAFT_KIT=minecraft:snow_block*16,minecraft:carved_pumpkin*8,minecraft:jack_o_lantern*2,minecraft:shears,minecraft:snow_golem_spawn_egg*4,minecraft:zombie_spawn_egg*4,minecraft:blaze_spawn_egg*2,minecraft:lead*2,minecraft:iron_sword,minecraft:cooked_beef*16
 ```
 
+## Group loot-functions
+
+### 1. Minecraft loot sets damage, potions, stew effects, enchantments, components and ominous bottle levels
+
+After bd2521c7.
+
+- **Vanilla (javap, 26.3, `net.minecraft.world.level.storage.loot`):**
+  - `SetItemDamageFunction.run`: only for `isDamageableItem` (a max damage, not unbreakable). With `add`, the kept part is `1 - damage / max`, else 0. It sets `floor((1 - clamp(damage + kept, 0, 1)) * max)`, and `setDamageValue` clamps that to `0..max`. A damage of 0 is the default, so it leaves no component. An iron sword (max 250) at 0.5 gets damage 125.
+  - `SetPotionFunction`: updates `potion_contents` with the potion and keeps any colour and custom effects.
+  - `SetStewEffectFunction`: only on `suspicious_stew` with a non-empty list. `Util.getRandom` picks an entry (`nextInt(size)`), then the duration provider is rolled. The duration is times 20 unless the effect is instantaneous (instant health, instant damage, saturation). `SuspiciousStewEffects.withEffectAdded` appends `{id, duration}`, and the codec leaves out a duration of 160.
+  - `SetOminousBottleAmplifierFunction`: the int provider is clamped to 0..4 and set as `ominous_bottle_amplifier`. 0 is the bottle's default.
+  - `SetEnchantmentsFunction`: a book becomes an enchanted book with `transmuteCopy`, which keeps the count and components. `EnchantmentHelper.updateEnchantments` writes `stored_enchantments` on an enchanted book and `enchantments` on anything else. Each listed enchantment is set to the provider's value, or with `add` raised by it, clamped to 0..255. Level 0 removes it.
+  - `SetComponentsFunction`: `applyComponentsAndValidate(patch)`. A `!key` entry removes that component.
+  - The chest tables also need these:
+    - `SetNameFunction`: the name goes to `custom_name`, or to `item_name` with `target: item_name`.
+    - `SetInstrumentFunction`: `HolderSet.getRandomElement` takes `nextInt(size)` of the tag's members, here `#minecraft:regular_goat_horns` for the pillager outpost.
+    - `FilteredFunction`: `item_filter` decides between `on_pass` and `on_fail`.
+    - `DiscardItem`: gives `ItemStack.EMPTY`.
+    - `LocationCheck`: false without `ORIGIN`, otherwise `LocationPredicate.matches` at the origin plus the offset, here only `biomes` (an id, a list or a tag).
+  - The map filter `{"minecraft:map_id": {}}` is the component's `AnyValue` predicate: it holds when the stack carries `map_id`.
+- **Which tables use what (26.3 jar, outside `blocks/`):**
+  - `set_damage`: 24 times in chests (ancient city, bastions, trial chambers) and 4 in fishing.
+  - `set_potion`: 12 times in chests, 7 in dispensers, 13 in spawners and 3 in entity tables.
+  - `set_stew_effect`: the shipwreck supply chest, the ancient city ice box and the desert well.
+  - `set_ominous_bottle_amplifier`: the trial chamber reward chests and `entities/pillager` (raid captains).
+  - `set_enchantments` and `set_components`: the trial chamber equipment tables and the wind burst book in the ominous rare reward.
+  - `set_name`, `filtered` and `exploration_map`: the abandoned camp, shipwreck map and ocean ruin chests.
+  - `set_instrument`: the pillager outpost.
+  - `location_check`: the abandoned camp chests, the mineshaft's `music_disc_bounce` in `sulfur_caves`, and fishing junk.
+- **Changed:**
+  - `third_party/minecraftoss/core/src/item.rs`:
+    - `ItemCatalog` reads `max_damage` from the 26.3 item catalog.
+    - New `ItemCatalog::max_damage`.
+  - `third_party/minecraftoss/core/src/loot.rs`:
+    - `apply_function` ports `set_damage`, `set_potion`, `set_stew_effect`, `set_ominous_bottle_amplifier`, `set_enchantments`, `set_components`, `set_name`, `set_instrument`, `filtered` and `discard`, next to `enchant_randomly`. Instrument tags are read from the data pack's `tags/instrument`.
+    - `condition` gains `location_check` from the new `LootParams.biome`.
+    - `item_predicate` gains the `map_id` predicate.
+    - `exploration_map` is the one function in these tables that still fails. It needs a structure search and a filled map.
+  - `third_party/minecraftoss/entities/src/loot.rs`, the entity loot engine:
+    - `set_ominous_bottle_amplifier`.
+    - The `type_specific/raider` `is_captain` predicate, from a new `EntityLootContext.captain`. No pillager sets it yet; group `pillagers` will.
+    - With these, `entities/pillager` (a captain's ominous bottle) rolls. The other entity tables need nothing new.
+  - `crates/minecraft_terrain/src/containers.rs`: new `structure_loot_in` with the chest's biome. `structure_loot` calls it without one.
+  - `crates/minecraft_terrain/src/terrain.rs`: new `BlockStates::biome_name`, the zoomed biome at a block, as `Level.getBiome` reads it.
+  - `crates/minecraft_survival/src/menus.rs`: a structure chest opened for the first time rolls with the biome it stands in.
+- **Tests:**
+  - `minecraftoss-core` `loot::tests`:
+    - `set_damage_wears_an_iron_sword_by_its_max_damage`: 0.5 gives 125, `add` 0.25 on top gives 62, and 1.0 removes the component. A uniform range stays within the max, and a stick is left alone.
+    - `set_ominous_bottle_amplifier_rolls_zero_to_four`: uniform 0-4 gives every level and no component at 0. A constant 9 gives 4.
+    - `set_enchantments_sets_or_adds_levels_and_stores_them_on_books`: set, add, partial reset, clear to no component, and a book of 2 becoming 2 enchanted books with `stored_enchantments`.
+    - `set_components_sets_and_removes_components`: a copper trim, and `!minecraft:damage`.
+    - `potions_stews_names_horns_and_filters_write_vanilla_components`: covers set_potion, both stew durations, the default 160, a plain bowl left alone, `item_name` and `custom_name`, all four regular goat horns, and the map filter discarding a map without `map_id`.
+    - `location_checks_read_the_biome_at_the_origin`: an id, a list, a tag, no origin, and an unsupported `structures` key.
+    - `every_chest_spawner_equipment_and_gameplay_table_rolls_without_an_unsupported_function`, gated on `MINECRAFTOSS_ROOT`:
+      - It covers every table under `chests`, `spawners`, `equipment` and `gameplay` (over 90).
+      - Every function found in a table is applied to four sample items, and only `exploration_map` may report itself unsupported.
+      - Each table rolls 8 times. Chests, spawners and equipment must succeed unless the table has an exploration map. Gameplay rolls may fail only on conditions the core engine leaves to the entity engine, such as fishing's entity predicates.
+    - `unknown_functions_still_fail` now uses `exploration_map`.
+  - `minecraftoss-entities` `loot::tests::a_pillager_captain_drops_an_ominous_bottle_of_level_one_to_five`: a plain pillager drops nothing, and a captain drops one bottle, every amplifier 0-4 over 200 rolls.
+  - `minecraft_terrain` `containers::tests::ancient_city_pyramid_and_trial_chamber_chests_roll_with_their_components`, over 100 seeds:
+    - Ancient city chests are never empty, hold worn gear and a strong regeneration potion.
+    - Desert pyramid chests are never empty.
+    - Ominous trial reward bottles have amplifier 2-4.
+    - The mineshaft's bounce disc comes only in `sulfur_caves`.
+- **Decisions:**
+  - Beyond the brief's six functions, `set_name`, `set_instrument`, `filtered`, `discard` and `location_check` are ported too. The survey test asks every chest table to roll except through `exploration_map`, and without them the pillager outpost (`set_instrument`) and the abandoned mineshaft (`location_check`) still failed.
+  - `exploration_map` stays unported, as the brief says. Its five tables still roll nothing: the abandoned camp chests, `shipwreck_map` and both ocean ruin chests.
+  - No biome (or no origin) makes a `location_check` false. A loot table rolled without a world position therefore never gets a biome-only item.
+  - A component set to its default value (damage 0, amplifier 0, an empty enchantment map) is removed, as vanilla's component patch does, so the stack stacks with a plain one.
+  - `chests/desert_pyramid` uses only `set_count` and `enchant_randomly` in 26.3, so it already rolled. The state doc's line 435 is out of date there, and the test keeps it as a check.
+  - The mineshaft table belongs to chest minecarts, which the fork does not have. Its `location_check` is exercised only by the test.
+- **Test steps (survival; use `/locate` and `/tp`, take night vision for the deep dark):**
+  1. `/locate structure minecraft:ancient_city`, `/tp` there and find three chests. Each holds loot: worn diamond hoes or leggings (their durability bars part used), enchanted books, a strong regeneration potion, sculk, candles and so on (**111_ancient_city_chests**).
+  2. `/locate structure minecraft:desert_pyramid`, `/tp` there and dig to the hidden room. Its four chests still hold loot (**112_desert_pyramid_chests**).
+  3. `/locate structure minecraft:shipwreck` and open the supply chest. It may hold a suspicious stew; eating it gives night vision, jump boost, weakness, blindness, poison or saturation (**113_shipwreck_supply**).
+  4. `/locate structure minecraft:trial_chambers` and open a corridor chest or barrel. The tools in it are worn (**114_trial_chamber_chest**).
+  5. In an ancient city, the friend opens a chest the host has not opened. It holds loot for the friend too (**115_friend_ancient_city_chest**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword,minecraft:torch*64,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:ladder*64,minecraft:water_bucket,minecraft:potion@night_vision,minecraft:potion@night_vision
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -1220,10 +1303,11 @@ IW4L_MINECRAFT_KIT=minecraft:snow_block*16,minecraft:carved_pumpkin*8,minecraft:
 - `docs/MULTIPLAYER.md`: friends see a wandering trader's drink and invisibility through `MobShow.drink` and `MobShow.invisible` (no new message), and a trader's trading screen is the villagers' `MenuExtras::Merchant` with `show_progress` false.
 - `docs/MINECRAFT-SURVIVAL.md`: players build iron golems like vanilla: a carved pumpkin or jack o'lantern set on a T of four iron blocks (with air under the arms and beside the head) turns the five blocks into an iron golem, in any of the 24 orientations (upright facing any way, or lying down). The blocks break with their particles and sounds. A built golem is player-made and never attacks players. A piston pushing the pumpkin into place builds one too; a dispenser does not place the pumpkin yet.
 - `docs/MINECRAFT-SURVIVAL.md`: snow golems are live mobs. Two snow blocks under a carved pumpkin or jack o'lantern (upright or lying down, any facing) turn into a snow golem; the snow golem egg hatches one. It strolls, looks at players, and throws a snowball every second at the nearest monster in sight within 10 blocks (creepers too): snowballs knock monsters back without harm (3 damage to blazes) and make them turn on the golem; players are not affected. Water and rain hurt it, it melts in warm biomes (the `gameplay/snow_golem_melts` attribute: deserts, savannas, badlands, the Nether), and while `mob_griefing` is on it leaves snow layers wherever snow can lie. Shears take off its pumpkin (it drops as an item), a lead ties it, it never despawns, and its pumpkin and health are saved. Friends see it, its pumpkin and its snowballs, and shear and shoot it the same way. A dispenser cannot finish a golem with a pumpkin yet.
+- `docs/MINECRAFT-SURVIVAL.md` line 435 ("Structure chests whose loot tables use a function not ported yet roll nothing ...") becomes: "Structure chests roll every 26.3 loot function except `exploration_map`: worn gear (`set_damage`), potions, suspicious stews, ominous bottle levels, fixed enchantments, armour trims, names, goat horns and biome-only items (`location_check`). The chests with explorer maps (abandoned camps, shipwreck map chests and ocean ruins) still roll nothing." The structure loot sentence at line 108 gains: "ancient city, trial chamber, bastion, shipwreck supply and pillager outpost chests roll too".
 
 ## Vendored files
 
-Patched by track D: 31 (`entities/src/movement.rs`, `entities/src/effects.rs`, `entities/src/lib.rs`, `entities/src/potion.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `player/src/survival.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs`, `generator/src/feature/entities.rs`, `entities/src/controls.rs`, `entities/src/loot.rs`, `world/src/level/time.rs`, `entities/src/cow_ai.rs`, `entities/src/horse.rs`, `entities/src/world/shulker_bullets.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/merchants.rs`, `world/src/level_storage.rs`, `world/src/storage.rs`, `world/src/level/mod.rs`, `player/src/lib.rs`). Added: 15 (`entities/src/drowned_ai.rs`; `entities/src/feline.rs`, `entities/src/feline_ai.rs` and `entities/src/world/felines.rs` from group cats; `entities/src/llama_ai.rs`, `entities/src/llama_spit.rs` and `entities/src/world/equines.rs` from group horse-family; `entities/src/world/leashes.rs`, `entities/src/wandering_trader.rs`, `entities/src/trader_ai.rs` and `entities/src/world/traders.rs` from group wandering-trader; `world/src/level/golem_build.rs`, `entities/src/snow_golem.rs`, `entities/src/snow_golem_ai.rs` and `entities/src/world/snow_golems.rs` from group built-golems). Group zombie-villagers added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` (commit 1) and `entities/src/effects.rs` and `entities/src/potion.rs` (commit 2) to the patched list. Group effects-omens added `player/src/survival.rs` (commit 1). Group riding added `entities/src/movement.rs` (commit 1). Group horse-family added `entities/src/cow_ai.rs`, `entities/src/horse.rs`, `entities/src/world/shulker_bullets.rs` and `entities/src/bin/check_zombie_player_hits.rs` (commit 1). Group cats added `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs` and `generator/src/feature/entities.rs` (commit 1), and `entities/src/controls.rs`, `entities/src/loot.rs` and `world/src/level/time.rs` (commit 2). Group wandering-trader added `entities/src/world/merchants.rs`, `world/src/level_storage.rs` and `world/src/storage.rs` (commit 2). Group built-golems added `world/src/level/mod.rs` (commit 1) and `player/src/lib.rs` (commit 2).
+Patched by track D: 33 (`entities/src/movement.rs`, `entities/src/effects.rs`, `entities/src/lib.rs`, `entities/src/potion.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `player/src/survival.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs`, `generator/src/feature/entities.rs`, `entities/src/controls.rs`, `entities/src/loot.rs`, `world/src/level/time.rs`, `entities/src/cow_ai.rs`, `entities/src/horse.rs`, `entities/src/world/shulker_bullets.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/merchants.rs`, `world/src/level_storage.rs`, `world/src/storage.rs`, `world/src/level/mod.rs`, `player/src/lib.rs`, `core/src/item.rs`, `core/src/loot.rs`). Added: 15 (`entities/src/drowned_ai.rs`; `entities/src/feline.rs`, `entities/src/feline_ai.rs` and `entities/src/world/felines.rs` from group cats; `entities/src/llama_ai.rs`, `entities/src/llama_spit.rs` and `entities/src/world/equines.rs` from group horse-family; `entities/src/world/leashes.rs`, `entities/src/wandering_trader.rs`, `entities/src/trader_ai.rs` and `entities/src/world/traders.rs` from group wandering-trader; `world/src/level/golem_build.rs`, `entities/src/snow_golem.rs`, `entities/src/snow_golem_ai.rs` and `entities/src/world/snow_golems.rs` from group built-golems). Group zombie-villagers added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` (commit 1) and `entities/src/effects.rs` and `entities/src/potion.rs` (commit 2) to the patched list. Group effects-omens added `player/src/survival.rs` (commit 1). Group riding added `entities/src/movement.rs` (commit 1). Group horse-family added `entities/src/cow_ai.rs`, `entities/src/horse.rs`, `entities/src/world/shulker_bullets.rs` and `entities/src/bin/check_zombie_player_hits.rs` (commit 1). Group cats added `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs` and `generator/src/feature/entities.rs` (commit 1), and `entities/src/controls.rs`, `entities/src/loot.rs` and `world/src/level/time.rs` (commit 2). Group wandering-trader added `entities/src/world/merchants.rs`, `world/src/level_storage.rs` and `world/src/storage.rs` (commit 2). Group built-golems added `world/src/level/mod.rs` (commit 1) and `player/src/lib.rs` (commit 2). Group loot-functions added `core/src/item.rs` and `core/src/loot.rs` (commit 1).
 
 ## Left for later
 
@@ -1244,3 +1328,7 @@ Patched by track D: 31 (`entities/src/movement.rs`, `entities/src/effects.rs`, `
 - The seven `spit` particles when llama spit appears (`LlamaSpit.recreateFromPacket`): the client has no particle for a newly tracked projectile yet.
 - Wandering traders: fleeing evokers, vindicators, vexes, pillagers and illusioners (group `pillagers`, once illagers exist); a trader llama leaves on the same tick as its trader, not one tick before it (the leash pass runs before the mobs tick).
 - Built golems: the dispenser's carved pumpkin (`canSpawnGolem` with the base patterns, placing the pumpkin to finish a golem, else putting it on an entity's head); copper golems from a carved pumpkin on a copper block (group `copper-golems`); the snow golem's pumpkin in spawner cages; the snow golem's `BLOCK_PLACE` and `SHEAR` game events (group `vibrations`).
+- Explorer maps (`exploration_map`: the structure search, the filled map and its decorations): the abandoned camp, shipwreck map and ocean ruin chests roll nothing until it lands.
+- Chest minecarts (the abandoned mineshaft's loot with its `sulfur_caves` disc): the fork has no minecarts that carry loot.
+- A pillager captain's ominous bottle needs `EntityLootContext.captain` set when a captain dies (group `pillagers`).
+- A flaky test from group wandering-trader: `server::tests::the_trader_spawner_brings_a_trader_within_48_blocks_with_two_trader_llamas_on_leads` failed once during the loot-functions run. It was the full `minecraft_terrain` suite with cargo's default thread count, and the failing check was `leash_holder` against `LeashHolder::Mob(trader)` at `server.rs:11312`. It passes alone (15 of 15) and in two full runs with 8 test threads. The likely cause is an order-dependent step (a `HashSet`/`HashMap` walk in the leash pass) or shared state under heavy parallel load.

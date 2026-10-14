@@ -30,6 +30,7 @@ pub struct EntityLootContext {
     pub this_type: Option<&'static str>,
     /// A cube mob's size (`type_specific/cube_mob`).
     pub cube_size: Option<i32>,
+    pub captain: bool,
 }
 
 pub struct EntityLootBook {
@@ -498,6 +499,7 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
             let mut count: i64 = 1;
             let mut potion = None;
             let mut enchantments = Vec::new();
+            let mut ominous = None;
             let functions: Vec<&Value> = match leaf.get("modifier").or_else(|| leaf.get("functions")) {
                 Some(Value::Array(list)) => list.iter().collect(),
                 Some(single) => vec![single],
@@ -517,6 +519,7 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
                     "minecraft:furnace_smelt" => item = data.smelting.get(&item)?.clone(),
                     // `SetPotionFunction`: the potion contents component.
                     "minecraft:set_potion" => potion = Some(function["id"].as_str()?.to_owned()),
+                    "minecraft:set_ominous_bottle_amplifier" => ominous = Some(int_provider(&function["amplifier"], random)?.clamp(0, 4)),
                     "minecraft:enchant_randomly" => {
                         if let Some(enchantment) = data.enchant_randomly(function, &item, random)? {
                             if item == "minecraft:book" {
@@ -542,6 +545,14 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
                     for (id, level) in enchantments {
                         crate::enchant::add_enchantment(&stack.id, &mut components, &id, level);
                     }
+                    stack.components = Some(Value::Object(components));
+                }
+                if let Some(amplifier) = ominous.filter(|a| *a > 0) {
+                    let mut components = match stack.components.take() {
+                        Some(Value::Object(existing)) => existing,
+                        _ => serde_json::Map::new(),
+                    };
+                    components.insert("minecraft:ominous_bottle_amplifier".to_owned(), Value::from(amplifier));
                     stack.components = Some(Value::Object(components));
                 }
                 out.push(stack);
@@ -654,6 +665,16 @@ fn entity_properties(data: &LootData, value: &Value, context: EntityLootContext)
                     "minecraft:entity_type" => data.type_matches(test.as_str()?, context.this_type),
                     "minecraft:vehicle" => data.type_matches(test["minecraft:entity_type"].as_str()?, context.vehicle),
                     "minecraft:type_specific/sheep" => test["sheared"].as_bool()? == context.sheep_sheared,
+                    "minecraft:type_specific/raider" => {
+                        let mut holds = true;
+                        for (field, wanted) in test.as_object()? {
+                            match field.as_str() {
+                                "is_captain" => holds &= wanted.as_bool()? == context.captain,
+                                _ => return None,
+                            }
+                        }
+                        holds
+                    }
                     // `CubeMobPredicate`: its size, exact or a range.
                     "minecraft:type_specific/cube_mob" => {
                         let size = context.cube_size?;
@@ -877,5 +898,25 @@ mod tests {
         assert_eq!(fresh.roll_barter().unwrap()[0].id, first[0].id);
         book.tables.get_mut("minecraft:gameplay/piglin_bartering").unwrap()["type"] = Value::from("minecraft:entity");
         assert!(book.roll_barter().is_none());
+    }
+
+    #[test]
+    fn a_pillager_captain_drops_an_ominous_bottle_of_level_one_to_five() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let pillager = EntityLootContext { this_type: Some("minecraft:pillager"), ..Default::default() };
+        assert_eq!(book.roll("minecraft:pillager", pillager).map(|d| d.len()), Some(0));
+        let captain = EntityLootContext { captain: true, ..pillager };
+        let mut seen = [false; 5];
+        for _ in 0..200 {
+            let drops = book.roll("minecraft:pillager", captain).expect("a captain's loot");
+            assert_eq!(drops.len(), 1);
+            assert_eq!((drops[0].id.as_str(), drops[0].count), ("minecraft:ominous_bottle", 1));
+            let amplifier = drops[0].components.as_ref().map_or(0, |c| c["minecraft:ominous_bottle_amplifier"].as_i64().unwrap());
+            assert!((0..=4).contains(&amplifier));
+            seen[amplifier as usize] = true;
+        }
+        assert_eq!(seen, [true; 5]);
     }
 }

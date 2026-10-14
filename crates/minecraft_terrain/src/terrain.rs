@@ -236,6 +236,16 @@ impl BlockStates {
             |chunk| chunk.biome((qx & 3) as usize, qy, (qz & 3) as usize),
         )
     }
+
+    pub fn biome_name<'c>(
+        &self,
+        (x, y, z): BlockPos,
+        chunk: impl Fn(ChunkPos) -> Option<&'c Chunk>,
+    ) -> String {
+        let quart = zoom::quart_for_block(self.zoom_seed, x, y, z);
+        let id = self.noise_biome((quart[0], quart[1], quart[2]), chunk);
+        self.registries.biomes.get(id).name.as_str().to_owned()
+    }
 }
 
 fn catalog_fluid_cell(fluid: minecraftoss_core::block::FluidInfo) -> crate::fluid::FluidCell {
