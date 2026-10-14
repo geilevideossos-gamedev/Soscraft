@@ -33,6 +33,7 @@ pub struct EntityView {
     pub(crate) rope_holders: HashMap<u128, minecraft_terrain::leash_render::RopeHolder>,
     pub(crate) items: ItemVisuals,
     pub(crate) clock: f64,
+    pub(crate) ride_clock: f64,
     pub(crate) tick_seconds: f64,
     pub(crate) ticks: u64,
     pub world_items: WorldItems,
@@ -81,6 +82,7 @@ impl EntityView {
             rope_holders: HashMap::new(),
             items: ItemVisuals::default(),
             clock: 0.0,
+            ride_clock: 0.0,
             tick_seconds: TICK_SECONDS,
             ticks: 0,
             world_items: WorldItems::default(),
@@ -188,6 +190,15 @@ impl EntityView {
             minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_target);
             if self.ticks.is_multiple_of(600) {
                 diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
+            }
+        }
+        if client.runs_normally {
+            self.ride_clock = self.clock;
+        } else {
+            self.ride_clock += dt;
+            if self.ride_clock >= self.tick_seconds {
+                self.ride_clock = (self.ride_clock - self.tick_seconds).min(self.tick_seconds);
+                self.client.tick_only(&self.world.player_carriers());
             }
         }
 
@@ -548,6 +559,10 @@ impl EntityView {
         (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32
     }
 
+    pub fn ride_partial(&self) -> f32 {
+        (self.ride_clock / self.tick_seconds).clamp(0.0, 1.0) as f32
+    }
+
     pub fn drawn_dragons(&self) -> Vec<minecraft_terrain::ender_dragon::DragonView> {
         self.drawn_dragons.views()
     }
@@ -799,6 +814,9 @@ impl EntityView {
             .filter(|mob| self.shown.contains(&mob.id))
             .collect();
         self.client.spawn_missing(&missing);
+        let carriers = self.world.player_carriers();
+        let ride_partial = self.ride_partial();
+        self.client.set_ride_partial(&carriers, ride_partial);
         let w = &self.world;
         let poses = &self.client;
         let partial = (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32;
@@ -1401,5 +1419,37 @@ mod tests {
         let mut near = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
         view.bursts(&mut near);
         assert_eq!(view.sounds.last().map(|(event, ..)| event.as_str()), Some(BLAST_SOUND));
+    }
+
+    #[test]
+    fn a_ridden_strider_keeps_its_own_clock_while_the_host_is_frozen() {
+        use minecraftoss_entities::strider::Strider;
+        use minecraftoss_entities::world::Rider;
+        let mut view = EntityView::new(5);
+        let mut saddled = Strider::new(DVec3::new(0.5, 64.0, 0.5));
+        saddled.saddled = true;
+        let ridden = view.world.spawn_strider(saddled, true);
+        let idle = view.world.spawn_strider(Strider::new(DVec3::new(6.5, 64.0, 0.5)), true);
+        assert!(view.world.force_riding(Rider::Player(0), ridden));
+        view.client.receive(server_mobs(&view.world));
+        let normal = crate::tick_rate::ClientTiming { tick_seconds: 0.25, runs_normally: true };
+        let frozen = crate::tick_rate::ClientTiming { runs_normally: false, ..normal };
+        let quarter = normal.tick_seconds / 4.0;
+        view.advance(quarter, normal, &[], DVec3::ZERO);
+        assert_eq!(view.ride_partial(), view.partial());
+        let ticks = |view: &EntityView, id: u64| view.client.get(id).unwrap().tick_count;
+        let (ridden_ticks, idle_ticks) = (ticks(&view, ridden), ticks(&view, idle));
+        let held = view.partial();
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            assert!(!view.advance(quarter, frozen, &[], DVec3::ZERO));
+            assert_eq!(view.partial(), held, "the level's partial tick stays put");
+            seen.push(view.ride_partial());
+        }
+        assert_eq!(seen, [0.5, 0.75, 0.0, 0.25, 0.5, 0.75, 0.0]);
+        assert_eq!(ticks(&view, ridden), ridden_ticks + 2, "the carrier ticks once a tick");
+        assert_eq!(ticks(&view, idle), idle_ticks, "the empty strider stays frozen");
+        view.advance(quarter, normal, &[], DVec3::ZERO);
+        assert_eq!(view.ride_partial(), view.partial(), "they agree once the game runs again");
     }
 }

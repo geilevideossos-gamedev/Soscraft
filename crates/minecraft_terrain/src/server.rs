@@ -1041,6 +1041,17 @@ impl ServerSim {
     /// Mobs tick after the level, inside the entity-ticking range (the
     /// level's ticking chunks, `DistanceManager.inEntityTickingRange`).
     pub fn tick_mobs(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], bright_outside: bool) {
+        self.tick_mobs_with(players, bright_outside, false);
+    }
+
+    pub fn tick_ridden_mobs(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], bright_outside: bool) {
+        if self.mobs.player_carriers().is_empty() {
+            return;
+        }
+        self.tick_mobs_with(players, bright_outside, true);
+    }
+
+    fn tick_mobs_with(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], bright_outside: bool, frozen: bool) {
         self.sync_pois();
         let ticking: std::collections::HashSet<ChunkPos> = self.level.ticking_chunks.iter().flatten().copied().collect();
         self.mobs.set_bright_outside(bright_outside);
@@ -1062,7 +1073,11 @@ impl ServerSim {
         if let Some((state, _)) = shared {
             *mobs.level_random_mut() = minecraftoss_player::rng::LegacyRandom::from_raw_state(state);
         }
-        mobs.tick_with_players_where(&mut world, players, &ticks);
+        if frozen {
+            mobs.tick_frozen_with_players_where(&mut world, players, &ticks);
+        } else {
+            mobs.tick_with_players_where(&mut world, players, &ticks);
+        }
         // Births and summons are listed for replays that tag them; the game
         // needs no list.
         let _ = (mobs.take_born_villagers(), mobs.take_born_wolves(), mobs.take_summoned_golems());
@@ -1074,7 +1089,9 @@ impl ServerSim {
         }
         // `ServerPlayer.doTick` (the connection tick, after the levels):
         // the players push the mobs they walk into.
-        mobs.push_from_players(players, &ticks);
+        if !frozen {
+            mobs.push_from_players(players, &ticks);
+        }
         // Entity events (a villager's hearts, anger, happiness) are for the
         // client's particles, which it does not draw yet.
         let _ = mobs.take_entity_events();
@@ -1098,7 +1115,9 @@ impl ServerSim {
         self.throw_mob_snowballs();
         self.explode_creepers();
         self.explode_fireballs();
-        self.explode_blasts(players);
+        if !frozen {
+            self.explode_blasts(players);
+        }
         self.sound_potion_breaks();
     }
 
@@ -4161,6 +4180,8 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.tick_eyes();
         sim.tick_end(&input.mob_players);
         sim.tick_gateways();
+    } else {
+        sim.tick_ridden_mobs(&input.mob_players, input.bright_outside);
     }
     out.dismounts.extend(sim.take_vehicle_losses());
     out.player_hits.extend(sim.take_end_hits());
@@ -11004,6 +11025,34 @@ mod tests {
         assert_eq!(sim.level.game_time, before);
         run_ticks(&mut sim, &mut input, true, 5);
         assert_eq!(sim.level.game_time, before + 5);
+    }
+
+    #[test]
+    fn a_strider_carrying_a_player_walks_while_frozen() {
+        let Some((mut sim, strider)) = ridden_strider("minecraft:lava", 100.5) else { return };
+        sim.mobs.strider_mut(strider).unwrap().no_ai = false;
+        let cow = sim.mobs.spawn_cow(minecraftoss_entities::cow::Cow::new(glam::DVec3::new(3.5, 100.5, 3.5)), false);
+        let steer = minecraftoss_entities::controls::PlayerControls { id: 0, main_hand: Some(crate::durability::STEERING_ITEM.to_owned()), ..Default::default() };
+        let mut input = TickInput { controls: vec![steer], ..idle_input() };
+        let at = |sim: &mut ServerSim, id: u64| sim.mobs.body_mut(id).map(|body| body.position).unwrap();
+        let cow_ticks = |sim: &ServerSim| sim.mobs.cows().iter().find(|e| e.id == cow).map(|e| e.tick_count);
+        let (start, cow_at, cow_before, time) = (at(&mut sim, strider), at(&mut sim, cow), cow_ticks(&sim), sim.level.game_time);
+        let mobs_time = sim.mobs.game_time();
+        run_ticks(&mut sim, &mut input, false, 20);
+        let walked = at(&mut sim, strider);
+        assert!(walked.z > start.z + 2.0, "it walks where its rider looks: {start} {walked}");
+        assert_eq!((at(&mut sim, cow), cow_ticks(&sim)), (cow_at, cow_before), "the cow stays frozen");
+        assert_eq!((sim.level.game_time, sim.mobs.game_time()), (time, mobs_time));
+        assert!(server_dismounts(&mut sim));
+        let left = at(&mut sim, strider);
+        run_ticks(&mut sim, &mut input, false, 10);
+        assert_eq!(at(&mut sim, strider), left, "an empty strider freezes too");
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(cow_ticks(&sim), cow_before.map(|ticks| ticks + 1), "a normal tick runs the cow again");
+    }
+
+    fn server_dismounts(sim: &mut ServerSim) -> bool {
+        !sim.ride_tick(&[minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }]).is_empty()
     }
 
     fn standing(id: u64, feet: [f64; 3], picks_up: bool) -> TickPlayer {

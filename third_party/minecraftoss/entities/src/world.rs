@@ -5892,17 +5892,30 @@ impl EntityWorld {
     /// accepts, as `ServerLevel.tick` skips entities outside the
     /// entity-ticking range. The others keep their state untouched.
     pub fn tick_with_players_where(&mut self, world: &mut impl World, players: &[PlayerCandidate], ticks: &dyn Fn(DVec3) -> bool) {
+        self.tick_selected(world, players, ticks, false);
+    }
+
+    pub fn tick_frozen_with_players_where(&mut self, world: &mut impl World, players: &[PlayerCandidate], ticks: &dyn Fn(DVec3) -> bool) {
+        self.tick_selected(world, players, ticks, true);
+    }
+
+    fn tick_selected(&mut self, world: &mut impl World, players: &[PlayerCandidate], ticks: &dyn Fn(DVec3) -> bool, frozen: bool) {
         // The chunk source ticks the trackers before any entity: each
         // sends what the last tick flagged.
         for body in self.bodies_mut() {
             body.needs_sync = false;
         }
-        self.game_time += 1;
+        if !frozen {
+            self.game_time += 1;
+        }
         let game_time = self.game_time;
         self.set_pushing_players(players);
         self.tick_ride_jumps();
-        self.resolve_piglin_angers(players);
-        let ticking: HashSet<u64> = self.positions().filter(|&(_, position)| ticks(position)).map(|(id, _)| id).collect();
+        if !frozen {
+            self.resolve_piglin_angers(players);
+        }
+        let carriers: Option<HashSet<u64>> = frozen.then(|| self.player_carriers().into_iter().collect());
+        let ticking: HashSet<u64> = self.positions().filter(|&(id, position)| ticks(position) && carriers.as_ref().is_none_or(|carriers| carriers.contains(&id))).map(|(id, _)| id).collect();
         self.tick_leashes(&*world, players, &ticking);
         // Snapshot membership: newborns join the world immediately but start
         // ticking on the next game tick, in global insertion order.

@@ -1079,7 +1079,7 @@ impl Entities {
             self.view.client.set_own_vehicle(Some(vehicle));
         }
         let mob = self.view.client.get(vehicle)?;
-        let partial = (self.view.clock / self.view.tick_seconds).clamp(0.0, 1.0);
+        let partial = (self.view.ride_clock / self.view.tick_seconds).clamp(0.0, 1.0);
         let pose = mob.pose(partial as f32);
         let point = self.view.world.passenger_point(vehicle)?;
         let strider = self.view.world.striders().iter().any(|e| e.id == vehicle);
