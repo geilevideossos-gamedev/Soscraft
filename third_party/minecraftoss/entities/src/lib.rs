@@ -61,6 +61,7 @@ pub mod overlay;
 pub mod panic;
 pub mod path_search;
 pub mod poi;
+pub mod raid;
 pub mod pig;
 pub mod pig_ai;
 pub mod piglin;

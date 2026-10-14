@@ -37,7 +37,7 @@ pub(crate) const CONTAINER_SHEETS: [&str; 18] = [
     "creative_inventory/tab_inventory",
 ];
 
-const SPRITE_FOLDERS: [&str; 16] = [
+const SPRITE_FOLDERS: [&str; 17] = [
     "container/slot/",
     "container/anvil/",
     "container/brewing_stand/",
@@ -54,6 +54,7 @@ const SPRITE_FOLDERS: [&str; 16] = [
     "hud/heart/",
     "tooltip/",
     "recipe_book/",
+    "boss_bar/",
 ];
 
 const LOOSE_SPRITES: [&str; 14] = [

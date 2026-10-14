@@ -601,6 +601,32 @@ pub enum BossBarOverlay {
     Notched20,
 }
 
+impl BossBarColor {
+    pub fn sprite_name(self) -> &'static str {
+        match self {
+            BossBarColor::Pink => "pink",
+            BossBarColor::Blue => "blue",
+            BossBarColor::Red => "red",
+            BossBarColor::Green => "green",
+            BossBarColor::Yellow => "yellow",
+            BossBarColor::Purple => "purple",
+            BossBarColor::White => "white",
+        }
+    }
+}
+
+impl BossBarOverlay {
+    pub fn sprite_name(self) -> &'static str {
+        match self {
+            BossBarOverlay::Progress => "progress",
+            BossBarOverlay::Notched6 => "notched_6",
+            BossBarOverlay::Notched10 => "notched_10",
+            BossBarOverlay::Notched12 => "notched_12",
+            BossBarOverlay::Notched20 => "notched_20",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BossBarFlags {
     pub darken_screen: bool,

@@ -141,6 +141,7 @@ pub struct PlayerView {
     pub strafe: f32,
     pub jumping: bool,
     pub swirl: Option<minecraft_terrain::spell_particles::SwirlView>,
+    pub omens: minecraft_terrain::server::PlayerOmens,
 }
 
 fn player_controls(id: u64, player: &PlayerView, inventory: &Inventory) -> minecraftoss_entities::controls::PlayerControls {
@@ -174,6 +175,10 @@ pub struct PlayerOutputs {
     pub potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
     pub pushes: Vec<DVec3>,
     pub item_uses_done: Vec<SentItemUse>,
+    pub raid_omens: Vec<(i32, (i32, i32, i32))>,
+    pub raid_heroes: Vec<i32>,
+    pub raid_horns: Vec<DVec3>,
+    pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
 }
 
 #[derive(Default)]
@@ -197,6 +202,7 @@ pub(crate) struct PlayerQueue {
     merchant_routed: Vec<MerchantNews>,
     merchant: Vec<MerchantNews>,
     merchant_waiting: usize,
+    raid_omens_waiting: Vec<(i32, (i32, i32, i32))>,
     pub(crate) out: PlayerOutputs,
 }
 
@@ -344,6 +350,26 @@ impl PlayerQueues {
         for view in std::mem::take(&mut output.lecterns) {
             if let Some(queue) = self.0.get_mut(&view.player) {
                 queue.lecterns.push(view);
+            }
+        }
+        for (player, amplifier, at) in std::mem::take(&mut output.raid_omens) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.raid_omens.push((amplifier, at));
+            }
+        }
+        for (player, amplifier) in std::mem::take(&mut output.raid_heroes) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.raid_heroes.push(amplifier);
+            }
+        }
+        for (player, at) in std::mem::take(&mut output.raid_horns) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.raid_horns.push(DVec3::from_array(at));
+            }
+        }
+        for (player, bars) in output.raid_bars.take().into_iter().flatten() {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.raid_bars = Some(bars);
             }
         }
         unclaimed
@@ -1344,8 +1370,10 @@ impl Entities {
         let presenter = actors.first().map(|actor| actor.id);
         self.presenter = presenter;
         let presenter_feet = actors.first().map_or([0.0; 3], |actor| actor.view.feet);
-        for actor in actors.iter() {
-            self.players.queue(actor.id).feet = Some(actor.view.feet);
+        for actor in actors.iter_mut() {
+            let queue = self.players.queue(actor.id);
+            queue.feet = Some(actor.view.feet);
+            queue.raid_omens_waiting.append(&mut actor.view.omens.raid_omens);
         }
         let orb_pickup_target = DVec3::from_array(presenter_feet) + DVec3::Y * f64::from(EYE_HEIGHT / 2.0);
         let near: Vec<DVec3> = actors.iter().filter(|actor| actor.view.alive && !actor.view.spectator).map(|actor| DVec3::from_array(actor.view.feet)).collect();
@@ -1400,6 +1428,13 @@ impl Entities {
                 player_hurts: Vec::new(),
                 spawn_mobs: self.spawn_mobs,
                 controls: actors.iter().filter(|actor| actor.view.alive).map(|actor| player_controls(actor.id, &actor.view, actor.inventory)).collect(),
+                omens: actors
+                    .iter()
+                    .map(|actor| {
+                        let raid_omens = std::mem::take(&mut self.players.queue(actor.id).raid_omens_waiting);
+                        (actor.id, minecraft_terrain::server::PlayerOmens { bad_omen: actor.view.omens.bad_omen, raid_omens })
+                    })
+                    .collect(),
             }, batch.normal.clone());
         }
         let mut changes = Vec::new();
@@ -2036,6 +2071,7 @@ mod tests {
             strafe: 0.0,
             jumping: false,
             swirl: None,
+            omens: Default::default(),
         };
         let survival = player_candidate(HOST, &view(true, false));
         assert!(survival.alive && survival.attackable && !survival.spectator);
@@ -2149,7 +2185,7 @@ mod tests {
         entities.summon(minecraft_commands::PlayerId(0), "minecraft:pig".to_owned(), [0.5, 200.0, 2.5], Some(nbt));
         let mut inventory = Inventory::default();
         inventory.slots[3] = Some(ItemStack::new("minecraft:saddle", 1));
-        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None };
+        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default() };
         let started = std::time::Instant::now();
         let tick = |entities: &mut Entities, inventory: &mut Inventory| {
             assert!(started.elapsed().as_secs() < 60, "the server answers");
@@ -2239,7 +2275,7 @@ mod tests {
         let mut inventory = Inventory::default();
         inventory.slots[36] = Some(ItemStack::new("minecraft:golden_boots", 1));
         inventory.slots[39] = Some(ItemStack::new("minecraft:chainmail_helmet", 1));
-        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None };
+        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default() };
         let controls = player_controls(HOST, &view, &inventory);
         assert_eq!(controls.armor, [Some("minecraft:golden_boots".to_owned()), None, None, Some("minecraft:chainmail_helmet".to_owned())]);
     }
@@ -2710,6 +2746,7 @@ mod tests {
             strafe: 0.0,
             jumping: false,
             swirl: None,
+            omens: Default::default(),
         };
         let batch = crate::tick_rate::TickBatch {
             normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },
@@ -2757,6 +2794,7 @@ mod tests {
                 strafe: 0.0,
                 jumping: false,
                 swirl,
+                omens: Default::default(),
             };
             let batch = crate::tick_rate::TickBatch {
                 normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },

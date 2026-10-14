@@ -751,6 +751,7 @@ pub(crate) fn struck(
         riding,
         reattach,
         jump_bar,
+        raid_bars,
         ..
     } = player;
     let local_uuid = &*uuid;
@@ -916,7 +917,28 @@ pub(crate) fn struck(
             sounds.play(packs, sound.event, None, sound.volume, sound.pitch);
         }
     }
+    for (amplifier, omen_at) in outputs.raid_omens.into_iter().filter(|_| alive) {
+        if survival.turn_bad_omen(amplifier, omen_at)
+            && let Some(sounds) = sounds.as_mut()
+        {
+            sounds.play(packs, RAID_OMEN_SOUND, Some(at(feet)), 1.0, 1.0);
+        }
+    }
+    for amplifier in outputs.raid_heroes {
+        survival.become_hero(amplifier);
+    }
+    for horn in outputs.raid_horns {
+        if let Some(sounds) = sounds.as_mut() {
+            let horn = at(horn.to_array());
+            sounds.play(packs, minecraft_terrain::raids::HORN_SOUND, Some(horn), minecraft_terrain::raids::HORN_VOLUME, 1.0);
+        }
+    }
+    if let Some(bars) = outputs.raid_bars {
+        *raid_bars = bars;
+    }
 }
+
+const RAID_OMEN_SOUND: &str = "minecraft:event.mob_effect.raid_omen";
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn settle(
@@ -1196,6 +1218,7 @@ pub(crate) fn tick_actor<'a>(
             ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE)
                 != 0,
         ),
+        omens: player.survival.omens(),
     };
     let actor = TickActor {
         id: u64::from(player.id.0),

@@ -37,6 +37,39 @@ fn custom_name(tag: &Tag) -> Option<String> {
     }
 }
 
+pub fn read_raider(tag: &Tag) -> il::Raider {
+    il::Raider {
+        wave: int(tag, "Wave").unwrap_or(0),
+        can_join_raid: flag(tag, "CanJoinRaid", false),
+        celebrating: false,
+        ticks_outside_raid: 0,
+        raid_id: int(tag, "RaidId"),
+        patrol_target: tag
+            .get("patrol_target")
+            .and_then(Tag::as_ints)
+            .and_then(|ints| <[i32; 3]>::try_from(ints).ok())
+            .map(|[x, y, z]| (x, y, z)),
+        patrol_leader: flag(tag, "PatrolLeader", false),
+        patrolling: flag(tag, "Patrolling", false),
+    }
+}
+
+pub fn raider_fields(raider: &il::Raider) -> Vec<(&'static str, Tag)> {
+    let mut fields = vec![
+        ("Wave", Tag::Int(raider.wave)),
+        ("CanJoinRaid", byte(raider.can_join_raid)),
+        ("PatrolLeader", byte(raider.patrol_leader)),
+        ("Patrolling", byte(raider.patrolling)),
+    ];
+    if let Some(raid) = raider.raid_id {
+        fields.push(("RaidId", Tag::Int(raid)));
+    }
+    if let Some((x, y, z)) = raider.patrol_target {
+        fields.push(("patrol_target", Tag::IntArray(vec![x, y, z])));
+    }
+    fields
+}
+
 pub fn spawn(world: &mut EntityWorld, tag: &Tag, kind: IllagerKind, saved: Saved) -> Option<u64> {
     let mut illager = Illager::new(kind, saved.pos);
     illager.yaw = saved.yaw;
@@ -69,17 +102,7 @@ pub fn spawn(world: &mut EntityWorld, tag: &Tag, kind: IllagerKind, saved: Saved
             *cell = Some(stack);
         }
     }
-    let raider = &mut illager.raider;
-    raider.wave = int(tag, "Wave").unwrap_or(0);
-    raider.can_join_raid = flag(tag, "CanJoinRaid", false);
-    raider.raid_id = int(tag, "RaidId");
-    raider.patrol_target = tag
-        .get("patrol_target")
-        .and_then(Tag::as_ints)
-        .and_then(|ints| <[i32; 3]>::try_from(ints).ok())
-        .map(|[x, y, z]| (x, y, z));
-    raider.patrol_leader = flag(tag, "PatrolLeader", false);
-    raider.patrolling = flag(tag, "Patrolling", false);
+    illager.raider = read_raider(tag);
     illager.johnny = flag(tag, "Johnny", false);
     if kind == IllagerKind::Evoker {
         illager.spell_casting_ticks = int(tag, "SpellTicks").unwrap_or(0);
@@ -98,26 +121,16 @@ pub fn spawn(world: &mut EntityWorld, tag: &Tag, kind: IllagerKind, saved: Saved
 
 pub fn fields(entity: &IllagerEntity) -> Vec<(&'static str, Tag)> {
     let illager = &entity.illager;
-    let raider = &illager.raider;
     let mut fields = vec![
         ("CanPickUpLoot", byte(illager.can_pick_up_loot)),
         ("LeftHanded", byte(illager.left_handed)),
-        ("Wave", Tag::Int(raider.wave)),
-        ("CanJoinRaid", byte(raider.can_join_raid)),
-        ("PatrolLeader", byte(raider.patrol_leader)),
-        ("Patrolling", byte(raider.patrolling)),
     ];
+    fields.extend(raider_fields(&illager.raider));
     if illager.johnny {
         fields.push(("Johnny", byte(true)));
     }
     if illager.kind == IllagerKind::Evoker {
         fields.push(("SpellTicks", Tag::Int(illager.spell_casting_ticks)));
-    }
-    if let Some(raid) = raider.raid_id {
-        fields.push(("RaidId", Tag::Int(raid)));
-    }
-    if let Some((x, y, z)) = raider.patrol_target {
-        fields.push(("patrol_target", Tag::IntArray(vec![x, y, z])));
     }
     if illager.kind == IllagerKind::Pillager {
         let items = illager

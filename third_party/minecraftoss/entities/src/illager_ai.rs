@@ -136,6 +136,11 @@ pub struct IllagerState {
     pub vexes_near: usize,
     pub casts: Vec<SpellCast>,
     pub spell_sounds: Vec<&'static str>,
+    pub raid: Option<crate::raid::RaidView>,
+    pub near_raid: bool,
+    pub recruit: bool,
+    pub celebrating: bool,
+    pub celebrate_sound: bool,
 }
 
 pub(crate) fn raider_goals() -> GoalSelector<MonsterGoalContext> {
@@ -146,14 +151,15 @@ pub(crate) fn raider_goals() -> GoalSelector<MonsterGoalContext> {
             cooldown_until: -1,
         },
     );
-    for priority in [1, 3, 4, 5] {
-        selector.add(
-            priority,
-            NeverGoal {
-                controls: &[Control::Move],
-            },
-        );
-    }
+    selector.add(
+        1,
+        NeverGoal {
+            controls: &[Control::Move],
+        },
+    );
+    selector.add(3, crate::raid::PathfindToRaidGoal::default());
+    selector.add(4, crate::raid::MoveThroughVillageGoal::default());
+    selector.add(5, crate::raid::CelebrationGoal);
     selector
 }
 

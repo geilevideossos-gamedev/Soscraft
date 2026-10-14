@@ -176,6 +176,7 @@ pub struct Session {
     view: Option<PlayerView>,
     cracks: BTreeMap<(u32, BlockPos), u8>,
     boss_bar: Option<f32>,
+    raid_bars: BTreeMap<i32, minecraft_terrain::raids::RaidBar>,
     credits: bool,
     sleepers: BTreeMap<u32, Lying>,
 }
@@ -202,6 +203,7 @@ impl Session {
             view: None,
             cracks: BTreeMap::new(),
             boss_bar: None,
+            raid_bars: BTreeMap::new(),
             credits: false,
             sleepers: BTreeMap::new(),
         }
@@ -251,6 +253,28 @@ impl Session {
             id: DRAGON_BAR,
             operation,
         }));
+    }
+
+    pub fn send_raid_bars(&mut self, bars: &[minecraft_terrain::raids::RaidBar]) {
+        let now: BTreeMap<i32, minecraft_terrain::raids::RaidBar> = bars.iter().map(|bar| (bar.id, *bar)).collect();
+        for &id in self.raid_bars.keys().filter(|id| !now.contains_key(id)) {
+            self.outbox.push(ToClient::BossBar(BossBarUpdate { id: raid_bar_id(id), operation: BossBarOperation::Remove }));
+        }
+        for (&id, bar) in &now {
+            let id_sent = raid_bar_id(id);
+            match self.raid_bars.get(&id) {
+                None => self.outbox.push(ToClient::BossBar(BossBarUpdate { id: id_sent, operation: raid_bar(bar) })),
+                Some(shown) => {
+                    if shown.name != bar.name {
+                        self.outbox.push(ToClient::BossBar(BossBarUpdate { id: id_sent, operation: BossBarOperation::Name(raid_bar_name(bar.name)) }));
+                    }
+                    if shown.progress != bar.progress {
+                        self.outbox.push(ToClient::BossBar(BossBarUpdate { id: id_sent, operation: BossBarOperation::Progress(bar.progress) }));
+                    }
+                }
+            }
+        }
+        self.raid_bars = now;
     }
 
     pub fn send_credits(&mut self, holding: bool) {
@@ -786,6 +810,34 @@ pub fn join_code_line(code: &str) -> Clientbound {
     system_line(Text::literal("Friends join with the code ").append(bracketed))
 }
 
+pub const RAID_BARS: u64 = 0x100;
+
+pub fn raid_bar_id(raid: i32) -> u64 {
+    RAID_BARS + u64::from(raid as u32)
+}
+
+pub fn raid_bar_name(name: minecraft_terrain::raids::BarName) -> Text {
+    use minecraft_terrain::raids::{BarName, DEFEAT_KEY, RAIDERS_REMAINING_KEY, RAID_KEY, VICTORY_KEY};
+    match name {
+        BarName::Raid => Text::translate(RAID_KEY, Vec::new()),
+        BarName::RaidersRemaining(count) => Text::translate(RAID_KEY, Vec::new())
+            .append(Text::literal(" - "))
+            .append(Text::translate(RAIDERS_REMAINING_KEY, vec![Text::literal(count.to_string())])),
+        BarName::Victory => Text::translate(VICTORY_KEY, Vec::new()),
+        BarName::Defeat => Text::translate(DEFEAT_KEY, Vec::new()),
+    }
+}
+
+pub fn raid_bar(bar: &minecraft_terrain::raids::RaidBar) -> BossBarOperation {
+    BossBarOperation::Add {
+        name: raid_bar_name(bar.name),
+        progress: bar.progress,
+        color: BossBarColor::Red,
+        overlay: BossBarOverlay::Notched10,
+        flags: BossBarFlags::default(),
+    }
+}
+
 pub fn dragon_bar(progress: f32) -> BossBarOperation {
     BossBarOperation::Add {
         name: Text::translate(DRAGON_NAME, Vec::new()),
@@ -1197,6 +1249,13 @@ impl Sessions {
                 crate::the_end::dragon_fight::shown_bar(fight, player)
             });
             session.send_boss_bar(bar);
+        }
+    }
+
+    pub fn send_raid_bars(&mut self, players: &BTreeMap<PlayerUuid, Player>) {
+        for session in self.sessions.values_mut() {
+            let bars = players.get(&session.uuid).map_or(&[][..], |player| player.raid_bars.as_slice());
+            session.send_raid_bars(bars);
         }
     }
 
@@ -1920,6 +1979,45 @@ mod tests {
             sessions.sessions.insert(client, session);
         }
         sessions
+    }
+
+    #[test]
+    fn a_friend_gets_the_raid_bar_red_and_notched_with_its_name_and_progress() {
+        use minecraft_terrain::raids::{BarName, RaidBar};
+        let mut session = Session::new(2, PlayerUuid("f".to_owned()), "Alex", 2);
+        let bar = |name, progress| RaidBar { id: 3, name, progress };
+        let sent = |session: &mut Session| -> Vec<BossBarUpdate> {
+            std::mem::take(&mut session.outbox)
+                .into_iter()
+                .filter_map(|message| match message {
+                    ToClient::BossBar(update) => Some(update),
+                    _ => None,
+                })
+                .collect()
+        };
+        session.send_raid_bars(&[bar(BarName::Raid, 0.25)]);
+        let added = sent(&mut session);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].id, RAID_BARS + 3);
+        let BossBarOperation::Add { name, progress, color, overlay, flags } = &added[0].operation else {
+            panic!("{added:?}");
+        };
+        assert_eq!((*progress, *color, *overlay, *flags), (0.25, BossBarColor::Red, BossBarOverlay::Notched10, BossBarFlags::default()));
+        assert_eq!(*name, Text::translate(minecraft_terrain::raids::RAID_KEY, Vec::new()));
+        session.send_raid_bars(&[bar(BarName::Raid, 0.25)]);
+        assert!(sent(&mut session).is_empty(), "nothing changed");
+        session.send_raid_bars(&[bar(BarName::RaidersRemaining(2), 0.1)]);
+        let changed: Vec<BossBarOperation> = sent(&mut session).into_iter().map(|update| update.operation).collect();
+        assert_eq!(changed, [BossBarOperation::Name(raid_bar_name(BarName::RaidersRemaining(2))), BossBarOperation::Progress(0.1)]);
+        session.send_raid_bars(&[]);
+        let removed = sent(&mut session);
+        assert_eq!((removed[0].id, removed[0].operation.clone()), (RAID_BARS + 3, BossBarOperation::Remove));
+        let resolved = raid_bar_name(BarName::RaidersRemaining(2)).resolve(&|key: &str| match key {
+            "event.minecraft.raid" => Some("Raid".to_owned()),
+            "event.minecraft.raid.raiders_remaining" => Some("Raiders Remaining: %s".to_owned()),
+            _ => None,
+        });
+        assert_eq!(resolved.text, "Raid - Raiders Remaining: 2");
     }
 
     fn bars(sessions: &mut Sessions) -> Vec<(u32, BossBarOperation)> {

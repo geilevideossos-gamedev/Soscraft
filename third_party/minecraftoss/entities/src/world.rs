@@ -38,6 +38,8 @@ mod vexes;
 pub use vexes::VexEntity;
 mod ravagers;
 pub use ravagers::RavagerEntity;
+mod raiders;
+pub use raiders::{celebrate_sound, RaiderMut, RaiderView};
 mod hazards;
 mod living;
 mod pushing;
@@ -2575,6 +2577,7 @@ pub struct EntityWorld {
     seed_uniquifier: u64,
     /// The level's points of interest (`PoiManager`).
     pub pois: crate::poi::PoiManager,
+    raids: Vec<crate::raid::RaidView>,
     /// A pinned random for the next golem villagers summon.
     summoned_golem_seed: Option<u64>,
     /// Pinned randoms for the next babies villagers make, in turn, and the
@@ -2699,6 +2702,7 @@ impl Default for EntityWorld {
             day_time: 0,
             seed_uniquifier: 8_682_522_807_148_012,
             pois: crate::poi::PoiManager::new(-4, 19),
+            raids: Vec::new(),
             summoned_golem_seed: None,
             summoned_golems: Vec::new(),
             born_seeds: Default::default(),
@@ -5642,6 +5646,7 @@ impl EntityWorld {
             day_time: self.day_time,
             seed_uniquifier: self.seed_uniquifier,
             pois: self.pois.clone(),
+            raids: self.raids.clone(),
             summoned_golem_seed: self.summoned_golem_seed,
             summoned_golems: Vec::new(),
             born_seeds: self.born_seeds.clone(),
@@ -5783,7 +5788,13 @@ impl EntityWorld {
             let persistent = e.enderman.persistence_required || e.ai.state.enderman.carried.is_some();
             !check(e.id, e.enderman.body.position, persistent, MONSTER, &mut e.no_action_time, &mut e.random)
         });
-        self.witches.retain_mut(|e| !check(e.id, e.witch.body.position, e.witch.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
+        self.witches.retain_mut(|e| {
+            let in_raid = e.witch.raider.raid_id.is_some();
+            if in_raid && listed(e.witch.body.position) {
+                e.no_action_time = 0;
+            }
+            !check(e.id, e.witch.body.position, e.witch.persistence_required || in_raid, MONSTER, &mut e.no_action_time, &mut e.random)
+        });
         // `AbstractGolem.removeWhenFarAway` is false, yet the idle roll draws.
         self.iron_golems.retain_mut(|e| !check(e.id, e.golem.body.position, e.golem.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         // `TamableAnimal`: a tame wolf never goes.
@@ -5795,14 +5806,22 @@ impl EntityWorld {
             let position = e.illager.body.position;
             let near = players.iter().map(|p| p.distance_squared(position)).min_by(f64::total_cmp).is_some_and(|d| d <= crate::illager::PATROL_KEEP_RANGE * crate::illager::PATROL_KEEP_RANGE);
             let rule = if e.illager.raider.patrolling && near { KEPT_MONSTER } else { MONSTER };
-            !check(e.id, position, e.illager.persistence_required, rule, &mut e.no_action_time, &mut e.random)
+            let in_raid = e.illager.raider.raid_id.is_some();
+            if in_raid && listed(position) {
+                e.no_action_time = 0;
+            }
+            !check(e.id, position, e.illager.persistence_required || in_raid, rule, &mut e.no_action_time, &mut e.random)
         });
         self.vexes.retain_mut(|e| !check(e.id, e.vex.body.position, e.vex.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.ravagers.retain_mut(|e| {
             let position = e.ravager.body.position;
             let near = players.iter().map(|p| p.distance_squared(position)).min_by(f64::total_cmp).is_some_and(|d| d <= crate::illager::PATROL_KEEP_RANGE * crate::illager::PATROL_KEEP_RANGE);
             let rule = if e.ravager.raider.patrolling && near { KEPT_MONSTER } else { MONSTER };
-            !check(e.id, position, e.ravager.persistence_required, rule, &mut e.no_action_time, &mut e.random)
+            let in_raid = e.ravager.raider.raid_id.is_some();
+            if in_raid && listed(position) {
+                e.no_action_time = 0;
+            }
+            !check(e.id, position, e.ravager.persistence_required || in_raid, rule, &mut e.no_action_time, &mut e.random)
         });
         self.villagers.retain_mut(|e| !check(e.id, e.villager.body.position, e.villager.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         self.cows.retain_mut(|e| !check(e.id, e.cow.body.position, e.cow.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));

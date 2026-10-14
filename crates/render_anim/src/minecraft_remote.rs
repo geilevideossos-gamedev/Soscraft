@@ -758,6 +758,7 @@ fn follow_boss_bars(
         });
         shown.name = name(&bar.name);
         (shown.world_fog, shown.music) = (fog, music);
+        (shown.color, shown.overlay) = (bar.color.sprite_name(), bar.overlay.sprite_name());
         shown.set_progress(bar.progress);
         shown.advance(seconds);
     }

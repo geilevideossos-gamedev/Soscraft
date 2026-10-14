@@ -166,6 +166,8 @@ pub struct Survival {
     freeze_immune: bool,
     melted: Vec<(i32, i32, i32)>,
     totem_grace_until: Option<u64>,
+    pub raid_omen_position: Option<(i32, i32, i32)>,
+    pub raid_omens_fired: Vec<(i32, (i32, i32, i32))>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -204,6 +206,39 @@ fn scale(max_health: i32) -> f32 {
 }
 
 impl Survival {
+    pub fn fire_raid_omen(&mut self) {
+        let Some(omen) = self.status.effect(EffectKind::RaidOmen).filter(|omen| omen.duration == 1) else {
+            return;
+        };
+        if let Some(at) = self.raid_omen_position.take() {
+            self.raid_omens_fired.push((i32::from(omen.amplifier), at));
+        }
+    }
+
+    pub fn omens(&mut self) -> minecraft_terrain::server::PlayerOmens {
+        minecraft_terrain::server::PlayerOmens {
+            bad_omen: self.status.effect(EffectKind::BadOmen).map(|omen| i32::from(omen.amplifier)),
+            raid_omens: std::mem::take(&mut self.raid_omens_fired),
+        }
+    }
+
+    pub fn turn_bad_omen(&mut self, amplifier: i32, at: (i32, i32, i32)) -> bool {
+        if self.status.effect(EffectKind::BadOmen).is_none() {
+            return false;
+        }
+        self.status.remove_effect(EffectKind::BadOmen);
+        let fresh = self.status.effect(EffectKind::RaidOmen).is_none();
+        let amplifier = amplifier.clamp(0, i32::from(u8::MAX)) as u8;
+        self.status.add_effect(EffectKind::RaidOmen, minecraft_terrain::raids::RAID_OMEN_TICKS, amplifier);
+        self.raid_omen_position = Some(at);
+        fresh
+    }
+
+    pub fn become_hero(&mut self, amplifier: i32) {
+        let amplifier = amplifier.clamp(0, i32::from(u8::MAX)) as u8;
+        self.status.add_effect(EffectKind::HeroOfTheVillage, minecraft_terrain::raids::HERO_TICKS, amplifier);
+    }
+
     pub fn respawn(&mut self) {
         *self = Self {
             blocked_sprint: self.blocked_sprint,
@@ -349,6 +384,7 @@ impl Survival {
         let withering = self.status.effect(EffectKind::Wither).is_some_and(|effect| {
             effect.duration % (40_u32 >> effect.amplifier.min(31)).max(1) == 0
         });
+        self.fire_raid_omen();
         self.status.tick_effects();
         if self.invulnerable {
             self.status.health = self.status.health.max(before);
@@ -1281,6 +1317,37 @@ mod tests {
         let mut survival = Survival::default();
         survival.observe(100, 100);
         survival
+    }
+
+    #[test]
+    fn bad_omen_turns_into_a_raid_omen_that_fires_once_where_it_was_given() {
+        let mut survival = fresh();
+        assert!(!survival.turn_bad_omen(2, (1, 64, 2)), "no bad omen to turn");
+        survival.status.add_effect(EffectKind::BadOmen, 120000, 2);
+        assert_eq!(survival.omens().bad_omen, Some(2));
+        assert!(survival.turn_bad_omen(2, (1, 64, 2)), "a new raid omen sounds");
+        assert!(survival.status.effect(EffectKind::BadOmen).is_none());
+        assert_eq!(survival.status.effect(EffectKind::RaidOmen).map(|e| (e.duration, e.amplifier)), Some((600, 2)));
+        assert_eq!(survival.raid_omen_position, Some((1, 64, 2)));
+        assert!(!survival.turn_bad_omen(2, (1, 64, 2)), "the omen turns only once");
+        let motion = Motion { on_ground: true, ..Motion::default() };
+        for _ in 0..599 {
+            survival.tick(&motion);
+        }
+        assert!(survival.omens().raid_omens.is_empty(), "not before its last tick");
+        survival.tick(&motion);
+        assert!(survival.status.effect(EffectKind::RaidOmen).is_none());
+        let fired = survival.omens();
+        assert_eq!((fired.bad_omen, fired.raid_omens), (None, vec![(2, (1, 64, 2))]));
+        assert!(survival.omens().raid_omens.is_empty(), "it is handed over once");
+        assert_eq!(survival.raid_omen_position, None);
+        survival.status.add_effect(EffectKind::RaidOmen, 5, 0);
+        for _ in 0..5 {
+            survival.tick(&motion);
+        }
+        assert!(survival.omens().raid_omens.is_empty(), "a raid omen from /effect has no place to raid");
+        survival.become_hero(3);
+        assert_eq!(survival.status.effect(EffectKind::HeroOfTheVillage).map(|e| (e.duration, e.amplifier)), Some((48000, 3)));
     }
 
     #[test]

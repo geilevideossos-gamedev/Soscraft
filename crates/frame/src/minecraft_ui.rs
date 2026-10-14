@@ -267,6 +267,7 @@ pub struct MinecraftUi {
     pub overlay_message: Option<McOverlayMessage>,
     pub sleep: Option<McSleep>,
     pub boss_bars: Vec<McBossBar>,
+    pub raid_bars: Vec<McBossBar>,
     pub credits: Option<crate::minecraft_credits::McCredits>,
     pub book: Option<McBook>,
     pub merchant: Option<McMerchant>,
@@ -297,6 +298,9 @@ pub struct McBossBar {
     pub elapsed: f32,
     pub world_fog: bool,
     pub music: bool,
+    pub color: &'static str,
+    pub overlay: &'static str,
+    pub key: u64,
 }
 
 impl McBossBar {
@@ -310,7 +314,16 @@ impl McBossBar {
             elapsed: Self::LERP_SECONDS,
             world_fog,
             music,
+            color: "pink",
+            overlay: "progress",
+            key: 0,
         }
+    }
+
+    pub fn styled(mut self, color: &'static str, overlay: &'static str) -> Self {
+        self.color = color;
+        self.overlay = overlay;
+        self
     }
 
     pub fn progress(&self) -> f32 {

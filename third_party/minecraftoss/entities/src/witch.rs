@@ -50,6 +50,7 @@ pub struct Witch {
     pub heal_cooldown: i32,
     /// When fire last hurt it (`getLastDamageSource` within 40 ticks).
     pub last_fire_damage: Option<i64>,
+    pub raider: crate::illager::Raider,
 }
 
 impl Witch {
@@ -65,6 +66,7 @@ impl Witch {
             using_time: 0,
             heal_cooldown: 0,
             last_fire_damage: None,
+            raider: crate::illager::Raider::default(),
         }
     }
 

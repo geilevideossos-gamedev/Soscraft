@@ -16,10 +16,11 @@ pub const ITEM_PICKUP_SOUND: &str = "minecraft:entity.item.pickup";
 pub const ORB_PICKUP_SOUND: &str = "minecraft:entity.experience_orb.pickup";
 pub const LEVEL_UP_SOUND: &str = "minecraft:entity.player.levelup";
 pub const LIMIT: usize = 4096;
-const ACTOR_ONLY: [&str; 3] = [
+const ACTOR_ONLY: [&str; 4] = [
     "minecraft:ui.hud.bubble_pop",
     "minecraft:block.portal.trigger",
     "minecraft:block.portal.travel",
+    minecraft_terrain::raids::HORN_SOUND,
 ];
 
 #[derive(Clone, Debug, PartialEq)]

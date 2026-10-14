@@ -110,6 +110,99 @@ pub struct ServerSim {
     lecterns: Vec<crate::lectern::LecternView>,
     trackers: crate::mob_tracking::Trackers,
     custom_spawners: crate::custom_spawners::CustomSpawners,
+    raids: crate::raids::Raids,
+    raids_rule: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayerOmens {
+    pub bad_omen: Option<i32>,
+    pub raid_omens: Vec<(i32, (i32, i32, i32))>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RaidTick {
+    pub omens: Vec<(u64, i32, (i32, i32, i32))>,
+    pub heroes: Vec<(u64, i32)>,
+    pub horns: Vec<(u64, [f64; 3])>,
+    pub bars: Vec<(u64, Vec<crate::raids::RaidBar>)>,
+}
+
+struct RaidSim<'a> {
+    level: &'a mut Level<'static>,
+    mobs: &'a mut minecraftoss_entities::world::EntityWorld,
+    mob_tags: &'a mut std::collections::HashMap<u64, minecraftoss_core::nbt::Tag>,
+    ticking: std::collections::HashSet<ChunkPos>,
+}
+
+impl crate::raids::RaidLevel for RaidSim<'_> {
+    fn difficulty(&self) -> i32 {
+        self.level.difficulty
+    }
+
+    fn is_village(&mut self, pos: (i32, i32, i32)) -> bool {
+        self.mobs.pois.is_village(pos)
+    }
+
+    fn has_chunk(&self, pos: (i32, i32, i32)) -> bool {
+        self.level.chunk(ChunkPos::new(pos.0 >> 4, pos.2 >> 4)).is_some()
+    }
+
+    fn has_chunks(&self, from: (i32, i32), to: (i32, i32)) -> bool {
+        (from.0 >> 4..=to.0 >> 4).all(|cx| (from.1 >> 4..=to.1 >> 4).all(|cz| self.level.chunk(ChunkPos::new(cx, cz)).is_some()))
+    }
+
+    fn entity_ticking(&self, pos: (i32, i32, i32)) -> bool {
+        self.ticking.contains(&ChunkPos::new(pos.0 >> 4, pos.2 >> 4))
+    }
+
+    fn surface(&self, x: i32, z: i32) -> i32 {
+        minecraftoss_generator::feature::World::height_at(&*self.level, minecraftoss_core::chunk::HeightmapKind::WorldSurface, x, z)
+    }
+
+    fn spawn_ok(&mut self, pos: (i32, i32, i32)) -> bool {
+        self.level.raid_spawn_ok(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2))
+    }
+
+    fn can_start_raid(&self, pos: (i32, i32, i32)) -> bool {
+        self.level.can_start_raid_at(pos.0, pos.1, pos.2)
+    }
+
+    fn occupied_village_pois(&self, pos: (i32, i32, i32), radius: i32) -> Vec<(i32, i32, i32)> {
+        let village = |kind: minecraftoss_entities::poi::PoiType| kind.village();
+        self.mobs.pois.in_range(&village, pos, radius, minecraftoss_entities::poi::Occupancy::IsOccupied).into_iter().map(|record| record.pos).collect()
+    }
+
+    fn player_uuid(&self, player: u64) -> u128 {
+        self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player)
+    }
+
+    fn raiders(&self) -> Vec<minecraftoss_entities::world::RaiderView> {
+        self.mobs.raiders()
+    }
+
+    fn raider_mut(&mut self, id: u64) -> Option<minecraftoss_entities::world::RaiderMut<'_>> {
+        self.mobs.raider_mut(id)
+    }
+
+    fn spawn_raider(&mut self, member: crate::raids::RaidMember) -> Vec<u64> {
+        use minecraftoss_core::nbt::Tag;
+        let pos = minecraftoss_core::BlockPos::new(member.pos.0, member.pos.1, member.pos.2);
+        let Some(mut tag) = self.level.raid_member(member.kind, pos, member.wave, member.raid, member.leader, member.enchant_odds) else { return Vec::new() };
+        if let Some(kind) = member.rider {
+            if let Some(Tag::Compound(mut rider)) = self.level.raid_member(kind, pos, member.wave, member.raid, false, member.enchant_odds) {
+                rider.remove("Pos");
+                if let Tag::Compound(map) = &mut tag {
+                    map.insert("Passengers".to_owned(), Tag::List(vec![Tag::Compound(rider)]));
+                }
+            }
+        }
+        self.mobs.set_day_time(self.level.overworld_clock());
+        let spawned = crate::server_mobs::spawn_saved_all(self.mobs, &tag);
+        let ids = spawned.iter().map(|(id, _)| *id).collect();
+        self.mob_tags.extend(spawned);
+        ids
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -382,6 +475,8 @@ impl ServerSim {
             lecterns: Vec::new(),
             trackers: Default::default(),
             custom_spawners: crate::custom_spawners::CustomSpawners::for_dimension(dimension_type),
+            raids: crate::raids::Raids::default(),
+            raids_rule: true,
         }
     }
 
@@ -643,6 +738,68 @@ impl ServerSim {
         if let (Some(traders), Some(tag)) = (self.custom_spawners.traders.as_mut(), saved) {
             traders.data = crate::custom_spawners::TraderData::read(&tag);
         }
+        let raids = self.raids_path().and_then(|path| minecraftoss_world::level_storage::read_saved_at(&path).ok().flatten());
+        if let Some(tag) = raids {
+            self.raids = crate::raids::Raids::read(&tag);
+            self.mobs.set_raids(self.raids.views());
+        }
+    }
+
+    fn raids_path(&self) -> Option<std::path::PathBuf> {
+        let dimension = self.storage.as_ref()?.dimension_dir()?;
+        Some(dimension.join("data").join("minecraft").join(crate::raids::RAIDS_FILE))
+    }
+
+    pub fn raids(&self) -> &crate::raids::Raids {
+        &self.raids
+    }
+
+    pub fn raids_mut(&mut self) -> &mut crate::raids::Raids {
+        &mut self.raids
+    }
+
+    fn save_raids(&self) {
+        let Some(path) = self.raids_path() else { return };
+        if let Err(e) = minecraftoss_world::level_storage::write_saved_at(&path, self.raids.write()) {
+            eprintln!("raids write failed: {e}");
+        }
+    }
+
+    fn raid_sim(&mut self) -> RaidSim<'_> {
+        let ticking = self.level.ticking_chunks.iter().flatten().copied().collect();
+        RaidSim { level: &mut self.level, mobs: &mut self.mobs, mob_tags: &mut self.mob_tags, ticking }
+    }
+
+    pub fn tick_raids(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], omens: &[(u64, PlayerOmens)], normal: bool) -> RaidTick {
+        let mut out = RaidTick::default();
+        let raid_players: Vec<crate::raids::RaidPlayer> = players
+            .iter()
+            .map(|p| crate::raids::RaidPlayer { id: p.id, uuid: self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + p.id), feet: p.position.to_array(), alive: p.alive, spectator: p.spectator })
+            .collect();
+        let rule = self.raids_rule;
+        let game_time = self.level.game_time;
+        let mut raids = std::mem::take(&mut self.raids);
+        for (player, omen) in omens {
+            let Some(raid_player) = raid_players.iter().find(|p| p.id == *player) else { continue };
+            for &(amplifier, at) in &omen.raid_omens {
+                let seed = self.sound_random.next_long();
+                raids.create_or_extend(&mut self.raid_sim(), raid_player, at, amplifier, rule, seed);
+            }
+            if let Some(amplifier) = omen.bad_omen {
+                if raids.omen_turns(&mut self.raid_sim(), raid_player) {
+                    out.omens.push((*player, amplifier, raid_player.block()));
+                }
+            }
+        }
+        if normal {
+            let tick = raids.tick(&mut self.raid_sim(), &raid_players, rule, game_time);
+            out.heroes = tick.heroes;
+            out.horns = tick.horns;
+        }
+        self.mobs.set_raids(raids.views());
+        out.bars = raid_players.iter().map(|p| (p.id, raids.bars_for(p.id))).collect();
+        self.raids = raids;
+        out
     }
 
     fn trader_data_path(&self) -> Option<std::path::PathBuf> {
@@ -795,6 +952,7 @@ impl ServerSim {
             }
         }
         self.save_trader_data();
+        self.save_raids();
     }
 
     /// Before the level ticks: natural spawning's players (registered with
@@ -2760,6 +2918,7 @@ impl ServerSim {
         }
         self.custom_spawners.spawn_wandering_traders = rules.bool("spawn_wandering_traders");
         self.custom_spawners.spawn_patrols = rules.bool("spawn_patrols");
+        self.raids_rule = rules.bool("raids");
     }
 
     pub fn weather(&mut self, feet: Option<[f64; 3]>) -> WeatherView {
@@ -3191,9 +3350,26 @@ pub struct TickInput {
     /// The `spawn_mobs` game rule.
     pub spawn_mobs: bool,
     pub controls: Vec<minecraftoss_entities::controls::PlayerControls>,
+    pub omens: Vec<(u64, PlayerOmens)>,
 }
 
 impl TickInput {
+    pub fn carry_omens(&mut self, older: &mut TickInput) {
+        for (player, omen) in &mut older.omens {
+            let fired = std::mem::take(&mut omen.raid_omens);
+            if fired.is_empty() {
+                continue;
+            }
+            match self.omens.iter_mut().find(|(id, _)| id == player) {
+                Some((_, newer)) => {
+                    let later = std::mem::replace(&mut newer.raid_omens, fired);
+                    newer.raid_omens.extend(later);
+                }
+                None => self.omens.push((*player, PlayerOmens { bad_omen: None, raid_omens: fired })),
+            }
+        }
+    }
+
     pub fn remove_player(&mut self, player: u64) {
         self.players.retain(|p| p.id != player);
         self.mob_players.retain(|p| p.id != player);
@@ -3202,6 +3378,7 @@ impl TickInput {
         self.mob_vitals.retain(|(id, _)| *id != player);
         self.player_hurts.retain(|(id, _, _)| *id != player);
         self.controls.retain(|controls| controls.id != player);
+        self.omens.retain(|(id, _)| *id != player);
     }
 }
 
@@ -3280,6 +3457,10 @@ pub struct Output {
     pub eye_answers: Vec<crate::eye_of_ender::EyeAnswer>,
     pub lecterns: Vec<crate::lectern::LecternView>,
     pub tracked: crate::mob_tracking::Tracked,
+    pub raid_omens: Vec<(u64, i32, (i32, i32, i32))>,
+    pub raid_heroes: Vec<(u64, i32)>,
+    pub raid_horns: Vec<(u64, [f64; 3])>,
+    pub raid_bars: Option<Vec<(u64, Vec<crate::raids::RaidBar>)>>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -3746,7 +3927,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::Tick(_, normal) if normal.is_empty() => {}
                 Command::Tick(input, normal) => match batch.as_mut() {
                     Some((running, flags)) => {
-                        *running = *input;
+                        let mut input = *input;
+                        input.carry_omens(running);
+                        *running = input;
                         flags.extend(normal);
                     }
                     None => {
@@ -3792,6 +3975,13 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     if let Some(natural) = &mut sim.level.natural_spawning {
         natural.spawn_mobs = input.spawn_mobs;
     }
+    let omens = std::mem::take(&mut input.omens);
+    let raid = sim.tick_raids(&input.mob_players, &omens, normal);
+    input.omens = omens.into_iter().map(|(id, omen)| (id, PlayerOmens { bad_omen: omen.bad_omen, raid_omens: Vec::new() })).collect();
+    out.raid_omens.extend(raid.omens);
+    out.raid_heroes.extend(raid.heroes);
+    out.raid_horns.extend(raid.horns);
+    out.raid_bars = Some(raid.bars);
     if normal {
         sim.prepare_spawning(&input.mob_players);
         sim.tick();
@@ -10494,6 +10684,7 @@ mod tests {
             player_hurts: Vec::new(),
             spawn_mobs: false,
             controls: Vec::new(),
+            omens: Vec::new(),
         }
     }
 
@@ -11627,6 +11818,135 @@ mod tests {
         let dropped: Vec<String> = server.items().into_iter().map(|item| item.item).collect();
         assert!(dropped.iter().any(|item| item == "minecraft:ominous_bottle"), "{dropped:?}");
         assert!(dropped.iter().any(|item| item == "minecraft:white_banner"), "{dropped:?}");
+    }
+
+    #[test]
+    fn a_raid_omen_in_a_village_brings_waves_of_raiders_with_a_bar_and_a_horn() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -5..=5 {
+            for z in -5..=5 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let y = minecraftoss_generator::feature::World::height_at(&server.level, minecraftoss_core::chunk::HeightmapKind::MotionBlocking, 8, 8);
+        let feet = [8.5, f64::from(y), 8.5];
+        server.set_players(&[feet], 2);
+        server.set_simulation_area((0, 0), 5);
+        let bell = (8, y, 8);
+        assert!(server.mobs.pois.add(bell, minecraftoss_entities::poi::PoiType::Meeting));
+        assert!(server.mobs.pois.acquire(bell));
+        let me = candidate(0, feet);
+        let bad = [(0, PlayerOmens { bad_omen: Some(1), raid_omens: Vec::new() })];
+        let tick = server.tick_raids(&[me], &bad, true);
+        assert_eq!(tick.omens, [(0, 1, bell)], "bad omen turns into raid omen at the player's block");
+        let away = candidate(0, [300.5, f64::from(y), 8.5]);
+        assert!(server.tick_raids(&[away], &bad, true).omens.is_empty(), "not outside the village");
+        let fired = [(0, PlayerOmens { bad_omen: None, raid_omens: vec![(1, bell)] })];
+        server.tick_raids(&[me], &fired, true);
+        assert_eq!(server.raids().raids.len(), 1, "the raid omen ends in a raid");
+        let id = *server.raids().raids.keys().next().unwrap();
+        assert_eq!(server.raids().raids[&id].raid_omen_level, 2);
+        let mut horns = Vec::new();
+        let mut bars = Vec::new();
+        for _ in 0..400 {
+            let tick = server.tick_raids(&[me], &[], true);
+            horns.extend(tick.horns);
+            bars.extend(tick.bars.into_iter().flat_map(|(player, bars)| bars.into_iter().map(move |bar| (player, bar.name))));
+            if !server.mobs.illagers().is_empty() {
+                break;
+            }
+        }
+        assert!(!server.mobs.illagers().is_empty(), "the first wave came");
+        assert!(horns.iter().any(|(player, _)| *player == 0), "the horn sounded for the player");
+        assert!(bars.contains(&(0, crate::raids::BarName::Raid)), "the player sees the Raid bar");
+        let wave: Vec<&minecraftoss_entities::world::IllagerEntity> = server.mobs.illagers().iter().collect();
+        assert!((4..=5).contains(&wave.len()), "four pillagers and one at most more on normal: {}", wave.len());
+        assert!(wave.iter().all(|e| e.illager.kind == minecraftoss_entities::illager::IllagerKind::Pillager && e.illager.holds_crossbow()));
+        assert!(wave.iter().all(|e| e.illager.raider.raid_id == Some(id) && e.illager.raider.wave == 1 && e.illager.raider.can_join_raid));
+        assert_eq!(wave.iter().filter(|e| e.is_captain()).count(), 1, "one captain with the ominous banner");
+        let raid = &server.raids().raids[&id];
+        assert_eq!((raid.groups_spawned, raid.raiders_alive()), (1, wave.len()));
+        assert!(raid.total_health > 0.0);
+        let saved = crate::server_mobs::mob_tags_where(&server.mobs, |_, _| true, &server.mob_tags, false);
+        let raiders: Vec<&minecraftoss_core::nbt::Tag> = saved.iter().map(|(_, tag)| tag).filter(|tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:pillager")).collect();
+        assert_eq!(raiders.len(), wave.len());
+        assert!(raiders.iter().all(|tag| tag.get("RaidId").and_then(minecraftoss_core::nbt::Tag::as_i64) == Some(i64::from(id))));
+        let written = server.raids().write();
+        let back = crate::raids::Raids::read(&written);
+        assert_eq!(back.raids[&id].groups_spawned, 1);
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("raids", "false").unwrap();
+        server.apply_game_rules(&rules);
+        server.tick_raids(&[me], &[], true);
+        assert!(server.raids().raids.is_empty(), "the raids rule stops it");
+        assert!(server.mobs.illagers().iter().all(|e| e.illager.raider.raid_id.is_none()));
+    }
+
+    #[test]
+    fn raid_members_carry_their_wave_raid_and_raid_buffs() {
+        let Some((mut server, _)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        use minecraftoss_core::nbt::Tag;
+        let pos = minecraftoss_core::BlockPos::new(8, 200, 8);
+        let main_hand = |tag: &Tag| tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|hand| hand.get("id")).and_then(Tag::as_str).map(str::to_owned);
+        let enchantments = |tag: &Tag| tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|hand| hand.get("components")).and_then(|c| c.get("minecraft:enchantments")).cloned();
+        let vindicator = server.level.raid_member("minecraft:vindicator", pos, 6, 3, true, 1.0).expect("a raid vindicator");
+        assert_eq!(main_hand(&vindicator).as_deref(), Some("minecraft:iron_axe"), "its axe comes from the raid");
+        assert_eq!(enchantments(&vindicator).and_then(|e| e.get("minecraft:sharpness").and_then(Tag::as_i64)), Some(2), "past wave five: sharpness II");
+        assert_eq!((vindicator.get("Wave"), vindicator.get("RaidId")), (Some(&Tag::Int(6)), Some(&Tag::Int(3))));
+        assert_eq!(vindicator.get("CanJoinRaid"), Some(&Tag::Byte(1)));
+        assert!(vindicator.get("equipment").and_then(|e| e.get("head")).is_some(), "the wave's captain wears the banner");
+        assert_eq!(vindicator.get("Pos").and_then(Tag::as_list).map(|p| p.iter().filter_map(Tag::as_f64).collect::<Vec<_>>()), Some(vec![8.5, 201.0, 8.5]));
+        let plain = server.level.raid_member("minecraft:vindicator", pos, 2, 3, false, 0.0).unwrap();
+        assert_eq!(main_hand(&plain).as_deref(), Some("minecraft:iron_axe"));
+        assert_eq!(enchantments(&plain), None, "no enchantment without raid omen odds");
+        assert!(plain.get("equipment").and_then(|e| e.get("head")).is_none());
+        let pillager = server.level.raid_member("minecraft:pillager", pos, 4, 3, false, 1.0).unwrap();
+        assert_eq!(main_hand(&pillager).as_deref(), Some("minecraft:crossbow"));
+        assert_eq!(enchantments(&pillager).and_then(|e| e.get("minecraft:quick_charge").and_then(Tag::as_i64)), Some(1));
+        let witch = server.level.raid_member("minecraft:witch", pos, 4, 3, false, 0.0).unwrap();
+        assert_eq!(witch.get("CanJoinRaid"), Some(&Tag::Byte(1)), "a raid witch can join raids");
+        assert!(server.level.raid_member("minecraft:zombie", pos, 1, 3, false, 0.0).is_none());
+    }
+
+    #[test]
+    fn raids_are_saved_in_the_dimension_s_data_folder_and_read_back() {
+        let Some((mut server, _)) = door_world() else { return };
+        let dir = std::env::temp_dir().join(format!("iw4l-raids-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let registries = Arc::new(Registries::load(&DataPaths::discover().unwrap()).unwrap());
+        let storage = |registries: &Arc<Registries>| Some(Arc::new(minecraftoss_world::storage::ChunkStorage::new(&dir, "minecraft:overworld", registries.clone(), -64, 384)));
+        server.set_entity_storage(storage(&registries));
+        assert!(server.raids().raids.is_empty());
+        let mut raid = crate::raids::Raid::new((8, 70, 8), 2, 5);
+        raid.started = true;
+        raid.groups_spawned = 3;
+        raid.raid_omen_level = 2;
+        raid.heroes.insert(0xA11CE);
+        server.raids_mut().raids.insert(2, raid);
+        server.raids_mut().next_id = 2;
+        server.save_all_entities();
+        let path = dir.join("dimensions").join("minecraft").join("overworld").join("data").join("minecraft").join("raids.dat");
+        let saved = minecraftoss_world::level_storage::read_saved_at(&path).unwrap().expect("raids.dat in the overworld's data folder");
+        assert_eq!(crate::raids::Raids::read(&saved).raids[&2].groups_spawned, 3);
+        let Some((mut fresh, _)) = door_world() else { return };
+        fresh.set_entity_storage(storage(&registries));
+        let back = &fresh.raids().raids[&2];
+        assert_eq!((back.center, back.groups_spawned, back.raid_omen_level, back.heroes.contains(&0xA11CE)), ((8, 70, 8), 3, 2, true));
+        assert_eq!(fresh.raids().next_id, 2);
+        assert_eq!(fresh.mobs.raids().iter().map(|view| view.id).collect::<Vec<_>>(), [2], "its raiders find it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

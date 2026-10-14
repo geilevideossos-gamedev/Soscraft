@@ -252,6 +252,11 @@ impl Level<'_> {
         self.environment_flag("gameplay/can_pillager_patrol_spawn", biome)
     }
 
+    pub fn can_start_raid_at(&self, x: i32, y: i32, z: i32) -> bool {
+        let biome = minecraftoss_generator::feature::World::biome(self, x, y, z).map_or(0, |b| b.0);
+        self.environment_flag("gameplay/can_start_raid", biome)
+    }
+
     /// A float attribute's value in a biome.
     pub(super) fn biome_value(&self, name: &str, biome: u16) -> f32 {
         self.environment_value(name, biome)

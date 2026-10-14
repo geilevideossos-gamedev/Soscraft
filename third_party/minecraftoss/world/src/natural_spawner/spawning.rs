@@ -238,6 +238,20 @@ pub const OMINOUS_BANNER_PATTERNS: [(&str, &str); 8] = [
     ("border", "black"),
 ];
 
+pub const RAID_GROUPS_EASY: i32 = 3;
+pub const RAID_GROUPS_NORMAL: i32 = 5;
+
+fn enchant_main_hand(tag: &mut Tag, enchantment: &str, level: i32) {
+    let levels = Tag::Compound(BTreeMap::from([(enchantment.to_owned(), Tag::Int(level))]));
+    let components = Tag::Compound(BTreeMap::from([("minecraft:enchantments".to_owned(), levels)]));
+    if let Tag::Compound(map) = tag
+        && let Some(Tag::Compound(slots)) = map.get_mut("equipment")
+        && let Some(Tag::Compound(hand)) = slots.get_mut("mainhand")
+    {
+        hand.insert("components".to_owned(), components);
+    }
+}
+
 pub fn ominous_banner() -> Tag {
     let text = |value: &str| Tag::String(value.to_owned());
     let layers = OMINOUS_BANNER_PATTERNS
@@ -1060,6 +1074,74 @@ impl CreatureSpawns {
         let _ = attribute(&mut tag, "minecraft:follow_range", follow_range_base(kind));
         let difficulty = Self::difficulty_at(level, context, pos);
         Self::finalize_pillager(level, &mut tag, difficulty, false, true);
+        Some(tag)
+    }
+
+    pub fn raid_spawn_ok(&self, level: &mut dyn SpawnLevel, pos: BlockPos) -> bool {
+        let kind = "minecraft:ravager";
+        let Some(info) = type_info(kind) else { return false };
+        if self.is_spawn_position_ok(level, kind, &info, pos) {
+            return true;
+        }
+        let blocks = &self.registries.blocks;
+        let name = |state: minecraftoss_core::BlockStateId| blocks.block(blocks.block_of(state)).name.as_str();
+        name(level.block(pos.below())) == "minecraft:snow" && matches!(name(level.block(pos)), "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn raid_member(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, kind: &str, pos: BlockPos, wave: i32, raid: i32, leader: bool, enchant_odds: f32) -> Option<Tag> {
+        let mut tag = self.registries.entities.as_ref()?.default_tag(kind)?;
+        let uuid = level.next_uuid();
+        place(&mut tag, [f64::from(pos.x) + 0.5, f64::from(pos.y) + 1.0, f64::from(pos.z) + 0.5], 0.0, 0.0, uuid);
+        let _ = attribute(&mut tag, "minecraft:follow_range", follow_range_base(kind));
+        if leader {
+            set(&mut tag, "PatrolLeader", byte(true));
+        }
+        set(&mut tag, "Wave", Tag::Int(wave));
+        set(&mut tag, "RaidId", Tag::Int(raid));
+        let difficulty = Self::difficulty_at(level, context, pos);
+        match kind {
+            "minecraft:pillager" => Self::finalize_pillager(level, &mut tag, difficulty, false, false),
+            "minecraft:vindicator" => Self::finalize_vindicator(level, &mut tag, difficulty, false),
+            "minecraft:evoker" => {
+                Self::finalize_raider(level, &mut tag, false, false);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:witch" | "minecraft:ravager" => {
+                set(&mut tag, "CanJoinRaid", byte(true));
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            _ => return None,
+        }
+        set(&mut tag, "CanJoinRaid", byte(true));
+        let mut own = entity_random(uuid);
+        match kind {
+            "minecraft:pillager" => {
+                if own.next_f32() <= enchant_odds {
+                    let quick_charge = if wave > RAID_GROUPS_NORMAL {
+                        Some(2)
+                    } else if wave > RAID_GROUPS_EASY {
+                        Some(1)
+                    } else {
+                        None
+                    };
+                    if let Some(charge) = quick_charge {
+                        equip(&mut tag, "mainhand", "minecraft:crossbow");
+                        enchant_main_hand(&mut tag, "minecraft:quick_charge", charge);
+                    }
+                }
+            }
+            "minecraft:vindicator" => {
+                let enchanted = own.next_f32() <= enchant_odds;
+                equip(&mut tag, "mainhand", "minecraft:iron_axe");
+                if enchanted {
+                    let sharpness = if wave > RAID_GROUPS_NORMAL { 2 } else { 1 };
+                    enchant_main_hand(&mut tag, "minecraft:sharpness", sharpness);
+                }
+            }
+            _ => {}
+        }
+        set(&mut tag, "OnGround", byte(true));
         Some(tag)
     }
 

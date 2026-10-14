@@ -1138,6 +1138,7 @@ fn update(
             strafe: host_ride.1,
             jumping: host_ride.2,
             swirl: minecraft_survival::swirls::player_swirl(&survival.status, feet, ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0),
+            omens: survival.omens(),
         };
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
@@ -1253,6 +1254,8 @@ fn update(
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
         ui.jump_bar = player.jump_bar.filter(|_| alive);
+        let raid_language = ui.chat.language.clone();
+        crate::minecraft_raids::show_raid_bars(&mut ui, &player.raid_bars, &raid_language, dt as f32);
         let minecraft_survival::player::Player { name: player_name, survival, mode: player_mode, inventory, selected, hand, menus, drop_throttle, arsenal, tags, dimension: player_dimension, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.effects = if alive { mc_effects(&minecraft_survival::views::effect_views(&survival.status)) } else { Vec::new() };

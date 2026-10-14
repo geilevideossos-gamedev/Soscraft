@@ -1158,6 +1158,7 @@ mod tests {
                             strafe: 0.0,
                             jumping: false,
                             swirl: None,
+                            omens: Default::default(),
                         },
                         inventory: &mut minecraftoss_player::inventory::Inventory::default(),
                         selected: 0,

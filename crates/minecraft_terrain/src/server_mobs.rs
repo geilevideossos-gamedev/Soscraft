@@ -966,6 +966,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let mut witch = minecraftoss_entities::witch::Witch::new(pos);
             witch.yaw = yaw;
             witch.persistence_required = persistent;
+            witch.raider = crate::illager_save::read_raider(tag);
             if let Some(health) = health {
                 witch.health = health;
             }
@@ -1505,6 +1506,9 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         map.insert("PersistenceRequired".into(), Tag::Byte(i8::from(persistent)));
         // The UUID gossip about it is kept by.
         map.entry("UUID".into()).or_insert_with(|| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(world.uuid_of(id)).to_vec()));
+        if fields.iter().any(|(key, _)| *key == "Wave") && !fields.iter().any(|(key, _)| *key == "RaidId") {
+            map.remove("RaidId");
+        }
         for (key, value) in fields {
             map.insert(key.to_owned(), value);
         }
@@ -1558,7 +1562,7 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
     }
     for e in world.witches() {
         let w = &e.witch;
-        add(e.id, "minecraft:witch", &w.body, w.yaw, w.health, w.persistence_required, Vec::new());
+        add(e.id, "minecraft:witch", &w.body, w.yaw, w.health, w.persistence_required, crate::illager_save::raider_fields(&w.raider));
     }
     for e in world.ghasts() {
         let g = &e.ghast;
@@ -2805,6 +2809,23 @@ mod tests {
         let mut fresh = EntityWorld::default();
         let back = spawn_saved(&mut fresh, saved).expect("a saved ravager loads");
         assert_eq!(fresh.ravager_mut(back).unwrap().ravager.stunned_tick, 17);
+    }
+
+    #[test]
+    fn a_witch_saves_and_loads_its_raid_and_forgets_a_raid_it_left() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:witch\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,30],Health:26.0f,CanJoinRaid:1b,Wave:4,RaidId:2,PatrolLeader:0b}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("witches load");
+        let raider = world.raiders().into_iter().find(|view| view.id == id).unwrap().raider;
+        assert_eq!((raider.wave, raider.raid_id, raider.can_join_raid), (4, Some(2), true));
+        let originals: std::collections::HashMap<u64, Tag> = [(id, tag.clone())].into_iter().collect();
+        let saved = |world: &EntityWorld| mob_tags_where(world, |_, _| true, &originals, true).into_iter().find(|(i, _)| *i == id).unwrap().1;
+        let kept = saved(&world);
+        assert_eq!((kept.get("Wave"), kept.get("RaidId")), (Some(&Tag::Int(4)), Some(&Tag::Int(2))));
+        world.raider_mut(id).unwrap().raider.raid_id = None;
+        let left = saved(&world);
+        assert_eq!(left.get("RaidId"), None, "a raider out of its raid saves no RaidId");
+        assert_eq!(left.get("CanJoinRaid"), Some(&Tag::Byte(1)));
     }
 
     #[test]

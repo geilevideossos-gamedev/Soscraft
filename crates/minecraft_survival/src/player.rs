@@ -54,6 +54,7 @@ pub struct Player {
     pub time_since_rest: i32,
     pub saved_in_bed: Option<(i32, i32, i32)>,
     pub jump_bar: Option<f32>,
+    pub raid_bars: Vec<minecraft_terrain::raids::RaidBar>,
     pub drop_throttle: crate::creative::DropThrottle,
     pub tags: Vec<String>,
     pub recipe_book: crate::recipe_book::Book,
@@ -135,6 +136,7 @@ impl Player {
             time_since_rest: 0,
             saved_in_bed: None,
             jump_bar: None,
+            raid_bars: Vec::new(),
             drop_throttle: crate::creative::DropThrottle::default(),
             tags: Vec::new(),
             recipe_book: crate::recipe_book::Book::default(),
@@ -284,6 +286,7 @@ impl Player {
                 .sleeping
                 .map(|sleeping| sleeping.head)
                 .or(self.saved_in_bed),
+            raid_omen_position: self.survival.raid_omen_position,
             time_since_rest: Some(self.time_since_rest),
             tags: Some(self.tags.clone()),
             recipe_book: Some(self.recipe_book.saved(&self.inventory)),

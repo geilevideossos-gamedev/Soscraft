@@ -238,6 +238,27 @@ impl Level<'_> {
         members
     }
 
+    pub fn raid_member(&mut self, kind: &str, pos: BlockPos, wave: i32, raid: i32, leader: bool, enchant_odds: f32) -> Option<Tag> {
+        let natural = self.natural_spawning.take()?;
+        let inputs = self.spawn_inputs(&natural.players);
+        let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
+        let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
+        let spawns = natural.spawns.clone();
+        let member = spawns.raid_member(self, &context, kind, pos, wave, raid, leader, enchant_odds);
+        self.natural_spawning = Some(natural);
+        member
+    }
+
+    pub fn raid_spawn_ok(&mut self, pos: BlockPos) -> bool {
+        let Some(natural) = self.natural_spawning.take() else { return false };
+        let spawns = natural.spawns.clone();
+        self.natural_spawning = Some(natural);
+        spawns.raid_spawn_ok(self, pos)
+    }
+
     pub fn spawner_cat(&mut self, pos: BlockPos, persistent: bool) -> Option<Tag> {
         let natural = self.natural_spawning.take()?;
         let spawns = natural.spawns.clone();

@@ -935,6 +935,7 @@ mod tests {
                         strafe: 0.0,
                         jumping: false,
                         swirl: None,
+                        omens: Default::default(),
                     },
                     inventory: &mut *inventory,
                     selected: 0,

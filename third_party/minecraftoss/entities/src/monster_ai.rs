@@ -2433,12 +2433,7 @@ impl Goal<MonsterGoalContext> for RandomLookGoal {
 /// `PatrollingMonster`'s and `Raider`'s goals (none can start outside a
 /// patrol or raid, and none draws), then the witch's own.
 pub fn witch_goals() -> GoalSelector<MonsterGoalContext> {
-    let mut selector = GoalSelector::default();
-    selector.add(4, NeverGoal { controls: &[Control::Move] });
-    selector.add(1, NeverGoal { controls: &[Control::Move] });
-    selector.add(3, NeverGoal { controls: &[Control::Move] });
-    selector.add(4, NeverGoal { controls: &[Control::Move] });
-    selector.add(5, NeverGoal { controls: &[Control::Move] });
+    let mut selector = crate::illager_ai::raider_goals();
     selector.add(1, FloatGoal);
     selector.add(2, RangedAttackGoal { speed: 1.0, interval_min: crate::witch::ATTACK_INTERVAL, interval_max: crate::witch::ATTACK_INTERVAL, radius: crate::witch::ATTACK_RADIUS });
     selector.add(2, StrollGoal { speed: 1.0, probability: 0.001 });

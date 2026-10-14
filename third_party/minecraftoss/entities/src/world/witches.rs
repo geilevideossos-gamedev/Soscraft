@@ -298,8 +298,11 @@ impl EntityWorld {
         let (game_time, difficulty, bright_outside) = (self.game_time, self.difficulty, self.bright_outside);
         let vitals = self.player_vitals.clone();
         let mobs = self.mob_candidates();
+        let raid = self.witches.iter().find(|e| e.id == id).and_then(|e| self.raid_view(e.witch.raider.raid_id));
         let Some(entity) = self.witches.iter_mut().find(|e| e.id == id) else { return };
         entity.ai.state.mobs = mobs;
+        entity.ai.state.illager.raid = raid;
+        entity.ai.state.illager.has_raid = raid.is_some_and(|raid| raid.active);
         entity.previous_position = entity.witch.body.position;
         entity.tick_count += 1;
         base_tick_fluid(&mut entity.witch.body, &*world, entity.tick_count == 1, &mut entity.random, &mut entity.voices, WITCH_SOUNDS);
@@ -341,7 +344,20 @@ impl EntityWorld {
             let yaw = entity.witch.yaw;
             let _ = super::living::dying_travel(&mut entity.witch.body, &*world, yaw, entity.tick_count, &mut entity.random, &mut entity.voices, WITCH_SOUNDS, Some(true));
         } else if !entity.no_ai {
+            entity.ai.state.pois = raid.map(|_| std::mem::take(&mut self.pois));
             thrown = entity.tick_ai(&*world, players, &vitals, game_time, difficulty, bright_outside);
+            if let Some(pois) = entity.ai.state.pois.take() {
+                self.pois = pois;
+            }
+            if std::mem::take(&mut entity.ai.state.illager.reset_idle) {
+                entity.no_action_time = 0;
+            }
+            entity.witch.raider.celebrating = entity.ai.state.illager.celebrating;
+            if std::mem::take(&mut entity.ai.state.illager.celebrate_sound) {
+                let pitch = adult_pitch(&mut entity.random);
+                let position = entity.position();
+                entity.voices.push((Voice::Event("entity.witch.celebrate", 1.0, pitch), position));
+            }
         } else {
             entity.witch.body.trim_small_velocity();
             monster_idle_without_ai(&*world, players, entity.witch.body.position, witch::EYE_HEIGHT, &mut entity.no_action_time);

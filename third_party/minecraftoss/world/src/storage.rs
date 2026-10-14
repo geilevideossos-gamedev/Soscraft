@@ -62,6 +62,10 @@ impl ChunkStorage {
         self.dir.ancestors().nth(4)
     }
 
+    pub fn dimension_dir(&self) -> Option<&Path> {
+        self.dir.parent()
+    }
+
     fn with_region<T>(&self, region: (i32, i32), f: impl FnOnce(&mut RegionFile) -> T) -> Result<T, String> {
         with_region(&self.dir, &self.regions, region, f)
     }

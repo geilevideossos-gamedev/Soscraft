@@ -692,6 +692,7 @@ mod tests {
             player_hurts: Vec::new(),
             spawn_mobs: false,
             controls: Vec::new(),
+            omens: Vec::new(),
         }
     }
 

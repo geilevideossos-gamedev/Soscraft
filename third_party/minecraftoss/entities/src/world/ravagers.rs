@@ -81,7 +81,7 @@ impl RavagerEntity {
         state.patrolling = self.ravager.raider.patrolling;
         state.leader = self.ravager.raider.patrol_leader;
         state.patrol_target = self.ravager.raider.patrol_target;
-        state.has_raid = false;
+        state.has_raid = state.raid.is_some_and(|raid| raid.active);
         state.companions.clear();
     }
 
@@ -452,10 +452,16 @@ impl EntityWorld {
         let villagers = self.illager_villagers();
         let mob_griefing = self.mob_griefing;
         let steered = self.ravager_steered(id);
+        let raid = self
+            .ravagers
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| self.raid_view(e.ravager.raider.raid_id));
         let Some(entity) = self.ravagers.iter_mut().find(|e| e.id == id) else {
             return;
         };
         entity.ai.state.mobs = mobs;
+        entity.ai.state.illager.raid = raid;
         entity.ai.state.mob_griefing = mob_griefing;
         entity.ai.set_steered(steered);
         entity.previous_position = entity.ravager.body.position;
@@ -543,7 +549,23 @@ impl EntityWorld {
                     &mut entity.no_action_time,
                 );
             } else {
+                entity.ai.state.pois = raid.map(|_| std::mem::take(&mut self.pois));
                 strike = entity.tick_ai(&*world, players, &villagers, game_time, difficulty);
+                if let Some(pois) = entity.ai.state.pois.take() {
+                    self.pois = pois;
+                }
+                if std::mem::take(&mut entity.ai.state.illager.reset_idle) {
+                    entity.no_action_time = 0;
+                }
+                entity.ravager.raider.celebrating = entity.ai.state.illager.celebrating;
+                if std::mem::take(&mut entity.ai.state.illager.celebrate_sound) {
+                    let pitch = adult_pitch(&mut entity.random);
+                    let position = entity.position();
+                    entity.voices.push((
+                        Voice::Event("entity.ravager.celebrate", 1.0, pitch),
+                        position,
+                    ));
+                }
             }
             if entity.ravager.health > 0.0 {
                 let has_target = entity.ai.state.target.is_some();

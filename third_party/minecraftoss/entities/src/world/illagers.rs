@@ -112,7 +112,7 @@ impl IllagerEntity {
         state.leader = self.illager.raider.patrol_leader;
         state.johnny = self.illager.johnny;
         state.patrol_target = self.illager.raider.patrol_target;
-        state.has_raid = false;
+        state.has_raid = state.raid.is_some() || state.near_raid;
         state.aggressive = self.illager.aggressive;
         state.charging = self.illager.charging_crossbow;
         state.spell_ticks = self.illager.spell_casting_ticks;
@@ -542,6 +542,15 @@ impl EntityWorld {
         let blue_sheep = self.blue_sheep_near(id);
         let vexes_near = self.vexes_near(id);
         let mob_griefing = self.mob_griefing;
+        let raid = self
+            .illagers
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| self.raid_view(e.illager.raider.raid_id));
+        let near_raid = self.illagers.iter().find(|e| e.id == id).is_some_and(|e| {
+            let here = crate::raid::block_of(e.illager.body.position);
+            crate::raid::nearby_raid(&self.raids, here).is_some()
+        });
         let mut level_random = std::mem::take(&mut self.level_random);
         let Some(entity) = self.illagers.iter_mut().find(|e| e.id == id) else {
             self.level_random = level_random;
@@ -552,6 +561,8 @@ impl EntityWorld {
         entity.ai.state.illager.blue_sheep = blue_sheep;
         entity.ai.state.illager.vexes_near = vexes_near;
         entity.ai.state.mob_griefing = mob_griefing;
+        entity.ai.state.illager.raid = raid;
+        entity.ai.state.illager.near_raid = near_raid;
         entity.previous_position = entity.illager.body.position;
         entity.tick_count += 1;
         base_tick_fluid(
@@ -614,6 +625,7 @@ impl EntityWorld {
             return;
         }
         let (mut shot, mut strike) = (None, None);
+        entity.ai.state.pois = raid.map(|_| std::mem::take(&mut self.pois));
         if entity.illager.health <= 0.0 && !entity.no_ai {
             let yaw = entity.illager.yaw;
             let _ = super::living::dying_travel(
@@ -644,6 +656,19 @@ impl EntityWorld {
                 il::EYE_HEIGHT,
                 &mut entity.no_action_time,
             );
+        }
+        if let Some(pois) = entity.ai.state.pois.take() {
+            self.pois = pois;
+        }
+        entity.illager.raider.celebrating = entity.ai.state.illager.celebrating;
+        if std::mem::take(&mut entity.ai.state.illager.celebrate_sound) {
+            let pitch = adult_pitch(&mut entity.random);
+            if let Some(event) = super::celebrate_sound(entity.illager.kind.type_id()) {
+                let position = entity.position();
+                entity
+                    .voices
+                    .push((Voice::Event(event, 1.0, pitch), position));
+            }
         }
         entity.using_item = entity
             .ai

@@ -38,17 +38,7 @@ pub fn spawn(world: &mut EntityWorld, tag: &Tag, saved: Saved) -> Option<u64> {
     ravager.attack_tick = int(tag, "AttackTick").unwrap_or(0);
     ravager.stunned_tick = int(tag, "StunTick").unwrap_or(0);
     ravager.roar_tick = int(tag, "RoarTick").unwrap_or(0);
-    let raider = &mut ravager.raider;
-    raider.wave = int(tag, "Wave").unwrap_or(0);
-    raider.can_join_raid = flag(tag, "CanJoinRaid");
-    raider.raid_id = int(tag, "RaidId");
-    raider.patrol_target = tag
-        .get("patrol_target")
-        .and_then(Tag::as_ints)
-        .and_then(|ints| <[i32; 3]>::try_from(ints).ok())
-        .map(|[x, y, z]| (x, y, z));
-    raider.patrol_leader = flag(tag, "PatrolLeader");
-    raider.patrolling = flag(tag, "Patrolling");
+    ravager.raider = crate::illager_save::read_raider(tag);
     let id = world.spawn_ravager(ravager, saved.no_ai);
     let entity = world.ravager_mut(id)?;
     entity.random = saved.random;
@@ -60,22 +50,12 @@ pub fn spawn(world: &mut EntityWorld, tag: &Tag, saved: Saved) -> Option<u64> {
 
 pub fn fields(entity: &RavagerEntity) -> Vec<(&'static str, Tag)> {
     let ravager = &entity.ravager;
-    let raider = &ravager.raider;
     let mut fields = vec![
         ("LeftHanded", byte(ravager.left_handed)),
         ("AttackTick", Tag::Int(ravager.attack_tick)),
         ("StunTick", Tag::Int(ravager.stunned_tick)),
         ("RoarTick", Tag::Int(ravager.roar_tick)),
-        ("Wave", Tag::Int(raider.wave)),
-        ("CanJoinRaid", byte(raider.can_join_raid)),
-        ("PatrolLeader", byte(raider.patrol_leader)),
-        ("Patrolling", byte(raider.patrolling)),
     ];
-    if let Some(raid) = raider.raid_id {
-        fields.push(("RaidId", Tag::Int(raid)));
-    }
-    if let Some((x, y, z)) = raider.patrol_target {
-        fields.push(("patrol_target", Tag::IntArray(vec![x, y, z])));
-    }
+    fields.extend(crate::illager_save::raider_fields(&ravager.raider));
     fields
 }
