@@ -1567,7 +1567,7 @@ impl ServerSim {
             return Err(format!("{kind} may not spawn in peaceful"));
         }
         if !self.level.natural_spawning.as_ref().is_none_or(|natural| natural.spawner_blocks_work) {
-            return Err("advMode.notEnabled.spawner".to_owned());
+            return Err(crate::spawn_egg::SPAWNER_DISABLED.to_owned());
         }
         let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2).chunk());
         let tag = chunk.and_then(|chunk| chunk.block_entities.entities.get(&pos));

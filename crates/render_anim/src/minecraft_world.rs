@@ -1242,7 +1242,10 @@ fn update(
                 sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
             }
         }
-        crate::minecraft_players::struck(player, entities, &mut authority.0, local.0, origin, ps, alive, &teleports, sounds, &world.packs);
+        let struck_lines = crate::minecraft_players::struck(player, entities, &mut authority.0, local.0, origin, ps, alive, &teleports, sounds, &world.packs);
+        if !struck_lines.is_empty() {
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, &struck_lines);
+        }
         for item in std::mem::take(&mut entities.broken_items) {
             mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }

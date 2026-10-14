@@ -2560,6 +2560,31 @@ IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:flint_an
 
 After 96d39045. Clippy on `minecraft_terrain` and `minecraft_survival` (tests included, `-A clippy::approx_constant`) flagged one line of this group: `field_reassign_with_default` in `entities::tests::with_pvp_off_a_players_blast_only_pushes_players` (commit 3), now a struct literal. The other warnings in the touched files (`server.rs:649`, `:3263`) are upstream's. No game change, no test steps, no kit.
 
+## Group small-not-vanilla
+
+Segment d6, brief D10 group small-not-vanilla: four small not-vanilla items, one commit each.
+
+### 1. A Minecraft spawner that refuses an egg says so in chat
+
+After 2886e3fa.
+
+- **Vanilla (26.3, javap of `SpawnEggItem.useOn`):** on a spawner block entity, when `ServerLevel.isSpawnerBlockEnabled()` is false, the server calls `ServerPlayer.sendSystemMessage(Component.translatable("advMode.notEnabled.spawner"))` for the player who used the egg (a chat line, not the action bar, no colour) and returns `FAIL`, so the egg is kept. Nobody else sees it.
+- **Changed:**
+  - `minecraft_terrain/src/spawn_egg.rs`: `SPAWNER_DISABLED` (`advMode.notEnabled.spawner`), which `ServerSim::spawner_egg` now returns instead of the literal.
+  - `minecraft_survival/src/entities.rs`: `PlayerOutputs.told` (chat lines for that one player). The egg answers are settled in the new `settle_eggs`; an answer refused with `SPAWNER_DISABLED` adds the translatable system line through `egg_refusal`. The other refusals (no spawner there, a monster in peaceful, an unsimulated mob) stay silent and logged, as vanilla's `canSpawn` failure is.
+  - `render_anim/src/minecraft_players.rs`: `struck` returns that player's `told` lines. The host shows them in its own chat (`minecraft_world.rs`); a friend's go into `Stepped.lines`, which the host sends to that friend only as `ToClient::Chat`.
+- **Tests:** `minecraft_survival`: `entities::tests::a_spawner_that_refuses_an_egg_tells_only_the_player_who_used_it` (the friend's refused egg gives one system line that resolves to the language's text, not an overlay; the friend's hatched egg and the host's "no spawner" answer give none; the refused egg is kept, the hatched one spent). Runs: `minecraft_survival` 748 (+1 world test), `minecraft_terrain` spawner tests 29, `render_anim` 210, all green. `check -p launcher` green.
+- **Decisions:** the line rides the existing per-player chat paths (the host's chat box and the friend's relayed `ToClient::Chat`), so no message or protocol change; `PROTOCOL` stays 6.
+- **Test steps** (two windows, host and friend in the same overworld spot, both in survival):
+  1. Host: `/gamerule spawner_blocks_work false`. Host places a spawner and right-clicks it with the pig egg: the host's chat shows "Spawner blocks are not enabled" (in the game's language) and the egg count stays the same. The friend's chat shows nothing (**235_spawner_refused**, both windows).
+  2. Friend right-clicks the same spawner with the zombie egg: only the friend's chat shows the line, and the friend keeps the egg (**236_spawner_refused_friend**, both windows).
+  3. `/gamerule spawner_blocks_work true`: the pig egg on the spawner now sets a pig in the cage, the egg is spent, and no line appears (**237_spawner_accepts**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner*2,minecraft:pig_spawn_egg*4,minecraft:zombie_spawn_egg*4,minecraft:cooked_beef*16
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2669,6 +2694,7 @@ Group skater-poses changed `SkateReport` (new `pose`) and `StateFrame` (new `ska
 - `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 5): the death lines paragraph gains: "A blast a player caused (their TNT, a crystal they popped, a fireball they sent back) reads '<victim> was blown up by <player>' (with 'using [<name>]' for a custom-named held item), and counts as that player's hit for 'doomed to fall' and 'to escape' lines."
 - `docs/MULTIPLAYER.md` (group tnt, commit 5): next to the `DamageCause::Player` note (line 1427) add: "`DamageCause::PlayerExplosion { client }` is a player's blast (`minecraft:player_explosion`), named the same way."
 - `docs/PROGRESS.md` (group tnt, commit 1): line 57 ("TNT with pvp off (track D): the brief found that TNT hurts nobody today...") becomes: "TNT (track D, group tnt): TNT now hurts players and mobs everywhere, single player too; tell the owner."
+- `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 1): line 441's last sentence ("An egg refused by a spawner because `spawner_blocks_work` is off gives no chat message ...") is removed; line 120 gains: "An egg refused because `spawner_blocks_work` is off tells that player 'Spawner blocks are not enabled' in the chat, like vanilla."
 
 ## Vendored files
 

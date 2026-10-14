@@ -4,6 +4,7 @@ use minecraftoss_player::{Block, Face, Player, Pos, World};
 use std::collections::VecDeque;
 
 pub const SPAWN_EGG_SUFFIX: &str = "_spawn_egg";
+pub const SPAWNER_DISABLED: &str = "advMode.notEnabled.spawner";
 const FALLBACK_WIDTH: f64 = 0.6;
 const EPSILON: f64 = 1.0e-7;
 const SPAWNERS: [&str; 2] = ["minecraft:spawner", "minecraft:trial_spawner"];

@@ -737,7 +737,7 @@ pub(crate) fn struck(
     teleports: &[(PlayerUuid, [f64; 3])],
     sounds: &mut Option<Sounds>,
     packs: &PackStack,
-) {
+) -> Vec<Clientbound> {
     let player_id = u64::from(player.id.0);
     let dimension = player.dimension;
     let outputs = entities.take_player_outputs(player_id);
@@ -937,6 +937,7 @@ pub(crate) fn struck(
     if let Some(bars) = outputs.raid_bars {
         *raid_bars = bars;
     }
+    outputs.told
 }
 
 const RAID_OMEN_SOUND: &str = "minecraft:event.mob_effect.raid_omen";
@@ -1653,7 +1654,7 @@ pub(crate) fn step_friend(
         .death_watch
         .stood(minecraft_survival::death::DeathSpot { feet, eye });
     if let Some(entities) = entities.as_mut() {
-        struck(
+        stepped.lines.extend(struck(
             player,
             entities,
             world.authority,
@@ -1664,7 +1665,7 @@ pub(crate) fn step_friend(
             &[],
             &mut sounds,
             world.packs,
-        );
+        ));
         let found = entities.take_experience(u64::from(player.id.0));
         let chime = player.survival.gain_experience(found);
         if let Some(sounds) = sounds.as_mut() {

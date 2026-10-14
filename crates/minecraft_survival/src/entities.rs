@@ -183,6 +183,7 @@ pub struct PlayerOutputs {
     pub raid_heroes: Vec<i32>,
     pub raid_horns: Vec<DVec3>,
     pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
+    pub told: Vec<minecraft_commands::Clientbound>,
 }
 
 #[derive(Default)]
@@ -224,6 +225,23 @@ fn apply_merchant_answer(inventory: &mut Inventory, update: &minecraft_terrain::
         }
     }
     inventory.cursor = update.cursor.clone();
+}
+
+fn settle_eggs(queue: &mut PlayerQueue, inventory: &mut Inventory) {
+    for summoned in std::mem::take(&mut queue.egg_answers) {
+        let egg = queue.eggs_waiting.answer(inventory, summoned.is_ok());
+        if let (Some(egg), Err(error)) = (egg, summoned) {
+            queue.out.told.extend(egg_refusal(&error));
+            diag::warn!(World, "Minecraft {egg} hatched nothing: {error}");
+        }
+    }
+}
+
+fn egg_refusal(error: &str) -> Option<minecraft_commands::Clientbound> {
+    (error == minecraft_terrain::spawn_egg::SPAWNER_DISABLED).then(|| minecraft_commands::Clientbound::System {
+        text: minecraft_commands::Text::translate(error, Vec::new()),
+        overlay: false,
+    })
 }
 
 fn settle_merchant_news(queue: &mut PlayerQueue, inventory: &mut Inventory) {
@@ -1656,12 +1674,7 @@ impl Entities {
             let Some(queue) = self.players.0.get_mut(&actor.id) else {
                 continue;
             };
-            for summoned in std::mem::take(&mut queue.egg_answers) {
-                let egg = queue.eggs_waiting.answer(actor.inventory, summoned.is_ok());
-                if let (Some(egg), Err(error)) = (egg, summoned) {
-                    diag::warn!(World, "Minecraft {egg} hatched nothing: {error}");
-                }
-            }
+            settle_eggs(queue, actor.inventory);
             for slots in std::mem::take(&mut queue.mob_slots) {
                 for (slot, stack) in slots {
                     if let Some(held) = actor.inventory.slots.get_mut(slot) {
@@ -3228,5 +3241,35 @@ mod tests {
         assert_eq!(kept, all, "pvp on");
         unharmed_by_potions_without_pvp(&mut kept, false, is_player);
         assert_eq!(kept, vec![hit(FRIEND, harm(Some(77))), hit(FRIEND, harm(None)), hit(HOST, poison)], "a witch's potion and a poison still land");
+    }
+
+    #[test]
+    fn a_spawner_that_refuses_an_egg_tells_only_the_player_who_used_it() {
+        let mut queues = two_queues();
+        let mut host = Inventory::default();
+        let mut friend = Inventory::default();
+        host.slots[0] = Some(ItemStack::new("minecraft:pig_spawn_egg", 2));
+        friend.slots[0] = Some(ItemStack::new("minecraft:zombie_spawn_egg", 3));
+        assert!(queues.queue(HOST).eggs_waiting.send_from(&host, 0, true));
+        assert!(queues.queue(FRIEND).eggs_waiting.send_from(&friend, 0, true));
+        assert!(queues.queue(FRIEND).eggs_waiting.send_from(&friend, 0, true));
+        let mut output = minecraft_terrain::server::Output::default();
+        output.summoned.push((FRIEND, Err(minecraft_terrain::spawn_egg::SPAWNER_DISABLED.to_owned())));
+        output.summoned.push((HOST, Err("no monster spawner at (4, 205, 4)".to_owned())));
+        output.summoned.push((FRIEND, Ok("minecraft:zombie".to_owned())));
+        queues.route(&mut output, 2, |_| None);
+        settle_eggs(queues.queue(HOST), &mut host);
+        settle_eggs(queues.queue(FRIEND), &mut friend);
+        let told = std::mem::take(&mut queues.queue(FRIEND).out.told);
+        assert_eq!(told.len(), 1, "one line for the refused egg, none for the hatched one");
+        let minecraft_commands::Clientbound::System { text, overlay } = &told[0] else {
+            panic!("a system line");
+        };
+        assert!(!overlay, "vanilla's sendSystemMessage goes to the chat");
+        let language = std::collections::HashMap::from([("advMode.notEnabled.spawner".to_owned(), "Spawner blocks are not enabled".to_owned())]);
+        assert_eq!(text.resolve(&|key| language.get(key).cloned()).text, "Spawner blocks are not enabled");
+        assert!(queues.queue(HOST).out.told.is_empty(), "another refusal says nothing in the chat");
+        assert_eq!(host.slots[0].as_ref().map(|egg| egg.count), Some(2), "a refused egg is kept");
+        assert_eq!(friend.slots[0].as_ref().map(|egg| egg.count), Some(2), "only the hatched egg is spent");
     }
 }
