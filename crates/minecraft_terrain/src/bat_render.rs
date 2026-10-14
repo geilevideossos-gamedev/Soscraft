@@ -5,12 +5,14 @@
 use crate::{
     client_mobs::ClientMobs,
     cow_render::cube_tinted_pose,
+    keyframes::{self, AnimationState, Definition, Interpolation, Keyframe, Moved, Target},
     lighting::SkyLight,
     mesh::{Atlas, ChunkMesh},
     pack::ResourceId,
 };
 use glam::{EulerRot, Quat, Vec3};
 use minecraftoss_entities::world::BatEntity;
+use std::sync::LazyLock;
 
 /// A part's placement: its rotation and origin (model pixels) in the
 /// model's frame.
@@ -90,46 +92,41 @@ const FLYING: Animation = &[
     (Bone::LeftWingTip, &[], &[(0.0, [0.0, -10.5, 0.0]), (0.0417, [0.0, -65.5, 0.0]), (0.2083, [0.0, 135.0, 0.0]), (0.5, [0.0, -10.5, 0.0])]),
 ];
 
-/// Both animations last half a second and loop.
 const LENGTH: f32 = 0.5;
 
-/// `KeyframeAnimation.Entry.apply` with `LINEAR` keyframes: the keyframe
-/// pair around `t` (`Mth.binarySearch`) and JOML's unfused lerp between
-/// their values, each first scaled per axis as its `Keyframe` was built
-/// (`posVec` negates y; `degreeVec` turns degrees to radians).
-fn sample(keys: Channel, t: f32, scale: Vec3) -> Vec3 {
-    let (mut from, mut len) = (0usize, keys.len());
-    while len > 0 {
-        let half = len / 2;
-        if t <= keys[from + half].0 {
-            len = half;
-        } else {
-            from += half + 1;
-            len -= half + 1;
+impl Bone {
+    const ALL: [Bone; 7] = [Bone::Head, Bone::Body, Bone::Feet, Bone::RightWing, Bone::RightWingTip, Bone::LeftWing, Bone::LeftWingTip];
+
+    fn name(self) -> &'static str {
+        match self {
+            Bone::Head => "head",
+            Bone::Body => "body",
+            Bone::Feet => "feet",
+            Bone::RightWing => "right_wing",
+            Bone::RightWingTip => "right_wing_tip",
+            Bone::LeftWing => "left_wing",
+            Bone::LeftWingTip => "left_wing_tip",
         }
     }
-    let prev = from.saturating_sub(1);
-    let next = (prev + 1).min(keys.len() - 1);
-    let alpha = if next != prev { ((t - keys[prev].0) / (keys[next].0 - keys[prev].0)).clamp(0.0, 1.0) } else { 0.0 };
-    let (a, b) = (Vec3::from_array(keys[prev].1) * scale, Vec3::from_array(keys[next].1) * scale);
-    (b - a) * alpha + a
 }
 
-/// `KeyframeAnimation.apply` for an animation started at `start`: each
-/// bone's (position, rotation) offsets, positions in model pixels (y
-/// negated as `posVec` does), rotations in radians.
-fn offsets(animation: Animation, start: i32, age_in_ticks: f32) -> impl Iterator<Item = (Bone, Vec3, Vec3)> {
-    // `AnimationState.getTimeInMillis`, then seconds, looped.
-    let millis = ((age_in_ticks - start as f32) * 50.0) as i64;
-    let t = (millis as f32 / 1000.0) % LENGTH;
-    // `(float) (Math.PI / 180.0)`.
-    let radians = Vec3::splat(std::f32::consts::PI / 180.0);
-    animation.iter().map(move |&(bone, position, rotation)| {
-        let p = if position.is_empty() { Vec3::ZERO } else { sample(position, t, Vec3::new(1.0, -1.0, 1.0)) };
-        let r = if rotation.is_empty() { Vec3::ZERO } else { sample(rotation, t, radians) };
-        (bone, p, r)
-    })
+fn definition(animation: Animation) -> Definition {
+    let keys = |channel: Channel, vec: fn(f32, f32, f32) -> Vec3| -> Vec<Keyframe> {
+        channel.iter().map(|&(t, [x, y, z])| Keyframe::new(t, vec(x, y, z), Interpolation::Linear)).collect()
+    };
+    let mut definition = Definition::new(LENGTH, true);
+    for &(bone, position, rotation) in animation {
+        if !rotation.is_empty() {
+            definition.add(bone.name(), keyframes::Channel::new(Target::Rotation, keys(rotation, keyframes::degree_vec)));
+        }
+        if !position.is_empty() {
+            definition.add(bone.name(), keyframes::Channel::new(Target::Position, keys(position, keyframes::pos_vec)));
+        }
+    }
+    definition
 }
+
+static ANIMATIONS: LazyLock<[Definition; 2]> = LazyLock::new(|| [definition(RESTING), definition(FLYING)]);
 
 /// A part's box and texture offset.
 type Cube = ([f32; 3], [f32; 3], [f32; 2]);
@@ -160,11 +157,14 @@ pub fn append_bats<'a>(
         if mob.resting {
             moved[index(Bone::Head)].1.y = mob.head_yaw * (std::f32::consts::PI / 180.0);
         }
-        let running = if mob.resting { mob.rest_start.map(|s| (RESTING, s)) } else { mob.fly_start.map(|s| (FLYING, s)) };
+        let running = if mob.resting { mob.rest_start.map(|s| (&ANIMATIONS[0], s)) } else { mob.fly_start.map(|s| (&ANIMATIONS[1], s)) };
         if let Some((animation, start)) = running {
-            for (bone, p, r) in offsets(animation, start, mob.age_in_ticks) {
-                moved[index(bone)].0 += p;
-                moved[index(bone)].1 += r;
+            let mut offsets = Moved::default();
+            animation.apply_state(AnimationState::started(start), mob.age_in_ticks, 1.0, &mut offsets);
+            for bone in Bone::ALL {
+                let offset = offsets.get(bone.name());
+                moved[index(bone)].0 += offset.position;
+                moved[index(bone)].1 += offset.rotation;
             }
         }
         let part = |parent: Pose, bone: Option<Bone>, pivot: [f32; 3]| {
@@ -197,15 +197,48 @@ pub fn append_bats<'a>(
 mod tests {
     use super::*;
 
+    fn flying_at(start: i32, age_in_ticks: f32) -> Moved {
+        let mut moved = Moved::default();
+        ANIMATIONS[1].apply_state(AnimationState::started(start), age_in_ticks, 1.0, &mut moved);
+        moved
+    }
+
     #[test]
     fn keyframes_interpolate_linearly_between_their_pair() {
-        let keys: Channel = &[(0.0, [0.0, 0.0, 0.0]), (0.125, [20.0, 0.0, 0.0]), (0.5, [0.0, 0.0, 0.0])];
-        let one = Vec3::ONE;
-        assert_eq!(sample(keys, 0.0, one).x, 0.0);
-        assert_eq!(sample(keys, 0.0625, one).x, 10.0);
-        assert_eq!(sample(keys, 0.125, one).x, 20.0);
-        assert_eq!(sample(keys, 0.3125, one).x, 10.0);
-        // A lone keyframe holds.
-        assert_eq!(sample(&[(0.0, [180.0, 0.0, 0.0])], 0.3, one).x, 180.0);
+        let degrees = |moved: &Moved, bone: Bone| moved.get(bone.name()).rotation.x / keyframes::DEGREES;
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert_eq!(degrees(&flying_at(0, 0.0), Bone::Head), 0.0);
+        assert!(close(degrees(&flying_at(0, 1.0), Bone::Head), 8.0));
+        assert!(close(degrees(&flying_at(0, 2.5), Bone::Head), 20.0));
+        assert!(close(degrees(&flying_at(10, 11.0), Bone::Head), 8.0));
+        assert!(close(degrees(&flying_at(0, 5.0), Bone::Head), 40.0 / 3.0));
+        assert_eq!(degrees(&flying_at(0, 10.0), Bone::Head), 0.0);
+        assert_eq!(flying_at(0, 2.5).get(Bone::Head.name()).position, Vec3::new(0.0, -2.0, 0.0));
+        let mut resting = Moved::default();
+        ANIMATIONS[0].apply_state(AnimationState::started(0), 6.0, 1.0, &mut resting);
+        assert_eq!(resting.get(Bone::Head.name()).rotation.x, 180.0 * keyframes::DEGREES);
+        assert_eq!(resting.get(Bone::RightWingTip.name()).rotation.y, -120.0 * keyframes::DEGREES);
+    }
+
+    #[test]
+    fn the_bat_tables_match_the_jar() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let bat = keyframes::read_from_jar(&jar, "BatAnimation").unwrap();
+        for (field, ours) in [("BAT_RESTING", &ANIMATIONS[0]), ("BAT_FLYING", &ANIMATIONS[1])] {
+            let theirs = bat.get(field).unwrap();
+            assert_eq!((theirs.length, theirs.looping), (ours.length, ours.looping), "{field}");
+            assert_eq!(theirs.channel_count(), ours.channel_count(), "{field}");
+            for (bone, channels) in &theirs.bones {
+                for channel in channels {
+                    assert_eq!(ours.channel(bone, channel.target), Some(channel), "{field} {bone} {:?}", channel.target);
+                }
+            }
+        }
     }
 }

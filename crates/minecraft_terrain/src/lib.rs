@@ -15,6 +15,7 @@ pub mod block_particles;
 #[cfg(test)]
 mod test_dir;
 pub mod class_file;
+pub mod keyframes;
 pub mod clouds;
 pub mod creative_search;
 pub mod recipe_book;
