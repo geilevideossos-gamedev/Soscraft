@@ -1272,6 +1272,34 @@ After bd2521c7.
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword,minecraft:torch*64,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:ladder*64,minecraft:water_bucket,minecraft:potion@night_vision,minecraft:potion@night_vision
 ```
 
+### 2. Minecraft ancient cities generate with sculk shriekers and loot chests
+
+After 7f709c62.
+
+- **What it checks:** this commit is a test only.
+  - `/locate` finds the nearest `minecraft:ancient_city` start from (0, -51, 0) on seed 77, and the test generates every chunk of its bounding box.
+  - The start piece (the city centre) stands in `minecraft:deep_dark`, read with the zoomed biome from commit 1.
+  - The chunks hold `reinforced_deepslate` (the portal frame), `sculk_shrieker` (at least one with `can_summon=true`), `sculk_catalyst`, `sculk_sensor`, `deepslate_bricks` and chests, and no `structure_block` data markers.
+  - At least 10 chests inside the city's pieces carry a loot table, every one `minecraft:chests/ancient_city` or `minecraft:chests/ancient_city_ice_box`, and each rolls non-empty loot through the core engine.
+  - The city near (-2500, -50, -1050) on seed 77 also has a chest whose template holds a fixed golden apple and no loot table. Simple dungeon chests inside its bounding box are left out, because they are not in a city piece.
+- **Changed:** `crates/minecraft_terrain/src/terrain.rs`, the test only.
+- **Tests:** `terrain::tests::ancient_cities_generate_in_the_deep_dark_with_sculk_shriekers_and_loot_chests` (gated on `MINECRAFTOSS_ROOT` and the block entity catalog; about 8 s).
+- **Decisions:**
+  - Commit 1's functions change what new chests roll. Older chests behave as follows:
+    - A chest that rolled nothing before (a function was missing) was never filled and keeps its `LootTable`, so it fills the first time it is opened in this build. The exception is a chest the player put an item into: it was saved with `Items` and no loot table.
+    - A chest already filled stays as it was saved.
+  - Shipwreck supply and treasure chests, buried treasure, ancient cities, bastions, trial chambers and pillager outposts now roll.
+  - Desert pyramids already rolled; their table needs only `set_count` and `enchant_randomly`.
+  - Shipwreck map chests and ocean ruins still roll nothing until explorer maps land.
+- **Test steps (survival, night vision on):**
+  1. `/locate structure minecraft:ancient_city`, `/tp` there, and open chests in different rooms. They hold loot (commit 1's step 1, **111_ancient_city_chests**).
+  2. The city's centre has the reinforced deepslate portal frame, and sculk shriekers, sensors and catalysts stand around the city. Do not trigger the shriekers yet; their behaviour comes with groups `vibrations` and `shriekers-catalysts` (**116_ancient_city_sculk**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword,minecraft:torch*64,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:ladder*64,minecraft:water_bucket,minecraft:potion@night_vision,minecraft:potion@night_vision
+```
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.
@@ -1304,6 +1332,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_swor
 - `docs/MINECRAFT-SURVIVAL.md`: players build iron golems like vanilla: a carved pumpkin or jack o'lantern set on a T of four iron blocks (with air under the arms and beside the head) turns the five blocks into an iron golem, in any of the 24 orientations (upright facing any way, or lying down). The blocks break with their particles and sounds. A built golem is player-made and never attacks players. A piston pushing the pumpkin into place builds one too; a dispenser does not place the pumpkin yet.
 - `docs/MINECRAFT-SURVIVAL.md`: snow golems are live mobs. Two snow blocks under a carved pumpkin or jack o'lantern (upright or lying down, any facing) turn into a snow golem; the snow golem egg hatches one. It strolls, looks at players, and throws a snowball every second at the nearest monster in sight within 10 blocks (creepers too): snowballs knock monsters back without harm (3 damage to blazes) and make them turn on the golem; players are not affected. Water and rain hurt it, it melts in warm biomes (the `gameplay/snow_golem_melts` attribute: deserts, savannas, badlands, the Nether), and while `mob_griefing` is on it leaves snow layers wherever snow can lie. Shears take off its pumpkin (it drops as an item), a lead ties it, it never despawns, and its pumpkin and health are saved. Friends see it, its pumpkin and its snowballs, and shear and shoot it the same way. A dispenser cannot finish a golem with a pumpkin yet.
 - `docs/MINECRAFT-SURVIVAL.md` line 435 ("Structure chests whose loot tables use a function not ported yet roll nothing ...") becomes: "Structure chests roll every 26.3 loot function except `exploration_map`: worn gear (`set_damage`), potions, suspicious stews, ominous bottle levels, fixed enchantments, armour trims, names, goat horns and biome-only items (`location_check`). The chests with explorer maps (abandoned camps, shipwreck map chests and ocean ruins) still roll nothing." The structure loot sentence at line 108 gains: "ancient city, trial chamber, bastion, shipwreck supply and pillager outpost chests roll too".
+- `docs/MINECRAFT-SURVIVAL.md`: ancient cities generate in the deep dark with their reinforced deepslate portal frame, sculk shriekers (`can_summon=true`), sensors and catalysts, and their chests (and the kitchen's ice box) roll vanilla loot. The sculk blocks do not react yet (groups `vibrations` and `shriekers-catalysts`).
 
 ## Vendored files
 

@@ -2689,6 +2689,74 @@ mod tests {
     }
 
     #[test]
+    fn ancient_cities_generate_in_the_deep_dark_with_sculk_shriekers_and_loot_chests() {
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Overworld, None, Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + std::time::Duration::from_secs(300);
+        let at = match crate::locate::nearest_structure(&gen, &["minecraft:ancient_city".to_owned()], [0, -51, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no ancient city near the origin of seed 77: {other:?}"),
+        };
+        let city = gen.structures.id("minecraft:ancient_city").expect("the ancient city structure");
+        let chunk = minecraftoss_core::ChunkPos::new(at[0] >> 4, at[2] >> 4);
+        let start = gen.structures.starts_in(&gen.library, &gen.terrain, chunk).iter().find(|start| start.structure == city).cloned().expect("the located chunk starts a city");
+        let bbox = start.bounding_box();
+        let mut chunks = Vec::new();
+        for cx in (bbox.min_x >> 4)..=(bbox.max_x >> 4) {
+            for cz in (bbox.min_z >> 4)..=(bbox.max_z >> 4) {
+                chunks.push(stream.load_chunk_now(minecraftoss_core::ChunkPos::new(cx, cz)));
+            }
+        }
+        let center = start.pieces.lock().unwrap()[0].base().bbox;
+        let middle = (center.center().x, center.min_y + 1, center.center().z);
+        let biome = stream.states.biome_name(middle, |pos| chunks.iter().find(|chunk| (chunk.pos.x, chunk.pos.z) == pos).map(|chunk| &**chunk));
+        assert_eq!(biome, "minecraft:deep_dark", "the city at {middle:?} stands in the deep dark");
+        let mut counts = HashMap::new();
+        let blocks = &registries.blocks;
+        let mut summoning = 0;
+        for chunk in &chunks {
+            count_blocks(&registries, chunk, &mut counts);
+            let min_y = chunk.min_section_y() * 16;
+            for y in min_y..min_y + chunk.sections().len() as i32 * 16 {
+                for z in 0..16usize {
+                    for x in 0..16usize {
+                        let state = chunk.block(x, y, z);
+                        if blocks.block(blocks.block_of(state)).name.as_str() == "minecraft:sculk_shrieker" && blocks.property(state, "can_summon") == Some("true") {
+                            summoning += 1;
+                        }
+                    }
+                }
+            }
+        }
+        for name in ["minecraft:reinforced_deepslate", "minecraft:sculk_shrieker", "minecraft:sculk_catalyst", "minecraft:sculk_sensor", "minecraft:deepslate_bricks", "minecraft:chest"] {
+            assert!(count(&counts, name) > 0, "no {name} in the city: {counts:?}");
+        }
+        assert!(summoning > 0, "the city's shriekers can summon a warden");
+        assert_eq!(count(&counts, "minecraft:structure_block"), 0, "the data markers are removed");
+        let pieces: Vec<_> = start.pieces.lock().unwrap().iter().map(|piece| piece.base().bbox).collect();
+        let in_city = |(x, y, z): (i32, i32, i32)| pieces.iter().any(|bbox| bbox.is_inside(minecraftoss_core::BlockPos::new(x, y, z)));
+        let chests: Vec<((i32, i32, i32), Tag)> = block_entity_tags(&chunks).into_iter().filter(|(pos, tag)| in_city(*pos) && tag.get("id").and_then(Tag::as_str) == Some("minecraft:chest")).collect();
+        let tables: Vec<&str> = chests.iter().filter_map(|(_, tag)| tag.get("LootTable").and_then(Tag::as_str)).collect();
+        assert!(tables.len() >= 10, "a city holds many loot chests: {chests:?}");
+        assert!(tables.iter().all(|table| matches!(*table, "minecraft:chests/ancient_city" | "minecraft:chests/ancient_city_ice_box")), "{tables:?}");
+        assert!(tables.contains(&"minecraft:chests/ancient_city"), "{tables:?}");
+        for table in tables {
+            let mut sequences = minecraftoss_core::loot::RandomSequences::new(77);
+            let mut random = minecraftoss_core::random::LegacyRandom::new(5);
+            let params = minecraftoss_core::loot::LootParams { origin: Some([0.5, -40.5, 0.5]), biome: Some(biome.clone()), ..Default::default() };
+            let loot = registries.loot.roll(&registries, table, &params, &mut sequences, &mut random).unwrap_or_else(|e| panic!("{table}: {e}"));
+            assert!(!loot.is_empty(), "{table} rolls loot");
+        }
+    }
+
+    #[test]
     fn the_outer_end_islands_generate_beyond_the_main_island() {
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };
