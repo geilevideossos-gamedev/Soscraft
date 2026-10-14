@@ -2656,6 +2656,26 @@ IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*4,minecraft:ghast_spawn_egg*2,mine
 IW4L_MINECRAFT_KIT=minecraft:spawner*2,minecraft:pig_spawn_egg*4,minecraft:zombie_spawn_egg*4,minecraft:enchanting_table,minecraft:lapis_lazuli*32,minecraft:experience_bottle*32,minecraft:iron_sword,minecraft:book*4,iw4l:m4,iw4l:rifle_ammo*64,minecraft:white_bed,minecraft:red_bed,minecraft:hoglin_spawn_egg*4,minecraft:ghast_spawn_egg*2,minecraft:blaze_spawn_egg*2,minecraft:piglin_spawn_egg*2,minecraft:netherrack*64,minecraft:shield,minecraft:cooked_beef*16
 ```
 
+## Review (d6)
+
+Adversarial review of the groups friend-hand to small-not-vanilla (`r9-d6-base..99e46d92`).
+
+### 1. A client in an MW2 match cannot start a board its host never moves
+
+After 99e46d92.
+
+- **Found:** group friend-skating (`0a36201a`) let `skate::update` run on any client with a `ClientPredictionState`, so it no longer returned early without an `AuthorityWorld`. Skating also works on MW2 maps, so a client in an upstream MW2 match (two players over the relay, no Minecraft world) with skating on could press J: its own prediction took the board's place, while the MW2 host, which has no skater handling, kept the client where it stood. The two disagreed until the board was picked up. Before the group the key did nothing on such a client.
+- **Changed:** `render_anim/src/skate.rs`: a client skates on its own prediction only while a Minecraft world is loaded (`MinecraftWorldView.active`, the friend's streamed world). Anywhere else a client picks up a board it still has (left over from a Minecraft session) and returns. The host and single player still skate on their `AuthorityWorld` as before.
+- **Tests:** `render_anim`: `skate::tests::only_a_minecraft_friend_skates_on_its_own_prediction`. `check -p launcher` green.
+- **Test steps:**
+  1. MW2 match through the relay (not a Minecraft world), skating on in Options > Controls > Minecraft on the client. Client: press J. No board appears, the client keeps walking normally and the host sees it where the client sees itself (**248_mw2_client_no_board**, both windows).
+  2. Minecraft world with a friend: friend presses J on flat ground. The friend skates as in group friend-skating (**249_friend_still_skates**, both windows).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cooked_beef*16
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).

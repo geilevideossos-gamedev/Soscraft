@@ -65,6 +65,10 @@ fn teleported(last: Option<u32>, now: u32) -> bool {
     last.is_some_and(|last| last != now)
 }
 
+fn friend_skates(authority: bool, minecraft_world: bool) -> bool {
+    !authority && minecraft_world
+}
+
 pub(crate) trait SkateBody {
     fn set_external_motion(&mut self, client: sim::ClientId, enabled: bool);
     fn set_origin(&mut self, client: sim::ClientId, origin: [f32; 3]);
@@ -439,7 +443,7 @@ fn update(
     local: Res<net::LocalPresentClient>,
     presented: Res<net::PresentedSnapshot>,
     clip: Res<crate::DynEntPhysClip>,
-    (mut authority, mut prediction): (Option<ResMut<net::AuthorityWorld>>, Option<ResMut<net::ClientPredictionState>>),
+    (mut authority, mut prediction, world_view): (Option<ResMut<net::AuthorityWorld>>, Option<ResMut<net::ClientPredictionState>>, Option<Res<crate::minecraft_world::MinecraftWorldView>>),
     mut mode: ResMut<SkateMode>,
     mut host: ResMut<Host>,
     (gamepads, active): (Query<&bevy::input::gamepad::Gamepad>, Option<Res<frame::ActivePad>>),
@@ -447,9 +451,16 @@ fn update(
     settings: Option<Res<frame::GameSettings>>,
     (keys, mouse_buttons, motion, devices): KeyboardInput<'_>,
 ) {
+    let minecraft_world = world_view.as_deref().is_some_and(|view| view.active);
     let authority: &mut dyn SkateBody = match (authority.as_deref_mut(), prediction.as_deref_mut()) {
         (Some(authority), _) => authority,
-        (None, Some(prediction)) => prediction,
+        (None, Some(prediction)) if friend_skates(false, minecraft_world) => prediction,
+        (None, Some(prediction)) => {
+            if mode.active || host.enter_requested || host.activating {
+                stop(&mut host, &mut mode, prediction);
+            }
+            return;
+        }
         (None, None) => return,
     };
     if let Some(bit) = authority.e_flags(local.0, &presented).map(|flags| flags & playerstate_iw4::eflags::TELEPORT)
@@ -820,6 +831,13 @@ fn keyboard_frame(keys: KeySample, mouse: [f32; 2], state: &mut FlickState, dt: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_minecraft_friend_skates_on_its_own_prediction() {
+        assert!(friend_skates(false, true), "a friend in a Minecraft world");
+        assert!(!friend_skates(false, false), "a client in an MW2 match has no skating host");
+        assert!(!friend_skates(true, true), "the host skates on its own authority");
+    }
 
     #[test]
     fn a_toggle_is_refused_while_skating_is_off_or_its_data_is_missing() {
