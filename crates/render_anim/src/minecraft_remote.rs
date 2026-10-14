@@ -173,6 +173,7 @@ pub(crate) struct Friend {
     activation: crate::minecraft_hand::ItemActivation,
     activation_tick: u64,
     recipe_book: crate::minecraft_recipe_book::FriendBook,
+    use_clock: crate::minecraft_hand::UseClock,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -517,7 +518,6 @@ pub(crate) fn friend(
     let shown_ui = (
         ui.boss_bars.iter().any(|bar| bar.world_fog),
         ui.credits.is_some(),
-        ui_draw.as_deref().is_none_or(|draw| draw.0),
     );
     present(
         friend,
@@ -595,6 +595,14 @@ pub(crate) fn friend(
             }
         }
     }
+    let gate = HandGate {
+        skating: skate.active,
+        detached: mc_detached,
+        asleep: sleepers.camera.is_some(),
+        ui_shown: ui_draw.as_deref().is_none_or(|draw| draw.0),
+        alive: player.is_some_and(|ps| ps.pm_type == 0),
+    };
+    show_hand(friend, &mut view, &mut ui, player.as_ref(), gate, aspect);
     ui.loading_world = friend.holding(now_ms);
     if friend.switch_screen.is_some() && !friend.spawn_gate.holding(now_ms) {
         friend.switch_screen = None;
@@ -1328,7 +1336,7 @@ fn present(
     player: Option<&playerstate_iw4::PlayerState>,
     drawn_from: Option<&Transform>,
     aspect: f32,
-    (dt, (world_fog, credits, ui_shown)): (f64, (bool, bool, bool)),
+    (dt, (world_fog, credits)): (f64, (bool, bool)),
     now_ms: u64,
 ) {
     let Friend {
@@ -1351,8 +1359,6 @@ fn present(
         sounds,
         dimension,
         switch_screen,
-        activation,
-        activation_tick,
         ..
     } = friend
     else {
@@ -1588,22 +1594,117 @@ fn present(
         ),
         (sounds.as_mut(), mining, weather[0]),
     );
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct HandGate {
+    skating: bool,
+    detached: bool,
+    asleep: bool,
+    ui_shown: bool,
+    alive: bool,
+}
+
+impl HandGate {
+    fn items(self) -> bool {
+        self.alive && self.ui_shown && !self.skating && !self.detached && !self.asleep
+    }
+
+    fn activation(self) -> bool {
+        self.ui_shown && !self.asleep
+    }
+}
+
+fn show_hand(
+    friend: &mut Friend,
+    view: &mut MinecraftWorldView,
+    ui: &mut frame::MinecraftUi,
+    ps: Option<&playerstate_iw4::PlayerState>,
+    gate: HandGate,
+    aspect: f32,
+) {
+    view.hand = Default::default();
+    let Friend {
+        prepared: Some(prepared),
+        remote: Some(remote),
+        light: Some(light),
+        selection,
+        inventory_ui,
+        activation,
+        activation_tick,
+        use_clock,
+        ..
+    } = friend
+    else {
+        ui.hand_swing = 0.0;
+        ui.offhand_busy = false;
+        return;
+    };
+    let (Some(level), Some(player)) = (remote.level.as_mut(), remote.player.as_ref()) else {
+        ui.hand_swing = 0.0;
+        ui.offhand_busy = false;
+        return;
+    };
     let now = level.view.ticks();
     let ticks = now.saturating_sub(*activation_tick);
     *activation_tick = now;
     activation.tick(u32::try_from(ticks).unwrap_or(u32::MAX));
+    let partial = level.view.partial();
     let pose = activation
-        .pose(level.view.partial(), aspect)
-        .filter(|_| ui_shown);
-    view.hand = Default::default();
-    if let Some(pose) = pose {
-        let mut mesh = minecraft_terrain::mesh::ChunkMesh::default();
-        let light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
-        let look = (&prepared.look.packs, &*prepared.look.atlas, &*light);
-        crate::minecraft_hand::append_totem(&mut mesh, &mut level.view, pose, light_at, look);
-        let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
-        view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
-        view.hand_clip = crate::minecraft_hand::hand_clip(aspect);
+        .pose(partial, aspect)
+        .filter(|_| gate.activation());
+    let using = use_clock.follow(player.using, now, selection.slot);
+    let alive = gate.alive && ui.active;
+    ui.offhand_busy = alive && using.is_some();
+    ui.hand_swing = 0.0;
+    let recipes = &prepared.recipes;
+    let stack_in = |slot: usize| {
+        player
+            .slots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .and_then(|nbt| view_stack(nbt, recipes))
+    };
+    let items = gate.items() && alive;
+    let main = stack_in(selection.slot).filter(|_| items && ui.holding_item);
+    let offhand = stack_in(minecraft_survival::offhand::OFFHAND)
+        .filter(|_| items && (ui.holding_item || ui.offhand_busy));
+    let held = crate::minecraft_hand::Held {
+        main: main.as_ref().map(|stack| (selection.slot, stack)),
+        offhand: offhand.as_ref(),
+        swing: 0.0,
+        swing_offhand: false,
+        using,
+        partial,
+        activation: pose,
+    };
+    let eye = match ps {
+        Some(ps) => sim::voxel::to_block(
+            level.origin,
+            [
+                ps.origin[0],
+                ps.origin[1],
+                ps.origin[2] + ps.view_height_current,
+            ],
+        ),
+        None => [
+            level.feet[0],
+            level.feet[1] + SPAWN_EYE_HEIGHT,
+            level.feet[2],
+        ],
+    };
+    let light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
+    let look = (
+        &prepared.look.packs,
+        &*prepared.look.atlas,
+        &*light,
+        &inventory_ui.dials,
+    );
+    let mesh =
+        crate::minecraft_hand::held_hand_mesh(&held, &mut level.view, look, light_at, aspect);
+    if let Some((vertices, indices, clip)) = mesh {
+        view.hand = (vertices, indices);
+        view.hand_clip = clip;
     }
 }
 
@@ -1771,6 +1872,41 @@ mod tests {
             !host_silent(ready, late * 10, true),
             "a host that acknowledges the hello is loading its world"
         );
+    }
+
+    #[test]
+    fn the_friends_held_items_hide_in_f5_in_bed_while_skating_dead_or_with_the_ui_off() {
+        let shown = HandGate {
+            ui_shown: true,
+            alive: true,
+            ..HandGate::default()
+        };
+        assert!(shown.items() && shown.activation());
+        let f5 = HandGate {
+            detached: true,
+            ..shown
+        };
+        assert!(!f5.items() && f5.activation());
+        let in_bed = HandGate {
+            asleep: true,
+            ..shown
+        };
+        assert!(!in_bed.items() && !in_bed.activation());
+        let skating = HandGate {
+            skating: true,
+            ..shown
+        };
+        assert!(!skating.items());
+        let dead = HandGate {
+            alive: false,
+            ..shown
+        };
+        assert!(!dead.items());
+        let ui_off = HandGate {
+            ui_shown: false,
+            ..shown
+        };
+        assert!(!ui_off.items() && !ui_off.activation());
     }
 
     #[test]

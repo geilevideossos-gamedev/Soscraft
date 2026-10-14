@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 5;
+pub const PROTOCOL: u16 = 6;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -422,9 +422,21 @@ pub enum Hand {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UseKind {
+    Eat {
+        duration: i32,
+    },
+    #[default]
+    Block,
+    Charge,
+    Scope,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsingView {
     pub hand: Hand,
     pub ticks: i32,
+    pub kind: UseKind,
 }
 
 pub const PLAYER_SLOTS: usize = 45;

@@ -2064,6 +2064,41 @@ After 1fa0ce90.
 - **Changed:** this log only: the d2 combined kit below, so groups pillagers to raid-villagers are tested with one kit.
 - **Test steps:** none; the steps of each group's commits hold.
 
+## Group friend-hand
+
+Segment d6 (friend fixes), brief D9. Continues from the merge of track D's d1 and d2 into minecraft-survival (f7432188, released as round 9 release 2 with protocol 5).
+
+### 1. A friend sees their held items, eating, the shield and the trident charge in first person
+
+After f7432188.
+
+- **Vanilla (26.3):** the client draws its own first-person hands from its own use state (`ItemInHandRenderer.renderArmWithItem`: `applyEatTransform` for eat and drink, the raised shield for block, `applyItemArmTransform` plus the trident pull for spear, the spyglass hiding the hands while scoping); `GameRenderer.renderItemInHand` skips the hands in third person, while sleeping, with the GUI hidden and in spectator. The swing is commit 2.
+- **Changed:**
+  - `render_anim/src/minecraft_hand.rs`: the host's held-item drawing (`minecraft_world.rs`, the block after the totem guard) moved into `held_hand_mesh(held, view, (packs, atlas, light, dials), light_at, aspect) -> Option<(vertices, indices, clip)>`, with `Held { main: (slot, stack), offhand, swing, swing_offhand, using: Option<HeldUse { slot, kind }>, partial, activation }` and `UseShown { Eat { remaining, duration }, Block, Charge { ticks }, Scope }`. `host_use(survival, hand)` gives the host's use; `UseClock` gives the friend's from its player view. The host calls `held_hand_mesh` with the same stacks, filters and partial as before.
+  - `minecraft_net/src/messages.rs`: `UsingView.kind: UseKind { Eat { duration }, Block, Charge, Scope }`; **`PROTOCOL` 5 to 6** (track D's one bump after release 2).
+  - `minecraft_survival/src/views.rs`: `using()` fills the kind (eating with the food's `consume_ticks`).
+  - `render_anim/src/minecraft_remote.rs`: the friend's hand left `present()` for a new `show_hand()`, run after the friend's hand input each frame. It draws the selected stack while `ui.holding_item`, the offhand stack while holding an item or using one, the use from `UseClock` (re-based on every new player view, then counted on the friend's own tick: eating down, the trident charge up) and the totem rise as before. It hides the items in F5, in bed, while skating, dead or with the UI off (`HandGate`), hides them while scoping (`held_hand_mesh`), and sets `ui.offhand_busy` (the MW2 hands step aside while a use runs, as on the host) and `ui.hand_swing` (0 until commit 2).
+- **Tests:** `minecraft_net`: `codec::tests::a_player_view_says_what_kind_of_use_its_hand_is_in` (and the protocol test now asks for 6); `minecraft_survival`: `views::tests::a_friend_is_told_what_kind_of_use_their_hand_is_in` (Eat 32 for a steak, Eat 16 for dried kelp in the offhand, Block, Charge, Scope; the ticks stay out of the sent key); `render_anim`: `minecraft_hand::tests::a_friends_use_counter_counts_eating_down_between_views`, `a_friends_trident_charge_counts_up_and_a_shield_and_spyglass_hold`, `scoping_hides_both_held_items`, `the_host_hand_uses_eating_before_a_shield_a_trident_or_a_spyglass`; `minecraft_remote::tests::the_friends_held_items_hide_in_f5_in_bed_while_skating_dead_or_with_the_ui_off`. Runs: `minecraft_net` 21, `minecraft_survival` 726, `render_anim` 183, all green; `check -p launcher` green.
+- **Decisions:**
+  - One use at a time per player, as vanilla's single `useItem`: eating before the shield, the trident and the spyglass, the order `views.rs` already sent. The host drew an eating hand and a blocking hand at once if both were set; the fork never sets both.
+  - The friend's use clock re-bases on every new player view (the host sends one only when something shown changes, the use ticks are left out of that key), then counts on the friend's own level tick. A finished meal waits at the mouth until the host's next view, which comes at once because the stack count and food change.
+  - `UseKind` defaults to `Block` (the derive needs a unit variant); the host never sends a default.
+  - With the UI off (`ui_draw 0`) the friend's held items and the totem rise hide, as vanilla's hidden GUI hides the hands. The host's held items still show with the UI off (unchanged in this commit, listed under Left for later). In F5 the totem rise still shows, as on the host.
+  - `PROTOCOL` is 6: the first message change after release 2 (protocol 5). Commit 2's `ToClient::Animate` rides in the same 6.
+- **Test steps** (same new build in both windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r9-friend -Fresh -HostSound`; the friend gets the kit when joining; in the friend window move the items to the hotbar first):
+  1. Friend: select the diamond sword: it shows in the right hand like on the host (**171_friend_sword**). Select an empty slot: the MW2 hands show.
+  2. Friend: put the shield in the offhand (swap key) and hold right-click with the sword selected: the shield rises (**172_friend_shield**); let go: it lowers.
+  3. Friend: select the cooked beef and hold right-click: the beef rises to the mouth and bobs every 4 ticks, then the hand comes back down after 1.6 s (**173_friend_eat_beef**). Dried kelp in the offhand: the same in half the time. The swiftness potion: the same drinking pose.
+  4. Friend: hold right-click with the trident: it is raised and pulled back over half a second and shakes (**174_friend_trident**); let go: it is thrown and the hand is empty.
+  5. Friend: right-click with the spyglass: the scope shows and no item is in view; let go: the items come back.
+  6. Friend: F5 hides the first-person items; F5 back shows them. Lie in a bed: no items in view.
+  7. Host window: its own sword, shield, eating and trident look as before (**175_host_hand_unchanged**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:dried_kelp*16,minecraft:trident,minecraft:spyglass,minecraft:potion@swiftness,minecraft:totem_of_undying,minecraft:white_bed,minecraft:cobblestone*64
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2081,6 +2116,8 @@ IW4L_MINECRAFT_KIT=minecraft:pillager_spawn_egg*16,minecraft:vindicator_spawn_eg
 ## Protocol
 
 Before the merge of minecraft-survival (tracks A, B and C) into track D, `minecraft_net::PROTOCOL` was 4 (from 3) on this track, bumped once in group trading-friend. Since that merge (`r9-d2-base`) it is 5, the number tracks A, B and C took together: protocol 5 has not been released (release 1 is protocol 4), so no released build shares the number with a different message set. `ToServer::OpenMountInventory` moved to codec index 16, after track A's `CreativeSlot` (13) and track C's `RecipeBookSettings` (14) and `RecipeSeen` (15). Later groups of this track must not bump it again.
+
+Protocol 5 shipped in round 9 release 2. Group friend-hand (commit 1, `UsingView.kind`) set it to 6, the one bump allowed after release 2; every later message change of round 9 rides in 6 and never goes above it.
 
 ## State doc changes
 
@@ -2135,6 +2172,7 @@ Before the merge of minecraft-survival (tracks A, B and C) into track D, `minecr
 - `docs/MINECRAFT-SURVIVAL.md`: in the raids paragraph, "Villagers do not hide or ring bells yet, vindicators do not break doors yet, and raiders do not pick up banners." becomes "Vindicators do not break doors yet, and raiders do not pick up banners." New paragraph "Bells and villagers in raids": "Bells ring like vanilla: right-clicked with the main hand on one of their sides below the rim (a floor bell from the front or back, a wall bell from its sides, a hanging bell from any side) or given a new redstone signal. Every villager within 32 blocks hears it and, outside a raid, runs to a home (a bed) nearby and hides until 15 seconds after the ring. When raiders are within 32 blocks the bell resonates a quarter second later, and two seconds after that every raider within 48 blocks glows for 3 seconds: a white rim around it in the open, a white shape of it seen through blocks. In a raid, villagers gather at their bell before the first wave and now and then ring it, hide at home while the waves come, and after a victory come out under the open sky, cheer and launch firework rockets that burst into coloured sparks with a flash and a bang (a low burst hurts whoever stands within 5 blocks: "went off with a bang"). A player with Hero of the Village gets gifts: every 30 seconds to 5 minutes each villager that sees the hero walks up and throws a gift from vanilla's hero of the village loot (a farmer bread, pumpkin pie or a cookie, a child a poppy, and so on). Friends ring bells, see the glow and get gifts the same way. The bell does not swing yet, arrows and wind charges do not ring it yet, and frightened villagers do not sweat yet."
 - `docs/MULTIPLAYER.md`: a friend's bell use is a hand use on the host (no new message); glowing mobs reach friends as `MobShow.glowing`; hero gifts are item entities thrown on the host; firework rockets reach friends as thrown views and their bursts as `EntitySnapshot.firework_bursts`. Protocol 5.
 - `docs/MINECRAFT-SURVIVAL.md` (review fix 4): in the ravager paragraph, "Its roar hurts everything within 4 blocks but illagers for 6 and flings it all away, players too." becomes "Its roar hurts everything within 4 blocks but illagers for 6 and flings every mob away; players only take the blow."
+- `docs/MULTIPLAYER.md` (group friend-hand, commit 1): `minecraft_net::PROTOCOL` is 6 (the code block at line 162 and the note at line 1415). `PlayerView.using` (`UsingView`) now carries `kind: UseKind { Eat { duration }, Block, Charge, Scope }`. In section 20, "the friend's first-person hand" becomes: "A friend draws their own first-person held items like the host: the selected item, the offhand item while holding an item or using one, eating and drinking at the mouth, the raised shield, the trident pulled back and the spyglass hiding the items. The use comes from the friend's `PlayerView.using` and is counted on between views on the friend's own tick. The items hide in F5, in bed, while skating, dead or with the UI off. The swing is not shown yet." No vendored file changed.
 
 ## Vendored files
 
@@ -2176,3 +2214,4 @@ Patched by track D: 40 (`entities/src/movement.rs`, `entities/src/effects.rs`, `
 - Fireworks: a rocket exploding on an entity in its path (`onHitEntity`), knockback for mobs hurt by a burst, the other explosion shapes (small and large balls, stars, creepers), trails and twinkles, saving rockets in flight, players launching rockets from the ground and dispensers and crossbows firing them.
 - Thrown things and illagers: `thrown::targets` and `thrown::hurt_by` (players' tridents, snowballs, eggs and splash potions) list no pillagers, vindicators, evokers, vexes, ravagers, hoglins, piglins, striders, ghasts or blazes, so those cannot be struck by them; found while building the firework blast, which uses every tracked mob instead.
 - Ravagers: a raid rider steering its ravager (the fork's ravager walks to the village itself; vanilla moves it by the rider's navigation); patrol companions beyond illagers (vanilla's `LongDistancePatrolGoal` counts every `PatrollingMonster`); a non-raider rider steering it (vanilla leaves such a ravager to its rider; the fork holds it still); the attack knockback landing on a fully blocked hit (the fork's melee `throw` lands on shielded hits); armor stands (excluded from the roar without `mob_griefing`) are not mobs in the fork; `checkSpawnObstruction` (no liquid in its box) is not asked by eggs and summons in the fork either; a vindicator rider's melee reach does not grow by its ravager's box (`Mob.getAttackBoundingBox` with a vehicle).
+- The host's own first-person held items still show with the UI off (`ui_draw 0`); vanilla's hidden GUI hides the hands, as the friend's now do (group friend-hand, commit 1).

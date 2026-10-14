@@ -393,6 +393,7 @@ mod tests {
             using: Some(UsingView {
                 hand: Hand::Off,
                 ticks: 9,
+                kind: UseKind::Eat { duration: 16 },
             }),
             jump_bar: Some(0.75),
             ..PlayerView::default()
@@ -848,8 +849,8 @@ mod tests {
     }
 
     #[test]
-    fn a_held_potion_colour_round_trips_on_protocol_5() {
-        assert_eq!(crate::PROTOCOL, 5);
+    fn a_held_potion_colour_round_trips_on_protocol_6() {
+        assert_eq!(crate::PROTOCOL, 6);
         let potion = GearItem {
             id: "minecraft:splash_potion".to_string(),
             glint: false,
@@ -875,6 +876,33 @@ mod tests {
         assert_eq!(back.slots[43], view.slots[43]);
         assert_eq!(back.slots[44], view.slots[44]);
         assert!(back.slots[43].is_some() && back.slots[44].is_some());
+    }
+
+    #[test]
+    fn a_player_view_says_what_kind_of_use_its_hand_is_in() {
+        assert_eq!(crate::PROTOCOL, 6);
+        let kinds = [
+            UseKind::Eat { duration: 32 },
+            UseKind::Eat { duration: 16 },
+            UseKind::Block,
+            UseKind::Charge,
+            UseKind::Scope,
+        ];
+        for kind in kinds {
+            let mut view = player_view();
+            view.using = Some(UsingView {
+                hand: Hand::Main,
+                ticks: 7,
+                kind,
+            });
+            let message = ToClient::Player(Box::new(view));
+            let bytes = encode(Lane::Reliable, &message).unwrap();
+            let ToClient::Player(back) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+                panic!("not a player view");
+            };
+            let using = back.using.expect("a use");
+            assert_eq!((using.hand, using.ticks, using.kind), (Hand::Main, 7, kind));
+        }
     }
 
     #[test]

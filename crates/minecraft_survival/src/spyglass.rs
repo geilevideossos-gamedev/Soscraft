@@ -133,10 +133,12 @@ mod tests {
         let main = Some(UsingView {
             hand: Hand::Main,
             ticks: 4,
+            kind: minecraft_net::messages::UseKind::Scope,
         });
         let off = Some(UsingView {
             hand: Hand::Off,
             ticks: 4,
+            kind: minecraft_net::messages::UseKind::Scope,
         });
         assert!(seen_scoping(main, &holding(2, ITEM), 2));
         assert!(!seen_scoping(main, &holding(2, ITEM), 3));
