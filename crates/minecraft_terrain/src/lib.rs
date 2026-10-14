@@ -98,6 +98,7 @@ pub mod wolf_render;
 pub mod cat_render;
 pub mod custom_spawners;
 pub mod raids;
+pub mod bells;
 pub mod flame_render;
 pub mod client_mobs;
 pub mod client_dragon;

@@ -765,8 +765,22 @@ pub fn act(
                     })
                     .filter(|&pos| entities.has_knot(pos) || !(player.crouching && has_item))
                     .is_some_and(|pos| entities.leash_fence(player_id, pos, player.crouching));
+            let bell = main
+                && !leashed_fence
+                && !(player.crouching && has_item)
+                && player
+                    .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
+                    .filter(|hit| {
+                        minecraftoss_player::World::block(&terrain.scene, hit.pos).is_some_and(|block| {
+                            minecraft_terrain::bells::is_bell(&block)
+                                && minecraft_terrain::bells::proper_hit(&block, hit.face, hit.point.y - f64::from(hit.pos.1))
+                        })
+                    })
+                    .map(|hit| entities.ring_bell(hit.pos, minecraft_terrain::bells::face_name(hit.face)))
+                    .is_some();
             let used = if main
                 && !leashed_fence
+                && !bell
                 && table.is_none()
                 && station.is_none()
                 && workshop.is_none()
@@ -923,7 +937,7 @@ pub fn act(
                 .or(bed);
                 hand.swing = Some(0.0);
                 HandUse::Consumed
-            } else if leashed_fence {
+            } else if leashed_fence || bell {
                 hand.swing = Some(0.0);
                 HandUse::Consumed
             } else if let Some(pos) = used {

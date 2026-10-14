@@ -112,6 +112,7 @@ pub struct ServerSim {
     custom_spawners: crate::custom_spawners::CustomSpawners,
     raids: crate::raids::Raids,
     raids_rule: bool,
+    bells: crate::bells::Bells,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -477,6 +478,7 @@ impl ServerSim {
             custom_spawners: crate::custom_spawners::CustomSpawners::for_dimension(dimension_type),
             raids: crate::raids::Raids::default(),
             raids_rule: true,
+            bells: crate::bells::Bells::default(),
         }
     }
 
@@ -1062,6 +1064,7 @@ impl ServerSim {
         self.throw_barters();
         self.drop_cat_gifts();
         self.drop_leads();
+        self.raid_villager_events();
         for gone in self.mobs.take_departed_traders() {
             self.mob_tags.remove(&gone);
         }
@@ -1314,6 +1317,44 @@ impl ServerSim {
                 let components = stack.components.as_ref().map(|c| c.to_string());
                 let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
                 self.level.spawn_at_location([x, at.y, z], stack);
+            }
+        }
+    }
+
+    fn hear_bells(&mut self) {
+        let game_time = self.level.game_time;
+        for (pos, _) in std::mem::take(&mut self.level.bell_rings) {
+            self.bells.ring((pos.x, pos.y, pos.z), game_time, &mut self.mobs);
+        }
+    }
+
+    pub fn ring_bell(&mut self, pos: BlockPos, face: Option<&str>) -> bool {
+        let direction = face.and_then(minecraftoss_core::pos::Direction::from_name);
+        self.level.ring_bell(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), direction)
+    }
+
+    pub fn tick_bells(&mut self) {
+        let game_time = self.level.game_time;
+        let level = &self.level;
+        let blocks = &level.registries().blocks;
+        let is_bell = |(x, y, z): BlockPos| blocks.block_by_name(crate::bells::BELL) == Some(blocks.block_of(level.block(minecraftoss_core::BlockPos::new(x, y, z))));
+        let resonated = self.bells.tick(game_time, is_bell, &mut self.mobs);
+        for pos in resonated {
+            self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::bells::RESONATE_SOUND, pos: crate::bells::center(pos).to_array(), volume: 1.0, pitch: 1.0 });
+        }
+    }
+
+    fn raid_villager_events(&mut self) {
+        for pos in self.mobs.take_bell_rings() {
+            self.ring_bell(pos, None);
+        }
+        let _ = self.mobs.take_fireworks();
+        for gift in self.mobs.take_hero_gifts() {
+            let Some(stacks) = self.entity_loot.as_mut().and_then(|loot| loot.roll_hero_gift(gift.table)) else { continue };
+            for stack in stacks.into_iter().filter(|stack| stack.count > 0) {
+                let components = stack.components.as_ref().map(|c| c.to_string());
+                let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
+                self.level.spawn_item_with(gift.position.to_array(), stack, gift.velocity.to_array(), minecraftoss_entities::world::GIFT_PICKUP_DELAY, 0);
             }
         }
     }
@@ -2933,6 +2974,7 @@ impl ServerSim {
     pub fn tick(&mut self) {
         let bursting: Vec<(i32, [f64; 3])> = self.level.entities.iter().filter(|e| e.tnt_data().is_some_and(|d| d.fuse <= 1)).map(|e| (e.id, e.pos)).collect();
         self.level.tick();
+        self.hear_bells();
         self.level.tick_spawners();
         self.level.unsupported.clear();
         for (id, position) in bursting {
@@ -3185,6 +3227,7 @@ pub enum Command {
     PlayerBreaks(Vec<BlockPos>),
     PlayerMines(Vec<(BlockPos, HowBroken)>),
     UseBlock { pos: BlockPos, facing: &'static str },
+    RingBell { pos: BlockPos, face: &'static str },
     BoneMeal { pos: BlockPos, face: &'static str },
     Attack(BlockPos),
     ItemOnBlock { player: u64, pos: BlockPos, action: ItemOnBlock },
@@ -3554,6 +3597,10 @@ impl ServerHandle {
         self.send(Command::BoneMeal { pos, face });
     }
 
+    pub fn ring_bell(&mut self, pos: BlockPos, face: &'static str) {
+        self.send(Command::RingBell { pos, face });
+    }
+
     /// A player's attack; true (and sent) when the level acts on the block.
     pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: BlockPos) -> bool {
         let handled = self.state_in(scene, pos).is_some_and(|s| self.attacks.get(usize::from(s.0)).copied().unwrap_or(false));
@@ -3830,6 +3877,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.use_block(pos, facing);
                     out.egg_teleports.extend(sim.take_egg_teleports());
                 }
+                Command::RingBell { pos, face } => {
+                    sim.ring_bell(pos, Some(face));
+                }
                 Command::BoneMeal { pos, face } => {
                     if sim.bone_meal(pos, face) {
                         out.bone_meal_used.push(pos);
@@ -4011,6 +4061,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     let bodies: Vec<_> = input.mob_players.iter().map(crate::thrown::PlayerBody::of).collect();
     if normal {
         sim.tick_mobs(&input.mob_players, input.bright_outside);
+        sim.tick_bells();
         sim.tick_clouds(&bodies);
         sim.tick_thrown(&bodies);
         sim.tick_tridents(&bodies);
@@ -11889,6 +11940,49 @@ mod tests {
         server.tick_raids(&[me], &[], true);
         assert!(server.raids().raids.is_empty(), "the raids rule stops it");
         assert!(server.mobs.illagers().iter().all(|e| e.illager.raider.raid_id.is_none()));
+    }
+
+    #[test]
+    fn a_rung_bell_wakes_the_villagers_and_lights_up_the_raiders() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        let bell = (8, 200, 8);
+        place(&mut server, &mut scene, bell, Block::new("minecraft:bell").with("attachment", "floor").with("facing", "north"));
+        server.summon("minecraft:villager", [8.5, 200.0, 10.5], None, 0.0).unwrap();
+        server.summon("minecraft:pillager", [20.5, 200.0, 8.5], None, 0.0).unwrap();
+        server.summon("minecraft:pillager", [80.5, 200.0, 8.5], None, 0.0).unwrap();
+        let (near, far) = (server.mobs.illagers()[0].id, server.mobs.illagers()[1].id);
+        server.level.sounds.clear();
+        assert!(!server.ring_bell((8, 199, 8), None), "stone is no bell");
+        assert!(server.ring_bell(bell, Some("east")));
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::bells::USE_SOUND && s.volume == 2.0));
+        server.tick();
+        let heard = |server: &ServerSim| server.mobs.villagers()[0].ai.as_ref().unwrap().brain.memories.heard_bell_time.get().copied();
+        let first = heard(&server).expect("the villager heard the bell");
+        let mut resonated = 0;
+        for _ in 0..50 {
+            server.level.sounds.clear();
+            server.tick();
+            server.tick_bells();
+            resonated += server.level.sounds.iter().filter(|s| s.event == crate::bells::RESONATE_SOUND).count();
+        }
+        assert_eq!(resonated, 1, "it resonates once with a raider near");
+        assert!(server.mobs.glowing(near) && !server.mobs.glowing(far));
+        let shows = crate::mob_tracking::shows(&server.mobs);
+        assert!(shows[&near].glowing && !shows.get(&far).is_some_and(|show| show.glowing));
+        server.level.sounds.clear();
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:redstone_block"));
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::bells::USE_SOUND), "redstone rings it");
+        server.tick();
+        assert!(heard(&server).is_some_and(|time| time > first));
+        server.set_simulation_area((0, 0), 1);
+        for _ in 0..61 {
+            server.tick();
+            server.tick_mobs(&[], true);
+        }
+        assert!(!server.mobs.glowing(near), "the glow lasts three seconds");
     }
 
     #[test]

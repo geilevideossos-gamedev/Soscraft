@@ -246,6 +246,7 @@ pub struct Memories {
     pub potential_job_site: Slot<Pos>,
     pub meeting_point: Slot<Pos>,
     pub heard_bell_time: Slot<i64>,
+    pub hiding_place: Slot<Pos>,
     pub last_slept: Slot<i64>,
     pub last_woken: Slot<i64>,
     pub last_worked_at_poi: Slot<i64>,
@@ -297,6 +298,7 @@ impl Memories {
         self.potential_job_site.tick();
         self.meeting_point.tick();
         self.heard_bell_time.tick();
+        self.hiding_place.tick();
         self.last_slept.tick();
         self.last_woken.tick();
         self.last_worked_at_poi.tick();

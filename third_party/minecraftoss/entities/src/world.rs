@@ -39,7 +39,7 @@ pub use vexes::VexEntity;
 mod ravagers;
 pub use ravagers::RavagerEntity;
 mod raiders;
-pub use raiders::{celebrate_sound, RaiderMut, RaiderView};
+pub use raiders::{celebrate_sound, FireworkLaunch, HeroGift, RaidVillagerEvents, RaiderMut, RaiderView, GIFT_PICKUP_DELAY};
 mod hazards;
 mod living;
 mod pushing;
@@ -2578,6 +2578,7 @@ pub struct EntityWorld {
     /// The level's points of interest (`PoiManager`).
     pub pois: crate::poi::PoiManager,
     raids: Vec<crate::raid::RaidView>,
+    raid_villager_events: raiders::RaidVillagerEvents,
     /// A pinned random for the next golem villagers summon.
     summoned_golem_seed: Option<u64>,
     /// Pinned randoms for the next babies villagers make, in turn, and the
@@ -2703,6 +2704,7 @@ impl Default for EntityWorld {
             seed_uniquifier: 8_682_522_807_148_012,
             pois: crate::poi::PoiManager::new(-4, 19),
             raids: Vec::new(),
+            raid_villager_events: Default::default(),
             summoned_golem_seed: None,
             summoned_golems: Vec::new(),
             born_seeds: Default::default(),
@@ -5647,6 +5649,7 @@ impl EntityWorld {
             seed_uniquifier: self.seed_uniquifier,
             pois: self.pois.clone(),
             raids: self.raids.clone(),
+            raid_villager_events: Default::default(),
             summoned_golem_seed: self.summoned_golem_seed,
             summoned_golems: Vec::new(),
             born_seeds: self.born_seeds.clone(),

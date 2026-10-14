@@ -390,6 +390,11 @@ impl PlayerWorld for MobWorld<'_> {
         let level = self.level.borrow();
         minecraftoss_generator::feature::World::height_at(&**level, minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z)
     }
+
+    fn motion_blocking_height(&self, x: i32, z: i32) -> i32 {
+        let level = self.level.borrow();
+        minecraftoss_generator::feature::World::height_at(&**level, minecraftoss_core::chunk::HeightmapKind::MotionBlocking, x, z)
+    }
 }
 
 fn name_of(level: &Level<'static>, states: &BlockStates, state: BlockStateId) -> Option<PlayerBlock> {

@@ -84,6 +84,7 @@ pub struct MobShow {
     pub spell: u8,
     pub bite: [i32; 2],
     pub ravager: [i32; 3],
+    pub glowing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -493,6 +494,11 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             },
         );
     }
+    for raider in world.raiders() {
+        if world.glowing(raider.id) {
+            out.entry(raider.id).or_default().glowing = true;
+        }
+    }
     out
 }
 
@@ -731,6 +737,14 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
         e.spit.pitch_o = e.spit.pitch;
         e.spit.yaw = mob.y_rot;
         e.spit.pitch = mob.x_rot;
+    }
+    if show.glowing != world.glowing(id) {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        if show.glowing {
+            world.add_mob_effect(id, EffectInstance::new(MobEffect::Glowing, -1, 0));
+        } else if let Some((effects, _, _)) = world.mob_effects_mut(id) {
+            effects.remove(MobEffect::Glowing);
+        }
     }
 }
 

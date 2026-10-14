@@ -138,6 +138,130 @@ impl EntityWorld {
     }
 }
 
+pub const GIFT_PICKUP_DELAY: i32 = 10;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeroGift {
+    pub table: &'static str,
+    pub position: DVec3,
+    pub velocity: DVec3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FireworkLaunch {
+    pub position: DVec3,
+    pub color: i32,
+    pub flight: i32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RaidVillagerEvents {
+    pub bell_rings: Vec<minecraftoss_player::Pos>,
+    pub hero_gifts: Vec<HeroGift>,
+    pub fireworks: Vec<FireworkLaunch>,
+}
+
+fn bell_center(bell: minecraftoss_player::Pos) -> DVec3 {
+    DVec3::new(
+        f64::from(bell.0) + 0.5,
+        f64::from(bell.1) + 0.5,
+        f64::from(bell.2) + 0.5,
+    )
+}
+
+impl EntityWorld {
+    pub fn take_bell_rings(&mut self) -> Vec<minecraftoss_player::Pos> {
+        std::mem::take(&mut self.raid_villager_events.bell_rings)
+    }
+
+    pub fn take_hero_gifts(&mut self) -> Vec<HeroGift> {
+        std::mem::take(&mut self.raid_villager_events.hero_gifts)
+    }
+
+    pub fn take_fireworks(&mut self) -> Vec<FireworkLaunch> {
+        std::mem::take(&mut self.raid_villager_events.fireworks)
+    }
+
+    pub fn bell_listeners(&self, bell: minecraftoss_player::Pos, radius: f64) -> Vec<u64> {
+        let (min, max) = (
+            DVec3::new(f64::from(bell.0), f64::from(bell.1), f64::from(bell.2)) - radius,
+            DVec3::new(f64::from(bell.0), f64::from(bell.1), f64::from(bell.2)) + 1.0 + radius,
+        );
+        let meets = |body: &crate::movement::Body| {
+            let half = f64::from(body.width) / 2.0;
+            let p = body.position;
+            p.x - half < max.x
+                && p.x + half > min.x
+                && p.y < max.y
+                && p.y + f64::from(body.height) > min.y
+                && p.z - half < max.z
+                && p.z + half > min.z
+        };
+        let villagers = self
+            .villagers
+            .iter()
+            .filter(|e| meets(&e.villager.body))
+            .map(|e| e.id);
+        let raiders = self
+            .raiders()
+            .into_iter()
+            .filter(|r| {
+                let half = f64::from(r.width) / 2.0;
+                let p = r.position;
+                p.x - half < max.x
+                    && p.x + half > min.x
+                    && p.y < max.y
+                    && p.y + f64::from(r.height) > min.y
+                    && p.z - half < max.z
+                    && p.z + half > min.z
+            })
+            .map(|r| r.id);
+        villagers.chain(raiders).collect()
+    }
+
+    pub fn hear_bell(
+        &mut self,
+        listeners: &[u64],
+        bell: minecraftoss_player::Pos,
+        radius: f64,
+        game_time: i64,
+    ) {
+        let center = bell_center(bell);
+        for entity in self
+            .villagers
+            .iter_mut()
+            .filter(|e| listeners.contains(&e.id))
+        {
+            let near = entity.villager.body.position.distance_squared(center) < radius * radius;
+            if entity.villager.health > 0.0 && near {
+                if let Some(ai) = entity.ai.as_deref_mut() {
+                    ai.brain.memories.heard_bell_time.set(game_time);
+                }
+            }
+        }
+    }
+
+    pub fn raiders_near_bell(
+        &self,
+        listeners: &[u64],
+        bell: minecraftoss_player::Pos,
+        radius: f64,
+    ) -> Vec<u64> {
+        let center = bell_center(bell);
+        self.raiders()
+            .into_iter()
+            .filter(|r| listeners.contains(&r.id) && r.health > 0.0)
+            .filter(|r| r.position.distance_squared(center) < radius * radius)
+            .map(|r| r.id)
+            .collect()
+    }
+
+    pub fn glowing(&self, id: u64) -> bool {
+        self.mob_effects(id)
+            .is_some_and(|effects| effects.has(crate::effects::MobEffect::Glowing))
+    }
+}
+
 pub fn celebrate_sound(kind: &str) -> Option<&'static str> {
     match kind {
         "minecraft:pillager" => Some("entity.pillager.celebrate"),
@@ -230,6 +354,9 @@ mod tests {
             over: loss,
             loss,
             groups_spawned: 1,
+            victory: false,
+            stopped: false,
+            between_waves: false,
         }
     }
 
@@ -358,6 +485,286 @@ mod tests {
         world.illager_mut(pillager).unwrap().illager.health = 3.0;
         world.illager_mut(pillager).unwrap().no_ai = true;
         assert!(thrown(&mut world, 400).is_empty());
+    }
+
+    struct Town {
+        bell: Option<minecraftoss_player::Pos>,
+    }
+
+    impl World for Town {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            if Some(pos) == self.bell {
+                return Some(minecraftoss_player::Block::new("minecraft:bell"));
+            }
+            (pos.1 < 64).then(|| minecraftoss_player::Block::new("minecraft:stone"))
+        }
+        fn set_block(
+            &mut self,
+            _: minecraftoss_player::Pos,
+            _: Option<minecraftoss_player::Block>,
+        ) {
+        }
+        fn can_see_sky(&self, pos: minecraftoss_player::Pos) -> bool {
+            pos.1 >= 64
+        }
+    }
+
+    const HOME: minecraftoss_player::Pos = (12, 64, 0);
+    const TOWN_BELL: minecraftoss_player::Pos = (0, 64, 3);
+
+    fn town() -> EntityWorld {
+        let mut world = EntityWorld::default();
+        world.set_day_time(1000);
+        assert!(world.pois.add(HOME, crate::poi::PoiType::Home));
+        world
+    }
+
+    fn townsfolk(
+        world: &mut EntityWorld,
+        at: DVec3,
+        profession: crate::villager::Profession,
+    ) -> u64 {
+        let mut villager = crate::villager::Villager::new(at);
+        villager.profession = profession;
+        villager.xp = 1;
+        let id = world.spawn_villager_active(villager, 0.0);
+        world.villager_mut(id).unwrap().random = minecraftoss_player::rng::LegacyRandom::new(3);
+        id
+    }
+
+    fn brain(world: &EntityWorld) -> &crate::villager_brain::Brain {
+        &world.villagers()[0].ai.as_ref().unwrap().brain
+    }
+
+    fn town_raid(groups_spawned: i32, victory: bool, loss: bool) -> RaidView {
+        RaidView {
+            id: 2,
+            center: TOWN_BELL,
+            active: true,
+            over: victory || loss,
+            loss,
+            groups_spawned,
+            victory,
+            stopped: false,
+            between_waves: false,
+        }
+    }
+
+    fn home_center() -> DVec3 {
+        DVec3::new(
+            f64::from(HOME.0) + 0.5,
+            f64::from(HOME.1),
+            f64::from(HOME.2) + 0.5,
+        )
+    }
+
+    #[test]
+    fn villagers_who_hear_a_bell_hide_at_home_until_it_has_been_quiet_for_15_seconds() {
+        use crate::villager_brain::Activity;
+        let mut world = town();
+        let mut town = Town { bell: None };
+        let villager = townsfolk(
+            &mut world,
+            DVec3::new(0.5, 64.0, 0.5),
+            crate::villager::Profession::None,
+        );
+        for _ in 0..20 {
+            world.tick(&mut town);
+        }
+        let heard = world.game_time();
+        let listeners = world.bell_listeners(TOWN_BELL, 48.0);
+        assert_eq!(listeners, [villager]);
+        world.hear_bell(&listeners, TOWN_BELL, 32.0, heard);
+        world.tick(&mut town);
+        assert!(brain(&world).activities.is_active(Activity::Hide));
+        let mut hidden_at = None;
+        let mut closest = f64::MAX;
+        while world.game_time() < heard + 299 {
+            world.tick(&mut town);
+            hidden_at = hidden_at.or(brain(&world).memories.hiding_place.get().copied());
+            let at = world.villagers()[0].position();
+            closest = closest.min(at.distance(home_center()));
+        }
+        assert_eq!(hidden_at, Some(HOME), "it hides at the home in reach");
+        assert!(closest < 3.0, "it runs home: {closest}");
+        assert!(brain(&world).activities.is_active(Activity::Hide));
+        for _ in 0..3 {
+            world.tick(&mut town);
+        }
+        let memories = &brain(&world).memories;
+        assert!(!memories.heard_bell_time.present() && !memories.hiding_place.present());
+        assert!(
+            brain(&world).activities.is_active(Activity::Idle),
+            "back to its day"
+        );
+    }
+
+    #[test]
+    fn before_a_raid_villagers_ring_their_bell_and_once_it_starts_they_hide() {
+        use crate::villager_brain::Activity;
+        let mut world = town();
+        let mut town = Town {
+            bell: Some(TOWN_BELL),
+        };
+        let villager = townsfolk(
+            &mut world,
+            DVec3::new(0.5, 64.0, 1.5),
+            crate::villager::Profession::None,
+        );
+        let ai = world
+            .villager_mut(villager)
+            .unwrap()
+            .ai
+            .as_deref_mut()
+            .unwrap();
+        ai.brain.memories.meeting_point.set(TOWN_BELL);
+        world.set_raids(vec![town_raid(0, false, false)]);
+        let (mut pre_raid, mut rings) = (false, Vec::new());
+        for _ in 0..600 {
+            world.tick(&mut town);
+            pre_raid |= brain(&world).activities.is_active(Activity::PreRaid);
+            rings.extend(world.take_bell_rings());
+        }
+        assert!(pre_raid, "a raid with no wave yet is a pre-raid");
+        assert_eq!(brain(&world).activities.default, Activity::PreRaid);
+        assert!(!rings.is_empty(), "it rings the bell by the meeting point");
+        assert!(rings.iter().all(|&at| at == TOWN_BELL));
+        world.set_raids(vec![town_raid(1, false, false)]);
+        let (mut hiding, mut scared) = (None, false);
+        for _ in 0..600 {
+            world.tick(&mut town);
+            if brain(&world).activities.is_active(Activity::Raid) {
+                hiding = hiding.or(brain(&world).memories.hiding_place.get().copied());
+            }
+            scared |= world.take_entity_events().contains(&(villager, 42));
+        }
+        assert_eq!(hiding, Some(HOME), "in the raid it hides at home");
+        assert_eq!(brain(&world).activities.default, Activity::Raid);
+        assert!(scared, "it sweats now and then");
+    }
+
+    #[test]
+    fn villagers_celebrate_a_won_raid_with_fireworks_and_never_a_lost_one() {
+        for (victory, loss) in [(true, false), (false, true), (false, false)] {
+            let mut world = town();
+            let mut town = Town { bell: None };
+            townsfolk(
+                &mut world,
+                DVec3::new(0.5, 64.0, 0.5),
+                crate::villager::Profession::None,
+            );
+            world.set_raids(vec![town_raid(5, victory, loss)]);
+            let (mut cheers, mut fireworks) = (0, Vec::new());
+            for _ in 0..1200 {
+                world.tick(&mut town);
+                cheers += world
+                    .take_sounds()
+                    .iter()
+                    .filter(|sound| sound.event.ends_with("entity.villager.celebrate"))
+                    .count();
+                fireworks.extend(world.take_fireworks());
+            }
+            if victory {
+                assert!(cheers > 0, "it cheers");
+                assert!(!fireworks.is_empty(), "it launches fireworks");
+                for launch in &fireworks {
+                    assert!(crate::villager_brain::FIREWORK_COLORS.contains(&launch.color));
+                    assert!((0..3).contains(&launch.flight));
+                    assert!(launch.position.y > 64.0);
+                }
+            } else {
+                assert_eq!((cheers, fireworks.len()), (0, 0), "loss {loss}");
+            }
+        }
+    }
+
+    fn hero_test_player(position: DVec3) -> crate::tempt::PlayerCandidate {
+        crate::tempt::PlayerCandidate {
+            id: 7,
+            position,
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        }
+    }
+
+    #[test]
+    fn a_farmer_throws_a_hero_of_the_village_a_gift_and_nobody_else() {
+        for hero in [true, false] {
+            let mut world = town();
+            let mut town = Town { bell: None };
+            let villager = townsfolk(
+                &mut world,
+                DVec3::new(0.5, 64.0, 0.5),
+                crate::villager::Profession::Farmer,
+            );
+            if hero {
+                world.set_player_hero(7, Some(0));
+            }
+            let mut gifts = Vec::new();
+            for _ in 0..1500 {
+                let at = world.villagers()[0].position() + DVec3::new(3.0, 0.0, 0.0);
+                world.tick_with_players(&mut town, &[hero_test_player(at)]);
+                gifts.extend(world.take_hero_gifts());
+            }
+            if !hero {
+                assert!(gifts.is_empty());
+                continue;
+            }
+            assert!(!gifts.is_empty(), "the hero gets a gift");
+            let gift = &gifts[0];
+            assert_eq!(
+                gift.table,
+                "minecraft:gameplay/hero_of_the_village/farmer_gift"
+            );
+            assert!((gift.velocity.length() - 0.3).abs() < 1e-3);
+            assert!(gifts.len() <= 2, "a gift a while at most: {}", gifts.len());
+            assert_eq!(world.villagers()[0].id, villager);
+        }
+    }
+
+    #[test]
+    fn a_bell_finds_villagers_and_raiders_and_makes_the_raiders_glow() {
+        let mut world = town();
+        let villager = townsfolk(
+            &mut world,
+            DVec3::new(0.5, 64.0, 0.5),
+            crate::villager::Profession::None,
+        );
+        let near = raiding_pillager(&mut world, DVec3::new(20.5, 64.0, 3.5));
+        let far = raiding_pillager(&mut world, DVec3::new(45.5, 64.0, 3.5));
+        let away = raiding_pillager(&mut world, DVec3::new(90.5, 64.0, 3.5));
+        let listeners = world.bell_listeners(TOWN_BELL, 48.0);
+        assert_eq!(listeners, [villager, near, far]);
+        assert_eq!(world.raiders_near_bell(&listeners, TOWN_BELL, 32.0), [near]);
+        assert_eq!(
+            world.raiders_near_bell(&listeners, TOWN_BELL, 48.0),
+            [near, far]
+        );
+        world.hear_bell(&listeners, TOWN_BELL, 32.0, 77);
+        assert_eq!(
+            brain(&world).memories.heard_bell_time.get().copied(),
+            Some(77)
+        );
+        assert!(!world.glowing(near));
+        world.add_mob_effect(
+            near,
+            crate::effects::EffectInstance::new(crate::effects::MobEffect::Glowing, 60, 0),
+        );
+        assert!(world.glowing(near) && !world.glowing(away));
     }
 
     #[test]

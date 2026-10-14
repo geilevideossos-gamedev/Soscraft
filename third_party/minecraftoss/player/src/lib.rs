@@ -217,6 +217,17 @@ pub trait World {
         }
         self.min_y()
     }
+    fn motion_blocking_height(&self, x: i32, z: i32) -> i32 {
+        let mut y = self.max_y();
+        while y >= self.min_y() {
+            let pos = (x, y, z);
+            if self.block(pos).is_some() && (!self.collision_boxes(pos).is_empty() || self.floatable_fluid(pos) || self.fluid_is_lava(pos)) {
+                return y + 1;
+            }
+            y -= 1;
+        }
+        self.min_y()
+    }
     fn replaceable(&self, block: &Block) -> bool {
         authored_replaceable(block)
     }

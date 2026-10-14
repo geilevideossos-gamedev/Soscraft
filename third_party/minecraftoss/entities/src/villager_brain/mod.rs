@@ -18,7 +18,7 @@
 mod behaviors;
 mod memory;
 
-pub use behaviors::{door_halves, rise_from_bed};
+pub use behaviors::{door_halves, hero_gift_table, rise_from_bed, FIREWORK_COLORS};
 pub use memory::{Memories, Observer, Slot, Tracker, Visible, WalkTarget};
 
 use crate::fluid::FluidFrame;
@@ -126,6 +126,7 @@ pub struct Seen {
     pub gossips: Option<std::sync::Arc<crate::gossip::Gossips>>,
     /// A player's main-hand item.
     pub main_hand: Option<String>,
+    pub hero: bool,
 }
 
 /// A villager's offers as its behaviors read them (`getOffers`, making
@@ -184,6 +185,7 @@ pub fn seen_item(item: &minecraftoss_player::WorldItem) -> Seen {
         wants_golem: false,
         gossips: None,
         main_hand: None,
+        hero: false,
     }
 }
 
@@ -300,6 +302,9 @@ pub enum Remote {
     /// `BehaviorUtils.throwItem`: an item entity thrown from where it
     /// stood (its pickup delay the default ten ticks).
     ThrowItem { stack: minecraftoss_player::inventory::ItemStack, position: DVec3, velocity: DVec3 },
+    RingBell { pos: (i32, i32, i32) },
+    HeroGift { table: &'static str, position: DVec3, velocity: DVec3 },
+    Firework { position: DVec3, color: i32, flight: i32 },
 }
 
 /// What a behavior works with.
@@ -320,6 +325,7 @@ pub struct Ctx<'a> {
     pub pois: &'a mut PoiManager,
     /// A new profession asks for a new brain (`Villager.refreshBrain`).
     pub refresh: bool,
+    pub raids: &'a [crate::raid::RaidView],
 }
 
 impl Ctx<'_> {
@@ -723,6 +729,7 @@ pub struct CtxParts<'a> {
     pub day_time: i64,
     pub remote: &'a mut Vec<Remote>,
     pub pois: &'a mut PoiManager,
+    pub raids: &'a [crate::raid::RaidView],
 }
 
 impl<'a> CtxParts<'a> {
@@ -734,6 +741,7 @@ impl<'a> CtxParts<'a> {
             unseeded,
             pois: &mut *self.pois,
             refresh: false,
+            raids: self.raids,
             world: self.world,
             mem,
             activities,

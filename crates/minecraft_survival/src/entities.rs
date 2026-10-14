@@ -885,6 +885,10 @@ impl Entities {
         self.server.attack_block(scene, pos)
     }
 
+    pub fn ring_bell(&mut self, pos: (i32, i32, i32), face: &'static str) {
+        self.server.ring_bell(pos, face);
+    }
+
     pub fn item_on_block(&mut self, player: u64, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
         self.server.item_on_block(player, pos, action);
         self.players.queue(player).item_use_waiting = Some(sent);

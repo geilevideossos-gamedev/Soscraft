@@ -273,6 +273,11 @@ impl EntityLootBook {
         self.roll_of_type(crate::feline::GIFT_TABLE, "minecraft:gift", context)
     }
 
+    pub fn roll_hero_gift(&mut self, table: &str) -> Option<Vec<ItemStack>> {
+        let context = EntityLootContext { this_type: Some("minecraft:villager"), ..Default::default() };
+        self.roll_of_type(table, "minecraft:gift", context)
+    }
+
     fn roll_of_type(&mut self, entity_id: &str, kind: &str, context: EntityLootContext) -> Option<Vec<ItemStack>> {
         let table = self.tables.get(entity_id)?;
         if table["type"].as_str()? != kind {
@@ -884,6 +889,31 @@ mod tests {
         assert!(potions.iter().all(|s| matches!(potion(s), Some("minecraft:fire_resistance" | "minecraft:water"))));
         assert!(potions.iter().any(|s| potion(s) == Some("minecraft:water")));
         assert!(potions.iter().any(|s| potion(s) == Some("minecraft:fire_resistance")));
+    }
+
+    #[test]
+    fn every_hero_gift_table_rolls_vanillas_gifts() {
+        let Some(mut book) = jar_book() else {
+            return;
+        };
+        let farmer: Vec<String> = (0..60)
+            .flat_map(|_| book.roll_hero_gift("minecraft:gameplay/hero_of_the_village/farmer_gift").expect("a farmer's gift"))
+            .map(|s| s.id)
+            .collect();
+        for item in ["minecraft:bread", "minecraft:pumpkin_pie", "minecraft:cookie"] {
+            assert!(farmer.iter().any(|id| id == item), "{item} in {farmer:?}");
+        }
+        assert!(farmer.iter().all(|id| ["minecraft:bread", "minecraft:pumpkin_pie", "minecraft:cookie"].contains(&id.as_str())));
+        let baby = book.roll_hero_gift("minecraft:gameplay/hero_of_the_village/baby_gift").unwrap();
+        assert_eq!(baby.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["minecraft:poppy"]);
+        let fletcher: Vec<ItemStack> = (0..200).flat_map(|_| book.roll_hero_gift("minecraft:gameplay/hero_of_the_village/fletcher_gift").unwrap()).collect();
+        assert!(fletcher.iter().any(|s| s.id == "minecraft:arrow"));
+        assert!(fletcher.iter().any(|s| s.id == "minecraft:tipped_arrow" && potion(s).is_some()));
+        for profession in crate::villager::Profession::ALL {
+            let table = crate::villager_brain::hero_gift_table(false, profession);
+            assert!(book.roll_hero_gift(table).is_some(), "{table}");
+        }
+        assert!(book.roll_hero_gift("minecraft:piglin").is_none(), "an entity table is no gift");
     }
 
     #[test]

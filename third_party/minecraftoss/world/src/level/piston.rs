@@ -383,6 +383,7 @@ impl Level<'_> {
         match self.redstone_kind(state) {
             Some(Kind::Piston { sticky }) => self.piston_trigger_event(state, pos, a, b, sticky),
             Some(Kind::NoteBlock) => self.note_block_event(state),
+            Some(Kind::Bell) if a == 1 => self.bell_rings.push((pos, from_3d(b))),
             _ => {}
         }
     }

@@ -202,6 +202,7 @@ pub struct Level<'a> {
     pub frame_outputs: HashMap<BlockPos, Vec<(Direction, i32)>>,
     pub chest_openers: HashMap<BlockPos, i32>,
     pub level_events: Vec<(i32, BlockPos, i32)>,
+    pub bell_rings: Vec<(BlockPos, Direction)>,
     /// Entity-ticking chunks in vanilla's iteration order, when known.
     pub ticking_chunks: Option<Vec<ChunkPos>>,
     /// Chunk light solved for readers without `&mut` (`World::light`).
@@ -295,6 +296,7 @@ impl<'a> Level<'a> {
             frame_outputs: HashMap::new(),
             chest_openers: HashMap::new(),
             level_events: Vec::new(),
+            bell_rings: Vec::new(),
             ticking_chunks: None,
             random_counts: Default::default(),
             lazy_light: std::cell::RefCell::new(Default::default()),

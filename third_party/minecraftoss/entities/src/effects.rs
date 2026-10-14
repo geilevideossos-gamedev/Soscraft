@@ -30,10 +30,11 @@ pub enum MobEffect {
     SlowFalling,
     Strength,
     Invisibility,
+    Glowing,
 }
 
 impl MobEffect {
-    pub const ALL: [MobEffect; 15] = [
+    pub const ALL: [MobEffect; 16] = [
         Self::Speed,
         Self::Slowness,
         Self::InstantHealth,
@@ -49,6 +50,7 @@ impl MobEffect {
         Self::SlowFalling,
         Self::Strength,
         Self::Invisibility,
+        Self::Glowing,
     ];
 
     /// Its registry ID.
@@ -69,6 +71,7 @@ impl MobEffect {
             Self::SlowFalling => "minecraft:slow_falling",
             Self::Strength => "minecraft:strength",
             Self::Invisibility => "minecraft:invisibility",
+            Self::Glowing => "minecraft:glowing",
         }
     }
 

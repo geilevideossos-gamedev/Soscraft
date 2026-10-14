@@ -360,6 +360,9 @@ impl Raid {
             over: self.is_over(),
             loss: self.status == RaidStatus::Loss,
             groups_spawned: self.groups_spawned,
+            victory: self.status == RaidStatus::Victory,
+            stopped: self.is_stopped(),
+            between_waves: self.is_between_waves(),
         }
     }
 

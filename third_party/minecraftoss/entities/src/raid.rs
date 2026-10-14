@@ -28,6 +28,9 @@ pub struct RaidView {
     pub over: bool,
     pub loss: bool,
     pub groups_spawned: i32,
+    pub victory: bool,
+    pub stopped: bool,
+    pub between_waves: bool,
 }
 
 impl RaidView {
@@ -283,6 +286,9 @@ mod tests {
             over: false,
             loss: false,
             groups_spawned: 0,
+            victory: false,
+            stopped: false,
+            between_waves: false,
         }
     }
 

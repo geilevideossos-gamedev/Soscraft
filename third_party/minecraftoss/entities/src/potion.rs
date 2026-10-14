@@ -105,6 +105,7 @@ impl Potion {
             MobEffect::SlowFalling => 15978425,
             MobEffect::Strength => 16762624,
             MobEffect::Invisibility => 16185078,
+            MobEffect::Glowing => 9740385,
         }
     }
 }

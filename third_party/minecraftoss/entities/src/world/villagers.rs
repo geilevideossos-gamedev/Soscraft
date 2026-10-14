@@ -98,6 +98,7 @@ fn seen_of(kind: &'static str, category: &'static str, body: &Body, eye_height: 
         wants_golem: false,
         gossips: None,
         main_hand: None,
+        hero: false,
     }
 }
 
@@ -364,6 +365,7 @@ impl EntityWorld {
                 wants_golem: false,
                 gossips: None,
                 main_hand: self.player_main_hands.get(&p.id).cloned(),
+                hero: self.player_heroes.contains_key(&p.id),
             });
         }
         out
@@ -410,6 +412,7 @@ impl EntityWorld {
             nearby
         };
         let mut remote = Vec::new();
+        let raids = self.raids.clone();
         let mut level_random = std::mem::take(&mut self.level_random);
         let Some(entity) = self.villagers.iter_mut().find(|e| e.id == id) else {
             self.level_random = level_random;
@@ -505,7 +508,7 @@ impl EntityWorld {
             }
         } else if !entity.no_ai && entity.ai.is_some() {
             let trades = TradeArgs { book: self.trades.as_deref(), sequences: &mut self.trade_sequences };
-            if let Some(damage) = villager_ai_step(entity, world, &seen, &nearby, &mut level_random, game_time, day_time, &mut remote, &mut self.pois, &mut door_updates, trades, griefing, &mut trampled) {
+            if let Some(damage) = villager_ai_step(entity, world, &seen, &nearby, &mut level_random, game_time, day_time, &mut remote, &mut self.pois, &mut door_updates, trades, griefing, &mut trampled, &raids) {
                 entity.hurt_from(damage, "minecraft:fall", None, game_time);
             }
             // The items its memories now name, as seen this tick.
@@ -590,7 +593,7 @@ impl EntityWorld {
                 let mut remote_after = Vec::new();
                 let entity = self.villagers.iter_mut().find(|e| e.id == id).unwrap();
                 let trades = TradeArgs { book: self.trades.as_deref(), sequences: &mut self.trade_sequences };
-                refresh_brain(entity, &*world, &seen, &mut level_random, game_time, day_time, &mut remote_after, &mut self.pois, trades, self.mob_griefing);
+                refresh_brain(entity, &*world, &seen, &mut level_random, game_time, day_time, &mut remote_after, &mut self.pois, trades, self.mob_griefing, &raids);
                 self.level_random = level_random;
             }
         }
@@ -659,6 +662,9 @@ impl EntityWorld {
                         e.voices.push((Voice::Event(event, 1.0, 1.0), position));
                     }
                 }
+                Remote::RingBell { pos } => self.raid_villager_events.bell_rings.push(pos),
+                Remote::HeroGift { table, position, velocity } => self.raid_villager_events.hero_gifts.push(super::HeroGift { table, position, velocity }),
+                Remote::Firework { position, color, flight } => self.raid_villager_events.fireworks.push(super::FireworkLaunch { position, color, flight }),
             }
         }
     }
@@ -691,7 +697,7 @@ impl EntityWorld {
         let entity = self.villagers.iter_mut().find(|e| e.id == id).unwrap();
         entity.villager.set_age(crate::age::Age::BABY_START);
         let trades = TradeArgs { book: self.trades.as_deref(), sequences: &mut self.trade_sequences };
-        refresh_brain(entity, world, &[], &mut level_random, game_time, day_time, &mut Vec::new(), &mut self.pois, trades, self.mob_griefing);
+        refresh_brain(entity, world, &[], &mut level_random, game_time, day_time, &mut Vec::new(), &mut self.pois, trades, self.mob_griefing, &[]);
         self.level_random = level_random;
         let ai = entity.ai.as_deref_mut().unwrap();
         ai.yaw = 0.0;
@@ -718,6 +724,7 @@ fn villager_ai_step<W: World>(
     trades: TradeArgs,
     griefing: bool,
     trampled: &mut Option<(i32, i32, i32)>,
+    raids: &[crate::raid::RaidView],
 ) -> Option<f32> {
     let baby = entity.villager.age.baby();
     let eye_height = entity.eye_height();
@@ -799,8 +806,9 @@ fn villager_ai_step<W: World>(
         level_random,
         time: game_time,
         day_time,
-        remote,
+        remote: &mut *remote,
         pois,
+        raids,
     };
     ai.brain.tick(parts, nearby, hurt);
     // `setVillagerData` with a new profession forgets the offers.
@@ -826,8 +834,12 @@ fn villager_ai_step<W: World>(
     if let Some(target) = look_at {
         ai.look_control.set_look_at(target);
     }
-    // A raid's sound, one tick in a hundred (no raids here).
-    let _ = entity.random.next_int(100);
+    if !entity.no_ai && entity.random.next_int(100) == 0 {
+        let here = crate::raid::block_of(entity.villager.body.position);
+        if crate::raid::nearby_raid(raids, here).is_some_and(|raid| raid.active && !raid.over) {
+            remote.push(Remote::EntityEvent { entity: entity.id, event: 42 });
+        }
+    }
     let eye_height = if entity.sleeping.is_some() { 0.2 } else { entity.villager.eye_height() };
     let body = &mut entity.villager.body;
     // Lying down or getting up moved it.
@@ -967,7 +979,7 @@ impl VillagerEntity {
 /// behaviors stop and a new brain takes over.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-fn refresh_brain<W: World>(entity: &mut VillagerEntity, world: &W, seen: &[Seen], level_random: &mut LegacyRandom, game_time: i64, day_time: i64, remote: &mut Vec<Remote>, pois: &mut crate::poi::PoiManager, trades: TradeArgs, griefing: bool) {
+fn refresh_brain<W: World>(entity: &mut VillagerEntity, world: &W, seen: &[Seen], level_random: &mut LegacyRandom, game_time: i64, day_time: i64, remote: &mut Vec<Remote>, pois: &mut crate::poi::PoiManager, trades: TradeArgs, griefing: bool, raids: &[crate::raid::RaidView]) {
     let baby = entity.villager.age.baby();
     let eye_height = entity.eye_height();
     let Some(ai) = entity.ai.as_deref_mut() else { return };
@@ -1020,6 +1032,7 @@ fn refresh_brain<W: World>(entity: &mut VillagerEntity, world: &W, seen: &[Seen]
         day_time,
         remote,
         pois,
+        raids,
     };
     ai.brain.refresh(parts, baby);
 }
