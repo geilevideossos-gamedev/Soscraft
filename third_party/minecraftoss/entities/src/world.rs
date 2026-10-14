@@ -614,7 +614,7 @@ pub enum PlayerHitKind {
     Arrow { velocity: DVec3, effect: Option<(EffectKind, u32)> },
     /// A creeper's blast (`player_explosion`, no default knockback): the
     /// push `ServerExplosion` hands the player (`hitPlayers`).
-    Explosion { knockback: DVec3 },
+    Explosion { knockback: DVec3, by: Option<u64> },
     Fireball { velocity: DVec3, ignite_ticks: i32 },
     BadRespawnPoint { knockback: DVec3 },
     ShulkerBullet { velocity: DVec3 },
@@ -3135,7 +3135,7 @@ impl EntityWorld {
         let before = self.player_hits.len();
         self.apply_explosion(world, None, blast, players);
         for hit in &mut self.player_hits[before..] {
-            if let PlayerHitKind::Explosion { knockback } = hit.kind {
+            if let PlayerHitKind::Explosion { knockback, .. } = hit.kind {
                 hit.kind = PlayerHitKind::BadRespawnPoint { knockback };
             }
         }
@@ -3209,7 +3209,11 @@ impl EntityWorld {
             let mut body = Body::new(player.position, 0.6, height);
             body.on_ground = true;
             if let Some((damage, knockback)) = impact(&body, player.eye_height) {
-                self.player_hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Explosion { knockback }, source });
+                let by = match blaster {
+                    Blaster::Player(player) => Some(player),
+                    Blaster::Mob(_) | Blaster::Nobody => None,
+                };
+                self.player_hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Explosion { knockback, by }, source });
             }
         }
     }

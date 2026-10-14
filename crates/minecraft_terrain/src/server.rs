@@ -1587,7 +1587,7 @@ impl ServerSim {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         for blast in self.mobs.take_creeper_explosions() {
             let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
-            self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.radius, fire: false, interaction, source: None });
+            self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.radius, fire: false, interaction, source: None, owner: None });
             self.explosions.push(blast);
         }
     }
@@ -1604,7 +1604,7 @@ impl ServerSim {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         for blast in self.mobs.take_fireball_blasts() {
             let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
-            self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.power, fire: blast.fire, interaction, source: None });
+            self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.power, fire: blast.fire, interaction, source: None, owner: None });
             self.explosions.push(minecraftoss_entities::creeper::CreeperExplosion { position: blast.position, radius: blast.power, powered: false });
         }
         for (x, y, z) in self.mobs.take_fireball_fires() {
@@ -1732,7 +1732,7 @@ impl ServerSim {
             self.drop_death_loot();
             let interaction = if self.block_explosion_drop_decay { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Destroy };
             let interaction = if source == BlastSource::KeepBlocks { BlockInteraction::Keep } else { interaction };
-            let exploded = Explosion { center: blast.center, radius: blast.power, fire: blast.fire, interaction, source: None };
+            let exploded = Explosion { center: blast.center, radius: blast.power, fire: blast.fire, interaction, source: None, owner: None };
             match source {
                 BlastSource::RespawnPoint { shield: Some((x, y, z)) } => self.level.explode_shielded(exploded, minecraftoss_core::BlockPos::new(x, y, z)),
                 _ => self.level.explode(exploded),
@@ -1747,7 +1747,10 @@ impl ServerSim {
             {
                 let Self { level, states, mobs, mob_tables, blast_players, .. } = &mut *self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-                mobs.blast(&world, explosion, blast_players);
+                match exploded.owner {
+                    Some(player) => mobs.blast_by_player(&world, explosion, blast_players, player),
+                    None => mobs.blast(&world, explosion, blast_players),
+                }
             }
             self.level.explode(exploded);
             self.drop_death_loot();
@@ -1758,7 +1761,7 @@ impl ServerSim {
     pub fn weapon_blast(&mut self, center: [f64; 3], power: f32) {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         let effects = self.level.explosion_effects.len();
-        self.level.explode(Explosion { center, radius: power, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+        self.level.explode(Explosion { center, radius: power, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None, owner: None });
         self.level.explosion_effects.truncate(effects);
     }
 
@@ -2423,12 +2426,16 @@ impl ServerSim {
     }
 
     pub fn item_on_block(&mut self, pos: BlockPos, action: ItemOnBlock) -> bool {
+        self.item_on_block_by(None, pos, action)
+    }
+
+    pub fn item_on_block_by(&mut self, player: Option<u64>, pos: BlockPos, action: ItemOnBlock) -> bool {
         let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
         match action {
             ItemOnBlock::EmptyBucket { water } => self.level.empty_bucket_into(at, water),
             ItemOnBlock::FillBucket => self.level.bucket_pickup(at).is_some(),
             ItemOnBlock::Ignite => self.level.place_fire(at),
-            ItemOnBlock::PrimeTnt => self.level.ignite_tnt(at),
+            ItemOnBlock::PrimeTnt => self.level.ignite_tnt_by(at, player),
             ItemOnBlock::BoneMeal { face } => self.bone_meal(pos, face),
             ItemOnBlock::EnderEye => self.level.place_ender_eye(at).is_some(),
             ItemOnBlock::EndCrystal => {
@@ -4009,7 +4016,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.egg_teleports.extend(sim.take_egg_teleports());
                 }
                 Command::ItemOnBlock { player, pos, action } => {
-                    out.item_uses.push((player, sim.item_on_block(pos, action)));
+                    out.item_uses.push((player, sim.item_on_block_by(Some(player), pos, action)));
                 }
                 Command::SpawnItem { item, count, components, position, velocity, pickup_delay, age } => {
                     sim.spawn_item(&item, count, components.as_deref(), position, velocity, pickup_delay, age);
@@ -8373,7 +8380,7 @@ mod tests {
         server.tick();
         server.take_changes();
         let before = server.items().len();
-        server.level.explode(minecraftoss_world::level::explosion::Explosion { center: [8.5, 200.5, 8.5], radius: 2.0, fire: false, interaction: minecraftoss_world::level::explosion::BlockInteraction::DestroyWithDecay, source: None });
+        server.level.explode(minecraftoss_world::level::explosion::Explosion { center: [8.5, 200.5, 8.5], radius: 2.0, fire: false, interaction: minecraftoss_world::level::explosion::BlockInteraction::DestroyWithDecay, source: None, owner: None });
         server.tick();
         assert!(server.take_changes().contains(&((8, 200, 8), None)));
         let contents = r#"{"minecraft:container":[{"item":{"count":3,"id":"minecraft:diamond"},"slot":0}]}"#;
@@ -11058,10 +11065,73 @@ mod tests {
         let changes: std::collections::HashMap<_, _> = sim.take_changes().into_iter().collect();
         assert!((7..=9).any(|x| (200..=202).any(|y| changes.get(&(x, y, 6)) == Some(&None))), "the blast breaks the wall it was shielded by");
         assert!(sim.mobs.cows().iter().all(|cow| cow.cow.health <= 0.0), "the cow dies");
+        assert!(sim.orbs().is_empty(), "nobody lit it, so the cow gives no experience");
         if sim.entity_loot.is_some() {
             let items = sim.items();
             assert!(items.iter().any(|item| item.item == "minecraft:beef"), "its loot drops after the blast and is not blown away: {items:?}");
         }
+    }
+
+    #[test]
+    fn chained_tnt_inherits_the_owner() {
+        let Some((mut sim, mut scene, _)) = tnt_test_world() else { return };
+        place(&mut sim, &mut scene, (10, 200, 8), Block::new("minecraft:tnt"));
+        place(&mut sim, &mut scene, (6, 200, 8), Block::new("minecraft:tnt"));
+        assert!(sim.item_on_block_by(Some(3), (8, 200, 8), ItemOnBlock::PrimeTnt));
+        let owners = |sim: &ServerSim| sim.level.entities.iter().filter(|e| !e.removed).filter_map(|e| e.tnt_data()).map(|d| d.owner).collect::<Vec<_>>();
+        assert_eq!(owners(&sim), [Some(3)]);
+        for _ in 0..80 {
+            sim.tick();
+        }
+        assert_eq!(owners(&sim), [Some(3), Some(3)], "both TNT the blast reached are primed in the igniter's name");
+        place(&mut sim, &mut scene, (4, 200, 4), Block::new("minecraft:tnt"));
+        place(&mut sim, &mut scene, (5, 200, 4), Block::new("minecraft:redstone_block"));
+        assert_eq!(owners(&sim), [Some(3), Some(3), None], "redstone primes it for nobody");
+    }
+
+    #[test]
+    fn tnt_lit_by_a_player_names_them_and_credits_their_kills() {
+        let Some((mut sim, _, mut input)) = tnt_test_world() else { return };
+        if sim.summon("minecraft:cow", [10.5, 200.0, 8.5], None, 0.0).is_err() {
+            return;
+        }
+        assert!(sim.item_on_block_by(Some(0), (8, 200, 8), ItemOnBlock::PrimeTnt));
+        let out = run_ticks(&mut sim, &mut input, true, 80);
+        assert_eq!(out.explosions.len(), 1);
+        let mut blasted: Vec<(u64, Option<u64>)> = out
+            .player_hits
+            .iter()
+            .filter_map(|hit| match hit.kind {
+                minecraftoss_entities::world::PlayerHitKind::Explosion { by, .. } => Some((hit.player_id, by)),
+                _ => None,
+            })
+            .collect();
+        blasted.sort_unstable();
+        assert_eq!(blasted, [(0, Some(0)), (1, Some(0))], "the igniter is named, and is hurt like everyone else");
+        assert!(out.player_hits.iter().all(|hit| hit.source.is_none()), "no mob is behind it");
+        assert!(sim.mobs.cows().iter().all(|cow| cow.cow.health <= 0.0), "the cow dies");
+        assert!(!sim.orbs().is_empty(), "a player's kill drops experience");
+    }
+
+    #[test]
+    fn a_crystal_popped_by_a_player_names_them() {
+        let Some((mut sim, mut scene, _)) = tnt_test_world() else { return };
+        place(&mut sim, &mut scene, (8, 200, 8), Block::new("minecraft:obsidian"));
+        assert!(sim.place_end_crystal((8, 200, 8)));
+        let id = sim.crystals.list[0].id;
+        sim.end_hit(crate::end_crystal::EndTarget::Crystal(id), crate::end_crystal::EndDamage::attack(1.0, 7));
+        sim.tick_mobs(&[candidate(7, [8.5, 201.0, 11.5]), candidate(8, [11.5, 201.0, 8.5])], true);
+        let mut blasted: Vec<(u64, Option<u64>)> = sim
+            .mobs
+            .take_player_hits()
+            .iter()
+            .filter_map(|hit| match hit.kind {
+                minecraftoss_entities::world::PlayerHitKind::Explosion { by, .. } => Some((hit.player_id, by)),
+                _ => None,
+            })
+            .collect();
+        blasted.sort_unstable();
+        assert_eq!(blasted, [(7, Some(7)), (8, Some(7))]);
     }
 
     #[test]
@@ -11546,15 +11616,15 @@ mod tests {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         let Some((mut server, _)) = door_world() else { return };
         framed(&mut server, false, (8, 199, 9), Direction::South, Some("minecraft:carrot"));
-        server.level.explode(Explosion { center: [8.5, 199.0, 12.5], radius: 3.0, fire: false, interaction: BlockInteraction::Keep, source: None });
+        server.level.explode(Explosion { center: [8.5, 199.0, 12.5], radius: 3.0, fire: false, interaction: BlockInteraction::Keep, source: None, owner: None });
         server.break_blasted_frames();
         assert_eq!(server.frame_views().len(), 1, "a creeper that may not grief leaves frames alone");
         server.take_explosion_effects();
-        server.level.explode(Explosion { center: [8.5, 199.5, 17.5], radius: 4.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+        server.level.explode(Explosion { center: [8.5, 199.5, 17.5], radius: 4.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None, owner: None });
         server.break_blasted_frames();
         assert_eq!(server.frame_views().len(), 1, "out of reach: more than twice the power away");
         server.take_explosion_effects();
-        server.level.explode(Explosion { center: [8.5, 199.5, 13.5], radius: 4.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None });
+        server.level.explode(Explosion { center: [8.5, 199.5, 13.5], radius: 4.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None, owner: None });
         server.break_blasted_frames();
         assert!(server.frame_views().is_empty(), "TNT breaks it");
         let dropped = item_ids(&server);

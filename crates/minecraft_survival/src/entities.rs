@@ -1557,6 +1557,7 @@ impl Entities {
             let is_player = |id: u64| players.0.contains_key(&id);
             unharmed_without_pvp(&mut output.players_struck, self.pvp, is_player);
             unharmed_by_potions_without_pvp(&mut output.player_potions, self.pvp, is_player);
+            spared_by_blasts_without_pvp(&mut output.player_hits, &mut output.players_pushed, self.pvp, is_player);
             let unclaimed = {
                 let world = mobs.as_deref().unwrap_or(&self.view.world);
                 let dragons = &self.view.dragons;
@@ -1826,6 +1827,19 @@ fn unharmed_by_potions_without_pvp(hits: &mut Vec<minecraft_terrain::potions::Pl
     }
 }
 
+fn spared_by_blasts_without_pvp(hits: &mut Vec<minecraftoss_entities::world::PlayerHit>, pushed: &mut Vec<(u64, DVec3)>, pvp: bool, is_player: impl Fn(u64) -> bool) {
+    if pvp {
+        return;
+    }
+    hits.retain(|hit| match hit.kind {
+        PlayerHitKind::Explosion { knockback, by: Some(by) } if is_player(by) => {
+            pushed.push((hit.player_id, knockback));
+            false
+        }
+        _ => true,
+    });
+}
+
 fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> Hit {
     let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
     (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, Default::default(), None)
@@ -1833,7 +1847,7 @@ fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) 
 
 fn explosion_push(kind: &PlayerHitKind) -> Option<DVec3> {
     match *kind {
-        PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => Some(knockback),
+        PlayerHitKind::Explosion { knockback, .. } | PlayerHitKind::BadRespawnPoint { knockback } => Some(knockback),
         _ => None,
     }
 }
@@ -1859,7 +1873,7 @@ fn mob_hit(
     let toward = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
         PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
-        PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
+        PlayerHitKind::Explosion { knockback, .. } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
         PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at } => [at.x - feet[0], at.z - feet[2]],
     };
     let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. })).then_some(toward);
@@ -2674,7 +2688,7 @@ mod tests {
         let mut queues = two_queues();
         let mut output = minecraft_terrain::server::Output::default();
         let knockback = DVec3::new(0.6, 0.3, 0.0);
-        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback }, source: None });
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback, by: None }, source: None });
         output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: HOST, damage: 9.0, kind: PlayerHitKind::BadRespawnPoint { knockback: DVec3::Z }, source: None });
         output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: HOST, damage: 4.0, kind: PlayerHitKind::Arrow { velocity: DVec3::X, effect: None }, source: None });
         queues.route(&mut output, 2, |_| None);
@@ -2685,7 +2699,7 @@ mod tests {
         assert_eq!(queues.queue(HOST).out.pushes, [DVec3::Z], "an arrow pushes through its hit, not here");
         assert_eq!(queues.queue(HOST).out.hits.len(), 2);
         let mut output = minecraft_terrain::server::Output::default();
-        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback }, source: None });
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback, by: None }, source: None });
         let mut queues = two_queues();
         queues.route(&mut output, 0, |_| None);
         let friend = queues.queue(FRIEND);
@@ -3167,6 +3181,32 @@ mod tests {
         assert_eq!(kept.len(), 3, "pvp on");
         unharmed_without_pvp(&mut kept, false, is_player);
         assert_eq!(kept.iter().map(|s| (s.player, s.by)).collect::<Vec<_>>(), [(FRIEND, 77)]);
+    }
+
+    #[test]
+    fn with_pvp_off_a_players_blast_only_pushes_players() {
+        let queues = two_queues();
+        let blast = |player_id: u64, by: Option<u64>| minecraftoss_entities::world::PlayerHit { player_id, damage: 12.0, kind: PlayerHitKind::Explosion { knockback: DVec3::new(0.0, 0.2, player_id as f64), by }, source: None };
+        let all = vec![blast(HOST, Some(FRIEND)), blast(FRIEND, Some(FRIEND)), blast(FRIEND, Some(77)), blast(HOST, None)];
+        let is_player = |id: u64| queues.0.contains_key(&id);
+        let (mut kept, mut pushed) = (all.clone(), Vec::new());
+        spared_by_blasts_without_pvp(&mut kept, &mut pushed, true, is_player);
+        assert_eq!(kept.len(), 4, "pvp on");
+        assert!(pushed.is_empty());
+        spared_by_blasts_without_pvp(&mut kept, &mut pushed, false, is_player);
+        assert_eq!(kept.iter().map(|hit| hit.player_id).collect::<Vec<_>>(), [FRIEND, HOST], "a blast by someone gone, and an ownerless one, still hurt");
+        assert_eq!(pushed, [(HOST, DVec3::new(0.0, 0.2, HOST as f64)), (FRIEND, DVec3::new(0.0, 0.2, FRIEND as f64))], "the igniter included");
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output::default();
+        output.player_hits = all[..2].to_vec();
+        let is_player = |id: u64| id == HOST || id == FRIEND;
+        spared_by_blasts_without_pvp(&mut output.player_hits, &mut output.players_pushed, false, is_player);
+        queues.route(&mut output, 2, |_| None);
+        for player in [HOST, FRIEND] {
+            let queue = queues.queue(player);
+            assert!(queue.out.hits.is_empty(), "no hearts lost");
+            assert_eq!(queue.out.pushes.len(), 1, "pushed once");
+        }
     }
 
     #[test]

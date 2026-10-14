@@ -402,6 +402,10 @@ impl EntityWorld {
                         damage,
                         kind: PlayerHitKind::Explosion {
                             knockback: direction * impact,
+                            by: match owner {
+                                Some(Shooter::Player(player)) => Some(player),
+                                _ => None,
+                            },
                         },
                         source,
                     });

@@ -48,6 +48,7 @@ pub struct FallingData {
 pub struct TntData {
     pub fuse: i32,
     pub power: f32,
+    pub owner: Option<u64>,
 }
 
 /// `ExperienceOrb` state.

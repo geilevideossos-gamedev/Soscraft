@@ -49,6 +49,7 @@ pub struct Explosion {
     pub interaction: BlockInteraction,
     /// The direct source entity's ID (`source`), excluded from the blast.
     pub source: Option<i32>,
+    pub owner: Option<u64>,
 }
 
 /// `Mth.lerp`.
@@ -59,24 +60,32 @@ fn lerp(delta: f64, a: f64, b: f64) -> f64 {
 impl Level<'_> {
     /// `TntBlock.prime` without a source: a primed TNT entity at the block.
     pub(super) fn prime_tnt(&mut self, pos: BlockPos) -> bool {
+        self.prime_tnt_by(pos, None)
+    }
+
+    fn prime_tnt_by(&mut self, pos: BlockPos, owner: Option<u64>) -> bool {
         if !self.tnt_explodes {
             return false;
         }
-        let tnt = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5]);
+        let tnt = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], owner);
         self.add_entity(tnt);
         // The priming sound's seed comes from the sound seed generator.
         true
     }
 
     pub fn ignite_tnt(&mut self, pos: BlockPos) -> bool {
-        self.is_a(self.block(pos), "TntBlock") && self.prime_tnt(pos) && self.set_block(pos, BlockStateId::AIR, 11, update::LIMIT)
+        self.ignite_tnt_by(pos, None)
+    }
+
+    pub fn ignite_tnt_by(&mut self, pos: BlockPos, owner: Option<u64>) -> bool {
+        self.is_a(self.block(pos), "TntBlock") && self.prime_tnt_by(pos, owner) && self.set_block(pos, BlockStateId::AIR, 11, update::LIMIT)
     }
 
     /// `PrimedTnt(level, x, y, z, owner)`: a random horizontal nudge.
-    pub(super) fn new_primed_tnt(&mut self, pos: [f64; 3]) -> Entity {
+    pub(super) fn new_primed_tnt(&mut self, pos: [f64; 3], owner: Option<u64>) -> Entity {
         let rot = self.random.next_f64() * f64::from(std::f32::consts::TAU);
         let delta = [-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02];
-        Entity::primed_tnt(pos, delta, TntData { fuse: 80, power: 4.0 })
+        Entity::primed_tnt(pos, delta, TntData { fuse: 80, power: 4.0, owner })
     }
 
     /// `TntBlock.onPlace` / `neighborChanged`.
@@ -103,13 +112,13 @@ impl Level<'_> {
         let EntityKind::PrimedTnt(data) = &mut e.kind else { return };
         data.fuse -= 1;
         if data.fuse <= 0 {
-            let power = data.power;
+            let (power, owner) = (data.power, data.owner);
             e.removed = true;
             if self.tnt_explodes {
                 // `getY(0.0625)`: a sixteenth of the way up the box.
                 let y = e.pos[1] + f64::from(e.height) * 0.0625;
                 let interaction = if self.tnt_explosion_drop_decay { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Destroy };
-                let explosion = Explosion { center: [e.pos[0], y, e.pos[2]], radius: power, fire: false, interaction, source: Some(e.id) };
+                let explosion = Explosion { center: [e.pos[0], y, e.pos[2]], radius: power, fire: false, interaction, source: Some(e.id), owner };
                 if self.defer_tnt_blasts {
                     self.tnt_blasts.push(explosion);
                 } else {
@@ -396,7 +405,7 @@ impl Level<'_> {
         self.set_block(pos, BlockStateId::AIR, update::ALL, update::LIMIT);
         if tnt && self.tnt_explodes {
             // `wasExploded`: a primed TNT with a short random fuse.
-            let mut primed = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5]);
+            let mut primed = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], ex.owner);
             let fuse = self.random.next_i32_bound((80 / 4).max(1)) + 80 / 8;
             if let EntityKind::PrimedTnt(data) = &mut primed.kind {
                 data.fuse = fuse;
