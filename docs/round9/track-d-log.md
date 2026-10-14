@@ -1300,6 +1300,19 @@ After 7f709c62.
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword,minecraft:torch*64,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:ladder*64,minecraft:water_bucket,minecraft:potion@night_vision,minecraft:potion@night_vision
 ```
 
+## Review
+
+The adversarial review of the whole track (24dfdf71..2b1160db). One commit per fix.
+
+### 1. Track D's new custom spawner and horse files pass rustfmt
+
+After 2b1160db.
+
+- **Defect:** two new files of this track failed `rustfmt --check` on their committed content, against the rule for new files: `crates/minecraft_terrain/src/custom_spawners.rs` (group wandering-trader, two `assert!` calls in a test) and `third_party/minecraftoss/entities/src/world/equines.rs` (groups horse-family and riding: `ride_tick`, `horse_ride` and the riding tests).
+- **Changed:** both files formatted with `rustfmt --edition 2021` (they are new in this track, so no upstream lines move). No code changes.
+- **Tests:** none new; the formatting changes no behaviour.
+- **Test steps:** none.
+
 ## State doc changes
 
 - `docs/MINECRAFT-SURVIVAL.md`: drowned are now saved, loaded, hatched from their egg and seen by friends; a zombie that drowns keeps its equipment and name as a drowned. Drowned spawn naturally in rivers (one in 15 rolls), deep oceans (one in 40, below sea level minus 5) and dripstone cave water in the dark, with a trident (6.25 %) or a fishing rod (3.75 %) and a nautilus shell in the offhand (3 %), which they always drop; a player's kill sometimes drops the worn trident. By day drowned on land walk back into the water; at night they swim up and come out onto the nearest beach, and they stroll in the water. A drowned with a trident raises it over its head and throws it every 2 seconds at its target within sight (8 damage, "was impaled by Drowned"); the thrown tridents cannot be picked up and despawn after a minute. Friends see the raised arm and the tridents. Zombie nautilus jockeys and the trident roll for ocean ruin drowned are missing.

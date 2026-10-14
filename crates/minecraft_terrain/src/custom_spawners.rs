@@ -310,12 +310,16 @@ mod tests {
             TraderData::read(&minecraftoss_core::nbt::Tag::Compound(Default::default())),
             TraderData::default()
         );
-        assert!(CustomSpawners::for_dimension("minecraft:overworld")
-            .traders
-            .is_some());
-        assert!(CustomSpawners::for_dimension("minecraft:the_nether")
-            .traders
-            .is_none());
+        assert!(
+            CustomSpawners::for_dimension("minecraft:overworld")
+                .traders
+                .is_some()
+        );
+        assert!(
+            CustomSpawners::for_dimension("minecraft:the_nether")
+                .traders
+                .is_none()
+        );
     }
 
     #[test]

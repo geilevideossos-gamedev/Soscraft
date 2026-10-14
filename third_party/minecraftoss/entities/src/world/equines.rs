@@ -132,7 +132,11 @@ impl CowEntity {
         }
     }
 
-    pub(super) fn ride_tick(&mut self, world: &impl World, controls: &crate::controls::PlayerControls) {
+    pub(super) fn ride_tick(
+        &mut self,
+        world: &impl World,
+        controls: &crate::controls::PlayerControls,
+    ) {
         let fall = {
             let Some(horse) = self.horse.as_mut() else {
                 return;
@@ -177,19 +181,33 @@ impl CowEntity {
             if was_water {
                 cow.body.travel_water(world, input, yaw);
             } else if self.fluid.in_lava() {
-                cow.body.travel_lava(world, input, yaw, self.fluid.lava_height);
+                cow.body
+                    .travel_lava(world, input, yaw, self.fluid.lava_height);
             } else if let Some(fallen) =
-                cow.body.travel_air_flying(world, input, speed, yaw, false, speed * 0.1)
+                cow.body
+                    .travel_air_flying(world, input, speed, yaw, false, speed * 0.1)
             {
                 fall = fall_damage(&cow.body, world, fallen, false, &mut self.voices);
             }
             let sounds = horse_movement_sounds(horse, cow.age.baby());
-            play_movement(&mut cow.body, self.tick_count, &mut self.random, &mut self.voices, sounds);
-            self.body_rotation.tick(yaw, &mut self.look_control, self.previous_position, cow.body.position);
+            play_movement(
+                &mut cow.body,
+                self.tick_count,
+                &mut self.random,
+                &mut self.voices,
+                sounds,
+            );
+            self.body_rotation.tick(
+                yaw,
+                &mut self.look_control,
+                self.previous_position,
+                cow.body.position,
+            );
             self.body_rotation.body_yaw = yaw;
             self.look_control.head_yaw = yaw;
             if !was_water {
-                self.fluid = FluidFrame::sample(world, cow.body.position, cow.body.width, cow.body.height);
+                self.fluid =
+                    FluidFrame::sample(world, cow.body.position, cow.body.width, cow.body.height);
                 self.was_touching_water = cow.body.touching_water;
             }
             fall
@@ -421,16 +439,20 @@ impl EntityWorld {
             .controlling_player(id)
             .and_then(|p| self.player_controls(p))
             .cloned();
-        let crazy = entity.horse.as_ref().filter(|h| !h.tame && carrying).map(|h| crate::cow_ai::Crazy {
-            rider: match first {
-                Some(Rider::Player(p)) => Some(p),
-                _ => None,
-            },
-            mob_controlled: matches!(first, Some(Rider::Mob(_))),
-            temper: h.temper,
-            max_temper: h.kind.max_temper(),
-            target: None,
-        });
+        let crazy = entity
+            .horse
+            .as_ref()
+            .filter(|h| !h.tame && carrying)
+            .map(|h| crate::cow_ai::Crazy {
+                rider: match first {
+                    Some(Rider::Player(p)) => Some(p),
+                    _ => None,
+                },
+                mob_controlled: matches!(first, Some(Rider::Mob(_))),
+                temper: h.temper,
+                max_temper: h.kind.max_temper(),
+                target: None,
+            });
         HorseRide {
             player,
             mob_controlled: self.controlling_mob(id).is_some(),
@@ -1266,7 +1288,11 @@ mod tests {
         }
         let horse = world.cow_mut(id).unwrap().horse.clone().unwrap();
         assert_eq!(horse.owner, Some(77));
-        assert_eq!(world.vehicle_of(Rider::Player(0)), Some(id), "the rider stays on");
+        assert_eq!(
+            world.vehicle_of(Rider::Player(0)),
+            Some(id),
+            "the rider stays on"
+        );
         assert!(world.take_entity_events().contains(&(id, 7)));
         assert!(world.take_player_dismounts().is_empty());
     }
@@ -1292,7 +1318,10 @@ mod tests {
         let (player, vehicle, spot) = dismounts[0];
         assert_eq!((player, vehicle), (0, id));
         let spot = spot.expect("thrown beside it");
-        assert!((spot.y - 64.0).abs() < 1.0e-9 && spot.distance(feet) > 0.9, "{spot} {feet}");
+        assert!(
+            (spot.y - 64.0).abs() < 1.0e-9 && spot.distance(feet) > 0.9,
+            "{spot} {feet}"
+        );
         assert!(world.take_entity_events().contains(&(id, 6)));
     }
 
@@ -1301,26 +1330,60 @@ mod tests {
         let mut world = EntityWorld::default();
         let id = equine(&mut world, HorseKind::Horse, DVec3::new(0.5, 64.0, 0.5));
         let mut saddle = holding("minecraft:saddle");
-        assert!(!world.horse_rides_on_use(id, 0, Some("minecraft:saddle")), "a wild horse gets angry");
-        assert_eq!(world.horse_interact(id, 0, &mut saddle, 0, false), InteractionResult::SuccessPredicted);
+        assert!(
+            !world.horse_rides_on_use(id, 0, Some("minecraft:saddle")),
+            "a wild horse gets angry"
+        );
+        assert_eq!(
+            world.horse_interact(id, 0, &mut saddle, 0, false),
+            InteractionResult::SuccessPredicted
+        );
         assert!(!world.cow_mut(id).unwrap().horse.as_ref().unwrap().saddled);
-        world.cow_mut(id).unwrap().horse.as_mut().unwrap().clear_standing();
+        world
+            .cow_mut(id)
+            .unwrap()
+            .horse
+            .as_mut()
+            .unwrap()
+            .clear_standing();
         world.cow_mut(id).unwrap().horse.as_mut().unwrap().tame = true;
         assert!(!world.horse_rides_on_use(id, 0, Some("minecraft:saddle")));
-        assert_eq!(world.horse_interact(id, 0, &mut saddle, 0, false), InteractionResult::SuccessPredicted);
+        assert_eq!(
+            world.horse_interact(id, 0, &mut saddle, 0, false),
+            InteractionResult::SuccessPredicted
+        );
         assert!(world.cow_mut(id).unwrap().horse.as_ref().unwrap().saddled);
         assert_eq!(saddle.slots[0].as_ref().unwrap().count, 7);
-        assert!(world.horse_rides_on_use(id, 0, Some("minecraft:saddle")), "a second saddle just mounts");
+        assert!(
+            world.horse_rides_on_use(id, 0, Some("minecraft:saddle")),
+            "a second saddle just mounts"
+        );
         assert!(world.horse_rides_on_use(id, 0, None));
         let mut armor = holding("minecraft:iron_horse_armor");
         assert!(!world.horse_rides_on_use(id, 0, Some("minecraft:iron_horse_armor")));
         world.horse_interact(id, 0, &mut armor, 0, false);
-        assert_eq!(world.cow_mut(id).unwrap().horse.as_ref().unwrap().body_item.as_deref(), Some("minecraft:iron_horse_armor"));
+        assert_eq!(
+            world
+                .cow_mut(id)
+                .unwrap()
+                .horse
+                .as_ref()
+                .unwrap()
+                .body_item
+                .as_deref(),
+            Some("minecraft:iron_horse_armor")
+        );
         assert!(world.start_riding(Rider::Player(0), id, &Floor));
-        assert!(!world.horse_rides_on_use(id, 1, None), "one rider at a time");
+        assert!(
+            !world.horse_rides_on_use(id, 1, None),
+            "one rider at a time"
+        );
         assert_eq!(world.controlling_player(id), Some(0));
         let seat = world.seat(Rider::Player(0)).unwrap();
-        assert!((seat.y - (64.0 + f64::from(1.44375_f32) - 0.6)).abs() < 1.0e-6, "{seat}");
+        assert!(
+            (seat.y - (64.0 + f64::from(1.44375_f32) - 0.6)).abs() < 1.0e-6,
+            "{seat}"
+        );
         steer(&mut world, 90.0, 0.98, false);
         let players = [player(0, seat)];
         for _ in 0..40 {
@@ -1331,13 +1394,23 @@ mod tests {
         let moved = entity.cow.body.position;
         assert!(moved.x < -5.0 && (moved.z - 0.5).abs() < 1.0e-6, "{moved}");
         world.cow_mut(id).unwrap().horse.as_mut().unwrap().saddled = false;
-        assert_eq!(world.controlling_player(id), None, "without a saddle it walks its own way");
+        assert_eq!(
+            world.controlling_player(id),
+            None,
+            "without a saddle it walks its own way"
+        );
     }
 
     fn jump_peak(strength: f64) -> f64 {
         let mut world = EntityWorld::default();
         let id = ridden(&mut world, HorseKind::Horse, true, true);
-        world.cow_mut(id).unwrap().horse.as_mut().unwrap().jump_strength = strength;
+        world
+            .cow_mut(id)
+            .unwrap()
+            .horse
+            .as_mut()
+            .unwrap()
+            .jump_strength = strength;
         let players = [player(0, DVec3::new(0.5, 65.0, 0.5))];
         steer(&mut world, 0.0, 0.0, false);
         for _ in 0..5 {
@@ -1368,43 +1441,89 @@ mod tests {
         assert_eq!(world.ride_jump_scale(0), None, "a llama has no jump bar");
         assert_eq!(world.controlling_player(id), None);
         let point = world.passenger_point(id).unwrap();
-        assert!((point.y - f64::from(1.37_f32)).abs() < 1.0e-6 && (point.z + f64::from(0.3_f32)).abs() < 1.0e-6, "{point}");
+        assert!(
+            (point.y - f64::from(1.37_f32)).abs() < 1.0e-6
+                && (point.z + f64::from(0.3_f32)).abs() < 1.0e-6,
+            "{point}"
+        );
     }
 
     #[test]
-    fn a_tame_horse_s_inventory_opens_on_a_crouching_click_or_from_its_saddle_and_the_screen_sets_its_slots() {
+    fn a_tame_horse_s_inventory_opens_on_a_crouching_click_or_from_its_saddle_and_the_screen_sets_its_slots()
+     {
         let mut world = EntityWorld::default();
         let wild = equine(&mut world, HorseKind::Donkey, DVec3::new(0.5, 64.0, 0.5));
         let donkey = equine(&mut world, HorseKind::Donkey, DVec3::new(4.5, 64.0, 0.5));
         world.cow_mut(donkey).unwrap().horse.as_mut().unwrap().tame = true;
-        assert!(!world.horse_opens_inventory(donkey, 0), "a plain click rides it");
+        assert!(
+            !world.horse_opens_inventory(donkey, 0),
+            "a plain click rides it"
+        );
         world.set_player_controls(&[crate::controls::PlayerControls {
             id: 0,
             sneaking: true,
             ..Default::default()
         }]);
         assert!(world.horse_opens_inventory(donkey, 0));
-        assert!(!world.horse_opens_inventory(wild, 0), "a wild one has no inventory for you");
+        assert!(
+            !world.horse_opens_inventory(wild, 0),
+            "a wild one has no inventory for you"
+        );
         world.set_player_controls(&[crate::controls::PlayerControls {
             id: 0,
             ..Default::default()
         }]);
         assert!(world.start_riding(Rider::Player(0), donkey, &Floor));
-        assert!(world.horse_opens_inventory(donkey, 0), "its rider opens it with the inventory key");
+        assert!(
+            world.horse_opens_inventory(donkey, 0),
+            "its rider opens it with the inventory key"
+        );
         let mut chest = holding("minecraft:chest");
         world.drop_player(0);
         world.horse_interact(donkey, 0, &mut chest, 0, false);
-        assert_eq!(world.cow_mut(donkey).unwrap().horse.as_ref().unwrap().inventory.len(), 15);
+        assert_eq!(
+            world
+                .cow_mut(donkey)
+                .unwrap()
+                .horse
+                .as_ref()
+                .unwrap()
+                .inventory
+                .len(),
+            15
+        );
         let mut items = vec![None; 15];
         items[14] = Some(ItemStack::new("minecraft:wheat", 9));
-        world.set_mount_inventory(donkey, true, Some("minecraft:iron_horse_armor".to_owned()), items.clone());
+        world.set_mount_inventory(
+            donkey,
+            true,
+            Some("minecraft:iron_horse_armor".to_owned()),
+            items.clone(),
+        );
         let horse = world.cow_mut(donkey).unwrap().horse.clone().unwrap();
         assert!(horse.saddled && horse.inventory == items);
-        assert_eq!(horse.body_item.as_deref(), Some("minecraft:iron_horse_armor"));
+        assert_eq!(
+            horse.body_item.as_deref(),
+            Some("minecraft:iron_horse_armor")
+        );
         world.set_mount_inventory(donkey, true, None, vec![None; 3]);
-        assert_eq!(world.cow_mut(donkey).unwrap().horse.as_ref().unwrap().inventory, items, "a stale screen of another size is ignored");
-        let drops = horse_death_equipment(&world.cow_mut(donkey).unwrap().horse.clone().unwrap(), true);
+        assert_eq!(
+            world
+                .cow_mut(donkey)
+                .unwrap()
+                .horse
+                .as_ref()
+                .unwrap()
+                .inventory,
+            items,
+            "a stale screen of another size is ignored"
+        );
+        let drops =
+            horse_death_equipment(&world.cow_mut(donkey).unwrap().horse.clone().unwrap(), true);
         let ids: Vec<_> = drops.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["minecraft:saddle", "minecraft:wheat", "minecraft:chest"]);
+        assert_eq!(
+            ids,
+            ["minecraft:saddle", "minecraft:wheat", "minecraft:chest"]
+        );
     }
 }
