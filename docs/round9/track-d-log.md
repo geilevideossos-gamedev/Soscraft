@@ -1747,6 +1747,19 @@ After 953bfece.
 IW4L_MINECRAFT_KIT=minecraft:ravager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:evoker_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:cow_spawn_egg*4,minecraft:shield,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:oak_leaves*64,minecraft:birch_leaves*64,minecraft:cobblestone*64,minecraft:spyglass
 ```
 
+### 3. Track D's ravager renderer passes clippy
+
+After 7e008469.
+
+- **Changed:** `crates/minecraft_terrain/src/ravager_render.rs`: the jaw's pitch is one `if` expression (`clippy::needless_late_init`); no change in what is drawn.
+- **Tests:** `ravager_render::tests` (4) green. Clippy on `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain`, `minecraft_survival` and `render_anim` (`--all-targets`, `-A clippy::approx_constant`) finds nothing in group ravagers' code. The file passes `rustfmt --check --edition 2021`.
+- **Test steps:** none; commit 2's steps hold.
+- **Kit:** commit 2's.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ravager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:evoker_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:cow_spawn_egg*4,minecraft:shield,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:oak_leaves*64,minecraft:birch_leaves*64,minecraft:cobblestone*64,minecraft:spyglass
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision), and groups pillagers and patrols-vindicators keep their own kits (their last commits).

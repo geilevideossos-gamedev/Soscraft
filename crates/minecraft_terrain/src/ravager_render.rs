@@ -84,17 +84,16 @@ pub fn ravager_pose(mob: &MobPose, look: RavagerLook) -> RavagerPose {
     let deg = 0.017_453_292_f32;
     let mut neck_offset = [0.0, -7.0, 5.5];
     let mut neck_pitch = 0.0;
-    let mouth_pitch;
-    if look.attack_ticks > 0.0 {
+    let mouth_pitch = if look.attack_ticks > 0.0 {
         let wave = (1.0 + triangle_wave(look.attack_ticks, ATTACK_TICKS)) * 0.5;
         let lunge = wave * wave * wave * 12.0;
         neck_offset[2] = -6.5 + lunge;
         neck_offset[1] = -7.0 - lunge * mth_sin(0.0);
-        mouth_pitch = if look.attack_ticks > 5.0 {
+        if look.attack_ticks > 5.0 {
             mth_sin((-4.0 + look.attack_ticks) / 4.0) * PI * 0.4
         } else {
             0.157_079_64 * mth_sin(PI * look.attack_ticks / 10.0)
-        };
+        }
     } else {
         let stunned = look.stunned_ticks > 0.0;
         neck_pitch = if stunned { STUNNED_NECK } else { 0.0 };
@@ -105,8 +104,8 @@ pub fn ravager_pose(mob: &MobPose, look: RavagerLook) -> RavagerPose {
         } else if look.roar > 0.0 {
             mouth = FRAC_PI_2 * mth_sin(look.roar * PI * 0.25);
         }
-        mouth_pitch = mouth;
-    }
+        mouth
+    };
     let swing = 0.4 * mob.walk_speed;
     let walk = mob.walk_position * 0.6662;
     let neck = part_pose(neck_offset, [neck_pitch, 0.0, 0.0]);
