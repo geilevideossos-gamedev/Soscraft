@@ -547,6 +547,9 @@ impl EntityView {
         for e in w.witches().iter().filter(|e| e.witch.health > 0.0) {
             add(MobHit::Witch(e.id), &e.witch.body);
         }
+        for e in w.illagers().iter().filter(|e| e.illager.health > 0.0) {
+            add(MobHit::Illager(e.id), &e.illager.body);
+        }
         for e in w.iron_golems().iter().filter(|e| e.golem.health > 0.0) {
             add(MobHit::IronGolem(e.id), &e.golem.body);
         }
@@ -927,6 +930,14 @@ impl EntityView {
             light,
             partial,
         );
+        let illager_items = minecraft_terrain::illager_render::append_illagers(
+            &mut out.models,
+            w.illagers().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
         shulker_render::append_shulkers(
             &mut out.models,
             w.shulkers().iter(),
@@ -1136,6 +1147,7 @@ impl EntityView {
             .chain(trader_items)
             .chain(witch_items)
             .chain(piglin_items)
+            .chain(illager_items)
             .chain(placed_items.iter().cloned())
             .collect();
         let _ = self

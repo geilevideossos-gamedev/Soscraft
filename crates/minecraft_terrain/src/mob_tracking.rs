@@ -274,7 +274,8 @@ pub fn tracking_range(kind: &str) -> i32 {
         "zombie" | "husk" | "drowned" | "zombie_villager" | "zombified_piglin" | "skeleton"
         | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
-        | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" | "mule" | "snow_golem" => 8,
+        | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" | "mule" | "snow_golem"
+        | "pillager" | "vindicator" | "evoker" => 8,
         "item" | "experience_orb" => 6,
         "arrow" | "spectral_arrow" | "snowball" | "egg" | "ender_pearl" | "eye_of_ender"
         | "trident" | "fireball" | "small_fireball" | "dragon_fireball" | "splash_potion"
@@ -403,6 +404,18 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             e.id,
             MobShow {
                 pumpkin: e.golem.pumpkin,
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.illagers() {
+        put(
+            e.id,
+            MobShow {
+                aggressive: e.illager.aggressive,
+                charging: e.illager.charging_crossbow,
+                arm_pose: minecraftoss_entities::illager::arm_pose_index(e.arm_pose),
+                using_item: e.using_item,
                 ..MobShow::default()
             },
         );
@@ -601,6 +614,13 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
     if let Some(e) = world.snow_golem_mut(id) {
         place(&mut e.previous_position, &mut e.golem.body, mob);
         e.golem.pumpkin = show.pumpkin;
+    }
+    if let Some(e) = world.illager_mut(id) {
+        place(&mut e.previous_position, &mut e.illager.body, mob);
+        e.illager.aggressive = show.aggressive;
+        e.illager.charging_crossbow = show.charging;
+        e.arm_pose = minecraftoss_entities::illager::arm_pose_of(show.arm_pose);
+        e.using_item = show.using_item;
     }
     if let Some(e) = world.ghast_mut(id) {
         place(&mut e.previous_position, &mut e.ghast.body, mob);
@@ -1258,6 +1278,42 @@ mod tests {
             show_on(&mut friend, &mob);
         }
         assert!(!friend.wandering_traders()[0].invisible());
+    }
+
+    #[test]
+    fn a_friend_sees_a_pillager_charge_and_then_hold_its_crossbow() {
+        use minecraftoss_entities::illager::{Illager, IllagerArmPose};
+        let at = DVec3::new(2.5, 64.0, 0.5);
+        let mut host = EntityWorld::default();
+        let id = host.spawn_illager(Illager::pillager(at), true);
+        let mut friend = EntityWorld::default();
+        assert_eq!(friend.spawn_illager(Illager::pillager(at), true), id);
+        assert_eq!(tracking_range("minecraft:pillager"), 8);
+        {
+            let e = host.illager_mut(id).unwrap();
+            e.illager.charging_crossbow = true;
+            e.arm_pose = IllagerArmPose::CrossbowCharge;
+            e.using_item = Some(12);
+        }
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.illagers()[0];
+        assert_eq!((seen.arm_pose, seen.using_item), (IllagerArmPose::CrossbowCharge, Some(12)));
+        assert!(seen.illager.charging_crossbow);
+        {
+            let e = host.illager_mut(id).unwrap();
+            e.illager.charging_crossbow = false;
+            e.arm_pose = IllagerArmPose::CrossbowHold;
+            e.using_item = None;
+            e.illager.aggressive = true;
+        }
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.illagers()[0];
+        assert_eq!((seen.arm_pose, seen.using_item), (IllagerArmPose::CrossbowHold, None));
+        assert!(seen.illager.aggressive && !seen.illager.charging_crossbow);
     }
 
     #[test]

@@ -1418,6 +1418,35 @@ After b429636a.
 IW4L_MINECRAFT_KIT=minecraft:pillager_spawn_egg*8,minecraft:iron_golem_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:wandering_trader_spawn_egg*2,minecraft:shield,minecraft:diamond_sword,minecraft:cooked_beef*32
 ```
 
+### 2. Minecraft pillagers are drawn like vanilla
+
+After 836bb203.
+
+- **Vanilla (javap, 26.3):**
+  - `LayerDefinitions`: `ModelLayers.PILLAGER` (and `EVOKER`, `VINDICATOR`, `ILLUSIONER`) is `IllagerModel.createBodyLayer()` with `MeshTransformer.scaling(0.9375)` (the root scaled by 0.9375 and moved down `24.016 * (1 - 0.9375)` pixels).
+  - `IllagerModel.createBodyLayer` (64 x 64): `head` (0, 0) box (-4, -10, -4) 8 x 10 x 8 at (0, 0, 0) with the `hat` (32, 0) box (-4, -10, -4) 8 x 12 x 8 grown 0.45 (hidden: `hat.visible = false`) and the `nose` (24, 0) box (-1, -1, -6) 2 x 4 x 2 at (0, -2, 0); `body` (16, 20) box (-4, 0, -3) 8 x 12 x 6 and the robe (0, 38) box (-4, 0, -3) 8 x 20 x 6 grown 0.5; `arms` at (0, 3, -1) turned -0.75 about X: (44, 22) box (-8, -2, -2) 4 x 8 x 4 and (40, 38) box (-4, 2, -2) 8 x 4 x 4, with `left_shoulder` (44, 22) mirrored box (4, -2, -2) 4 x 8 x 4; `right_leg` (0, 22) box (-2, 0, -2) 4 x 12 x 4 at (-2, 12, 0), `left_leg` the same mirrored at (2, 12, 0); `right_arm` (40, 46) box (-3, -2, -2) 4 x 12 x 4 at (-5, 2, 0), `left_arm` the same mirrored, box (-1, -2, -2), at (5, 2, 0).
+  - `IllagerModel.setupAnim`: the head turns and pitches; riding, the arms are at -0.628 and the legs at -1.414 spread 0.314 and rolled 0.0785; walking, the arms swing `cos(pos * 0.6662 (+ pi)) * 2 * speed * 0.5` and the legs `* 1.4 * speed * 0.5`. By arm pose: `ATTACKING` (zombie arms and a second bob with an empty main hand, else `swingWeaponDown`), `SPELLCASTING` (arms raised to 2.356 rolled, swaying 0.25), `BOW_AND_ARROW`, `CROSSBOW_HOLD` (`AnimationUtils.animateCrossbowHold`, always right-handed: the right arm -0.3 and the left 0.6 plus the head's turn, the right arm -pi/2 + 0.1 and the left -1.5 plus the head's pitch), `CROSSBOW_CHARGE` (`animateCrossbowCharge`, right-handed: the right arm at -0.8 and -0.971, the left drawing from 0.4 to 0.85 and from -0.971 to -pi/2 over the 25 charge ticks), `CELEBRATING`. The crossed `arms` show only for `CROSSED`, the two free arms otherwise.
+  - `IllagerRenderer`: shadow 0.5 (`PillagerRenderer`), a `CustomHeadLayer`; `extractRenderState` takes the riding flag, the main arm, the arm pose, the crossbow's charge duration while charging and the ticks used with the partial tick. `PillagerRenderer` adds `ItemInHandLayer` (both hands, always) and draws `textures/entity/illager/pillager.png`.
+  - `ItemInHandLayer`: the arm's pose, then -90 degrees about X, 180 about Y and out to the hand (`±1/16, 2/16, -10/16`), in the third-person hand display.
+- **Changed:**
+  - New `crates/minecraft_terrain/src/illager_render.rs`: the model ported from `createBodyLayer` and `setupAnim` on `posed_cube` (all eight arm poses, riding, the 0.9375 scale, the grown robe, the hidden hat), the textures of the three illagers, the crossbow (or any held item) in the hand by `ItemInHandLayer`'s pose, shadow 0.5.
+  - `minecraft_terrain`: `lib.rs` (the module), `mesh.rs` (the three illager textures), `client_mobs.rs` (the pose push and the shadow), `mob_tracking.rs` (pillagers, vindicators and evokers tracked at 8 chunks; friends see the arm pose, the charge ticks, charging and aggression through `MobShow.arm_pose`, `using_item`, `charging` and `aggressive`, no new field).
+  - `minecraft_survival/src/entity_view.rs`: the illagers drawn with their held items, and their hit boxes for MW2 bullets (hit key 32 from commit 1).
+- **Tests:**
+  - `minecraft_terrain`: `illager_render::tests` (`a_pillager_stands_two_blocks_tall_at_fifteen_sixteenths_with_free_arms`, `crossed_arms_replace_the_two_free_arms`, `a_crossbow_is_held_up_to_the_eye_and_the_string_pulled_while_charging`, `the_crossbow_sits_in_the_right_hand_ten_pixels_down_the_arm`, `a_riding_illager_bends_its_legs_forward`), `mob_tracking::tests::a_friend_sees_a_pillager_charge_and_then_hold_its_crossbow`.
+  - Runs: `minecraft_terrain` illager and tracking tests, `minecraft_survival` lib 715, all green. `check -p launcher` green. The new `illager_render.rs` passes `rustfmt --check --edition 2021`.
+- **Decisions:**
+  - The held crossbow is drawn with its plain item model: the held-item renderer takes no components, so a loaded crossbow does not show its arrow and a charging one does not show its pull (the piglin's crossbow is drawn the same way).
+  - The hat cube is left out, as vanilla hides it; no layer draws it for illagers.
+  - The custom head layer (a block or skull worn on the head) is not drawn: the fork's mobs draw armour heads elsewhere and pillagers wear none (the captain's banner comes with group `patrols-vindicators`).
+  - Pillagers are not drawn in spawner cages yet: the cage builds its mob from the saved tag, which commit 3 brings.
+- **Test steps:** none on their own; commit 3's steps check the model (a pillager can be hatched from commit 3 on).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:pillager_spawn_egg*8,minecraft:iron_golem_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:wandering_trader_spawn_egg*2,minecraft:shield,minecraft:diamond_sword,minecraft:cooked_beef*32
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision).
