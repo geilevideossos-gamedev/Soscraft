@@ -149,7 +149,7 @@ impl Level<'_> {
     }
 
     fn explode_from(&mut self, ex: Explosion, shield: Option<BlockPos>, dangerous: bool) -> usize {
-        let mut to_blow = self.exploded_positions(&ex, shield, dangerous);
+        let mut to_blow = self.exploded_positions(&ex, shield, dangerous, false);
         self.hurt_entities(&ex);
         if ex.interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&ex, &mut to_blow);
@@ -164,6 +164,24 @@ impl Level<'_> {
             interacts: ex.interaction != BlockInteraction::Keep,
         });
         to_blow.len()
+    }
+
+    pub fn wind_charge_blocks(&mut self, center: [f64; 3], radius: f32) -> Vec<BlockPos> {
+        let ex = Explosion { center, radius, fire: false, interaction: BlockInteraction::TriggerBlock, source: None, owner: None };
+        let mut targets = self.exploded_positions(&ex, None, false, true);
+        let mut i = targets.len();
+        while i > 1 {
+            let j = self.random.next_i32_bound(i as i32) as usize;
+            targets.swap(i - 1, j);
+            i -= 1;
+        }
+        targets
+    }
+
+    fn wind_charge_resistance(&self, state: BlockStateId) -> Option<f32> {
+        let registries = self.registries();
+        let immune = registries.block_tags.id("minecraft:blocks_wind_charge_explosions").is_some_and(|tag| registries.block_in_tag(state, tag));
+        immune.then_some(3_600_000.0)
     }
 
     pub fn light_fire(&mut self, pos: BlockPos) -> bool {
@@ -203,7 +221,7 @@ impl Level<'_> {
 
     /// `ServerExplosion.calculateExplodedPositions`, in the iteration order
     /// of vanilla's `HashSet`.
-    fn exploded_positions(&mut self, ex: &Explosion, shield: Option<BlockPos>, dangerous: bool) -> Vec<BlockPos> {
+    fn exploded_positions(&mut self, ex: &Explosion, shield: Option<BlockPos>, dangerous: bool, wind: bool) -> Vec<BlockPos> {
         let mut seen = HashSet::new();
         let mut inserted = Vec::new();
         for xx in 0..16 {
@@ -229,6 +247,7 @@ impl Level<'_> {
                         }
                         let resistance = if shield == Some(pos) { Some(WATER_RESISTANCE) } else { self.explosion_resistance(state) };
                         let resistance = if dangerous && self.wither_can_destroy(state) { resistance.map(|r| r.min(0.8)) } else { resistance };
+                        let resistance = if wind { self.wind_charge_resistance(state) } else { resistance };
                         if let Some(resistance) = resistance {
                             remaining -= (resistance + 0.3f32) * 0.3f32;
                         }

@@ -107,6 +107,7 @@ pub struct ServerSim {
     end_players: Vec<crate::ender_dragon::PlayerBody>,
     frames: crate::item_frame::Frames,
     frame_sounds: Vec<minecraftoss_entities::world::MobSound>,
+    wind_sounds: Vec<minecraftoss_entities::world::MobSound>,
     lectern_viewers: std::collections::HashMap<u64, BlockPos>,
     lecterns: Vec<crate::lectern::LecternView>,
     trackers: crate::mob_tracking::Trackers,
@@ -479,6 +480,7 @@ impl ServerSim {
             end_players: Vec::new(),
             frames: crate::item_frame::Frames::default(),
             frame_sounds: Vec::new(),
+            wind_sounds: Vec::new(),
             lectern_viewers: std::collections::HashMap::new(),
             lecterns: Vec::new(),
             trackers: Default::default(),
@@ -1884,16 +1886,38 @@ impl ServerSim {
         self.mobs.set_player_uuid(player, uuid);
     }
 
-    fn wind_burst(&mut self, center: glam::DVec3, players: &[crate::thrown::PlayerBody]) {
+    fn wind_burst(&mut self, center: glam::DVec3, players: &[crate::thrown::PlayerBody], charge: crate::wind::Charge) {
+        let blocks = self.level.wind_charge_blocks(center.to_array(), charge.radius());
         let pushes = {
             let Self { level, states, mob_tables, mobs, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-            crate::wind::burst(&world, mobs, center, players)
+            crate::wind::burst(&world, mobs, center, players, charge)
         };
         self.players_pushed.extend(pushes);
-        self.level.wind_burst(center.to_array(), crate::wind::RADIUS, crate::wind::KNOCKBACK);
+        self.level.wind_burst(center.to_array(), charge.radius(), charge.knockback());
+        if charge.triggers_blocks(self.mobs.mob_griefing()) {
+            for pos in blocks {
+                self.wind_trigger(pos);
+            }
+        }
         let (a, b) = (self.sound_random.next_float(), self.sound_random.next_float());
-        self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::wind::BURST_SOUND, pos: center.to_array(), volume: 4.0, pitch: crate::wind::burst_pitch(a, b) });
+        self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: charge.sound(), pos: center.to_array(), volume: 4.0, pitch: crate::wind::burst_pitch(a, b) });
+    }
+
+    fn wind_trigger(&mut self, pos: minecraftoss_core::BlockPos) {
+        let Some((before, draw)) = self.level.wind_trigger(pos) else { return };
+        let Some(block) = self.mob_tables.names.get(usize::from(before.0)).cloned().flatten() else { return };
+        let sound = match crate::doors::toggle_sound(&block) {
+            Some(sound) => (sound.event, sound.volume, sound.pitch + draw * sound.pitch_spread),
+            None if block.id.contains("candle") => (crate::bucket::CANDLE_DOUSE_SOUND.to_owned(), 1.0, 1.0),
+            None => return,
+        };
+        let position = glam::DVec3::new(f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5);
+        self.wind_sounds.push(minecraftoss_entities::world::MobSound { event: sound.0, position, volume: sound.1, pitch: sound.2, category: "blocks" });
+    }
+
+    pub fn take_wind_sounds(&mut self) -> Vec<minecraftoss_entities::world::MobSound> {
+        std::mem::take(&mut self.wind_sounds)
     }
 
     pub fn tick_tridents(&mut self, players: &[crate::thrown::PlayerBody]) {
@@ -2201,7 +2225,7 @@ impl ServerSim {
                 }
                 None => {}
             }
-            self.wind_burst(center, players);
+            self.wind_burst(center, players, crate::wind::Charge::Player);
         }
         for (mob, velocity, owner, seed) in struck {
             crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
@@ -4239,6 +4263,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.player_hits.append(&mut sim.mob_trident_hits);
     out.mob_sounds.extend(sim.take_end_sounds());
     out.mob_sounds.extend(sim.take_frame_sounds());
+    out.mob_sounds.extend(sim.take_wind_sounds());
     out.dragons_killed.extend(sim.take_dragons_killed());
     out.fight_reports.extend(sim.take_fight_reports());
     out.pearl_teleports.extend(sim.take_pearl_teleports());
@@ -7385,6 +7410,61 @@ mod tests {
             server.tick_thrown(&[]);
         }
         assert_eq!(cow_health(&server, 8.5).or_else(|| server.mobs.cows().first().map(|c| c.cow.health)), Some(9.0));
+    }
+
+    fn place_at(server: &mut ServerSim, scene: &mut HandcraftedScene, pos: BlockPos, block: Block) {
+        scene.set(pos, Some(block));
+        server.player_edit(scene, pos, PlayerEdit::Place);
+    }
+
+    #[test]
+    fn a_wind_burst_opens_a_wooden_door_presses_a_button_and_puts_out_a_candle_but_leaves_an_iron_door() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:oak_door");
+        for pos in [(7, 199, 6), (10, 200, 7), (8, 199, 6)] {
+            place_at(&mut server, &mut scene, pos, Block::new("minecraft:stone"));
+        }
+        for (y, half) in [(200, "lower"), (201, "upper")] {
+            let iron = Block::new("minecraft:iron_door").with("facing", "north").with("half", half).with("hinge", "left").with("open", "false").with("powered", "false");
+            place_at(&mut server, &mut scene, (7, y, 6), iron);
+        }
+        place_at(&mut server, &mut scene, (9, 200, 7), Block::new("minecraft:stone_button").with("face", "wall").with("facing", "west").with("powered", "false"));
+        place_at(&mut server, &mut scene, (8, 200, 6), Block::new("minecraft:candle").with("candles", "1").with("lit", "true").with("waterlogged", "false"));
+        server.take_changes();
+        server.take_wind_sounds();
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 7.5), &[], crate::wind::Charge::Player);
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(open(&changes, (8, 200, 8)), Some(true));
+        assert_eq!(open(&changes, (8, 201, 8)), Some(true));
+        assert!(!changes.contains_key(&(7, 200, 6)) && !changes.contains_key(&(7, 201, 6)), "iron doors stay shut");
+        let button = changes.get(&(9, 200, 7)).cloned().flatten();
+        assert_eq!(button.as_ref().and_then(|b| b.properties.get("powered")).map(String::as_str), Some("true"));
+        let candle = changes.get(&(8, 200, 6)).cloned().flatten();
+        assert_eq!(candle.as_ref().and_then(|b| b.properties.get("lit")).map(String::as_str), Some("false"));
+        let sounds: Vec<_> = server.take_wind_sounds().into_iter().map(|s| s.event).collect();
+        for event in ["minecraft:block.wooden_door.open", "minecraft:block.stone_button.click_on", crate::bucket::CANDLE_DOUSE_SOUND] {
+            assert!(sounds.iter().any(|s| s == event), "{event} in {sounds:?}");
+        }
+        assert_eq!(sounds.len(), 3, "{sounds:?}");
+    }
+
+    #[test]
+    fn a_breeze_burst_triggers_blocks_only_with_mob_griefing() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:oak_door");
+        server.mobs.set_mob_griefing(false);
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 7.75), &[], crate::wind::Charge::Breeze);
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(open(&changes, (8, 200, 8)), None);
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::wind::BREEZE_BURST_SOUND));
+        server.mobs.set_mob_griefing(true);
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 7.75), &[], crate::wind::Charge::Breeze);
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(open(&changes, (8, 200, 8)), Some(true));
+        server.mobs.set_mob_griefing(false);
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 7.75), &[], crate::wind::Charge::Player);
+        let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+        assert_eq!(open(&changes, (8, 200, 8)), Some(false), "a player's charge ignores the rule");
     }
 
     #[test]
