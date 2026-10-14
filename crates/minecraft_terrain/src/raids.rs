@@ -1539,7 +1539,7 @@ mod tests {
                 "a player far away sees no bar"
             );
             if !village.living().is_empty() {
-                village.kill_all(if turn % 2 == 0 { 0 } else { 5 });
+                village.kill_all(if turn.is_multiple_of(2) { 0 } else { 5 });
                 turn += 1;
             }
             !out.heroes.is_empty()

@@ -1840,6 +1840,19 @@ After 8f46df5c.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:ominous_bottle[ominous_bottle_amplifier=2]*2,minecraft:milk_bucket,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:crossbow,minecraft:shield,minecraft:totem_of_undying,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:villager_spawn_egg*8,minecraft:bell,minecraft:spyglass,minecraft:witch_spawn_egg*2,minecraft:pillager_spawn_egg*2,minecraft:wooden_sword
 ```
 
+### 3. Track D's raid test passes clippy
+
+After fb7bb5df.
+
+- **Changed:** `crates/minecraft_terrain/src/raids.rs`: a test picks the killer with `is_multiple_of` (`clippy::manual_is_multiple_of`); no change in the game.
+- **Tests:** `raids::tests` (8) green. Clippy on `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain`, `minecraft_survival`, `render_anim` and `hud` (`--all-targets`, `-A clippy::approx_constant`) finds nothing else in group raids' code. The file passes `rustfmt --check --edition 2021`.
+- **Test steps:** none; commits 1 and 2 hold.
+- **Kit:** commit 2's.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:ominous_bottle[ominous_bottle_amplifier=2]*2,minecraft:milk_bucket,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:crossbow,minecraft:shield,minecraft:totem_of_undying,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:villager_spawn_egg*8,minecraft:bell,minecraft:spyglass,minecraft:witch_spawn_egg*2,minecraft:pillager_spawn_egg*2,minecraft:wooden_sword
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision), and groups pillagers and patrols-vindicators keep their own kits (their last commits).
