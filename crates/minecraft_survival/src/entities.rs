@@ -3203,8 +3203,7 @@ mod tests {
         assert_eq!(kept.iter().map(|hit| hit.player_id).collect::<Vec<_>>(), [FRIEND, HOST], "a blast by someone gone, and an ownerless one, still hurt");
         assert_eq!(pushed, [(HOST, DVec3::new(0.0, 0.2, HOST as f64)), (FRIEND, DVec3::new(0.0, 0.2, FRIEND as f64))], "the igniter included");
         let mut queues = two_queues();
-        let mut output = minecraft_terrain::server::Output::default();
-        output.player_hits = all[..2].to_vec();
+        let mut output = minecraft_terrain::server::Output { player_hits: all[..2].to_vec(), ..Default::default() };
         let is_player = |id: u64| id == HOST || id == FRIEND;
         spared_by_blasts_without_pvp(&mut output.player_hits, &mut output.players_pushed, false, is_player);
         queues.route(&mut output, 2, |_| None);

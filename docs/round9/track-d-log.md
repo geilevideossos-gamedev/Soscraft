@@ -2556,6 +2556,10 @@ After 8a834f02. Not in the brief's list: commit 3 names the igniter in the hit, 
 IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:flint_and_steel,minecraft:anvil,minecraft:experience_bottle*16,minecraft:cobblestone*64,minecraft:cooked_beef*16
 ```
 
+### 6. Track D's TNT pvp test passes clippy
+
+After 96d39045. Clippy on `minecraft_terrain` and `minecraft_survival` (tests included, `-A clippy::approx_constant`) flagged one line of this group: `field_reassign_with_default` in `entities::tests::with_pvp_off_a_players_blast_only_pushes_players` (commit 3), now a struct literal. The other warnings in the touched files (`server.rs:649`, `:3263`) are upstream's. No game change, no test steps, no kit.
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
