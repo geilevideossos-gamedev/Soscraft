@@ -98,7 +98,7 @@ impl MobCategory {
         Some(match kind.trim_start_matches("minecraft:") {
             "zombie" | "zombie_villager" | "zombie_horse" | "skeleton" | "creeper" | "spider" | "enderman" | "witch" | "slime" | "husk" | "stray" | "drowned"
             | "bogged" | "parched" | "camel_husk" | "cave_spider" | "silverfish" | "phantom" | "blaze" | "ghast" | "magma_cube" | "piglin" | "hoglin"
-            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" | "vindicator" | "evoker" => Self::Monster,
+            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" | "vindicator" | "evoker" | "vex" => Self::Monster,
             "cow" | "pig" | "sheep" | "chicken" | "horse" | "donkey" | "mule" | "mooshroom" | "rabbit" | "wolf" | "fox" | "goat" | "llama" | "panda"
             | "polar_bear" | "cat" | "ocelot" | "parrot" | "frog" | "camel" | "armadillo" | "turtle" | "strider" => Self::Creature,
             "bat" => Self::Ambient,
@@ -1141,6 +1141,17 @@ impl CreatureSpawns {
                 Self::finalize_raider(level, &mut tag, true, false);
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
+            "minecraft:vex" => {
+                equip(&mut tag, "mainhand", "minecraft:iron_sword");
+                if let Tag::Compound(map) = &mut tag {
+                    let chances = map.entry("drop_chances".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new()));
+                    if let Tag::Compound(chances) = chances {
+                        chances.insert("mainhand".to_owned(), Tag::Float(0.0));
+                    }
+                }
+                Self::roll_enchantments(level, &mut tag, difficulty);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
             "minecraft:witch" => {
                 // `Raider.finalizeSpawn`, then `PatrollingMonster`'s leader
                 // roll (witches never lead), then `Mob`'s part.
@@ -1991,6 +2002,37 @@ mod tests {
             }
         }
         assert!((15..=60).contains(&leaders), "about 6 %: {leaders}");
+    }
+
+    #[test]
+    fn a_summoned_vex_carries_an_iron_sword_it_never_drops() {
+        use minecraftoss_core::nbt::Tag;
+        let info = super::type_info("minecraft:vex").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.fire_immune, info.rules), (0.4, 0.8, super::super::Placement::NoRestrictions, true, super::Rules::Monster));
+        assert_eq!(MobCategory::of_type("minecraft:vex"), Some(MobCategory::Monster));
+        let Some((spawns, column)) = river() else { return };
+        let mut land = Column { solid_top: 64, water_top: 64, darken: 0, added: Vec::new(), ..column };
+        let mut context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 6000,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed: 0,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let tag = spawns.summon(&mut land, &mut context, "minecraft:vex", [0.5, 65.0, 0.5], None, 0.0).expect("a vex");
+        assert_eq!(tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|h| h.get("id")).and_then(Tag::as_str), Some("minecraft:iron_sword"));
+        assert_eq!(tag.get("drop_chances").and_then(|c| c.get("mainhand")).and_then(Tag::as_f64), Some(0.0));
+        assert!(tag.get("life_ticks").is_none(), "a summoned vex lives on");
     }
 
     #[test]

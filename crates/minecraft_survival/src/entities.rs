@@ -1843,6 +1843,7 @@ pub(crate) fn encode(hit: MobHit) -> u64 {
         MobHit::WanderingTrader(_) => WANDERING_TRADER_KEY,
         MobHit::SnowGolem(_) => SNOW_GOLEM_KEY,
         MobHit::Illager(_) => ILLAGER_KEY,
+        MobHit::Vex(_) => VEX_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1876,6 +1877,7 @@ pub(crate) fn decode(key: u64) -> Option<MobHit> {
         WANDERING_TRADER_KEY => MobHit::WanderingTrader(id),
         SNOW_GOLEM_KEY => MobHit::SnowGolem(id),
         ILLAGER_KEY => MobHit::Illager(id),
+        VEX_KEY => MobHit::Vex(id),
         _ => return None,
     })
 }
@@ -1891,6 +1893,7 @@ const FELINE_KEY: u64 = 29;
 const WANDERING_TRADER_KEY: u64 = 30;
 const SNOW_GOLEM_KEY: u64 = 31;
 const ILLAGER_KEY: u64 = 32;
+const VEX_KEY: u64 = 33;
 pub(crate) const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
@@ -2252,6 +2255,13 @@ mod tests {
         assert_eq!(fireball_of(key), None);
         assert_eq!(crystal_of(key), None);
         assert_eq!(end_target_of(key), None);
+    }
+
+    #[test]
+    fn a_vex_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Vex(84));
+        assert_eq!(key >> 56, 33);
+        assert_eq!(decode(key), Some(MobHit::Vex(84)));
     }
 
     #[test]

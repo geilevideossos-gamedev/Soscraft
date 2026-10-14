@@ -55,6 +55,14 @@ impl EntityWorld {
             return true;
         }
         let owner_kind = self.entity_type(owner);
+        if kind == crate::vex::TYPE_ID {
+            let master = self.vex_owner(victim);
+            let illager_vex = master
+                .and_then(|m| self.entity_type(m))
+                .is_some_and(crate::illager::is_illager);
+            return master == Some(owner)
+                || (illager_vex && owner_kind.is_some_and(crate::illager::is_illager));
+        }
         owner_kind.is_some_and(crate::illager::is_illager) && crate::illager::is_illager(kind)
     }
 

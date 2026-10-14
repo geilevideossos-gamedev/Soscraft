@@ -537,6 +537,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         textures.insert(ResourceId::parse(texture)?, ());
     }
     textures.insert(ResourceId::parse(crate::evoker_fangs_render::TEXTURE)?, ());
+    for texture in crate::vex_render::TEXTURES {
+        textures.insert(ResourceId::parse(texture)?, ());
+    }
     for cracks in ["low", "medium", "high"] {
         textures.insert(ResourceId::parse(&format!("minecraft:entity/iron_golem/iron_golem_crackiness_{cracks}"))?, ());
     }

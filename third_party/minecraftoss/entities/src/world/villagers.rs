@@ -333,6 +333,9 @@ impl EntityWorld {
         for e in &self.illagers {
             out.push(seen_of(e.illager.kind.type_id(), "monster", &e.illager.body, crate::illager::EYE_HEIGHT, e.illager.health > 0.0, false, e.id));
         }
+        for e in &self.vexes {
+            out.push(seen_of(crate::vex::TYPE_ID, "monster", &e.vex.body, crate::vex::EYE_HEIGHT, e.vex.health > 0.0, false, e.id));
+        }
         for p in players {
             out.push(Seen {
                 id: PLAYER_TARGET + p.id,

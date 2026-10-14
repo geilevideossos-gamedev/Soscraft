@@ -12,7 +12,7 @@ use crate::client_mobs::{ServerMob, server_mobs};
 pub const LOOK_TICKS: u64 = 10;
 pub const DEFAULT_RANGE: i32 = 5;
 
-const VOLATILE: [&str; 32] = [
+const VOLATILE: [&str; 33] = [
     "Pos",
     "Motion",
     "Rotation",
@@ -45,6 +45,7 @@ const VOLATILE: [&str; 32] = [
     "DespawnDelay",
     "SpellTicks",
     "Warmup",
+    "life_ticks",
 ];
 
 const ARM_POSES: [ArmPose; 6] = [
@@ -279,7 +280,7 @@ pub fn tracking_range(kind: &str) -> i32 {
         | "stray" | "bogged" | "wither_skeleton" | "parched" | "creeper" | "spider"
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
         | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" | "mule" | "snow_golem"
-        | "pillager" | "vindicator" | "evoker" => 8,
+        | "pillager" | "vindicator" | "evoker" | "vex" => 8,
         "evoker_fangs" => 6,
         "item" | "experience_orb" => 6,
         "arrow" | "spectral_arrow" | "snowball" | "egg" | "ender_pearl" | "eye_of_ender"
@@ -422,6 +423,15 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
                 arm_pose: minecraftoss_entities::illager::arm_pose_index(e.arm_pose),
                 using_item: e.using_item,
                 spell: e.illager.spell.id(),
+                ..MobShow::default()
+            },
+        );
+    }
+    for e in world.vexes() {
+        put(
+            e.id,
+            MobShow {
+                charging: e.vex.charging,
                 ..MobShow::default()
             },
         );
@@ -637,6 +647,10 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
         e.arm_pose = minecraftoss_entities::illager::arm_pose_of(show.arm_pose);
         e.using_item = show.using_item;
         e.illager.spell = minecraftoss_entities::illager::IllagerSpell::from_id(show.spell);
+    }
+    if let Some(e) = world.vex_mut(id) {
+        place(&mut e.previous_position, &mut e.vex.body, mob);
+        e.vex.charging = show.charging;
     }
     if let Some(e) = world.ghast_mut(id) {
         place(&mut e.previous_position, &mut e.ghast.body, mob);
@@ -1385,6 +1399,26 @@ mod tests {
         assert!(host_fangs.sent_spike && friend_fangs.sent_spike);
         assert_eq!(friend_fangs.bite_progress(0.5), host_fangs.bite_progress(0.5));
         assert!(friend_fangs.bite_progress(0.5) > 0.0);
+    }
+
+    #[test]
+    fn a_friend_sees_a_vex_charge() {
+        let mut host = EntityWorld::default();
+        let (vex, tag) = spawn(&mut host, "{id:\"minecraft:vex\",Pos:[2.5d,66.0d,0.5d],NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1}}}");
+        assert_eq!(tracking_range("minecraft:vex"), 8);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, vex, &tag));
+        assert_eq!(friend.entity_type(vex), Some("minecraft:vex"));
+        assert!(!friend.vexes()[0].vex.charging);
+        host.vex_mut(vex).unwrap().vex.charging = true;
+        host.vex_mut(vex).unwrap().vex.body.position.y = 67.5;
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.vexes()[0].vex;
+        assert!(seen.charging, "the charging texture shows");
+        assert_eq!(seen.body.position.y, 67.5);
+        assert_eq!(seen.main_hand().map(|s| s.id.as_str()), Some("minecraft:iron_sword"));
     }
 
     #[test]

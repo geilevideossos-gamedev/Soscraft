@@ -51,6 +51,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:stray",
     "minecraft:strider",
     "minecraft:trader_llama",
+    "minecraft:vex",
     "minecraft:villager",
     "minecraft:vindicator",
     "minecraft:wandering_trader",
@@ -372,6 +373,9 @@ impl Shown {
                     light,
                     partial,
                 );
+            }
+            "minecraft:vex" => {
+                crate::vex_render::append_vexes(models, w.vexes().iter(), poses, atlas, light, partial);
             }
             "minecraft:wolf" => wolf_render::append_wolves(
                 models,
@@ -923,6 +927,7 @@ mod tests {
             ("minecraft:pillager", 0.05),
             ("minecraft:vindicator", 0.05),
             ("minecraft:evoker", 0.05),
+            ("minecraft:vex", 0.05),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);

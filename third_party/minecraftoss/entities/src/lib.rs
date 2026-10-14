@@ -37,6 +37,8 @@ pub mod horse;
 pub mod illager;
 pub mod illager_ai;
 pub mod evoker_fangs;
+pub mod vex;
+pub mod vex_ai;
 pub mod llama_ai;
 pub mod trader_ai;
 pub mod wandering_trader;

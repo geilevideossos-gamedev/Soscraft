@@ -34,6 +34,8 @@ mod illagers;
 pub use illagers::{is_ominous_banner, IllagerEntity};
 mod evoker_fangs;
 pub use evoker_fangs::EvokerFangsEntity;
+mod vexes;
+pub use vexes::VexEntity;
 mod hazards;
 mod living;
 mod pushing;
@@ -2077,6 +2079,7 @@ enum EntityKey {
     SnowGolem(u64),
     Illager(u64),
     EvokerFangs(u64),
+    Vex(u64),
 }
 
 impl EntityKey {
@@ -2112,7 +2115,8 @@ impl EntityKey {
             | Self::Trader(id)
             | Self::SnowGolem(id)
             | Self::Illager(id)
-            | Self::EvokerFangs(id) => id,
+            | Self::EvokerFangs(id)
+            | Self::Vex(id) => id,
         }
     }
 }
@@ -2145,13 +2149,14 @@ pub enum MobHit {
     WanderingTrader(u64),
     SnowGolem(u64),
     Illager(u64),
+    Vex(u64),
 }
 
 impl MobHit {
     /// The hit mob's entity ID.
     pub fn id(self) -> u64 {
         match self {
-            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) | Self::Feline(id) | Self::WanderingTrader(id) | Self::SnowGolem(id) | Self::Illager(id) => id,
+            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) | Self::Feline(id) | Self::WanderingTrader(id) | Self::SnowGolem(id) | Self::Illager(id) | Self::Vex(id) => id,
         }
     }
 }
@@ -2480,6 +2485,7 @@ pub struct EntityWorld {
     wandering_traders: Vec<TraderEntity>,
     snow_golems: Vec<SnowGolemEntity>,
     illagers: Vec<IllagerEntity>,
+    vexes: Vec<VexEntity>,
     snowball_shots: Vec<SnowballShot>,
     ghasts: Vec<GhastEntity>,
     fireballs: Vec<FireballEntity>,
@@ -2621,6 +2627,7 @@ impl Default for EntityWorld {
             wandering_traders: Vec::new(),
             snow_golems: Vec::new(),
             illagers: Vec::new(),
+            vexes: Vec::new(),
             snowball_shots: Vec::new(),
             ghasts: Vec::new(),
             fireballs: Vec::new(),
@@ -2903,6 +2910,7 @@ impl EntityWorld {
             }
             EntityKey::SnowGolem(id) => (self.snow_golems.iter().find(|e| e.id == id)?.golem.body.clone(), crate::snow_golem::EYE_HEIGHT),
             EntityKey::Illager(id) => (self.illagers.iter().find(|e| e.id == id)?.illager.body.clone(), crate::illager::EYE_HEIGHT),
+            EntityKey::Vex(id) => (self.vexes.iter().find(|e| e.id == id)?.vex.body.clone(), crate::vex::EYE_HEIGHT),
             EntityKey::Villager(id) => {
                 let e = self.villagers.iter().find(|e| e.id == id)?;
                 (e.villager.body.clone(), e.villager.eye_height())
@@ -2978,6 +2986,7 @@ impl EntityWorld {
             EntityKey::Blaze(id) => self.blazes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.blaze.body)),
             EntityKey::SnowGolem(id) => self.snow_golems.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.golem.body)),
             EntityKey::Illager(id) => self.illagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.illager.body)),
+            EntityKey::Vex(id) => self.vexes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.vex.body)),
             EntityKey::Strider(id) => self.striders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.strider.body)),
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.hoglin.body)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.piglin.body)),
@@ -3078,6 +3087,11 @@ impl EntityWorld {
             }
             EntityKey::Illager(id) => {
                 if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
+                    e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Vex(id) => {
+                if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
                     e.ai.state.hurt_by = Some((target, e.tick_count));
                 }
             }
@@ -3276,6 +3290,10 @@ impl EntityWorld {
                     EntityKey::Illager(id) => {
                         let entity = self.illagers.iter().find(|entity| entity.id == id)?;
                         (id, &entity.illager.body, entity.illager.health)
+                    }
+                    EntityKey::Vex(id) => {
+                        let entity = self.vexes.iter().find(|entity| entity.id == id)?;
+                        (id, &entity.vex.body, entity.vex.health)
                     }
                     EntityKey::Villager(id) => {
                         let entity = self.villagers.iter().find(|entity| entity.id == id)?;
@@ -3552,6 +3570,13 @@ impl EntityWorld {
             if result.applied {
                 entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
                 projectile_knockback(&mut entity.illager.body, &mut entity.random, hit.velocity);
+            }
+        } else if let Some(entity) = self.vexes.iter_mut().find(|entity| entity.id == id) {
+            let result = entity.hurt(hit.damage);
+            outcome = Some(result);
+            if result.applied {
+                entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
+                projectile_knockback(&mut entity.vex.body, &mut entity.random, hit.velocity);
             }
         } else if let Some(entity) = self.striders.iter_mut().find(|entity| entity.id == id) {
             let result = entity.hurt(hit.damage, source);
@@ -4029,6 +4054,9 @@ impl EntityWorld {
         for e in &self.illagers {
             add(e.id, e.illager.kind.type_id(), &e.illager.body, crate::illager::EYE_HEIGHT, e.illager.health > 0.0, false);
         }
+        for e in &self.vexes {
+            add(e.id, crate::vex::TYPE_ID, &e.vex.body, crate::vex::EYE_HEIGHT, e.vex.health > 0.0, false);
+        }
         for e in &self.sheep {
             let baby = e.sheep.age.baby();
             add(e.id, "minecraft:sheep", &e.body, if baby { 0.6175 } else { 1.235 }, e.health > 0.0, baby);
@@ -4154,6 +4182,12 @@ impl EntityWorld {
             }
             (hit, false)
         } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == victim) {
+            let hit = e.hurt(damage);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            (hit, false)
+        } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == victim) {
             let hit = e.hurt(damage);
             if hit.applied {
                 e.ai.state.hurt_by = Some((by, e.tick_count));
@@ -4515,6 +4549,20 @@ impl EntityWorld {
             }
             deaths.push((order, death));
         }
+        for e in &mut self.vexes {
+            let kind = crate::vex::TYPE_ID;
+            let Some((order, mut death)) = death_of(e.id, &mut e.vex.damage, kind, Some(kind), plain) else { continue };
+            if earns(&death, true) {
+                let mut experience = crate::vex::EXPERIENCE;
+                for slot in 0..e.vex.equipment.len() {
+                    if e.vex.equipment[slot].is_some() && e.vex.drop_chances[slot] <= 1.0 {
+                        experience += 1 + e.random.next_int(3) as i32;
+                    }
+                }
+                death.experience = experience;
+            }
+            deaths.push((order, death));
+        }
         for e in &mut self.slimes {
             let context = EntityLootContext { cube_size: Some(e.slime.size), ..plain };
             let kind = e.slime.type_id();
@@ -4688,6 +4736,9 @@ impl EntityWorld {
         if let Some(e) = self.illagers.iter().find(|e| e.id == id) {
             return Some(e.illager.kind.type_id());
         }
+        if self.vexes.iter().any(|e| e.id == id) {
+            return Some(crate::vex::TYPE_ID);
+        }
         if self.wolves.iter().any(|e| e.id == id) {
             return Some("minecraft:wolf");
         }
@@ -4767,6 +4818,7 @@ impl EntityWorld {
             .chain(self.wandering_traders.iter_mut().map(|e| &mut e.trader.body))
             .chain(self.snow_golems.iter_mut().map(|e| &mut e.golem.body))
             .chain(self.illagers.iter_mut().map(|e| &mut e.illager.body))
+            .chain(self.vexes.iter_mut().map(|e| &mut e.vex.body))
             .chain(self.villagers.iter_mut().map(|e| &mut e.villager.body))
             .chain(self.cows.iter_mut().map(|e| &mut e.cow.body))
             .chain(self.sheep.iter_mut().map(|e| &mut e.body))
@@ -4810,6 +4862,8 @@ impl EntityWorld {
             Some(&mut e.golem.body)
         } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.illager.body)
+        } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.vex.body)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.villager.body)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
@@ -4853,6 +4907,7 @@ impl EntityWorld {
             .or_else(|| self.wandering_traders.iter().find(|e| e.id == id).map(|e| &e.trader.damage))
             .or_else(|| self.snow_golems.iter().find(|e| e.id == id).map(|e| &e.golem.damage))
             .or_else(|| self.illagers.iter().find(|e| e.id == id).map(|e| &e.illager.damage))
+            .or_else(|| self.vexes.iter().find(|e| e.id == id).map(|e| &e.vex.damage))
             .or_else(|| self.villagers.iter().find(|e| e.id == id).map(|e| &e.villager.damage))
             .or_else(|| self.cows.iter().find(|e| e.id == id).map(|e| &e.cow.damage))
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| &e.damage))
@@ -4896,6 +4951,8 @@ impl EntityWorld {
             Some(&mut e.golem.damage)
         } else if let Some(e) = self.illagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.illager.damage)
+        } else if let Some(e) = self.vexes.iter_mut().find(|e| e.id == id) {
+            Some(&mut e.vex.damage)
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.villager.damage)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
@@ -4995,6 +5052,9 @@ impl EntityWorld {
         }
         for e in &mut self.illagers {
             resolve_voices(&mut out, &mut e.voices, e.illager.kind.sound_family(), 1.0, "hostile_volume");
+        }
+        for e in &mut self.vexes {
+            resolve_voices(&mut out, &mut e.voices, "vex", 1.0, "hostile_volume");
         }
         for e in &mut self.cows {
             if let Some(horse) = &e.horse {
@@ -5343,6 +5403,7 @@ impl EntityWorld {
             .chain(self.wandering_traders.iter().map(|e| (e.id, e.trader.body.position)))
             .chain(self.snow_golems.iter().map(|e| (e.id, e.golem.body.position)))
             .chain(self.illagers.iter().map(|e| (e.id, e.illager.body.position)))
+            .chain(self.vexes.iter().map(|e| (e.id, e.vex.body.position)))
             .chain(self.arrows.iter().map(|e| (e.id, e.arrow.position)))
             .chain(self.potions.iter().map(|e| (e.id, e.potion.position)))
             .chain(self.villagers.iter().map(|e| (e.id, e.villager.body.position)))
@@ -5385,6 +5446,7 @@ impl EntityWorld {
         self.wandering_traders.iter().for_each(|e| add(e.previous_position, &e.trader.body));
         self.snow_golems.iter().for_each(|e| add(e.previous_position, &e.golem.body));
         self.illagers.iter().for_each(|e| add(e.previous_position, &e.illager.body));
+        self.vexes.iter().for_each(|e| add(e.previous_position, &e.vex.body));
         self.villagers.iter().for_each(|e| add(e.previous_position, &e.villager.body));
         self.cows.iter().for_each(|e| add(e.previous_position, &e.cow.body));
         self.sheep.iter().for_each(|e| add(e.previous_position, &e.body));
@@ -5423,6 +5485,7 @@ impl EntityWorld {
         let wandering_traders: Vec<TraderEntity> = self.wandering_traders.iter().filter(|e| keep(e.trader.body.position)).cloned().collect();
         let snow_golems: Vec<SnowGolemEntity> = self.snow_golems.iter().filter(|e| keep(e.golem.body.position)).cloned().collect();
         let illagers: Vec<IllagerEntity> = self.illagers.iter().filter(|e| keep(e.illager.body.position)).cloned().collect();
+        let vexes: Vec<VexEntity> = self.vexes.iter().filter(|e| keep(e.vex.body.position)).cloned().collect();
         let arrows: Vec<ArrowEntity> = self.arrows.iter().filter(|e| keep(e.arrow.position)).cloned().collect();
         let potions: Vec<PotionEntity> = self.potions.iter().filter(|e| keep(e.potion.position)).cloned().collect();
         let villagers: Vec<VillagerEntity> = self.villagers.iter().filter(|e| keep(e.villager.body.position)).cloned().collect();
@@ -5455,6 +5518,7 @@ impl EntityWorld {
             wandering_traders,
             snow_golems,
             illagers,
+            vexes,
             snowball_shots: Vec::new(),
             ghasts,
             fireballs,
@@ -5593,6 +5657,7 @@ impl EntityWorld {
         out.extend(self.wandering_traders.iter().map(|e| entry(e.id, crate::wandering_trader::TYPE_ID, &e.trader.body, e.trader.persistence_required)));
         out.extend(self.snow_golems.iter().map(|e| entry(e.id, crate::snow_golem::TYPE_ID, &e.golem.body, e.golem.persistence_required)));
         out.extend(self.illagers.iter().map(|e| entry(e.id, e.illager.kind.type_id(), &e.illager.body, e.illager.persistence_required)));
+        out.extend(self.vexes.iter().map(|e| entry(e.id, crate::vex::TYPE_ID, &e.vex.body, e.vex.persistence_required)));
         out.extend(self.villagers.iter().map(|e| entry(e.id, "minecraft:villager", &e.villager.body, e.villager.persistence_required)));
         out.extend(self.cows.iter().map(|e| {
             let kind = if e.mooshroom.is_some() { "minecraft:mooshroom" } else { "minecraft:cow" };
@@ -5670,6 +5735,7 @@ impl EntityWorld {
             let rule = if e.illager.raider.patrolling && near { KEPT_MONSTER } else { MONSTER };
             !check(e.id, position, e.illager.persistence_required, rule, &mut e.no_action_time, &mut e.random)
         });
+        self.vexes.retain_mut(|e| !check(e.id, e.vex.body.position, e.vex.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.villagers.retain_mut(|e| !check(e.id, e.villager.body.position, e.villager.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         self.cows.retain_mut(|e| !check(e.id, e.cow.body.position, e.cow.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
         self.sheep.retain_mut(|e| !check(e.id, e.body.position, e.sheep.persistence_required, CREATURE, &mut e.no_action_time, &mut e.random));
@@ -5706,6 +5772,7 @@ impl EntityWorld {
         self.wandering_traders.retain(|e| !remove(e.trader.body.position));
         self.snow_golems.retain(|e| !remove(e.golem.body.position));
         self.illagers.retain(|e| !remove(e.illager.body.position));
+        self.vexes.retain(|e| !remove(e.vex.body.position));
         self.arrows.retain(|e| !remove(e.arrow.position));
         self.potions.retain(|e| !remove(e.potion.position));
         self.villagers.retain(|e| !remove(e.villager.body.position));
@@ -6387,6 +6454,10 @@ impl EntityWorld {
                 }
                 EntityKey::Illager(id) => {
                     self.tick_illager(id, world, players, ticks);
+                    continue;
+                }
+                EntityKey::Vex(id) => {
+                    self.tick_vex(id, world, players);
                     continue;
                 }
                 EntityKey::Potion(id) => {
@@ -7813,6 +7884,7 @@ impl EntityWorld {
         self.wandering_traders.retain(|entity| entity.trader.damage.death_ticks < 20);
         self.snow_golems.retain(|entity| entity.golem.damage.death_ticks < 20);
         self.illagers.retain(|entity| entity.illager.damage.death_ticks < 20);
+        self.vexes.retain(|entity| entity.vex.damage.death_ticks < 20);
         self.potions.retain(|entity| entity.potion.alive);
         self.villagers
             .retain(|entity| entity.villager.damage.death_ticks < 20);
@@ -7852,6 +7924,7 @@ impl EntityWorld {
             .chain(self.wandering_traders.iter().map(|entity| entity.id))
             .chain(self.snow_golems.iter().map(|entity| entity.id))
             .chain(self.illagers.iter().map(|entity| entity.id))
+            .chain(self.vexes.iter().map(|entity| entity.id))
             .chain(self.arrows.iter().map(|entity| entity.id))
             .chain(self.potions.iter().map(|entity| entity.id))
             .chain(self.villagers.iter().map(|entity| entity.id))
@@ -7901,7 +7974,8 @@ impl EntityWorld {
             | EntityKey::Trader(id)
             | EntityKey::SnowGolem(id)
             | EntityKey::Illager(id)
-            | EntityKey::EvokerFangs(id) => alive_ids.contains(id),
+            | EntityKey::EvokerFangs(id)
+            | EntityKey::Vex(id) => alive_ids.contains(id),
         });
         self.prune_riding();
     }
@@ -8064,6 +8138,15 @@ impl EntityWorld {
                         continue;
                     }
                     (MobHit::Illager(id), &entity.illager.body)
+                }
+                EntityKey::Vex(id) => {
+                    let Some(entity) = self.vexes.iter().find(|entity| entity.id == id) else {
+                        continue;
+                    };
+                    if entity.vex.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::Vex(id), &entity.vex.body)
                 }
                 EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => continue,
                 EntityKey::Ghast(id) => {

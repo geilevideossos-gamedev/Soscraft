@@ -602,6 +602,9 @@ impl EntityView {
         for e in w.illagers().iter().filter(|e| e.illager.health > 0.0) {
             add(MobHit::Illager(e.id), &e.illager.body);
         }
+        for e in w.vexes().iter().filter(|e| e.vex.health > 0.0) {
+            add(MobHit::Vex(e.id), &e.vex.body);
+        }
         for e in w.iron_golems().iter().filter(|e| e.golem.health > 0.0) {
             add(MobHit::IronGolem(e.id), &e.golem.body);
         }
@@ -990,6 +993,14 @@ impl EntityView {
             light,
             partial,
         );
+        let vex_items = minecraft_terrain::vex_render::append_vexes(
+            &mut out.models,
+            w.vexes().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
         shulker_render::append_shulkers(
             &mut out.models,
             w.shulkers().iter(),
@@ -1207,6 +1218,7 @@ impl EntityView {
             .chain(witch_items)
             .chain(piglin_items)
             .chain(illager_items)
+            .chain(vex_items)
             .chain(placed_items.iter().cloned())
             .collect();
         let _ = self

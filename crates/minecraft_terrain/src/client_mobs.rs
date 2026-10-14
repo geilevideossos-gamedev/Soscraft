@@ -1183,6 +1183,7 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         .chain(world.endermen().iter().map(|e| (e.id, e.ai.state.melee.swings)))
         .chain(world.piglins().iter().map(|e| (e.id, e.swings)))
         .chain(world.illagers().iter().map(|e| (e.id, e.ai.state.melee.swings)))
+        .chain(world.vexes().iter().map(|e| (e.id, e.ai.state.melee.swings)))
         .collect();
     for e in world.zombies() {
         push(e.id, e.yaw, &e.look_control, &e.zombie.body, e.zombie.baby, e.zombie.eye_height());
@@ -1227,6 +1228,9 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     }
     for e in world.illagers() {
         push(e.id, e.illager.yaw, &e.ai.state.look_control, &e.illager.body, false, minecraftoss_entities::illager::EYE_HEIGHT);
+    }
+    for e in world.vexes() {
+        push(e.id, e.vex.yaw, &e.ai.state.look_control, &e.vex.body, false, minecraftoss_entities::vex::EYE_HEIGHT);
     }
     for e in world.wandering_traders() {
         push(e.id, e.trader.yaw, &e.ai.state.look_control, &e.trader.body, false, e.trader.eye_height());
@@ -1298,6 +1302,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.blazes().iter().map(|e| (e.id, 0.5)));
     kinds.extend(world.snow_golems().iter().map(|e| (e.id, crate::snow_golem_render::SHADOW_RADIUS)));
     kinds.extend(world.illagers().iter().map(|e| (e.id, crate::illager_render::SHADOW_RADIUS)));
+    kinds.extend(world.vexes().iter().map(|e| (e.id, crate::vex_render::SHADOW_RADIUS)));
     kinds.extend(world.striders().iter().map(|e| (e.id, crate::strider_render::shadow_radius(e.strider.age.baby()))));
     kinds.extend(world.hoglins().iter().map(|e| (e.id, crate::hoglin_render::shadow_radius(e.hoglin.is_baby()))));
     kinds.extend(world.piglins().iter().map(|e| (e.id, 0.5 * age(e.piglin.is_baby()))));

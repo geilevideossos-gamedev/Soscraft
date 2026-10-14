@@ -462,6 +462,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:stray",
     "minecraft:strider",
     "minecraft:trader_llama",
+    "minecraft:vex",
     "minecraft:villager",
     "minecraft:vindicator",
     "minecraft:wandering_trader",
@@ -694,6 +695,10 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let kind = minecraftoss_entities::illager::IllagerKind::from_type(kind)?;
             let saved = crate::illager_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::illager_save::spawn(world, tag, kind, saved)?
+        }
+        "minecraft:vex" if tag.get("Passengers").is_none() => {
+            let saved = crate::vex_save::Saved { pos, yaw, health, persistent, no_ai, random };
+            crate::vex_save::spawn(world, tag, saved)?
         }
         "minecraft:hoglin" | "minecraft:zoglin" => {
             use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
@@ -1769,6 +1774,10 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         let illager = &e.illager;
         add(e.id, illager.kind.type_id(), &illager.body, illager.yaw, illager.health, illager.persistence_required, crate::illager_save::fields(e));
     }
+    for e in world.vexes() {
+        let vex = &e.vex;
+        add(e.id, minecraftoss_entities::vex::TYPE_ID, &vex.body, vex.yaw, vex.health, vex.persistence_required, crate::vex_save::fields(world, e));
+    }
     for e in world.chickens() {
         let chicken = &e.chicken;
         let mut fields = age(&chicken.age);
@@ -2749,6 +2758,36 @@ mod tests {
         let f = &fresh.evoker_fangs_mut(back).unwrap().fangs;
         assert_eq!((f.warmup, f.yaw), (6, 45.0));
         assert_eq!(f.owner_uuid, Some(world.uuid_of(evoker)));
+    }
+
+    #[test]
+    fn a_summoned_vex_saves_and_loads_with_its_owner_origin_and_life() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:vex"));
+        let mut world = EntityWorld::default();
+        let evoker = spawn_saved(&mut world, &minecraftoss_core::snbt::parse_compound("{id:\"minecraft:evoker\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,12]}").unwrap()).unwrap();
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vex\",Pos:[2.5d,66.0d,2.5d],UUID:[I;4,5,6,13],Health:12.0f,LeftHanded:1b,bound_pos:[I;2,65,2],life_ticks:900,owner:[I;4,5,6,12],equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1}},drop_chances:{mainhand:0.0f}}").unwrap();
+        let id = spawn_saved(&mut world, &tag).expect("vexes load");
+        assert_eq!(world.entity_type(id), Some("minecraft:vex"));
+        {
+            let owner = world.uuid_of(evoker);
+            let v = &world.vex_mut(id).unwrap().vex;
+            assert_eq!((v.health, v.life_ticks, v.bound_origin), (12.0, Some(900), Some((2, 65, 2))));
+            assert!(v.left_handed);
+            assert_eq!(v.owner_uuid, Some(owner));
+            assert_eq!(v.main_hand().map(|s| s.id.as_str()), Some("minecraft:iron_sword"));
+            assert_eq!(v.drop_chances[0], 0.0);
+        }
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(i, _)| *i == id).collect();
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("life_ticks"), Some(&Tag::Int(900)));
+        assert_eq!(saved.get("bound_pos"), Some(&Tag::IntArray(vec![2, 65, 2])));
+        assert_eq!(saved.get("owner"), Some(&Tag::IntArray(vec![4, 5, 6, 12])));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved vex loads");
+        assert_eq!(fresh.vex_mut(back).unwrap().vex.life_ticks, Some(900));
+        let wild = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vex\",Pos:[2.5d,66.0d,2.5d]}").unwrap();
+        let id = spawn_saved(&mut fresh, &wild).unwrap();
+        assert_eq!(fresh.vex_mut(id).unwrap().vex.life_ticks, None, "a vex from an egg lives on");
     }
 
     #[test]

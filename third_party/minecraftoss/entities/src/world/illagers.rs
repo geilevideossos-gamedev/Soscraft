@@ -470,7 +470,9 @@ impl EntityWorld {
                     e.sheep.wool.set_color(WOLOLO_RED);
                 }
             }
-            SpellCast::SummonVex => {}
+            SpellCast::SummonVex => {
+                self.summon_vexes(id);
+            }
         }
     }
 
@@ -538,6 +540,7 @@ impl EntityWorld {
         let villagers = self.illager_villagers();
         let companions = self.patrol_companions(id);
         let blue_sheep = self.blue_sheep_near(id);
+        let vexes_near = self.vexes_near(id);
         let mob_griefing = self.mob_griefing;
         let mut level_random = std::mem::take(&mut self.level_random);
         let Some(entity) = self.illagers.iter_mut().find(|e| e.id == id) else {
@@ -547,6 +550,7 @@ impl EntityWorld {
         entity.ai.state.mobs = mobs;
         entity.ai.state.illager.companions = companions.clone();
         entity.ai.state.illager.blue_sheep = blue_sheep;
+        entity.ai.state.illager.vexes_near = vexes_near;
         entity.ai.state.mob_griefing = mob_griefing;
         entity.previous_position = entity.illager.body.position;
         entity.tick_count += 1;

@@ -60,6 +60,7 @@ pub enum MonsterKind {
     Pillager,
     Vindicator,
     Evoker,
+    Vex,
 }
 
 impl MonsterKind {
@@ -87,6 +88,7 @@ impl MonsterKind {
             Self::Pillager => &crate::illager_ai::PILLAGER_GOAL_NAMES,
             Self::Vindicator => &crate::illager_ai::VINDICATOR_GOAL_NAMES,
             Self::Evoker => &crate::illager_ai::EVOKER_GOAL_NAMES,
+            Self::Vex => &crate::vex_ai::GOAL_NAMES,
         }
     }
 
@@ -113,6 +115,7 @@ impl MonsterKind {
             Self::Pillager => &crate::illager_ai::PILLAGER_TARGET_NAMES,
             Self::Vindicator => &crate::illager_ai::VINDICATOR_TARGET_NAMES,
             Self::Evoker => &crate::illager_ai::EVOKER_TARGET_NAMES,
+            Self::Vex => &crate::vex_ai::TARGET_NAMES,
         }
     }
 }
@@ -380,6 +383,7 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:pillager"
             | "minecraft:vindicator"
             | "minecraft:evoker"
+            | "minecraft:vex"
     )
 }
 
@@ -542,6 +546,7 @@ pub struct MonsterGoalContext {
     pub trader: crate::trader_ai::TraderState,
     pub snow_golem: crate::snow_golem_ai::SnowGolemState,
     pub illager: crate::illager_ai::IllagerState,
+    pub vex: crate::vex_ai::VexState,
     /// The level's points of interest and random, lent while it ticks (to
     /// iron golems and zombies).
     pub pois: Option<crate::poi::PoiManager>,
@@ -761,7 +766,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -827,7 +832,7 @@ impl MonsterAi {
             walk.clear_malus(PathType::Fire);
         }
         // `FloatGoal` lets the navigation float.
-        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker);
+        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex);
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::WitherSkeleton => FOLLOW_RANGE,
             MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
@@ -842,6 +847,7 @@ impl MonsterAi {
             MonsterKind::Pillager => crate::illager::IllagerKind::Pillager.follow_range(),
             MonsterKind::Vindicator => crate::illager::IllagerKind::Vindicator.follow_range(),
             MonsterKind::Evoker => crate::illager::IllagerKind::Evoker.follow_range(),
+            MonsterKind::Vex => crate::vex::FOLLOW_RANGE,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -897,6 +903,7 @@ impl MonsterAi {
             MonsterKind::Pillager => (crate::illager_ai::pillager_goals(), crate::illager_ai::pillager_targets(), crate::illager::EYE_HEIGHT),
             MonsterKind::Vindicator => (crate::illager_ai::vindicator_goals(), crate::illager_ai::vindicator_targets(), crate::illager::EYE_HEIGHT),
             MonsterKind::Evoker => (crate::illager_ai::evoker_goals(), crate::illager_ai::evoker_targets(), crate::illager::EYE_HEIGHT),
+            MonsterKind::Vex => (crate::vex_ai::vex_goals(), crate::vex_ai::vex_targets(), crate::vex::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -963,6 +970,7 @@ impl MonsterAi {
                 trader: Default::default(),
                 snow_golem: Default::default(),
                 illager: Default::default(),
+                vex: Default::default(),
                 pois: None,
                 level_random: None,
                 can_break_doors: false,

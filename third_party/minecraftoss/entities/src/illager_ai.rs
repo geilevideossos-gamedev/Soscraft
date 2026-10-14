@@ -1090,6 +1090,27 @@ impl Goal<MonsterGoalContext> for JohnnyAttackGoal {
     }
 }
 
+pub(crate) fn raider_hurt_by() -> impl Goal<MonsterGoalContext> + Clone + 'static {
+    RaiderHurtByGoal(HurtByTargetGoal {
+        timestamp: 0,
+        unseen_ticks: 0,
+        target_mob: None,
+        alert_others: true,
+    })
+}
+
+pub(crate) fn look_at(
+    range: f64,
+    probability: f32,
+    players: bool,
+) -> impl Goal<MonsterGoalContext> + Clone + 'static {
+    LookAtGoal {
+        range,
+        probability,
+        players,
+    }
+}
+
 #[derive(Clone)]
 struct RaiderHurtByGoal(HurtByTargetGoal);
 
