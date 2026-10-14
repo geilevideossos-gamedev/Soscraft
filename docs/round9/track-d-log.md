@@ -2025,6 +2025,21 @@ After 8f623fdf.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2
 ```
 
+### 4. A Minecraft ravager's roar does not fling players
+
+After 131b07f0.
+
+- **Found:** group ravagers' roar (`world/ravagers.rs`, `ravager_roars`) gave every player within reach the strong knockback as well as the 6 damage. `Ravager.roar` (javap, 26.3) calls `strongKnockback` only when the entity is not a `Player` (`instanceof Player; ifne`): a player takes the 6 `mob_attack` damage with its ordinary knockback and is not flung.
+- **Changed:** vendored `entities/src/world/ravagers.rs`: the roar no longer queues a player push; the player's hit (a plain melee blow from the ravager) is unchanged. Mobs are still flung.
+- **Tests:** vendored entities `world::ravagers::tests::a_blocked_ravager_is_stunned_for_forty_ticks_then_roars_and_flings_what_is_near` now checks that the roar hurts the player with a plain blow and queues no push (the cow and the pillager are still flung). Ravager tests (17) green; `check -p launcher` green.
+- **Test steps (survival, Normal, shield in the offhand):**
+  1. Hatch a ravager and block its bite with the shield until it is stunned (grey swirls). Stay within 4 blocks: when it roars you take a hit with the usual small knockback, not a long throw; a cow beside it is still thrown away (**170_ravager_roar_player**).
+- **Kit:** commit 1's.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2,minecraft:cow_spawn_egg*2
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision), and groups pillagers, patrols-vindicators, raids and raid-villagers keep their own kits (their last commits).
@@ -2089,6 +2104,7 @@ Before the merge of minecraft-survival (tracks A, B and C) into track D, `minecr
 - `docs/MULTIPLAYER.md`: raid bars reach friends as `ToClient::BossBar` (id `0x100 + raid id`, red, notched 10; `Name` and `Progress` updates, `Remove` when the player leaves the raid's range or it ends); the horn is a sound to that player alone; the friend's bad omen, raid omen and hero of the village run like the host's (the omen hand-over rides in the host's tick input as `PlayerOmens`). No new message; protocol 5.
 - `docs/MINECRAFT-SURVIVAL.md`: in the raids paragraph, "Villagers do not hide or ring bells yet, vindicators do not break doors yet, and raiders do not pick up banners." becomes "Vindicators do not break doors yet, and raiders do not pick up banners." New paragraph "Bells and villagers in raids": "Bells ring like vanilla: right-clicked with the main hand on one of their sides below the rim (a floor bell from the front or back, a wall bell from its sides, a hanging bell from any side) or given a new redstone signal. Every villager within 32 blocks hears it and, outside a raid, runs to a home (a bed) nearby and hides until 15 seconds after the ring. When raiders are within 32 blocks the bell resonates a quarter second later, and two seconds after that every raider within 48 blocks glows for 3 seconds: a white rim around it in the open, a white shape of it seen through blocks. In a raid, villagers gather at their bell before the first wave and now and then ring it, hide at home while the waves come, and after a victory come out under the open sky, cheer and launch firework rockets that burst into coloured sparks with a flash and a bang (a low burst hurts whoever stands within 5 blocks: "went off with a bang"). A player with Hero of the Village gets gifts: every 30 seconds to 5 minutes each villager that sees the hero walks up and throws a gift from vanilla's hero of the village loot (a farmer bread, pumpkin pie or a cookie, a child a poppy, and so on). Friends ring bells, see the glow and get gifts the same way. The bell does not swing yet, arrows and wind charges do not ring it yet, and frightened villagers do not sweat yet."
 - `docs/MULTIPLAYER.md`: a friend's bell use is a hand use on the host (no new message); glowing mobs reach friends as `MobShow.glowing`; hero gifts are item entities thrown on the host; firework rockets reach friends as thrown views and their bursts as `EntitySnapshot.firework_bursts`. Protocol 5.
+- `docs/MINECRAFT-SURVIVAL.md` (review fix 4): in the ravager paragraph, "Its roar hurts everything within 4 blocks but illagers for 6 and flings it all away, players too." becomes "Its roar hurts everything within 4 blocks but illagers for 6 and flings every mob away; players only take the blow."
 
 ## Vendored files
 

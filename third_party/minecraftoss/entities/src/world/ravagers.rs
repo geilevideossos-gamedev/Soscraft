@@ -434,8 +434,6 @@ impl EntityWorld {
                 },
                 source: Some(id),
             });
-            self.player_pushes
-                .push((player.id, rv::strong_knockback(position, p)));
         }
         self.entity_events.push((id, 69));
     }
@@ -813,15 +811,13 @@ mod tests {
                     (hits[0].damage, hits[0].source),
                     (rv::ROAR_DAMAGE, Some(id))
                 );
-                let flung = world.take_player_pushes();
-                assert_eq!(flung.len(), 1);
-                let from = world.ravagers()[0].ravager.body.position;
-                let expected = rv::strong_knockback(from, players[0].position);
-                assert!((flung[0].1 - expected).length() < 1e-9, "{:?}", flung[0].1);
                 assert!(
-                    flung[0].1.z > 1.5 && flung[0].1.y == 0.2,
-                    "{:?}",
-                    flung[0].1
+                    matches!(hits[0].kind, PlayerHitKind::Melee { throw, .. } if throw == DVec3::ZERO),
+                    "a plain blow from the ravager"
+                );
+                assert!(
+                    world.take_player_pushes().is_empty(),
+                    "the roar's fling spares players"
                 );
                 let cow_entity = world.cows().iter().find(|e| e.id == cow).unwrap();
                 assert!(cow_entity.cow.health < 10.0, "the cow is hurt");
