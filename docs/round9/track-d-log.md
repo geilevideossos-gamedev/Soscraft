@@ -2040,6 +2040,19 @@ After 131b07f0.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2,minecraft:cow_spawn_egg*2
 ```
 
+### 5. Track D's mob list names the ravager roar fix
+
+After 30a2d1cb.
+
+- **Changed:** `docs/round9/mobs.md` row 13 (ravager): the roar flings every mob but itself, and players only take the blow (commit 4 left the row unchanged). The review commits touched only vendored files already listed under "Vendored files" (`entities/src/illager.rs`, `illager_ai.rs`, `world/illagers.rs`, `world/ravagers.rs`), so the counts there stand.
+- **Tests:** after commits 1 to 4: `minecraftoss-entities` lib 374 and `minecraft_terrain` lib 1348 of 1351 (3 ignored), all green; `check -p launcher` green; clippy on both crates (`--all-targets`, `-A clippy::approx_constant`) finds nothing in track D's files.
+- **Test steps:** none; commit 4's step holds.
+- **Kit:** commit 4's.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell*2,minecraft:villager_spawn_egg*8,minecraft:pillager_spawn_egg*4,minecraft:vindicator_spawn_egg*2,minecraft:redstone_block*2,minecraft:lever*2,minecraft:white_bed*4,minecraft:composter*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:emerald*32,minecraft:spyglass,minecraft:oak_planks*64,minecraft:oak_door*2,minecraft:ravager_spawn_egg*2,minecraft:cow_spawn_egg*2
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision), and groups pillagers, patrols-vindicators, raids and raid-villagers keep their own kits (their last commits).
