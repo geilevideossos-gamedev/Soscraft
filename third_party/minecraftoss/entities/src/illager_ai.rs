@@ -1,8 +1,8 @@
 use crate::goals::{Control, Controls, Goal, GoalSelector};
 use crate::illager as il;
 use crate::monster_ai::{
-    AvoidEntityGoal, FloatGoal, HurtByTargetGoal, MonsterGoalContext, NearestTargetGoal, NeverGoal,
-    Prey, Target,
+    AvoidEntityGoal, FloatGoal, HurtByTargetGoal, MeleeAttackGoal, MonsterGoalContext,
+    NearestTargetGoal, NeverGoal, Prey, Target,
 };
 use crate::navigation::{navigate_walk_to, navigate_walk_to_entity};
 use glam::DVec3;
@@ -27,6 +27,29 @@ pub const PILLAGER_TARGET_NAMES: [&str; 4] = [
     "NearestAttackableTargetGoal",
     "NearestAttackableTargetGoal",
     "NearestAttackableTargetGoal",
+];
+pub const VINDICATOR_GOAL_NAMES: [&str; 14] = [
+    "LongDistancePatrolGoal",
+    "ObtainRaidLeaderBannerGoal",
+    "PathfindToRaidGoal",
+    "RaiderMoveThroughVillageGoal",
+    "RaiderCelebration",
+    "FloatGoal",
+    "AvoidEntityGoal",
+    "VindicatorBreakDoorGoal",
+    "RaiderOpenDoorGoal",
+    "HoldGroundAttackGoal",
+    "MeleeAttackGoal",
+    "RandomStrollGoal",
+    "LookAtPlayerGoal",
+    "LookAtPlayerGoal",
+];
+pub const VINDICATOR_TARGET_NAMES: [&str; 5] = [
+    "HurtByTargetGoal",
+    "NearestAttackableTargetGoal",
+    "NearestAttackableTargetGoal",
+    "NearestAttackableTargetGoal",
+    "VindicatorJohnnyAttackGoal",
 ];
 pub const PATH_DELAY_MIN: i32 = 20;
 pub const PATH_DELAY_MAX: i32 = 40;
@@ -73,9 +96,12 @@ pub struct IllagerState {
     pub patrol_target: Option<Pos>,
     pub companions: Vec<u64>,
     pub patrol_orders: Option<Pos>,
+    pub johnny: bool,
+    pub reset_idle: bool,
+    pub melee_aggressive: bool,
 }
 
-pub fn pillager_goals() -> GoalSelector<MonsterGoalContext> {
+fn raider_goals() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(
         4,
@@ -83,30 +109,100 @@ pub fn pillager_goals() -> GoalSelector<MonsterGoalContext> {
             cooldown_until: -1,
         },
     );
+    for priority in [1, 3, 4, 5] {
+        selector.add(
+            priority,
+            NeverGoal {
+                controls: &[Control::Move],
+            },
+        );
+    }
+    selector
+}
+
+pub fn vindicator_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = raider_goals();
+    selector.add(0, FloatGoal);
     selector.add(
         1,
-        NeverGoal {
-            controls: &[Control::Move],
-        },
+        AvoidEntityGoal::new(
+            "minecraft:creaking",
+            il::CREAKING_AVOID_RANGE,
+            il::CREAKING_WALK_SPEED,
+            il::CREAKING_SPRINT_SPEED,
+        ),
     );
     selector.add(
-        3,
+        2,
         NeverGoal {
             controls: &[Control::Move],
         },
     );
+    selector.add(3, NeverGoal { controls: &[] });
     selector.add(
         4,
-        NeverGoal {
-            controls: &[Control::Move],
+        HoldGroundAttackGoal {
+            radius: il::HOLD_GROUND_RADIUS,
         },
     );
     selector.add(
         5,
-        NeverGoal {
-            controls: &[Control::Move],
+        MeleeAttackGoal {
+            hits: true,
+            raises_arms: false,
+            follow_unseen: false,
+            gives_up_in_light: false,
+            speed: il::MELEE_SPEED,
         },
     );
+    selector.add(
+        8,
+        RandomStrollGoal {
+            speed: il::STROLL_SPEED,
+        },
+    );
+    selector.add(
+        9,
+        LookAtGoal {
+            range: il::VINDICATOR_PLAYER_LOOK_RANGE,
+            probability: 1.0,
+            players: true,
+        },
+    );
+    selector.add(
+        10,
+        LookAtGoal {
+            range: il::VINDICATOR_MOB_LOOK_RANGE,
+            probability: 0.02,
+            players: false,
+        },
+    );
+    selector
+}
+
+pub fn vindicator_targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(
+        1,
+        RaiderHurtByGoal(HurtByTargetGoal {
+            timestamp: 0,
+            unseen_ticks: 0,
+            target_mob: None,
+            alert_others: true,
+        }),
+    );
+    selector.add(2, NearestTargetGoal::every(Prey::Player, true, 5));
+    selector.add(3, NearestTargetGoal::every(Prey::Villager, true, 5));
+    selector.add(3, NearestTargetGoal::every(Prey::Golem, true, 5));
+    selector.add(
+        4,
+        JohnnyAttackGoal(NearestTargetGoal::every(Prey::Living, true, 0)),
+    );
+    selector
+}
+
+pub fn pillager_goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = raider_goals();
     selector.add(0, FloatGoal);
     selector.add(
         1,
@@ -669,6 +765,28 @@ impl Goal<MonsterGoalContext> for LookAtGoal {
         let eye = info.position + DVec3::new(0.0, f64::from(info.eye_height), 0.0);
         ctx.look_control.set_look_at_with_limits(eye, 10.0, x_max);
         ctx.illager.look_mob_time -= 1;
+    }
+}
+
+#[derive(Clone)]
+struct JohnnyAttackGoal(NearestTargetGoal);
+
+impl Goal<MonsterGoalContext> for JohnnyAttackGoal {
+    fn controls(&self) -> Controls {
+        self.0.controls()
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        ctx.illager.johnny && self.0.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.0.can_continue(ctx, world)
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.start(ctx);
+        ctx.illager.reset_idle = true;
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.stop(ctx);
     }
 }
 

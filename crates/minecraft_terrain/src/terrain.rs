@@ -2804,6 +2804,46 @@ mod tests {
     }
 
     #[test]
+    fn woodland_mansions_hold_vindicators_with_iron_axes() {
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Overworld, None, Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + std::time::Duration::from_secs(300);
+        let at = match crate::locate::nearest_structure(&gen, &["minecraft:mansion".to_owned()], [0, 64, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no woodland mansion near the origin of seed 77: {other:?}"),
+        };
+        let mansion = gen.structures.id("minecraft:mansion").expect("the mansion structure");
+        let chunk = minecraftoss_core::ChunkPos::new(at[0] >> 4, at[2] >> 4);
+        let start = gen.structures.starts_in(&gen.library, &gen.terrain, chunk).iter().find(|start| start.structure == mansion).cloned().expect("the located chunk starts a mansion");
+        let bbox = start.bounding_box();
+        let mut vindicators = Vec::new();
+        for cx in (bbox.min_x >> 4)..=(bbox.max_x >> 4) {
+            for cz in (bbox.min_z >> 4)..=(bbox.max_z >> 4) {
+                let chunk = stream.load_chunk_now(minecraftoss_core::ChunkPos::new(cx, cz));
+                vindicators.extend(chunk.generation.entities.iter().filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:vindicator")).cloned());
+            }
+        }
+        assert!(!vindicators.is_empty(), "a mansion has warriors");
+        for tag in &vindicators {
+            let hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|h| h.get("id")).and_then(Tag::as_str);
+            assert_eq!(hand, Some("minecraft:iron_axe"));
+            assert_eq!(tag.get("PersistenceRequired").and_then(Tag::as_i64), Some(1));
+            assert_eq!(tag.get("CanJoinRaid").and_then(Tag::as_i64), Some(1));
+            assert_ne!(tag.get("PatrolLeader").and_then(Tag::as_i64), Some(1), "no leader roll in structures");
+            let mut world = minecraftoss_entities::world::EntityWorld::default();
+            let id = crate::server_mobs::spawn_saved(&mut world, tag).expect("a mansion vindicator comes alive");
+            assert_eq!(world.entity_type(id), Some("minecraft:vindicator"));
+        }
+    }
+
+    #[test]
     fn the_outer_end_islands_generate_beyond_the_main_island() {
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

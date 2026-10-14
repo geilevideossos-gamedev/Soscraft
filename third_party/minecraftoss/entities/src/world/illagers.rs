@@ -109,6 +109,7 @@ impl IllagerEntity {
         state.holds_crossbow = self.illager.holds_crossbow();
         state.patrolling = self.illager.raider.patrolling;
         state.leader = self.illager.raider.patrol_leader;
+        state.johnny = self.illager.johnny;
         state.patrol_target = self.illager.raider.patrol_target;
         state.has_raid = false;
         state.aggressive = self.illager.aggressive;
@@ -128,7 +129,7 @@ impl IllagerEntity {
         game_time: i64,
         difficulty: i32,
         level_random: &mut LegacyRandom,
-    ) -> Option<CrossbowShot> {
+    ) -> (Option<CrossbowShot>, Option<Target>) {
         let position = self.illager.body.position;
         if players
             .iter()
@@ -165,6 +166,15 @@ impl IllagerEntity {
         let full = self.tick_count <= 1 || (self.tick_count + self.id as i32) % 2 == 0;
         ai.tick_goals(world, full);
         let shot = ai.state.illager.shot.take();
+        let strike = ai.state.attack.take();
+        let melee = ai.state.melee.aggressive;
+        if melee != ai.state.illager.melee_aggressive {
+            ai.state.illager.melee_aggressive = melee;
+            ai.state.illager.aggressive = melee;
+        }
+        if std::mem::take(&mut ai.state.illager.reset_idle) {
+            self.no_action_time = 0;
+        }
         body.position = ai.state.body.position;
         let position = body.position;
         let (can_update, surface) =
@@ -245,7 +255,7 @@ impl IllagerEntity {
         }) {
             self.hurt(damage);
         }
-        shot
+        (shot, strike)
     }
 }
 
@@ -255,7 +265,8 @@ impl EntityWorld {
         let id = self.next_id;
         let kind = match illager.kind {
             il::IllagerKind::Pillager => MonsterKind::Pillager,
-            il::IllagerKind::Vindicator | il::IllagerKind::Evoker => MonsterKind::Pillager,
+            il::IllagerKind::Vindicator => MonsterKind::Vindicator,
+            il::IllagerKind::Evoker => MonsterKind::Pillager,
         };
         let mut ai = MonsterAi::of_kind(kind, &illager.body, illager.yaw);
         ai.state.max_health = il::MAX_HEALTH;
@@ -342,6 +353,36 @@ impl EntityWorld {
         let arrow_id = self.spawn_arrow(id, arrow);
         if let Some(arrow) = self.arrows.iter_mut().find(|e| e.id == arrow_id) {
             arrow.hit_sound = il::HIT_SOUND;
+        }
+    }
+
+    fn illager_strikes(&mut self, id: u64, target: Target) {
+        let Some(entity) = self.illagers.iter().find(|e| e.id == id) else {
+            return;
+        };
+        let position = entity.position();
+        let mut damage = entity.illager.kind.attack_damage();
+        let mut disable_shield_seconds = 0.0;
+        if let Some(stack) = entity.illager.main_hand().cloned() {
+            damage += self.weapon_damage(&stack);
+            disable_shield_seconds = self.disable_shield_seconds(&stack);
+        }
+        match target {
+            Target::Player(player_id) => self.player_hits.push(PlayerHit {
+                player_id,
+                damage,
+                kind: PlayerHitKind::Melee {
+                    attacker: position,
+                    hunger_ticks: 0,
+                    lift: 0.0,
+                    throw: DVec3::ZERO,
+                    disable_shield_seconds,
+                },
+                source: Some(id),
+            }),
+            Target::Mob(victim) | Target::Villager(victim) => {
+                self.mob_hits_mob(id, victim, damage, position, 0.0);
+            }
         }
     }
 
@@ -510,7 +551,7 @@ impl EntityWorld {
             self.level_random = level_random;
             return;
         }
-        let mut shot = None;
+        let (mut shot, mut strike) = (None, None);
         if entity.illager.health <= 0.0 && !entity.no_ai {
             let yaw = entity.illager.yaw;
             let _ = super::living::dying_travel(
@@ -524,7 +565,7 @@ impl EntityWorld {
                 Some(true),
             );
         } else if !entity.no_ai {
-            shot = entity.tick_ai(
+            (shot, strike) = entity.tick_ai(
                 &*world,
                 players,
                 &villagers,
@@ -557,6 +598,9 @@ impl EntityWorld {
         self.level_random = level_random;
         if let Some(shot) = shot {
             self.illager_shoots(id, shot);
+        }
+        if let Some(target) = strike {
+            self.illager_strikes(id, target);
         }
         if let Some((target, aggressive)) = shout {
             self.illager_shouts(id, target, aggressive);
@@ -910,6 +954,110 @@ mod tests {
             }
         }
         assert!((5..=40).contains(&dropped), "{dropped}");
+    }
+
+    fn vindicator_at(world: &mut EntityWorld, at: DVec3, no_ai: bool) -> u64 {
+        let id = world.spawn_illager(Illager::vindicator(at), no_ai);
+        world.illager_mut(id).unwrap().set_random_seed(5);
+        id
+    }
+
+    #[test]
+    fn a_vindicator_is_a_live_monster_with_an_iron_axe_that_golems_hunt() {
+        let mut world = EntityWorld::default();
+        let id = vindicator_at(&mut world, DVec3::new(0.5, 64.0, 0.5), true);
+        assert_eq!(world.entity_type(id), Some(il::VINDICATOR));
+        let entity = &world.illagers()[0];
+        assert_eq!(
+            (
+                entity.illager.body.width,
+                entity.illager.body.height,
+                entity.illager.health
+            ),
+            (0.6, 1.95, 24.0)
+        );
+        assert_eq!(entity.arm_pose, IllagerArmPose::Crossed);
+        assert_eq!(entity.ai.state.follow_range, 12.0);
+        assert_eq!(
+            MonsterKind::Vindicator.goal_names().len(),
+            crate::illager_ai::VINDICATOR_GOAL_NAMES.len()
+        );
+        assert!(world.census().iter().any(|e| e.kind == il::VINDICATOR));
+        assert!(crate::monster_ai::is_enemy(il::VINDICATOR));
+        let golem = world.spawn_iron_golem(
+            crate::iron_golem::IronGolem::new(DVec3::new(0.5, 64.0, 8.5)),
+            false,
+        );
+        for _ in 0..40 {
+            world.tick(&mut Field);
+        }
+        let hunter = world.iron_golems().iter().find(|e| e.id == golem).unwrap();
+        assert_eq!(hunter.ai.state.target, Some(Target::Mob(id)));
+    }
+
+    #[test]
+    fn a_vindicator_raises_its_axe_and_strikes_a_player_through_a_shield() {
+        let mut world = EntityWorld::default();
+        let id = vindicator_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+        let players = [player_at(1, 0.5, 6.5)];
+        let mut struck = None;
+        let mut raised = false;
+        for _ in 0..200 {
+            world.tick_with_players(&mut Field, &players);
+            let entity = world.illagers().iter().find(|e| e.id == id).unwrap();
+            raised |= entity.arm_pose == IllagerArmPose::Attacking && entity.illager.aggressive;
+            if let Some(hit) = world.take_player_hits().into_iter().next() {
+                struck = Some(hit);
+                break;
+            }
+        }
+        let hit = struck.expect("it walks up and strikes");
+        assert!(raised, "it raises its arms to attack");
+        assert_eq!(hit.player_id, 1);
+        assert_eq!(hit.source, Some(id));
+        assert!(hit.damage >= 5.0, "{}", hit.damage);
+        match hit.kind {
+            PlayerHitKind::Melee {
+                disable_shield_seconds,
+                ..
+            } => assert_eq!(disable_shield_seconds, 5.0, "an axe disables a shield"),
+            other => panic!("{other:?}"),
+        }
+        let entity = world.illagers().iter().find(|e| e.id == id).unwrap();
+        assert!(entity.ai.state.melee.swings > 0);
+        assert_eq!(entity.ai.state.target, Some(Target::Player(1)));
+    }
+
+    #[test]
+    fn a_vindicator_named_johnny_attacks_a_cow_but_spares_other_illagers() {
+        let cow_at = DVec3::new(0.5, 64.0, 5.5);
+        let mut world = EntityWorld::default();
+        let plain = vindicator_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+        world.spawn_cow(crate::cow::Cow::new(cow_at), true);
+        for _ in 0..60 {
+            world.tick(&mut Field);
+        }
+        let entity = world.illagers().iter().find(|e| e.id == plain).unwrap();
+        assert_eq!(entity.ai.state.target, None, "a plain vindicator leaves cows alone");
+        let mut world = EntityWorld::default();
+        let johnny = vindicator_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+        world.illager_mut(johnny).unwrap().illager.set_custom_name(il::JOHNNY);
+        let pillager = pillager_at(&mut world, DVec3::new(3.5, 64.0, 0.5), true);
+        let cow = world.spawn_cow(crate::cow::Cow::new(cow_at), true);
+        let mut targeted = None;
+        let mut hurt = false;
+        for _ in 0..200 {
+            world.tick(&mut Field);
+            let entity = world.illagers().iter().find(|e| e.id == johnny).unwrap();
+            targeted = targeted.or(entity.ai.state.target);
+            hurt |= world.cows().iter().any(|c| c.id == cow && c.cow.health < 10.0);
+            if hurt {
+                break;
+            }
+        }
+        assert_eq!(targeted, Some(Target::Mob(cow)));
+        assert_ne!(targeted, Some(Target::Mob(pillager)));
+        assert!(hurt, "Johnny strikes the cow");
     }
 
     #[test]

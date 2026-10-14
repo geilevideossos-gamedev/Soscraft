@@ -58,6 +58,7 @@ pub enum MonsterKind {
     WanderingTrader,
     SnowGolem,
     Pillager,
+    Vindicator,
 }
 
 impl MonsterKind {
@@ -83,6 +84,7 @@ impl MonsterKind {
             Self::WanderingTrader => &crate::trader_ai::GOAL_NAMES,
             Self::SnowGolem => &crate::snow_golem_ai::GOAL_NAMES,
             Self::Pillager => &crate::illager_ai::PILLAGER_GOAL_NAMES,
+            Self::Vindicator => &crate::illager_ai::VINDICATOR_GOAL_NAMES,
         }
     }
 
@@ -107,6 +109,7 @@ impl MonsterKind {
             Self::WanderingTrader => &crate::trader_ai::TARGET_NAMES,
             Self::SnowGolem => &crate::snow_golem_ai::TARGET_NAMES,
             Self::Pillager => &crate::illager_ai::PILLAGER_TARGET_NAMES,
+            Self::Vindicator => &crate::illager_ai::VINDICATOR_TARGET_NAMES,
         }
     }
 }
@@ -411,6 +414,7 @@ pub(crate) enum Prey {
     Piglin,
     Chicken,
     Monster,
+    Living,
 }
 
 /// `MeleeAttackGoal`'s state (and `ZombieAttackGoal`'s raised arms).
@@ -632,7 +636,10 @@ impl MonsterGoalContext {
         if self.kind == MonsterKind::Cat && matches!(target.target, Target::Player(id) if self.feline.tame && self.feline.owner == Some(id)) {
             return false;
         }
-        if self.kind == MonsterKind::Pillager && matches!(target.target, Target::Villager(id) if self.villagers.iter().any(|v| v.id == id && v.baby)) {
+        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator) && matches!(target.target, Target::Villager(id) if self.villagers.iter().any(|v| v.id == id && v.baby)) {
+            return false;
+        }
+        if matches!(self.kind, MonsterKind::Pillager | MonsterKind::Vindicator) && self.kind_of(target.target).is_some_and(crate::illager::is_illager) {
             return false;
         }
         target.alive && target.player_ok && !(player && self.difficulty == 0)
@@ -751,7 +758,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator, true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -817,7 +824,7 @@ impl MonsterAi {
             walk.clear_malus(PathType::Fire);
         }
         // `FloatGoal` lets the navigation float.
-        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager);
+        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager | MonsterKind::Vindicator);
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::WitherSkeleton => FOLLOW_RANGE,
             MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
@@ -830,6 +837,7 @@ impl MonsterAi {
             MonsterKind::WanderingTrader => crate::wandering_trader::FOLLOW_RANGE,
             MonsterKind::SnowGolem => crate::snow_golem::FOLLOW_RANGE,
             MonsterKind::Pillager => crate::illager::IllagerKind::Pillager.follow_range(),
+            MonsterKind::Vindicator => crate::illager::IllagerKind::Vindicator.follow_range(),
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -883,6 +891,7 @@ impl MonsterAi {
             MonsterKind::WanderingTrader => (crate::trader_ai::trader_goals(), crate::trader_ai::trader_targets(), crate::wandering_trader::EYE_HEIGHT),
             MonsterKind::SnowGolem => (crate::snow_golem_ai::snow_golem_goals(), crate::snow_golem_ai::snow_golem_targets(), crate::snow_golem::EYE_HEIGHT),
             MonsterKind::Pillager => (crate::illager_ai::pillager_goals(), crate::illager_ai::pillager_targets(), crate::illager::EYE_HEIGHT),
+            MonsterKind::Vindicator => (crate::illager_ai::vindicator_goals(), crate::illager_ai::vindicator_targets(), crate::illager::EYE_HEIGHT),
             MonsterKind::Skeleton => (skeleton_goals(), skeleton_targets(), 1.74),
             MonsterKind::Spider => (spider_goals(), spider_targets(), 0.65),
             MonsterKind::Slime => (slime_goals(), slime_targets(), 0.325),
@@ -2845,7 +2854,7 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
         if self.dark_only && ctx.in_light(world) {
             return false;
         }
-        if ctx.random.next_int(self.interval) != 0 {
+        if self.interval > 0 && ctx.random.next_int(self.interval) != 0 {
             return false;
         }
         let (range, eye) = (ctx.follow_range.max(2.0), ctx.eye());
@@ -2861,6 +2870,13 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
             Prey::Piglin => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:piglin" | "minecraft:piglin_brute")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Chicken => ctx.mobs.iter().filter(|m| m.kind == "minecraft:chicken").map(|m| Target::Mob(m.id)).collect(),
             Prey::Monster => ctx.mobs.iter().filter(|m| is_enemy(m.kind)).map(|m| Target::Mob(m.id)).collect(),
+            Prey::Living => ctx
+                .players
+                .iter()
+                .map(|p| Target::Player(p.id))
+                .chain(ctx.villagers.iter().filter(|v| ctx.mobs.iter().all(|m| m.id != v.id)).map(|v| Target::Villager(v.id)))
+                .chain(ctx.mobs.iter().filter(|m| m.id != ctx.illager.id).map(|m| Target::Mob(m.id)))
+                .collect(),
         };
         let mut best: Option<(f64, Target)> = None;
         for target in candidates {

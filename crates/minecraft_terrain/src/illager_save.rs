@@ -30,6 +30,13 @@ fn byte(value: bool) -> Tag {
     Tag::Byte(i8::from(value))
 }
 
+fn custom_name(tag: &Tag) -> Option<String> {
+    match tag.get("CustomName")? {
+        Tag::String(name) => Some(name.clone()),
+        name => name.get("text").and_then(Tag::as_str).map(str::to_owned),
+    }
+}
+
 pub fn spawn(world: &mut EntityWorld, tag: &Tag, kind: IllagerKind, saved: Saved) -> Option<u64> {
     let mut illager = Illager::new(kind, saved.pos);
     illager.yaw = saved.yaw;
@@ -73,6 +80,10 @@ pub fn spawn(world: &mut EntityWorld, tag: &Tag, kind: IllagerKind, saved: Saved
         .map(|[x, y, z]| (x, y, z));
     raider.patrol_leader = flag(tag, "PatrolLeader", false);
     raider.patrolling = flag(tag, "Patrolling", false);
+    illager.johnny = flag(tag, "Johnny", false);
+    if let Some(name) = custom_name(tag) {
+        illager.set_custom_name(&name);
+    }
     let id = world.spawn_illager(illager, saved.no_ai);
     let entity = world.illager_mut(id)?;
     entity.random = saved.random;
@@ -93,6 +104,9 @@ pub fn fields(entity: &IllagerEntity) -> Vec<(&'static str, Tag)> {
         ("PatrolLeader", byte(raider.patrol_leader)),
         ("Patrolling", byte(raider.patrolling)),
     ];
+    if illager.johnny {
+        fields.push(("Johnny", byte(true)));
+    }
     if let Some(raid) = raider.raid_id {
         fields.push(("RaidId", Tag::Int(raid)));
     }

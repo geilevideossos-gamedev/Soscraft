@@ -1310,6 +1310,30 @@ mod tests {
     }
 
     #[test]
+    fn a_friend_sees_a_vindicator_cross_its_arms_and_then_raise_its_axe() {
+        use minecraftoss_entities::illager::IllagerArmPose;
+        let mut host = EntityWorld::default();
+        let (vindicator, tag) = spawn(&mut host, "{id:\"minecraft:vindicator\",Pos:[2.5d,64.0d,0.5d],NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_axe\",count:1}}}");
+        assert_eq!(tracking_range("minecraft:vindicator"), 8);
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, vindicator, &tag));
+        assert_eq!(friend.entity_type(vindicator), Some("minecraft:vindicator"));
+        assert_eq!(friend.illagers()[0].arm_pose, IllagerArmPose::Crossed);
+        assert!(!friend.illagers()[0].illager.shows_held_items());
+        {
+            let e = host.illager_mut(vindicator).unwrap();
+            e.illager.aggressive = true;
+            e.arm_pose = e.illager.arm_pose();
+        }
+        for mob in server_mobs(&host) {
+            show_on(&mut friend, &mob);
+        }
+        let seen = &friend.illagers()[0];
+        assert_eq!(seen.arm_pose, IllagerArmPose::Attacking);
+        assert!(seen.illager.shows_held_items(), "the axe shows while it attacks");
+    }
+
+    #[test]
     fn a_friend_sees_a_pillager_charge_and_then_hold_its_crossbow() {
         use minecraftoss_entities::illager::{Illager, IllagerArmPose};
         let at = DVec3::new(2.5, 64.0, 0.5);

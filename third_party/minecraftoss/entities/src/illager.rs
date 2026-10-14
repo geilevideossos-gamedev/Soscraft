@@ -53,6 +53,12 @@ pub const PATROL_COOLDOWN: i64 = 200;
 pub const PATROL_TARGET_SPREAD: i32 = 500;
 pub const PATROL_WANDER: i32 = 8;
 pub const PATROL_KEEP_RANGE: f64 = 128.0;
+pub const IRON_AXE: &str = "minecraft:iron_axe";
+pub const JOHNNY: &str = "Johnny";
+pub const MELEE_SPEED: f64 = 1.0;
+pub const VINDICATOR_PLAYER_LOOK_RANGE: f64 = 3.0;
+pub const VINDICATOR_MOB_LOOK_RANGE: f64 = 8.0;
+pub const ILLAGERS: [&str; 4] = [PILLAGER, VINDICATOR, EVOKER, "minecraft:illusioner"];
 pub const PIERCING_ROLL: i32 = 300;
 
 pub const MAINHAND: usize = 0;
@@ -167,6 +173,7 @@ pub struct Illager {
     pub raider: Raider,
     pub charging_crossbow: bool,
     pub aggressive: bool,
+    pub johnny: bool,
 }
 
 impl Illager {
@@ -186,6 +193,19 @@ impl Illager {
             raider: Raider::default(),
             charging_crossbow: false,
             aggressive: false,
+            johnny: false,
+        }
+    }
+
+    pub fn vindicator(position: DVec3) -> Self {
+        let mut vindicator = Self::new(IllagerKind::Vindicator, position);
+        vindicator.equipment[MAINHAND] = Some(iron_axe());
+        vindicator
+    }
+
+    pub fn set_custom_name(&mut self, name: &str) {
+        if self.kind == IllagerKind::Vindicator && name == JOHNNY {
+            self.johnny = true;
         }
     }
 
@@ -257,8 +277,14 @@ impl Illager {
             IllagerKind::Pillager if self.holds_crossbow() => IllagerArmPose::CrossbowHold,
             IllagerKind::Pillager if self.aggressive => IllagerArmPose::Attacking,
             IllagerKind::Pillager => IllagerArmPose::Neutral,
+            IllagerKind::Vindicator if self.aggressive => IllagerArmPose::Attacking,
+            IllagerKind::Vindicator if self.raider.celebrating => IllagerArmPose::Celebrating,
             IllagerKind::Vindicator | IllagerKind::Evoker => IllagerArmPose::Crossed,
         }
+    }
+
+    pub fn shows_held_items(&self) -> bool {
+        self.kind != IllagerKind::Vindicator || self.aggressive
     }
 
     pub fn eye_height(&self) -> f32 {
@@ -274,6 +300,16 @@ pub fn crossbow() -> ItemStack {
     let mut stack = ItemStack::new(CROSSBOW, 1);
     stack.max = 1;
     stack
+}
+
+pub fn iron_axe() -> ItemStack {
+    let mut stack = ItemStack::new(IRON_AXE, 1);
+    stack.max = 1;
+    stack
+}
+
+pub fn is_illager(kind: &str) -> bool {
+    ILLAGERS.contains(&kind)
 }
 
 pub fn arm_pose_index(pose: IllagerArmPose) -> u8 {
@@ -330,6 +366,40 @@ mod tests {
         pillager.set_crossbow_charged(false);
         assert!(!pillager.crossbow_charged());
         assert!(pillager.main_hand().unwrap().components.is_none());
+    }
+
+    #[test]
+    fn a_vindicator_holds_an_iron_axe_crosses_its_arms_and_raises_them_to_attack() {
+        let mut vindicator = Illager::vindicator(DVec3::ZERO);
+        assert_eq!(vindicator.kind.follow_range(), 12.0);
+        assert_eq!(vindicator.kind.attack_damage(), 5.0);
+        assert_eq!(vindicator.health, 24.0);
+        assert_eq!(vindicator.main_hand().map(|s| s.id.as_str()), Some(IRON_AXE));
+        assert!(!vindicator.can_pick_up_loot);
+        assert_eq!(vindicator.arm_pose(), IllagerArmPose::Crossed);
+        assert!(!vindicator.shows_held_items());
+        vindicator.aggressive = true;
+        assert_eq!(vindicator.arm_pose(), IllagerArmPose::Attacking);
+        assert!(vindicator.shows_held_items());
+        vindicator.aggressive = false;
+        vindicator.raider.celebrating = true;
+        assert_eq!(vindicator.arm_pose(), IllagerArmPose::Celebrating);
+        assert!(Illager::pillager(DVec3::ZERO).shows_held_items());
+    }
+
+    #[test]
+    fn only_a_vindicator_named_johnny_becomes_johnny() {
+        let mut vindicator = Illager::vindicator(DVec3::ZERO);
+        vindicator.set_custom_name("Bob");
+        assert!(!vindicator.johnny);
+        vindicator.set_custom_name(JOHNNY);
+        assert!(vindicator.johnny);
+        vindicator.set_custom_name("Bob");
+        assert!(vindicator.johnny, "renaming keeps it Johnny");
+        let mut pillager = Illager::pillager(DVec3::ZERO);
+        pillager.set_custom_name(JOHNNY);
+        assert!(!pillager.johnny);
+        assert!(is_illager(VINDICATOR) && is_illager(PILLAGER) && !is_illager("minecraft:witch"));
     }
 
     #[test]

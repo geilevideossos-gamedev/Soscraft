@@ -350,7 +350,7 @@ pub fn append_illagers<'a>(
                 first_tint: None,
             });
         }
-        if pose.crossed {
+        if pose.crossed || !illager.shows_held_items() {
             continue;
         }
         let (right, left) = if illager.left_handed {

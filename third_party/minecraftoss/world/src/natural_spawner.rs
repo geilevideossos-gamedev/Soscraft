@@ -317,10 +317,11 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "glow_squid" => (0.8, 0.8, Placement::InWater, MotionBlockingNoLeaves, false, false),
         "drowned" => (0.6, 1.95, Placement::InWater, MotionBlockingNoLeaves, false, false),
         "pillager" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "vindicator" => (0.6, 1.95, Placement::NoRestrictions, MotionBlockingNoLeaves, false, false),
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute" | "drowned" | "pillager");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "cave_spider" | "enderman" | "husk" | "stray" | "bogged" | "parched" | "zombified_piglin" | "wither_skeleton" | "blaze" | "zoglin" | "piglin" | "piglin_brute" | "drowned" | "pillager" | "vindicator");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),

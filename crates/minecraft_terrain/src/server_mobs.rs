@@ -462,6 +462,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:strider",
     "minecraft:trader_llama",
     "minecraft:villager",
+    "minecraft:vindicator",
     "minecraft:wandering_trader",
     "minecraft:witch",
     "minecraft:wither_skeleton",
@@ -688,7 +689,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let saved = crate::piglin_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::piglin_save::spawn(world, tag, kind, saved)?
         }
-        "minecraft:pillager" if tag.get("Passengers").is_none() => {
+        "minecraft:pillager" | "minecraft:vindicator" if tag.get("Passengers").is_none() => {
             let kind = minecraftoss_entities::illager::IllagerKind::from_type(kind)?;
             let saved = crate::illager_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::illager_save::spawn(world, tag, kind, saved)?
@@ -2654,6 +2655,36 @@ mod tests {
         let again = &again[0].1;
         assert!(again.get("wander_target").is_none() && again.get("home_pos").is_none() && again.get("home_radius").is_none(), "{again:?}");
         assert!(again.get("equipment").and_then(|e| e.get("mainhand")).is_none(), "the empty hand saves no bucket");
+    }
+
+    #[test]
+    fn a_vindicator_saves_and_loads_with_its_axe_and_stays_johnny() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:vindicator"));
+        let named = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vindicator\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,9],Health:22.0f,CustomName:\"Johnny\",CanJoinRaid:1b,equipment:{mainhand:{id:\"minecraft:iron_axe\",count:1}}}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &named).expect("vindicators load");
+        assert_eq!(world.entity_type(id), Some("minecraft:vindicator"));
+        {
+            let i = &world.illager_mut(id).unwrap().illager;
+            assert!(i.johnny, "named Johnny");
+            assert_eq!(i.health, 22.0);
+            assert_eq!(i.main_hand().map(|s| s.id.as_str()), Some("minecraft:iron_axe"));
+            assert!(!i.can_pick_up_loot);
+        }
+        let originals: std::collections::HashMap<u64, Tag> = [(id, named)].into_iter().collect();
+        let saved = mob_tags_where(&world, |_, _| true, &originals, true);
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("Johnny"), Some(&Tag::Byte(1)));
+        let mut unnamed = saved.clone();
+        if let Tag::Compound(map) = &mut unnamed {
+            map.remove("CustomName");
+        }
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, &unnamed).expect("a saved vindicator loads");
+        assert!(fresh.illager_mut(back).unwrap().illager.johnny, "the Johnny flag is saved");
+        let plain = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vindicator\",Pos:[1.5d,64.0d,2.5d],CustomName:{text:\"Bob\"}}").unwrap();
+        let id = spawn_saved(&mut fresh, &plain).unwrap();
+        assert!(!fresh.illager_mut(id).unwrap().illager.johnny);
     }
 
     #[test]
