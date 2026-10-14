@@ -1367,6 +1367,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.illagers().iter().map(|e| (e.id, crate::illager_render::SHADOW_RADIUS)));
     kinds.extend(world.vexes().iter().map(|e| (e.id, crate::vex_render::SHADOW_RADIUS)));
     kinds.extend(world.ravagers().iter().map(|e| (e.id, crate::ravager_render::SHADOW_RADIUS)));
+    kinds.extend(world.withers().iter().map(|e| (e.id, crate::wither_render::SHADOW_RADIUS)));
     kinds.extend(world.striders().iter().map(|e| (e.id, crate::strider_render::shadow_radius(e.strider.age.baby()))));
     kinds.extend(world.hoglins().iter().map(|e| (e.id, crate::hoglin_render::shadow_radius(e.hoglin.is_baby()))));
     kinds.extend(world.piglins().iter().map(|e| (e.id, 0.5 * age(e.piglin.is_baby()))));

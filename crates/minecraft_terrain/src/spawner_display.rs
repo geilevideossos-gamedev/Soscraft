@@ -57,6 +57,7 @@ const DRAWN_KINDS: &[&str] = &[
     "minecraft:vindicator",
     "minecraft:wandering_trader",
     "minecraft:witch",
+    "minecraft:wither",
     "minecraft:wither_skeleton",
     "minecraft:wolf",
     "minecraft:zoglin",
@@ -380,6 +381,9 @@ impl Shown {
             }
             "minecraft:ravager" => {
                 crate::ravager_render::append_ravagers(models, w.ravagers().iter(), poses, atlas, light, partial);
+            }
+            "minecraft:wither" => {
+                crate::wither_render::append_withers(models, translucent, w.withers().iter(), poses, atlas, light, partial);
             }
             "minecraft:wolf" => wolf_render::append_wolves(
                 models,
@@ -933,6 +937,7 @@ mod tests {
             ("minecraft:evoker", 0.05),
             ("minecraft:vex", 0.05),
             ("minecraft:ravager", 0.1),
+            ("minecraft:wither", 0.1),
         ] {
             let pos = (10, 70, -3);
             let mut displays = one(pos, Some(mob), 20);

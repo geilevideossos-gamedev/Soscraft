@@ -2798,6 +2798,46 @@ After 81f6f353.
 IW4L_MINECRAFT_KIT=minecraft:soul_sand*16,minecraft:soul_soil*8,minecraft:wither_skeleton_skull*12,minecraft:wither_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:netherite_sword,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:spyglass
 ```
 
+### 2. Minecraft withers are drawn like vanilla
+
+After d4f932de.
+
+- **Vanilla (javap, 26.3):**
+  - `WitherBossModel.createBodyLayer(CubeDeformation)` (64 x 64; every box takes the deformation): `shoulders` (0, 16) box (-10, 3.9, -0.5) 20 x 3 x 3 at zero; `ribcage` at (-2, 6.9, -0.5) turned 0.20420352 about X: (0, 22) box (0, 0, 0) 3 x 10 x 3 and three (24, 22) boxes (-4, 1.5 / 4 / 6.5, 0.5) 11 x 2 x 2; `tail` (12, 22) box (0, 0, 0) 3 x 6 x 3 at (-2, 6.9 + cos(0.2042035) * 10, -0.5 + sin(0.2042035) * 10) turned 0.83252203; `center_head` (0, 0) box (-4, -4, -4) 8 x 8 x 8 at zero; `right_head` and `left_head` (32, 0) box (-4, -4, -4) 6 x 6 x 6 at (-8, 4, 0) and (10, 4, 0). `LayerDefinitions`: `WITHER` with `CubeDeformation.NONE`, `WITHER_ARMOR` with 0.5.
+  - `WitherBossModel.setupAnim`: the right head from `yHeadRots[0] - bodyRot` and `xHeadRots[0]`, the left head from index 1 (degrees to radians by 0.017453292); `f = cos(ageInTicks * 0.1)`, the ribcage pitch `(0.065 + 0.05 f) * pi`, the tail at `(-2, 6.9 + cos(ribcage) * 10, -0.5 + sin(ribcage) * 10)` pitched `(0.265 + 0.1 f) * pi`; the centre head from the render state's `yRot` and `xRot` (the head's net yaw and pitch).
+  - `WitherBossRenderer`: shadow 1.0; `getBlockLightLevel` 15; `scale`: 2, less `invulnerableTicks / 220 * 0.5` while charging (`extractRenderState` gives `invul - partial`, else 0); texture `textures/entity/wither/wither_invulnerable.png` while `floor(invul) > 0` and (above 80 or `floor / 5 % 2 != 1`), else `wither.png`; the side heads' rotations copied as they are (no partial tick); `isPowered`.
+  - `WitherArmorLayer` (an `EnergySwirlLayer`): only when powered, the 0.5-grown model posed the same, `textures/entity/wither/wither_armor.png` through `RenderTypes.energySwirl(texture, xOffset(t) % 1, t * 0.01 % 1)` with `xOffset(t) = cos(t * 0.02) * 3` and `t = ageInTicks`, colour 0xFF808080, no overlay.
+  - `WitherBoss.aiStep` on the client: a `SMOKE` at each head with gaussian 0.3 spread every tick, an `ENTITY_EFFECT` (0.7, 0.7, 0.5) at a head one time in four (level random) while powered, and three `ENTITY_EFFECT` (0.7, 0.7, 0.9) at gaussian 1 across and up to 3.3 up while charging.
+  - `SpawnerRenderer`: the cage scales the mob by `0.53125 / max(width, height)` above 1 (3.5 for the wither).
+- **Changed:**
+  - New `crates/minecraft_terrain/src/wither_render.rs`: `WitherBossModel` ported from `createBodyLayer` and `setupAnim` on `posed_cube` (`WitherLook` from `extractRenderState`: the charge clock with the partial tick, the side heads' rotations, powered), the charge scale and the flashing texture, full block light, shadow 1.0, and the armour layer: the cubes grown 0.5 with `wither_armor` scrolled by `swirl_shift` and cut where the scrolled texture wraps, so it repeats inside its atlas region as vanilla's repeating texture does, drawn translucent at full light.
+  - `minecraft_terrain`: `lib.rs`, `mesh.rs` (the three wither textures), `client_mobs.rs` (the shadow), `spawner_display.rs` (withers turn in spawner cages).
+  - `minecraft_survival/src/entity_view.rs`: withers drawn (the armour in the translucent pass); the smoke at the three heads, the powered glow and the charge sparks drawn by each viewer from the wither's shown state (`wither_effects`), for the host and every friend.
+- **Tests:**
+  - `minecraft_terrain`: `wither_render::tests` (`a_wither_is_drawn_at_twice_its_model_size_about_three_and_a_half_blocks_tall` (54 faces, the head's top at 3.5, the tail clear of the ground, the heads 3 blocks across), `a_charging_wither_grows_and_flashes_its_blue_skin` (the scale from 1.5 to 2, the texture at 200, 81, 80, 79, 75, 70 and 0 ticks), `its_ribcage_and_tail_breathe_and_its_side_heads_turn_from_the_body`, `its_armour_scrolls_and_wraps_inside_the_texture` (the shift at 0 and 250 ticks, no cuts unshifted, cut faces covering the same shell with every coordinate inside the region, the shell outside the body)), the spawner cage test with the wither.
+  - `minecraft_survival`: `entity_view::tests::a_wither_smokes_from_its_three_heads_and_glows_while_it_charges_or_is_powered`.
+  - Runs: `minecraft_terrain` lib 1382 of 1385 (3 ignored), `minecraft_survival` wither tests, all green. `check -p launcher` green. Clippy on `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain` and `minecraft_survival` (`--all-targets`, `-A clippy::approx_constant`) finds nothing in this group's code. The new `wither_render.rs` passes `rustfmt --check --edition 2021`.
+- **Decisions:**
+  - The armour swirl is drawn in the translucent pass at half alpha and full light, not additively: the fork has no additive entity pass. It shows the same scrolling blue lattice over the body, a little darker over the bones than vanilla's added light.
+  - The swirl's texture scroll is done on the mesh: each face's coordinates are shifted and the face is cut where they cross the texture's edge, since the atlas cannot repeat a texture.
+  - The particles come from each viewer's own random (vanilla also draws them on each client), so host and friend see the same kind and rate but not the same specks.
+- **Vendored files:** none.
+- **Test steps (survival, Normal difficulty, by day, open flat ground in the Overworld; diamond armour on):**
+  1. Place one soul sand block, three soul sand blocks across on top of it (a T), and a wither skeleton skull on two of the top blocks: nothing happens. Place the third skull and run back 10 blocks at once: the seven blocks break with their particles, a small wither stands where the bottom block was, flashing between its blue and grey skin, wrapped in the moving blue armour, blue sparks around it and smoke from its three heads (**153_wither_built**).
+  2. Shoot it with the bow while it charges: the arrows do nothing (no red flash). Over 11 seconds it grows to full size, its flashing slows and stops, and its armour fades halfway through as it heals past half health (**154_wither_charging**).
+  3. At the end it blows up (a crater a little bigger than a charged creeper's) with a deep roar. The friend, far away, hears the roar too, from the wither's direction.
+  4. It flies up and comes after you, staying about five blocks above you, its centre head looking at you; the side heads turn to you and to a cow from a cow egg, never to a zombie from a zombie egg (**155_wither_flying**). It does not shoot yet. An iron golem from its egg goes for it.
+  5. Hit it with the sword: red flash (it heals one health every second). Bring it below half health: the moving blue armour comes back (**156_wither_armour**). Kill it: it leaves 50 experience (no nether star yet).
+  6. Build one from soul soil and one lying flat on the ground (the T and the skulls all on one layer, a skull last): both build. `/difficulty peaceful`: placing the last skull builds nothing. `/difficulty normal`.
+  7. In creative, a wither egg hatches a full-size wither that does not charge and has no armour; use a wither egg on a placed spawner: a small wither turns in the cage (**157_wither_cage**); the spawner also spawns full withers, so break it after the screenshot.
+  8. Build a wither and save and quit while it charges, then load: it is still charging and still blows up at the end.
+  9. Friend window: the friend sees the wither grow, flash and blow up, its armour, the smoke, its side heads turning, and shoots it with a gun (red flash); the friend builds one the same way and the host sees it (**158_friend_wither**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:soul_sand*16,minecraft:soul_soil*8,minecraft:wither_skeleton_skull*12,minecraft:wither_spawn_egg*2,minecraft:spawner,minecraft:cow_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:netherite_sword,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:spyglass
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2923,6 +2963,7 @@ Group skater-poses changed `SkateReport` (new `pose`) and `StateFrame` (new `ska
 - `docs/round8/decisions.md:29` (a ghast's or blaze's fireball doesn't make a hoglin retaliate) is answered by track D, group small-not-vanilla, commit 4: the large fireball's blast now notes the ghast, and the direct hits already noted the shooter. "Looting and Fire Aspect don't affect their drops" stays.
 - `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 4): the hoglin paragraph gains: "A hoglin or piglin hurt by a ghast's fireball blast or a blaze's fireball turns on the ghast or blaze."
 - `docs/MINECRAFT-SURVIVAL.md` (group wither-live, commit 1): new paragraph "Withers: three wither skeleton skulls placed on a T of soul sand or soul soil (in any direction, standing or lying) build a wither, not on peaceful. It charges for 11 seconds at a third of its health, invulnerable and healing to full, then blows up (radius 7) with a roar heard everywhere in the dimension. It then flies after the nearest living thing that is not undead, staying about five blocks above it; its two side heads pick their own targets within 20 blocks and turn to them. Undead and drowning never hurt it; it takes no lasting effects. A wither egg or `/summon` gives one that does not charge. Withers are saved, and friends see them, their heads and the charge. They do not shoot skulls, break blocks, show a boss bar or drop a nether star yet."
+- `docs/MINECRAFT-SURVIVAL.md` (group wither-live, commit 2): the wither paragraph gains: "Withers are drawn like vanilla: the three-headed model at twice size, growing from 1.5 to 2 and flashing blue while it charges, the moving blue armour while at half health or less, smoke from its heads and blue sparks while charging, for the host and friends; they also turn in spawner cages."
 
 ## Vendored files
 

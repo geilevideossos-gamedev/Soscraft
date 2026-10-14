@@ -148,6 +148,7 @@ impl EntityView {
             self.spell_casts();
             self.fang_crits();
             self.ravager_effects();
+            self.wither_effects();
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);
             self.drawn_fireballs.tick();
@@ -269,6 +270,32 @@ impl EntityView {
                 for _ in 0..ROAR_PARTICLES {
                     let motion = DVec3::new(self.random.next_gaussian() * ROAR_SPREAD, self.random.next_gaussian() * ROAR_SPREAD, self.random.next_gaussian() * ROAR_SPREAD);
                     self.ambient.add(minecraft_terrain::ambient_particles::Kind::Poof, center, motion);
+                }
+            }
+        }
+    }
+
+    fn wither_effects(&mut self) {
+        use minecraftoss_entities::wither::{head_position, CHARGE_COLOR, CHARGE_PARTICLE_HEIGHT, POWERED_COLOR, SMOKE_SPREAD};
+        use minecraft_terrain::spell_particles::SpellKind;
+        let withers: Vec<(u64, minecraftoss_entities::wither::Wither)> = self.world.withers().iter().filter(|e| e.wither.health > 0.0).map(|e| (e.id, e.wither.clone())).collect();
+        for (id, wither) in withers {
+            let body_yaw = self.client.pose(id, 1.0).map_or(wither.body_yaw, |mob| mob.body_rot);
+            let spread = f64::from(SMOKE_SPREAD);
+            for head in 0..3 {
+                let at = head_position(wither.body.position, body_yaw, head);
+                let smoke = at + DVec3::new(self.random.next_gaussian() * spread, self.random.next_gaussian() * spread, self.random.next_gaussian() * spread);
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::Smoke, smoke, DVec3::ZERO);
+                if wither.powered() && self.random.next_int(4) == 0 {
+                    let glow = at + DVec3::new(self.random.next_gaussian() * spread, self.random.next_gaussian() * spread, self.random.next_gaussian() * spread);
+                    self.spell.spawn(SpellKind::Effect, glow, DVec3::ZERO, POWERED_COLOR, 1.0);
+                }
+            }
+            if wither.charging() {
+                let p = wither.body.position;
+                for _ in 0..3 {
+                    let at = DVec3::new(p.x + self.random.next_gaussian(), p.y + f64::from(self.random.next_float() * CHARGE_PARTICLE_HEIGHT), p.z + self.random.next_gaussian());
+                    self.spell.spawn(SpellKind::Effect, at, DVec3::ZERO, CHARGE_COLOR, 1.0);
                 }
             }
         }
@@ -1069,6 +1096,15 @@ impl EntityView {
             light,
             partial,
         );
+        minecraft_terrain::wither_render::append_withers(
+            &mut out.models,
+            &mut out.translucent,
+            w.withers().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
         for e in w.illagers().iter().filter(|e| w.glowing(e.id)) {
             let mut mob = minecraft_terrain::mesh::ChunkMesh::default();
             let _ = minecraft_terrain::illager_render::append_illagers(&mut mob, std::iter::once(e), poses, atlas, light, partial);
@@ -1382,6 +1418,27 @@ mod tests {
     fn a_dragon_frozen_on_the_host_makes_no_flap_or_growl_on_the_client() {
         assert!(voices(false) > 0);
         assert_eq!(voices(true), 0);
+    }
+
+    #[test]
+    fn a_wither_smokes_from_its_three_heads_and_glows_while_it_charges_or_is_powered() {
+        let mut view = EntityView::new(7);
+        let id = view.world.spawn_wither(minecraftoss_entities::wither::Wither::new(DVec3::new(0.5, 64.0, 0.5)), true);
+        for _ in 0..10 {
+            view.wither_effects();
+        }
+        assert_eq!(view.ambient.len(), 30, "a puff of smoke at every head each tick");
+        assert_eq!(view.spell.len(), 0, "a healthy wither does not glow");
+        view.world.wither_mut(id).unwrap().wither.make_invulnerable();
+        for _ in 0..40 {
+            view.wither_effects();
+        }
+        let glows = view.spell.len();
+        assert!((120 + 15..=120 + 50).contains(&glows), "three charge sparks a tick and the powered glow one head in four: {glows}");
+        view.world.wither_mut(id).unwrap().wither.health = 0.0;
+        let before = (view.ambient.len(), view.spell.len());
+        view.wither_effects();
+        assert_eq!((view.ambient.len(), view.spell.len()), before, "a dead wither stops");
     }
 
     #[test]
