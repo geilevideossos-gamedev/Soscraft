@@ -176,6 +176,7 @@ pub(crate) struct Friend {
     use_clock: crate::minecraft_hand::UseClock,
     swing: crate::minecraft_hand::FriendSwing,
     portal: crate::minecraft_portal::FriendPortal,
+    music: crate::minecraft_music::MusicManager,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -208,7 +209,13 @@ impl Friend {
     }
 }
 
-fn stop(friend: &mut Friend, view: &mut MinecraftWorldView, ui: &mut frame::MinecraftUi) {
+fn stop(
+    friend: &mut Friend,
+    view: &mut MinecraftWorldView,
+    ui: &mut frame::MinecraftUi,
+    music: &mut audio::McMusic,
+) {
+    music.wanted = None;
     if view.active {
         sim::voxel::deactivate();
         crate::minecraft_world::clear_view(view);
@@ -358,12 +365,13 @@ pub(crate) fn friend(
         Option<Res<frame::ActivePad>>,
         Option<Res<frame::HudInputView>>,
     ),
-    (mut body_gear, mut sound_queue, mut sleepers, weapons, strings): (
+    (mut body_gear, mut sound_queue, mut sleepers, weapons, strings, mut mc_music): (
         ResMut<crate::anim::minecraft_gear::McBodyGear>,
         ResMut<audio::McSoundQueue>,
         ResMut<frame::McSleepers>,
         Option<Res<assets::PreparedWeapons>>,
         Option<Res<assets::PreparedLocalizedStrings>>,
+        ResMut<audio::McMusic>,
     ),
 ) {
     if *role != frame::RuntimeRole::Client {
@@ -377,10 +385,10 @@ pub(crate) fn friend(
         *sleepers = frame::McSleepers::default();
     }
     for _ in torn_down.read() {
-        stop(friend, &mut view, &mut ui);
+        stop(friend, &mut view, &mut ui, &mut mc_music);
     }
     for match_ in installed.read() {
-        stop(friend, &mut view, &mut ui);
+        stop(friend, &mut view, &mut ui, &mut mc_music);
         if assets::minecraft_map::is_minecraft(&match_.zone) {
             let (send, receive) = mpsc::channel();
             friend.loader = std::thread::Builder::new()
@@ -394,6 +402,7 @@ pub(crate) fn friend(
         }
     }
     if !view.active {
+        mc_music.wanted = None;
         return;
     }
     let now = Instant::now();
@@ -448,7 +457,7 @@ pub(crate) fn friend(
             }
             Err(error) => {
                 diag::warn!(World, "Minecraft world failed to load: {error}");
-                stop(friend, &mut view, &mut ui);
+                stop(friend, &mut view, &mut ui, &mut mc_music);
                 return;
             }
         }
@@ -524,7 +533,7 @@ pub(crate) fn friend(
         ui.boss_bars.iter().any(|bar| bar.world_fog),
         ui.credits.is_some(),
     );
-    present(
+    let sky_ticked = present(
         friend,
         &mut view,
         prediction.as_deref(),
@@ -623,6 +632,9 @@ pub(crate) fn friend(
     };
     show_hand(friend, &mut view, &mut ui, player.as_ref(), gate, aspect);
     ui.loading_world = friend.holding(now_ms);
+    if sky_ticked {
+        play_music(friend, &ui, &mut mc_music);
+    }
     if friend.switch_screen.is_some() && !friend.spawn_gate.holding(now_ms) {
         friend.switch_screen = None;
     }
@@ -1399,7 +1411,7 @@ fn present(
     aspect: f32,
     (dt, (world_fog, credits)): (f64, (bool, bool)),
     now_ms: u64,
-) {
+) -> bool {
     let Friend {
         prepared: Some(prepared),
         remote: Some(remote),
@@ -1424,12 +1436,12 @@ fn present(
         ..
     } = friend
     else {
-        return;
+        return false;
     };
     let shown = remote.take_shown();
     remote.advance_clocks(dt);
     let Some(level) = remote.level.as_mut() else {
-        return;
+        return false;
     };
     let band = minecraft_survival::bands::level(level.dimension);
     if shown.level {
@@ -1539,7 +1551,7 @@ fn present(
         now_ms,
     );
     let Some(light) = light.as_mut() else {
-        return;
+        return false;
     };
     for (chunk, column) in lights {
         light.set_chunk_column(chunk, column);
@@ -1657,6 +1669,41 @@ fn present(
         ),
         (sounds.as_mut(), mining, weather[0]),
     );
+    sky.ticked
+}
+
+fn music_input<'a>(
+    dimension: minecraft_net::Dimension,
+    ui: &frame::MinecraftUi,
+    finished: Option<&'a str>,
+) -> crate::minecraft_music::MusicInput<'a> {
+    crate::minecraft_music::MusicInput {
+        dimension,
+        credits_open: ui.credits.is_some(),
+        boss_music: ui.boss_bars.iter().any(|bar| bar.music),
+        finished,
+        loading: ui.loading_world,
+    }
+}
+
+fn play_music(friend: &mut Friend, ui: &frame::MinecraftUi, music: &mut audio::McMusic) {
+    let Friend {
+        prepared: Some(prepared),
+        remote: Some(remote),
+        sounds,
+        music: manager,
+        ..
+    } = friend
+    else {
+        return;
+    };
+    let Some(level) = remote.level.as_ref() else {
+        return;
+    };
+    let input = music_input(level.dimension, ui, music.finished.as_deref());
+    if let Some(action) = manager.update(input) {
+        crate::minecraft_music::apply(action, sounds.as_mut(), &prepared.look.packs, music);
+    }
 }
 
 fn swing_allowed(
@@ -2010,6 +2057,37 @@ mod tests {
         assert!(activation.pose(0.0, 1.5).is_some());
         activation.tick(crate::minecraft_hand::ACTIVATION_TICKS);
         assert!(activation.pose(0.0, 1.5).is_none(), "it ends after two seconds");
+    }
+
+    #[test]
+    fn a_friend_hears_the_dragon_music_with_its_bar_and_stop_clears_it() {
+        use crate::minecraft_music::{END_BOSS, MusicAction, MusicManager};
+        use minecraft_net::Dimension;
+        let mut ui = frame::MinecraftUi::default();
+        let bar = frame::minecraft_ui::McBossBar::new("Ender Dragon".to_owned(), 1.0, true, true);
+        ui.boss_bars.push(bar);
+        let mut manager = MusicManager::new(1);
+        let fight = music_input(Dimension::End, &ui, None);
+        assert_eq!(manager.update(fight), Some(MusicAction::Start(END_BOSS)));
+        assert_eq!(manager.update(fight), None, "it plays on");
+        ui.boss_bars.clear();
+        let home = music_input(Dimension::Overworld, &ui, None);
+        assert_eq!(manager.update(home), Some(MusicAction::Stop), "it stops in the Overworld");
+        let mut quiet = MusicManager::new(1);
+        ui.loading_world = true;
+        assert_eq!(quiet.update(music_input(Dimension::End, &ui, None)), None, "not while loading");
+        let mut music = audio::McMusic {
+            wanted: Some(audio::McMusicTrack {
+                key: END_BOSS.event.to_owned(),
+                bytes: Arc::from(&b"ogg"[..]),
+                volume: 1.0,
+            }),
+            finished: None,
+        };
+        let mut friend = Friend::default();
+        let mut view = MinecraftWorldView::default();
+        stop(&mut friend, &mut view, &mut ui, &mut music);
+        assert!(music.wanted.is_none());
     }
 
     #[test]

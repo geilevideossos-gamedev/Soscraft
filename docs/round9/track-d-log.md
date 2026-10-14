@@ -2159,6 +2159,29 @@ After cc6ff02d.
 IW4L_MINECRAFT_KIT=minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_pickaxe,minecraft:cobblestone*64,minecraft:cooked_beef*32
 ```
 
+### 2. A friend hears the End, dragon and credits music
+
+After 6b9d6085.
+
+- **Vanilla (26.3):** `MusicManager` is client-side (`Minecraft.tick` calls `musicManager.tick()` with `Minecraft.getSituationalMusic()`), so every client picks and plays its own music from its own level, its own boss overlay (`BossHealthOverlay.shouldPlayMusic`) and its own credits screen. The fork's `minecraft_music` already follows it for the host (round 8).
+- **Changed:** `render_anim/src/minecraft_remote.rs`:
+  - `Friend.music`, a `MusicManager` of its own; `ResMut<audio::McMusic>` joins the `(body_gear, sound_queue, sleepers, weapons, strings)` tuple, as `friend()` is at Bevy's 16-parameter limit.
+  - `present()` now returns whether the friend's environment ticked (`SkyTicked.ticked`, the same tick the host's music follows); on such a frame `play_music()` builds the `MusicInput` from the friend's level dimension, its credits, its boss bars (`McBossBar.music`, from the host's `play_music` flag) and its loading state (`ui.loading_world`, set just before), and hands the action to `minecraft_music::apply` with the friend's own sounds and packs.
+  - `stop()` and the inactive early return clear `McMusic.wanted`, as the host's `update` does when its view is inactive.
+- **Tests:** `render_anim`: `minecraft_remote::tests::a_friend_hears_the_dragon_music_with_its_bar_and_stop_clears_it` (a dragon bar in the End starts `music.dragon` at once and it plays on, the Overworld stops it, nothing starts while loading, `stop()` clears the wanted track). Runs: `render_anim` 189, all green; `check -p launcher` green.
+- **Decisions:**
+  - The friend's music runs only on frames where its environment ticked, like the host's, so its 20 Hz delays match vanilla's.
+  - No message change: the boss bars, credits and level the music needs were already on the friend.
+- **Test steps** (same build and setup as commit 1, with host sound: `-HostSound`; use headphones on the friend window or mute the host to tell the two apart):
+  1. Host: `/execute in minecraft:the_end run tp @a 0 70 0`. When the dragon's bar shows at the top of the friend's screen, the friend hears the dragon music at once (**183_friend_dragon_music**, the friend window with the bar).
+  2. Host: `/kill Friend`; the friend respawns in the Overworld: the music stops at once and no new music starts there (**184_friend_music_stopped**).
+  3. Friend: leave the game while in the End (return to the menu): the music stops with it.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:bow,minecraft:arrow*64,minecraft:ender_pearl*16,minecraft:water_bucket,minecraft:cooked_beef*32,minecraft:obsidian*14,minecraft:flint_and_steel
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2235,7 +2258,10 @@ Protocol 5 shipped in round 9 release 2. Group friend-hand (commit 1, `UsingView
 - `docs/MULTIPLAYER.md` (group friend-hand, commit 1): `minecraft_net::PROTOCOL` is 6 (the code block at line 162 and the note at line 1415). `PlayerView.using` (`UsingView`) now carries `kind: UseKind { Eat { duration }, Block, Charge, Scope }`. In section 20, "the friend's first-person hand" becomes: "A friend draws their own first-person held items like the host: the selected item, the offhand item while holding an item or using one, eating and drinking at the mouth, the raised shield, the trident pulled back and the spyglass hiding the items. The use comes from the friend's `PlayerView.using` and is counted on between views on the friend's own tick. The items hide in F5, in bed, while skating, dead or with the UI off. The swing is not shown yet." No vendored file changed.
 - `docs/MULTIPLAYER.md` (group friend-hand, commit 2): new message `ToClient::Animate { client, offhand }` (protocol 6). In the section 20 text of commit 1, "The swing is not shown yet." becomes: "A friend's own attack press swings at once on the friend, with vanilla's restart rule and the 10-tick miss time; every other swing the host starts for that friend (placing, using, digging) reaches only that friend as `ToClient::Animate`." Line 1303 drops "the friend's first-person hand", and the leftover item at line 1326 ("**The friend's first-person hand:** ...") is removed.
 - `CLAUDE.md` roadmap item 2: drop "the friend's first-person hand" from the multiplayer leftovers.
-- `docs/MULTIPLAYER.md` (group friend-portal-music, commit 1): section 20 and the leftover lists drop "the portal overlay" for friends. New wording: "A friend draws its own purple portal overlay from its own position on its streamed terrain (vanilla's client-side portal effect), closes its open screen inside a portal, and starts the effect again on a new level; the host still decides the travel and sends the trigger and travel sounds." No message change.
+- `docs/MINECRAFT-SURVIVAL.md` (group friend-portal-music, commit 1): in "What a friend's game still lacks" (line 369) the item "the purple overlay while standing in a portal (the trigger sound plays);" is removed.
+- `docs/MULTIPLAYER.md` (group friend-portal-music, commit 1): add to section 20's list of what friends have: "A friend draws its own purple portal overlay from its own position on its streamed terrain (vanilla's client-side portal effect), closes its open screen inside a portal, and starts the effect again on a new level; the host still decides the travel and sends the trigger and travel sounds." No message change.
+- `docs/MULTIPLAYER.md` (group friend-portal-music, commit 2): the leftover item at line 1327 ("**Music on the friend's game** ...") is removed, and line 1433 drops ", and music on the friend's game" (ending "... (section 18.3)."). New wording in section 20: "Each game plays its own Minecraft music, as vanilla's client-side `MusicManager` does: a friend hears the End music, the dragon music while a boss bar asks for music, and the credits music, from its own level, boss bars and credits." No message change.
+- `docs/MINECRAFT-SURVIVAL.md` (group friend-portal-music, commit 2): in "What a friend's game still lacks" (line 367) the item "music of any kind;" is removed. `CLAUDE.md` names neither the friend's music nor its portal overlay, so it is unchanged.
 
 ## Vendored files
 
