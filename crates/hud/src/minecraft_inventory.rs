@@ -648,6 +648,10 @@ pub(crate) fn update_minecraft_hud(
         .filter(|_| !covered);
         let hole = puppet_box.map(|[x0, y0, x1, y1]| [origin[0] + x0, origin[1] + y0, origin[0] + x1, origin[1] + y1]);
         painter.gradient([0, 0, space.width, space.height], hole, 0xC010_1010, 0xD010_1010);
+        let effect_list = crate::minecraft_effects::list_spot(&ui, gui_size).and_then(|spot| crate::minecraft_effects::listed(&gui, &ui.effects, spot, space.width));
+        if let Some(list) = effect_list.as_deref() {
+            crate::minecraft_effects::draw_listed(&mut painter, list);
+        }
         let look = crate::minecraft_recipe_book::Look { ui: &ui, weapons, origin, gui: gui_size, mouse: pointer.filter(|_| !pad_pointer).map(|_| pointer_gui), now };
         if matches!(ui.screen, McScreen::Creative(_)) {
             crate::minecraft_creative::draw_background(&mut painter, &ui, weapons, origin, &input.creative, now);
@@ -703,7 +707,7 @@ pub(crate) fn update_minecraft_hud(
             }
             crate::minecraft_recipe_book::Tip::Text(text) => (vec![TextLine::new(text, WHITE)], false),
         });
-        let tooltip = item_tooltip.or(book_tooltip).or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen)).or_else(creative_tooltip).or_else(|| crate::minecraft_screens::grenade_slot_tooltip(&ui, hovered));
+        let tooltip = item_tooltip.or(book_tooltip).or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen)).or_else(creative_tooltip).or_else(|| crate::minecraft_screens::grenade_slot_tooltip(&ui, hovered)).or_else(|| effect_list.as_deref().and_then(|list| crate::minecraft_effects::listed_tooltip(list, pointer_gui)).map(|lines| (lines, true)));
         if let (Some((lines, gap)), Some(_)) = (tooltip, pointer) {
             painter.tooltip(&lines, pointer_gui, gap);
         }

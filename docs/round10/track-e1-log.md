@@ -248,3 +248,47 @@ Commit: "Minecraft inventory loads the effect list frames and effect names", the
 - **Tests:** `render_anim` `minecraft_gui::tests::every_mob_effect_icon_and_the_effect_frames_load` also checks that both frames load 32 x 32 as nine-slices with a border of 4, that the effect name, "∞" and "II" are kept while an enchantment name is not, and that the font has "∞".
 - **Decisions:** none.
 - **Owner's test steps:** none on their own: this commit only loads textures and texts. The steps come with the next commit.
+
+### The list beside the inventory
+
+Commit: "Minecraft inventory lists the active effects beside it", the one after `c274aa21`.
+
+- **Cause** (as in the brief, re-checked at `c274aa21`): `draw_hud` (`crates/hud/src/minecraft_hotbar.rs`) always drew the top-right effect icons, and the screen pass in `crates/hud/src/minecraft_inventory.rs` never drew an effect list.
+- **Vanilla 26.3** (javap: `EffectsInInventory`, `InventoryScreen`, `CreativeModeInventoryScreen`, `Hud.extractEffects`, `MobEffectUtil.formatDuration`, `StringUtil.formatTickDuration`, `ComponentRenderUtils.clipText`, `GuiGraphicsExtractor`):
+  - Only the inventory and the creative screen own the list. `canSeeEffects` is `width - (leftPos + imageWidth + 2) >= 32`, and the HUD skips its icons exactly when the open screen's `showsActiveEffects()` is that.
+  - Boxes start at `x0 = leftPos + imageWidth + 2`, `y = topPos`, in natural order (`Ordering.natural()`), `33` apart, or `132 / (n - 1)` apart with more than 5. Width: `min(maxWidth, max(32 + name + 7, 32 + time + 7))`, `maxWidth` being `room - 7` from a room of 120 up and 32 below.
+  - Each box: the 32-high nine-slice frame (ambient or not), then, when `w - 39 > 0`, the name at `(x0 + 32, y + 7)` in white and the time 9 lower in `0xFF808080`, both with a shadow (the five-argument `text` passes `true`), then the 18 x 18 icon at `(x0 + 7, y + 7)` with no blinking.
+  - The name is cut to `room - width("...")` and gets "..." when it is wider than the text room. A cut name, or a box with no text room, shows a tooltip of the name and time when the mouse is in `[x0, x0 + w] x [y, y + step]`, edges included. The first tooltip set in a frame wins (`setTooltipForNextFrameInternal`).
+  - Name: `effect.<namespace>.<id>`, plus a space and `enchantment.level.<amplifier + 1>` for amplifiers 1 to 9. Time: "∞" for an endless effect, else `floor(ticks / tickrate)` seconds as `mm:ss`, or `hh:mm:ss` from one hour.
+  - `InventoryScreen` draws the list before handing over to `AbstractRecipeBookScreen`, so the list also shows when a narrow window's recipe book covers the inventory.
+- **Changed:**
+  - `crates/hud/src/minecraft_effects.rs`: `list_spot(ui, gui)` gives `[leftPos, imageWidth, topPos]` for an open inventory or creative screen, from the same layout and `minecraft_recipe_book::origin` as the screen pass, so the recipe book's shift is in it. `hides_icons(ui, gui)` is true when that spot leaves 32 or more. `listed(gui, effects, spot, width)` builds the boxes (`Listed`: icon, frame, place, width, full name, time, the drawn label, the hover rectangle) by the rules above, `draw_listed` draws them and `listed_tooltip` gives the hovered box's name and time.
+  - `minecraft_hotbar.rs` `draw_hud`: the top-right icons are skipped when `hides_icons`.
+  - `minecraft_inventory.rs`: the screen pass draws the list right after the dark gradient, and the effect tooltip comes last in the tooltip chain, with the title gap.
+- **Tests** (`hud` `minecraft_effects::tests`):
+  - `the_list_sits_right_of_the_inventory_in_natural_order_33_apart`: at width 480 the inventory's spot is `[152, 176, 43]`; four effects in natural order at x 330, y 43, 76, 109, 142, with widths 69, 129, 111 and 143; "Hero of the Village" cut to "Hero of the Vi..." with a hover box; an ambient effect gets the ambient frame; no effects give nothing.
+  - `more_than_five_effects_pack_into_132_pixels`: 7 effects 22 apart, 6 effects 26 apart, 5 effects 33 apart.
+  - `a_narrow_room_gives_icon_boxes_with_a_tooltip_and_too_little_gives_nothing`: with the recipe book open at 480 the room is 73, so the boxes are 32 wide with no text and a tooltip inside `[407, 439]`; the shared edge row goes to the upper box; a room of 31 (width 396) gives nothing and 32 (width 398) gives icon boxes.
+  - `names_carry_levels_two_to_ten_and_times_count_twenty_ticks_a_second`: "Regeneration II", "Bad Omen V", no level for amplifiers 0 and 10, the key for a missing level text; "00:05" (100 and 119 ticks), "08:00", "59:59", "01:40:00", "∞".
+  - `a_long_name_is_cut_to_fit_with_three_dots`.
+  - `the_hud_icons_hide_exactly_when_the_list_has_room`: for the inventory with and without the book (480, 396, 398, and the narrow 378 where the book covers it), the creative inventory and search tabs, a chest, a crafting table and a closed screen, `hides_icons` is true exactly when `listed` gives a list; the creative spot at 480 is `[142, 195, 58]`.
+  - `a_listed_effect_draws_its_frame_text_and_icon_in_vanilla_order`: the frame first (330, 43 to 399, 75), the white name and its shadow, the grey time 9 lower, the icon last at (337, 50); a box with no text room draws only the frame and the icon.
+- **Decisions:**
+  - The list counts 20 ticks a second, as the brief decided. Vanilla divides by the `/tick rate`, which the HUD does not know; under `/tick rate 10` vanilla would show twice the time.
+  - The list is drawn after the dark gradient, not before it as the brief said. Vanilla draws the gradient and the screen's background in a lower layer and the list in the screen's own pass, so it is not darkened.
+  - The effect tooltip is the last one in our tooltip chain. Vanilla's list sets its tooltip first, but no other tooltip of these screens can come from the area right of the screen, so nothing changes. Between two hover boxes the upper box wins, as in vanilla.
+  - The list also shows on a narrow window with the recipe book covering the inventory, as in vanilla.
+  - The tooltip's two lines are white and keep the usual 2-pixel gap after the first line, like every vanilla tooltip of more than one line.
+  - The HUD icons hide whenever the open screen has room for the list, even with no effects, as vanilla's `showsActiveEffects` does; with no effects there is nothing to hide anyway.
+- **Owner's test steps** (survival, a new world, by day on open grass at least 60 blocks from any village, the kit below, default GUI scale, recipe book closed unless a step says otherwise):
+  1. **The list.** Drink a night vision potion and eat a golden apple. Run `/effect give @s minecraft:hero_of_the_village 600 0`. The icons show at the top right. Open the inventory (E). To the right of the inventory is a column of grey boxes, each with an icon, a white name and a grey time. From the top: "Regeneration II" (a few seconds, while it lasts), "Absorption 01:5x", "Night Vision 07:5x", "Hero of the Village 09:5x". The icons at the top right are gone. **Screenshot 1.**
+  2. **The recipe book.** Click the recipe book button. The inventory moves right and the boxes shrink to icons only. Hover one: a tooltip shows its name and time. **Screenshot 2.** Close the book: the full boxes come back.
+  3. **Many effects.** Close the inventory. Run `/effect give @s minecraft:speed 60`, `/effect give @s minecraft:haste 60 1`, `/effect give @s minecraft:strength 60` and `/effect give @s minecraft:luck infinite`. Open the inventory. With 7 or more effects the boxes overlap, packed into the same height. Luck shows "∞" at the bottom and Haste shows "Haste II". **Screenshot 3.**
+  4. **Other screens.** Place the chest and open it: the icons stay at the top right and there is no list (vanilla). Run `/gamemode creative` and press E: the list sits beside the creative screen, on every tab. **Screenshot 4.** Run `/gamemode survival`.
+  5. **Clearing.** Drink a milk bucket and open the inventory: no boxes. Close it: no icons either.
+  6. **Two windows** (host H, friend F, `scripts\mp-local.ps1` or over the relay, both with the kit): F drinks a night vision potion and opens the inventory: the list shows beside it and F's top-right icons hide. **Screenshot 5**, F's window. H's own screen is unchanged.
+- **Kit** (6 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:golden_apple*8,minecraft:potion@long_night_vision,minecraft:potion@long_night_vision,minecraft:chest,minecraft:milk_bucket,minecraft:milk_bucket
+```
