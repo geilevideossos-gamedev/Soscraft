@@ -35,6 +35,8 @@ const SPRINT_FOOD: u8 = 6;
 const SAFE_FALL: f64 = 3.0;
 const MAX_STRIDE: f64 = 2.0;
 const BAD_OMEN_SOUND: &str = "minecraft:event.mob_effect.bad_omen";
+const TRIAL_OMEN_SOUND: &str = "minecraft:event.mob_effect.trial_omen";
+const RAID_OMEN_SOUND: &str = "minecraft:event.mob_effect.raid_omen";
 pub(crate) const DAMAGE_BLINK: u64 = 20;
 pub(crate) const SETTLE_DISPLAY: u64 = 20;
 
@@ -168,6 +170,7 @@ pub struct Survival {
     totem_grace_until: Option<u64>,
     pub raid_omen_position: Option<(i32, i32, i32)>,
     pub raid_omens_fired: Vec<(i32, (i32, i32, i32))>,
+    effect_sounds: Vec<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -205,6 +208,15 @@ fn scale(max_health: i32) -> f32 {
     max_health.max(1) as f32 / 20.0
 }
 
+fn added_sound(kind: EffectKind) -> Option<&'static str> {
+    match kind {
+        EffectKind::BadOmen => Some(BAD_OMEN_SOUND),
+        EffectKind::TrialOmen => Some(TRIAL_OMEN_SOUND),
+        EffectKind::RaidOmen => Some(RAID_OMEN_SOUND),
+        _ => None,
+    }
+}
+
 impl Survival {
     pub fn fire_raid_omen(&mut self) {
         let Some(omen) = self.status.effect(EffectKind::RaidOmen).filter(|omen| omen.duration == 1) else {
@@ -237,6 +249,23 @@ impl Survival {
     pub fn become_hero(&mut self, amplifier: i32) {
         let amplifier = amplifier.clamp(0, i32::from(u8::MAX)) as u8;
         self.status.add_effect(EffectKind::HeroOfTheVillage, minecraft_terrain::raids::HERO_TICKS, amplifier);
+    }
+
+    pub fn give_effect(&mut self, kind: EffectKind, ticks: u32, amplifier: u8) -> bool {
+        let before = self.status.effect(kind);
+        self.status.add_effect(kind, ticks, amplifier);
+        let after = self.status.effect(kind);
+        if before.is_none()
+            && after.is_some()
+            && let Some(sound) = added_sound(kind)
+        {
+            self.effect_sounds.push(sound);
+        }
+        after != before
+    }
+
+    pub fn take_effect_sounds(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.effect_sounds)
     }
 
     pub fn respawn(&mut self) {
@@ -1035,16 +1064,13 @@ impl Survival {
     }
 
     pub fn drink_ominous_bottle(&mut self, components: Option<&serde_json::Value>) -> Vec<&'static str> {
-        let fresh = self.status.effect(EffectKind::BadOmen).is_none();
-        self.status.add_effect(
+        let queued = self.effect_sounds.len();
+        self.give_effect(
             EffectKind::BadOmen,
             minecraft_terrain::bottle::BAD_OMEN_TICKS,
             minecraft_terrain::bottle::ominous_amplifier(components),
         );
-        let mut heard = Vec::new();
-        if fresh && self.status.effect(EffectKind::BadOmen).is_some() {
-            heard.push(BAD_OMEN_SOUND);
-        }
+        let mut heard = self.effect_sounds.split_off(queued);
         heard.push(minecraft_terrain::bottle::OMINOUS_DISPOSE_SOUND);
         heard
     }
@@ -2237,6 +2263,7 @@ mod tests {
             }
         );
         assert_eq!(survival.status.effect(EffectKind::BadOmen).map(|e| (e.duration, e.amplifier)), Some((120000, 3)));
+        assert!(survival.take_effect_sounds().is_empty(), "the drink's omen sound is heard once");
         assert_eq!(inventory.slots[4].as_ref().map(|s| (s.id.as_str(), s.count)), Some((OMINOUS_BOTTLE, 1)), "one bottle used, no glass bottle back");
         let Bite::Done { heard, .. } = drink(&mut survival, &mut inventory) else { panic!("drunk") };
         assert_eq!(heard, vec![OMINOUS_DISPOSE_SOUND], "an omen already there plays no omen sound");

@@ -461,10 +461,7 @@ impl CommandWorld for Host<'_> {
         let Some(kind) = effect_kind(effect) else {
             return false;
         };
-        let status = &mut survival.status;
-        let before = status.effect(kind);
-        status.add_effect(kind, ticks.unwrap_or(u32::MAX), amplifier);
-        status.effect(kind) != before
+        survival.give_effect(kind, ticks.unwrap_or(u32::MAX), amplifier)
     }
 
     fn effect_clear(&mut self, player: PlayerId, effect: Option<&str>) -> bool {
@@ -2704,6 +2701,66 @@ pub(crate) mod tests {
         for (id, kind) in kinds {
             assert_eq!(effect_kind(id), Some(kind));
         }
+    }
+
+    #[test]
+    fn a_fresh_omen_given_by_command_queues_its_sound_once_for_its_player() {
+        let mut parts = Parts::new();
+        parts.server.registries_mut().effects = [
+            "minecraft:bad_omen",
+            "minecraft:trial_omen",
+            "minecraft:raid_omen",
+            "minecraft:speed",
+        ]
+        .map(String::from)
+        .to_vec();
+        parts.join(FRIEND, "Alex", [100.5, 64.0, 100.5]);
+        let (delivered, _) = parts.send(
+            HOST,
+            &[
+                "/effect give @s minecraft:bad_omen 60",
+                "/effect give @s minecraft:bad_omen 60",
+                "/effect give @s minecraft:bad_omen 90 3",
+                "/effect give @s minecraft:speed 60",
+                "/effect give @s minecraft:trial_omen 60",
+                "/effect give @s minecraft:raid_omen 5",
+            ],
+        );
+        assert_eq!(delivered.len(), 6);
+        let host = &mut parts.player(HOST).survival;
+        assert_eq!(
+            host.status
+                .effect(EffectKind::BadOmen)
+                .map(|e| (e.duration, e.amplifier)),
+            Some((1800, 3))
+        );
+        assert_eq!(
+            host.take_effect_sounds(),
+            [
+                "minecraft:event.mob_effect.bad_omen",
+                "minecraft:event.mob_effect.trial_omen",
+                "minecraft:event.mob_effect.raid_omen"
+            ]
+        );
+        assert!(host.take_effect_sounds().is_empty(), "taken once");
+        parts.send(HOST, &["/effect give Alex minecraft:bad_omen 30"]);
+        assert!(parts.player(HOST).survival.take_effect_sounds().is_empty());
+        assert_eq!(
+            parts.player(FRIEND).survival.take_effect_sounds(),
+            ["minecraft:event.mob_effect.bad_omen"]
+        );
+        parts.send(
+            HOST,
+            &[
+                "/effect clear @s minecraft:bad_omen",
+                "/effect give @s minecraft:bad_omen 60",
+            ],
+        );
+        assert_eq!(
+            parts.player(HOST).survival.take_effect_sounds(),
+            ["minecraft:event.mob_effect.bad_omen"],
+            "a cleared omen sounds again"
+        );
     }
 
     #[test]

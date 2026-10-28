@@ -292,3 +292,35 @@ Commit: "Minecraft inventory lists the active effects beside it", the one after 
 ```
 IW4L_MINECRAFT_KIT=minecraft:golden_apple*8,minecraft:potion@long_night_vision,minecraft:potion@long_night_vision,minecraft:chest,minecraft:milk_bucket,minecraft:milk_bucket
 ```
+
+## E-omen. Omen sounds from /effect give, and the ominous bottle tooltip
+
+### Omens given by command play their sound
+
+Commit: "Minecraft omens given by command play their sound", the one after `796a9e13`.
+
+- **Cause** (as in the brief, re-checked at `796a9e13`): `effect_give` (`crates/minecraft_survival/src/commands.rs`) called `status.add_effect` and played nothing. Only the ominous bottle's drink had an omen sound, from its own fresh-omen check in `Survival::drink_ominous_bottle`.
+- **Vanilla 26.3** (javap): `MobEffects` registers `bad_omen`, `trial_omen` and `raid_omen` with `withSoundOnAdded(SoundEvents.APPLY_EFFECT_*)`, which are `event.mob_effect.bad_omen`, `.trial_omen` and `.raid_omen`. `LivingEntity.addEffect` calls `onEffectAdded` only when the effect was not there before; an upgrade goes through `onEffectUpdated`, which plays nothing. `MobEffect.onEffectAdded` plays the sound at the entity with volume 1 and pitch 1 for everyone near (`playSound(null, ...)`).
+- **Changed:**
+  - `crates/minecraft_survival/src/survival.rs`: `Survival::give_effect(kind, ticks, amplifier)` adds the effect and, when it was absent before and present after, queues the kind's added sound (`added_sound`: the three omens). It returns whether the effect changed, as `/effect give` counted before. `take_effect_sounds()` hands the queue over. `drink_ominous_bottle` now gives Bad Omen through `give_effect` and moves the sound it queued into its `heard` list, so the fresh-omen rule is in one place and the drink is still heard once.
+  - `commands.rs` `effect_give`: uses `give_effect`.
+  - `crates/minecraft_survival/src/actions.rs` `act()`: drains the player's queued effect sounds into `effects` as sounds at the player (no position, volume 1, pitch 1), the drink's route, so they are heard wherever a drink's sounds are: by the host for the host's own, and for a friend's at the friend's eye.
+  - The raid omen of a Bad Omen turning in a village (`turn_bad_omen`, `render_anim/src/minecraft_players.rs`) is unchanged.
+- **Tests:**
+  - `minecraft_survival` `commands::tests::a_fresh_omen_given_by_command_queues_its_sound_once_for_its_player`: Bad Omen, the same Bad Omen again, Bad Omen at a higher level, Speed, Trial Omen and Raid Omen queue exactly the three omen sounds in order, and the queue is empty once taken; `/effect give Alex` queues the sound on the friend, not the host; a cleared omen sounds again.
+  - `minecraft_survival` `actions::tests::an_omen_given_since_the_last_frame_is_heard_once_from_the_player`: `act()` gives one trial omen sound at the player with volume 1 and pitch 1, and none the frame after.
+  - `minecraft_survival` `survival::tests::an_ominous_bottle_is_drunk_away_and_gives_bad_omen_at_its_amplifier` still passes and now also checks that the drink leaves no queued sound.
+- **Decisions:**
+  - `give_effect` returns whether the effect changed (vanilla's `addEffect` result), not whether it was fresh; the sound is the only thing tied to a fresh effect. Track D's Bad-to-Trial Omen turn gets the trial omen sound by calling it.
+  - The sound is played at the player's eye like the drink's sounds, not at the feet as vanilla does; for a sound this close to the listener the difference is not audible.
+- **Owner's test steps** (survival, a new world, by day on open grass at least 60 blocks from any village, no kit needed):
+  1. **Bad Omen.** Run `/effect clear @s`, then `/effect give @s minecraft:bad_omen 60`: an eerie omen sound plays and the Bad Omen icon shows. Run the same command again: no sound, because the omen is already there. Run `/effect give @s minecraft:bad_omen 60 2`: the omen gets stronger, still no sound.
+  2. **Trial and Raid Omen.** Run `/effect give @s minecraft:trial_omen 60`: the trial omen sound. Run `/effect give @s minecraft:raid_omen 5`: the raid omen sound. Run `/effect clear @s`.
+  3. **Speed.** Run `/effect give @s minecraft:speed 60`: no sound.
+  4. **The bottle.** Drink an ominous bottle: the omen sound plays once (not twice), then the bottle's dispose sound. Drink a milk bucket.
+  5. **Two windows** (host H, friend F, standing next to each other away from any village): H runs `/effect give <F's name> minecraft:bad_omen 30`. F hears the omen sound and H hears it too. H runs `/effect clear <F's name>`.
+- **Kit** (only for step 4):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*2,minecraft:milk_bucket
+```
