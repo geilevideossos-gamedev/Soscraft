@@ -31,6 +31,7 @@ pub struct RemoteLevel {
     pub block_entities: BTreeMap<BlockPos, Nbt>,
     pub mobs: BTreeMap<u64, Nbt>,
     pub view: crate::entity_view::EntityView,
+    pub synced_game_time: Option<i64>,
 }
 
 impl RemoteLevel {
@@ -603,6 +604,7 @@ impl RemoteWorld {
                     block_entities: BTreeMap::new(),
                     mobs: BTreeMap::new(),
                     view: crate::entity_view::EntityView::new(login.seed),
+                    synced_game_time: None,
                 });
                 diag::info!(
                     World,

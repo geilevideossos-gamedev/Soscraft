@@ -506,6 +506,15 @@ impl Entities {
         self.server.set_game_rules(rules.clone());
     }
 
+    pub fn set_game_time(&mut self, game_time: i64) {
+        self.server.set_game_time(game_time);
+        self.view.world.set_game_time(game_time);
+    }
+
+    pub fn game_time(&self) -> i64 {
+        self.view.world.game_time()
+    }
+
     pub fn set_weather(&mut self, weather: &'static str, duration: i32) {
         self.server.set_weather(weather, duration);
         self.world_weather = minecraft_terrain::server::weather_parameters(weather, duration);

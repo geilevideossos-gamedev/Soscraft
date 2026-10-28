@@ -1953,11 +1953,16 @@ fn present_entities(
     let feet = glam::DVec3::from_array(feet);
     let near: Vec<glam::DVec3> = alive.then_some(feet).into_iter().collect();
     let entities = &mut level.view;
-    entities.world.set_game_time(game_time);
+    if level.synced_game_time != Some(game_time) {
+        level.synced_game_time = Some(game_time);
+        entities.world.set_game_time(game_time);
+    }
     let before = entities.ticks();
     let timing = minecraft_survival::tick_rate::ClientTiming::default();
     entities.advance(dt, timing, &near, feet + glam::DVec3::Y * 0.81);
     let ticks = u32::try_from(entities.ticks() - before).unwrap_or(u32::MAX);
+    let advanced = entities.world.game_time() + i64::from(ticks);
+    entities.world.set_game_time(advanced);
     entities.tick_scene(&level.terrain.scene, ticks);
     for _ in 0..ticks {
         let rain = entities.rain_tick(&level.terrain.scene, eye, rain_level);

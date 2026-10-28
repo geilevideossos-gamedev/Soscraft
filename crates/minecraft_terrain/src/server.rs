@@ -112,6 +112,7 @@ pub struct ServerSim {
     lecterns: Vec<crate::lectern::LecternView>,
     trackers: crate::mob_tracking::Trackers,
     custom_spawners: crate::custom_spawners::CustomSpawners,
+    trial_configs: std::collections::HashMap<String, Option<crate::trial_spawner::TrialConfig>>,
     raids: crate::raids::Raids,
     raids_rule: bool,
     bells: crate::bells::Bells,
@@ -485,6 +486,7 @@ impl ServerSim {
             lecterns: Vec::new(),
             trackers: Default::default(),
             custom_spawners: crate::custom_spawners::CustomSpawners::for_dimension(dimension_type),
+            trial_configs: std::collections::HashMap::new(),
             raids: crate::raids::Raids::default(),
             raids_rule: true,
             bells: crate::bells::Bells::default(),
@@ -3159,10 +3161,46 @@ impl ServerSim {
         self.explode_tnt();
         self.hear_bells();
         self.level.tick_spawners();
-        crate::trial_spawner::wake_spawners(&mut self.level, |kind| crate::server_mobs::SIMULATED_KINDS.contains(&kind));
         self.level.unsupported.clear();
         self.tick_frames();
         self.check_lectern_viewers();
+    }
+
+    pub fn tick_trial_spawners(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        let spawners = crate::trial_spawner::ticking_spawners(&self.level);
+        if spawners.is_empty() {
+            return;
+        }
+        let block = |at: glam::DVec3| minecraftoss_core::BlockPos::new(at.x.floor() as i32, at.y.floor() as i32, at.z.floor() as i32);
+        let players: Vec<crate::trial_spawner::TrialPlayer> = players
+            .iter()
+            .filter(|player| !player.spectator)
+            .map(|player| crate::trial_spawner::TrialPlayer {
+                uuid: self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player.id),
+                block: block(player.position),
+                eye: [player.position.x, player.position.y + f64::from(player.eye_height), player.position.z],
+                detectable: player.attackable,
+            })
+            .collect();
+        let ids: Vec<u64> = self.mobs.mob_ids().collect();
+        let mut mobs = std::collections::HashMap::new();
+        for id in ids {
+            if self.mobs.damage_state(id).is_some_and(|damage| damage.dead) {
+                continue;
+            }
+            let uuid = self.mobs.uuid_of(id);
+            if let Some(body) = self.mobs.body_mut(id) {
+                mobs.insert(uuid, block(body.position));
+            }
+        }
+        let simulated = |kind: &str| crate::server_mobs::SIMULATED_KINDS.contains(&kind);
+        let trials = crate::trial_spawner::Trials { players: &players, mobs: &mobs, simulated: &simulated };
+        crate::trial_spawner::tick_spawners(&mut self.level, &spawners, &trials, &mut self.trial_configs);
+    }
+
+    pub fn set_game_time(&mut self, game_time: i64) {
+        self.level.game_time = game_time;
+        self.mobs.set_game_time(game_time);
     }
 
     fn tick_frames(&mut self) {
@@ -3447,6 +3485,7 @@ pub enum Command {
     SetWeather { weather: &'static str, duration: i32 },
     WeatherData(crate::level_storage::WeatherData),
     GameRules(Box<crate::game_rules::GameRules>),
+    GameTime(i64),
     PlayerUuid { player: u64, uuid: u128 },
     PlayerLeft(u64),
     Dismount { player: u64 },
@@ -3859,6 +3898,10 @@ impl ServerHandle {
         self.send(Command::GameRules(Box::new(rules)));
     }
 
+    pub fn set_game_time(&mut self, game_time: i64) {
+        self.send(Command::GameTime(game_time));
+    }
+
     pub fn set_player_uuid(&mut self, player: u64, uuid: u128) {
         self.send(Command::PlayerUuid { player, uuid });
     }
@@ -4140,6 +4183,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::Reattach { player, root } => out.mounts.extend(sim.reattach(player, &root).map(|vehicle| (player, vehicle))),
                 Command::WeatherData(data) => sim.set_weather_data(&data),
                 Command::GameRules(rules) => sim.apply_game_rules(&rules),
+                Command::GameTime(game_time) => sim.set_game_time(game_time),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
                 Command::EndHit { target, damage } => sim.end_hit(target, damage),
                 Command::FrameAction { player, id, action } => {
@@ -4224,6 +4268,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.prepare_spawning(&input.mob_players);
         sim.blast_players.clone_from(&input.mob_players);
         sim.tick();
+        sim.tick_trial_spawners(&input.mob_players);
         sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
         sim.tick_custom_spawners(&input.mob_players);
         sim.tick_trader_spawner(&input.mob_players);
@@ -10135,6 +10180,7 @@ mod tests {
         server.take_changes();
         server.set_simulation_area((0, 0), 2);
         server.tick();
+        server.tick_trial_spawners(&[]);
         let at = |server: &ServerSim, pos: BlockPos| {
             let block = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
             let state = server.level.block(block);
@@ -10155,6 +10201,7 @@ mod tests {
         let before = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
         for _ in 0..5 {
             server.tick();
+            server.tick_trial_spawners(&[]);
         }
         let after = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
         assert_eq!(before, after, "a waiting spawner keeps its mob");
@@ -10191,6 +10238,7 @@ mod tests {
         };
         let mob = |tag: &minecraftoss_core::nbt::Tag| tag.get("spawn_data").and_then(spawn_kind).map(str::to_owned);
         server.tick();
+        server.tick_trial_spawners(&[]);
         assert_eq!(look(&server).0, "inactive", "a placed trial spawner has no mob");
         server.take_block_entity_changes();
         server.take_changes();
@@ -10204,12 +10252,14 @@ mod tests {
         }
         assert!(server.take_block_entity_changes().iter().any(|(changed, _)| *changed == pos));
         server.tick();
+        server.tick_trial_spawners(&[]);
         let (state, tag) = look(&server);
         assert_eq!((state.as_str(), mob(&tag).as_deref()), ("waiting_for_players", Some("minecraft:zombie")));
         assert_eq!(server.spawner_egg(pos, "minecraft:skeleton"), Ok(()));
         assert_eq!(look(&server).0, "inactive");
         assert!(server.take_changes().iter().any(|(changed, _)| *changed == pos));
         server.tick();
+        server.tick_trial_spawners(&[]);
         let (state, tag) = look(&server);
         assert_eq!((state.as_str(), mob(&tag).as_deref()), ("waiting_for_players", Some("minecraft:skeleton")));
         server.level.difficulty = 0;
@@ -10223,6 +10273,109 @@ mod tests {
         rules.set("spawner_blocks_work", "true").unwrap();
         server.apply_game_rules(&rules);
         assert!(server.spawner_egg((4, 199, 4), "minecraft:zombie").is_err(), "no spawner below it");
+    }
+
+    #[test]
+    fn a_trial_spawner_spawns_zombies_for_a_near_player_and_rewards_after_they_die() {
+        use crate::trial_spawner::{CLOSE_SHUTTER, DETECT_PLAYER, EJECT_ITEM, OPEN_SHUTTER, SPAWN_MOB, SPAWN_PARTICLES, STATE};
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() || registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let spawner = (8, 200, 8);
+        let at = minecraftoss_core::BlockPos::new(spawner.0, spawner.1, spawner.2);
+        let mut run = |creative: bool, ticks: usize| {
+            let mut server = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+                }
+            }
+            for x in 2..=14 {
+                for z in 2..=14 {
+                    server.player_edit_block((x, 199, z), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+                    for y in 200..=203 {
+                        server.player_edit_block((x, y, z), Some(&Block::new("minecraft:air")), PlayerEdit::Place);
+                    }
+                }
+            }
+            server.player_edit_block(spawner, Some(&Block::new("minecraft:trial_spawner")), PlayerEdit::Place);
+            server.level.difficulty = 2;
+            assert_eq!(server.spawner_egg(spawner, "minecraft:zombie"), Ok(()));
+            server.set_game_time(1_000_000);
+            server.set_player_uuid(0, 0x5eed);
+            let feet = glam::DVec3::new(8.5, 200.0, 12.5);
+            let player = minecraftoss_entities::tempt::PlayerCandidate {
+                id: 0,
+                position: feet,
+                eye_height: 1.62,
+                main_hand_cow_food: false,
+                offhand_cow_food: false,
+                main_hand_pig_food: false,
+                offhand_pig_food: false,
+                main_hand_chicken_food: false,
+                offhand_chicken_food: false,
+                main_hand_carrot_on_a_stick: false,
+                offhand_carrot_on_a_stick: false,
+                main_hand_wolf_interest: false,
+                offhand_wolf_interest: false,
+                main_hand_horse_tempt: false,
+                offhand_horse_tempt: false,
+                alive: true,
+                spectator: false,
+                attackable: !creative,
+            };
+            let (mut spawned, mut seen) = (Vec::new(), Vec::new());
+            for _ in 0..ticks {
+                server.set_players(&[feet.to_array()], 2);
+                server.set_simulation_area((0, 0), 2);
+                server.prepare_spawning(&[player]);
+                server.tick();
+                server.tick_trial_spawners(&[player]);
+                spawned.extend(server.level.spawned.iter().filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:zombie") && tag.get("PersistenceRequired").and_then(Tag::as_i64) == Some(1)).cloned());
+                server.take_spawned();
+                let zombies: Vec<u64> = server.mobs.zombies().iter().map(|e| e.id).collect();
+                server.mobs.remove_mobs(&zombies);
+                let state = server.level.registries().blocks.property(server.level.block(at), STATE).unwrap().to_owned();
+                if seen.last() != Some(&state) {
+                    seen.push(state);
+                }
+            }
+            (server, spawned, seen)
+        };
+        let (server, spawned, seen) = run(false, 600);
+        assert_eq!(seen, ["waiting_for_players", "active", "waiting_for_reward_ejection", "ejecting_reward", "cooldown"]);
+        assert_eq!(spawned.len(), 6, "six zombies for one player");
+        for zombie in &spawned {
+            let pos: Vec<f64> = zombie.get("Pos").and_then(Tag::as_list).unwrap().iter().filter_map(Tag::as_f64).collect();
+            assert!((pos[0] - 8.5).abs() <= 4.0 && (pos[2] - 8.5).abs() <= 4.0 && (199.0..=201.0).contains(&pos[1]), "{pos:?}");
+        }
+        let events = &server.level.level_events;
+        let count = |id: i32| events.iter().filter(|event| event.0 == id).count();
+        assert!(events.contains(&(DETECT_PLAYER, at, 1)));
+        assert_eq!((count(SPAWN_PARTICLES), count(SPAWN_MOB), count(EJECT_ITEM)), (6, 6, 1));
+        let sounds: Vec<&str> = server.level.sounds.iter().map(|sound| sound.event).filter(|event| event.contains("shutter")).collect();
+        assert_eq!(sounds, [OPEN_SHUTTER, CLOSE_SHUTTER]);
+        let rewards: Vec<&minecraftoss_world::level::entity::Entity> = server
+            .level
+            .entities
+            .iter()
+            .filter(|e| matches!(&e.kind, minecraftoss_world::level::entity::EntityKind::Item(_)) && (e.pos[0] - 8.5).abs() < 2.0 && (e.pos[2] - 8.5).abs() < 2.0 && e.pos[1] > 200.5)
+            .collect();
+        assert!(!rewards.is_empty(), "the reward lands on the spawner");
+        let tag = server.level.chunk(at.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&spawner)).cloned().unwrap();
+        let ends = tag.get("cooldown_ends_at").and_then(Tag::as_i64).unwrap();
+        assert!(ends > 1_036_000 && ends < 1_036_600, "{ends}");
+        assert!(tag.get("registered_players").is_none() && tag.get("current_mobs").is_none());
+        let (_, none, seen) = run(true, 200);
+        assert!(none.is_empty(), "a creative player starts no trial");
+        assert_eq!(seen, ["waiting_for_players"]);
     }
 
     #[test]

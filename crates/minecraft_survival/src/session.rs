@@ -787,7 +787,7 @@ pub fn rules_of(rules: &GameRules) -> Rules {
 pub fn time_of(globals: &Globals) -> ToClient {
     let advancing = globals.game_rules.bool("advance_time");
     ToClient::Time {
-        game_time: globals.day.ticks.floor() as i64,
+        game_time: globals.game_time(),
         clocks: vec![
             (
                 OVERWORLD_CLOCK.to_owned(),
@@ -1105,13 +1105,17 @@ impl Sessions {
     pub fn send_time(&mut self, globals: &Globals, levels: &BTreeMap<Dimension, Level>) {
         let time = time_of(globals);
         for session in self.sessions.values_mut() {
-            session.outbox.push(time.clone());
-            let weather = session
+            let entities = session
                 .chunks
                 .level
                 .and_then(|dimension| levels.get(&dimension))
-                .and_then(|level| level.entities.as_ref())
-                .map(|entities| entities.weather);
+                .and_then(|level| level.entities.as_ref());
+            let mut time = time.clone();
+            if let (ToClient::Time { game_time, .. }, Some(entities)) = (&mut time, entities) {
+                *game_time = entities.game_time();
+            }
+            session.outbox.push(time);
+            let weather = entities.map(|entities| entities.weather);
             if let Some(weather) = weather {
                 session.outbox.push(ToClient::Weather {
                     rain: weather.rain_level,
@@ -2699,7 +2703,7 @@ mod tests {
         sessions.take_outgoing();
         sessions.send_time(&server.globals, &server.levels);
         let time = ToClient::Time {
-            game_time: 6000,
+            game_time: server.globals.game_time(),
             clocks: vec![
                 (OVERWORLD_CLOCK.to_owned(), 6000.0, false),
                 (THE_END_CLOCK.to_owned(), 1234.0, false),

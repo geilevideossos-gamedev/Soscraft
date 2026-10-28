@@ -224,6 +224,49 @@ impl Level<'_> {
         result
     }
 
+    pub fn summon_trial_mob(&mut self, entity: &Tag, custom_rules: Option<&Tag>, at: [f64; 3]) -> Option<Tag> {
+        let kind = entity.get("id").and_then(Tag::as_str)?.to_owned();
+        let natural = self.natural_spawning.take()?;
+        let mob = self.trial_mob(&natural, &kind, entity, custom_rules, at);
+        self.natural_spawning = Some(natural);
+        let mob = mob?;
+        self.spawned.push(mob.clone());
+        Some(mob)
+    }
+
+    fn trial_mob(&mut self, natural: &NaturalSpawning, kind: &str, entity: &Tag, custom_rules: Option<&Tag>, at: [f64; 3]) -> Option<Tag> {
+        let inputs = self.spawn_inputs(&natural.players);
+        let in_loaded = |c: ChunkPos| inputs.loaded.contains(&c);
+        let slime_chance = |b: BiomeId| inputs.slime_chances.get(usize::from(b.0)).copied().unwrap_or(0.0);
+        let finder = natural.structures.clone();
+        let structures = |pos: BlockPos| finder.as_ref().map_or_else(Vec::new, |find| find(pos));
+        let mut context = inputs.context(natural.respawn, &natural.census, &in_loaded, &slime_chance, &structures, natural.spawn_mobs && natural.spawn_monsters);
+        let spawns = natural.spawns.clone();
+        if !spawns.spawner_may_spawn(self, &context, kind, at, crate::natural_spawner::spawning::SpawnerReason::TrialSpawner) {
+            return None;
+        }
+        if let Some(rules) = custom_rules {
+            let block = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+            if !in_range(rules.get("block_light_limit"), self.block_light(block)) || !in_range(rules.get("sky_light_limit"), self.sky_light(block)) {
+                return None;
+            }
+        }
+        let y_rot = self.random.next_f32() * 360.0;
+        let only_id = matches!(entity, Tag::Compound(map) if map.len() == 1);
+        let nbt = (!only_id).then(|| {
+            let mut nbt = entity.clone();
+            if let Tag::Compound(map) = &mut nbt {
+                map.remove("Pos");
+            }
+            nbt
+        });
+        let mut mob = spawns.summon(self, &mut context, kind, at, nbt.as_ref(), y_rot).ok()?;
+        if let Tag::Compound(map) = &mut mob {
+            map.insert("PersistenceRequired".to_owned(), Tag::Byte(1));
+        }
+        Some(mob)
+    }
+
     pub fn spawn_patrol(&mut self, start: BlockPos) -> Vec<Tag> {
         let Some(natural) = self.natural_spawning.take() else { return Vec::new() };
         let inputs = self.spawn_inputs(&natural.players);
