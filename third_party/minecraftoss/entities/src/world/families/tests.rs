@@ -3,7 +3,7 @@ use super::*;
 use crate::creeper::CreeperExplosion;
 use crate::effects::{EffectInstance, MobEffect};
 use crate::fireball::{Fireball, FireballKind, Shooter};
-use crate::monster_ai::Target;
+use crate::monster_ai::{MonsterKind, Target};
 use crate::projectile::ArrowImpact;
 use minecraftoss_player::{Block, Pos};
 use std::collections::HashSet;
@@ -593,4 +593,132 @@ fn an_iron_golem_hunts_an_enemy_registered_mob() {
         }
         assert_eq!(target, hunted.then_some(Target::Mob(prey)), "{kind}");
     }
+}
+
+#[test]
+fn a_registered_monster_runs_its_goals_and_strikes_a_player() {
+    let registered = MonsterKind::Registered(KIND);
+    assert_eq!(registered.goal_names(), probe::GOAL_NAMES);
+    assert_eq!(registered.target_goal_names(), probe::TARGET_NAMES);
+    assert!(
+        MonsterKind::Registered("minecraft:unknown")
+            .goal_names()
+            .is_empty()
+    );
+    let mut world = EntityWorld::default();
+    let mut field = Field::default();
+    let hunter = probe_at(&mut world, KIND, at(0.5));
+    let idle = probe_at(&mut world, KIND, DVec3::new(0.5, 64.0, 20.5));
+    let kept = probe_at(&mut world, KIND, DVec3::new(0.5, 64.0, -20.5));
+    let ai = &probe(&world, hunter).state.ai;
+    assert_eq!(ai.state.kind, registered);
+    assert!(ai.state.walk.can_float, "its FloatGoal floats the path");
+    assert_eq!(ai.state.walk.max_up_step, probe::STEP);
+    assert_eq!(ai.state.follow_range, probe::FOLLOW_RANGE);
+    assert_eq!(ai.state.walk.follow_range, probe::FOLLOW_RANGE as f32);
+    assert_eq!(ai.state.eye_height, probe::EYE_HEIGHT);
+    for id in [hunter, idle, kept] {
+        probe_mut(&mut world, id).state.goals = true;
+    }
+    for id in [hunter, kept] {
+        probe_mut(&mut world, id).state.goal_allowed = true;
+    }
+    probe_mut(&mut world, kept)
+        .state
+        .ai
+        .retain_goals(&["ProbeGoal"]);
+    let players: Vec<PlayerCandidate> = [hunter, idle, kept]
+        .iter()
+        .enumerate()
+        .map(|(index, &id)| {
+            let spot = probe(&world, id).core.body.position + DVec3::new(2.0, 0.0, 0.0);
+            player_at(index as u64 + 1, spot)
+        })
+        .collect();
+    world.tick_with_players(&mut field, &players);
+    for (player, id) in players.iter().zip([hunter, idle, kept]) {
+        assert!(
+            world
+                .player_attack(&attack(player.id, player.position, 1.0), id)
+                .hurt
+        );
+    }
+    let mut hits = Vec::new();
+    let mut running = HashSet::new();
+    for _ in 0..100 {
+        world.tick_with_players(&mut field, &players);
+        hits.extend(world.take_player_hits());
+        running.extend(probe(&world, hunter).state.ai.running_goals());
+        let kept_goals = probe(&world, kept).state.ai.running_goals();
+        assert!(kept_goals.iter().all(|name| *name == "ProbeGoal"));
+    }
+    assert!(
+        running.contains("MeleeAttackGoal") && running.contains("ProbeGoal"),
+        "{running:?}"
+    );
+    assert_eq!(
+        probe(&world, hunter).state.ai.running_targets(),
+        ["HurtByTargetGoal"]
+    );
+    assert!(hits.iter().all(|hit| hit.source != Some(kept)));
+    let hits: Vec<_> = hits
+        .into_iter()
+        .filter(|hit| hit.source == Some(hunter))
+        .collect();
+    assert!(!hits.is_empty(), "it bites its attacker");
+    for hit in &hits {
+        assert_eq!(hit.player_id, 1);
+        assert_eq!(hit.damage, probe::DAMAGE);
+        let PlayerHitKind::Melee { attacker, .. } = hit.kind else {
+            panic!("{:?}", hit.kind);
+        };
+        assert!(attacker.distance(players[0].position) < 2.0, "{attacker}");
+    }
+    assert_eq!(probe(&world, hunter).core.swings as usize, hits.len());
+    assert!(probe(&world, hunter).state.goal_ticks > 0, "the goal ran");
+    assert_eq!(probe(&world, idle).state.goal_ticks, 0, "never let in");
+    assert!(
+        probe(&world, kept).state.goal_ticks > 0,
+        "the kept goal ran"
+    );
+    assert_eq!(
+        probe(&world, kept).state.ai.state.target,
+        Some(Target::Player(3)),
+        "its targets stay"
+    );
+}
+
+#[test]
+fn prey_kinds_targets_the_named_kinds_only() {
+    let mut world = EntityWorld::default();
+    let mut field = Field::default();
+    let hunter = probe_at(&mut world, KIND, at(0.5));
+    probe_mut(&mut world, hunter).state.goals = true;
+    let other = probe_at(&mut world, KIND, at(3.5));
+    probe_mut(&mut world, other).core.no_ai = true;
+    world.spawn_zombie(crate::zombie::Zombie::new(at(-3.5)), true);
+    for _ in 0..40 {
+        world.tick(&mut field);
+    }
+    assert_eq!(probe(&world, hunter).state.ai.state.target, None);
+    let prey = probe_at(&mut world, ANIMAL, DVec3::new(0.5, 64.0, 3.5));
+    probe_mut(&mut world, prey).core.no_ai = true;
+    let mut target = None;
+    for _ in 0..40 {
+        world.tick(&mut field);
+        target = probe(&world, hunter).state.ai.state.target;
+        if target.is_some() {
+            break;
+        }
+    }
+    assert_eq!(target, Some(Target::Mob(prey)));
+    for _ in 0..30 {
+        world.tick(&mut field);
+    }
+    assert!(
+        world
+            .family_core(prey)
+            .is_none_or(|(_, core)| core.health < probe::MAX_HEALTH),
+        "and bites it"
+    );
 }

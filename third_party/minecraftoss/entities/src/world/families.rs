@@ -3,6 +3,7 @@ use super::*;
 use crate::effects::MobEffects;
 use crate::inside_blocks::Hazard;
 use crate::monster_ai::{MonsterGoalContext, Target};
+use std::any::Any;
 use std::ops::RangeInclusive;
 
 macro_rules! family_group {
@@ -442,6 +443,49 @@ pub struct MonsterSpec {
     pub eye_height: f32,
     pub follow_range: f64,
     pub walk: fn(&mut WalkProfile),
+}
+
+pub trait ExtraState: Any + Send {
+    fn clone_box(&self) -> Box<dyn ExtraState>;
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<T: Any + Clone + Send> ExtraState for T {
+    fn clone_box(&self) -> Box<dyn ExtraState> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+#[derive(Default)]
+pub struct GoalExtra(Option<Box<dyn ExtraState>>);
+
+impl Clone for GoalExtra {
+    fn clone(&self) -> Self {
+        Self(self.0.as_ref().map(|state| state.clone_box()))
+    }
+}
+
+impl GoalExtra {
+    pub fn get<T: Any>(&self) -> Option<&T> {
+        self.0.as_deref()?.as_any().downcast_ref()
+    }
+
+    pub fn get_mut<T: Any>(&mut self) -> Option<&mut T> {
+        self.0.as_deref_mut()?.as_any_mut().downcast_mut()
+    }
+
+    pub fn set<T: Any + Clone + Send>(&mut self, state: T) {
+        self.0 = Some(Box::new(state));
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

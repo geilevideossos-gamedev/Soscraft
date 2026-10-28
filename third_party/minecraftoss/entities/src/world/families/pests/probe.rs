@@ -1,7 +1,12 @@
+use crate::goals::{Controls, Goal, GoalSelector};
 use crate::loot::EntityLootContext;
-use crate::monster_ai::{MonsterAi, MonsterKind};
+use crate::monster_ai::{
+    FloatGoal, HurtByTargetGoal, LookAtPlayerGoal, MeleeAttackGoal, MonsterAi, MonsterGoalContext,
+    MonsterKind, NearestTargetGoal, Prey, RandomLookGoal,
+};
 use crate::tempt::PlayerCandidate;
-use crate::world::families::{Family, FamilyMob, MobCore};
+use crate::walk_path::WalkProfile;
+use crate::world::families::{Family, FamilyMob, MobCore, MonsterSpec};
 use crate::world::{EntityWorld, PlayerHitKind};
 use glam::DVec3;
 use minecraftoss_player::World;
@@ -16,6 +21,96 @@ pub const MAX_HEALTH: f32 = 10.0;
 pub const CUBE_SIZE: i32 = 3;
 pub const SPEED: f64 = 0.3;
 pub const DAMAGE: f32 = 2.0;
+pub const FOLLOW_RANGE: f64 = 24.0;
+pub const STEP: f32 = 1.0;
+
+pub const GOAL_NAMES: [&str; 5] = [
+    "FloatGoal",
+    "MeleeAttackGoal",
+    "ProbeGoal",
+    "LookAtPlayerGoal",
+    "RandomLookGoal",
+];
+pub const TARGET_NAMES: [&str; 2] = ["HurtByTargetGoal", "NearestAttackableTargetGoal"];
+
+static SPEC: MonsterSpec = MonsterSpec {
+    goal_names: &GOAL_NAMES,
+    target_names: &TARGET_NAMES,
+    goals,
+    targets,
+    eye_height: EYE_HEIGHT,
+    follow_range: FOLLOW_RANGE,
+    walk,
+};
+
+fn goals() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(1, FloatGoal);
+    selector.add(
+        2,
+        MeleeAttackGoal {
+            hits: true,
+            raises_arms: false,
+            follow_unseen: false,
+            gives_up_in_light: false,
+            speed: 1.0,
+        },
+    );
+    selector.add(3, ProbeGoal);
+    selector.add(4, LookAtPlayerGoal { range: 8.0 });
+    selector.add(5, RandomLookGoal);
+    selector
+}
+
+fn targets() -> GoalSelector<MonsterGoalContext> {
+    let mut selector = GoalSelector::default();
+    selector.add(
+        1,
+        HurtByTargetGoal {
+            timestamp: 0,
+            unseen_ticks: 0,
+            target_mob: None,
+            alert_others: false,
+        },
+    );
+    selector.add(2, NearestTargetGoal::every(Prey::Kinds(&[ANIMAL]), true, 5));
+    selector
+}
+
+fn walk(walk: &mut WalkProfile) {
+    walk.max_up_step = STEP;
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProbeExtra {
+    pub allowed: bool,
+    pub ticks: u32,
+}
+
+#[derive(Clone)]
+struct ProbeGoal;
+
+impl Goal<MonsterGoalContext> for ProbeGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.extra
+            .get::<ProbeExtra>()
+            .is_some_and(|extra| extra.allowed)
+    }
+
+    fn every_tick(&self) -> bool {
+        true
+    }
+
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(extra) = ctx.extra.get_mut::<ProbeExtra>() {
+            extra.ticks += 1;
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Probe {
@@ -29,6 +124,8 @@ pub struct Probe {
     pub drops: Vec<ItemStack>,
     pub walks: Vec<(DVec3, f64)>,
     pub goals: bool,
+    pub goal_allowed: bool,
+    pub goal_ticks: u32,
     pub ai: Box<MonsterAi>,
 }
 
@@ -38,7 +135,7 @@ impl Family for Probe {
 
     fn spawn(kind: &'static str, position: DVec3) -> Option<FamilyMob<Self>> {
         let core = MobCore::new(kind, position, WIDTH, HEIGHT, EYE_HEIGHT, MAX_HEALTH);
-        let ai = MonsterAi::of_kind(MonsterKind::Spider, &core.body, core.yaw);
+        let ai = MonsterAi::of_kind(MonsterKind::Registered(kind), &core.body, core.yaw);
         Some(FamilyMob {
             core,
             state: Probe {
@@ -52,6 +149,8 @@ impl Family for Probe {
                 drops: Vec::new(),
                 walks: Vec::new(),
                 goals: false,
+                goal_allowed: false,
+                goal_ticks: 0,
                 ai: Box::new(ai),
             },
         })
@@ -71,8 +170,20 @@ impl Family for Probe {
             .family_mob_mut::<Self>(id)
             .is_some_and(|mob| mob.state.goals);
         if base.alive && !base.no_ai && goals {
+            if let Some(mob) = world.family_mob_mut::<Self>(id) {
+                let allowed = mob.state.goal_allowed;
+                let extra = &mut mob.state.ai.state.extra;
+                match extra.get_mut::<ProbeExtra>() {
+                    Some(state) => state.allowed = allowed,
+                    None => extra.set(ProbeExtra { allowed, ticks: 0 }),
+                }
+            }
             let strike = world
                 .family_goal_step::<Self, W>(id, level, players, SPEED, |probe| &mut *probe.ai);
+            if let Some(mob) = world.family_mob_mut::<Self>(id) {
+                let extra = mob.state.ai.state.extra.get::<ProbeExtra>();
+                mob.state.goal_ticks = extra.map_or(0, |extra| extra.ticks);
+            }
             if let Some(target) = strike {
                 let attacker = world.body_of(id).map_or(DVec3::ZERO, |body| body.position);
                 let kind = PlayerHitKind::Melee {
@@ -136,6 +247,10 @@ impl Family for Probe {
 
     fn death_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {
         std::mem::take(&mut mob.state.drops)
+    }
+
+    fn monster(kind: &str) -> Option<&'static MonsterSpec> {
+        (kind == KIND).then_some(&SPEC)
     }
 
     fn loot(_mob: &FamilyMob<Self>, context: &mut EntityLootContext) {

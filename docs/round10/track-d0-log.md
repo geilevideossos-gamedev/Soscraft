@@ -61,3 +61,33 @@ After 17faa07d.
 ```
 IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:cow_spawn_egg*4,minecraft:villager_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:iron_sword,minecraft:bow,minecraft:arrow*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:splash_potion@harming,minecraft:lead*2,minecraft:cooked_beef*32
 ```
+## Group registry-hooks
+
+### 1. Registered Minecraft mobs use the shared monster goals and targets
+
+After 9eecb2ff.
+
+- **Changed (vendored entities crate):**
+  - `monster_ai.rs` (D0-2.4): `MonsterKind::Registered(&'static str)` at the end of the enum. `goal_names` and `target_goal_names` answer it from `families::monster_spec(kind)` (an empty list without a spec), so `running_goals`, `running_targets` and `retain_goals` work for registered mobs. `MonsterKind::Registered(_)` joins the fall-sacrifice arm of `profile`. `of_kind` looks the spec up once (`let spec`), takes the follow range from it (16 without one), keeps the monster defaults (fire maluses cleared, `WalkTarget::Monster`), then sets `can_float` from the spec's goal names and runs `spec.walk`; the goals tuple arm builds `(spec.goals)()`, `(spec.targets)()` and `spec.eye_height`.
+  - `MonsterGoalContext.extra: GoalExtra` after `shulker`, `extra: Default::default()` after `shulker: ShulkerState::default()`.
+  - `Prey::Kinds(&'static [&'static str])` at the end of `Prey`, and its arm at the end of `NearestTargetGoal::can_start`'s match: the `ctx.mobs` of those kinds. `enderman_targets` uses it for endermites.
+  - `world/families.rs`: `ExtraState` (`clone_box`, `as_any`, `as_any_mut`, blanket impl for `T: Any + Clone + Send`) and `GoalExtra` (`get::<T>`, `get_mut::<T>`, `set(T)`, `Clone` through `clone_box`, `Default` empty).
+  - The test probe now runs on `MonsterKind::Registered(KIND)` with its own `MonsterSpec` (follow range 24, eye height 0.7, `walk` sets a one-block step): goals `FloatGoal`, `MeleeAttackGoal` (hits), `ProbeGoal` (test only: starts while the family put `allowed` into `GoalExtra`, counts its ticks there), `LookAtPlayerGoal`, `RandomLookGoal`; targets `HurtByTargetGoal` and `NearestAttackableTargetGoal` over `Prey::Kinds(&[ANIMAL])`. Its tick writes `ProbeExtra` before `family_goal_step` and reads it back after.
+- **Tests added** (`world::families::tests`): `a_registered_monster_runs_its_goals_and_strikes_a_player` (the spec's names through `goal_names`/`target_goal_names`, an unknown registered kind has none, `of_kind` takes follow range, eye height, `can_float` and the step from the spec, `running_goals` shows `MeleeAttackGoal` and `ProbeGoal`, `running_targets` `HurtByTargetGoal`, the bite is a `PlayerHitKind::Melee` from the probe at its damage with `core.swings` counting it, `GoalExtra` read and written by the goal, `retain_goals(&["ProbeGoal"])` keeps only that goal and its targets), `prey_kinds_targets_the_named_kinds_only` (no target with a zombie and another probe near, the probe animal becomes the target and is bitten). `a_hurt_registered_monster_turns_on_its_attacker` now runs on the registered goals instead of the spider's.
+- **Decisions:**
+  - `can_float` follows the spec: true when its goal names hold `FloatGoal` (vanilla `FloatGoal`'s constructor calls `getNavigation().setCanFloat(true)`, which is why the old list names exactly the kinds with that goal). `spec.walk` runs after it and may still change it.
+  - A registered kind without a spec gets empty selectors, follow range 16 and eye height 0.85 of the body (the creeper's rule), so `of_kind` never panics on a family that has no goals.
+  - `GoalExtra` lives in the root file; `monster_ai.rs` only gains the field. `ExtraState` asks `Send` (not `Sync`): `MonsterAi` is `Send` already and boxed goals are not `Sync` either.
+  - The enderman's endermite target goal switches from `Prey::Absent` to `Prey::Kinds(&["minecraft:endermite"])` here (D0-2.4 names it), not in group `silverfish-live`: until endermites live there is no candidate of that kind, so the goal rolls its interval and finds nothing exactly as before, and the variant is used outside tests (without a user `Prey::Kinds` warns as never constructed).
+  - `HurtByTargetGoal` starts only when the hurt timestamp differs from its last one, which begins at 0 (vanilla does the same), so a mob hurt on the tick it spawned does not turn on its attacker. The new goal test ticks once before the attacks for that reason; no code change.
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (411 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new files pass `rustfmt --check --edition 2021`.
+- **Test steps** (registered mobs have no family yet, so nothing new is visible; the steps check that monsters on the shared goals behave as before). Release build, survival, Normal, at night or underground, flat ground in the Overworld. Name each screenshot by its label, `D0-3-1.png`.
+  1. Use the zombie, skeleton, spider and creeper eggs 10 blocks away. The zombie walks at you and hits, the skeleton shoots, the spider runs and leaps at you, the creeper hisses next to you. **Screenshot D0-3-1.**
+  2. Use an enderman egg and look at its head: it shakes, then comes for you. Hit it once: it teleports.
+  3. Use an iron golem egg next to a new zombie: the golem walks to the zombie and hits it into the air.
+  4. Use a wolf egg, tame it with bones, then hit a zombie: the wolf attacks the zombie. **Screenshot D0-3-4.**
+  5. Pour water next to a spider and a creeper: both float in it instead of sinking.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*4,minecraft:skeleton_spawn_egg*2,minecraft:spider_spawn_egg*2,minecraft:creeper_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:bone*16,minecraft:water_bucket,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64
+```
