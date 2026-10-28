@@ -924,6 +924,13 @@ pub(crate) fn struck(
             sounds.play(packs, RAID_OMEN_SOUND, Some(at(feet)), 1.0, 1.0);
         }
     }
+    if outputs.trial_omen
+        && alive
+        && survival.turn_bad_omen_into_trial()
+        && let Some(sounds) = sounds.as_mut()
+    {
+        sounds.play(packs, TRIAL_OMEN_SOUND, Some(at(feet)), 1.0, 1.0);
+    }
     for amplifier in outputs.raid_heroes {
         survival.become_hero(amplifier);
     }
@@ -949,6 +956,7 @@ fn takes_pushes(alive: bool, mode: minecraftoss_player::GameMode, pm_flags: u32)
 }
 
 const RAID_OMEN_SOUND: &str = "minecraft:event.mob_effect.raid_omen";
+const TRIAL_OMEN_SOUND: &str = "minecraft:event.mob_effect.trial_omen";
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn settle(

@@ -229,9 +229,7 @@ impl Level<'_> {
         let natural = self.natural_spawning.take()?;
         let mob = self.trial_mob(&natural, &kind, entity, custom_rules, at);
         self.natural_spawning = Some(natural);
-        let mob = mob?;
-        self.spawned.push(mob.clone());
-        Some(mob)
+        mob
     }
 
     fn trial_mob(&mut self, natural: &NaturalSpawning, kind: &str, entity: &Tag, custom_rules: Option<&Tag>, at: [f64; 3]) -> Option<Tag> {

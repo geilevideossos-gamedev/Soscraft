@@ -124,6 +124,7 @@ pub struct ServerSim {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlayerOmens {
     pub bad_omen: Option<i32>,
+    pub trial_omen: bool,
     pub raid_omens: Vec<(i32, (i32, i32, i32))>,
 }
 
@@ -3166,24 +3167,33 @@ impl ServerSim {
         self.check_lectern_viewers();
     }
 
-    pub fn tick_trial_spawners(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+    pub fn tick_trial_spawners(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], omens: &mut [(u64, PlayerOmens)]) -> Vec<u64> {
         let spawners = crate::trial_spawner::ticking_spawners(&self.level);
         if spawners.is_empty() {
-            return;
+            return Vec::new();
         }
         let block = |at: glam::DVec3| minecraftoss_core::BlockPos::new(at.x.floor() as i32, at.y.floor() as i32, at.z.floor() as i32);
-        let players: Vec<crate::trial_spawner::TrialPlayer> = players
+        let omen_of = |id: u64| omens.iter().find(|(player, _)| *player == id).map(|(_, omen)| omen);
+        let mut players: Vec<(u64, crate::trial_spawner::TrialPlayer)> = players
             .iter()
             .filter(|player| !player.spectator)
-            .map(|player| crate::trial_spawner::TrialPlayer {
-                uuid: self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player.id),
-                block: block(player.position),
-                eye: [player.position.x, player.position.y + f64::from(player.eye_height), player.position.z],
-                detectable: player.attackable,
+            .map(|player| {
+                (
+                    player.id,
+                    crate::trial_spawner::TrialPlayer {
+                        uuid: self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player.id),
+                        block: block(player.position),
+                        eye: [player.position.x, player.position.y + f64::from(player.eye_height), player.position.z],
+                        detectable: player.attackable,
+                        bad_omen: omen_of(player.id).is_some_and(|omen| omen.bad_omen.is_some()),
+                        trial_omen: omen_of(player.id).is_some_and(|omen| omen.trial_omen),
+                    },
+                )
             })
             .collect();
         let ids: Vec<u64> = self.mobs.mob_ids().collect();
         let mut mobs = std::collections::HashMap::new();
+        let mut mob_ids = std::collections::HashMap::new();
         for id in ids {
             if self.mobs.damage_state(id).is_some_and(|damage| damage.dead) {
                 continue;
@@ -3191,11 +3201,23 @@ impl ServerSim {
             let uuid = self.mobs.uuid_of(id);
             if let Some(body) = self.mobs.body_mut(id) {
                 mobs.insert(uuid, block(body.position));
+                mob_ids.insert(uuid, id);
             }
         }
         let simulated = |kind: &str| crate::server_mobs::SIMULATED_KINDS.contains(&kind);
-        let trials = crate::trial_spawner::Trials { players: &players, mobs: &mobs, simulated: &simulated };
-        crate::trial_spawner::tick_spawners(&mut self.level, &spawners, &trials, &mut self.trial_configs);
+        let mut trial_players: Vec<crate::trial_spawner::TrialPlayer> = players.iter().map(|(_, player)| *player).collect();
+        let mut trials = crate::trial_spawner::Trials { players: &mut trial_players, mobs: &mobs, simulated: &simulated };
+        let outcome = crate::trial_spawner::tick_spawners(&mut self.level, &spawners, &mut trials, &mut self.trial_configs);
+        let discarded: Vec<u64> = outcome.discarded.iter().filter_map(|uuid| mob_ids.get(uuid).copied()).collect();
+        self.mobs.remove_mobs(&discarded);
+        self.mob_tags.retain(|id, _| !discarded.contains(id));
+        players.retain(|(_, player)| outcome.omens_turned.contains(&player.uuid));
+        let turned: Vec<u64> = players.into_iter().map(|(id, _)| id).collect();
+        for (_, omen) in omens.iter_mut().filter(|(id, _)| turned.contains(id)) {
+            omen.bad_omen = None;
+            omen.trial_omen = true;
+        }
+        turned
     }
 
     pub fn set_game_time(&mut self, game_time: i64) {
@@ -3628,7 +3650,7 @@ impl TickInput {
                     let later = std::mem::replace(&mut newer.raid_omens, fired);
                     newer.raid_omens.extend(later);
                 }
-                None => self.omens.push((*player, PlayerOmens { bad_omen: None, raid_omens: fired })),
+                None => self.omens.push((*player, PlayerOmens { bad_omen: None, trial_omen: false, raid_omens: fired })),
             }
         }
     }
@@ -3720,6 +3742,7 @@ pub struct Output {
     pub lecterns: Vec<crate::lectern::LecternView>,
     pub tracked: crate::mob_tracking::Tracked,
     pub raid_omens: Vec<(u64, i32, (i32, i32, i32))>,
+    pub trial_omens: Vec<u64>,
     pub raid_heroes: Vec<(u64, i32)>,
     pub raid_horns: Vec<(u64, [f64; 3])>,
     pub raid_bars: Option<Vec<(u64, Vec<crate::raids::RaidBar>)>>,
@@ -4259,7 +4282,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     }
     let omens = std::mem::take(&mut input.omens);
     let raid = sim.tick_raids(&input.mob_players, &omens, normal);
-    input.omens = omens.into_iter().map(|(id, omen)| (id, PlayerOmens { bad_omen: omen.bad_omen, raid_omens: Vec::new() })).collect();
+    input.omens = omens.into_iter().map(|(id, omen)| (id, PlayerOmens { bad_omen: omen.bad_omen, trial_omen: omen.trial_omen, raid_omens: Vec::new() })).collect();
     out.raid_omens.extend(raid.omens);
     out.raid_heroes.extend(raid.heroes);
     out.raid_horns.extend(raid.horns);
@@ -4268,7 +4291,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.prepare_spawning(&input.mob_players);
         sim.blast_players.clone_from(&input.mob_players);
         sim.tick();
-        sim.tick_trial_spawners(&input.mob_players);
+        out.trial_omens.extend(sim.tick_trial_spawners(&input.mob_players, &mut input.omens));
         sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
         sim.tick_custom_spawners(&input.mob_players);
         sim.tick_trader_spawner(&input.mob_players);
@@ -10180,7 +10203,7 @@ mod tests {
         server.take_changes();
         server.set_simulation_area((0, 0), 2);
         server.tick();
-        server.tick_trial_spawners(&[]);
+        server.tick_trial_spawners(&[], &mut []);
         let at = |server: &ServerSim, pos: BlockPos| {
             let block = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
             let state = server.level.block(block);
@@ -10201,7 +10224,7 @@ mod tests {
         let before = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
         for _ in 0..5 {
             server.tick();
-            server.tick_trial_spawners(&[]);
+            server.tick_trial_spawners(&[], &mut []);
         }
         let after = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
         assert_eq!(before, after, "a waiting spawner keeps its mob");
@@ -10238,7 +10261,7 @@ mod tests {
         };
         let mob = |tag: &minecraftoss_core::nbt::Tag| tag.get("spawn_data").and_then(spawn_kind).map(str::to_owned);
         server.tick();
-        server.tick_trial_spawners(&[]);
+        server.tick_trial_spawners(&[], &mut []);
         assert_eq!(look(&server).0, "inactive", "a placed trial spawner has no mob");
         server.take_block_entity_changes();
         server.take_changes();
@@ -10252,14 +10275,14 @@ mod tests {
         }
         assert!(server.take_block_entity_changes().iter().any(|(changed, _)| *changed == pos));
         server.tick();
-        server.tick_trial_spawners(&[]);
+        server.tick_trial_spawners(&[], &mut []);
         let (state, tag) = look(&server);
         assert_eq!((state.as_str(), mob(&tag).as_deref()), ("waiting_for_players", Some("minecraft:zombie")));
         assert_eq!(server.spawner_egg(pos, "minecraft:skeleton"), Ok(()));
         assert_eq!(look(&server).0, "inactive");
         assert!(server.take_changes().iter().any(|(changed, _)| *changed == pos));
         server.tick();
-        server.tick_trial_spawners(&[]);
+        server.tick_trial_spawners(&[], &mut []);
         let (state, tag) = look(&server);
         assert_eq!((state.as_str(), mob(&tag).as_deref()), ("waiting_for_players", Some("minecraft:skeleton")));
         server.level.difficulty = 0;
@@ -10337,7 +10360,7 @@ mod tests {
                 server.set_simulation_area((0, 0), 2);
                 server.prepare_spawning(&[player]);
                 server.tick();
-                server.tick_trial_spawners(&[player]);
+                server.tick_trial_spawners(&[player], &mut []);
                 spawned.extend(server.level.spawned.iter().filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:zombie") && tag.get("PersistenceRequired").and_then(Tag::as_i64) == Some(1)).cloned());
                 server.take_spawned();
                 let zombies: Vec<u64> = server.mobs.zombies().iter().map(|e| e.id).collect();
@@ -10376,6 +10399,113 @@ mod tests {
         let (_, none, seen) = run(true, 200);
         assert!(none.is_empty(), "a creative player starts no trial");
         assert_eq!(seen, ["waiting_for_players"]);
+    }
+
+    #[test]
+    fn a_trial_spawner_turns_ominous_for_a_bad_omen_and_arms_its_new_mobs() {
+        use crate::trial_spawner::{BECOME_OMINOUS, OMINOUS, SPAWN_MOB};
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() || registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        for x in 2..=14 {
+            for z in 2..=14 {
+                server.player_edit_block((x, 199, z), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+                for y in 200..=203 {
+                    server.player_edit_block((x, y, z), Some(&Block::new("minecraft:air")), PlayerEdit::Place);
+                }
+            }
+        }
+        let spawner = (8, 200, 8);
+        let at = minecraftoss_core::BlockPos::new(spawner.0, spawner.1, spawner.2);
+        server.player_edit_block(spawner, Some(&Block::new("minecraft:trial_spawner")), PlayerEdit::Place);
+        for (key, config) in [("normal_config", "minecraft:trial_chamber/melee/zombie/normal"), ("ominous_config", "minecraft:trial_chamber/melee/zombie/ominous")] {
+            server.level.set_block_entity_value(at, key, Tag::String(config.to_owned()));
+        }
+        server.level.difficulty = 2;
+        server.set_game_time(1_000_000);
+        server.set_player_uuid(0, 0x5eed);
+        let feet = glam::DVec3::new(8.5, 200.0, 12.5);
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: feet,
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let mut omens = vec![(0, PlayerOmens::default())];
+        let step = |server: &mut ServerSim, omens: &mut Vec<(u64, PlayerOmens)>, spawned: &mut Vec<Tag>| {
+            server.set_players(&[feet.to_array()], 2);
+            server.set_simulation_area((0, 0), 2);
+            server.prepare_spawning(&[player]);
+            server.tick();
+            let turned = server.tick_trial_spawners(&[player], omens);
+            spawned.extend(server.level.spawned.iter().filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:zombie")).cloned());
+            server.take_spawned();
+            turned
+        };
+        let (mut ticks, mut spawned) = (0, Vec::new());
+        while server.mobs.zombies().is_empty() {
+            assert!(step(&mut server, &mut omens, &mut spawned).is_empty());
+            ticks += 1;
+            assert!(ticks < 200, "a plain trial starts");
+        }
+        let plain = |server: &ServerSim| server.level.registries().blocks.property(server.level.block(at), OMINOUS) == Some("false");
+        assert!(plain(&server), "plain while nobody has an omen");
+        let zombie = server.mobs.zombies()[0].zombie.body.position.floor().as_ivec3();
+        let zombie = minecraftoss_core::BlockPos::new(zombie.x, zombie.y, zombie.z);
+        omens[0].1.bad_omen = Some(1);
+        let before = server.level.level_events.len();
+        let mut turned = Vec::new();
+        while turned.is_empty() {
+            turned = step(&mut server, &mut omens, &mut spawned);
+            ticks += 1;
+            assert!(ticks < 300, "the omen is seen");
+        }
+        assert_eq!(turned, [0]);
+        assert_eq!((omens[0].1.bad_omen, omens[0].1.trial_omen), (None, true), "a batch does not ask twice");
+        assert!(!plain(&server));
+        let eye = minecraftoss_core::BlockPos::new(8, 201, 12);
+        let events = &server.level.level_events[before..];
+        assert!(events.contains(&(BECOME_OMINOUS, eye, 0)) && events.contains(&(BECOME_OMINOUS, at, 1)));
+        assert!(events.contains(&(SPAWN_MOB, zombie, 0)), "the old zombie leaves in flames");
+        assert!(server.mobs.zombies().is_empty(), "the old zombie is gone");
+        spawned.clear();
+        for _ in 0..200 {
+            assert!(step(&mut server, &mut omens, &mut spawned).is_empty(), "an ominous spawner asks no more");
+        }
+        assert!(!spawned.is_empty());
+        for zombie in &spawned {
+            let hand = zombie.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str);
+            assert!(matches!(hand, Some("minecraft:iron_sword" | "minecraft:diamond_sword")), "{hand:?}");
+            assert_eq!(zombie.get("drop_chances").and_then(|d| d.get("mainhand")).and_then(Tag::as_f64), Some(0.0));
+        }
+        assert!(server.mobs.zombies().iter().any(|e| e.zombie.main_hand.as_deref().is_some_and(|hand| hand.ends_with("_sword"))));
     }
 
     #[test]
@@ -12811,12 +12941,12 @@ mod tests {
         assert!(server.mobs.pois.add(bell, minecraftoss_entities::poi::PoiType::Meeting));
         assert!(server.mobs.pois.acquire(bell));
         let me = candidate(0, feet);
-        let bad = [(0, PlayerOmens { bad_omen: Some(1), raid_omens: Vec::new() })];
+        let bad = [(0, PlayerOmens { bad_omen: Some(1), trial_omen: false, raid_omens: Vec::new() })];
         let tick = server.tick_raids(&[me], &bad, true);
         assert_eq!(tick.omens, [(0, 1, bell)], "bad omen turns into raid omen at the player's block");
         let away = candidate(0, [300.5, f64::from(y), 8.5]);
         assert!(server.tick_raids(&[away], &bad, true).omens.is_empty(), "not outside the village");
-        let fired = [(0, PlayerOmens { bad_omen: None, raid_omens: vec![(1, bell)] })];
+        let fired = [(0, PlayerOmens { bad_omen: None, trial_omen: false, raid_omens: vec![(1, bell)] })];
         server.tick_raids(&[me], &fired, true);
         assert_eq!(server.raids().raids.len(), 1, "the raid omen ends in a raid");
         let id = *server.raids().raids.keys().next().unwrap();

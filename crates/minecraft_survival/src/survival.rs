@@ -218,8 +218,20 @@ impl Survival {
     pub fn omens(&mut self) -> minecraft_terrain::server::PlayerOmens {
         minecraft_terrain::server::PlayerOmens {
             bad_omen: self.status.effect(EffectKind::BadOmen).map(|omen| i32::from(omen.amplifier)),
+            trial_omen: self.status.effect(EffectKind::TrialOmen).is_some(),
             raid_omens: std::mem::take(&mut self.raid_omens_fired),
         }
+    }
+
+    pub fn turn_bad_omen_into_trial(&mut self) -> bool {
+        let Some(omen) = self.status.effect(EffectKind::BadOmen) else {
+            return false;
+        };
+        let ticks = minecraft_terrain::trial_spawner::TRIAL_OMEN_TICKS * (u32::from(omen.amplifier) + 1);
+        self.status.remove_effect(EffectKind::BadOmen);
+        let fresh = self.status.effect(EffectKind::TrialOmen).is_none();
+        self.status.add_effect(EffectKind::TrialOmen, ticks, 0);
+        fresh
     }
 
     pub fn turn_bad_omen(&mut self, amplifier: i32, at: (i32, i32, i32)) -> bool {
@@ -1350,6 +1362,24 @@ mod tests {
         assert!(survival.omens().raid_omens.is_empty(), "a raid omen from /effect has no place to raid");
         survival.become_hero(3);
         assert_eq!(survival.status.effect(EffectKind::HeroOfTheVillage).map(|e| (e.duration, e.amplifier)), Some((48000, 3)));
+    }
+
+    #[test]
+    fn a_trial_spawner_turns_bad_omen_into_trial_omen_for_eighteen_thousand_ticks_a_level() {
+        let mut survival = fresh();
+        assert!(!survival.turn_bad_omen_into_trial(), "no bad omen to turn");
+        assert!(survival.status.effect(EffectKind::TrialOmen).is_none());
+        survival.status.add_effect(EffectKind::BadOmen, 120000, 3);
+        assert!(!survival.omens().trial_omen);
+        assert!(survival.turn_bad_omen_into_trial(), "a new trial omen sounds");
+        assert!(survival.status.effect(EffectKind::BadOmen).is_none());
+        assert_eq!(survival.status.effect(EffectKind::TrialOmen).map(|e| (e.duration, e.amplifier)), Some((72000, 0)));
+        let omens = survival.omens();
+        assert_eq!((omens.bad_omen, omens.trial_omen), (None, true));
+        assert!(!survival.turn_bad_omen_into_trial(), "the omen turns only once");
+        survival.status.add_effect(EffectKind::BadOmen, 120000, 0);
+        assert!(!survival.turn_bad_omen_into_trial(), "a trial omen already there makes no sound");
+        assert_eq!(survival.status.effect(EffectKind::TrialOmen).map(|e| (e.duration, e.amplifier)), Some((72000, 0)), "the longer one stays");
     }
 
     #[test]

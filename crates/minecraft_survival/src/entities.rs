@@ -180,6 +180,7 @@ pub struct PlayerOutputs {
     pub pushes: Vec<DVec3>,
     pub item_uses_done: Vec<SentItemUse>,
     pub raid_omens: Vec<(i32, (i32, i32, i32))>,
+    pub trial_omen: bool,
     pub raid_heroes: Vec<i32>,
     pub raid_horns: Vec<DVec3>,
     pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
@@ -379,6 +380,11 @@ impl PlayerQueues {
         for (player, amplifier, at) in std::mem::take(&mut output.raid_omens) {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.out.raid_omens.push((amplifier, at));
+            }
+        }
+        for player in std::mem::take(&mut output.trial_omens) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.trial_omen = true;
             }
         }
         for (player, amplifier) in std::mem::take(&mut output.raid_heroes) {
@@ -1547,7 +1553,7 @@ impl Entities {
                     .iter()
                     .map(|actor| {
                         let raid_omens = std::mem::take(&mut self.players.queue(actor.id).raid_omens_waiting);
-                        (actor.id, minecraft_terrain::server::PlayerOmens { bad_omen: actor.view.omens.bad_omen, raid_omens })
+                        (actor.id, minecraft_terrain::server::PlayerOmens { bad_omen: actor.view.omens.bad_omen, trial_omen: actor.view.omens.trial_omen, raid_omens })
                     })
                     .collect(),
                 view_distance: self.view_distance,

@@ -26,6 +26,8 @@ const TIME_BETWEEN_EACH_EJECTION: f32 = 30.0;
 const SHUTTER_DELAY: f32 = 40.0;
 const DETECTION_PERIOD: i64 = 20;
 const DETECTION_SPAWN_DELAY: i64 = 40;
+const TICKS_BETWEEN_ITEM_SPAWNERS: i64 = 160;
+pub const TRIAL_OMEN_TICKS: u32 = 18000;
 const EJECT_HEIGHT: f64 = 1.2;
 const EJECT_ACCURACY: i32 = 2;
 pub const SPAWN_PARTICLES: i32 = 3011;
@@ -583,13 +585,33 @@ pub struct TrialPlayer {
     pub block: BlockPos,
     pub eye: [f64; 3],
     pub detectable: bool,
+    pub bad_omen: bool,
+    pub trial_omen: bool,
+}
+
+fn ominous_player(sighted: &[u128], players: &[TrialPlayer]) -> Option<(TrialPlayer, bool)> {
+    let mut bad = None;
+    for uuid in sighted {
+        let Some(player) = players.iter().find(|player| player.uuid == *uuid) else {
+            continue;
+        };
+        if player.trial_omen {
+            return Some((*player, false));
+        }
+        if player.bad_omen {
+            bad = Some(*player);
+        }
+    }
+    bad.map(|player| (player, true))
 }
 
 pub trait TrialWorld {
     fn now(&self) -> i64;
     fn players(&self) -> &[TrialPlayer];
+    fn turn_bad_omen(&mut self, player: u128);
     fn sees(&self, from: [f64; 3], to: [f64; 3]) -> bool;
     fn mob_block(&self, uuid: u128) -> Option<BlockPos>;
+    fn discard_mob(&mut self, uuid: u128) -> Option<BlockPos>;
     fn can_spawn(&self) -> bool;
     fn simulated(&self, kind: &str) -> bool;
     fn random(&mut self) -> &mut dyn RandomSource;
@@ -671,7 +693,7 @@ impl TrialSpawner {
                 if !self.has_mob_to_spawn(*ominous, world) {
                     return TrialState::Inactive;
                 }
-                self.try_detect_players(pos, state, *ominous, world);
+                self.try_detect_players(pos, state, ominous, world);
                 if self.data.detected_players.is_empty() {
                     state
                 } else {
@@ -686,9 +708,9 @@ impl TrialSpawner {
                 if !self.has_mob_to_spawn(*ominous, world) {
                     return TrialState::Inactive;
                 }
-                let additional = self.data.additional_players();
-                self.try_detect_players(pos, state, *ominous, world);
                 let config = self.config.active(*ominous).clone();
+                let additional = self.data.additional_players();
+                self.try_detect_players(pos, state, ominous, world);
                 if self.data.total_mobs_spawned >= config.target_total_mobs(additional) {
                     if self.data.current_mobs.is_empty() {
                         self.data.cooldown_ends_at = now + cooldown;
@@ -741,7 +763,7 @@ impl TrialSpawner {
                 state
             }
             TrialState::Cooldown => {
-                self.try_detect_players(pos, state, *ominous, world);
+                self.try_detect_players(pos, state, ominous, world);
                 if !self.data.detected_players.is_empty() {
                     self.data.total_mobs_spawned = 0;
                     self.data.next_mob_spawns_at = 0;
@@ -794,18 +816,20 @@ impl TrialSpawner {
         &mut self,
         pos: BlockPos,
         state: TrialState,
-        ominous: bool,
+        ominous: &mut bool,
         world: &mut impl TrialWorld,
     ) {
         let now = world.now();
         if pos.pack().wrapping_add(now) % DETECTION_PERIOD != 0 {
             return;
         }
-        if state == TrialState::Cooldown && ominous {
+        if state == TrialState::Cooldown && *ominous {
             return;
         }
         let sighted = self.detect(pos, true, world);
-        if state == TrialState::Cooldown {
+        let became_ominous =
+            !*ominous && !sighted.is_empty() && self.become_ominous(pos, &sighted, ominous, world);
+        if state == TrialState::Cooldown && !became_ominous {
             return;
         }
         let found = if self.data.detected_players.is_empty() {
@@ -823,13 +847,50 @@ impl TrialSpawner {
         if detected > before {
             self.data.next_mob_spawns_at =
                 (now + DETECTION_SPAWN_DELAY).max(self.data.next_mob_spawns_at);
-            let event = if ominous {
-                DETECT_PLAYER_OMINOUS
-            } else {
-                DETECT_PLAYER
-            };
-            world.level_event(event, pos, detected as i32);
+            if !became_ominous {
+                let event = if *ominous {
+                    DETECT_PLAYER_OMINOUS
+                } else {
+                    DETECT_PLAYER
+                };
+                world.level_event(event, pos, detected as i32);
+            }
         }
+    }
+
+    fn become_ominous(
+        &mut self,
+        pos: BlockPos,
+        sighted: &[u128],
+        ominous: &mut bool,
+        world: &mut impl TrialWorld,
+    ) -> bool {
+        let Some((player, bad_omen)) = ominous_player(sighted, world.players()) else {
+            return false;
+        };
+        if bad_omen {
+            world.turn_bad_omen(player.uuid);
+        }
+        world.level_event(BECOME_OMINOUS, block_at(player.eye), 0);
+        self.apply_ominous(pos, ominous, world);
+        true
+    }
+
+    fn apply_ominous(&mut self, pos: BlockPos, ominous: &mut bool, world: &mut impl TrialWorld) {
+        *ominous = true;
+        world.level_event(BECOME_OMINOUS, pos, 1);
+        for uuid in std::mem::take(&mut self.data.current_mobs) {
+            if let Some(at) = world.discard_mob(uuid) {
+                world.level_event(SPAWN_MOB, at, 0);
+            }
+        }
+        if !self.config.ominous.spawn_potentials.is_empty() {
+            self.data.spawn_data = None;
+        }
+        let now = world.now();
+        self.data.total_mobs_spawned = 0;
+        self.data.next_mob_spawns_at = now + i64::from(self.config.ominous.ticks_between_spawn);
+        self.data.cooldown_ends_at = now + TICKS_BETWEEN_ITEM_SPAWNERS;
     }
 
     fn spawn_mob(
@@ -859,11 +920,102 @@ impl TrialSpawner {
     }
 }
 
+fn equipment_slot(id: &str) -> &'static str {
+    let name = id.rsplit(':').next().unwrap_or(id);
+    if name.ends_with("_helmet")
+        || name.ends_with("_head")
+        || name.ends_with("_skull")
+        || name == "carved_pumpkin"
+    {
+        "head"
+    } else if name.ends_with("_chestplate") || name == "elytra" {
+        "chest"
+    } else if name.ends_with("_leggings") {
+        "legs"
+    } else if name.ends_with("_boots") {
+        "feet"
+    } else {
+        "mainhand"
+    }
+}
+
+fn drop_chance(chances: Option<&Tag>, slot: &str) -> Option<f32> {
+    let chances = chances?;
+    chances
+        .as_f64()
+        .or_else(|| chances.get(slot).and_then(Tag::as_f64))
+        .map(|chance| chance as f32)
+}
+
+pub fn equip(level: &mut Level, mob: &mut Tag, equipment: &Tag) {
+    let Some(table) = equipment.get("loot_table").and_then(Tag::as_str) else {
+        return;
+    };
+    let registries = level.lib.registries.clone();
+    let params = LootParams {
+        origin: saved_pos(mob),
+        this_entity: true,
+        ..LootParams::default()
+    };
+    let Ok(stacks) = registries.loot.roll(
+        &registries,
+        table,
+        &params,
+        &mut level.random_sequences,
+        &mut level.random,
+    ) else {
+        return;
+    };
+    let chances = equipment.get("slot_drop_chances");
+    let Tag::Compound(map) = mob else {
+        return;
+    };
+    let mut equipped = Vec::new();
+    for stack in stacks {
+        if stack.is_empty() {
+            continue;
+        }
+        let slot = equipment_slot(&stack.id);
+        if equipped.contains(&slot) {
+            continue;
+        }
+        let mut item = BTreeMap::new();
+        item.insert("id".to_owned(), Tag::String(stack.id.clone()));
+        let count = if slot == "mainhand" { stack.count } else { 1 };
+        item.insert("count".to_owned(), Tag::Int(count));
+        if let Some(components) = stack.components {
+            item.insert("components".to_owned(), components);
+        }
+        if let Tag::Compound(slots) = map
+            .entry("equipment".to_owned())
+            .or_insert_with(|| Tag::Compound(BTreeMap::new()))
+        {
+            slots.insert(slot.to_owned(), Tag::Compound(item));
+        }
+        if let Some(chance) = drop_chance(chances, slot) {
+            if let Tag::Compound(slots) = map
+                .entry("drop_chances".to_owned())
+                .or_insert_with(|| Tag::Compound(BTreeMap::new()))
+            {
+                slots.insert(slot.to_owned(), Tag::Float(chance));
+            }
+        }
+        equipped.push(slot);
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TrialOutcome {
+    pub omens_turned: Vec<u128>,
+    pub discarded: Vec<u128>,
+}
+
 pub struct LevelTrials<'a, 'l> {
     pub level: &'a mut Level<'l>,
-    pub players: &'a [TrialPlayer],
+    pub players: &'a mut [TrialPlayer],
     pub mobs: &'a HashMap<u128, BlockPos>,
     pub simulated: &'a dyn Fn(&str) -> bool,
+    pub outcome: &'a mut TrialOutcome,
 }
 
 impl TrialWorld for LevelTrials<'_, '_> {
@@ -875,6 +1027,16 @@ impl TrialWorld for LevelTrials<'_, '_> {
         self.players
     }
 
+    fn turn_bad_omen(&mut self, player: u128) {
+        for found in self.players.iter_mut().filter(|found| found.uuid == player) {
+            found.bad_omen = false;
+            found.trial_omen = true;
+        }
+        if !self.outcome.omens_turned.contains(&player) {
+            self.outcome.omens_turned.push(player);
+        }
+    }
+
     fn sees(&self, from: [f64; 3], to: [f64; 3]) -> bool {
         self.level
             .clip_first_hit(to, from, ClipBlocks::Visual, ClipFluids::None)
@@ -883,6 +1045,14 @@ impl TrialWorld for LevelTrials<'_, '_> {
 
     fn mob_block(&self, uuid: u128) -> Option<BlockPos> {
         self.mobs.get(&uuid).copied()
+    }
+
+    fn discard_mob(&mut self, uuid: u128) -> Option<BlockPos> {
+        let at = self.mob_block(uuid)?;
+        if !self.outcome.discarded.contains(&uuid) {
+            self.outcome.discarded.push(uuid);
+        }
+        Some(at)
     }
 
     fn can_spawn(&self) -> bool {
@@ -912,9 +1082,13 @@ impl TrialWorld for LevelTrials<'_, '_> {
         }
         let entity = spawn_data.get("entity")?;
         let rules = spawn_data.get("custom_spawn_rules");
-        let mob = self.level.summon_trial_mob(entity, rules, at)?;
+        let mut mob = self.level.summon_trial_mob(entity, rules, at)?;
+        if let Some(equipment) = spawn_data.get("equipment") {
+            equip(self.level, &mut mob, equipment);
+        }
         let uuid = mob.get("UUID").and_then(uuid_of_tag)?;
         let feet = saved_pos(&mob).unwrap_or(at);
+        self.level.spawned.push(mob);
         Some((uuid, block_at(feet)))
     }
 
@@ -980,7 +1154,7 @@ pub fn ticking_spawners(level: &Level) -> Vec<(i32, i32, i32)> {
 }
 
 pub struct Trials<'a> {
-    pub players: &'a [TrialPlayer],
+    pub players: &'a mut [TrialPlayer],
     pub mobs: &'a HashMap<u128, BlockPos>,
     pub simulated: &'a dyn Fn(&str) -> bool,
 }
@@ -988,19 +1162,22 @@ pub struct Trials<'a> {
 pub fn tick_spawners(
     level: &mut Level,
     spawners: &[(i32, i32, i32)],
-    trials: &Trials,
+    trials: &mut Trials,
     configs: &mut HashMap<String, Option<TrialConfig>>,
-) {
+) -> TrialOutcome {
+    let mut outcome = TrialOutcome::default();
     for key in spawners {
-        tick_at(level, *key, trials, configs);
+        tick_at(level, *key, trials, configs, &mut outcome);
     }
+    outcome
 }
 
 fn tick_at(
     level: &mut Level,
     key: (i32, i32, i32),
-    trials: &Trials,
+    trials: &mut Trials,
     configs: &mut HashMap<String, Option<TrialConfig>>,
+    outcome: &mut TrialOutcome,
 ) {
     let pos = BlockPos::new(key.0, key.1, key.2);
     let lib = level.lib;
@@ -1042,6 +1219,7 @@ fn tick_at(
             players: trials.players,
             mobs: trials.mobs,
             simulated: trials.simulated,
+            outcome,
         },
     );
     if spawner.data != before {
@@ -1415,6 +1593,8 @@ mod tests {
         ejected: Vec<String>,
         sounds: Vec<&'static str>,
         events: Vec<(i32, BlockPos, i32)>,
+        turned: Vec<u128>,
+        discarded: Vec<u128>,
     }
 
     impl Mock {
@@ -1430,6 +1610,8 @@ mod tests {
                 ejected: Vec::new(),
                 sounds: Vec::new(),
                 events: Vec::new(),
+                turned: Vec::new(),
+                discarded: Vec::new(),
             }
         }
     }
@@ -1443,12 +1625,26 @@ mod tests {
             &self.players
         }
 
+        fn turn_bad_omen(&mut self, player: u128) {
+            for found in self.players.iter_mut().filter(|found| found.uuid == player) {
+                found.bad_omen = false;
+                found.trial_omen = true;
+            }
+            self.turned.push(player);
+        }
+
         fn sees(&self, _from: [f64; 3], to: [f64; 3]) -> bool {
             !self.walls || to[0] < 0.0
         }
 
         fn mob_block(&self, uuid: u128) -> Option<BlockPos> {
             self.mobs.get(&uuid).copied()
+        }
+
+        fn discard_mob(&mut self, uuid: u128) -> Option<BlockPos> {
+            let at = self.mobs.remove(&uuid)?;
+            self.discarded.push(uuid);
+            Some(at)
         }
 
         fn can_spawn(&self) -> bool {
@@ -1495,6 +1691,8 @@ mod tests {
             block: BlockPos::new(x, 64, 0),
             eye: [f64::from(x) + 0.5, 65.62, 0.5],
             detectable,
+            bad_omen: false,
+            trial_omen: false,
         }
     }
 
@@ -1512,6 +1710,7 @@ mod tests {
     struct Run {
         spawner: TrialSpawner,
         state: TrialState,
+        ominous: bool,
         world: Mock,
     }
 
@@ -1520,16 +1719,16 @@ mod tests {
             Self {
                 spawner: spawner_of(kind),
                 state: TrialState::Inactive,
+                ominous: false,
                 world: Mock::new(),
             }
         }
 
         fn step(&mut self) {
             self.world.now += 1;
-            let mut ominous = false;
             self.state = self
                 .spawner
-                .tick(AT, self.state, &mut ominous, &mut self.world);
+                .tick(AT, self.state, &mut self.ominous, &mut self.world);
         }
 
         fn until(&mut self, limit: i64, done: impl Fn(&Self) -> bool) -> i64 {
@@ -1737,6 +1936,219 @@ mod tests {
         waiting.spawner.data.spawn_data = Some(entity("minecraft:breeze"));
         waiting.step();
         assert_eq!(waiting.state, TrialState::Inactive);
+    }
+
+    fn omened(uuid: u128, x: i32, bad_omen: bool, trial_omen: bool) -> TrialPlayer {
+        TrialPlayer {
+            bad_omen,
+            trial_omen,
+            ..player(uuid, x, true)
+        }
+    }
+
+    #[test]
+    fn a_spawner_that_sees_a_player_with_bad_omen_turns_ominous_and_gives_trial_omen() {
+        let mut run = Run::of("minecraft:zombie");
+        run.spawner.config.ominous = TrialConfig {
+            ticks_between_spawn: 100,
+            ..TrialConfig::default().with_spawning("minecraft:skeleton")
+        };
+        run.step();
+        run.world.walls = true;
+        run.world.players = vec![omened(4, 5, true, false)];
+        for _ in 0..60 {
+            run.step();
+        }
+        assert_eq!(run.state, TrialState::WaitingForPlayers, "out of sight");
+        assert!(run.world.turned.is_empty() && !run.ominous);
+        run.world.walls = false;
+        run.until(21, |run| run.state == TrialState::Active);
+        let now = run.world.now;
+        assert!(run.ominous);
+        assert_eq!(run.world.turned, [4]);
+        assert!(run.world.players[0].trial_omen && !run.world.players[0].bad_omen);
+        assert_eq!(
+            run.world.events,
+            [
+                (BECOME_OMINOUS, BlockPos::new(5, 65, 0), 0),
+                (BECOME_OMINOUS, AT, 1)
+            ],
+            "no detection burst"
+        );
+        let data = &run.spawner.data;
+        assert_eq!(data.detected_players, [4]);
+        assert_eq!(
+            data.spawn_data, None,
+            "the ominous config picks the next mob"
+        );
+        assert_eq!(
+            (data.next_mob_spawns_at, data.cooldown_ends_at),
+            (now + 100, now + 160)
+        );
+        run.step();
+        assert_eq!(
+            run.spawner.data.spawn_data.as_ref().and_then(spawn_kind),
+            Some("minecraft:skeleton")
+        );
+        assert_eq!(run.until(200, |run| run.world.made == 1), 99);
+    }
+
+    #[test]
+    fn trial_omen_turns_a_spawner_ominous_as_it_is_and_comes_before_bad_omen() {
+        let mut run = Run::of("minecraft:zombie");
+        run.world.players = vec![
+            omened(1, 3, true, false),
+            omened(2, -3, false, true),
+            omened(3, 4, true, false),
+        ];
+        run.active();
+        assert!(run.ominous);
+        assert!(run.world.turned.is_empty(), "nobody's Bad Omen is used");
+        assert_eq!(
+            run.world.events[0],
+            (BECOME_OMINOUS, BlockPos::new(-3, 65, 0), 0)
+        );
+        let mut run = Run::of("minecraft:zombie");
+        run.world.players = vec![omened(1, 3, true, false), omened(3, 4, true, false)];
+        run.active();
+        assert_eq!(
+            run.world.turned,
+            [3],
+            "the last player with Bad Omen in sight"
+        );
+        let mut plain = Run::of("minecraft:zombie");
+        plain.world.players = vec![player(1, 3, true)];
+        plain.active();
+        assert!(!plain.ominous);
+        assert_eq!(plain.world.events, [(DETECT_PLAYER, AT, 1)]);
+    }
+
+    #[test]
+    fn turning_ominous_mid_trial_discards_its_mobs_in_flames_and_starts_over() {
+        let mut run = Run::of("minecraft:zombie");
+        run.world.players = vec![player(7, 3, true)];
+        run.active();
+        run.until(200, |run| run.spawner.data.current_mobs.len() == 2);
+        let mobs = run.spawner.data.current_mobs.clone();
+        let blocks: Vec<BlockPos> = mobs.iter().map(|uuid| run.world.mobs[uuid]).collect();
+        run.world.players.push(omened(8, -4, true, false));
+        let before = run.world.events.len();
+        run.until(21, |run| run.ominous);
+        let now = run.world.now;
+        assert_eq!(run.state, TrialState::Active);
+        assert_eq!(run.world.discarded, mobs);
+        assert_eq!(
+            run.world.events[before..],
+            [
+                (BECOME_OMINOUS, BlockPos::new(-4, 65, 0), 0),
+                (BECOME_OMINOUS, AT, 1),
+                (SPAWN_MOB, blocks[0], 0),
+                (SPAWN_MOB, blocks[1], 0),
+            ]
+        );
+        let data = &run.spawner.data;
+        assert!(data.current_mobs.is_empty());
+        assert_eq!(data.detected_players, [7, 8]);
+        assert_eq!(
+            (
+                data.total_mobs_spawned,
+                data.next_mob_spawns_at,
+                data.cooldown_ends_at
+            ),
+            (0, now + 40, now + 160)
+        );
+    }
+
+    #[test]
+    fn an_omen_wakes_a_cooling_spawner_but_an_ominous_one_cools_down_and_turns_plain() {
+        let mut run = Run::of("minecraft:zombie");
+        run.state = TrialState::Cooldown;
+        run.spawner.data.cooldown_ends_at = 10_000;
+        run.world.players = vec![player(4, 2, true)];
+        for _ in 0..40 {
+            run.step();
+        }
+        assert_eq!(run.state, TrialState::Cooldown);
+        run.world.players.push(omened(5, 3, false, true));
+        run.until(21, |run| run.state == TrialState::Active);
+        assert!(run.ominous);
+        let data = &run.spawner.data;
+        assert_eq!(data.detected_players, [4, 5]);
+        assert_eq!((data.total_mobs_spawned, data.next_mob_spawns_at), (0, 0));
+        assert_eq!(data.cooldown_ends_at, run.world.now + 160);
+        let mut run = Run::of("minecraft:zombie");
+        run.state = TrialState::Cooldown;
+        run.ominous = true;
+        run.spawner.data.cooldown_ends_at = 100;
+        run.world.players = vec![omened(5, 3, true, true)];
+        run.until(200, |run| run.state == TrialState::WaitingForPlayers);
+        assert_eq!(run.world.now, 100);
+        assert!(!run.ominous, "plain again at the end of its cooldown");
+        assert!(run.world.events.is_empty() && run.world.turned.is_empty());
+    }
+
+    #[test]
+    fn an_ominous_trial_ejects_from_its_ominous_reward_tables() {
+        let (key, consumables) = (
+            "minecraft:spawners/ominous/trial_chamber/key",
+            "minecraft:spawners/ominous/trial_chamber/consumables",
+        );
+        let mut run = Run::of("minecraft:zombie");
+        run.spawner.config.ominous.loot_tables_to_eject =
+            vec![(key.to_owned(), 3), (consumables.to_owned(), 7)];
+        for _ in 0..1000 {
+            run.state = TrialState::EjectingReward;
+            run.ominous = true;
+            run.spawner.data = StateData {
+                detected_players: vec![1],
+                cooldown_ends_at: 36000,
+                ..StateData::default()
+            };
+            run.world.now = -1;
+            run.step();
+        }
+        let keys = run
+            .world
+            .ejected
+            .iter()
+            .filter(|table| *table == key)
+            .count();
+        assert_eq!(run.world.ejected.len(), 1000);
+        assert!((250..350).contains(&keys), "{keys}");
+        assert!(
+            run.world
+                .ejected
+                .iter()
+                .all(|table| table == key || table == consumables)
+        );
+    }
+
+    #[test]
+    fn trial_equipment_goes_to_its_armour_slot_or_the_main_hand() {
+        let slots = [
+            "minecraft:iron_helmet",
+            "minecraft:skeleton_skull",
+            "minecraft:diamond_chestplate",
+            "minecraft:chainmail_leggings",
+            "minecraft:golden_boots",
+            "minecraft:bow",
+            "minecraft:iron_sword",
+        ]
+        .map(equipment_slot);
+        assert_eq!(
+            slots,
+            [
+                "head", "head", "chest", "legs", "feet", "mainhand", "mainhand"
+            ]
+        );
+        let one = Tag::Float(0.0);
+        assert_eq!(drop_chance(Some(&one), "head"), Some(0.0));
+        let mut map = BTreeMap::new();
+        map.insert("mainhand".to_owned(), Tag::Float(0.5));
+        let some = Tag::Compound(map);
+        assert_eq!(drop_chance(Some(&some), "mainhand"), Some(0.5));
+        assert_eq!(drop_chance(Some(&some), "head"), None);
+        assert_eq!(drop_chance(None, "head"), None);
     }
 
     #[test]
