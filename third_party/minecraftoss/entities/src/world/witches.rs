@@ -18,6 +18,8 @@ use crate::witch::{self, Throw, Witch};
 /// A witch steps with its block's sound; it is a `Monster`.
 const WITCH_SOUNDS: MovementSounds = MovementSounds::monster(None);
 
+const HURT_BY_SPLASHED_WATER: [&str; 3] = ["minecraft:blaze", "minecraft:snow_golem", "minecraft:strider"];
+
 /// A witch on the monster goal framework.
 #[derive(Clone)]
 pub struct WitchEntity {
@@ -611,25 +613,34 @@ impl EntityWorld {
                 self.heal_mob(id, amount);
                 None
             }
-            Some(EffectWork::HurtMagic(amount)) => {
-                let result = self.hurt_mob_by_magic(id, amount, owner);
-                if let Some(result) = result {
-                    let attacker = match owner {
-                        Some(o) if o >= PLAYER_TARGET => "minecraft:player",
-                        _ => owner.and_then(|o| self.entity_type(o)).unwrap_or("minecraft:splash_potion"),
-                    };
-                    self.credit(id, result, attacker, true);
-                    if result.applied && result.full {
-                        if let Some((body, _)) = self.mob_body(id) {
-                            let (xd, zd) = (at.x - body.position.x, at.z - body.position.z);
-                            self.knock_back(id, f64::from(0.4_f32), xd, zd);
-                        }
-                    }
-                }
-                result
-            }
+            Some(EffectWork::HurtMagic(amount)) => self.potion_hurt(id, amount, at, owner),
             _ => None,
         }
+    }
+
+    pub fn splash_water_hurt(&mut self, id: u64, at: DVec3, owner: Option<u64>) -> Option<DamageResult> {
+        if !self.entity_type(id).is_some_and(|kind| HURT_BY_SPLASHED_WATER.contains(&kind)) {
+            return None;
+        }
+        self.potion_hurt(id, 1.0, at, owner)
+    }
+
+    fn potion_hurt(&mut self, id: u64, amount: f32, at: DVec3, owner: Option<u64>) -> Option<DamageResult> {
+        let result = self.hurt_mob_by_magic(id, amount, owner);
+        if let Some(result) = result {
+            let attacker = match owner {
+                Some(o) if o >= PLAYER_TARGET => "minecraft:player",
+                _ => owner.and_then(|o| self.entity_type(o)).unwrap_or("minecraft:splash_potion"),
+            };
+            self.credit(id, result, attacker, true);
+            if result.applied && result.full {
+                if let Some((body, _)) = self.mob_body(id) {
+                    let (xd, zd) = (at.x - body.position.x, at.z - body.position.z);
+                    self.knock_back(id, f64::from(0.4_f32), xd, zd);
+                }
+            }
+        }
+        result
     }
 
     /// `LivingEntity.heal` on a mob, by ID.

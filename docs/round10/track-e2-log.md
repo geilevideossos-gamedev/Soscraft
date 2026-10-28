@@ -157,3 +157,22 @@ After a8700f4f.
 ```
 IW4L_MINECRAFT_KIT=minecraft:splash_potion@harming,minecraft:splash_potion@healing,minecraft:zoglin_spawn_egg,minecraft:cobblestone*64,minecraft:golden_apple*16
 ```
+
+### 3. Minecraft water bottles hurt blazes, striders and snow golems
+
+After 85acbc95.
+
+- **Vanilla (26.3, `AbstractThrownPotion.affectEntitiesAround`):** a water splash (`#hurts_water_sensitive_entities`) looks at every living entity in its box grown by (4, 2, 4) whose feet are less than 4 blocks from the break, and hurts each one with `isSensitiveToWater()` by 1.0 `indirect_magic` from the potion and its thrower, before it puts out fires. Only `Blaze`, `EnderMan`, `SnowGolem` and `Strider` return true. `indirect_magic` is not in `#no_knockback` (plain `magic` is), and a potion's `calculateHorizontalHurtKnockbackDirection` is the victim's position less the potion's, so the hit pushes the mob away from the break, as harming already does.
+- **Changed:**
+  - Vendored `entities/src/world/witches.rs`: the harm half of `splash_instant` (hurt, the thrower's credit, the push away from the break) is now the private `potion_hurt(id, amount, at, owner)`, unchanged. New public `EntityWorld::splash_water_hurt(id, at, owner) -> Option<DamageResult>` runs it with 1.0 for a blaze, a snow golem or a strider (the private `HURT_BY_SPLASHED_WATER` list, checked by `entity_type`) and returns `None` for any other mob.
+  - `minecraft_terrain/src/splash.rs` `wet`: a mob that is not an enderman goes to `splash_water_hurt` with the player as owner. The blaze and the snow golem remember the thrower (the `hurt_mob_by_magic` arms), and the strider takes the hit as it takes harming.
+- **Tests:** `splash::tests::a_water_bottle_hurts_a_blaze_a_strider_and_a_snow_golem_by_one`: a water splash takes a blaze and a strider from 20 to 19 and a snow golem from 4 to 3, pushes the blaze and the strider away from the break and makes the blaze remember the thrower; a pig next to them and a blaze 6.5 blocks away are not hurt; `splash_water_hurt` on the pig is `None`. The existing enderman water test in `server::tests` passes unchanged.
+- **Decision:** endermen keep their own branch in `wet` (hurt by 1, remember the thrower, then teleport away). They are left out of `HURT_BY_SPLASHED_WATER` because `hurt_mob_by_magic` makes an enderman dodge a potion without taking its damage, which is right for harming but not for water. The list stays in the vendored entities crate, so `splash.rs` holds no per-mob list.
+- **Test steps (survival, Normal, by day, flat ground, outside a warm biome; pen the mobs in with cobblestone):**
+  1. Use a blaze spawn egg and a strider spawn egg next to each other, and a snow golem spawn egg next to them. Throw a water splash between them. All three flash red once and are pushed a little away from the splash; the blaze then comes at you (**ti2-6_water_bottle**).
+  2. Throw the second water splash next to a pig 3 blocks away: the pig does not flash (**ti2-7_water_pig**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:splash_potion@water*2,minecraft:blaze_spawn_egg,minecraft:strider_spawn_egg,minecraft:snow_golem_spawn_egg,minecraft:pig_spawn_egg,minecraft:cobblestone*64,minecraft:potion@fire_resistance,minecraft:golden_apple*16
+```

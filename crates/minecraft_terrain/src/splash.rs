@@ -46,6 +46,8 @@ pub fn wet(
             if let Some(enderman) = world.enderman_mut(target.id) {
                 enderman.dodge_pending = true;
             }
+        } else {
+            world.splash_water_hurt(target.id, at, Some(PLAYER_TARGET + owner));
         }
         if let Some(body) = world.body_mut(target.id) {
             body.fire_ticks = body.fire_ticks.min(0);
@@ -241,6 +243,35 @@ mod tests {
             panic!("{hits:?}");
         };
         assert_eq!(effect.duration, (0.5 * 900.0 + 0.5) as i32);
+    }
+
+    #[test]
+    fn a_water_bottle_hurts_a_blaze_a_strider_and_a_snow_golem_by_one() {
+        use minecraftoss_entities::{blaze::Blaze, pig::Pig, snow_golem::SnowGolem, strider::Strider};
+        let mut world = EntityWorld::default();
+        let at = |x: f64| DVec3::new(x, 64.0, 0.5);
+        let blaze = world.spawn_blaze(Blaze::new(at(1.5)), true);
+        let strider = world.spawn_strider(Strider::new(at(-1.5)), true);
+        let golem = world.spawn_snow_golem(SnowGolem::new(at(0.5)), true);
+        let pig = world.spawn_pig(Pig::new(at(-0.5)), true);
+        let far = world.spawn_blaze(Blaze::new(at(6.5)), true);
+        assert!(wet(&mut world, at(0.0), 2, &[]).is_empty());
+        assert_eq!(world.blaze_mut(blaze).unwrap().blaze.health, 19.0);
+        assert_eq!(world.strider_mut(strider).unwrap().strider.health, 19.0);
+        assert_eq!(world.snow_golem_mut(golem).unwrap().golem.health, 3.0);
+        assert_eq!(world.pigs()[0].pig.health, 10.0);
+        assert_eq!(world.blaze_mut(far).unwrap().blaze.health, 20.0);
+        let blaze = world.blaze_mut(blaze).unwrap();
+        assert_eq!(
+            blaze.ai.state.hurt_by.map(|(by, _)| by),
+            Some(Target::Player(2))
+        );
+        assert!(blaze.blaze.body.velocity.x > 0.0, "pushed away from the splash");
+        assert!(world.strider_mut(strider).unwrap().strider.body.velocity.x < 0.0);
+        assert_eq!(
+            world.splash_water_hurt(pig, at(0.0), Some(PLAYER_TARGET + 2)),
+            None
+        );
     }
 
     #[test]
