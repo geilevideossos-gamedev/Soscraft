@@ -491,7 +491,7 @@ impl Level<'_> {
                     }
                 }
                 None => {
-                    if !spawns.spawner_may_spawn(self, &context, &kind, at) {
+                    if !spawns.spawner_may_spawn(self, &context, &kind, at, crate::natural_spawner::spawning::SpawnerReason::Spawner) {
                         continue;
                     }
                 }

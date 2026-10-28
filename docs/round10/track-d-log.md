@@ -142,6 +142,34 @@ After 97db956b.
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:trial_spawner*3,minecraft:zombie_spawn_egg*4,minecraft:skeleton_spawn_egg*2,minecraft:husk_spawn_egg*2,minecraft:slime_spawn_egg*2,minecraft:stone*16,minecraft:cobblestone*64,minecraft:ladder*32,minecraft:water_bucket
 ```
 
+## Group trial-spawners-run
+
+Brief D12, second half: the spawn rules of spawners, the visual line of sight, the trial itself with its rewards, and its particles and sounds.
+
+### 1. Minecraft spawners spawn husks, strays and slimes without open sky or slime chunks
+
+After 1294cf59.
+
+- **Vanilla (javap, 26.3):**
+  - `EntitySpawnReason.isSpawner` is true for `SPAWNER` and `TRIAL_SPAWNER`; `ignoresLightRequirements` only for `TRIAL_SPAWNER`.
+  - `Monster.checkMonsterSpawnRules`: `(ignoresLightRequirements || isDarkEnoughToSpawn) && checkMobSpawnRules`, and `Mob.checkMobSpawnRules` is true for a spawner without looking at the block below.
+  - `checkSurfaceMonstersSpawnRules` (husks) and `Stray.checkStraySpawnRules` add `canSeeSky` only when the reason is not a spawner.
+  - `Slime.checkSlimeSpawnRules`: not peaceful, then for a spawner only `checkMobSpawnRules` (no swamp, no slime chunk).
+  - `Drowned.checkDrownedSpawnRules` for a spawner: not peaceful and (ignores light or dark enough), no water test.
+  - `BaseSpawner` (mob spawners) also asks `Mob.checkSpawnRules` (the walk target value: monsters need the dark); `TrialSpawner.spawnMob` never does, only `checkSpawnObstruction`.
+- **Changed:** vendored `world/src/natural_spawner/spawning.rs`: `SpawnerReason` (`Spawner`, `TrialSpawner`) and `spawner_may_spawn(.., reason)`: monsters, husks, strays and drowned need the dark only from a mob spawner, slimes need only "not peaceful", and the walk test runs only for a mob spawner. `world/src/level/spawning.rs`'s mob spawner passes `Spawner`. Group commit 3's trial spawner passes `TrialSpawner`.
+- **Tests:** vendored `natural_spawner::spawning::tests::spawners_spawn_husks_strays_and_slimes_without_open_sky_or_a_slime_chunk`: in a dark cave (no sky, outside a slime chunk) both reasons spawn husks, strays, slimes and zombies, while the natural rules still refuse husks, strays and slimes there and accept zombies; with block light 15 a mob spawner refuses husks, strays and zombies and a trial spawner takes them; slimes ignore the light, but not peaceful. The strider tests in `server::tests` pass the `Spawner` reason.
+- **Decisions:** none beyond vanilla.
+- **Test steps (world `trial10`, survival, Normal):**
+  1. Deep underground (dig a room at y −30 with no sky above, no torches), place the kit's mob spawner and use a husk egg on it, stand 5 blocks away: husks come out in the dark (before this commit a husk spawner needed open sky) (**312_husk_spawner**).
+  2. Break it, place another spawner in the same room and use a slime egg: slimes come out, also outside a slime chunk.
+  3. Light the room with torches all around a husk spawner: it stops (a mob spawner still needs the dark for monsters).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:spawner*2,minecraft:husk_spawn_egg*2,minecraft:slime_spawn_egg*2,minecraft:torch*64,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:ladder*32
+```
+
 ## Protocol
 
 No message of this track has changed yet. `minecraft_net::PROTOCOL` stays 6.
@@ -154,4 +182,4 @@ No message of this track has changed yet. `minecraft_net::PROTOCOL` stays 6.
 
 ## Vendored files
 
-Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2), and `world/src/level/container.rs` (group trial-spawners, commit 2: `Level::set_block_entity_tag`). All three were already patched by the fork (the first two are in round 9's list, `docs/round9/track-d-log.md`, Vendored files; `container.rs` since c5efeed0), so the fork's counts do not change.
+Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2), and `world/src/level/container.rs` (group trial-spawners, commit 2: `Level::set_block_entity_tag`). All three were already patched by the fork (the first two are in round 9's list, `docs/round9/track-d-log.md`, Vendored files; `container.rs` since c5efeed0), so the fork's counts do not change. Group trial-spawners-run, commit 1: `world/src/natural_spawner/spawning.rs` and `world/src/level/spawning.rs` (both patched by the fork before).

@@ -162,6 +162,12 @@ impl DifficultyInstance {
 /// `DimensionType.MOON_BRIGHTNESS_PER_PHASE`, by moon phase.
 pub const MOON_BRIGHTNESS_PER_PHASE: [f32; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnerReason {
+    Spawner,
+    TrialSpawner,
+}
+
 /// What spawning reads besides the level's blocks and light.
 pub struct SpawnContext<'a> {
     /// The feet of every player that is not a spectator.
@@ -697,7 +703,7 @@ impl CreatureSpawns {
         self.no_collision(level, spawn_aabb(info, f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5))
     }
 
-    pub fn spawner_may_spawn(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, kind: &str, at: [f64; 3]) -> bool {
+    pub fn spawner_may_spawn(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, kind: &str, at: [f64; 3], reason: SpawnerReason) -> bool {
         let Some(info) = type_info(kind) else { return true };
         let pos = BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
         let bb = spawn_aabb(&info, at[0], at[1], at[2]);
@@ -707,22 +713,23 @@ impl CreatureSpawns {
         if context.difficulty == 0 && MobCategory::of_type(kind) == Some(MobCategory::Monster) {
             return false;
         }
+        let trial = reason == SpawnerReason::TrialSpawner;
         let rules = match info.rules {
-            Rules::Monster => self.dark_enough(level, context, pos),
-            Rules::SurfaceMonster => self.dark_enough(level, context, pos) && level.sky_brightness(pos) >= 15,
+            Rules::Monster | Rules::SurfaceMonster | Rules::Stray | Rules::Drowned => trial || self.dark_enough(level, context, pos),
+            Rules::Slime => context.difficulty != 0,
             Rules::Ghast => level.random().next_i32_bound(20) == 0,
             Rules::AnyLightMonster => true,
-            Rules::Drowned => self.dark_enough(level, context, pos),
             _ => self.natural_spawn_rules(level, context, kind, &info, pos),
         };
         if !rules {
             return false;
         }
-        let walk = match info.walk {
-            Walk::Animal => self.mob_check_spawn_rules(level, &info, pos),
-            Walk::Monster => -self.pathfinding_cost_from_light(level, pos) >= 0.0,
-            Walk::Neutral => true,
-        };
+        let walk = trial
+            || match info.walk {
+                Walk::Animal => self.mob_check_spawn_rules(level, &info, pos),
+                Walk::Monster => -self.pathfinding_cost_from_light(level, pos) >= 0.0,
+                Walk::Neutral => true,
+            };
         walk && self.check_spawn_obstruction(level, &info, at[0], at[1], at[2]) && !context.obstacles.iter().any(|o| overlaps(&bb, o))
     }
 
@@ -1850,6 +1857,98 @@ mod tests {
         fn add_entity(&mut self, entity: minecraftoss_core::nbt::Tag) {
             self.added.push(entity);
         }
+    }
+
+    struct Cave {
+        column: Column,
+        block_light: i32,
+    }
+
+    impl super::SpawnLevel for Cave {
+        fn block(&self, pos: minecraftoss_core::BlockPos) -> minecraftoss_core::BlockStateId {
+            if pos.y <= self.column.solid_top {
+                self.column.floor
+            } else {
+                minecraftoss_core::BlockStateId::AIR
+            }
+        }
+        fn height(&self, _kind: minecraftoss_core::chunk::HeightmapKind, _x: i32, _z: i32) -> i32 {
+            200
+        }
+        fn biome(&self, _pos: minecraftoss_core::BlockPos) -> minecraftoss_core::BiomeId {
+            self.column.biome
+        }
+        fn noise_biome(&self, _qx: i32, _qy: i32, _qz: i32) -> minecraftoss_core::BiomeId {
+            self.column.biome
+        }
+        fn raw_brightness(&mut self, _pos: minecraftoss_core::BlockPos, _darkening: i32) -> i32 {
+            self.block_light
+        }
+        fn sky_brightness(&mut self, _pos: minecraftoss_core::BlockPos) -> i32 {
+            0
+        }
+        fn block_brightness(&mut self, _pos: minecraftoss_core::BlockPos) -> i32 {
+            self.block_light
+        }
+        fn min_y(&self) -> i32 {
+            -64
+        }
+        fn random(&mut self) -> &mut dyn minecraftoss_core::random::RandomSource {
+            &mut self.column.random
+        }
+        fn next_uuid(&mut self) -> [i32; 4] {
+            self.column.made += 1;
+            [self.column.made, 0, 0, 1]
+        }
+        fn add_entity(&mut self, entity: minecraftoss_core::nbt::Tag) {
+            self.column.added.push(entity);
+        }
+    }
+
+    #[test]
+    fn spawners_spawn_husks_strays_and_slimes_without_open_sky_or_a_slime_chunk() {
+        use super::SpawnerReason::{Spawner, TrialSpawner};
+        let Some((spawns, column)) = river() else { return };
+        let mut cave = Cave { column: Column { solid_top: 9, water_top: 9, ..column }, block_light: 0 };
+        let chunk = minecraftoss_core::ChunkPos::new(0, 0);
+        let seed = (0..).find(|seed| !super::is_slime_chunk(chunk, *seed)).unwrap();
+        let context = super::SpawnContext {
+            players: &[],
+            respawn: None,
+            difficulty: 2,
+            overworld_time: 0,
+            moon_brightness: 0.0,
+            raining: false,
+            thundering: false,
+            seed,
+            surface_slime_chance: &|_| 0.0,
+            halloween: false,
+            can_spawn_in_chunk: &|_| true,
+            obstacles: Vec::new(),
+            chickens: Vec::new(),
+            structures: &|_| Vec::new(),
+            spawning_monsters: true,
+        };
+        let at = [8.5, 10.0, 8.5];
+        let pos = minecraftoss_core::BlockPos::new(8, 10, 8);
+        for kind in ["minecraft:husk", "minecraft:stray", "minecraft:slime", "minecraft:zombie"] {
+            assert!((0..50).all(|_| spawns.spawner_may_spawn(&mut cave, &context, kind, at, Spawner)), "a spawner in a dark cave spawns {kind}");
+            assert!((0..50).all(|_| spawns.spawner_may_spawn(&mut cave, &context, kind, at, TrialSpawner)), "a trial spawner in a dark cave spawns {kind}");
+        }
+        for kind in ["minecraft:husk", "minecraft:stray", "minecraft:slime"] {
+            let info = super::type_info(kind).unwrap();
+            assert!((0..500).all(|_| !spawns.natural_spawn_rules(&mut cave, &context, kind, &info, pos)), "natural {kind} need the sky or a slime chunk");
+        }
+        let zombie = super::type_info("minecraft:zombie").unwrap();
+        assert!(spawns.natural_spawn_rules(&mut cave, &context, "minecraft:zombie", &zombie, pos), "zombies spawn naturally in the dark cave");
+        cave.block_light = 15;
+        for kind in ["minecraft:husk", "minecraft:stray", "minecraft:zombie"] {
+            assert!((0..50).all(|_| !spawns.spawner_may_spawn(&mut cave, &context, kind, at, Spawner)), "a mob spawner needs the dark for {kind}");
+            assert!((0..50).all(|_| spawns.spawner_may_spawn(&mut cave, &context, kind, at, TrialSpawner)), "a trial spawner ignores the light for {kind}");
+        }
+        assert!(spawns.spawner_may_spawn(&mut cave, &context, "minecraft:slime", at, Spawner), "slimes ignore the light");
+        let peaceful = super::SpawnContext { difficulty: 0, ..context };
+        assert!(!spawns.spawner_may_spawn(&mut cave, &peaceful, "minecraft:slime", at, TrialSpawner), "but not peaceful");
     }
 
     fn river() -> Option<(std::sync::Arc<super::CreatureSpawns>, Column)> {

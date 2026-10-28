@@ -9539,9 +9539,9 @@ mod tests {
         let spawns = server.level.natural_spawning.as_ref().unwrap().spawns.clone();
         let players = [[40.5, 100.0, 40.5]];
         let context = spawn_context(&players, true);
-        assert!(spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [2.5, 100.0, 2.5]), "deep lava climbs to the air above it");
-        assert!(spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [2.5, 101.0, 2.5]));
-        assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [6.5, 100.0, 6.5]), "lava under a roof");
+        assert!(spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [2.5, 100.0, 2.5], minecraftoss_world::natural_spawner::spawning::SpawnerReason::Spawner), "deep lava climbs to the air above it");
+        assert!(spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [2.5, 101.0, 2.5], minecraftoss_world::natural_spawner::spawning::SpawnerReason::Spawner));
+        assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [6.5, 100.0, 6.5], minecraftoss_world::natural_spawner::spawning::SpawnerReason::Spawner), "lava under a roof");
     }
 
     fn mob_tag_answers(blocks: &[(&str, &str)], tag: &str) -> Option<Vec<bool>> {
@@ -9601,10 +9601,10 @@ mod tests {
         let spawns = server.level.natural_spawning.as_ref().unwrap().spawns.clone();
         let players = [[40.5, 100.0, 40.5]];
         let mut context = spawn_context(&players, true);
-        assert!(spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [4.5, 101.0, 4.5]), "its whole box in lava");
-        assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:magma_cube", [4.5, 101.0, 4.5]), "other mobs keep the liquid test");
+        assert!(spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [4.5, 101.0, 4.5], minecraftoss_world::natural_spawner::spawning::SpawnerReason::Spawner), "its whole box in lava");
+        assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:magma_cube", [4.5, 101.0, 4.5], minecraftoss_world::natural_spawner::spawning::SpawnerReason::Spawner), "other mobs keep the liquid test");
         context.obstacles.push([4.0, 101.0, 4.0, 5.0, 103.0, 5.0]);
-        assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [4.5, 101.0, 4.5]), "a mob in the way still blocks it");
+        assert!(!spawns.spawner_may_spawn(&mut server.level, &context, "minecraft:strider", [4.5, 101.0, 4.5], minecraftoss_world::natural_spawner::spawning::SpawnerReason::Spawner), "a mob in the way still blocks it");
     }
 
     fn ridden_strider(fill: &str, feet: f64) -> Option<(ServerSim, u64)> {
