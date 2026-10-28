@@ -51,6 +51,8 @@ pub enum Kind {
     HappyVillager,
     Rain,
     Flame,
+    SmallFlame,
+    SoulFireFlame,
     Snowflake,
     EndRod,
     Crit,
@@ -129,13 +131,16 @@ impl Particle {
         particle
     }
 
-    fn flame(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
-        let mut particle = Self::base(Kind::Flame, at, DVec3::ZERO, random);
+    fn flame(kind: Kind, at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(kind, at, DVec3::ZERO, random);
         particle.friction = 0.96;
         particle.velocity = particle.velocity * f64::from(0.01_f32) + motion;
         let mut jitter = || f64::from((random.next_float() - random.next_float()) * 0.05);
         particle.position += DVec3::new(jitter(), jitter(), jitter());
         particle.lifetime = (8.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32 + 4;
+        if kind == Kind::SmallFlame {
+            particle.quad_size *= 0.5;
+        }
         particle
     }
 
@@ -466,7 +471,8 @@ impl Particle {
             Kind::ExplosionEmitter => return None,
             Kind::HappyVillager => "glint".to_owned(),
             Kind::Rain => format!("splash_{}", self.sprite),
-            Kind::Flame => "flame".to_owned(),
+            Kind::Flame | Kind::SmallFlame => "flame".to_owned(),
+            Kind::SoulFireFlame => "soul_fire_flame".to_owned(),
             Kind::EndRod | Kind::Totem => {
                 let step = self.age * (GLITTER_SPRITES - 1) / self.lifetime.max(1);
                 format!(
@@ -490,7 +496,9 @@ impl Particle {
                 self.quad_size * (grown * 32.0).clamp(0.0, 1.0)
             }
             Kind::Lava => self.quad_size * (1.0 - grown * grown),
-            Kind::Flame => self.quad_size * (1.0 - grown * grown * 0.5),
+            Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => {
+                self.quad_size * (1.0 - grown * grown * 0.5)
+            }
             Kind::CosySmoke
             | Kind::SignalSmoke
             | Kind::Poof
@@ -679,7 +687,7 @@ pub fn textures() -> Vec<ResourceId> {
     let big_smoke = (0..BIG_SMOKE_SPRITES).map(|index| format!("big_smoke_{index}"));
     let explosion = (0..EXPLOSION_SPRITES).map(|index| format!("explosion_{index}"));
     let glitter = (0..GLITTER_SPRITES).map(|index| format!("glitter_{index}"));
-    ["lava", "glint", "flame", "critical_hit"]
+    ["lava", "glint", "flame", "soul_fire_flame", "critical_hit"]
         .into_iter()
         .map(str::to_owned)
         .chain(big_smoke)
@@ -1071,7 +1079,9 @@ impl AmbientParticles {
             Kind::ExplosionEmitter => Particle::emitter(at, random),
             Kind::HappyVillager => Particle::happy_villager(at, motion, random),
             Kind::Rain => Particle::rain(at, random),
-            Kind::Flame => Particle::flame(at, motion, random),
+            Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => {
+                Particle::flame(kind, at, motion, random)
+            }
             Kind::Snowflake => Particle::snowflake(at, motion, random),
             Kind::EndRod => Particle::end_rod(at, motion, random),
             Kind::Crit => Particle::crit(at, motion, random),
@@ -1103,7 +1113,7 @@ impl AmbientParticles {
             Kind::Explosion => particle.hold(),
             Kind::HappyVillager => particle.linger(),
             Kind::Rain => particle.drip(scene, &mut cache, random),
-            Kind::Flame => particle.rise(),
+            Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => particle.rise(),
             Kind::Snowflake => {
                 let alive = particle.tick(scene, &mut cache);
                 let (side, down) = (f64::from(0.95_f32), f64::from(0.9_f32));
@@ -1165,7 +1175,7 @@ impl AmbientParticles {
             let (sky, block) = match particle.kind {
                 Kind::Explosion | Kind::EndRod | Kind::Totem => (FULL_BRIGHT, FULL_BRIGHT),
                 Kind::Lava => (f32::from(light.get(cell)), FULL_BRIGHT),
-                Kind::Flame => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
+                Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
                 _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
             };
             let size = particle.size_at(partial);
@@ -1278,6 +1288,39 @@ mod tests {
         let mut flame = particles.particles[0].clone();
         flame.age = flame.lifetime / 2;
         assert!(flame.glow(3.0, 0.0) > 3.0 && flame.glow(3.0, 0.0) < 15.0);
+    }
+
+    #[test]
+    fn small_and_soul_flames_are_flames_with_their_own_size_and_sprite() {
+        let start = DVec3::new(0.5, 64.5, 0.5);
+        let mut made = Vec::new();
+        for kind in [Kind::Flame, Kind::SmallFlame, Kind::SoulFireFlame] {
+            let mut particles = AmbientParticles::new(7);
+            particles.add(kind, start, DVec3::ZERO);
+            made.push(particles.particles[0].clone());
+        }
+        let (flame, small, soul) = (&made[0], &made[1], &made[2]);
+        assert_eq!(small.quad_size, flame.quad_size * 0.5);
+        assert_eq!(soul.quad_size, flame.quad_size);
+        for particle in [small, soul] {
+            assert_eq!(particle.lifetime, flame.lifetime);
+            assert_eq!(particle.position, flame.position);
+            assert_eq!(particle.velocity, flame.velocity);
+            assert_eq!(particle.glow(3.0, 0.0), 3.0);
+        }
+        let sprite = |particle: &Particle| particle.sprite().unwrap().key();
+        assert_eq!(sprite(small), "minecraft:particle/flame");
+        assert_eq!(sprite(soul), "minecraft:particle/soul_fire_flame");
+        assert!(textures().contains(&ResourceId::parse("minecraft:particle/soul_fire_flame").unwrap()));
+        let mut particles = AmbientParticles::new(7);
+        particles.add(Kind::SoulFireFlame, start, DVec3::ZERO);
+        let lifetime = particles.particles[0].lifetime;
+        let mut lived = 0;
+        while !particles.is_empty() {
+            particles.tick(&open());
+            lived += 1;
+        }
+        assert_eq!(lived, lifetime + 1);
     }
 
     #[test]

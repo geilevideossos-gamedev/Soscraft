@@ -3156,6 +3156,7 @@ impl ServerSim {
         self.explode_tnt();
         self.hear_bells();
         self.level.tick_spawners();
+        crate::trial_spawner::wake_spawners(&mut self.level, |kind| crate::server_mobs::SIMULATED_KINDS.contains(&kind));
         self.level.unsupported.clear();
         self.tick_frames();
         self.check_lectern_viewers();
@@ -10096,6 +10097,66 @@ mod tests {
         assert_eq!(kept, Some(20), "and its first wait does not run down");
         let (_, off, _) = run(3.0, false, 60);
         assert!(off.is_empty(), "spawner_blocks_work off: nothing");
+    }
+
+    #[test]
+    fn a_trial_spawner_picks_its_mob_and_waits_for_players_in_the_simulation_area() {
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=6 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let place = |server: &mut ServerSim, pos: BlockPos, config: Option<&str>| {
+            server.player_edit_block(pos, Some(&Block::new("minecraft:trial_spawner")), PlayerEdit::Place);
+            if let Some(config) = config {
+                server.level.set_block_entity_value(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), "normal_config", Tag::String(config.to_owned()));
+            }
+        };
+        let (zombies, breezes, empty, far) = ((2, 200, 2), (6, 200, 2), (10, 200, 2), (100, 200, 2));
+        place(&mut server, zombies, Some("minecraft:trial_chamber/melee/zombie/normal"));
+        place(&mut server, breezes, Some("minecraft:trial_chamber/breeze/normal"));
+        place(&mut server, empty, None);
+        place(&mut server, far, Some("minecraft:trial_chamber/melee/zombie/normal"));
+        server.take_block_entity_changes();
+        server.take_changes();
+        server.set_simulation_area((0, 0), 2);
+        server.tick();
+        let at = |server: &ServerSim, pos: BlockPos| {
+            let block = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+            let state = server.level.block(block);
+            let state = server.level.registries().blocks.property(state, crate::trial_spawner::STATE).map(str::to_owned);
+            let tag = server.level.chunk(block.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&pos)).cloned().unwrap();
+            let kind = tag.get("spawn_data").map(|data| crate::trial_spawner::spawn_kind(data).map(str::to_owned));
+            (state.unwrap(), kind)
+        };
+        assert_eq!(at(&server, zombies), ("waiting_for_players".to_owned(), Some(Some("minecraft:zombie".to_owned()))));
+        assert_eq!(at(&server, breezes), ("inactive".to_owned(), Some(Some("minecraft:breeze".to_owned()))), "breezes are not simulated yet");
+        assert_eq!(at(&server, empty), ("inactive".to_owned(), Some(None)), "the default config spawns nothing");
+        assert_eq!(at(&server, far), ("inactive".to_owned(), None), "outside the simulation area nothing ticks");
+        let spawners = [zombies, breezes, empty, far];
+        let changed: Vec<BlockPos> = server.take_block_entity_changes().into_iter().filter(|(pos, tag)| spawners.contains(pos) && tag.as_ref().is_some_and(|tag| tag.get("spawn_data").is_some())).map(|(pos, _)| pos).collect();
+        assert_eq!(changed, [zombies, breezes, empty]);
+        let blocks: Vec<BlockPos> = server.take_changes().into_iter().map(|(pos, _)| pos).filter(|pos| spawners.contains(pos)).collect();
+        assert_eq!(blocks, [zombies]);
+        let before = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
+        for _ in 0..5 {
+            server.tick();
+        }
+        let after = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
+        assert_eq!(before, after, "a waiting spawner keeps its mob");
+        assert_eq!(at(&server, breezes).0, "inactive");
+        assert!(server.take_block_entity_changes().iter().all(|(pos, _)| !spawners.contains(pos)));
     }
 
     #[test]

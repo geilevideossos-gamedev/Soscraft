@@ -149,6 +149,7 @@ pub mod campfire;
 pub mod containers;
 pub mod lids;
 pub mod spawner_display;
+pub mod trial_spawner;
 pub mod openers;
 pub mod stations;
 pub mod experience;

@@ -1639,7 +1639,7 @@ impl Entities {
             changes.extend(output.changes);
             self.view.spawners.block_entities(&output.block_entities);
             if self.heard.listening() {
-                self.spawner_tags.extend(output.block_entities.iter().filter_map(|(pos, tag)| tag.as_ref().filter(|tag| minecraft_terrain::spawner_display::is_spawner(tag)).map(|tag| (*pos, tag.clone()))));
+                self.spawner_tags.extend(output.block_entities.iter().filter_map(|(pos, tag)| tag.as_ref().filter(|tag| minecraft_terrain::spawner_display::is_displayed_block_entity(tag)).map(|tag| (*pos, tag.clone()))));
             }
             self.block_entity_changes.extend(output.block_entities);
             self.destroyed.extend(output.destroyed);

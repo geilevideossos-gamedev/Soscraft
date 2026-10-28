@@ -19,7 +19,6 @@ use crate::level::Terrain;
 
 pub const QUEUE_LIMIT: usize = 64 * 1024 * 1024;
 pub const LOST_STREAM: &str = "Lost the world stream";
-const SPAWNER: &str = "minecraft:spawner";
 
 type BlockPos = (i32, i32, i32);
 
@@ -704,7 +703,7 @@ impl RemoteWorld {
                 continue;
             }
             let block = states.block(state).cloned();
-            if block.as_ref().is_none_or(|block| block.id.key() != SPAWNER) {
+            if !block.as_ref().is_some_and(minecraft_terrain::spawner_display::is_displayed_block) {
                 level.view.spawners.block_entities(&[(at, None)]);
             }
             level.terrain.scene.set(at, block);

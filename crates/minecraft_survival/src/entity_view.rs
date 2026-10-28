@@ -801,7 +801,8 @@ impl EntityView {
     }
 
     pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
-        for _ in 0..ticks {
+        let time = self.world.game_time();
+        for tick in 0..ticks {
             for rocket in self.thrown.iter().filter(|view| minecraft_terrain::firework_rocket::is_rocket(view)) {
                 self.fireworks.trail(rocket.position, rocket.position.y - rocket.previous.y);
             }
@@ -809,6 +810,10 @@ impl EntityView {
             self.poof.tick(scene);
             let bodies = &self.bodies;
             self.ambient.tick_emitters(|key| bodies.get(&key).copied());
+            let now = time - i64::from(ticks - 1 - tick);
+            for sound in self.spawners.tick_trials(scene, now, &mut self.ambient) {
+                self.sounds.push((sound.event.to_owned(), DVec3::from_array(sound.at), sound.volume, sound.pitch));
+            }
             self.ambient.tick(scene);
             for entity in self
                 .world
