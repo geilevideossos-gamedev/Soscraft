@@ -503,6 +503,18 @@ impl MerchantMenu {
         thrown
     }
 
+    pub fn spread(&mut self, players: &[usize], payments: &[usize], right: bool, inventory: &mut Inventory, merchant: &mut impl Merchant) {
+        let base = inventory.slots.len();
+        let indices: Vec<usize> = players.iter().copied().filter(|&slot| slot < 36).chain(payments.iter().copied().filter(|&slot| slot < 2).map(|slot| base + slot)).collect();
+        let mut cells = self.payment.clone();
+        inventory.distribute_limited(&indices, right, &mut cells, |_, stack| Some(CONTAINER_MAX.min(i32::from(stack.max)) as u8));
+        for (slot, cell) in cells.into_iter().enumerate() {
+            if cell != self.payment[slot] {
+                self.set_payment_by_player(slot, cell, merchant);
+            }
+        }
+    }
+
     fn quick_move_payment_once(&mut self, slot: usize, inventory: &mut Inventory, merchant: &mut impl Merchant) -> Option<ItemStack> {
         let mut stack = self.payment[slot].clone()?;
         let clicked = stack.clone();
@@ -753,5 +765,40 @@ mod tests {
         assert!(menu.payment[0].is_none());
         assert!(menu.throw_payment(0, true, &inventory, &mut merchant).is_none(), "an empty slot throws nothing");
         assert!(merchant.trades.is_empty());
+    }
+
+    #[test]
+    fn a_drag_shares_the_carried_stack_over_the_payments_and_the_inventory() {
+        let mut merchant = Fake { offers: vec![offer(("minecraft:wheat", 20), ("minecraft:emerald", 1), 2)], ..Fake::default() };
+        let mut inventory = Inventory::default();
+        inventory.cursor = Some(ItemStack::new("minecraft:wheat", 64));
+        let mut menu = MerchantMenu::new(1);
+        menu.spread(&[9, 10], &[0], false, &mut inventory, &mut merchant);
+        assert_eq!(menu.payment.iter().map(|p| p.as_ref().map(|s| s.count)).collect::<Vec<_>>(), [Some(21), None]);
+        assert_eq!((held(&inventory, 9), held(&inventory, 10)), (Some(("minecraft:wheat", 21)), Some(("minecraft:wheat", 21))));
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(1));
+        assert_eq!(menu.result.as_ref().map(|s| s.id.as_str()), Some("minecraft:emerald"), "the payments were re-read");
+        assert_eq!(merchant.heard.last(), Some(&true));
+        inventory.cursor = Some(ItemStack::new("minecraft:wheat", 10));
+        menu.spread(&[9, 10], &[0, 1], true, &mut inventory, &mut merchant);
+        assert_eq!(menu.payment.iter().map(|p| p.as_ref().map(|s| s.count)).collect::<Vec<_>>(), [Some(22), Some(1)]);
+        assert_eq!(held(&inventory, 9), Some(("minecraft:wheat", 22)));
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(6), "a right drag places one each");
+        assert!(menu.result.is_none(), "a trade of one cost wants the other payment slot empty");
+        assert_eq!(merchant.heard.last(), Some(&false));
+        let mut menu = MerchantMenu::new(1);
+        let mut inventory = Inventory::default();
+        inventory.cursor = Some(ItemStack::new("minecraft:wheat", 64));
+        menu.spread(&[9, 10], &[0, 1], false, &mut inventory, &mut merchant);
+        assert_eq!(menu.payment.iter().map(|p| p.as_ref().map(|s| s.count)).collect::<Vec<_>>(), [Some(16), Some(16)]);
+        assert!(inventory.cursor.is_none(), "four slots, sixteen each");
+        let mut menu = MerchantMenu::new(1);
+        menu.payment[1] = Some(ItemStack::new("minecraft:carrot", 3));
+        let mut inventory = Inventory::default();
+        inventory.cursor = Some(ItemStack::new("minecraft:wheat", 20));
+        menu.spread(&[40], &[0, 1], false, &mut inventory, &mut merchant);
+        assert_eq!(menu.payment[0].as_ref().map(|s| s.count), Some(20), "the carrots and the offhand take none");
+        assert_eq!(menu.payment[1].as_ref().map(|s| (s.id.as_str(), s.count)), Some(("minecraft:carrot", 3)));
+        assert!(inventory.slots[40].is_none() && inventory.cursor.is_none());
     }
 }

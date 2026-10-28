@@ -294,6 +294,10 @@ impl EntityWorld {
         thrown
     }
 
+    pub fn merchant_spread(&mut self, player: u64, players: &[usize], payments: &[usize], right: bool, inventory: &mut Inventory) {
+        self.with_menu(player, |menu, merchant| menu.spread(players, payments, right, inventory, merchant));
+    }
+
     /// A shift-click on an inventory slot while trading.
     pub fn merchant_quick_move_inventory(&mut self, player: u64, index: usize, inventory: &mut Inventory) {
         if let Some(menu) = self.merchant_menus.get_mut(&player) {

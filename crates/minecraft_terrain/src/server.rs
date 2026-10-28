@@ -270,6 +270,7 @@ pub enum MerchantOp {
     Payment { slot: usize, right: bool, shift: bool },
     Swap { slot: usize, hotbar: usize },
     Throw { slot: usize, whole: bool },
+    Spread { players: u64, payments: u8, right: bool },
     /// The result clicked (shift: traded as often as it goes).
     Result { shift: bool },
     QuickMove(usize),
@@ -700,6 +701,11 @@ impl ServerSim {
             MerchantOp::Payment { slot, right, shift } => self.mobs.merchant_click_payment(player, slot, right, shift, &mut inventory),
             MerchantOp::Swap { slot, hotbar } => thrown.extend(self.mobs.merchant_swap(player, slot, hotbar, selected, &mut inventory)),
             MerchantOp::Throw { slot, whole } => thrown = self.mobs.merchant_throw(player, slot, whole, &inventory),
+            MerchantOp::Spread { players, payments, right } => {
+                let players: Vec<usize> = (0..64).filter(|slot| (players >> slot) & 1 == 1).collect();
+                let payments: Vec<usize> = (0..2).filter(|slot| (payments >> slot) & 1 == 1).collect();
+                self.mobs.merchant_spread(player, &players, &payments, right, &mut inventory);
+            }
             MerchantOp::Result { shift } => self.mobs.merchant_click_result(player, shift, &mut inventory),
             MerchantOp::QuickMove(index) => self.mobs.merchant_quick_move_inventory(player, index, &mut inventory),
             MerchantOp::Close => {
@@ -5275,6 +5281,21 @@ mod tests {
         assert_eq!(thrown(&update), [("minecraft:wheat".to_owned(), 3)]);
         assert_eq!(payment(&update), None);
         assert!(server.items().is_empty(), "the player throws them, not the server");
+    }
+
+    #[test]
+    fn a_drag_on_the_trading_screen_spreads_over_the_marked_payments_and_inventory_slots() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let mut inventory = Inventory::default();
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false).merchant.is_some());
+        inventory.cursor = Some(wheat(64));
+        let update = server.merchant(0, MerchantOp::Spread { players: (1 << 9) | (1 << 30), payments: 0b11, right: false }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(9, Some(wheat(16))), (30, Some(wheat(16)))]);
+        assert!(update.cursor.is_none());
+        let view = update.view.expect("still open");
+        assert_eq!(view.payment.iter().map(|p| p.as_ref().map(|s| s.count)).collect::<Vec<_>>(), [Some(16), Some(16)]);
+        assert!(view.result.is_none(), "a trade of one cost wants the other payment slot empty");
     }
 
     #[test]

@@ -836,6 +836,23 @@ fn merchant_op(action: &MenuAction) -> Option<MerchantOp> {
             slot: slot_index(*slot)?,
             whole: *whole,
         },
+        MenuAction::Spread { slots, right }
+            if slots
+                .iter()
+                .any(|slot| matches!(slot, MenuSlot::Container(0 | 1))) =>
+        {
+            MerchantOp::Spread {
+                players: slots.iter().fold(0, |mask, slot| match slot {
+                    MenuSlot::Inventory(index) if *index < 64 => mask | (1 << *index),
+                    _ => mask,
+                }),
+                payments: slots.iter().fold(0, |mask, slot| match slot {
+                    MenuSlot::Container(index @ (0 | 1)) => mask | (1 << *index),
+                    _ => mask,
+                }),
+                right: *right,
+            }
+        }
         MenuAction::Slot {
             slot: MenuSlot::Container(2) | MenuSlot::Output,
             shift,
@@ -2737,6 +2754,22 @@ mod tests {
                 MerchantOp::Throw {
                     slot: 2,
                     whole: true,
+                },
+            ),
+            (
+                MenuAction::Spread {
+                    slots: vec![
+                        MenuSlot::Container(0),
+                        MenuSlot::Inventory(12),
+                        MenuSlot::Container(1),
+                        MenuSlot::Inventory(40),
+                    ],
+                    right: true,
+                },
+                MerchantOp::Spread {
+                    players: (1 << 12) | (1 << 40),
+                    payments: 0b11,
+                    right: true,
                 },
             ),
             (cell(2), MerchantOp::Result { shift: false }),

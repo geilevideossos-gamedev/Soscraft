@@ -185,3 +185,26 @@ Commit: "Minecraft trading screen throws from its payment and result slots with 
   3. **Q on a payment.** Pick the crop offer again. Hover the payment and press Q: one crop is thrown. Press Ctrl+Q: the rest of that stack is thrown and the result disappears. **Screenshot 4.**
   4. **Carrying a stack.** Pick up a stack from the inventory, hover the result and press Q: nothing happens. Put the stack back.
   5. **Two windows:** F does steps 1-3 on the same farmer after H closes the screen. The emeralds and crops fly from F's eye in F's direction, and H sees them land in front of F. **Screenshot 5**, both windows.
+
+### Drags over the payment slots
+
+Commit: "Minecraft trading screen shares a dragged stack over its payment slots", the one after `89e5769b`.
+
+- **Cause:** the HUD already lets a drag cover the two payment slots (`droppable` lists them for the trading screen) and sends `McClick::Spread`, but `merchant_op` had no arm for it and `merchant_local` refuses a spread that touches a payment, so the drag did nothing.
+- **Vanilla 26.3** (javap, `AbstractContainerMenu.doClick`, QUICK_CRAFT): the payment slots take drags (plain `Slot`s: `mayPlace` true, `canDragTo` not overridden); the result does not (`MerchantResultSlot.mayPlace` false). Each slot ends with `min(stack max, slot max, existing + place count)`, the place count being `floor(count / slots)` for a left drag and 1 for a right drag, and the cursor keeps the rest. Each `setByPlayer` on a payment re-reads the offers. Vanilla keeps the dragged slots in a `HashSet`, so their order is not kept either.
+- **Changed:**
+  - `merchant.rs`: `MerchantMenu::spread(players, payments, right, inventory, merchant)` hands the inventory slots (storage only, below 36) and the two payments to `Inventory::distribute_limited`, the way `Containers::spread` does, with a payment capacity of min(99, the stack's max). Each payment that changed is set with `set_payment_by_player`, which re-reads the offers.
+  - `world/merchants.rs`: `EntityWorld::merchant_spread`.
+  - `server.rs`: `MerchantOp::Spread { players: u64, payments: u8, right }` next to `Throw`, with bit masks so `MerchantOp` stays `Copy`; `Server::merchant` unpacks them.
+  - `menus.rs`: `merchant_op` maps a `Spread` that touches `Container(0)` or `Container(1)` to it. A spread over inventory slots only stays local as before; `keeps_gun` still refuses a carried gun.
+- **Tests:**
+  - `minecraftoss-entities` `merchant::tests::a_drag_shares_the_carried_stack_over_the_payments_and_the_inventory` (64 wheat left-dragged over the first payment and two inventory slots: 21 each, 1 kept, and the result re-read; a right drag over both payments and the two slots adds 1 each, keeps 6, and the result goes because a trade of one cost wants the second payment empty; 64 over both payments and two slots: 16 each; a payment with carrots and the offhand take none).
+  - `minecraft_terrain` `server::tests::a_drag_on_the_trading_screen_spreads_over_the_marked_payments_and_inventory_slots` (the bit masks reach the right slots of a real farmer's screen).
+  - `minecraft_survival` `menus::tests::a_villager_s_trading_screen_turns_clicks_into_trades`: a right drag over both payments, an inventory slot and the offhand sends the masks `(1 << 12) | (1 << 40)` and `0b11`.
+- **Decisions:**
+  - `MerchantOp::Spread` carries bit masks so `MerchantOp` stays `Copy` (the inventory has 45 slots, which fit in a u64). The drag's order is lost, as in vanilla's `HashSet`; the inventory slots are filled before the payments, as for chests and benches.
+- **Owner's test steps** (the same world and farmer; close the screen and open it again with empty payment slots, without picking an offer):
+  1. **Left drag.** Pick up a full stack (64) of the crop from the inventory. Hold the left button and drag across the first payment slot and one empty inventory slot, then let go: 32 land in each, the cursor is empty, and the emerald shows as the result. **Screenshot 6.**
+  2. **Right drag.** Pick up another full stack of the crop and right-drag over both payment slots and the same inventory slot: one more lands in each (33, 1 and 33), and the emerald disappears, because a trade that costs one item wants the second payment slot empty (as in vanilla). **Screenshot 7.**
+  3. **Four slots.** Close the screen (the payments go back to the inventory) and open it again. Pick up a full stack and left-drag over both payment slots and two empty inventory slots: 16 land in each of the four and the cursor is empty.
+  4. **Two windows:** F does steps 1-3 on the same farmer after H closes the screen; it works the same.
