@@ -229,6 +229,34 @@ After 20ade5b0.
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:trial_spawner*3,minecraft:zombie_spawn_egg*4,minecraft:husk_spawn_egg*2,minecraft:slime_spawn_egg*2,minecraft:cobblestone*64,minecraft:glass*32,minecraft:ladder*32,minecraft:water_bucket
 ```
 
+### 4. Minecraft trial spawners show their detect, spawn and eject particles and sounds
+
+After 600beb1c.
+
+- **Vanilla (javap, 26.3, `LevelEventHandler` and `TrialSpawner`'s client helpers):** every sound plays at the block centre with volume 1 and pitch `(r1 − r2) × 0.2 + 1`.
+  - 3011: `addSpawnParticles`, 20 times a `smoke` and a flame (`TrialSpawner$FlameParticle.decode(data)`: 1 is the soul fire flame, anything else the flame) at one point `centre + (nextDouble − 0.5) × 2` on each axis, no motion. 3012: `block.trial_spawner.spawn_mob`, then the same. 3021: `block.trial_spawner.spawn_item`, then the same.
+  - 3013: `block.trial_spawner.detect_player`, then `addDetectPlayerParticles`: `30 + min(data, 10) × 5` `trial_spawner_detection` particles at `x + 0.5 + (2 × nextFloat − 1) × 0.65`, `z` the same (drawn before `y`), `y + 0.1 + nextFloat × 0.8`, no motion. 3019: the same with `trial_spawner_detection_ominous`.
+  - 3020: `block.trial_spawner.ominous_activate` at volume 0.3 for data 0 (the player) and 1 otherwise (the spawner), 30 ominous detection particles, then `addBecomeOminousParticles`: 20 times a `trial_omen` and a `soul_fire_flame` at one point around the centre (as 3011) with motion `nextGaussian × 0.02` on each axis.
+  - 3014: `block.trial_spawner.eject_item`, then `addEjectItemParticles`: 20 times, at `pos + 0.4 + nextDouble × 0.2` on each axis with motion `nextGaussian × 0.02` each, a `small_flame` (its z motion × 0.25) and a `smoke`.
+  - `TrialSpawnerDetectionParticle` (scale 1.5 from its provider): the 7-argument particle constructor with no motion, then x and z motion 0 and y × 0.9, friction 0.96, gravity −0.1, speeds up when its rise is blocked, collides, quad size × 0.75 × 1.5, lifetime `(int) (8 / randomBetween(0.5, 1) × 1.5)` at least 1, its 5 frames by age, block light 15, opaque, grows like smoke (`clamp((age + partial) / lifetime × 32, 0, 1)`), facing the camera around Y only.
+  - `trial_omen` uses `SpellParticle$Provider`: x and z motion `0.5 − nextDouble` into the constructor with the given y, then y × 0.2 (x and z × 0.1 only when the given x and z were 0), friction 0.96, gravity −0.1, quad size × 0.75, lifetime `(int) (8 / (nextFloat × 0.8 + 0.2))`, no collision, translucent.
+- **Changed:**
+  - `level_events.rs`: the arms for 3011, 3012, 3013, 3014, 3019, 3020 and 3021 above (the host and friends both draw level events through `level_event`, the friends from `ToClient::LevelEvent`). 3020 and 3021 come from group trial-ominous; their effects are ready here.
+  - `ambient_particles.rs`: particle kinds `TrialSpawnerDetection`, `TrialSpawnerDetectionOminous` and `TrialOmen` as above, with their sprites added to the atlas list.
+  - `trial_spawner.rs`: the event ids 3020 and 3021 and the five sound names.
+- **Tests:** `level_events::tests::trial_spawner_events_play_vanillas_sounds_and_particles` (3013 with 2 players: the detect sound and 40 detection particles in their box; 3019 with 25 players: 80; 3020: the activate sound at 0.3 for data 0 and 1.0 for data 1, 30 ominous detection particles, 20 trial omens and 20 soul flames; 3011: 20 smokes and 20 flames within a block of the centre, no sound; 3012 with data 1: the spawn sound and soul flames; 3021: the item sound; 3014: the eject sound, 20 small flames and 20 smokes in pairs at one point within 0.1 of the centre, the flame's z motion a quarter of the smoke's). `ambient_particles::tests::trial_detection_particles_rise_lit_through_their_frames_and_the_trial_omen_drifts` (lifetimes 12 to 24, no sideways motion, opaque, frames 0 to 4, full block light; the trial omen is translucent with its own sprite and lifetime 8 to 40; the sprites are in the atlas list).
+- **Decisions:** the detection particle is drawn facing the camera like the other particles; vanilla turns it only around Y (`LOOKAT_Y`), which the particle mesher does not have. The tilt only shows when looking at it from far above or below.
+- **Test steps (world `trial10`, survival, Normal, a fresh spawner in the chamber):**
+  1. Walk into sight of a fresh zombie spawner: with the detect sound, a column of orange-gold sparks rises from it (about 35 of them, more with more players) (**313_trial_detect**).
+  2. Each zombie that comes out appears in a puff of smoke and flames with a low spawn sound, and the spawner puffs too.
+  3. After the last zombie dies, the reward pops out with a sound and a little burst of small flames and smoke at the top of the spawner (**314_trial_eject**).
+  4. Friend window: the friend sees and hears the same detect, spawn and eject effects.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:trial_spawner*3,minecraft:zombie_spawn_egg*4,minecraft:husk_spawn_egg*2,minecraft:slime_spawn_egg*2,minecraft:cobblestone*64,minecraft:glass*32,minecraft:ladder*32,minecraft:water_bucket
+```
+
 ## Protocol
 
 No message of this track has changed yet. `minecraft_net::PROTOCOL` stays 6.
@@ -239,7 +267,7 @@ No message of this track has changed yet. `minecraft_net::PROTOCOL` stays 6.
 
 - Release 1's known limits (`docs/round10/release-1-tests.md`, Wind charges) and the round 9 log (group breezes, commit 1, and "Left for later"): drop "A player flying in creative is still pushed by a burst". A player flying in creative was never pushed by a burst: every push goes through the flying check (group d5-review, commit 1).
 - `docs/MINECRAFT-SURVIVAL.md` and `docs/round8/decisions.md`'s deferred trial spawners: trial spawners now show their mob turning in the cage with vanilla's flames and hum (soul flames when ominous), wake up from inactive with a mob picked from their config, and take spawn eggs like vanilla. Breeze and silverfish trial spawners stay dark until those mobs exist. The trial itself is still to come (group trial-spawners-run).
-- `docs/MINECRAFT-SURVIVAL.md` (trial spawners, group trial-spawners-run): trial spawners run their trial like vanilla: they detect survival players in sight within 14 blocks (through glass and bars), spawn their mobs in turn (6, 2 at once, plus 2 and 1 per extra player; the chamber configs' numbers), forget mobs that die or go farther than 47 blocks, eject one reward per player from the top, and cool down for 30 minutes. Mob spawners and trial spawners spawn husks, strays and slimes without open sky or slime chunks, and trial spawners ignore light. Each level's game time now starts from `level.dat`'s `Time` (one clock for the server, the save and both displays). Not yet: ominous trials (group trial-ominous), the detection, spawn and ejection particles and sounds (commit 4).
+- `docs/MINECRAFT-SURVIVAL.md` (trial spawners, group trial-spawners-run): trial spawners run their trial like vanilla: they detect survival players in sight within 14 blocks (through glass and bars), spawn their mobs in turn (6, 2 at once, plus 2 and 1 per extra player; the chamber configs' numbers), forget mobs that die or go farther than 47 blocks, eject one reward per player from the top, and cool down for 30 minutes. Mob spawners and trial spawners spawn husks, strays and slimes without open sky or slime chunks, and trial spawners ignore light. Each level's game time now starts from `level.dat`'s `Time` (one clock for the server, the save and both displays). With the detection, spawn and ejection particles and sounds of vanilla (commit 4). Not yet: ominous trials (group trial-ominous).
 - Release 1's known limits (Withers) and the round 9 log (group wither-fight, commit 1): drop "A skull loaded from a save has no owner and hurts as magic for 5". `docs/MINECRAFT-SURVIVAL.md`: fireballs, small fireballs and wither skulls keep their shooter through a save (`Owner`), found again when the shooter loads (group d5-review, commit 2).
 
 ## Vendored files

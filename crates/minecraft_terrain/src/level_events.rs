@@ -1,6 +1,11 @@
 use crate::ambient_particles::Kind;
 use crate::display_ticks::{AmbientSound, DisplayTick};
 use crate::scene::{Block, BlockPos, HandcraftedScene, Scene};
+use crate::trial_spawner::{
+    BECOME_OMINOUS, DETECT_PLAYER, DETECT_PLAYER_OMINOUS, DETECT_PLAYER_SOUND, EJECT_ITEM,
+    EJECT_ITEM_SOUND, OMINOUS_ACTIVATE_SOUND, SPAWN_ITEM, SPAWN_ITEM_SOUND, SPAWN_MOB,
+    SPAWN_MOB_SOUND, SPAWN_PARTICLES,
+};
 use glam::DVec3;
 use minecraftoss_player::rng::LegacyRandom;
 
@@ -17,6 +22,7 @@ const FIZZ_SMOKE: usize = 8;
 const EVAPORATION_SMOKE: usize = 8;
 const SPREAD_FACTOR: i32 = 3;
 const SPREAD: f64 = 3.0;
+const TRIAL_PARTICLES: usize = 20;
 const BONEMEALABLE: [&str; 35] = [
     "AzaleaBlock",
     "BambooSaplingBlock",
@@ -125,6 +131,59 @@ pub fn level_event<S: Scene + ?Sized>(
                 pitch: (random.next_float() - random.next_float()) * 0.2 + 1.0,
             });
         }
+        SPAWN_PARTICLES => trial_spawn_particles(base, data, random, &mut out),
+        SPAWN_MOB | SPAWN_ITEM => {
+            let event = if id == SPAWN_MOB {
+                SPAWN_MOB_SOUND
+            } else {
+                SPAWN_ITEM_SOUND
+            };
+            out.sounds.push(trial_sound(event, base, 1.0, random));
+            trial_spawn_particles(base, data, random, &mut out);
+        }
+        DETECT_PLAYER | DETECT_PLAYER_OMINOUS => {
+            out.sounds
+                .push(trial_sound(DETECT_PLAYER_SOUND, base, 1.0, random));
+            let kind = if id == DETECT_PLAYER {
+                Kind::TrialSpawnerDetection
+            } else {
+                Kind::TrialSpawnerDetectionOminous
+            };
+            detect_particles(base, data, kind, random, &mut out);
+        }
+        BECOME_OMINOUS => {
+            let volume = if data == 0 { 0.3 } else { 1.0 };
+            out.sounds
+                .push(trial_sound(OMINOUS_ACTIVATE_SOUND, base, volume, random));
+            detect_particles(base, 0, Kind::TrialSpawnerDetectionOminous, random, &mut out);
+            for _ in 0..TRIAL_PARTICLES {
+                let at = around(base, random);
+                let motion = DVec3::new(
+                    random.next_gaussian() * 0.02,
+                    random.next_gaussian() * 0.02,
+                    random.next_gaussian() * 0.02,
+                );
+                out.particles.push((Kind::TrialOmen, at, motion));
+                out.particles.push((Kind::SoulFireFlame, at, motion));
+            }
+        }
+        EJECT_ITEM => {
+            out.sounds.push(trial_sound(EJECT_ITEM_SOUND, base, 1.0, random));
+            for _ in 0..TRIAL_PARTICLES {
+                let x = base.x + 0.4 + random.next_double() * 0.2;
+                let y = base.y + 0.4 + random.next_double() * 0.2;
+                let z = base.z + 0.4 + random.next_double() * 0.2;
+                let motion = DVec3::new(
+                    random.next_gaussian() * 0.02,
+                    random.next_gaussian() * 0.02,
+                    random.next_gaussian() * 0.02,
+                );
+                let at = DVec3::new(x, y, z);
+                let flame = DVec3::new(motion.x, motion.y, motion.z * 0.25);
+                out.particles.push((Kind::SmallFlame, at, flame));
+                out.particles.push((Kind::Smoke, at, motion));
+            }
+        }
         BONE_MEAL_USE => {
             growth_particles(scene, pos, data, is_a, random, &mut out);
             out.sounds.push(AmbientSound {
@@ -137,6 +196,56 @@ pub fn level_event<S: Scene + ?Sized>(
         _ => {}
     }
     out
+}
+
+fn trial_sound(
+    event: &'static str,
+    base: DVec3,
+    volume: f32,
+    random: &mut LegacyRandom,
+) -> AmbientSound {
+    AmbientSound {
+        event,
+        at: (base + DVec3::splat(0.5)).to_array(),
+        volume,
+        pitch: (random.next_float() - random.next_float()) * 0.2 + 1.0,
+    }
+}
+
+fn around(base: DVec3, random: &mut LegacyRandom) -> DVec3 {
+    let x = base.x + 0.5 + (random.next_double() - 0.5) * 2.0;
+    let y = base.y + 0.5 + (random.next_double() - 0.5) * 2.0;
+    let z = base.z + 0.5 + (random.next_double() - 0.5) * 2.0;
+    DVec3::new(x, y, z)
+}
+
+fn trial_spawn_particles(base: DVec3, data: i32, random: &mut LegacyRandom, out: &mut DisplayTick) {
+    let flame = if data == 1 {
+        Kind::SoulFireFlame
+    } else {
+        Kind::Flame
+    };
+    for _ in 0..TRIAL_PARTICLES {
+        let at = around(base, random);
+        out.particles.push((Kind::Smoke, at, DVec3::ZERO));
+        out.particles.push((flame, at, DVec3::ZERO));
+    }
+}
+
+fn detect_particles(
+    base: DVec3,
+    players: i32,
+    kind: Kind,
+    random: &mut LegacyRandom,
+    out: &mut DisplayTick,
+) {
+    for _ in 0..30 + players.min(10) * 5 {
+        let x = f64::from(2.0 * random.next_float() - 1.0) * 0.65;
+        let z = f64::from(2.0 * random.next_float() - 1.0) * 0.65;
+        let y = base.y + 0.1 + f64::from(random.next_float()) * 0.8;
+        let at = DVec3::new(base.x + 0.5 + x, y, base.z + 0.5 + z);
+        out.particles.push((kind, at, DVec3::ZERO));
+    }
 }
 
 fn growth_particles<S: Scene + ?Sized>(
@@ -497,6 +606,61 @@ mod tests {
         for (kind, at, _) in steam.particles {
             assert_eq!(kind, Kind::LargeSmoke);
             assert!((0.0..1.0).contains(&at.x) && (40.0..41.0).contains(&at.y));
+        }
+    }
+
+    #[test]
+    fn trial_spawner_events_play_vanillas_sounds_and_particles() {
+        let mut random = LegacyRandom::new(4);
+        let mut event = |id: i32, data: i32| {
+            level_event(id, (10, 20, 30), data, &no_scene(), &classes, &mut random)
+        };
+        let count = |tick: &DisplayTick, kind: Kind| {
+            tick.particles.iter().filter(|(made, _, _)| *made == kind).count()
+        };
+        let sound = |tick: &DisplayTick| {
+            assert_eq!(tick.sounds.len(), 1);
+            let sound = &tick.sounds[0];
+            assert_eq!(sound.at, [10.5, 20.5, 30.5]);
+            assert!((0.8..=1.2).contains(&sound.pitch), "{}", sound.pitch);
+            (sound.event, sound.volume)
+        };
+        let detected = event(DETECT_PLAYER, 2);
+        assert_eq!(sound(&detected), (DETECT_PLAYER_SOUND, 1.0));
+        assert_eq!(count(&detected, Kind::TrialSpawnerDetection), 40);
+        assert_eq!(detected.particles.len(), 40);
+        for (_, at, motion) in &detected.particles {
+            assert_eq!(*motion, DVec3::ZERO);
+            assert!((at.x - 10.5).abs() <= 0.65 && (at.z - 30.5).abs() <= 0.65);
+            assert!(at.y >= 20.1 && at.y <= 20.9);
+        }
+        let crowd = event(DETECT_PLAYER_OMINOUS, 25);
+        assert_eq!(count(&crowd, Kind::TrialSpawnerDetectionOminous), 80, "at most ten players count");
+        let quiet = event(BECOME_OMINOUS, 0);
+        assert_eq!(sound(&quiet), (OMINOUS_ACTIVATE_SOUND, 0.3));
+        assert_eq!(count(&quiet, Kind::TrialSpawnerDetectionOminous), 30);
+        assert_eq!((count(&quiet, Kind::TrialOmen), count(&quiet, Kind::SoulFireFlame)), (20, 20));
+        assert_eq!(sound(&event(BECOME_OMINOUS, 1)), (OMINOUS_ACTIVATE_SOUND, 1.0));
+        let flames = event(SPAWN_PARTICLES, 0);
+        assert!(flames.sounds.is_empty());
+        assert_eq!((count(&flames, Kind::Smoke), count(&flames, Kind::Flame)), (20, 20));
+        for (_, at, _) in &flames.particles {
+            assert!((at.x - 10.5).abs() <= 1.0 && (at.y - 20.5).abs() <= 1.0 && (at.z - 30.5).abs() <= 1.0);
+        }
+        let mob = event(SPAWN_MOB, 1);
+        assert_eq!(sound(&mob), (SPAWN_MOB_SOUND, 1.0));
+        assert_eq!((count(&mob, Kind::Smoke), count(&mob, Kind::SoulFireFlame)), (20, 20), "soul flames when ominous");
+        let item = event(SPAWN_ITEM, 1);
+        assert_eq!(sound(&item), (SPAWN_ITEM_SOUND, 1.0));
+        assert_eq!(count(&item, Kind::SoulFireFlame), 20);
+        let eject = event(EJECT_ITEM, 0);
+        assert_eq!(sound(&eject), (EJECT_ITEM_SOUND, 1.0));
+        assert_eq!((count(&eject, Kind::SmallFlame), count(&eject, Kind::Smoke)), (20, 20));
+        for pair in eject.particles.chunks(2) {
+            let ((_, flame_at, flame), (_, smoke_at, smoke)) = (pair[0], pair[1]);
+            assert_eq!(flame_at, smoke_at);
+            assert!((flame_at - DVec3::new(10.5, 20.5, 30.5)).abs().max_element() <= 0.1);
+            assert_eq!((flame.x, flame.y, flame.z), (smoke.x, smoke.y, smoke.z * 0.25));
         }
     }
 }
