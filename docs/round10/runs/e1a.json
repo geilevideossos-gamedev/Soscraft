@@ -1,0 +1,48 @@
+{
+    "track":  "e1",
+    "worktree":  "C:\\Dev\\mc-wt\\track-e1",
+    "branch":  "track-e1",
+    "target":  "D:\\iw4l-wt\\track-e1",
+    "base":  "r10-e1a-base",
+    "round":  10,
+    "briefs":  "docs/round10/track-e.md (read the overview first, then the E1 sections; E2 runs in parallel in C:\\Dev\\mc-wt\\track-e2 and owns the files the overview assigns to it)",
+    "notes":  "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under \u0027## Protocol\u0027 in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
+    "groups":  [
+                   {
+                       "key":  "kit-components",
+                       "prompt":  "Track E1 group kit-components. Read docs/round10/track-e.md, section E-kit (and the overview rules). One commit \u0027Minecraft item commands and kits take banner patterns, shield colours, loaded crossbows and firework stars\u0027: crates/minecraft_commands/src/args.rs (:390-441, whitelist :404) and crates/minecraft_terrain/src/crafting.rs kit_components (:483) accept banner_patterns, base_color, charged_projectiles, fireworks and firework_explosion, SNBT turned to JSON via item_nbt::tag_json; bad input gives arguments.item.component.malformed. Tests as listed. This commit also serves E2\u0027s firework kits. No comments, minimal diffs."
+                   },
+                   {
+                       "key":  "particles-events",
+                       "prompt":  "Track E1 group particles-events. Read docs/round10/track-e.md, section E-particles, group particles-events (commits 1-2). New crates/minecraft_terrain/src/mob_particles.rs (PuffKind, MobPuff, puff_for, mob_puffs via body_of and tracking_range); server.rs replaces the dropped take_entity_events (:1100-1102, delete the old comment) with ServerSim/EntitySnapshot.mob_puffs; mob_sender.rs near/take/add/has_bursts; ambient_particles Kind::Heart, AngryVillager, Splash (+heart, angry textures); entity_view.rs a mob_puffs() helper called with one line from bursts() (E2 owns the firework loop). No PROTOCOL bump. Tests as listed."
+                   },
+                   {
+                       "key":  "trading-keys",
+                       "prompt":  "Track E1 group trading-keys. Read docs/round10/track-e.md, section E-trading. Four commits: number keys and F on payment/result slots (MerchantMenu::swap_payment/swap_result, MerchantOp::Swap, menus.rs merchant_op); Q and Ctrl+Q (throw_payment/throw_result, MerchantUpdate.thrown, vendored Inventory::queue_drop, apply_merchant_answer); drags over payments (MerchantMenu::spread with distribute_limited, MerchantOp::Spread bit masks); no gather on double click (hud Menu::picks_all, merchant_local refuses Gather). Insert enum variants next to related ones, not at the end. No net protocol change. Tests as listed; decisions go in the track log. The owner\u0027s steps use whichever crop the farmer wants (a 26.3 farmer offers 2 of 5 novice trades)."
+                   },
+                   {
+                       "key":  "effects-list",
+                       "prompt":  "Track E1 group effects-list. Read docs/round10/track-e.md, section E-effects. Two commits: \u0027Minecraft inventory loads the effect list frames and effect names\u0027 (render_anim minecraft_gui.rs SPRITE_FOLDERS + container/inventory/, TEXT_PREFIXES + effect. and enchantment.level., test at :811) and \u0027Minecraft inventory lists the active effects beside it\u0027 (hud minecraft_effects.rs listed/draw_listed/listed_tooltip with the vanilla EffectsInInventory geometry; hud minecraft_inventory.rs draws it for Inventory and Creative; minecraft_hotbar.rs:95 skips HUD icons via one shared helper). 20 ticks a second (decision). Tests as listed."
+                   },
+                   {
+                       "key":  "omen-sound-tooltip",
+                       "prompt":  "Track E1 group omen-sound-tooltip. Read docs/round10/track-e.md, section E-omen. Two commits: \u0027Minecraft omens given by command play their sound\u0027 (minecraft_survival survival.rs give_effect + effect_sounds + take_effect_sounds, fresh add only, drink path moved onto it; commands.rs:466 uses it; actions.rs act() drains the sounds) and \u0027Minecraft ominous bottles show their Bad Omen line\u0027 (McStack.effects + derive Default in frame/src/minecraft_ui.rs, fill literals; render_anim minecraft_inventory.rs convert; hud tooltip in blue 0x5555FF). Tests as listed."
+                   },
+                   {
+                       "key":  "horse-fall",
+                       "prompt":  "Track E1 group horse-fall. Read docs/round10/track-e.md, section E-horses, part 1. Two commits: \u0027Minecraft horses fall like vanilla horses\u0027 (living.rs helper, equines.rs horse_fall/cow_fall with safe distance 6 and multiplier 0.5, horse.land sound, no generic fall sound, pending_fall; one-line swaps at equines.rs:190 and vendored world.rs:7748 and :7933 only) and \u0027Minecraft riders share their horse\u0027s fall\u0027 (riding.rs take_rider_falls, server.rs rider_falls beside dismounts, entities.rs PlayerOutputs, survival.rs rider_fall, render_anim minecraft_players.rs struck()). Tests as listed."
+                   },
+                   {
+                       "key":  "vehicle-hearts",
+                       "prompt":  "Track E1 group vehicle-hearts. Read docs/round10/track-e.md, section E-horses, part 3. Two commits: \u0027Minecraft riders see their mount\u0027s hearts in place of the food bar\u0027 (riding.rs vehicle_health, Player.vehicle_health, MinecraftUi.vehicle_health next to jump_bar, hud minecraft_vitals.rs vehicle_hearts per Hud.extractVehicleHealth, minecraft_hotbar.rs hides drumsticks and lifts bubbles, host at minecraft_world.rs:1260) and \u0027Friends see their mount\u0027s hearts\u0027 (PlayerView.vehicle_health, views.rs:92, minecraft_remote.rs:1299). No PROTOCOL bump (release step does it). Tests as listed."
+                   },
+                   {
+                       "key":  "horse-gallop",
+                       "prompt":  "Track E1 group horse-gallop. Read docs/round10/track-e.md, section E-horses, part 2. One commit \u0027Minecraft ridden horses gallop and breathe\u0027: horse.rs gallop_counter and HorseKind::can_gallop (Horse only); emissions.rs HorseStep enum (Walk, Wood, Gallop{breathe}, Silent) with the breath at volume/0.15*0.6 on next_int(10)==0; equines.rs horse_movement_sounds counts steps while ridden (5 wood clops, then gallop every third step); ride_tick resets on input z\u003c=0; vendored world.rs only lines 7750 and 7940 change. Tests as listed."
+                   },
+                   {
+                       "key":  "dye-icons",
+                       "prompt":  "Track E1 group dye-icons. Read docs/round10/track-e.md, section E-horses, part 4 (group dye-icons). Two commits: \u0027Minecraft dyed items show their colour in icons, hands and on the ground\u0027 (item_tint gets of_stack_at(base, stack), where base is the id or a dial key, and of_stack calls it; it keys body_gear::dyed_color when there is no potion colour; interface.rs minecraft:dye uses the keyed colour, update the :157 assertion; render_anim minecraft_hand.rs:195 and icon_source at minecraft_inventory.rs:771 use of_stack_at(\u0026dials.key(\u0026stack.id), stack). Never plain of_stack there, or held and icon compasses and clocks lose their dial. Test that a compass key still splits to its dial model.) and \u0027Minecraft kits dye leather with the 26.3 dye tag\u0027 (crafting.rs:473 uses #minecraft:cauldron_can_remove_dye, rename the :872 fixture). Tests as listed."
+                   }
+               ]
+}

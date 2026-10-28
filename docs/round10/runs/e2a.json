@@ -1,0 +1,52 @@
+{
+    "track":  "e2",
+    "worktree":  "C:\\Dev\\mc-wt\\track-e2",
+    "branch":  "track-e2",
+    "target":  "D:\\iw4l-wt\\track-e2",
+    "base":  "r10-e2a-base",
+    "round":  10,
+    "briefs":  "docs/round10/track-e.md (read the overview first, then the E2 sections; E1 runs in parallel in C:\\Dev\\mc-wt\\track-e1 and owns the files the overview assigns to it)",
+    "notes":  "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under \u0027## Protocol\u0027 in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
+    "groups":  [
+                   {
+                       "key":  "ti1-targets-and-hurt",
+                       "prompt":  "Track E2 group ti1-targets-and-hurt. Read docs/round10/track-e.md, section E-thrown, group ti1 (and the overview\u0027s D0 agreement). Four commits: thrown things hurt every mob family (vendored world/combat.rs hurt_for_player split, pub player_projectile_hurt/ProjectileHit; thrown.rs hurt_by calls it); hit pillagers, ravagers, withers and the Nether mobs (EntityWorld::hit_boxes, arrow_targets maps it, thrown::targets is one line); snowballs hurt blazes (snow_golems.rs snowball_damage, tick_thrown :2231); wind charges don\u0027t anger calm mobs (NO_ANGER_FROM_WIND_CHARGE). No per-mob code left in thrown.rs. Tests as listed."
+                   },
+                   {
+                       "key":  "ti2-potions",
+                       "prompt":  "Track E2 group ti2-potions. Read docs/round10/track-e.md, section E-thrown, group ti2. Three commits: \u0027Minecraft potions work on ghasts and blazes\u0027 (vendored world/witches.rs arms in mob_effects_mut, mob_effects, heal_mob, hurt_mob_by_magic; note_hoglin_hurt on applied hits with an owner); \u0027Minecraft harming heals every undead mob\u0027 (splash_instant and the cows undead flag via entity_type + wither::is_undead); \u0027Minecraft water bottles hurt blazes, striders and snow golems\u0027 (splash.rs wet list, new EntityWorld::splash_water_hurt). Use D0\u0027s generic arms if merged. Tests as listed."
+                   },
+                   {
+                       "key":  "ti3-mounts",
+                       "prompt":  "Track E2 group ti3-mounts. Read docs/round10/track-e.md, section E-thrown, group ti3-mounts. One commit \u0027Minecraft thrown things pass the mount their thrower rides\u0027: in server.rs tick_thrown and tick_tridents, for a player owner, walk vehicle_of(Rider::Player) to the root vehicle and mark the root and its passengers as owner targets, and grow owner_box to cover them (vanilla getRootVehicle().getSelfAndPassengers()). Mob throwers unchanged. Test: a snowball thrown down from a ridden strider passes it and hits another strider."
+                   },
+                   {
+                       "key":  "doors-zombies",
+                       "prompt":  "Track E2 group doors-zombies. Read docs/round10/track-e.md, section E-doors, group doors-zombies. Two commits: \u0027Minecraft zombies break wooden doors on Hard like vanilla\u0027 (new vendored entities door_goals.rs: DoorWork, DoorInteract, BreakDoorGoal 240 ticks with 1019 knocks, crack stages and 1021, apply_door_work via set_door_open; zombie and zombified piglin goal lists and names; world.rs:6178 can_open_doors; a take_level_events queue placed next to take_villager_infections (world.rs:3823), not next to take_entity_events where E1 adds a function; drained in server.rs next to infect_villagers; level_events.rs arms for 1019/1021) and \u0027Minecraft door cracks from mobs show for the host and friends\u0027 (door_cracks, session.rs level_cracks mob key, minecraft_world.rs:1550). Tests as listed."
+                   },
+                   {
+                       "key":  "doors-raiders",
+                       "prompt":  "Track E2 group doors-raiders. Read docs/round10/track-e.md, section E-doors, group doors-raiders. Commit \u0027Minecraft vindicators open and break doors in raids\u0027: vendored illager_ai.rs slots 2 and 3 become BreakDoorGoal::vindicator (Normal/Hard, Move control, active raid, next_int(5) roll, reset_idle) and OpenDoorGoal{close_door:false} with the raid check; world/illagers.rs tick_ai sets walk.can_open_doors = near_raid after the navigation tick, and tick_illager applies apply_door_work; update the vindicator paragraph in docs/MINECRAFT-SURVIVAL.md. Optional second commit only if the review finds door flapping breaks paths. Tests as listed."
+                   },
+                   {
+                       "key":  "maps-loot",
+                       "prompt":  "Track E2 group maps-loot. Read docs/round10/track-e.md, section E-maps, group maps-loot. Four commits: map data in the vanilla 26.3 map files (new minecraft_terrain maps.rs MapData/MapStore, data/minecraft/maps/\u003cid\u003e.dat and last_id.dat, Globals and save.rs); chests roll explorer maps (vendored core/src/loot.rs Exploring hook and exploration_map arm, retarget the unknown-function test and survey; LootExplorer with locate::nearest_structure and a 2 s deadline; open_station stores new maps); coastline preview (renderBiomePreviewMap port); skip claimed structures (claims in dimensions/minecraft/\u003cdim\u003e/data/iw4l/map_claims.dat). Tests as listed."
+                   },
+                   {
+                       "key":  "lead-knots",
+                       "prompt":  "Track E2 group lead-knots. Read docs/round10/track-e.md, section E-leads-cats, item 1. Two commits: \u0027Minecraft lead knots can be punched off\u0027 (vendored leashes.rs break_knot, tick_knots reuses it; leash_render.rs knot_box/knot_on_ray; server.rs Command::Knot next to LeashFence with KnotAction::Punch; entities.rs punch_knot and the knot distance in mob_distance; actions.rs attack press tries it first, no exhaustion or wear) and \u0027Minecraft shears cut every lead off a lead knot\u0027 (shear_knot, KnotAction::Shear, shears branch before leashed_fence with wear_tool). Tests as listed."
+                   },
+                   {
+                       "key":  "cat-chests",
+                       "prompt":  "Track E2 group cat-chests. Read docs/round10/track-e.md, section E-leads-cats, item 2. Two commits: \u0027Minecraft cats sitting on a chest keep it shut\u0027 (vendored world/felines.rs cat_sits_on with the strict AABB, entities.rs cat_on_chest, actions.rs:845-848 splits Chest from Ender, both halves checked, arm still swings) and \u0027Minecraft cats leave chests that someone has open\u0027 (vendored player/src/lib.rs World::chest_open_count default 0, server_mobs.rs MobWorld override from level.chest_openers, feline_ai.rs:765 can_sit_on uses it). Tests as listed."
+                   },
+                   {
+                       "key":  "fw-burst",
+                       "prompt":  "Track E2 group fw-burst. Read docs/round10/track-e.md, section E-fireworks, group fw-burst (the kit parser is E1\u0027s, not here). Three commits: \u0027Minecraft firework rockets carry their stars\u0027 (firework.rs Explosion/Fireworks, Rocket explosions and RocketOwner, damage 5+2*stars and none without stars, Burst carries explosions, starless burst puffs in entity_view.rs :321); \u0027burst on mobs and players in their path\u0027 (Rocket::tick uses thrown::targets/player_targets, vanilla getHitResultOnMoveVector order); \u0027Mobs hurt by a firework burst are knocked back\u0027 (vendored firework_blast, knock_back 0.4). No PROTOCOL bump. Tests as listed."
+                   },
+                   {
+                       "key":  "fw-launch",
+                       "prompt":  "Track E2 group fw-launch. Read docs/round10/track-e.md, section E-fireworks, group fw-launch. Three commits: \u0027Minecraft firework rockets launch from a clicked block\u0027 (rocket_place, Change::LaunchRocket next to Change::Rocket, actions.rs before rocket_use :1131, entities.launch_rocket, Command::LaunchRocket next to ThrowEye); \u0027Minecraft dispensers shoot firework rockets\u0027 (vendored dispenser.rs queue, shoot sound 1/1.2, shot-at-angle Rocket power 0.5 uncertainty 1.0); \u0027A player\u0027s firework rocket blames the player\u0027 (PlayerHitKind::Fireworks by, pvp-off sparing, death.rs PlayerFireworks). Tests as listed."
+                   }
+               ]
+}
