@@ -198,6 +198,7 @@ pub struct PlayerData {
     pub last_death: Option<GlobalPos>,
     pub portal_cooldown: Option<i32>,
     pub seen_credits: Option<bool>,
+    pub xp_seed: Option<i32>,
     pub root_vehicle: Option<Tag>,
     pub sleep_timer: Option<i32>,
     pub sleeping_pos: Option<(i32, i32, i32)>,
@@ -254,6 +255,10 @@ impl PlayerData {
                 .get("seenCredits")
                 .and_then(Tag::as_i64)
                 .map(|seen| seen != 0),
+            xp_seed: tag
+                .get("XpSeed")
+                .and_then(Tag::as_i64)
+                .and_then(|seed| i32::try_from(seed).ok()),
             root_vehicle: tag
                 .get("RootVehicle")
                 .filter(|root| root.get("Entity").is_some())
@@ -350,6 +355,9 @@ impl PlayerData {
         }
         if let Some(seen) = self.seen_credits {
             entries.insert("seenCredits".to_owned(), Tag::Byte(i8::from(seen)));
+        }
+        if let Some(seed) = self.xp_seed {
+            entries.insert("XpSeed".to_owned(), Tag::Int(seed));
         }
         if let Some(root) = &self.root_vehicle {
             entries.insert("RootVehicle".to_owned(), root.clone());
@@ -1909,6 +1917,28 @@ mod tests {
             PlayerData::read(&short, &RecipeBook::default()).portal_cooldown,
             Some(40)
         );
+    }
+
+    #[test]
+    fn the_enchanting_seed_is_an_int_named_xp_seed_like_vanilla() {
+        let entries = PlayerData {
+            xp_seed: Some(-77_000_001),
+            ..PlayerData::default()
+        }
+        .entries();
+        assert_eq!(entries["XpSeed"], Tag::Int(-77_000_001));
+        let read = PlayerData::read(&Tag::Compound(entries), &RecipeBook::default());
+        assert_eq!(read.xp_seed, Some(-77_000_001));
+        let missing = PlayerData::read(&compound(Vec::new()), &RecipeBook::default());
+        assert_eq!(missing.xp_seed, None);
+        let kept = PlayerData::default().merged(Some(compound(vec![("XpSeed", Tag::Int(5))])));
+        assert_eq!(kept.get("XpSeed"), Some(&Tag::Int(5)));
+        let replaced = PlayerData {
+            xp_seed: Some(9),
+            ..PlayerData::default()
+        }
+        .merged(Some(compound(vec![("XpSeed", Tag::Int(5))])));
+        assert_eq!(replaced.get("XpSeed"), Some(&Tag::Int(9)));
     }
 
     #[test]

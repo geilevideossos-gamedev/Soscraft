@@ -226,6 +226,8 @@ pub struct ClientPrediction {
     had_local_last_snap: bool,
 
     tick_input: TickInput,
+
+    external_origin: Option<[f32; 3]>,
 }
 
 impl ClientPrediction {
@@ -251,6 +253,7 @@ impl ClientPrediction {
             last_predict_msec: None,
             had_local_last_snap: false,
             tick_input: TickInput::default(),
+            external_origin: None,
         };
         pred.world.suppress_snapshot_publish();
         pred
@@ -279,6 +282,29 @@ impl ClientPrediction {
 
     pub fn set_minecraft_move_scale(&mut self, scale: f32) -> bool {
         self.world.set_minecraft_move_scale(self.local, scale)
+    }
+
+    pub fn set_external_motion(&mut self, enabled: bool) {
+        self.world.set_external_motion(self.local, enabled);
+        if !enabled {
+            self.external_origin = None;
+        }
+    }
+
+    pub fn set_origin(&mut self, origin: [f32; 3]) {
+        self.external_origin = Some(origin);
+        self.hold_external_origin();
+    }
+
+    fn hold_external_origin(&mut self) {
+        let Some(origin) = self.external_origin else {
+            return;
+        };
+        self.world.set_origin(self.local, origin);
+        if let Some(ps) = self.predicted_local.as_mut() {
+            ps.origin = origin;
+            ps.velocity = [0.0; 3];
+        }
     }
 
     pub fn history(&self) -> &MoveHistory {
@@ -501,6 +527,7 @@ impl ClientPrediction {
 
             self.predicted_local = self.local_state().or(authoritative);
         }
+        self.hold_external_origin();
 
         let in_now = authoritative.is_some();
         let player_view = authoritative.is_some_and(|ps| {
@@ -655,4 +682,50 @@ pub fn snapshot_ground_e_type(snapshot: &Snapshot, mover_num: i32) -> Option<i32
         return Some(entity_iw4::ET_PLAYER_CORPSE);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(tick: u32, local: ClientId, origin: [f32; 3]) -> Snapshot {
+        let mut snapshot = Snapshot::unpublished(Tick(tick));
+        let mut ps = PlayerState::ZERO;
+        ps.origin = origin;
+        snapshot.players.push((local, ps));
+        snapshot
+    }
+
+    fn origin(prediction: &ClientPrediction) -> (Option<[f32; 3]>, Option<[f32; 3]>) {
+        let local = prediction.local();
+        (
+            prediction.world().player(local).map(|ps| ps.origin),
+            prediction.predicted_local().map(|ps| ps.origin),
+        )
+    }
+
+    #[test]
+    fn an_external_origin_holds_through_snapshots_until_it_is_released() {
+        let local = ClientId(1);
+        let mut prediction = ClientPrediction::new(local);
+        prediction.arm_from_content(&SimWorld::new());
+        prediction.on_authority(&snapshot(1, local, [0.0; 3]), None);
+        assert_eq!(origin(&prediction), (Some([0.0; 3]), Some([0.0; 3])));
+        prediction.set_external_motion(true);
+        let board = [10.0, 20.0, 30.0];
+        prediction.set_origin(board);
+        assert_eq!(origin(&prediction), (Some(board), Some(board)));
+        prediction.on_authority(&snapshot(2, local, [1.0, 2.0, 3.0]), None);
+        assert_eq!(
+            origin(&prediction),
+            (Some(board), Some(board)),
+            "an older place from the host does not pull the skater back"
+        );
+        prediction.set_external_motion(false);
+        prediction.on_authority(&snapshot(3, local, [1.0, 2.0, 3.0]), None);
+        assert_eq!(
+            origin(&prediction),
+            (Some([1.0, 2.0, 3.0]), Some([1.0, 2.0, 3.0]))
+        );
+    }
 }

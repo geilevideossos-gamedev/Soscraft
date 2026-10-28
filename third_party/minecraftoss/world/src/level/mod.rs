@@ -18,6 +18,7 @@ pub mod explosion;
 pub mod falling;
 pub mod fire;
 pub mod golem_build;
+pub mod wither_build;
 pub mod grow;
 pub mod ice;
 pub mod lectern;
@@ -199,6 +200,8 @@ pub struct Level<'a> {
     pub tnt_explodes: bool,
     pub tnt_explosion_drop_decay: bool,
     pub explosion_effects: Vec<explosion::ExplosionEffect>,
+    pub defer_tnt_blasts: bool,
+    pub tnt_blasts: Vec<explosion::Explosion>,
     pub frame_outputs: HashMap<BlockPos, Vec<(Direction, i32)>>,
     pub chest_openers: HashMap<BlockPos, i32>,
     pub level_events: Vec<(i32, BlockPos, i32)>,
@@ -293,6 +296,8 @@ impl<'a> Level<'a> {
             tnt_explodes: true,
             tnt_explosion_drop_decay: false,
             explosion_effects: Vec::new(),
+            defer_tnt_blasts: false,
+            tnt_blasts: Vec::new(),
             frame_outputs: HashMap::new(),
             chest_openers: HashMap::new(),
             level_events: Vec::new(),

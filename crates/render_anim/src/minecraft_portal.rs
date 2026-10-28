@@ -113,6 +113,43 @@ pub(crate) fn arriving(player: &mut Player, sounds: Option<&mut Sounds>, packs: 
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FriendPortal {
+    effect: portal::PortalEffect,
+    clock: f64,
+    age: u64,
+}
+
+pub(crate) fn friend_inside(
+    feet: Option<[f64; 3]>,
+    spectator: bool,
+    axis_at: impl Fn((i32, i32, i32)) -> Option<portal::PortalAxis>,
+) -> bool {
+    !spectator && feet.is_some_and(|feet| portal::touched_portal(feet, axis_at).is_some())
+}
+
+pub(crate) fn friend_portal_tick(
+    friend: &mut FriendPortal,
+    seconds: f64,
+    inside: bool,
+) -> (bool, Option<McPortalOverlay>) {
+    friend.clock += seconds.max(0.0);
+    let ticks = (friend.clock / portal::TICK_SECONDS).floor();
+    friend.clock -= ticks * portal::TICK_SECONDS;
+    let ticks = ticks.min(f64::from(u32::MAX)) as u32;
+    for _ in 0..ticks {
+        friend.age += 1;
+        friend.effect.tick(inside);
+    }
+    let partial = (friend.clock / portal::TICK_SECONDS) as f32;
+    let shown = friend.effect.shown(partial);
+    let overlay = (shown > 0.0).then(|| McPortalOverlay {
+        alpha: portal::overlay_alpha(shown),
+        frame: friend.age,
+    });
+    (inside && ticks > 0, overlay)
+}
+
 pub(crate) const FREEZE_OUTLINE: &str = "minecraft:misc/powder_snow_outline";
 pub(crate) const SPYGLASS_SCOPE: &str = "minecraft:misc/spyglass_scope";
 pub(crate) const PUMPKIN_BLUR: &str = "minecraft:misc/pumpkinblur";
@@ -161,4 +198,61 @@ pub(crate) fn blurred(
     let (handle, _) = strip(packs, images, sprite)?;
     images.get_mut(&handle)?.sampler = bevy::image::ImageSampler::linear();
     Some(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TICK: f64 = portal::TICK_SECONDS;
+
+    fn ticks(friend: &mut FriendPortal, count: usize, inside: bool) -> (bool, Option<McPortalOverlay>) {
+        let mut last = (false, None);
+        for _ in 0..count {
+            last = friend_portal_tick(friend, TICK, inside);
+        }
+        last
+    }
+
+    fn close(overlay: Option<McPortalOverlay>, intensity: f32) -> bool {
+        overlay.is_some_and(|shown| (shown.alpha - portal::overlay_alpha(intensity)).abs() < 1.0e-4)
+    }
+
+    #[test]
+    fn a_friends_portal_overlay_rises_inside_falls_outside_and_restarts_on_a_new_level() {
+        let mut friend = FriendPortal::default();
+        assert_eq!(friend_portal_tick(&mut friend, TICK / 2.0, true), (false, None));
+        let (closes, overlay) = friend_portal_tick(&mut friend, TICK / 2.0, true);
+        assert!(closes, "the first tick inside closes the inventory");
+        assert_eq!(overlay, None, "drawn from the tick before");
+        let (closes, overlay) = friend_portal_tick(&mut friend, TICK / 2.0, true);
+        assert!(!closes && close(overlay, 0.00625), "it is drawn between ticks");
+        assert_eq!(overlay.map(|shown| shown.frame), Some(1));
+        friend_portal_tick(&mut friend, TICK / 2.0, true);
+        let (closes, overlay) = ticks(&mut friend, 18, true);
+        assert!(closes && close(overlay, 0.2375), "{overlay:?}");
+        assert_eq!(overlay.map(|shown| shown.frame), Some(20));
+        let (_, overlay) = ticks(&mut friend, 100, true);
+        assert_eq!(overlay.map(|shown| shown.alpha), Some(1.0));
+        let (closes, overlay) = ticks(&mut friend, 10, false);
+        assert!(!closes && close(overlay, 0.55), "{overlay:?}");
+        let (_, overlay) = ticks(&mut friend, 15, false);
+        assert_eq!(overlay, None, "it is gone a second after stepping out");
+        ticks(&mut friend, 40, true);
+        friend = FriendPortal::default();
+        let (closes, overlay) = ticks(&mut friend, 2, true);
+        assert!(closes && close(overlay, 0.0125), "a new level starts it again");
+    }
+
+    #[test]
+    fn a_friend_is_inside_a_portal_only_alive_and_not_a_spectator() {
+        let axis = |pos: (i32, i32, i32)| (pos == (0, 64, 0)).then_some(portal::PortalAxis::Z);
+        assert!(friend_inside(Some([0.5, 64.0, 0.5]), false, axis));
+        assert!(!friend_inside(Some([0.5, 64.0, 0.5]), true, axis), "a spectator");
+        assert!(!friend_inside(None, false, axis), "dead");
+        assert!(!friend_inside(Some([5.5, 64.0, 5.5]), false, axis));
+        let mut friend = FriendPortal::default();
+        let inside = friend_inside(Some([0.5, 64.0, 0.5]), true, axis);
+        assert_eq!(ticks(&mut friend, 40, inside), (false, None), "a spectator sees no overlay");
+    }
 }

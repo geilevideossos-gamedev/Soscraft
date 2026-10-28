@@ -2129,6 +2129,17 @@ pub fn touches_wall(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> bool {
     guard.as_ref().and_then(|world| world.at(origin)).is_some_and(|world| touches_wall_in(&world, origin, mins, maxs))
 }
 
+pub fn inside_blocks(origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> bool {
+    let Ok(guard) = WORLD.read() else {
+        return false;
+    };
+    guard.as_ref().and_then(|world| world.at(origin)).is_some_and(|world| inside_blocks_in(&world, origin, mins, maxs))
+}
+
+fn inside_blocks_in(world: &Level<'_>, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> bool {
+    trace_in(world, origin, origin, mins, maxs, None).startsolid != 0
+}
+
 fn touches_wall_in(world: &Level<'_>, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> bool {
     let reach = WALL_REACH * BLOCK;
     let wide = [mins[0] - reach, mins[1] - reach, mins[2] + reach];
@@ -2701,6 +2712,20 @@ mod tests {
         assert!(!touches_wall_in(&w.only(), at(4.5), mins, maxs));
         assert!(!touches_wall_in(&w.only(), to_map([0.0; 3], [4.5, 1.0, 4.5]), mins, maxs));
         assert!(!touches_wall_in(&w.only(), to_map([0.0; 3], [10.5, 5.0, 10.5]), mins, maxs));
+    }
+
+    #[test]
+    fn a_body_is_inside_blocks_only_where_it_overlaps_one() {
+        let w = world(&[([4, 0, 4], 1), ([4, 1, 4], 1), ([6, 1, 4], 2)]);
+        let mins = [-0.2 * BLOCK, -0.2 * BLOCK, 0.5 * BLOCK];
+        let maxs = [0.2 * BLOCK, 0.2 * BLOCK, 1.5 * BLOCK];
+        let at = |x: f64, y: f64| to_map([0.0; 3], [x, y, 4.5]);
+        assert!(inside_blocks_in(&w.only(), at(4.5, 0.0), mins, maxs), "in a wall");
+        assert!(inside_blocks_in(&w.only(), at(4.5, 1.2), mins, maxs), "sunk into the top");
+        assert!(!inside_blocks_in(&w.only(), at(4.5, 2.0), mins, maxs), "standing on top");
+        assert!(!inside_blocks_in(&w.only(), at(5.5, 1.0), mins, maxs), "beside it");
+        assert!(inside_blocks_in(&w.only(), at(6.5, 1.0), mins, maxs), "in a fence post");
+        assert!(!inside_blocks_in(&w.only(), at(10.5, 1.0), mins, maxs), "open air");
     }
 
     #[test]

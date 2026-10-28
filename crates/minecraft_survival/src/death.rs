@@ -12,6 +12,8 @@ const KILL_CREDIT_TICKS: u64 = 100;
 const SIGNIFICANT_FALL: f32 = 5.0;
 const VICTIM: &str = "%1$s";
 const ATTACKER: &str = "%2$s";
+const WEAPON: &str = "%3$s";
+const ITEM_FORMS: [&str; 4] = [PLAYER_KILL, "death.fell.assist", "death.fell.finish", "death.attack.explosion.player"];
 const OWNERLESS_ARROW: &str = "minecraft:arrow";
 const DEATH_EXPERIENCE_PER_LEVEL: u32 = 7;
 const MAX_DEATH_EXPERIENCE: u32 = 100;
@@ -73,6 +75,7 @@ pub enum MobAttack {
     Spit,
     Magic,
     Fireworks,
+    WitherSkull,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +99,12 @@ pub enum DamageCause {
         type_id: &'static str,
         attack: MobAttack,
     },
+    Player {
+        client: u32,
+    },
+    PlayerExplosion {
+        client: u32,
+    },
 }
 
 pub const IS_EXPLOSION: [&str; 4] = [
@@ -114,7 +123,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit | MobAttack::Magic | MobAttack::Fireworks => None,
+            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit | MobAttack::Magic | MobAttack::Fireworks | MobAttack::WitherSkull => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -164,6 +173,8 @@ impl DamageCause {
             Self::BadRespawnPoint => "minecraft:bad_respawn_point",
             Self::Explosion => "minecraft:explosion",
             Self::Fireworks => "minecraft:fireworks",
+            Self::Player { .. } => "minecraft:player_attack",
+            Self::PlayerExplosion { .. } => "minecraft:player_explosion",
             Self::Mob { attack, .. } => match attack {
                 MobAttack::Melee => "minecraft:mob_attack",
                 MobAttack::Arrow => "minecraft:arrow",
@@ -174,6 +185,7 @@ impl DamageCause {
                 MobAttack::Spit => "minecraft:spit",
                 MobAttack::Magic => "minecraft:indirect_magic",
                 MobAttack::Fireworks => "minecraft:fireworks",
+                MobAttack::WitherSkull => "minecraft:wither_skull",
             },
         }
     }
@@ -181,6 +193,8 @@ impl DamageCause {
     fn message_id(self) -> &'static str {
         match self {
             Self::Generic => "generic",
+            Self::Player { .. } => "player",
+            Self::PlayerExplosion { .. } => "explosion.player",
             Self::Hazard(Hazard::InFire | Hazard::Campfire) => "inFire",
             Self::Hazard(Hazard::Lava) => "lava",
             Self::Hazard(Hazard::Cactus) => "cactus",
@@ -229,6 +243,10 @@ impl DamageCause {
                 attack: MobAttack::Magic,
                 ..
             } => "indirectMagic",
+            Self::Mob {
+                attack: MobAttack::WitherSkull,
+                ..
+            } => "witherSkull",
         }
     }
 
@@ -296,6 +314,10 @@ impl DamageCause {
         matches!(self, Self::Fall | Self::EnderPearl)
     }
 
+    fn has_direct_source(self) -> bool {
+        matches!(self, Self::Explosion | Self::Fireworks)
+    }
+
     fn always_most_significant_fall(self) -> bool {
         self == Self::OutOfWorld
     }
@@ -335,6 +357,7 @@ pub struct CombatTracker {
     in_combat: bool,
     taking_damage: bool,
     hurt_by: Option<(u64, &'static str, u64)>,
+    hurt_by_player: Option<(u32, u64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -343,10 +366,44 @@ pub struct DeathLine {
     pub killer: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Killer {
+    pub name: String,
+    pub weapon: Option<String>,
+}
+
 struct DeathKey {
     key: String,
     attacker: Option<&'static str>,
     cause: Option<DamageCause>,
+    player: Option<Killer>,
+}
+
+fn by_player(
+    key: &str,
+    client: u32,
+    cause: DamageCause,
+    killer: impl Fn(u32) -> Option<Killer>,
+    missing: &str,
+) -> DeathKey {
+    let Some(found) = killer(client) else {
+        return DeathKey {
+            key: missing.to_owned(),
+            attacker: None,
+            cause: Some(cause),
+            player: None,
+        };
+    };
+    let named = found.weapon.is_some() && ITEM_FORMS.contains(&key);
+    DeathKey {
+        key: if named { format!("{key}.item") } else { key.to_owned() },
+        attacker: None,
+        cause: Some(cause),
+        player: Some(Killer {
+            weapon: found.weapon.filter(|_| named),
+            ..found
+        }),
+    }
 }
 
 impl CombatTracker {
@@ -367,7 +424,7 @@ impl CombatTracker {
         });
         self.last_damage = tick;
         self.taking_damage = true;
-        if cause.living_attacker().is_some() {
+        if cause.living_attacker().is_some() || matches!(cause, DamageCause::Player { .. } | DamageCause::PlayerExplosion { .. }) {
             self.in_combat = true;
         }
     }
@@ -375,6 +432,9 @@ impl CombatTracker {
     pub fn hurt_by(&mut self, tick: u64, cause: DamageCause) {
         if let Some((id, type_id)) = cause.living_attacker() {
             self.hurt_by = Some((id, type_id, tick));
+        }
+        if let DamageCause::Player { client } | DamageCause::PlayerExplosion { client } = cause {
+            self.hurt_by_player = Some((client, tick));
         }
     }
 
@@ -384,6 +444,12 @@ impl CombatTracker {
             .is_some_and(|(.., at)| tick.saturating_sub(at) > KILL_CREDIT_TICKS)
         {
             self.hurt_by = None;
+        }
+        if self
+            .hurt_by_player
+            .is_some_and(|(_, at)| tick.saturating_sub(at) > KILL_CREDIT_TICKS)
+        {
+            self.hurt_by_player = None;
         }
         if tick.is_multiple_of(STATUS_RECHECK_TICKS) {
             self.recheck(tick);
@@ -429,12 +495,17 @@ impl CombatTracker {
             .map(|(entry, _)| entry)
     }
 
-    fn death_key(&self, present: impl Fn(u64) -> bool) -> DeathKey {
+    fn death_key(
+        &self,
+        present: impl Fn(u64) -> bool,
+        killer: impl Fn(u32) -> Option<Killer>,
+    ) -> DeathKey {
         let Some(last) = self.entries.last() else {
             return DeathKey {
                 key: "death.attack.generic".to_owned(),
                 attacker: None,
                 cause: None,
+                player: None,
             };
         };
         if last.cause.is_fall()
@@ -449,7 +520,17 @@ impl CombatTracker {
                         .to_owned(),
                     attacker: None,
                     cause: Some(fall.cause),
+                    player: None,
                 };
+            }
+            if let DamageCause::Player { client } | DamageCause::PlayerExplosion { client } = fall.cause {
+                return by_player(
+                    "death.fell.assist",
+                    client,
+                    last.cause,
+                    killer,
+                    "death.fell.killer",
+                );
             }
             let finisher = last.cause.entity();
             let (key, attacker) = match fall.cause.entity() {
@@ -461,6 +542,7 @@ impl CombatTracker {
                 key: key.to_owned(),
                 attacker,
                 cause: Some(last.cause),
+                player: None,
             };
         }
         let key = format!("death.attack.{}", last.cause.message_id());
@@ -469,13 +551,40 @@ impl CombatTracker {
                 key: format!("{key}.message"),
                 attacker: None,
                 cause: Some(last.cause),
+                player: None,
             };
+        }
+        if let DamageCause::Player { client } = last.cause {
+            return by_player(&key, client, last.cause, killer, "death.attack.generic");
+        }
+        if let DamageCause::PlayerExplosion { client } = last.cause {
+            return by_player(&key, client, last.cause, killer, "death.attack.explosion");
         }
         if let Some(attacker) = last.cause.entity() {
             return DeathKey {
                 key,
                 attacker: Some(attacker),
                 cause: Some(last.cause),
+                player: None,
+            };
+        }
+        if last.cause.has_direct_source() {
+            return DeathKey {
+                key,
+                attacker: None,
+                cause: Some(last.cause),
+                player: None,
+            };
+        }
+        if let Some(found) = self.hurt_by_player.and_then(|(client, _)| killer(client)) {
+            return DeathKey {
+                key: format!("{key}.player"),
+                attacker: None,
+                cause: Some(last.cause),
+                player: Some(Killer {
+                    weapon: None,
+                    ..found
+                }),
             };
         }
         match self.hurt_by.filter(|(id, ..)| present(*id)) {
@@ -483,11 +592,13 @@ impl CombatTracker {
                 key: format!("{key}.player"),
                 attacker: Some(credit),
                 cause: Some(last.cause),
+                player: None,
             },
             None => DeathKey {
                 key,
                 attacker: None,
                 cause: Some(last.cause),
+                player: None,
             },
         }
     }
@@ -496,8 +607,9 @@ impl CombatTracker {
         &self,
         language: &HashMap<String, String>,
         present: impl Fn(u64) -> bool,
+        killer: impl Fn(u32) -> Option<Killer>,
     ) -> DeathLine {
-        let death = self.death_key(present);
+        let death = self.death_key(present, killer);
         let template = language
             .get(&death.key)
             .cloned()
@@ -505,6 +617,7 @@ impl CombatTracker {
         let attacker = death
             .attacker
             .map(|type_id| entity_name(language, type_id))
+            .or_else(|| death.player.as_ref().map(|found| found.name.clone()))
             .or_else(|| {
                 let key = death.cause?.link_key()?;
                 Some(format!(
@@ -515,6 +628,10 @@ impl CombatTracker {
         let message = attacker
             .as_deref()
             .map_or_else(|| template.clone(), |name| template.replace(ATTACKER, name));
+        let message = match death.player.as_ref().and_then(|found| found.weapon.as_deref()) {
+            Some(weapon) => message.replace(WEAPON, &format!("[{weapon}]")),
+            None => message,
+        };
         let killer = attacker
             .or_else(|| {
                 death
@@ -532,11 +649,21 @@ impl CombatTracker {
         DeathLine { message, killer }
     }
 
-    pub fn death_text(&self, victim: &str, present: impl Fn(u64) -> bool) -> Text {
-        let death = self.death_key(present);
+    pub fn death_text(
+        &self,
+        victim: &str,
+        present: impl Fn(u64) -> bool,
+        killer: impl Fn(u32) -> Option<Killer>,
+    ) -> Text {
+        let death = self.death_key(present, killer);
         let mut args = vec![Text::literal(victim)];
         if let Some(type_id) = death.attacker {
             args.push(Text::entity(type_id));
+        } else if let Some(found) = &death.player {
+            args.push(Text::literal(found.name.clone()));
+            if let Some(weapon) = &found.weapon {
+                args.push(Text::literal(format!("[{weapon}]")));
+            }
         } else if let Some(key) = death.cause.and_then(DamageCause::link_key) {
             let link = Text::translate(key, Vec::new());
             args.push(Text::literal("[").append(link).append(Text::literal("]")));
@@ -754,6 +881,8 @@ mod tests {
             ("entity.minecraft.piglin", "Piglin"),
             ("entity.minecraft.piglin_brute", "Piglin Brute"),
             ("entity.minecraft.shulker", "Shulker"),
+            ("entity.minecraft.wither", "Wither"),
+            ("death.attack.witherSkull", "%1$s was shot by a skull from %2$s"),
             ("entity.minecraft.drowned", "Drowned"),
             ("entity.minecraft.llama", "Llama"),
             ("death.attack.trident", "%1$s was impaled by %2$s"),
@@ -784,7 +913,7 @@ mod tests {
     }
 
     fn line(tracker: &CombatTracker) -> DeathLine {
-        tracker.death_line(&language(), |_| true)
+        tracker.death_line(&language(), |_| true, |_| None)
     }
 
     fn says(message: &str, killer: &str) -> DeathLine {
@@ -815,7 +944,7 @@ mod tests {
         escaping.hurt_by(1, zombie_bite());
         escaping.record(1, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
         for tracker in [CombatTracker::default(), bitten, doomed, bed, escaping] {
-            let text = tracker.death_text("Steve", |_| true).resolve(&lang).text;
+            let text = tracker.death_text("Steve", |_| true, |_| None).resolve(&lang).text;
             assert_eq!(text, line(&tracker).message.replace(VICTIM, "Steve"));
             assert!(!text.contains('%'), "{text}");
         }
@@ -991,6 +1120,17 @@ mod tests {
     }
 
     #[test]
+    fn a_wither_skull_shoots_the_player_by_the_wither() {
+        let mut tracker = CombatTracker::default();
+        let skull = DamageCause::mob(MobAttack::WitherSkull, Some(4), Some("minecraft:wither"));
+        assert_eq!((skull.damage_type(), skull.message_id()), ("minecraft:wither_skull", "witherSkull"));
+        assert!(!skull.burns() && !skull.is_explosion());
+        tracker.record(1, skull, 8.0, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was shot by a skull from Wither", "Wither"));
+        assert_eq!(DamageCause::mob(MobAttack::WitherSkull, None, None), DamageCause::Generic);
+    }
+
+    #[test]
     fn a_drowned_s_trident_impales_the_player() {
         let mut tracker = CombatTracker::default();
         let trident = DamageCause::mob(MobAttack::Trident, Some(6), Some("minecraft:drowned"));
@@ -1019,10 +1159,16 @@ mod tests {
         assert!(bang.is_explosion() && DamageCause::Fireworks.is_explosion());
         let mut tracker = CombatTracker::default();
         tracker.record(1, bang, 4.0, None, 0.0);
-        assert_eq!(tracker.death_line(&lang, |_| true).message, "%1$s went off with a bang");
+        assert_eq!(tracker.death_line(&lang, |_| true, |_| None).message, "%1$s went off with a bang");
         let mut sourceless = CombatTracker::default();
         sourceless.record(1, DamageCause::Fireworks, 4.0, None, 0.0);
-        assert_eq!(sourceless.death_line(&lang, |_| true).message, "%1$s went off with a bang");
+        assert_eq!(sourceless.death_line(&lang, |_| true, |_| None).message, "%1$s went off with a bang");
+        let mut fighting = CombatTracker::default();
+        fighting.hurt_by(1, zombie_bite());
+        fighting.hurt_by(2, DamageCause::Player { client: 0 });
+        fighting.record(3, DamageCause::Fireworks, 4.0, None, 0.0);
+        let host = |client: u32| (client == 0).then(|| Killer { name: "Host".to_owned(), weapon: None });
+        assert_eq!(fighting.death_line(&lang, |_| true, host).message, "%1$s went off with a bang", "the rocket is the direct source, so no one is credited");
     }
 
     #[test]
@@ -1047,7 +1193,7 @@ mod tests {
             says("%1$s tried to swim in lava to escape Zombie", "Zombie")
         );
         assert_eq!(
-            tracker.death_line(&language(), |_| false),
+            tracker.death_line(&language(), |_| false, |_| None),
             says("%1$s tried to swim in lava", "Lava")
         );
     }
@@ -1474,5 +1620,201 @@ mod tests {
         ] {
             assert!(!cause.is_explosion(), "{cause:?}");
         }
+    }
+
+    fn host(weapon: Option<&'static str>) -> impl Fn(u32) -> Option<Killer> {
+        move |client| {
+            (client == 0).then(|| Killer {
+                name: "Host".to_owned(),
+                weapon: weapon.map(str::to_owned),
+            })
+        }
+    }
+
+    fn with_player_lines() -> HashMap<String, String> {
+        let mut language = language();
+        for (key, text) in [
+            ("death.attack.player", "%1$s was slain by %2$s"),
+            (
+                "death.attack.player.item",
+                "%1$s was slain by %2$s using %3$s",
+            ),
+            (
+                "death.fell.assist.item",
+                "%1$s was doomed to fall by %2$s using %3$s",
+            ),
+        ] {
+            language.insert(key.to_owned(), text.to_owned());
+        }
+        language
+    }
+
+    #[test]
+    fn an_explosion_with_no_attacker_blew_up_even_right_after_a_hit() {
+        let mut language = with_player_lines();
+        language.insert("death.attack.explosion".to_owned(), "%1$s blew up".to_owned());
+        let lang = |key: &str| language.get(key).cloned();
+        let blow = DamageCause::Player { client: 0 };
+        let blast = DamageCause::mob(MobAttack::Explosion, None, None);
+        let mut tracker = CombatTracker::default();
+        tracker.hurt_by(1, zombie_bite());
+        tracker.record(1, zombie_bite(), 3.0, None, 0.0);
+        tracker.hurt_by(2, blow);
+        tracker.record(2, blow, 2.0, None, 0.0);
+        tracker.record(3, blast, 30.0, None, 0.0);
+        assert_eq!(
+            tracker.death_line(&language, |_| true, host(None)),
+            says("%1$s blew up", "blew up")
+        );
+        let text = tracker.death_text("Friend", |_| true, host(None));
+        assert_eq!(text.resolve(&lang).text, "Friend blew up");
+        let mut escaping = CombatTracker::default();
+        escaping.hurt_by(1, blow);
+        escaping.record(1, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
+        assert_eq!(
+            escaping.death_line(&language, |_| true, host(None)).message,
+            "%1$s tried to swim in lava to escape Host",
+            "a death with no direct source still names the last attacker"
+        );
+    }
+
+    #[test]
+    fn a_players_blast_blows_up_by_name_and_counts_as_their_hit() {
+        let mut language = with_player_lines();
+        for (key, text) in [
+            ("death.attack.explosion", "%1$s blew up"),
+            (
+                "death.attack.explosion.player.item",
+                "%1$s was blown up by %2$s using %3$s",
+            ),
+        ] {
+            language.insert(key.to_owned(), text.to_owned());
+        }
+        let lang = |key: &str| language.get(key).cloned();
+        let blast = DamageCause::PlayerExplosion { client: 0 };
+        assert_eq!(
+            (blast.damage_type(), blast.message_id()),
+            ("minecraft:player_explosion", "explosion.player")
+        );
+        assert!(blast.is_explosion());
+        let mut tracker = CombatTracker::default();
+        tracker.hurt_by(1, blast);
+        tracker.record(1, blast, 30.0, None, 0.0);
+        assert_eq!(
+            tracker.death_line(&language, |_| true, host(None)),
+            says("%1$s was blown up by Host", "Host")
+        );
+        let named = tracker.death_text("Friend", |_| true, host(Some("Excalibur")));
+        assert_eq!(
+            named.resolve(&lang).text,
+            "Friend was blown up by Host using [Excalibur]"
+        );
+        assert_eq!(
+            tracker.death_line(&language, |_| true, |_| None).message,
+            "%1$s blew up",
+            "an igniter who left"
+        );
+        let mut thrown = CombatTracker::default();
+        thrown.hurt_by(1, blast);
+        thrown.record(1, blast, 2.0, None, 0.0);
+        thrown.record(
+            2,
+            DamageCause::Fall,
+            20.0,
+            Some(FallLocation::Generic),
+            12.0,
+        );
+        assert_eq!(
+            thrown.death_line(&language, |_| true, host(None)).message,
+            "%1$s was doomed to fall by Host"
+        );
+        let mut escaping = CombatTracker::default();
+        escaping.hurt_by(1, blast);
+        escaping.record(1, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
+        assert_eq!(
+            escaping.death_line(&language, |_| true, host(None)).message,
+            "%1$s tried to swim in lava to escape Host"
+        );
+    }
+
+    #[test]
+    fn a_players_blow_slays_by_name_and_names_only_a_custom_named_weapon() {
+        let language = with_player_lines();
+        let lang = |key: &str| language.get(key).cloned();
+        let blow = DamageCause::Player { client: 0 };
+        assert_eq!(blow.damage_type(), "minecraft:player_attack");
+        let mut tracker = CombatTracker::default();
+        tracker.hurt_by(1, blow);
+        tracker.record(1, blow, 6.0, None, 0.0);
+        assert_eq!(
+            tracker.death_line(&language, |_| true, host(None)),
+            says("%1$s was slain by Host", "Host")
+        );
+        let text = tracker.death_text("Friend", |_| true, host(None));
+        assert_eq!(text.resolve(&lang).text, "Friend was slain by Host");
+        let named = tracker.death_text("Friend", |_| true, host(Some("Excalibur")));
+        assert_eq!(
+            named.resolve(&lang).text,
+            "Friend was slain by Host using [Excalibur]"
+        );
+        assert_eq!(
+            tracker
+                .death_line(&language, |_| true, host(Some("Excalibur")))
+                .message,
+            "%1$s was slain by Host using [Excalibur]"
+        );
+        assert_eq!(
+            tracker.death_line(&language, |_| true, |_| None).message,
+            "%1$s died",
+            "a killer who left"
+        );
+    }
+
+    #[test]
+    fn a_player_dooms_a_fall_and_is_escaped_into_lava_for_five_seconds() {
+        let language = with_player_lines();
+        let lang = |key: &str| language.get(key).cloned();
+        let blow = DamageCause::Player { client: 0 };
+        let mut doomed = CombatTracker::default();
+        doomed.hurt_by(1, blow);
+        doomed.record(1, blow, 2.0, None, 0.0);
+        doomed.record(
+            2,
+            DamageCause::Fall,
+            20.0,
+            Some(FallLocation::Generic),
+            12.0,
+        );
+        let text = doomed.death_text("Friend", |_| true, host(Some("Excalibur")));
+        assert_eq!(
+            text.resolve(&lang).text,
+            "Friend was doomed to fall by Host using [Excalibur]"
+        );
+        assert_eq!(
+            doomed.death_line(&language, |_| true, host(None)).message,
+            "%1$s was doomed to fall by Host"
+        );
+        let mut escaping = CombatTracker::default();
+        escaping.hurt_by(1, blow);
+        escaping.record(1, DamageCause::Hazard(Hazard::Lava), 4.0, None, 0.0);
+        let text = escaping.death_text("Friend", |_| true, host(Some("Excalibur")));
+        assert_eq!(
+            text.resolve(&lang).text,
+            "Friend tried to swim in lava to escape Host"
+        );
+        escaping.tick(102);
+        assert_eq!(
+            escaping.death_line(&language, |_| true, host(None)).message,
+            "%1$s tried to swim in lava"
+        );
+        let mut bitten = CombatTracker::default();
+        bitten.hurt_by(1, blow);
+        bitten.record(1, blow, 2.0, None, 0.0);
+        bitten.record(2, zombie_bite(), 3.0, None, 0.0);
+        assert_eq!(
+            bitten.death_line(&language, |_| true, host(None)),
+            says("%1$s was slain by Zombie", "Zombie"),
+            "the mob that struck last is named"
+        );
     }
 }

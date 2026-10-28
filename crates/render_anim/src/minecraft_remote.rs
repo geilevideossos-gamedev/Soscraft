@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 use minecraft_commands::{Clientbound, Serverbound, Text};
 use minecraft_net::messages::{BookView, Click, CreativeTarget, MenuView};
-use minecraft_net::messages::{GameMode, Target};
+use minecraft_net::messages::{GameMode, HandEventKind, StateUp, Target};
 use minecraft_net::{Lane, StateFrame, ToClient, ToServer};
 use minecraft_survival::data::GameData;
 use minecraft_survival::guns::{Follow, weapon_of};
@@ -173,6 +173,12 @@ pub(crate) struct Friend {
     activation: crate::minecraft_hand::ItemActivation,
     activation_tick: u64,
     recipe_book: crate::minecraft_recipe_book::FriendBook,
+    use_clock: crate::minecraft_hand::UseClock,
+    swing: crate::minecraft_hand::FriendSwing,
+    portal: crate::minecraft_portal::FriendPortal,
+    music: crate::minecraft_music::MusicManager,
+    skate_report: crate::minecraft_skaters::Reporter,
+    skaters: crate::minecraft_skaters::SkaterTracks,
 }
 
 fn host_silent(ready_at: Option<u64>, now_ms: u64, heard: bool) -> bool {
@@ -205,7 +211,14 @@ impl Friend {
     }
 }
 
-fn stop(friend: &mut Friend, view: &mut MinecraftWorldView, ui: &mut frame::MinecraftUi) {
+fn stop(
+    friend: &mut Friend,
+    view: &mut MinecraftWorldView,
+    ui: &mut frame::MinecraftUi,
+    (music, poses): (&mut audio::McMusic, &mut frame::SkatePoses),
+) {
+    music.wanted = None;
+    friend.skaters.forget(poses);
     if view.active {
         sim::voxel::deactivate();
         crate::minecraft_world::clear_view(view);
@@ -216,8 +229,44 @@ fn stop(friend: &mut Friend, view: &mut MinecraftWorldView, ui: &mut frame::Mine
     ui.chat_only = false;
     ui.credits = None;
     ui.boss_bars.clear();
+    ui.portal_overlay = None;
     ui.sleep = None;
     ui.chat.wake_up();
+}
+
+fn report_skate(
+    friend: &mut Friend,
+    wire: &mut net::MinecraftWire,
+    skate: &mut frame::SkateMode,
+    seconds: f64,
+) {
+    if friend.skate_report.take_stop() {
+        skate.refused = true;
+    }
+    let origin = skate.root.w_axis.truncate().to_array();
+    let yaw = crate::minecraft_skaters::board_yaw(skate.root);
+    let pose = (skate.tick, skate.airborne);
+    let report = friend
+        .skate_report
+        .follow(skate.active, pose, (origin, yaw), seconds);
+    match report {
+        Some(crate::minecraft_skaters::Report::State(mut report)) => {
+            report.pose = frame::SkatePose::of(skate)
+                .as_ref()
+                .and_then(crate::minecraft_skaters::net_pose)
+                .map(Box::new);
+            match minecraft_net::encode(Lane::State, &StateUp::Skate(report)) {
+                Ok(bytes) => {
+                    wire.send_state(HOST, &bytes);
+                }
+                Err(error) => diag::warn!(World, "Minecraft skate report not sent: {error}"),
+            }
+        }
+        Some(crate::minecraft_skaters::Report::Reliable(report)) => {
+            send(wire, &ToServer::Skate(report));
+        }
+        None => {}
+    }
 }
 
 fn send(wire: &mut net::MinecraftWire, message: &ToServer) {
@@ -239,8 +288,8 @@ fn line(text: &str) -> Clientbound {
 fn exchange(
     friend: &mut Friend,
     wire: &mut net::MinecraftWire,
-    now: Instant,
-    now_ms: u64,
+    (now, now_ms): (Instant, u64),
+    own: u32,
 ) -> Vec<Clientbound> {
     let Friend {
         prepared: Some(prepared),
@@ -250,6 +299,7 @@ fn exchange(
         ready_at,
         host_heard,
         told,
+        skaters,
         ..
     } = friend
     else {
@@ -266,7 +316,10 @@ fn exchange(
     }
     for (_, bytes) in wire.take_state() {
         if let Ok(frame) = minecraft_net::decode::<StateFrame>(Lane::State, &bytes) {
-            remote.apply_state(frame);
+            let heard = crate::minecraft_skaters::heard_skaters(&frame.skaters);
+            if remote.apply_state(frame) {
+                skaters.heard_all(&heard, own, now_ms as f64 / 1000.0);
+            }
         }
     }
     for blob in wire.take_batches() {
@@ -337,12 +390,13 @@ pub(crate) fn friend(
     mut prediction: Option<ResMut<net::ClientPredictionState>>,
     (local, presented): (Res<net::LocalPresentClient>, Res<net::PresentedSnapshot>),
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    (skate, cameras, mc_camera, ui_draw, settings): (
-        Res<frame::SkateMode>,
+    (mut skate, cameras, mc_camera, ui_draw, settings, mut poses): (
+        ResMut<frame::SkateMode>,
         Query<&Transform, With<render_scene::FlyCamera>>,
         Option<Res<frame::McCamera>>,
         Option<Res<frame::UiDraw>>,
         Option<Res<frame::GameSettings>>,
+        ResMut<frame::SkatePoses>,
     ),
     mut ui: ResMut<frame::MinecraftUi>,
     mut view: ResMut<MinecraftWorldView>,
@@ -354,17 +408,21 @@ pub(crate) fn friend(
         Option<Res<frame::ActivePad>>,
         Option<Res<frame::HudInputView>>,
     ),
-    (mut body_gear, mut sound_queue, mut sleepers, weapons, strings): (
+    (mut body_gear, mut sound_queue, mut sleepers, weapons, strings, mut mc_music): (
         ResMut<crate::anim::minecraft_gear::McBodyGear>,
         ResMut<audio::McSoundQueue>,
         ResMut<frame::McSleepers>,
         Option<Res<assets::PreparedWeapons>>,
         Option<Res<assets::PreparedLocalizedStrings>>,
+        ResMut<audio::McMusic>,
     ),
 ) {
     if *role != frame::RuntimeRole::Client {
         if ui.chat_only {
             ui.chat_only = false;
+        }
+        if !friend.skaters.is_empty() {
+            friend.skaters.forget(&mut poses);
         }
         return;
     }
@@ -373,10 +431,10 @@ pub(crate) fn friend(
         *sleepers = frame::McSleepers::default();
     }
     for _ in torn_down.read() {
-        stop(friend, &mut view, &mut ui);
+        stop(friend, &mut view, &mut ui, (&mut mc_music, &mut poses));
     }
     for match_ in installed.read() {
-        stop(friend, &mut view, &mut ui);
+        stop(friend, &mut view, &mut ui, (&mut mc_music, &mut poses));
         if assets::minecraft_map::is_minecraft(&match_.zone) {
             let (send, receive) = mpsc::channel();
             friend.loader = std::thread::Builder::new()
@@ -390,6 +448,7 @@ pub(crate) fn friend(
         }
     }
     if !view.active {
+        mc_music.wanted = None;
         return;
     }
     let now = Instant::now();
@@ -416,6 +475,8 @@ pub(crate) fn friend(
                 );
                 friend.fire_frames = crate::minecraft_world::fire_frames(&prepared.look.packs)
                     .map(|(image, frames)| (images.add(image), frames));
+                ui.portal_frames =
+                    crate::minecraft_portal::frames(&prepared.look.packs, &mut images);
                 ui.spyglass_scope = crate::minecraft_portal::strip(
                     &prepared.look.packs,
                     &mut images,
@@ -442,7 +503,7 @@ pub(crate) fn friend(
             }
             Err(error) => {
                 diag::warn!(World, "Minecraft world failed to load: {error}");
-                stop(friend, &mut view, &mut ui);
+                stop(friend, &mut view, &mut ui, (&mut mc_music, &mut poses));
                 return;
             }
         }
@@ -451,7 +512,7 @@ pub(crate) fn friend(
     let sent = std::mem::take(&mut ui.chat.sent);
     let mut wire = wire.filter(|wire| wire.role() == Some(net::WireRole::Friend));
     if let Some(wire) = wire.as_mut() {
-        let lines = exchange(friend, wire, now, now_ms);
+        let lines = exchange(friend, wire, (now, now_ms), local.0.0);
         if let Some(prepared) = friend.prepared.as_ref().filter(|_| !lines.is_empty()) {
             crate::minecraft_chat::show(&mut ui.chat, &lines, &prepared.language);
             show_overlays(&mut ui, &lines, &prepared.language);
@@ -517,9 +578,8 @@ pub(crate) fn friend(
     let shown_ui = (
         ui.boss_bars.iter().any(|bar| bar.world_fog),
         ui.credits.is_some(),
-        ui_draw.as_deref().is_none_or(|draw| draw.0),
     );
-    present(
+    let sky_ticked = present(
         friend,
         &mut view,
         prediction.as_deref(),
@@ -529,6 +589,7 @@ pub(crate) fn friend(
         (dt, shown_ui),
         now_ms,
     );
+    show_portal(friend, &mut ui, player.as_ref(), real_time.delta_secs_f64());
     snowflakes(friend, &presented);
     if let Some(prediction) = prediction.as_deref_mut() {
         prediction
@@ -581,21 +642,48 @@ pub(crate) fn friend(
         let mut hands =
             crate::minecraft_input::host_hands(&ui, hud_input.as_deref(), &buttons, pad);
         hands.captured |= !ui.active;
-        let target = aim(friend, player.as_ref());
+        let target = aim(friend, player.as_ref(), &presented);
         let sampled = friend.hand.sample(hands, swap, drop, target, seconds);
+        friend.swing.advance(dt, hands.attack_held && !hands.captured);
+        let pressed = sampled
+            .events
+            .iter()
+            .any(|event| event.kind == HandEventKind::AttackPressed);
+        let creative = friend
+            .remote
+            .as_ref()
+            .and_then(|remote| remote.player.as_ref())
+            .is_some_and(|view| view.game_mode == GameMode::Creative);
+        if pressed && swing_allowed(friend, &ui, player.as_ref(), skate.active) {
+            friend.swing.attack(target == Target::Miss, creative);
+        }
         if !sampled.events.is_empty() {
             send(wire, &ToServer::Hand(sampled.events));
         }
         if let Some(state) = sampled.state {
-            match minecraft_net::encode(Lane::State, &state) {
+            match minecraft_net::encode(Lane::State, &StateUp::Hand(state)) {
                 Ok(bytes) => {
                     wire.send_state(HOST, &bytes);
                 }
                 Err(error) => diag::warn!(World, "Minecraft hand state not sent: {error}"),
             }
         }
+        report_skate(friend, wire, &mut skate, seconds);
     }
+    friend.skaters.show(&mut poses, now_ms as f64 / 1000.0);
+    ui.board_allowed &= sleepers.camera.is_none();
+    let gate = HandGate {
+        skating: skate.active,
+        detached: mc_detached,
+        asleep: sleepers.camera.is_some(),
+        ui_shown: ui_draw.as_deref().is_none_or(|draw| draw.0),
+        alive: player.is_some_and(|ps| ps.pm_type == 0),
+    };
+    show_hand(friend, &mut view, &mut ui, player.as_ref(), gate, aspect);
     ui.loading_world = friend.holding(now_ms);
+    if sky_ticked {
+        play_music(friend, &ui, &mut mc_music);
+    }
     if friend.switch_screen.is_some() && !friend.spawn_gate.holding(now_ms) {
         friend.switch_screen = None;
     }
@@ -644,6 +732,8 @@ fn show_effects(
         activation,
         recipe_book,
         inventory_ui,
+        swing,
+        skate_report,
         ..
     } = friend
     else {
@@ -691,6 +781,12 @@ fn show_effects(
                 let unlocked = recipe_book.receive(book, &mut ui.recipe_book);
                 inventory_ui.set_unlocked(unlocked);
             }
+            ToClient::Animate { client, offhand } => {
+                if Some(client) == own {
+                    swing.echo(offhand);
+                }
+            }
+            ToClient::SkateRefused { tick } => skate_report.refused(tick),
             effect => {
                 if own_totem(&effect, own) {
                     let level = remote.level.as_mut();
@@ -887,6 +983,42 @@ fn track_bodies(friend: &mut Friend, presented: &net::PresentedSnapshot) {
     }
 }
 
+fn show_portal(
+    friend: &mut Friend,
+    ui: &mut frame::MinecraftUi,
+    ps: Option<&playerstate_iw4::PlayerState>,
+    seconds: f64,
+) {
+    let Friend {
+        remote: Some(remote),
+        portal,
+        ..
+    } = friend
+    else {
+        ui.portal_overlay = None;
+        return;
+    };
+    let Some(level) = remote.level.as_ref() else {
+        ui.portal_overlay = None;
+        return;
+    };
+    let spectator = remote
+        .player
+        .as_ref()
+        .is_some_and(|view| view.game_mode == GameMode::Spectator);
+    let feet = ps
+        .filter(|ps| ps.pm_type == 0 && ps.pm_flags & playerstate_iw4::pm_flags::MC_RIDING == 0)
+        .map(|ps| sim::voxel::to_block(level.origin, ps.origin));
+    let inside = crate::minecraft_portal::friend_inside(feet, spectator, |pos| {
+        minecraft_survival::portal::portal_axis_in(&level.terrain, pos)
+    });
+    let (closes, overlay) = crate::minecraft_portal::friend_portal_tick(portal, seconds, inside);
+    if closes {
+        ui.inventory_open = false;
+    }
+    ui.portal_overlay = overlay;
+}
+
 fn snowflakes(friend: &mut Friend, presented: &net::PresentedSnapshot) {
     let Friend {
         remote: Some(remote),
@@ -934,7 +1066,11 @@ fn snowflakes(friend: &mut Friend, presented: &net::PresentedSnapshot) {
     flakes.feet = seen;
 }
 
-fn aim(friend: &Friend, ps: Option<&playerstate_iw4::PlayerState>) -> Target {
+fn aim(
+    friend: &Friend,
+    ps: Option<&playerstate_iw4::PlayerState>,
+    presented: &net::PresentedSnapshot,
+) -> Target {
     let Some(remote) = friend.remote.as_ref() else {
         return Target::Miss;
     };
@@ -962,7 +1098,40 @@ fn aim(friend: &Friend, ps: Option<&playerstate_iw4::PlayerState>) -> Target {
         minecraft_terrain::game_mode::ENTITY_REACH
     };
     let block_distance = block.as_ref().map(|hit| hit.point.distance(aim.eye()));
-    if let Some((id, distance)) = level.view.mob_on_ray(aim.eye(), aim.look(), entity_reach)
+    let own = remote.login.as_ref().map(|login| login.client);
+    let bodies: Vec<_> = remote
+        .players
+        .keys()
+        .filter(|&&client| Some(client) != own)
+        .filter_map(|&client| {
+            let other = presented.player(sim::ClientId(client))?;
+            let here = other.pm_type == 0
+                && minecraft_survival::bands::holds(level.dimension, f64::from(other.origin[2]));
+            let (feet, height) = body_of(presented, client, level.origin).filter(|_| here)?;
+            Some(minecraft_survival::pvp::PlayerBox::standing(
+                u64::from(client),
+                feet,
+                height,
+                false,
+            ))
+        })
+        .collect();
+    let body = minecraft_survival::pvp::player_on_ray(
+        &bodies,
+        u64::MAX,
+        aim.eye(),
+        aim.look(),
+        entity_reach,
+    );
+    let mob = level.view.mob_on_ray(aim.eye(), aim.look(), entity_reach);
+    if let Some((client, distance)) = body
+        && block_distance.is_none_or(|block| distance < block)
+        && mob.is_none_or(|(_, nearest)| distance < nearest)
+        && let Ok(client) = u32::try_from(client)
+    {
+        return Target::Player { client };
+    }
+    if let Some((id, distance)) = mob
         && block_distance.is_none_or(|block| distance < block)
     {
         return Target::Mob { id };
@@ -1121,6 +1290,8 @@ fn show_player(
     }
     let (mins, maxs) = sim::voxel::player_hull(ps);
     let eye_in_water = sim::voxel::water(ps.origin, mins, maxs, ps.view_height_current).eye;
+    ui.board_allowed =
+        crate::minecraft_world::board_allowed(true, !interacts, ps.pm_flags, eye_in_water, false, false);
     let eye_in_lava = sim::voxel::eye_in_lava(ps.origin, ps.view_height_current);
     let vitals = hud.vitals(view, dt, eye_in_water, eye_in_lava);
     ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));
@@ -1328,9 +1499,9 @@ fn present(
     player: Option<&playerstate_iw4::PlayerState>,
     drawn_from: Option<&Transform>,
     aspect: f32,
-    (dt, (world_fog, credits, ui_shown)): (f64, (bool, bool, bool)),
+    (dt, (world_fog, credits)): (f64, (bool, bool)),
     now_ms: u64,
-) {
+) -> bool {
     let Friend {
         prepared: Some(prepared),
         remote: Some(remote),
@@ -1351,17 +1522,16 @@ fn present(
         sounds,
         dimension,
         switch_screen,
-        activation,
-        activation_tick,
+        portal,
         ..
     } = friend
     else {
-        return;
+        return false;
     };
     let shown = remote.take_shown();
     remote.advance_clocks(dt);
     let Some(level) = remote.level.as_mut() else {
-        return;
+        return false;
     };
     let band = minecraft_survival::bands::level(level.dimension);
     if shown.level {
@@ -1409,6 +1579,7 @@ fn present(
         *weather = remote.weather;
         *mining = crate::minecraft_mining::Mining::default();
         cracks.clear();
+        *portal = Default::default();
         spawn_gate.start(now_ms);
     }
     crate::minecraft_world::apply_streamed(
@@ -1470,7 +1641,7 @@ fn present(
         now_ms,
     );
     let Some(light) = light.as_mut() else {
-        return;
+        return false;
     };
     for (chunk, column) in lights {
         light.set_chunk_column(chunk, column);
@@ -1588,22 +1759,171 @@ fn present(
         ),
         (sounds.as_mut(), mining, weather[0]),
     );
+    sky.ticked
+}
+
+fn music_input<'a>(
+    dimension: minecraft_net::Dimension,
+    ui: &frame::MinecraftUi,
+    finished: Option<&'a str>,
+) -> crate::minecraft_music::MusicInput<'a> {
+    crate::minecraft_music::MusicInput {
+        dimension,
+        credits_open: ui.credits.is_some(),
+        boss_music: ui.boss_bars.iter().any(|bar| bar.music),
+        finished,
+        loading: ui.loading_world,
+    }
+}
+
+fn play_music(friend: &mut Friend, ui: &frame::MinecraftUi, music: &mut audio::McMusic) {
+    let Friend {
+        prepared: Some(prepared),
+        remote: Some(remote),
+        sounds,
+        music: manager,
+        ..
+    } = friend
+    else {
+        return;
+    };
+    let Some(level) = remote.level.as_ref() else {
+        return;
+    };
+    let input = music_input(level.dimension, ui, music.finished.as_deref());
+    if let Some(action) = manager.update(input) {
+        crate::minecraft_music::apply(action, sounds.as_mut(), &prepared.look.packs, music);
+    }
+}
+
+fn swing_allowed(
+    friend: &Friend,
+    ui: &frame::MinecraftUi,
+    ps: Option<&playerstate_iw4::PlayerState>,
+    skating: bool,
+) -> bool {
+    let idle = friend
+        .remote
+        .as_ref()
+        .and_then(|remote| remote.player.as_ref())
+        .is_some_and(|view| view.using.is_none());
+    let throwing = ps.is_none_or(|ps| {
+        crate::minecraft_players::actor(ps, [0.0; 3], true).mw2_offhand
+    });
+    ui.active && ui.holding_item && !skating && idle && !throwing
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct HandGate {
+    skating: bool,
+    detached: bool,
+    asleep: bool,
+    ui_shown: bool,
+    alive: bool,
+}
+
+impl HandGate {
+    fn items(self) -> bool {
+        self.alive && self.ui_shown && !self.skating && !self.detached && !self.asleep
+    }
+
+    fn activation(self) -> bool {
+        self.ui_shown && !self.asleep
+    }
+}
+
+fn show_hand(
+    friend: &mut Friend,
+    view: &mut MinecraftWorldView,
+    ui: &mut frame::MinecraftUi,
+    ps: Option<&playerstate_iw4::PlayerState>,
+    gate: HandGate,
+    aspect: f32,
+) {
+    view.hand = Default::default();
+    let Friend {
+        prepared: Some(prepared),
+        remote: Some(remote),
+        light: Some(light),
+        selection,
+        inventory_ui,
+        activation,
+        activation_tick,
+        use_clock,
+        swing,
+        ..
+    } = friend
+    else {
+        ui.hand_swing = 0.0;
+        ui.offhand_busy = false;
+        return;
+    };
+    let (Some(level), Some(player)) = (remote.level.as_mut(), remote.player.as_ref()) else {
+        ui.hand_swing = 0.0;
+        ui.offhand_busy = false;
+        return;
+    };
     let now = level.view.ticks();
     let ticks = now.saturating_sub(*activation_tick);
     *activation_tick = now;
     activation.tick(u32::try_from(ticks).unwrap_or(u32::MAX));
+    let partial = level.view.partial();
     let pose = activation
-        .pose(level.view.partial(), aspect)
-        .filter(|_| ui_shown);
-    view.hand = Default::default();
-    if let Some(pose) = pose {
-        let mut mesh = minecraft_terrain::mesh::ChunkMesh::default();
-        let light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
-        let look = (&prepared.look.packs, &*prepared.look.atlas, &*light);
-        crate::minecraft_hand::append_totem(&mut mesh, &mut level.view, pose, light_at, look);
-        let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
-        view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
-        view.hand_clip = crate::minecraft_hand::hand_clip(aspect);
+        .pose(partial, aspect)
+        .filter(|_| gate.activation());
+    let using = use_clock.follow(player.using, now, selection.slot);
+    let alive = gate.alive && ui.active;
+    ui.offhand_busy = alive && using.is_some();
+    let (swing, swing_offhand) = swing.shown();
+    ui.hand_swing = if swing_offhand || !alive { 0.0 } else { swing };
+    let recipes = &prepared.recipes;
+    let stack_in = |slot: usize| {
+        player
+            .slots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .and_then(|nbt| view_stack(nbt, recipes))
+    };
+    let items = gate.items() && alive;
+    let main = stack_in(selection.slot).filter(|_| items && ui.holding_item);
+    let offhand = stack_in(minecraft_survival::offhand::OFFHAND)
+        .filter(|_| items && (ui.holding_item || ui.offhand_busy));
+    let held = crate::minecraft_hand::Held {
+        main: main.as_ref().map(|stack| (selection.slot, stack)),
+        offhand: offhand.as_ref(),
+        swing,
+        swing_offhand,
+        using,
+        partial,
+        activation: pose,
+    };
+    let eye = match ps {
+        Some(ps) => sim::voxel::to_block(
+            level.origin,
+            [
+                ps.origin[0],
+                ps.origin[1],
+                ps.origin[2] + ps.view_height_current,
+            ],
+        ),
+        None => [
+            level.feet[0],
+            level.feet[1] + SPAWN_EYE_HEIGHT,
+            level.feet[2],
+        ],
+    };
+    let light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
+    let look = (
+        &prepared.look.packs,
+        &*prepared.look.atlas,
+        &*light,
+        &inventory_ui.dials,
+    );
+    let mesh =
+        crate::minecraft_hand::held_hand_mesh(&held, &mut level.view, look, light_at, aspect);
+    if let Some((vertices, indices, clip)) = mesh {
+        view.hand = (vertices, indices);
+        view.hand_clip = clip;
     }
 }
 
@@ -1774,6 +2094,41 @@ mod tests {
     }
 
     #[test]
+    fn the_friends_held_items_hide_in_f5_in_bed_while_skating_dead_or_with_the_ui_off() {
+        let shown = HandGate {
+            ui_shown: true,
+            alive: true,
+            ..HandGate::default()
+        };
+        assert!(shown.items() && shown.activation());
+        let f5 = HandGate {
+            detached: true,
+            ..shown
+        };
+        assert!(!f5.items() && f5.activation());
+        let in_bed = HandGate {
+            asleep: true,
+            ..shown
+        };
+        assert!(!in_bed.items() && !in_bed.activation());
+        let skating = HandGate {
+            skating: true,
+            ..shown
+        };
+        assert!(!skating.items());
+        let dead = HandGate {
+            alive: false,
+            ..shown
+        };
+        assert!(!dead.items());
+        let ui_off = HandGate {
+            ui_shown: false,
+            ..shown
+        };
+        assert!(!ui_off.items() && !ui_off.activation());
+    }
+
+    #[test]
     fn only_the_friends_own_totem_rises_in_their_view() {
         let pop = |client| ToClient::PlayerEvent {
             client,
@@ -1792,6 +2147,37 @@ mod tests {
         assert!(activation.pose(0.0, 1.5).is_some());
         activation.tick(crate::minecraft_hand::ACTIVATION_TICKS);
         assert!(activation.pose(0.0, 1.5).is_none(), "it ends after two seconds");
+    }
+
+    #[test]
+    fn a_friend_hears_the_dragon_music_with_its_bar_and_stop_clears_it() {
+        use crate::minecraft_music::{END_BOSS, MusicAction, MusicManager};
+        use minecraft_net::Dimension;
+        let mut ui = frame::MinecraftUi::default();
+        let bar = frame::minecraft_ui::McBossBar::new("Ender Dragon".to_owned(), 1.0, true, true);
+        ui.boss_bars.push(bar);
+        let mut manager = MusicManager::new(1);
+        let fight = music_input(Dimension::End, &ui, None);
+        assert_eq!(manager.update(fight), Some(MusicAction::Start(END_BOSS)));
+        assert_eq!(manager.update(fight), None, "it plays on");
+        ui.boss_bars.clear();
+        let home = music_input(Dimension::Overworld, &ui, None);
+        assert_eq!(manager.update(home), Some(MusicAction::Stop), "it stops in the Overworld");
+        let mut quiet = MusicManager::new(1);
+        ui.loading_world = true;
+        assert_eq!(quiet.update(music_input(Dimension::End, &ui, None)), None, "not while loading");
+        let mut music = audio::McMusic {
+            wanted: Some(audio::McMusicTrack {
+                key: END_BOSS.event.to_owned(),
+                bytes: Arc::from(&b"ogg"[..]),
+                volume: 1.0,
+            }),
+            finished: None,
+        };
+        let mut friend = Friend::default();
+        let mut view = MinecraftWorldView::default();
+        stop(&mut friend, &mut view, &mut ui, (&mut music, &mut frame::SkatePoses::default()));
+        assert!(music.wanted.is_none());
     }
 
     #[test]

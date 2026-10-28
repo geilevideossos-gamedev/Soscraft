@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use bevy::prelude::*;
 use minecraft_commands::{Outgoing, Recipient, Serverbound};
-use minecraft_net::messages::HandState;
+use minecraft_net::messages::StateUp;
 use minecraft_net::{Lane, PlayerUuid, ToClient, ToServer};
 use minecraft_survival::menus::{Books, MenuInput};
 use minecraft_survival::session::{BatchJob, EncodedBatch, Hello, JoinContext, Sessions};
@@ -89,6 +89,8 @@ pub(crate) struct HostSessions {
     lecterns: BTreeMap<u32, LecternClicks>,
     leave_beds: Vec<u32>,
     edit_books: BTreeMap<u32, BookEdits>,
+    skaters: BTreeMap<u32, crate::minecraft_skaters::Skater>,
+    poses: crate::minecraft_skaters::SkaterTracks,
 }
 
 impl HostSessions {
@@ -102,10 +104,16 @@ impl HostSessions {
             && self.lecterns.is_empty()
             && self.leave_beds.is_empty()
             && self.edit_books.is_empty()
+            && self.skaters.is_empty()
+            && self.poses.is_empty()
     }
 }
 
-fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Instant) {
+fn read_inbox(
+    host: &mut HostSessions,
+    wire: &mut net::MinecraftWire,
+    (now, seconds): (Instant, f64),
+) {
     for (client, bytes) in wire.take_inbox() {
         match minecraft_net::decode::<ToServer>(Lane::Reliable, &bytes) {
             Ok(ToServer::Hello {
@@ -193,6 +201,11 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
                     session.book_settings = Some((open, filtering));
                 }
             }
+            Ok(ToServer::Skate(report)) => {
+                if host.sessions.sessions.contains_key(&client) {
+                    host.skaters.entry(client).or_default().heard(report, seconds);
+                }
+            }
             Ok(ToServer::RecipeSeen(ids)) => {
                 if let Some(session) = host.sessions.sessions.get_mut(&client) {
                     let room = SEEN_RECIPES.saturating_sub(session.seen_recipes.len());
@@ -210,12 +223,36 @@ fn read_inbox(host: &mut HostSessions, wire: &mut net::MinecraftWire, now: Insta
         }
     }
     for (client, bytes) in wire.take_state() {
-        if let Ok(state) = minecraft_net::decode::<HandState>(Lane::State, &bytes)
-            && let Some(session) = host.sessions.sessions.get_mut(&client)
-        {
-            session.hands.state(state, now);
+        let Ok(up) = minecraft_net::decode::<StateUp>(Lane::State, &bytes) else {
+            continue;
+        };
+        let Some(session) = host.sessions.sessions.get_mut(&client) else {
+            continue;
+        };
+        match up {
+            StateUp::Hand(state) => session.hands.state(state, now),
+            StateUp::Skate(report) => {
+                host.skaters.entry(client).or_default().heard(report, seconds);
+            }
         }
     }
+}
+
+fn skating(skaters: &BTreeMap<u32, crate::minecraft_skaters::Skater>, client: u32) -> bool {
+    skaters
+        .get(&client)
+        .is_some_and(|skater| skater.skating().active)
+}
+
+fn told_swing(client: u32, hand: &mut minecraft_survival::player::Hand) -> Option<ToClient> {
+    if hand.swing != Some(0.0) || hand.swing_predicted {
+        return None;
+    }
+    hand.swing_predicted = true;
+    Some(ToClient::Animate {
+        client,
+        offhand: hand.swing_offhand,
+    })
 }
 
 fn edit_books(player: &mut minecraft_survival::player::Player, edits: BookEdits) {
@@ -335,10 +372,12 @@ pub(crate) fn host(
     mut host: NonSendMut<HostSessions>,
     mut ui: ResMut<frame::MinecraftUi>,
     mut body_gear: ResMut<crate::anim::minecraft_gear::McBodyGear>,
+    (skate, mut poses): (Res<frame::SkateMode>, ResMut<frame::SkatePoses>),
 ) {
     let relayed = std::mem::take(&mut runtime.relayed);
     let Some(mut wire) = wire.filter(|wire| wire.role() == Some(net::WireRole::Host)) else {
         if !host.idle() {
+            host.poses.forget(&mut poses);
             *host = HostSessions::default();
         }
         return;
@@ -354,12 +393,15 @@ pub(crate) fn host(
         host.lecterns.remove(client);
         host.leave_beds.retain(|leaving| leaving != client);
         host.edit_books.remove(client);
+        host.skaters.remove(client);
+        host.poses.leave(*client);
         body_gear.remove(*client);
         sim::voxel::set_death_protected(*client, false);
         sim::voxel::forget_gun_guard(*client);
         sim::voxel::forget_arsenal(*client);
     }
-    read_inbox(&mut host, &mut wire, now);
+    let seconds = time.elapsed_secs_f64();
+    read_inbox(&mut host, &mut wire, (now, seconds));
     let host = &mut *host;
     let Some(mut view) = crate::minecraft_world::host_view(&mut runtime) else {
         if !host.sessions.is_empty() {
@@ -475,15 +517,28 @@ pub(crate) fn host(
             edit_books(player, edits);
             let id = sim::ClientId(session.client);
             let was = player.menus.block().cloned();
+            let skater = host.skaters.entry(session.client).or_default();
+            let (skate, refused) =
+                crate::minecraft_skaters::ride(skater, player, world.authority, id, seconds);
+            session.outbox.extend(refused);
+            if let Some(pose) = skater.take_fresh() {
+                host.poses.heard(session.client, &pose, seconds);
+            } else if !skater.skating().active {
+                host.poses.leave(session.client);
+            }
             let stepped = crate::minecraft_players::step_friend(
                 player,
                 &mut world,
                 id,
                 origin,
-                selected,
+                (selected, skate),
                 &mut session.hands,
                 (&mut session.lectern, clicks),
             );
+            skater.allowed = stepped.board_allowed;
+            session
+                .outbox
+                .extend(told_swing(session.client, &mut player.hand));
             session
                 .outbox
                 .extend(stepped.books.into_iter().map(ToClient::Lectern));
@@ -521,6 +576,7 @@ pub(crate) fn host(
             }));
         }
         host.sessions.deliver(&server.globals.chat, &told, true);
+        host.poses.show(&mut poses, seconds);
         for player in server.players.values() {
             if player.uuid == *view.local {
                 continue;
@@ -535,6 +591,8 @@ pub(crate) fn host(
                 player.selected,
                 &player.mode,
             );
+            let skating = skating(&host.skaters, player.id.0);
+            let worn = worn.map(|gear| crate::minecraft_world::board_gear(gear, skating));
             body_gear.follow(player.id.0, pm_type, worn);
         }
         run_friend_commands(
@@ -583,6 +641,7 @@ pub(crate) fn host(
         .and_then(|level| level.dragon_fight.as_ref());
     host.sessions.send_boss_bars(&server.players, fight);
     host.sessions.send_raid_bars(&server.players);
+    host.sessions.send_wither_bars(&server.players);
     host.sessions.send_views(&server.players);
     let gears: Vec<_> = server
         .players
@@ -593,18 +652,49 @@ pub(crate) fn host(
             } else {
                 player.id.0
             };
-            (client, minecraft_survival::gear::player_gear(player))
+            let gear = minecraft_survival::gear::player_gear(player);
+            let skating = if player.uuid == *view.local {
+                skate.active
+            } else {
+                skating(&host.skaters, client)
+            };
+            (client, crate::minecraft_skaters::board_view(gear, skating))
         })
         .collect();
     host.sessions.send_gear(&gears);
     let books = Books::of(&server.globals.data);
     host.sessions
         .send_menus(&mut server.players, &mut server.levels, books);
-    let frames = host.sessions.send_mobs(
+    let mut frames = host.sessions.send_mobs(
         &server.players,
         &mut server.levels,
         crate::minecraft_world::VIEW_DISTANCE,
     );
+    let mut skaters = Vec::new();
+    if let Some(me) = server.players.get(view.local)
+        && let Some(pose) = frame::SkatePose::of(&skate)
+            .as_ref()
+            .and_then(crate::minecraft_skaters::net_pose)
+    {
+        skaters.push((local.0.0, me.dimension, pose));
+    }
+    for session in host.sessions.sessions.values() {
+        let pose = host.skaters.get(&session.client).and_then(|skater| skater.shown());
+        if let (Some(pose), Some(player)) = (pose, server.players.get(&session.uuid)) {
+            skaters.push((session.client, player.dimension, pose));
+        }
+    }
+    for (client, frame) in &mut frames {
+        let level = host
+            .sessions
+            .sessions
+            .get(client)
+            .and_then(|session| server.players.get(&session.uuid))
+            .map(|player| player.dimension);
+        if let Some(level) = level {
+            frame.skaters = crate::minecraft_skaters::relayed(&skaters, *client, level);
+        }
+    }
     host.sessions
         .send_heard(&server.players, &mut server.levels);
     for (client, frame) in frames {
@@ -749,6 +839,29 @@ mod tests {
             identity: net::SessionIdentity::unassigned(1),
         };
         assert_eq!(room_code(&connecting), None);
+    }
+
+    #[test]
+    fn a_friend_is_told_only_of_its_own_swings_it_did_not_predict_once() {
+        let mut hand = minecraft_survival::player::Hand::default();
+        assert_eq!(told_swing(2, &mut hand), None, "no swing");
+        hand.swing = Some(0.0);
+        hand.swing_offhand = true;
+        assert_eq!(
+            told_swing(2, &mut hand),
+            Some(ToClient::Animate {
+                client: 2,
+                offhand: true
+            })
+        );
+        assert_eq!(told_swing(2, &mut hand), None, "told once");
+        hand.swing_predicted = false;
+        hand.swing = Some(1.5);
+        assert_eq!(told_swing(2, &mut hand), None, "a running swing was told when it began");
+        hand.swing = Some(0.0);
+        hand.swing_offhand = false;
+        hand.swing_predicted = true;
+        assert_eq!(told_swing(2, &mut hand), None, "the friend swung on its own press");
     }
 
     #[test]

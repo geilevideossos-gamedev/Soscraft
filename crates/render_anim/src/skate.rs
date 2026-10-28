@@ -65,9 +65,48 @@ fn teleported(last: Option<u32>, now: u32) -> bool {
     last.is_some_and(|last| last != now)
 }
 
+fn friend_skates(authority: bool, minecraft_world: bool) -> bool {
+    !authority && minecraft_world
+}
+
+pub(crate) trait SkateBody {
+    fn set_external_motion(&mut self, client: sim::ClientId, enabled: bool);
+    fn set_origin(&mut self, client: sim::ClientId, origin: [f32; 3]);
+    fn e_flags(&self, client: sim::ClientId, presented: &net::PresentedSnapshot) -> Option<u32>;
+}
+
+impl SkateBody for net::AuthorityWorld {
+    fn set_external_motion(&mut self, client: sim::ClientId, enabled: bool) {
+        self.0.set_external_motion(client, enabled);
+    }
+
+    fn set_origin(&mut self, client: sim::ClientId, origin: [f32; 3]) {
+        self.0.set_origin(client, origin);
+    }
+
+    fn e_flags(&self, client: sim::ClientId, _: &net::PresentedSnapshot) -> Option<u32> {
+        self.0.player(client).map(|ps| ps.e_flags)
+    }
+}
+
+impl SkateBody for net::ClientPredictionState {
+    fn set_external_motion(&mut self, _: sim::ClientId, enabled: bool) {
+        self.0.set_external_motion(enabled);
+    }
+
+    fn set_origin(&mut self, _: sim::ClientId, origin: [f32; 3]) {
+        self.0.set_origin(origin);
+    }
+
+    fn e_flags(&self, client: sim::ClientId, presented: &net::PresentedSnapshot) -> Option<u32> {
+        presented.player(client).map(|ps| ps.e_flags)
+    }
+}
+
 pub fn register(app: &mut App) {
     app.init_resource::<SkateMode>()
         .init_resource::<Host>()
+        .init_resource::<frame::SkatePoses>()
         .add_systems(
             Update,
             update
@@ -75,7 +114,24 @@ pub fn register(app: &mut App) {
                 .before(crate::sync_camera_from_presented)
                 .before(render_scene::GfxSceneAdd)
                 .in_set(frame::ClientSet::Present),
+        )
+        .add_systems(
+            Update,
+            publish
+                .after(update)
+                .before(render_scene::GfxSceneAdd)
+                .in_set(frame::ClientSet::Present),
         );
+}
+
+fn publish(mode: Res<SkateMode>, mut poses: ResMut<frame::SkatePoses>, mut written: Local<Option<u32>>) {
+    if let Some(client) = written.take() {
+        poses.0.remove(&client);
+    }
+    if let Some(pose) = frame::SkatePose::of(&mode) {
+        poses.0.insert(mode.client, pose);
+        *written = Some(mode.client);
+    }
 }
 
 fn preload_assets(mode: &mut SkateMode) {
@@ -337,10 +393,8 @@ fn preload_map(host: &mut Host, clip: Arc<asset_world::ClipCollision>) -> Result
     Ok(())
 }
 
-fn stop(host: &mut Host, mode: &mut SkateMode, authority: &mut net::AuthorityWorld) {
-    authority
-        .0
-        .set_external_motion(sim::ClientId(mode.client), false);
+fn stop(host: &mut Host, mode: &mut SkateMode, authority: &mut dyn SkateBody) {
+    authority.set_external_motion(sim::ClientId(mode.client), false);
     host.enter_requested = false;
     host.activating = false;
     host.epoch = host.epoch.wrapping_add(1);
@@ -356,7 +410,7 @@ fn stop(host: &mut Host, mode: &mut SkateMode, authority: &mut net::AuthorityWor
     diag::info!(World, "Skate mode stopped; map session retained");
 }
 
-fn present(mode: &mut SkateMode, p: Pose, authority: &mut net::AuthorityWorld) {
+fn present(mode: &mut SkateMode, p: Pose, authority: &mut dyn SkateBody) {
     let b = collision::basis();
     let mut root = b * p.root * b.inverse();
     root.w_axis = collision::from_skate(p.root.w_axis.truncate()).extend(1.);
@@ -376,7 +430,7 @@ fn present(mode: &mut SkateMode, p: Pose, authority: &mut net::AuthorityWorld) {
             fov,
         )
     });
-    authority.0.set_origin(
+    authority.set_origin(
         sim::ClientId(mode.client),
         root.w_axis.truncate().to_array(),
     );
@@ -389,7 +443,7 @@ fn update(
     local: Res<net::LocalPresentClient>,
     presented: Res<net::PresentedSnapshot>,
     clip: Res<crate::DynEntPhysClip>,
-    mut authority: Option<ResMut<net::AuthorityWorld>>,
+    (mut authority, mut prediction, world_view): SkateBodies<'_>,
     mut mode: ResMut<SkateMode>,
     mut host: ResMut<Host>,
     (gamepads, active): (Query<&bevy::input::gamepad::Gamepad>, Option<Res<frame::ActivePad>>),
@@ -397,13 +451,26 @@ fn update(
     settings: Option<Res<frame::GameSettings>>,
     (keys, mouse_buttons, motion, devices): KeyboardInput<'_>,
 ) {
-    let Some(authority) = authority.as_deref_mut() else {
-        return;
+    let minecraft_world = world_view.as_deref().is_some_and(|view| view.active);
+    let authority: &mut dyn SkateBody = match (authority.as_deref_mut(), prediction.as_deref_mut()) {
+        (Some(authority), _) => authority,
+        (None, Some(prediction)) if friend_skates(false, minecraft_world) => prediction,
+        (None, Some(prediction)) => {
+            if mode.active || host.enter_requested || host.activating {
+                stop(&mut host, &mut mode, prediction);
+            }
+            return;
+        }
+        (None, None) => return,
     };
-    if let Some(bit) = authority.0.player(local.0).map(|ps| ps.e_flags & playerstate_iw4::eflags::TELEPORT)
+    if let Some(bit) = authority.e_flags(local.0, &presented).map(|flags| flags & playerstate_iw4::eflags::TELEPORT)
         && teleported(host.teleport_bit.replace(bit), bit)
         && (mode.active || host.enter_requested || host.activating)
     {
+        stop(&mut host, &mut mode, authority);
+    }
+    if std::mem::take(&mut mode.refused) && (mode.active || host.enter_requested || host.activating) {
+        diag::info!(World, "Skate stopped: the host refused the board here");
         stop(&mut host, &mut mode, authority);
     }
     let enabled = settings.is_some_and(|settings| settings.skating);
@@ -527,7 +594,7 @@ fn update(
                 mode.entering = false;
                 mode.active = true;
                 host.input_suspended = false;
-                authority.0.set_external_motion(local.0, true);
+                authority.set_external_motion(local.0, true);
                 present(&mut mode, p, authority);
                 diag::info!(World, "Skate activation from retained session: {ms}ms");
             }
@@ -689,6 +756,12 @@ struct KeySample {
     right_mouse: bool,
 }
 
+type SkateBodies<'w> = (
+    Option<ResMut<'w, net::AuthorityWorld>>,
+    Option<ResMut<'w, net::ClientPredictionState>>,
+    Option<Res<'w, crate::minecraft_world::MinecraftWorldView>>,
+);
+
 type KeyboardInput<'w> = (
     Option<Res<'w, ButtonInput<KeyCode>>>,
     Option<Res<'w, ButtonInput<MouseButton>>>,
@@ -764,6 +837,13 @@ fn keyboard_frame(keys: KeySample, mouse: [f32; 2], state: &mut FlickState, dt: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_minecraft_friend_skates_on_its_own_prediction() {
+        assert!(friend_skates(false, true), "a friend in a Minecraft world");
+        assert!(!friend_skates(false, false), "a client in an MW2 match has no skating host");
+        assert!(!friend_skates(true, true), "the host skates on its own authority");
+    }
 
     #[test]
     fn a_toggle_is_refused_while_skating_is_off_or_its_data_is_missing() {

@@ -37,7 +37,7 @@ const EYE_HEIGHT: f32 = 1.62;
 const SERVER_ITEM: u32 = 1 << 31;
 pub const HOST_VIEW_DISTANCE: i32 = 8;
 const GUARDED_BY_PIGLINS: &str = "minecraft:guarded_by_piglins";
-pub type Hit = (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush, Option<(EffectKind, u32)>);
+pub type Hit = (f32, Option<[f64; 3]>, Option<[f64; 2]>, crate::death::DamageCause, crate::impulse::MeleePush, Option<(EffectKind, u32, u8)>);
 pub type Hits = Vec<Hit>;
 type Changes = Vec<((i32, i32, i32), Option<Block>)>;
 type Picked = (i32, [f64; 3], String, i32, Option<String>);
@@ -100,6 +100,8 @@ pub struct Entities {
     pub heard: crate::heard::HeardLog,
     pub spawner_tags: Vec<((i32, i32, i32), minecraftoss_core::nbt::Tag)>,
     mount_viewers: HashMap<u64, u64>,
+    player_boxes: Vec<crate::pvp::PlayerBox>,
+    held_names: HashMap<u64, String>,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -181,6 +183,8 @@ pub struct PlayerOutputs {
     pub raid_heroes: Vec<i32>,
     pub raid_horns: Vec<DVec3>,
     pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
+    pub wither_bars: Option<Vec<minecraft_terrain::wither_bar::WitherBar>>,
+    pub told: Vec<minecraft_commands::Clientbound>,
 }
 
 #[derive(Default)]
@@ -222,6 +226,23 @@ fn apply_merchant_answer(inventory: &mut Inventory, update: &minecraft_terrain::
         }
     }
     inventory.cursor = update.cursor.clone();
+}
+
+fn settle_eggs(queue: &mut PlayerQueue, inventory: &mut Inventory) {
+    for summoned in std::mem::take(&mut queue.egg_answers) {
+        let egg = queue.eggs_waiting.answer(inventory, summoned.is_ok());
+        if let (Some(egg), Err(error)) = (egg, summoned) {
+            queue.out.told.extend(egg_refusal(&error));
+            diag::warn!(World, "Minecraft {egg} hatched nothing: {error}");
+        }
+    }
+}
+
+fn egg_refusal(error: &str) -> Option<minecraft_commands::Clientbound> {
+    (error == minecraft_terrain::spawn_egg::SPAWNER_DISABLED).then(|| minecraft_commands::Clientbound::System {
+        text: minecraft_commands::Text::translate(error, Vec::new()),
+        overlay: false,
+    })
 }
 
 fn settle_merchant_news(queue: &mut PlayerQueue, inventory: &mut Inventory) {
@@ -305,6 +326,7 @@ impl PlayerQueues {
             let Some(queue) = self.0.get_mut(&hit.player_id) else {
                 continue;
             };
+            queue.out.pushes.extend(explosion_push(&hit.kind));
             let Some(feet) = queue.feet else {
                 continue;
             };
@@ -372,6 +394,11 @@ impl PlayerQueues {
         for (player, bars) in output.raid_bars.take().into_iter().flatten() {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.out.raid_bars = Some(bars);
+            }
+        }
+        for (player, bars) in output.wither_bars.take().into_iter().flatten() {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.wither_bars = Some(bars);
             }
         }
         unclaimed
@@ -467,6 +494,8 @@ impl Entities {
             heard: Default::default(),
             spawner_tags: Vec::new(),
             mount_viewers: HashMap::new(),
+            player_boxes: Vec::new(),
+            held_names: HashMap::new(),
         }
     }
 
@@ -538,6 +567,70 @@ impl Entities {
         self.view.lids.block_event(scene, pos, id, count);
         let param = i32::try_from(count).unwrap_or(i32::MAX);
         self.heard.push(crate::heard::Said::all(crate::heard::Heard::Block { pos: [pos.0, pos.1, pos.2], kind: id, param }));
+    }
+
+    pub fn set_player_boxes(&mut self, boxes: Vec<crate::pvp::PlayerBox>) {
+        self.player_boxes = boxes;
+    }
+
+    pub fn player_box(&self, id: u64) -> Option<[f64; 6]> {
+        self.player_boxes.iter().find(|player| player.id == id).map(|player| player.bounds)
+    }
+
+    pub fn set_held_names(&mut self, names: HashMap<u64, String>) {
+        self.held_names = names;
+    }
+
+    pub fn held_name(&self, id: u64) -> Option<String> {
+        self.held_names.get(&id).cloned()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pvp_attack(&self, player: u64, held: Option<&ItemStack>, eye: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: &Blow) -> crate::pvp::Attack {
+        crate::pvp::Attack {
+            attacker: player,
+            feet: eye - DVec3::Y * f64::from(EYE_HEIGHT),
+            yaw,
+            attack_damage,
+            strength,
+            sprinting: blow.sprinting,
+            can_critical: blow.can_critical,
+            can_sweep: blow.can_sweep,
+            bonus: minecraft_terrain::melee::weapon_bonus(held),
+            disable_shield_ticks: crate::pvp::shield_disable_ticks(&self.recipes, held),
+            pvp: self.pvp,
+        }
+    }
+
+    fn strike_players(&mut self, attacker: u64, blows: Vec<crate::pvp::Blow>) {
+        for blow in blows {
+            self.players.queue(blow.victim).out.hits.push(crate::pvp::hit(&blow, attacker));
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn punch_player(&mut self, player: u64, inventory: &Inventory, selected: usize, eye: DVec3, look: DVec3, yaw: f32, attack_damage: f64, strength: f32, blow: &Blow) -> Option<bool> {
+        let (victim, distance) = crate::pvp::player_on_ray(&self.player_boxes, player, eye, look, blow.reach)?;
+        let frame = minecraft_terrain::item_frame::on_ray(&self.view.frames, eye, look, blow.reach).map(|(_, distance)| distance);
+        let nearer = self.entity_distance(player, eye, look, blow.reach).into_iter().chain(frame).chain(blow.block).any(|other| other <= distance);
+        if nearer {
+            return None;
+        }
+        let victim = *self.player_boxes.iter().find(|box_| box_.id == victim)?;
+        let held = inventory.slots.get(selected).and_then(Option::as_ref);
+        let attack = self.pvp_attack(player, held, eye, yaw, attack_damage, strength, blow);
+        let hit = crate::pvp::melee(&attack, &victim);
+        for sound in &hit.sounds {
+            self.sound(sound, attack.feet, 1.0, 1.0);
+        }
+        let mut blows: Vec<_> = hit.blow.into_iter().collect();
+        if hit.hurt && hit.sweep {
+            blows.extend(crate::pvp::swept(&attack, victim.bounds, Some(victim.id), &self.player_boxes));
+            let swing = minecraftoss_entities::world::PlayerAttack { player_id: player, position: attack.feet, yaw, attack_damage, strength, sprinting: blow.sprinting, can_critical: blow.can_critical, can_sweep: blow.can_sweep };
+            self.server.mob_sweep(player, swing, victim.bounds, attack.bonus.damage);
+        }
+        self.strike_players(player, blows);
+        Some(hit.hurt)
     }
 
     pub fn mob_box(&self, id: u64) -> Option<[f64; 6]> {
@@ -806,13 +899,20 @@ impl Entities {
             can_critical: blow.can_critical,
             can_sweep: blow.can_sweep,
         };
-        self.server.mob_action(player, hit, Some(attack), inventory, selected, false);
+        self.server.mob_action(player, hit, Some(attack), inventory, selected, blow.creative);
+        let held = inventory.slots.get(selected).and_then(Option::as_ref);
+        let pvp = self.pvp_attack(player, held, eye, yaw, attack_damage, strength, &blow);
+        if let Some(bounds) = self.mob_box(hit.id()) {
+            let blows = crate::pvp::swept(&pvp, bounds, None, &self.player_boxes);
+            self.strike_players(player, blows);
+        }
         true
     }
 
     pub fn mob_distance(&self, player: u64, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         let frame = minecraft_terrain::item_frame::on_ray(&self.view.frames, eye, look, reach).map(|(_, distance)| distance);
-        self.entity_distance(player, eye, look, reach).into_iter().chain(frame).min_by(f64::total_cmp)
+        let other = crate::pvp::player_on_ray(&self.player_boxes, player, eye, look, reach).map(|(_, distance)| distance);
+        self.entity_distance(player, eye, look, reach).into_iter().chain(frame).chain(other).min_by(f64::total_cmp)
     }
 
     fn entity_distance(&self, player: u64, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
@@ -1004,7 +1104,7 @@ impl Entities {
             self.view.client.set_own_vehicle(Some(vehicle));
         }
         let mob = self.view.client.get(vehicle)?;
-        let partial = (self.view.clock / self.view.tick_seconds).clamp(0.0, 1.0);
+        let partial = (self.view.ride_clock / self.view.tick_seconds).clamp(0.0, 1.0);
         let pose = mob.pose(partial as f32);
         let point = self.view.world.passenger_point(vehicle)?;
         let strider = self.view.world.striders().iter().any(|e| e.id == vehicle);
@@ -1441,6 +1541,7 @@ impl Entities {
                         (actor.id, minecraft_terrain::server::PlayerOmens { bad_omen: actor.view.omens.bad_omen, raid_omens })
                     })
                     .collect(),
+                view_distance: self.view_distance,
             }, batch.normal.clone());
         }
         let mut changes = Vec::new();
@@ -1481,6 +1582,7 @@ impl Entities {
             let is_player = |id: u64| players.0.contains_key(&id);
             unharmed_without_pvp(&mut output.players_struck, self.pvp, is_player);
             unharmed_by_potions_without_pvp(&mut output.player_potions, self.pvp, is_player);
+            spared_by_blasts_without_pvp(&mut output.player_hits, &mut output.players_pushed, self.pvp, is_player);
             let unclaimed = {
                 let world = mobs.as_deref().unwrap_or(&self.view.world);
                 let dragons = &self.view.dragons;
@@ -1579,12 +1681,7 @@ impl Entities {
             let Some(queue) = self.players.0.get_mut(&actor.id) else {
                 continue;
             };
-            for summoned in std::mem::take(&mut queue.egg_answers) {
-                let egg = queue.eggs_waiting.answer(actor.inventory, summoned.is_ok());
-                if let (Some(egg), Err(error)) = (egg, summoned) {
-                    diag::warn!(World, "Minecraft {egg} hatched nothing: {error}");
-                }
-            }
+            settle_eggs(queue, actor.inventory);
             for slots in std::mem::take(&mut queue.mob_slots) {
                 for (slot, stack) in slots {
                     if let Some(held) = actor.inventory.slots.get_mut(slot) {
@@ -1750,9 +1847,29 @@ fn unharmed_by_potions_without_pvp(hits: &mut Vec<minecraft_terrain::potions::Pl
     }
 }
 
+fn spared_by_blasts_without_pvp(hits: &mut Vec<minecraftoss_entities::world::PlayerHit>, pushed: &mut Vec<(u64, DVec3)>, pvp: bool, is_player: impl Fn(u64) -> bool) {
+    if pvp {
+        return;
+    }
+    hits.retain(|hit| match hit.kind {
+        PlayerHitKind::Explosion { knockback, by: Some(by) } if is_player(by) => {
+            pushed.push((hit.player_id, knockback));
+            false
+        }
+        _ => true,
+    });
+}
+
 fn struck_hit(feet: [f64; 3], struck: &minecraft_terrain::thrown::PlayerStruck) -> Hit {
     let from = DVec3::from_array(feet) - struck.velocity.normalize_or_zero();
     (struck.damage, Some(from.to_array()), Some([-struck.velocity.x, -struck.velocity.z]), crate::death::DamageCause::Generic, Default::default(), None)
+}
+
+fn explosion_push(kind: &PlayerHitKind) -> Option<DVec3> {
+    match *kind {
+        PlayerHitKind::Explosion { knockback, .. } | PlayerHitKind::BadRespawnPoint { knockback } => Some(knockback),
+        _ => None,
+    }
 }
 
 fn melee_push(kind: &PlayerHitKind) -> crate::impulse::MeleePush {
@@ -1775,17 +1892,19 @@ fn mob_hit(
     };
     let toward = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
-        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
-        PlayerHitKind::Explosion { knockback } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
+        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::WitherSkull { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
+        PlayerHitKind::Explosion { knockback, .. } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
         PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at } => [at.x - feet[0], at.z - feet[2]],
     };
-    let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. })).then_some(toward);
+    let ownerless_skull = matches!(hit.kind, PlayerHitKind::WitherSkull { .. }) && hit.source.is_none();
+    let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. }) && !ownerless_skull).then_some(toward);
     let attack = match hit.kind {
         PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
         PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
         PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. } => crate::death::MobAttack::Explosion,
         PlayerHitKind::Fireball { ignite_ticks, .. } if ignite_ticks > 0 => crate::death::MobAttack::SmallFireball,
         PlayerHitKind::Fireball { .. } => crate::death::MobAttack::Fireball,
+        PlayerHitKind::WitherSkull { .. } => crate::death::MobAttack::WitherSkull,
         PlayerHitKind::ShulkerBullet { .. } => crate::death::MobAttack::MobProjectile,
         PlayerHitKind::Trident { .. } => crate::death::MobAttack::Trident,
         PlayerHitKind::Spit { .. } => crate::death::MobAttack::Spit,
@@ -1794,15 +1913,17 @@ fn mob_hit(
     };
     let cause = match hit.kind {
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
-        PlayerHitKind::Magic { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
+        PlayerHitKind::Magic { .. } | PlayerHitKind::WitherSkull { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
         PlayerHitKind::Fireworks { .. } if hit.source.is_none() || type_id.is_none() => crate::death::DamageCause::Fireworks,
+        PlayerHitKind::Explosion { by: Some(by), .. } => crate::death::DamageCause::PlayerExplosion { client: u32::try_from(by).unwrap_or(u32::MAX) },
         _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
     };
     let scales = matches!(hit.kind, PlayerHitKind::Explosion { .. } | PlayerHitKind::BadRespawnPoint { .. }) || hit.source.is_some();
     let damage = difficulty_scaled(hit.damage, difficulty, scales);
     let effect = match hit.kind {
-        PlayerHitKind::Arrow { effect, .. } => effect,
-        PlayerHitKind::ShulkerBullet { .. } => Some((EffectKind::Levitation, minecraftoss_entities::shulker_bullet::LEVITATION_TICKS)),
+        PlayerHitKind::Arrow { effect, .. } => effect.map(|(kind, ticks)| (kind, ticks, 0)),
+        PlayerHitKind::ShulkerBullet { .. } => Some((EffectKind::Levitation, minecraftoss_entities::shulker_bullet::LEVITATION_TICKS, 0)),
+        PlayerHitKind::WitherSkull { wither_ticks, .. } => (wither_ticks > 0).then_some((EffectKind::Wither, wither_ticks, 1)),
         _ => None,
     };
     (damage > 0.0).then_some((damage, from, toward, cause, melee_push(&hit.kind), effect))
@@ -1893,6 +2014,7 @@ pub(crate) fn encode(hit: MobHit) -> u64 {
         MobHit::Illager(_) => ILLAGER_KEY,
         MobHit::Vex(_) => VEX_KEY,
         MobHit::Ravager(_) => RAVAGER_KEY,
+        MobHit::Wither(_) => WITHER_KEY,
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
@@ -1928,6 +2050,7 @@ pub(crate) fn decode(key: u64) -> Option<MobHit> {
         ILLAGER_KEY => MobHit::Illager(id),
         VEX_KEY => MobHit::Vex(id),
         RAVAGER_KEY => MobHit::Ravager(id),
+        WITHER_KEY => MobHit::Wither(id),
         _ => return None,
     })
 }
@@ -1945,6 +2068,7 @@ const SNOW_GOLEM_KEY: u64 = 31;
 const ILLAGER_KEY: u64 = 32;
 const VEX_KEY: u64 = 33;
 const RAVAGER_KEY: u64 = 34;
+const WITHER_KEY: u64 = 35;
 pub(crate) const FRAME_KEY: u64 = 28 << 56;
 pub const FLAT_HIT: u64 = 1 << 55;
 
@@ -2310,6 +2434,13 @@ mod tests {
     }
 
     #[test]
+    fn a_wither_hit_box_encodes_and_decodes() {
+        let key = encode(MobHit::Wither(93));
+        assert_eq!(key >> 56, 35);
+        assert_eq!(decode(key), Some(MobHit::Wither(93)));
+    }
+
+    #[test]
     fn a_ravager_hit_box_encodes_and_decodes() {
         let key = encode(MobHit::Ravager(91));
         assert_eq!(key >> 56, 34);
@@ -2446,10 +2577,34 @@ mod tests {
         let (_, from, toward, cause, _, effect) = mob_hit(&hit, [0.0; 3], 2, Some("minecraft:shulker")).unwrap();
         assert_eq!((from, toward), (None, Some([-0.15, -0.0])));
         assert_eq!(cause, crate::death::DamageCause::Mob { id: 9, type_id: "minecraft:shulker", attack: crate::death::MobAttack::MobProjectile });
-        assert_eq!(effect, Some((EffectKind::Levitation, 200)));
+        assert_eq!(effect, Some((EffectKind::Levitation, 200, 0)));
         let ownerless = minecraftoss_entities::world::PlayerHit { source: None, ..hit };
         let (damage, _, _, cause, _, effect) = mob_hit(&ownerless, [0.0; 3], 3, None).unwrap();
-        assert_eq!((damage, cause, effect), (4.0, crate::death::DamageCause::Generic, Some((EffectKind::Levitation, 200))));
+        assert_eq!((damage, cause, effect), (4.0, crate::death::DamageCause::Generic, Some((EffectKind::Levitation, 200, 0))));
+    }
+
+    #[test]
+    fn a_wither_skull_hurts_by_difficulty_and_withers_two_and_without_its_wither_is_magic() {
+        let hit = minecraftoss_entities::world::PlayerHit {
+            player_id: HOST,
+            damage: 8.0,
+            kind: PlayerHitKind::WitherSkull { velocity: DVec3::new(0.0, 0.0, 0.3), wither_ticks: 200 },
+            source: Some(9),
+        };
+        let damage = |difficulty| mob_hit(&hit, [0.0; 3], difficulty, Some("minecraft:wither")).map(|h| h.0);
+        assert_eq!((damage(0), damage(1), damage(2), damage(3)), (None, Some(5.0), Some(8.0), Some(12.0)));
+        let (_, from, toward, cause, _, effect) = mob_hit(&hit, [0.0; 3], 2, Some("minecraft:wither")).unwrap();
+        assert_eq!((from, toward), (None, Some([-0.0, -0.3])));
+        assert_eq!(cause, crate::death::DamageCause::Mob { id: 9, type_id: "minecraft:wither", attack: crate::death::MobAttack::WitherSkull });
+        assert_eq!(cause.damage_type(), "minecraft:wither_skull");
+        assert!(!cause.bypasses_armor());
+        assert_eq!(effect, Some((EffectKind::Wither, 200, 1)));
+        let easy = minecraftoss_entities::world::PlayerHit { kind: PlayerHitKind::WitherSkull { velocity: DVec3::Z, wither_ticks: 0 }, ..hit };
+        assert_eq!(mob_hit(&easy, [0.0; 3], 1, Some("minecraft:wither")).unwrap().5, None);
+        let ownerless = minecraftoss_entities::world::PlayerHit { source: None, damage: 5.0, ..hit };
+        let (damage, _, toward, cause, _, effect) = mob_hit(&ownerless, [0.0; 3], 3, None).unwrap();
+        assert_eq!((damage, toward, cause), (5.0, None, crate::death::DamageCause::Magic));
+        assert_eq!(effect, Some((EffectKind::Wither, 200, 1)));
     }
 
     #[test]
@@ -2584,6 +2739,35 @@ mod tests {
         let hits = std::mem::take(&mut queues.queue(FRIEND).out.hits);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0], (4.0, None, Some([2.0, -0.0]), crate::death::DamageCause::mob(crate::death::MobAttack::Arrow, Some(77), Some("minecraft:skeleton")), Default::default(), None));
+    }
+
+    #[test]
+    fn an_explosion_pushes_the_player_it_hit_even_when_it_does_no_damage() {
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output::default();
+        let knockback = DVec3::new(0.6, 0.3, 0.0);
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback, by: None }, source: None });
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: HOST, damage: 9.0, kind: PlayerHitKind::BadRespawnPoint { knockback: DVec3::Z }, source: None });
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: HOST, damage: 4.0, kind: PlayerHitKind::Arrow { velocity: DVec3::X, effect: None }, source: None });
+        queues.route(&mut output, 2, |_| None);
+        let friend = queues.queue(FRIEND);
+        assert_eq!(friend.out.pushes, [knockback]);
+        assert_eq!(friend.out.hits.len(), 1);
+        assert_eq!(friend.out.hits[0].3, crate::death::DamageCause::Explosion);
+        assert_eq!(queues.queue(HOST).out.pushes, [DVec3::Z], "an arrow pushes through its hit, not here");
+        assert_eq!(queues.queue(HOST).out.hits.len(), 2);
+        let mut output = minecraft_terrain::server::Output::default();
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback, by: None }, source: None });
+        let mut queues = two_queues();
+        queues.route(&mut output, 0, |_| None);
+        let friend = queues.queue(FRIEND);
+        assert!(friend.out.hits.is_empty(), "no damage on peaceful");
+        assert_eq!(friend.out.pushes, [knockback], "the blast still pushes");
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output::default();
+        output.player_hits.push(minecraftoss_entities::world::PlayerHit { player_id: FRIEND, damage: 20.0, kind: PlayerHitKind::Explosion { knockback, by: Some(HOST) }, source: None });
+        queues.route(&mut output, 2, |_| None);
+        assert_eq!(queues.queue(FRIEND).out.hits[0].3, crate::death::DamageCause::PlayerExplosion { client: 0 }, "a player's TNT names them");
     }
 
     #[test]
@@ -2924,6 +3108,40 @@ mod tests {
     }
 
     #[test]
+    fn a_punch_queues_one_hit_on_the_player_in_front_and_none_without_pvp() {
+        let Some(mut entities) = friend_world() else {
+            return;
+        };
+        let feet = [10.5, 201.0, 10.5];
+        let host = crate::pvp::PlayerBox::standing(HOST, feet, 1.8, false);
+        let friend = crate::pvp::PlayerBox::standing(FRIEND, [10.5, 201.0, 12.5], 1.8, false);
+        let other = crate::pvp::PlayerBox::standing(2, [11.5, 201.0, 13.0], 1.8, false);
+        entities.set_player_boxes(vec![host, friend, other]);
+        let eye = DVec3::from_array(feet) + DVec3::Y * f64::from(EYE_HEIGHT);
+        let blow = Blow { sprinting: false, can_critical: false, can_sweep: false, reach: 3.0, block: None, creative: false };
+        let inventory = Inventory::default();
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, DVec3::Z, 0.0, 1.0, 1.0, &blow), Some(true));
+        let hits = entities.take_player_outputs(FRIEND).hits;
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].0, hits[0].3), (1.0, crate::death::DamageCause::Player { client: 0 }));
+        assert!(entities.take_player_outputs(HOST).hits.is_empty(), "never the attacker");
+        assert!(entities.take_player_outputs(2).hits.is_empty(), "no sweep without a sword");
+        assert_eq!(entities.mob_distance(HOST, eye, DVec3::Z, 3.0).map(|d| (d * 100.0).round()), Some(170.0));
+        let sweep = Blow { can_sweep: true, ..blow };
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, DVec3::Z, 0.0, 1.0, 1.0, &sweep), Some(true));
+        assert_eq!(entities.take_player_outputs(FRIEND).hits.len(), 1);
+        assert_eq!(entities.take_player_outputs(2).hits.len(), 1, "the sweep reaches the player beside the target");
+        let wall = Blow { block: Some(1.0), ..blow };
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, DVec3::Z, 0.0, 1.0, 1.0, &wall), None);
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, -DVec3::Z, 0.0, 1.0, 1.0, &blow), None);
+        entities.pvp = false;
+        assert_eq!(entities.punch_player(HOST, &inventory, 0, eye, DVec3::Z, 0.0, 1.0, 1.0, &sweep), Some(false));
+        assert!(entities.take_player_outputs(FRIEND).hits.is_empty());
+        assert!(entities.take_player_outputs(2).hits.is_empty());
+        assert!(entities.view.sounds.iter().any(|(event, ..)| event == crate::pvp::NO_DAMAGE_SOUND));
+    }
+
+    #[test]
     fn a_host_drop_reaches_the_level_and_the_friend_picks_it_up() {
         let Some(mut entities) = friend_world() else {
             return;
@@ -3029,6 +3247,31 @@ mod tests {
     }
 
     #[test]
+    fn with_pvp_off_a_players_blast_only_pushes_players() {
+        let queues = two_queues();
+        let blast = |player_id: u64, by: Option<u64>| minecraftoss_entities::world::PlayerHit { player_id, damage: 12.0, kind: PlayerHitKind::Explosion { knockback: DVec3::new(0.0, 0.2, player_id as f64), by }, source: None };
+        let all = vec![blast(HOST, Some(FRIEND)), blast(FRIEND, Some(FRIEND)), blast(FRIEND, Some(77)), blast(HOST, None)];
+        let is_player = |id: u64| queues.0.contains_key(&id);
+        let (mut kept, mut pushed) = (all.clone(), Vec::new());
+        spared_by_blasts_without_pvp(&mut kept, &mut pushed, true, is_player);
+        assert_eq!(kept.len(), 4, "pvp on");
+        assert!(pushed.is_empty());
+        spared_by_blasts_without_pvp(&mut kept, &mut pushed, false, is_player);
+        assert_eq!(kept.iter().map(|hit| hit.player_id).collect::<Vec<_>>(), [FRIEND, HOST], "a blast by someone gone, and an ownerless one, still hurt");
+        assert_eq!(pushed, [(HOST, DVec3::new(0.0, 0.2, HOST as f64)), (FRIEND, DVec3::new(0.0, 0.2, FRIEND as f64))], "the igniter included");
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output { player_hits: all[..2].to_vec(), ..Default::default() };
+        let is_player = |id: u64| id == HOST || id == FRIEND;
+        spared_by_blasts_without_pvp(&mut output.player_hits, &mut output.players_pushed, false, is_player);
+        queues.route(&mut output, 2, |_| None);
+        for player in [HOST, FRIEND] {
+            let queue = queues.queue(player);
+            assert!(queue.out.hits.is_empty(), "no hearts lost");
+            assert_eq!(queue.out.pushes.len(), 1, "pushed once");
+        }
+    }
+
+    #[test]
     fn with_pvp_off_a_players_harming_potion_spares_every_player_but_other_effects_land() {
         use minecraft_terrain::potions::{PlayerPotion, PlayerPotionHit, PotionEffect};
         let queues = two_queues();
@@ -3042,5 +3285,35 @@ mod tests {
         assert_eq!(kept, all, "pvp on");
         unharmed_by_potions_without_pvp(&mut kept, false, is_player);
         assert_eq!(kept, vec![hit(FRIEND, harm(Some(77))), hit(FRIEND, harm(None)), hit(HOST, poison)], "a witch's potion and a poison still land");
+    }
+
+    #[test]
+    fn a_spawner_that_refuses_an_egg_tells_only_the_player_who_used_it() {
+        let mut queues = two_queues();
+        let mut host = Inventory::default();
+        let mut friend = Inventory::default();
+        host.slots[0] = Some(ItemStack::new("minecraft:pig_spawn_egg", 2));
+        friend.slots[0] = Some(ItemStack::new("minecraft:zombie_spawn_egg", 3));
+        assert!(queues.queue(HOST).eggs_waiting.send_from(&host, 0, true));
+        assert!(queues.queue(FRIEND).eggs_waiting.send_from(&friend, 0, true));
+        assert!(queues.queue(FRIEND).eggs_waiting.send_from(&friend, 0, true));
+        let mut output = minecraft_terrain::server::Output::default();
+        output.summoned.push((FRIEND, Err(minecraft_terrain::spawn_egg::SPAWNER_DISABLED.to_owned())));
+        output.summoned.push((HOST, Err("no monster spawner at (4, 205, 4)".to_owned())));
+        output.summoned.push((FRIEND, Ok("minecraft:zombie".to_owned())));
+        queues.route(&mut output, 2, |_| None);
+        settle_eggs(queues.queue(HOST), &mut host);
+        settle_eggs(queues.queue(FRIEND), &mut friend);
+        let told = std::mem::take(&mut queues.queue(FRIEND).out.told);
+        assert_eq!(told.len(), 1, "one line for the refused egg, none for the hatched one");
+        let minecraft_commands::Clientbound::System { text, overlay } = &told[0] else {
+            panic!("a system line");
+        };
+        assert!(!overlay, "vanilla's sendSystemMessage goes to the chat");
+        let language = std::collections::HashMap::from([("advMode.notEnabled.spawner".to_owned(), "Spawner blocks are not enabled".to_owned())]);
+        assert_eq!(text.resolve(&|key| language.get(key).cloned()).text, "Spawner blocks are not enabled");
+        assert!(queues.queue(HOST).out.told.is_empty(), "another refusal says nothing in the chat");
+        assert_eq!(host.slots[0].as_ref().map(|egg| egg.count), Some(2), "a refused egg is kept");
+        assert_eq!(friend.slots[0].as_ref().map(|egg| egg.count), Some(2), "only the hatched egg is spent");
     }
 }

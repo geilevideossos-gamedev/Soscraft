@@ -369,6 +369,7 @@ impl Survival {
             self.status.health = (self.status.health - lost).max(0.0);
             self.status.food.add_exhaustion(HURT_EXHAUSTION);
             self.synced = Some(health);
+            self.hurts += 1;
         }
     }
 
@@ -541,12 +542,13 @@ impl Survival {
         &self,
         language: &std::collections::HashMap<String, String>,
         present: impl Fn(u64) -> bool,
+        killer: impl Fn(u32) -> Option<crate::death::Killer>,
     ) -> DeathLine {
-        self.combat.death_line(language, present)
+        self.combat.death_line(language, present, killer)
     }
 
-    pub fn death_text(&self, victim: &str, present: impl Fn(u64) -> bool) -> minecraft_commands::Text {
-        self.combat.death_text(victim, present)
+    pub fn death_text(&self, victim: &str, present: impl Fn(u64) -> bool, killer: impl Fn(u32) -> Option<crate::death::Killer>) -> minecraft_commands::Text {
+        self.combat.death_text(victim, present, killer)
     }
 
     pub fn last_feet(&self) -> Option<[f64; 3]> {
@@ -846,14 +848,14 @@ impl Survival {
         }
     }
 
-    pub fn struck(&mut self, damage: f32, blocked: f32, armor: Armor, from: Option<[f64; 3]>, cause: DamageCause, effect: Option<(EffectKind, u32)>) -> bool {
+    pub fn struck(&mut self, damage: f32, blocked: f32, armor: Armor, from: Option<[f64; 3]>, cause: DamageCause, effect: Option<(EffectKind, u32, u8)>) -> bool {
         if damage <= blocked {
             self.hurt_blocked(cause);
             return false;
         }
         let landed = self.hurt(damage - blocked, armor, from, cause);
-        if let (true, Some((kind, ticks))) = (landed, effect) {
-            self.status.add_effect(kind, ticks, 0);
+        if let (true, Some((kind, ticks, amplifier))) = (landed, effect) {
+            self.status.add_effect(kind, ticks, amplifier);
         }
         landed
     }
@@ -1412,7 +1414,7 @@ mod tests {
     #[test]
     fn a_tipped_arrow_gives_its_effect_only_when_it_hurts() {
         let arrow = DamageCause::mob(crate::death::MobAttack::Arrow, Some(3), Some("minecraft:bogged"));
-        let poison = Some((EffectKind::Poison, 100));
+        let poison = Some((EffectKind::Poison, 100, 0));
         let mut survival = fresh();
         assert!(survival.struck(3.0, 0.0, Armor::default(), None, arrow, poison));
         assert_eq!(survival.status.effect(EffectKind::Poison).map(|e| (e.duration, e.amplifier)), Some((100, 0)));
@@ -1429,9 +1431,19 @@ mod tests {
     }
 
     #[test]
+    fn a_wither_skull_gives_wither_two_and_is_told_as_shot_by_a_skull() {
+        let skull = DamageCause::mob(crate::death::MobAttack::WitherSkull, Some(3), Some("minecraft:wither"));
+        let mut survival = fresh();
+        assert!(survival.struck(8.0, 0.0, Armor::default(), None, skull, Some((EffectKind::Wither, 200, 1))));
+        assert_eq!(survival.status.effect(EffectKind::Wither).map(|e| (e.duration, e.amplifier)), Some((200, 1)));
+        assert_eq!(survival.status.health, 12.0);
+        assert_eq!(skull.damage_type(), "minecraft:wither_skull");
+    }
+
+    #[test]
     fn a_shulker_bullet_lifts_the_player_only_when_it_hurts() {
         let bullet = DamageCause::mob(crate::death::MobAttack::MobProjectile, Some(3), Some("minecraft:shulker"));
-        let levitation = Some((EffectKind::Levitation, 200));
+        let levitation = Some((EffectKind::Levitation, 200, 0));
         let mut survival = fresh();
         assert!(survival.struck(4.0, 0.0, Armor::default(), None, bullet, levitation));
         assert_eq!(survival.status.effect(EffectKind::Levitation).map(|e| (e.duration, e.amplifier)), Some((200, 0)));
@@ -1915,7 +1927,7 @@ mod tests {
         assert_eq!(survival.status.food.exhaustion, exhaustion);
         assert_eq!(survival.source, Some([1.0, 64.0, 2.0]));
         assert_eq!(
-            survival.combat.death_line(&std::collections::HashMap::new(), |_| false).message,
+            survival.combat.death_line(&std::collections::HashMap::new(), |_| false, |_| None).message,
             "death.attack.magic"
         );
     }
@@ -2359,7 +2371,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
-        assert_eq!(survival.death_line(&language, |_| false).message, "%1$s was killed");
+        assert_eq!(survival.death_line(&language, |_| false, |_| None).message, "%1$s was killed");
         assert_eq!(survival.settle(100, 100).damage, Some((100, None)));
         survival.respawn();
         assert!(!survival.killed());
@@ -3119,7 +3131,7 @@ mod tests {
     }
 
     fn death(survival: &Survival) -> (String, String) {
-        let line = survival.death_line(&death_language(), |_| true);
+        let line = survival.death_line(&death_language(), |_| true, |_| None);
         (line.message, line.killer)
     }
 

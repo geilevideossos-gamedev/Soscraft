@@ -219,6 +219,7 @@ mod tests {
             ToServer::RecipeBookSettings { .. } => 14,
             ToServer::RecipeSeen(_) => 15,
             ToServer::OpenMountInventory => 16,
+            ToServer::Skate(_) => 17,
         }
     }
 
@@ -257,6 +258,28 @@ mod tests {
             ToClient::Sleeping { .. } => 30,
             ToClient::OpenBook { .. } => 31,
             ToClient::RecipeBook(_) => 32,
+            ToClient::Animate { .. } => 33,
+            ToClient::SkateRefused { .. } => 34,
+        }
+    }
+
+    fn skate_report(on: bool) -> SkateReport {
+        SkateReport {
+            tick: 40,
+            on,
+            airborne: on,
+            origin: [-12.5, 3600.25, 70.0],
+            yaw: -135.5,
+            pose: on.then(|| Box::new(skate_pose(1.0))),
+        }
+    }
+
+    fn skate_pose(seed: f32) -> SkatePose {
+        SkatePose {
+            root: std::array::from_fn(|i| seed + i as f32 * 0.5),
+            bones: std::array::from_fn(|bone| {
+                std::array::from_fn(|i| seed * -2.0 + bone as f32 + i as f32 * 0.125)
+            }),
         }
     }
 
@@ -355,6 +378,7 @@ mod tests {
                 },
             }),
             ToServer::OpenMountInventory,
+            ToServer::Skate(skate_report(false)),
         ]
     }
 
@@ -393,6 +417,7 @@ mod tests {
             using: Some(UsingView {
                 hand: Hand::Off,
                 ticks: 9,
+                kind: UseKind::Eat { duration: 16 },
             }),
             jump_bar: Some(0.75),
             ..PlayerView::default()
@@ -696,6 +721,11 @@ mod tests {
                 open: true,
                 filtering: true,
             }),
+            ToClient::Animate {
+                client: 3,
+                offhand: true,
+            },
+            ToClient::SkateRefused { tick: 41 },
         ]
     }
 
@@ -710,7 +740,7 @@ mod tests {
     #[test]
     fn every_message_to_the_server_round_trips() {
         let messages = to_server();
-        let mut seen = [false; 17];
+        let mut seen = [false; 18];
         for message in &messages {
             seen[server_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -729,7 +759,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 33];
+        let mut seen = [false; 35];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -848,8 +878,8 @@ mod tests {
     }
 
     #[test]
-    fn a_held_potion_colour_round_trips_on_protocol_5() {
-        assert_eq!(crate::PROTOCOL, 5);
+    fn a_held_potion_colour_round_trips_on_protocol_6() {
+        assert_eq!(crate::PROTOCOL, 6);
         let potion = GearItem {
             id: "minecraft:splash_potion".to_string(),
             glint: false,
@@ -878,6 +908,51 @@ mod tests {
     }
 
     #[test]
+    fn a_swing_takes_the_next_free_index_on_protocol_6() {
+        assert_eq!(crate::PROTOCOL, 6);
+        let main = ToClient::Animate {
+            client: 2,
+            offhand: false,
+        };
+        assert_eq!(client_index(&main), 33);
+        assert_eq!(encode(Lane::Reliable, &main).unwrap(), vec![33, 2, 0]);
+        let off = ToClient::Animate {
+            client: 2,
+            offhand: true,
+        };
+        assert_eq!(encode(Lane::Reliable, &off).unwrap(), vec![33, 2, 1]);
+        round_trip(Lane::Reliable, &main);
+        round_trip(Lane::Reliable, &off);
+    }
+
+    #[test]
+    fn a_player_view_says_what_kind_of_use_its_hand_is_in() {
+        assert_eq!(crate::PROTOCOL, 6);
+        let kinds = [
+            UseKind::Eat { duration: 32 },
+            UseKind::Eat { duration: 16 },
+            UseKind::Block,
+            UseKind::Charge,
+            UseKind::Scope,
+        ];
+        for kind in kinds {
+            let mut view = player_view();
+            view.using = Some(UsingView {
+                hand: Hand::Main,
+                ticks: 7,
+                kind,
+            });
+            let message = ToClient::Player(Box::new(view));
+            let bytes = encode(Lane::Reliable, &message).unwrap();
+            let ToClient::Player(back) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+                panic!("not a player view");
+            };
+            let using = back.using.expect("a use");
+            assert_eq!((using.hand, using.ticks, using.kind), (Hand::Main, 7, kind));
+        }
+    }
+
+    #[test]
     fn state_lane_messages_round_trip() {
         round_trip(
             Lane::State,
@@ -895,8 +970,57 @@ mod tests {
                 epoch: 3,
                 mobs: Blob(vec![7; 2000]),
                 entities: Blob(Vec::new()),
+                skaters: Blob(vec![9; 1153]),
             },
         );
+    }
+
+    #[test]
+    fn skater_poses_ride_the_state_frame_at_1152_bytes_a_skater() {
+        let pose = skate_pose(3.0);
+        assert_eq!(encode(Lane::State, &pose).unwrap().len(), 1152);
+        assert_eq!(1152, (1 + SKATE_BONES) * 12 * 4);
+        let skaters = Skaters(vec![(0, pose), (3, skate_pose(-1.5))]);
+        let bytes = encode(Lane::State, &skaters).unwrap();
+        assert_eq!(bytes.len(), 1 + 2 * (1 + 1152));
+        round_trip(Lane::State, &skaters);
+        round_trip(Lane::State, &Skaters::default());
+        let frame = StateFrame {
+            tick: 8,
+            epoch: 1,
+            skaters: Blob(bytes.clone()),
+            ..StateFrame::default()
+        };
+        let back = decode::<StateFrame>(Lane::State, &encode(Lane::State, &frame).unwrap()).unwrap();
+        assert_eq!(decode::<Skaters>(Lane::State, &back.skaters.0).unwrap(), skaters);
+        let report = StateUp::Skate(skate_report(true));
+        assert_eq!(encode(Lane::State, &report).unwrap().len(), 1 + 19 + 1 + 1152);
+        let off = ToServer::Skate(skate_report(false));
+        assert_eq!(encode(Lane::Reliable, &off).unwrap().len(), 1 + 19 + 1);
+    }
+
+    #[test]
+    fn a_skate_report_rides_the_state_lane_beside_the_hand_on_protocol_6() {
+        assert_eq!(crate::PROTOCOL, 6);
+        let hand = StateUp::Hand(HandState {
+            tick: 7,
+            attack: false,
+            use_item: true,
+            target: Target::Mob { id: 3 },
+        });
+        let skate = StateUp::Skate(skate_report(true));
+        assert_eq!(encode(Lane::State, &hand).unwrap()[0], 0);
+        assert_eq!(encode(Lane::State, &skate).unwrap()[0], 1);
+        round_trip(Lane::State, &hand);
+        round_trip(Lane::State, &skate);
+        let off = ToServer::Skate(skate_report(false));
+        assert_eq!(server_index(&off), 17);
+        assert_eq!(encode(Lane::Reliable, &off).unwrap()[0], 17);
+        round_trip(Lane::Reliable, &off);
+        let refused = ToClient::SkateRefused { tick: 300 };
+        assert_eq!(client_index(&refused), 34);
+        assert_eq!(encode(Lane::Reliable, &refused).unwrap(), vec![34, 0xac, 2]);
+        round_trip(Lane::Reliable, &refused);
     }
 
     #[test]

@@ -477,6 +477,7 @@ pub const SIMULATED_KINDS: &[&str] = &[
     "minecraft:vindicator",
     "minecraft:wandering_trader",
     "minecraft:witch",
+    "minecraft:wither",
     "minecraft:wither_skeleton",
     "minecraft:wolf",
     "minecraft:zoglin",
@@ -723,6 +724,10 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
         "minecraft:ravager" if tag.get("Passengers").is_none() => {
             let saved = crate::ravager_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::ravager_save::spawn(world, tag, saved)?
+        }
+        "minecraft:wither" => {
+            let saved = crate::wither_save::Saved { pos, yaw, health, persistent, no_ai, random };
+            crate::wither_save::spawn(world, tag, saved)?
         }
         "minecraft:hoglin" | "minecraft:zoglin" => {
             use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
@@ -1127,14 +1132,15 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
-        "minecraft:fireball" | "minecraft:small_fireball" => {
+        "minecraft:fireball" | "minecraft:small_fireball" | "minecraft:wither_skull" => {
             let motion = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
-            let kind = if kind == "minecraft:small_fireball" { minecraftoss_entities::fireball::FireballKind::Small } else { minecraftoss_entities::fireball::FireballKind::Large { explosion_power: int(tag, "ExplosionPower").unwrap_or(1) } };
+            let kind = if kind == "minecraft:wither_skull" { crate::wither_save::skull_kind(tag) } else if kind == "minecraft:small_fireball" { minecraftoss_entities::fireball::FireballKind::Small } else { minecraftoss_entities::fireball::FireballKind::Large { explosion_power: int(tag, "ExplosionPower").unwrap_or(1) } };
             let mut fireball = minecraftoss_entities::fireball::Fireball::shoot(kind, minecraftoss_entities::fireball::Shooter::Mob(0), pos, motion);
             fireball.owner = None;
             fireball.velocity = motion;
             fireball.acceleration_power = tag.get("acceleration_power").and_then(Tag::as_f64).unwrap_or(minecraftoss_entities::fireball::ACCELERATION_POWER);
             fireball.left_owner = int(tag, "LeftOwner").unwrap_or(1) != 0;
+            (fireball.yaw, fireball.pitch) = crate::wither_save::rotation(tag);
             return Some(world.spawn_fireball(fireball));
         }
         "minecraft:shulker_bullet" => {
@@ -1810,6 +1816,10 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         let ravager = &e.ravager;
         add(e.id, minecraftoss_entities::ravager::TYPE_ID, &ravager.body, ravager.yaw, ravager.health, ravager.persistence_required, crate::ravager_save::fields(e));
     }
+    for e in world.withers() {
+        let wither = &e.wither;
+        add(e.id, minecraftoss_entities::wither::TYPE_ID, &wither.body, wither.yaw, wither.health, wither.persistence_required, crate::wither_save::fields(e));
+    }
     for e in world.chickens() {
         let chicken = &e.chicken;
         let mut fields = age(&chicken.age);
@@ -1892,8 +1902,11 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         map.insert("id".to_owned(), Tag::String(fireball.kind.type_id().to_owned()));
         map.insert("Pos".to_owned(), doubles(fireball.position.to_array()));
         map.insert("Motion".to_owned(), doubles(fireball.velocity.to_array()));
-        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(0.0), Tag::Float(0.0)]));
+        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(fireball.yaw), Tag::Float(fireball.pitch)]));
         map.insert("acceleration_power".to_owned(), Tag::Double(fireball.acceleration_power));
+        if let minecraftoss_entities::fireball::FireballKind::WitherSkull { dangerous } = fireball.kind {
+            map.insert("dangerous".to_owned(), Tag::Byte(i8::from(dangerous)));
+        }
         map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(fireball.left_owner)));
         if let minecraftoss_entities::fireball::FireballKind::Large { explosion_power } = fireball.kind {
             map.insert("ExplosionPower".to_owned(), Tag::Byte(explosion_power.clamp(-128, 127) as i8));
@@ -2790,6 +2803,51 @@ mod tests {
         let f = &fresh.evoker_fangs_mut(back).unwrap().fangs;
         assert_eq!((f.warmup, f.yaw), (6, 45.0));
         assert_eq!(f.owner_uuid, Some(world.uuid_of(evoker)));
+    }
+
+    #[test]
+    fn a_wither_saves_and_loads_mid_charge_with_its_health() {
+        assert!(SIMULATED_KINDS.contains(&"minecraft:wither"));
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wither\",Pos:[1.5d,70.0d,2.5d],UUID:[I;4,5,6,30],Health:140.0f,Rotation:[90.0f,0.0f],Invul:117}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("withers load");
+        assert_eq!(world.entity_type(id), Some("minecraft:wither"));
+        {
+            let w = &world.wither_mut(id).unwrap().wither;
+            assert_eq!((w.health, w.invulnerable_ticks, w.yaw, w.body_yaw), (140.0, 117, 90.0, 90.0));
+            assert!(w.charging() && w.powered());
+        }
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(i, _)| *i == id).collect();
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("Invul"), Some(&Tag::Int(117)));
+        assert_eq!(saved.get("Health"), Some(&Tag::Float(140.0)));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, saved).expect("a saved wither loads");
+        assert_eq!(fresh.wither_mut(back).unwrap().wither.invulnerable_ticks, 117);
+        let plain = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wither\",Pos:[1.5d,70.0d,2.5d]}").unwrap();
+        let summoned = spawn_saved(&mut fresh, &plain).unwrap();
+        let w = &fresh.wither_mut(summoned).unwrap().wither;
+        assert_eq!((w.health, w.invulnerable_ticks), (300.0, 0), "a summoned wither does not charge");
+    }
+
+    #[test]
+    fn a_wither_skull_saves_and_loads_blue_with_its_turn() {
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wither_skull\",Pos:[1.5d,70.0d,2.5d],Motion:[0.0d,0.0d,0.2d],Rotation:[30.0f,-10.0f],dangerous:1b,acceleration_power:0.1d,LeftOwner:1b}").unwrap();
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).expect("wither skulls load");
+        assert_eq!(world.entity_type(id), Some("minecraft:wither_skull"));
+        let skull = &world.fireballs()[0].fireball;
+        assert_eq!(skull.kind, minecraftoss_entities::fireball::FireballKind::WitherSkull { dangerous: true });
+        assert_eq!((skull.yaw, skull.pitch, skull.velocity.z), (30.0, -10.0, 0.2));
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(i, _)| *i == id).collect();
+        let saved = &saved[0].1;
+        assert_eq!(saved.get("id").and_then(Tag::as_str), Some("minecraft:wither_skull"));
+        assert_eq!(saved.get("dangerous"), Some(&Tag::Byte(1)));
+        assert_eq!(saved.get("Rotation"), Some(&Tag::List(vec![Tag::Float(30.0), Tag::Float(-10.0)])));
+        let plain = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wither_skull\",Pos:[1.5d,70.0d,2.5d]}").unwrap();
+        let mut fresh = EntityWorld::default();
+        spawn_saved(&mut fresh, &plain).unwrap();
+        assert_eq!(fresh.fireballs()[0].fireball.kind, minecraftoss_entities::fireball::FireballKind::WitherSkull { dangerous: false });
     }
 
     #[test]

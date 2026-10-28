@@ -737,6 +737,18 @@ impl EntityWorld {
         out
     }
 
+    pub fn player_carriers(&self) -> Vec<u64> {
+        let mut out: Vec<u64> = self
+            .passengers
+            .iter()
+            .filter(|(_, riders)| riders.iter().any(|rider| matches!(rider, Rider::Player(_))))
+            .flat_map(|(&vehicle, _)| self.with_mob_riders(self.root_vehicle(vehicle)))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     pub fn mob_with_uuid(&self, uuid: u128) -> Option<u64> {
         self.mob_ids().find(|&id| self.uuid_of(id) == uuid)
     }
@@ -759,6 +771,7 @@ impl EntityWorld {
         self.illagers.retain(|e| !gone(e.id));
         self.vexes.retain(|e| !gone(e.id));
         self.ravagers.retain(|e| !gone(e.id));
+        self.withers.retain(|e| !gone(e.id));
         self.villagers.retain(|e| !gone(e.id));
         self.cows.retain(|e| !gone(e.id));
         self.sheep.retain(|e| !gone(e.id));
@@ -1217,5 +1230,59 @@ mod tests {
             entities.boost_ride(0),
             "a new boost after the last one ends"
         );
+    }
+
+    #[test]
+    fn player_carriers_is_the_stack_under_a_player() {
+        let world = floor("minecraft:netherrack", 8);
+        let mut entities = EntityWorld::default();
+        let adult = strider_at(&mut entities, DVec3::new(0.5, 64.0, 0.5));
+        let baby = baby_strider(&mut entities, DVec3::new(2.5, 64.0, 0.5));
+        let piglin = zombified_piglin(&mut entities, DVec3::new(-2.5, 64.0, 0.5));
+        let lone = strider_at(&mut entities, DVec3::new(5.5, 64.0, 5.5));
+        let jockey = zombified_piglin(&mut entities, DVec3::new(5.5, 64.0, -5.5));
+        let other = strider_at(&mut entities, DVec3::new(-5.5, 64.0, -5.5));
+        assert!(entities.player_carriers().is_empty());
+        assert!(entities.start_riding(Rider::Mob(baby), adult, &world));
+        assert!(entities.force_riding(Rider::Mob(piglin), adult));
+        assert!(entities.start_riding(Rider::Mob(jockey), lone, &world));
+        assert!(entities.player_carriers().is_empty(), "mob riders carry no player");
+        assert!(entities.start_riding(Rider::Player(0), baby, &world));
+        assert!(entities.start_riding(Rider::Player(1), other, &world));
+        let mut expected = vec![adult, baby, piglin, other];
+        expected.sort_unstable();
+        assert_eq!(entities.player_carriers(), expected);
+        assert!(entities.dismount_player(0, 0.0, &world).is_some());
+        assert_eq!(entities.player_carriers(), vec![other]);
+    }
+
+    #[test]
+    fn a_frozen_tick_moves_only_what_carries_a_player() {
+        let mut sea = lava_sea(16);
+        let (mut entities, ridden) = ridden_strider(&sea, 64.5, true, 0.0);
+        let idle = strider_at(&mut entities, DVec3::new(-6.5, 64.5, -6.5));
+        for _ in 0..5 {
+            entities.tick_with_players(&mut sea, &[]);
+        }
+        let time = entities.game_time();
+        let start = feet(&mut entities, ridden);
+        let ridden_ticks = entities.strider_mut(ridden).unwrap().tick_count;
+        let idle_at = feet(&mut entities, idle);
+        let idle_ticks = entities.strider_mut(idle).unwrap().tick_count;
+        for _ in 0..20 {
+            entities.tick_frozen_with_players_where(&mut sea, &[], &|_| true);
+        }
+        assert_eq!(entities.game_time(), time, "game time stays frozen");
+        let walked = feet(&mut entities, ridden);
+        assert!(walked.z > start.z + 2.0, "{start} {walked}");
+        assert_eq!(entities.strider_mut(ridden).unwrap().tick_count, ridden_ticks + 20);
+        assert_eq!(feet(&mut entities, idle), idle_at);
+        assert_eq!(entities.strider_mut(idle).unwrap().tick_count, idle_ticks);
+        let held = feet(&mut entities, ridden);
+        entities.tick_frozen_with_players_where(&mut sea, &[], &|position| position.z < 0.0);
+        assert_eq!(feet(&mut entities, ridden), held, "outside the ticking range it waits");
+        entities.tick_with_players(&mut sea, &[]);
+        assert_eq!(entities.game_time(), time + 1);
+        assert_eq!(entities.strider_mut(idle).unwrap().tick_count, idle_ticks + 1);
     }
 }

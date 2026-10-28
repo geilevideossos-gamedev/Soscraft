@@ -98,7 +98,7 @@ impl MobCategory {
         Some(match kind.trim_start_matches("minecraft:") {
             "zombie" | "zombie_villager" | "zombie_horse" | "skeleton" | "creeper" | "spider" | "enderman" | "witch" | "slime" | "husk" | "stray" | "drowned"
             | "bogged" | "parched" | "camel_husk" | "cave_spider" | "silverfish" | "phantom" | "blaze" | "ghast" | "magma_cube" | "piglin" | "hoglin"
-            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" | "vindicator" | "evoker" | "vex" | "ravager" => Self::Monster,
+            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "piglin_brute" | "zoglin" | "vindicator" | "evoker" | "vex" | "ravager" | "wither" => Self::Monster,
             "cow" | "pig" | "sheep" | "chicken" | "horse" | "donkey" | "mule" | "mooshroom" | "rabbit" | "wolf" | "fox" | "goat" | "llama" | "panda"
             | "polar_bear" | "cat" | "ocelot" | "parrot" | "frog" | "camel" | "armadillo" | "turtle" | "strider" => Self::Creature,
             "bat" => Self::Ambient,
@@ -402,6 +402,7 @@ fn follow_range_base(kind: &str) -> f64 {
         "minecraft:blaze" => 48.0,
         "minecraft:piglin_brute" => 12.0,
         "minecraft:pillager" | "minecraft:ravager" => 32.0,
+        "minecraft:wither" => 40.0,
         "minecraft:vindicator" | "minecraft:evoker" => 12.0,
         _ => 16.0,
     }
@@ -1331,7 +1332,7 @@ impl CreatureSpawns {
                 minecraftoss_core::entity_data::finalize_piglin_brute(&mut tag, &self.dimension, [pos.x, pos.y, pos.z]);
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
-            "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" | "minecraft:ghast" | "minecraft:blaze" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
+            "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" | "minecraft:ghast" | "minecraft:blaze" | "minecraft:wither" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
             _ => {
                 level.note_unsupported(&format!("finalizeSpawn of {kind}"));
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
@@ -2123,6 +2124,14 @@ mod tests {
             assert_ne!(tag.get("PatrolLeader").and_then(Tag::as_i64), Some(1), "a ravager never leads");
             assert!(tag.get("equipment").and_then(|e| e.get("head")).is_none());
         }
+    }
+
+    #[test]
+    fn a_wither_hatches_anywhere_as_a_fire_immune_monster_that_looks_forty_blocks() {
+        let info = super::type_info("minecraft:wither").unwrap();
+        assert_eq!((info.width, info.height, info.placement, info.fire_immune, info.rules), (0.9, 3.5, super::super::Placement::NoRestrictions, true, super::Rules::Unrestricted));
+        assert_eq!(MobCategory::of_type("minecraft:wither"), Some(MobCategory::Monster));
+        assert_eq!(super::follow_range_base("minecraft:wither"), 40.0);
     }
 
     #[test]

@@ -901,6 +901,7 @@ pub struct ClientMobs {
     mobs: HashMap<u64, ClientMob>,
     displays: HashMap<u64, (glam::Quat, DVec3)>,
     own_vehicle: Option<u64>,
+    ride_partial: (Vec<u64>, f32),
 }
 
 impl ClientMobs {
@@ -973,7 +974,28 @@ impl ClientMobs {
         for mob in self.mobs.values_mut() {
             mob.tick();
         }
-        let riders: Vec<(u64, u64, f64)> = self.mobs.iter().filter_map(|(&id, mob)| mob.vehicle.map(|(vehicle, offset)| (id, vehicle, offset))).collect();
+        self.seat_riders(&|_| true);
+    }
+
+    pub fn tick_only(&mut self, ids: &[u64]) {
+        for id in ids {
+            if let Some(mob) = self.mobs.get_mut(id) {
+                mob.tick();
+            }
+        }
+        self.seat_riders(&|id| ids.contains(&id));
+    }
+
+    pub fn set_ride_partial(&mut self, carriers: &[u64], partial: f32) {
+        self.ride_partial = (carriers.to_vec(), partial);
+    }
+
+    pub fn partial_of(&self, id: u64, partial: f32) -> f32 {
+        if self.ride_partial.0.contains(&id) { self.ride_partial.1 } else { partial }
+    }
+
+    fn seat_riders(&mut self, ticked: &dyn Fn(u64) -> bool) {
+        let riders: Vec<(u64, u64, f64)> = self.mobs.iter().filter(|&(&id, _)| ticked(id)).filter_map(|(&id, mob)| mob.vehicle.map(|(vehicle, offset)| (id, vehicle, offset))).collect();
         for (id, vehicle, offset) in riders {
             let Some((position, old_position)) = self.mobs.get(&vehicle).map(|v| (v.position, v.old_position)) else { continue };
             if let Some(mob) = self.mobs.get_mut(&id) {
@@ -995,7 +1017,7 @@ impl ClientMobs {
     }
 
     pub fn pose(&self, id: u64, partial: f32) -> Option<MobPose> {
-        let partial = partial.clamp(0.0, 1.0);
+        let partial = self.partial_of(id, partial).clamp(0.0, 1.0);
         let mob = self.mobs.get(&id)?;
         let mut pose = mob.pose(partial);
         if let Some(vehicle) = mob.vehicle.and_then(|(vehicle, _)| self.mobs.get(&vehicle)) {
@@ -1138,6 +1160,36 @@ mod tests {
         mobs.receive(vec![mob(1, x + 0.2, -90.0)]);
         assert!(mobs.get(1).unwrap().direct.is_none());
     }
+
+    #[test]
+    fn tick_only_moves_only_the_listed_vehicle_and_seats_its_rider() {
+        let mut mobs = ClientMobs::default();
+        mobs.set_own_vehicle(Some(1));
+        let mut x = 0.0;
+        mobs.receive(vec![mob(1, x, -90.0)]);
+        mobs.tick_only(&[1]);
+        for _ in 0..10 {
+            x += 0.2;
+            let mut rider = mob(2, x, 0.0);
+            rider.position.y += 1.0;
+            rider.vehicle = Some((1, 1.0));
+            mobs.receive(vec![mob(1, x, -90.0), rider, mob(3, 5.0 + x, 0.0)]);
+            let before = mobs.get(3).unwrap().clone();
+            mobs.tick_only(&[1, 2]);
+            let (under, seat) = (mobs.get(1).unwrap(), mobs.get(2).unwrap());
+            assert_eq!(under.position.x, x);
+            assert!((under.position.x - under.old_position.x - 0.2).abs() < 1e-9);
+            assert_eq!(seat.position, under.position + DVec3::Y);
+            assert_eq!(seat.old_position, under.old_position + DVec3::Y);
+            let other = mobs.get(3).unwrap();
+            assert_eq!((other.position, other.old_position, other.tick_count), (before.position, before.old_position, before.tick_count));
+        }
+        assert_eq!(mobs.partial_of(1, 0.25), 0.25);
+        mobs.set_ride_partial(&[1, 2], 0.75);
+        assert_eq!((mobs.partial_of(1, 0.25), mobs.partial_of(2, 0.25), mobs.partial_of(3, 0.25)), (0.75, 0.75, 0.25));
+        assert_eq!(mobs.pose(1, 0.25).unwrap().feet, mobs.get(1).unwrap().pose(0.75).feet);
+        assert_eq!(mobs.pose(3, 0.25).unwrap().feet, mobs.get(3).unwrap().pose(0.25).feet);
+    }
 }
 
 /// Every living mob of a server entity world, as trackers see it.
@@ -1236,6 +1288,9 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.ravagers() {
         push(e.id, e.ravager.yaw, &e.ai.state.look_control, &e.ravager.body, false, minecraftoss_entities::ravager::EYE_HEIGHT);
     }
+    for e in world.withers() {
+        push(e.id, e.wither.yaw, &e.ai.state.look_control, &e.wither.body, false, minecraftoss_entities::wither::EYE_HEIGHT);
+    }
     for e in world.wandering_traders() {
         push(e.id, e.trader.yaw, &e.ai.state.look_control, &e.trader.body, false, e.trader.eye_height());
     }
@@ -1312,6 +1367,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.illagers().iter().map(|e| (e.id, crate::illager_render::SHADOW_RADIUS)));
     kinds.extend(world.vexes().iter().map(|e| (e.id, crate::vex_render::SHADOW_RADIUS)));
     kinds.extend(world.ravagers().iter().map(|e| (e.id, crate::ravager_render::SHADOW_RADIUS)));
+    kinds.extend(world.withers().iter().map(|e| (e.id, crate::wither_render::SHADOW_RADIUS)));
     kinds.extend(world.striders().iter().map(|e| (e.id, crate::strider_render::shadow_radius(e.strider.age.baby()))));
     kinds.extend(world.hoglins().iter().map(|e| (e.id, crate::hoglin_render::shadow_radius(e.hoglin.is_baby()))));
     kinds.extend(world.piglins().iter().map(|e| (e.id, 0.5 * age(e.piglin.is_baby()))));
@@ -1320,7 +1376,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
         .filter_map(|(id, radius)| {
             let mob = mobs.get(id)?;
             Some(crate::mesh::ShadowCaster {
-                position: mob.pose(partial.clamp(0.0, 1.0)).feet,
+                position: mob.pose(mobs.partial_of(id, partial).clamp(0.0, 1.0)).feet,
                 distance_squared: mob.position.distance_squared(camera),
                 radius,
                 strength: 1.0,

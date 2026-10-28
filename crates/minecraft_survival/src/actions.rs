@@ -152,6 +152,7 @@ pub fn allows(
     eye: [f64; 3],
     mode: &minecraft_terrain::game_mode::PlayerMode,
     mob_box: impl Fn(u64) -> Option<[f64; 6]>,
+    player_box: impl Fn(u64) -> Option<[f64; 6]>,
 ) -> bool {
     match *target {
         minecraft_net::messages::Target::Miss => true,
@@ -162,7 +163,8 @@ pub fn allows(
         minecraft_net::messages::Target::Mob { id } => {
             mob_box(id).is_some_and(|bounds| reaches_box(eye, bounds, mode.entity_reach()))
         }
-        minecraft_net::messages::Target::Player { .. } => false,
+        minecraft_net::messages::Target::Player { client } => player_box(u64::from(client))
+            .is_some_and(|bounds| reaches_box(eye, bounds, mode.entity_reach())),
     }
 }
 
@@ -371,6 +373,7 @@ pub fn act(
         if holding_item && !skating && input.attack_pressed && !busy {
             hand.swing = Some(0.0);
             hand.swing_offhand = false;
+            hand.swing_predicted = true;
             let held = inventory.slots[*selected].clone();
             let (damage, speed) = entities.recipes.attack_attributes(held.as_ref());
             let speed = (speed * survival.status.attack_speed_multiplier()).clamp(0.0, 1024.0);
@@ -393,7 +396,21 @@ pub fn act(
                     .map(|hit| hit.distance),
                 creative: !game_mode.consumes_items(),
             };
-            if entities.punch(
+            let pvp = entities.punch_player(
+                player_id, inventory, *selected, eye_block, look, mc_yaw, damage, strength, &blow,
+            );
+            if let Some(hurt) = pvp {
+                punched = true;
+                hand.attack_ticks = 0;
+                if hurt {
+                    survival.exhaust(crate::survival::ATTACK_EXHAUSTION);
+                    if game_mode.consumes_items()
+                        && let Some(broken) = crate::pvp::wear_weapon(inventory, *selected)
+                    {
+                        entities.broken_items.push(broken);
+                    }
+                }
+            } else if entities.punch(
                 player_id, inventory, *selected, eye_block, look, mc_yaw, damage, strength, blow,
             ) {
                 punched = true;
@@ -1893,26 +1910,45 @@ pub(crate) mod tests {
             face: 4,
             hit: [hit_x, 65.5, 0.5],
         };
-        assert!(allows(&block(5, 5.0), eye, &survival, |_| None));
-        assert!(!allows(&block(6, 6.0), eye, &survival, |_| None));
+        assert!(allows(&block(5, 5.0), eye, &survival, |_| None, |_| None));
+        assert!(!allows(&block(6, 6.0), eye, &survival, |_| None, |_| None));
         let zombie = [5.7, 65.0, 0.2, 6.3, 66.95, 0.8];
         let mob = |id| (id == 7).then_some(zombie);
-        assert!(allows(&Target::Mob { id: 7 }, eye, &survival, mob));
+        assert!(allows(&Target::Mob { id: 7 }, eye, &survival, mob, |_| None));
         assert!(
-            !allows(&Target::Mob { id: 8 }, eye, &survival, mob),
+            !allows(&Target::Mob { id: 8 }, eye, &survival, mob, |_| None),
             "an unknown mob"
         );
         let far = [9.7, 65.0, 0.2, 10.3, 66.95, 0.8];
         assert!(!allows(&Target::Mob { id: 7 }, eye, &survival, |_| Some(
             far
-        )));
-        assert!(allows(&Target::Miss, eye, &survival, |_| None));
+        ), |_| None));
+        assert!(allows(&Target::Miss, eye, &survival, |_| None, |_| None));
         assert!(!allows(
             &Target::Player { client: 1 },
             eye,
             &survival,
+            |_| None,
             |_| None
         ));
+    }
+
+    #[test]
+    fn a_player_target_is_allowed_only_in_reach() {
+        let eye = [0.5, 65.62, 0.5];
+        let survival = PlayerMode::new(GameMode::Survival);
+        let near = crate::pvp::PlayerBox::standing(1, [3.5, 64.0, 0.5], 1.8, false).bounds;
+        let far = crate::pvp::PlayerBox::standing(2, [10.5, 64.0, 0.5], 1.8, false).bounds;
+        let player = |id| match id {
+            1 => Some(near),
+            2 => Some(far),
+            _ => None,
+        };
+        let target = |client| Target::Player { client };
+        assert!(allows(&target(1), eye, &survival, |_| None, player));
+        assert!(!allows(&target(2), eye, &survival, |_| None, player));
+        assert!(!allows(&target(3), eye, &survival, |_| None, player));
+        assert!(!allows(&Target::Mob { id: 1 }, eye, &survival, |_| None, player));
     }
 
     #[test]
@@ -1929,8 +1965,8 @@ pub(crate) mod tests {
             face: 1,
             hit,
         };
-        assert!(allows(&target([3.5, 65.0, 3.5]), eye, &mode, |_| None));
-        assert!(!allows(&target([3.5, 66.5, 3.5]), eye, &mode, |_| None));
+        assert!(allows(&target([3.5, 65.0, 3.5]), eye, &mode, |_| None, |_| None));
+        assert!(!allows(&target([3.5, 66.5, 3.5]), eye, &mode, |_| None, |_| None));
     }
 
     pub(crate) struct Flat;
@@ -2269,6 +2305,40 @@ pub(crate) mod tests {
             stopped.survival.eating().is_none(),
             "letting go stops eating"
         );
+    }
+
+    #[test]
+    fn only_the_swing_of_an_attack_press_is_predicted_by_a_friend() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding("minecraft:cobblestone", 32);
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, [4.5, 201.0, 6.5]));
+        let mut step = |player: &mut Player, looking: &Actor, input: Hands| {
+            act(
+                player,
+                &mut level,
+                &globals,
+                &mut Flat,
+                looking,
+                input,
+                &moved(),
+                None,
+                0.0,
+            )
+        };
+        step(&mut player, &looking, press());
+        assert_eq!(player.hand.swing, Some(0.0));
+        assert!(!player.hand.swing_predicted, "a placing swing is the host's");
+        player.hand.swing = None;
+        let attack = Hands {
+            attack_pressed: true,
+            attack_held: true,
+            ..Hands::default()
+        };
+        step(&mut player, &actor(0.0, -60.0), attack);
+        assert_eq!(player.hand.swing, Some(0.0));
+        assert!(player.hand.swing_predicted, "the friend swung on its own press");
     }
 
     #[test]

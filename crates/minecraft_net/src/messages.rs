@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Dimension, PlayerUuid};
 
-pub const PROTOCOL: u16 = 5;
+pub const PROTOCOL: u16 = 6;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nbt(pub Vec<u8>);
@@ -69,6 +69,7 @@ pub enum ToServer {
     },
     RecipeSeen(Vec<String>),
     OpenMountInventory,
+    Skate(SkateReport),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +95,33 @@ pub struct HandState {
     pub attack: bool,
     pub use_item: bool,
     pub target: Target,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SkateReport {
+    pub tick: u32,
+    pub on: bool,
+    pub airborne: bool,
+    pub origin: [f32; 3],
+    pub yaw: f32,
+    pub pose: Option<Box<SkatePose>>,
+}
+
+pub const SKATE_BONES: usize = 23;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SkatePose {
+    pub root: [f32; 12],
+    pub bones: [[f32; 12]; SKATE_BONES],
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Skaters(pub Vec<(u32, SkatePose)>);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum StateUp {
+    Hand(HandState),
+    Skate(SkateReport),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -297,6 +325,13 @@ pub enum ToClient {
         slot: u8,
     },
     RecipeBook(RecipeBookView),
+    Animate {
+        client: u32,
+        offhand: bool,
+    },
+    SkateRefused {
+        tick: u32,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -363,6 +398,7 @@ pub struct StateFrame {
     pub epoch: u32,
     pub mobs: Blob,
     pub entities: Blob,
+    pub skaters: Blob,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,9 +458,21 @@ pub enum Hand {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UseKind {
+    Eat {
+        duration: i32,
+    },
+    #[default]
+    Block,
+    Charge,
+    Scope,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsingView {
     pub hand: Hand,
     pub ticks: i32,
+    pub kind: UseKind,
 }
 
 pub const PLAYER_SLOTS: usize = 45;

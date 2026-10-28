@@ -920,6 +920,49 @@ impl Level<'_> {
         self.schedule_block_tick_priority(pos, block, ticks, priority::NORMAL);
     }
 
+    pub fn wind_trigger(&mut self, pos: BlockPos) -> Option<(BlockStateId, f32)> {
+        let state = self.block(pos);
+        let iron = matches!(self.name(state), "minecraft:iron_door" | "minecraft:iron_trapdoor");
+        let powered = self.flag(state, "powered");
+        match self.redstone_kind(state) {
+            Some(Kind::Door) if !iron && !powered && self.prop(state, "half") == Some("lower") => {
+                let next = self.with_bool(state, "open", !self.flag(state, "open"));
+                self.set_block(pos, next, update::CLIENTS | 8, update::LIMIT);
+                Some((state, self.random.next_f32()))
+            }
+            Some(Kind::TrapDoor) if !iron && !powered => {
+                let next = self.with_bool(state, "open", !self.flag(state, "open"));
+                self.set_block(pos, next, update::CLIENTS, update::LIMIT);
+                if self.flag(next, "waterlogged") {
+                    self.schedule_water_tick(pos);
+                }
+                Some((state, self.random.next_f32()))
+            }
+            Some(Kind::FenceGate) if !powered => {
+                let next = self.with_bool(state, "open", !self.flag(state, "open"));
+                self.set_block_and_update(pos, next);
+                Some((state, self.random.next_f32()))
+            }
+            Some(Kind::Button(_)) if !powered => {
+                self.press_button(pos);
+                Some((state, 0.0))
+            }
+            Some(Kind::Lever) => {
+                self.pull_lever(pos);
+                Some((state, 0.0))
+            }
+            Some(Kind::Bell) => {
+                self.ring_bell(pos, None);
+                None
+            }
+            _ if self.is_a(state, "AbstractCandleBlock") && self.flag(state, "lit") => {
+                self.set_block(pos, self.with_bool(state, "lit", false), update::ALL | 8, update::LIMIT);
+                Some((state, 0.0))
+            }
+            _ => None,
+        }
+    }
+
     /// `useWithoutItem` for the redstone blocks a player can use with an
     /// empty hand (creative abilities). False for blocks not simulated.
     pub fn use_block(&mut self, pos: BlockPos) -> bool {

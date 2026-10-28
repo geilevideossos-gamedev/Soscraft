@@ -142,6 +142,7 @@ impl MobSender {
             epoch,
             mobs: Blob(mobs),
             entities: Blob(entities),
+            skaters: Blob::default(),
         })
     }
 }

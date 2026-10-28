@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use minecraft_net::messages::{
-    Abilities, CooldownView, EffectView, GameMode, Hand, Nbt, PLAYER_SLOTS, PlayerView, UsingView,
+    Abilities, CooldownView, EffectView, GameMode, Hand, Nbt, PLAYER_SLOTS, PlayerView, UseKind,
+    UsingView,
 };
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_player::crafting::RecipeBook;
@@ -119,23 +120,29 @@ fn using(player: &Player) -> Option<UsingView> {
         return Some(UsingView {
             hand: hand(eating.slot),
             ticks: count(eating.remaining_ticks()),
+            kind: UseKind::Eat {
+                duration: count(eating.info.consume_ticks),
+            },
         });
     }
     if let Some(blocking) = player.hand.blocking {
         return Some(UsingView {
             hand: hand(blocking.slot),
             ticks: count(blocking.ticks),
+            kind: UseKind::Block,
         });
     }
     if let Some(charging) = player.hand.charging {
         return Some(UsingView {
             hand: hand(charging.slot),
             ticks: count(charging.ticks),
+            kind: UseKind::Charge,
         });
     }
     player.hand.scoping.map(|scoping| UsingView {
         hand: hand(scoping.slot),
         ticks: count(scoping.ticks),
+        kind: UseKind::Scope,
     })
 }
 
@@ -554,5 +561,55 @@ mod tests {
         selection.follow(2, 2.5);
         assert_eq!(selection.slot, 2, "the host never took the pick");
         assert_eq!(selection.pick(20, 3.0), Some(8));
+    }
+
+    #[test]
+    fn a_friend_is_told_what_kind_of_use_their_hand_is_in() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut alex = player(&mut chat, 1, "Alex");
+        assert_eq!(player_view(&alex).using, None);
+        alex.survival.status.food.level = 4;
+        let steak = ItemStack::new("minecraft:cooked_beef", 8);
+        alex.inventory.slots[2] = Some(steak.clone());
+        alex.selected = 2;
+        assert!(alex.survival.start_eating(2, &steak));
+        let eating = player_view(&alex).using.expect("eating");
+        assert_eq!(
+            (eating.hand, eating.ticks, eating.kind),
+            (Hand::Main, 32, UseKind::Eat { duration: 32 })
+        );
+        alex.survival.stop_eating();
+        let kelp = ItemStack::new("minecraft:dried_kelp", 8);
+        alex.inventory.slots[OFFHAND] = Some(kelp.clone());
+        assert!(alex.survival.start_eating(OFFHAND, &kelp));
+        let kelp = player_view(&alex).using.expect("eating kelp");
+        assert_eq!(
+            (kelp.hand, kelp.ticks, kelp.kind),
+            (Hand::Off, 16, UseKind::Eat { duration: 16 })
+        );
+        alex.survival.stop_eating();
+        alex.hand.blocking = Some(crate::offhand::Blocking {
+            slot: OFFHAND,
+            ticks: 6,
+        });
+        let block = player_view(&alex).using.expect("blocking");
+        assert_eq!(
+            (block.hand, block.ticks, block.kind),
+            (Hand::Off, 6, UseKind::Block)
+        );
+        alex.hand.blocking = None;
+        alex.hand.charging = Some(crate::trident::Charging { slot: 2, ticks: 11 });
+        let charge = player_view(&alex).using.expect("charging");
+        assert_eq!(
+            (charge.hand, charge.ticks, charge.kind),
+            (Hand::Main, 11, UseKind::Charge)
+        );
+        alex.hand.charging = None;
+        alex.hand.scoping = Some(crate::spyglass::Scoping { slot: 2, ticks: 3 });
+        let scope = player_view(&alex).using.expect("scoping");
+        assert_eq!(scope.kind, UseKind::Scope);
+        let mut later = player_view(&alex);
+        later.using.as_mut().expect("scoping").ticks = 40;
+        assert_eq!(sent_key(&later), sent_key(&player_view(&alex)));
     }
 }

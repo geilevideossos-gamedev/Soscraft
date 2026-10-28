@@ -2064,6 +2064,917 @@ After 1fa0ce90.
 - **Changed:** this log only: the d2 combined kit below, so groups pillagers to raid-villagers are tested with one kit.
 - **Test steps:** none; the steps of each group's commits hold.
 
+## Group friend-hand
+
+Segment d6 (friend fixes), brief D9. Continues from the merge of track D's d1 and d2 into minecraft-survival (f7432188, released as round 9 release 2 with protocol 5).
+
+### 1. A friend sees their held items, eating, the shield and the trident charge in first person
+
+After f7432188.
+
+- **Vanilla (26.3):** the client draws its own first-person hands from its own use state (`ItemInHandRenderer.renderArmWithItem`: `applyEatTransform` for eat and drink, the raised shield for block, `applyItemArmTransform` plus the trident pull for spear, the spyglass hiding the hands while scoping); `GameRenderer.renderItemInHand` skips the hands in third person, while sleeping, with the GUI hidden and in spectator. The swing is commit 2.
+- **Changed:**
+  - `render_anim/src/minecraft_hand.rs`: the host's held-item drawing (`minecraft_world.rs`, the block after the totem guard) moved into `held_hand_mesh(held, view, (packs, atlas, light, dials), light_at, aspect) -> Option<(vertices, indices, clip)>`, with `Held { main: (slot, stack), offhand, swing, swing_offhand, using: Option<HeldUse { slot, kind }>, partial, activation }` and `UseShown { Eat { remaining, duration }, Block, Charge { ticks }, Scope }`. `host_use(survival, hand)` gives the host's use; `UseClock` gives the friend's from its player view. The host calls `held_hand_mesh` with the same stacks, filters and partial as before.
+  - `minecraft_net/src/messages.rs`: `UsingView.kind: UseKind { Eat { duration }, Block, Charge, Scope }`; **`PROTOCOL` 5 to 6** (track D's one bump after release 2).
+  - `minecraft_survival/src/views.rs`: `using()` fills the kind (eating with the food's `consume_ticks`).
+  - `render_anim/src/minecraft_remote.rs`: the friend's hand left `present()` for a new `show_hand()`, run after the friend's hand input each frame. It draws the selected stack while `ui.holding_item`, the offhand stack while holding an item or using one, the use from `UseClock` (re-based on every new player view, then counted on the friend's own tick: eating down, the trident charge up) and the totem rise as before. It hides the items in F5, in bed, while skating, dead or with the UI off (`HandGate`), hides them while scoping (`held_hand_mesh`), and sets `ui.offhand_busy` (the MW2 hands step aside while a use runs, as on the host) and `ui.hand_swing` (0 until commit 2).
+- **Tests:** `minecraft_net`: `codec::tests::a_player_view_says_what_kind_of_use_its_hand_is_in` (and the protocol test now asks for 6); `minecraft_survival`: `views::tests::a_friend_is_told_what_kind_of_use_their_hand_is_in` (Eat 32 for a steak, Eat 16 for dried kelp in the offhand, Block, Charge, Scope; the ticks stay out of the sent key); `render_anim`: `minecraft_hand::tests::a_friends_use_counter_counts_eating_down_between_views`, `a_friends_trident_charge_counts_up_and_a_shield_and_spyglass_hold`, `scoping_hides_both_held_items`, `the_host_hand_uses_eating_before_a_shield_a_trident_or_a_spyglass`; `minecraft_remote::tests::the_friends_held_items_hide_in_f5_in_bed_while_skating_dead_or_with_the_ui_off`. Runs: `minecraft_net` 21, `minecraft_survival` 726, `render_anim` 183, all green; `check -p launcher` green.
+- **Decisions:**
+  - One use at a time per player, as vanilla's single `useItem`: eating before the shield, the trident and the spyglass, the order `views.rs` already sent. The host drew an eating hand and a blocking hand at once if both were set; the fork never sets both.
+  - The friend's use clock re-bases on every new player view (the host sends one only when something shown changes, the use ticks are left out of that key), then counts on the friend's own level tick. A finished meal waits at the mouth until the host's next view, which comes at once because the stack count and food change.
+  - `UseKind` defaults to `Block` (the derive needs a unit variant); the host never sends a default.
+  - With the UI off (`ui_draw 0`) the friend's held items and the totem rise hide, as vanilla's hidden GUI hides the hands. The host's held items still show with the UI off (unchanged in this commit, listed under Left for later). In F5 the totem rise still shows, as on the host.
+  - `PROTOCOL` is 6: the first message change after release 2 (protocol 5). Commit 2's `ToClient::Animate` rides in the same 6.
+- **Test steps** (same new build in both windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r9-friend -Fresh -HostSound`; the friend gets the kit when joining; in the friend window move the items to the hotbar first):
+  1. Friend: select the diamond sword: it shows in the right hand like on the host (**171_friend_sword**). Select an empty slot: the MW2 hands show.
+  2. Friend: put the shield in the offhand (swap key) and hold right-click with the sword selected: the shield rises (**172_friend_shield**); let go: it lowers.
+  3. Friend: select the cooked beef and hold right-click: the beef rises to the mouth and bobs every 4 ticks, then the hand comes back down after 1.6 s (**173_friend_eat_beef**). Dried kelp in the offhand: the same in half the time. The swiftness potion: the same drinking pose.
+  4. Friend: hold right-click with the trident: it is raised and pulled back over half a second and shakes (**174_friend_trident**); let go: it is thrown and the hand is empty.
+  5. Friend: right-click with the spyglass: the scope shows and no item is in view; let go: the items come back.
+  6. Friend: F5 hides the first-person items; F5 back shows them. Lie in a bed: no items in view.
+  7. Host window: its own sword, shield, eating and trident look as before (**175_host_hand_unchanged**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:dried_kelp*16,minecraft:trident,minecraft:spyglass,minecraft:potion@swiftness,minecraft:totem_of_undying,minecraft:white_bed,minecraft:cobblestone*64
+```
+
+### 2. A friend's swing plays at once and follows the host's
+
+After 29cafd82.
+
+- **Vanilla (26.3, javap):** `Minecraft.startAttack` returns at once while `missTime > 0`; a miss (or a null hit result) sets `missTime = 10` when `MultiPlayerGameMode.hasMissTime()` (not creative), and every attack that gets past the early returns ends in `LocalPlayer.swing(MAIN_HAND, animation, false)` on the client itself. `continueAttack(false)` clears `missTime`; `Minecraft.tick` counts it down. `LivingEntity.swing(hand, animation, updateSelf)` starts a swing only through `SwingState.startIfAble`: when none runs, when its `ticks >= durationTicks / 2` or when `ticks <= 0` (the 6-tick swing restarts from tick 3 on). The server sends `ClientboundSwingAnimationPacket` to the tracking players, and to the swinger too only for swings it started itself (`sendToTrackingPlayersAndSelf` when `updateSelf`).
+- **Changed:**
+  - `minecraft_net`: `ToClient::Animate { client, offhand }` (codec index 33, protocol 6 from commit 1).
+  - `minecraft_survival`: `Hand.swing_predicted` (`player.rs`), set by the attack-press swing in `actions.rs` only.
+  - `render_anim/src/minecraft_players.rs`: `movement()` clears `swing_predicted` where it advances the swing, before the player acts.
+  - `render_anim/src/minecraft_host.rs`: after `step_friend`, `told_swing` puts `Animate` into that friend's own outbox for a swing that began this frame (`swing == Some(0.0)`) and was not predicted, and marks it told so a step that returns before `movement()` does not send it again.
+  - `render_anim/src/minecraft_hand.rs`: `FriendSwing` (the swing, its hand, the miss time and a tick clock), `may_restart` (vanilla's rule) and `swing_shown`.
+  - `render_anim/src/minecraft_remote.rs`: the friend advances `FriendSwing` each frame; on its own attack press (sent this frame, while holding an item, not using one, not skating and not throwing an MW2 grenade) it swings at once, and a press at a miss outside creative starts the 10-tick miss time; `Animate` for the friend's own client restarts the swing by the vanilla rule. `show_hand()` draws the swing on the held item and sets `ui.hand_swing` for the MW2 hands of an empty hand.
+- **Tests:** `minecraft_net`: `codec::tests::a_swing_takes_the_next_free_index_on_protocol_6` (and `Animate` in the every-message round trip); `minecraft_survival`: `actions::tests::only_the_swing_of_an_attack_press_is_predicted_by_a_friend`; `render_anim`: `minecraft_hand::tests::a_friends_swing_plays_at_once_and_an_echo_restarts_it_only_after_half_way`, `a_missed_swing_holds_the_next_press_for_ten_ticks_outside_creative`; `minecraft_host::tests::a_friend_is_told_only_of_its_own_swings_it_did_not_predict_once`. Runs: `minecraft_net` 22, `minecraft_survival` 727, `render_anim` 186, all green; `check -p launcher` green.
+- **Decisions:**
+  - `Animate` goes only to the swinging friend: other players do not draw Minecraft arm swings on bodies yet (the MW2 body has its own animations), so there is no one else to tell.
+  - The host keeps restarting its own attack-press swing at once (unchanged); the friend's prediction uses vanilla's restart rule, so a fast second click in the first half of a swing does not restart it on the friend.
+  - Swings that start outside the friend's step (none known) would be missed, because the next frame's `movement()` advances them before `told_swing` looks.
+- **Test steps** (same build and setup as commit 1):
+  1. Friend: select the diamond sword and left-click into the air: the sword swings at once, with no wait for the host (**176_friend_swing_air**). Click fast: each click swings; a click early in a swing does not restart it.
+  2. Friend: select an empty slot and left-click: the MW2 hands swing (**177_friend_empty_swing**).
+  3. Friend: hit a cow with the sword: one swing and the cow is hurt.
+  4. Friend: place cobblestone: the hand swings once (the host's swing reaches the friend) (**178_friend_place_swing**). Hold left-click on stone with the pickaxe: the hand keeps swinging while it digs.
+  5. Friend: `/gamemode creative` (the host runs it), left-click into the air twice fast: both swing.
+  6. Host window: the host's own swings are as before (**179_host_swing_unchanged**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:iron_pickaxe,minecraft:cobblestone*64,minecraft:cow_spawn_egg*4,minecraft:shield,minecraft:cooked_beef*32,minecraft:trident,minecraft:spyglass,minecraft:dried_kelp*16,minecraft:white_bed
+```
+
+## Group friend-portal-music
+
+Segment d6 (friend fixes), brief D9.
+
+### 1. A friend sees the purple portal overlay while standing in a portal
+
+After cc6ff02d.
+
+- **Vanilla (26.3, javap):** `LocalPlayer.handlePortalTransitionEffect` runs on the client's own tick from its own portal state: while the player is inside a portal this tick it closes any screen not allowed in portals (`closeContainer` for a container screen), plays `block.portal.trigger` when the intensity is 0, and adds 0.0125; outside it takes 0.05 off while above 0; the intensity is clamped to 0..1 and drawn lerped between the last two ticks. `NetherPortalBlock.entityInside` marks the player inside only when `canUsePortal(false)`: alive, not a passenger and not sleeping. A dimension change makes a new `LocalPlayer`, so the intensity starts again at 0.
+- **Changed:**
+  - `render_anim/src/minecraft_portal.rs`: `FriendPortal` (the effect, a 20 Hz clock and the frame age), `friend_inside(feet, spectator, axis_at)` (the host's `portal::touched_portal` with `portal_axis_in`) and the pure `friend_portal_tick(portal, seconds, inside) -> (inside this tick, overlay)`, with the host's `PortalEffect` curve and `overlay_alpha`.
+  - `render_anim/src/minecraft_remote.rs`: the friend loads `ui.portal_frames` with its other overlays; a new `show_portal()` runs after `present()` each frame from the real frame time: inside while alive, not riding and not a spectator, on the friend's own streamed terrain. A tick inside closes the friend's open screen (`show_menus` then tells the host), and `ui.portal_overlay` follows the effect. The effect resets on a level rebuild (`present()`, a new level from the host) and `stop()` clears the overlay.
+  - The trigger and travel sounds stay as the host sends them (the host's `step_friend` runs the friend's real portal and its sounds).
+- **Tests:** `render_anim`: `minecraft_portal::tests::a_friends_portal_overlay_rises_inside_falls_outside_and_restarts_on_a_new_level` (0.0125 a tick inside, drawn between ticks, full after 80 ticks, gone within 20 ticks outside, the first tick inside closes the screen, a reset starts again from 0), `a_friend_is_inside_a_portal_only_alive_and_not_a_spectator`. Runs: `render_anim` 188, all green; `check -p launcher` green.
+- **Decisions:**
+  - The friend draws its own overlay from its own terrain and position, as vanilla's client does, instead of a new message; the host still decides the travel.
+  - A riding friend sees no overlay (vanilla `canUsePortal(false)` and the host's `may_use_portals`); a spectator sees none (the brief's rule; the host's own Nether portal check does not test the game mode, unchanged).
+  - The screen closes on every tick inside, not only the first, as vanilla closes it each tick and the host does each step.
+- **Test steps** (same new build in both windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r9-friend -Fresh -HostSound`; the friend gets the kit when joining):
+  1. Friend: build a 4×5 obsidian frame and light it with flint and steel.
+  2. Friend: open the inventory (E) and walk into the portal: the inventory closes, the purple swirl fades in with the trigger sound (**180_friend_portal_overlay**), and after 4 seconds the friend goes to the Nether.
+  3. Friend: walk in and step out at once: the swirl fades out within a second (**181_friend_portal_fade**).
+  4. Friend: back in the Overworld through the Nether portal: the swirl starts again from nothing when the friend steps into the portal once more.
+  5. Host window: stepping into the same portal shows the host's swirl as before (**182_host_portal_unchanged**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_pickaxe,minecraft:cobblestone*64,minecraft:cooked_beef*32
+```
+
+### 2. A friend hears the End, dragon and credits music
+
+After 6b9d6085.
+
+- **Vanilla (26.3):** `MusicManager` is client-side (`Minecraft.tick` calls `musicManager.tick()` with `Minecraft.getSituationalMusic()`), so every client picks and plays its own music from its own level, its own boss overlay (`BossHealthOverlay.shouldPlayMusic`) and its own credits screen. The fork's `minecraft_music` already follows it for the host (round 8).
+- **Changed:** `render_anim/src/minecraft_remote.rs`:
+  - `Friend.music`, a `MusicManager` of its own; `ResMut<audio::McMusic>` joins the `(body_gear, sound_queue, sleepers, weapons, strings)` tuple, as `friend()` is at Bevy's 16-parameter limit.
+  - `present()` now returns whether the friend's environment ticked (`SkyTicked.ticked`, the same tick the host's music follows); on such a frame `play_music()` builds the `MusicInput` from the friend's level dimension, its credits, its boss bars (`McBossBar.music`, from the host's `play_music` flag) and its loading state (`ui.loading_world`, set just before), and hands the action to `minecraft_music::apply` with the friend's own sounds and packs.
+  - `stop()` and the inactive early return clear `McMusic.wanted`, as the host's `update` does when its view is inactive.
+- **Tests:** `render_anim`: `minecraft_remote::tests::a_friend_hears_the_dragon_music_with_its_bar_and_stop_clears_it` (a dragon bar in the End starts `music.dragon` at once and it plays on, the Overworld stops it, nothing starts while loading, `stop()` clears the wanted track). Runs: `render_anim` 189, all green; `check -p launcher` green.
+- **Decisions:**
+  - The friend's music runs only on frames where its environment ticked, like the host's, so its 20 Hz delays match vanilla's.
+  - No message change: the boss bars, credits and level the music needs were already on the friend.
+- **Test steps** (same build and setup as commit 1, with host sound: `-HostSound`; use headphones on the friend window or mute the host to tell the two apart):
+  1. Host: `/execute in minecraft:the_end run tp @a 0 70 0`. When the dragon's bar shows at the top of the friend's screen, the friend hears the dragon music at once (**183_friend_dragon_music**, the friend window with the bar).
+  2. Host: `/kill Friend`; the friend respawns in the Overworld: the music stops at once and no new music starts there (**184_friend_music_stopped**).
+  3. Friend: leave the game while in the End (return to the menu): the music stops with it.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:bow,minecraft:arrow*64,minecraft:ender_pearl*16,minecraft:water_bucket,minecraft:cooked_beef*32,minecraft:obsidian*14,minecraft:flint_and_steel
+```
+
+## Group pvp-melee
+
+Segment d6 (friend fixes), brief D9.
+
+### 1. Minecraft melee hits other players, with sweeps, crits, knockback and the pvp rule
+
+After 91dd9245.
+
+- **Vanilla (26.3, javap of `Player.attack`, `isSweepAttack`, `canCriticalAttack`, `causeExtraKnockback`, `doSweepAttack` and `LivingEntity.getKnockback`; enchantment data `sharpness.json` and `knockback.json` from the jar):**
+  - `Player.attack` treats a player like any `LivingEntity`. Base = attack damage × (0.2 + s² × 0.8), magic = (`getEnchantedDamage` − damage) × s. With neither above 0 nothing happens.
+  - Full strength is s > 0.9. A sprinting full hit plays `entity.player.attack.knockback` before the hurt. A crit (falling, not on ground, climbing, in water, riding or sprinting) multiplies only the base by 1.5, so Sharpness is not multiplied. The sweep needs full strength, no crit, no sprint knockback, on ground, slow movement and a sword.
+  - `hurtOrSimulate` false (pvp off: `ServerPlayer.hurtServer` refuses a player source when `canHarmPlayer` is false; a creative or spectator victim is invulnerable) plays `entity.player.attack.nodamage` and nothing else. `onAttack` resets the attack strength in both cases.
+  - On a hurt: `causeExtraKnockback(getKnockback + 0.5 if sprinting)`, where `getKnockback` = (attribute + the Knockback enchantment's `add 1 per level`) / 2, so Knockback 2 adds 1.0. `LivingEntity.knockback(strength, sin(yaw), −cos(yaw))`.
+  - `doSweepAttack`: every living entity in the target's box grown by 1, 0.25, 1, other than the attacker and the target, within 3 blocks (distance² < 9) of the attacker, takes `getEnchantedDamage(1 + 0 × base) × s` (so Sharpness adds to the sweep too) and knockback 0.4.
+  - Then `itemAttackInteraction` (the weapon's `item_damage_per_attack` wear) and `causeFoodExhaustion(0.1)`, only after a hurt. Sharpness: `add 1 + 0.5 per level above the first` (Sharpness 5 adds 3.0).
+- **Changed:**
+  - New `minecraft_survival/src/pvp.rs`: `PlayerBox` (id, 0.6-wide box, invulnerable), the pure `melee(attack, victim) -> PvpHit` (the vanilla damage, crit, knockback, sweep flags and sounds above), `swept(attack, around, target, players)` (the sweep round a player or a mob), `player_on_ray` (never the attacker), `shield_disable_ticks` (the weapon component's `disable_blocking_for_seconds`, 100 ticks for an axe), `wear_weapon` and `hit()` (a `Hit` with `DamageCause::Player { client }`).
+  - New `minecraft_terrain/src/melee.rs`: `weapon_bonus(stack)` (Sharpness damage and Knockback strength from the stack's enchantments), the one helper both player hits and mob hits use.
+  - `minecraft_survival/src/entities.rs`: `Entities.player_boxes` (`set_player_boxes`, `player_box`) and `punch_player`, run before `punch`. It hits the nearest player only when no frame, mob, End part, shulker bullet, fireball or block is nearer. Each blow goes into the victim's `queue.out.hits`, where `struck()` already applies the shield, the axe's shield disable, armour, Protection, the totem and the MW2 knockback. A sword's sweep round a player target reaches the other players and, through the new `ServerHandle::mob_sweep` (`Command::MobSweep` on the entity world's thread, with the mobs' hurt sounds, loot and experience), the mobs beside them; a sweep round a mob target now reaches players beside it too. `mob_distance` counts players. A mob hit by a creative player no longer passes `infinite: false`.
+  - `minecraft_survival/src/actions.rs`: `act()` tries `punch_player` first. A player hit resets the attack strength and counts as a punch even with pvp off (only the no-damage sound). On a hurt it adds the attack exhaustion and wears the weapon (not in creative). `allows()` takes a player-box lookup and passes `Target::Player` only within entity reach.
+  - `minecraft_survival/src/death.rs`: `DamageCause::Player { client }` with the damage type `minecraft:player_attack`. Its death line is commit 2.
+  - `render_anim/src/minecraft_players.rs`: `set_player_boxes` fills each level's boxes every frame before any `act()`, from `sim::voxel::player_hull`. Only alive players count, and not ones who are switching or arriving, not spectators, and only in their own dimension's band. `step_friend`'s `allows` sees the other players' boxes, never the friend's own. `render_anim/src/minecraft_world.rs` calls it after the queues are drained.
+  - `render_anim/src/minecraft_remote.rs`: the friend's `aim()` tests the other players' bodies in the same band (alive) against the mobs and the block, and sends `Target::Player { client }` for the nearest.
+  - Vendored `entities/src/world/combat.rs` (already in the patched list): `player_attack_with(attack, target, enchanted, extra_knockback)` adds Sharpness to the hit and the sweep and Knockback to the push, and the sweep loop moved into `player_sweep(attack, around, target, enchanted)`, which a player target's sweep uses too. `player_attack` keeps its old behaviour through it. `minecraft_terrain/src/mob_actions.rs` gains `sweep()` and `server.rs` the `MobSweep` command (additive). `minecraft_terrain/src/mob_actions.rs` passes `weapon_bonus` and wears the weapon after a hurt. Mob hits never wore the weapon before.
+- **Tests:**
+  - `minecraft_survival`:
+    - `pvp::tests`: a full hit lands once with the weapon's damage and the strong sound; half strength scales like vanilla (6 × 0.4, and 1 → 0.4); pvp off or a creative victim gives only the no-damage sound and no blow; a falling full hit is critical (×1.5) and Sharpness is not multiplied; Sharpness 5 adds 3 and scales with strength; sprint knockback (0.5) and Knockback 2 (1.0) throw along the attacker's facing and add up; an axe disables a shield for 100 ticks (also from the real item catalog); a sweep reaches a second player in range and skips one 4 blocks away, also round a cow, never with pvp off and never past 3 blocks from the attacker; the ray finds the nearest other player and never the attacker; a hit wears the weapon by its damage per attack.
+    - `actions::tests::a_player_target_is_allowed_only_in_reach`.
+    - `entities::tests::a_punch_queues_one_hit_on_the_player_in_front_and_none_without_pvp`: one hit with `DamageCause::Player`, none on the attacker; the sweep reaches the player beside the target; a nearer block or a look away hits nobody; pvp off queues nothing and plays the no-damage sound.
+  - `minecraft_terrain`: `melee::tests` (Sharpness 1 → 1.0, 5 → 3.0; Knockback 2 → 1.0); `mob_actions::tests::a_sweep_round_a_player_hurts_the_mobs_beside_them_and_not_one_far_away` (two cows beside the box lose 1 + Sharpness 3, one 4 blocks off keeps its health).
+  - `render_anim`: `minecraft_players::tests::only_a_living_player_in_its_own_band_gets_a_melee_box` (spectator, dead and out of band skipped, creative marked invulnerable).
+  - Runs: `minecraft_survival` 739, `minecraft_terrain` 1354 (one run had `sections::tests::background_full_update_matches_the_synchronous_one` fail under load; it passes alone and touches nothing of this commit), `render_anim` 190 and `minecraftoss-entities` 374, all green. `check -p launcher` green.
+- **Decisions:**
+  - The victim side is `struck()` as it was. A player blow is a `Hit` in the victim's queue, so the shield, armour, Protection, totem, knockback resistance and the death all follow the paths mob hits already use, for host and friends alike.
+  - The sweep round a mob target reaches players at once. The mob's own hit runs on the entity world's thread, so the host does not wait to learn whether that hit landed (vanilla sweeps only after a landed hit).
+  - A creative attacker's weapon is not worn, on players or mobs.
+  - No message change: `Target::Player` already existed. `PROTOCOL` stays 6.
+- **Test steps** (same new build in both windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r9-friend -Fresh -HostSound`; both get the kit; host: `/op Friend`, `/gamerule pvp true`):
+  1. Both put on the iron armour. Friend: hit the host 3 times with the diamond sword, waiting for the full charge each time. The host loses armour-reduced hearts (about 2 hearts per hit), is pushed back a little and hears the strong-hit sound (**185_pvp_full_hits**, the host window with the hearts).
+  2. Friend: jump and hit the host while falling: the crit sound and a bigger hit (**186_pvp_crit**).
+  3. Friend: sprint into the host and hit: the host flies further, with the knockback sound. Friend: hit with the iron sword with Knockback II: the host flies further still (**187_pvp_knockback**).
+  4. Host: raise the shield (right click) facing the friend. Friend: hit with the sword: blocked, no hearts lost. Friend: hit with the iron axe: the shield drops and stays down for 5 seconds (**188_pvp_shield_axe**).
+  5. Host: hatch two cows right beside you. Friend: stand still and hit the host at full charge with the diamond sword (not sprinting, not falling): the sweep sound plays and both cows are hurt too (**189_pvp_sweep**). Friend: hit one of the cows the same way while the host stands beside it: the host is hurt by the sweep.
+  6. Host: hit the friend the same way: the same results on the friend's side (**190_pvp_host_hits_friend**).
+  7. Host: `/gamerule pvp false`. Both hit each other: only the no-damage sound, no hearts lost, no push (**191_pvp_off**). Host: `/gamerule pvp true` again.
+  8. Host: `/gamemode creative Friend`. Host hits the friend: the no-damage sound, no hearts lost. `/gamemode survival Friend`.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:iron_axe,minecraft:shield,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:iron_sword+knockback=2,minecraft:cow_spawn_egg*4,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:totem_of_undying
+```
+
+### 2. Players killed by Minecraft melee get vanilla death lines
+
+After 2f0c9dee.
+
+- **Vanilla (26.3, javap of `DamageSource.getLocalizedDeathMessage`; `en_us.json`):**
+  - A `player_attack` source (message id `player`) reads "death.attack.player" ("%1$s was slain by %2$s") with the attacker's display name.
+  - The `.item` form ("%1$s was slain by %2$s using %3$s", the weapon as `[name]`) is used only when the attacker's main-hand item at the time of the message has `minecraft:custom_name`.
+  - `CombatTracker.getFallMessage` does the same for "death.fell.assist" and "death.fell.finish" (both have `.item` forms).
+  - A death from the world shortly after a player's hit names the kill credit: `getKillCredit` prefers `lastHurtByPlayer` (100 ticks) over the mob, as in "death.attack.lava.player".
+- **Changed:**
+  - `minecraft_survival/src/death.rs`:
+    - `DamageCause::Player` now has the message id `player`.
+    - New `Killer { name, weapon }`. `death_line` and `death_text` take a player lookup (`impl Fn(u32) -> Option<Killer>`).
+    - A player's last blow gives "death.attack.player". With a custom-named weapon it becomes "death.attack.player.item" with `[name]`.
+    - A player's hit before a long fall gives "death.fell.assist" (or `.item`).
+    - `CombatTracker` keeps `hurt_by_player` for 100 ticks, for the `.player` escape lines. A mob that strikes last is still the one named.
+    - A killer who is no longer in the game falls back to "death.attack.generic" or "death.fell.killer".
+    - The kill card's killer is the attacker's name.
+  - `minecraft_survival/src/survival.rs`: the `death_line` and `death_text` wrappers pass the lookup through.
+  - `minecraft_survival/src/pvp.rs`: `custom_name(stack)` reads the plain-string or `{"text": ...}` name.
+  - `minecraft_survival/src/entities.rs`: `set_held_names` and `held_name` hold each player's held custom name for the frame.
+  - `render_anim/src/minecraft_players.rs`:
+    - `set_player_boxes` also fills every level's held names.
+    - `settle()` builds the lookup from the chat's player names (`globals.chat.name`) and the held names, for the death line, the chat text and the kill card, for host and friends alike.
+  - No MW2 kill credit: the death still goes to the sim as a `MinecraftDeath` with no attacker.
+- **Tests:** `minecraft_survival`:
+  - `death::tests::a_players_blow_slays_by_name_and_names_only_a_custom_named_weapon` ("Friend was slain by Host", "... using [Excalibur]" only with a custom name, a killer who left gives "died", the damage type).
+  - `death::tests::a_player_dooms_a_fall_and_is_escaped_into_lava_for_five_seconds` (the fall assist with and without the named weapon, the lava escape and its 100-tick end, a zombie's last bite still named).
+  - `pvp::tests::a_weapon_is_named_only_by_its_custom_name`.
+  - Runs: `minecraft_survival` 742 and `render_anim` 190, all green. `check -p launcher` green.
+- **Decisions:**
+  - The weapon name is the attacker's held item when the death line is made, as vanilla reads `getMainHandItem()` at message time. Held names are refreshed every frame from all players.
+  - A killer in another dimension still has its name (from the chat roster), but not its weapon name.
+  - No message change. `PROTOCOL` stays 6.
+- **Test steps** (same build and setup as commit 1, `/gamerule pvp true`):
+  1. Host: place the anvil, drink experience bottles until level 5 or more, and rename the iron sword "Excalibur" in the anvil.
+  2. Host: kill the friend with Excalibur. Both chats show "Friend was slain by Host using [Excalibur]" once, with the host's real name (**192_pvp_named_kill**, both windows). The friend's kill card names the host.
+  3. Host: kill the friend with the plain diamond sword: "Friend was slain by Host" (**193_pvp_plain_kill**).
+  4. Friend: hit the host off a ledge at least 6 blocks high with Excalibur passed to the friend (drop it): "Host was doomed to fall by Friend using [Excalibur]" (**194_pvp_doomed_fall**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:iron_sword,minecraft:diamond_sword,minecraft:anvil,minecraft:experience_bottle*32,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:cobblestone*64,minecraft:cooked_beef*32
+```
+
+## Group friend-skating
+
+Segment d6 (friend fixes), brief D9 and `docs/round8/d-skate.md`.
+
+### 1. A friend can skate: the host moves them from the friend's board
+
+After b5a04ad1.
+
+- **Vanilla (26.3, javap of `ServerGamePacketListenerImpl.handleMoveVehicle`):** skating has no vanilla twin; the closest is a vehicle, which the client moves and the server checks. The server refuses a vehicle move that is "too quickly" (the squared distance from the vehicle's place minus its squared speed above `100.0`, so 10 blocks a packet beyond its speed) or "wrongly" (ending more than `0.0625` from where the server's own collision puts it), and puts the vehicle back. A rider who dies, changes dimension or is teleported leaves the vehicle.
+- **Changed:**
+  - `minecraft_net/src/messages.rs`: `SkateReport { tick, on, airborne, origin, yaw }`; the state lane now carries `StateUp { Hand(HandState), Skate(SkateReport) }` instead of a bare `HandState`; `ToServer::Skate(SkateReport)` (index 17) is the reliable off report; `ToClient::SkateRefused { tick }` (index 34). `PROTOCOL` stays 6 (set by group friend-hand, unreleased).
+  - `net/src/client/predict.rs`: `ClientPrediction::set_external_motion(enabled)` and `set_origin(origin)` forward to its `SimWorld`. The origin set while skating is held through every adopted snapshot (`on_authority` puts it back after the replay), so the host's older place never pulls the friend's skater back; turning external motion off drops it.
+  - `sim/src/voxel.rs`: `inside_blocks(origin, mins, maxs)`, whether a box overlaps any block's collision in that level.
+  - `render_anim/src/skate.rs`: the hard `AuthorityWorld` requirement is gone. A `SkateBody` trait (`set_external_motion`, `set_origin`, `e_flags`) is implemented for the host's `AuthorityWorld` and the friend's `ClientPredictionState`; the teleport bit comes from the authority on the host and from `presented.player(local)` on a friend. A new `SkateMode.refused` (frame) picks the board up when the host refused it.
+  - `render_anim/src/minecraft_world.rs`: `board_allowed` and `board_gear` are `pub(crate)`.
+  - `render_anim/src/minecraft_remote.rs`: the friend computes `ui.board_allowed` from its own view (alive, spectator, flying, gliding, riding, eyes under water from its own terrain, asleep). Every new skate pose, and every 0.25 s while the pose stands still, goes to the host as `StateUp::Skate` on the state lane; picking the board up sends one `ToServer::Skate` with `on: false` on the reliable lane. A `SkateRefused` for the current ride sets `SkateMode.refused`.
+  - New `render_anim/src/minecraft_skaters.rs`:
+    - The host's `Skater` per friend keeps the newest report (older ticks are dropped).
+    - `judge()` accepts a report only while the friend is alive, not switching dimensions, the board is allowed (from the host's own step of that friend: the authoritative `ps`, its game mode, its eyes in water, its bed and powder snow), the origin is finite, not inside blocks and within `40 blocks/s x the time since the last accepted report (at most 1 s) + 10 blocks` of the host's place for the friend.
+    - An accepted report sets external motion, the origin and the view yaw (so the body faces the board). A refused one turns external motion off, sends `SkateRefused { tick }`, and ignores the friend's reports until its off report.
+    - While riding, death, a dimension switch or change, a teleport bit flip (`/tp`, pearls, gateways, respawn) and 2 s without a report refuse the board the same way. An off report stops it.
+    - The friend's `Reporter` numbers the reports and knows which refusal belongs to the current ride.
+  - `render_anim/src/minecraft_host.rs`: reports from both lanes reach the friend's `Skater` (`HostSessions.skaters`, dropped when the friend leaves). Each frame the host judges the newest report before `step_friend`, which now takes the friend's `Skating { active, airborne }`. The skating friend's held items are cleared from the body gear the host draws and from the `Equipment` it sends, so nobody sees an item in a skater's hands.
+  - `render_anim/src/minecraft_players.rs`: `step_friend` passes the `Skating` to `movement()` (no footsteps, no movement food, vanilla fall damage on landing, as the host's own board), sets `actor.skating` (no mining, punching, placing, eating or blocking), and returns `Stepped.board_allowed`.
+- **Tests:**
+  - `minecraft_net`: `codec::tests::a_skate_report_rides_the_state_lane_beside_the_hand_on_protocol_6` (the `StateUp` tags, `ToServer::Skate` at 17, `SkateRefused` at 34 with its varint tick, round trips); the every-message tests cover both new messages.
+  - `net`: `client::predict::tests::an_external_origin_holds_through_snapshots_until_it_is_released`.
+  - `sim`: `voxel::tests::a_body_is_inside_blocks_only_where_it_overlaps_one`.
+  - `render_anim`: `minecraft_skaters::tests::a_valid_report_moves_the_friend`, `a_report_too_far_is_refused_until_the_friend_picks_the_board_up`, `a_report_inside_a_wall_or_in_a_bad_state_is_refused` (wall, dead, board not allowed, NaN), `death_a_dimension_change_a_teleport_or_silence_clear_the_board`, `an_off_report_stops_and_older_reports_are_ignored`, `a_skater_shows_no_held_item`, `the_friend_reports_new_poses_keeps_the_ride_alive_and_sends_one_reliable_off`, `a_refusal_stops_only_the_ride_it_was_for`, `the_board_yaw_follows_the_skater_root`. Leaving is the `Skater`'s removal with the session (no separate test).
+  - Runs: `minecraft_net` 23, `net` (lib) 17, `sim` 157, `render_anim` 199 and `minecraft_survival` 742, all green. `check -p launcher` green. The new file passes `rustfmt --check --edition 2024`.
+- **Decisions:**
+  - The host checks the friend's skater like a vanilla vehicle move, with a fixed top speed: the skate engine reads its speed limits from the Skate 3 data, which the host may not have, so the host uses 40 blocks/s (above any rolling speed and a 4-second free fall) plus vanilla's 10-block allowance per move. The wall test uses a 0.4-wide body from half a block to 1.5 blocks above the skater root, since the root and the wheels sit in the surface they roll on.
+  - The friend's `SkateReport.tick` is the friend's own report number, not the engine's pose tick, so the host can order the two lanes and drop a stale state report that arrives after the reliable off.
+  - The host keeps each friend's skate state in `HostSessions.skaters` (keyed by client, dropped on leave) beside the other per-client host state, not in `minecraft_survival::session::Session`, so the shared crate does not change.
+  - The friend does not test powder snow itself (it has no survival state); the host does and refuses the board there.
+  - Others see the friend's soldier move with the board and turned to its heading, in the idle pose and without the board: the pose and board for everyone are group skater-poses. The host's own skating still sends its held items to friends until then.
+  - No vendored file changed.
+- **Test steps** (same new build in both windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r9-friend -Fresh -HostSound`; Skate 3 must be converted in the game folder, so both role folders get `IW4L_SKATE_ASSETS`; host: `/op Friend`):
+  1. In both windows: Options > Controls > Minecraft > Skating: Enabled.
+  2. Friend: on flat ground, hold the diamond sword and press J. The board goes down and the skate camera takes over. In the host window the friend's soldier rolls along with no sword in its hands (**195_friend_skates**, both windows).
+  3. Friend: build a 5-step staircase of oak stairs on cobblestone columns and skate up and down it. The host sees the friend go up and down smoothly, without jumps back (**196_friend_skates_stairs**, host window).
+  4. Friend: build a 4-block cobblestone tower with a 6-block runway and roll off the edge without an ollie: half a heart is lost on landing (**197_friend_skate_fall**). With a hay bale set into the ground at the landing spot: nothing.
+  5. Friend: dig a 3x3 pool 2 deep, fill it with the water bucket (in creative, then `/gamemode survival`) and ride in: the board is picked up when the eyes go under, and the friend swims (**198_friend_skate_water**).
+  6. Friend on the board: open chat and run `/tp ~ ~ ~20`. The friend stands at the new place with the board picked up (**199_friend_skate_tp**). J puts it down again there.
+  7. Friend on the board: the host runs `/kill Friend`. After the respawn J puts the board down again.
+  8. Friend on the board: press E. The inventory opens and the skater coasts; the host still sees the friend moving.
+  9. Host skates (J): the friend's window shows the host's soldier moving, as before.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_stairs*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:hay_block*16,minecraft:water_bucket,minecraft:diamond_sword,minecraft:cooked_beef*32
+```
+
+## Group skater-poses
+
+Segment d6 (friend fixes), brief D9 group skater-poses.
+
+### 1. Everyone sees every skater's pose and board
+
+After 0a36201a.
+
+- **Vanilla (26.3):** skating has no vanilla twin. The nearest is how a client sees another entity: the server sends its place at most once a tick (`ServerEntity.sendChanges`, from `ChunkMap.TrackedEntity`), only to players tracking it in the same level, and each client moves the entity smoothly between the last places it heard (`Entity.lerpTo`, `InterpolationHandler`). The skater pose follows that: one pose a tick, relayed only within the level, interpolated by every viewer.
+- **Changed:**
+  - `frame/src/skate.rs`: `SKATE_BONES`, the 22 mapped skater bones of `skate/rig.rs` (`HIPS` .. `RIGHTTOEBASE`) plus `SKATEBOARD_ROOT`, in a fixed order; `SkatePose { root, bones }` with `from_named(root, names, bones)` and `of(&SkateMode)`; the resource `SkatePoses(BTreeMap<u32, SkatePose>)`, keyed by client.
+  - `render_anim/src/skate/rig.rs`: `pose(dobj, names, bones)` and `board(names, bones, geom)` take names and bones instead of `&SkateMode`. `pose` runs the unchanged `pose_with(reference, ...)`. The board's joints come from `board_skin`: a joint the bones do not carry (trucks, wheels) follows `SKATEBOARD_ROOT`.
+  - `render_anim/src/skate.rs`: a new `publish` system after `update` puts the local skater's `SkatePose` into `SkatePoses` under its client and takes it out when the board is picked up.
+  - `render_anim/src/occupancy/remote_body.rs`: `sync_remote_bodies` and `pose_remote_bodies` look the skater up in `SkatePoses` by client (`minecraft_skaters::drawn`), for the local body as for everyone else: the body root comes from the pose, the soldier is posed by `rig::pose` with `SKATE_BONES`, and the board is drawn with no gun. The local skater's board keeps every Skate joint (`board_bones`); others' boards use the shared bones. A game without `rig.json` draws no skater (`drawn` is `None`): the idle soldier at the place and heading the host sends, with no board.
+  - `minecraft_net/src/messages.rs` (protocol 6, no bump): `SkatePose { root: [f32; 12], bones: [[f32; 12]; 23] }` (3x4 column-major, the bottom row is `0 0 0 1`); `SkateReport.pose: Option<Box<SkatePose>>` (boxed so `StateUp` and `ToServer` stay small; `SkateReport`, `StateUp` and the friend's `Report` are no longer `Copy`); `Skaters(Vec<(u32, SkatePose)>)`; `StateFrame.skaters: Blob` (the encoded `Skaters`, empty when nobody else skates in that level).
+  - `minecraft_survival/src/mob_sender.rs`: the state frame starts with no skaters (the host fills them in).
+  - `render_anim/src/minecraft_skaters.rs`:
+    - `net_pose` and `from_net` turn a `SkatePose` into its 3x4 floats and back.
+    - The host's `Skater` keeps the pose of the last accepted report while the ride lasts (`shown`) and hands each new one over once (`take_fresh`); a refusal, an off report or the end of the ride drops it.
+    - `relay(skaters, to, level)` gives a player every skater in its level but itself; `relayed` encodes it into the frame's blob, `heard_skaters` decodes it.
+    - `PoseTrack` keeps the last two poses heard and shows the skater between them, one interval behind (the span is capped at 0.2 s): root and bones are split into scale, rotation and place, the rotations slerped and the rest lerped. A track not heard for 1 s is dropped.
+    - `SkaterTracks` holds the tracks of the other skaters, writes them into `SkatePoses` each frame and removes exactly the entries it wrote when a skater leaves the list, goes silent or the game stops.
+    - The friend's `Reporter` sends at most one state report per tick (50 ms), as vanilla's client sends one move a tick; the keep-alive stays at 0.25 s.
+  - `render_anim/src/minecraft_remote.rs` (friend): every state report carries the skater's pose. A state frame the friend accepts gives its skaters to the friend's `SkaterTracks` (its own client left out), which fill `SkatePoses` each frame. `stop()` and a role change clear them.
+  - `render_anim/src/minecraft_host.rs` (host): an accepted report's pose goes into the host's `SkaterTracks` (drawn on the host with interpolation); a friend that stops skating or leaves is removed. Each state frame gets the skaters of the receiver's level: the host's own (from its `SkateMode`, under the host's client) and every friend riding with a pose. The host's own held items are now cleared from the `Equipment` it sends while it skates, as the friends' already were.
+- **Bandwidth per skater (from the codec tests):** one pose is 1152 bytes (12 + 23 x 12 floats). A friend's state report is 1173 bytes (1 tag + 19 report + 1 option + 1152), at most 20 a second while the pose changes (one every 0.25 s while it stands still): about 23.5 KB/s up per skating friend. In each state frame (one per server tick, 20 a second) each other skater in the receiver's level adds 1153 bytes (1 client + 1152): about 23 KB/s down per skater for every other player in that level, so with four players all skating each game receives about 69 KB/s more. The off report on the reliable lane is 21 bytes. Both lanes are zstd-packed when that is smaller; float poses rarely pack much.
+- **Tests:**
+  - `minecraft_net`: `codec::tests::skater_poses_ride_the_state_frame_at_1152_bytes_a_skater` (the pose size, `Skaters` round trip and size, the frame's blob, the report sizes with and without a pose); `state_lane_messages_round_trip` covers `StateFrame.skaters`; `skate_report(true)` now carries a pose in the every-message tests.
+  - `render_anim`: `skate::rig::tests::the_pose_from_the_mapped_bones_equals_the_pose_from_every_skate_bone` (a 23-joint soldier and a synthetic rig: `pose` with the 23 shared bones equals `pose` with every engine bone in another order, an unmapped finger follows its wrist), `board_joints_beyond_the_shared_bones_ride_the_deck`; `minecraft_skaters::tests::the_shared_bones_are_the_ones_the_wire_carries`, `the_local_pose_keeps_only_the_mapped_bones_in_order`, `the_host_relays_skaters_only_to_players_in_the_same_level`, `others_see_a_skater_between_its_last_two_poses`, `a_game_shows_the_skaters_it_hears_and_drops_the_ones_that_left`, `the_own_board_keeps_every_skate_bone_and_others_ride_the_shared_ones`, `a_viewer_without_the_rig_draws_the_idle_soldier`, `the_host_keeps_the_pose_of_an_accepted_report_until_the_ride_ends`, `the_friend_reports_at_most_once_a_tick`.
+  - Runs: `minecraft_net` 24, `frame` 28, `render_anim` 210 and `minecraft_survival` 742 (+1 world test), all green. `check -p launcher` green. Clippy on `render_anim`, `minecraft_net` and `frame` (with `-A clippy::approx_constant`) shows no new warning in the changed code besides the existing too-many-arguments note on `sync_remote_bodies`. No new `.rs` file; `minecraft_skaters.rs` (track D's own file) still passes `rustfmt --check --edition 2024`.
+- **Decisions:**
+  - The pose carries 23 bones, not 22: the 22 body bones of `rig.rs` plus `SKATEBOARD_ROOT`, without which no viewer can place the board. Other board joints (Skate 3's trucks and wheels, if `board.json` weights any vertex to them) ride the deck rigidly on other players' boards; the skater's own board in third person still uses every joint. `SPINE3`, `NECK` and `HEAD` are sent though `rig::pose` copies the parent for `j_spine4`, `j_neck` and `j_head`, as the brief asks for all 22.
+  - Bones are sent in Skate's own space and converted by each viewer, so the bytes on the wire are the engine's; the root is sent in map space, as `SkateMode.root` holds it.
+  - Each game shows other skaters one report interval behind, between the last two poses (vanilla interpolates entity moves the same way); the local skater is never delayed.
+  - The host relays only the newest accepted pose of each friend, so a refused or stopped skater disappears from everyone's view at once.
+  - The friend's reports are throttled to one per 50 ms (vanilla's one move per client tick) to keep the upload near 23 KB/s; the host's movement check already allows for any gap.
+  - The host's own held items are cleared from its `Equipment` while it skates (the friend-skating leftover), so friends see no item in the skating host's hands.
+  - No vendored file changed.
+- **Test steps** (same new build in both windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r9-friend -Fresh -HostSound`; both role folders need Skate 3 converted, so both get `IW4L_SKATE_ASSETS`; host: `/op Friend`):
+  1. In both windows: Options > Controls > Minecraft > Skating: Enabled.
+  2. Friend: on flat ground press J and roll towards the host. In the host window the friend's soldier stands on a board in the skate pose (knees bent, arms out), the board under its feet, and it leans and turns with the friend's board without stutter (**200_host_sees_friend_skate**, host window, and the friend's own third-person view with F5 for comparison).
+  3. Friend: ollie and kickflip next to the host. The host sees the jump and the flip of the board (**201_host_sees_friend_trick**).
+  4. Friend: press J again. In the host window the board is gone at once and the friend's soldier stands in its idle pose.
+  5. Host: press J and roll past the friend. In the friend's window the host's soldier rides a board in the skate pose with no item in its hands (**202_friend_sees_host_skate**, friend window).
+  6. Both skate at the same time next to each other: each window shows the other on its board (**203_both_skate**, both windows).
+  7. Host, standing on its board in the Overworld: `/execute in minecraft:the_nether run tp Friend 0 80 0`. The friend in the Nether sees no skater. Host: `/execute in minecraft:overworld run tp Friend ~ ~ ~` (the friend lands at the host): the friend sees the host on its board again.
+  8. A friend whose `skate-data` has no `rig.json` (rename it) sees the host as the standing soldier moving along with no board, and does not crash.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_stairs*64,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:diamond_sword,minecraft:cooked_beef*32
+```
+
+## Group strider-freeze
+
+Segment d6, brief D10 group strider-freeze.
+
+### 1. A Minecraft strider carrying a player keeps walking under /tick freeze
+
+After 3476d774.
+
+- **Vanilla (26.3, javap):**
+  - `TickRateManager.isEntityFrozen(e)` is `!runsNormally() && !(e instanceof Player) && e.countPlayerPassengers() <= 0`; `countPlayerPassengers` counts indirect passengers too.
+  - `ServerLevel.lambda$tick$0` (the entity tick list): a removed entity returns, a frozen one returns, then `checkDespawn`, then a non-player outside `inEntityTickingRange` returns, a passenger returns (its vehicle ticks it), else `tickNonPassenger`.
+  - `ServerLevel.tickPassenger` checks only `isRemoved`, the vehicle and the tick list, never the frozen state, so the whole stack under a player rider ticks: the root vehicle and every passenger on it.
+  - A frozen tick does not advance the game time; the client uses the same `isEntityFrozen` test, so a player-carrying vehicle is drawn on its own running clock.
+- **Changed:**
+  - Vendored `entities/src/world/riding.rs`: `EntityWorld::player_carriers()`, every mob in the stack under a player rider (`with_mob_riders(root_vehicle(v))` for each vehicle with a `Rider::Player`), sorted and deduplicated.
+  - Vendored `entities/src/world.rs`: `tick_with_players_where` became a wrapper over a private `tick_selected(.., frozen)`; the new `tick_frozen_with_players_where` ticks only the carriers inside the ticking range, does not bump `game_time`, skips `resolve_piglin_angers`, and runs the same leash, ride, death and pruning epilogue. Audit of `game_time`: the tick body passes the frozen time to burn, suffocate, hurt and goal timers (`last_can_use_check`), as vanilla's frozen level time does; `hurt_by_blast`, `player_hurt`, `apply_arrow_hit` and `mob_hits_mob` read the field and need no change.
+  - `minecraft_terrain/src/server.rs`: `tick_mobs` became a wrapper over `tick_mobs_with(.., frozen)`; the new `ServerSim::tick_ridden_mobs` (nothing to do without a carrier) runs it frozen, and `run_tick`'s frozen branch calls it. The frozen run skips `push_from_players` and `explode_blasts`; the mob event drains (death loot, barters, conversions, creeper and fireball blasts) still run.
+  - `minecraft_terrain/src/client_mobs.rs`: `ClientMobs::tick_only(ids)` ticks only the listed mobs; the rider snapping of `tick()` moved into `seat_riders`, shared by both. `set_ride_partial(carriers, partial)` and `partial_of(id, partial)`: `ClientMobs::pose` and `shadow_casters` draw a carrier with the ride partial.
+  - `minecraft_survival/src/entity_view.rs`: `EntityView.ride_clock` and `ride_partial()`. While the game runs normally the ride clock is the level clock; while frozen it runs on real time and every tick length ticks the client mobs of `world.player_carriers()` (the host's copy of the server's entity world, so the friends' vehicles too). `meshes()` hands the carriers and the ride partial to `ClientMobs`, so every renderer, the rider mobs and the shadows use it.
+  - `minecraft_survival/src/entities.rs`: `Entities::ride_seat` (the host's and every friend's seat on the host) uses the ride clock.
+  - The friend needs no change: its `EntityView` always runs normally (`render_anim/src/minecraft_remote.rs`, `ClientTiming::default()`), and the strider's moves reach it from the host's trackers, which now see it move.
+- **Tests:**
+  - `minecraftoss-entities`: `world::riding::tests::player_carriers_is_the_stack_under_a_player` (a player on a baby strider riding an adult with a zombified piglin also on it: all three; a strider jockey with no player: none; a second player's strider; dismounting drops the stack) and `a_frozen_tick_moves_only_what_carries_a_player` (20 frozen ticks: the steered strider walks over 2 blocks and ticks 20 times, the other strider neither moves nor ticks, game time unchanged; outside the ticking range the carrier waits; a normal tick runs everything again).
+  - `minecraft_terrain`: `server::tests::a_strider_carrying_a_player_walks_while_frozen` (`run_tick` with `normal = false`: the ridden strider walks where the rider looks, a cow keeps its place and tick count, the level's and the mobs' game time stay; after dismounting the strider freezes too; a normal tick runs the cow) and `client_mobs::tests::tick_only_moves_only_the_listed_vehicle_and_seats_its_rider` (also the ride partial in `pose`).
+  - `minecraft_survival`: `entity_view::tests::a_ridden_strider_keeps_its_own_clock_while_the_host_is_frozen` (the level partial stays, the ride partial runs and the carrier ticks once a tick length, the empty strider does not; they agree after unfreezing).
+  - Runs: `minecraftoss-entities` 376, `minecraft_terrain` 1353 (3 ignored), `minecraft_survival` 743 (+1 world test), all green. `check -p launcher` green. Clippy on the three crates (with `-A clippy::approx_constant`, tests included) shows no warning in the changed code. No new `.rs` file.
+- **Decisions:**
+  - The whole stack under a player ticks (vanilla's `tickPassenger` ticks every passenger of a ticking vehicle), still only inside the entity-ticking range.
+  - A frozen tick neither bumps the entity world's game time nor resolves piglin anger (both belong to a normal tick); leashes tick only for carriers (`tick_leashes` gets the ticking set).
+  - In frozen ticks players do not push mobs (`push_from_players`) and queued block blasts (respawn anchors, crystals) wait for the next normal tick, as before this commit; only mob work runs.
+  - The host's carriers use their own clock only while frozen; on unfreezing the ride clock snaps back to the level clock, so the carrier's partial tick may jump once (by less than one tick, 50 ms).
+- **Test steps** (single player for 1 and 2; step 3 with the same new build in both windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r9-friend -Fresh -HostSound`, host: `/op Friend`):
+  1. Lay netherrack 10 by 10, pour the two lava buckets into a small pool on it, hatch two striders in the lava and saddle both, and hatch a cow 5 blocks away. Hold the warped fungus on a stick and right-click one strider to mount it. Type `/tick freeze`. Hold W: the strider walks smoothly where you look; the cow and the other strider stay still (**210_strider_freeze_start**, then **211_strider_freeze_5s** after 5 seconds of walking).
+  2. Crouch to get off: the strider stops at once. Mount it again: it walks. `/tick step 20`: the cow and the other strider move for one second, then stop. `/tick unfreeze`: everything runs again (**212_strider_unfreeze**).
+  3. Two windows: the friend mounts the second strider holding its own fungus on a stick, then the host types `/tick freeze` (the host stays off its strider). The friend walks: both screens show the friend's strider moving smoothly; the host's empty strider and the cow stay frozen (**213_friend_strider_host**, host window, and **214_friend_strider_friend**, friend window).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*4,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:warped_fungus_on_a_stick,minecraft:lava_bucket,minecraft:lava_bucket,minecraft:netherrack*64,minecraft:cow_spawn_egg*8
+```
+
+## Group tnt
+
+Segment d6, brief D10 group tnt. **Notice for the owner: TNT now hurts players and mobs everywhere, in single player too.** Until this group a TNT blast broke blocks and hurt dropped items only; no mob and no player lost health.
+
+### 1. Minecraft TNT hurts mobs and players like vanilla, before its blocks break
+
+After 4e171e63.
+
+- **Vanilla (26.3, javap of `ServerExplosion.explode` and `hurtEntities`, `TntBlock.prime` and `wasExploded`):**
+  - `explode()` runs `calculateExplodedPositions`, then `hurtEntities`, then `interactWithBlocks` and `createFire`: every entity's exposure (`getSeenPercent`) is taken with the blocks still standing.
+  - `hurtEntities` takes every entity in the box grown by twice the radius plus one, skips those whose distance over twice the radius is above 1, and gives each `hurtServer` with `getEntityDamageAmount` ((p² + p) / 2 × 7 × 2r + 1, p = (1 − distance) × exposure). The entity list is taken before the first hurt, so the loot of a mob it kills is not hurt by the same blast.
+  - A primed TNT explodes with power 4 at a sixteenth of its height; its damage source is `explosion(tnt, owner)` (commit 2 adds the owner).
+- **Changed:**
+  - Vendored `world/src/level/mod.rs`: `Level.defer_tnt_blasts` (false by default, so the vendored level and its tests explode at once as before) and `Level.tnt_blasts`.
+  - Vendored `world/src/level/explosion.rs`: `tick_tnt` pushes its `Explosion` into `tnt_blasts` instead of exploding when the level defers them.
+  - `minecraft_terrain/src/server.rs`:
+    - `ServerSim::new` sets `defer_tnt_blasts`.
+    - New `ServerSim.blast_players`, filled by `run_tick` from the tick's `mob_players` right before `ServerSim::tick`.
+    - `ServerSim::tick` drains the deferred blasts right after `level.tick()` in the new `explode_tnt`: the entity world's `blast` hurts and pushes the mobs and hands the players their `PlayerHit`s, then `level.explode` breaks the blocks and hurts the items, then the dead mobs drop their loot, then the `CreeperExplosion` goes into `explosions` for the sound, the crystals and the dragon as before.
+    - The old scan for TNT about to burst (and `TNT_BLAST_RADIUS`) is gone; the radius is now the TNT's own power.
+- **Tests:** `minecraft_terrain`: `server::tests::tnt_hurts_a_mob_and_a_player_before_its_blocks_break` (through `run_tick`: nothing for 79 ticks; then one explosion of radius 4; the open player 3 blocks away gets one ownerless explosion hit over 10; the player behind a 3 by 3 cobblestone wall gets one hit under 2, although the blast breaks that wall; the cow dies and, with the jar's loot, its beef lies on the ground). The other TNT tests (`flint_primes_tnt_which_blows_up_with_a_bang`, `primed_tnt_explodes_and_drops_items`, `primed_tnt_waits_while_frozen`, `an_mw2_blast_primes_tnt_it_reaches`, `tnt_beside_a_frame_breaks_it`) pass unchanged. Runs: `minecraft_terrain` 1354 (3 ignored), `minecraftoss-world` 96, all green. `check -p launcher` green.
+- **Decisions:**
+  - The loot of the mobs a TNT blast kills drops after `level.explode`, not before as in `explode_blasts`: vanilla takes its entity list before the first hurt, so the drops must never be hurt by their own blast. (In the test the order made no difference, but dropping after the blocks can never destroy them.)
+  - Only `ServerSim::tick` drains the blasts, so the frozen tick leaves primed TNT alone as before. Tests that call `ServerSim::tick` without `run_tick` blast the mobs but no players.
+  - The players hurt are the tick's `mob_players` (alive, not spectators), the same list creepers use. A creative player gets the hit, which `struck()` drops as for every hit.
+- **Test steps** (single player, new world `r9-tnt`, survival):
+  1. Lay a 9 by 9 floor of cobblestone. Hatch a cow, place TNT one block from it, step 3 blocks away and light the TNT with flint and steel. You lose hearts (about 7 on Normal without armour) and the cow dies and drops beef and experience (**220_tnt_hurts**).
+  2. Build a 3 wide, 3 high cobblestone wall, place TNT 2 blocks in front of it, light it and run behind the wall, standing right against it. The wall breaks but you lose little or nothing (**221_tnt_behind_wall**).
+  3. Place TNT with a dropped stack of cobblestone right beside it (throw a few with Q) and light it: the dropped items are blown away as before; then put a cow beside another TNT and light it: the beef lies in the crater afterwards (**222_tnt_loot_stays**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:cow_spawn_egg*8,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:golden_apple*8
+```
+
+### 2. Minecraft explosions push players like vanilla
+
+After 1ed1d4f7. Not in the brief's list of three: the brief took the pushes for granted (its owner steps say "you lose hearts and are pushed"), but no explosion pushed a player in the fork (track C's second review found the same, `docs/WEAPONS.md:621`). Without it a player spared by pvp (commit 3) would get no push at all.
+
+- **Vanilla (26.3, javap of `ServerExplosion.hurtEntities`; the jar's `#minecraft:no_knockback` damage type tag):**
+  - After `hurtServer`, every entity is pushed by direction × (1 − distance) × exposure (× (1 − `explosion_knockback_resistance`) for a living one) through `pushFromExplosion`, whether the hurt landed or not. A player that is neither a spectator nor a flying creative player also gets it in `hitPlayers`, which the explode packet hands its client.
+  - `explosion`, `player_explosion` and `bad_respawn_point` are in `#minecraft:no_knockback`, so the hurt itself adds no 0.4 knockback: the blast's push is the only one.
+- **Changed:** `minecraft_survival/src/entities.rs`: `route` turns the knockback of every `PlayerHitKind::Explosion` and `BadRespawnPoint` hit into that player's `out.pushes` (the same blocks-a-tick motion `players_pushed` already carries for wind bursts and the dragon), before the hit is converted, so a hit that does no damage (peaceful, a totem's grace, a creative player) still pushes. `render_anim/src/minecraft_players.rs` applies it through `launch_velocity` and `push_velocity` as before, and skips dead, spectating and creative-flying players. Creepers, ghast fireballs, beds and respawn anchors, end crystals and TNT all push now.
+- **Tests:** `minecraft_survival`: `entities::tests::an_explosion_pushes_the_player_it_hit_even_when_it_does_no_damage` (the friend's TNT hit gives one push and one hit; a bad respawn point pushes the host; an arrow adds no push here; on peaceful the hit is gone but the push stays). Runs: `minecraft_survival` 744 (+1 world test), green. `check -p launcher` green.
+- **Decisions:**
+  - Blast Protection's `explosion_knockback_resistance` is still not applied to the push (`docs/MINECRAFT-SURVIVAL.md:423` already lists it), and MW2 blasts still push no player.
+- **Test steps** (single player, `r9-tnt`, survival):
+  1. Stand 3 blocks from TNT and light it: you lose hearts and are thrown away from it, a little up (**223_tnt_push**).
+  2. Hatch a creeper and let it blow up beside you: you are pushed too (**224_creeper_push**).
+  3. `/gamemode creative`, fly (double jump) next to lit TNT: no push. Land beside another one: pushed, no hearts lost. `/gamemode survival`.
+  4. Hold a totem of undying in the offhand, take a TNT blast with half a heart left so the totem pops, then stand by a second TNT within 4 seconds: no damage, but the push (**225_totem_push**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:creeper_spawn_egg*4,minecraft:cobblestone*64,minecraft:totem_of_undying,minecraft:totem_of_undying,minecraft:cooked_beef*32,minecraft:golden_apple*8
+```
+
+### 3. Minecraft primed TNT remembers who lit it, and with pvp off a player's TNT or end crystal only pushes players
+
+After 21862eeb. (Commit 2's log said `minecraft_survival` 745; the run there was 744, corrected above.)
+
+- **Vanilla (26.3, javap of `TntBlock.prime` and `wasExploded`, `Explosion.getIndirectSourceEntity`, `EndCrystal.hurtServer`, `ServerPlayer.hurtServer`):**
+  - `TntBlock.prime(level, pos, igniter, stack)` makes `PrimedTnt(level, x, y, z, igniter)`: flint and steel and fire charges pass the player; `prime(level, pos)` (redstone, fire, neighbours) passes null.
+  - `wasExploded` primes a chained TNT with `explosion.getIndirectSourceEntity()`, which for a TNT blast is `PrimedTnt.getOwner()` (a `typeSwitch` over PrimedTnt, LivingEntity and Projectile), so a chain keeps its igniter.
+  - The blast's damage source is `explosion(tnt, owner)`: `player_explosion` with the player as the causing entity. `EndCrystal.hurtServer` explodes with `explosion(crystal, source.getEntity())`, so a crystal popped by a player names them too, and its chained TNT gets no owner (the crystal is not a living source).
+  - `ServerPlayer.hurtServer` refuses a hurt whose causing entity is a player when `canHarmPlayer` is false (pvp off), the igniter included. `ServerExplosion.hurtEntities` still pushes the spared player.
+- **Changed:**
+  - Vendored `world/src/level/entity.rs`: `TntData.owner: Option<u64>`.
+  - Vendored `world/src/level/explosion.rs`: `Explosion.owner` (every literal sets it); `ignite_tnt_by(pos, owner)` and the private `prime_tnt_by`, with `ignite_tnt` and `prime_tnt` passing `None`; `new_primed_tnt` takes the owner; `tick_tnt` hands the TNT's owner to its explosion; a TNT hit by a blast is primed with the blast's owner.
+  - Vendored `entities/src/world.rs`: `PlayerHitKind::Explosion { knockback, by }`, `by` set from `Blaster::Player` in `apply_explosion_by` (TNT and crystals); the bad-respawn-point conversion ignores `by`. Vendored `entities/src/world/fireballs.rs`: a fireball a player sent back names that player in `by`.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::item_on_block_by(player, ..)` (`item_on_block` passes `None`); `Command::ItemOnBlock` passes its player, so `PrimeTnt` primes in the player's name. `explode_tnt` blasts a TNT with an owner through `blast_by_player`, which credits the owner with the kills (experience drops, as for a player's hit) and names them in the players' hits. The other `Explosion` literals pass `owner: None`.
+  - `minecraft_survival/src/entities.rs`: on the host, `spared_by_blasts_without_pvp` (next to `unharmed_without_pvp`) takes every explosion hit whose `by` is a player in the game out of `player_hits` when pvp is off and puts its knockback into `players_pushed`, so the player is pushed (the same blocks-a-tick motion commit 2 gives every blast) and loses no health. A blast by someone who left the game hurts, as vanilla's owner reference no longer resolves.
+- **Tests:**
+  - `minecraft_terrain`: `server::tests::chained_tnt_inherits_the_owner` (two TNT reached by a player's blast are primed in that player's name; one primed by redstone has none); `tnt_lit_by_a_player_names_them_and_credits_their_kills` (both players' hits name the igniter, the igniter included, no mob source; the cow dies and drops experience); `a_crystal_popped_by_a_player_names_them` (both hits name the player who popped it). Commit 1's test now also checks that an ownerless TNT kill drops no experience.
+  - `minecraft_survival`: `entities::tests::with_pvp_off_a_players_blast_only_pushes_players` (pvp on keeps every hit; pvp off removes the hits by a player, the igniter's own included, and pushes each victim once; an ownerless blast and a blast by someone gone still hurt; through `route` both players get one push and no hit).
+  - The existing TNT tests pass unchanged. Runs: `minecraft_terrain` 1357 (3 ignored), `minecraftoss-entities` 376, `minecraftoss-world` 96, `minecraft_survival` 745 (+1 world test), all green. `check -p launcher` green.
+- **Decisions:**
+  - The owner is a player only (the server's player id). Vanilla also keeps a mob as owner (a creeper's blast priming TNT, `getIndirectSourceEntity` of a living source); that would only change a chained TNT's death line to "blown up by Creeper", so it is left for later.
+  - Primed TNT is not saved by the fork, so the owner needs no save field (vanilla saves `owner`).
+  - A crystal destroyed by a player's TNT blast does not name the player for its own blast yet: the level's crystal pass (`tick_end`, `crystals.blast(.., None)`) gets no owner. Left for later.
+  - The sparing runs on the host only, where every player's hit is routed, so it covers friends and the host alike.
+- **Test steps** (two windows: `& scripts\mp-local.ps1 -Exe iw4l-survival.exe -World r9-tnt -Fresh -HostSound`; host: `/op Friend`):
+  1. Host: `/gamerule pvp false`. Both stand 2 blocks from a TNT with a cow beside it. Friend lights it with flint and steel: neither loses hearts, both are pushed, the cow dies and drops beef and experience (**226_tnt_pvp_off**, host window).
+  2. Lay 4 TNT in a row; the friend lights the end one while both stand 3 blocks from the row: the whole chain spares both of you (**227_tnt_chain_pvp_off**).
+  3. Place TNT with a redstone block beside it (nobody lit it): both lose hearts (**228_tnt_redstone_hurts**).
+  4. Host: `/gamerule pvp true`. The friend lights TNT 2 blocks from both: both lose hearts, the friend too (**229_tnt_pvp_on**).
+  5. Host: `/gamerule pvp false`. Place obsidian and an end crystal 3 blocks from both; the friend punches the crystal: both are pushed but lose no hearts (**230_crystal_pvp_off**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*32,minecraft:flint_and_steel,minecraft:flint_and_steel,minecraft:redstone_block*4,minecraft:cow_spawn_egg*8,minecraft:end_crystal*4,minecraft:obsidian*8,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:golden_apple*8
+```
+
+### 4. An explosion with no attacker is told as "blew up"
+
+After fa83bb5e.
+
+- **Vanilla (26.3, `DamageSource.getLocalizedDeathMessage`; `en_us.json`):** only a source with neither a causing nor a direct entity falls back to the kill credit (`getKillCredit`, the `.player` form such as "was blown up by Zombie"). A TNT or end crystal blast with no owner is `explosion(tnt, null)`: its direct entity is the TNT or the crystal, so the line is `death.attack.explosion` with that entity's name, whose template ignores it: "%1$s blew up", even right after a mob's or a player's hit.
+- **Found:** the brief's cause ("an explosion with no source is told as a generic death") was already fixed by track C (7660486d, `DamageCause::Explosion` with the message id `explosion`). What was left: a player or mob that hit the victim in the 5 seconds before the blast turned it into "<victim> was blown up by <them>" through the kill-credit escape.
+- **Changed:** `minecraft_survival/src/death.rs`: `DamageCause::has_direct_source()` (true for `Explosion`, the fork's ownerless TNT and crystal blast); `death_key` gives such a cause its own key before the `hurt_by_player` and `hurt_by` escapes.
+- **Tests:** `minecraft_survival`: `death::tests::an_explosion_with_no_attacker_blew_up_even_right_after_a_hit` (a zombie's bite and the host's blow, then an ownerless blast: "%1$s blew up", killer "blew up", resolved "Friend blew up"; lava after the host's blow still says "to escape Host"). Runs: `minecraft_survival` 746 (+1 world test), green. `check -p launcher` green.
+- **Decisions:** fireworks with no shooter keep the escape for now (their direct entity is the rocket too, but the fork's `DamageCause::Fireworks` also covers a rocket whose shooter is gone); left for later.
+- **Test steps** (two windows as in commit 3; host: `/gamerule pvp true`, `/gamerule show_death_messages true`):
+  1. Host: put a TNT and a redstone block in the inventory hotbar. With 2 hearts left, the friend hits the host once with a fist, and within 5 seconds the host places the TNT and the redstone block beside it and stays: the chat reads "<host> blew up", not "was blown up by <friend>" (**231_tnt_blew_up**, both windows).
+  2. A zombie hits the friend, then the friend dies to a redstone-primed TNT: "<friend> blew up" (**232_tnt_blew_up_zombie**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:redstone_block*8,minecraft:zombie_spawn_egg*2,minecraft:cobblestone*64,minecraft:cooked_beef*16
+```
+
+### 5. A player's Minecraft TNT is told as "was blown up by <player>"
+
+After 8a834f02. Not in the brief's list: commit 3 names the igniter in the hit, and this commit gives that name to the death line and the kill credit.
+
+- **Vanilla (26.3, `DamageSource.getLocalizedDeathMessage`, `CombatTracker.getFallMessage`; the jar's `damage_type/player_explosion.json` and `en_us.json`):** `player_explosion` has the message id `explosion.player` and scales with difficulty always. With a causing player the line is `death.attack.explosion.player` ("%1$s was blown up by %2$s"), or its `.item` form ("... using %3$s") when the player's main-hand item has a custom name. The player becomes the victim's `lastHurtByPlayer`, so a fall right after is "doomed to fall by", and lava "to escape", that player.
+- **Changed:**
+  - `minecraft_survival/src/death.rs`: `DamageCause::PlayerExplosion { client }` (damage type `minecraft:player_explosion`, in `IS_EXPLOSION`, so a totem's grace refuses it too). It enters combat and sets the player kill credit like `Player`; its death line goes through `by_player` with the key `death.attack.explosion.player` (its `.item` form is added to `ITEM_FORMS`), and an igniter who left falls back to "blew up". A fall after it is "death.fell.assist" naming the player.
+  - `minecraft_survival/src/entities.rs`: `mob_hit` gives an explosion hit with `by` the cause `PlayerExplosion`.
+- **Tests:** `minecraft_survival`: `death::tests::a_players_blast_blows_up_by_name_and_counts_as_their_hit` (the damage type and message id; "%1$s was blown up by Host", with "using [Excalibur]"; "blew up" after the host left; "doomed to fall by Host"; lava "to escape Host"); `entities::tests::an_explosion_pushes_the_player_it_hit_even_when_it_does_no_damage` also checks that a hit with `by` routes as `PlayerExplosion`. Runs: `minecraft_survival` 747 (+1 world test), green. `check -p launcher` green.
+- **Decisions:** the client id is the server's player id (`u32::try_from`, as `pvp::hit` does), so the chat roster names it for host and friends alike.
+- **Test steps** (two windows as in commit 3; host: `/gamerule pvp true`):
+  1. The friend lights TNT next to the host, who stays: "<host> was blown up by <friend>" in both chats, and the host's kill card names the friend (**233_tnt_blown_up_by**).
+  2. The friend renames the flint and steel "Boom" in an anvil, holds it and lights TNT next to the host: "<host> was blown up by <friend> using [Boom]" (**234_tnt_blown_up_using**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*16,minecraft:flint_and_steel,minecraft:flint_and_steel,minecraft:anvil,minecraft:experience_bottle*16,minecraft:cobblestone*64,minecraft:cooked_beef*16
+```
+
+### 6. Track D's TNT pvp test passes clippy
+
+After 96d39045. Clippy on `minecraft_terrain` and `minecraft_survival` (tests included, `-A clippy::approx_constant`) flagged one line of this group: `field_reassign_with_default` in `entities::tests::with_pvp_off_a_players_blast_only_pushes_players` (commit 3), now a struct literal. The other warnings in the touched files (`server.rs:649`, `:3263`) are upstream's. No game change, no test steps, no kit.
+
+## Group small-not-vanilla
+
+Segment d6, brief D10 group small-not-vanilla: four small not-vanilla items, one commit each.
+
+### 1. A Minecraft spawner that refuses an egg says so in chat
+
+After 2886e3fa.
+
+- **Vanilla (26.3, javap of `SpawnEggItem.useOn`):** on a spawner block entity, when `ServerLevel.isSpawnerBlockEnabled()` is false, the server calls `ServerPlayer.sendSystemMessage(Component.translatable("advMode.notEnabled.spawner"))` for the player who used the egg (a chat line, not the action bar, no colour) and returns `FAIL`, so the egg is kept. Nobody else sees it.
+- **Changed:**
+  - `minecraft_terrain/src/spawn_egg.rs`: `SPAWNER_DISABLED` (`advMode.notEnabled.spawner`), which `ServerSim::spawner_egg` now returns instead of the literal.
+  - `minecraft_survival/src/entities.rs`: `PlayerOutputs.told` (chat lines for that one player). The egg answers are settled in the new `settle_eggs`; an answer refused with `SPAWNER_DISABLED` adds the translatable system line through `egg_refusal`. The other refusals (no spawner there, a monster in peaceful, an unsimulated mob) stay silent and logged, as vanilla's `canSpawn` failure is.
+  - `render_anim/src/minecraft_players.rs`: `struck` returns that player's `told` lines. The host shows them in its own chat (`minecraft_world.rs`); a friend's go into `Stepped.lines`, which the host sends to that friend only as `ToClient::Chat`.
+- **Tests:** `minecraft_survival`: `entities::tests::a_spawner_that_refuses_an_egg_tells_only_the_player_who_used_it` (the friend's refused egg gives one system line that resolves to the language's text, not an overlay; the friend's hatched egg and the host's "no spawner" answer give none; the refused egg is kept, the hatched one spent). Runs: `minecraft_survival` 748 (+1 world test), `minecraft_terrain` spawner tests 29, `render_anim` 210, all green. `check -p launcher` green.
+- **Decisions:** the line rides the existing per-player chat paths (the host's chat box and the friend's relayed `ToClient::Chat`), so no message or protocol change; `PROTOCOL` stays 6.
+- **Test steps** (two windows, host and friend in the same overworld spot, both in survival):
+  1. Host: `/gamerule spawner_blocks_work false`. Host places a spawner and right-clicks it with the pig egg: the host's chat shows "Spawner blocks are not enabled" (in the game's language) and the egg count stays the same. The friend's chat shows nothing (**235_spawner_refused**, both windows).
+  2. Friend right-clicks the same spawner with the zombie egg: only the friend's chat shows the line, and the friend keeps the egg (**236_spawner_refused_friend**, both windows).
+  3. `/gamerule spawner_blocks_work true`: the pig egg on the spawner now sets a pig in the cage, the egg is spent, and no line appears (**237_spawner_accepts**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner*2,minecraft:pig_spawn_egg*4,minecraft:zombie_spawn_egg*4,minecraft:cooked_beef*16
+```
+
+### 2. The Minecraft enchanting seed is saved with the player
+
+After 5f6b7017.
+
+- **Vanilla (26.3, javap of `Player.addAdditionalSaveData` and `readAdditionalSaveData`):** the player file holds `XpSeed` as an int (`putInt("XpSeed", enchantmentSeed)`), read back with `getIntOr("XpSeed", 0)`. The enchanting table's three offers come from that seed and the bookshelves; the seed changes only when the player enchants.
+- **Changed:**
+  - `minecraft_survival/src/player_nbt.rs`: `PlayerData.xp_seed`, read from and written as `XpSeed` (`Tag::Int`). Like `PortalCooldown` it is not in `OWNED`, so a `PlayerData` without a seed keeps the one already in the file.
+  - `minecraft_survival/src/player.rs`: `Player::data` saves `enchantment_seed`.
+  - `minecraft_survival/src/server.rs`: `join_from` restores it when the file has one. Every player (host and friends) has their own file under `players/data/<uuid>.dat`, so the seed is per UUID.
+- **Tests:** `minecraft_survival`: `player_nbt::tests::the_enchanting_seed_is_an_int_named_xp_seed_like_vanilla` (an int, read back, missing reads as none, an unset seed keeps the file's, a set one replaces it); `server::tests::a_joining_player_keeps_the_enchanting_seed_their_file_saved` (a file without `XpSeed` gives the UUID-derived seed, a saved seed comes back, another player keeps their own); the world test `a_saved_world_comes_back_whole_with_vanilla_keys_and_tag_types` now expects `XpSeed` as an int in the player file and round-trips a seed. Runs: `minecraft_survival` 750 plus the world test, green. `check -p launcher` green.
+- **Decisions:** a file without `XpSeed` (every player file the fork wrote before this commit) gets the seed derived from the UUID, as `Player::new` already gave, instead of vanilla's 0. So a player's table offers stay what they were before the update, and two players of an old world do not share seed 0. A vanilla 26.3 file always has `XpSeed`, so for those nothing differs from vanilla.
+- **Test steps** (single player, then a friend):
+  1. Place the enchanting table, drink experience bottles to level 3 or more, put the iron sword and lapis in the table and note the three offers (**238_enchant_offers_before**).
+  2. Take the sword out, save and quit to the menu, load the world again and put the sword back: the same three offers (**239_enchant_offers_after**).
+  3. Enchant once: the offers change. Save, quit and load again: the new offers stay (**240_enchant_offers_kept**).
+  4. Friend window: the friend does steps 1 and 2 on the same table, leaving and rejoining instead of the host's restart: the friend sees their own offers, the same before and after, and the host's do not change (**241_enchant_offers_friend**, both windows).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:enchanting_table,minecraft:lapis_lazuli*32,minecraft:experience_bottle*32,minecraft:iron_sword,minecraft:iron_sword,minecraft:book*4
+```
+
+### 3. An MW2 gun hit wakes a sleeping Minecraft player
+
+After 83e369cf.
+
+- **Vanilla (26.3, javap of `LivingEntity.hurtServer`):** right after the invulnerability and `isDeadOrDying` checks, a sleeping entity calls `stopSleeping()`, before armour, absorption and the damage amount. So any accepted hit wakes a sleeper at once.
+- **Cause:** a sleeper wakes when `Survival::hurts()` changes (`sleep.rs`, the check next to the broken bed). Only Minecraft damage counted it (`Survival::record`). MW2 damage (bullets, grenades, knives) lowers the MW2 health, which `Survival::observe` follows each frame for every player on the host (`minecraft_players::life`, run for the host and for each friend), but it never counted as a hurt.
+- **Changed:** `minecraft_survival/src/survival.rs`: `observe` counts a hurt when the MW2 health drops (also when absorption takes it all, as vanilla wakes before absorption). Nothing in `sim/src/damage.rs` (track C's file) changed: the hook is on the Minecraft side, per player.
+- **Tests:** `minecraft_survival`: `sleep::night_tests::a_gun_hit_wakes_the_sleeper_like_a_minecraft_hurt` (two sleepers; an unchanged MW2 health wakes nobody; a 30-point MW2 drop takes 6 Minecraft health from the one hit and wakes them at once with the timer at 0, while the other stays in bed). Runs: `minecraft_survival` 751 plus the world test, green. `check -p launcher` green.
+- **Decisions:** `hurts` is read only by the sleep check, so the extra count changes nothing else.
+- **Test steps** (two windows, overworld, `/time set night`, `/gamerule pvp true`):
+  1. Host and friend each place a bed and the host lies down. The friend shoots the host once with the M4: the host gets up at once beside the bed, without the slow fade (**242_gun_wakes_host**, both windows).
+  2. The friend lies down and the host shoots the friend once: the friend gets up at once (**243_gun_wakes_friend**, both windows).
+  3. Both lie down again and nobody shoots: the night is skipped as before (**244_sleep_still_skips**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,minecraft:white_bed,minecraft:red_bed,minecraft:cooked_beef*16
+```
+
+### 4. A ghast's or blaze's fireball makes a hoglin retaliate
+
+After cedee1fd.
+
+- **Vanilla (26.3, `Hoglin.hurtServer` and `HoglinAi.wasHurtBy`; `LargeFireball.onHit`, `ServerExplosion.hurtEntities`):** a hoglin that takes damage calls `wasHurtBy` with `source.getEntity()`. A ghast's large fireball explodes with `fireball(fireball, ghast)`, whose entity is the ghast, so a hoglin hurt by the blast goes for the ghast (and calls the visible adults); a blaze's small fireball hits with `fireball(fireball, blaze)` the same way. Piglins do the same through `PiglinAi.wasHurtBy`.
+- **Found:** the direct hit already noted the attacker (`apply_arrow_hit` calls `note_hoglin_hurt_by_owner`), so a blaze's small fireball and a large fireball that struck the hoglin itself worked. What was missing was the large fireball's blast: `fireball_explosion` hurt the hoglin through `hurt_by_blast` and never noted who sent it.
+- **Changed:** vendored `entities/src/world/fireballs.rs`: `fireball_explosion` notes the blaster (the ghast, or the player who sent the fireball back) on every mob its blast hurts, through `note_hoglin_hurt`, which falls back to `note_piglin_hurt` for piglins and does nothing for other mobs.
+- **Tests:** `minecraftoss-entities`: `world::hoglins::tests::a_ghasts_fireball_blast_and_a_blazes_fireball_make_a_hoglin_fight_back` (a ghast's fireball landing 1.6 blocks from a hoglin hurts it and sets its attack target on the ghast; it fails without the fix; a blaze's small fireball sets it on the blaze). Runs: `minecraftoss-entities` 377, `minecraft_terrain` 1357 (3 ignored), green. `check -p launcher` green.
+- **Decisions:** piglins hurt by a ghast's blast now also turn on the ghast, as vanilla's `PiglinAi.wasHurtBy` does. A hit by both the fireball and its blast notes the ghast twice in the same tick; the second note repeats the same target and changes nothing.
+- **Test steps** (single player, Nether, a 9 x 9 netherrack platform in an open area, `/gamemode creative` so the mobs leave you alone):
+  1. Hoglin egg in the middle of the platform. Ghast egg 12 blocks away and a few blocks up, then `/gamemode survival` and stand so the ghast shoots at you with the hoglin between you and the ghast; step aside so the fireball lands next to the hoglin. The hurt hoglin turns and charges the ghast, jumping at it under it (**245_hoglin_vs_ghast**).
+  2. `/gamemode creative`. Blaze egg 8 blocks from a new hoglin, then `/gamemode survival` with the hoglin between you and the blaze: when a blaze fireball hits the hoglin, it goes for the blaze (**246_hoglin_vs_blaze**).
+  3. Repeat step 1 with a piglin instead of the hoglin: the piglin shoots or runs at the ghast (**247_piglin_vs_ghast**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:hoglin_spawn_egg*4,minecraft:ghast_spawn_egg*2,minecraft:blaze_spawn_egg*2,minecraft:piglin_spawn_egg*2,minecraft:netherrack*64,minecraft:shield,minecraft:cooked_beef*16
+```
+
+### Group notes (small-not-vanilla)
+
+- All four items were small enough to do; none was skipped.
+- `PROTOCOL` stays 6: no `minecraft_net` message or encoding changed in this group.
+- Owner's D10 step 5 is covered by commit 1 step 1 (the spawner line) and commit 2 steps 1 to 3 (the table's offers after a restart).
+- Group kit (all four commits, 19 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner*2,minecraft:pig_spawn_egg*4,minecraft:zombie_spawn_egg*4,minecraft:enchanting_table,minecraft:lapis_lazuli*32,minecraft:experience_bottle*32,minecraft:iron_sword,minecraft:book*4,iw4l:m4,iw4l:rifle_ammo*64,minecraft:white_bed,minecraft:red_bed,minecraft:hoglin_spawn_egg*4,minecraft:ghast_spawn_egg*2,minecraft:blaze_spawn_egg*2,minecraft:piglin_spawn_egg*2,minecraft:netherrack*64,minecraft:shield,minecraft:cooked_beef*16
+```
+
+## Review (d6)
+
+Adversarial review of the groups friend-hand to small-not-vanilla (`r9-d6-base..99e46d92`).
+
+### 1. A client in an MW2 match cannot start a board its host never moves
+
+After 99e46d92.
+
+- **Found:** group friend-skating (`0a36201a`) let `skate::update` run on any client with a `ClientPredictionState`, so it no longer returned early without an `AuthorityWorld`. Skating also works on MW2 maps, so a client in an upstream MW2 match (two players over the relay, no Minecraft world) with skating on could press J: its own prediction took the board's place, while the MW2 host, which has no skater handling, kept the client where it stood. The two disagreed until the board was picked up. Before the group the key did nothing on such a client.
+- **Changed:** `render_anim/src/skate.rs`: a client skates on its own prediction only while a Minecraft world is loaded (`MinecraftWorldView.active`, the friend's streamed world). Anywhere else a client picks up a board it still has (left over from a Minecraft session) and returns. The host and single player still skate on their `AuthorityWorld` as before.
+- **Tests:** `render_anim`: `skate::tests::only_a_minecraft_friend_skates_on_its_own_prediction`. `check -p launcher` green.
+- **Test steps:**
+  1. MW2 match through the relay (not a Minecraft world), skating on in Options > Controls > Minecraft on the client. Client: press J. No board appears, the client keeps walking normally and the host sees it where the client sees itself (**248_mw2_client_no_board**, both windows).
+  2. Minecraft world with a friend: friend presses J on flat ground. The friend skates as in group friend-skating (**249_friend_still_skates**, both windows).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cooked_beef*16
+```
+
+### 2. A rocket with no shooter is told as "went off with a bang" after a fight
+
+After 2b9614a3.
+
+- **Vanilla (26.3, `DamageSource.getLocalizedDeathMessage`):** the `.player` form ("... while fighting X", the kill credit of `getKillCredit`) is used only when the damage source has neither a causing nor a direct entity. A firework rocket is always the direct entity of its `fireworks` damage, so a rocket with no shooter reads "went off with a bang" even right after a player's or a mob's hit.
+- **Found:** group tnt (`8a834f02`) gave `DamageCause::Explosion` (TNT with no owner) its direct source, but `DamageCause::Fireworks` (a rocket with no shooter) still fell through to the kill credit, which group pvp-melee had just extended to players: "went off with a bang while fighting Host". The log listed it under the TNT leftovers.
+- **Changed:** `minecraft_survival/src/death.rs`: `has_direct_source` covers `Fireworks` as well as `Explosion`. The TNT leftover line drops the fireworks item.
+- **Tests:** `minecraft_survival`: `death::tests::a_villager_s_firework_makes_the_player_go_off_with_a_bang` now also bites, hits by a player and then kills by a sourceless rocket, and expects "went off with a bang". `check -p launcher` green.
+- **Test steps:** the fork launches no rocket without a shooter yet (raid villagers' rockets have one), so the case itself is covered by the unit test. To check that the kill credit still works (`/gamerule pvp true`):
+  1. Friend hits the host once with the sword; within 5 seconds the host walks into lava and dies. The chat reads "Host tried to swim in lava to escape Friend" (**250_lava_escape_still_named**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:iron_sword,minecraft:lava_bucket,minecraft:cooked_beef*16
+```
+
+## Final verification (d6)
+
+### 1. Track D's skater code passes clippy
+
+After cf2136d3.
+
+- **Checked:** clippy on the crates touched since `r9-d6-base` (`frame`, `minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `net`, `render_anim`, `sim`, `minecraftoss-entities` and `minecraftoss-world`; `--all-targets`, `-A clippy::approx_constant`) warned on two lines added since `r9-d6-base`; every other warning is older than the segment.
+  - `render_anim/src/skate.rs` (group friend-skating, 0a36201a, and review fix 1): `type_complexity` on `update`'s tuple of the authority world, the client prediction and the Minecraft world view. It is now the type `SkateBodies<'w>`, next to `KeyboardInput<'w>`.
+  - `render_anim/src/minecraft_skaters.rs` (group skater-poses, 3476d774): `unwrap_or(Vec::new())` in `relayed` (`clippy::unwrap_or_default`, while `unwrap_or_default` itself is disallowed by `clippy.toml`). It is now `map_or(Blob::default(), Blob)`, the same empty blob the function already sends when no skater is shown.
+- The three `.rs` files added since `r9-d6-base` (`minecraft_survival/src/pvp.rs`, `minecraft_terrain/src/melee.rs`, `render_anim/src/minecraft_skaters.rs`) pass `rustfmt --check` on their staged content (edition 2024, 2021 for `minecraft_terrain`), and no added line has a comment.
+- **Tests:** none new; behaviour is unchanged. `test -p` on the nine crates, all green: `frame` 28, `minecraft_net` 24, `minecraft_survival` 751 and `vanilla_world` 1, `minecraft_terrain` 1357 (3 ignored), `minecraftoss-entities` 377, `minecraftoss-world` 96, `net` 17, `render_anim` 211, `sim` 157; doc-tests green (the minecraftoss crates with the stand-in `third_party/scenarios` files of `scriptsull-suite.ps1`, removed afterwards). `check -p launcher` green.
+- **Changed:** the two lines above, and this log: the d6 combined kit under "Combined kit".
+- **Test steps:** none; the steps of each d6 commit hold.
+
+## Group keyframes
+
+Segment d5, brief D2 P1 (moved in from d3): one commit.
+
+### 1. Minecraft keyframe animations are shared by every mob model
+
+After 4dde5109.
+
+- **Vanilla (26.3, javap of `client.jar`):**
+  - `AnimationDefinition$Builder`: `withLength(F)` (static), `looping()`, `addAnimation(String bone, AnimationChannel)` (a `HashMap<String, List<AnimationChannel>>`, so a bone can carry several channels) and `build()` (`AnimationDefinition(length, looping, boneAnimations)`).
+  - `AnimationChannel(Target, Keyframe[])`; `AnimationChannel$Targets` `POSITION`, `ROTATION`, `SCALE` add to `ModelPart.offsetPos`, `offsetRotation` and `offsetScale` (each `+=`).
+  - `Keyframe` is a record `(timestamp, preTarget, postTarget, interpolation)`; the 3-argument constructor uses the target for both. `KeyframeAnimations.posVec` negates y, `degreeVec` multiplies by `0.017453292f`, `scaleVec(DDD)` gives `(float)(x - 1)` per axis.
+  - `KeyframeAnimation$Entry.apply(seconds, scale, dest)`: `Mth.binarySearch(0, n, t <= ts[i])`, `prev = max(0, found - 1)`, `next = min(n - 1, prev + 1)`, `alpha = Mth.clamp((t - ts[prev]) / (ts[next] - ts[prev]), 0, 1)` (0 when `next == prev`), and the interpolation of keyframe `next`. `LINEAR`: `post[prev].lerp(pre[next], alpha)` (JOML unfused) times the scale. `CATMULLROM`: `Mth.catmullrom(alpha, post[max(0, prev - 1)], post[prev], post[next], post[min(n - 1, next + 1)])` per axis times the scale, with `catmullrom(a, p0, p1, p2, p3) = 0.5 * (2 p1 + (p2 - p0) a + (2 p0 - 5 p1 + 4 p2 - p3) a^2 + (3 p1 - p0 - 3 p2 + p3) a^3)`.
+  - `KeyframeAnimation.apply(long millis, float scale)`: seconds `millis / 1000f`, `% lengthInSeconds` when looping (a finished animation holds its last keyframe). `apply(AnimationState, ageInTicks, speed)` runs only while started, with `(long)(state.getTimeInMillis(ageInTicks) * speed)` and scale 1; `applyWalk(pos, speed, multiplier, amplitude)`: `(long)(pos * 50 * multiplier)` ms and scale `min(speed * amplitude, 1)`; `applyStatic`: 0 ms, scale 1.
+  - `AnimationState`: `startTick` (stopped is `Integer.MIN_VALUE`), `start`, `startIfStopped`, `animateWhen`, `stop`, `fastForward(ticks, scale)` (`startTick -= (int)(ticks * scale)`), `getTimeInMillis(age) = (long)((age - startTick) * 50)`.
+  - The 16 classes in `client/animation/definitions` build every definition in `<clinit>` with only these calls: `ldc`/`ldc_w` floats and bone strings, `ldc2_w` and `dconst_0`/`dconst_1` doubles (`scaleVec`), `fconst_0..2`, `iconst`/`bipush` array sizes and slots, `new`, `dup`, `anewarray`, `aastore`, `getstatic` targets and interpolations, `invokestatic` `posVec`/`degreeVec`/`scaleVec`/`withLength`, `invokespecial` `Keyframe.<init>` and `AnimationChannel.<init>`, `invokevirtual` `looping`/`addAnimation`/`build`, `putstatic`. 74 definitions, 848 channels, 5070 keyframes (1439 `CATMULLROM`).
+  - `WardenAnimation`: `WARDEN_EMERGE` 6.68 s (12 channels, 200 keyframes), `WARDEN_DIG` 5.0 s (12, 108, 9 of them `LINEAR`), `WARDEN_ROAR` 4.2 s (8, 51), `WARDEN_SNIFF` 4.16 s (4, 25), `WARDEN_ATTACK` 0.33333 s (8, 32), `WARDEN_SONIC_BOOM` 3.0 s (10, 66); none loops; 482 keyframes, 473 `CATMULLROM`; bones `body`, `head`, `left_arm`, `right_arm`, `left_leg`, `right_leg`, `left_ribcage`, `right_ribcage` (24 position and 30 rotation channels).
+  - `BatAnimation`: `BAT_RESTING` and `BAT_FLYING`, both 0.5 s and looping, 11 and 9 channels, 51 keyframes, all `LINEAR`.
+- **Changed:**
+  - New `minecraft_terrain/src/keyframes.rs`: `Keyframe` (pre and post targets), `Channel::sample` (the binary search and both interpolations), `Definition` (length, looping, bones in the order they were added, each with its channels) with `apply`, `apply_state`, `apply_walk` and `apply_static` into `Moved` (position, rotation and scale offsets per bone name, added like `offsetPos`/`offsetRotation`/`offsetScale`), `AnimationState` (start tick, `time_in_millis` from the age with the partial, `age_in_ticks(tick_count, partial)`), and the reader: `read_class` runs a class's `<clinit>` on a small stack machine over `class_file::instructions` (objects for keyframes, keyframe arrays, channels, builders and built definitions) and keeps every `putstatic` of an `AnimationDefinition`. An unknown opcode, method or field is an error naming the class and the bytecode offset, so a changed jar fails loudly instead of animating wrongly. `read_from_jar(jar, "WardenAnimation")` reads one class; `AnimationLibrary::new(jar)` caches each class (or its error) the first time it is asked for, so the jar is opened once per class.
+  - `minecraft_terrain/src/bat_render.rs`: the linear sampler and its time code are gone. The bat's existing tables (`RESTING`, `FLYING`, unchanged) are turned once into two `Definition`s (`posVec` and `degreeVec` baked in as vanilla builds its keyframes) and run through `apply_state`. The result is the same to the bit: the same search, clamp and unfused lerp, `(PI / 180) as f32` equals `0.017453292f`, a scale of 1 multiplies exactly, and speed 1 gives back the same milliseconds.
+  - `minecraft_terrain/src/lib.rs`: `pub mod keyframes`.
+- **Tests:** `minecraft_terrain`:
+  - `keyframes::tests`: `linear_keyframes_interpolate_between_their_pair` (hand values at 0, 1/16, 1/8 and 5/16 s, the scale, before the first and after the last key, a lone key holds, an empty channel is zero), `linear_keyframes_go_from_post_to_pre`, `catmullrom_keyframes_follow_the_spline_through_their_neighbours` (the formula at 0, 1 and 0.5; a channel 0, 10, 0, 10 gives 5.625 at 0.5 s, 5 at 1.5 s, 8.4375 at 1.25 s, 4.375 at 2.5 s, 16.875 with scale 2, and holds 10 after the end), `the_next_keyframe_picks_the_interpolation`, `vectors_are_built_as_keyframe_animations_builds_them`, `a_looping_animation_wraps_and_a_finished_one_holds`, `offsets_add_up_over_animations`, `an_animation_state_runs_from_its_start_tick_with_the_partial`, `a_walk_animation_runs_on_the_walk_position_scaled_by_its_speed`, `the_reader_runs_a_static_initialiser_of_builder_calls` (a hand-built class with a `CATMULLROM` rotation and a `scaleVec` channel), `the_reader_refuses_bytecode_it_does_not_know`, `a_library_without_a_jar_reads_nothing_and_says_why`. Gated on `MINECRAFTOSS_ROOT`: `the_warden_reads_its_animations_from_the_jar` (the six definitions with the lengths, channel and keyframe counts above, 473 `CATMULLROM` keyframes, the emerge body keyframe at 0.52 s and -22.5 degrees, the eight bones, the cache returns the same class), `the_bat_reads_its_animations_from_the_jar`, `every_animation_class_in_the_jar_reads` (all 16 classes).
+  - `bat_render::tests`: `keyframes_interpolate_linearly_between_their_pair` (now through the module: the flying head at ticks 0, 1, 2.5, 5 and 10, a later start tick, the bob, the resting head and wing tip) and `the_bat_tables_match_the_jar` (gated: every channel of the bat's tables equals the jar's `BatAnimation`, keyframe for keyframe).
+  - Runs: `minecraft_terrain` 1373 passed (3 ignored); clippy on `minecraft_terrain` (`--all-targets`, `-A clippy::approx_constant`) has no warning in either file; `check -p launcher` green. `keyframes.rs` passes `rustfmt --check --edition 2021` on its staged content.
+- **Decisions:**
+  - The reader works, so nothing is transcribed by hand: every keyframed mob reads its `*Animation` class from the 26.3 `client.jar` at runtime and no Mojang data enters the repo.
+  - The bat keeps its hand tables (upstream's, from before the fork) and only its sampler moved: the renderer has no jar handle today and the port had to stay identical. The gated test proves the tables equal the jar. Moving the bat to the jar is left to whoever wires the library into the client.
+  - Bones keep the order the class adds them in (vanilla's `HashMap` order differs); the targets add, so the order cannot change a pose.
+  - Nothing in the game reads the library yet. The first renderer that needs it (group `warden-render`) creates one `AnimationLibrary` from `render_anim::minecraft_world::data_jar()`, for host and friend alike: both draw from their own jar, and the friend runs no AI and gets only the start ticks through `MobShow`.
+- **Vendored files:** none.
+- **Test steps:** none of its own; nothing in the game changes (the bat poses exactly as before). The keyframed mobs' groups carry the steps.
+- **Kit:** none.
+
+## Group wither-live
+
+Segment d4, brief D2 and D6 batch G (mob 51): commit 1 builds the wither and runs it in the entity world, commit 2 draws it.
+
+### 1. Minecraft withers are built from soul sand and skulls
+
+After 81f6f353.
+
+- **Vanilla (javap, 26.3, and the 26.3 data pack):**
+  - `EntityTypes.WITHER`: `MobCategory.MONSTER`, `fireImmune`, `immuneTo(#wither_immune_to)` (blocks), `sized(0.9, 3.5)` (eye height the default 0.85 of the height, 2.975), `clientTrackingRange(10)`, `notInPeaceful`, `dontTrackDeltas`. No `SpawnPlacements` entry (spawners and eggs place it anywhere); no biome lists it. `wither_spawn_egg` exists in 26.3.
+  - `WitherBoss` (a `Monster`, `RangedAttackMob`): `xpReward` 50, `FlyingMoveControl(this, 10, false)`, `FlyingPathNavigation` (`setCanOpenDoors(false)`, `setCanFloat(true)`); `createAttributes`: `Monster`'s with max health 300, movement speed and flying speed 0.6 (`0.6000000238418579`), follow range 40, armor 4. Synced `DATA_TARGET_A/B/C` (the entity ids of the three heads' targets) and `DATA_ID_INV` (the charge clock, saved as `Invul`). Sounds `entity.wither.ambient`, `hurt`, `death`. `canRide`, `canUsePortal` false; `canBeAffected` refuses wither; `addEffect` refuses everything; `makeStuckInBlock` does nothing.
+  - Goals: 0 `WitherDoNothingGoal` (MOVE, JUMP, LOOK; while `getInvulnerableTicks() > 0`), 2 `RangedAttackGoal(1.0, 40, 20)`, 5 `WaterAvoidingRandomFlyingGoal(1.0)`, 6 `LookAtPlayerGoal(Player, 8)`, 7 `RandomLookAroundGoal`. Targets: 1 `HurtByTargetGoal()`, 2 `NearestAttackableTargetGoal(LivingEntity, 0, false, false, LIVING_ENTITY_SELECTOR)` (not `#wither_friends` = `#undead`, and `attackable`). `TARGETING_CONDITIONS` for the side heads: `forCombat().range(20).selector(LIVING_ENTITY_SELECTOR)`.
+  - `aiStep`: the motion's y times 0.6; on the server with a head-0 target: if below it, or not powered and less than 5 above it, `y = max(0, y) + 0.3 - max(0, y) * 0.6000000238418579`; farther than 3 blocks across, `motion += (n.x * 0.3 - motion.x * 0.6, 0, n.z * 0.3 - motion.z * 0.6)`; a horizontal speed² above 0.05 turns `yRot` to `atan2(z, x) * 57.295776 - 90`; then `Monster.aiStep`; then each side head turns (`rotlerp`: `wrapDegrees(to - from)` clamped, no wrap of the result) towards its target's eyes from its own place, pitch 40 and yaw 10 degrees a tick, or its yaw back to `yBodyRot` with no target; then the client particles (`SMOKE` at every head with gaussian 0.3 spread, `ENTITY_EFFECT` (0.7, 0.7, 0.5) one time in four when powered, three `ENTITY_EFFECT` (0.7, 0.7, 0.9) up to 3.3 blocks while charging).
+  - `getHeadX/Y/Z(i)`: head 0 at the body's x, z and `y + 3.0`; heads 1 and 2 at `(yBodyRot + 180 * (i - 1))` degrees, `x + cos * 1.3`, `z + sin * 1.3`, `y + 2.2` (all times `getScale`).
+  - `customServerAiStep`: while charging, `j = invul - 1`, the boss bar at `1 - j / 220`, at `j <= 0` `explode(this, x, eyeY, z, 7, false, MOB)` and the global level event 1023 (`entity.wither.spawn`, played by every client two blocks from its camera towards the wither), `invul = j`, and every tenth tick `heal(10)`; it returns there. Otherwise, for heads 1 and 2 when `tickCount >= nextHeadUpdate`: the next update in `10 + nextInt(10)`; on normal or hard `idleHeadUpdates` counts up and past 15 the head fires a dangerous skull at a random spot within (±10, ±5, ±10) (`Mth.nextDouble`) and resets; a kept target that is no longer attackable, farther than 30 blocks or out of sight is dropped, else the head fires at it (aimed half its eye height up), the next update in `40 + nextInt(20)` and the idle count reset; with no target it picks one at random (`nextInt(size)`) among the living within the box grown (20, 8, 20) that pass `TARGETING_CONDITIONS`. Head 0 takes `getTarget()`. Then the block breaking clock (`destroyBlocksTick`), `heal(1)` every 20 ticks, and the boss bar at `health / max`.
+  - `performRangedAttack(LivingEntity, float)` is head 0's shot (`nextFloat() < 0.001` makes it dangerous); `performRangedAttack(head, x, y, z, dangerous)` plays level event 1024 and shoots a `WitherSkull` from the head.
+  - `hurtServer`: refused when `isInvulnerableTo`, for `#wither_immune_to` damage (`drown`), from a `WitherBoss`, while charging unless `#bypasses_invulnerability` (`out_of_world`, `generic_kill`), when powered from an arrow or wind charge, and from a `#wither_friends` source; otherwise `destroyBlocksTick` 20 if it was not running, every idle head count up by 3, then `Monster.hurtServer`. `makeInvulnerable`: `invul` 220, the boss bar at 0, health a third of max. `isPowered`: health at most half. `checkDespawn` only discards it on peaceful and keeps `noActionTime` at 0.
+  - `WitherSkullBlock.setPlacedBy` → `checkSpawn(level, pos)`: only for `wither_skeleton_skull` or `wither_skeleton_wall_skull`, at `pos.y >= minY`, not on peaceful; `getOrCreateWitherFull`: one aisle `"^^^", "###", "~#~"`, `#` is `#wither_summon_base_blocks` (soul sand, soul soil), `^` either skull, `~` air; `BlockPattern.find` as for golems (24 orientations). A match: `CarvedPumpkinBlock.clearPatternBlocks` (air with flags 2 and level event 2001 per cell), `EntityType.create(TRIGGERED)` (no `finalizeSpawn`), `snapTo(block(1, 2, 0) + (0.5, 0.55, 0.5), forwards on the X axis ? 0 : 90, 0)`, `yBodyRot` the same, `makeInvulnerable`, the `summoned_entity` trigger for players within 50, `addFreshEntity`, `updatePatternBlocks`.
+  - `FlyingMoveControl.tick`: on `MOVE_TO` the operation goes back to `WAIT` and gravity off; closer than `2.500000277905201E-7` (squared) the inputs stop; else `yRot` turns at most 90 towards the wanted spot, the speed is the modifier times flying speed in the air (movement speed on the ground), `Mob.setSpeed` (also `zza`), and with a vertical or horizontal offset above `1.0E-5` the pitch turns at most 10 and `yya` is plus or minus the speed. On `WAIT` gravity comes back (`hoversInPlace` false) and the inputs stop. `LivingEntity.getFlyingSpeed` is 0.02 (no player rider); `travelInAir` takes it as the acceleration in the air.
+  - `FlyingPathNavigation`: `FlyNodeEvaluator` paths, `canMoveDirectly` by `isClearForMovementBetween`, `isStableDestination` `entityCanStandOn` at the spot itself. `PathNavigation.followThePath` reaches a node within `width / 2` (0.45) across and 1 up or down; `doStuckDetection` gives up when it moved less than `speed² * 25` blocks in 100 ticks.
+  - `RangedAttackGoal(mob, 1.0, 40, 20)`: MOVE and LOOK, every tick; `canUse` a live target, `canContinueToUse` that or the old target alive and the path not done; each tick sight counts up or resets, beyond 20 blocks or seen under 5 ticks it moves to the target else stops, looks at it (30, 30), and at `--attackTime == 0` shoots when it sees it (`attackTime` back to 40), below 0 sets 40.
+  - `WaterAvoidingRandomFlyingGoal.getPosition`: `HoverRandomPos.getPos(mob, 8, 7, view.x, view.z, pi/2, 3, 1)` else `AirAndWaterRandomPos.getPos(mob, 8, 4, -2, view.x, view.z, pi/2)`; the stroll rolls `nextInt(reducedTickDelay(120))` (60).
+  - `WitherBossModel`, `WitherBossRenderer` and `WitherArmorLayer`: commit 2.
+  - Tags (data pack): `#wither_immune_to` (damage) is `drown`; `#wither_friends` is `#undead` = `#skeletons` (skeleton, stray, wither skeleton, skeleton horse, bogged, parched), `#zombies` (zombie horse, camel husk, zombie, zombie villager, zombified piglin, zoglin, drowned, husk, zombie nautilus), wither and phantom; `#wither_summon_base_blocks` soul sand and soul soil; `loot_table/entities/wither.json` is empty (the nether star is `dropCustomDeathLoot`).
+- **Changed:**
+  - New vendored `entities/src/wither.rs` (`Wither`: size, health, armour, the charge clock and its step, the heads' rotations and update clocks, `head_position`, `head_angles`, `turn_heads` with vanilla's `rotlerp`, `chase` (the `aiStep` pull), `facing`, `fly` (`FlyingMoveControl`), `refuses`, the armoured and unarmoured hurt, `note_hurt`; `is_undead` (the 26.3 `#undead` tag); `SkullShot`), `entities/src/wither_ai.rs` (the goal and target lists in vanilla's slots: `DoNothingGoal`, `RangedAttackGoal`, `FlyingStrollGoal`, the shared look goals, `HurtByTargetGoal`, `NearestLivingGoal`; `FlightPath`, the straight flying navigation with the node reach and the stuck check; `WitherState`; `prey`) and `entities/src/world/withers.rs` (the `withers` store: `WitherEntity`, `spawn_wither`, `withers()`, `wither_mut`, its tick in vanilla's order (chase, AI, navigation, charge or heads, move control, look control, travel, head turns, body turn), `side_heads`, the charge-up blast through the creeper blast path with the spawn sound, `hurt_typed`).
+  - Vendored `entities`: `world.rs` and `world/{combat,hazards,pushing,riding,villagers,witches}.rs` (the store in every walk over the mobs, `EntityKey::Wither` and `MobHit::Wither`, blasts, arrows (from an undead owner refused), mob hits (from the undead refused), player hits, potions (undead: harming heals, healing hurts; no lasting effects), fire immunity, drowning refused, 50 experience, its sounds, the census, despawning only on peaceful); `monster_ai.rs` (`MonsterKind::Wither`, follow range 40, enemy); `stroll.rs` (`hover_random_position`, `air_and_water_random_position`); `lib.rs`.
+  - New vendored `world/src/level/wither_build.rs` (the pattern on `golem_build`'s orientations, `find`, `spawn_position`, `spawn_yaw`, `wither_tag` with `Invul:220` and `Health:100f`, and `Level::wither_skull_placed`: the cells cleared and broken like a golem's, the wither as a spawned tag); vendored `world/src/level/mod.rs` (the module), `world/src/natural_spawner.rs` (`type_info`: 0.9 x 3.5, no placement restriction, fire immune, unrestricted rules) and `natural_spawner/spawning.rs` (monster category, follow range 40, eggs and summons finalize as `Mob`).
+  - `minecraft_terrain`: new `wither_save.rs` (a wither from its tag with `Invul`, and its fields); `server_mobs.rs` (`SIMULATED_KINDS`, the `spawn_saved` and `mob_tags_where` arms); `server.rs` (a player's placed block calls `wither_skull_placed`, vanilla's `setPlacedBy`; `HATCHING_EGGS` grows to 50); `mob_tracking.rs` (tracked at 10 chunks, `Invul` volatile, `MobShow.wither`: the side heads' pitch and yaw, the charge clock and the half-health flag); `client_mobs.rs` (withers in `server_mobs`); `ender_dragon.rs` (`heard_everywhere`: the wither spawn sound plays two blocks from every camera, as the dragon's death); `lib.rs`.
+  - `minecraft_survival`: `entities.rs` (hit key 35 for `MobHit::Wither`), `entity_view.rs` (withers hit by MW2 bullets), `heard.rs` (friends hear the spawn sound from anywhere).
+- **Tests:**
+  - Vendored entities: `wither::tests` (`a_wither_is_a_tall_three_hundred_health_armoured_boss`, `a_built_wither_charges_for_220_ticks_at_a_third_of_its_health` (the blast on tick 220, 22 heals to full), `its_side_heads_sit_one_and_a_third_blocks_out_and_lower`, `a_side_head_turns_ten_degrees_a_tick_towards_its_target`, `it_rises_above_and_closes_on_its_target`, `its_flight_turns_up_to_ninety_degrees_and_floats_without_gravity`, `it_takes_no_hits_while_charging_and_none_from_the_undead_or_drowning`), `wither_ai::tests` (`a_flight_path_ends_within_half_its_width_and_a_block_of_height`, `a_flight_path_gives_up_when_it_moves_under_nine_blocks_in_a_hundred_ticks`), `world::withers::tests` (`a_wither_is_a_live_monster_of_its_size_and_health` (follow range, enemy, census, loot table, 50 experience), `a_built_wither_cannot_be_hurt_while_it_charges_then_blows_up_after_220_ticks` (a refused hit, health 110 at tick 10 and 200 at tick 100, one radius 7 blast at its eyes on tick 220 with the spawn sound, the builder hurt by it, then hittable), `a_wither_flies_to_its_target_and_its_side_heads_pick_their_own` (the player as main target, flying to it and above it, side heads on the player or a cow but never the zombie, centre and side head shots)).
+  - Vendored world: `level::wither_build::tests` (`three_skulls_on_a_soul_sand_t_are_found_in_all_four_rotations` (both skulls, both bases, from every skull, the nine cells, the spawn spot and yaw), `a_mixed_soul_sand_and_soil_t_counts`, `two_skulls_another_base_or_blocked_corners_build_nothing`, `a_wither_built_lying_down_is_found_too`, `a_built_wither_starts_charging_at_a_third_of_its_health`), `natural_spawner::spawning::tests::a_wither_hatches_anywhere_as_a_fire_immune_monster_that_looks_forty_blocks`.
+  - `minecraft_terrain`: `server::tests::three_wither_skeleton_skulls_on_a_soul_sand_t_build_a_charging_wither` (real level: two skulls do nothing, the third clears and breaks the seven blocks, the wither at the bottom block + 0.55 with `Invul` 220, health 100 and yaw 90), `server::tests::wither_skulls_set_by_a_command_or_on_peaceful_build_no_wither`, `server_mobs::tests::a_wither_saves_and_loads_mid_charge_with_its_health` (and a summoned one does not charge), `mob_tracking::tests::a_friend_sees_a_wither_charge_and_turn_its_three_heads`, `ender_dragon::tests::a_new_wither_is_heard_two_blocks_from_every_camera`; `every_spawn_egg_of_a_mob_the_game_has_hatches_that_mob` now hatches 50 eggs.
+  - `minecraft_survival`: `entities::tests::a_wither_hit_box_encodes_and_decodes`, `heard::tests::the_dragon_dies_for_everyone_and_a_totem_pops_for_those_tracking_the_player` (the wither spawn sound reaches everyone).
+  - Runs: `minecraftoss-entities` lib 389, `minecraftoss-world` wither tests 6, `minecraft_terrain` lib 1378 of 1381 (3 ignored; `sections::tests::background_full_update_matches_the_synchronous_one` failed once under load and passes alone, a timing test this group does not touch), `minecraft_survival` lib 752, all green. `check -p launcher` green. The five new files pass `rustfmt --check --edition 2021`.
+- **Decisions:**
+  - One `withers` store (hit key 35): vanilla's `WitherBoss` shares no class with another mob.
+  - The pattern is checked when a player (host or friend) places a skull, as vanilla's `setPlacedBy`; a skull set by a command does not build one. The wither joins the entity world as a spawned tag at the next tick, as built golems do.
+  - Flight uses straight paths: `FlyingPathNavigation` heads for the target block directly with vanilla's node reach and stuck check, without `FlyNodeEvaluator`'s 3D search (prerequisite P3, group `parrots`, can replace it). A wither that flies into a wall stops there until the stuck check or a new path; block breaking (group `wither-fight`) clears most of them.
+  - `HoverRandomPos`'s stable spot (`entityCanStandOn`) is a block whose top is solid render (`World::solid_render`), the fork's closest test.
+  - The three heads' shots are worked out with vanilla's clocks and draws (so the random sequence and targets match) and kept on `WitherEntity.shots` for one tick; nothing fires yet. Group `wither-fight` turns them into wither skulls with level event 1024.
+  - The side heads' rotations are computed on the host only and sent through `MobShow.wither`; vanilla clients compute them from the synced target ids. Friends run no AI, so this is the same look.
+  - A friend's wither gets only the half-health flag (`MobShow.wither.powered`), not its health: the friend sets its copy's health to half or full so the armour layer (commit 2) and `powered()` agree.
+  - Lasting effects never stay on a wither (`addEffect` refuses all): its effects are cleared each tick; instant splash effects still work, as undead (harming heals, healing hurts).
+  - Fall damage is not taken: the wither forgets its fall each tick (it sinks slowly with gravity when idle and has no fall damage case worth the wiring).
+  - The charge-up blast goes through the creeper blast path (mobs and players hurt and pushed, blocks broken with `mob_griefing`, `DestroyWithDecay`), with the wither as the source so it is not hurt itself; the wither spawn sound is heard by every player in the level two blocks from their camera, like the dragon's death.
+  - No `summoned_entity` advancement trigger: the fork has no advancements.
+  - Undead are hard-coded from the 26.3 `#undead` tag in `wither::is_undead` (the entities crate reads no tags; it lists kinds as the other target selectors do).
+- **Vendored files:** added `entities/src/wither.rs`, `entities/src/wither_ai.rs`, `entities/src/world/withers.rs` and `world/src/level/wither_build.rs`; patched only files already listed.
+- **Test steps:** none on their own; the wither is drawn with commit 2, whose steps cover this commit (building, the charge-up and blast, flight, heads, saving, friends).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:soul_sand*16,minecraft:soul_soil*8,minecraft:wither_skeleton_skull*12,minecraft:wither_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:netherite_sword,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:spyglass
+```
+
+### 2. Minecraft withers are drawn like vanilla
+
+After d4f932de.
+
+- **Vanilla (javap, 26.3):**
+  - `WitherBossModel.createBodyLayer(CubeDeformation)` (64 x 64; every box takes the deformation): `shoulders` (0, 16) box (-10, 3.9, -0.5) 20 x 3 x 3 at zero; `ribcage` at (-2, 6.9, -0.5) turned 0.20420352 about X: (0, 22) box (0, 0, 0) 3 x 10 x 3 and three (24, 22) boxes (-4, 1.5 / 4 / 6.5, 0.5) 11 x 2 x 2; `tail` (12, 22) box (0, 0, 0) 3 x 6 x 3 at (-2, 6.9 + cos(0.2042035) * 10, -0.5 + sin(0.2042035) * 10) turned 0.83252203; `center_head` (0, 0) box (-4, -4, -4) 8 x 8 x 8 at zero; `right_head` and `left_head` (32, 0) box (-4, -4, -4) 6 x 6 x 6 at (-8, 4, 0) and (10, 4, 0). `LayerDefinitions`: `WITHER` with `CubeDeformation.NONE`, `WITHER_ARMOR` with 0.5.
+  - `WitherBossModel.setupAnim`: the right head from `yHeadRots[0] - bodyRot` and `xHeadRots[0]`, the left head from index 1 (degrees to radians by 0.017453292); `f = cos(ageInTicks * 0.1)`, the ribcage pitch `(0.065 + 0.05 f) * pi`, the tail at `(-2, 6.9 + cos(ribcage) * 10, -0.5 + sin(ribcage) * 10)` pitched `(0.265 + 0.1 f) * pi`; the centre head from the render state's `yRot` and `xRot` (the head's net yaw and pitch).
+  - `WitherBossRenderer`: shadow 1.0; `getBlockLightLevel` 15; `scale`: 2, less `invulnerableTicks / 220 * 0.5` while charging (`extractRenderState` gives `invul - partial`, else 0); texture `textures/entity/wither/wither_invulnerable.png` while `floor(invul) > 0` and (above 80 or `floor / 5 % 2 != 1`), else `wither.png`; the side heads' rotations copied as they are (no partial tick); `isPowered`.
+  - `WitherArmorLayer` (an `EnergySwirlLayer`): only when powered, the 0.5-grown model posed the same, `textures/entity/wither/wither_armor.png` through `RenderTypes.energySwirl(texture, xOffset(t) % 1, t * 0.01 % 1)` with `xOffset(t) = cos(t * 0.02) * 3` and `t = ageInTicks`, colour 0xFF808080, no overlay.
+  - `WitherBoss.aiStep` on the client: a `SMOKE` at each head with gaussian 0.3 spread every tick, an `ENTITY_EFFECT` (0.7, 0.7, 0.5) at a head one time in four (level random) while powered, and three `ENTITY_EFFECT` (0.7, 0.7, 0.9) at gaussian 1 across and up to 3.3 up while charging.
+  - `SpawnerRenderer`: the cage scales the mob by `0.53125 / max(width, height)` above 1 (3.5 for the wither).
+- **Changed:**
+  - New `crates/minecraft_terrain/src/wither_render.rs`: `WitherBossModel` ported from `createBodyLayer` and `setupAnim` on `posed_cube` (`WitherLook` from `extractRenderState`: the charge clock with the partial tick, the side heads' rotations, powered), the charge scale and the flashing texture, full block light, shadow 1.0, and the armour layer: the cubes grown 0.5 with `wither_armor` scrolled by `swirl_shift` and cut where the scrolled texture wraps, so it repeats inside its atlas region as vanilla's repeating texture does, drawn translucent at full light.
+  - `minecraft_terrain`: `lib.rs`, `mesh.rs` (the three wither textures), `client_mobs.rs` (the shadow), `spawner_display.rs` (withers turn in spawner cages).
+  - `minecraft_survival/src/entity_view.rs`: withers drawn (the armour in the translucent pass); the smoke at the three heads, the powered glow and the charge sparks drawn by each viewer from the wither's shown state (`wither_effects`), for the host and every friend.
+- **Tests:**
+  - `minecraft_terrain`: `wither_render::tests` (`a_wither_is_drawn_at_twice_its_model_size_about_three_and_a_half_blocks_tall` (54 faces, the head's top at 3.5, the tail clear of the ground, the heads 3 blocks across), `a_charging_wither_grows_and_flashes_its_blue_skin` (the scale from 1.5 to 2, the texture at 200, 81, 80, 79, 75, 70 and 0 ticks), `its_ribcage_and_tail_breathe_and_its_side_heads_turn_from_the_body`, `its_armour_scrolls_and_wraps_inside_the_texture` (the shift at 0 and 250 ticks, no cuts unshifted, cut faces covering the same shell with every coordinate inside the region, the shell outside the body)), the spawner cage test with the wither.
+  - `minecraft_survival`: `entity_view::tests::a_wither_smokes_from_its_three_heads_and_glows_while_it_charges_or_is_powered`.
+  - Runs: `minecraft_terrain` lib 1382 of 1385 (3 ignored), `minecraft_survival` wither tests, all green. `check -p launcher` green. Clippy on `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain` and `minecraft_survival` (`--all-targets`, `-A clippy::approx_constant`) finds nothing in this group's code. The new `wither_render.rs` passes `rustfmt --check --edition 2021`.
+- **Decisions:**
+  - The armour swirl is drawn in the translucent pass at half alpha and full light, not additively: the fork has no additive entity pass. It shows the same scrolling blue lattice over the body, a little darker over the bones than vanilla's added light.
+  - The swirl's texture scroll is done on the mesh: each face's coordinates are shifted and the face is cut where they cross the texture's edge, since the atlas cannot repeat a texture.
+  - The particles come from each viewer's own random (vanilla also draws them on each client), so host and friend see the same kind and rate but not the same specks.
+- **Vendored files:** none.
+- **Test steps (survival, Normal difficulty, by day, open flat ground in the Overworld; diamond armour on):**
+  1. Place one soul sand block, three soul sand blocks across on top of it (a T), and a wither skeleton skull on two of the top blocks: nothing happens. Place the third skull and run back 10 blocks at once: the seven blocks break with their particles, a small wither stands where the bottom block was, flashing between its blue and grey skin, wrapped in the moving blue armour, blue sparks around it and smoke from its three heads (**153_wither_built**).
+  2. Shoot it with the bow while it charges: the arrows do nothing (no red flash). Over 11 seconds it grows to full size, its flashing slows and stops, and its armour fades halfway through as it heals past half health (**154_wither_charging**).
+  3. At the end it blows up (a crater a little bigger than a charged creeper's) with a deep roar. The friend, far away, hears the roar too, from the wither's direction.
+  4. It flies up and comes after you, staying about five blocks above you, its centre head looking at you; the side heads turn to you and to a cow from a cow egg, never to a zombie from a zombie egg (**155_wither_flying**). It does not shoot yet. An iron golem from its egg goes for it.
+  5. Hit it with the sword: red flash (it heals one health every second). Bring it below half health: the moving blue armour comes back (**156_wither_armour**). Kill it: it leaves 50 experience (no nether star yet).
+  6. Build one from soul soil and one lying flat on the ground (the T and the skulls all on one layer, a skull last): both build. `/difficulty peaceful`: placing the last skull builds nothing. `/difficulty normal`.
+  7. In creative, a wither egg hatches a full-size wither that does not charge and has no armour; use a wither egg on a placed spawner: a small wither turns in the cage (**157_wither_cage**); the spawner also spawns full withers, so break it after the screenshot.
+  8. Build a wither and save and quit while it charges, then load: it is still charging and still blows up at the end.
+  9. Friend window: the friend sees the wither grow, flash and blow up, its armour, the smoke, its side heads turning, and shoots it with a gun (red flash); the friend builds one the same way and the host sees it (**158_friend_wither**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:soul_sand*16,minecraft:soul_soil*8,minecraft:wither_skeleton_skull*12,minecraft:wither_spawn_egg*2,minecraft:spawner,minecraft:cow_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:netherite_sword,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:spyglass
+```
+
+## Group wither-fight
+
+Segment d4, brief D6 batch G (mob 51): commit 1 makes the wither fight (skulls, the half-health shield, block breaking, the nether star), commit 2 adds its boss bar.
+
+### 1. Minecraft withers fight with skulls and armour, break blocks and drop a nether star
+
+After c3ae9343.
+
+- **Vanilla (javap, 26.3, and the 26.3 data pack):**
+  - `EntityTypes.WITHER_SKULL`: `MobCategory.MISC`, `noLootTable`, `sized(0.3125, 0.3125)`, `clientTrackingRange(4)`, `updateInterval(10)`.
+  - `WitherSkull` (an `AbstractHurtingProjectile`): synced `DATA_DANGEROUS` (default false), saved as `dangerous`; `getInertia` 0.73 when dangerous, else the base 0.95 (`getLiquidInertia` stays 0.8); `isOnFire` and `shouldBurn` false (it never burns; the trail particle stays the base `SMOKE`); `getBlockExplosionResistance`: when dangerous and `WitherBoss.canDestroy(state)`, `min(0.8, resistance)`; `onHitEntity`: with a living owner, `witherSkull(skull, owner)` damage 8, and when it lands a living target gets `doPostAttackEffects` and a dead one heals the owner 5; with no living owner, `magic` damage 5; then, when it landed on a living target, Wither (`MobEffects.WITHER`) for 20 x 10 ticks on Normal and 20 x 40 on Hard (none on Easy or Peaceful) at amplifier 1, from `getEffectSource`; `onHit`: `explode(this, x, y, z, 1.0, false, MOB)` and discard.
+  - `AbstractHurtingProjectile`: the owner's constructor places it at the owner, sets its rotation to the owner's `yRot` and `xRot` and moves it along the normalized direction at `accelerationPower` (0.1); `tick`: discard when the owner is removed or the chunk unloaded, `applyInertia` (`(motion + motion.normalize() * accelerationPower) * inertia`), the hit on the move, `ProjectileUtil.rotateTowardsMovement(this, 0.2)` (`yRot = atan2(z, x) * 57.2957763671875 + 90`, `xRot = atan2(horizontal, y) * 57.2957763671875 - 90`, the old angles wrapped within 180 and each lerped a fifth of the way), `setPos`, then the hit; `hurtServer` returns false (a skull cannot be hit back; only `Fireball` deflects).
+  - `WitherBoss.performRangedAttack(head, target)`: aims at the target's feet plus half its eye height; head 0 (the `RangedAttackGoal` shot) is dangerous one time in a thousand (`nextFloat() < 0.001`). `performRangedAttack(head, x, y, z, dangerous)`: level event 1024 at `blockPosition()` unless silent, a `WitherSkull(level, this, (x, y, z) - head.normalize())` set to the head's position.
+  - `LevelEventHandler`: 1024 plays `entity.wither.shoot` and 1022 `entity.wither.break_block`, both `HOSTILE` at volume 2.0 and pitch `(nextFloat() - nextFloat()) * 0.2 + 1` from the client's random, at the block's centre.
+  - `WitherBoss.hurtServer`: when powered (`health <= max / 2`) a hit whose direct entity is an `AbstractArrow` (arrows, spectral arrows, tridents) or a `WindCharge` returns false (the arrow bounces like off a shulker); a source entity that is a `WitherBoss` or in `#wither_friends` returns false, so its own and other withers' skulls and blasts never hurt it.
+  - `WitherBoss.customServerAiStep` after the heads: `destroyBlocksTick` counts down when above 0 and on reaching 0, with `mob_griefing`, every block in `BlockPos.betweenClosed(x - r, y, z - r, x + r, y + h, z + r)` (`r = floor(width / 2 + 1)` = 1, `h = floor(height)` = 3; x fastest, then y, then z) that `canDestroy` (not air, not `#wither_immune`) is destroyed with its drops (`ServerLevel.destroyBlock(pos, true, this)`), and when any broke, level event 1022 at its block position. `hurtServer` sets the clock to 20 when it is not running.
+  - `#wither_immune` (block tag): barrier, bedrock, end portal, end portal frame, end gateway, the three command blocks, structure block, jigsaw, moving piston, light, reinforced deepslate, test block, test instance block.
+  - `WitherBoss.dropCustomDeathLoot`: `spawnAtLocation(NETHER_STAR)` and `setExtendedLifetime` (item age -6000, so 15 minutes before it despawns); the `entities/wither` loot table is empty. `LivingEntity.dropAllDeathLoot` runs it only with `mob_drops`.
+  - Damage type `wither_skull`: `message_id` `witherSkull` ("%1$s was shot by a skull from %2$s"), scaling `when_caused_by_living_non_player`, in `#is_projectile`.
+  - `WitherSkullRenderer`: `SkullModel` from `createSkullLayer` (64 x 64, `head` (0, 35) box (-4, -8, -4) 8 x 8 x 8 at zero), the pose scaled (-1, -1, 1), the head turned by the skull's `yRot` and `xRot` (`SkullModel.setupAnim`, times 0.017453292), texture `wither_invulnerable.png` when dangerous else `wither.png`, block light 15.
+- **Changed:**
+  - Vendored `entities/src/fireball.rs`: `FireballKind::WitherSkull { dangerous }` (type `minecraft:wither_skull`, size 0.3125, not redirectable, inertia 0.73 when dangerous), the skull's numbers (8 and 5 damage, the kill heal, power 1, the 0.8 resistance cap, `skull_wither_ticks`), and `Fireball.yaw` and `pitch` with `rotate_towards_movement` run each tick before the move.
+  - Vendored `entities/src/world/fireballs.rs`: a skull's hit (`wither_skull_strikes`: players get `PlayerHitKind::WitherSkull`, mobs the arrow-style hit for 8 or magic for 5 without an owner, then Wither II or the owner's heal on a kill), its power 1 blast without fire, and `FireballBlast.dangerous`.
+  - Vendored `entities/src/world/withers.rs`: the shots become skulls the tick they are worked out, each with the shoot sound, the skull turned like the wither; the block breaking clock and `WitherBreak` (the 3 x 4 x 3 box, in vanilla's order) taken by the server with `take_wither_breaks`.
+  - Vendored `entities/src/wither.rs`: `ARMOR_DEFLECTS` (arrow, trident and wind charge damage refused while powered), `destroy_blocks_step`, `boss_progress` (for commit 2), the sound and item ids.
+  - Vendored `entities/src/world.rs`: `PlayerHitKind::WitherSkull { velocity, wither_ticks }`, the `wither_breaks` store, a nether star in a dead wither's drops when `mob_drops` is on, and blasts from an undead mob (its own skulls included) refused by a wither. Vendored `entities/src/bin/check_zombie_player_hits.rs`: the new hit kind.
+  - Vendored `world/src/level/explosion.rs`: `explode_dangerous_skull` (the 0.8 cap for blocks a wither can destroy) and `Level::wither_can_destroy` (the `#wither_immune` tag read from the data pack).
+  - `minecraft_terrain`: `server.rs` (dangerous skull blasts, `break_around_withers` with the drops and the break sound, the nether star's extended lifetime), `server_mobs.rs` (skulls saved and loaded with `dangerous` and their rotation), `wither_save.rs` (`skull_kind`, `rotation`, `extend_lifetime`), `mob_tracking.rs` (skull rotations to friends), `thrown.rs` (tridents and wind charges hit withers), `wither_render.rs` (`append_skulls`: the skull model, black or blue), `ghast_render.rs` (skulls are not drawn as fire charges).
+  - `minecraft_survival`: `entities.rs` (the skull hit on a player: shields block it, Wither II, magic without an owner; `Hit`'s effect carries its amplifier), `death.rs` (`MobAttack::WitherSkull`: `minecraft:wither_skull`, "witherSkull"), `survival.rs` (`struck` gives the effect at its amplifier), `entity_view.rs` (skulls drawn for host and friends).
+- **Tests:**
+  - Vendored entities: `fireball::tests::a_dangerous_wither_skull_flies_slower_and_turns_its_face_along_its_flight`; `world::withers::tests` `its_heads_fire_wither_skulls_with_the_shoot_sound`, `a_skull_hits_a_player_for_eight_and_withers_them_ten_or_forty_seconds` (Easy 0, Normal 200, Hard 800 ticks, ownerless 5), `a_skull_withers_a_mob_and_heals_its_wither_when_it_kills`, `a_dangerous_skull_blast_is_marked_for_the_level_and_a_plain_one_is_not`, `arrows_tridents_and_wind_charges_bounce_off_its_armour_below_half_health`, `its_own_skull_blast_does_not_hurt_it`, `a_hurt_wither_breaks_the_blocks_around_it_a_second_later_if_mobs_may_grief` (tick 20, the box and its order), `a_dead_wither_drops_a_nether_star_when_mobs_drop_loot`.
+  - `minecraft_terrain`: `server::tests::a_blue_wither_skull_blasts_through_obsidian_but_not_bedrock_and_a_black_one_breaks_neither`, `server::tests::a_hurt_wither_breaks_the_blocks_around_it_but_not_bedrock_and_they_drop` (31 obsidian broken and dropped, bedrock and the lid out of reach kept, one break sound), `server::tests::a_dead_wither_leaves_a_nether_star_that_lasts_fifteen_minutes` (loot from the 26.3 jar under `MINECRAFTOSS_ROOT`), `server_mobs::tests::a_wither_skull_saves_and_loads_blue_with_its_turn`, `mob_tracking::tests::a_friend_sees_a_blue_wither_skull_turn_as_it_flies`, `thrown::tests::a_trident_or_wind_charge_hurts_a_wither_until_its_armour_comes_at_half_health`, `wither_render::tests::a_wither_skull_is_the_head_cube_half_a_block_high_and_blue_when_dangerous`.
+  - `minecraft_survival`: `entities::tests::a_wither_skull_hurts_by_difficulty_and_withers_two_and_without_its_wither_is_magic`, `survival::tests::a_wither_skull_gives_wither_two_and_is_told_as_shot_by_a_skull`, `death::tests::a_wither_skull_shoots_the_player_by_the_wither`; the tipped arrow and shulker bullet tests take the amplifier.
+  - Runs: `minecraftoss-entities` lib 398, `minecraftoss-world` lib 102, `minecraft_terrain` lib 1389 of 1392 (3 ignored), `minecraft_survival` lib 756, all green. `check -p launcher` green.
+- **Decisions:**
+  - Wither skulls join the `fireballs` store as `FireballKind::WitherSkull`: vanilla's `WitherSkull` shares `AbstractHurtingProjectile` with the fireballs, so it moves, hits and is tracked by the same code. No new hit key: like fireballs, skulls are not hittable.
+  - The skull's mob hit goes through the arrow-style hit (`apply_arrow_hit`) for its damage and knockback, credited to the wither; the shoot sound's pitch is drawn from the wither's random, as the blaze and ghast do (vanilla draws it on each client).
+  - The Wither II amplifier rides in `Hit`'s effect, now `(effect, ticks, amplifier)`; tipped arrows and shulker bullets pass 0.
+  - A skull loaded from a save has no owner (as the fork's fireballs): it hurts as magic for 5. Vanilla would find its wither again if it was loaded.
+  - A skull that kills a player does not heal its wither: the player's death is decided by the survival side after the entity world's tick. Mobs it kills heal it.
+  - The armour shield refuses damage by its type (`minecraft:arrow`, `minecraft:trident`, `minecraft:wind_charge`) where vanilla checks the direct entity's class; the fork's shulker bullets also reach a wither through the arrow-style hit and would bounce off a powered one (vanilla: they hit). No fork shulker targets withers.
+  - The nether star's extended lifetime is set on any `nether_star` stack among the death drops: the only vanilla source of one there is the wither.
+  - The wither's death sound stays positional: javap shows no global level event for it (only the spawn, 1023, is global; 1028 is the dragon's death).
+  - Withers broke no blocks before taking damage, as vanilla.
+- **Vendored files:** patched `entities/src/fireball.rs` (new on the list); touched files already listed: `entities/src/world.rs`, `entities/src/world/fireballs.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `world/src/level/explosion.rs` and the added `entities/src/wither.rs` and `entities/src/world/withers.rs`.
+- **Test steps (survival, Normal difficulty, by day, open flat ground in the Overworld; diamond armour on):**
+  1. Build a wither (four soul sand in a T, three wither skeleton skulls) and run 15 blocks away. After the blast it comes after you and shoots black skulls from all three heads, each with a short shriek; a hit hurts and gives Wither II (the black hearts) for 10 seconds (**251_wither_skulls**). Drink milk to clear it.
+  2. Stand behind a wall of cobblestone: the black skulls blow small holes in it. Now and then (more often when you hide) a slower, light blue skull flies from a side head; it blows through obsidian (put up an obsidian wall with one bedrock block in it: the obsidian goes, the bedrock stays) (**252_blue_skull**).
+  3. Shoot it with the bow while it is above half health: the arrows hurt (red flash). Bring it below half health with the sword: the blue armour comes on and arrows, a thrown trident and wind charges bounce off without hurting it (**253_wither_shield**). The sword still hurts it.
+  4. Hit it once while it is close to blocks (lure it under cobblestone): a second later the blocks around it (3 wide, 4 high) break with a crack and drop as items, obsidian included; bedrock never breaks (**254_wither_breaks**). `/gamerule mob_griefing false`: hitting it breaks nothing and the skulls' blasts leave the blocks. `/gamerule mob_griefing true`.
+  5. Spawn chickens from eggs near it: its skulls kill them and it heals 5 per kill. An iron golem from its egg fights it and gets Wither II from its skulls.
+  6. Kill it: it drops a nether star (**255_nether_star**) and 50 experience. Leave the star on the ground for 6 minutes (`/time add` does not age items; just wait): it is still there.
+  7. Die to a skull with a fresh wither (no armour): the chat says "<name> was shot by a skull from Wither".
+  8. Friend window: the friend sees the black and blue skulls fly and turn, gets hit by them (Wither II), sees the wither break blocks, and their arrows bounce off the shielded wither (**256_friend_wither_fight**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:soul_sand*8,minecraft:wither_skeleton_skull*6,minecraft:wither_spawn_egg*2,minecraft:netherite_sword,minecraft:bow,minecraft:arrow*64,minecraft:trident,minecraft:wind_charge*16,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:milk_bucket*2,minecraft:obsidian*32,minecraft:bedrock*4,minecraft:cobblestone*64,minecraft:chicken_spawn_egg*4,minecraft:iron_golem_spawn_egg*2,minecraft:diamond_pickaxe,minecraft:totem_of_undying
+```
+
+### 2. Minecraft withers show a purple boss bar to every player near them
+
+After 94bad055.
+
+- **Vanilla (javap, 26.3):**
+  - `WitherBoss.<init>`: `bossEvent = new ServerBossEvent(Mth.createInsecureUUID(random), getDisplayName(), BossBarColor.PURPLE, BossBarOverlay.PROGRESS)` with `setDarkenScreen(true)` (no boss music, no fog); `setCustomName` and `readAdditionalSaveData` rename it.
+  - `startSeenByPlayer` adds the player to the bar and `stopSeenByPlayer` removes them: a player has the bar exactly while the wither is tracked for them (`ChunkMap.TrackedEntity`: horizontal distance within `min(clientTrackingRange * 16, view distance * 16)`, 10 chunks for the wither).
+  - The progress: `makeInvulnerable` sets 0; while charging `customServerAiStep` sets `1 - invul / 220` (after the tick's decrement), then `health / maxHealth` every tick once charged. A new `BossEvent` starts at 1 (an egg's wither).
+- **Changed:**
+  - New `crates/minecraft_terrain/src/wither_bar.rs`: `WitherBar` (entity ID and progress), the level's withers with `Wither::boss_progress`, and `bars_for` (the withers a player at those feet tracks with that view distance, through `mob_tracking::tracks` and the wither's tracking range).
+  - `minecraft_terrain/src/server.rs`: `Output.wither_bars` (every player of the level gets its list each tick, empty when none), `TickInput.view_distance` (the host's; friends use their watcher's); `eye_of_ender.rs` test input; `lib.rs`.
+  - `minecraft_survival`: `entities.rs` (the host's view distance into the tick, each player's bars to its queue), `player.rs` (`Player.wither_bars`), `session.rs` (`wither_bar_id` from `WITHER_BARS` = 2^40 plus the entity ID, `wither_bar`: purple, progress, darkening the screen; `Session.send_wither_bars` adds, moves and removes each bar; `Sessions.send_wither_bars`).
+  - `render_anim`: `minecraft_players.rs` (the bars into the player), new `minecraft_wither.rs` (`show_wither_bars`: the host's bars named from the language file), `minecraft_world.rs` (the host shows them), `minecraft_host.rs` (friends are sent theirs), `lib.rs`.
+  - `frame/src/minecraft_ui.rs` (`MinecraftUi.wither_bars`), `hud/src/minecraft_boss.rs` (drawn after the dragon's and the raids').
+- **Tests:**
+  - `minecraft_terrain`: `wither_bar::tests::a_wither_shows_its_bar_to_the_players_that_track_it` (an empty bar when built, half at half health, filling as it charges, 10 chunks or the view distance), `server::tests::each_player_gets_the_bars_of_the_withers_it_tracks_within_its_view_distance` (host and friend by their own view distances, gone with the wither).
+  - `minecraft_survival`: `session::tests::a_friend_gets_a_purple_darkening_bar_for_each_wither_it_tracks` (add, unchanged, progress, a second bar, remove; ids clear of the dragon's and the raids').
+  - `render_anim`: `minecraft_wither::tests::the_host_sees_a_purple_bar_per_wither_it_tracks`.
+  - Runs: `minecraft_terrain` lib 1391 of 1394 (3 ignored), `minecraft_survival` lib 757, `render_anim` lib 212, `hud` lib 186, `frame` lib 28, all green. `check -p launcher` green. Clippy on `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain`, `minecraft_survival`, `render_anim`, `hud` and `frame` (`--all-targets`, `-A clippy::approx_constant`) finds nothing in this group's code (both commits). The new `wither_bar.rs` passes `rustfmt --check --edition 2021` and `minecraft_wither.rs` `--edition 2024`.
+- **Decisions:**
+  - One bar per wither, keyed by its entity ID (vanilla keys it by a random UUID; the fork's bar ids only need to be unique on the wire).
+  - The bar follows the fork's tracking rule (`mob_tracking::tracks`, horizontal distance within 10 chunks and the player's view distance), the same rule that decides whether the wither is drawn for that player; vanilla also needs the chunk sent, which within the view distance it is.
+  - The bar is always named "Wither": the fork has no name tags, so a wither has no custom name.
+  - `darken_screen` is sent to friends as vanilla's flag, but neither the host nor a friend darkens the sky for it yet (left for later).
+  - No `minecraft_net` change: the boss bar messages exist, so `PROTOCOL` stays 6.
+- **Vendored files:** none.
+- **Test steps (survival, Normal difficulty, by day, open flat ground in the Overworld; diamond armour on):**
+  1. Build a wither: a purple "Wither" bar appears at the top of the screen, empty, and fills over 11 seconds while it charges (**257_wither_bar_charging**).
+  2. After the blast the bar is full. Hit the wither: the bar drops; it creeps back up one health a second.
+  3. `/tp ~ ~ ~200` (or ride away more than 130 blocks): the bar goes; come back: it is there again with the wither.
+  4. Hatch a second wither from an egg: two purple bars, one under the other, the second full (**258_two_wither_bars**).
+  5. Kill one: its bar empties and goes as it dies; the other stays.
+  6. Friend window: the friend sees the same bars while near the withers and none from far away or in another dimension; their hits move the bar for both (**259_friend_wither_bar**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:soul_sand*8,minecraft:wither_skeleton_skull*6,minecraft:wither_spawn_egg*2,minecraft:netherite_sword,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:milk_bucket*2,minecraft:totem_of_undying,minecraft:cobblestone*64
+```
+
+## Group breezes
+
+Segment d4, brief D7 (mob 52): commit 1 lets wind charges trigger blocks, commit 2 brings the breeze into the entity world.
+
+### 1. Minecraft wind charges open doors and press buttons like vanilla
+
+After ef9ad9de.
+
+- **Vanilla (javap, 26.3, and the 26.3 data pack):**
+  - `WindCharge.explode`: `level.explode(this, null, EXPLOSION_DAMAGE_CALCULATOR, pos, 1.2F, false, ExplosionInteraction.TRIGGER, GUST_EMITTER_SMALL, GUST_EMITTER_LARGE, [], WIND_CHARGE_BURST)` with `SimpleExplosionDamageCalculator(true, false, Optional.of(1.22F), #blocks_wind_charge_explosions)`. `BreezeWindCharge.explode`: radius 3.0, `AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR` (`SimpleExplosionDamageCalculator(true, false, Optional.empty(), #blocks_wind_charge_explosions)`, so the knockback multiplier is 1.0, and 0 for a flying player), `BREEZE_WIND_CHARGE_BURST`. `ExplosionInteraction.TRIGGER` is `BlockInteraction.TRIGGER_BLOCK`.
+  - `SimpleExplosionDamageCalculator.getBlockExplosionResistance` with immune blocks: 3600000 for a block in the tag, otherwise **no resistance at all** (`Optional.empty()`, not the block's own), so a wind charge's rays pass through every block but barrier and bedrock (`#blocks_wind_charge_explosions` = barrier, bedrock).
+  - `ServerExplosion.explode`: `calculateExplodedPositions` (the 16×16×16 rays with the level random), `hurtEntities`, then `interactWithBlocks` whenever the interaction is not `KEEP`: `Util.shuffle` with the level random, `BlockState.onExplosionHit` on each, then the stack collectors. `canTriggerBlocks()`: `TRIGGER_BLOCK`, and for a source of type `BREEZE_WIND_CHARGE` only with `mob_griefing`.
+  - `onExplosionHit` with `canTriggerBlocks()`: `DoorBlock` (lower half, `BlockSetType.canOpenByWindCharge`, not powered: `setOpen(!open)`, flags 10, the door sound at pitch `0.9 + nextFloat × 0.1` from the level random); `TrapDoorBlock` (`canOpenByWindCharge`, not powered: `toggle`, flags 2, water tick when waterlogged, the same sound draw); `FenceGateBlock` (not powered: `OPEN` flipped in place with `setBlockAndUpdate`, facing kept, sound draw as above); `ButtonBlock` (not powered: `press`, every button, stone ones too); `LeverBlock` (`pull`); `BellBlock` (`attemptToRing` with no direction, so its facing); `AbstractCandleBlock` (lit: `extinguish`: `setLit(false)` with flags 11, smoke at each wick, `block.candle.extinguish` 1.0/1.0). `BlockSetType`: only iron has `canOpenByWindCharge` false (copper, gold, stone, polished blackstone and every wood true).
+- **Changed:**
+  - `third_party/minecraftoss/world/src/level/explosion.rs`: `wind_charge_blocks` (the exploded positions with the wind charge resistance, `wind_charge_resistance`, then vanilla's shuffle); `exploded_positions` takes a `wind` flag.
+  - `third_party/minecraftoss/world/src/level/redstone.rs`: `wind_trigger` (the per-block `onExplosionHit` above; returns the state before and the sound draw).
+  - `crates/minecraft_terrain/src/wind.rs`: `Charge { Player, Breeze }` with radius, knockback, burst sound and `triggers_blocks`; `push`, `reach` and `burst` take the charge.
+  - `crates/minecraft_terrain/src/server.rs`: `ServerSim::wind_burst` takes the charge, picks the blocks first (vanilla's random order), pushes, then triggers them when the charge may (`wind_trigger`: the toggle sound from `doors::toggle_sound` at the drawn pitch, or the candle sound, heard by host and friends through `Output.mob_sounds`).
+- **Tests:**
+  - `minecraft_terrain`: `server::tests::a_wind_burst_opens_a_wooden_door_presses_a_button_and_puts_out_a_candle_but_leaves_an_iron_door` (both door halves open, the button powered, the candle out, the iron door within reach untouched, three sounds), `server::tests::a_breeze_burst_triggers_blocks_only_with_mob_griefing` (and a player's charge ignores the rule), `wind::tests::a_breeze_charge_reaches_further_and_pushes_less_than_a_players`.
+  - Runs: `minecraft_terrain` lib 1394 of 1397 (3 ignored) and `minecraftoss-world` all green; `check -p launcher` green.
+- **Decisions:**
+  - The blocks come from the level's own ray march (`Level::wind_charge_blocks`, the same `exploded_positions` the other explosions use) instead of a box in `wind.rs`: vanilla's rays decide which blocks a charge reaches, and they draw from the level random before the shuffle.
+  - Smoke at the candle wicks is not shown (the water bucket's douse shows none either); game events (`BLOCK_OPEN`, `BLOCK_ACTIVATE`, `BLOCK_CHANGE`) wait for group `vibrations`.
+  - A player flying in creative is still pushed by a burst (vanilla's multiplier is 0 for a flying player); unchanged from before.
+- **Vendored files:** `world/src/level/explosion.rs` and `world/src/level/redstone.rs`, both already patched; no file added.
+- **Test steps (survival, by day, flat ground):**
+  1. Place an oak door, a copper door and an iron door in a row on cobblestone, an oak trapdoor, an oak fence gate and a lit candle (flint and steel) near them, and a stone button and a lever each on its own cobblestone block at least two blocks from any door (so their power does not open the doors). Throw a wind charge at the ground between them: the oak and copper doors, the trapdoor and the gate swing open with their sounds, the button clicks and the lever flips, the candle goes out; the iron door stays shut (**260_wind_charge_doors**).
+  2. Throw another: the doors, trapdoor, gate and lever flip back; the button, if still pressed, is left alone.
+  3. Place a bell on a block and throw a wind charge at it: it rings.
+  4. Put a button on a redstone lamp's side and burst a charge at it: the lamp lights for a second and a half (**261_wind_charge_button_lamp**).
+  5. Friend window: the friend sees and hears the doors open from the host's charge, and the host sees and hears the friend's.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:wind_charge*64,minecraft:oak_door*4,minecraft:copper_door*2,minecraft:iron_door*2,minecraft:stone_button*4,minecraft:oak_button*4,minecraft:lever*4,minecraft:oak_trapdoor*4,minecraft:iron_trapdoor*2,minecraft:oak_fence_gate*4,minecraft:bell,minecraft:candle*8,minecraft:flint_and_steel,minecraft:redstone_lamp*2,minecraft:cobblestone*64
+```
+
 ## Combined kit
 
 One kit for the owner's test of the whole track (27 stacks). The ancient city steps of group loot-functions keep their own kit (a pickaxe, torches and night vision). Groups pillagers to raid-villagers (d2, from `r9-d2-base`) have their own combined kit, the second line: swap the `.env` line between the two parts of the test. The village steps of group raid-villagers use a plains village's own beds and doors; group pillagers' crossbow step uses that commit's own kit (it adds `minecraft:crossbow`).
@@ -2078,9 +2989,19 @@ d2 groups (pillagers, patrols-vindicators, evokers-vexes, ravagers, raids, raid-
 IW4L_MINECRAFT_KIT=minecraft:pillager_spawn_egg*16,minecraft:vindicator_spawn_egg*8,minecraft:evoker_spawn_egg*8,minecraft:vex_spawn_egg*4,minecraft:ravager_spawn_egg*4,minecraft:witch_spawn_egg*2,minecraft:villager_spawn_egg*8,minecraft:iron_golem_spawn_egg*2,minecraft:sheep_spawn_egg*4,minecraft:cow_spawn_egg*2,minecraft:ominous_bottle*4,minecraft:milk_bucket,minecraft:bell,minecraft:lever*2,minecraft:diamond_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:spyglass,minecraft:oak_leaves*64
 ```
 
+d6 groups (friend-hand, friend-portal-music, pvp-melee, friend-skating, skater-poses, strider-freeze, tnt, small-not-vanilla and the d6 review), 27 stacks. Both windows get it (the friend when joining). The items of the d6 steps that do not fit (the swiftness potion, bow, arrows, ender pearls, water bucket, the other iron armour pieces, hay block, netherrack, end crystals, the creeper, zombie, pig, hoglin, ghast, blaze and piglin eggs, the spawner, enchanting table, lapis, books and the M4 with its ammo) come from that commit's own kit or the creative inventory. Skating also needs `IW4L_SKATE_ASSETS` in both role folders.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_sword,minecraft:iron_sword+knockback=2,minecraft:iron_sword,minecraft:iron_axe,minecraft:shield,minecraft:trident,minecraft:spyglass,minecraft:totem_of_undying,minecraft:iron_chestplate,minecraft:golden_apple*8,minecraft:cooked_beef*32,minecraft:dried_kelp*16,minecraft:cobblestone*64,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_pickaxe,minecraft:white_bed,minecraft:cow_spawn_egg*8,minecraft:oak_stairs*64,minecraft:tnt*16,minecraft:redstone_block*4,minecraft:anvil,minecraft:experience_bottle*32,minecraft:lava_bucket,minecraft:strider_spawn_egg*4,minecraft:saddle,minecraft:warped_fungus_on_a_stick
+```
+
 ## Protocol
 
 Before the merge of minecraft-survival (tracks A, B and C) into track D, `minecraft_net::PROTOCOL` was 4 (from 3) on this track, bumped once in group trading-friend. Since that merge (`r9-d2-base`) it is 5, the number tracks A, B and C took together: protocol 5 has not been released (release 1 is protocol 4), so no released build shares the number with a different message set. `ToServer::OpenMountInventory` moved to codec index 16, after track A's `CreativeSlot` (13) and track C's `RecipeBookSettings` (14) and `RecipeSeen` (15). Later groups of this track must not bump it again.
+
+Protocol 5 shipped in round 9 release 2. Group friend-hand (commit 1, `UsingView.kind`) set it to 6, the one bump allowed after release 2; every later message change of round 9 rides in 6 and never goes above it.
+
+Group skater-poses changed `SkateReport` (new `pose`) and `StateFrame` (new `skaters`) and added `SkatePose` and `Skaters`, all inside protocol 6 (still unreleased), with no bump.
 
 ## State doc changes
 
@@ -2135,10 +3056,72 @@ Before the merge of minecraft-survival (tracks A, B and C) into track D, `minecr
 - `docs/MINECRAFT-SURVIVAL.md`: in the raids paragraph, "Villagers do not hide or ring bells yet, vindicators do not break doors yet, and raiders do not pick up banners." becomes "Vindicators do not break doors yet, and raiders do not pick up banners." New paragraph "Bells and villagers in raids": "Bells ring like vanilla: right-clicked with the main hand on one of their sides below the rim (a floor bell from the front or back, a wall bell from its sides, a hanging bell from any side) or given a new redstone signal. Every villager within 32 blocks hears it and, outside a raid, runs to a home (a bed) nearby and hides until 15 seconds after the ring. When raiders are within 32 blocks the bell resonates a quarter second later, and two seconds after that every raider within 48 blocks glows for 3 seconds: a white rim around it in the open, a white shape of it seen through blocks. In a raid, villagers gather at their bell before the first wave and now and then ring it, hide at home while the waves come, and after a victory come out under the open sky, cheer and launch firework rockets that burst into coloured sparks with a flash and a bang (a low burst hurts whoever stands within 5 blocks: "went off with a bang"). A player with Hero of the Village gets gifts: every 30 seconds to 5 minutes each villager that sees the hero walks up and throws a gift from vanilla's hero of the village loot (a farmer bread, pumpkin pie or a cookie, a child a poppy, and so on). Friends ring bells, see the glow and get gifts the same way. The bell does not swing yet, arrows and wind charges do not ring it yet, and frightened villagers do not sweat yet."
 - `docs/MULTIPLAYER.md`: a friend's bell use is a hand use on the host (no new message); glowing mobs reach friends as `MobShow.glowing`; hero gifts are item entities thrown on the host; firework rockets reach friends as thrown views and their bursts as `EntitySnapshot.firework_bursts`. Protocol 5.
 - `docs/MINECRAFT-SURVIVAL.md` (review fix 4): in the ravager paragraph, "Its roar hurts everything within 4 blocks but illagers for 6 and flings it all away, players too." becomes "Its roar hurts everything within 4 blocks but illagers for 6 and flings every mob away; players only take the blow."
+- `docs/MULTIPLAYER.md` (group friend-hand, commit 1): `minecraft_net::PROTOCOL` is 6 (the code block at line 162 and the note at line 1415). `PlayerView.using` (`UsingView`) now carries `kind: UseKind { Eat { duration }, Block, Charge, Scope }`. In section 20, "the friend's first-person hand" becomes: "A friend draws their own first-person held items like the host: the selected item, the offhand item while holding an item or using one, eating and drinking at the mouth, the raised shield, the trident pulled back and the spyglass hiding the items. The use comes from the friend's `PlayerView.using` and is counted on between views on the friend's own tick. The items hide in F5, in bed, while skating, dead or with the UI off. The swing is not shown yet." No vendored file changed.
+- `docs/MULTIPLAYER.md` (group friend-hand, commit 2): new message `ToClient::Animate { client, offhand }` (protocol 6). In the section 20 text of commit 1, "The swing is not shown yet." becomes: "A friend's own attack press swings at once on the friend, with vanilla's restart rule and the 10-tick miss time; every other swing the host starts for that friend (placing, using, digging) reaches only that friend as `ToClient::Animate`." Line 1303 drops "the friend's first-person hand", and the leftover item at line 1326 ("**The friend's first-person hand:** ...") is removed.
+- `CLAUDE.md` roadmap item 2: drop "the friend's first-person hand" from the multiplayer leftovers.
+- `docs/MINECRAFT-SURVIVAL.md` (group friend-portal-music, commit 1): in "What a friend's game still lacks" (line 369) the item "the purple overlay while standing in a portal (the trigger sound plays);" is removed.
+- `docs/MULTIPLAYER.md` (group friend-portal-music, commit 1): add to section 20's list of what friends have: "A friend draws its own purple portal overlay from its own position on its streamed terrain (vanilla's client-side portal effect), closes its open screen inside a portal, and starts the effect again on a new level; the host still decides the travel and sends the trigger and travel sounds." No message change.
+- `docs/MULTIPLAYER.md` (group friend-portal-music, commit 2): the leftover item at line 1327 ("**Music on the friend's game** ...") is removed, and line 1433 drops ", and music on the friend's game" (ending "... (section 18.3)."). New wording in section 20: "Each game plays its own Minecraft music, as vanilla's client-side `MusicManager` does: a friend hears the End music, the dragon music while a boss bar asks for music, and the credits music, from its own level, boss bars and credits." No message change.
+- `docs/MINECRAFT-SURVIVAL.md` (group friend-portal-music, commit 2): in "What a friend's game still lacks" (line 367) the item "music of any kind;" is removed. `CLAUDE.md` names neither the friend's music nor its portal overlay, so it is unchanged.
+- `docs/MINECRAFT-SURVIVAL.md` (group pvp-melee, commit 1): line 374 drops "Minecraft melee against another player (swords and axes reach only mobs),"; line 425's shield note becomes "a mob's or a player's axe hit disables a raised shield for 5 seconds; MW2 bullets ignore it." New wording for the multiplayer section: "Minecraft melee hits other players like vanilla `Player.attack`: the attack strength scale, crits, sprint knockback, Sharpness and Knockback, the sword's sweep (players and mobs beside the target, and players beside a mob target), the shield and the axe's 5-second shield disable, armour, Protection and the totem. With the `pvp` game rule off a hit makes only the no-damage sound. Creative and spectator players cannot be hurt; spectators cannot be hit at all. Swords and axes wear by their `item_damage_per_attack` on mobs and players."
+- `docs/MULTIPLAYER.md` (group pvp-melee, commit 1): line 783 ("Not covered") drops its first two sentences about melee, line 1303 drops "and Minecraft melee between players", line 1321's leftover item is removed, and section 20 gains: "Minecraft melee between players runs on the host: each frame the host gives every level the boxes of its living, non-spectator players in that dimension's band; the attacker's `act()` hits the nearest of a frame, mob, End part, bullet, fireball or player before the block, and a hit is a `Hit` with `DamageCause::Player` in the victim's queue, which `struck()` applies with the shield, armour and totem. A friend aims at the other bodies it draws and sends `Target::Player`; the host checks reach. No message change."
+- `CLAUDE.md` roadmap item 2: drop "Minecraft melee between players" from the multiplayer leftovers.
+- `docs/MINECRAFT-SURVIVAL.md` (group pvp-melee, commit 2): line 374's "A gun hit followed by a fall or lava is told as a plain fall or lava death" stays for guns. New wording: "A player killed by another player's Minecraft melee gets vanilla's line: '<victim> was slain by <killer>', with 'using [<name>]' only for a custom-named weapon; a melee hit before a long fall gives 'was doomed to fall by <killer>', and lava, fire and the like within 5 seconds of a melee hit name the player escaped. Melee kills give no MW2 kill credit."
+- `docs/MULTIPLAYER.md` (group pvp-melee, commit 2): line 1427 ("There is no `DamageCause::Player`") becomes "`DamageCause::Player { client }` is the Minecraft melee cause; its death lines take the killer's name from the chat roster and the weapon's custom name from the killer's held item when the line is made. A gun kill's line is still built from the sim's death (E18)."
+
+- `docs/round8/friend-install.md` (group friend-skating): line 104 (`IW4L_SKATE=off`) becomes: "`IW4L_SKATE=off`: the zip has no Skate 3 converter, and without this line the first start stops to ask for Skate 3. A friend who wants to skate needs their own extracted Skate 3 (`default.xex` with its `data` folder) and the converter: drop this line, put `skate\iw4l-skate-convert.exe` (with `skate\licenses\`) from the host's game folder beside the exe, and set Skating to Enabled in Options > Controls > Minecraft; the next start asks for `default.xex` and converts it into `skate-data`." Line 162 drops "skating," from the list of what friends still miss.
+- `docs/MULTIPLAYER.md` (group friend-skating): the leftover item at line 1325 ("**Skating for friends:** ...") becomes: "**Skating for friends:** a friend skates on its own Skate 3 data. Its skate worker moves its own predicted player (`ClientPrediction::set_external_motion` and `set_origin`, held through each snapshot), and it reports the skater to the host: every new pose as `StateUp::Skate(SkateReport)` on the state lane, and `ToServer::Skate` with `on: false` on the reliable lane when the board is picked up. The host accepts a report only while the friend is alive, not switching, allowed the board (the host's own step of that friend) and within 40 blocks/s plus 10 blocks of its last place, outside blocks; then it moves the friend with external motion and runs the friend's Minecraft rules with `Skating` (no movement food or footsteps, fall damage on landing, no item use). Otherwise, and on death, dimension changes, teleports or 2 s of silence, it sends `ToClient::SkateRefused` and the friend picks the board up. Others see the friend move in the idle pose without a board until the skater pose is sent." Line 1303 (the leftover list) drops "skating for friends". The state lane note gains `StateUp`; protocol stays 6.
+- `docs/MINECRAFT-SURVIVAL.md` (group friend-skating): line 364 ("skating (the skate key does nothing for a friend, and the host's board shows only on the host's screen);") becomes "the skate pose and board of other players (each game sees only its own board);". Line 418 drops "a friend can't skate and"; the skating paragraph (line 140) gains: "Friends skate the same way with their own Skate 3 data; the host checks each move and picks the board up when it is too far, inside blocks or no longer allowed."
+- `CLAUDE.md` roadmap item 2: drop "skating for friends" from the multiplayer leftovers; item 4 becomes "Skating already works in Minecraft worlds for the host and friends (round 8 track D, round 9 track D), but nobody sees another player's skate pose yet."
+- `docs/MULTIPLAYER.md` (group skater-poses): in the friend-skating item above, "Others see the friend move in the idle pose without a board until the skater pose is sent." becomes: "Every skater's pose reaches the others: the friend's state report carries the root and 23 bones (the 22 mapped skater bones and the board root) as 3x4 floats, and each state frame carries `Skaters`, every other skater in the receiver's level with its pose, the host's own included. Each game shows another skater between the last two poses it heard, one interval behind, and draws the soldier in the skate pose on a board; a game without `rig.json` draws the standing soldier with no board. About 23 KB/s per skater in each direction." The state lane note gains `StateFrame.skaters` and `SkateReport.pose`; protocol stays 6.
+- `docs/MINECRAFT-SURVIVAL.md` (group skater-poses): the item "the skate pose and board of other players (each game sees only its own board);" in "What a friend's game still lacks" is removed. The skating paragraph gains: "Every player sees every skater in the same dimension on a board in the skate pose, the host and friends alike. A skater holds no item in its hands for the others."
+- `CLAUDE.md` (group skater-poses): roadmap item 4 becomes "Skate 3. Skating works in Minecraft worlds for the host and friends, and everyone sees every skater's pose and board (round 8 track D, round 9 track D)."
+- `docs/MINECRAFT-SURVIVAL.md` (group strider-freeze): in the **Frozen ticks** item (line 129), after "... mobs, projectiles and the End." add: "A mob carrying a player keeps ticking, as in vanilla: the whole stack under a player rider (its vehicle, that vehicle's own vehicle and their other mob riders) walks, steers and is drawn on its own clock, for the host's and the friends' rides alike; the game time stays frozen."
+- `CLAUDE.md` (group strider-freeze): roadmap item 2's last sentence drops ", such as a ridden strider standing still under `/tick freeze`".
+- `docs/PROGRESS.md` (group strider-freeze): the open not-vanilla item "ridden strider under `/tick freeze`" (line 10) is done by track D, group strider-freeze; it answers `docs/round8/decisions.md:23`.
+- `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 1): line 430 ("TNT explosions don't hurt mobs or players; only creeper explosions do.") is removed. The TNT item at line 126 ("TNT explodes.") becomes: "TNT explodes and hurts the mobs and players around it like vanilla, with their exposure taken before its blocks break; the mobs it kills drop their loot after the blast."
+- `docs/WEAPONS.md` (group tnt, commit 2; track C's file): line 621 becomes "- Explosion knockback still pushes the player: a Minecraft blast's push reaches the player as `out.pushes` whether the hurt lands or not, as vanilla pushes an entity whose hurt is refused. MW2 blasts push no player."; line 748's step 3 ends "no damage (and no push: MW2 blasts push no player)"; line 796's row reads "Bullets and explosions, MW2 and Minecraft, 80 ticks; a Minecraft blast still pushes".
+- `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 2): the explosions item at line 33 gains: "Minecraft explosions (TNT, creepers, fireballs, beds, anchors, crystals) push every player they reach away from the centre like vanilla, even when the hit does no damage; a flying creative player is not pushed."
+- `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 3): line 374 drops ", and TNT lit by a player with `pvp` off (the vendored level's primed TNT keeps no igniter, so its blast hurts players anyway)". The pvp paragraph gains: "Primed TNT remembers the player who lit it with flint and steel or a fire charge, and TNT a blast primes keeps that player; redstone and fire prime it for nobody. With `pvp` off a blast caused by a player (their TNT, an end crystal they popped, a ghast fireball they sent back) pushes every player but hurts none, the igniter included; mobs are still hurt and the player gets the credit for kills."
+- `docs/MULTIPLAYER.md` (group tnt, commit 3): line 783 drops its last sentence ("TNT lit by a player still hurts other players with pvp off: ..."), and the leftover at line 1323 ("TNT lit by a player honouring `pvp`: ...") is removed. Section 20 gains: "With `pvp` off the host takes every explosion hit caused by a player (`PlayerHitKind::Explosion.by`) out of the routed hits and pushes the victim instead."
+- `docs/round8/decisions.md:71` is answered: TNT lit by a player honours `pvp` (track D, group tnt).
+- `docs/PROGRESS.md` (group tnt, commit 3): the open not-vanilla item "TNT lit by another player with pvp off" (line 10) is done by track D, group tnt.
+- `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 4): the death lines paragraph gains: "A blast with nobody behind it (TNT nobody lit, an end crystal nobody popped) reads '<victim> blew up', even right after another player's or a mob's hit, as vanilla."
+- `docs/MINECRAFT-SURVIVAL.md` (group tnt, commit 5): the death lines paragraph gains: "A blast a player caused (their TNT, a crystal they popped, a fireball they sent back) reads '<victim> was blown up by <player>' (with 'using [<name>]' for a custom-named held item), and counts as that player's hit for 'doomed to fall' and 'to escape' lines."
+- `docs/MULTIPLAYER.md` (group tnt, commit 5): next to the `DamageCause::Player` note (line 1427) add: "`DamageCause::PlayerExplosion { client }` is a player's blast (`minecraft:player_explosion`), named the same way."
+- `docs/PROGRESS.md` (group tnt, commit 1): line 57 ("TNT with pvp off (track D): the brief found that TNT hurts nobody today...") becomes: "TNT (track D, group tnt): TNT now hurts players and mobs everywhere, single player too; tell the owner."
+- `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 1): line 441's last sentence ("An egg refused by a spawner because `spawner_blocks_work` is off gives no chat message ...") is removed; line 120 gains: "An egg refused because `spawner_blocks_work` is off tells that player 'Spawner blocks are not enabled' in the chat, like vanilla."
+- `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 2): line 380's last sentence ("A player's enchanting seed is not saved ...") is removed; the player file paragraph gains: "Each player's enchanting seed is saved as vanilla's `XpSeed`, so a table offers the same enchantments after a restart; a player file from before round 9 keeps the seed the player's UUID gives."
+- `docs/MULTIPLAYER.md` (group small-not-vanilla, commit 2): the leftover at line 1352 ("The enchanting seed is per player since E14 but not saved ...") is removed.
+- `docs/round8/decisions.md:73` (enchanting seed) is answered by track D, group small-not-vanilla, commit 2.
+- `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 3): line 374 drops "A gun hit does not wake a sleeping player, the host included."; line 426 drops "; a gun hit does not wake anyone in bed (only Minecraft damage does)"; line 78's waking list reads "a hit that hurts (Minecraft damage or an MW2 gun, grenade or knife hit)".
+- `docs/MULTIPLAYER.md` (group small-not-vanilla, commit 3): the leftover at line 1324 ("a gun hit waking a sleeping player ...") is removed.
+- `docs/round8/decisions.md:72` (a gun hit doesn't wake a sleeping player) is answered by track D, group small-not-vanilla, commit 3.
+- `docs/round8/decisions.md:29` (a ghast's or blaze's fireball doesn't make a hoglin retaliate) is answered by track D, group small-not-vanilla, commit 4: the large fireball's blast now notes the ghast, and the direct hits already noted the shooter. "Looting and Fire Aspect don't affect their drops" stays.
+- `docs/MINECRAFT-SURVIVAL.md` (group small-not-vanilla, commit 4): the hoglin paragraph gains: "A hoglin or piglin hurt by a ghast's fireball blast or a blaze's fireball turns on the ghast or blaze."
+- `docs/MINECRAFT-SURVIVAL.md` (group wither-live, commit 1): new paragraph "Withers: three wither skeleton skulls placed on a T of soul sand or soul soil (in any direction, standing or lying) build a wither, not on peaceful. It charges for 11 seconds at a third of its health, invulnerable and healing to full, then blows up (radius 7) with a roar heard everywhere in the dimension. It then flies after the nearest living thing that is not undead, staying about five blocks above it; its two side heads pick their own targets within 20 blocks and turn to them. Undead and drowning never hurt it; it takes no lasting effects. A wither egg or `/summon` gives one that does not charge. Withers are saved, and friends see them, their heads and the charge. They do not shoot skulls, break blocks, show a boss bar or drop a nether star yet."
+- `docs/MINECRAFT-SURVIVAL.md` (group wither-live, commit 2): the wither paragraph gains: "Withers are drawn like vanilla: the three-headed model at twice size, growing from 1.5 to 2 and flashing blue while it charges, the moving blue armour while at half health or less, smoke from its heads and blue sparks while charging, for the host and friends; they also turn in spawner cages."
+- `docs/MINECRAFT-SURVIVAL.md` (group wither-fight, commit 1): the wither paragraph's last sentence ("They do not shoot skulls, break blocks, show a boss bar or drop a nether star yet.") becomes: "Its three heads shoot wither skulls: black ones (8 damage and Wither II for 10 seconds on Normal, 40 on Hard) and now and then a slower blue one whose blast breaks obsidian. Below half health its armour turns away arrows, tridents and wind charges. A second after it is hurt it breaks the blocks around it (3 by 4 by 3), with their drops, but never bedrock or the other wither-immune blocks, and only with `mob_griefing`. Killed, it drops a nether star that lasts 15 minutes on the ground. Death by a skull reads 'was shot by a skull from Wither'. It shows no boss bar yet."
+- `docs/MINECRAFT-SURVIVAL.md` (group wither-fight, commit 2): the wither paragraph's "It shows no boss bar yet." becomes: "Every player within 10 chunks of a wither (and within their view distance) sees its purple boss bar: empty when it is built, filling while it charges, then its health. Friends see it too. The sky does not darken for it yet."
+- `docs/MINECRAFT-SURVIVAL.md` (group breezes, commit 1): line 117 gains after "launches the player without the fall damage of the jump": "; a burst opens or closes wooden and copper doors, trapdoors and fence gates (not iron ones or powered ones), presses buttons, flips levers, rings bells and puts out candles within its reach (its rays pass through every block but barrier and bedrock)".
+- `docs/MULTIPLAYER.md` (group wither-fight, commit 2): boss bars: besides the dragon's (id 1) and the raids' (0x100 plus the raid), each wither a friend tracks sends a purple bar with id 2^40 plus the wither's entity ID (`ToClient::BossBar`, no protocol change).
 
 ## Vendored files
 
-Patched by track D: 40 (`entities/src/movement.rs`, `entities/src/effects.rs`, `entities/src/lib.rs`, `entities/src/potion.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `player/src/survival.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs`, `generator/src/feature/entities.rs`, `entities/src/controls.rs`, `entities/src/loot.rs`, `world/src/level/time.rs`, `entities/src/cow_ai.rs`, `entities/src/horse.rs`, `entities/src/world/shulker_bullets.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/merchants.rs`, `world/src/level_storage.rs`, `world/src/storage.rs`, `world/src/level/mod.rs`, `player/src/lib.rs`, `core/src/item.rs`, `core/src/loot.rs`, `entities/src/look.rs`, `entities/src/witch.rs`, `entities/src/villager_brain/behaviors.rs`, `entities/src/villager_brain/memory.rs`, `entities/src/villager_brain/mod.rs`, `world/src/level/piston.rs`, `world/src/level/redstone.rs`). Added: 28 (`entities/src/drowned_ai.rs`; `entities/src/feline.rs`, `entities/src/feline_ai.rs` and `entities/src/world/felines.rs` from group cats; `entities/src/llama_ai.rs`, `entities/src/llama_spit.rs` and `entities/src/world/equines.rs` from group horse-family; `entities/src/world/leashes.rs`, `entities/src/wandering_trader.rs`, `entities/src/trader_ai.rs` and `entities/src/world/traders.rs` from group wandering-trader; `world/src/level/golem_build.rs`, `entities/src/snow_golem.rs`, `entities/src/snow_golem_ai.rs` and `entities/src/world/snow_golems.rs` from group built-golems; `entities/src/illager.rs`, `entities/src/illager_ai.rs` and `entities/src/world/illagers.rs` from group pillagers; `entities/src/evoker_fangs.rs`, `entities/src/world/evoker_fangs.rs`, `entities/src/vex.rs`, `entities/src/vex_ai.rs` and `entities/src/world/vexes.rs` from group evokers-vexes; `entities/src/ravager.rs`, `entities/src/ravager_ai.rs` and `entities/src/world/ravagers.rs` from group ravagers; `entities/src/raid.rs` and `entities/src/world/raiders.rs` from group raids). Group zombie-villagers added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` (commit 1) and `entities/src/effects.rs` and `entities/src/potion.rs` (commit 2) to the patched list. Group effects-omens added `player/src/survival.rs` (commit 1). Group riding added `entities/src/movement.rs` (commit 1). Group horse-family added `entities/src/cow_ai.rs`, `entities/src/horse.rs`, `entities/src/world/shulker_bullets.rs` and `entities/src/bin/check_zombie_player_hits.rs` (commit 1). Group cats added `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs` and `generator/src/feature/entities.rs` (commit 1), and `entities/src/controls.rs`, `entities/src/loot.rs` and `world/src/level/time.rs` (commit 2). Group wandering-trader added `entities/src/world/merchants.rs`, `world/src/level_storage.rs` and `world/src/storage.rs` (commit 2). Group built-golems added `world/src/level/mod.rs` (commit 1) and `player/src/lib.rs` (commit 2). Group loot-functions added `core/src/item.rs` and `core/src/loot.rs` (commit 1). Group patrols-vindicators touched only files already listed (commit 1: `player/src/lib.rs`, `world/src/natural_spawner/spawning.rs`, `world/src/level/spawning.rs`, `world/src/level/time.rs`, `entities/src/world.rs` and the added illager files; commit 2: `entities/src/monster_ai.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `generator/src/feature/entities.rs` and the added illager files). Group evokers-vexes touched only files already listed besides its added ones (commit 1: `entities/src/lib.rs`, `entities/src/loot.rs`, `entities/src/monster_ai.rs`, `entities/src/world.rs`, `entities/src/world/{equines,pushing,riding,shulker_bullets,witches}.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `generator/src/feature/entities.rs` and the illager files; commit 2: `entities/src/lib.rs`, `entities/src/monster_ai.rs`, `entities/src/illager_ai.rs`, `entities/src/world.rs`, `entities/src/world/{combat,hazards,pushing,riding,villagers,witches,illagers,evoker_fangs}.rs`, `world/src/natural_spawner.rs` and `world/src/natural_spawner/spawning.rs`). Group ravagers added `entities/src/look.rs` (commit 1) and otherwise touched files already listed (commit 1: `entities/src/lib.rs`, `entities/src/monster_ai.rs`, `entities/src/illager_ai.rs`, `entities/src/world.rs`, `entities/src/world/{combat,hazards,pushing,riding,villagers,witches}.rs`, `player/src/lib.rs`, `world/src/natural_spawner.rs` and `world/src/natural_spawner/spawning.rs`). Group raids added `entities/src/witch.rs` (commit 1) and otherwise touched files already listed (commit 1: `entities/src/lib.rs`, `entities/src/monster_ai.rs`, `entities/src/illager_ai.rs`, `entities/src/world.rs`, `entities/src/world/{illagers,ravagers,witches}.rs`, `world/src/level/spawning.rs`, `world/src/level/time.rs`, `world/src/natural_spawner/spawning.rs` and `world/src/storage.rs`; commit 2: `entities/src/monster_ai.rs`, `entities/src/witch.rs`, `entities/src/world/witches.rs` and the added `entities/src/world/raiders.rs`). Group raid-villagers added `entities/src/villager_brain/{behaviors,memory,mod}.rs`, `world/src/level/piston.rs` and `world/src/level/redstone.rs` (commit 1) and otherwise touched files already listed (commit 1: `entities/src/effects.rs`, `entities/src/potion.rs`, `entities/src/loot.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `player/src/lib.rs`, `world/src/level/mod.rs` and the added `entities/src/raid.rs` and `entities/src/world/raiders.rs`).
+Patched by track D: 45 (`entities/src/fireball.rs`, `entities/src/movement.rs`, `entities/src/effects.rs`, `entities/src/lib.rs`, `entities/src/potion.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `entities/src/zombie.rs`, `player/src/survival.rs`, `world/src/level/spawning.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs`, `generator/src/feature/entities.rs`, `entities/src/controls.rs`, `entities/src/loot.rs`, `world/src/level/time.rs`, `entities/src/cow_ai.rs`, `entities/src/horse.rs`, `entities/src/world/shulker_bullets.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/merchants.rs`, `world/src/level_storage.rs`, `world/src/storage.rs`, `world/src/level/mod.rs`, `player/src/lib.rs`, `core/src/item.rs`, `core/src/loot.rs`, `entities/src/look.rs`, `entities/src/witch.rs`, `entities/src/villager_brain/behaviors.rs`, `entities/src/villager_brain/memory.rs`, `entities/src/villager_brain/mod.rs`, `world/src/level/piston.rs`, `world/src/level/redstone.rs`, `world/src/level/explosion.rs`, `world/src/level/entity.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/hoglins.rs`). Added: 32 (`entities/src/drowned_ai.rs`; `entities/src/feline.rs`, `entities/src/feline_ai.rs` and `entities/src/world/felines.rs` from group cats; `entities/src/llama_ai.rs`, `entities/src/llama_spit.rs` and `entities/src/world/equines.rs` from group horse-family; `entities/src/world/leashes.rs`, `entities/src/wandering_trader.rs`, `entities/src/trader_ai.rs` and `entities/src/world/traders.rs` from group wandering-trader; `world/src/level/golem_build.rs`, `entities/src/snow_golem.rs`, `entities/src/snow_golem_ai.rs` and `entities/src/world/snow_golems.rs` from group built-golems; `entities/src/illager.rs`, `entities/src/illager_ai.rs` and `entities/src/world/illagers.rs` from group pillagers; `entities/src/evoker_fangs.rs`, `entities/src/world/evoker_fangs.rs`, `entities/src/vex.rs`, `entities/src/vex_ai.rs` and `entities/src/world/vexes.rs` from group evokers-vexes; `entities/src/ravager.rs`, `entities/src/ravager_ai.rs` and `entities/src/world/ravagers.rs` from group ravagers; `entities/src/raid.rs` and `entities/src/world/raiders.rs` from group raids; `entities/src/wither.rs`, `entities/src/wither_ai.rs`, `entities/src/world/withers.rs` and `world/src/level/wither_build.rs` from group wither-live). Group zombie-villagers added `entities/src/world/villagers.rs` and `world/src/level/spawning.rs` (commit 1) and `entities/src/effects.rs` and `entities/src/potion.rs` (commit 2) to the patched list. Group effects-omens added `player/src/survival.rs` (commit 1). Group riding added `entities/src/movement.rs` (commit 1). Group horse-family added `entities/src/cow_ai.rs`, `entities/src/horse.rs`, `entities/src/world/shulker_bullets.rs` and `entities/src/bin/check_zombie_player_hits.rs` (commit 1). Group cats added `entities/src/monster_ai.rs`, `entities/src/world/combat.rs`, `entities/src/world/hazards.rs`, `entities/src/world/pushing.rs`, `entities/src/world/riding.rs`, `entities/src/world/witches.rs` and `generator/src/feature/entities.rs` (commit 1), and `entities/src/controls.rs`, `entities/src/loot.rs` and `world/src/level/time.rs` (commit 2). Group wandering-trader added `entities/src/world/merchants.rs`, `world/src/level_storage.rs` and `world/src/storage.rs` (commit 2). Group built-golems added `world/src/level/mod.rs` (commit 1) and `player/src/lib.rs` (commit 2). Group loot-functions added `core/src/item.rs` and `core/src/loot.rs` (commit 1). Group patrols-vindicators touched only files already listed (commit 1: `player/src/lib.rs`, `world/src/natural_spawner/spawning.rs`, `world/src/level/spawning.rs`, `world/src/level/time.rs`, `entities/src/world.rs` and the added illager files; commit 2: `entities/src/monster_ai.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `generator/src/feature/entities.rs` and the added illager files). Group evokers-vexes touched only files already listed besides its added ones (commit 1: `entities/src/lib.rs`, `entities/src/loot.rs`, `entities/src/monster_ai.rs`, `entities/src/world.rs`, `entities/src/world/{equines,pushing,riding,shulker_bullets,witches}.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`, `generator/src/feature/entities.rs` and the illager files; commit 2: `entities/src/lib.rs`, `entities/src/monster_ai.rs`, `entities/src/illager_ai.rs`, `entities/src/world.rs`, `entities/src/world/{combat,hazards,pushing,riding,villagers,witches,illagers,evoker_fangs}.rs`, `world/src/natural_spawner.rs` and `world/src/natural_spawner/spawning.rs`). Group ravagers added `entities/src/look.rs` (commit 1) and otherwise touched files already listed (commit 1: `entities/src/lib.rs`, `entities/src/monster_ai.rs`, `entities/src/illager_ai.rs`, `entities/src/world.rs`, `entities/src/world/{combat,hazards,pushing,riding,villagers,witches}.rs`, `player/src/lib.rs`, `world/src/natural_spawner.rs` and `world/src/natural_spawner/spawning.rs`). Group raids added `entities/src/witch.rs` (commit 1) and otherwise touched files already listed (commit 1: `entities/src/lib.rs`, `entities/src/monster_ai.rs`, `entities/src/illager_ai.rs`, `entities/src/world.rs`, `entities/src/world/{illagers,ravagers,witches}.rs`, `world/src/level/spawning.rs`, `world/src/level/time.rs`, `world/src/natural_spawner/spawning.rs` and `world/src/storage.rs`; commit 2: `entities/src/monster_ai.rs`, `entities/src/witch.rs`, `entities/src/world/witches.rs` and the added `entities/src/world/raiders.rs`). Group raid-villagers added `entities/src/villager_brain/{behaviors,memory,mod}.rs`, `world/src/level/piston.rs` and `world/src/level/redstone.rs` (commit 1) and otherwise touched files already listed (commit 1: `entities/src/effects.rs`, `entities/src/potion.rs`, `entities/src/loot.rs`, `entities/src/world.rs`, `entities/src/world/villagers.rs`, `player/src/lib.rs`, `world/src/level/mod.rs` and the added `entities/src/raid.rs` and `entities/src/world/raiders.rs`).
+Group pvp-melee touched only `entities/src/world/combat.rs`, already listed (commit 1: `player_attack_with` and `player_sweep`).
+
+Group strider-freeze touched only `entities/src/world.rs` and `entities/src/world/riding.rs`, already listed (`tick_selected`, `tick_frozen_with_players_where`, `player_carriers`).
+
+Group tnt added `world/src/level/explosion.rs` (commit 1: `tick_tnt` defers its blast; commit 3: the owner), `world/src/level/entity.rs` and `entities/src/world/fireballs.rs` (commit 3: `TntData.owner`, the fireball's `by`) to the patched list, and touched `world/src/level/mod.rs` and `entities/src/world.rs`, already listed (commit 1: `defer_tnt_blasts`, `tnt_blasts`; commit 3: `PlayerHitKind::Explosion.by`).
+
+Group small-not-vanilla added `entities/src/world/hoglins.rs` (commit 4: a test) to the patched list and touched `entities/src/world/fireballs.rs`, already listed (commit 4: the hurt-by note in `fireball_explosion`).
+
+Group wither-live added `entities/src/wither.rs`, `entities/src/wither_ai.rs`, `entities/src/world/withers.rs` and `world/src/level/wither_build.rs` (commit 1) and otherwise touched files already listed (commit 1: `entities/src/lib.rs`, `entities/src/monster_ai.rs`, `entities/src/stroll.rs`, `entities/src/world.rs`, `entities/src/world/{combat,hazards,pushing,riding,villagers,witches}.rs`, `world/src/level/mod.rs`, `world/src/natural_spawner.rs` and `world/src/natural_spawner/spawning.rs`).
+
+Group wither-fight added `entities/src/fireball.rs` (commit 1) to the patched list, now 45, and otherwise touched files already listed (commit 1: `entities/src/world.rs`, `entities/src/world/fireballs.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `world/src/level/explosion.rs` and the added `entities/src/wither.rs` and `entities/src/world/withers.rs`). Added files stay 32.
+
+Group breezes touched `world/src/level/explosion.rs` and `world/src/level/redstone.rs`, already listed (commit 1: `wind_charge_blocks`, `wind_trigger`). Patched stays 45, added 32.
 
 ## Left for later
 
@@ -2167,12 +3150,22 @@ Patched by track D: 40 (`entities/src/movement.rs`, `entities/src/effects.rs`, `
 - Banner patterns are not drawn (placed banners, held banners and the captain's ominous banner show their base colour only); skulls worn by illagers are not drawn (`CustomHeadLayer`'s skull branch).
 - The piglin's crossbow shot draws a pitch (`1 / (0.8..1.2)`) from its random; vanilla's single crossbow arrow plays at pitch 1 with no draw (`CrossbowItem.getShotPitch` index 0). The pillager does it the vanilla way; the piglin (round 8, `world/piglins.rs`) is unchanged.
 - The crossbow's loading start and middle sounds play in the shooter's category; vanilla plays them as `PLAYERS` sounds.
+- A friend never loads `ui.freeze_outline` (`minecraft_remote.rs`, next to the portal frames), so a friend in powder snow sees no frost outline; found in group friend-portal-music, outside its two commits.
 - Vexes: flight through water and lava (vanilla's `travelInFluid` drag) and drowning; the follow range bonus roll of a summoned vex; a summoned vex joining its evoker's team.
 - Evokers: the fangs' knockback (`LivingEntity.hurtServer` pushes 0.4 away from the fangs; the fork's indirect magic pushes nothing), a summoned vex joining its evoker's scoreboard team (the fork has no teams) (the celebrate sound landed with group `raids`).
 - A mob's held crossbow is drawn with its plain item model: a loaded crossbow shows no arrow and a charging one no pull (`mesh::HeldItem` carries no components); pillagers in spawner cages are drawn without their crossbow (the cage draws mob models only).
 - Raids: `ObtainRaidLeaderBannerGoal` (a raider picks up a dropped ominous banner and becomes its wave's captain; illagers pick up nothing yet); the raid statistics and advancements (`raid_trigger`, `raid_win`, the `voluntary_exile` and `hero_of_the_village` criteria); the raid omen particles around the player; a celebrating raider skipping its jump while riding. (Villagers hiding, ringing the bell, raiders glowing, celebrating and gifts landed with group `raid-villagers`.)
-- Bells: the bell's swing (`BellRenderer` from the block event's direction), the client's `ENTITY_EFFECT` particles from a resonating bell to each raider, arrows and other projectiles ringing it (`onProjectileHit`), wind charges ringing it (`onExplosionHit` with `canTriggerBlocks`; the fork's wind charges trigger no blocks yet), the `bell_ring` statistic and the `BLOCK_CHANGE` game event (group `vibrations`).
+- Bells: the bell's swing (`BellRenderer` from the block event's direction), the client's `ENTITY_EFFECT` particles from a resonating bell to each raider, arrows and other projectiles ringing it (`onProjectileHit`), the `bell_ring` statistic and the `BLOCK_CHANGE` game event (group `vibrations`).
 - Villagers in raids: the sweat particles of entity event 42 (the client draws no entity-event particles yet).
 - Fireworks: a rocket exploding on an entity in its path (`onHitEntity`), knockback for mobs hurt by a burst, the other explosion shapes (small and large balls, stars, creepers), trails and twinkles, saving rockets in flight, players launching rockets from the ground and dispensers and crossbows firing them.
 - Thrown things and illagers: `thrown::targets` and `thrown::hurt_by` (players' tridents, snowballs, eggs and splash potions) list no pillagers, vindicators, evokers, vexes, ravagers, hoglins, piglins, striders, ghasts or blazes, so those cannot be struck by them; found while building the firework blast, which uses every tracked mob instead.
 - Ravagers: a raid rider steering its ravager (the fork's ravager walks to the village itself; vanilla moves it by the rider's navigation); patrol companions beyond illagers (vanilla's `LongDistancePatrolGoal` counts every `PatrollingMonster`); a non-raider rider steering it (vanilla leaves such a ravager to its rider; the fork holds it still); the attack knockback landing on a fully blocked hit (the fork's melee `throw` lands on shielded hits); armor stands (excluded from the roar without `mob_griefing`) are not mobs in the fork; `checkSpawnObstruction` (no liquid in its box) is not asked by eggs and summons in the fork either; a vindicator rider's melee reach does not grow by its ravager's box (`Mob.getAttackBoundingBox` with a vehicle).
+- The host's own first-person held items still show with the UI off (`ui_draw 0`); vanilla's hidden GUI hides the hands, as the friend's now do (group friend-hand, commit 1).
+- Skating leftovers (group friend-skating): done in group skater-poses (the pose and board for everyone, the host's held items cleared while it skates).
+- Skater-pose leftovers (group skater-poses): other players' boards keep their trucks and wheels rigid on the deck (only `SKATEBOARD_ROOT` is sent); the poses ride the state frames, which the host sends with each server output of the receiver's level, so a gap of more than 1 s between frames (a host stall, a level without an entity world) shows other skaters as standing soldiers until the next frame.
+- Melee leftovers (group pvp-melee): the attacker's own slowdown after a sprint knockback hit (`causeExtraKnockback` multiplies the attacker's motion by 0.6 and stops the sprint), for mob and player hits alike; `EnchantmentHelper.doPostAttackEffects` (Fire Aspect and other post-attack enchantments) on players; a sweep round a mob reaches players before the entity world says whether the mob was hurt.
+- Strider-freeze leftovers (group strider-freeze): under `/tick freeze` a player on foot does not push a ridden strider or horse (vanilla's `pushEntities` still pushes a ticking carrier), and queued respawn-anchor and crystal blasts wait for the next normal tick (as before the group).
+- TNT leftovers (group tnt): a mob as TNT owner (a creeper's blast priming TNT; vanilla's `getIndirectSourceEntity` keeps any living source, so a chain would read "blown up by Creeper"); an end crystal destroyed by a player's TNT blast does not name that player for its own blast (`tick_end` passes no owner to `crystals.blast`); the direct hit of a fireball a player sent back (`PlayerHitKind::Fireball`) still hurts players with pvp off; Blast Protection's `explosion_knockback_resistance` on explosion pushes.
+- Keyframe leftovers (group keyframes): no renderer holds an `AnimationLibrary` yet (the first one, group `warden-render`, creates it from `data_jar()`); the bat still samples its hand tables, which the gated `the_bat_tables_match_the_jar` keeps equal to the jar, and can move to `BatAnimation` once the client holds the library.
+- Wither leftovers (group wither-live): the skulls, the half-health shield, block breaking, the nether star and the purple boss bar landed with group `wither-fight`. Still left from that group: the sky darkening under a wither's bar (`BossEvent.darkenScreen`, the lightmap's darken amount: the flag reaches friends but nothing reads it), smoke trails behind skulls and fireballs (`AbstractHurtingProjectile.createParticleTrail`), the owner of a skull loaded from a save, and a skull kill of a player healing its wither. Also left: `FlyNodeEvaluator` paths (P3, group `parrots`; the wither flies straight), the dispenser's wither skull (`WitherSkullBlock.canSpawnMob` and `checkSpawn` from a dispenser; the fork's dispenser has no skull behaviour), and the `summoned_entity` advancement trigger.
+- Wind charge leftovers (group breezes, commit 1): the smoke at a candle's wicks when a burst puts it out, the `BLOCK_OPEN`, `BLOCK_CLOSE`, `BLOCK_ACTIVATE` and `BLOCK_CHANGE` game events of triggered blocks (group `vibrations`), and no push for a player flying in creative (vanilla's `getKnockbackMultiplier` is 0 for a flying player).

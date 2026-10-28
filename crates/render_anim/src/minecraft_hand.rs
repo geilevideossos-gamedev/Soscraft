@@ -130,6 +130,178 @@ pub(crate) fn activation_pose(ticks: u32, partial: f32, off: [f32; 2], aspect: f
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum UseShown {
+    Eat { remaining: u32, duration: u32 },
+    Block,
+    Charge { ticks: u32 },
+    Scope,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HeldUse {
+    pub(crate) slot: usize,
+    pub(crate) kind: UseShown,
+}
+
+pub(crate) fn host_use(survival: &minecraft_survival::survival::Survival, hand: &minecraft_survival::player::Hand) -> Option<HeldUse> {
+    survival
+        .eating()
+        .map(|eating| HeldUse { slot: eating.slot, kind: UseShown::Eat { remaining: eating.remaining_ticks(), duration: eating.info.consume_ticks } })
+        .or_else(|| hand.blocking.map(|blocking| HeldUse { slot: blocking.slot, kind: UseShown::Block }))
+        .or_else(|| hand.charging.map(|charging| HeldUse { slot: charging.slot, kind: UseShown::Charge { ticks: charging.ticks } }))
+        .or_else(|| hand.scoping.map(|scoping| HeldUse { slot: scoping.slot, kind: UseShown::Scope }))
+}
+
+pub(crate) struct Held<'a> {
+    pub(crate) main: Option<(usize, &'a minecraftoss_player::inventory::ItemStack)>,
+    pub(crate) offhand: Option<&'a minecraftoss_player::inventory::ItemStack>,
+    pub(crate) swing: f32,
+    pub(crate) swing_offhand: bool,
+    pub(crate) using: Option<HeldUse>,
+    pub(crate) partial: f32,
+    pub(crate) activation: Option<Mat4>,
+}
+
+pub(crate) type HandLook<'a> = (&'a minecraft_terrain::pack::PackStack, &'a minecraft_terrain::mesh::Atlas, &'a minecraft_terrain::lighting::SkyLight, &'a minecraft_terrain::dials::Dials);
+
+pub(crate) fn held_hand_mesh(held: &Held<'_>, view: &mut minecraft_survival::entity_view::EntityView, (packs, atlas, light, dials): HandLook<'_>, light_at: Vec3, aspect: f32) -> Option<(Vec<u8>, Vec<u32>, [f32; 16])> {
+    let offhand = minecraft_survival::offhand::OFFHAND;
+    let stacks = posed_stacks(held);
+    if held.activation.is_none() && stacks.iter().all(|(stack, _)| stack.is_none()) {
+        return None;
+    }
+    let mut posed = Vec::new();
+    for (stack, arm) in stacks {
+        let Some((slot, stack)) = stack else {
+            continue;
+        };
+        let using = held.using.filter(|using| using.slot == slot).map(|using| using.kind);
+        let raised = matches!(using, Some(UseShown::Block | UseShown::Charge { .. }));
+        let display = minecraft_terrain::pack::ResourceId::parse(&stack.id)
+            .ok()
+            .and_then(|id| minecraft_terrain::model::item_hand_transform(packs, &id, arm < 0.0, raised).ok())
+            .unwrap_or(Mat4::IDENTITY);
+        let display = match using {
+            Some(UseShown::Charge { ticks }) => trident_charge_transform(ticks as f32 + held.partial, arm) * display,
+            _ => display,
+        };
+        let eat = match using {
+            Some(UseShown::Eat { remaining, duration }) => Some(eat_transform(remaining as f32, held.partial, duration, arm)),
+            _ => None,
+        };
+        let swung = if raised || eat.is_some() || held.swing_offhand != (slot == offhand) { 0.0 } else { held.swing };
+        let glint = minecraft_terrain::glint::has_glint(stack);
+        let key = minecraft_terrain::item_tint::key(dials.key(&stack.id), minecraft_terrain::potions::stack_color(stack.components.as_ref()));
+        posed.push((eat.unwrap_or(Mat4::IDENTITY) * item_pose(display, swung, 0.0, arm), key, glint));
+    }
+    let mut mesh = view.held_item_mesh(&posed, light_at, packs, atlas, light);
+    if let Some(pose) = held.activation {
+        append_totem(&mut mesh, view, pose, light_at, (packs, atlas, light));
+    }
+    let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
+    Some((bytemuck::cast_slice(&vertices).to_vec(), mesh.indices, hand_clip(aspect)))
+}
+
+type PosedStack<'a> = (Option<(usize, &'a minecraftoss_player::inventory::ItemStack)>, f32);
+
+fn posed_stacks<'a>(held: &Held<'a>) -> [PosedStack<'a>; 2] {
+    let scoping = held.using.is_some_and(|using| using.kind == UseShown::Scope);
+    let offhand = held.offhand.map(|stack| (minecraft_survival::offhand::OFFHAND, stack));
+    [(held.main, 1.0), (offhand, -1.0)].map(|(stack, arm)| (stack.filter(|_| !scoping), arm))
+}
+
+pub(crate) fn swing_shown(swing: Option<f32>) -> f32 {
+    swing.map_or(0.0, |t| (t / SWING_TICKS).clamp(0.0, 1.0))
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct UseClock {
+    seen: Option<minecraft_net::messages::UsingView>,
+    at: u64,
+}
+
+impl UseClock {
+    pub(crate) fn follow(&mut self, using: Option<minecraft_net::messages::UsingView>, tick: u64, selected: usize) -> Option<HeldUse> {
+        if self.seen != using || tick < self.at {
+            self.seen = using;
+            self.at = tick;
+        }
+        let using = using?;
+        let passed = u32::try_from(tick - self.at).unwrap_or(u32::MAX);
+        let ticks = u32::try_from(using.ticks).unwrap_or(0);
+        let slot = match using.hand {
+            minecraft_net::messages::Hand::Main => selected,
+            minecraft_net::messages::Hand::Off => minecraft_survival::offhand::OFFHAND,
+        };
+        let kind = match using.kind {
+            minecraft_net::messages::UseKind::Eat { duration } => UseShown::Eat { remaining: ticks.saturating_sub(passed), duration: u32::try_from(duration).unwrap_or(0).max(1) },
+            minecraft_net::messages::UseKind::Block => UseShown::Block,
+            minecraft_net::messages::UseKind::Charge => UseShown::Charge { ticks: ticks.saturating_add(passed) },
+            minecraft_net::messages::UseKind::Scope => UseShown::Scope,
+        };
+        Some(HeldUse { slot, kind })
+    }
+}
+
+const MISS_TICKS: u32 = 10;
+
+pub(crate) fn may_restart(swing: Option<f32>) -> bool {
+    swing.is_none_or(|t| t <= 0.0 || t >= SWING_TICKS * 0.5)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct FriendSwing {
+    swing: Option<f32>,
+    offhand: bool,
+    miss_time: u32,
+    clock: f64,
+}
+
+impl FriendSwing {
+    pub(crate) fn advance(&mut self, seconds: f64, attack_held: bool) {
+        if let Some(ticks) = self.swing.as_mut() {
+            *ticks += (seconds * 20.0) as f32;
+            if *ticks >= SWING_TICKS {
+                self.swing = None;
+            }
+        }
+        self.clock += seconds.max(0.0);
+        let ticks = (self.clock * 20.0).floor();
+        self.clock -= ticks / 20.0;
+        self.miss_time = self.miss_time.saturating_sub(ticks as u32);
+        if !attack_held {
+            self.miss_time = 0;
+        }
+    }
+
+    pub(crate) fn attack(&mut self, miss: bool, creative: bool) -> bool {
+        if self.miss_time > 0 {
+            return false;
+        }
+        if miss && !creative {
+            self.miss_time = MISS_TICKS;
+        }
+        self.start(false);
+        true
+    }
+
+    pub(crate) fn echo(&mut self, offhand: bool) {
+        self.start(offhand);
+    }
+
+    fn start(&mut self, offhand: bool) {
+        if may_restart(self.swing) {
+            self.swing = Some(0.0);
+            self.offhand = offhand;
+        }
+    }
+
+    pub(crate) fn shown(&self) -> (f32, bool) {
+        (swing_shown(self.swing), self.offhand)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +410,113 @@ mod tests {
             let bread_lift = eat_transform(bread, 1.0, 32, 1.0).transform_point3(Vec3::ZERO).x;
             assert!((kelp_lift - bread_lift).abs() < 1e-5);
         }
+    }
+
+    fn using(hand: minecraft_net::messages::Hand, ticks: i32, kind: minecraft_net::messages::UseKind) -> Option<minecraft_net::messages::UsingView> {
+        Some(minecraft_net::messages::UsingView { hand, ticks, kind })
+    }
+
+    #[test]
+    fn a_friends_use_counter_counts_eating_down_between_views() {
+        use minecraft_net::messages::{Hand, UseKind};
+        let mut clock = UseClock::default();
+        let steak = using(Hand::Main, 32, UseKind::Eat { duration: 32 });
+        let eat = |remaining| Some(HeldUse { slot: 3, kind: UseShown::Eat { remaining, duration: 32 } });
+        assert_eq!(clock.follow(steak, 100, 3), eat(32));
+        assert_eq!(clock.follow(steak, 110, 3), eat(22));
+        assert_eq!(clock.follow(steak, 140, 3), eat(0), "it stays at the mouth until the host says it is done");
+        let resent = using(Hand::Main, 20, UseKind::Eat { duration: 32 });
+        assert_eq!(clock.follow(resent, 141, 3), eat(20), "a new view re-bases the counter");
+        assert_eq!(clock.follow(resent, 145, 3), eat(16));
+        assert_eq!(clock.follow(None, 146, 3), None);
+        let kelp = using(Hand::Off, 16, UseKind::Eat { duration: 16 });
+        assert_eq!(clock.follow(kelp, 150, 3), Some(HeldUse { slot: minecraft_survival::offhand::OFFHAND, kind: UseShown::Eat { remaining: 16, duration: 16 } }));
+        assert_eq!(clock.follow(kelp, 158, 3).map(|held| held.kind), Some(UseShown::Eat { remaining: 8, duration: 16 }));
+        assert_eq!(clock.follow(kelp, 2, 3).map(|held| held.kind), Some(UseShown::Eat { remaining: 16, duration: 16 }), "a new level's clock starts again");
+    }
+
+    #[test]
+    fn a_friends_trident_charge_counts_up_and_a_shield_and_spyglass_hold() {
+        use minecraft_net::messages::{Hand, UseKind};
+        let mut clock = UseClock::default();
+        let charge = using(Hand::Main, 2, UseKind::Charge);
+        assert_eq!(clock.follow(charge, 10, 0), Some(HeldUse { slot: 0, kind: UseShown::Charge { ticks: 2 } }));
+        assert_eq!(clock.follow(charge, 18, 0).map(|held| held.kind), Some(UseShown::Charge { ticks: 10 }));
+        let shield = using(Hand::Off, 0, UseKind::Block);
+        assert_eq!(clock.follow(shield, 20, 0), Some(HeldUse { slot: minecraft_survival::offhand::OFFHAND, kind: UseShown::Block }));
+        assert_eq!(clock.follow(using(Hand::Main, 5, UseKind::Scope), 21, 7), Some(HeldUse { slot: 7, kind: UseShown::Scope }));
+    }
+
+    #[test]
+    fn a_friends_swing_plays_at_once_and_an_echo_restarts_it_only_after_half_way() {
+        let tick = 0.05;
+        let mut swing = FriendSwing::default();
+        assert_eq!(swing.shown(), (0.0, false));
+        assert!(swing.attack(false, false));
+        assert_eq!(swing.shown(), (0.0, false));
+        swing.advance(tick, true);
+        assert!((swing.shown().0 - 1.0 / SWING_TICKS).abs() < 1e-5, "it runs from the press");
+        swing.echo(false);
+        assert!(swing.shown().0 > 0.0, "the host's echo in the first half does not restart it");
+        swing.advance(2.0 * tick, true);
+        swing.echo(true);
+        assert_eq!(swing.shown(), (0.0, true), "past half way a host swing starts again, in its hand");
+        for _ in 0..6 {
+            swing.advance(tick, true);
+        }
+        assert_eq!(swing.shown(), (0.0, true), "a swing ends after six ticks");
+        swing.echo(false);
+        assert_eq!(swing.shown(), (0.0, false), "a host swing with none running starts at once");
+    }
+
+    #[test]
+    fn a_missed_swing_holds_the_next_press_for_ten_ticks_outside_creative() {
+        let tick = 0.05;
+        let mut swing = FriendSwing::default();
+        assert!(swing.attack(true, false));
+        for _ in 0..9 {
+            swing.advance(tick, true);
+            assert!(!swing.attack(false, false), "the miss time holds the press");
+        }
+        swing.advance(tick, true);
+        assert!(swing.attack(false, false), "ten ticks later it swings again");
+        let mut released = FriendSwing::default();
+        assert!(released.attack(true, false));
+        released.advance(tick, false);
+        assert!(released.attack(false, false), "letting go clears the miss time");
+        let mut creative = FriendSwing::default();
+        assert!(creative.attack(true, true));
+        assert!(creative.attack(true, true), "creative has no miss time");
+        assert!(may_restart(None) && may_restart(Some(0.0)) && may_restart(Some(3.0)));
+        assert!(!may_restart(Some(2.9)));
+    }
+
+    #[test]
+    fn scoping_hides_both_held_items() {
+        let sword = minecraftoss_player::inventory::ItemStack::new("minecraft:diamond_sword", 1);
+        let shield = minecraftoss_player::inventory::ItemStack::new("minecraft:shield", 1);
+        let mut held = Held { main: Some((2, &sword)), offhand: Some(&shield), swing: 0.0, swing_offhand: false, using: None, partial: 0.0, activation: None };
+        let shown = |held: &Held<'_>| posed_stacks(held).map(|(stack, arm)| (stack.map(|(slot, stack)| (slot, stack.id.clone())), arm));
+        assert_eq!(shown(&held), [(Some((2, "minecraft:diamond_sword".to_owned())), 1.0), (Some((minecraft_survival::offhand::OFFHAND, "minecraft:shield".to_owned())), -1.0)]);
+        held.using = Some(HeldUse { slot: 2, kind: UseShown::Scope });
+        assert_eq!(shown(&held), [(None, 1.0), (None, -1.0)]);
+        held.using = Some(HeldUse { slot: minecraft_survival::offhand::OFFHAND, kind: UseShown::Block });
+        assert!(shown(&held).iter().all(|(stack, _)| stack.is_some()));
+    }
+
+    #[test]
+    fn the_host_hand_uses_eating_before_a_shield_a_trident_or_a_spyglass() {
+        let mut survival = minecraft_survival::survival::Survival::default();
+        let mut hand = minecraft_survival::player::Hand::default();
+        assert_eq!(host_use(&survival, &hand), None);
+        hand.scoping = Some(minecraft_survival::spyglass::Scoping { slot: 1, ticks: 4 });
+        assert_eq!(host_use(&survival, &hand), Some(HeldUse { slot: 1, kind: UseShown::Scope }));
+        hand.charging = Some(minecraft_survival::trident::Charging { slot: 1, ticks: 6 });
+        assert_eq!(host_use(&survival, &hand), Some(HeldUse { slot: 1, kind: UseShown::Charge { ticks: 6 } }));
+        hand.blocking = Some(minecraft_survival::offhand::Blocking { slot: 40, ticks: 2 });
+        assert_eq!(host_use(&survival, &hand), Some(HeldUse { slot: 40, kind: UseShown::Block }));
+        survival.status.food.level = 4;
+        assert!(survival.start_eating(0, &minecraftoss_player::inventory::ItemStack::new("minecraft:dried_kelp", 1)));
+        assert_eq!(host_use(&survival, &hand), Some(HeldUse { slot: 0, kind: UseShown::Eat { remaining: 16, duration: 16 } }));
     }
 }

@@ -33,6 +33,7 @@ pub struct EntityView {
     pub(crate) rope_holders: HashMap<u128, minecraft_terrain::leash_render::RopeHolder>,
     pub(crate) items: ItemVisuals,
     pub(crate) clock: f64,
+    pub(crate) ride_clock: f64,
     pub(crate) tick_seconds: f64,
     pub(crate) ticks: u64,
     pub world_items: WorldItems,
@@ -81,6 +82,7 @@ impl EntityView {
             rope_holders: HashMap::new(),
             items: ItemVisuals::default(),
             clock: 0.0,
+            ride_clock: 0.0,
             tick_seconds: TICK_SECONDS,
             ticks: 0,
             world_items: WorldItems::default(),
@@ -146,6 +148,7 @@ impl EntityView {
             self.spell_casts();
             self.fang_crits();
             self.ravager_effects();
+            self.wither_effects();
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);
             self.drawn_fireballs.tick();
@@ -188,6 +191,15 @@ impl EntityView {
             minecraft_terrain::orb_render::tick_pickups(&mut self.orb_pickups, orb_target);
             if self.ticks.is_multiple_of(600) {
                 diag::info!(World, "Minecraft mobs: {} tracked", self.boxes().len());
+            }
+        }
+        if client.runs_normally {
+            self.ride_clock = self.clock;
+        } else {
+            self.ride_clock += dt;
+            if self.ride_clock >= self.tick_seconds {
+                self.ride_clock = (self.ride_clock - self.tick_seconds).min(self.tick_seconds);
+                self.client.tick_only(&self.world.player_carriers());
             }
         }
 
@@ -258,6 +270,32 @@ impl EntityView {
                 for _ in 0..ROAR_PARTICLES {
                     let motion = DVec3::new(self.random.next_gaussian() * ROAR_SPREAD, self.random.next_gaussian() * ROAR_SPREAD, self.random.next_gaussian() * ROAR_SPREAD);
                     self.ambient.add(minecraft_terrain::ambient_particles::Kind::Poof, center, motion);
+                }
+            }
+        }
+    }
+
+    fn wither_effects(&mut self) {
+        use minecraftoss_entities::wither::{head_position, CHARGE_COLOR, CHARGE_PARTICLE_HEIGHT, POWERED_COLOR, SMOKE_SPREAD};
+        use minecraft_terrain::spell_particles::SpellKind;
+        let withers: Vec<(u64, minecraftoss_entities::wither::Wither)> = self.world.withers().iter().filter(|e| e.wither.health > 0.0).map(|e| (e.id, e.wither.clone())).collect();
+        for (id, wither) in withers {
+            let body_yaw = self.client.pose(id, 1.0).map_or(wither.body_yaw, |mob| mob.body_rot);
+            let spread = f64::from(SMOKE_SPREAD);
+            for head in 0..3 {
+                let at = head_position(wither.body.position, body_yaw, head);
+                let smoke = at + DVec3::new(self.random.next_gaussian() * spread, self.random.next_gaussian() * spread, self.random.next_gaussian() * spread);
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::Smoke, smoke, DVec3::ZERO);
+                if wither.powered() && self.random.next_int(4) == 0 {
+                    let glow = at + DVec3::new(self.random.next_gaussian() * spread, self.random.next_gaussian() * spread, self.random.next_gaussian() * spread);
+                    self.spell.spawn(SpellKind::Effect, glow, DVec3::ZERO, POWERED_COLOR, 1.0);
+                }
+            }
+            if wither.charging() {
+                let p = wither.body.position;
+                for _ in 0..3 {
+                    let at = DVec3::new(p.x + self.random.next_gaussian(), p.y + f64::from(self.random.next_float() * CHARGE_PARTICLE_HEIGHT), p.z + self.random.next_gaussian());
+                    self.spell.spawn(SpellKind::Effect, at, DVec3::ZERO, CHARGE_COLOR, 1.0);
                 }
             }
         }
@@ -548,6 +586,10 @@ impl EntityView {
         (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32
     }
 
+    pub fn ride_partial(&self) -> f32 {
+        (self.ride_clock / self.tick_seconds).clamp(0.0, 1.0) as f32
+    }
+
     pub fn drawn_dragons(&self) -> Vec<minecraft_terrain::ender_dragon::DragonView> {
         self.drawn_dragons.views()
     }
@@ -639,6 +681,9 @@ impl EntityView {
         }
         for e in w.ravagers().iter().filter(|e| e.ravager.health > 0.0) {
             add(MobHit::Ravager(e.id), &e.ravager.body);
+        }
+        for e in w.withers().iter().filter(|e| e.wither.health > 0.0) {
+            add(MobHit::Wither(e.id), &e.wither.body);
         }
         for e in w.iron_golems().iter().filter(|e| e.golem.health > 0.0) {
             add(MobHit::IronGolem(e.id), &e.golem.body);
@@ -799,6 +844,9 @@ impl EntityView {
             .filter(|mob| self.shown.contains(&mob.id))
             .collect();
         self.client.spawn_missing(&missing);
+        let carriers = self.world.player_carriers();
+        let ride_partial = self.ride_partial();
+        self.client.set_ride_partial(&carriers, ride_partial);
         let w = &self.world;
         let poses = &self.client;
         let partial = (self.clock / self.tick_seconds).clamp(0.0, 1.0) as f32;
@@ -1048,6 +1096,15 @@ impl EntityView {
             light,
             partial,
         );
+        minecraft_terrain::wither_render::append_withers(
+            &mut out.models,
+            &mut out.translucent,
+            w.withers().iter(),
+            poses,
+            atlas,
+            light,
+            partial,
+        );
         for e in w.illagers().iter().filter(|e| w.glowing(e.id)) {
             let mut mob = minecraft_terrain::mesh::ChunkMesh::default();
             let _ = minecraft_terrain::illager_render::append_illagers(&mut mob, std::iter::once(e), poses, atlas, light, partial);
@@ -1194,6 +1251,21 @@ impl EntityView {
                 }),
             atlas,
             forward,
+        );
+        minecraft_terrain::wither_render::append_skulls(
+            &mut out.models,
+            w.fireballs()
+                .iter()
+                .filter(|f| f.fireball.alive && near(f.fireball.position))
+                .map(|f| {
+                    (
+                        f,
+                        f.previous_position
+                            .lerp(f.fireball.position, f64::from(partial)),
+                    )
+                }),
+            atlas,
+            light,
         );
         if let Ok(items) = self
             .items
@@ -1364,6 +1436,27 @@ mod tests {
     }
 
     #[test]
+    fn a_wither_smokes_from_its_three_heads_and_glows_while_it_charges_or_is_powered() {
+        let mut view = EntityView::new(7);
+        let id = view.world.spawn_wither(minecraftoss_entities::wither::Wither::new(DVec3::new(0.5, 64.0, 0.5)), true);
+        for _ in 0..10 {
+            view.wither_effects();
+        }
+        assert_eq!(view.ambient.len(), 30, "a puff of smoke at every head each tick");
+        assert_eq!(view.spell.len(), 0, "a healthy wither does not glow");
+        view.world.wither_mut(id).unwrap().wither.make_invulnerable();
+        for _ in 0..40 {
+            view.wither_effects();
+        }
+        let glows = view.spell.len();
+        assert!((120 + 15..=120 + 50).contains(&glows), "three charge sparks a tick and the powered glow one head in four: {glows}");
+        view.world.wither_mut(id).unwrap().wither.health = 0.0;
+        let before = (view.ambient.len(), view.spell.len());
+        view.wither_effects();
+        assert_eq!((view.ambient.len(), view.spell.len()), before, "a dead wither stops");
+    }
+
+    #[test]
     fn a_stunned_ravager_swirls_now_and_then_and_its_roar_puffs_once() {
         let mut view = EntityView::new(7);
         let ravager = minecraftoss_entities::ravager::Ravager::new(DVec3::new(0.5, 64.0, 0.5));
@@ -1401,5 +1494,37 @@ mod tests {
         let mut near = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
         view.bursts(&mut near);
         assert_eq!(view.sounds.last().map(|(event, ..)| event.as_str()), Some(BLAST_SOUND));
+    }
+
+    #[test]
+    fn a_ridden_strider_keeps_its_own_clock_while_the_host_is_frozen() {
+        use minecraftoss_entities::strider::Strider;
+        use minecraftoss_entities::world::Rider;
+        let mut view = EntityView::new(5);
+        let mut saddled = Strider::new(DVec3::new(0.5, 64.0, 0.5));
+        saddled.saddled = true;
+        let ridden = view.world.spawn_strider(saddled, true);
+        let idle = view.world.spawn_strider(Strider::new(DVec3::new(6.5, 64.0, 0.5)), true);
+        assert!(view.world.force_riding(Rider::Player(0), ridden));
+        view.client.receive(server_mobs(&view.world));
+        let normal = crate::tick_rate::ClientTiming { tick_seconds: 0.25, runs_normally: true };
+        let frozen = crate::tick_rate::ClientTiming { runs_normally: false, ..normal };
+        let quarter = normal.tick_seconds / 4.0;
+        view.advance(quarter, normal, &[], DVec3::ZERO);
+        assert_eq!(view.ride_partial(), view.partial());
+        let ticks = |view: &EntityView, id: u64| view.client.get(id).unwrap().tick_count;
+        let (ridden_ticks, idle_ticks) = (ticks(&view, ridden), ticks(&view, idle));
+        let held = view.partial();
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            assert!(!view.advance(quarter, frozen, &[], DVec3::ZERO));
+            assert_eq!(view.partial(), held, "the level's partial tick stays put");
+            seen.push(view.ride_partial());
+        }
+        assert_eq!(seen, [0.5, 0.75, 0.0, 0.25, 0.5, 0.75, 0.0]);
+        assert_eq!(ticks(&view, ridden), ridden_ticks + 2, "the carrier ticks once a tick");
+        assert_eq!(ticks(&view, idle), idle_ticks, "the empty strider stays frozen");
+        view.advance(quarter, normal, &[], DVec3::ZERO);
+        assert_eq!(view.ride_partial(), view.partial(), "they agree once the game runs again");
     }
 }

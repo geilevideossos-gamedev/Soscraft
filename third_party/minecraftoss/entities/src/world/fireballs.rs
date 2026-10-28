@@ -13,6 +13,7 @@ pub struct FireballBlast {
     pub position: DVec3,
     pub power: f32,
     pub fire: bool,
+    pub dangerous: bool,
 }
 
 impl EntityWorld {
@@ -210,9 +211,23 @@ impl EntityWorld {
             Some(Shooter::Mob(id)) => Some(id),
             _ => None,
         };
+        if let FireballKind::WitherSkull { dangerous } = fireball.kind {
+            if let Some(target) = hit.entity {
+                self.wither_skull_strikes(target, fireball, players);
+            }
+            self.fireball_explosion(
+                world,
+                fireball.position,
+                crate::fireball::SKULL_BLAST_POWER,
+                fireball.owner,
+                players,
+                (false, dangerous),
+            );
+            return;
+        }
         let (damage, ignite_ticks) = match fireball.kind {
             FireballKind::Large { .. } => (crate::fireball::LARGE_DAMAGE, 0),
-            FireballKind::Small => (
+            FireballKind::Small | FireballKind::WitherSkull { .. } => (
                 crate::fireball::SMALL_DAMAGE,
                 crate::fireball::SMALL_IGNITE_TICKS,
             ),
@@ -248,14 +263,80 @@ impl EntityWorld {
                 explosion_power as f32,
                 fireball.owner,
                 players,
+                (self.mob_griefing, false),
             ),
-            FireballKind::Small => {
+            FireballKind::Small | FireballKind::WitherSkull { .. } => {
                 let griefs = !matches!(fireball.owner, Some(Shooter::Mob(_))) || self.mob_griefing;
                 if let Some(pos) = hit.block.filter(|_| griefs) {
                     let beside = struck_side(world, pos, hit.location, fireball.velocity);
                     self.fireball_fires.push(beside);
                 }
             }
+        }
+    }
+
+    fn wither_skull_strikes(
+        &mut self,
+        target: u64,
+        fireball: &Fireball,
+        players: &[PlayerCandidate],
+    ) {
+        let owner = match fireball.owner {
+            Some(Shooter::Mob(id)) if self.entity_type(id).is_some() => Some(id),
+            _ => None,
+        };
+        let wither_ticks = crate::fireball::skull_wither_ticks(self.difficulty);
+        let damage = if owner.is_some() {
+            crate::fireball::WITHER_SKULL_DAMAGE
+        } else {
+            crate::fireball::OWNERLESS_SKULL_DAMAGE
+        };
+        if target >= PLAYER_TARGET {
+            let player = target - PLAYER_TARGET;
+            if players.iter().any(|p| p.id == player && p.attackable) {
+                self.player_hits.push(PlayerHit {
+                    player_id: player,
+                    damage,
+                    kind: PlayerHitKind::WitherSkull {
+                        velocity: fireball.velocity,
+                        wither_ticks,
+                    },
+                    source: owner,
+                });
+            }
+            return;
+        }
+        let result = match owner {
+            Some(owner) => {
+                let result = self.apply_arrow_hit(
+                    ArrowImpact {
+                        target_id: target,
+                        damage,
+                        velocity: fireball.velocity,
+                    },
+                    owner,
+                );
+                if let Some(result) = result {
+                    let kind = self.entity_type(owner).unwrap_or(crate::wither::TYPE_ID);
+                    self.credit(target, result, kind, false);
+                }
+                result
+            }
+            None => self.hurt_mob_by_magic(target, damage, None),
+        };
+        let Some(result) = result.filter(|r| r.applied) else {
+            return;
+        };
+        if result.died {
+            if let Some(e) = owner.and_then(|owner| self.withers.iter_mut().find(|e| e.id == owner))
+            {
+                e.wither.heal(crate::fireball::SKULL_KILL_HEAL);
+            }
+        } else if wither_ticks > 0 {
+            self.add_mob_effect(
+                target,
+                crate::effects::EffectInstance::new(MobEffect::Wither, wither_ticks as i32, 1),
+            );
         }
     }
 
@@ -335,6 +416,7 @@ impl EntityWorld {
         power: f32,
         owner: Option<Shooter>,
         players: &[PlayerCandidate],
+        (fire, dangerous): (bool, bool),
     ) {
         let reach = power * 2.0_f32;
         if reach >= 1.0e-5_f32 {
@@ -362,6 +444,9 @@ impl EntityWorld {
                 else {
                     continue;
                 };
+                if let (true, Some(attacker)) = (result.applied, blaster.wolf_attacker()) {
+                    self.note_hoglin_hurt(key.id(), attacker);
+                }
                 match owner {
                     Some(Shooter::Mob(id)) => {
                         let kind = self.entity_type(id).unwrap_or("minecraft:fireball");
@@ -402,6 +487,10 @@ impl EntityWorld {
                         damage,
                         kind: PlayerHitKind::Explosion {
                             knockback: direction * impact,
+                            by: match owner {
+                                Some(Shooter::Player(player)) => Some(player),
+                                _ => None,
+                            },
                         },
                         source,
                     });
@@ -411,7 +500,8 @@ impl EntityWorld {
         self.fireball_blasts.push(FireballBlast {
             position: center,
             power,
-            fire: self.mob_griefing,
+            fire,
+            dangerous,
         });
     }
 }

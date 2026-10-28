@@ -49,6 +49,7 @@ pub struct Explosion {
     pub interaction: BlockInteraction,
     /// The direct source entity's ID (`source`), excluded from the blast.
     pub source: Option<i32>,
+    pub owner: Option<u64>,
 }
 
 /// `Mth.lerp`.
@@ -59,24 +60,32 @@ fn lerp(delta: f64, a: f64, b: f64) -> f64 {
 impl Level<'_> {
     /// `TntBlock.prime` without a source: a primed TNT entity at the block.
     pub(super) fn prime_tnt(&mut self, pos: BlockPos) -> bool {
+        self.prime_tnt_by(pos, None)
+    }
+
+    fn prime_tnt_by(&mut self, pos: BlockPos, owner: Option<u64>) -> bool {
         if !self.tnt_explodes {
             return false;
         }
-        let tnt = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5]);
+        let tnt = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], owner);
         self.add_entity(tnt);
         // The priming sound's seed comes from the sound seed generator.
         true
     }
 
     pub fn ignite_tnt(&mut self, pos: BlockPos) -> bool {
-        self.is_a(self.block(pos), "TntBlock") && self.prime_tnt(pos) && self.set_block(pos, BlockStateId::AIR, 11, update::LIMIT)
+        self.ignite_tnt_by(pos, None)
+    }
+
+    pub fn ignite_tnt_by(&mut self, pos: BlockPos, owner: Option<u64>) -> bool {
+        self.is_a(self.block(pos), "TntBlock") && self.prime_tnt_by(pos, owner) && self.set_block(pos, BlockStateId::AIR, 11, update::LIMIT)
     }
 
     /// `PrimedTnt(level, x, y, z, owner)`: a random horizontal nudge.
-    pub(super) fn new_primed_tnt(&mut self, pos: [f64; 3]) -> Entity {
+    pub(super) fn new_primed_tnt(&mut self, pos: [f64; 3], owner: Option<u64>) -> Entity {
         let rot = self.random.next_f64() * f64::from(std::f32::consts::TAU);
         let delta = [-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02];
-        Entity::primed_tnt(pos, delta, TntData { fuse: 80, power: 4.0 })
+        Entity::primed_tnt(pos, delta, TntData { fuse: 80, power: 4.0, owner })
     }
 
     /// `TntBlock.onPlace` / `neighborChanged`.
@@ -103,13 +112,18 @@ impl Level<'_> {
         let EntityKind::PrimedTnt(data) = &mut e.kind else { return };
         data.fuse -= 1;
         if data.fuse <= 0 {
-            let power = data.power;
+            let (power, owner) = (data.power, data.owner);
             e.removed = true;
             if self.tnt_explodes {
                 // `getY(0.0625)`: a sixteenth of the way up the box.
                 let y = e.pos[1] + f64::from(e.height) * 0.0625;
                 let interaction = if self.tnt_explosion_drop_decay { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Destroy };
-                self.explode(Explosion { center: [e.pos[0], y, e.pos[2]], radius: power, fire: false, interaction, source: Some(e.id) });
+                let explosion = Explosion { center: [e.pos[0], y, e.pos[2]], radius: power, fire: false, interaction, source: Some(e.id), owner };
+                if self.defer_tnt_blasts {
+                    self.tnt_blasts.push(explosion);
+                } else {
+                    self.explode(explosion);
+                }
             }
         } else {
             self.entity_update_fluid_interaction(e);
@@ -118,15 +132,24 @@ impl Level<'_> {
 
     /// `ServerExplosion.explode`; returns the number of blocks it picked.
     pub fn explode(&mut self, ex: Explosion) -> usize {
-        self.explode_from(ex, None)
+        self.explode_from(ex, None, false)
     }
 
     pub fn explode_shielded(&mut self, ex: Explosion, shield: BlockPos) -> usize {
-        self.explode_from(ex, Some(shield))
+        self.explode_from(ex, Some(shield), false)
     }
 
-    fn explode_from(&mut self, ex: Explosion, shield: Option<BlockPos>) -> usize {
-        let mut to_blow = self.exploded_positions(&ex, shield);
+    pub fn explode_dangerous_skull(&mut self, ex: Explosion) -> usize {
+        self.explode_from(ex, None, true)
+    }
+
+    pub fn wither_can_destroy(&self, state: BlockStateId) -> bool {
+        let registries = self.registries();
+        !registries.blocks.is_air(state) && !registries.block_tags.id("minecraft:wither_immune").is_some_and(|tag| registries.block_in_tag(state, tag))
+    }
+
+    fn explode_from(&mut self, ex: Explosion, shield: Option<BlockPos>, dangerous: bool) -> usize {
+        let mut to_blow = self.exploded_positions(&ex, shield, dangerous, false);
         self.hurt_entities(&ex);
         if ex.interaction != BlockInteraction::Keep {
             self.interact_with_blocks(&ex, &mut to_blow);
@@ -141,6 +164,24 @@ impl Level<'_> {
             interacts: ex.interaction != BlockInteraction::Keep,
         });
         to_blow.len()
+    }
+
+    pub fn wind_charge_blocks(&mut self, center: [f64; 3], radius: f32) -> Vec<BlockPos> {
+        let ex = Explosion { center, radius, fire: false, interaction: BlockInteraction::TriggerBlock, source: None, owner: None };
+        let mut targets = self.exploded_positions(&ex, None, false, true);
+        let mut i = targets.len();
+        while i > 1 {
+            let j = self.random.next_i32_bound(i as i32) as usize;
+            targets.swap(i - 1, j);
+            i -= 1;
+        }
+        targets
+    }
+
+    fn wind_charge_resistance(&self, state: BlockStateId) -> Option<f32> {
+        let registries = self.registries();
+        let immune = registries.block_tags.id("minecraft:blocks_wind_charge_explosions").is_some_and(|tag| registries.block_in_tag(state, tag));
+        immune.then_some(3_600_000.0)
     }
 
     pub fn light_fire(&mut self, pos: BlockPos) -> bool {
@@ -180,7 +221,7 @@ impl Level<'_> {
 
     /// `ServerExplosion.calculateExplodedPositions`, in the iteration order
     /// of vanilla's `HashSet`.
-    fn exploded_positions(&mut self, ex: &Explosion, shield: Option<BlockPos>) -> Vec<BlockPos> {
+    fn exploded_positions(&mut self, ex: &Explosion, shield: Option<BlockPos>, dangerous: bool, wind: bool) -> Vec<BlockPos> {
         let mut seen = HashSet::new();
         let mut inserted = Vec::new();
         for xx in 0..16 {
@@ -205,6 +246,8 @@ impl Level<'_> {
                             break;
                         }
                         let resistance = if shield == Some(pos) { Some(WATER_RESISTANCE) } else { self.explosion_resistance(state) };
+                        let resistance = if dangerous && self.wither_can_destroy(state) { resistance.map(|r| r.min(0.8)) } else { resistance };
+                        let resistance = if wind { self.wind_charge_resistance(state) } else { resistance };
                         if let Some(resistance) = resistance {
                             remaining -= (resistance + 0.3f32) * 0.3f32;
                         }
@@ -391,7 +434,7 @@ impl Level<'_> {
         self.set_block(pos, BlockStateId::AIR, update::ALL, update::LIMIT);
         if tnt && self.tnt_explodes {
             // `wasExploded`: a primed TNT with a short random fuse.
-            let mut primed = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5]);
+            let mut primed = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], ex.owner);
             let fuse = self.random.next_i32_bound((80 / 4).max(1)) + 80 / 8;
             if let EntityKind::PrimedTnt(data) = &mut primed.kind {
                 data.fuse = fuse;

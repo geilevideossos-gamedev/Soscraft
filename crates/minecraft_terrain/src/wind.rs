@@ -10,6 +10,42 @@ pub const DAMAGE: f32 = 1.0;
 pub const DAMAGE_TYPE: &str = "minecraft:wind_charge";
 pub const COOLDOWN_TICKS: u32 = 10;
 const EYE_SHARE: f64 = 0.85;
+pub const BREEZE_RADIUS: f32 = 3.0;
+pub const BREEZE_KNOCKBACK: f64 = 1.0;
+pub const BREEZE_BURST_SOUND: &str = "minecraft:entity.breeze.wind_burst";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Charge {
+    Player,
+    Breeze,
+}
+
+impl Charge {
+    pub fn radius(self) -> f32 {
+        match self {
+            Self::Player => RADIUS,
+            Self::Breeze => BREEZE_RADIUS,
+        }
+    }
+
+    pub fn knockback(self) -> f64 {
+        match self {
+            Self::Player => KNOCKBACK,
+            Self::Breeze => BREEZE_KNOCKBACK,
+        }
+    }
+
+    pub fn sound(self) -> &'static str {
+        match self {
+            Self::Player => BURST_SOUND,
+            Self::Breeze => BREEZE_BURST_SOUND,
+        }
+    }
+
+    pub fn triggers_blocks(self, mob_griefing: bool) -> bool {
+        self == Self::Player || mob_griefing
+    }
+}
 
 pub fn burst_point(at: DVec3, face: Option<Face>) -> DVec3 {
     face.map_or(at, |face| at + face_normal(face) * 0.25)
@@ -57,8 +93,14 @@ pub fn exposure(world: &impl World, center: DVec3, min: DVec3, max: DVec3) -> f3
     hits as f32 / count as f32
 }
 
-pub fn push(center: DVec3, feet: DVec3, eye: DVec3, exposure: f32) -> Option<DVec3> {
-    let distance = feet.distance(center) / f64::from(RADIUS * 2.0);
+pub fn push(
+    charge: Charge,
+    center: DVec3,
+    feet: DVec3,
+    eye: DVec3,
+    exposure: f32,
+) -> Option<DVec3> {
+    let distance = feet.distance(center) / f64::from(charge.radius() * 2.0);
     if distance > 1.0 {
         return None;
     }
@@ -69,11 +111,11 @@ pub fn push(center: DVec3, feet: DVec3, eye: DVec3, exposure: f32) -> Option<DVe
     } else {
         direction / length
     };
-    Some(direction * ((1.0 - distance) * f64::from(exposure) * KNOCKBACK))
+    Some(direction * ((1.0 - distance) * f64::from(exposure) * charge.knockback()))
 }
 
-fn reach(center: DVec3) -> (DVec3, DVec3) {
-    let r = f64::from(RADIUS * 2.0) + 1.0;
+fn reach(charge: Charge, center: DVec3) -> (DVec3, DVec3) {
+    let r = f64::from(charge.radius() * 2.0) + 1.0;
     (center - DVec3::splat(r), center + DVec3::splat(r))
 }
 
@@ -91,8 +133,9 @@ pub fn burst(
     mobs: &mut EntityWorld,
     center: DVec3,
     players: &[PlayerBody],
+    charge: Charge,
 ) -> Vec<(u64, DVec3)> {
-    let area = reach(center);
+    let area = reach(charge, center);
     for target in crate::thrown::targets(mobs) {
         if !meets(area, (target.min, target.max)) {
             continue;
@@ -100,7 +143,7 @@ pub fn burst(
         let feet = crate::thrown::target_feet(&target);
         let eye = feet + DVec3::Y * ((target.max.y - target.min.y) * EYE_SHARE);
         let seen = exposure(world, center, target.min, target.max);
-        let Some(push) = push(center, feet, eye, seen) else {
+        let Some(push) = push(charge, center, feet, eye, seen) else {
             continue;
         };
         if let Some(body) = mobs.body_mut(target.id) {
@@ -114,7 +157,8 @@ pub fn burst(
         .filter_map(|p| {
             let (min, max) = p.bounds();
             let eye = p.feet + DVec3::Y * crate::trident::EYE_HEIGHT;
-            push(center, p.feet, eye, exposure(world, center, min, max)).map(|push| (p.id, push))
+            push(charge, center, p.feet, eye, exposure(world, center, min, max))
+                .map(|push| (p.id, push))
         })
         .collect()
 }
@@ -145,6 +189,7 @@ mod tests {
     fn a_burst_pushes_away_and_weakens_with_distance() {
         let center = DVec3::new(0.0, 64.0, 0.0);
         let near = push(
+            Charge::Player,
             center,
             DVec3::new(1.0, 64.0, 0.0),
             DVec3::new(1.0, 65.62, 0.0),
@@ -152,6 +197,7 @@ mod tests {
         )
         .unwrap();
         let far = push(
+            Charge::Player,
             center,
             DVec3::new(2.0, 64.0, 0.0),
             DVec3::new(2.0, 65.62, 0.0),
@@ -163,9 +209,30 @@ mod tests {
         let expected = (1.0 - 1.0 / f64::from(RADIUS * 2.0)) * KNOCKBACK;
         assert!((near.length() - expected).abs() < 1e-9);
         assert_eq!(
-            push(center, DVec3::new(2.5, 64.0, 0.0), DVec3::ZERO, 1.0),
+            push(
+                Charge::Player,
+                center,
+                DVec3::new(2.5, 64.0, 0.0),
+                DVec3::ZERO,
+                1.0
+            ),
             None
         );
+    }
+
+    #[test]
+    fn a_breeze_charge_reaches_further_and_pushes_less_than_a_players() {
+        let center = DVec3::new(0.0, 64.0, 0.0);
+        let feet = DVec3::new(3.0, 64.0, 0.0);
+        let eye = DVec3::new(3.0, 65.62, 0.0);
+        assert_eq!(push(Charge::Player, center, feet, eye, 1.0), None);
+        let breeze = push(Charge::Breeze, center, feet, eye, 1.0).unwrap();
+        let expected = (1.0 - 3.0 / f64::from(BREEZE_RADIUS * 2.0)) * BREEZE_KNOCKBACK;
+        assert!((breeze.length() - expected).abs() < 1e-9);
+        assert_eq!(Charge::Breeze.sound(), "minecraft:entity.breeze.wind_burst");
+        assert!(Charge::Player.triggers_blocks(false));
+        assert!(!Charge::Breeze.triggers_blocks(false));
+        assert!(Charge::Breeze.triggers_blocks(true));
     }
 
     #[test]

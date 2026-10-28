@@ -465,6 +465,7 @@ pub(crate) fn movement(
     steps.last = alive.then_some(feet);
 
     let dt_hand = dt;
+    hand.swing_predicted = false;
     if let Some(ticks) = hand.swing.as_mut() {
         *ticks += (dt_hand * 20.0) as f32;
         if *ticks >= crate::minecraft_hand::SWING_TICKS {
@@ -736,7 +737,7 @@ pub(crate) fn struck(
     teleports: &[(PlayerUuid, [f64; 3])],
     sounds: &mut Option<Sounds>,
     packs: &PackStack,
-) {
+) -> Vec<Clientbound> {
     let player_id = u64::from(player.id.0);
     let dimension = player.dimension;
     let outputs = entities.take_player_outputs(player_id);
@@ -752,6 +753,7 @@ pub(crate) fn struck(
         reattach,
         jump_bar,
         raid_bars,
+        wither_bars,
         ..
     } = player;
     let local_uuid = &*uuid;
@@ -936,6 +938,10 @@ pub(crate) fn struck(
     if let Some(bars) = outputs.raid_bars {
         *raid_bars = bars;
     }
+    if let Some(bars) = outputs.wither_bars {
+        *wither_bars = bars;
+    }
+    outputs.told
 }
 
 const RAID_OMEN_SOUND: &str = "minecraft:event.mob_effect.raid_omen";
@@ -992,11 +998,16 @@ pub(crate) fn settle(
         if let Some((amount, from)) = settle.damage {
             let death = (survival.status.health <= 0.0).then(|| {
                 let line = match language {
-                    Some(language) => survival.death_line(language, |id| entities.mob_present(id)),
+                    Some(language) => survival.death_line(
+                        language,
+                        |id| entities.mob_present(id),
+                        |client| killer(globals, entities, client),
+                    ),
                     None => survival.death_line(
                         &minecraft_terrain::item_icons::language(packs)
                             .unwrap_or_else(|_| HashMap::new()),
                         |id| entities.mob_present(id),
+                        |client| killer(globals, entities, client),
                     ),
                 };
                 sim::voxel::MinecraftDeath {
@@ -1012,7 +1023,11 @@ pub(crate) fn settle(
             }
             if death.is_some() {
                 let name = globals.chat.name(*id).unwrap_or("Player");
-                let text = survival.death_text(name, |id| entities.mob_present(id));
+                let text = survival.death_text(
+                    name,
+                    |id| entities.mob_present(id),
+                    |client| killer(globals, entities, client),
+                );
                 told =
                     minecraft_survival::commands::tell_death(&globals.game_rules, survival, text);
             }
@@ -1035,6 +1050,83 @@ pub(crate) fn settle(
 pub(crate) struct Settled {
     pub(crate) told: Option<Clientbound>,
     pub(crate) popped: bool,
+}
+
+pub(crate) fn set_player_boxes(
+    levels: &mut BTreeMap<Dimension, Level>,
+    players: &BTreeMap<PlayerUuid, Player>,
+    authority: &sim::SimWorld,
+    origins: &HashMap<Dimension, [f64; 3]>,
+    (host, host_client): (&PlayerUuid, sim::ClientId),
+) {
+    let names: HashMap<u64, String> = players
+        .values()
+        .filter_map(|player| {
+            let held = player.inventory.slots.get(player.selected)?.as_ref()?;
+            Some((
+                u64::from(player.id.0),
+                minecraft_survival::pvp::custom_name(held)?,
+            ))
+        })
+        .collect();
+    for (dimension, level) in levels.iter_mut() {
+        let Some(entities) = level.entities.as_mut() else {
+            continue;
+        };
+        let boxes = origins.get(dimension).map_or_else(Vec::new, |&origin| {
+            players
+                .values()
+                .filter(|player| player.dimension == *dimension)
+                .filter_map(|player| {
+                    let client = if player.uuid == *host {
+                        host_client
+                    } else {
+                        sim::ClientId(player.id.0)
+                    };
+                    player_box(player, authority.player(client)?, origin)
+                })
+                .collect()
+        });
+        entities.set_player_boxes(boxes);
+        entities.set_held_names(names.clone());
+    }
+}
+
+fn killer(
+    globals: &Globals,
+    entities: &Entities,
+    client: u32,
+) -> Option<minecraft_survival::death::Killer> {
+    Some(minecraft_survival::death::Killer {
+        name: globals
+            .chat
+            .name(minecraft_commands::PlayerId(client))?
+            .to_owned(),
+        weapon: entities.held_name(u64::from(client)),
+    })
+}
+
+fn player_box(
+    player: &Player,
+    ps: &PlayerState,
+    origin: [f64; 3],
+) -> Option<minecraft_survival::pvp::PlayerBox> {
+    let present = !player.dead
+        && player.switching.is_none()
+        && player.arrival.is_none()
+        && ps.pm_type == 0
+        && player.mode.mode != minecraftoss_player::GameMode::Spectator
+        && minecraft_survival::bands::holds(player.dimension, f64::from(ps.origin[2]));
+    if !present {
+        return None;
+    }
+    let (_, maxs) = sim::voxel::player_hull(ps);
+    Some(minecraft_survival::pvp::PlayerBox::standing(
+        u64::from(player.id.0),
+        sim::voxel::to_block(origin, ps.origin),
+        f64::from(maxs[2] / sim::voxel::BLOCK),
+        player.mode.invulnerable(),
+    ))
 }
 
 pub(crate) fn tell_pvp_deaths(
@@ -1237,6 +1329,7 @@ pub(crate) struct Stepped {
     pub(crate) books: Vec<Option<minecraft_net::messages::BookView>>,
     pub(crate) bed: Option<Bed>,
     pub(crate) open_book: Option<minecraft_survival::books::OpenBook>,
+    pub(crate) board_allowed: bool,
 }
 
 type Bed = minecraft_survival::respawn_block::Bed;
@@ -1392,7 +1485,7 @@ pub(crate) fn step_friend(
     world: &mut FriendWorld<'_>,
     client: sim::ClientId,
     origin: [f64; 3],
-    selected: Option<u8>,
+    (selected, skate): (Option<u8>, Skating),
     hands: &mut HandQueue,
     (open, clicks): LecternClicks<'_>,
 ) -> Stepped {
@@ -1414,10 +1507,19 @@ pub(crate) fn step_friend(
         .levels
         .get(&player.dimension)
         .and_then(|level| level.entities.as_ref());
+    let own = u64::from(player.id.0);
     let taken = hands.take(world.instant, |target| {
-        minecraft_survival::actions::allows(target, eye, &mode, |id| {
-            entities.and_then(|entities| entities.mob_box(id))
-        })
+        minecraft_survival::actions::allows(
+            target,
+            eye,
+            &mode,
+            |id| entities.and_then(|entities| entities.mob_box(id)),
+            |id| {
+                entities
+                    .filter(|_| id != own)
+                    .and_then(|entities| entities.player_box(id))
+            },
+        )
     });
     if let Some(slot) = selected {
         player.selected = usize::from(slot).min(minecraft_survival::guns::HOTBAR - 1);
@@ -1533,12 +1635,20 @@ pub(crate) fn step_friend(
         client,
         origin,
         &ps,
-        (life.alive, Skating::default()),
+        (life.alive, skate),
         world.dt,
         &mut sounds,
         world.packs,
     );
     let feet = sim::voxel::to_block(origin, ps.origin);
+    stepped.board_allowed = crate::minecraft_world::board_allowed(
+        life.alive,
+        player.mode.mode == minecraftoss_player::GameMode::Spectator,
+        ps.pm_flags,
+        moved.eye_in_water,
+        player.sleeping.is_some(),
+        player.survival.in_powder_snow(),
+    );
     let walker = minecraft_survival::survival::walks_on_powder_snow(&player.inventory);
     world.authority.set_powder_snow_walker(client, walker);
     let frozen = player.survival.ticks_frozen();
@@ -1548,7 +1658,7 @@ pub(crate) fn step_friend(
         .death_watch
         .stood(minecraft_survival::death::DeathSpot { feet, eye });
     if let Some(entities) = entities.as_mut() {
-        struck(
+        stepped.lines.extend(struck(
             player,
             entities,
             world.authority,
@@ -1559,7 +1669,7 @@ pub(crate) fn step_friend(
             &[],
             &mut sounds,
             world.packs,
-        );
+        ));
         let found = entities.take_experience(u64::from(player.id.0));
         let chime = player.survival.gain_experience(found);
         if let Some(sounds) = sounds.as_mut() {
@@ -1627,7 +1737,14 @@ pub(crate) fn step_friend(
         drop_on_death(death_watch, inventory, hand, entities);
     }
     let (effects, (table, block, bench), bed, open_book) = friend_hand(
-        player, world, client, origin, &ps, &moved, taken, life.alive,
+        player,
+        world,
+        client,
+        origin,
+        &ps,
+        &moved,
+        taken,
+        (life.alive, skate.active),
     );
     stepped.bed = bed;
     stepped.open_book = open_book;
@@ -1755,7 +1872,7 @@ fn friend_hand(
     ps: &PlayerState,
     moved: &Moved,
     taken: HandTake,
-    alive: bool,
+    (alive, skating): (bool, bool),
 ) -> (
     Vec<Effect>,
     Opens,
@@ -1773,7 +1890,8 @@ fn friend_hand(
         player.survival.stop_eating();
         player.hand.blocking = None;
     }
-    let actor = actor(ps, origin, alive);
+    let mut actor = actor(ps, origin, alive);
+    actor.skating = skating;
     if let Some(entities) = level.entities.as_mut().filter(|_| interacts) {
         for whole in taken.drops {
             let selected = player.selected;
@@ -2206,6 +2324,42 @@ mod tests {
         bodies.clear();
         lay_friends(&players, shown, &mut authority, &origins, &mut in_bed, &mut bodies);
         assert!(in_bed.is_empty() && bodies.is_empty());
+    }
+
+    #[test]
+    fn only_a_living_player_in_its_own_band_gets_a_melee_box() {
+        use minecraft_survival::commands::HOST;
+        use minecraft_terrain::game_mode::PlayerMode;
+        use minecraftoss_player::GameMode;
+        let mut chat = CommandServer::new(HOST);
+        chat.join(HOST, "Steve");
+        let mut player = Player::new(
+            chat.profile(HOST).unwrap(),
+            PlayerMode::default(),
+            minecraft_survival::survival::Survival::default(),
+            minecraftoss_player::inventory::Inventory::default(),
+        );
+        let origin = [0.0; 3];
+        let ps = PlayerState {
+            origin: sim::voxel::to_map(origin, [3.5, 64.0, 0.5]),
+            ..PlayerState::ZERO
+        };
+        let found = player_box(&player, &ps, origin).expect("a standing player");
+        assert_eq!(found.id, 0);
+        assert!(!found.invulnerable);
+        assert!((found.bounds[0] - 3.2).abs() < 1.0e-4, "{found:?}");
+        assert!((found.bounds[1] - 64.0).abs() < 1.0e-4, "{found:?}");
+        assert!((found.bounds[5] - 0.8).abs() < 1.0e-4, "{found:?}");
+        player.mode = PlayerMode::new(GameMode::Creative);
+        assert!(player_box(&player, &ps, origin).unwrap().invulnerable);
+        player.mode = PlayerMode::new(GameMode::Spectator);
+        assert_eq!(player_box(&player, &ps, origin), None, "a spectator");
+        player.mode = PlayerMode::default();
+        player.dead = true;
+        assert_eq!(player_box(&player, &ps, origin), None, "a dead player");
+        player.dead = false;
+        player.dimension = Dimension::Nether;
+        assert_eq!(player_box(&player, &ps, origin), None, "outside its own band");
     }
 
     #[test]

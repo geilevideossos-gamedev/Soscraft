@@ -454,11 +454,11 @@ pub(crate) fn skate_on_ground(skating: bool, airborne: bool, ground_entity: i32)
     if skating { !airborne } else { ground_entity != playerstate_iw4::ENTITYNUM_NONE }
 }
 
-fn board_gear(gear: minecraft_terrain::body_gear::BodyGear, skating: bool) -> minecraft_terrain::body_gear::BodyGear {
+pub(crate) fn board_gear(gear: minecraft_terrain::body_gear::BodyGear, skating: bool) -> minecraft_terrain::body_gear::BodyGear {
     if skating { minecraft_terrain::body_gear::BodyGear { main: None, off: None, ..gear } } else { gear }
 }
 
-fn board_allowed(alive: bool, spectator: bool, pm_flags: u32, eye_in_water: bool, asleep: bool, in_powder_snow: bool) -> bool {
+pub(crate) fn board_allowed(alive: bool, spectator: bool, pm_flags: u32, eye_in_water: bool, asleep: bool, in_powder_snow: bool) -> bool {
     alive && !spectator && pm_flags & (playerstate_iw4::pm_flags::MC_FLYING | playerstate_iw4::pm_flags::MC_GLIDING | playerstate_iw4::pm_flags::MC_RIDING) == 0 && !eye_in_water && !asleep && !in_powder_snow
 }
 
@@ -706,6 +706,7 @@ fn update(
     let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
     let clients: Vec<u32> = players.values().filter(|player| &player.uuid != local_uuid).map(|player| player.id.0).chain([local.0.0]).collect();
     queues.drain(|client| clients.contains(&client));
+    crate::minecraft_players::set_player_boxes(levels, players, &authority.0, origins, (local_uuid, local.0));
     sim::voxel::set_pvp(globals.game_rules.bool("pvp"));
     let weapon_name = |weapon: u32| {
         let key = weapon_names.0.as_deref()?.0.display_name_key_of(weapon)?;
@@ -1241,7 +1242,10 @@ fn update(
                 sounds.play(&world.packs, &kind.break_sound, Some(at(centre)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
             }
         }
-        crate::minecraft_players::struck(player, entities, &mut authority.0, local.0, origin, ps, alive, &teleports, sounds, &world.packs);
+        let struck_lines = crate::minecraft_players::struck(player, entities, &mut authority.0, local.0, origin, ps, alive, &teleports, sounds, &world.packs);
+        if !struck_lines.is_empty() {
+            show_chat(&mut ui.chat, inventory_ui, &world.packs, &struck_lines);
+        }
         for item in std::mem::take(&mut entities.broken_items) {
             mining.break_burst(&world.packs, &world.atlas, glam::DVec3::from_array(eye).as_vec3(), mc_yaw, ps.viewangles[0], &item);
         }
@@ -1256,6 +1260,7 @@ fn update(
         ui.jump_bar = player.jump_bar.filter(|_| alive);
         let raid_language = ui.chat.language.clone();
         crate::minecraft_raids::show_raid_bars(&mut ui, &player.raid_bars, &raid_language, dt as f32);
+        crate::minecraft_wither::show_wither_bars(&mut ui, &player.wither_bars, &raid_language, dt as f32);
         let minecraft_survival::player::Player { name: player_name, survival, mode: player_mode, inventory, selected, hand, menus, drop_throttle, arsenal, tags, dimension: player_dimension, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.effects = if alive { mc_effects(&minecraft_survival::views::effect_views(&survival.status)) } else { Vec::new() };
@@ -1460,47 +1465,30 @@ fn update(
         ui.camera_overlay = alive && minecraft_terrain::body_gear::camera_overlay(&inventory.slots);
         sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
         crate::minecraft_fork_items::mirror_gun_guard(local.0.0, survival, inventory);
-        // The held item in view; an empty hand is MW2's own hands.
         view.hand = Default::default();
-        let swing = hand.swing.map_or(0.0, |t| (t / crate::minecraft_hand::SWING_TICKS).clamp(0.0, 1.0));
+        let swing = crate::minecraft_hand::swing_shown(hand.swing);
         ui.hand_swing = if hand.swing_offhand { 0.0 } else { swing };
         let main_stack = inventory.slots[*selected].clone().filter(|_| ui.holding_item);
         let offhand_stack = offhand_stack.filter(|_| ui.holding_item || ui.offhand_busy);
         let activation = item_activation.pose((hand.clock / TICK_SECONDS) as f32, aspect).filter(|_| ui_draw.as_ref().is_none_or(|draw| draw.0));
         let main_stack = main_stack.filter(|_| !mc_detached && hand.scoping.is_none());
         let offhand_stack = offhand_stack.filter(|_| !mc_detached && hand.scoping.is_none());
-        if !puppet.active && sleepers.camera.is_none() && (activation.is_some() || main_stack.is_some() || offhand_stack.is_some()) {
+        if !puppet.active && sleepers.camera.is_none() {
+            let held = crate::minecraft_hand::Held {
+                main: main_stack.as_ref().map(|stack| (*selected, stack)),
+                offhand: offhand_stack.as_ref(),
+                swing,
+                swing_offhand: hand.swing_offhand,
+                using: crate::minecraft_hand::host_use(survival, hand),
+                partial: (hand.clock / TICK_SECONDS) as f32,
+                activation,
+            };
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
-            let mut posed = Vec::new();
-            for (slot, stack, arm) in [(*selected, main_stack, 1.0), (minecraft_survival::offhand::OFFHAND, offhand_stack, -1.0)] {
-                let Some(stack) = stack else {
-                    continue;
-                };
-                let charging = hand.charging.filter(|charging| charging.slot == slot);
-                let using = hand.blocking.is_some_and(|blocking| blocking.slot == slot) || charging.is_some();
-                let display = minecraft_terrain::pack::ResourceId::parse(&stack.id)
-                    .ok()
-                    .and_then(|id| minecraft_terrain::model::item_hand_transform(&world.packs, &id, arm < 0.0, using).ok())
-                    .unwrap_or(glam::Mat4::IDENTITY);
-                let display = match charging {
-                    Some(charging) => crate::minecraft_hand::trident_charge_transform(charging.ticks as f32 + (hand.clock / TICK_SECONDS) as f32, arm) * display,
-                    None => display,
-                };
-                let eat = survival
-                    .eating()
-                    .filter(|eating| eating.slot == slot)
-                    .map(|eating| crate::minecraft_hand::eat_transform(eating.remaining_ticks() as f32, (hand.clock / TICK_SECONDS) as f32, eating.info.consume_ticks, arm));
-                let swung = if using || eat.is_some() || hand.swing_offhand != (slot == minecraft_survival::offhand::OFFHAND) { 0.0 } else { swing };
-                let glint = minecraft_terrain::glint::has_glint(&stack);
-                posed.push((eat.unwrap_or(glam::Mat4::IDENTITY) * crate::minecraft_hand::item_pose(display, swung, 0.0, arm), minecraft_terrain::item_tint::key(inventory_ui.dials.key(&stack.id), minecraft_terrain::potions::stack_color(stack.components.as_ref())), glint));
+            let look = (&world.packs, &*world.atlas, &*light, &inventory_ui.dials);
+            if let Some((vertices, indices, clip)) = crate::minecraft_hand::held_hand_mesh(&held, &mut entities.view, look, eye_light_at, aspect) {
+                view.hand = (vertices, indices);
+                view.hand_clip = clip;
             }
-            let mut mesh = entities.held_item_mesh(&posed, eye_light_at, &world.packs, &world.atlas, light);
-            if let Some(pose) = activation {
-                crate::minecraft_hand::append_totem(&mut mesh, &mut entities.view, pose, eye_light_at, (&world.packs, &world.atlas, light));
-            }
-            let vertices = minecraft_terrain::mesh::section_vertices(&mesh);
-            view.hand = (bytemuck::cast_slice(&vertices).to_vec(), mesh.indices);
-            view.hand_clip = crate::minecraft_hand::hand_clip(aspect);
         }
 
         sim::voxel::set_mob_boxes(band, entities.shot_boxes(player.riding.map(|ride| ride.vehicle)));

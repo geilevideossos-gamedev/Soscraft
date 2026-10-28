@@ -80,7 +80,9 @@ pub fn attack(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor, attack: &
     if !hittable(world, id) {
         return MobOutcome::default();
     }
-    let result = world.player_attack(attack, id);
+    let held = actor.inventory.slots.get(actor.selected).and_then(Option::as_ref).cloned();
+    let bonus = crate::melee::weapon_bonus(held.as_ref());
+    let result = world.player_attack_with(attack, id, bonus.damage, bonus.knockback);
     let mut outcome = MobOutcome { handled: true, ..MobOutcome::default() };
     let at = attack.position;
     if result.knockback {
@@ -89,6 +91,12 @@ pub fn attack(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor, attack: &
     if !result.hurt {
         outcome.sound("entity.player.attack.nodamage", at, 1.0, "players_volume");
         return outcome;
+    }
+    if let Some(held) = held.filter(|_| !actor.infinite) {
+        let wear = actor.inventory.recipes.weapon(&held).map_or(0, |(per_attack, _)| per_attack);
+        if actor.inventory.wear_tool(actor.selected, wear) {
+            outcome.broken.push(held.id);
+        }
     }
     (outcome.drops, outcome.experience) = death_remains(world, actor.entity_loot.as_deref_mut());
     if result.sweep {
@@ -100,6 +108,14 @@ pub fn attack(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor, attack: &
         let event = if result.full_strength { "entity.player.attack.strong" } else { "entity.player.attack.weak" };
         outcome.sound(event, at, 1.0, "players_volume");
     }
+    outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
+    outcome
+}
+
+pub fn sweep(world: &mut EntityWorld, attack: &PlayerAttack, around: [f64; 6], enchanted: f32, loot: Option<&mut EntityLootBook>) -> MobOutcome {
+    let swept = world.player_sweep(attack, around, None, enchanted);
+    let mut outcome = MobOutcome { handled: !swept.is_empty(), ..MobOutcome::default() };
+    (outcome.drops, outcome.experience) = death_remains(world, loot);
     outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
     outcome
 }
@@ -935,5 +951,24 @@ mod tests {
         assert!(outcome.handled && outcome.drops.len() == 1);
         assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(4), "untying feeds nothing");
         assert_eq!(world.leash_holder(sheep), None);
+    }
+
+    #[test]
+    fn a_sweep_round_a_player_hurts_the_mobs_beside_them_and_not_one_far_away() {
+        let mut world = EntityWorld::default();
+        let near = world.spawn_cow(Cow::new(DVec3::new(1.5, 64.0, 2.5)), false);
+        let other = world.spawn_cow(Cow::new(DVec3::new(-0.5, 64.0, 2.0)), false);
+        let far = world.spawn_cow(Cow::new(DVec3::new(0.5, 64.0, 6.0)), false);
+        let attack = PlayerAttack { player_id: 0, position: DVec3::new(0.5, 64.0, 0.5), yaw: 0.0, attack_damage: 7.0, strength: 1.0, sprinting: false, can_critical: false, can_sweep: true };
+        let around = [0.2, 64.0, 2.2, 0.8, 65.8, 2.8];
+        let outcome = sweep(&mut world, &attack, around, 3.0, None);
+        assert!(outcome.handled);
+        let health = |world: &EntityWorld, id: u64| world.cows().iter().find(|e| e.id == id).map(|e| e.cow.health);
+        let full = Cow::new(DVec3::ZERO).health;
+        assert_eq!(health(&world, near), Some(full - 4.0));
+        assert_eq!(health(&world, other), Some(full - 4.0));
+        assert_eq!(health(&world, far), Some(full));
+        let alone = [10.2, 64.0, 10.2, 10.8, 65.8, 10.8];
+        assert!(!sweep(&mut world, &attack, alone, 0.0, None).handled);
     }
 }

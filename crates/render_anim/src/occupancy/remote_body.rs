@@ -341,6 +341,7 @@ type McViews<'w> = (
 
 fn sync_remote_bodies(
     skate: Res<frame::SkateMode>,
+    poses: Res<frame::SkatePoses>,
     (puppet, mc_camera, sleepers): McViews,
     mut commands: Commands,
     local: Res<LocalPresentClient>,
@@ -442,8 +443,8 @@ fn sync_remote_bodies(
         // A corpse belongs to its client too; only the living body rides.
         let is_corpse = runtime.next_state.e_type == ET_PLAYER_CORPSE
             || runtime.pose_e_type == ET_PLAYER_CORPSE as u8;
-        if skate.active && !skate.bones.is_empty() && client.0 == skate.client && !is_corpse {
-            pose = Transform::from_matrix(skate.root);
+        if let Some(skater) = crate::minecraft_skaters::drawn(&poses, client.0).filter(|_| !is_corpse) {
+            pose = Transform::from_matrix(skater.root);
         }
         if client == local.0
             && !is_corpse
@@ -482,7 +483,7 @@ fn sync_remote_bodies(
 }
 
 struct PendingBodySkin<'a> {
-    skate: Option<&'a frame::SkateMode>,
+    skate: Option<(Vec<&'a str>, &'a [Mat4])>,
     is_bot: bool,
     persist_key: u32,
     transform: Transform,
@@ -510,6 +511,7 @@ enum RemoteSkinAction<'a> {
 
 struct RemotePoseFrame<'a> {
     skate: &'a frame::SkateMode,
+    poses: &'a frame::SkatePoses,
     puppet: Option<&'a frame::InventoryPuppet>,
     script: &'a asset_anim::ParsedPlayerAnimScript,
     tree: &'a asset_anim::CompiledAnimTreeDefinition,
@@ -585,6 +587,7 @@ fn pose_remote_bodies(
         ResMut<crate::anim::minecraft_gear::PosedGearFrame>,
         Res<crate::anim::minecraft_gear::McBodyGear>,
         Res<crate::anim::minecraft_glide::McGlide>,
+        Res<frame::SkatePoses>,
     ),
     mut roots: Query<
         (
@@ -612,6 +615,7 @@ fn pose_remote_bodies(
         mut posed_gear,
         body_gear,
         glide,
+        poses,
     ) = dpvs;
     submit.clear();
     for (_, _, _, mut bolts, _) in &mut roots {
@@ -699,6 +703,7 @@ fn pose_remote_bodies(
     let last_cache_hits = pose_hashes.take_last_cache_hits();
     let mut pose_frame = RemotePoseFrame {
         skate: &skate,
+        poses: &poses,
         puppet: puppet.as_deref(),
         script,
         tree,
@@ -940,12 +945,9 @@ impl<'a> RemotePoseFrame<'a> {
             validate_remote_tracks(dobj, clips.as_ref(), body, &model_set.body_name)?;
 
             // A corpse keeps its client's key; only the living body skates.
-            let skating = self.skate.active
-                && !self.skate.bones.is_empty()
-                && persist_key == self.skate.client
-                && !is_corpse;
-            let world = if skating {
-                crate::skate::rig::pose(dobj, self.skate)
+            let skating = crate::minecraft_skaters::drawn(self.poses, persist_key).filter(|_| !is_corpse);
+            let world = if let Some(skater) = skating {
+                crate::skate::rig::pose(dobj, &frame::skate::SKATE_BONES, &skater.bones)
             } else {
                 pose_remote_dobj(
                     dobj,
@@ -1001,8 +1003,8 @@ impl<'a> RemotePoseFrame<'a> {
                 }
                 RemoteSkinAction::Blend(mut job) => {
                     job.is_bot = remote.is_bot;
-                    if skating {
-                        job.skate = Some(self.skate);
+                    if let Some(skater) = skating {
+                        job.skate = Some(crate::minecraft_skaters::board_bones(self.skate, persist_key, skater));
                         job.gun = None;
                         job.attachments.clear();
                     }
@@ -1336,8 +1338,8 @@ fn assemble_meshes(job: PendingBodySkin<'_>) -> Result<AssembledMeshes, String> 
             true,
         )?;
     }
-    if let Some(skate) = job.skate {
-        crate::skate::rig::board(skate, &mut geom)?;
+    if let Some((names, bones)) = &job.skate {
+        crate::skate::rig::board(names, bones, &mut geom)?;
     }
     let (radii, radius_parents) = radii(
         job.body,
