@@ -1961,8 +1961,7 @@ impl ServerSim {
                     TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
                         Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
                         None => {
-                            let seed = self.sound_random.next_long();
-                            crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+                            crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner);
                         }
                     },
                     TridentEvent::Sound { event, at, volume, pitch } => {
@@ -2141,7 +2140,7 @@ impl ServerSim {
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
                     match t.shooter {
                         Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
-                        None => struck.push((mob, landed.velocity, t.owner, t.random().next_long())),
+                        None => struck.push((mob, landed.velocity, t.owner)),
                     }
                 }
                 if hurts {
@@ -2165,7 +2164,7 @@ impl ServerSim {
                     }
                     Throwable::WindCharge => {
                         let center = if landed.mob.is_some() { t.position() } else { crate::wind::burst_point(landed.at, landed.face) };
-                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, t.random().next_long(), center));
+                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, center));
                     }
                     Throwable::SplashPotion | Throwable::LingeringPotion => {
                         let contents = t.contents();
@@ -2217,18 +2216,18 @@ impl ServerSim {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: crate::thrown::sound_cell(at), volume: 1.0, pitch });
         }
         self.clouds.append(&mut lingering);
-        for (mob, velocity, owner, seed, center) in bursts {
+        for (mob, velocity, owner, center) in bursts {
             match mob.map(|id| (id, crate::thrown::struck_player(id))) {
                 Some((_, Some(player))) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: owner, damage: crate::wind::DAMAGE, kind: crate::wind::DAMAGE_TYPE, velocity }),
                 Some((id, None)) => {
-                    crate::thrown::hurt_by(&mut self.mobs, id, crate::wind::DAMAGE, crate::wind::DAMAGE_TYPE, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+                    crate::thrown::hurt_by(&mut self.mobs, id, crate::wind::DAMAGE, crate::wind::DAMAGE_TYPE, velocity, owner);
                 }
                 None => {}
             }
             self.wind_burst(center, players, crate::wind::Charge::Player);
         }
-        for (mob, velocity, owner, seed) in struck {
-            crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+        for (mob, velocity, owner) in struck {
+            crate::thrown::hurt(&mut self.mobs, mob, velocity, owner);
         }
         for (shooter, mob, velocity) in shot_by_mobs {
             self.mobs.snowball_hits_mob(shooter, mob, velocity);

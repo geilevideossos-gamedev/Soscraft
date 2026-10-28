@@ -1,10 +1,8 @@
 use glam::{DVec3, Vec2, Vec3};
-use minecraftoss_entities::health::DamageResult;
-use minecraftoss_entities::monster_ai::Target;
 use minecraftoss_entities::movement::Body;
 use minecraftoss_entities::potion::{Potion, PotionTarget, ThrownPotion};
 use minecraftoss_entities::tempt::PlayerCandidate;
-use minecraftoss_entities::world::{DamageSourceKind, EntityWorld};
+use minecraftoss_entities::world::{EntityWorld, ProjectileHit};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_player::{Face, Pos, World};
 
@@ -17,7 +15,6 @@ pub const POWER: f32 = 1.5;
 pub const INACCURACY: f32 = 1.0;
 pub const PEARL_DAMAGE: f32 = 5.0;
 pub const PEARL_COOLDOWN: u32 = 20;
-const KNOCKBACK: f64 = 0.4;
 const THROWN: &str = "minecraft:thrown";
 pub const PLAYER_TARGET: u64 = u64::MAX / 2;
 pub const MOB_THROWER: u64 = u64::MAX;
@@ -625,31 +622,13 @@ pub fn targets(world: &EntityWorld) -> Vec<PotionTarget> {
     out
 }
 
-fn knockback(body: &mut Body, random: &mut LegacyRandom, power: f64, mut xd: f64, mut zd: f64) {
-    while xd * xd + zd * zd < f64::from(1.0e-5_f32) {
-        xd = (random.next_double() - random.next_double()) * 0.01;
-        zd = (random.next_double() - random.next_double()) * 0.01;
-    }
-    let length = (xd * xd + zd * zd).sqrt();
-    let (dx, dz) = (xd / length * power, zd / length * power);
-    let v = body.velocity;
-    let y = if body.on_ground {
-        (v.y / 2.0 + power).min(0.4)
-    } else {
-        v.y
-    };
-    body.velocity = DVec3::new(v.x / 2.0 - dx, y, v.z / 2.0 - dz);
-    body.needs_sync = true;
-}
-
 pub fn hurt(
     world: &mut EntityWorld,
     id: u64,
     velocity: DVec3,
     player: u64,
-    random: &mut LegacyRandom,
 ) -> bool {
-    hurt_by(world, id, 0.0, THROWN, velocity, player, random)
+    hurt_by(world, id, 0.0, THROWN, velocity, player)
 }
 
 pub fn hurt_by(
@@ -659,114 +638,10 @@ pub fn hurt_by(
     kind: &'static str,
     velocity: DVec3,
     player: u64,
-    random: &mut LegacyRandom,
 ) -> bool {
-    if let Some(e) = world.enderman_mut(id) {
-        e.dodge_pending = true;
-        return false;
-    }
-    let by = Some(Target::Player(player));
-    let time = world.game_time();
-    let projectile = DamageSourceKind::Projectile;
-    let blame =
-        |hit: &DamageResult, tick: i32| hit.applied.then_some((Target::Player(player), tick));
-    let (hit, resists) = if let Some(e) = world.bat_mut(id) {
-        (e.hurt(amount), false)
-    } else if let Some(e) = world.zombie_mut(id) {
-        let hit = e.hurt(minecraftoss_entities::health::damage_after_armor(amount, 2.0, 0.0));
-        if let (Some(ai), Some(blamed)) = (e.ai.as_deref_mut(), blame(&hit, e.tick_count)) {
-            ai.state.hurt_by = Some(blamed);
-        }
-        (hit, false)
-    } else if let Some(e) = world.skeleton_mut(id) {
-        let hit = e.hurt(amount);
-        if let (Some(ai), Some(blamed)) = (e.ai.as_deref_mut(), blame(&hit, e.tick_count)) {
-            ai.state.hurt_by = Some(blamed);
-        }
-        (hit, false)
-    } else if let Some(e) = world.creeper_mut(id) {
-        let hit = e.hurt(amount);
-        if let Some(blamed) = blame(&hit, e.tick_count) {
-            e.ai.state.hurt_by = Some(blamed);
-        }
-        (hit, false)
-    } else if let Some(e) = world.spider_mut(id) {
-        let hit = e.hurt(amount);
-        if let Some(blamed) = blame(&hit, e.tick_count) {
-            e.ai.state.hurt_by = Some(blamed);
-        }
-        (hit, false)
-    } else if let Some(e) = world.slime_mut(id) {
-        let hit = e.hurt(amount);
-        if let Some(blamed) = blame(&hit, e.tick_count) {
-            e.ai.state.hurt_by = Some(blamed);
-        }
-        (hit, false)
-    } else if let Some(e) = world.witch_mut(id) {
-        let hit = e.hurt(amount, false, false);
-        if let Some(blamed) = blame(&hit, e.tick_count) {
-            e.ai.state.hurt_by = Some(blamed);
-        }
-        (hit, false)
-    } else if let Some(e) = world.iron_golem_mut(id) {
-        let hit = e.hurt(amount);
-        if let Some(blamed) = blame(&hit, e.tick_count) {
-            e.ai.state.hurt_by = Some(blamed);
-        }
-        (hit, true)
-    } else if let Some(e) = world.wolf_mut(id) {
-        (e.hurt_from(amount, kind, by, time), false)
-    } else if let Some(e) = world.feline_mut(id) {
-        (e.hurt_from(amount, kind, by, time), false)
-    } else if let Some(e) = world.wandering_trader_mut(id) {
-        (e.hurt_from(amount, kind, by, time), false)
-    } else if let Some(e) = world.snow_golem_mut(id) {
-        let hit = e.hurt(amount);
-        if let Some(blamed) = blame(&hit, e.tick_count) {
-            e.ai.state.hurt_by = Some(blamed);
-        }
-        (hit, false)
-    } else if let Some(e) = world.villager_mut(id) {
-        (
-            e.hurt_from(amount, kind, Some(PLAYER_TARGET + player), time),
-            false,
-        )
-    } else if let Some(e) = world.cow_mut(id) {
-        (e.hurt(amount, projectile), false)
-    } else if let Some(e) = world.sheep_mut(id) {
-        (e.hurt(amount, projectile), false)
-    } else if let Some(e) = world.pig_mut(id) {
-        (e.hurt(amount, projectile), false)
-    } else if let Some(e) = world.chicken_mut(id) {
-        (e.hurt_with_source(amount, projectile), false)
-    } else if let Some(e) = world.shulker_mut(id) {
-        if kind == crate::trident::DAMAGE_TYPE && e.refuses_arrows() {
-            return false;
-        }
-        let hit = e.hurt_armored(amount);
-        if let Some(blamed) = blame(&hit, e.tick_count) {
-            e.ai.state.hurt_by = Some(blamed);
-        }
-        (hit, true)
-    } else if let Some(e) = world.wither_mut(id) {
-        let hit = e.hurt_typed(amount, kind, false, false);
-        if let Some(blamed) = blame(&hit, e.tick_count) {
-            e.ai.state.hurt_by = Some(blamed);
-        }
-        (hit, false)
-    } else {
-        return false;
-    };
-    world.credit(id, hit, "minecraft:player", true);
-    if hit.applied {
-        world.villager_hurt_by(id, PLAYER_TARGET + player);
-    }
-    if hit.applied && hit.full && !resists {
-        if let Some(body) = world.body_mut(id) {
-            knockback(body, random, KNOCKBACK, -velocity.x, -velocity.z);
-        }
-    }
-    hit.applied
+    world
+        .player_projectile_hurt(id, ProjectileHit { amount, kind, player, velocity })
+        .is_some_and(|hit| hit.applied)
 }
 
 pub fn shown(age: i32, at: DVec3, camera: DVec3) -> bool {
@@ -853,6 +728,7 @@ pub fn append_views<'a>(mesh: &mut ChunkMesh, views: impl IntoIterator<Item = &'
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minecraftoss_entities::monster_ai::Target;
     use minecraftoss_player::{Block, Pos};
     use std::collections::HashMap;
 
@@ -860,13 +736,12 @@ mod tests {
     fn a_trident_or_wind_charge_hurts_a_wither_until_its_armour_comes_at_half_health() {
         let mut world = EntityWorld::default();
         let id = world.spawn_wither(minecraftoss_entities::wither::Wither::new(DVec3::new(0.5, 64.0, 0.5)), true);
-        let mut random = LegacyRandom::new(1);
-        assert!(hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        assert!(hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0));
         assert_eq!(world.wither_mut(id).unwrap().ai.state.hurt_by.map(|(t, _)| t), Some(Target::Player(0)));
         world.wither_mut(id).unwrap().wither.health = 150.0;
         world.wither_mut(id).unwrap().wither.damage = Default::default();
-        assert!(!hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
-        assert!(!hurt_by(&mut world, id, 1.0, crate::wind::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        assert!(!hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0));
+        assert!(!hurt_by(&mut world, id, 1.0, crate::wind::DAMAGE_TYPE, DVec3::Z, 0));
         assert_eq!(world.withers()[0].wither.health, 150.0);
     }
 
@@ -879,10 +754,9 @@ mod tests {
         let id = world.spawn_shulker(shulker, false);
         let target = targets(&world).into_iter().find(|t| t.id == id).unwrap();
         assert_eq!((target.min, target.max), (DVec3::new(0.0, 63.0, 0.0), DVec3::new(1.0, 65.0, 1.0)), "a ceiling shulker hangs down");
-        let mut random = LegacyRandom::new(1);
-        assert!(!hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        assert!(!hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0));
         world.shulker_mut(id).unwrap().shulker.raw_peek = 30;
-        assert!(hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        assert!(hurt_by(&mut world, id, 8.0, crate::trident::DAMAGE_TYPE, DVec3::Z, 0));
         let shulker = &world.shulkers()[0].shulker;
         assert_eq!((shulker.health, shulker.body.velocity), (22.0, DVec3::ZERO));
     }
@@ -1218,8 +1092,7 @@ mod tests {
         let mut zombie = minecraftoss_entities::zombie::Zombie::new(DVec3::new(0.5, 64.0, 0.5));
         zombie.health = 1.0;
         let id = world.spawn_zombie(zombie, true);
-        let mut random = LegacyRandom::new(4);
-        assert!(hurt_by(&mut world, id, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, DVec3::Z, 0, &mut random));
+        assert!(hurt_by(&mut world, id, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, DVec3::Z, 0));
         let deaths = world.take_deaths();
         assert_eq!(deaths.len(), 1);
         assert!(deaths[0].context.killed_by_player, "it drops its experience and player-only loot");
