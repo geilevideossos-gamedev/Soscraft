@@ -12,7 +12,7 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 - Usual rules: this file current, decisions in `docs/round10/decisions.md`, no questions to the owner, the CLAUDE.md workflow. Gentle mode when the owner says they are playing.
 
 ## How to continue
-- Every cargo command goes through `scripts\cargo-slot.ps1` (PowerShell). Full speed (`slots=2`, `jobs=8`, `priority=normal` in `%LOCALAPPDATA%\iw4l-cargo-slot.txt`) since the start of round 10; gentle (`slots=1`, `jobs=4`, `priority=low`) when the owner says they play.
+- Every cargo command goes through `scripts\cargo-slot.ps1` (PowerShell). Since the crash on 2026-10-28 the slot file (`%LOCALAPPDATA%\iw4l-cargo-slot.txt`) is `slots=2`, `jobs=4`, `priority=low`, and at most four track runs go at once (decisions: "Lower load after the crash"). Never go back to `jobs=8` with two slots. Gentle (`slots=1`, `jobs=4`, `priority=low`) when the owner says they play.
 - The full suite is `scripts\full-suite.ps1`.
 - Track worktrees live in `C:\Dev\mc-wt\<name>` on branch `<name>`, each with its own target dir (`D:\iw4l-wt\<name>`, or `C:\iw4l-wt\<name>` when D: is full). Worktrees never share a target dir.
 - Merging a track: in the track's worktree `git checkout --detach minecraft-survival` and `git merge --no-ff <track>`, run `scripts\full-suite.ps1 +target=<the track's target dir>` there, then `git merge --ff-only <merge commit>` in `C:\Dev\mashup-crafting` and push to `origin`. Delete the track's target dir once the track is finished.
@@ -25,19 +25,20 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 - Briefs written by workflows: E (ed23b000), D and W (382bf959), F and the Elden Ring design doc (c9253dba). D0 (shared mob registry) still being written. The M1-M3 briefs follow D0's design.
 - Each track runs in segments of a few groups, one track-runner run each, with the segment's base tagged `r10-<segment>-base` before it starts. The specs are in `docs/round10/runs/`.
 - A watchdog (a background loop) alerts when D: or C: falls below 8 GB.
+- 2026-10-28 20:27: the PC crashed with d0a, d1, e1a, e2a, f1 and w1 running and the M1-M3 briefs half researched (nothing of them saved). All six segments were in their first group (d0a had its mob list commit 17faa07d, d1 one review commit bad8dd84) and the other worktrees hold their first group's half-done work uncommitted. Every run spec got a RESTARTS note (finish the half-done group from `git status`, clean a corrupt crate). Relaunched at the lower load: d0a, d1, e1a and e2a first; w1 and f1 wait for a free place; the M1-M3 briefs are written again by writers that never build.
 
 ## Tracks
 | Track | Branch | Brief | Segments | State |
 |---|---|---|---|---|
-| D0. Shared mob wiring (mob list, spawn tables, render registry) | track-d0 | `docs/round10/track-d0.md` | d0a (registry-core ... silverfish-drawn: the whole registry with silverfish and endermites as its proof), d0b (silverfish-behaviour, flying-navigation) | d0a running since 2026-10-28; merged first, then D, W, F and M1-M3 merge it in before their mob groups |
-| D. Trial spawners, vaults, lodestones, breezes | track-d | `docs/round10/track-d.md` | d1 (d5-review ... lodestones, review base `r9-d5-base` so the round 9 d5 commits are reviewed too), d2 (breezes, breeze-render; after D0) | d1 running since 2026-10-28 |
-| W. Darkness, vibrations, sculk, warden | track-w | `docs/round10/track-w.md` | w1 (darkness ... shriekers-catalysts), w2 (warden groups; after D0) | w1 running since 2026-10-28 |
+| D0. Shared mob wiring (mob list, spawn tables, render registry) | track-d0 | `docs/round10/track-d0.md` | d0a (registry-core ... silverfish-drawn: the whole registry with silverfish and endermites as its proof), d0b (silverfish-behaviour, flying-navigation) | d0a restarted after the crash (2026-10-28 evening); merged first, then D, W, F and M1-M3 merge it in before their mob groups |
+| D. Trial spawners, vaults, lodestones, breezes | track-d | `docs/round10/track-d.md` | d1 (d5-review ... lodestones, review base `r9-d5-base` so the round 9 d5 commits are reviewed too), d2 (breezes, breeze-render; after D0) | d1 restarted after the crash (2026-10-28 evening) |
+| W. Darkness, vibrations, sculk, warden | track-w | `docs/round10/track-w.md` | w1 (darkness ... shriekers-catalysts), w2 (warden groups; after D0) | w1 waits for a free place (its darkness group is half done, uncommitted) |
 | M1. Land animals (group `land`, bytes 48-63): rabbit, fox, goat, parrot, panda, turtle, armadillo, polar bear, sniffer, bee | track-m1 | `docs/round10/track-m1.md` | | brief being written; starts when d0a is merged |
 | M2. Water and buckets (group `water`, 64-79): P2 water movement, squids, fish, dolphin, axolotl, frog, tadpole, guardians, nautiluses, sulfur cube | track-m2 | `docs/round10/track-m2.md` | | brief being written; starts when d0a is merged |
 | M3. Night, built and horses (group `night`, 80-95; horse kinds in the cow store): phantom, P8 lightning, undead horses, camels, allay, copper golem, creaking, happy ghast | track-m3 | `docs/round10/track-m3.md` | | brief being written; starts when d0a is merged |
-| E1. Known limits: screens, visuals, sounds | track-e1 | `docs/round10/track-e.md` | e1a (kit-components ... dye-icons), e1b (horse-dye ... bells-outline) | e1a running since 2026-10-28 |
-| E2. Known limits: gameplay and loot | track-e2 | `docs/round10/track-e.md` | e2a (ti1 ... fw-launch), e2b (fw-shapes ... ti4-end-targets) | e2a running since 2026-10-28 |
-| F. First Elden Ring boss: Margit, the Fell Omen | track-f (target `C:\iw4l-wt\track-f`) | `docs/ELDEN-RING-BOSSES.md`, `docs/round10/track-f.md` | f1 (er-core, er-rules: the pure `elden_boss` crate), f2 (er-entity, er-arena; after D0), f3 (er-look, er-fight, er-guns, er-bar-friend, er-altar) | f1 running since 2026-10-28 |
+| E1. Known limits: screens, visuals, sounds | track-e1 | `docs/round10/track-e.md` | e1a (kit-components ... dye-icons), e1b (horse-dye ... bells-outline) | e1a restarted after the crash (2026-10-28 evening) |
+| E2. Known limits: gameplay and loot | track-e2 | `docs/round10/track-e.md` | e2a (ti1 ... fw-launch), e2b (fw-shapes ... ti4-end-targets) | e2a restarted after the crash (2026-10-28 evening) |
+| F. First Elden Ring boss: Margit, the Fell Omen | track-f (target `C:\iw4l-wt\track-f`) | `docs/ELDEN-RING-BOSSES.md`, `docs/round10/track-f.md` | f1 (er-core, er-rules: the pure `elden_boss` crate), f2 (er-entity, er-arena; after D0), f3 (er-look, er-fight, er-guns, er-bar-friend, er-altar) | f1 waits for a free place (its er-core group is half done, uncommitted) |
 
 ## Release builds
 | # | When | Commit | State |
@@ -45,6 +46,7 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 | 1 | track-d merged (d6, keyframes, withers, wind charges) | 6e0e0573 | done 2026-10-28: full suite green (24.9 min, 3863 tests); release 12m 57s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, old one kept as `iw4l-survival-f743218.exe`, relay copied (same hash); protocol 6; test steps `docs/round10/release-1-tests.md` |
 
 ## Log
+- 2026-10-28: the PC crashed at 20:27 under six tracks at `-j 8`; load lowered to two slots at `-j 4` with four track runs at once; d0a, d1, e1a and e2a restarted.
 - 2026-10-28: `docs/ELDEN-RING-BOSSES.md` written (first boss Margit, the Fell Omen, with a stand-in model); track F (f1) started.
 - 2026-10-28: tracks E1 (e1a), E2 (e2a), D (d1) and W (w1) started; disk watchdog on.
 - 2026-10-28: release 1 (6e0e0573) built and copied in; test steps `docs/round10/release-1-tests.md`.
