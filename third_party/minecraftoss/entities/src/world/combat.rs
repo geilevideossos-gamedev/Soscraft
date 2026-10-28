@@ -37,6 +37,18 @@ pub struct ProjectileHit {
     pub velocity: DVec3,
 }
 
+pub const NO_ANGER_FROM_WIND_CHARGE: [&str; 9] = [
+    "minecraft:breeze",
+    "minecraft:skeleton",
+    "minecraft:bogged",
+    "minecraft:stray",
+    "minecraft:zombie",
+    "minecraft:husk",
+    "minecraft:spider",
+    "minecraft:cave_spider",
+    "minecraft:slime",
+];
+
 /// What an attack did.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AttackResult {
@@ -306,7 +318,7 @@ impl EntityWorld {
     /// cooldown, the attacker remembered, and on a full hit the default
     /// knockback away from the player. `None` when no such mob lives.
     fn hurt_by_player(&mut self, id: u64, amount: f32, attack: &PlayerAttack) -> Option<DamageResult> {
-        let hit = self.hurt_for_player(id, amount, attack.player_id, "minecraft:player_attack", DamageSourceKind::PlayerAttack)?;
+        let hit = self.hurt_for_player(id, amount, attack.player_id, "minecraft:player_attack", DamageSourceKind::PlayerAttack, true)?;
         if hit.applied && hit.full {
             if let Some((body, _)) = self.mob_body(id) {
                 let (xd, zd) = (attack.position.x - body.position.x, attack.position.z - body.position.z);
@@ -325,20 +337,21 @@ impl EntityWorld {
         if hit.kind == "minecraft:trident" && self.shulkers.iter().any(|e| e.id == id && e.refuses_arrows()) {
             return Some(refused);
         }
-        let result = self.hurt_for_player(id, hit.amount, hit.player, hit.kind, DamageSourceKind::Projectile)?;
+        let angers = hit.kind != "minecraft:wind_charge" || !self.entity_type(id).is_some_and(|kind| NO_ANGER_FROM_WIND_CHARGE.contains(&kind));
+        let result = self.hurt_for_player(id, hit.amount, hit.player, hit.kind, DamageSourceKind::Projectile, angers)?;
         if result.applied && result.full {
             self.knock_back(id, f64::from(0.4_f32), -hit.velocity.x, -hit.velocity.z);
         }
         Some(result)
     }
 
-    fn hurt_for_player(&mut self, id: u64, amount: f32, player: u64, kind: &'static str, source: DamageSourceKind) -> Option<DamageResult> {
+    fn hurt_for_player(&mut self, id: u64, amount: f32, player: u64, kind: &'static str, source: DamageSourceKind, angers: bool) -> Option<DamageResult> {
         let hit = if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
         } else if let Some(e) = self.zombies.iter_mut().find(|e| e.id == id) {
             // `Zombie.createAttributes`: 2 armor.
             let hit = e.hurt(damage_after_armor(amount, 2.0, 0.0));
-            if hit.applied {
+            if hit.applied && angers {
                 if let Some(ai) = e.ai.as_deref_mut() {
                     // `setLastHurtByMob`, for `HurtByTargetGoal`.
                     ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
@@ -352,7 +365,7 @@ impl EntityWorld {
             hit
         } else if let Some(e) = self.skeletons.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
-            if hit.applied {
+            if hit.applied && angers {
                 if let Some(ai) = e.ai.as_deref_mut() {
                     ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
                 } else {
@@ -369,13 +382,13 @@ impl EntityWorld {
             hit
         } else if let Some(e) = self.spiders.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
-            if hit.applied {
+            if hit.applied && angers {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
             hit
         } else if let Some(e) = self.slimes.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(damage_after_armor(amount, e.slime.armor(), 0.0));
-            if hit.applied {
+            if hit.applied && angers {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
             hit
@@ -583,6 +596,38 @@ mod tests {
         assert!(health(&world, id) < max);
         assert_eq!(world.shulker_mut(id).unwrap().ai.state.hurt_by.map(|(t, _)| t), Some(Target::Player(2)));
         assert_eq!(world.mob_body(id).unwrap().0.velocity, DVec3::ZERO);
+    }
+
+    #[test]
+    fn a_wind_charge_leaves_a_zombie_calm_but_angers_a_pillager() {
+        let mut world = EntityWorld::default();
+        let wind = ProjectileHit { amount: 1.0, kind: "minecraft:wind_charge", player: 4, velocity: DVec3::new(0.0, 0.0, 1.0) };
+        let zombie = world.spawn_zombie_active(crate::zombie::Zombie::new(at(0.5)), 0.0);
+        let spider = world.spawn_spider(crate::spider::Spider::new(at(3.5)), true);
+        let slime = world.spawn_slime(crate::slime::Slime::new(at(6.5), 2), true);
+        let pillager = world.spawn_illager(crate::illager::Illager::new(crate::illager::IllagerKind::Pillager, at(9.5)), true);
+        let drowned = world.spawn_drowned(crate::zombie::Zombie::new(at(12.5)));
+        let mut weak = crate::zombie::Zombie::new(at(15.5));
+        weak.health = 0.5;
+        let weak = world.spawn_zombie(weak, true);
+        for id in [zombie, spider, slime, pillager, drowned, weak] {
+            let before = health(&world, id);
+            assert!(world.player_projectile_hurt(id, wind).is_some_and(|hit| hit.applied && hit.full), "{:?}", world.entity_type(id));
+            assert!(health(&world, id) < before, "{:?}", world.entity_type(id));
+        }
+        let calm = world.zombie_mut(zombie).unwrap();
+        assert_eq!((calm.ai.as_ref().map(|ai| ai.state.hurt_by), calm.target_player_id), (Some(None), None));
+        assert_eq!(world.spider_mut(spider).unwrap().ai.state.hurt_by, None);
+        assert_eq!(world.slime_mut(slime).unwrap().ai.state.hurt_by, None);
+        assert_ne!(world.mob_body(zombie).unwrap().0.velocity, DVec3::ZERO, "it is still pushed");
+        assert_eq!(world.illager_mut(pillager).unwrap().ai.state.hurt_by.map(|(by, _)| by), Some(Target::Player(4)));
+        assert_eq!(world.zombie_mut(drowned).unwrap().target_player_id, Some(4), "a drowned is not on the calm list");
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert!(deaths[0].context.killed_by_player, "the player is still credited");
+        let trident = world.player_projectile_hurt(spider, ProjectileHit { amount: 8.0, kind: "minecraft:trident", ..wind });
+        assert!(trident.is_some_and(|hit| hit.applied));
+        assert_eq!(world.spider_mut(spider).unwrap().ai.state.hurt_by.map(|(by, _)| by), Some(Target::Player(4)));
     }
 
     #[test]
