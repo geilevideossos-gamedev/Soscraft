@@ -10,6 +10,7 @@
 //! serve a generation region and the server level ([`spawning`]: the
 //! per-tick spawner around players).
 
+mod families;
 pub mod spawning;
 pub mod tick;
 
@@ -245,6 +246,7 @@ enum Rules {
     Ocelot,
     Unrestricted,
     Patrolling,
+    Family { creature: bool },
     /// Rules not ported yet: the type is not spawned.
     Other,
 }
@@ -252,7 +254,7 @@ enum Rules {
 impl Rules {
     /// Creatures finalize as animals (`finalize_spawn`), not as monsters.
     fn creature(self) -> bool {
-        matches!(self, Self::Animal | Self::SpawnableOn(_) | Self::Ocelot | Self::Unrestricted)
+        matches!(self, Self::Animal | Self::SpawnableOn(_) | Self::Ocelot | Self::Unrestricted | Self::Family { creature: true })
     }
 }
 
@@ -270,6 +272,9 @@ enum Walk {
 /// The creature types spawn tables name.
 fn type_info(kind: &str) -> Option<TypeInfo> {
     use HeightmapKind::{MotionBlocking, MotionBlockingNoLeaves};
+    if let Some(row) = families::row(kind) {
+        return Some(row.info);
+    }
     let (width, height, placement, heightmap, fire_immune, animal_rules) = match kind.trim_start_matches("minecraft:") {
         "pig" => (0.9, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, true),
         "cow" => (0.9, 1.4, Placement::OnGround, MotionBlockingNoLeaves, false, true),
@@ -894,6 +899,10 @@ impl CreatureSpawns {
 
     /// `Mob.finalizeSpawn` and the type's overrides, drawing from the level random.
     fn finalize_spawn(&self, level: &mut dyn SpawnLevel, kind: &str, tag: &mut Tag, pos: BlockPos, group: &mut Group) {
+        if let Some(row) = families::row(kind) {
+            families::finalize_creature(self, level, row, tag, pos, group);
+            return;
+        }
         let registries = &*self.registries;
         let biome = level.biome(pos);
         let mut unsupported = false;
@@ -1119,6 +1128,7 @@ enum Group {
     Rabbit { variant: i32, size: i32 },
     /// `Llama.LlamaGroupData`: its variant.
     Llama { variant: i32, size: i32 },
+    Family { data: i32, size: i32 },
 }
 
 /// `AgeableMob.finalizeSpawn`: later members of a group may be babies.
@@ -1136,6 +1146,7 @@ fn ageable(level: &mut dyn SpawnLevel, tag: &mut Tag, group: &mut Group, default
         }
         Group::Rabbit { size, .. } => (size, 1.0),
         Group::Llama { size, .. } => (size, 0.05),
+        Group::Family { size, .. } => (size, default_chance),
         Group::None => unreachable!("set above"),
     };
     if *size > 0 && level.random().next_f32() <= chance {

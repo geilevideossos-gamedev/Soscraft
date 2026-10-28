@@ -8,8 +8,8 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 
 Files under `third_party/minecraftoss` this track patched or added (round 8 counted 73 patched and 37 added).
 
-- Patched (10): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`.
-- Added (11): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only).
+- Patched (12): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`.
+- Added (20): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only), `world/src/natural_spawner/families.rs`, `world/src/natural_spawner/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `world/src/natural_spawner/families/tests.rs` (test only).
 
 ## Protocol
 
@@ -148,4 +148,47 @@ After 7f0cd730.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*2,minecraft:cave_spider_spawn_egg*2,minecraft:evoker_spawn_egg*2,minecraft:skeleton_spawn_egg*2,minecraft:shield,minecraft:iron_sword,minecraft:cooked_beef*32,minecraft:milk_bucket
+```
+
+## Group registry-spawning
+
+### 1. Minecraft mob families bring their own spawn rules
+
+After 724aca35.
+
+- **Changed (vendored world crate, D0-4):**
+  - New root `natural_spawner/families.rs`: `FamilySpawn` (`kind`, `info: TypeInfo`, `category`, `follow_range`, `baby_chance: Option<f32>`, `rule: Option<FamilyRule>`, `finalize: Option<FamilyFinalize>`), the two fn types, `rows()` (the seven groups in byte order, then the test rows under `#[cfg(test)]` on the statement), `row(kind)` (with or without `minecraft:`), `rule` (the row's rule with the spawner flag, true for a row without one), `finalize_creature` and `finalize_monster`.
+  - Seven group files `natural_spawner/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, each `pub(super) const ROWS: &[FamilySpawn]`. Only `pests` has rows: `minecraft:silverfish` and `minecraft:endermite`, 0.4 x 0.3, `OnGround`, `MotionBlockingNoLeaves`, not fire immune, `Rules::Family { creature: false }`, monster walk, removed far away, cluster 4, `MobCategory::Monster`, follow range 16, no babies, no finalize, and the rule `any_light_away_from_players` (javap `checkSilverfishSpawnRules` and `checkEndermiteSpawnRules`: `checkAnyLightMonsterSpawnRules`, true for a spawner, else no player within 5 blocks of the block centre).
+  - `natural_spawner.rs`: `mod families;`, `Rules::Family { creature: bool }` (after `Patrolling`) and its `creature()` case, the row first in `type_info`, the row first in `finalize_spawn` (it returns before every built-in arm and the catch-all), `Group::Family { data, size }` and its `ageable` arm.
+  - `spawning.rs`: the row first in `MobCategory::of_type` and `follow_range_base`; `Rules::Family` arms in `natural_spawn_rules` (spawner false) and `spawner_may_spawn` (spawner true, before `_ =>`); in `finalize_monster`, right after the follow-range line, any row runs `families::finalize_monster` and returns before the catch-all; `MonsterGroup::Family { data, size }`; `dark_enough`, `mob_spawn_rules`, `difficulty_at`, `populate_armor`, `roll_enchantments` and `MonsterGroup` are `pub(super)`.
+  - `summon` and the natural spawn need no change: they route by `type_info(kind).rules.creature()`, which is the row's.
+- **What changes for the existing game:** silverfish and endermites now have spawn rules, so a silverfish spawner spawns by them (any light for the rule, a monster's walk target, room, peaceful) instead of anywhere (the kind had no `type_info`, so `spawner_may_spawn` said yes), and a summoned or hatched silverfish or endermite gets its follow range and `Mob.finalizeSpawn` without an unsupported note. Endermites now have the monster category (mob cap, despawning, the terrain's dormant-monster check). Neither kind is simulated yet (group `registry-client`), so nothing new is drawn.
+- **Tests added** (`natural_spawner::families::tests`, with three `#[cfg(test)]` rows: `minecraft:mooshroom` overriding its built-in row as a creature with a numbering finalize and babies at chance 1, `minecraft:giant` as a monster with the same finalize and follow range 30, `minecraft:trader_llama` as a creature without finalize or babies):
+  - `a_family_row_comes_before_the_built_in_tables` (both pests: size, placement, heightmap, rules, walk, removal, cluster, category, `type_width`, the row fields; every row kind unique; a summoned silverfish and endermite get follow range 16, the giant 30).
+  - `a_row_overrides_a_built_in_kind` (the mooshroom's size, rules, walk and category come from the row; the giant gets a category it never had; a summoned mooshroom runs the row's finalize without a context and logs nothing).
+  - `silverfish_spawn_by_any_light_from_spawners_and_never_near_a_player` (the rule passes in full daylight, refuses a player 4.9 blocks from the block centre and allows one at 5, a spawner ignores players and the block below, bedrock refuses a natural spawn; `spawner_may_spawn` says yes in the dark beside a player, no in peaceful and no in full light (the monster walk target); natural spawning with only silverfish in the biome's monster list spawns them with no unsupported note, and none in peaceful).
+  - `a_family_finalize_runs_for_summons_and_natural_spawns_and_shares_group_data` (a summoned giant's finalize gets the context and its difficulty, a summoned mooshroom's gets none; natural giant and mooshroom groups number their members 1, 2, 3 through the shared group data, the monster path with the difficulty and the creature path without, and every member after the first is a baby).
+  - `a_row_without_finalize_or_babies_is_supported_and_draws_nothing` (silverfish and endermite summons log nothing; two trader llamas in one group draw exactly what `finalize_mob` draws, get no baby, keep `Group::None` and skip the built-in llama arm; two mooshrooms draw one baby roll more).
+- **javap this round:** `Silverfish.checkSilverfishSpawnRules` and `Endermite.checkEndermiteSpawnRules` (as above, `getNearestPlayer(x + 0.5, y + 0.5, z + 0.5, 5.0, true)`), `Monster.checkAnyLightMonsterSpawnRules` (only `checkMobSpawnRules` in 26.3), `Mob.checkMobSpawnRules` (true for a spawner, else `isValidSpawn` below), `EntityGetter.getNearestPlayer(DDDDZ)` (`true` picks `NO_CREATIVE_OR_SPECTATOR`; the distance must be below 5).
+- **Decisions:**
+  - `FamilyRule` also takes the kind (`&str`, before `&TypeInfo`), unlike the brief's type: vanilla rules get their `EntityType`, and `mob_spawn_rules` (`isValidSpawn`) reads it for leaves, ice and magma, so two kinds can share one rule.
+  - The pests rule has no peaceful test: in 26.3 `checkAnyLightMonsterSpawnRules` is only `checkMobSpawnRules` (the brief said "not peaceful"). Peaceful is still refused by the existing `getMobForSpawn` line in `spawn_category_for_position` and the peaceful line of `spawner_may_spawn`, which end the spawn as vanilla does.
+  - `SpawnContext.players` holds every non-spectator, while vanilla's 5-block check also skips creative players, so a creative player within 5 blocks also stops a natural silverfish or endermite. Natural spawning already refuses spots within 24 blocks of any player, so this never decides a natural spawn.
+  - The monster path honours `baby_chance` too (the brief named only the finalize and `finalize_mob` there): finalize, then the `AgeableMob` baby draw on the group's size, then `finalize_mob`, the order of vanilla's `super.finalizeSpawn` chain. That is what the `size` of `MonsterGroup::Family` is for.
+  - Group data: the first member's `Some(data)` makes the group `Family { data, size }` (keeping the size counted so far); a family whose finalize keeps no data uses `Ageable` (with babies) or stays `None` (without), so a `baby_chance: None` row never draws a baby roll.
+  - `MonsterGroup` became `pub(super)` (one word) so the root file carries the monster group data; the brief listed only the five helpers.
+  - The test rows are the mooshroom, the giant and the trader llama, not the goat the brief suggested: M1 adds a real goat row to `land.rs`, which would shadow a goat test row (or be shadowed by it) and break one side's tests at that merge. None of the three belongs to a round 10 track, and the test rows exist only in this crate's own test build.
+- **Left for later:**
+  - Chunk-generation spawns (`spawn_for_chunk_generation`, `check_spawn_rules`) have no `SpawnContext`, so a family creature row there still uses the animal rules (`#animals_spawnable_on` below, light above 8) instead of its own rule. The first track with a creature that needs its own rule at world generation (M1's goats, M2's frogs) adds that hook to the root file.
+  - `check_spawn_obstruction` refuses any liquid in the box except for striders and drowned, while vanilla `WaterAnimal.checkSpawnObstruction` only asks `isUnobstructed`. M2 adds that exception for its water rows.
+- **Runs:** `test -p minecraftoss-world --locked` (107 passed, the five new tests with the 26.3 data), `clippy -p minecraftoss-world --locked --lib --tests` (no warnings), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new files pass `rustfmt --check --edition 2024` (the world crate's edition) on their staged content.
+- **Test steps** (silverfish and endermites are not simulated yet, so the steps check that natural spawning, spawners and summons of the old mobs work as before). Release build, survival, Normal, flat open ground in the Overworld. Name each screenshot by its label, `D0-6-1.png`.
+  1. `/time set night` and stand still for a minute: zombies, skeletons, creepers and spiders appear in the dark around you and come at you. **Screenshot D0-6-1.**
+  2. `/time set day`, then walk or fly 300 blocks into land you have not seen: cows, sheep, pigs and chickens stand about in groups, some of them babies. **Screenshot D0-6-2.**
+  3. Build a 7 x 7 x 4 room of stone bricks with no light inside, place the spawner in the middle and use a zombie egg on it: zombies come out within half a minute. Put four torches in the room: no more zombies come. Break the spawner.
+  4. `/summon minecraft:zombie ~ ~ ~4` and `/summon minecraft:skeleton ~ ~ ~4`: both come at you, and the skeleton holds its bow.
+  5. `/difficulty peaceful`: the monsters vanish and no new ones come. `/difficulty normal`.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner*2,minecraft:zombie_spawn_egg*4,minecraft:stone_bricks*64,minecraft:stone_bricks*64,minecraft:torch*16,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
 ```

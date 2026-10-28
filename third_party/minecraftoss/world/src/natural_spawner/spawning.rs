@@ -95,6 +95,9 @@ impl MobCategory {
     /// `EntityType.getCategory` for the mob types spawning names; none for
     /// `MISC` and types not listed.
     pub fn of_type(kind: &str) -> Option<Self> {
+        if let Some(row) = super::families::row(kind) {
+            return Some(row.category);
+        }
         Some(match kind.trim_start_matches("minecraft:") {
             "zombie" | "zombie_villager" | "zombie_horse" | "skeleton" | "creeper" | "spider" | "enderman" | "witch" | "slime" | "husk" | "stray" | "drowned"
             | "bogged" | "parched" | "camel_husk" | "cave_spider" | "silverfish" | "phantom" | "blaze" | "ghast" | "magma_cube" | "piglin" | "hoglin"
@@ -210,7 +213,7 @@ impl SpawnCallbacks for Unlimited {}
 
 /// `SpawnGroupData` a monster type carries through its group.
 #[derive(Clone, Copy, Debug)]
-enum MonsterGroup {
+pub(super) enum MonsterGroup {
     None,
     /// `Zombie.ZombieGroupData`.
     Zombie { baby: bool, can_spawn_jockey: bool },
@@ -218,6 +221,7 @@ enum MonsterGroup {
     Spider,
     /// `AgeableMobGroupData` (slimes, zombie horses).
     Ageable { should_spawn_baby: bool, chance: f32, size: i32 },
+    Family { data: i32, size: i32 },
 }
 
 fn byte(value: bool) -> Tag {
@@ -395,6 +399,9 @@ fn add_modifier(tag: &mut Tag, id: &str, default_base: f64, modifier_id: &str, a
 
 /// The follow range base a type's attribute supplier gives.
 fn follow_range_base(kind: &str) -> f64 {
+    if let Some(row) = super::families::row(kind) {
+        return row.follow_range;
+    }
     match kind {
         "minecraft:zombie" | "minecraft:zombie_villager" | "minecraft:husk" | "minecraft:drowned" | "minecraft:zombified_piglin" => 35.0,
         "minecraft:enderman" => 64.0,
@@ -713,6 +720,7 @@ impl CreatureSpawns {
             Rules::Ghast => level.random().next_i32_bound(20) == 0,
             Rules::AnyLightMonster => true,
             Rules::Drowned => self.dark_enough(level, context, pos),
+            Rules::Family { .. } => super::families::rule(self, level, context, kind, &info, pos, true),
             _ => self.natural_spawn_rules(level, context, kind, &info, pos),
         };
         if !rules {
@@ -763,6 +771,7 @@ impl CreatureSpawns {
             Rules::Ocelot => level.random().next_i32_bound(3) != 0,
             Rules::Unrestricted => true,
             Rules::Patrolling => level.block_brightness(pos) <= 8 && context.difficulty != 0 && self.mob_spawn_rules(level, kind, info, pos),
+            Rules::Family { .. } => super::families::rule(self, level, context, kind, info, pos, false),
             Rules::Other => {
                 level.note_unsupported(&format!("spawn rules of {kind}"));
                 false
@@ -771,7 +780,7 @@ impl CreatureSpawns {
     }
 
     /// `Monster.isDarkEnoughToSpawn`.
-    fn dark_enough(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, pos: BlockPos) -> bool {
+    pub(super) fn dark_enough(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, pos: BlockPos) -> bool {
         let sky = level.sky_brightness(pos);
         if sky > level.random().next_i32_bound(32) {
             return false;
@@ -817,7 +826,7 @@ impl CreatureSpawns {
     }
 
     /// `Mob.checkMobSpawnRules`: a valid spawn block below.
-    fn mob_spawn_rules(&self, level: &mut dyn SpawnLevel, kind: &str, info: &TypeInfo, pos: BlockPos) -> bool {
+    pub(super) fn mob_spawn_rules(&self, level: &mut dyn SpawnLevel, kind: &str, info: &TypeInfo, pos: BlockPos) -> bool {
         let below = level.block(pos.below());
         self.is_valid_spawn(&self.registries, below, kind, info)
     }
@@ -933,7 +942,7 @@ impl CreatureSpawns {
     }
 
     /// `ServerLevel.getCurrentDifficultyAt`.
-    fn difficulty_at(level: &dyn SpawnLevel, context: &SpawnContext, pos: BlockPos) -> DifficultyInstance {
+    pub(super) fn difficulty_at(level: &dyn SpawnLevel, context: &SpawnContext, pos: BlockPos) -> DifficultyInstance {
         let (local, moon) = match level.inhabited_time(pos.chunk()) {
             Some(time) => (time, context.moon_brightness),
             None => (0, 0.0),
@@ -943,7 +952,7 @@ impl CreatureSpawns {
 
     /// `Mob.populateDefaultEquipmentSlots`: an armor set, most likely
     /// leather, one piece after another until a partial-set roll stops it.
-    fn populate_armor(level: &mut dyn SpawnLevel, tag: &mut Tag, difficulty: DifficultyInstance) {
+    pub(super) fn populate_armor(level: &mut dyn SpawnLevel, tag: &mut Tag, difficulty: DifficultyInstance) {
         if level.random().next_f32() < 0.15 * difficulty.special_multiplier() {
             let mut armor_type = level.random().next_i32_bound(3);
             for _ in 1..=3 {
@@ -971,7 +980,7 @@ impl CreatureSpawns {
     /// `Mob.populateDefaultEquipmentEnchantments`: a roll per equipped item
     /// (the main hand at 0.25, armor at 0.5, times the special multiplier)
     /// in `EquipmentSlot.VALUES` order.
-    fn roll_enchantments(level: &mut dyn SpawnLevel, tag: &Tag, difficulty: DifficultyInstance) {
+    pub(super) fn roll_enchantments(level: &mut dyn SpawnLevel, tag: &Tag, difficulty: DifficultyInstance) {
         let special = difficulty.special_multiplier();
         for (slot, chance) in [("mainhand", 0.25f32), ("feet", 0.5), ("legs", 0.5), ("chest", 0.5), ("head", 0.5)] {
             if has_equipment(tag, slot) && level.random().next_f32() < chance * special {
@@ -1165,6 +1174,10 @@ impl CreatureSpawns {
         let mut own = entity_random(uuid);
         // Created before `Mob.finalizeSpawn` adds its bonus.
         let _ = attribute(&mut tag, "minecraft:follow_range", follow_range_base(kind));
+        if let Some(row) = super::families::row(kind) {
+            super::families::finalize_monster(self, level, (context, difficulty), row, &mut tag, pos, group);
+            return tag;
+        }
         match kind {
             "minecraft:husk" => {
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
