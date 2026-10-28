@@ -29,10 +29,12 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 ## Tracks
 | Track | Branch | Brief | Segments | State |
 |---|---|---|---|---|
-| D0. Shared mob wiring (mob list, spawn tables, render registry) | track-d0 | `docs/round10/track-d0.md` | | brief |
+| D0. Shared mob wiring (mob list, spawn tables, render registry) | track-d0 | `docs/round10/track-d0.md` | d0a (registry-core ... silverfish-drawn: the whole registry with silverfish and endermites as its proof), d0b (silverfish-behaviour, flying-navigation) | d0a running since 2026-10-28; merged first, then D, W, F and M1-M3 merge it in before their mob groups |
 | D. Trial spawners, vaults, lodestones, breezes | track-d | `docs/round10/track-d.md` | d1 (d5-review ... lodestones, review base `r9-d5-base` so the round 9 d5 commits are reviewed too), d2 (breezes, breeze-render; after D0) | d1 running since 2026-10-28 |
 | W. Darkness, vibrations, sculk, warden | track-w | `docs/round10/track-w.md` | w1 (darkness ... shriekers-catalysts), w2 (warden groups; after D0) | w1 running since 2026-10-28 |
-| M1-M3. The remaining mobs | track-m1..m3 | after D0's design | | waiting for D0 |
+| M1. Land animals (group `land`, bytes 48-63): rabbit, fox, goat, parrot, panda, turtle, armadillo, polar bear, sniffer, bee | track-m1 | `docs/round10/track-m1.md` | | brief being written; starts when d0a is merged |
+| M2. Water and buckets (group `water`, 64-79): P2 water movement, squids, fish, dolphin, axolotl, frog, tadpole, guardians, nautiluses, sulfur cube | track-m2 | `docs/round10/track-m2.md` | | brief being written; starts when d0a is merged |
+| M3. Night, built and horses (group `night`, 80-95; horse kinds in the cow store): phantom, P8 lightning, undead horses, camels, allay, copper golem, creaking, happy ghast | track-m3 | `docs/round10/track-m3.md` | | brief being written; starts when d0a is merged |
 | E1. Known limits: screens, visuals, sounds | track-e1 | `docs/round10/track-e.md` | e1a (kit-components ... dye-icons), e1b (horse-dye ... bells-outline) | e1a running since 2026-10-28 |
 | E2. Known limits: gameplay and loot | track-e2 | `docs/round10/track-e.md` | e2a (ti1 ... fw-launch), e2b (fw-shapes ... ti4-end-targets) | e2a running since 2026-10-28 |
 | F. First Elden Ring boss: Margit, the Fell Omen | track-f (target `C:\iw4l-wt\track-f`) | `docs/ELDEN-RING-BOSSES.md`, `docs/round10/track-f.md` | f1 (er-core, er-rules: the pure `elden_boss` crate), f2 (er-entity, er-arena; after D0), f3 (er-look, er-fight, er-guns, er-bar-friend, er-altar) | f1 running since 2026-10-28 |

@@ -1,0 +1,40 @@
+{
+  "track": "d0",
+  "worktree": "C:\\Dev\\mc-wt\\track-d0",
+  "branch": "track-d0",
+  "target": "D:\\iw4l-wt\\track-d0",
+  "base": "r10-d0a-base",
+  "round": 10,
+  "briefs": "docs/round10/track-d0.md (read D0-0 to D0-3 first)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. D0 is on the critical path: tracks D, W, M1-M3 and F wait for its registry. Keep each group to its brief section; never touch existing families' behaviour. D0's own generic arms go at the end of each list, as its brief says; the note about related positions is for the other tracks.",
+  "groups": [
+    {
+      "key": "registry-core",
+      "prompt": "Track D0 brief: docs/round10/track-d0.md. Read D0-0 (rules, the agreement with track E, no PROTOCOL bump), D0-1 and D0-2 first. Commit 1: create docs/round10/mobs.md from D0-8 verbatim. Commit 2 'Minecraft mob families plug into the entity world through one registry': D0-2.1 to D0-2.3 and D0-2.7 in the vendored entities crate (world/families.rs root, the seven group files, family_group!, MobCore with `removed`, FamilyMob, FamilyStore, Family with every hook of D0-2.2 and its defaults, Registered, EntityKey::Family, MobHit::Family, one generic arm per site of the D0-2.3 table at the end of each list, including the leash rows, fireball_damages_mob and the `removed` death retain; the base-tick helpers family_base_tick (step_sound, dying_travel), family_goal_step, family_after_move, family_strike and the generic Exposed impl through S::hurt; the cfg(test) probe, key 39). Tests: the D0-9.1 walk, combat, death, removal, despawn, pushing, lead, fireball and iron-golem tests. Start docs/round10/track-d0-log.md."
+    },
+    {
+      "key": "registry-hooks",
+      "prompt": "Track D0, docs/round10/track-d0.md sections D0-2.4 to D0-2.6, three commits: 1 'Registered Minecraft mobs use the shared monster goals and targets' (MonsterKind::Registered, MonsterSpec, GoalExtra after `shulker`, Prey::Kinds, the profile/can_float/follow-range/goals arms, is_enemy closing line, family_goal_step used by the probe); 2 'Registered Minecraft mobs can carry riders' (every riding.rs arm of D0-2.5: carries_riders, passenger_point, vehicle_body, start_riding, stop_riding, controlling_player, controlling_mob, order_vehicle, jumpable_by and tick_ride_jumps, mob_vehicle_attachment); 3 'Minecraft mobs can hurt players with their own damage types' (PlayerHitKind::Typed, MobAttack::Typed, survival entities.rs mob_hit, death.rs, bin/check_zombie_player_hits.rs). Tests: the D0-9.1 goal, prey, hurt-turn, mount, steer-and-jump and typed-hit tests. Update the track log."
+    },
+    {
+      "key": "registry-spawning",
+      "prompt": "Track D0, docs/round10/track-d0.md section D0-4: in the vendored world crate add natural_spawner/families.rs and the seven group row files; make dark_enough, mob_spawn_rules, difficulty_at, populate_armor and roll_enchantments pub(super) in spawning.rs; FamilySpawn rows (baby_chance: Option<f32>, finalize with Option<(&SpawnContext, DifficultyInstance)>) checked first in type_info, MobCategory::of_type, follow_range_base, finalize_monster and finalize_spawn, every row returning before the note_unsupported catch-alls; Rules::Family { creature } calling the row's rule with the spawner flag in natural_spawn_rules and spawner_may_spawn; Group::Family and MonsterGroup::Family; the pests rows for minecraft:silverfish and minecraft:endermite. One commit: 'Minecraft mob families bring their own spawn rules'. Tests D0-9.2. Update the track log."
+    },
+    {
+      "key": "silverfish-live",
+      "prompt": "Track D0, docs/round10/track-d0.md sections D0-7 (vanilla numbers) and D0-7.1: one commit 'Minecraft silverfish and endermites live in the entity world'. Two registry families in entities/src/world/families/pests/ (silverfish.rs key 36, endermites.rs key 37) on MonsterKind::Registered with MonsterSpecs and the base-tick helpers (family_goal_step, step_sound): attributes, goals and targets, hurt and the alert, the wake-friends clock in GoalExtra, 5 and 3 experience, Lifetime and the 2400-tick life ending in core.removed, enemy for iron golems, endermen hunting endermites through Prey::Kinds. javap the goals first and record the numbers in the log. Tests D0-9.3."
+    },
+    {
+      "key": "registry-client",
+      "prompt": "Track D0, docs/round10/track-d0.md sections D0-5.1 and D0-5.2, two commits: 1 'Registered Minecraft mobs are saved, loaded and hatched' (TerrainFamily, terrain_group!, families::Common, generic spawn_saved mapping the tag id to the KINDS entry, mob_tags_where, is_simulated and simulated_kinds, the eggs survey with short names, /summon list, VEHICLES/carries through is_vehicle; switch server.rs live_shulkers_stay_far_from_players_while_dormant_monsters_go from silverfish to minecraft:phantom); 2 'Friends see registered Minecraft mobs' (tracking_range, look dropping only the tag's own family's VOLATILE keys, MobShow.family FamilyShow, shows, show_on). No PROTOCOL bump: add a '## Protocol' section to the track log naming commit 2 and MobShow.family (decisions.md). Silverfish and endermite glue; mobs.md rows to live. The D0-9.4 tests for these commits."
+    },
+    {
+      "key": "registry-draw",
+      "prompt": "Track D0, docs/round10/track-d0.md sections D0-5.3, D0-5.4 and D0-6.1, two commits: 1 'Registered Minecraft mobs are drawn, shot and used through one registry' (client_mobs server_mobs push, swings and head-turn, shadow_casters, mesh.rs textures, spawner_display, FamilyDraw with models, culled, translucent and held, the generic glow loop beside entity_view.rs:1108-1121, mob_actions MobHit::Family arm, survival encode/decode, entity_view boxes, meshes and client_effects with ClientFx, the keyframe holder of D0-6.1); 2 'Minecraft players cannot sleep beside pillagers, vexes, ravagers or withers' (resting_monsters, plus its generic loop). The D0-9.4 tests for these commits, including the glow and look-tag tests. Update the track log."
+    },
+    {
+      "key": "silverfish-drawn",
+      "prompt": "Track D0, docs/round10/track-d0.md section D0-7.2: one commit 'Minecraft silverfish and endermites are drawn like vanilla'. javap SilverfishModel, EndermiteModel and their renderers; port createBodyLayer and setupAnim on posed_cube in crates/minecraft_terrain/src/families/pests/; textures, shadow and death flip through TerrainFamily; the endermite's two portal particles a tick through client_effects for host and friend; spawner cages through the generic arm. mobs.md rows to drawn. Tests D0-9.5."
+    }
+  ]
+}
