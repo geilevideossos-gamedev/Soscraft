@@ -138,3 +138,22 @@ After 83a12ec4.
 ```
 IW4L_MINECRAFT_KIT=minecraft:splash_potion@poison,minecraft:splash_potion@harming*2,minecraft:blaze_spawn_egg,minecraft:ghast_spawn_egg,minecraft:hoglin_spawn_egg,minecraft:cobblestone*64,minecraft:potion@fire_resistance,minecraft:golden_apple*16
 ```
+
+### 2. Minecraft harming heals every undead mob
+
+After a8700f4f.
+
+- **Vanilla (26.3):** `HealOrHarmMobEffect` turns round for every mob in `#minecraft:inverted_healing_and_harm`, which is `#minecraft:undead`: `#skeletons`, `#zombies` (with zoglin, zombie horse, camel husk and zombie nautilus), the wither and the phantom. The same tag is `#ignores_poison_and_regen`.
+- **Changed:** vendored `entities/src/world/witches.rs`:
+  - `splash_instant` decides "undead" by `entity_type(id)` and `wither::is_undead` (the full 26.3 tag), not by the zombie and skeleton stores. Zoglins and withers are now healed by harming and hurt by healing. This covers splash potions, lingering clouds and witches' potions, which all go through `splash_instant`.
+  - `mob_effects_mut` reads the same flag once before its borrows and uses it for the `cows` store, so skeleton and zombie horses (track M) will ignore poison and regeneration without another change. The other stores keep their own flags.
+- **Tests:** vendored `world::witches::tests::harming_heals_a_zoglin_and_a_wither_and_healing_hurts_them`: a zoglin, a wither and a drowned refuse poison, gain 4 from a harming splash and lose 6 to a healing splash; a hoglin still loses 6 to harming; a horse is not undead.
+- **Decision:** the fork has no skeleton or zombie horses yet, so the brief's skeleton-horse case can't be tested. The `cows` flag follows `entity_type`, which returns the horse kind's id, so the test that adds those horses only needs to check the flag.
+- **Test steps (survival, Normal, by day, flat ground; pen the zoglin in with cobblestone):**
+  1. Use the zoglin spawn egg and throw a harming splash at it. It shows no red flash and loses no health, because harming heals it (**ti2-4_zoglin_harming**).
+  2. Throw a healing splash at the same zoglin. Now it flashes red and charges you (**ti2-5_zoglin_healing**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:splash_potion@harming,minecraft:splash_potion@healing,minecraft:zoglin_spawn_egg,minecraft:cobblestone*64,minecraft:golden_apple*16
+```

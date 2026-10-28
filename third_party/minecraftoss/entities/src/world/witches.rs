@@ -476,6 +476,7 @@ impl EntityWorld {
 
     /// A mob's effects, with whether it is undead or a spider.
     pub fn mob_effects_mut(&mut self, id: u64) -> Option<(&mut MobEffects, bool, bool)> {
+        let undead = self.entity_type(id).is_some_and(crate::wither::is_undead);
         if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.witch.effects, false, false));
         }
@@ -531,7 +532,7 @@ impl EntityWorld {
             return Some((&mut e.effects, true, false));
         }
         if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
-            return Some((&mut e.effects, false, false));
+            return Some((&mut e.effects, undead, false));
         }
         if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
@@ -604,7 +605,7 @@ impl EntityWorld {
     /// round. An enderman teleports away from a potion instead of taking
     /// its harm (`Enderman.hurtServer`).
     pub fn splash_instant(&mut self, id: u64, effect: MobEffect, amplifier: i32, scale: f64, at: DVec3, owner: Option<u64>) -> Option<DamageResult> {
-        let undead = self.zombies.iter().any(|e| e.id == id) || self.skeletons.iter().any(|e| e.id == id);
+        let undead = self.entity_type(id).is_some_and(crate::wither::is_undead);
         match instant_work(effect, amplifier, undead, scale) {
             Some(EffectWork::Heal(amount)) => {
                 self.heal_mob(id, amount);
@@ -844,6 +845,32 @@ mod tests {
         }
         assert_eq!(world.blaze_mut(blaze).unwrap().ai.state.hurt_by.map(|(by, _)| by), Some(Target::Player(3)));
         assert_eq!(world.ghast_mut(ghast).unwrap().ai.state.hurt_by.map(|(by, _)| by), Some(Target::Player(3)));
+    }
+
+    #[test]
+    fn harming_heals_a_zoglin_and_a_wither_and_healing_hurts_them() {
+        let mut world = EntityWorld::default();
+        let zoglin = world.spawn_hoglin(crate::hoglin::Hoglin::new(crate::hoglin::HoglinKind::Zoglin, at(0.5)), true);
+        let wither = world.spawn_wither(crate::wither::Wither::new(at(5.5)), true);
+        let drowned = world.spawn_drowned(crate::zombie::Zombie::new(at(10.5)));
+        let hoglin = world.spawn_hoglin(crate::hoglin::Hoglin::new(crate::hoglin::HoglinKind::Hoglin, at(15.5)), true);
+        world.hoglin_mut(zoglin).unwrap().hoglin.health = 20.0;
+        world.wither_mut(wither).unwrap().wither.health = 200.0;
+        world.zombie_mut(drowned).unwrap().zombie.health = 10.0;
+        world.hoglin_mut(hoglin).unwrap().hoglin.health = 20.0;
+        for (id, before) in [(zoglin, 20.0), (wither, 200.0), (drowned, 10.0)] {
+            assert_eq!(world.mob_effects_mut(id).map(|(_, undead, _)| undead), Some(true));
+            assert!(!world.add_mob_effect(id, EffectInstance::new(MobEffect::Poison, 900, 0)), "{:?}", world.entity_type(id));
+            assert_eq!(world.splash_instant(id, MobEffect::InstantDamage, 0, 1.0, at(0.0), Some(PLAYER_TARGET + 1)), None);
+            assert_eq!(health(&world, id), before + 4.0, "{:?}", world.entity_type(id));
+            assert!(world.splash_instant(id, MobEffect::InstantHealth, 0, 1.0, at(0.0), Some(PLAYER_TARGET + 1)).is_some_and(|hit| hit.applied));
+            assert_eq!(health(&world, id), before - 2.0, "{:?}", world.entity_type(id));
+        }
+        assert!(world.splash_instant(hoglin, MobEffect::InstantDamage, 0, 1.0, at(0.0), Some(PLAYER_TARGET + 1)).is_some_and(|hit| hit.applied));
+        assert_eq!(health(&world, hoglin), 14.0);
+        assert_eq!(world.mob_effects_mut(hoglin).map(|(_, undead, _)| undead), Some(false));
+        let horse = world.spawn_horse(crate::cow::Cow::new(at(20.5)), crate::horse::HorseState::new(crate::horse::HorseKind::Horse), true);
+        assert_eq!(world.mob_effects_mut(horse).map(|(_, undead, _)| undead), Some(false));
     }
 
     #[test]
