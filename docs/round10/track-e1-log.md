@@ -97,3 +97,30 @@ Commit: "Minecraft taming shows hearts, and a failed try or a bucking horse show
 ```
 IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:llama_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*4,minecraft:ocelot_spawn_egg*2,minecraft:wheat*64,minecraft:golden_carrot*16,minecraft:bone*32,minecraft:cod*64,minecraft:iron_sword,minecraft:cooked_beef*32
 ```
+
+### Villager hearts, anger, happiness and raid sweat
+
+Commit: "Minecraft villagers show hearts, anger, happiness and raid sweat", the one after `8618a93d`.
+
+- **Cause:** the villagers' entity events reached the server's puff list after the last commit, but `puff_for` had no villager rows and the client had no angry-villager or splash particle.
+- **Vanilla 26.3** (javap): `Villager.handleEntityEvent` draws 12 `HEART`, 13 `ANGRY_VILLAGER`, 14 `HAPPY_VILLAGER` and 42 `SPLASH` through `AbstractVillager.addParticlesAroundSelf`: 5 particles, motion `nextGaussian() * 0.02` three times, at `getRandomX(1)`, `getRandomY() + 1.0`, `getRandomZ(1)`. Anything else goes to `AbstractVillager`, so a villager's 18 draws nothing. `HeartParticle$AngryVillagerProvider` is the heart particle half a block higher with the `angry` sprite and colour (1, 1, 1). `SplashParticle` is a `WaterDropParticle` with gravity 0.04, whose velocity becomes `(xa, 0.1, za)` when `ya` is 0 and `xa` or `za` is not.
+- **Changed:**
+  - `mob_particles.rs`: the villager rows (12 heart, 13 angry, 14 happy, 42 splash, each 5 particles a block up); a villager's other events, 18 included, give nothing.
+  - `ambient_particles.rs`: `Kind::AngryVillager` (the heart particle at `at + (0, 0.5, 0)`, sprite `angry`, added to the atlas list, ticked with `coast`) and `Kind::Splash` (the rain drop's draws with gravity 0.04 and the sideways override, ticked with `drip`, sprites `splash_0..3`).
+  - `entity_view.rs`: `mob_puffs()` maps the two new kinds.
+- **Tests:**
+  - `minecraft_terrain` `mob_particles::tests::villager_events_give_five_particles_a_block_up` (12, 13, 14, 42; a wolf's 12 and a wandering trader's 14 give nothing; a spawned villager's 42 becomes one splash puff of 5 a block up with range 10, its 18 nothing).
+  - `minecraft_terrain` `ambient_particles::tests`: `an_angry_cloud_starts_half_a_block_higher_and_is_white`, `a_splash_drop_falls_at_0_04_and_pops_on_the_ground`.
+  - `minecraft_survival` `entity_view::tests::a_villager_s_puffs_draw_five_of_their_kind_a_block_up`.
+- **Decisions:** none beyond the brief. The villagers' events come from code that already ran: 13 when a player hurts a living villager, 14 after a trade, 12 to both parents and the baby after breeding, 42 one tick in 100 for a villager with AI inside an active raid.
+- **Owner's test steps** (survival, Normal, by day, a new world, the kit below):
+  1. **Anger.** Use a villager egg. Punch it once with an empty hand: a few dark grey clouds puff over its head. **Screenshot 7.**
+  2. **Happiness.** Place the composter beside a second villager. When it has become a farmer (a straw hat), make one trade: green sparkles over its head. **Screenshot 8.** A 26.3 farmer offers 2 of its 5 novice trades at random (20 wheat, 26 potatoes, 22 carrots or 15 beetroot for an emerald, or an emerald for 6 bread), so it always wants at least one crop; the kit has all four.
+  3. **Raid sweat.** `/locate structure minecraft:village_plains` and `/tp` there. Walk 60 blocks out, drink an ominous bottle and walk back in. Wait for the raid. While the villagers hide in the houses, each one now and then (about every 5 seconds) shows a few light-blue water drops around its head, which fall and vanish. **Screenshot 9**, through a door or window.
+  4. **Optional, villager hearts.** Put down the three beds near two villagers and throw each one 6 bread. After a while hearts rise over both, and a baby villager appears with hearts of its own.
+  5. **Two windows** (host H, friend F): during a raid with both in the village, F also sees the villagers' water drops; H punches a villager next to F, and F sees the grey clouds.
+- **Kit** (the whole `particles-events` group, taming steps of the last commit included; 22 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:llama_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*4,minecraft:ocelot_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:wheat*64,minecraft:potato*64,minecraft:carrot*64,minecraft:beetroot*64,minecraft:golden_carrot*16,minecraft:bone*32,minecraft:cod*64,minecraft:bread*32,minecraft:white_bed,minecraft:white_bed,minecraft:white_bed,minecraft:composter,minecraft:emerald*64,minecraft:ominous_bottle*2,minecraft:iron_sword,minecraft:cooked_beef*32
+```

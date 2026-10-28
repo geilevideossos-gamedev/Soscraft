@@ -7,8 +7,14 @@ const OCELOT: &str = "minecraft:ocelot";
 const TAMED: u8 = 7;
 const NOT_TAMED: u8 = 6;
 const IN_LOVE: u8 = 18;
+const VILLAGER_HEARTS: u8 = 12;
+const VILLAGER_ANGRY: u8 = 13;
+const VILLAGER_HAPPY: u8 = 14;
+const VILLAGER_SWEATING: u8 = 42;
 const ANIMAL_PARTICLES: u8 = 7;
 const ANIMAL_LIFT: f64 = 0.5;
+const VILLAGER_PARTICLES: u8 = 5;
+const VILLAGER_LIFT: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PuffKind {
@@ -31,16 +37,21 @@ pub struct MobPuff {
 }
 
 pub fn puff_for(entity_type: &str, event: u8) -> Option<(PuffKind, u8, f64)> {
-    let kind = match (entity_type, event) {
+    let villager = |kind| Some((kind, VILLAGER_PARTICLES, VILLAGER_LIFT));
+    let animal = |kind| Some((kind, ANIMAL_PARTICLES, ANIMAL_LIFT));
+    match (entity_type, event) {
+        (VILLAGER, VILLAGER_HEARTS) => villager(PuffKind::Heart),
+        (VILLAGER, VILLAGER_ANGRY) => villager(PuffKind::AngryVillager),
+        (VILLAGER, VILLAGER_HAPPY) => villager(PuffKind::HappyVillager),
+        (VILLAGER, VILLAGER_SWEATING) => villager(PuffKind::Splash),
         (VILLAGER, _) => None,
-        (OCELOT, TRUSTING_EVENT) => Some(PuffKind::Heart),
-        (OCELOT, DISTRUSTING_EVENT) => Some(PuffKind::Smoke),
+        (OCELOT, TRUSTING_EVENT) => animal(PuffKind::Heart),
+        (OCELOT, DISTRUSTING_EVENT) => animal(PuffKind::Smoke),
         (OCELOT, TAMED | NOT_TAMED) => None,
-        (_, TAMED | IN_LOVE) => Some(PuffKind::Heart),
-        (_, NOT_TAMED) => Some(PuffKind::Smoke),
+        (_, TAMED | IN_LOVE) => animal(PuffKind::Heart),
+        (_, NOT_TAMED) => animal(PuffKind::Smoke),
         _ => None,
-    };
-    kind.map(|kind| (kind, ANIMAL_PARTICLES, ANIMAL_LIFT))
+    }
 }
 
 pub fn mob_puffs(world: &EntityWorld, events: &[(u64, u8)]) -> Vec<MobPuff> {
@@ -100,6 +111,29 @@ mod tests {
         );
         assert_eq!(puff_for("minecraft:ocelot", 7), None);
         assert_eq!(puff_for("minecraft:ocelot", 6), None);
+    }
+
+    #[test]
+    fn villager_events_give_five_particles_a_block_up() {
+        for (event, kind) in [
+            (12, PuffKind::Heart),
+            (13, PuffKind::AngryVillager),
+            (14, PuffKind::HappyVillager),
+            (42, PuffKind::Splash),
+        ] {
+            assert_eq!(puff_for("minecraft:villager", event), Some((kind, 5, 1.0)));
+        }
+        assert_eq!(puff_for("minecraft:wolf", 12), None);
+        assert_eq!(puff_for("minecraft:wandering_trader", 14), None);
+        let mut world = EntityWorld::default();
+        let villager = world.spawn_villager(
+            minecraftoss_entities::villager::Villager::new(DVec3::new(0.5, 64.0, 0.5)),
+            true,
+        );
+        let puffs = mob_puffs(&world, &[(villager, 42), (villager, 18)]);
+        assert_eq!(puffs.len(), 1);
+        assert_eq!((puffs[0].kind, puffs[0].count), (PuffKind::Splash, 5));
+        assert_eq!((puffs[0].lift, puffs[0].range), (1.0, 10));
     }
 
     #[test]

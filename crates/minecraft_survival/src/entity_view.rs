@@ -309,7 +309,8 @@ impl EntityView {
                 PuffKind::Heart => Kind::Heart,
                 PuffKind::Smoke => Kind::Smoke,
                 PuffKind::HappyVillager => Kind::HappyVillager,
-                PuffKind::AngryVillager | PuffKind::Splash => continue,
+                PuffKind::AngryVillager => Kind::AngryVillager,
+                PuffKind::Splash => Kind::Splash,
             };
             let (width, height) = (f64::from(puff.width), f64::from(puff.height));
             for _ in 0..puff.count {
@@ -1535,6 +1536,25 @@ mod tests {
         for (_, at) in drawn {
             assert!((at.x - feet.x).abs() <= 0.6 && (at.z - feet.z).abs() <= 0.6, "{at}");
             assert!(at.y >= feet.y + 0.5 && at.y <= feet.y + 0.85 + 0.5, "{at}");
+        }
+    }
+
+    #[test]
+    fn a_villager_s_puffs_draw_five_of_their_kind_a_block_up() {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraft_terrain::mob_particles::{MobPuff, PuffKind};
+        let mut view = EntityView::new(13);
+        let feet = DVec3::new(0.5, 64.0, 0.5);
+        let puff = |kind| MobPuff { kind, count: 5, feet, width: 0.6, height: 1.95, lift: 1.0, range: 10 };
+        let kinds = [(PuffKind::Heart, Kind::Heart), (PuffKind::AngryVillager, Kind::AngryVillager), (PuffKind::HappyVillager, Kind::HappyVillager), (PuffKind::Splash, Kind::Splash)];
+        let mut snapshot = EntitySnapshot { mob_puffs: kinds.iter().map(|&(kind, _)| puff(kind)).collect(), ..EntitySnapshot::default() };
+        view.bursts(&mut snapshot);
+        let drawn: Vec<(Kind, DVec3)> = view.ambient.kinds_at().collect();
+        for (_, kind) in kinds {
+            let lowest = if kind == Kind::AngryVillager { 1.5 } else { 1.0 };
+            let of_kind: Vec<DVec3> = drawn.iter().filter(|(drawn, _)| *drawn == kind).map(|&(_, at)| at).collect();
+            assert_eq!(of_kind.len(), 5, "{kind:?}");
+            assert!(of_kind.iter().all(|at| at.y >= feet.y + lowest && at.y <= feet.y + 1.95 + lowest), "{kind:?} {of_kind:?}");
         }
     }
 
