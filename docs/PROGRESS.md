@@ -22,7 +22,7 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 
 ## Where it stands
 - 2026-10-28: the track-d worktree was fine (links already pointed at `C:\Dev\mc-wt\track-d`; `git worktree repair` found nothing). The track runner was already saved. track-d merged as 6e0e0573 (full suite green, 24.9 min), pushed; release 1 built and copied in. The track-d branch is fast-forwarded to 6e0e0573 and its target dir trimmed of test binaries.
-- Briefs written by workflows: E (ed23b000), D and W (382bf959). D0 (shared mob registry) and F (Elden Ring design doc and proof of concept) still being written. The M1-M3 briefs follow D0's design.
+- Briefs written by workflows: E (ed23b000), D and W (382bf959), F and the Elden Ring design doc (c9253dba). D0 (shared mob registry) still being written. The M1-M3 briefs follow D0's design.
 - Each track runs in segments of a few groups, one track-runner run each, with the segment's base tagged `r10-<segment>-base` before it starts. The specs are in `docs/round10/runs/`.
 - A watchdog (a background loop) alerts when D: or C: falls below 8 GB.
 
@@ -35,7 +35,7 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 | M1-M3. The remaining mobs | track-m1..m3 | after D0's design | | waiting for D0 |
 | E1. Known limits: screens, visuals, sounds | track-e1 | `docs/round10/track-e.md` | e1a (kit-components ... dye-icons), e1b (horse-dye ... bells-outline) | e1a running since 2026-10-28 |
 | E2. Known limits: gameplay and loot | track-e2 | `docs/round10/track-e.md` | e2a (ti1 ... fw-launch), e2b (fw-shapes ... ti4-end-targets) | e2a running since 2026-10-28 |
-| F. First Elden Ring boss | track-f | `docs/ELDEN-RING-BOSSES.md`, `docs/round10/track-f.md` | | brief |
+| F. First Elden Ring boss: Margit, the Fell Omen | track-f (target `C:\iw4l-wt\track-f`) | `docs/ELDEN-RING-BOSSES.md`, `docs/round10/track-f.md` | f1 (er-core, er-rules: the pure `elden_boss` crate), f2 (er-entity, er-arena; after D0), f3 (er-look, er-fight, er-guns, er-bar-friend, er-altar) | f1 running since 2026-10-28 |
 
 ## Release builds
 | # | When | Commit | State |
@@ -43,6 +43,7 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 | 1 | track-d merged (d6, keyframes, withers, wind charges) | 6e0e0573 | done 2026-10-28: full suite green (24.9 min, 3863 tests); release 12m 57s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, old one kept as `iw4l-survival-f743218.exe`, relay copied (same hash); protocol 6; test steps `docs/round10/release-1-tests.md` |
 
 ## Log
+- 2026-10-28: `docs/ELDEN-RING-BOSSES.md` written (first boss Margit, the Fell Omen, with a stand-in model); track F (f1) started.
 - 2026-10-28: tracks E1 (e1a), E2 (e2a), D (d1) and W (w1) started; disk watchdog on.
 - 2026-10-28: release 1 (6e0e0573) built and copied in; test steps `docs/round10/release-1-tests.md`.
 - 2026-10-28: round 10 started; track-d merged in its worktree (6e0e0573), full suite running; briefs started.

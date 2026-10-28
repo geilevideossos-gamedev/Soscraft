@@ -1,0 +1,20 @@
+{
+  "track": "f",
+  "worktree": "C:\\Dev\\mc-wt\\track-f",
+  "branch": "track-f",
+  "target": "C:\\iw4l-wt\\track-f",
+  "base": "r10-f2-base",
+  "round": 10,
+  "briefs": "docs/round10/track-f.md and docs/ELDEN-RING-BOSSES.md (the design doc) and docs/round10/track-d0.md (the D0 registry plug-in checklist)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
+  "groups": [
+    {
+      "key": "er-entity",
+      "prompt": "Build commits F2.1-F2.2 of section F2 of docs/round10/track-f.md (group er-entity, segment f2). Needs D0 merged into track-f: read docs/round10/track-d0.md and its log first and plug Margit in by D0's checklist; Appendix A only for what D0 does not cover, each such site recorded in the log. Margit lives in the entity world on elden_boss's brain (voices as Voice::Event, category hostile_volume; never far away; Peaceful removes him; mobs do not target him), is saved by crates/minecraft_terrain/src/elden_save.rs as a minecraft:marker carrying data.iw4l and loads in Return at full health (never reading Health), and takes Minecraft melee, projectile, explosion and environment hits with no hurt cooldown except Environment. Add elden_boss path dependencies where first used."
+    },
+    {
+      "key": "er-arena",
+      "prompt": "Build commits F2.3-F2.4 of section F2 of docs/round10/track-f.md (group er-arena, segment f2), continuing from er-entity. /summon iw4l:margit is accepted and suggested (registry beside SIMULATED_KINDS or D0's list), refused on Peaceful, honours NBT Health, stores his tag in mob_tags; death lines name him (death.rs entity_name). tick_elden_boss builds the Sense (eligible candidates, each player's ground height from the blocks, reachable from a path plan at most every 10 ticks), steps the brain, and applies walking, facing, root motion and leaps as collision moves, and fades to a standing spot, so he walks, leaps, fades and keeps to his arena. Tests as listed, including the walled-ring fade and the two-deep-hole hit."
+    }
+  ]
+}

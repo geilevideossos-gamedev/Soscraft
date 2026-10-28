@@ -1,0 +1,32 @@
+{
+  "track": "f",
+  "worktree": "C:\\Dev\\mc-wt\\track-f",
+  "branch": "track-f",
+  "target": "C:\\iw4l-wt\\track-f",
+  "base": "r10-f3-base",
+  "round": 10,
+  "briefs": "docs/round10/track-f.md and docs/ELDEN-RING-BOSSES.md (the design doc)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
+  "groups": [
+    {
+      "key": "er-look",
+      "prompt": "Build section F3 of docs/round10/track-f.md (group er-look), commits F3.1-F3.3, with design doc sections 5.3, 5.4 and 14.1. A 64x64 skin painted by code beside the white tile in mesh.rs (no PNG; the gold of his weapons painted in it), the posed-cube model of a hooded old man with a cane and gold weapon parts drawn full-bright and scaled in over 4 ticks (no append_glowing, no tint), key poses timed by the move table on keyframes.rs (the move clock stops in holds), the eye tell, and cue particles (Totem, EndRod, Poof, Explosion, Crit, and gold SpellKind::Effect spell particles; nothing added to ambient_particles.rs) and sounds from the shown clip, the same in host and friend views."
+    },
+    {
+      "key": "er-fight",
+      "prompt": "Build section F4 of docs/round10/track-f.md (group er-fight), commits F4.1-F4.2, with design doc sections 5, 7.4 and 13. His strikes become PlayerHits from his id (physical Melee with throw, lift and a 5 s shield disable for hammers; holy Magic), his daggers fly in the entity, stop at blocks and hit the first player on their path, and his death drops the gold, apple and experience by fighter count and sends GREAT ENEMY FELLED (white; the overlay has no colour) with the challenge sound heard only by that player to each fighter's action bar, routed per player beside the wither bars, host and friends alike."
+    },
+    {
+      "key": "er-guns",
+      "prompt": "Build section F5 of docs/round10/track-f.md (group er-guns), commit F5.1, with design doc sections 2.2 and 7.1. A Margit hit key in Entities::shoot and blast goes through a new ServerHandle::elden_hurt to a new Command::EldenHurt beside Command::EndHit (run beside it in the server's command loop) with Hurt::Bullet or Hurt::Blast, the raw MW2 points and the shooter's id, instead of mob_action and mob_blast, so his resistances and stance apply. Friends' shots credit the friend. His 1.4 x 3.0 box and aim assist come through D0's registry."
+    },
+    {
+      "key": "er-bar-friend",
+      "prompt": "Build section F6 of docs/round10/track-f.md (group er-bar-friend), commits F6.1-F6.2, with design doc sections 9 and 10. A red bar named Margit, the Fell Omen for every player within 48 blocks of an awake Margit (ids 1 << 41 plus his id, a fourth host bar list after the wither bars, routed beside wither_bars in entities.rs and render_anim minecraft_players.rs), music.dragon in any dimension while a bar asks for music, stopping after; and MobShow.elden so friends see his clip, phase and daggers; tracking_range 10. No PROTOCOL bump (section F0); record the wire change under ## Protocol in the log."
+    },
+    {
+      "key": "er-altar",
+      "prompt": "Build section F7 of docs/round10/track-f.md (group er-altar), commits F7.1-F7.2, with design doc sections 8 and 11.2. A standing lantern placed on two stacked gold blocks summons Margit in golden mist facing the nearest player (Command::PlayerEdit has no player id; do not add one), not on Peaceful, the blocks cleared like the wither build; and a ring of gold SpellKind::Effect spell particles marks his 24-block leash while he fights. Then copy the brief's Owner's test for the release and the combined kit into docs/round10/track-f-log.md, adjusted to what was built."
+    }
+  ]
+}
