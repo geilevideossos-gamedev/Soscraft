@@ -7,7 +7,7 @@ use crate::monster_ai::{
 use crate::tempt::PlayerCandidate;
 use crate::walk_path::WalkProfile;
 use crate::world::families::{Family, FamilyMob, MobCore, MonsterSpec};
-use crate::world::{EntityWorld, PlayerHitKind};
+use crate::world::{EntityWorld, PlayerHitKind, Rider};
 use glam::DVec3;
 use minecraftoss_player::World;
 use minecraftoss_player::inventory::ItemStack;
@@ -23,6 +23,7 @@ pub const SPEED: f64 = 0.3;
 pub const DAMAGE: f32 = 2.0;
 pub const FOLLOW_RANGE: f64 = 24.0;
 pub const STEP: f32 = 1.0;
+pub const SEAT_SPACING: f64 = 0.5;
 
 pub const GOAL_NAMES: [&str; 5] = [
     "FloatGoal",
@@ -126,12 +127,20 @@ pub struct Probe {
     pub goals: bool,
     pub goal_allowed: bool,
     pub goal_ticks: u32,
+    pub seats: usize,
+    pub saddled: bool,
+    pub mob_steers: bool,
+    pub jumps: bool,
+    pub jumped: Vec<i32>,
+    pub orders: Vec<(DVec3, f64)>,
+    pub attachment: f64,
     pub ai: Box<MonsterAi>,
 }
 
 impl Family for Probe {
     const KEY: u8 = 39;
     const KINDS: &'static [&'static str] = &[KIND, ANIMAL];
+    const MOUNT: bool = true;
 
     fn spawn(kind: &'static str, position: DVec3) -> Option<FamilyMob<Self>> {
         let core = MobCore::new(kind, position, WIDTH, HEIGHT, EYE_HEIGHT, MAX_HEALTH);
@@ -151,6 +160,13 @@ impl Family for Probe {
                 goals: false,
                 goal_allowed: false,
                 goal_ticks: 0,
+                seats: 0,
+                saddled: false,
+                mob_steers: false,
+                jumps: false,
+                jumped: Vec::new(),
+                orders: Vec::new(),
+                attachment: 0.0,
                 ai: Box::new(ai),
             },
         })
@@ -259,5 +275,38 @@ impl Family for Probe {
 
     fn leash_walk<W: World>(mob: &mut FamilyMob<Self>, _level: &W, target: DVec3, speed: f64) {
         mob.state.walks.push((target, speed));
+    }
+
+    fn seats(mob: &FamilyMob<Self>) -> usize {
+        mob.state.seats
+    }
+
+    fn passenger_point(mob: &FamilyMob<Self>, seat: usize) -> DVec3 {
+        let height = f64::from(mob.core.body.height);
+        DVec3::new(0.0, height, -SEAT_SPACING * seat as f64)
+    }
+
+    fn controller(mob: &FamilyMob<Self>, passengers: &[Rider]) -> Option<Rider> {
+        match *passengers.first()? {
+            Rider::Player(player) if mob.state.saddled => Some(Rider::Player(player)),
+            Rider::Mob(id) if mob.state.mob_steers => Some(Rider::Mob(id)),
+            _ => None,
+        }
+    }
+
+    fn rider_jumps(mob: &FamilyMob<Self>) -> bool {
+        mob.state.jumps
+    }
+
+    fn rider_jump(mob: &mut FamilyMob<Self>, power: i32) {
+        mob.state.jumped.push(power);
+    }
+
+    fn rider_order(mob: &mut FamilyMob<Self>, target: DVec3, speed: f64) {
+        mob.state.orders.push((target, speed));
+    }
+
+    fn vehicle_attachment(mob: &FamilyMob<Self>) -> f64 {
+        mob.state.attachment
     }
 }

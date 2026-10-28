@@ -610,8 +610,7 @@ pub trait Family: Clone + Send + Sized + 'static {
     }
 
     fn passenger_point(mob: &FamilyMob<Self>, _seat: usize) -> DVec3 {
-        let body = &mob.core.body;
-        body.position + DVec3::new(0.0, f64::from(body.height), 0.0)
+        DVec3::new(0.0, f64::from(mob.core.body.height), 0.0)
     }
 
     fn dismount(mob: &FamilyMob<Self>, _level: &dyn World, _width: f32, _heights: &[f32]) -> DVec3 {

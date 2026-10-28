@@ -722,3 +722,101 @@ fn prey_kinds_targets_the_named_kinds_only() {
         "and bites it"
     );
 }
+
+#[test]
+fn a_registered_mount_seats_a_rider_and_lets_it_off() {
+    let mut world = EntityWorld::default();
+    let field = Field::default();
+    let mount = probe_at(&mut world, KIND, at(0.5));
+    let plain = probe_at(&mut world, KIND, at(10.5));
+    let rider = probe_at(&mut world, KIND, at(3.5));
+    let third = probe_at(&mut world, KIND, at(6.5));
+    assert!(is_vehicle(KIND), "saved jockeys see it before it lives");
+    assert!(!world.carries_riders(mount), "no seats yet");
+    assert!(!world.start_riding(Rider::Mob(rider), plain, &field));
+    probe_mut(&mut world, mount).state.seats = 2;
+    probe_mut(&mut world, rider).state.attachment = 0.25;
+    assert!(world.carries_riders(mount));
+    assert!(world.start_riding(Rider::Mob(rider), mount, &field));
+    assert!(world.start_riding(Rider::Player(0), mount, &field));
+    assert!(
+        !world.start_riding(Rider::Mob(third), mount, &field),
+        "two seats"
+    );
+    assert_eq!(
+        world.passengers_of(mount),
+        [Rider::Mob(rider), Rider::Player(0)]
+    );
+    let base = at(0.5);
+    let height = f64::from(probe::HEIGHT);
+    assert_eq!(
+        world.passenger_point(mount),
+        Some(DVec3::new(0.0, height, 0.0))
+    );
+    let seat = world.seat(Rider::Mob(rider)).unwrap();
+    let wanted = base + DVec3::new(0.0, height - 0.25, 0.0);
+    assert!((seat - wanted).length() < 1e-9, "{seat}");
+    assert_eq!(probe(&world, rider).core.body.position, seat, "seated");
+    let player_seat = world.seat(Rider::Player(0)).unwrap();
+    let lift = crate::world::riding::PLAYER_VEHICLE_ATTACHMENT;
+    let wanted = base + DVec3::new(0.0, height - lift, -probe::SEAT_SPACING);
+    assert!((player_seat - wanted).length() < 1e-9, "{player_seat}");
+    let spot = world.stop_riding(Rider::Mob(rider), 0.0, &field).unwrap();
+    assert_eq!(spot, base + DVec3::new(0.0, height, 0.0), "on top of it");
+    assert_eq!(probe(&world, rider).core.body.position, spot);
+    assert_eq!(world.vehicle_of(Rider::Mob(rider)), None);
+    assert!(
+        world.start_riding(Rider::Mob(third), mount, &field),
+        "a seat is free again"
+    );
+}
+
+#[test]
+fn a_player_steers_and_jumps_a_registered_mount() {
+    let mut world = EntityWorld::default();
+    let mut field = Field::default();
+    let mount = probe_at(&mut world, KIND, at(0.5));
+    probe_mut(&mut world, mount).state.seats = 1;
+    assert!(world.start_riding(Rider::Player(0), mount, &field));
+    assert_eq!(world.controlling_player(mount), None, "not saddled");
+    probe_mut(&mut world, mount).state.saddled = true;
+    assert_eq!(world.controlling_player(mount), Some(0));
+    assert_eq!(world.controlling_mob(mount), None);
+    assert_eq!(world.ride_jump_scale(0), None, "no jump bar");
+    probe_mut(&mut world, mount).state.jumps = true;
+    assert_eq!(world.ride_jump_scale(0), Some(0.0));
+    let players = [player_at(0, world.seat(Rider::Player(0)).unwrap())];
+    let steer = |world: &mut EntityWorld, jumping| {
+        world.set_player_controls(&[crate::controls::PlayerControls {
+            id: 0,
+            jumping,
+            ..Default::default()
+        }]);
+    };
+    steer(&mut world, true);
+    for _ in 0..5 {
+        world.tick_with_players(&mut field, &players);
+    }
+    assert!((world.ride_jump_scale(0).unwrap() - 0.4).abs() < 1e-6);
+    assert!(probe(&world, mount).state.jumped.is_empty());
+    steer(&mut world, false);
+    world.tick_with_players(&mut field, &players);
+    assert_eq!(probe(&world, mount).state.jumped, [40], "on release");
+
+    assert!(world.dismount_player(0, 0.0, &field).is_some());
+    let zombie = world.spawn_zombie(crate::zombie::Zombie::new(at(3.5)), true);
+    assert!(world.start_riding(Rider::Mob(zombie), mount, &field));
+    assert_eq!(world.controlling_mob(mount), None, "it does not steer yet");
+    probe_mut(&mut world, mount).state.mob_steers = true;
+    assert_eq!(world.controlling_mob(mount), Some(zombie));
+    assert_eq!(world.controlling_player(mount), None);
+    let tick = world.begin_ride_tick(zombie).unwrap();
+    let navigation = &mut world.zombie_mut(zombie).unwrap().navigation;
+    navigation.target_pos = Some((8, 64, 0));
+    navigation.speed_modifier = 1.25;
+    world.end_ride_tick(tick, &field);
+    assert_eq!(
+        probe(&world, mount).state.orders,
+        [(DVec3::new(8.0, 64.0, 0.0), 1.25)]
+    );
+}

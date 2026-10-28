@@ -91,3 +91,36 @@ After 9eecb2ff.
 ```
 IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*4,minecraft:skeleton_spawn_egg*2,minecraft:spider_spawn_egg*2,minecraft:creeper_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:bone*16,minecraft:water_bucket,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32,minecraft:torch*64
 ```
+
+### 2. Registered Minecraft mobs can carry riders
+
+After 37dcfc8d.
+
+- **Changed (vendored entities crate, `world/riding.rs`, D0-2.5):** one generic arm per mount function, each after the existing families:
+  - `carries_riders`: `|| self.families.traits(vehicle).is_some_and(|t| t.seats > 0)` on its one line.
+  - `passenger_point(vehicle)`: a registered vehicle answers `Family::passenger_point(mob, 0)` (the first seat), before the horse lookup. `seat_point(rider)` asks the family with the rider's index in `passengers_of(vehicle)` (vanilla `getPassengerAttachmentPoint` takes `getPassengers().indexOf(passenger)`), falling back to `passenger_point(vehicle)` for every other vehicle.
+  - `vehicle_body`: the core's body, after the ravager.
+  - `start_riding`: `passengers_of(vehicle).len() < seats && force_riding(..)`, after the horse and ravager line.
+  - `stop_riding`: the spot from `Family::dismount` (`family_spot`, a `None if family_spot.is_some()` arm after the ravager's).
+  - `controlling_mob` and `controlling_player`: `Family::controller(mob, passengers_of(vehicle))`, a mob or a player rider each, after the horse block.
+  - `order_vehicle`: a registered vehicle passes every `Navigate` and `NavigateToEntity` order to `Family::rider_order` (target, speed), after the horse block.
+  - `jumpable_by`: a registered vehicle whose `rider_jumps` holds answers its controlling player, before the horse lookup; `tick_ride_jumps` hands the released power to `Family::rider_jump` before it looks in the cow store.
+  - `mob_vehicle_attachment`: its `_ => 0.0` arm becomes `_ => self.families.traits(id).map_or(0.0, |t| t.vehicle_attachment)`.
+- **Changed (root file):** `Family::passenger_point`'s default is the offset `(0, height, 0)` above the vehicle's feet, as every vehicle's `passenger_point` in `riding.rs` is an offset (it was a world position in 9eecb2ff, which nothing read yet). `dismount` keeps its default, the world spot on top of the vehicle.
+- **Changed (probe):** `MOUNT` true; per-mob `seats`, `saddled` (a player first passenger steers), `mob_steers` (a mob first passenger steers), `jumps` (jump bar), the released powers and the orders it was given, and a rider-side `vehicle_attachment`; seats sit 0.5 apart along -z.
+- **Tests added** (`world::families::tests`): `a_registered_mount_seats_a_rider_and_lets_it_off` (`is_vehicle`, `carries_riders` only with seats, two seats and no third rider, the first rider sits at seat 0 less its own attachment and the player at seat 1 less 0.6, `passenger_point`, `stop_riding` sets the rider on top of the mount and frees the seat), `a_player_steers_and_jumps_a_registered_mount` (`controlling_player` only once saddled, no jump bar until `rider_jumps`, `ride_jump_scale` 0.4 after five held ticks and power 40 handed to `rider_jump` on release, a zombie rider controls it through `controlling_mob` and its new navigation target reaches `rider_order` through `end_ride_tick` and `order_vehicle`).
+- **Decisions:**
+  - Survival's `ride_seat(player, vehicle)` asks `passenger_point(vehicle)` without a seat, so a player on a registered mount is drawn at seat 0 whatever seat it holds. The server-side seat (`seat`, `seat_offset`) is right for every seat. Only the happy ghast (M3, four seats) needs the drawn seat to follow the index; M3 adds a seat-aware call there.
+  - The terrain side of mounts (`VEHICLES`/`carries` with `families::is_vehicle`, D0-5.1) belongs to group `registry-client`.
+  - `rider_order` gets `NavigateToEntity` orders too (with the entity's position as the target): vanilla passes the controlling mob's navigation target either way.
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (413 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new files pass `rustfmt --check --edition 2021`.
+- **Test steps** (no registered mount exists yet; the steps check the old mounts and jockeys). Release build, survival, Normal, flat ground in the Overworld, and in the Nether for step 3. Name each screenshot by its label, `D0-4-1.png`.
+  1. Use a horse egg, tame it by riding it until hearts show, saddle it and ride: it steers with the mouse, and holding the jump key fills the jump bar; releasing it jumps. **Screenshot D0-4-1** with the jump bar half full.
+  2. Get off with the sneak key: you land beside the horse.
+  3. In the Nether, use a strider egg, saddle it and ride it with the warped fungus on a stick: it walks where you look. Get off on the lava's shore.
+  4. `/summon minecraft:ravager ~ ~ ~5 {Passengers:[{id:"minecraft:pillager"}]}`: the pillager sits on the ravager's back and both come for you. **Screenshot D0-4-4.**
+  5. `/summon minecraft:chicken ~ ~ ~5 {Passengers:[{id:"minecraft:zombie",IsBaby:1b}]}`: the baby zombie rides the chicken.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:saddle*3,minecraft:strider_spawn_egg*2,minecraft:warped_fungus_on_a_stick,minecraft:golden_carrot*16,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
+```
