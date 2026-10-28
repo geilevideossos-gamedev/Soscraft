@@ -822,6 +822,13 @@ fn merchant_op(action: &MenuAction) -> Option<MerchantOp> {
             right: *right,
             shift: *shift,
         },
+        MenuAction::Swap {
+            slot: slot @ (MenuSlot::Container(0..=2) | MenuSlot::Output),
+            hotbar,
+        } => MerchantOp::Swap {
+            slot: slot_index(*slot)?,
+            hotbar: usize::from(*hotbar),
+        },
         MenuAction::Slot {
             slot: MenuSlot::Container(2) | MenuSlot::Output,
             shift,
@@ -2685,6 +2692,23 @@ mod tests {
                     slot: 1,
                     right: true,
                     shift: false,
+                },
+            ),
+            (
+                MenuAction::Swap {
+                    slot: MenuSlot::Container(1),
+                    hotbar: 3,
+                },
+                MerchantOp::Swap { slot: 1, hotbar: 3 },
+            ),
+            (
+                MenuAction::Swap {
+                    slot: MenuSlot::Output,
+                    hotbar: 40,
+                },
+                MerchantOp::Swap {
+                    slot: 2,
+                    hotbar: 40,
                 },
             ),
             (cell(2), MerchantOp::Result { shift: false }),

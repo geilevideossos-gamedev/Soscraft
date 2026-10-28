@@ -268,6 +268,7 @@ pub enum MerchantOp {
     Select(i32),
     /// A payment slot clicked (shift: moved back).
     Payment { slot: usize, right: bool, shift: bool },
+    Swap { slot: usize, hotbar: usize },
     /// The result clicked (shift: traded as often as it goes).
     Result { shift: bool },
     QuickMove(usize),
@@ -694,6 +695,12 @@ impl ServerSim {
         match op {
             MerchantOp::Select(index) => self.mobs.merchant_select(player, index, &mut inventory),
             MerchantOp::Payment { slot, right, shift } => self.mobs.merchant_click_payment(player, slot, right, shift, &mut inventory),
+            MerchantOp::Swap { slot, hotbar } => {
+                if let Some(stack) = self.mobs.merchant_swap(player, slot, hotbar, selected, &mut inventory) {
+                    let components = stack.components.as_ref().map(|c| c.to_string());
+                    self.level.spawn_at_location(feet, stack_of(&stack.id, i32::from(stack.count), components.as_deref()));
+                }
+            }
             MerchantOp::Result { shift } => self.mobs.merchant_click_result(player, shift, &mut inventory),
             MerchantOp::QuickMove(index) => self.mobs.merchant_quick_move_inventory(player, index, &mut inventory),
             MerchantOp::Close => {
@@ -5205,6 +5212,40 @@ mod tests {
         let update = server.merchant(0, MerchantOp::QuickMove(2), inventory.clone(), 0, [0.0; 3]);
         assert_eq!(update.slots, vec![(2, None), (9, Some(wheat(35)))], "and back from the hotbar into the inventory");
         assert!(server.merchant(0, MerchantOp::QuickMove(36), inventory.clone(), 0, [0.0; 3]).slots.is_empty(), "armour stays");
+    }
+
+    #[test]
+    fn number_keys_on_the_trading_screen_move_payments_and_trade_the_result_into_the_hotbar() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let mut inventory = Inventory::default();
+        inventory.slots[9] = Some(wheat(50));
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false).merchant.is_some());
+        let apply = |inventory: &mut Inventory, update: &MerchantUpdate| {
+            for (slot, stack) in &update.slots {
+                inventory.slots[*slot] = stack.clone();
+            }
+        };
+        let update = server.merchant(0, MerchantOp::Select(0), inventory.clone(), 0, [0.0; 3]);
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Swap { slot: 0, hotbar: 1 }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(1, Some(wheat(50)))]);
+        let view = update.view.as_ref().expect("still open");
+        assert!(view.payment[0].is_none() && view.result.is_none());
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Swap { slot: 0, hotbar: 1 }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(1, None)]);
+        assert!(update.view.as_ref().expect("still open").result.is_some(), "the wheat is back and so is the emerald");
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Swap { slot: 2, hotbar: 2 }, inventory.clone(), 0, [0.0; 3]);
+        let changed: Vec<_> = update.slots.iter().map(|(slot, stack)| (*slot, stack.as_ref().map(|s| (s.id.as_str(), s.count)))).collect();
+        assert_eq!(changed, vec![(2, Some(("minecraft:emerald", 1)))]);
+        assert_eq!(update.view.as_ref().expect("still open").payment[0].as_ref().map(|s| s.count), Some(30), "one trade paid");
+        assert_eq!(server.orbs().len(), 1, "with its experience");
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Swap { slot: 2, hotbar: 2 }, inventory.clone(), 0, [0.0; 3]);
+        assert!(update.slots.is_empty(), "a filled hotbar slot takes no result");
+        assert_eq!(update.view.expect("still open").payment[0].as_ref().map(|s| s.count), Some(30));
     }
 
     #[test]

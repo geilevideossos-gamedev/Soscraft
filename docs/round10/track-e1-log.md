@@ -124,3 +124,36 @@ Commit: "Minecraft villagers show hearts, anger, happiness and raid sweat", the 
 ```
 IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:llama_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*4,minecraft:ocelot_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:wheat*64,minecraft:potato*64,minecraft:carrot*64,minecraft:beetroot*64,minecraft:golden_carrot*16,minecraft:bone*32,minecraft:cod*64,minecraft:bread*32,minecraft:white_bed,minecraft:white_bed,minecraft:white_bed,minecraft:composter,minecraft:emerald*64,minecraft:ominous_bottle*2,minecraft:iron_sword,minecraft:cooked_beef*32
 ```
+
+## E-trading. Trading screen: number keys, F, Q, drags and double-click
+
+### Number keys and F on the payment and result slots
+
+Commit: "Minecraft trading screen takes number keys and the offhand key on its payment and result slots", the one after `1443f0e4`.
+
+- **Cause** (as in the brief, re-checked at `1443f0e4`): the HUD already sends `McClick::Swap` for a number key or F over any slot, and the friend's client sends the same `MenuAction::Swap`, but `merchant_op` (`menus.rs`) had no arm for a swap on `Container(0|1|2)` or `Output`, and `merchant_local` lets through only the player's own slots, so the click was dropped. `MerchantOp` and `MerchantMenu` had no swap either.
+- **Vanilla 26.3** (javap, `AbstractContainerMenu.doClick`, SWAP branch): only for buttons 0-8 and 40. Both empty: nothing. Hotbar empty: if `mayPickup`, the hotbar gets the slot's stack, then `onSwapCraft`, `setByPlayer(EMPTY)` and `onTake`. Slot empty: if `mayPlace`, the slot takes `split(getMaxStackSize(stack))` when the hotbar stack is bigger than that (min(99, the item's max)), else the whole stack. Both full: needs `mayPickup && mayPlace`; an overfull hotbar stack puts `split(max)` in, `onTake` runs and the old slot stack goes to `inventory.add`, or is dropped with `player.drop(stack, true)`; otherwise the two swap and `onTake` runs. `MerchantResultSlot.mayPlace` is false, so the result only goes into an empty hotbar or offhand slot, and `mayPickup` needs the active offer to be paid for either way round. A payment slot's `onTake` is `setChanged` (the offers re-read); the result's pays for the trade.
+- **Changed:**
+  - `third_party/minecraftoss/entities/src/merchant.rs`: `MerchantMenu::swap_payment(slot, hotbar, selected, inventory, merchant)` follows the SWAP branch on a payment slot, with `set_payment_by_player` for `setByPlayer` and `update_sell_item` for `onTake`. It returns what `Inventory::add_item` could not take back. `swap_result(hotbar, inventory, merchant)` puts the result in an empty hotbar or offhand slot when `may_take_result` allows it, empties the slot, re-reads the offers and pays with `take_result`, as `click_result` does.
+  - `world/merchants.rs`: `EntityWorld::merchant_swap` (payment 0 or 1, result 2) next to `merchant_click_payment`.
+  - `crates/minecraft_terrain/src/server.rs`: `MerchantOp::Swap { slot, hotbar }` next to `Payment`; `Server::merchant` runs it. A stack that does not fit drops at the feet, like the overflow of a close (the next commit throws it from the eye instead).
+  - `crates/minecraft_survival/src/menus.rs`: `merchant_op` maps `Swap` on `Container(0..=2)` or `Output` to `MerchantOp::Swap` (`Output` is slot 2). `keeps_gun` still refuses a gun from the hotbar into `Container(_)`.
+- **Tests:**
+  - `minecraftoss-entities` `merchant::tests`: `a_number_key_swaps_a_payment_with_a_hotbar_slot_or_the_offhand` (to an empty hotbar slot and back, to the offhand and into the second payment, a key other than 1-9 or F does nothing, a carrot stack swaps with the wheat, no trade), `an_overfull_hotbar_stack_puts_a_slot_s_worth_in_and_the_old_payment_goes_to_the_inventory` (16 of 20 eggs with a stack size of 16 go in, the wheat goes back to the inventory, or comes back to be dropped when the inventory is full), `a_number_key_on_the_result_trades_once_into_an_empty_hotbar_slot_only` (one trade into hotbar 1, refilled; a filled slot takes nothing; the offhand takes the second; then the result is gone).
+  - `minecraft_terrain` `server::tests::number_keys_on_the_trading_screen_move_payments_and_trade_the_result_into_the_hotbar` (a real farmer: the wheat out to hotbar 2 and back, the result into hotbar 3 with one orb, a second press does nothing).
+  - `minecraft_survival` `menus::tests::a_villager_s_trading_screen_turns_clicks_into_trades`: a number key on payment 2 and F on the output send `MerchantOp::Swap`.
+- **Decisions:**
+  - `swap_payment` takes the selected hotbar slot, because vanilla's `Inventory.add` puts the old payment on the selected stack first (`add_item(stack, selected)`).
+  - Until the next commit the rare leftover of an overfull hotbar stack drops at the player's feet; the next commit throws it from the eye like vanilla's `player.drop(stack, true)`.
+- **Owner's test steps** (survival, by day on open grass at least 60 blocks from a village, a new world, the kit below; the kit fills only the backpack, so the hotbar and offhand start empty):
+  1. **A farmer.** Place the composter, fence a 5 x 5 pen around it and use a villager egg inside. Wait until it wears a straw hat. Right-click it and pick its crop offer (wheat, potatoes, carrots or beetroot: a 26.3 farmer picks 2 of its 5 novice trades at random, so it always wants at least one crop). The crop moves into the first payment slot and an emerald shows as the result. "The crop" below means that one.
+  2. **Number key on a payment.** Hover the first payment slot and press 1: the crop goes to hotbar slot 1 and the emerald disappears. **Screenshot 1.** Press 1 again: the crop goes back and the emerald returns.
+  3. **F on a payment.** Hover the payment and press F: the crop goes to the offhand. Press F again to bring it back.
+  4. **Number key on the result.** Hover the result and press 2: one trade is made, the emerald lands in hotbar slot 2, the payment shrinks by the price and an experience orb drops. Press 2 again over the result: nothing happens, because a filled hotbar slot doesn't take the result. **Screenshot 2.**
+  5. **Swapping two stacks.** Close the screen, put a stack of another crop in hotbar slot 3, open the farmer again and pick the crop offer. Hover the payment and press 3: the two stacks change places, and the result shows only if the farmer also buys the other crop.
+  6. **Two windows** (host H, friend F, `scripts\mp-local.ps1` or over the relay, both with the kit): H closes the screen and F does steps 2-4 on the same farmer. They work the same, and H sees F's orb drop.
+- **Kit** (18 backpack slots; each `*192` gives three stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:wheat*192,minecraft:potato*192,minecraft:carrot*192,minecraft:beetroot*192,minecraft:emerald*64,minecraft:villager_spawn_egg*4,minecraft:composter,minecraft:oak_fence*32,minecraft:torch*32,minecraft:bread*16
+```

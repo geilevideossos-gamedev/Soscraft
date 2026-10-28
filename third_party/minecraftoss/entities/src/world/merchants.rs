@@ -274,6 +274,16 @@ impl EntityWorld {
         self.with_menu(player, |menu, merchant| menu.click_payment(slot, right, shift, inventory, merchant));
     }
 
+    pub fn merchant_swap(&mut self, player: u64, slot: usize, hotbar: usize, selected: usize, inventory: &mut Inventory) -> Option<ItemStack> {
+        let mut left = None;
+        self.with_menu(player, |menu, merchant| match slot {
+            0 | 1 => left = menu.swap_payment(slot, hotbar, selected, inventory, merchant),
+            2 => menu.swap_result(hotbar, inventory, merchant),
+            _ => {}
+        });
+        left
+    }
+
     /// A shift-click on an inventory slot while trading.
     pub fn merchant_quick_move_inventory(&mut self, player: u64, index: usize, inventory: &mut Inventory) {
         if let Some(menu) = self.merchant_menus.get_mut(&player) {
