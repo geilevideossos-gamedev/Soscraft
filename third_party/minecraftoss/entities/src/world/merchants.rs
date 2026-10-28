@@ -284,6 +284,16 @@ impl EntityWorld {
         left
     }
 
+    pub fn merchant_throw(&mut self, player: u64, slot: usize, whole: bool, inventory: &Inventory) -> Vec<ItemStack> {
+        let mut thrown = Vec::new();
+        self.with_menu(player, |menu, merchant| match slot {
+            0 | 1 => thrown.extend(menu.throw_payment(slot, whole, inventory, merchant)),
+            2 => thrown = menu.throw_result(whole, inventory, merchant),
+            _ => {}
+        });
+        thrown
+    }
+
     /// A shift-click on an inventory slot while trading.
     pub fn merchant_quick_move_inventory(&mut self, player: u64, index: usize, inventory: &mut Inventory) {
         if let Some(menu) = self.merchant_menus.get_mut(&player) {

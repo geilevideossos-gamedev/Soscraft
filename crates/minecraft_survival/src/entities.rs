@@ -226,6 +226,9 @@ fn apply_merchant_answer(inventory: &mut Inventory, update: &minecraft_terrain::
         }
     }
     inventory.cursor = update.cursor.clone();
+    for stack in &update.thrown {
+        inventory.queue_drop(stack.clone());
+    }
 }
 
 fn settle_eggs(queue: &mut PlayerQueue, inventory: &mut Inventory) {
@@ -2840,8 +2843,8 @@ mod tests {
         queues.queue(FRIEND).merchant_waiting = 2;
         let mut output = minecraft_terrain::server::Output { mob_results: vec![(FRIEND, MobResult { merchant: Some(view(9)), ..Default::default() })], ..Default::default() };
         let wheat = ItemStack::new("minecraft:wheat", 20);
-        let answer = MerchantUpdate { view: Some(view(9)), slots: vec![(4, None), (12, Some(wheat.clone()))], cursor: Some(ItemStack::new("minecraft:emerald", 1)), closing: false };
-        let closing = MerchantUpdate { view: None, slots: Vec::new(), cursor: None, closing: true };
+        let answer = MerchantUpdate { view: Some(view(9)), slots: vec![(4, None), (12, Some(wheat.clone()))], cursor: Some(ItemStack::new("minecraft:emerald", 1)), thrown: vec![ItemStack::new("minecraft:emerald", 2)], closing: false };
+        let closing = MerchantUpdate { view: None, slots: Vec::new(), cursor: None, thrown: Vec::new(), closing: true };
         output.merchant = vec![(FRIEND, closing), (FRIEND, answer)];
         let _ = queues.route(&mut output, 2, |_| None);
         assert!(output.merchant.is_empty());
@@ -2865,6 +2868,7 @@ mod tests {
         assert_eq!(inventory.slots[4], None);
         assert_eq!(inventory.slots[12], Some(wheat));
         assert_eq!(inventory.cursor, Some(ItemStack::new("minecraft:emerald", 1)));
+        assert_eq!(inventory.take_pending_drops(), [ItemStack::new("minecraft:emerald", 2)], "what the click threw waits to be tossed from the eye");
         assert_eq!(friend.merchant_waiting, 1, "one answer came of the two in flight");
         assert_eq!(friend.merchant.len(), 3);
         assert!(friend.merchant_routed.is_empty());

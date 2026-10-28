@@ -462,14 +462,45 @@ impl MerchantMenu {
         if !(hotbar < 9 || hotbar == 40) || inventory.slots.get(hotbar).is_none_or(Option::is_some) {
             return;
         }
-        let Some(result) = self.result.clone().filter(|s| s.count > 0) else { return };
-        if !self.may_take_result(merchant) {
-            return;
+        if let Some(result) = self.take_whole_result(merchant) {
+            inventory.slots[hotbar] = Some(result);
         }
-        inventory.slots[hotbar] = Some(result);
+    }
+
+    pub fn throw_payment(&mut self, slot: usize, whole: bool, inventory: &Inventory, merchant: &mut impl Merchant) -> Option<ItemStack> {
+        if slot >= 2 || inventory.cursor.is_some() {
+            return None;
+        }
+        let amount = if whole { i32::from(self.payment[slot].as_ref()?.count) } else { 1 };
+        let taken = self.try_remove(slot, amount, merchant)?;
+        self.update_sell_item(merchant);
+        Some(taken)
+    }
+
+    fn take_whole_result(&mut self, merchant: &mut impl Merchant) -> Option<ItemStack> {
+        let result = self.result.clone().filter(|s| s.count > 0)?;
+        if !self.may_take_result(merchant) {
+            return None;
+        }
         self.result = None;
         self.update_sell_item(merchant);
         self.take_result(merchant);
+        Some(result)
+    }
+
+    pub fn throw_result(&mut self, whole: bool, inventory: &Inventory, merchant: &mut impl Merchant) -> Vec<ItemStack> {
+        let mut thrown = Vec::new();
+        if inventory.cursor.is_some() {
+            return thrown;
+        }
+        while let Some(taken) = self.take_whole_result(merchant) {
+            let again = whole && self.result.as_ref().is_some_and(|r| r.id == taken.id);
+            thrown.push(taken);
+            if !again {
+                break;
+            }
+        }
+        thrown
     }
 
     fn quick_move_payment_once(&mut self, slot: usize, inventory: &mut Inventory, merchant: &mut impl Merchant) -> Option<ItemStack> {
@@ -681,5 +712,46 @@ mod tests {
         assert!(menu.result.is_none(), "ten wheat pay for nothing");
         menu.swap_result(1, &mut inventory, &mut merchant);
         assert!(inventory.slots[1].is_none() && merchant.trades.len() == 2);
+    }
+
+    #[test]
+    fn q_on_the_result_makes_one_trade_and_ctrl_q_trades_until_the_offer_runs_out() {
+        let (mut menu, mut merchant, inventory) = paid(64, 2);
+        let thrown = menu.throw_result(false, &inventory, &mut merchant);
+        assert_eq!(thrown.iter().map(|s| (s.id.as_str(), s.count)).collect::<Vec<_>>(), [("minecraft:emerald", 1)]);
+        assert_eq!(merchant.trades, vec![0]);
+        assert_eq!(menu.payment[0].as_ref().map(|s| s.count), Some(44));
+        assert!(menu.result.is_some(), "refilled");
+        let (mut menu, mut merchant, inventory) = paid(64, 2);
+        let thrown = menu.throw_result(true, &inventory, &mut merchant);
+        assert_eq!(thrown.len(), 2, "two uses, two trades");
+        assert_eq!(merchant.trades, vec![0, 0]);
+        assert_eq!(menu.payment[0].as_ref().map(|s| s.count), Some(24));
+        assert!(menu.result.is_none(), "out of stock");
+        assert!(menu.throw_result(true, &inventory, &mut merchant).is_empty());
+        let (mut menu, mut merchant, inventory) = paid(50, 5);
+        assert_eq!(menu.throw_result(true, &inventory, &mut merchant).len(), 2, "until the wheat runs short");
+        assert_eq!(menu.payment[0].as_ref().map(|s| s.count), Some(10));
+        let (mut menu, mut merchant, mut inventory) = paid(64, 2);
+        inventory.cursor = Some(ItemStack::new("minecraft:dirt", 1));
+        assert!(menu.throw_result(true, &inventory, &mut merchant).is_empty(), "not with a carried stack");
+        assert!(menu.throw_payment(0, true, &inventory, &mut merchant).is_none());
+        assert!(merchant.trades.is_empty());
+    }
+
+    #[test]
+    fn q_drops_one_from_a_payment_and_ctrl_q_the_stack() {
+        let (mut menu, mut merchant, inventory) = paid(21, 2);
+        let one = menu.throw_payment(0, false, &inventory, &mut merchant);
+        assert_eq!(one.map(|s| (s.id, s.count)), Some(("minecraft:wheat".to_owned(), 1)));
+        assert_eq!(menu.payment[0].as_ref().map(|s| s.count), Some(20));
+        assert!(menu.result.is_some());
+        menu.throw_payment(0, false, &inventory, &mut merchant);
+        assert!(menu.result.is_none(), "nineteen wheat pay for nothing");
+        let rest = menu.throw_payment(0, true, &inventory, &mut merchant);
+        assert_eq!(rest.map(|s| s.count), Some(19));
+        assert!(menu.payment[0].is_none());
+        assert!(menu.throw_payment(0, true, &inventory, &mut merchant).is_none(), "an empty slot throws nothing");
+        assert!(merchant.trades.is_empty());
     }
 }

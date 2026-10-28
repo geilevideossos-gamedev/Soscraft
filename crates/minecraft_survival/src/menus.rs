@@ -829,6 +829,13 @@ fn merchant_op(action: &MenuAction) -> Option<MerchantOp> {
             slot: slot_index(*slot)?,
             hotbar: usize::from(*hotbar),
         },
+        MenuAction::Throw {
+            slot: slot @ (MenuSlot::Container(0..=2) | MenuSlot::Output),
+            whole,
+        } => MerchantOp::Throw {
+            slot: slot_index(*slot)?,
+            whole: *whole,
+        },
         MenuAction::Slot {
             slot: MenuSlot::Container(2) | MenuSlot::Output,
             shift,
@@ -2650,6 +2657,7 @@ mod tests {
             view,
             slots: Vec::new(),
             cursor: None,
+            thrown: Vec::new(),
             closing: false,
         })
     }
@@ -2711,6 +2719,26 @@ mod tests {
                     hotbar: 40,
                 },
             ),
+            (
+                MenuAction::Throw {
+                    slot: MenuSlot::Container(0),
+                    whole: false,
+                },
+                MerchantOp::Throw {
+                    slot: 0,
+                    whole: false,
+                },
+            ),
+            (
+                MenuAction::Throw {
+                    slot: MenuSlot::Output,
+                    whole: true,
+                },
+                MerchantOp::Throw {
+                    slot: 2,
+                    whole: true,
+                },
+            ),
             (cell(2), MerchantOp::Result { shift: false }),
             (take_all, MerchantOp::Result { shift: true }),
             (slot(14, true), MerchantOp::QuickMove(14)),
@@ -2741,6 +2769,38 @@ mod tests {
         assert!(close(&mut steve).is_empty());
         assert!(steve.menus.open.is_none());
         assert_eq!(sent(&mut steve), [MerchantOp::Close]);
+    }
+
+    #[test]
+    fn stacks_thrown_from_the_trading_screen_are_tossed_by_the_host_and_by_a_friend() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut steve = trading(&mut chat);
+        let mut alex = player(&mut chat, 1, "Alex");
+        let shown = merchant_news(&mut alex, vec![MerchantNews::Opened(trade_view(9))], true, false);
+        assert!(shown.opened);
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let throw = MenuAction::Throw {
+            slot: MenuSlot::Output,
+            whole: true,
+        };
+        for trader in [&mut steve, &mut alex] {
+            let _ = apply(trader, &mut containers, books(&book), &throw, 0.5);
+            assert_eq!(
+                sent(trader),
+                [MerchantOp::Throw {
+                    slot: 2,
+                    whole: true
+                }]
+            );
+            trader
+                .inventory
+                .queue_drop(ItemStack::new("minecraft:emerald", 2));
+            let _ = merchant_news(trader, vec![answer(Some(trade_view(9)))], true, false);
+            let thrown = pump_merchant(trader, |_, _, _| {});
+            assert_eq!(thrown, [ItemStack::new("minecraft:emerald", 2)]);
+            assert!(pump_merchant(trader, |_, _, _| {}).is_empty(), "thrown once");
+        }
     }
 
     #[test]

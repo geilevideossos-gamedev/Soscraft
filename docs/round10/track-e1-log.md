@@ -157,3 +157,31 @@ Commit: "Minecraft trading screen takes number keys and the offhand key on its p
 ```
 IW4L_MINECRAFT_KIT=minecraft:wheat*192,minecraft:potato*192,minecraft:carrot*192,minecraft:beetroot*192,minecraft:emerald*64,minecraft:villager_spawn_egg*4,minecraft:composter,minecraft:oak_fence*32,minecraft:torch*32,minecraft:bread*16
 ```
+
+### Q and Ctrl+Q on the payment and result slots
+
+Commit: "Minecraft trading screen throws from its payment and result slots with Q", the one after `7ec4eebd`.
+
+- **Cause:** the HUD sends `McClick::Throw` for Q and Ctrl+Q over a slot that holds something, but `merchant_op` had no arm for a throw on the payments or the result, so it was dropped; `MerchantOp` had no throw and `MerchantUpdate` could not hand stacks back to throw.
+- **Vanilla 26.3** (javap, `AbstractContainerMenu.doClick`, THROW branch; `Slot.safeTake` and `tryRemove`; `MerchantContainer.removeItem`): only with an empty cursor. The amount is 1 for Q and the slot's whole count for Ctrl+Q. Each `safeTake(amount, MAX)` is dropped with `player.drop(stack, true)`; with Ctrl it repeats while the slot still holds the same item (`isSameItem`). `MerchantContainer.removeItem(2, n)` always takes the whole result, then `setByPlayer(EMPTY)` re-reads the offers and the result's `onTake` pays. So Q on the result makes one trade and throws it, and Ctrl+Q keeps trading and throwing until the payments run short or the offer is out of stock. On a payment, Q throws one and Ctrl+Q the stack (the slot is empty after it, so the loop stops).
+- **Changed:**
+  - `merchant.rs`: `throw_payment(slot, whole, inventory, merchant)` (`try_remove`, then `onTake`'s re-read) and `throw_result(whole, inventory, merchant)` (the Ctrl loop), both refusing a carried cursor. The take of a whole paid result (`take_whole_result`: `may_take_result`, empty the slot, re-read, `take_result`) is shared with `swap_result`.
+  - `world/merchants.rs`: `EntityWorld::merchant_throw` next to `merchant_swap`.
+  - `server.rs`: `MerchantOp::Throw { slot, whole }` next to `Swap`; `MerchantUpdate.thrown`, set by `Server::merchant` for a throw and for the leftover of a number-key swap (which no longer drops at the feet), empty for a close request.
+  - `third_party/minecraftoss/player/src/inventory.rs`: `Inventory::queue_drop`, next to `take_pending_drops`.
+  - `crates/minecraft_survival/src/entities.rs`: `apply_merchant_answer` queues `update.thrown` as pending drops. Every path that takes pending drops throws them from the player's eye: `pump_merchant` (the host in `minecraft_world.rs`, a friend in `minecraft_players.rs`), the host's `apply_input`, `menus::apply` and `close`; a death drains them with the inventory.
+  - `menus.rs`: `merchant_op` maps `Throw` on `Container(0..=2)` or `Output` to `MerchantOp::Throw`.
+- **Tests:**
+  - `minecraftoss-entities` `merchant::tests`: `q_on_the_result_makes_one_trade_and_ctrl_q_trades_until_the_offer_runs_out` (Q: one trade, refilled; Ctrl+Q on a 2-use offer: two trades, then out of stock and nothing more; Ctrl+Q with 50 wheat: two trades until the wheat runs short; nothing with a carried stack), `q_drops_one_from_a_payment_and_ctrl_q_the_stack`.
+  - `minecraft_terrain` `server::tests::q_on_the_trading_screen_hands_the_thrown_stacks_back_and_drops_the_trades_orbs` (a real farmer: Q gives one emerald in `thrown` and one orb, Ctrl+Q two more trades and orbs, Q and Ctrl+Q on the payment give 1 and 3 wheat, and the server spawns no item).
+  - `minecraft_survival`: `entities::tests::trading_screens_reach_only_their_player_and_set_the_slots_before_anything_else` (an answer's `thrown` becomes a pending drop), `menus::tests::stacks_thrown_from_the_trading_screen_are_tossed_by_the_host_and_by_a_friend` (Ctrl+Q on the output sends `MerchantOp::Throw` for the host and for a friend, and the answer's stack comes out of `pump_merchant`, which is `MerchantShown.thrown`, once), and Q on a payment and Ctrl+Q on the output in `a_villager_s_trading_screen_turns_clicks_into_trades`.
+- **Decisions:**
+  - Thrown stacks come back to the player through the inventory's pending drops (`Inventory::queue_drop`), so the host, a friend and a forced close share one path, and the toss is the player's own Q toss from the eye. The server never tosses.
+  - The leftover of a number-key swap with an overfull hotbar stack is thrown the same way (vanilla `player.drop(stack, true)`), replacing the drop at the feet of the last commit.
+  - No drop statistic is counted for a stack thrown from the trading screen, as for the other screens' Q.
+- **Owner's test steps** (the same world and farmer as above, the same kit; pick the crop offer again first):
+  1. **Q on the result.** Hover the result and press Q: one trade is made and the emerald is thrown in front of you, with an experience orb. **Screenshot 3.**
+  2. **Ctrl+Q on the result.** Press Ctrl+Q over the result: it keeps trading and throwing emeralds until the crop in the payment runs short or the offer is sold out (a red cross). Orbs drop for each trade.
+  3. **Q on a payment.** Pick the crop offer again. Hover the payment and press Q: one crop is thrown. Press Ctrl+Q: the rest of that stack is thrown and the result disappears. **Screenshot 4.**
+  4. **Carrying a stack.** Pick up a stack from the inventory, hover the result and press Q: nothing happens. Put the stack back.
+  5. **Two windows:** F does steps 1-3 on the same farmer after H closes the screen. The emeralds and crops fly from F's eye in F's direction, and H sees them land in front of F. **Screenshot 5**, both windows.
