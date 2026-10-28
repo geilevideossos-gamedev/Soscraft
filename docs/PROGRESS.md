@@ -1,4 +1,4 @@
-﻿# Round 10 progress: survival in parallel tracks, known limits, the first Elden Ring boss
+# Round 10 progress: survival in parallel tracks, known limits, the first Elden Ring boss
 
 Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the "Round 10" message (summary below). This file is the hand-over point if a session stops. Read it top to bottom, then `git log --oneline 532474d6..`, `git worktree list`, the run specs in `docs/round10/runs/` and the track logs in `docs/round10/`. Round 9's hand-over is in git history (`git show 532474d6:docs/PROGRESS.md`). Decisions go to `docs/round10/decisions.md`.
 
