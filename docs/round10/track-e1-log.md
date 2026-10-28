@@ -235,3 +235,16 @@ Commit: "Minecraft trading screen never gathers on a double click, like vanilla"
 ```
 IW4L_MINECRAFT_KIT=minecraft:wheat*192,minecraft:potato*192,minecraft:carrot*192,minecraft:beetroot*192,minecraft:emerald*64,minecraft:villager_spawn_egg*4,minecraft:composter,minecraft:oak_fence*32,minecraft:torch*32,minecraft:bread*16
 ```
+
+## E-effects. Effects listed beside the inventory
+
+### The list's frames and the effect names
+
+Commit: "Minecraft inventory loads the effect list frames and effect names", the one after `12214823`.
+
+- **Cause** (as in the brief, re-checked at `12214823`): the GUI atlas (`crates/render_anim/src/minecraft_gui.rs`) loaded no sprite from `container/inventory/`, so the list's frames were missing, and `TEXT_PREFIXES` dropped every `effect.` and `enchantment.level.` text, so the HUD had no effect names, no "∞" and no level numerals.
+- **Vanilla 26.3** (the 26.3 pack): `textures/gui/sprites/container/inventory/` holds only `effect_background` and `effect_background_ambient`, both 32 x 32, nine-slice with a border of 4 (their `.png.mcmeta`). `EffectsInInventory` draws them, the names are `effect.minecraft.<id>` plus `enchantment.level.<n>`, and an endless effect shows `effect.duration.infinite` ("∞", which the default font's `include/default.json` has).
+- **Changed:** `SPRITE_FOLDERS` has `container/inventory/` (18 folders) next to the creative folder, and `TEXT_PREFIXES` keeps `effect.` and `enchantment.level.` (16 prefixes). Nothing draws them yet; the next commit does.
+- **Tests:** `render_anim` `minecraft_gui::tests::every_mob_effect_icon_and_the_effect_frames_load` also checks that both frames load 32 x 32 as nine-slices with a border of 4, that the effect name, "∞" and "II" are kept while an enchantment name is not, and that the font has "∞".
+- **Decisions:** none.
+- **Owner's test steps:** none on their own: this commit only loads textures and texts. The steps come with the next commit.

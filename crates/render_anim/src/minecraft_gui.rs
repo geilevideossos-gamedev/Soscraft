@@ -37,7 +37,7 @@ pub(crate) const CONTAINER_SHEETS: [&str; 18] = [
     "creative_inventory/tab_inventory",
 ];
 
-const SPRITE_FOLDERS: [&str; 17] = [
+const SPRITE_FOLDERS: [&str; 18] = [
     "container/slot/",
     "container/anvil/",
     "container/brewing_stand/",
@@ -49,6 +49,7 @@ const SPRITE_FOLDERS: [&str; 17] = [
     "container/smoker/",
     "container/blast_furnace/",
     "container/creative_inventory/",
+    "container/inventory/",
     "container/villager/",
     "container/horse/",
     "hud/heart/",
@@ -77,11 +78,13 @@ const LOOSE_SPRITES: [&str; 14] = [
 pub(crate) const BOOK_SHEET: &str = "book";
 pub(crate) const RECIPE_BOOK_SHEET: &str = "recipe_book";
 
-const TEXT_PREFIXES: [&str; 14] = [
+const TEXT_PREFIXES: [&str; 16] = [
     "container.",
     "itemGroup.",
     "inventory.",
     "item.modifiers.",
+    "effect.",
+    "enchantment.level.",
     "gui.experience.",
     "item.minecraft.smithing_template.",
     "multiplayer.downloadingTerrain",
@@ -802,7 +805,13 @@ mod tests {
             return;
         }
         let packs = PackStack::open(vec![pack]).unwrap();
-        let (atlas, gui) = build_atlas(&packs, &HashMap::new()).unwrap();
+        let language = HashMap::from([
+            ("effect.minecraft.regeneration".to_owned(), "Regeneration".to_owned()),
+            ("effect.duration.infinite".to_owned(), "\u{221e}".to_owned()),
+            ("enchantment.level.2".to_owned(), "II".to_owned()),
+            ("enchantment.minecraft.sharpness".to_owned(), "Sharpness".to_owned()),
+        ]);
+        let (atlas, gui) = build_atlas(&packs, &language).unwrap();
         assert!(atlas.height() <= 2048);
         for effect in ["darkness", "bad_omen", "raid_omen", "trial_omen", "hero_of_the_village", "speed", "breath_of_the_nautilus"] {
             assert_eq!(gui.sprites[&format!("mob_effect/{effect}")].rect[2..], [18, 18], "{effect}");
@@ -810,6 +819,24 @@ mod tests {
         assert!(gui.sprites.keys().filter(|name| name.starts_with("mob_effect/")).count() >= 40);
         assert_eq!(gui.sprites["hud/effect_background"].rect[2..], [24, 24]);
         assert_eq!(gui.sprites["hud/effect_background_ambient"].rect[2..], [24, 24]);
+        for frame in ["container/inventory/effect_background", "container/inventory/effect_background_ambient"] {
+            assert_eq!(gui.sprites[frame].rect[2..], [32, 32], "{frame}");
+            assert_eq!(
+                gui.sprites[frame].scaling,
+                McScaling::NineSlice {
+                    width: 32,
+                    height: 32,
+                    border: [4; 4],
+                    stretch_inner: false
+                },
+                "{frame}"
+            );
+        }
+        assert_eq!(gui.text("effect.minecraft.regeneration"), "Regeneration");
+        assert_eq!(gui.text("effect.duration.infinite"), "\u{221e}");
+        assert_eq!(gui.text("enchantment.level.2"), "II");
+        assert!(!gui.texts.contains_key("enchantment.minecraft.sharpness"));
+        assert!(gui.font.glyphs.contains_key(&'\u{221e}'));
     }
 
     #[test]
