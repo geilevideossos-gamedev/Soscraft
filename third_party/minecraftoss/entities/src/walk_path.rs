@@ -57,6 +57,7 @@ pub enum WalkTarget {
     Hoglin {
         repellent: Option<(i32, i32, i32)>,
     },
+    MonsterOver(&'static [&'static str]),
 }
 
 impl WalkProfile {

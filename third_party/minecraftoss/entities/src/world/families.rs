@@ -254,6 +254,7 @@ macro_rules! family_group {
 
 pub mod bosses;
 pub mod deep_dark;
+pub mod goals;
 pub mod land;
 pub mod night;
 pub mod pests;
@@ -626,6 +627,10 @@ pub trait Family: Clone + Send + Sized + 'static {
         None
     }
 
+    fn emits_sounds(_kind: &str) -> bool {
+        true
+    }
+
     fn loot(_mob: &FamilyMob<Self>, _context: &mut EntityLootContext) {}
 
     fn panicking(_mob: &FamilyMob<Self>) -> bool {
@@ -678,10 +683,15 @@ fn traits_of<S: Family>(mob: &FamilyMob<S>) -> MobTraits {
 
 fn movement_sounds<S: Family>(kind: &str) -> MovementSounds {
     let step = S::step_sound(kind);
-    if S::category(kind) == "monster" {
+    let sounds = if S::category(kind) == "monster" {
         MovementSounds::monster(step)
     } else {
         MovementSounds::creature(step)
+    };
+    if S::emits_sounds(kind) {
+        sounds
+    } else {
+        sounds.without_sounds()
     }
 }
 
@@ -1402,6 +1412,7 @@ impl EntityWorld {
         let sounds = movement_sounds::<S>(kind);
         let FamilyMob { core, state } = &mut *mob;
         let ai = ai(state);
+        ai.yaw = core.yaw;
         ai.state.mobs = mobs;
         ai.state.hurt_by = core.hurt_by;
         ai.state.max_health = core.max_health;
@@ -1443,6 +1454,39 @@ impl EntityWorld {
             S::hurt(mob, &fall);
         }
         strike
+    }
+
+    pub fn family_alert<S: Registered>(
+        &mut self,
+        id: u64,
+        attacker: Target,
+        ai: fn(&mut S) -> &mut MonsterAi,
+    ) {
+        let store = S::store_mut(self);
+        let Some(source) = store.get_mut(id) else {
+            return;
+        };
+        let (kind, p) = (source.core.kind, source.core.body.position);
+        let range = ai(&mut source.state).state.follow_range;
+        let min = p - DVec3::new(range, 10.0, range);
+        let max = p + DVec3::new(1.0 + range, 11.0, 1.0 + range);
+        for other in &mut store.mobs {
+            if other.core.id == id || other.core.kind != kind {
+                continue;
+            }
+            let body = &other.core.body;
+            let (q, half) = (body.position, f64::from(body.width / 2.0));
+            let touches = q.x - half < max.x
+                && q.x + half > min.x
+                && q.y < max.y
+                && q.y + f64::from(body.height) > min.y
+                && q.z - half < max.z
+                && q.z + half > min.z;
+            let ai = ai(&mut other.state);
+            if touches && ai.state.target().is_none() {
+                ai.state.set_target(Some(attacker));
+            }
+        }
     }
 
     pub fn family_after_move<S: Registered, W: World>(
