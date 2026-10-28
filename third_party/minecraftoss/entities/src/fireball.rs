@@ -94,6 +94,7 @@ pub struct Fireball {
     pub velocity: DVec3,
     pub acceleration_power: f64,
     pub owner: Option<Shooter>,
+    pub owner_uuid: Option<u128>,
     pub tick_count: i32,
     pub left_owner: bool,
     pub in_water: bool,
@@ -121,6 +122,7 @@ impl Fireball {
             velocity: normalize(direction) * ACCELERATION_POWER,
             acceleration_power: ACCELERATION_POWER,
             owner: Some(owner),
+            owner_uuid: None,
             tick_count: 0,
             left_owner: false,
             in_water: false,
@@ -154,6 +156,7 @@ impl Fireball {
     pub fn deflect(&mut self, look: DVec3, by: Shooter, by_attack: bool) {
         self.velocity = look;
         self.owner = Some(by);
+        self.owner_uuid = None;
         if by_attack {
             self.acceleration_power = ACCELERATION_POWER;
         } else {

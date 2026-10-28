@@ -1879,7 +1879,7 @@ fn melee_push(kind: &PlayerHitKind) -> crate::impulse::MeleePush {
     }
 }
 
-fn mob_hit(
+pub(crate) fn mob_hit(
     hit: &minecraftoss_entities::world::PlayerHit,
     feet: [f64; 3],
     difficulty: i32,
