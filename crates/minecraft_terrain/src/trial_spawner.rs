@@ -16,6 +16,14 @@ const CONSUMABLES: &str = "minecraft:spawners/trial_chamber/consumables";
 const KEY: &str = "minecraft:spawners/trial_chamber/key";
 const ITEMS_TO_DROP_WHEN_OMINOUS: &str =
     "minecraft:spawners/trial_chamber/items_to_drop_when_ominous";
+const RESET_STATE_DATA: [&str; 6] = [
+    "registered_players",
+    "current_mobs",
+    "cooldown_ends_at",
+    "next_mob_spawns_at",
+    "total_mobs_spawned",
+    "spawn_data",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Emission {
@@ -289,6 +297,17 @@ impl TrialConfig {
     pub fn pick_spawn_data(&self, random: &mut dyn RandomSource) -> Option<Tag> {
         pick(&self.spawn_potentials, random).cloned()
     }
+
+    pub fn with_spawning(&self, kind: &str) -> Self {
+        let mut entity = BTreeMap::new();
+        entity.insert("id".to_owned(), Tag::String(kind.to_owned()));
+        let mut data = BTreeMap::new();
+        data.insert("entity".to_owned(), Tag::Compound(entity));
+        Self {
+            spawn_potentials: vec![(Tag::Compound(data), 1)],
+            ..self.clone()
+        }
+    }
 }
 
 pub fn registry_config(pack: &DataPack, id: &str) -> Option<TrialConfig> {
@@ -338,6 +357,67 @@ impl FullConfig {
     pub fn active(&self, ominous: bool) -> &TrialConfig {
         if ominous { &self.ominous } else { &self.normal }
     }
+
+    pub fn write(&self, map: &mut BTreeMap<String, Tag>) {
+        map.insert("normal_config".to_owned(), self.normal.to_tag());
+        map.insert("ominous_config".to_owned(), self.ominous.to_tag());
+        for (key, value, default) in [
+            (
+                "required_player_range",
+                self.required_player_range,
+                REQUIRED_PLAYER_RANGE,
+            ),
+            (
+                "target_cooldown_length",
+                self.target_cooldown_length,
+                TARGET_COOLDOWN_LENGTH,
+            ),
+        ] {
+            if value == default {
+                map.remove(key);
+            } else {
+                map.insert(key.to_owned(), Tag::Int(value));
+            }
+        }
+    }
+}
+
+pub fn override_entity(pack: &DataPack, tag: &Tag, kind: &str) -> Tag {
+    let full = FullConfig::read(pack, tag);
+    let full = FullConfig {
+        normal: full.normal.with_spawning(kind),
+        ominous: full.ominous.with_spawning(kind),
+        ..full
+    };
+    let mut map = tag.as_compound().cloned().unwrap_or_default();
+    for key in RESET_STATE_DATA {
+        map.remove(key);
+    }
+    full.write(&mut map);
+    Tag::Compound(map)
+}
+
+pub fn spawn_egg(level: &mut Level, pos: BlockPos, kind: &str) -> bool {
+    let key = (pos.x, pos.y, pos.z);
+    let Some(tag) = level
+        .chunk(pos.chunk())
+        .and_then(|chunk| chunk.block_entities.entities.get(&key))
+        .filter(|tag| is_trial_spawner(tag))
+        .cloned()
+    else {
+        return false;
+    };
+    let lib = level.lib;
+    level.set_block_entity_tag(pos, override_entity(&lib.registries.datapack, &tag, kind));
+    let state = level.block(pos);
+    if let Some(inactive) =
+        lib.registries
+            .blocks
+            .with_property(state, STATE, TrialState::Inactive.name())
+    {
+        level.set_block_and_update(pos, inactive);
+    }
+    true
 }
 
 pub fn is_trial_spawner(tag: &Tag) -> bool {
@@ -628,6 +708,84 @@ mod tests {
             registry_config(&pack, "minecraft:trial_chamber/nothing"),
             None
         );
+    }
+
+    #[test]
+    fn an_egg_makes_both_configs_spawn_its_mob_and_resets_the_trial() {
+        let Some(pack) = pack() else {
+            return;
+        };
+        let normal = "minecraft:trial_chamber/melee/zombie/normal";
+        let ominous = "minecraft:trial_chamber/melee/zombie/ominous";
+        let mut map = BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String(ID.to_owned()));
+        map.insert("normal_config".to_owned(), Tag::String(normal.to_owned()));
+        map.insert("ominous_config".to_owned(), Tag::String(ominous.to_owned()));
+        map.insert("target_cooldown_length".to_owned(), Tag::Int(600));
+        map.insert("total_mobs_spawned".to_owned(), Tag::Int(4));
+        map.insert("next_mob_spawns_at".to_owned(), Tag::Long(900));
+        map.insert("cooldown_ends_at".to_owned(), Tag::Long(36900));
+        for key in ["registered_players", "current_mobs"] {
+            map.insert(
+                key.to_owned(),
+                Tag::List(vec![Tag::IntArray(vec![1, 2, 3, 4])]),
+            );
+        }
+        map.insert("spawn_data".to_owned(), entity("minecraft:zombie"));
+        map.insert(
+            "ejecting_loot_table".to_owned(),
+            Tag::String(KEY.to_owned()),
+        );
+        let tag = override_entity(&pack, &Tag::Compound(map), "minecraft:skeleton");
+        let keys: Vec<&str> = tag
+            .as_compound()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "ejecting_loot_table",
+                "id",
+                "normal_config",
+                "ominous_config",
+                "target_cooldown_length"
+            ]
+        );
+        let full = FullConfig::read(&pack, &tag);
+        let skeleton = vec![(entity("minecraft:skeleton"), 1)];
+        assert_eq!(
+            full.normal,
+            TrialConfig {
+                spawn_potentials: skeleton.clone(),
+                ..registry_config(&pack, normal).unwrap()
+            }
+        );
+        assert_eq!(
+            full.ominous,
+            TrialConfig {
+                spawn_potentials: skeleton,
+                ..registry_config(&pack, ominous).unwrap()
+            }
+        );
+        assert_eq!(
+            (full.required_player_range, full.target_cooldown_length),
+            (14, 600)
+        );
+        let written = tag.get("normal_config").unwrap();
+        assert_eq!(written.get("simultaneous_mobs"), Some(&Tag::Float(3.0)));
+        assert!(written.get("total_mobs").is_none());
+        let mut placed = BTreeMap::new();
+        placed.insert("id".to_owned(), Tag::String(ID.to_owned()));
+        let fresh = override_entity(&pack, &Tag::Compound(placed), "minecraft:zombie");
+        let full = FullConfig::read(&pack, &fresh);
+        assert_eq!(
+            full.normal,
+            TrialConfig::default().with_spawning("minecraft:zombie")
+        );
+        assert_eq!(full.ominous, full.normal);
+        assert!(fresh.get("target_cooldown_length").is_none());
     }
 
     #[test]

@@ -1576,6 +1576,9 @@ impl ServerSim {
         if !self.level.natural_spawning.as_ref().is_none_or(|natural| natural.spawner_blocks_work) {
             return Err(crate::spawn_egg::SPAWNER_DISABLED.to_owned());
         }
+        if crate::trial_spawner::spawn_egg(&mut self.level, minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), kind) {
+            return Ok(());
+        }
         let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2).chunk());
         let tag = chunk.and_then(|chunk| chunk.block_entities.entities.get(&pos));
         if tag.and_then(|tag| tag.get("id")).and_then(minecraftoss_core::nbt::Tag::as_str) != Some("minecraft:mob_spawner") {
@@ -10157,6 +10160,69 @@ mod tests {
         assert_eq!(before, after, "a waiting spawner keeps its mob");
         assert_eq!(at(&server, breezes).0, "inactive");
         assert!(server.take_block_entity_changes().iter().all(|(pos, _)| !spawners.contains(pos)));
+    }
+
+    #[test]
+    fn an_egg_sets_a_trial_spawners_mob() {
+        use crate::trial_spawner::{spawn_kind, TrialConfig, STATE};
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let pos = (4, 200, 4);
+        let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        server.player_edit_block(pos, Some(&Block::new("minecraft:trial_spawner")), PlayerEdit::Place);
+        server.set_simulation_area((0, 0), 2);
+        let look = |server: &ServerSim| {
+            let state = server.level.registries().blocks.property(server.level.block(at), STATE).unwrap().to_owned();
+            let tag = server.level.chunk(at.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&pos)).cloned().unwrap();
+            (state, tag)
+        };
+        let mob = |tag: &minecraftoss_core::nbt::Tag| tag.get("spawn_data").and_then(spawn_kind).map(str::to_owned);
+        server.tick();
+        assert_eq!(look(&server).0, "inactive", "a placed trial spawner has no mob");
+        server.take_block_entity_changes();
+        server.take_changes();
+        assert_eq!(server.spawner_egg(pos, "minecraft:zombie"), Ok(()));
+        let (state, tag) = look(&server);
+        assert_eq!(state, "inactive");
+        assert_eq!(mob(&tag), None, "the egg drops the old spawn data");
+        for key in ["normal_config", "ominous_config"] {
+            let config = TrialConfig::from_tag(tag.get(key).unwrap());
+            assert_eq!(config, TrialConfig::default().with_spawning("minecraft:zombie"), "{key}");
+        }
+        assert!(server.take_block_entity_changes().iter().any(|(changed, _)| *changed == pos));
+        server.tick();
+        let (state, tag) = look(&server);
+        assert_eq!((state.as_str(), mob(&tag).as_deref()), ("waiting_for_players", Some("minecraft:zombie")));
+        assert_eq!(server.spawner_egg(pos, "minecraft:skeleton"), Ok(()));
+        assert_eq!(look(&server).0, "inactive");
+        assert!(server.take_changes().iter().any(|(changed, _)| *changed == pos));
+        server.tick();
+        let (state, tag) = look(&server);
+        assert_eq!((state.as_str(), mob(&tag).as_deref()), ("waiting_for_players", Some("minecraft:skeleton")));
+        server.level.difficulty = 0;
+        assert!(server.spawner_egg(pos, "minecraft:creeper").is_err());
+        server.level.difficulty = 2;
+        let mut rules = crate::game_rules::GameRules::default();
+        rules.set("spawner_blocks_work", "false").unwrap();
+        server.apply_game_rules(&rules);
+        assert_eq!(server.spawner_egg(pos, "minecraft:creeper"), Err(crate::spawn_egg::SPAWNER_DISABLED.to_owned()));
+        assert_eq!(mob(&look(&server).1).as_deref(), Some("minecraft:skeleton"), "a refused egg changes nothing");
+        rules.set("spawner_blocks_work", "true").unwrap();
+        server.apply_game_rules(&rules);
+        assert!(server.spawner_egg((4, 199, 4), "minecraft:zombie").is_err(), "no spawner below it");
     }
 
     #[test]

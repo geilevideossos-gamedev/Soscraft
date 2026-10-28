@@ -113,6 +113,35 @@ After 0ff5716c.
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:cobblestone*64,minecraft:ladder*32,minecraft:water_bucket
 ```
 
+### 2. Minecraft spawn eggs set a trial spawner's mob
+
+After 97db956b.
+
+- **Vanilla (javap, 26.3):** a spawn egg on a `Spawner` block entity calls `setEntityId`; `TrialSpawnerBlockEntity.setEntityId` is `TrialSpawner.overrideEntityToSpawn(type, level)`:
+  - `TrialSpawnerStateData.reset()`: current mobs cleared, `spawn_data` dropped, and `resetStatistics`: detected players cleared, `total_mobs_spawned`, `next_mob_spawns_at` and `cooldown_ends_at` 0. `ejecting_loot_table` is kept.
+  - `FullConfig.overrideEntity(type)`: both configs become inline copies (`Holder.direct`) through `TrialSpawnerConfig.withSpawning(type)`, which keeps every number and loot table and makes `spawn_potentials` that type alone (`WeightedList.of`: weight 1, a `SpawnData` holding only the id, no custom spawn rules, no equipment). The range and the cooldown length are kept.
+  - Then `setState(INACTIVE)` (`setBlockAndUpdate`). The next tick picks the new mob and the spawner waits for players (commit 1's pass).
+- **Changed:**
+  - `trial_spawner.rs`: `TrialConfig::with_spawning`, `FullConfig::write` (both configs inline, range and cooldown length left out at their defaults), `override_entity` (the block entity after an egg) and `spawn_egg` (the tag replaced, the block set inactive with flags 3; `false` when the block entity is not a trial spawner).
+  - `server.rs` `ServerSim::spawner_egg`: a trial spawner takes the egg through `spawn_egg`. The refusals before it stay as they were (a monster in peaceful; `spawner_blocks_work` off, with the vanilla chat line `advMode.notEnabled.spawner`), and anything that is neither spawner still answers "no monster spawner".
+  - Vendored `world/src/level/container.rs`: `Level::set_block_entity_tag` replaces a block entity's whole tag and marks it changed, so the host's display and the friends get the new tag.
+- **Tests:**
+  - `trial_spawner::tests::an_egg_makes_both_configs_spawn_its_mob_and_resets_the_trial` (registry configs become inline copies with only the skeleton at weight 1 and every number kept, the state data goes except `ejecting_loot_table`, a cooldown length of 600 stays; a freshly placed spawner gets the default numbers and leaves the cooldown length out).
+  - `server::tests::an_egg_sets_a_trial_spawners_mob` (a placed trial spawner stays inactive; a zombie egg makes both configs zombie-only, drops the spawn data and reports the block entity; the next tick it waits for players with a zombie; a skeleton egg on the waiting spawner sets it inactive and the next tick shows a skeleton; a creeper egg in peaceful and any egg with `spawner_blocks_work` off are refused and change nothing; an egg on a block without a spawner is refused).
+- **Decisions:** none beyond vanilla; the game event `block_change` that vanilla's egg posts is track W's (game events).
+- **Test steps (world `trial10`, survival, Normal):**
+  1. 30 blocks from the chamber, place a trial spawner from the kit on stone. It stays dark (no mob). Use a zombie spawn egg on it: the egg is used up, and a small zombie turns inside with small orange flames (**306_trial_spawner_egg**). Zombies do not come out yet: the trial is the next group.
+  2. Use a skeleton egg on the same spawner: the zombie inside becomes a skeleton.
+  3. Use a husk egg on one of the chamber's trial spawners: it now shows a husk. A slime egg on another shows a slime.
+  4. `/difficulty peaceful` and use a zombie egg on a trial spawner: nothing changes and the egg stays. `/difficulty normal`.
+  5. `/gamerule spawner_blocks_work false` and use an egg: the chat says spawners are disabled and the egg stays. `/gamerule spawner_blocks_work true`.
+  6. Friend window: the friend uses a slime egg on the host's placed trial spawner; both see the slime turning inside.
+- **Kit (one line for the whole group):**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:trial_spawner*3,minecraft:zombie_spawn_egg*4,minecraft:skeleton_spawn_egg*2,minecraft:husk_spawn_egg*2,minecraft:slime_spawn_egg*2,minecraft:stone*16,minecraft:cobblestone*64,minecraft:ladder*32,minecraft:water_bucket
+```
+
 ## Protocol
 
 No message of this track has changed yet. `minecraft_net::PROTOCOL` stays 6.
@@ -120,8 +149,9 @@ No message of this track has changed yet. `minecraft_net::PROTOCOL` stays 6.
 ## State doc changes
 
 - Release 1's known limits (`docs/round10/release-1-tests.md`, Wind charges) and the round 9 log (group breezes, commit 1, and "Left for later"): drop "A player flying in creative is still pushed by a burst". A player flying in creative was never pushed by a burst: every push goes through the flying check (group d5-review, commit 1).
+- `docs/MINECRAFT-SURVIVAL.md` and `docs/round8/decisions.md`'s deferred trial spawners: trial spawners now show their mob turning in the cage with vanilla's flames and hum (soul flames when ominous), wake up from inactive with a mob picked from their config, and take spawn eggs like vanilla. Breeze and silverfish trial spawners stay dark until those mobs exist. The trial itself is still to come (group trial-spawners-run).
 - Release 1's known limits (Withers) and the round 9 log (group wither-fight, commit 1): drop "A skull loaded from a save has no owner and hurts as magic for 5". `docs/MINECRAFT-SURVIVAL.md`: fireballs, small fireballs and wither skulls keep their shooter through a save (`Owner`), found again when the shooter loads (group d5-review, commit 2).
 
 ## Vendored files
 
-Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2). Both are already in round 9's patched list (`docs/round9/track-d-log.md`, Vendored files), so the fork's counts do not change.
+Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2), and `world/src/level/container.rs` (group trial-spawners, commit 2: `Level::set_block_entity_tag`). All three were already patched by the fork (the first two are in round 9's list, `docs/round9/track-d-log.md`, Vendored files; `container.rs` since c5efeed0), so the fork's counts do not change.
