@@ -1,6 +1,7 @@
 use minecraftoss_player::GameMode;
 use minecraftoss_world::book;
 use minecraftoss_world::game_rules::{self, Rule, Value};
+use minecraftoss_world::item_components;
 
 use crate::reader::{CommandError, StringReader, literal};
 use crate::spawnpoint::java_float;
@@ -401,7 +402,13 @@ fn components(
         let book = book::CONTENT_COMPONENTS.contains(&id.as_str());
         let ominous = id == OMINOUS_AMPLIFIER;
         let custom = id == CUSTOM_DATA;
-        if !book && !ominous && !custom && !ENCHANTMENT_COMPONENTS.contains(&id.as_str()) {
+        let listed = item_components::COMPONENTS.contains(&id.as_str());
+        if !book
+            && !ominous
+            && !custom
+            && !listed
+            && !ENCHANTMENT_COMPONENTS.contains(&id.as_str())
+        {
             reader.cursor = start;
             return Err(
                 CommandError::new("arguments.item.component.unknown", vec![literal(&id)]).at(start),
@@ -422,6 +429,8 @@ fn components(
             ominous_amplifier(reader, &id, books)?;
         } else if custom {
             custom_data(reader, books)?;
+        } else if listed {
+            item_component(reader, &id, books)?;
         } else {
             enchantment_levels(reader, &id, out)?;
         }
@@ -507,6 +516,53 @@ fn custom_data(
             .at(start))
         }
     }
+}
+
+fn item_component(
+    reader: &mut StringReader,
+    component: &str,
+    components: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CommandError> {
+    let start = reader.cursor;
+    let text = snbt_value(reader);
+    match item_components::content(component, &text) {
+        Ok(value) => {
+            components.insert(component.to_owned(), value);
+            Ok(())
+        }
+        Err(reason) => {
+            reader.cursor = start;
+            Err(CommandError::new(
+                "arguments.item.component.malformed",
+                vec![literal(component), literal(reason)],
+            )
+            .at(start))
+        }
+    }
+}
+
+fn snbt_value(reader: &mut StringReader) -> String {
+    let start = reader.cursor;
+    let mut depth = 0_usize;
+    let mut quote = None;
+    let mut escaped = false;
+    while let Some(c) = reader.peek() {
+        match quote {
+            Some(_) if escaped => escaped = false,
+            Some(_) if c == '\\' => escaped = true,
+            Some(open) if c == open => quote = None,
+            Some(_) => {}
+            None => match c {
+                ',' | ']' if depth == 0 => break,
+                '"' | '\'' => quote = Some(c),
+                '{' | '[' => depth += 1,
+                '}' | ']' => depth = depth.saturating_sub(1),
+                _ => {}
+            },
+        }
+        reader.skip();
+    }
+    reader.input()[start..reader.cursor].to_owned()
 }
 
 fn tag_json(tag: &minecraftoss_core::nbt::Tag) -> serde_json::Value {
@@ -1119,6 +1175,103 @@ mod tests {
         assert_eq!(
             key(&parse_item("ominous_bottle[ominous_bottle_amplifier=x]").unwrap_err()),
             "parsing.int.expected"
+        );
+    }
+
+    #[test]
+    fn banners_and_shields_take_patterns_and_a_base_colour() {
+        let banner = parse_item(
+            r#"white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"border",color:red}]]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            banner.components,
+            Some(serde_json::json!({"minecraft:banner_patterns": [
+                {"pattern": "minecraft:creeper", "color": "black"},
+                {"pattern": "minecraft:border", "color": "red"}
+            ]}))
+        );
+        let shield = parse_item(
+            r#"shield[base_color=red, minecraft:banner_patterns = [{pattern:{asset_id:"cross",translation_key:"block.minecraft.banner.cross"},color:"yellow"}]]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            shield.components,
+            Some(serde_json::json!({
+                "minecraft:base_color": "red",
+                "minecraft:banner_patterns": [{
+                    "pattern": {"asset_id": "minecraft:cross", "translation_key": "block.minecraft.banner.cross"},
+                    "color": "yellow"
+                }]
+            }))
+        );
+        let quoted = parse_item(r#"shield[base_color="light_blue"]"#).unwrap();
+        assert_eq!(
+            quoted.components,
+            Some(serde_json::json!({"minecraft:base_color": "light_blue"}))
+        );
+    }
+
+    #[test]
+    fn a_crossbow_takes_its_charged_projectiles() {
+        let crossbow =
+            parse_item(r#"crossbow[charged_projectiles=[{id:"minecraft:arrow"}],enchantments={multishot:1}]"#)
+                .unwrap();
+        assert_eq!(
+            crossbow.components,
+            Some(serde_json::json!({"minecraft:charged_projectiles": [{"id": "minecraft:arrow"}]}))
+        );
+        assert_eq!(crossbow.enchantments, levels(&[("minecraft:multishot", 1)]));
+        let three = parse_item(r#"crossbow[charged_projectiles=[{id:"spectral_arrow",count:3}]]"#).unwrap();
+        assert_eq!(
+            three.components,
+            Some(serde_json::json!({"minecraft:charged_projectiles": [{"id": "minecraft:spectral_arrow", "count": 3}]}))
+        );
+    }
+
+    #[test]
+    fn rockets_and_stars_take_their_firework_components() {
+        let rocket = parse_item(
+            "firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]",
+        )
+        .unwrap();
+        assert_eq!(
+            rocket.components,
+            Some(serde_json::json!({"minecraft:fireworks": {
+                "flight_duration": 1,
+                "explosions": [{"shape": "large_ball", "colors": [11743532], "has_trail": 1}]
+            }}))
+        );
+        let star = parse_item(
+            "firework_star[firework_explosion={shape:creeper,colors:[I;1,2],fade_colors:[3],has_twinkle:true}]",
+        )
+        .unwrap();
+        assert_eq!(
+            star.components,
+            Some(serde_json::json!({"minecraft:firework_explosion": {
+                "shape": "creeper", "colors": [1, 2], "fade_colors": [3], "has_twinkle": 1
+            }}))
+        );
+    }
+
+    #[test]
+    fn bad_dyes_shapes_and_lists_are_malformed_components() {
+        for (text, bad) in [
+            ("shield[base_color=purpl]", "purpl"),
+            (r#"white_banner[banner_patterns=[{pattern:"creeper",color:"grey"}]]"#, "[{"),
+            ("firework_star[firework_explosion={shape:square}]", "{"),
+            (r#"white_banner[banner_patterns={pattern:"creeper",color:"black"}]"#, "{"),
+            (r#"crossbow[charged_projectiles=[{id:"arrow"}"#, "[{"),
+            (r#"crossbow[charged_projectiles=[{id:"arrow",count:0}]]"#, "[{"),
+            ("firework_rocket[fireworks={explosions:[{shape:star,colors:[I;1}]}]", "{"),
+        ] {
+            let error = parse_item(text).unwrap_err();
+            assert_eq!(key(&error), "arguments.item.component.malformed", "{text}");
+            assert_eq!(error.cursor, text.find(bad), "{text}");
+        }
+        assert_eq!(
+            key(&parse_item("shield[base_color=red,base_color=blue]").unwrap_err()),
+            "arguments.item.component.repeated"
         );
     }
 

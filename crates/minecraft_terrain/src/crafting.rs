@@ -507,6 +507,10 @@ pub fn kit_components(entry: &str) -> (&str, Option<serde_json::Value>) {
             if let Some(amplifier) = value.trim().parse::<i64>().ok().filter(|a| (0..=4).contains(a)) {
                 components.insert(name, serde_json::json!(amplifier));
             }
+        } else if minecraftoss_world::item_components::COMPONENTS.contains(&name.as_str()) {
+            if let Ok(content) = minecraftoss_world::item_components::content(&name, value.trim()) {
+                components.insert(name, content);
+            }
         }
     }
     (entry[..open].trim(), (!components.is_empty()).then_some(serde_json::Value::Object(components)))
@@ -755,6 +759,61 @@ mod tests {
         assert_eq!(stack(0), Some(("minecraft:ominous_bottle".to_owned(), 2, Some(json!({"minecraft:ominous_bottle_amplifier": 4})))));
         assert_eq!(stack(1), Some(("minecraft:ominous_bottle".to_owned(), 1, None)));
         assert_eq!(stack(2), Some(("minecraft:ominous_bottle".to_owned(), 1, None)), "out of range is left out");
+    }
+
+    #[test]
+    fn kit_banners_shields_crossbows_and_fireworks_carry_their_components() {
+        let banner = kit_components(r#"minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]"#);
+        assert_eq!(
+            banner,
+            ("minecraft:white_banner", Some(json!({"minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}, {"pattern": "minecraft:border", "color": "red"}]})))
+        );
+        let shield = kit_components(r#"minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]]"#);
+        assert_eq!(
+            shield,
+            ("minecraft:shield", Some(json!({"minecraft:base_color": "red", "minecraft:banner_patterns": [{"pattern": "minecraft:cross", "color": "yellow"}]})))
+        );
+        let crossbow = kit_components(r#"minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]]"#);
+        assert_eq!(crossbow, ("minecraft:crossbow", Some(json!({"minecraft:charged_projectiles": [{"id": "minecraft:arrow"}]}))));
+        let rocket = kit_components("minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]");
+        assert_eq!(
+            rocket,
+            ("minecraft:firework_rocket", Some(json!({"minecraft:fireworks": {"flight_duration": 1, "explosions": [{"shape": "large_ball", "colors": [11743532], "has_trail": 1}]}})))
+        );
+        let star = kit_components("minecraft:firework_star[firework_explosion={shape:star,colors:[I;14602026],fade_colors:[I;15435844],has_twinkle:1b}]");
+        assert_eq!(
+            star,
+            ("minecraft:firework_star", Some(json!({"minecraft:firework_explosion": {"shape": "star", "colors": [14602026], "fade_colors": [15435844], "has_twinkle": 1}})))
+        );
+        assert_eq!(kit_components("minecraft:shield[base_color=purpl]"), ("minecraft:shield", None));
+        assert_eq!(kit_components("minecraft:firework_star[firework_explosion={shape:square}]"), ("minecraft:firework_star", None));
+        assert_eq!(kit_components(r#"minecraft:white_banner[banner_patterns={pattern:"creeper",color:"black"}]"#), ("minecraft:white_banner", None));
+        let mut inventory = Inventory::default();
+        let spec = r#"minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"}]]*4,minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]]"#;
+        assert_eq!(give_kit(&mut inventory, spec), 2);
+        let given = |slot: usize| inventory.slots[HOTBAR + slot].as_ref().map(|s| (s.id.clone(), s.count, s.components.clone()));
+        assert_eq!(given(0), Some(("minecraft:white_banner".to_owned(), 4, Some(json!({"minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}]})))));
+        assert_eq!(
+            given(1),
+            Some(("minecraft:crossbow".to_owned(), 1, Some(json!({"minecraft:charged_projectiles": [{"id": "minecraft:arrow"}]}))))
+        );
+    }
+
+    #[test]
+    fn a_kit_rocket_keeps_its_star_through_a_save_and_load() {
+        let mut inventory = Inventory::default();
+        let spec = "minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64";
+        assert_eq!(give_kit(&mut inventory, spec), 1);
+        let rockets = inventory.slots[HOTBAR].clone().unwrap();
+        let fireworks = json!({"minecraft:fireworks": {"flight_duration": 1, "explosions": [{"shape": "large_ball", "colors": [11743532], "has_trail": 1}]}});
+        assert_eq!((rockets.id.as_str(), rockets.count, rockets.components.as_ref()), ("minecraft:firework_rocket", 64, Some(&fireworks)));
+        let tag = crate::item_nbt::stack_tag(&rockets).unwrap();
+        let star = tag.get("components").and_then(|c| c.get("minecraft:fireworks")).and_then(|f| f.get("explosions")).and_then(|e| e.as_list()).and_then(|e| e.first()).cloned().unwrap();
+        assert_eq!(star.get("colors").and_then(minecraftoss_core::nbt::Tag::as_ints), Some(vec![11743532]));
+        let read = minecraftoss_core::nbt::read(&minecraftoss_core::nbt::write_gzip(&tag, "")).unwrap();
+        let loaded = crate::item_nbt::stack_of(&read, &inventory.recipes).unwrap();
+        assert_eq!(loaded, rockets);
+        assert_eq!(crate::firework::flight_duration(&loaded), 1);
     }
 
     fn write_jar(path: &Path, recipes: &[(&str, Value)], tags: &[(&str, Value)]) {

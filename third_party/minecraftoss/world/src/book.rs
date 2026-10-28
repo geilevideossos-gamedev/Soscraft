@@ -166,11 +166,11 @@ fn closing(list: &str) -> Option<usize> {
     None
 }
 
-fn describe(tag: &Tag) -> String {
+pub(crate) fn describe(tag: &Tag) -> String {
     tag_json(tag).to_string()
 }
 
-fn list(tag: &Tag, max: Option<usize>) -> Result<&Vec<Tag>, String> {
+pub(crate) fn list(tag: &Tag, max: Option<usize>) -> Result<&Vec<Tag>, String> {
     let Tag::List(items) = tag else {
         return Err(format!("Not a list: {}", describe(tag)));
     };
@@ -183,7 +183,7 @@ fn list(tag: &Tag, max: Option<usize>) -> Result<&Vec<Tag>, String> {
     Ok(items)
 }
 
-fn string(tag: &Tag, max: usize) -> Result<Value, String> {
+pub(crate) fn string(tag: &Tag, max: usize) -> Result<Value, String> {
     let Tag::String(text) = tag else {
         return Err(format!("Not a string: {}", describe(tag)));
     };
@@ -194,7 +194,7 @@ fn string(tag: &Tag, max: usize) -> Result<Value, String> {
     Ok(Value::from(text.clone()))
 }
 
-fn number(tag: &Tag) -> Result<i64, String> {
+pub(crate) fn number(tag: &Tag) -> Result<i64, String> {
     match tag {
         Tag::Byte(v) => Ok(i64::from(*v)),
         Tag::Short(v) => Ok(i64::from(*v)),
@@ -228,7 +228,7 @@ fn filterable(tag: &Tag, inner: impl Fn(&Tag) -> Result<Value, String>) -> Resul
     Ok(Value::Object(out))
 }
 
-fn tag_json(tag: &Tag) -> Value {
+pub(crate) fn tag_json(tag: &Tag) -> Value {
     match tag {
         Tag::Byte(v) => Value::from(*v),
         Tag::Short(v) => Value::from(*v),
