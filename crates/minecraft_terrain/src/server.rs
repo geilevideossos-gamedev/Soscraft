@@ -10226,6 +10226,40 @@ mod tests {
     }
 
     #[test]
+    fn the_visual_clip_passes_glass_and_iron_bars_and_stops_at_stone_and_a_fence_outline() {
+        use minecraftoss_world::level::physics::{ClipBlocks, ClipFluids};
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        server.load_chunk(&map.load_now(ChunkPos::new(0, 0)));
+        for z in 0..=8 {
+            server.player_edit_block((8, 200, z), Some(&Block::new("minecraft:air")), PlayerEdit::Place);
+        }
+        server.player_edit_block((8, 199, 4), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+        let hit =minecraftoss_core::BlockPos::new(8, 200, 4);
+        let mut ray = |block: Block, y: f64| {
+            server.player_edit_block((8, 200, 4), Some(&block), PlayerEdit::Place);
+            let (from, to) = ([8.5, 200.0 + y, 1.5], [8.5, 200.0 + y, 7.5]);
+            let clip = |blocks| server.level.clip_first_hit(from, to, blocks, ClipFluids::None);
+            (clip(ClipBlocks::Visual), clip(ClipBlocks::Collider))
+        };
+        for glass in ["minecraft:glass", "minecraft:red_stained_glass", "minecraft:tinted_glass", "minecraft:iron_bars", "minecraft:glass_pane"] {
+            assert_eq!(ray(Block::new(glass), 0.5), (None, Some(hit)), "{glass} lets the eye through");
+        }
+        assert_eq!(ray(Block::new("minecraft:powder_snow"), 0.5).0, None);
+        assert_eq!(ray(Block::new("minecraft:stone"), 0.5), (Some(hit), Some(hit)));
+        assert_eq!(ray(Block::new("minecraft:oak_fence"), 0.5), (Some(hit), Some(hit)), "a fence's outline stops it");
+        assert_eq!(ray(Block::new("minecraft:soul_sand"), 0.95), (Some(hit), None), "soul sand looks like a full block");
+        assert_eq!(ray(Block::new("minecraft:mud"), 0.95), (Some(hit), None));
+        assert_eq!(ray(Block::new("minecraft:snow").with("layers", "1"), 0.05), (Some(hit), None), "one snow layer is seen but not felt");
+        assert_eq!(ray(Block::new("minecraft:air"), 0.5), (None, None));
+    }
+
+    #[test]
     fn the_end_converts_hoglins_too() {
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };

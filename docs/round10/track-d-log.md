@@ -170,6 +170,20 @@ After 1294cf59.
 IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:spawner*2,minecraft:husk_spawn_egg*2,minecraft:slime_spawn_egg*2,minecraft:torch*64,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:ladder*32
 ```
 
+### 2. Minecraft line of sight passes through glass and iron bars like vanilla
+
+After a877c6ae.
+
+- **Vanilla (javap, 26.3):** `ClipContext.Block.VISUAL` tests `BlockState.getVisualShape`, which is the collision shape except where a block overrides `getVisualShape`. The overrides in 26.3 (every block class that names it):
+  - `TransparentBlock` (glass, stained glass, tinted glass), `IronBarsBlock` (iron and copper bars, glass panes) and `PowderSnowBlock`: empty.
+  - `MudBlock` and `SoulSandBlock`: a full cube (their collision is 14/16 high).
+  - `SnowLayerBlock`: `SHAPES[layers]` (the collision is `SHAPES[layers - 1]`), so one layer is seen but not felt.
+  - `FenceBlock`: `getShape`, the outline. `CrossCollisionBlock` builds both from the same post and arms (`FenceBlock(4, 16, 4, 16, 24)`): the outline is the collision shape cut at 16/16 instead of 24/16.
+- **Changed:** vendored `world/src/level/physics.rs`: `ClipBlocks::Visual` and `Level::block_visual_shape` with the overrides above (block classes from the catalog, ancestors included), used by `clip_first_hit`. Its users are the trial spawner (next commit: a player seen from the spawner, a spawn spot that sees the spawner) and group trial-ominous's upward clip.
+- **Tests:** `server::tests::the_visual_clip_passes_glass_and_iron_bars_and_stops_at_stone_and_a_fence_outline`: a ray along a row at y 200 passes glass, red stained glass, tinted glass, iron bars, a glass pane and powder snow with the visual clip (the collider clip stops at all but powder snow); stone and an oak fence stop both; a ray at 0.95 of the block is stopped by soul sand and mud only visually; a ray at 0.05 is stopped by one snow layer only visually; air stops neither.
+- **Decisions:** none beyond vanilla.
+- **Test steps:** none on its own; it is tested in game through the next commit (a trial spawner sees you through glass, step 3 there).
+
 ## Protocol
 
 No message of this track has changed yet. `minecraft_net::PROTOCOL` stays 6.
@@ -182,4 +196,4 @@ No message of this track has changed yet. `minecraft_net::PROTOCOL` stays 6.
 
 ## Vendored files
 
-Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2), and `world/src/level/container.rs` (group trial-spawners, commit 2: `Level::set_block_entity_tag`). All three were already patched by the fork (the first two are in round 9's list, `docs/round9/track-d-log.md`, Vendored files; `container.rs` since c5efeed0), so the fork's counts do not change. Group trial-spawners-run, commit 1: `world/src/natural_spawner/spawning.rs` and `world/src/level/spawning.rs` (both patched by the fork before).
+Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2), and `world/src/level/container.rs` (group trial-spawners, commit 2: `Level::set_block_entity_tag`). All three were already patched by the fork (the first two are in round 9's list, `docs/round9/track-d-log.md`, Vendored files; `container.rs` since c5efeed0), so the fork's counts do not change. Group trial-spawners-run, commit 1: `world/src/natural_spawner/spawning.rs` and `world/src/level/spawning.rs` (both patched by the fork before). Commit 2: `world/src/level/physics.rs`, patched by the fork for the first time (one more patched file).

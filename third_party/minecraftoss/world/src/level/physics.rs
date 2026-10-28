@@ -68,6 +68,7 @@ impl Aabb {
 pub enum ClipBlocks {
     /// `COLLIDER`: collision shapes.
     Collider,
+    Visual,
     /// `FALLDAMAGE_RESETTING`: full blocks for the `fall_damage_resetting`
     /// tag, nothing else.
     FallDamageResetting,
@@ -331,6 +332,26 @@ impl Level<'_> {
         }
     }
 
+    pub fn block_visual_shape(&self, state: BlockStateId, pos: BlockPos) -> Option<VoxelShape> {
+        let blocks = &self.registries().blocks;
+        let block = blocks.block(blocks.block_of(state));
+        if block.is_a("TransparentBlock") || block.is_a("IronBarsBlock") || block.is_a("PowderSnowBlock") {
+            return None;
+        }
+        if block.is_a("MudBlock") || block.is_a("SoulSandBlock") {
+            return Some(VoxelShape::block(pos));
+        }
+        if block.is_a("SnowLayerBlock") {
+            let layers = blocks.property(state, "layers").and_then(|layers| layers.parse::<f64>().ok()).unwrap_or(1.0);
+            return Some(VoxelShape::column(pos, layers * 2.0 / 16.0));
+        }
+        if block.is_a("FenceBlock") {
+            let outline: Vec<[f64; 6]> = blocks.collision_boxes(state).into_iter().map(|b| [b[0], b[1], b[2], b[3], b[4].min(1.0), b[5]]).collect();
+            return (!outline.is_empty()).then(|| VoxelShape::from_boxes(&outline, None, pos));
+        }
+        self.block_collision_shape(state, pos)
+    }
+
     /// `BlockState.hasLargeCollisionShape`: a collision box leaving the block.
     fn has_large_collision_shape(&self, state: BlockStateId) -> bool {
         match self.registries().blocks.collision_shape(state) {
@@ -359,6 +380,7 @@ impl Level<'_> {
             let state = self.block(pos);
             let shape = match blocks {
                 ClipBlocks::Collider => self.block_collision_shape(state, pos),
+                ClipBlocks::Visual => self.block_visual_shape(state, pos),
                 ClipBlocks::FallDamageResetting => self.lib.registries.block_in_tag(state, fall_resetting).then(|| VoxelShape::block(pos)),
             };
             if shape.is_some_and(|shape| shape.clip_hits(from, to)) {
