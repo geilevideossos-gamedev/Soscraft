@@ -125,6 +125,10 @@ impl Menu for MenuView<'_> {
     fn capacity(&self, slot: McSlot) -> Option<u8> {
         self.ui.droppable.iter().find(|(s, _)| *s == slot).map(|&(_, capacity)| capacity)
     }
+
+    fn picks_all(&self) -> bool {
+        self.layout.screen != McScreen::Merchant
+    }
 }
 
 pub(crate) fn stack_at(ui: &MinecraftUi, slot: McSlot) -> Option<&McStack> {

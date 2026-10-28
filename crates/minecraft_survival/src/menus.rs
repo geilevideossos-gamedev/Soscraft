@@ -932,7 +932,7 @@ fn merchant_action(
             screen.selected = usize::try_from(index).ok();
         }
         ops.push(op);
-    } else if merchant_local(action) {
+    } else if merchant_local(action) && !matches!(action, MenuAction::Gather { .. }) {
         grid_action(action, inventory, Grid::Inventory, None, thrown);
     }
 }
@@ -2796,6 +2796,21 @@ mod tests {
         assert_eq!(
             steve.inventory.cursor.as_ref().map(|stack| stack.count),
             Some(5)
+        );
+        steve.inventory.slots[3] = Some(ItemStack::new("minecraft:wheat", 7));
+        let gather = MenuAction::Gather {
+            slot: MenuSlot::Inventory(2),
+            right: false,
+        };
+        let _ = apply(&mut steve, &mut containers, books(&book), &gather, 0.5);
+        assert!(sent(&mut steve).is_empty(), "a double click never gathers here");
+        assert_eq!(
+            steve.inventory.cursor.as_ref().map(|stack| stack.count),
+            Some(5)
+        );
+        assert_eq!(
+            steve.inventory.slots[3].as_ref().map(|stack| stack.count),
+            Some(7)
         );
         let _ = apply(&mut steve, &mut containers, books(&book), &slot(2, false), 0.5);
         assert!(steve.inventory.cursor.is_none());

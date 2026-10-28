@@ -208,3 +208,30 @@ Commit: "Minecraft trading screen shares a dragged stack over its payment slots"
   2. **Right drag.** Pick up another full stack of the crop and right-drag over both payment slots and the same inventory slot: one more lands in each (33, 1 and 33), and the emerald disappears, because a trade that costs one item wants the second payment slot empty (as in vanilla). **Screenshot 7.**
   3. **Four slots.** Close the screen (the payments go back to the inventory) and open it again. Pick up a full stack and left-drag over both payment slots and two empty inventory slots: 16 land in each of the four and the cursor is empty.
   4. **Two windows:** F does steps 1-3 on the same farmer after H closes the screen; it works the same.
+
+### No gathering on a double click
+
+Commit: "Minecraft trading screen never gathers on a double click, like vanilla", the one after `4d9d80f1`.
+
+- **Cause:** the HUD turned a double click on the trading screen into `McClick::Gather` (or, with Shift, a quick move of every matching stack) like on any other screen. On a payment slot the host dropped it; on an inventory slot `merchant_local` let it through to `grid_action`, which gathered the inventory's matching stacks onto the cursor.
+- **Vanilla 26.3** (javap): `MerchantMenu.canTakeItemForPickAll` returns false (`iconst_0; ireturn`). `AbstractContainerScreen.mouseReleased` checks it before both the PICKUP_ALL click and the Shift double-click quick-move loop, so on the trading screen neither happens on any slot, and the second release falls through to an ordinary click: the stack the first click picked up is put back.
+- **Changed:**
+  - `crates/hud/src/minecraft_clicks.rs`: the `Menu` trait has `picks_all()` (true by default). `Clicks::release` checks it next to `takes_all`, so on a menu that never picks all, the double click's second release is a plain click.
+  - `crates/hud/src/minecraft_inventory.rs`: `MenuView::picks_all` is false on `McScreen::Merchant`.
+  - `crates/minecraft_survival/src/menus.rs`: `merchant_action` does not run a `Gather` locally, so a stray one from an older friend's client does nothing either.
+- **Tests:**
+  - `hud` `minecraft_clicks::tests::a_double_click_on_a_menu_that_never_picks_all_puts_the_stack_back` (the second release sends a plain `Slot` click and no `Gather`; a Shift double click sends no extra quick moves).
+  - `minecraft_survival` `menus::tests::a_villager_s_trading_screen_turns_clicks_into_trades`: a `Gather` on an inventory slot sends nothing and leaves the cursor and the other wheat stack alone.
+- **Decisions:**
+  - A double click on the trading screen gathers nothing on any slot, because vanilla's `MerchantMenu.canTakeItemForPickAll` is false. The owner's "double-click does nothing" was vanilla; what we change is the gathering we used to do on inventory slots.
+  - The refusal is in `merchant_action`, not in `merchant_local` as the brief planned: `mount_action` also uses `merchant_local` for the horse screen's own inventory slots, and a horse screen does gather in vanilla (`HorseInventoryMenu` keeps the default `canTakeItemForPickAll`).
+- **Owner's test steps** (the same world and farmer):
+  1. **Trading screen.** Open the farmer. Put two small stacks of the same crop in the inventory (split one with a right click). Click one of them to pick it up, then click the same slot again quickly: the stack is put back, and the other stack is **not** gathered onto the cursor. **Screenshot 8.** Shift-double-click a crop stack: only that stack moves between the inventory and the hotbar.
+  2. **Normal inventory.** Close the screen and press E. Do the same double click: here the other stack is gathered onto the cursor (unchanged).
+  3. **Two windows:** F does step 1 on the same farmer after H closes the screen; nothing is gathered there either.
+
+**Kit for the whole `trading-keys` group** (the same as for the first commit; 18 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:wheat*192,minecraft:potato*192,minecraft:carrot*192,minecraft:beetroot*192,minecraft:emerald*64,minecraft:villager_spawn_egg*4,minecraft:composter,minecraft:oak_fence*32,minecraft:torch*32,minecraft:bread*16
+```
