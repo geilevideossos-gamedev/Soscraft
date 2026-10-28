@@ -6947,6 +6947,27 @@ mod tests {
     }
 
     #[test]
+    fn a_player_snowball_stops_on_a_pillager_and_knocks_it_back() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:pillager", [8.5, 200.0, 9.5], None, 180.0).unwrap();
+        server.take_spawned();
+        let (pillager, health) = server.mobs.illagers().first().map(|e| (e.id, e.illager.health)).expect("a pillager");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        server.throw(crate::thrown::Thrown::throw("minecraft:snowball", glam::DVec3::new(8.5, 201.6, 5.5), 0.0, 0.0, glam::DVec3::ZERO, true, &mut random).expect("a snowball"));
+        let mut hits = Vec::new();
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+            hits.extend(server.take_thrown_hits());
+        }
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].at.z > 8.8 && hits[0].at.z < 9.3 && hits[0].at.y > 201.0, "it breaks on the pillager's front: {hits:?}");
+        let e = server.mobs.illagers().iter().find(|e| e.id == pillager).expect("the pillager lives");
+        assert_eq!(e.illager.health, health, "a snowball does it no harm");
+        assert!(e.illager.body.velocity.z > 0.3 && e.illager.body.velocity.x.abs() < 0.05, "pushed along the throw: {:?}", e.illager.body.velocity);
+        assert_eq!(e.ai.state.hurt_by.map(|(by, _)| by), Some(minecraftoss_entities::monster_ai::Target::Player(0)));
+    }
+
+    #[test]
     fn a_pearl_vanishes_when_its_thrower_is_dead() {
         let Some((mut server, _)) = door_world() else { return };
         server.throw(thrown_down("minecraft:ender_pearl", 3));
@@ -7749,6 +7770,27 @@ mod tests {
         }
         assert_eq!(eggs.len(), 88);
         assert_eq!(hatched, HATCHING_EGGS);
+    }
+
+    #[test]
+    fn every_hatching_mob_is_a_thrown_target_and_takes_a_trident() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        for name in HATCHING_EGGS.iter().filter(|&&name| name != "ender_dragon") {
+            let kind = format!("minecraft:{name}");
+            let before: std::collections::HashSet<u64> = server.mobs.mob_ids().collect();
+            server.hatch_egg(&kind, [8.5, 200.0, 8.5], 0.0).unwrap();
+            let new: Vec<u64> = server.mobs.mob_ids().filter(|id| !before.contains(id)).collect();
+            assert!(!new.is_empty(), "{kind}");
+            let targets = crate::thrown::targets(&server.mobs);
+            for id in new {
+                let what = server.mobs.entity_type(id);
+                assert!(targets.iter().any(|target| target.id == id), "{kind}: {what:?} is a thrown target");
+                let landed = crate::thrown::hurt_by(&mut server.mobs, id, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, glam::DVec3::Z, 0);
+                let refuses = matches!(what, Some("minecraft:enderman" | "minecraft:shulker"));
+                assert_eq!(landed, !refuses, "{kind}: {what:?}");
+            }
+        }
     }
 
     #[test]

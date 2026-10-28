@@ -3269,6 +3269,107 @@ impl EntityWorld {
         self.spawn_arrow(owner_id, arrow)
     }
 
+    pub fn hit_boxes(&self) -> Vec<crate::potion::PotionTarget> {
+        let mut out = Vec::new();
+        let mut add = |id: u64, body: &Body, health: f32| {
+            if health > 0.0 {
+                let half_width = f64::from(body.width / 2.0);
+                out.push(crate::potion::PotionTarget {
+                    id,
+                    min: body.position - DVec3::new(half_width, 0.0, half_width),
+                    max: body.position + DVec3::new(half_width, f64::from(body.height), half_width),
+                    owner: false,
+                });
+            }
+        };
+        for e in &self.bats {
+            add(e.id, &e.bat.body, e.bat.health);
+        }
+        for e in &self.zombies {
+            add(e.id, &e.zombie.body, e.zombie.health);
+        }
+        for e in &self.skeletons {
+            add(e.id, &e.skeleton.body, e.skeleton.health);
+        }
+        for e in self.creepers.iter().filter(|e| !e.creeper.exploded) {
+            add(e.id, &e.creeper.body, e.creeper.health);
+        }
+        for e in &self.spiders {
+            add(e.id, &e.spider.body, e.spider.health);
+        }
+        for e in &self.slimes {
+            add(e.id, &e.slime.body, e.slime.health);
+        }
+        for e in &self.endermen {
+            add(e.id, &e.enderman.body, e.enderman.health);
+        }
+        for e in &self.witches {
+            add(e.id, &e.witch.body, e.witch.health);
+        }
+        for e in &self.iron_golems {
+            add(e.id, &e.golem.body, e.golem.health);
+        }
+        for e in &self.wolves {
+            add(e.id, &e.wolf.body, e.wolf.health);
+        }
+        for e in &self.felines {
+            add(e.id, &e.feline.body, e.feline.health);
+        }
+        for e in &self.wandering_traders {
+            add(e.id, &e.trader.body, e.trader.health);
+        }
+        for e in &self.snow_golems {
+            add(e.id, &e.golem.body, e.golem.health);
+        }
+        for e in &self.illagers {
+            add(e.id, &e.illager.body, e.illager.health);
+        }
+        for e in &self.vexes {
+            add(e.id, &e.vex.body, e.vex.health);
+        }
+        for e in &self.ravagers {
+            add(e.id, &e.ravager.body, e.ravager.health);
+        }
+        for e in &self.withers {
+            add(e.id, &e.wither.body, e.wither.health);
+        }
+        for e in &self.villagers {
+            add(e.id, &e.villager.body, e.villager.health);
+        }
+        for e in &self.cows {
+            add(e.id, &e.cow.body, e.cow.health);
+        }
+        for e in &self.sheep {
+            add(e.id, &e.body, e.health);
+        }
+        for e in &self.pigs {
+            add(e.id, &e.pig.body, e.pig.health);
+        }
+        for e in &self.chickens {
+            add(e.id, &e.chicken.body, e.chicken.health);
+        }
+        for e in &self.ghasts {
+            add(e.id, &e.ghast.body, e.ghast.health);
+        }
+        for e in &self.blazes {
+            add(e.id, &e.blaze.body, e.blaze.health);
+        }
+        for e in &self.striders {
+            add(e.id, &e.strider.body, e.strider.health);
+        }
+        for e in &self.hoglins {
+            add(e.id, &e.hoglin.body, e.hoglin.health);
+        }
+        for e in &self.piglins {
+            add(e.id, &e.piglin.body, e.piglin.health);
+        }
+        for e in self.shulkers.iter().filter(|e| e.shulker.health > 0.0) {
+            let (min, max) = e.shulker.bounding_box();
+            out.push(crate::potion::PotionTarget { id: e.id, min, max, owner: false });
+        }
+        out
+    }
+
     fn arrow_targets(&self, owner_id: u64, players: &[PlayerCandidate]) -> Vec<ArrowTarget> {
         // Players are pickable unless spectating (`canHitEntity`).
         let players = players.iter().filter(|p| self.players_pickable && p.alive && !p.spectator).map(|p| ArrowTarget {
@@ -3276,138 +3377,10 @@ impl EntityWorld {
             min: p.position - DVec3::new(0.3, 0.0, 0.3),
             max: p.position + DVec3::new(0.3, 1.8, 0.3),
         });
-        self.order
-            .iter()
-            .filter_map(|key| {
-                let (id, body, health) = match *key {
-                    EntityKey::Bat(id) => {
-                        let entity = self.bats.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.bat.body, entity.bat.health)
-                    }
-                    EntityKey::Zombie(id) => {
-                        let entity = self.zombies.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.zombie.body, entity.zombie.health)
-                    }
-                    EntityKey::Skeleton(id) => {
-                        let entity = self.skeletons.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.skeleton.body, entity.skeleton.health)
-                    }
-                    EntityKey::Creeper(id) => {
-                        let entity = self.creepers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.creeper.body, entity.creeper.health)
-                    }
-                    EntityKey::Spider(id) => {
-                        let entity = self.spiders.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.spider.body, entity.spider.health)
-                    }
-                    EntityKey::Slime(id) => {
-                        let entity = self.slimes.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.slime.body, entity.slime.health)
-                    }
-                    EntityKey::Enderman(id) => {
-                        let entity = self.endermen.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.enderman.body, entity.enderman.health)
-                    }
-                    EntityKey::Witch(id) => {
-                        let entity = self.witches.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.witch.body, entity.witch.health)
-                    }
-                    EntityKey::IronGolem(id) => {
-                        let entity = self.iron_golems.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.golem.body, entity.golem.health)
-                    }
-                    EntityKey::Wolf(id) => {
-                        let entity = self.wolves.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.wolf.body, entity.wolf.health)
-                    }
-                    EntityKey::Feline(id) => {
-                        let entity = self.felines.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.feline.body, entity.feline.health)
-                    }
-                    EntityKey::Trader(id) => {
-                        let entity = self.wandering_traders.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.trader.body, entity.trader.health)
-                    }
-                    EntityKey::SnowGolem(id) => {
-                        let entity = self.snow_golems.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.golem.body, entity.golem.health)
-                    }
-                    EntityKey::Illager(id) => {
-                        let entity = self.illagers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.illager.body, entity.illager.health)
-                    }
-                    EntityKey::Vex(id) => {
-                        let entity = self.vexes.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.vex.body, entity.vex.health)
-                    }
-                    EntityKey::Ravager(id) => {
-                        let entity = self.ravagers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.ravager.body, entity.ravager.health)
-                    }
-                    EntityKey::Wither(id) => {
-                        let entity = self.withers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.wither.body, entity.wither.health)
-                    }
-                    EntityKey::Villager(id) => {
-                        let entity = self.villagers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.villager.body, entity.villager.health)
-                    }
-                    EntityKey::Cow(id) => {
-                        let entity = self.cows.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.cow.body, entity.cow.health)
-                    }
-                    EntityKey::Sheep(id) => {
-                        let entity = self.sheep.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.body, entity.health)
-                    }
-                    EntityKey::Pig(id) => {
-                        let entity = self.pigs.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.pig.body, entity.pig.health)
-                    }
-                    EntityKey::Chicken(id) => {
-                        let entity = self.chickens.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.chicken.body, entity.chicken.health)
-                    }
-                    EntityKey::Ghast(id) => {
-                        let entity = self.ghasts.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.ghast.body, entity.ghast.health)
-                    }
-                    EntityKey::Blaze(id) => {
-                        let entity = self.blazes.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.blaze.body, entity.blaze.health)
-                    }
-                    EntityKey::Strider(id) => {
-                        let entity = self.striders.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.strider.body, entity.strider.health)
-                    }
-                    EntityKey::Hoglin(id) => {
-                        let entity = self.hoglins.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.hoglin.body, entity.hoglin.health)
-                    }
-                    EntityKey::Piglin(id) => {
-                        let entity = self.piglins.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.piglin.body, entity.piglin.health)
-                    }
-                    EntityKey::Shulker(id) => {
-                        let entity = self.shulkers.iter().find(|entity| entity.id == id)?;
-                        if id == owner_id || entity.shulker.health <= 0.0 {
-                            return None;
-                        }
-                        let (min, max) = entity.shulker.bounding_box();
-                        return Some(ArrowTarget { id, min, max });
-                    }
-                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => return None,
-                };
-                if id == owner_id || health <= 0.0 {
-                    return None;
-                }
-                let half_width = f64::from(body.width / 2.0);
-                Some(ArrowTarget {
-                    id,
-                    min: body.position - DVec3::new(half_width, 0.0, half_width),
-                    max: body.position + DVec3::new(half_width, f64::from(body.height), half_width),
-                })
-            })
+        self.hit_boxes()
+            .into_iter()
+            .filter(|target| target.id != owner_id)
+            .map(|target| ArrowTarget { id: target.id, min: target.min, max: target.max })
             .chain(players)
             .collect()
     }
@@ -9093,6 +9066,57 @@ mod tests {
         );
         assert!(world.villager_mut(villager).unwrap().hurt(21.0).died);
         assert!(world.mob_on_ray(eye, DVec3::Z, 5.0).is_none());
+    }
+
+    #[test]
+    fn hit_boxes_cover_every_live_mob() {
+        use crate::{feline::FelineKind, hoglin::HoglinKind, illager::IllagerKind, piglin::PiglinKind};
+        let mut world = EntityWorld::default();
+        let at = |x: f64| DVec3::new(x, 1.0, 0.5);
+        world.spawn_bat(Bat::new(at(0.5)), true);
+        let zombie = world.spawn_zombie(Zombie::new(at(2.5)), true);
+        world.spawn_skeleton(Skeleton::new(at(4.5)), true);
+        let creeper = world.spawn_creeper(Creeper::new(at(6.5)), true);
+        world.spawn_spider(Spider::new(at(8.5)), true);
+        world.spawn_slime(crate::slime::Slime::new(at(10.5), 2), true);
+        world.spawn_enderman(crate::enderman::Enderman::new(at(12.5)), true);
+        world.spawn_witch(crate::witch::Witch::new(at(14.5)), true);
+        world.spawn_iron_golem(crate::iron_golem::IronGolem::new(at(16.5)), true);
+        world.spawn_wolf(crate::wolf::Wolf::new(at(18.5)), true);
+        world.spawn_feline(crate::feline::Feline::new(FelineKind::Cat, at(20.5)), true);
+        world.spawn_wandering_trader(crate::wandering_trader::WanderingTrader::new(at(22.5)), true);
+        world.spawn_snow_golem(crate::snow_golem::SnowGolem::new(at(24.5)), true);
+        world.spawn_villager(Villager::new(at(26.5)), true);
+        world.spawn_cow(Cow::new(at(28.5)), true);
+        world.spawn_sheep(Sheep::default(), at(30.5), true);
+        world.spawn_pig(Pig::new(at(32.5)), true);
+        world.spawn_chicken(Chicken::new(at(34.5)), true);
+        world.spawn_illager(crate::illager::Illager::new(IllagerKind::Vindicator, at(36.5)), true);
+        world.spawn_vex(crate::vex::Vex::new(at(38.5)), true);
+        world.spawn_ravager(crate::ravager::Ravager::new(at(41.5)), true);
+        world.spawn_wither(crate::wither::Wither::new(at(45.5)), true);
+        world.spawn_ghast(crate::ghast::Ghast::new(at(52.5)), true);
+        world.spawn_blaze(crate::blaze::Blaze::new(at(58.5)), true);
+        world.spawn_strider(crate::strider::Strider::new(at(60.5)), true);
+        world.spawn_hoglin(crate::hoglin::Hoglin::new(HoglinKind::Zoglin, at(63.5)), true);
+        world.spawn_piglin(crate::piglin::Piglin::new(PiglinKind::Brute, at(66.5)), true);
+        let shulker = world.spawn_shulker(crate::shulker::Shulker::new(at(68.5)), true);
+        let potion = world.spawn_potion(crate::potion::ThrownPotion::shoot(crate::potion::Potion::Poison, 1, at(70.5), DVec3::Z, 0.5, 1.0, &mut LegacyRandom::new(0)));
+        let ids = |world: &EntityWorld| {
+            let mut ids: Vec<u64> = world.hit_boxes().iter().map(|target| target.id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        let mut live: Vec<u64> = world.mob_ids().filter(|&id| id != potion).collect();
+        live.sort_unstable();
+        assert_eq!(live.len(), 28);
+        assert_eq!(ids(&world), live);
+        let boxed = world.hit_boxes().into_iter().find(|target| target.id == shulker).unwrap();
+        assert_eq!((boxed.min, boxed.max, boxed.owner), (world.shulkers()[0].shulker.bounding_box().0, world.shulkers()[0].shulker.bounding_box().1, false));
+        world.zombie_mut(zombie).unwrap().zombie.health = 0.0;
+        world.creeper_mut(creeper).unwrap().creeper.exploded = true;
+        live.retain(|&id| id != zombie && id != creeper);
+        assert_eq!(ids(&world), live);
     }
 
     #[test]
