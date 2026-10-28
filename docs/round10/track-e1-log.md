@@ -324,3 +324,30 @@ Commit: "Minecraft omens given by command play their sound", the one after `796a
 ```
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*2,minecraft:milk_bucket
 ```
+
+### The ominous bottle's Bad Omen line
+
+Commit: "Minecraft ominous bottles show their Bad Omen line", the one after `f3bd9636`.
+
+- **Cause** (as in the brief, re-checked at `f3bd9636`): `McStack` (`crates/frame/src/minecraft_ui.rs`) had no effect lines, `convert` in `crates/render_anim/src/minecraft_inventory.rs` never read `minecraft:ominous_bottle_amplifier`, and `tooltip_lines` in `crates/hud/src/minecraft_inventory.rs` had nothing to draw under the name.
+- **Vanilla 26.3** (javap): `Items.OMINOUS_BOTTLE` has the default component `OminousBottleAmplifier(0)`. `OminousBottleAmplifier.addToTooltip` builds `MobEffectInstance(BAD_OMEN, 120000, amplifier, false, false, true)` and hands it to `PotionContents.addPotionTooltip(list, consumer, 1.0, tickRate)`. `getPotionDescription` is the effect's name, wrapped in `potion.withAmplifier` ("%s %s") with `potion.potency.<amplifier>` when the amplifier is above 0. The time is added with `potion.withDuration` ("%s (%s)") unless `endsWithin(20)` (an effect of 20 ticks or less, not endless), formatted by `MobEffectUtil.formatDuration` as `mm:ss`, or `hh:mm:ss` from an hour. The colour is the category's `getTooltipFormatting`: Bad Omen is NEUTRAL, which is BLUE (0x5555FF); HARMFUL would be RED. Bad Omen has no attribute modifiers, so there is no "When Applied:" block.
+- **Changed:**
+  - `frame/src/minecraft_ui.rs`: `McStack.effects: Vec<(String, bool)>` (the line, and whether it is beneficial or neutral), and `McStack` derives `Default`. The test literals in `frame` and `hud` end with `..Default::default()` instead of naming the new field, so later fields (banner lines, dyed armour) don't touch them again. The two literals that already copy another stack (`minecraft_screens.rs` and `minecraft_merchant.rs`) needed nothing.
+  - `render_anim/src/minecraft_inventory.rs`: `convert` fills `effects` from `effect_lines`, which gives an ominous bottle its Bad Omen line at `ominous_amplifier` (0 for a bottle with no components) and 120000 ticks. `effect_line(language, effect, amplifier, ticks)` builds a line by the rules above, with the numeral as a fallback for a missing potency text, so potions can use it later.
+  - `hud/src/minecraft_inventory.rs` `tooltip_lines`: the effect lines come right after the name, blue for beneficial or neutral and red for harmful. `minecraft_gui.rs` has `BLUE` (0xFF5555FF) next to `RED`.
+- **Tests:**
+  - `render_anim` `minecraft_inventory::tests::an_ominous_bottle_shows_its_bad_omen_with_its_level_and_time`: a plain bottle and amplifier 0 give `("Bad Omen (01:40:00)", true)`, amplifier 4 gives `("Bad Omen V (01:40:00)", true)`, amplifier 1 with no potency text gives "Bad Omen II (01:40:00)", a potion gives no line, 300 ticks give "(00:15)", 20 ticks give no time, and a missing name shows its key.
+  - `hud` `minecraft_inventory::tests::an_ominous_bottle_tooltip_shows_its_omen_in_blue_under_the_name`: the lines are the white name, then the omen line in blue; a harmful line is red.
+- **Decisions:**
+  - The time counts 20 ticks a second, as the effect list does (E-effects decision): vanilla divides by the `/tick rate`.
+  - The bottle's name stays white. Vanilla's ominous bottle is UNCOMMON, so its name is yellow there, but our tooltips draw no rarity colours yet for any item; that is a separate change.
+- **Owner's test steps** (survival, a new world, the kit below):
+  1. **The plain bottle.** Open the inventory and hover the stack of two ominous bottles: "Ominous Bottle", and under it a blue "Bad Omen (01:40:00)". **Screenshot 1.**
+  2. **The strong bottle.** Hover the single bottle: "Bad Omen V (01:40:00)" in blue. **Screenshot 2.**
+  3. **Creative.** Run `/gamemode creative`, open the inventory, search "ominous" and hover the bottle: "Bad Omen (01:40:00)". Run `/gamemode survival`.
+  4. **Two windows** (host H, friend F, both with the kit): F hovers both bottles in F's inventory and sees the same two lines.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*2,minecraft:ominous_bottle[ominous_bottle_amplifier=4]
+```

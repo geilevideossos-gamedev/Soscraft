@@ -1349,6 +1349,7 @@ mod tests {
             icon: id.into(),
             lore: Vec::new(),
             clip: None,
+            ..Default::default()
         };
         let netherite = stack("minecraft:netherite_upgrade_smithing_template");
         assert_eq!(

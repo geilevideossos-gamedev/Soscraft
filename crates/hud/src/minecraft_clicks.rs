@@ -331,6 +331,7 @@ mod tests {
             icon: id.into(),
             lore: Vec::new(),
             clip: None,
+            ..Default::default()
         }
     }
 

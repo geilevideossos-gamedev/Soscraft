@@ -10,7 +10,7 @@ use crate::gpu_list::{HudTessPass, TessJob};
 use crate::images::HudImages;
 use crate::minecraft_chat::MODIFIERS;
 use crate::minecraft_clicks::{Clicks, Menu, Target};
-use crate::minecraft_gui::{ANIMATED_ICON_MATERIAL, DARK_GREEN, GLINT_MATERIAL, GRAY, GUI_MATERIAL, GuiSpace, ICON_MATERIAL, Painter, TextLine, WHITE, YELLOW};
+use crate::minecraft_gui::{ANIMATED_ICON_MATERIAL, BLUE, DARK_GREEN, GLINT_MATERIAL, GRAY, GUI_MATERIAL, GuiSpace, ICON_MATERIAL, Painter, RED, TextLine, WHITE, YELLOW};
 use crate::minecraft_screens::{
     Cycler, Layout, PUPPET_BOX, RECIPE_COLUMNS, RECIPE_ROWS, Screen, SlotSpec, Station, drag_offset, enchant_row_at, hidden_rows,
     over_scroller, recipe_at, smithing_icons, smithing_templates, start_index,
@@ -892,6 +892,7 @@ fn tooltip_lines(
 ) -> Vec<TextLine> {
     let name = stack_name(stack, ui, weapons, strings, gaps);
     let mut lines = vec![TextLine { italic: stack.named, ..TextLine::new(name, crate::minecraft_hotbar::name_color(Some(stack))) }];
+    lines.extend(stack.effects.iter().map(|(line, kindly)| TextLine::new(line.clone(), if *kindly { BLUE } else { RED })));
     lines.extend(stack.contents.iter().map(|line| TextLine::new(line.clone(), WHITE)));
     lines.extend(stack.more.iter().map(|line| TextLine { italic: true, ..TextLine::new(line.clone(), WHITE) }));
     lines.extend(stack.lore.iter().map(|line| TextLine::new(line.clone(), GRAY)));
@@ -1107,6 +1108,7 @@ mod tests {
             icon: "minecraft:shulker_box".to_owned(),
             lore: Vec::new(),
             clip: None,
+            ..Default::default()
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool)> = lines.iter().map(|line| (line.text.as_str(), line.italic)).collect();
@@ -1144,10 +1146,30 @@ mod tests {
             icon: "minecraft:written_book".to_owned(),
             lore: vec!["by Alex".to_owned(), "Original".to_owned()],
             clip: None,
+            ..Default::default()
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool, u32)> = lines.iter().map(|line| (line.text.as_str(), line.italic, line.color)).collect();
         assert_eq!(shown[1..], [("by Alex", false, GRAY), ("Original", false, GRAY)]);
         assert_eq!((shown[0].0, shown[0].1), ("Diary", false));
+    }
+
+    #[test]
+    fn an_ominous_bottle_tooltip_shows_its_omen_in_blue_under_the_name() {
+        let stack = McStack {
+            id: "minecraft:ominous_bottle".to_owned(),
+            count: 1,
+            max: 64,
+            name: Some("Ominous Bottle".to_owned()),
+            icon: "minecraft:ominous_bottle".to_owned(),
+            effects: vec![("Bad Omen V (01:40:00)".to_owned(), true)],
+            ..Default::default()
+        };
+        let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
+        let shown: Vec<(&str, u32)> = lines.iter().map(|line| (line.text.as_str(), line.color)).collect();
+        assert_eq!(shown, [("Ominous Bottle", WHITE), ("Bad Omen V (01:40:00)", BLUE)]);
+        let harmful = McStack { effects: vec![("Poison (00:45)".to_owned(), false)], ..stack };
+        let lines = tooltip_lines(&harmful, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
+        assert_eq!((lines[1].text.as_str(), lines[1].color), ("Poison (00:45)", RED));
     }
 }
