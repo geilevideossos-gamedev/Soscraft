@@ -66,6 +66,7 @@ pub mod audio;
 pub mod server;
 pub mod server_mobs;
 pub mod mob_actions;
+pub mod mob_particles;
 pub mod walk_animation;
 pub mod cow_render;
 pub mod sheep_render;

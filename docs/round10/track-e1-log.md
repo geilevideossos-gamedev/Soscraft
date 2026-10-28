@@ -6,7 +6,7 @@ A commit can't name its own hash, so each entry is written with its commit and n
 
 ## Protocol
 
-No E1 commit has changed a `ToClient` or `ToServer` message or the codec yet.
+- "Minecraft taming shows hearts, and a failed try or a bucking horse shows smoke" (after `280f5fe9`): `EntitySnapshot` has a new field `mob_puffs`. The snapshot rides in the state frame's `entities` blob and in `ToClient::Bursts`, so host and friend must run the same build. No message or codec tag changed.
 
 ## E-kit. Kits and /give take banner patterns, loaded crossbows and firework stars
 
@@ -56,4 +56,44 @@ Commit: "Minecraft item commands and kits take banner patterns, shield colours, 
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]],minecraft:firework_rocket[fireworks={flight_duration:3}]*16,minecraft:firework_rocket*16,minecraft:elytra
+```
+
+## E-particles. Taming hearts, bucking smoke, trust hearts, raid sweat and the llama spit puff
+
+### Taming hearts and smoke
+
+Commit: "Minecraft taming shows hearts, and a failed try or a bucking horse shows smoke", the one after `280f5fe9`.
+
+- **Cause** (as in the brief, re-checked): the vendored mob world records vanilla's `broadcastEntityEvent` calls (7 tamed, 6 failed try or buck, 41 and 40 for the ocelot's trust, 18 in love, the villagers' 12, 13, 14 and 42), but `ServerSim::tick_mobs_with` threw them away with `let _ = mobs.take_entity_events();`, and the client had no heart particle.
+- **Vanilla 26.3** (javap): `TamableAnimal`, `AbstractHorse` and `Animal.handleEntityEvent` draw 7 particles (`HEART` for 7 and 18, `SMOKE` for 6), each with motion `nextGaussian() * 0.02` three times, at `getRandomX(1)`, `getRandomY() + 0.5`, `getRandomZ(1)`. `Ocelot.handleEntityEvent` draws hearts for 41, smoke for 40, and hands anything else to `Animal` (so 18 is hearts). `HeartParticle`: the passed motion is ignored (`super(..., 0, 0, 0)`), velocity * 0.01, y + 0.1, friction 0.86, quad size * 1.5, lifetime 16, no physics, opaque, and `getQuadSize` grows over the first 1/32 of its life.
+- **Changed:**
+  - New `crates/minecraft_terrain/src/mob_particles.rs`: `PuffKind` (`Heart`, `Smoke`, `AngryVillager`, `HappyVillager`, `Splash`), `MobPuff` (kind, count, feet, width, height, lift, tracking range) and `puff_for(entity_type, event)`, the vanilla table. This commit has the animal rows: 7 and 18 hearts, 6 smoke, the ocelot's 41 hearts, 40 smoke and 18 hearts, each 7 particles half a block up. Villagers give nothing yet, and every other event gives nothing (the ravager's 39 and 69 stay with the clock-driven effects). `mob_puffs(world, events)` places each puff on the mob's body (`EntityWorld::body_of`) with its `mob_tracking::tracking_range`, and drops events of mobs that are gone or have no row.
+  - `server.rs`: the dropped events line (and its comment) is now `mob_puffs` collecting the puffs into `ServerSim.mob_puffs`, which `finish_batch` moves into the new `EntitySnapshot.mob_puffs`.
+  - `mob_sender.rs`: `near` keeps a puff for a friend only in a chunk they have and within the mob's tracking range; `take_bursts`, `add_bursts` and `has_bursts` treat puffs as one-shot bursts, so they leave the droppable state frame, are kept until sent and go on the reliable `ToClient::Bursts`.
+  - `ambient_particles.rs`: `Kind::Heart` (vanilla's `HeartParticle`, ticked with `coast`, sprite `heart`, added to the atlas list).
+  - `entity_view.rs`: `mob_puffs()` draws each puff with the view's own random in vanilla's order, called with one line at the top of `bursts()`. Host and friend see the same kind, count and place, not the same specks.
+- **Tests:**
+  - `minecraft_terrain` `mob_particles::tests`: `taming_shows_seven_hearts_and_a_failed_try_seven_smokes` (horse, llama, wolf, cat), `an_ocelot_shows_hearts_when_it_trusts_and_smoke_when_it_does_not`, `a_villager_in_love_and_a_ravager_s_roar_draw_nothing_here`, `an_event_of_a_mob_that_is_gone_is_dropped`, `a_puff_sits_on_the_mob_s_body`.
+  - `minecraft_terrain` `server::tests::a_tamed_wolf_s_hearts_reach_the_snapshot`: a wolf is given bones until it is tamed; each failure's snapshot holds one smoke puff of 7 on the wolf, the success's one heart puff, and the next snapshot none.
+  - `minecraft_terrain` `ambient_particles::tests::a_heart_rises_slowly_through_blocks_for_sixteen_ticks`.
+  - `minecraft_survival`: `mob_sender::tests::mob_puffs_go_on_the_reliable_stream_and_stay_with_their_range`, `entity_view::tests::a_heart_puff_draws_seven_hearts_on_the_mob`, `remote::tests::a_friend_sees_the_hosts_taming_hearts`.
+- **Decisions:**
+  - An ocelot's 18 gives hearts too: the brief's table had only 41 and 40, but vanilla's `Ocelot.handleEntityEvent` passes 18 on to `Animal`.
+  - Each viewer draws the specks with its own random (`EntityView.random`), so host and friend see the same puff in slightly different specks, as with the wither smoke.
+  - `HAPPY_VILLAGER` puffs are already drawn by this commit's view code, but nothing sends one until the villager rows of the next commit.
+- **Owner's test steps** (survival, Normal, by day on plains, a new world, the kit below; hearts are small red hearts that rise slowly for under a second, smoke is a few grey puffs that drift up):
+  1. **A horse.** Use a horse egg and right-click the horse with an empty hand: you ride it while it runs about. When it rears and throws you off, 7 grey smoke puffs rise around it. **Screenshot 1.** Feed it wheat a few times and try again until it stays calm: 7 red hearts rise around it, about half a block above its body. **Screenshot 2.**
+  2. **A llama.** Use a llama egg and tame it the same way: smoke when it throws you, hearts when it is tamed.
+  3. **A wolf.** Use a wolf egg and right-click it with a bone. Each failure shows smoke. The success shows hearts, and the wolf sits with a red collar. **Screenshot 3.**
+  4. **A cat.** Use a cat egg. Hold cod and stand still until it creeps close, then right-click it with cod. A failure shows smoke and a success shows hearts. **Screenshot 4.** Tame a second cat the same way, then feed both cod again: hearts on each.
+  5. **An ocelot.** Use an ocelot egg, hold cod and stand still. When it is within 3 blocks, right-click it with cod. A failure shows smoke. The success shows hearts, and it stops running from you. **Screenshot 5.**
+  6. **Love hearts.** Feed the tamed horse from step 1 a golden carrot: hearts.
+  7. **Two windows** (host H, friend F, `scripts\mp-local.ps1` or over the relay; both with the kit):
+     1. F tames a wolf with bones while H stands 10 blocks away. Smoke and then hearts show in **both** windows. **Screenshot 6**, both windows.
+     2. H rides an untamed horse until it bucks, with F watching from 10 blocks: F sees the smoke. H tames it: F sees the hearts.
+     3. F walks 200 blocks away, and H tames a cat: F sees nothing. F comes back, and H feeds the tame cat cod: F sees the hearts.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:llama_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*4,minecraft:ocelot_spawn_egg*2,minecraft:wheat*64,minecraft:golden_carrot*16,minecraft:bone*32,minecraft:cod*64,minecraft:iron_sword,minecraft:cooked_beef*32
 ```

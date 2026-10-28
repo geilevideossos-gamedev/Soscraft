@@ -301,7 +301,30 @@ impl EntityView {
         }
     }
 
+    fn mob_puffs(&mut self, puffs: &[minecraft_terrain::mob_particles::MobPuff]) {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraft_terrain::mob_particles::PuffKind;
+        for puff in puffs {
+            let kind = match puff.kind {
+                PuffKind::Heart => Kind::Heart,
+                PuffKind::Smoke => Kind::Smoke,
+                PuffKind::HappyVillager => Kind::HappyVillager,
+                PuffKind::AngryVillager | PuffKind::Splash => continue,
+            };
+            let (width, height) = (f64::from(puff.width), f64::from(puff.height));
+            for _ in 0..puff.count {
+                let random = &mut self.random;
+                let motion = DVec3::new(random.next_gaussian() * 0.02, random.next_gaussian() * 0.02, random.next_gaussian() * 0.02);
+                let x = puff.feet.x + width * (2.0 * random.next_double() - 1.0);
+                let y = puff.feet.y + height * random.next_double() + puff.lift;
+                let z = puff.feet.z + width * (2.0 * random.next_double() - 1.0);
+                self.ambient.add(kind, DVec3::new(x, y, z), motion);
+            }
+        }
+    }
+
     pub fn bursts(&mut self, snapshot: &mut EntitySnapshot) {
+        self.mob_puffs(&std::mem::take(&mut snapshot.mob_puffs));
         let shattered = std::mem::take(&mut snapshot.eyes.shattered);
         self.eyes.shatter(shattered, &mut self.portal, &mut self.item_crumbs);
         for at in std::mem::take(&mut snapshot.breath_bursts) {
@@ -1494,6 +1517,25 @@ mod tests {
         let mut near = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
         view.bursts(&mut near);
         assert_eq!(view.sounds.last().map(|(event, ..)| event.as_str()), Some(BLAST_SOUND));
+    }
+
+    #[test]
+    fn a_heart_puff_draws_seven_hearts_on_the_mob() {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraft_terrain::mob_particles::{MobPuff, PuffKind};
+        let mut view = EntityView::new(11);
+        let feet = DVec3::new(4.5, 64.0, -3.5);
+        let puff = |kind| MobPuff { kind, count: 7, feet, width: 0.6, height: 0.85, lift: 0.5, range: 10 };
+        let mut snapshot = EntitySnapshot { mob_puffs: vec![puff(PuffKind::Heart), puff(PuffKind::Smoke)], ..EntitySnapshot::default() };
+        view.bursts(&mut snapshot);
+        assert!(snapshot.mob_puffs.is_empty());
+        let drawn: Vec<(Kind, DVec3)> = view.ambient.kinds_at().collect();
+        let count = |kind| drawn.iter().filter(|(drawn, _)| *drawn == kind).count();
+        assert_eq!((count(Kind::Heart), count(Kind::Smoke), drawn.len()), (7, 7, 14));
+        for (_, at) in drawn {
+            assert!((at.x - feet.x).abs() <= 0.6 && (at.z - feet.z).abs() <= 0.6, "{at}");
+            assert!(at.y >= feet.y + 0.5 && at.y <= feet.y + 0.85 + 0.5, "{at}");
+        }
     }
 
     #[test]

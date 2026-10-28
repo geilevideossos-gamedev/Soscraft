@@ -117,6 +117,7 @@ pub struct ServerSim {
     bells: crate::bells::Bells,
     rockets: Vec<crate::firework_rocket::Rocket>,
     firework_bursts: Vec<crate::firework_rocket::Burst>,
+    mob_puffs: Vec<crate::mob_particles::MobPuff>,
     rocket_hits: Vec<minecraftoss_entities::world::PlayerHit>,
 }
 
@@ -345,6 +346,7 @@ pub struct EntitySnapshot {
     pub dragon_explosions: Vec<(glam::DVec3, bool)>,
     pub swirls: Vec<crate::spell_particles::SwirlView>,
     pub firework_bursts: Vec<crate::firework_rocket::Burst>,
+    pub mob_puffs: Vec<crate::mob_particles::MobPuff>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -490,6 +492,7 @@ impl ServerSim {
             bells: crate::bells::Bells::default(),
             rockets: Vec::new(),
             firework_bursts: Vec::new(),
+            mob_puffs: Vec::new(),
             rocket_hits: Vec::new(),
         }
     }
@@ -1097,9 +1100,8 @@ impl ServerSim {
         if !frozen {
             mobs.push_from_players(players, &ticks);
         }
-        // Entity events (a villager's hearts, anger, happiness) are for the
-        // client's particles, which it does not draw yet.
-        let _ = mobs.take_entity_events();
+        let events = mobs.take_entity_events();
+        self.mob_puffs.extend(crate::mob_particles::mob_puffs(mobs, &events));
         // A blast's victims drop their loot before its blocks break
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
@@ -4360,7 +4362,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -11314,6 +11316,34 @@ mod tests {
         finish_batch(&mut sim, &input, &mut out);
         let shown = out.entities.expect("a snapshot").gateways;
         assert_eq!(shown.iter().map(|view| (view.pos, view.age, view.cooldown)).collect::<Vec<_>>(), [(pos, 4, crate::end_gateway::COOLDOWN_TIME - 1)]);
+    }
+
+    #[test]
+    fn a_tamed_wolf_s_hearts_reach_the_snapshot() {
+        use crate::mob_particles::{MobPuff, PuffKind};
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let wolf = sim.mobs.spawn_wolf(minecraftoss_entities::wolf::Wolf::new(glam::DVec3::new(8.5, 80.0, 8.5)), true);
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.slots[0] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:bone", 64));
+        let mut input = idle_input();
+        let snapshot = |sim: &mut ServerSim, input: &mut TickInput| {
+            let mut out = run_ticks(sim, input, true, 1);
+            finish_batch(sim, input, &mut out);
+            out.entities.expect("a snapshot").mob_puffs
+        };
+        let tame = |sim: &mut ServerSim| sim.mobs.wolf_mut(wolf).is_some_and(|entity| entity.wolf.tame);
+        for _ in 0..100 {
+            sim.mob_action(0, minecraftoss_entities::world::MobHit::Wolf(wolf), None, inventory.clone(), 0, false);
+            let puffs = snapshot(&mut sim, &mut input);
+            let body = sim.mobs.body_of(wolf).expect("the wolf").clone();
+            let kind = if tame(&mut sim) { PuffKind::Heart } else { PuffKind::Smoke };
+            assert_eq!(puffs, vec![MobPuff { kind, count: 7, feet: body.position, width: body.width, height: body.height, lift: 0.5, range: 10 }]);
+            if kind == PuffKind::Heart {
+                break;
+            }
+        }
+        assert!(tame(&mut sim), "a bone tames one time in three");
+        assert!(snapshot(&mut sim, &mut input).is_empty(), "the hearts show once");
     }
 
     fn tnt_test_world() -> Option<(ServerSim, HandcraftedScene, TickInput)> {
