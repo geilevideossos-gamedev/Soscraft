@@ -1,48 +1,48 @@
 {
-    "track":  "e2",
-    "worktree":  "C:\\Dev\\mc-wt\\track-e2",
-    "branch":  "track-e2",
-    "target":  "D:\\iw4l-wt\\track-e2",
-    "base":  "r10-e2b-base",
-    "round":  10,
-    "briefs":  "docs/round10/track-e.md (read the overview first, then the E2 sections; E1 runs in parallel in C:\\Dev\\mc-wt\\track-e1 and owns the files the overview assigns to it)",
-    "notes":  "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under \u0027## Protocol\u0027 in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
-    "groups":  [
-                   {
-                       "key":  "fw-shapes",
-                       "prompt":  "Track E2 group fw-shapes. Read docs/round10/track-e.md, section E-fireworks, group fw-shapes. Two commits in minecraft_terrain firework_particles.rs and minecraft_survival entity_view.rs (:321, :805; E1 only adds a one-line mob_puffs call at the top of bursts()): \u0027Minecraft firework stars burst in their own shapes\u0027 (port FireworkParticles$Starter from javap: tick 2i per star, ball/star/creeper/burst shapes, flash, blast/large_blast and _far, twinkle) and \u0027Minecraft firework sparks fade, trail and twinkle\u0027 (port SparkParticle). Tests as listed."
-                   },
-                   {
-                       "key":  "fw-craft",
-                       "prompt":  "Track E2 group fw-craft. Read docs/round10/track-e.md, section E-fireworks, group fw-craft. Two commits in vendored player/src/crafting.rs: \u0027Minecraft firework stars and rockets are crafted like vanilla\u0027 (Kind FireworkStar, FireworkStarFade, FireworkRocket parsed in parse_recipe :1007, matching :788 builds results; javap the three recipe classes) and \u0027Minecraft shields take a banner\u0027s pattern in the crafting grid\u0027 (ShieldDecorationRecipe: exactly a banner and an unpatterned shield, result keeps the shield\u0027s components and sets banner_patterns and base_color). Tests as listed."
-                   },
-                   {
-                       "key":  "fw-elytra",
-                       "prompt":  "Track E2 group fw-elytra. Read docs/round10/track-e.md, section E-fireworks, group fw-elytra. One commit \u0027An elytra rocket goes off at the end of its boost\u0027: alongside Change::Rocket (actions.rs:1173) the host launches an attached Rocket owned and ridden by the player, lifetime boost_ticks - 1, following the rider from the players list tick_rockets already gets (so a friend\u0027s rocket follows the friend), never hitting it; at the end the rider takes 5+2*stars through PlayerHitKind::Fireworks with by = the player (pvp rule applies), others within 5 blocks as usual, a starless rocket only puffs; trail via rocket_views. Tests: 1 star gives 7.0 at boost end, starless gives nothing, and the same for a second (friend) player id."
-                   },
-                   {
-                       "key":  "bell-hits",
-                       "prompt":  "Track E2 group bell-hits. Read docs/round10/track-e.md, section E-bell-hits. Two commits: \u0027Snowballs, tridents and wind charges ring Minecraft bells\u0027 (bells.rs rings_from; ServerSim::projectile_hit_block seam called from tick_thrown before the wind burst, tick_tridents via TridentEvent::Block, tick_rockets, tick_dragon_fireballs) and \u0027Skeleton arrows and fireballs ring Minecraft bells\u0027 (vendored projectile.rs take_block_hit; world.rs projectile_block_hits from arrows, fireballs, shulker bullets, llama spit (one line in equines.rs), witch potions; drained after tick_mobs). Use D0\u0027s arms if merged. Tests check bell_rings; block events only if E1 merged."
-                   },
-                   {
-                       "key":  "maps-held",
-                       "prompt":  "Track E2 group maps-held. Read docs/round10/track-e.md, section E-maps, group maps-held (commits 1-2 only; commit 3 is group maps-view). Two commits: \u0027Minecraft maps mark their holder and their target\u0027 (tickCarriedBy port: player, off_map, off_limits, Nether spin, decorations not saved) and \u0027Minecraft friends get the pictures of the maps they carry\u0027 (ToClient::MapData next to a related variant, dirty patches per player, a client MapCache filled from globals.maps on the host and from messages on a friend; no PROTOCOL bump). Tests as listed (MapData codec round trip, dirty-rectangle patch)."
-                   },
-                   {
-                       "key":  "maps-view",
-                       "prompt":  "Track E2 group maps-view. Read docs/round10/track-e.md, section E-maps, group maps-view (commit 3). One commit \u0027Minecraft shows the held map in first person\u0027: compose RGBA at 2x from map_background, the 62-entry MapColor palette read from MapColor.\u003cclinit\u003e via class_file.rs, and the decoration sprites at 8x8 map pixels rotated by rot*22.5 degrees; MinecraftUi.held_map next to the spyglass fields and a hud job; two-handed with an empty offhand, else one-handed, per javap of FirstPersonHandsAndItemsRenderer; hide the map stack in render_anim minecraft_hand.rs held_hand_mesh with one continue right after the let Some((slot, stack)) at :176-178 (E1 edits :195 only). Tests: palette GRASS NORMAL = (109, 153, 48); the layout picks two-handed only with an empty offhand."
-                   },
-                   {
-                       "key":  "maps-colours",
-                       "prompt":  "Track E2 group maps-colours. Read docs/round10/track-e.md, section E-maps, group maps-colours (commit 1). One commit \u0027Minecraft reads block map colours from the 26.3 jar\u0027: parse Blocks.\u003cclinit\u003e with class_file.rs, following keyframes.rs / creative_variants.rs. Cover Properties.mapColor(MapColor) and mapColor(DyeColor), the state lambdas (log axis, bed part, the rest), ofFullCopy / ofLegacyCopy and the helper builders (logs, leaves, stems, candles, shulker boxes, stained glass); missing means NONE. Result: a per-state colour id table. Tests gated on MINECRAFTOSS_ROOT: every 26.3 block state gets an id; grass_block 1, sand 2, stone 11, water 12, oak_log[axis=y] 13 and [axis=x] 34, red bed head 3."
-                   },
-                   {
-                       "key":  "maps-explore",
-                       "prompt":  "Track E2 group maps-explore. Read docs/round10/track-e.md, section E-maps, group maps-explore (commits 2-3). Two commits: \u0027Minecraft maps fill in as their holder walks\u0027 (MapItem.update port for hand-held maps over HandcraftedScene: stripe by step\u002615, water depth and height shading, ceiling speckle, dirty patches for maps-held, colours from maps-colours) and \u0027Minecraft empty maps turn into maps of where you stand\u0027 (minecraft:map use in actions.rs as EmptyMapItem.use: scale 0, tracking on, unlimited off, the take_result sound, hand replacement or add to inventory). Tests as listed (a flat grass stub fills the stripe for step\u002615 only; an empty map leaves 1 fewer map and a filled_map centred by create_fresh)."
-                   },
-                   {
-                       "key":  "ti4-end-targets",
-                       "prompt":  "Track E2 group ti4-end-targets, optional (skip if time is short). Read docs/round10/track-e.md, section E-thrown, group ti4. One commit \u0027Minecraft snowballs and tridents hit end crystals and the ender dragon\u0027: end_crystal.rs END_TARGET id range below FRAME_TARGET, end_targets(crystals, dragons) from the crystal pick box and ender_dragon::part_box, EndTarget::of_target; tick_thrown and tick_tridents add them, a hit runs end_hit with EndDamage::attack(amount, owner). Snowball/egg/pearl 0 (breaks a crystal), trident 8, wind charge 1, splash potions break without hurting. Test: snowball breaks a crystal, trident 8 to the head and 3 to the body."
-                   }
-               ]
+  "track": "e2",
+  "worktree": "C:\\Dev\\mc-wt\\track-e2",
+  "branch": "track-e2",
+  "target": "D:\\iw4l-wt\\track-e2",
+  "base": "r10-e2b-base",
+  "round": 10,
+  "briefs": "docs/round10/track-e.md (read the overview first, then the E2 sections; E1 runs in parallel in C:\\Dev\\mc-wt\\track-e1 and owns the files the overview assigns to it)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
+  "groups": [
+    {
+      "key": "fw-shapes",
+      "prompt": "Track E2 group fw-shapes. Read docs/round10/track-e.md, section E-fireworks, group fw-shapes. Two commits in minecraft_terrain firework_particles.rs and minecraft_survival entity_view.rs (:321, :805; E1 only adds a one-line mob_puffs call at the top of bursts()): 'Minecraft firework stars burst in their own shapes' (port FireworkParticles$Starter from javap: tick 2i per star, ball/star/creeper/burst shapes, flash, blast/large_blast and _far, twinkle) and 'Minecraft firework sparks fade, trail and twinkle' (port SparkParticle). Tests as listed."
+    },
+    {
+      "key": "fw-craft",
+      "prompt": "Track E2 group fw-craft. Read docs/round10/track-e.md, section E-fireworks, group fw-craft. Two commits in vendored player/src/crafting.rs: 'Minecraft firework stars and rockets are crafted like vanilla' (Kind FireworkStar, FireworkStarFade, FireworkRocket parsed in parse_recipe :1007, matching :788 builds results; javap the three recipe classes) and 'Minecraft shields take a banner's pattern in the crafting grid' (ShieldDecorationRecipe: exactly a banner and an unpatterned shield, result keeps the shield's components and sets banner_patterns and base_color). Tests as listed."
+    },
+    {
+      "key": "fw-elytra",
+      "prompt": "Track E2 group fw-elytra. Read docs/round10/track-e.md, section E-fireworks, group fw-elytra. One commit 'An elytra rocket goes off at the end of its boost': alongside Change::Rocket (actions.rs:1173) the host launches an attached Rocket owned and ridden by the player, lifetime boost_ticks - 1, following the rider from the players list tick_rockets already gets (so a friend's rocket follows the friend), never hitting it; at the end the rider takes 5+2*stars through PlayerHitKind::Fireworks with by = the player (pvp rule applies), others within 5 blocks as usual, a starless rocket only puffs; trail via rocket_views. Tests: 1 star gives 7.0 at boost end, starless gives nothing, and the same for a second (friend) player id."
+    },
+    {
+      "key": "bell-hits",
+      "prompt": "Track E2 group bell-hits. Read docs/round10/track-e.md, section E-bell-hits. Two commits: 'Snowballs, tridents and wind charges ring Minecraft bells' (bells.rs rings_from; ServerSim::projectile_hit_block seam called from tick_thrown before the wind burst, tick_tridents via TridentEvent::Block, tick_rockets, tick_dragon_fireballs) and 'Skeleton arrows and fireballs ring Minecraft bells' (vendored projectile.rs take_block_hit; world.rs projectile_block_hits from arrows, fireballs, shulker bullets, llama spit (one line in equines.rs), witch potions; drained after tick_mobs). Use D0's arms if merged. Tests check bell_rings; block events only if E1 merged."
+    },
+    {
+      "key": "maps-held",
+      "prompt": "Track E2 group maps-held. Read docs/round10/track-e.md, section E-maps, group maps-held (commits 1-2 only; commit 3 is group maps-view). Two commits: 'Minecraft maps mark their holder and their target' (tickCarriedBy port: player, off_map, off_limits, Nether spin, decorations not saved) and 'Minecraft friends get the pictures of the maps they carry' (ToClient::MapData next to a related variant, dirty patches per player, a client MapCache filled from globals.maps on the host and from messages on a friend; no PROTOCOL bump). Tests as listed (MapData codec round trip, dirty-rectangle patch)."
+    },
+    {
+      "key": "maps-view",
+      "prompt": "Track E2 group maps-view. Read docs/round10/track-e.md, section E-maps, group maps-view (commit 3). One commit 'Minecraft shows the held map in first person': compose RGBA at 2x from map_background, the 62-entry MapColor palette read from MapColor.<clinit> via class_file.rs, and the decoration sprites at 8x8 map pixels rotated by rot*22.5 degrees; MinecraftUi.held_map next to the spyglass fields and a hud job; two-handed with an empty offhand, else one-handed, per javap of FirstPersonHandsAndItemsRenderer; hide the map stack in render_anim minecraft_hand.rs held_hand_mesh with one continue right after the let Some((slot, stack)) at :176-178 (E1 edits :195 only). Tests: palette GRASS NORMAL = (109, 153, 48); the layout picks two-handed only with an empty offhand."
+    },
+    {
+      "key": "maps-colours",
+      "prompt": "Track E2 group maps-colours. Read docs/round10/track-e.md, section E-maps, group maps-colours (commit 1). One commit 'Minecraft reads block map colours from the 26.3 jar': parse Blocks.<clinit> with class_file.rs, following keyframes.rs / creative_variants.rs. Cover Properties.mapColor(MapColor) and mapColor(DyeColor), the state lambdas (log axis, bed part, the rest), ofFullCopy / ofLegacyCopy and the helper builders (logs, leaves, stems, candles, shulker boxes, stained glass); missing means NONE. Result: a per-state colour id table. Tests gated on MINECRAFTOSS_ROOT: every 26.3 block state gets an id; grass_block 1, sand 2, stone 11, water 12, oak_log[axis=y] 13 and [axis=x] 34, red bed head 3."
+    },
+    {
+      "key": "maps-explore",
+      "prompt": "Track E2 group maps-explore. Read docs/round10/track-e.md, section E-maps, group maps-explore (commits 2-3). Two commits: 'Minecraft maps fill in as their holder walks' (MapItem.update port for hand-held maps over HandcraftedScene: stripe by step&15, water depth and height shading, ceiling speckle, dirty patches for maps-held, colours from maps-colours) and 'Minecraft empty maps turn into maps of where you stand' (minecraft:map use in actions.rs as EmptyMapItem.use: scale 0, tracking on, unlimited off, the take_result sound, hand replacement or add to inventory). Tests as listed (a flat grass stub fills the stripe for step&15 only; an empty map leaves 1 fewer map and a filled_map centred by create_fresh)."
+    },
+    {
+      "key": "ti4-end-targets",
+      "prompt": "Track E2 group ti4-end-targets, optional (skip if time is short). Read docs/round10/track-e.md, section E-thrown, group ti4. One commit 'Minecraft snowballs and tridents hit end crystals and the ender dragon': end_crystal.rs END_TARGET id range below FRAME_TARGET, end_targets(crystals, dragons) from the crystal pick box and ender_dragon::part_box, EndTarget::of_target; tick_thrown and tick_tridents add them, a hit runs end_hit with EndDamage::attack(amount, owner). Snowball/egg/pearl 0 (breaks a crystal), trident 8, wind charge 1, splash potions break without hurting. Test: snowball breaks a crystal, trident 8 to the head and 3 to the body."
+    }
+  ]
 }

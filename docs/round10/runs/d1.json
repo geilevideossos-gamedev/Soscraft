@@ -1,0 +1,36 @@
+{
+  "track": "d",
+  "worktree": "C:\\Dev\\mc-wt\\track-d",
+  "branch": "track-d",
+  "target": "D:\\iw4l-wt\\track-d",
+  "base": "r9-d5-base",
+  "round": 10,
+  "briefs": "docs/round10/track-d.md (the round 9 brief docs/round9/track-d.md and log docs/round9/track-d-log.md hold the history)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. The review base r9-d5-base also covers the unreviewed round 9 d5 commits (keyframes 81f6f353, withers d4f932de..ef9ad9de, wind charges f142f9c1).",
+  "groups": [
+    {
+      "key": "d5-review",
+      "prompt": "Brief docs/round10/track-d.md section D11 (group d5-review). Commit 1: re-check every push path listed in D11 finding 1 (wind.rs burst -> server.rs:1896 players_pushed -> server.rs:4282-4283 -> entities.rs:301-304 -> render_anim minecraft_players.rs:903-913 MC_FLYING filter; also landed :765, creeper entities.rs:329, shield server.rs:4133, dragon server.rs:2642); if all are filtered, commit 'Track D pins that a wind charge does not push a player flying in creative' (test + log correction of the release-1 known limit), else fix it with a flying flag in thrown::PlayerBody. Commit 2: 'Minecraft fireballs and wither skulls keep their shooter through a save': Owner UUID saved in server_mobs.rs, loaded into a new Fireball.owner_uuid and resolved lazily by id_of_uuid before the hit like shulker bullets (shulker_bullets.rs:230-249), players mapping back to Shooter::Player; never resolve at load. Owner steps and kit in the section; log in docs/round10/track-d-log.md."
+    },
+    {
+      "key": "trial-spawners",
+      "prompt": "Brief docs/round10/track-d.md section D12, group trial-spawners (2 commits). 1 'Minecraft trial spawners show their mob spinning like vanilla': new crates/minecraft_terrain/src/trial_spawner.rs (config reader for registry ids and inline configs, states), the minimal server pass inactive->waiting with spawn_data, spawner_display.rs is_displayed_block_entity (trial spawners, vaults later) used also by the friend forward filter entities.rs:1642, spin/particles/ambient sound with the game time from EntityView.world, SmallFlame and SoulFireFlame particles, the trial chamber generation test in terrain.rs. 2 'Minecraft spawn eggs set a trial spawner's mob' (server.rs spawner_egg). Tests, steps, kit in D12."
+    },
+    {
+      "key": "trial-spawners-run",
+      "prompt": "Brief docs/round10/track-d.md section D12, group trial-spawners-run (4 commits). 1 'Minecraft spawners spawn husks, strays and slimes without open sky or slime chunks' (spawner_may_spawn with a spawn reason). 2 'Minecraft line of sight passes through glass and iron bars like vanilla' (ClipBlocks::Visual in vendored physics.rs:66-74 with the getVisualShape overrides, physics tests). 3 'Minecraft trial spawners run their trial and eject rewards like vanilla': TrialSpawner from_tag/write_tag and the six-state tick as javap'd, Level::summon_trial_mob, ServerSim::tick_trial_spawners after sim.tick() inside run_tick's if-normal block and before take_spawned, tracked mobs by UUID, the Visual clip for sight, unsimulated kinds stay inactive, generalised spawn_dispensed_item, the spawners/* reward table test. 4 'Minecraft trial spawners show their detect, spawn and eject particles and sounds' (level events 3011-3014, 3019-3021). Follow the batching and multiplayer rules in D0'."
+    },
+    {
+      "key": "trial-ominous",
+      "prompt": "Brief docs/round10/track-d.md section D13, group trial-ominous (2 commits). 1 'Minecraft trial spawners turn ominous with Trial Omen': PlayerOmens.trial_omen (struct literals at server.rs:3588, :4214 and tests), the omen check in detection, applyOminous/resetAfterBecomingOminous/removeOminous, Output.trial_omens routed like raid_omens, Bad Omen -> Trial Omen 18000 x (amp+1) at amplifier 0 with its sound, and input.omens updated in place after a conversion so a batch does not ask twice. 2 'Ominous Minecraft trial spawners drop items from above': EntityKind::OminousItemSpawner (saved, 60-120 ticks, sounds, projectile drops down with the javap'd dispense configs listed in D13, event 3021), the dispensing list and target choice (nextBoolean: mobs or players, no fallback), EntitySnapshot.ominous_items drawn for host and friends. Never bump PROTOCOL (the notes override D0')."
+    },
+    {
+      "key": "vaults",
+      "prompt": "Brief docs/round10/track-d.md section D14, group vaults (2 commits; needs trial-spawners and trial-spawners-run). 1 'Minecraft vaults take trial keys and eject rewards once per player': new crates/minecraft_terrain/src/vault.rs (config, server and shared data, four states, insert_key, 15-tick fail sound limit, 128-player cap; keys do nothing while the vault is not active), ServerSim::tick_vaults after trial spawners, Change::Vault and Command::VaultKey answered through Output.item_uses so the key is spent only on unlock and never in creative, level events 3015-3017. 2 'Minecraft vaults show their reward item turning': display item from shared_data turning 10 degrees a tick via the item mesher, flames, connection particles, host and friends. Tests, steps, kit in D14."
+    },
+    {
+      "key": "lodestones",
+      "prompt": "Brief docs/round10/track-d.md section D15, group lodestones (3 commits). 1 'Minecraft compasses lock onto lodestones like vanilla': new crates/minecraft_terrain/src/lodestone.rs, Change::Lodestone, use chain link in actions.rs, lock sound, host-owned tracker check via TickInput.lodestones / Output.lodestones_gone (only loaded chunks), the Lodestone Compass name. 2 'Minecraft lodestone compasses point at their lodestone': dials has_component condition, lodestone target, per-stack virtual key used by icons, hand and world held items (track E1 adds item_tint::of_stack_at and item_look keys in parallel; keep your key change small and composable). 3 'Friends' compasses and clocks turn like the host's': friend steps dials, ToClient::SpawnPosition, PlayerView.last_death (never bump PROTOCOL; note it under '## Protocol')."
+    }
+  ]
+}

@@ -1,48 +1,48 @@
 {
-    "track":  "e1",
-    "worktree":  "C:\\Dev\\mc-wt\\track-e1",
-    "branch":  "track-e1",
-    "target":  "D:\\iw4l-wt\\track-e1",
-    "base":  "r10-e1b-base",
-    "round":  10,
-    "briefs":  "docs/round10/track-e.md (read the overview first, then the E1 sections; E2 runs in parallel in C:\\Dev\\mc-wt\\track-e2 and owns the files the overview assigns to it)",
-    "notes":  "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under \u0027## Protocol\u0027 in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
-    "groups":  [
-                   {
-                       "key":  "horse-dye",
-                       "prompt":  "Track E1 group horse-dye. Read docs/round10/track-e.md, section E-horses, part 4 (group horse-dye). Two commits: \u0027Minecraft horses keep the dye of their leather armour\u0027 (HorseState.body_components; equip copies components; set_mount_inventory and Command::MountInventory take an ItemStack; MountInventory body_stack; death drop; server_mobs.rs load and body_equipment save compare id and components) and \u0027Minecraft dyed leather horse armour shows its colour on the horse\u0027 (horse_render.rs dyed tint plus untinted leather_overlay in the translucent pass; all_textures). Tests as listed."
-                   },
-                   {
-                       "key":  "item-states",
-                       "prompt":  "Track E1 group item-states. Read docs/round10/track-e.md, section E-banners, group item-states. Two commits: \u0027Minecraft item models pick crossbow and bow states like vanilla\u0027 (new minecraft_terrain item_look.rs ItemLook and key encode/split before dial and potion/dye suffixes; item_tint::of_stack_at (from dye-icons) appends it, so dial keys in the hand and icon_source survive; special_models.rs collect_leaves reads charge_type, crossbow/pull, use_duration and using_item with the dials threshold rule; mesh.rs:927 and item_icons.rs:22 resolve the leaf; do not edit dials.rs) and \u0027Minecraft pillagers and piglins show their crossbow\u0027s pull and loaded arrow\u0027 (illager_render.rs:348/:374, piglin_render.rs:669). Tests as listed."
-                   },
-                   {
-                       "key":  "banner-items",
-                       "prompt":  "Track E1 group banner-items. Read docs/round10/track-e.md, section E-banners, group banner-items. One commit \u0027Minecraft banners and shields show their patterns in hand, on heads, on the ground and as icons\u0027: mesh.rs:483 loads all textures/entity/banner and shield textures; special_models.rs Sheet tint index, push_banner layer cubes (max 16), push_shield shield_base plus plate layers, item_model(special, look), special_tints [base, layers]; ItemVisuals::model uses the look tints. Cut-out at alpha 0.1 (decision). The shield recipe is not here (E2 fw-craft). Tests as listed."
-                   },
-                   {
-                       "key":  "banner-roundtrip",
-                       "prompt":  "Track E1 group banner-roundtrip. Read docs/round10/track-e.md, section E-banners, group banner-roundtrip. Two commits: \u0027Minecraft banners keep their patterns and name when placed\u0027 (a generic ServerSim block entity components command next to the lectern one, a vendored Level function by level/lectern.rs:79, called from actions.rs beside place_shulker :1499) and \u0027Minecraft banners drop with their patterns and name\u0027 (vendored player/src/loot.rs:337 copy_components from block_entity stops voiding the roll; kept components for banners at actions.rs:1656 and the two blast sites; entities.rs:753 applies them to the loot drop). Tests with real data as listed."
-                   },
-                   {
-                       "key":  "player-looks",
-                       "prompt":  "Track E1 group player-looks. Read docs/round10/track-e.md, section E-banners, group player-looks. One commit \u0027Minecraft players and friends show loaded crossbows and patterned banners in their hands\u0027: GearItem.look (body_gear.rs:9, wire copy minecraft_net messages.rs:615, gear.rs:14-30); body_render.rs:33 and worn_head.rs key with it; the hand already uses of_stack_at; FrameView carries the look for mesh.rs:1267; one line in docs/MULTIPLAYER.md. No PROTOCOL bump (release step). Tests as listed."
-                   },
-                   {
-                       "key":  "placed-banners",
-                       "prompt":  "Track E1 group placed-banners. Read docs/round10/track-e.md, section E-banners, group placed-banners. One commit \u0027Minecraft placed banners show their patterns\u0027: new minecraft_terrain banner_look.rs BannerLooks (like spawner_display.rs SpawnerDisplays: load/unload chunk, block_entities, take_apart_changes into lids::ApartCells, posed); EntityView draws them next to append_open_lids; host feeds entities.rs:698-705 and :1640, friend feeds remote.rs:417, :651, :708; draw-apart loops in render_anim minecraft_levels.rs:536, minecraft_world.rs:1518, minecraft_remote.rs:1971. No wave. Tests as listed."
-                   },
-                   {
-                       "key":  "bells-swing",
-                       "prompt":  "Track E1 group bells-swing. Read docs/round10/track-e.md, section E-bells, group bells-swing. One commit \u0027Minecraft bells swing when rung\u0027: lids.rs LidKind::Bell and BellSwing from block event 1 (50 ticks, vanilla BellModel angle a = sin(t/pi)/(4+t/3), N -x, S +x, E -z, W +z); special_models.rs push_bell takes the swing; model.rs swung_bell_variants; mesh.rs append_open_lids; server.rs hear_bells queues a new Output.block_events drained beside level_events; entities.rs presents them through lid_event (host lids and Heard::Block to friends). No protocol change. Tests as listed."
-                   },
-                   {
-                       "key":  "particles-spit-love",
-                       "prompt":  "Track E1 group particles-spit-love. Read docs/round10/track-e.md, section E-particles, group particles-spit-love (commits 3-4). \u0027Minecraft llama spit leaves a puff\u0027: ambient_particles Kind::Spit (poof with gravity 0.5); entity_view.rs spit_puffs HashSet and fn called in advance beside fang_crits, 7 specks per new spit. \u0027Minecraft cows, sheep, pigs, chickens, mooshrooms, striders and hoglins show hearts when fed for love\u0027: vendored world.rs broadcast_entity_event next to take_entity_events (:4069; E2\u0027s take_level_events goes by take_villager_infections instead); mob_actions.rs love() helper, one line per arm, or in D0\u0027s generic animal arm if D0 has merged. Tests as listed."
-                   },
-                   {
-                       "key":  "bells-outline",
-                       "prompt":  "Track E1 group bells-outline, optional (skip if time is short). Read docs/round10/track-e.md, section E-bells, group bells-outline. One commit \u0027Glowing Minecraft mobs show a white outline like vanilla\u0027: render_gpu drawsurf/minecraft_world.rs draws the cover as a stencil mask (depth Always, no colour), then the hull with stencil NotEqual (rim only, through walls), then clears the bit; check colour_submit stencil bits (scene_depth.rs:102) so MW2 passes never read it; glow_render.rs cover becomes a mask copy. Test of the pipelines\u0027 stencil states. Log the world-space rim decision."
-                   }
-               ]
+  "track": "e1",
+  "worktree": "C:\\Dev\\mc-wt\\track-e1",
+  "branch": "track-e1",
+  "target": "D:\\iw4l-wt\\track-e1",
+  "base": "r10-e1b-base",
+  "round": 10,
+  "briefs": "docs/round10/track-e.md (read the overview first, then the E1 sections; E2 runs in parallel in C:\\Dev\\mc-wt\\track-e2 and owns the files the overview assigns to it)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
+  "groups": [
+    {
+      "key": "horse-dye",
+      "prompt": "Track E1 group horse-dye. Read docs/round10/track-e.md, section E-horses, part 4 (group horse-dye). Two commits: 'Minecraft horses keep the dye of their leather armour' (HorseState.body_components; equip copies components; set_mount_inventory and Command::MountInventory take an ItemStack; MountInventory body_stack; death drop; server_mobs.rs load and body_equipment save compare id and components) and 'Minecraft dyed leather horse armour shows its colour on the horse' (horse_render.rs dyed tint plus untinted leather_overlay in the translucent pass; all_textures). Tests as listed."
+    },
+    {
+      "key": "item-states",
+      "prompt": "Track E1 group item-states. Read docs/round10/track-e.md, section E-banners, group item-states. Two commits: 'Minecraft item models pick crossbow and bow states like vanilla' (new minecraft_terrain item_look.rs ItemLook and key encode/split before dial and potion/dye suffixes; item_tint::of_stack_at (from dye-icons) appends it, so dial keys in the hand and icon_source survive; special_models.rs collect_leaves reads charge_type, crossbow/pull, use_duration and using_item with the dials threshold rule; mesh.rs:927 and item_icons.rs:22 resolve the leaf; do not edit dials.rs) and 'Minecraft pillagers and piglins show their crossbow's pull and loaded arrow' (illager_render.rs:348/:374, piglin_render.rs:669). Tests as listed."
+    },
+    {
+      "key": "banner-items",
+      "prompt": "Track E1 group banner-items. Read docs/round10/track-e.md, section E-banners, group banner-items. One commit 'Minecraft banners and shields show their patterns in hand, on heads, on the ground and as icons': mesh.rs:483 loads all textures/entity/banner and shield textures; special_models.rs Sheet tint index, push_banner layer cubes (max 16), push_shield shield_base plus plate layers, item_model(special, look), special_tints [base, layers]; ItemVisuals::model uses the look tints. Cut-out at alpha 0.1 (decision). The shield recipe is not here (E2 fw-craft). Tests as listed."
+    },
+    {
+      "key": "banner-roundtrip",
+      "prompt": "Track E1 group banner-roundtrip. Read docs/round10/track-e.md, section E-banners, group banner-roundtrip. Two commits: 'Minecraft banners keep their patterns and name when placed' (a generic ServerSim block entity components command next to the lectern one, a vendored Level function by level/lectern.rs:79, called from actions.rs beside place_shulker :1499) and 'Minecraft banners drop with their patterns and name' (vendored player/src/loot.rs:337 copy_components from block_entity stops voiding the roll; kept components for banners at actions.rs:1656 and the two blast sites; entities.rs:753 applies them to the loot drop). Tests with real data as listed."
+    },
+    {
+      "key": "player-looks",
+      "prompt": "Track E1 group player-looks. Read docs/round10/track-e.md, section E-banners, group player-looks. One commit 'Minecraft players and friends show loaded crossbows and patterned banners in their hands': GearItem.look (body_gear.rs:9, wire copy minecraft_net messages.rs:615, gear.rs:14-30); body_render.rs:33 and worn_head.rs key with it; the hand already uses of_stack_at; FrameView carries the look for mesh.rs:1267; one line in docs/MULTIPLAYER.md. No PROTOCOL bump (release step). Tests as listed."
+    },
+    {
+      "key": "placed-banners",
+      "prompt": "Track E1 group placed-banners. Read docs/round10/track-e.md, section E-banners, group placed-banners. One commit 'Minecraft placed banners show their patterns': new minecraft_terrain banner_look.rs BannerLooks (like spawner_display.rs SpawnerDisplays: load/unload chunk, block_entities, take_apart_changes into lids::ApartCells, posed); EntityView draws them next to append_open_lids; host feeds entities.rs:698-705 and :1640, friend feeds remote.rs:417, :651, :708; draw-apart loops in render_anim minecraft_levels.rs:536, minecraft_world.rs:1518, minecraft_remote.rs:1971. No wave. Tests as listed."
+    },
+    {
+      "key": "bells-swing",
+      "prompt": "Track E1 group bells-swing. Read docs/round10/track-e.md, section E-bells, group bells-swing. One commit 'Minecraft bells swing when rung': lids.rs LidKind::Bell and BellSwing from block event 1 (50 ticks, vanilla BellModel angle a = sin(t/pi)/(4+t/3), N -x, S +x, E -z, W +z); special_models.rs push_bell takes the swing; model.rs swung_bell_variants; mesh.rs append_open_lids; server.rs hear_bells queues a new Output.block_events drained beside level_events; entities.rs presents them through lid_event (host lids and Heard::Block to friends). No protocol change. Tests as listed."
+    },
+    {
+      "key": "particles-spit-love",
+      "prompt": "Track E1 group particles-spit-love. Read docs/round10/track-e.md, section E-particles, group particles-spit-love (commits 3-4). 'Minecraft llama spit leaves a puff': ambient_particles Kind::Spit (poof with gravity 0.5); entity_view.rs spit_puffs HashSet and fn called in advance beside fang_crits, 7 specks per new spit. 'Minecraft cows, sheep, pigs, chickens, mooshrooms, striders and hoglins show hearts when fed for love': vendored world.rs broadcast_entity_event next to take_entity_events (:4069; E2's take_level_events goes by take_villager_infections instead); mob_actions.rs love() helper, one line per arm, or in D0's generic animal arm if D0 has merged. Tests as listed."
+    },
+    {
+      "key": "bells-outline",
+      "prompt": "Track E1 group bells-outline, optional (skip if time is short). Read docs/round10/track-e.md, section E-bells, group bells-outline. One commit 'Glowing Minecraft mobs show a white outline like vanilla': render_gpu drawsurf/minecraft_world.rs draws the cover as a stencil mask (depth Always, no colour), then the hull with stencil NotEqual (rim only, through walls), then clears the bit; check colour_submit stencil bits (scene_depth.rs:102) so MW2 passes never read it; glow_render.rs cover becomes a mask copy. Test of the pipelines' stencil states. Log the world-space rim decision."
+    }
+  ]
 }

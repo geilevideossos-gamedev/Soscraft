@@ -1,0 +1,20 @@
+{
+  "track": "d",
+  "worktree": "C:\\Dev\\mc-wt\\track-d",
+  "branch": "track-d",
+  "target": "D:\\iw4l-wt\\track-d",
+  "base": "r10-d2-base",
+  "round": 10,
+  "briefs": "docs/round10/track-d.md and docs/round10/track-d0.md (the D0 registry plug-in checklist)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
+  "groups": [
+    {
+      "key": "breezes",
+      "prompt": "Brief docs/round10/track-d.md section D16, group breezes (2 commits). Runs only after D0 is merged into minecraft-survival and that into track-d. Read docs/round10/track-d0.md first and wire the breeze through the D0 registry plug-in checklist (own files plus one line per registry, hit-key byte from D0's allocation). 1 'Minecraft breezes live in the entity world and shoot wind charges' (attributes, brain behaviours Shoot/LongJump/Slide/ShootWhenStuck, thrown wind charge with a mob shooter and Charge::Breeze saved as minecraft:breeze_wind_charge with its Owner, egg, saving, tracking 10, mob list row 52). 2 'Minecraft breezes jump, slide and turn arrows back like vanilla' (deflection except wind charges, sounds; breeze trial spawners now run)."
+    },
+    {
+      "key": "breeze-render",
+      "prompt": "Brief docs/round10/track-d.md section D16, group breeze-render (1 commit, after breezes, needs D0): 'Minecraft breezes are drawn with their wind and eyes'. New crates/minecraft_terrain/src/breeze_render.rs from BreezeModel on posed_cube, translucent scrolling wind layer (like wither_render swirl_shift), emissive eyes, shadow 0.5, textures in mesh.rs, the D0 render registry line, spawner and trial spawner cages, keyframes from BreezeAnimation via one AnimationLibrary::new(data_jar()) holder (reuse it if W or an M track already created it), animation start ticks in MobShow or D0's per-family show for friends. Tests, steps and kit in D16."
+    }
+  ]
+}

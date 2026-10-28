@@ -1,0 +1,24 @@
+{
+  "track": "w",
+  "worktree": "C:\\Dev\\mc-wt\\track-w",
+  "branch": "track-w",
+  "target": "D:\\iw4l-wt\\track-w",
+  "base": "r10-w2-base",
+  "round": 10,
+  "briefs": "docs/round10/track-w.md (read W0 first) and docs/round10/track-d0.md (the D0 registry plug-in checklist)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
+  "groups": [
+    {
+      "key": "warden-live",
+      "prompt": "Track W group warden-live (segment w2, after D0 is merged): build track-w.md section W4. First read docs/round10/track-d0.md and follow its plug-in checklist for the warden family (hit key from D0). Two commits: 'Minecraft wardens live in the entity world' (attributes, anger, vibration user with data kept in minecraft_terrain, brain activities, digging away) and 'Minecraft wardens are saved, hatch from eggs and dig out when shriekers summon them' (ON_TOP_OF_COLLIDER try_spawn_mob with the spawn rules passed in as a closure from ServerSim because entities cannot see the world crate's dark_enough, TRIGGERED light rule, summon_warden plugged into W7's shrieker response, tracking 16, MobShow pose and anger). Tests (including the fourth-warning summon moved from W7), steps w11-w13, kit in W4."
+    },
+    {
+      "key": "warden-fight",
+      "prompt": "Track W group warden-fight: build track-w.md section W5 (needs W4). Two commits: 'Minecraft wardens roar, sniff and hit hard enough to knock shields down' (roar 84 ticks, set_attack_target with its 200-tick sonic boom cooldown from Roar.stop and the hurt rule, sniffing, melee 30 scaled with a 5 s shield disable and boom cooldown set to 40, hurt anger +100, MW2 bullets like arrows) and 'Minecraft wardens fire sonic booms and spread darkness' (SonicBoom 60 ticks hitting at 34, PlayerHitKind::SonicBoom through armour, protection and shields, death line, beam burst, darkness pulses through W7's Output.player_effects). Tests, steps w14-w17, W4's kit."
+    },
+    {
+      "key": "warden-render",
+      "prompt": "Track W group warden-render: build track-w.md section W6 (needs W4, W5; D0 render registry). Two commits: 'Minecraft wardens are drawn like vanilla' (warden_render.rs from WardenModel, five emissive layers on their own part-filtered models from createBioluminescentLayer, createPulsatingSpotsLayer, createTendrilsLayer and createHeartLayer, in the translucent pass at full light, shadow 0.9, keyframes through one AnimationLibrary from data_jar for host and friend, pose and start ticks in MobShow, spawner cage) and 'Minecraft wardens' hearts beat and their digging throws up the ground' (heartbeat from shown anger, tendril clicks, 30 block particles a tick for the first 4.5 s of dig and emerge at Â±0.7). Tests, steps w18-w22, kit in W6."
+    }
+  ]
+}

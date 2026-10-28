@@ -1,0 +1,28 @@
+{
+  "track": "w",
+  "worktree": "C:\\Dev\\mc-wt\\track-w",
+  "branch": "track-w",
+  "target": "D:\\iw4l-wt\\track-w",
+  "base": "r10-w1-base",
+  "round": 10,
+  "briefs": "docs/round10/track-w.md (read W0 first)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log.",
+  "groups": [
+    {
+      "key": "darkness",
+      "prompt": "Track W group darkness: build docs/round10/track-w.md section W1 (read W0 first). Two commits: 'Minecraft darkness closes in the fog like vanilla' (new minecraft_terrain darkness.rs blend, fog after lava/powder snow, fog colour via environment.rs:196-200, host and friend SkyInputs, friend uses EffectView.duration) and 'Minecraft darkness pulses the light like vanilla' (brightness lane max(0,0.5-blend), darkness scale in environment[0].w, NOT [3].w which the model pass owns at minecraft_light.rs:249/359, subtracted before the clamp in both lightmaps). Tests and owner steps w01-w03 with the kit in W1. Log to docs/round10/track-w-log.md."
+    },
+    {
+      "key": "vibrations",
+      "prompt": "Track W group vibrations: build track-w.md section W2 (W0 for call sites, the eight Commands without a player, queues, batching, protocol). Three commits: 'Minecraft game events reach their listeners like vanilla' (game_events.rs table and tags, Level/EntityWorld/TickInput queues, acting player with PlayerEdit/PlayerBreaks/PlayerMines/UseBlock/RingBell/BoneMeal/Attack gaining player: u64 and ChestOpeners player: Option<u64>, vibrations.rs dispatcher, selector, travel, occlusion, listener NBT), 'Minecraft sculk sensors hear vibrations and power redstone' (vendored world level/sculk.rs, redstone kind, comparator, calibrated filter, vibration particle burst; resonance is W3), 'Players, mobs, blocks and explosions make Minecraft vibrations'. Tests, steps w04-w06, kit in W2."
+    },
+    {
+      "key": "vibrations-more",
+      "prompt": "Track W group vibrations-more: build track-w.md section W3 (W0 coordination: one helper call per site, E1/E2/D share these files). Four commits: 'Minecraft blocks make vibrations when used', 'Minecraft players and mobs make vibrations when they eat, drink, equip, ride, glide, shear, teleport, get hurt and die', 'Minecraft amethyst resonates sculk vibrations to calibrated sensors', 'MW2 guns make Minecraft vibrations' (Ray events before the build filter; projectile_land only when the ray stopped at a block Shot or a MobShot, never in the air; decision in W3). Tests, steps w07-w10, kit in W3."
+    },
+    {
+      "key": "shriekers-catalysts",
+      "prompt": "Track W group shriekers-catalysts (fourth, segment w1, needs W1-W3, not the warden): build track-w.md section W7. Three commits: 'Minecraft sculk shriekers warn players and darken them' (shrieker listener and stepOn, tryShriek silent when tryToWarn fails, 90-tick shriek, level event 3007, per-player WardenSpawnTracker saved in the player file and carried in TickInput/Output, tryRespond with reply sounds where level 4 plays listening_angry until W4 plugs in summon_warden, warden-nearby check by entity kind, new Output.player_effects with addEffectToPlayersAround rules and darkness within 40), 'Minecraft sculk catalysts bloom when mobs die nearby' (reward without a player kill, no orbs, player deaths via AwardExperience with the player id, bloom, soul burst), 'Minecraft sculk spreads from catalysts like vanilla' (shared spreader, level constants 10/4/10/5, can_summon=false, cursors NBT). Tests, steps w23-w26 (steps 4-5 from W4 on), kit in W7."
+    }
+  ]
+}
