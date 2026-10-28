@@ -542,6 +542,12 @@ impl EntityWorld {
         if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
+        if let Some(e) = self.ghasts.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
+        if let Some(e) = self.blazes.iter_mut().find(|e| e.id == id) {
+            return Some((&mut e.effects, false, false));
+        }
         if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
@@ -584,6 +590,8 @@ impl EntityWorld {
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.pigs.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.chickens.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.ghasts.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.blazes.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.striders.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.hoglins.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.piglins.iter().find(|e| e.id == id).map(|e| &e.effects))
@@ -673,6 +681,10 @@ impl EntityWorld {
             (&mut e.pig.health, 10.0)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             (&mut e.chicken.health, 4.0)
+        } else if let Some(e) = self.ghasts.iter_mut().find(|e| e.id == id) {
+            (&mut e.ghast.health, crate::ghast::MAX_HEALTH)
+        } else if let Some(e) = self.blazes.iter_mut().find(|e| e.id == id) {
+            (&mut e.blaze.health, crate::blaze::MAX_HEALTH)
         } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
             (&mut e.strider.health, crate::strider::MAX_HEALTH)
         } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
@@ -771,6 +783,20 @@ impl EntityWorld {
             e.hurt(amount, source)
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             e.hurt_with_source(amount, source)
+        } else if let Some(e) = self.ghasts.iter_mut().find(|e| e.id == id) {
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            let hit = e.hurt(amount);
+            if let (true, Some(by)) = (hit.applied, by) {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            hit
+        } else if let Some(e) = self.blazes.iter_mut().find(|e| e.id == id) {
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            let hit = e.hurt(amount);
+            if let (true, Some(by)) = (hit.applied, by) {
+                e.ai.state.hurt_by = Some((by, e.tick_count));
+            }
+            hit
         } else if let Some(e) = self.striders.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, source)
         } else if let Some(e) = self.hoglins.iter_mut().find(|e| e.id == id) {
@@ -782,7 +808,64 @@ impl EntityWorld {
         };
         if let (true, Some(owner)) = (result.applied, owner) {
             self.villager_hurt_by(id, owner);
+            self.note_hoglin_hurt_by_owner(id, owner);
         }
         Some(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::monster_ai::Target;
+
+    fn at(x: f64) -> DVec3 {
+        DVec3::new(x, 64.0, 0.5)
+    }
+
+    fn health(world: &EntityWorld, id: u64) -> f32 {
+        world.mob_body(id).map_or(0.0, |(_, health)| health)
+    }
+
+    #[test]
+    fn a_poison_splash_poisons_a_blaze_and_a_ghast() {
+        let mut world = EntityWorld::default();
+        let blaze = world.spawn_blaze(crate::blaze::Blaze::new(at(0.5)), true);
+        let ghast = world.spawn_ghast(crate::ghast::Ghast::new(at(10.5)), true);
+        for (id, max) in [(blaze, crate::blaze::MAX_HEALTH), (ghast, crate::ghast::MAX_HEALTH)] {
+            assert!(world.add_mob_effect(id, EffectInstance::new(MobEffect::Poison, 900, 0)));
+            assert!(world.mob_effects(id).is_some_and(|effects| effects.has(MobEffect::Poison)));
+            assert_eq!(world.mob_effects_mut(id).map(|(_, undead, spider)| (undead, spider)), Some((false, false)));
+            let hurt = world.splash_instant(id, MobEffect::InstantDamage, 0, 1.0, at(0.0), Some(PLAYER_TARGET + 3));
+            assert!(hurt.is_some_and(|hit| hit.applied && hit.full));
+            assert_eq!(health(&world, id), max - 6.0);
+            assert_eq!(world.splash_instant(id, MobEffect::InstantHealth, 0, 1.0, at(0.0), Some(PLAYER_TARGET + 3)), None);
+            assert_eq!(health(&world, id), max - 2.0);
+        }
+        assert_eq!(world.blaze_mut(blaze).unwrap().ai.state.hurt_by.map(|(by, _)| by), Some(Target::Player(3)));
+        assert_eq!(world.ghast_mut(ghast).unwrap().ai.state.hurt_by.map(|(by, _)| by), Some(Target::Player(3)));
+    }
+
+    #[test]
+    fn a_harming_splash_angers_a_hoglin_at_the_thrower() {
+        let mut world = EntityWorld::default();
+        let hoglin = world.spawn_hoglin(crate::hoglin::Hoglin::new(crate::hoglin::HoglinKind::Hoglin, at(0.5)), true);
+        let piglin = world.spawn_piglin(crate::piglin::Piglin::new(crate::piglin::PiglinKind::Piglin, at(5.5)), true);
+        let pillager = world.spawn_illager(crate::illager::Illager::new(crate::illager::IllagerKind::Pillager, at(10.5)), true);
+        for id in [hoglin, piglin] {
+            let before = health(&world, id);
+            assert!(world.splash_instant(id, MobEffect::InstantDamage, 0, 1.0, at(0.0), Some(PLAYER_TARGET + 6)).is_some_and(|hit| hit.applied));
+            assert!(health(&world, id) < before);
+        }
+        assert_eq!(world.hoglin_mut(hoglin).unwrap().hurt_by, vec![Target::Player(6)]);
+        assert_eq!(world.piglin_mut(piglin).unwrap().hurt_by, vec![Target::Player(6)]);
+        world.splash_instant(hoglin, MobEffect::InstantDamage, 0, 1.0, at(0.0), Some(pillager));
+        assert_eq!(world.hoglin_mut(hoglin).unwrap().hurt_by, vec![Target::Player(6)], "a hit inside its damage cooldown does not count");
+        world.hoglin_mut(hoglin).unwrap().hoglin.damage.cooldown_ticks = 0;
+        world.splash_instant(hoglin, MobEffect::InstantDamage, 0, 1.0, at(0.0), Some(pillager));
+        assert_eq!(world.hoglin_mut(hoglin).unwrap().hurt_by, vec![Target::Player(6), Target::Mob(pillager)]);
+        world.piglin_mut(piglin).unwrap().piglin.damage.cooldown_ticks = 0;
+        assert!(world.splash_instant(piglin, MobEffect::InstantDamage, 0, 1.0, at(0.0), None).is_some_and(|hit| hit.applied));
+        assert_eq!(world.piglin_mut(piglin).unwrap().hurt_by, vec![Target::Player(6)], "a potion with no thrower angers nobody");
     }
 }
