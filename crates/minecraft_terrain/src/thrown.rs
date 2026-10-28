@@ -482,10 +482,16 @@ pub fn targets(world: &EntityWorld) -> Vec<PotionTarget> {
 pub fn hurt(
     world: &mut EntityWorld,
     id: u64,
+    kind: Throwable,
     velocity: DVec3,
     player: u64,
 ) -> bool {
-    hurt_by(world, id, 0.0, THROWN, velocity, player)
+    let amount = if kind == Throwable::Snowball {
+        world.snowball_damage(id)
+    } else {
+        0.0
+    };
+    hurt_by(world, id, amount, THROWN, velocity, player)
 }
 
 pub fn hurt_by(
@@ -588,6 +594,23 @@ mod tests {
     use minecraftoss_entities::monster_ai::Target;
     use minecraftoss_player::{Block, Pos};
     use std::collections::HashMap;
+
+    #[test]
+    fn a_snowball_hurts_a_blaze_by_three_and_nothing_else() {
+        use minecraftoss_entities::blaze::Blaze;
+        let mut world = EntityWorld::default();
+        let at = |x: f64| DVec3::new(x, 64.0, 0.5);
+        let blazes = [0.5, 3.5, 6.5].map(|x| world.spawn_blaze(Blaze::new(at(x)), true));
+        let ghast = world.spawn_ghast(minecraftoss_entities::ghast::Ghast::new(at(12.5)), true);
+        let pig = world.spawn_pig(minecraftoss_entities::pig::Pig::new(at(20.5)), true);
+        assert_eq!((world.snowball_damage(blazes[0]), world.snowball_damage(ghast), world.snowball_damage(pig)), (3.0, 0.0, 0.0));
+        for (id, kind) in blazes.into_iter().zip([Throwable::Snowball, Throwable::Egg, Throwable::EnderPearl]).chain([(ghast, Throwable::Snowball), (pig, Throwable::Snowball)]) {
+            assert!(hurt(&mut world, id, kind, DVec3::Z, 0), "{kind:?}");
+        }
+        let health: Vec<f32> = world.blazes().iter().map(|e| e.blaze.health).collect();
+        assert_eq!(health, vec![17.0, 20.0, 20.0]);
+        assert_eq!((world.ghasts()[0].ghast.health, world.pigs()[0].pig.health), (10.0, 10.0));
+    }
 
     #[test]
     fn a_trident_or_wind_charge_hurts_a_wither_until_its_armour_comes_at_half_health() {

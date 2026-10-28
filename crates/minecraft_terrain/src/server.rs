@@ -2140,7 +2140,7 @@ impl ServerSim {
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
                     match t.shooter {
                         Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
-                        None => struck.push((mob, landed.velocity, t.owner)),
+                        None => struck.push((mob, t.kind, landed.velocity, t.owner)),
                     }
                 }
                 if hurts {
@@ -2226,8 +2226,8 @@ impl ServerSim {
             }
             self.wind_burst(center, players, crate::wind::Charge::Player);
         }
-        for (mob, velocity, owner) in struck {
-            crate::thrown::hurt(&mut self.mobs, mob, velocity, owner);
+        for (mob, kind, velocity, owner) in struck {
+            crate::thrown::hurt(&mut self.mobs, mob, kind, velocity, owner);
         }
         for (shooter, mob, velocity) in shot_by_mobs {
             self.mobs.snowball_hits_mob(shooter, mob, velocity);
@@ -6242,6 +6242,39 @@ mod tests {
         assert!(seen_snowball, "the golem's snowballs fly as thrown items");
         assert!(turned, "a snowball strikes the zombie, which turns on the golem");
         assert_eq!(server.mobs.zombies().iter().find(|e| e.id == zombie).map(|e| e.zombie.health), Some(20.0), "snowballs do it no harm");
+    }
+
+    #[test]
+    fn a_snow_golem_s_snowball_hits_a_blaze() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 6..=10 {
+            for z in 4..=16 {
+                place(&mut server, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        server.take_changes();
+        if server.level.snow_golem_melts_at(8, 200, 8) {
+            return;
+        }
+        server.set_players(&[[8.5, 200.0, 30.5]], 2);
+        server.set_simulation_area((0, 0), 1);
+        server.summon("minecraft:snow_golem", [8.5, 200.0, 5.5], None, 0.0).unwrap();
+        let still = minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap();
+        server.summon("minecraft:blaze", [8.5, 200.0, 10.5], Some(&still), 180.0).unwrap();
+        server.take_spawned();
+        let blaze = server.mobs.blazes()[0].id;
+        assert_eq!(server.mobs.blazes()[0].blaze.health, 20.0);
+        let mut struck = None;
+        for _ in 0..1200 {
+            server.tick_mobs(&[], false);
+            server.tick_thrown(&[]);
+            let now = server.mobs.blazes().iter().find(|e| e.id == blaze).map(|e| e.blaze.health);
+            if now != Some(20.0) {
+                struck = now;
+                break;
+            }
+        }
+        assert_eq!(struck, Some(17.0), "the golem's snowball strikes the blaze for 3");
     }
 
     #[test]
