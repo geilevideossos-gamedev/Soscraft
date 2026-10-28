@@ -8,7 +8,7 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 
 Files under `third_party/minecraftoss` this track patched or added (round 8 counted 73 patched and 37 added).
 
-- Patched (9): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`.
+- Patched (10): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`.
 - Added (11): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only).
 
 ## Protocol
@@ -123,4 +123,29 @@ After 37dcfc8d.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:saddle*3,minecraft:strider_spawn_egg*2,minecraft:warped_fungus_on_a_stick,minecraft:golden_carrot*16,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
+```
+
+### 3. Minecraft mobs can hurt players with their own damage types
+
+After 7f0cd730.
+
+- **Changed (vendored entities crate):** `PlayerHitKind::Typed { damage_type, message, from, push, bypasses_armor, bypasses_shield, disable_shield_seconds, effect: Option<(EffectKind, u32, u8)> }` at the end of the enum (D0-2.6). `bin/check_zombie_player_hits.rs` takes it as a hit from `from`, beside the melee, magic and firework arm.
+- **Changed (game code, `minecraft_survival`):**
+  - `death.rs`: `MobAttack::Typed { damage_type, message, bypasses_armor }` at the end of the enum. Its `damage_type` and `message_id` are its own strings, `bypasses_armor` reads the flag, and it has no stand-in attacker when the mob is gone (`DamageCause::mob` gives `Generic` without a source, as for melee).
+  - `entities.rs` `mob_hit`: `Typed` hits come from `from` (the hurt direction and the shield's angle), `toward` is dropped when `bypasses_shield` holds (one new line after the magic rule, so no shield blocks it), the attack is `MobAttack::Typed` with the hit's strings and armour flag, the effect is the hit's own, and the difficulty scaling is that of any hit with a source. `melee_push` gives `Typed` its `push` as the throw and its shield cooldown.
+- **Tests added:** `world::families::tests::a_typed_hit_reaches_the_player` (every field of a `Typed` strike from `family_strike` reaches the player hit list with its damage and source; the same strike on a mob goes through `mob_hits_mob`; `core.swings` counts both), `entities::tests::a_typed_hit_skips_armour_and_shields_when_told_and_gives_its_effect` (a sonic-boom-like hit: 6, 10 and 15 by difficulty and none in peaceful, no shield angle, `minecraft:sonic_boom` past armour, its push as the throw; a sting-like hit: a raised shield facing it blocks it, armour counts, the poison effect and a 100-tick shield cooldown carried, `Generic` without a source), `death::tests::a_typed_attack_reads_its_own_death_line` (the 26.3 `death.attack.sonic_boom` line, "%1$s was obliterated by a sonically-charged shriek", killer Warden; the sting's own type and message id).
+- **Decisions:**
+  - A `Typed` hit without a living source is `DamageCause::Generic`, as the other mob attacks are; every planned typed attack (sonic boom, sting, pufferfish) has a mob behind it.
+  - `bypasses_shield` works by dropping the shield angle (`toward`), the way evoker fangs already pass shields; the flag mirrors vanilla `#bypasses_shield`, which holds `#bypasses_armor` and so `minecraft:sonic_boom`.
+  - The push goes through `MeleePush` (thrown when hurt or shielded, scaled by knockback resistance), so a family passes the vanilla push already scaled for a resistance of 0.
+  - `PlayerHitKind` and `MobAttack` are not serialised (survival applies hits on the host), so this commit changes no protocol message.
+- **Runs:** `test -p minecraftoss-entities -p minecraft_survival --locked --lib --bins` (entities 414 passed, survival 759 passed, every `check_*` bin builds), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new files pass `rustfmt --check --edition 2021`.
+- **Test steps** (no registered mob attacks with a typed hit yet; the steps check that the old attacks on the player still land, are blocked and read their death lines). Release build, survival, Normal, at night, flat ground in the Overworld. Name each screenshot by its label, `D0-5-1.png`.
+  1. Use a zombie egg 6 blocks away, raise the shield as it comes: its hits are blocked with the shield sound. Lower the shield: it hurts you and pushes you back.
+  2. Use a cave spider egg and let it bite you: you are poisoned (green hearts).
+  3. Use an evoker egg: its fangs bite through the raised shield. **Screenshot D0-5-3.**
+  4. Let a skeleton shoot you dead (`/summon minecraft:skeleton ~ ~ ~8`): the death screen reads "Player was shot by Skeleton". **Screenshot D0-5-4.**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*2,minecraft:cave_spider_spawn_egg*2,minecraft:evoker_spawn_egg*2,minecraft:skeleton_spawn_egg*2,minecraft:shield,minecraft:iron_sword,minecraft:cooked_beef*32,minecraft:milk_bucket
 ```

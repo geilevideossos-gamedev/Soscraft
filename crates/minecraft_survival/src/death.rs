@@ -76,6 +76,11 @@ pub enum MobAttack {
     Magic,
     Fireworks,
     WitherSkull,
+    Typed {
+        damage_type: &'static str,
+        message: &'static str,
+        bypasses_armor: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,7 +128,7 @@ impl DamageCause {
         let type_id = type_id.or(match attack {
             MobAttack::Explosion => Some("minecraft:creeper"),
             MobAttack::Arrow => Some(OWNERLESS_ARROW),
-            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit | MobAttack::Magic | MobAttack::Fireworks | MobAttack::WitherSkull => None,
+            MobAttack::Melee | MobAttack::Fireball | MobAttack::SmallFireball | MobAttack::MobProjectile | MobAttack::Trident | MobAttack::Spit | MobAttack::Magic | MobAttack::Fireworks | MobAttack::WitherSkull | MobAttack::Typed { .. } => None,
         });
         match (source, type_id) {
             (Some(id), Some(type_id)) => Self::Mob {
@@ -186,6 +191,7 @@ impl DamageCause {
                 MobAttack::Magic => "minecraft:indirect_magic",
                 MobAttack::Fireworks => "minecraft:fireworks",
                 MobAttack::WitherSkull => "minecraft:wither_skull",
+                MobAttack::Typed { damage_type, .. } => damage_type,
             },
         }
     }
@@ -247,6 +253,10 @@ impl DamageCause {
                 attack: MobAttack::WitherSkull,
                 ..
             } => "witherSkull",
+            Self::Mob {
+                attack: MobAttack::Typed { message, .. },
+                ..
+            } => message,
         }
     }
 
@@ -256,6 +266,13 @@ impl DamageCause {
             Self::Magic
                 | Self::Mob {
                     attack: MobAttack::Magic,
+                    ..
+                }
+                | Self::Mob {
+                    attack: MobAttack::Typed {
+                        bypasses_armor: true,
+                        ..
+                    },
                     ..
                 }
         )
@@ -1169,6 +1186,24 @@ mod tests {
         fighting.record(3, DamageCause::Fireworks, 4.0, None, 0.0);
         let host = |client: u32| (client == 0).then(|| Killer { name: "Host".to_owned(), weapon: None });
         assert_eq!(fighting.death_line(&lang, |_| true, host).message, "%1$s went off with a bang", "the rocket is the direct source, so no one is credited");
+    }
+
+    #[test]
+    fn a_typed_attack_reads_its_own_death_line() {
+        let mut lang = language();
+        lang.insert("death.attack.sonic_boom".to_owned(), "%1$s was obliterated by a sonically-charged shriek".to_owned());
+        lang.insert("entity.minecraft.warden".to_owned(), "Warden".to_owned());
+        let shriek = MobAttack::Typed { damage_type: "minecraft:sonic_boom", message: "sonic_boom", bypasses_armor: true };
+        let boom = DamageCause::mob(shriek, Some(9), Some("minecraft:warden"));
+        assert_eq!((boom.damage_type(), boom.message_id()), ("minecraft:sonic_boom", "sonic_boom"));
+        assert!(boom.bypasses_armor() && !boom.burns() && !boom.is_explosion());
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, boom, 10.0, None, 0.0);
+        assert_eq!(tracker.death_line(&lang, |_| true, |_| None), says("%1$s was obliterated by a sonically-charged shriek", "Warden"));
+        let sting = DamageCause::mob(MobAttack::Typed { damage_type: "minecraft:sting", message: "sting", bypasses_armor: false }, Some(4), Some("minecraft:bee"));
+        assert_eq!((sting.damage_type(), sting.message_id()), ("minecraft:sting", "sting"));
+        assert!(!sting.bypasses_armor());
+        assert_eq!(DamageCause::mob(shriek, None, None), DamageCause::Generic);
     }
 
     #[test]

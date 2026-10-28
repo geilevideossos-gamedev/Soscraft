@@ -5,6 +5,7 @@ use crate::effects::{EffectInstance, MobEffect};
 use crate::fireball::{Fireball, FireballKind, Shooter};
 use crate::monster_ai::{MonsterKind, Target};
 use crate::projectile::ArrowImpact;
+use minecraftoss_player::survival::EffectKind;
 use minecraftoss_player::{Block, Pos};
 use std::collections::HashSet;
 
@@ -819,4 +820,61 @@ fn a_player_steers_and_jumps_a_registered_mount() {
         probe(&world, mount).state.orders,
         [(DVec3::new(8.0, 64.0, 0.0), 1.25)]
     );
+}
+
+#[test]
+fn a_typed_hit_reaches_the_player() {
+    let mut world = EntityWorld::default();
+    let id = probe_at(&mut world, KIND, at(0.5));
+    let victim = probe_at(&mut world, KIND, at(1.5));
+    let boom = PlayerHitKind::Typed {
+        damage_type: "minecraft:sonic_boom",
+        message: "sonic_boom",
+        from: at(0.5),
+        push: DVec3::new(2.5, 0.5, 0.0),
+        bypasses_armor: true,
+        bypasses_shield: true,
+        disable_shield_seconds: 0.0,
+        effect: Some((EffectKind::Darkness, 260, 0)),
+    };
+    assert!(
+        world
+            .family_strike(id, Target::Player(1), 10.0, boom)
+            .is_none()
+    );
+    let hits = world.take_player_hits();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        (hits[0].player_id, hits[0].damage, hits[0].source),
+        (1, 10.0, Some(id))
+    );
+    let PlayerHitKind::Typed {
+        damage_type,
+        message,
+        from,
+        push,
+        bypasses_armor,
+        bypasses_shield,
+        disable_shield_seconds,
+        effect,
+    } = hits[0].kind
+    else {
+        panic!("{:?}", hits[0].kind);
+    };
+    assert_eq!(
+        (damage_type, message, from, push),
+        (
+            "minecraft:sonic_boom",
+            "sonic_boom",
+            at(0.5),
+            DVec3::new(2.5, 0.5, 0.0)
+        )
+    );
+    assert!(bypasses_armor && bypasses_shield);
+    assert_eq!(disable_shield_seconds, 0.0);
+    assert_eq!(effect, Some((EffectKind::Darkness, 260, 0)));
+    let struck = world.family_strike(id, Target::Mob(victim), 3.0, boom);
+    assert!(struck.is_some_and(|result| result.applied));
+    assert_eq!(probe(&world, victim).core.health, probe::MAX_HEALTH - 3.0);
+    assert_eq!(probe(&world, id).core.swings, 2);
 }

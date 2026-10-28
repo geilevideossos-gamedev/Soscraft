@@ -626,6 +626,7 @@ pub enum PlayerHitKind {
     Spit { velocity: DVec3 },
     Magic { at: DVec3 },
     Fireworks { at: DVec3 },
+    Typed { damage_type: &'static str, message: &'static str, from: DVec3, push: DVec3, bypasses_armor: bool, bypasses_shield: bool, disable_shield_seconds: f32, effect: Option<(EffectKind, u32, u8)> },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,

@@ -1875,6 +1875,7 @@ fn explosion_push(kind: &PlayerHitKind) -> Option<DVec3> {
 fn melee_push(kind: &PlayerHitKind) -> crate::impulse::MeleePush {
     match *kind {
         PlayerHitKind::Melee { throw, lift, disable_shield_seconds, .. } => crate::impulse::MeleePush { throw, lift: f64::from(lift), disable_shield_ticks: crate::offhand::disable_ticks(disable_shield_seconds) },
+        PlayerHitKind::Typed { push, disable_shield_seconds, .. } => crate::impulse::MeleePush { throw: push, lift: 0.0, disable_shield_ticks: crate::offhand::disable_ticks(disable_shield_seconds) },
         _ => Default::default(),
     }
 }
@@ -1888,6 +1889,7 @@ fn mob_hit(
     let from = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
         PlayerHitKind::Fireworks { at } => Some(at.to_array()),
+        PlayerHitKind::Typed { from, .. } => Some(from.to_array()),
         _ => None,
     };
     let toward = match hit.kind {
@@ -1895,9 +1897,11 @@ fn mob_hit(
         PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::WitherSkull { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
         PlayerHitKind::Explosion { knockback, .. } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
         PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at } => [at.x - feet[0], at.z - feet[2]],
+        PlayerHitKind::Typed { from, .. } => [from.x - feet[0], from.z - feet[2]],
     };
     let ownerless_skull = matches!(hit.kind, PlayerHitKind::WitherSkull { .. }) && hit.source.is_none();
     let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. }) && !ownerless_skull).then_some(toward);
+    let toward = toward.filter(|_| !matches!(hit.kind, PlayerHitKind::Typed { bypasses_shield: true, .. }));
     let attack = match hit.kind {
         PlayerHitKind::Melee { .. } => crate::death::MobAttack::Melee,
         PlayerHitKind::Arrow { .. } => crate::death::MobAttack::Arrow,
@@ -1910,6 +1914,7 @@ fn mob_hit(
         PlayerHitKind::Spit { .. } => crate::death::MobAttack::Spit,
         PlayerHitKind::Magic { .. } => crate::death::MobAttack::Magic,
         PlayerHitKind::Fireworks { .. } => crate::death::MobAttack::Fireworks,
+        PlayerHitKind::Typed { damage_type, message, bypasses_armor, .. } => crate::death::MobAttack::Typed { damage_type, message, bypasses_armor },
     };
     let cause = match hit.kind {
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
@@ -1924,6 +1929,7 @@ fn mob_hit(
         PlayerHitKind::Arrow { effect, .. } => effect.map(|(kind, ticks)| (kind, ticks, 0)),
         PlayerHitKind::ShulkerBullet { .. } => Some((EffectKind::Levitation, minecraftoss_entities::shulker_bullet::LEVITATION_TICKS, 0)),
         PlayerHitKind::WitherSkull { wither_ticks, .. } => (wither_ticks > 0).then_some((EffectKind::Wither, wither_ticks, 1)),
+        PlayerHitKind::Typed { effect, .. } => effect,
         _ => None,
     };
     (damage > 0.0).then_some((damage, from, toward, cause, melee_push(&hit.kind), effect))
@@ -2606,6 +2612,34 @@ mod tests {
         let (damage, _, toward, cause, _, effect) = mob_hit(&ownerless, [0.0; 3], 3, None).unwrap();
         assert_eq!((damage, toward, cause), (5.0, None, crate::death::DamageCause::Magic));
         assert_eq!(effect, Some((EffectKind::Wither, 200, 1)));
+    }
+
+    #[test]
+    fn a_typed_hit_skips_armour_and_shields_when_told_and_gives_its_effect() {
+        let boom = PlayerHitKind::Typed { damage_type: "minecraft:sonic_boom", message: "sonic_boom", from: DVec3::new(3.0, 64.0, 0.0), push: DVec3::new(2.5, 0.5, 0.0), bypasses_armor: true, bypasses_shield: true, disable_shield_seconds: 0.0, effect: None };
+        let hit = minecraftoss_entities::world::PlayerHit { player_id: HOST, damage: 10.0, kind: boom, source: Some(9) };
+        let damage = |difficulty| mob_hit(&hit, [0.0, 64.0, 0.0], difficulty, Some("minecraft:warden")).map(|h| h.0);
+        assert_eq!((damage(0), damage(1), damage(2), damage(3)), (None, Some(6.0), Some(10.0), Some(15.0)));
+        let (_, from, toward, cause, push, effect) = mob_hit(&hit, [0.0, 64.0, 0.0], 2, Some("minecraft:warden")).unwrap();
+        assert_eq!((from, toward), (Some([3.0, 64.0, 0.0]), None), "no shield blocks it");
+        assert_eq!(crate::offhand::blocked_damage(-90.0, toward, 10.0), 0.0);
+        let typed = crate::death::MobAttack::Typed { damage_type: "minecraft:sonic_boom", message: "sonic_boom", bypasses_armor: true };
+        assert_eq!(cause, crate::death::DamageCause::Mob { id: 9, type_id: "minecraft:warden", attack: typed });
+        assert_eq!(cause.damage_type(), "minecraft:sonic_boom");
+        assert!(cause.bypasses_armor() && effect.is_none());
+        assert_eq!(push, crate::impulse::MeleePush { throw: DVec3::new(2.5, 0.5, 0.0), lift: 0.0, disable_shield_ticks: 0 });
+        let bite = PlayerHitKind::Typed { damage_type: "minecraft:sting", message: "sting", from: DVec3::new(-1.0, 64.0, 0.0), push: DVec3::ZERO, bypasses_armor: false, bypasses_shield: false, disable_shield_seconds: 5.0, effect: Some((EffectKind::Poison, 200, 0)) };
+        let hit = minecraftoss_entities::world::PlayerHit { damage: 2.0, kind: bite, ..hit };
+        let (damage, _, toward, cause, push, effect) = mob_hit(&hit, [0.0, 64.0, 0.0], 2, Some("minecraft:bee")).unwrap();
+        assert_eq!((damage, toward), (2.0, Some([-1.0, 0.0])));
+        assert!(crate::offhand::blocked_damage(90.0, toward, 2.0) > 0.0, "a raised shield blocks it");
+        assert_eq!(cause.damage_type(), "minecraft:sting");
+        assert!(!cause.bypasses_armor());
+        assert_eq!(push.disable_shield_ticks, 100);
+        assert_eq!(effect, Some((EffectKind::Poison, 200, 0)));
+        let ownerless = minecraftoss_entities::world::PlayerHit { source: None, ..hit };
+        let (damage, _, _, cause, _, _) = mob_hit(&ownerless, [0.0, 64.0, 0.0], 3, None).unwrap();
+        assert_eq!((damage, cause), (2.0, crate::death::DamageCause::Generic));
     }
 
     #[test]
