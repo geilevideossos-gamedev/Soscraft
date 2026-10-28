@@ -555,6 +555,9 @@ impl EntityWorld {
         if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
+        if let Some(found) = self.families.effects_mut(id) {
+            return Some(found);
+        }
         None
     }
 
@@ -588,6 +591,7 @@ impl EntityWorld {
             .or_else(|| self.hoglins.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.piglins.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.shulkers.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.families.core(id).map(|(_, core)| &core.effects))
     }
 
     /// `HealOrHarmMobEffect.applyInstantaneousEffect` on a mob: the heal,
@@ -596,7 +600,7 @@ impl EntityWorld {
     /// round. An enderman teleports away from a potion instead of taking
     /// its harm (`Enderman.hurtServer`).
     pub fn splash_instant(&mut self, id: u64, effect: MobEffect, amplifier: i32, scale: f64, at: DVec3, owner: Option<u64>) -> Option<DamageResult> {
-        let undead = self.zombies.iter().any(|e| e.id == id) || self.skeletons.iter().any(|e| e.id == id);
+        let undead = self.zombies.iter().any(|e| e.id == id) || self.skeletons.iter().any(|e| e.id == id) || self.families.traits(id).is_some_and(|t| t.undead);
         match instant_work(effect, amplifier, undead, scale) {
             Some(EffectWork::Heal(amount)) => {
                 self.heal_mob(id, amount);
@@ -682,6 +686,9 @@ impl EntityWorld {
             (&mut e.piglin.health, max)
         } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
             (&mut e.shulker.health, crate::shulker::MAX_HEALTH)
+        } else if let Some((_, core)) = self.families.core_mut(id) {
+            let max = core.max_health;
+            (&mut core.health, max)
         } else {
             return;
         };
@@ -777,6 +784,12 @@ impl EntityWorld {
             e.hurt(amount)
         } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
+        } else if let Some(key) = self.families.key_of(id) {
+            let kind = if owner.is_some() { "minecraft:indirect_magic" } else { "minecraft:magic" };
+            let by = owner.map(|o| if o >= PLAYER_TARGET { crate::monster_ai::Target::Player(o - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(o) });
+            let by_kind = owner.and_then(|o| if o >= PLAYER_TARGET { Some("minecraft:player") } else { self.entity_type(o) });
+            let hurt = families::Hurt::new(amount, kind, source).by(by, by_kind).bypassing_armor();
+            self.families.hurt(key, id, &hurt)?
         } else {
             self.piglins.iter_mut().find(|e| e.id == id)?.hurt(amount)
         };

@@ -394,7 +394,7 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:vex"
             | "minecraft:ravager"
             | "minecraft:wither"
-    )
+    ) || crate::world::families::enemy(kind)
 }
 
 /// A target as the goals see it.

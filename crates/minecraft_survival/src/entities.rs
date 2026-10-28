@@ -2015,6 +2015,7 @@ pub(crate) fn encode(hit: MobHit) -> u64 {
         MobHit::Vex(_) => VEX_KEY,
         MobHit::Ravager(_) => RAVAGER_KEY,
         MobHit::Wither(_) => WITHER_KEY,
+        MobHit::Family(key, _) => u64::from(key),
     };
     (kind << 56) | (hit.id() & ((1 << 56) - 1))
 }
