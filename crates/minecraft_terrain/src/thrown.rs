@@ -1,7 +1,7 @@
 use glam::{DVec3, Vec2, Vec3};
 use minecraftoss_entities::potion::{Potion, PotionTarget, ThrownPotion};
 use minecraftoss_entities::tempt::PlayerCandidate;
-use minecraftoss_entities::world::{EntityWorld, ProjectileHit};
+use minecraftoss_entities::world::{EntityWorld, ProjectileHit, Rider};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_player::{Face, Pos, World};
 
@@ -243,6 +243,38 @@ pub fn player_targets(players: &[PlayerBody], owner: u64) -> Vec<PotionTarget> {
 
 pub fn owner_box(players: &[PlayerBody], owner: u64) -> Option<(DVec3, DVec3)> {
     players.iter().find(|p| p.id == owner && p.targetable()).map(PlayerBody::bounds)
+}
+
+pub fn ride_group(world: &EntityWorld, player: u64) -> Vec<u64> {
+    let Some(vehicle) = world.vehicle_of(Rider::Player(player)) else {
+        return Vec::new();
+    };
+    let mut group = world.with_mob_riders(world.root_vehicle(vehicle));
+    let players: Vec<u64> = group
+        .iter()
+        .flat_map(|&mob| world.passengers_of(mob))
+        .filter_map(|rider| match *rider {
+            Rider::Player(id) => Some(PLAYER_TARGET + id),
+            Rider::Mob(_) => None,
+        })
+        .collect();
+    group.extend(players);
+    group
+}
+
+pub fn skip_own_mount(
+    world: &EntityWorld,
+    targets: &mut [PotionTarget],
+    player: u64,
+    bounds: (DVec3, DVec3),
+) -> (DVec3, DVec3) {
+    let group = ride_group(world, player);
+    let mut cover = bounds;
+    for target in targets.iter_mut().filter(|t| group.contains(&t.id)) {
+        target.owner = true;
+        cover = (cover.0.min(target.min), cover.1.max(target.max));
+    }
+    cover
 }
 
 #[derive(Clone, Debug, PartialEq)]

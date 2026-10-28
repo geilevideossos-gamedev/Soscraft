@@ -176,3 +176,31 @@ After 85acbc95.
 ```
 IW4L_MINECRAFT_KIT=minecraft:splash_potion@water*2,minecraft:blaze_spawn_egg,minecraft:strider_spawn_egg,minecraft:snow_golem_spawn_egg,minecraft:pig_spawn_egg,minecraft:cobblestone*64,minecraft:potion@fire_resistance,minecraft:golden_apple*16
 ```
+
+## Group ti3-mounts
+
+### 1. Minecraft thrown things pass the mount their thrower rides
+
+After f64ce4a1.
+
+- **Vanilla (26.3):** `Projectile.canHitEntity` refuses, until the projectile has left its owner, every entity for which `owner.isPassengerOfSameVehicle(entity)` holds: the owner's root vehicle and everything riding it. `isOutsideOwnerCollisionRange` sets `leftOwner` once the projectile's box, swept along its motion and grown by a block, meets none of `owner.getRootVehicle().getSelfAndPassengers()`. So a snowball, egg, pearl, potion, wind charge or trident thrown from a saddle flies through the player's own mount.
+- **Changed:**
+  - `minecraft_terrain/src/thrown.rs`: new public `ride_group(world, player)`: the player's root vehicle (`vehicle_of(Rider::Player)`, then `root_vehicle`), every mob riding it (`with_mob_riders`) and every player riding any of them (as `PLAYER_TARGET + id`). Empty for a player on foot. New public `skip_own_mount(world, targets, player, bounds)` marks those targets `owner: true` and returns `bounds` grown to cover their boxes.
+  - `minecraft_terrain/src/server.rs` `tick_thrown`: a player's throw (no `shooter`) passes its owner box and targets through `skip_own_mount`. `tick_tridents`: a player-owned trident's `TridentOwner.bounds` does the same. Mob throwers keep today's rule.
+- **Tests:**
+  - `server::tests::a_snowball_thrown_from_a_strider_passes_its_strider_but_hits_another`: a player on a saddled strider throws a snowball down at 72 degrees past the front of its own strider; it breaks on the front of a second strider standing next to it, pushes that one along the throw and leaves the ridden strider still. `ride_group` is the strider and its rider, and empty for a player on foot.
+  - `server::tests::a_trident_thrown_from_a_strider_passes_its_strider_but_hits_another`: the same throw with a trident takes 8 off the second strider and nothing off the ridden one.
+  - Both tests fail with `skip_own_mount` turned off (checked), because the flight crosses the top of the ridden strider first.
+- **Decisions:**
+  - The owner box grows to one box around the rider and the whole vehicle group, as the brief says, instead of vanilla's test of each box on its own. The rider sits on top of its mount, so the two only differ at the corners of the grown box, and the test grows it by a block anyway.
+  - Other players on the same vehicle (a camel's second seat) and the mobs riding the mount are passed too, as `getSelfAndPassengers` includes them.
+  - A dead or spectating thrower keeps today's rule (no owner box, so the throw counts as clear of its owner at once).
+- **Test steps (survival, Normal, by day, flat ground; a strider walks on land and shivers but works):**
+  1. Use a strider spawn egg, put the saddle on it and get on it. Build a cobblestone ring around it so it can't wander. Look straight down and throw a snowball: it flies through your strider and breaks on the ground at its feet (white crumbs under it). Your strider does not flash or get pushed (**ti3-1_snowball_down**).
+  2. Use the second strider egg on the block right in front of your strider, inside the ring. Still riding, look down at the front of the second strider and throw a snowball: it breaks on the second strider, which is pushed away from you; yours stays put (**ti3-2_other_strider**).
+  3. Look straight down and throw the loyalty trident: it passes your strider, sticks in the ground under it and flies back to you. Your strider does not flash red (**ti3-3_trident_down**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:snowball*16,minecraft:trident+loyalty=3,minecraft:cobblestone*64
+```

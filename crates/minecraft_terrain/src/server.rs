@@ -1940,7 +1940,10 @@ impl ServerSim {
             let mut targets = mob_targets.clone();
             targets.extend(crate::thrown::player_targets(players, trident.owner));
             targets.extend(self.frames.targets());
-            let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of).or_else(|| {
+            let owner = players.iter().find(|p| p.id == trident.owner).map(|p| {
+                let owner = crate::trident::TridentOwner::of(p);
+                crate::trident::TridentOwner { bounds: crate::thrown::skip_own_mount(&self.mobs, &mut targets, p.id, owner.bounds), ..owner }
+            }).or_else(|| {
                 let thrower = targets.iter_mut().find(|t| Some(t.id) == trident.mob_owner)?;
                 thrower.owner = true;
                 Some(crate::trident::TridentOwner { eye: (thrower.min + thrower.max) / 2.0, alive: true, spectator: false, bounds: (thrower.min, thrower.max) })
@@ -2103,7 +2106,7 @@ impl ServerSim {
         let mut bursts = Vec::new();
         let mut aged = Vec::new();
         {
-            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, .. } = self;
+            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, mobs, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             for t in thrown.iter_mut() {
                 let mut targets = mob_targets.clone();
@@ -2116,6 +2119,8 @@ impl ServerSim {
                         target.owner = true;
                         owner_box = Some((target.min, target.max));
                     }
+                } else {
+                    owner_box = owner_box.map(|bounds| crate::thrown::skip_own_mount(mobs, &mut targets, t.owner, bounds));
                 }
                 let landed = t.tick(&world, &targets, owner_box);
                 if t.kind == Throwable::EnderPearl {
@@ -9718,6 +9723,51 @@ mod tests {
     fn dismounting_over_open_lava_lands_on_top_of_the_strider() {
         let Some((mut server, id)) = ridden_strider("minecraft:lava", 100.5) else { return };
         assert_eq!(server.ride_tick(&crouch(0.0)), vec![(0, id, Some([8.5, 100.5 + f64::from(1.7_f32), 8.5]))]);
+    }
+
+    fn throw_from_the_saddle(server: &ServerSim, item: &'static str) -> (crate::thrown::PlayerBody, crate::thrown::Throw<'static>) {
+        let feet = server.mobs.seat(minecraftoss_entities::world::Rider::Player(0)).expect("the player sits on the strider");
+        let throw = crate::thrown::Throw { owner: 0, item, components: None, eye: feet + glam::DVec3::new(0.0, 1.62, 0.0), yaw: 0.0, pitch: 72.0, motion: glam::DVec3::ZERO, on_ground: false };
+        (player_at(0, feet.to_array(), true), throw)
+    }
+
+    fn strider_state(server: &ServerSim, id: u64) -> (f32, glam::DVec3) {
+        server.mobs.striders().iter().find(|e| e.id == id).map(|e| (e.strider.health, e.strider.body.velocity)).expect("the strider lives")
+    }
+
+    #[test]
+    fn a_snowball_thrown_from_a_strider_passes_its_strider_but_hits_another() {
+        let Some((mut server, ridden)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        let other = server.mobs.spawn_strider(minecraftoss_entities::strider::Strider::new(glam::DVec3::new(8.5, 101.0, 9.5)), true);
+        assert_eq!(crate::thrown::ride_group(&server.mobs, 0), vec![ridden, crate::thrown::PLAYER_TARGET], "the strider and its rider");
+        assert!(crate::thrown::ride_group(&server.mobs, 1).is_empty(), "a player on foot rides with nobody");
+        let (rider, throw) = throw_from_the_saddle(&server, "minecraft:snowball");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        server.throw(crate::thrown::Thrown::launch(&throw, &mut random).expect("a snowball"));
+        let mut hits = Vec::new();
+        for _ in 0..10 {
+            server.tick_thrown(&[rider]);
+            hits.extend(server.take_thrown_hits());
+        }
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].at.z > 9.0 && hits[0].at.z < 9.1 && hits[0].at.y > 101.0, "it breaks on the other strider's front: {hits:?}");
+        assert_eq!(strider_state(&server, ridden).1, glam::DVec3::ZERO, "its own mount is passed");
+        assert!(strider_state(&server, other).1.z > 0.1, "the other strider is pushed along the throw");
+    }
+
+    #[test]
+    fn a_trident_thrown_from_a_strider_passes_its_strider_but_hits_another() {
+        let Some((mut server, ridden)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        let other = server.mobs.spawn_strider(minecraftoss_entities::strider::Strider::new(glam::DVec3::new(8.5, 101.0, 9.5)), true);
+        let (rider, throw) = throw_from_the_saddle(&server, crate::trident::ITEM);
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        let stack = minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1);
+        server.throw_trident(crate::trident::ThrownTrident::launch(&throw, stack, false, &mut random));
+        for _ in 0..5 {
+            server.tick_tridents(&[rider]);
+        }
+        assert_eq!(strider_state(&server, ridden).0, minecraftoss_entities::strider::MAX_HEALTH, "its own mount is passed");
+        assert_eq!(strider_state(&server, other).0, minecraftoss_entities::strider::MAX_HEALTH - crate::trident::DAMAGE);
     }
 
     #[test]
