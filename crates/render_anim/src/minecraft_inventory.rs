@@ -636,6 +636,7 @@ impl InventoryUi {
         stacks.truncate(stacks.len() - creative_converted);
         stacks.extend(self.creative.icon_ids(ui));
         stacks.extend(ui.recipe_book.icon_ids().map(str::to_owned));
+        self.dials.watch(stacks.iter().map(String::as_str));
         ui.armor = inventory.armor_value();
         ui.droppable = inventory.cursor.as_ref().filter(|_| ui.inventory_open).map_or_else(Vec::new, |carried| {
             droppable(ui.screen, carried, inventory, opened.as_ref(), bench, containers, &ctx)
@@ -768,7 +769,7 @@ impl InventoryUi {
 
 fn icon_source<'a>(dials: &minecraft_terrain::dials::Dials, icon: &'a str) -> (&'a str, String) {
     let (base, potion) = minecraft_terrain::item_tint::split(icon);
-    (base, minecraft_terrain::item_tint::key(dials.key(base), potion))
+    (minecraft_terrain::dials::item_of(base), minecraft_terrain::item_tint::key(dials.key(base), potion))
 }
 
 fn stack_limit(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &ItemStack) -> u8 {
@@ -1132,6 +1133,18 @@ mod tests {
         assert_eq!(icon_source(&dials, &healing_icon), ("minecraft:potion", "minecraft:potion~f82423".to_owned()));
         assert_eq!(icon_source(&dials, &poison_icon), ("minecraft:potion", "minecraft:potion~87a363".to_owned()));
         assert_eq!(icon_source(&dials, "minecraft:clock"), ("minecraft:clock", "minecraft:clock".to_owned()));
+    }
+
+    #[test]
+    fn a_lodestone_compass_icon_is_keyed_by_its_target_but_named_by_its_item() {
+        use minecraft_terrain::lodestone::{self, Target, COMPASS};
+        let plain = ItemStack::new(COMPASS, 1);
+        let at = |pos| minecraft_terrain::item_tint::of_stack(&lodestone::with_tracker(&plain, Target::new(minecraft_net::Dimension::Overworld, pos)));
+        let (first, second) = (at((1, 2, 3)), at((9, 9, 9)));
+        assert_ne!(first, second);
+        assert_ne!(first, minecraft_terrain::item_tint::of_stack(&plain));
+        let dials = minecraft_terrain::dials::Dials::default();
+        assert_eq!(icon_source(&dials, &first), (COMPASS, COMPASS.to_owned()), "named as a compass, drawn as one until its needle is stepped");
     }
 
     #[test]
