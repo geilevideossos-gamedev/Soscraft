@@ -445,3 +445,89 @@ After 153fdcb5.
   - `families.rs` passes `rustfmt --check --edition 2021` with empty output.
 - **Decision:** a separate commit instead of an amend, because the track's rule is no amending.
 - **Test steps:** none (no change in the game).
+
+## Group silverfish-drawn
+
+### 1. Minecraft silverfish and endermites are drawn like vanilla
+
+After f9f28c3c.
+
+- **Changed (`minecraft_terrain`, D0-7.2):**
+  - New `families/pests/silverfish_render.rs`, the port of `SilverfishModel`:
+    - `createBodyLayer`: seven segments and three fur layers on a 64 x 32 texture.
+      - The segments are 3x2x2, 4x3x2, 6x4x3, 3x3x3, 2x2x3, 2x1x2 and 1x1x2. Each box is centred in x and z on a pivot at `24 - height`. The pivots start at z -3.5, and each next one is half of the two neighbours' depths further.
+      - The layers are 10x8x3 at uv 20,0 on segment 2, 6x4x3 at 20,11 on segment 4, and 6x5x2 at 20,18 on segment 1. Vanilla's mixed sizes are kept.
+    - `setupAnim`: segment `i` turns by `cos(age * 0.9 + i * 0.15 * pi) * pi * 0.05 * (1 + |i - 2|)` and shifts sideways by `sin(..) * pi * 0.2 * |i - 2|` pixels. The first layer turns with segment 2, and the other two turn and shift with segments 4 and 1. `Mth.sin` and `Mth.cos` come from the table, as in the strider render.
+    - Shared helpers, which the endermite reuses:
+      - `placements`, `sway` and `segment_cubes`;
+      - `model_root`: `LivingEntityRenderer.setupRotations` through `MobPose::body_rotation` with the flip, then `scale(-1, -1, 1)` and the 1.501 lift;
+      - `append_each`: the overlay marks, red while hurt or dying;
+      - `skin`: the sky and block light at the light probe.
+  - New `families/pests/endermite_render.rs`, the port of `EndermiteModel`:
+    - Four segments (4x3x2, 6x4x5, 3x3x1 and 1x2x1 at uv 0,0, 0,5, 0,14 and 0,18) with the same pivot rule.
+    - The same wave at a fifth of the turn (0.01) and half the shift (0.1).
+    - `portal_sparks`: the client part of `Endermite.aiStep`. Each tick gives two `PORTAL` particles at `getRandomX(0.5)`, `getRandomY()` and `getRandomZ(0.5)` of its 0.4 x 0.3 box, moving `(r - 0.5) * 2, -r, (r - 0.5) * 2`, with the draws in vanilla's order.
+  - Glue (`families/pests/silverfish.rs`, `families/pests/endermites.rs`):
+    - `draw` hands every mob that has not left to its render, into `out.models`.
+    - `TEXTURES` and `SHADOW_RADIUS` come from the render files.
+    - The endermite's `client_effects` emits its two sparks a tick for every endermite the client has a pose for, through `fx.portal.emit`. Both the host's and a friend's `EntityView::advance` call it.
+  - `families/pests.rs`: two `mod` lines.
+  - `portal_particles.rs`: `len` and `is_empty`, at the end of the impl, for the tests.
+- **Changed (tests in older files):**
+  - `spawner_display::tests::every_registered_kind_is_shown_inside_its_cage` now asks the silverfish and the endermite to be drawn (and so to turn) in their cage. 126b07a1 left this for this group.
+  - `families::tests::a_glowing_registered_mob_is_drawn_alone_for_its_outline` asks both outlines to be non-empty.
+  - `entity_view::tests::a_glowing_registered_mob_is_outlined` (survival) asks the silverfish's outline to be non-empty.
+- **What changes in the game:** silverfish and endermites now have their vanilla models instead of only a shadow. This holds on the host, for every friend and in spawner cages. They flash red when hurt, roll over onto their backs when they die, and get the white outline with Glowing. Endermites give off purple portal sparkles.
+- **Tests added:**
+  - `families::pests::silverfish_render::tests`:
+    - `the_seven_segments_line_up_nose_to_tail`: placements -3.5 to 11.5, ten parts, the pivots and boxes of segments 2 and 6.
+    - `the_three_fur_layers_ride_on_their_segments`: each layer's pivot, shift and turn follow its segment, with vanilla's layer sizes and uvs.
+    - `the_wiggle_matches_hand_computed_angles`: every segment's turn and shift at ages 0 and 2.5, against values worked out by hand from the formula.
+    - `a_silverfish_is_drawn_low_and_long_with_its_skin`:
+      - 60 faces, reaching from the feet to 8 pixels up and over a block long;
+      - every uv inside its texture, and the light of its cell;
+      - no red when well and red while dying;
+      - after 20 dying ticks, flipped below its feet.
+  - `families::pests::endermite_render::tests`:
+    - `the_four_segments_line_up_nose_to_tail`.
+    - `the_wiggle_matches_hand_computed_angles`, which also checks that a mite sways less than a silverfish.
+    - `an_endermite_is_drawn_as_four_purple_segments`: 24 faces, from the feet to 4 pixels up, every uv inside its texture, and nothing for a mob the client has not seen.
+    - `portal_sparks_start_inside_the_box_and_drift_out_and_down`: 400 sparks inside the box with their motion in range, and the first spark equal to the six draws worked out by hand.
+  - `entity_view::tests::an_endermite_gives_off_portal_particles_for_every_viewer` (survival):
+    - two views: a host's, and a friend's filled through `Trackers` and `spawn_tracked`;
+    - after 5 ticks each has 10 portal particles from the one endermite and none from the silverfish beside it;
+    - an endermite that left gives none.
+- **javap this round (26.3):**
+  - `SilverfishModel`: `BODY_SIZES`, `BODY_TEXS` and `setupAnim` as above. `createBodyLayer` makes `addBox(w * -0.5, 0, d * -0.5, w, h, d)` at `PartPose.offset(0, 24 - h, z)`, with z from -3.5 by `(d[i] + d[i + 1]) * 0.5`, then the three layers and `LayerDefinition.create(mesh, 64, 32)`.
+  - `EndermiteModel`: the same with its four sizes and uvs, and 0.01 and 0.1.
+  - `SilverfishRenderer` and `EndermiteRenderer`: `MobRenderer(context, model, 0.3)`, `getFlipDegrees` 180, a plain `LivingEntityRenderState`, and the textures `textures/entity/silverfish/silverfish.png` and `textures/entity/endermite/endermite.png`.
+  - `EntityModel(ModelPart)` uses `RenderTypes.entityCutout`. In 26.3 that is the type without culling; the culled one is `entityCutoutCull`, which is what `BatModel` names.
+  - `Endermite.aiStep`: on the client, the two `PORTAL` particles above. On the server, the life count from group silverfish-live.
+- **Decisions:**
+  - **Both draw into `models`, not `culled`:** vanilla's `entityCutout` does not cull in 26.3. Only the bat uses `entityCutoutCull`.
+  - **The flip stays in the render files:** `FLIP_DEGREES` (180) is a const in each render file. It is not a `TerrainFamily` const, because only the family's own `draw` reads it, so the trait stays as it is.
+  - **Shared helpers:** they live in `silverfish_render.rs`, because the two vanilla models are the same segmented shape with different tables.
+  - **Sparks:**
+    - Position and motion use the view's `ClientFx.random`, and the sprite and lifetime use the particle system's own random, as for the enderman. Vanilla draws them from the entity's unseeded random, so they match in kind, not particle for particle.
+    - They start from the client mob's position of this tick. `ClientMobs::tick` runs before the families' effects, just as vanilla's lerp step runs before `Endermite.aiStep` adds them.
+    - A dying endermite still gives them off, because vanilla's client `aiStep` runs until the mob is removed. One that left gives none.
+  - **No head turn and no baby scale:** neither model has a head part, and neither mob is ageable.
+- **Protocol:** no message or codec change.
+- **Left for later:** the poof when a silverfish merges into stone. It comes with group silverfish-behaviour or with E1's entity-event particles.
+- **Runs:**
+  - `test -p minecraft_terrain --locked --lib`: 1411 passed, 3 ignored. The known flaky `sections::tests::background_full_update_matches_the_synchronous_one` failed once under load and passed when run alone. The 13 `families` tests passed again after the two new files were formatted.
+  - `test -p minecraft_survival --locked`: 766 + 1 passed.
+  - `clippy -p minecraft_terrain -p minecraft_survival --locked --lib --tests -A clippy::approx_constant`: no warning on a line of this group. The remaining warnings are on older lines.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - The new and changed new files pass `rustfmt --check --edition 2021` with empty output on their staged content.
+- **Test steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. Step 6 needs two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `D0-12-1.png`, and for both windows `D0-12-6-host.png` and `D0-12-6-friend.png`.
+  1. Use a silverfish egg three times on the ground 6 blocks away. Three small grey silverfish crawl towards you, wiggling from side to side. Each is a row of seven segments with three fur ridges on its back. **Screenshot D0-12-1** with them in view.
+  2. Hit one with the sword without killing it: it flashes red. Kill it: it rolls over onto its back, lies there for a second and puffs away.
+  3. Use an endermite egg 4 blocks away. A small dark purple mite of four segments comes at you, and purple portal sparkles drift off it all the time. **Screenshot D0-12-3** with the sparkles in view.
+  4. Place a spawner and use a silverfish egg on it. Place a second spawner 3 blocks away and use an endermite egg on it. Stand next to them: a tiny silverfish and a tiny endermite turn inside their cages. **Screenshot D0-12-4.** Break both spawners.
+  5. Shoot a silverfish with a spectral arrow: a white outline traces its whole body.
+  6. Two windows: the host uses a silverfish egg and an endermite egg next to the friend. Both windows show the same models and the same wiggle, and the endermite's sparkles. The friend shoots the silverfish with the M4A1: it flashes and rolls over in both windows. **Screenshots D0-12-6-host and D0-12-6-friend** before the shot.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:endermite_spawn_egg*4,minecraft:spawner*2,minecraft:bow,minecraft:spectral_arrow*16,minecraft:iron_sword,minecraft:cooked_beef*32
+```

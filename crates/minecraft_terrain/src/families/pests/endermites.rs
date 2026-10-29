@@ -1,5 +1,6 @@
+use super::endermite_render;
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, TerrainFamily};
+use crate::families::{ClientFx, FamilyDraw, TerrainFamily};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
 use minecraftoss_core::nbt::Tag;
@@ -9,8 +10,8 @@ pub use minecraftoss_entities::world::families::pests::endermites::Endermite;
 impl TerrainFamily for Endermite {
     const TRACKING_RANGE: i32 = 8;
     const VOLATILE: &'static [&'static str] = &["Lifetime"];
-    const TEXTURES: &'static [&'static str] = &["minecraft:entity/endermite/endermite"];
-    const SHADOW_RADIUS: f32 = 0.3;
+    const TEXTURES: &'static [&'static str] = &[endermite_render::TEXTURE];
+    const SHADOW_RADIUS: f32 = endermite_render::SHADOW_RADIUS;
 
     fn read(mob: &mut FamilyMob<Self>, tag: &Tag) {
         mob.state.ai.state.look_control.head_yaw = mob.core.yaw;
@@ -25,12 +26,26 @@ impl TerrainFamily for Endermite {
     }
 
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        let shown = mobs.iter().filter(|mob| !mob.core.removed);
+        let ids = shown.map(|mob| mob.core.id);
+        endermite_render::append_endermites(out.models, ids, poses, atlas, light, partial);
+    }
+
+    fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            let Some(shown) = poses.get(mob.core.id) else {
+                continue;
+            };
+            for (start, motion) in endermite_render::portal_sparks(shown.position, fx.random) {
+                fx.portal.emit(start, motion);
+            }
+        }
     }
 }

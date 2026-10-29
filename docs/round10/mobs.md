@@ -22,8 +22,8 @@ A MW2 bullet finds a mob through one number: the kind in the top byte, the entit
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 42 | Silverfish | strongholds, infested blocks | stronghold spawner shows one; strongholds place infested stone bricks; sleep list; the `infested` potion is listed | infested blocks, waking friends, merging into stone, `SilverfishModel` | M | `silverfish` | 36 | live | bdbc8852, 757bfed8, "Friends see registered Minecraft mobs" |
-| 43 | Endermite | ender pearls | sleep list; the enderman's endermite target slot rolls with no prey | 5% pearl roll, `EndermiteModel`, portal particles | S | `endermites` | 37 | live | bdbc8852, 757bfed8, "Friends see registered Minecraft mobs" |
+| 42 | Silverfish | strongholds, infested blocks | stronghold spawner shows one; strongholds place infested stone bricks; sleep list; the `infested` potion is listed | infested blocks, waking friends, merging into stone | M | `silverfish` | 36 | drawn | bdbc8852, 757bfed8, 2842608b, 126b07a1, "Minecraft silverfish and endermites are drawn like vanilla" |
+| 43 | Endermite | ender pearls | sleep list; the enderman's endermite target slot rolls with no prey | 5% pearl roll | S | `endermites` | 37 | drawn | bdbc8852, 757bfed8, 2842608b, 126b07a1, "Minecraft silverfish and endermites are drawn like vanilla" |
 
 ## D: trial chambers (group `trial`)
 

@@ -1494,6 +1494,37 @@ mod tests {
         assert_eq!(outlined, [lit], "only the glowing one is outlined");
         let positions = |mesh: &minecraft_terrain::mesh::ChunkMesh| mesh.vertices.iter().map(|v| v.position).collect::<Vec<_>>();
         assert_eq!((positions(&meshes.glow), positions(&meshes.glow_cover)), (positions(&glow), positions(&cover)));
+        assert!(!glow.vertices.is_empty(), "the silverfish's model is outlined");
+    }
+
+    #[test]
+    fn an_endermite_gives_off_portal_particles_for_every_viewer() {
+        use minecraft_terrain::mob_tracking::{MobEvent, Trackers, Watcher, spawn_tracked};
+        let mut host = EntityView::new(7);
+        let mite = host.world.spawn_family_kind("minecraft:endermite", DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        host.world.spawn_family_kind("minecraft:silverfish", DVec3::new(2.5, 64.0, 0.5)).unwrap();
+        host.show_mobs(server_mobs(&host.world));
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let watcher = Watcher { id: 3, feet: [1.5, 64.0, 0.5], view_distance: 8 };
+        let tracked = trackers.update(&host.world, &HashMap::new(), &[watcher]);
+        let mut friend = EntityView::new(9);
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, tag) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend.world, *id, tag));
+        }
+        assert_eq!(friend.world.entity_type(mite), Some("minecraft:endermite"));
+        friend.show_mobs(tracked.moves_of(3).unwrap().to_vec());
+        for view in [&mut host, &mut friend] {
+            for _ in 0..5 {
+                view.advance(0.05, crate::tick_rate::ClientTiming::default(), &[], DVec3::ZERO);
+            }
+            assert_eq!(view.portal.len(), 10, "two sparks a tick from the endermite and none from the silverfish");
+        }
+        host.world.family_core_mut(mite).unwrap().1.removed = true;
+        host.portal.clear();
+        host.advance(0.05, crate::tick_rate::ClientTiming::default(), &[], DVec3::ZERO);
+        assert!(host.portal.is_empty(), "an endermite that left gives off none");
     }
 
     #[test]

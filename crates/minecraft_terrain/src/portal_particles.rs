@@ -140,6 +140,14 @@ impl PortalParticles {
     pub fn clear(&mut self) {
         self.particles.clear();
     }
+
+    pub fn len(&self) -> usize {
+        self.particles.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.particles.is_empty()
+    }
 }
 
 #[cfg(test)]

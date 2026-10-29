@@ -998,6 +998,9 @@ mod tests {
                 seen.push(mesh.vertices.iter().map(|v| v.position).collect::<Vec<_>>());
             }
             assert!(seen[0].is_empty() || (seen[0] != seen[1] && seen[1] != seen[2]), "{mob} turns");
+            if ["minecraft:silverfish", "minecraft:endermite"].contains(&mob) {
+                assert!(!seen[0].is_empty(), "{mob} is drawn in its cage");
+            }
         }
     }
 

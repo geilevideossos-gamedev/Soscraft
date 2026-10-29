@@ -138,6 +138,7 @@ fn a_glowing_registered_mob_is_drawn_alone_for_its_outline() {
         seen[0].1, own,
         "its outline is its own model and nothing else"
     );
+    assert!(!own.is_empty() && !seen[1].1.is_empty(), "both are drawn");
     assert!(outlined(&world, &|_| false).is_empty());
     world.family_core_mut(mite).unwrap().1.removed = true;
     let ids: Vec<u64> = outlined(&world, &glowing)
