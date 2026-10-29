@@ -524,6 +524,33 @@ mod tests {
     }
 
     #[test]
+    fn a_margit_killed_while_walking_stops_where_he_falls() {
+        let mut world = EntityWorld::default();
+        let mut scene = Scene::default();
+        let id = summoned(&mut world, at(0.5, 64.0, 0.5));
+        let players = [player_at(1, at(0.5, 64.0, 9.5))];
+        let mut walking = false;
+        for _ in 0..600 {
+            world.tick_with_players(&mut scene, &players);
+            if margit(&world, id).state.stride.length() > 0.08 {
+                walking = true;
+                break;
+            }
+        }
+        assert!(walking, "he walks toward the player");
+        let mob = world.elden_boss_mut(id).unwrap();
+        mob.state.brain.set_health(1.0);
+        let blow = Source::Explosion { damage: 10.0 };
+        assert!(super::super::take(mob, blow, Some(1)).died);
+        let fell = feet(&world, id);
+        for _ in 0..15 {
+            world.tick_with_players(&mut scene, &players);
+        }
+        let slid = flat_distance(feet(&world, id), fell);
+        assert!(slid < 0.5, "he slows to a stop as he dies: {slid}");
+    }
+
+    #[test]
     fn margit_fades_inside_a_wall_ring_he_cannot_reach() {
         let mut world = EntityWorld::default();
         let mut scene = Scene::default();

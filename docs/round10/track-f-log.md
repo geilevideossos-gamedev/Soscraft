@@ -448,3 +448,20 @@ After 86d53bb1. Brief F2, commit 4.
 ```
 IW4L_MINECRAFT_KIT=minecraft:cobblestone*256,minecraft:iron_pickaxe,minecraft:cooked_beef*32
 ```
+
+## Review of groups er-entity and er-arena
+
+### 13. A Margit killed while walking stops where he falls
+
+After fe8467c4.
+
+- **Defect:** `steady` puts his last stride back into his velocity at the start of every tick, so pushes never move him (commit 12). It did that while he was dying too. His stride is only updated by his own walking, which stops at death, so a Margit killed mid-stride was set back to full walking speed every tick and slid on through his whole death clip: 1.36 blocks in 15 ticks in the new test, about 2 blocks before he vanished. Vanilla's dying travel (`dying_travel`, which D0's base tick runs) slows a mob to a stop in a few ticks.
+- **Changed (vendored entities crate, `world/families/bosses/elden_bosses.rs`):** `steady` restores his stride only while he is alive. Effects and fall distance are still cleared every tick.
+- **Tests:** `world::families::bosses::elden_bosses::arena::tests::a_margit_killed_while_walking_stops_where_he_falls` (he walks toward a player 9 blocks away, is killed at full stride, and moves less than 0.5 blocks in the next 15 ticks; it failed at 1.36 before the change). `test -p minecraftoss-entities --locked --lib elden_bosses`: 19 passed. `check -p launcher --locked`: green.
+- **Owner's steps.** He is still a round shadow about 2 blocks wide until group `er-look`. Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `f2-13-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~10 {Health:20f}`: you hear him rise.
+  2. Step back to about 8 blocks so the shadow walks toward you, and hit it twice with the netherite sword as it reaches you: the deep evoker death sound plays, and the shadow stops at once where it was hit and is gone a second later. It does not glide on toward you. **Screenshot f2-13-1** right after the death sound.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cooked_beef*32
+```

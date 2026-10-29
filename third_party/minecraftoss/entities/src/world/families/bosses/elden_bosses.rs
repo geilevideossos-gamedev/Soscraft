@@ -96,8 +96,10 @@ pub fn tick_of(core: &MobCore) -> u64 {
 fn steady(mob: &mut FamilyMob<EldenBoss>) {
     let FamilyMob { core, state } = mob;
     core.effects = MobEffects::default();
-    core.body.velocity.x = state.stride.x;
-    core.body.velocity.z = state.stride.z;
+    if core.health > 0.0 {
+        core.body.velocity.x = state.stride.x;
+        core.body.velocity.z = state.stride.z;
+    }
     core.body.fall_distance = 0.0;
 }
 
