@@ -948,3 +948,35 @@ After e3acf73a.
 ```
 IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:gunpowder*64,minecraft:paper*32,minecraft:red_dye*16,minecraft:lime_dye*16,minecraft:blue_dye*16,minecraft:fire_charge*8,minecraft:diamond*8,minecraft:glowstone_dust*16,minecraft:creeper_head,minecraft:firework_rocket*16,minecraft:cooked_beef*32
 ```
+
+### 2. Minecraft shields take a banner's pattern in the crafting grid
+
+After ceadbff0.
+
+- **Vanilla (26.3, checked with javap and `recipe/shield_decoration.json`):**
+  - The recipe type `crafting_special_shielddecoration` names `banner` (`#minecraft:banners`) and `target` (`minecraft:shield`), with the shield as the result.
+  - `ShieldDecorationRecipe.matches`: exactly 2 items; one banner (a `BannerItem` in the tag) and one shield whose `banner_patterns` (default empty) has no layers; a second banner, a second shield, a patterned shield or anything else fails.
+  - `assemble`: the shield with all its components (`TransmuteRecipe.createWithOriginalComponents`, count 1), then `banner_patterns` set to the banner's and `base_color` set to the banner's colour (`BannerItem.getColor`). The banner's other components stay behind.
+  - The shield item's default `banner_patterns` is the empty list (`Items`), so a plain banner leaves the shield without that component; `base_color` has no default and is always set.
+  - Being a `CustomRecipe`, it is special like the firework recipes (commit 1) and works in the 2x2 grid too.
+- **Changed:** vendored `third_party/minecraftoss/player/src/crafting.rs`: `Kind::ShieldDecoration { banner, target }`, read by `parse_recipe` from `crafting_special_shielddecoration`; its `special_result` arm follows `matches` and `assemble` above. New `BANNER_PATTERNS` and `BASE_COLOR` keys, `banner_color` (the colour in a `<colour>_banner` id) and `banner_patterns` (a stack's non-empty pattern list). The recipe book leaves it out like the firework recipes.
+- **Tests** (vendored `crafting::tests`):
+  - `a_banner_and_an_unpatterned_shield_and_nothing_else_make_a_patterned_shield`: not listed or placeable; a black plain banner gives a shield with `base_color` black and no patterns; a patterned white banner anywhere in the grid gives its patterns and white; a shield with an empty pattern list (and a red base colour) or with its patterns removed still combines and takes the banner's colour; a patterned shield, a lone shield or banner, two shields, two banners or a stray stick make nothing.
+  - `a_decorated_shield_keeps_its_name_damage_and_enchantments`: the shield's name, damage, enchantments and repair cost stay, the banner's name does not move; in the 2x2 grid the black shield comes out and both items are used up.
+  - `the_jar_shield_decoration_takes_a_banner` (with the real 26.3 jar, skipped without it): not listed; the black and the patterned white shield; a third item makes nothing.
+  - On this commit's code: `minecraftoss-player` 207 tests pass (with the stand-in scenario files), `minecraft_terrain`'s recipe, crafting, firework and shield tests (97, with the real data) pass, and `check -p launcher` is clean.
+- **Decisions:**
+  - A banner whose patterns were removed with `!minecraft:banner_patterns` counts as a plain banner here. Vanilla would remove the component from the shield too; such a banner only comes from a command.
+  - A shield with a base colour but no patterns still combines, as in vanilla, and takes the banner's colour.
+- **Left for later:** how the shield looks is E1's E-banners (`banner-items`). Until that is merged, a decorated shield looks plain in the hand and as an icon, though its stack carries the colour and patterns.
+- **Protocol:** no message change.
+- **Test steps** (survival, by day; place the crafting table first). This is step BC-6 of E-banners:
+  1. **FW-C6. A black shield.** At the crafting table, put the black banner and a plain shield in any two cells: the result is a shield. Take it: the banner is used up. With E1's `banner-items` merged, the shield is black. **Screenshot FW-C6.**
+  2. **FW-C7. A patterned shield that keeps its enchantment.** Put the white patterned banner and the worn, enchanted shield in: the result shield keeps the glint and the durability bar (and, with `banner-items`, shows the black creeper and the red border on white). Take it. **Screenshot FW-C7.**
+  3. **FW-C8. What does not combine.** The red shield with the yellow cross and a black banner: no result. A plain shield with two black banners: no result. A plain shield, a black banner and a stick: no result.
+  4. **FW-C9. The small grid.** Open the inventory and put a black banner and the second plain shield in its 2x2 crafting grid: the result is a shield, as at the table.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:black_banner*4,minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:shield*2,minecraft:shield+unbreaking=3+damage=200,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:stick*4,minecraft:cooked_beef*32
+```

@@ -51,6 +51,10 @@ enum Kind {
         fuel: Ingredient,
         star: Ingredient,
     },
+    ShieldDecoration {
+        banner: Ingredient,
+        target: Ingredient,
+    },
 }
 
 const DYE_COLORS: [(&str, i32); 16] = [
@@ -77,6 +81,8 @@ const FIREWORK_EXPLOSION: &str = "minecraft:firework_explosion";
 const FIREWORKS: &str = "minecraft:fireworks";
 const DEFAULT_FLIGHT: u64 = 1;
 const MAX_FUEL: u64 = 3;
+const BANNER_PATTERNS: &str = "minecraft:banner_patterns";
+const BASE_COLOR: &str = "minecraft:base_color";
 
 #[derive(Debug)]
 struct Recipe {
@@ -1036,6 +1042,34 @@ impl RecipeBook {
                 set_component(&mut rockets, FIREWORKS, fireworks);
                 Some(rockets)
             }
+            Kind::ShieldDecoration { banner, target } => {
+                if items.len() != 2 {
+                    return None;
+                }
+                let (mut flag, mut shield) = (None, None);
+                for stack in items {
+                    if let Some(color) =
+                        banner_color(&stack.id).filter(|_| self.matches_ingredient(banner, &stack.id))
+                    {
+                        if flag.is_some() {
+                            return None;
+                        }
+                        flag = Some((stack, color));
+                    } else if self.matches_ingredient(target, &stack.id) {
+                        if shield.is_some() || banner_patterns(stack).is_some() {
+                            return None;
+                        }
+                        shield = Some(stack);
+                    } else {
+                        return None;
+                    }
+                }
+                let ((flag, color), shield) = (flag?, shield?);
+                let mut decorated = transmuted(&recipe.result, shield);
+                set_component(&mut decorated, BANNER_PATTERNS, banner_patterns(flag));
+                set_component(&mut decorated, BASE_COLOR, Some(Value::from(color)));
+                Some(decorated)
+            }
             Kind::Shaped(_) | Kind::Shapeless(_) => None,
         }
     }
@@ -1260,6 +1294,10 @@ fn parse_recipe(value: &Value) -> Option<Recipe> {
             fuel: Ingredient::parse(value.get("fuel")?)?,
             star: Ingredient::parse(value.get("star")?)?,
         },
+        "minecraft:crafting_special_shielddecoration" => Kind::ShieldDecoration {
+            banner: Ingredient::parse(value.get("banner")?)?,
+            target: Ingredient::parse(value.get("target")?)?,
+        },
         _ => return None,
     };
     Some(Recipe {
@@ -1296,6 +1334,23 @@ fn dye_color(stack: &ItemStack) -> Option<i32> {
         .iter()
         .find(|(dye, _)| *dye == name)
         .map(|(_, color)| *color)
+}
+
+fn banner_color(id: &str) -> Option<&'static str> {
+    let name = id.strip_prefix("minecraft:")?.strip_suffix("_banner")?;
+    DYE_COLORS
+        .iter()
+        .find(|(dye, _)| *dye == name)
+        .map(|(dye, _)| *dye)
+}
+
+fn banner_patterns(stack: &ItemStack) -> Option<Value> {
+    stack
+        .components
+        .as_ref()?
+        .get(BANNER_PATTERNS)
+        .filter(|patterns| patterns.as_array().is_some_and(|layers| !layers.is_empty()))
+        .cloned()
 }
 
 fn set_component(stack: &mut ItemStack, key: &str, value: Option<Value>) {
@@ -1713,6 +1768,125 @@ mod tests {
         let faded = book.matching(&table([red, item("blue_dye")]), 3, 3).unwrap();
         assert_eq!(faded.components.unwrap()["minecraft:firework_explosion"]["fade_colors"], serde_json::json!([2437522]));
         assert_eq!(crafted(&book, &["paper", "gunpowder", "gunpowder", "gunpowder", "gunpowder"]), None);
+    }
+
+    fn shield_book() -> RecipeBook {
+        let mut book = RecipeBook::default();
+        book.tags.insert(
+            "minecraft:banners".into(),
+            DYE_COLORS.iter().map(|(name, _)| format!("minecraft:{name}_banner")).collect(),
+        );
+        let mut recipe = parse_recipe(&serde_json::json!({
+            "type": "minecraft:crafting_special_shielddecoration", "banner": "#minecraft:banners",
+            "target": "minecraft:shield", "result": {"id": "minecraft:shield"}
+        }))
+        .unwrap();
+        recipe.id = "minecraft:shield_decoration".to_owned();
+        book.recipes.push(recipe);
+        book
+    }
+
+    #[test]
+    fn a_banner_and_an_unpatterned_shield_and_nothing_else_make_a_patterned_shield() {
+        let book = shield_book();
+        assert_eq!(book.crafting_recipes().count(), 0);
+        assert!(book.crafting_grid_candidates("minecraft:shield_decoration", 3, 3).is_none());
+        let black = crafted(&book, &["shield", "black_banner"]).unwrap();
+        assert_eq!(
+            (black.id.as_str(), black.count, black.components),
+            ("minecraft:shield", 1, Some(serde_json::json!({"minecraft:base_color": "black"})))
+        );
+        let layers = serde_json::json!([{"pattern": "minecraft:creeper", "color": "black"}, {"pattern": "minecraft:border", "color": "red"}]);
+        let white = with(item("white_banner"), serde_json::json!({"minecraft:banner_patterns": layers.clone()}));
+        let mut grid = table([]);
+        grid[4] = Some(item("shield"));
+        grid[8] = Some(white.clone());
+        assert_eq!(
+            book.matching(&grid, 3, 3).and_then(|shield| shield.components),
+            Some(serde_json::json!({"minecraft:base_color": "white", "minecraft:banner_patterns": layers.clone()}))
+        );
+        let emptied = with(item("shield"), serde_json::json!({"minecraft:banner_patterns": [], "minecraft:base_color": "red"}));
+        assert_eq!(
+            book.matching(&table([item("lime_banner"), emptied]), 3, 3).and_then(|shield| shield.components),
+            Some(serde_json::json!({"minecraft:base_color": "lime"}))
+        );
+        let removed = with(item("shield"), serde_json::json!({"!minecraft:banner_patterns": {}}));
+        assert_eq!(
+            book.matching(&table([removed, white.clone()]), 3, 3).and_then(|shield| shield.components),
+            Some(serde_json::json!({"minecraft:base_color": "white", "minecraft:banner_patterns": layers.clone()}))
+        );
+        let patterned = with(
+            item("shield"),
+            serde_json::json!({"minecraft:base_color": "red", "minecraft:banner_patterns": [{"pattern": "minecraft:cross", "color": "yellow"}]}),
+        );
+        assert_eq!(book.matching(&table([patterned, item("black_banner")]), 3, 3), None);
+        for refused in [
+            &["shield"][..],
+            &["black_banner"],
+            &["shield", "shield", "black_banner"],
+            &["shield", "black_banner", "white_banner"],
+            &["black_banner", "white_banner"],
+            &["shield", "shield"],
+            &["shield", "stick"],
+            &["stick", "black_banner"],
+            &["shield", "black_banner", "stick"],
+        ] {
+            assert_eq!(crafted(&book, refused), None, "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn a_decorated_shield_keeps_its_name_damage_and_enchantments() {
+        let book = shield_book();
+        let worn = with(
+            item("shield"),
+            serde_json::json!({
+                "minecraft:custom_name": "Wall", "minecraft:damage": 30,
+                "minecraft:enchantments": {"minecraft:unbreaking": 3}, "minecraft:repair_cost": 1
+            }),
+        );
+        let layers = serde_json::json!([{"pattern": "minecraft:creeper", "color": "black"}]);
+        let banner = with(
+            item("white_banner"),
+            serde_json::json!({"minecraft:banner_patterns": layers.clone(), "minecraft:custom_name": "Flag"}),
+        );
+        let decorated = book.matching(&table([worn, banner]), 3, 3).unwrap();
+        assert_eq!(
+            decorated.components,
+            Some(serde_json::json!({
+                "minecraft:custom_name": "Wall", "minecraft:damage": 30,
+                "minecraft:enchantments": {"minecraft:unbreaking": 3}, "minecraft:repair_cost": 1,
+                "minecraft:banner_patterns": layers, "minecraft:base_color": "white"
+            }))
+        );
+        let mut inventory = Inventory::default().with_recipes(book);
+        inventory.crafting[1] = Some(item("black_banner"));
+        inventory.crafting[2] = Some(item("shield"));
+        assert!(inventory.take_crafting_output(false));
+        assert_eq!(inventory.cursor.as_ref().and_then(|shield| shield.components.clone()), Some(serde_json::json!({"minecraft:base_color": "black"})));
+        assert!(inventory.crafting.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn the_jar_shield_decoration_takes_a_banner() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        assert!(book.crafting_recipes().all(|recipe| recipe.id != "minecraft:shield_decoration"));
+        let black = crafted(&book, &["black_banner", "shield"]).unwrap();
+        assert_eq!((black.id.as_str(), black.components), ("minecraft:shield", Some(serde_json::json!({"minecraft:base_color": "black"}))));
+        let layers = serde_json::json!([{"pattern": "minecraft:creeper", "color": "black"}]);
+        let white = with(item("white_banner"), serde_json::json!({"minecraft:banner_patterns": layers.clone()}));
+        assert_eq!(
+            book.matching(&table([item("shield"), white]), 3, 3).and_then(|shield| shield.components),
+            Some(serde_json::json!({"minecraft:base_color": "white", "minecraft:banner_patterns": layers}))
+        );
+        assert_eq!(crafted(&book, &["black_banner", "shield", "stick"]), None);
     }
 
     #[test]
