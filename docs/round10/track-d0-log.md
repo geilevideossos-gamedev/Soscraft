@@ -424,9 +424,9 @@ After 126b07a1.
 - **Protocol:** no message or codec change.
 - **Runs:** `test -p minecraft_survival --locked` (765 + 1 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). `clippy -p minecraft_terrain -p minecraft_survival --locked --lib --tests -A clippy::approx_constant` shows no warning on a line of this commit.
 - **Test steps.** Release build, survival, Normal, in the Overworld. Place a bed on open ground and stand beside it. Name each screenshot by its label, `D0-11-1.png`.
-  1. `/time set night`. `/summon minecraft:pillager ~3 ~ ~ {NoAI:1b}` and right-click the bed: the message "You may not rest now; there are monsters nearby" shows and you stay up. **Screenshot D0-11-1.** `/kill @e[type=minecraft:pillager]`.
-  2. Do the same with `minecraft:vex`, `minecraft:ravager` and `minecraft:silverfish`, one at a time, each with `{NoAI:1b}`: each one keeps you awake. Kill each before the next.
-  3. `/summon minecraft:wither ~6 ~ ~ {NoAI:1b}` and right-click the bed: you stay up. `/kill @e[type=minecraft:wither]`.
+  1. `/time set night`. `/summon minecraft:pillager ~3 ~ ~ {NoAI:1b}` and right-click the bed: the message "You may not rest now; there are monsters nearby" shows and you stay up. **Screenshot D0-11-1.** `/difficulty peaceful` (the pillager vanishes), then `/difficulty normal`. `/kill` only takes players in this game, so peaceful clears the monsters.
+  2. Do the same with `minecraft:vex`, `minecraft:ravager` and `minecraft:silverfish`, one at a time, each with `{NoAI:1b}`: each one keeps you awake. Clear each with `/difficulty peaceful` and `/difficulty normal` before the next.
+  3. `/summon minecraft:wither ~6 ~ ~ {NoAI:1b}` and right-click the bed: you stay up. `/difficulty peaceful` (the wither vanishes), then `/difficulty normal`.
   4. With no monster near, right-click the bed: you lie down and the night passes. **Screenshot D0-11-4** while lying down.
 
 ```
@@ -559,3 +559,12 @@ After f8f03659.
 ```
 IW4L_MINECRAFT_KIT=minecraft:spawner*3,minecraft:silverfish_spawn_egg*2,minecraft:endermite_spawn_egg*2,minecraft:stone_bricks*64,minecraft:stone_bricks*64,minecraft:andesite*64,minecraft:andesite*64,minecraft:torch*32,minecraft:iron_sword,minecraft:cooked_beef*32
 ```
+
+### 2. Track D0 sleep test steps clear monsters with peaceful instead of kill
+
+After 6120edf5.
+
+- **Defect:** the owner's steps for 153fdcb5 (group registry-draw, "Minecraft players cannot sleep beside pillagers, vexes, ravagers or withers") cleared each monster with `/kill @e[type=..]`. The fork's `/kill` only takes players (`minecraft_commands` `kill`, argument `players`), so those steps fail, and a NoAI ravager or wither is too tough to kill by hand between steps.
+- **Changed:** steps 1 to 3 of that commit now clear each monster with `/difficulty peaceful` and `/difficulty normal`. `check_despawn` removes every monster, the wither included, on peaceful.
+- **Tests:** none (docs only). **Protocol:** no change.
+- **Test steps:** the corrected steps of 153fdcb5 above, with its kit.
