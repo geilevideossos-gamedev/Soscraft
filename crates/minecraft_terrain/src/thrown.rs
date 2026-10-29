@@ -456,6 +456,14 @@ impl Thrown {
         self.flight.alive = false;
     }
 
+    pub fn deflect(&mut self) {
+        let spin = 170.0 + self.random.next_float() * 20.0;
+        self.flight.alive = true;
+        self.flight.velocity *= -0.5;
+        self.flight.position += self.flight.velocity;
+        self.flight.yaw += spin;
+    }
+
     pub fn alive(&self) -> bool {
         self.flight.alive
     }
@@ -1246,6 +1254,30 @@ mod tests {
             assert!(charge.tick(&world, &[], None).is_none());
         }
         assert!((charge.velocity() - before).length() < 1e-9, "{:?} {:?}", charge.velocity(), before);
+    }
+
+    #[test]
+    fn a_deflected_thrown_thing_flies_back_at_half_speed() {
+        let world = Blocks::default();
+        let mut snowball = throw("minecraft:snowball", 0.0);
+        let start = snowball.position();
+        let wall = PotionTarget { id: 5, min: start + DVec3::new(-1.0, -1.0, 3.0), max: start + DVec3::new(1.0, 1.0, 4.0), owner: false };
+        let mut landed = None;
+        for _ in 0..10 {
+            landed = snowball.tick(&world, &[wall], None);
+            if landed.is_some() {
+                break;
+            }
+        }
+        assert_eq!(landed.and_then(|landed| landed.mob), Some(5));
+        assert!(!snowball.alive());
+        let (at, before, yaw) = (snowball.position(), snowball.velocity(), snowball.yaw());
+        snowball.deflect();
+        assert!(snowball.alive());
+        assert!((snowball.velocity() + before * 0.5).length() < 1e-9);
+        assert!(snowball.position().z < at.z, "it leaves the box");
+        assert!((170.0..=190.0).contains(&(snowball.yaw() - yaw)));
+        assert!(snowball.tick(&world, &[wall], None).is_none(), "it does not hit the box again");
     }
 
     #[test]

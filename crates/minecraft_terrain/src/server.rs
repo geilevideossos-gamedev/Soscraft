@@ -2148,7 +2148,7 @@ impl ServerSim {
         let mut bursts = Vec::new();
         let mut aged = Vec::new();
         {
-            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, .. } = self;
+            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, mobs, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             for t in thrown.iter_mut() {
                 let mut targets = mob_targets.clone();
@@ -2179,6 +2179,10 @@ impl ServerSim {
                     }
                 }
                 let Some(landed) = landed else { continue };
+                if landed.mob.is_some_and(|mob| crate::thrown::struck_player(mob).is_none() && mobs.deflects_projectile(mob, &t.item)) {
+                    t.deflect();
+                    continue;
+                }
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
                 let frame = landed.mob.and_then(crate::item_frame::struck_frame);
                 frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));

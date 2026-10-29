@@ -252,6 +252,14 @@ impl Arrow {
         }
     }
 
+    pub fn deflect(&mut self) {
+        let _ = self.random.next_float();
+        self.velocity *= -0.5;
+        self.position += self.velocity;
+        self.velocity *= 0.99_f32 as f64;
+        self.velocity.y -= 0.05;
+    }
+
     /// `playSound(ARROW_HIT, 1.0F, 1.2F / (random.nextFloat() * 0.2F +
     /// 0.9F))` where it stands, on a block or an entity it hurt.
     fn play_hit_sound(&mut self) {

@@ -130,6 +130,13 @@ macro_rules! family_group {
                 None
             }
 
+            pub fn deflect(&mut self, key: u8, id: u64, projectile: &str) -> Option<bool> {
+                $($(#[$attr])* if key == <$ty as $crate::world::families::Family>::KEY {
+                    return self.$field.deflect(id, projectile);
+                })*
+                None
+            }
+
             pub fn traits(&self, key: u8, id: u64) -> Option<$crate::world::families::MobTraits> {
                 $($(#[$attr])* if key == <$ty as $crate::world::families::Family>::KEY {
                     return self.$field.traits(id);
@@ -595,6 +602,10 @@ pub trait Family: Clone + Send + Sized + 'static {
         0.0
     }
 
+    fn deflect(_mob: &mut FamilyMob<Self>, _projectile: &str) -> bool {
+        false
+    }
+
     fn voice(mob: &FamilyMob<Self>) -> (&'static str, f32, &'static str) {
         let kind = mob.core.kind;
         let family = kind.strip_prefix("minecraft:").unwrap_or(kind);
@@ -711,6 +722,10 @@ impl<S: Family> FamilyStore<S> {
 
     pub fn traits(&self, id: u64) -> Option<MobTraits> {
         self.get(id).map(traits_of)
+    }
+
+    pub fn deflect(&mut self, id: u64, projectile: &str) -> Option<bool> {
+        self.get_mut(id).map(|mob| S::deflect(mob, projectile))
     }
 
     pub fn effects_mut(&mut self, id: u64) -> Option<(&mut MobEffects, bool, bool)> {
@@ -1109,6 +1124,13 @@ impl Families {
         any_group!(self.traits(key, id))
     }
 
+    pub fn deflect(&mut self, id: u64, projectile: &str) -> bool {
+        let Some(key) = self.key_of(id) else {
+            return false;
+        };
+        any_group!(self.deflect(key, id, projectile)).unwrap_or(false)
+    }
+
     pub fn effects_mut(&mut self, id: u64) -> Option<(&mut MobEffects, bool, bool)> {
         let key = self.key_of(id)?;
         any_group!(self.effects_mut(key, id))
@@ -1284,6 +1306,10 @@ impl EntityWorld {
 
     pub fn family_traits(&self, id: u64) -> Option<MobTraits> {
         self.families.traits(id)
+    }
+
+    pub fn deflects_projectile(&mut self, id: u64, projectile: &str) -> bool {
+        self.families.deflect(id, projectile)
     }
 
     pub fn hurt_family(&mut self, id: u64, hurt: &Hurt) -> Option<DamageResult> {
