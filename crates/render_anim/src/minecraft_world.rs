@@ -601,7 +601,7 @@ fn update(
                     }
                 }
                 let chosen_mode = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok();
-                let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
+                let kit = minecraft_commands::kit::kit_line(minecraft_survival::commands::env_file().as_deref());
                 let joining = minecraft_survival::server::Joining { profile: &profile, spawn, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
                 let mut player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
                 match minecraft_survival::server::debug_dimension(std::env::var("IW4L_MINECRAFT_DIMENSION").as_deref().unwrap_or("")) {
@@ -1259,6 +1259,7 @@ fn update(
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
         ui.jump_bar = player.jump_bar.filter(|_| alive);
+        ui.vehicle_health = player.vehicle_health.filter(|_| alive);
         let raid_language = ui.chat.language.clone();
         crate::minecraft_raids::show_raid_bars(&mut ui, &player.raid_bars, &raid_language, dt as f32);
         crate::minecraft_wither::show_wither_bars(&mut ui, &player.wither_bars, &raid_language, dt as f32);

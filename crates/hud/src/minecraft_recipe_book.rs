@@ -696,7 +696,7 @@ fn draw_search(p: &mut Painter<'_>, look: &Look<'_>, panel: [i32; 2], input: &Bo
 }
 
 pub(crate) enum Tip {
-    Item(McStack, bool),
+    Item(Box<McStack>, bool),
     Text(String),
 }
 
@@ -721,7 +721,7 @@ pub(crate) fn tooltip(
             let button = &book.buttons[index];
             let shown = button.shown(book.filtering, ticks)?;
             return Some(Tip::Item(
-                shown.result.clone(),
+                Box::new(shown.result.clone()),
                 button.selected(book.filtering).len() > 1,
             ));
         }
@@ -747,7 +747,7 @@ pub(crate) fn tooltip(
     })?;
     let (_, stacks) = book.ghost_cells.iter().find(|(ghost, _)| *ghost == slot)?;
     let index = cycle(ticks, stacks.len())?;
-    Some(Tip::Item(stacks[index].clone(), false))
+    Some(Tip::Item(Box::new(stacks[index].clone()), false))
 }
 
 pub(crate) fn more_line(p: &Painter<'_>) -> TextLine {
@@ -777,6 +777,7 @@ mod tests {
             icon: id.to_owned(),
             lore: Vec::new(),
             clip: None,
+            ..Default::default()
         }
     }
 

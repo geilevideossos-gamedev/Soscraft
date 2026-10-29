@@ -499,6 +499,7 @@ pub struct PlayerView {
     pub cooldowns: Vec<CooldownView>,
     pub using: Option<UsingView>,
     pub jump_bar: Option<f32>,
+    pub vehicle_health: Option<[f32; 2]>,
 }
 
 impl Default for PlayerView {
@@ -524,6 +525,7 @@ impl Default for PlayerView {
             cooldowns: Vec::new(),
             using: None,
             jump_bar: None,
+            vehicle_health: None,
         }
     }
 }

@@ -18,8 +18,16 @@ pub(crate) struct MovementSounds {
     pub splash: &'static str,
     /// `AbstractHorse.playStepSound`: its own step (or its wood step on a
     /// wooden block) at the block's step volume and pitch.
-    pub horse_step: Option<(&'static str, &'static str)>,
+    pub horse_step: Option<HorseStep>,
     pub emits_sounds: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum HorseStep {
+    Walk { step: &'static str, wood: &'static str },
+    Wood,
+    Gallop { breathe: Option<&'static str> },
+    Silent,
 }
 
 impl MovementSounds {
@@ -59,13 +67,23 @@ pub(crate) fn play_movement(body: &mut Body, tick_count: i32, random: &mut Legac
     match body.emission.take().filter(|_| sounds.emits_sounds) {
         Some(Emission::Step(block, crystal)) => {
             match (sounds.step, block) {
-                (_, block) if sounds.horse_step.is_some() => {
-                    if let (Some((step, wood)), Some((event, volume, pitch))) = (sounds.horse_step, block) {
+                (_, block) if sounds.horse_step.is_some() => match (sounds.horse_step, block) {
+                    (Some(HorseStep::Walk { step, wood }), Some((event, volume, pitch))) => {
                         // `isWoodSoundType`.
                         let wooden = matches!(event.as_str(), "block.wood.step" | "block.nether_wood.step" | "block.stem.step" | "block.cherry_wood.step" | "block.bamboo_wood.step");
                         voices.push((Voice::Event(if wooden { wood } else { step }, volume, pitch), at));
                     }
-                }
+                    (Some(HorseStep::Wood), Some((_, volume, pitch))) => voices.push((Voice::Event("entity.horse.step_wood", volume, pitch), at)),
+                    (Some(HorseStep::Gallop { breathe }), Some((_, volume, pitch))) => {
+                        voices.push((Voice::Event("entity.horse.gallop", volume, pitch), at));
+                        if let Some(breathe) = breathe {
+                            if random.next_int(10) == 0 {
+                                voices.push((Voice::Event(breathe, volume / 0.15 * 0.6, pitch), at));
+                            }
+                        }
+                    }
+                    _ => {}
+                },
                 (Some(own), _) => voices.push((Voice::Event(own, sounds.step_volume, 1.0), at)),
                 (None, Some((event, volume, pitch))) => voices.push((Voice::Step(event, volume, pitch), at)),
                 (None, None) => {}

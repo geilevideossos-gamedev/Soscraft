@@ -22,7 +22,13 @@ pub fn split(key: &str) -> (&str, Option<u32>) {
 }
 
 pub fn of_stack(stack: &ItemStack) -> String {
-    key(&stack.id, potions::stack_color(stack.components.as_ref()))
+    of_stack_at(&stack.id, stack)
+}
+
+pub fn of_stack_at(base: &str, stack: &ItemStack) -> String {
+    let color = potions::stack_color(stack.components.as_ref())
+        .or_else(|| crate::body_gear::dyed_color(stack));
+    key(base, color)
 }
 
 #[cfg(test)]
@@ -82,5 +88,37 @@ mod tests {
             of_stack(&ItemStack::new("minecraft:stone", 64)),
             "minecraft:stone"
         );
+    }
+
+    #[test]
+    fn a_dyed_stack_keys_its_dye_and_a_dial_base_keeps_its_model() {
+        let mut armour = ItemStack::new("minecraft:leather_horse_armor", 1);
+        armour.components = Some(json!({"minecraft:dyed_color": 0xB02E26}));
+        assert_eq!(of_stack(&armour), "minecraft:leather_horse_armor~b02e26");
+        armour.components = Some(json!({"minecraft:dyed_color": {"rgb": 0x3C44AA}}));
+        assert_eq!(
+            split(&of_stack(&armour)),
+            ("minecraft:leather_horse_armor", Some(0x3C44AA))
+        );
+        assert_eq!(
+            of_stack(&ItemStack::new("minecraft:leather_horse_armor", 1)),
+            "minecraft:leather_horse_armor"
+        );
+        let compass = ItemStack::new("minecraft:compass", 1);
+        let dial = crate::dials::keyed("minecraft:compass", "minecraft:item/compass_16");
+        let held = of_stack_at(&dial, &compass);
+        assert_eq!(held, dial);
+        let (rest, color) = split(&held);
+        assert_eq!(color, None);
+        assert_eq!(
+            crate::dials::split(rest),
+            ("minecraft:compass", Some("minecraft:item/compass_16"))
+        );
+        let mut potion = ItemStack::new("minecraft:potion", 1);
+        potion.components = Some(json!({
+            "minecraft:potion_contents": {"potion": "minecraft:poison"},
+            "minecraft:dyed_color": 0xB02E26
+        }));
+        assert_eq!(of_stack(&potion), "minecraft:potion~87a363");
     }
 }

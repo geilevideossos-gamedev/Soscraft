@@ -7813,10 +7813,10 @@ impl EntityWorld {
                 } else if entity.fluid.in_lava() {
                     cow.body.travel_lava(world, input, cow.yaw, entity.fluid.lava_height);
                 } else if let Some(fallen) = cow.body.travel_air(world, input, cow.speed, cow.yaw) {
-                    fall = fall_damage(&cow.body, &*world, fallen, false, &mut entity.voices);
+                    fall = equines::cow_fall(entity.horse.as_mut(), &cow.body, &*world, fallen, cow.age.baby(), &mut entity.voices);
                 }
-                let sounds = if let Some(horse) = &entity.horse {
-                    equines::horse_movement_sounds(horse, cow.age.baby())
+                let sounds = if let Some(horse) = entity.horse.as_mut() {
+                    equines::horse_step_sounds(horse, &cow.body, cow.age.baby(), ride.carrying)
                 } else {
                     cow_sounds(false, cow.sound_variant)
                 };
@@ -7998,10 +7998,10 @@ impl EntityWorld {
                     cow.body
                         .travel_lava(world, input, cow.yaw, entity.fluid.lava_height);
                 } else if let Some(fallen) = cow.body.travel_air(world, input, cow.speed, cow.yaw) {
-                    fall = fall_damage(&cow.body, &*world, fallen, false, &mut entity.voices);
+                    fall = equines::cow_fall(entity.horse.as_mut(), &cow.body, &*world, fallen, cow.age.baby(), &mut entity.voices);
                 }
-                let sounds = if let Some(horse) = &entity.horse {
-                    equines::horse_movement_sounds(horse, cow.age.baby())
+                let sounds = if let Some(horse) = entity.horse.as_mut() {
+                    equines::horse_step_sounds(horse, &cow.body, cow.age.baby(), ride.carrying)
                 } else {
                     cow_sounds(entity.mooshroom.is_some(), cow.sound_variant)
                 };

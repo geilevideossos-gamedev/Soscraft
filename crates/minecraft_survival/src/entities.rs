@@ -178,6 +178,7 @@ pub struct PlayerOutputs {
     pub pearl_landings: Vec<DVec3>,
     pub potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
     pub pushes: Vec<DVec3>,
+    pub rider_falls: Vec<(f64, f32)>,
     pub item_uses_done: Vec<SentItemUse>,
     pub raid_omens: Vec<(i32, (i32, i32, i32))>,
     pub raid_heroes: Vec<i32>,
@@ -226,6 +227,9 @@ fn apply_merchant_answer(inventory: &mut Inventory, update: &minecraft_terrain::
         }
     }
     inventory.cursor = update.cursor.clone();
+    for stack in &update.thrown {
+        inventory.queue_drop(stack.clone());
+    }
 }
 
 fn settle_eggs(queue: &mut PlayerQueue, inventory: &mut Inventory) {
@@ -357,6 +361,11 @@ impl PlayerQueues {
         for &(player, vehicle, spot) in &output.dismounts {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.dismounts.push((vehicle, spot.map(DVec3::from_array)));
+            }
+        }
+        for (player, distance, multiplier) in std::mem::take(&mut output.rider_falls) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.rider_falls.push((distance, multiplier));
             }
         }
         for &(player, vehicle) in &output.mounts {
@@ -2945,6 +2954,17 @@ mod tests {
     }
 
     #[test]
+    fn rider_falls_reach_the_host_and_the_friend() {
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output { rider_falls: vec![(FRIEND, 10.0, 1.0), (HOST, 20.0, 0.2), (99, 8.0, 1.0)], ..Default::default() };
+        let _ = queues.route(&mut output, 2, |_| None);
+        assert!(output.rider_falls.is_empty());
+        assert_eq!(queues.queue(FRIEND).out.rider_falls, [(10.0, 1.0)]);
+        assert_eq!(queues.queue(HOST).out.rider_falls, [(20.0, 0.2)]);
+        assert!(!queues.0.contains_key(&99), "a player who is not here gets nothing");
+    }
+
+    #[test]
     fn trading_screens_reach_only_their_player_and_set_the_slots_before_anything_else() {
         use minecraft_terrain::server::{MerchantUpdate, MerchantView, MobResult};
         let view = |villager: u64| MerchantView { villager, profession: "minecraft:farmer", level: 1, xp: 0, offers: Vec::new(), payment: [None, None], result: None, future_xp: 0, max_stacks: Vec::new(), name: None, trader: false };
@@ -2952,8 +2972,8 @@ mod tests {
         queues.queue(FRIEND).merchant_waiting = 2;
         let mut output = minecraft_terrain::server::Output { mob_results: vec![(FRIEND, MobResult { merchant: Some(view(9)), ..Default::default() })], ..Default::default() };
         let wheat = ItemStack::new("minecraft:wheat", 20);
-        let answer = MerchantUpdate { view: Some(view(9)), slots: vec![(4, None), (12, Some(wheat.clone()))], cursor: Some(ItemStack::new("minecraft:emerald", 1)), closing: false };
-        let closing = MerchantUpdate { view: None, slots: Vec::new(), cursor: None, closing: true };
+        let answer = MerchantUpdate { view: Some(view(9)), slots: vec![(4, None), (12, Some(wheat.clone()))], cursor: Some(ItemStack::new("minecraft:emerald", 1)), thrown: vec![ItemStack::new("minecraft:emerald", 2)], closing: false };
+        let closing = MerchantUpdate { view: None, slots: Vec::new(), cursor: None, thrown: Vec::new(), closing: true };
         output.merchant = vec![(FRIEND, closing), (FRIEND, answer)];
         let _ = queues.route(&mut output, 2, |_| None);
         assert!(output.merchant.is_empty());
@@ -2977,6 +2997,7 @@ mod tests {
         assert_eq!(inventory.slots[4], None);
         assert_eq!(inventory.slots[12], Some(wheat));
         assert_eq!(inventory.cursor, Some(ItemStack::new("minecraft:emerald", 1)));
+        assert_eq!(inventory.take_pending_drops(), [ItemStack::new("minecraft:emerald", 2)], "what the click threw waits to be tossed from the eye");
         assert_eq!(friend.merchant_waiting, 1, "one answer came of the two in flight");
         assert_eq!(friend.merchant.len(), 3);
         assert!(friend.merchant_routed.is_empty());

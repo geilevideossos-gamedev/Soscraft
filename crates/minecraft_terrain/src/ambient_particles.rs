@@ -56,6 +56,9 @@ pub enum Kind {
     Crit,
     DragonBreath,
     Totem,
+    Heart,
+    AngryVillager,
+    Splash,
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +222,17 @@ impl Particle {
         particle
     }
 
+    fn heart(kind: Kind, at: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(kind, at, DVec3::ZERO, random);
+        particle.speed_up = true;
+        particle.friction = 0.86;
+        particle.velocity *= f64::from(0.01_f32);
+        particle.velocity.y += 0.1;
+        particle.quad_size *= 1.5;
+        particle.lifetime = 16;
+        particle
+    }
+
     fn rain(at: DVec3, random: &mut LegacyRandom) -> Self {
         let mut particle = Self::base(Kind::Rain, at, DVec3::ZERO, random);
         particle.sprite = random.next_int(SPLASH_SPRITES);
@@ -228,6 +242,16 @@ impl Particle {
         particle.size = f64::from(0.01_f32);
         particle.gravity = 0.06;
         particle.lifetime = (8.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32;
+        particle
+    }
+
+    fn splash(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::rain(at, random);
+        particle.kind = Kind::Splash;
+        particle.gravity = 0.04;
+        if motion.y == 0.0 && (motion.x != 0.0 || motion.z != 0.0) {
+            particle.velocity = DVec3::new(motion.x, 0.1, motion.z);
+        }
         particle
     }
 
@@ -479,6 +503,9 @@ impl Particle {
                 let step = self.age * (BREATH_SPRITES - 1) / self.lifetime.max(1);
                 format!("generic_{}", BREATH_FIRST_SPRITE + step.clamp(0, BREATH_SPRITES - 1))
             }
+            Kind::Heart => "heart".to_owned(),
+            Kind::AngryVillager => "angry".to_owned(),
+            Kind::Splash => format!("splash_{}", self.sprite),
         };
         ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
     }
@@ -501,6 +528,9 @@ impl Particle {
             | Kind::Snowflake
             | Kind::EndRod
             | Kind::Totem => self.quad_size,
+            Kind::Heart => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
+            Kind::AngryVillager => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
+            Kind::Splash => self.quad_size,
         }
     }
 
@@ -679,7 +709,7 @@ pub fn textures() -> Vec<ResourceId> {
     let big_smoke = (0..BIG_SMOKE_SPRITES).map(|index| format!("big_smoke_{index}"));
     let explosion = (0..EXPLOSION_SPRITES).map(|index| format!("explosion_{index}"));
     let glitter = (0..GLITTER_SPRITES).map(|index| format!("glitter_{index}"));
-    ["lava", "glint", "flame", "critical_hit"]
+    ["lava", "glint", "flame", "critical_hit", "heart", "angry"]
         .into_iter()
         .map(str::to_owned)
         .chain(big_smoke)
@@ -1077,6 +1107,9 @@ impl AmbientParticles {
             Kind::Crit => Particle::crit(at, motion, random),
             Kind::DragonBreath => Particle::dragon_breath(at, motion, 1.0, random),
             Kind::Totem => Particle::totem(at, motion, random),
+            Kind::Heart => Particle::heart(kind, at, random),
+            Kind::AngryVillager => Particle::heart(kind, at + DVec3::new(0.0, 0.5, 0.0), random),
+            Kind::Splash => Particle::splash(at, motion, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -1113,6 +1146,9 @@ impl AmbientParticles {
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
             Kind::EndRod | Kind::Crit => particle.coast(),
             Kind::DragonBreath => particle.breathe(),
+            Kind::Heart => particle.coast(),
+            Kind::AngryVillager => particle.coast(),
+            Kind::Splash => particle.drip(scene, &mut cache, random),
             Kind::Totem => {
                 let alive = particle.tick(scene, &mut cache);
                 particle.fade_after_half_life();
@@ -1698,6 +1734,96 @@ mod tests {
             particles.is_empty(),
             "a splash inside water is gone at once"
         );
+    }
+
+    #[test]
+    fn a_heart_rises_slowly_through_blocks_for_sixteen_ticks() {
+        let mut particles = AmbientParticles::new(29);
+        let at = DVec3::new(0.5, 64.8, 0.5);
+        particles.add(Kind::Heart, at, DVec3::new(0.3, -0.3, 0.3));
+        let heart = particles.particles[0].clone();
+        assert_eq!(heart.lifetime, 16);
+        assert!(heart.velocity.x.abs() < 0.002 && heart.velocity.z.abs() < 0.002);
+        assert!((heart.velocity.y - 0.1).abs() < 0.003, "{}", heart.velocity.y);
+        assert!(heart.quad_size >= 0.15 - 1e-6 && heart.quad_size <= 0.3 + 1e-6);
+        assert_eq!(
+            heart.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/heart")
+        );
+        assert_eq!(heart.size_at(0.0), 0.0);
+        assert!((heart.size_at(0.25) - heart.quad_size * 0.5).abs() < 1e-6);
+        assert_eq!(heart.size_at(0.5), heart.quad_size);
+        assert!(!particles_translucent(Kind::Heart));
+        let scene = Blocks(HashMap::from([((0, 65, 0), Block::new("minecraft:stone"))]));
+        particles.tick(&scene);
+        let ticked = &particles.particles[0];
+        assert!((ticked.position - at - heart.velocity).abs().max_element() < 1e-9);
+        let slowed = heart.velocity * f64::from(0.86_f32);
+        assert!((ticked.velocity - slowed).abs().max_element() < 1e-9);
+        for _ in 1..16 {
+            particles.tick(&scene);
+        }
+        assert_eq!(particles.len(), 1);
+        let y = particles.particles[0].position.y;
+        assert!(y > 65.3, "it rose into the stone: {y}");
+        particles.tick(&scene);
+        assert!(particles.is_empty());
+        assert!(textures().iter().any(|id| id.key() == "minecraft:particle/heart"));
+    }
+
+    #[test]
+    fn an_angry_cloud_starts_half_a_block_higher_and_is_white() {
+        let mut particles = AmbientParticles::new(31);
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        particles.add(Kind::AngryVillager, at, DVec3::new(0.01, 0.02, -0.01));
+        let cloud = particles.particles[0].clone();
+        assert_eq!(cloud.position, at + DVec3::new(0.0, 0.5, 0.0));
+        assert_eq!((cloud.color, cloud.alpha, cloud.lifetime), ([1.0; 3], 1.0, 16));
+        assert!((cloud.velocity.y - 0.1).abs() < 0.003, "{}", cloud.velocity.y);
+        assert_eq!(
+            cloud.sprite().map(|id| id.key()).as_deref(),
+            Some("minecraft:particle/angry")
+        );
+        assert_eq!(cloud.size_at(0.0), 0.0);
+        assert_eq!(cloud.size_at(0.5), cloud.quad_size);
+        assert!(!particles_translucent(Kind::AngryVillager));
+        let scene = open();
+        for _ in 0..16 {
+            particles.tick(&scene);
+        }
+        assert_eq!(particles.len(), 1);
+        assert!(particles.particles[0].position.y > 65.0);
+        particles.tick(&scene);
+        assert!(particles.is_empty());
+        assert!(textures().iter().any(|id| id.key() == "minecraft:particle/angry"));
+    }
+
+    #[test]
+    fn a_splash_drop_falls_at_0_04_and_pops_on_the_ground() {
+        let mut particles = AmbientParticles::new(37);
+        let motion = DVec3::new(0.01, -0.02, 0.03);
+        particles.add(Kind::Splash, DVec3::new(0.5, 65.2, 0.5), motion);
+        let drop = particles.particles[0].clone();
+        assert_eq!(drop.gravity, 0.04);
+        assert!(drop.velocity.y >= 0.1 && drop.velocity.y < 0.3 + 1e-6);
+        assert!(drop.velocity.x.abs() < 0.1 && drop.sprite < 4);
+        assert!((8..=40).contains(&drop.lifetime));
+        assert_eq!(
+            drop.sprite().map(|id| id.key()),
+            Some(format!("minecraft:particle/splash_{}", drop.sprite))
+        );
+        let scene = Blocks(HashMap::from([((0, 64, 0), Block::new("minecraft:stone"))]));
+        particles.tick(&scene);
+        let ticked = &particles.particles[0];
+        let expected = (drop.velocity.y - f64::from(0.04_f32)) * f64::from(0.98_f32);
+        assert!((ticked.velocity.y - expected).abs() < 1e-9, "{}", ticked.velocity.y);
+        for _ in 0..60 {
+            particles.tick(&scene);
+        }
+        assert!(particles.is_empty(), "it pops on the stone or runs out");
+        let mut sideways = AmbientParticles::new(41);
+        sideways.add(Kind::Splash, DVec3::new(0.5, 70.0, 0.5), DVec3::new(0.2, 0.0, -0.1));
+        assert_eq!(sideways.particles[0].velocity, DVec3::new(0.2, 0.1, -0.1));
     }
 
     #[test]

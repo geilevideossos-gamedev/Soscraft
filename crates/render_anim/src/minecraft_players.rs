@@ -752,6 +752,7 @@ pub(crate) fn struck(
         riding,
         reattach,
         jump_bar,
+        vehicle_health,
         raid_bars,
         wither_bars,
         ..
@@ -834,6 +835,24 @@ pub(crate) fn struck(
         let hurt = survival.struck(amount, blocked, armor, from, cause, effect);
         landed.extend(push.landing(hurt, blocked > 0.0, knockback_resistance));
     }
+    for (distance, multiplier) in outputs.rider_falls.into_iter().filter(|_| alive) {
+        let damage = survival.rider_fall(distance, multiplier);
+        if damage > 0
+            && let Some(sounds) = sounds.as_mut()
+        {
+            sounds.play(
+                packs,
+                minecraft_survival::survival::fall_sound(damage),
+                None,
+                1.0,
+                1.0,
+            );
+            let voice = (sounds.random() - sounds.random()) * 0.2 + 1.0;
+            if survival.status.health > 0.0 {
+                sounds.play(packs, "minecraft:entity.player.hurt", None, 1.0, voice);
+            }
+        }
+    }
     for (slot, held) in entities.take_boosts(player_id) {
         hand.swing = Some(0.0);
         hand.swing_offhand = slot == minecraft_survival::offhand::OFFHAND;
@@ -867,6 +886,7 @@ pub(crate) fn struck(
         riding, reattach, steps, entities, authority, rider, origin, present,
     );
     *jump_bar = riding.and_then(|_| entities.view.world.ride_jump_scale(player_id));
+    *vehicle_health = riding.and_then(|_| entities.view.world.vehicle_health(player_id));
     for to in teleports
         .iter()
         .filter(|(uuid, _)| alive && uuid == local_uuid)

@@ -117,6 +117,7 @@ pub struct ServerSim {
     bells: crate::bells::Bells,
     rockets: Vec<crate::firework_rocket::Rocket>,
     firework_bursts: Vec<crate::firework_rocket::Burst>,
+    mob_puffs: Vec<crate::mob_particles::MobPuff>,
     rocket_hits: Vec<minecraftoss_entities::world::PlayerHit>,
 }
 
@@ -267,6 +268,9 @@ pub enum MerchantOp {
     Select(i32),
     /// A payment slot clicked (shift: moved back).
     Payment { slot: usize, right: bool, shift: bool },
+    Swap { slot: usize, hotbar: usize },
+    Throw { slot: usize, whole: bool },
+    Spread { players: u64, payments: u8, right: bool },
     /// The result clicked (shift: traded as often as it goes).
     Result { shift: bool },
     QuickMove(usize),
@@ -281,6 +285,7 @@ pub struct MerchantUpdate {
     pub view: Option<MerchantView>,
     pub slots: Vec<(usize, Option<minecraftoss_player::inventory::ItemStack>)>,
     pub cursor: Option<minecraftoss_player::inventory::ItemStack>,
+    pub thrown: Vec<minecraftoss_player::inventory::ItemStack>,
     /// The server asks the client to close the screen (the villager went
     /// away or stopped trading); the client answers with `Close`.
     pub closing: bool,
@@ -345,6 +350,7 @@ pub struct EntitySnapshot {
     pub dragon_explosions: Vec<(glam::DVec3, bool)>,
     pub swirls: Vec<crate::spell_particles::SwirlView>,
     pub firework_bursts: Vec<crate::firework_rocket::Burst>,
+    pub mob_puffs: Vec<crate::mob_particles::MobPuff>,
 }
 
 /// A primed TNT entity as the client shows it.
@@ -490,6 +496,7 @@ impl ServerSim {
             bells: crate::bells::Bells::default(),
             rockets: Vec::new(),
             firework_bursts: Vec::new(),
+            mob_puffs: Vec::new(),
             rocket_hits: Vec::new(),
         }
     }
@@ -688,9 +695,17 @@ impl ServerSim {
     /// at the player's feet.
     pub fn merchant(&mut self, player: u64, op: MerchantOp, mut inventory: minecraftoss_player::inventory::Inventory, selected: usize, feet: [f64; 3]) -> MerchantUpdate {
         let before = inventory.slots.clone();
+        let mut thrown = Vec::new();
         match op {
             MerchantOp::Select(index) => self.mobs.merchant_select(player, index, &mut inventory),
             MerchantOp::Payment { slot, right, shift } => self.mobs.merchant_click_payment(player, slot, right, shift, &mut inventory),
+            MerchantOp::Swap { slot, hotbar } => thrown.extend(self.mobs.merchant_swap(player, slot, hotbar, selected, &mut inventory)),
+            MerchantOp::Throw { slot, whole } => thrown = self.mobs.merchant_throw(player, slot, whole, &inventory),
+            MerchantOp::Spread { players, payments, right } => {
+                let players: Vec<usize> = (0..64).filter(|slot| (players >> slot) & 1 == 1).collect();
+                let payments: Vec<usize> = (0..2).filter(|slot| (payments >> slot) & 1 == 1).collect();
+                self.mobs.merchant_spread(player, &players, &payments, right, &mut inventory);
+            }
             MerchantOp::Result { shift } => self.mobs.merchant_click_result(player, shift, &mut inventory),
             MerchantOp::QuickMove(index) => self.mobs.merchant_quick_move_inventory(player, index, &mut inventory),
             MerchantOp::Close => {
@@ -703,7 +718,7 @@ impl ServerSim {
         }
         self.spawn_trade_experience();
         let slots = inventory.slots.iter().zip(&before).enumerate().filter(|(_, (now, was))| now != was).map(|(slot, (now, _))| (slot, now.clone())).collect();
-        MerchantUpdate { view: self.merchant_view(player), slots, cursor: inventory.cursor.clone(), closing: false }
+        MerchantUpdate { view: self.merchant_view(player), slots, cursor: inventory.cursor.clone(), thrown, closing: false }
     }
 
     /// `ServerPlayer.tick`'s `stillValid` check on an open trading screen:
@@ -720,7 +735,7 @@ impl ServerSim {
                 continue;
             }
             self.merchant_closing.insert(player.id);
-            closing.push((player.id, MerchantUpdate { view: None, slots: Vec::new(), cursor: None, closing: true }));
+            closing.push((player.id, MerchantUpdate { view: None, slots: Vec::new(), cursor: None, thrown: Vec::new(), closing: true }));
         }
         closing
     }
@@ -1097,9 +1112,8 @@ impl ServerSim {
         if !frozen {
             mobs.push_from_players(players, &ticks);
         }
-        // Entity events (a villager's hearts, anger, happiness) are for the
-        // client's particles, which it does not draw yet.
-        let _ = mobs.take_entity_events();
+        let events = mobs.take_entity_events();
+        self.mob_puffs.extend(crate::mob_particles::mob_puffs(mobs, &events));
         // A blast's victims drop their loot before its blocks break
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
@@ -3657,6 +3671,7 @@ pub struct Output {
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<(u64, bool)>,
     pub dismounts: Vec<(u64, u64, Option<[f64; 3]>)>,
+    pub rider_falls: Vec<(u64, f64, f32)>,
     pub boosts: Vec<(u64, bool)>,
     pub mounts: Vec<(u64, u64)>,
     pub root_vehicles: Vec<(u64, Option<minecraftoss_core::nbt::Tag>)>,
@@ -4258,6 +4273,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.tick_ridden_mobs(&input.mob_players, input.bright_outside);
     }
     out.dismounts.extend(sim.take_vehicle_losses());
+    out.rider_falls.extend(sim.mobs.take_rider_falls());
     out.player_hits.extend(sim.take_end_hits());
     out.player_hits.extend(sim.take_rocket_hits());
     out.player_hits.append(&mut sim.mob_trident_hits);
@@ -4360,7 +4376,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -5203,6 +5219,85 @@ mod tests {
         let update = server.merchant(0, MerchantOp::QuickMove(2), inventory.clone(), 0, [0.0; 3]);
         assert_eq!(update.slots, vec![(2, None), (9, Some(wheat(35)))], "and back from the hotbar into the inventory");
         assert!(server.merchant(0, MerchantOp::QuickMove(36), inventory.clone(), 0, [0.0; 3]).slots.is_empty(), "armour stays");
+    }
+
+    #[test]
+    fn number_keys_on_the_trading_screen_move_payments_and_trade_the_result_into_the_hotbar() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let mut inventory = Inventory::default();
+        inventory.slots[9] = Some(wheat(50));
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false).merchant.is_some());
+        let apply = |inventory: &mut Inventory, update: &MerchantUpdate| {
+            for (slot, stack) in &update.slots {
+                inventory.slots[*slot] = stack.clone();
+            }
+        };
+        let update = server.merchant(0, MerchantOp::Select(0), inventory.clone(), 0, [0.0; 3]);
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Swap { slot: 0, hotbar: 1 }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(1, Some(wheat(50)))]);
+        let view = update.view.as_ref().expect("still open");
+        assert!(view.payment[0].is_none() && view.result.is_none());
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Swap { slot: 0, hotbar: 1 }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(1, None)]);
+        assert!(update.view.as_ref().expect("still open").result.is_some(), "the wheat is back and so is the emerald");
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Swap { slot: 2, hotbar: 2 }, inventory.clone(), 0, [0.0; 3]);
+        let changed: Vec<_> = update.slots.iter().map(|(slot, stack)| (*slot, stack.as_ref().map(|s| (s.id.as_str(), s.count)))).collect();
+        assert_eq!(changed, vec![(2, Some(("minecraft:emerald", 1)))]);
+        assert_eq!(update.view.as_ref().expect("still open").payment[0].as_ref().map(|s| s.count), Some(30), "one trade paid");
+        assert_eq!(server.orbs().len(), 1, "with its experience");
+        apply(&mut inventory, &update);
+        let update = server.merchant(0, MerchantOp::Swap { slot: 2, hotbar: 2 }, inventory.clone(), 0, [0.0; 3]);
+        assert!(update.slots.is_empty(), "a filled hotbar slot takes no result");
+        assert_eq!(update.view.expect("still open").payment[0].as_ref().map(|s| s.count), Some(30));
+    }
+
+    #[test]
+    fn q_on_the_trading_screen_hands_the_thrown_stacks_back_and_drops_the_trades_orbs() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let mut inventory = Inventory::default();
+        inventory.slots[9] = Some(wheat(64));
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false).merchant.is_some());
+        let update = server.merchant(0, MerchantOp::Select(0), inventory.clone(), 0, [0.0; 3]);
+        for (slot, stack) in update.slots {
+            inventory.slots[slot] = stack;
+        }
+        let thrown = |update: &MerchantUpdate| update.thrown.iter().map(|s| (s.id.clone(), s.count)).collect::<Vec<_>>();
+        let payment = |update: &MerchantUpdate| update.view.as_ref().and_then(|view| view.payment[0].as_ref()).map(|s| s.count);
+        let update = server.merchant(0, MerchantOp::Throw { slot: 2, whole: false }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(thrown(&update), [("minecraft:emerald".to_owned(), 1)]);
+        assert_eq!(payment(&update), Some(44));
+        assert!(update.slots.is_empty() && update.cursor.is_none());
+        assert_eq!(server.orbs().len(), 1, "the trade's orb");
+        let update = server.merchant(0, MerchantOp::Throw { slot: 2, whole: true }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(thrown(&update), [("minecraft:emerald".to_owned(), 1), ("minecraft:emerald".to_owned(), 1)], "until the wheat runs short");
+        assert_eq!(payment(&update), Some(4));
+        assert_eq!(server.orbs().len(), 3);
+        let update = server.merchant(0, MerchantOp::Throw { slot: 0, whole: false }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(thrown(&update), [("minecraft:wheat".to_owned(), 1)]);
+        let update = server.merchant(0, MerchantOp::Throw { slot: 0, whole: true }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(thrown(&update), [("minecraft:wheat".to_owned(), 3)]);
+        assert_eq!(payment(&update), None);
+        assert!(server.items().is_empty(), "the player throws them, not the server");
+    }
+
+    #[test]
+    fn a_drag_on_the_trading_screen_spreads_over_the_marked_payments_and_inventory_slots() {
+        use minecraftoss_player::inventory::Inventory;
+        let Some((mut server, id)) = trading_server() else { return };
+        let mut inventory = Inventory::default();
+        assert!(server.mob_action(0, minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false).merchant.is_some());
+        inventory.cursor = Some(wheat(64));
+        let update = server.merchant(0, MerchantOp::Spread { players: (1 << 9) | (1 << 30), payments: 0b11, right: false }, inventory.clone(), 0, [0.0; 3]);
+        assert_eq!(update.slots, vec![(9, Some(wheat(16))), (30, Some(wheat(16)))]);
+        assert!(update.cursor.is_none());
+        let view = update.view.expect("still open");
+        assert_eq!(view.payment.iter().map(|p| p.as_ref().map(|s| s.count)).collect::<Vec<_>>(), [Some(16), Some(16)]);
+        assert!(view.result.is_none(), "a trade of one cost wants the other payment slot empty");
     }
 
     #[test]
@@ -11317,6 +11412,34 @@ mod tests {
         finish_batch(&mut sim, &input, &mut out);
         let shown = out.entities.expect("a snapshot").gateways;
         assert_eq!(shown.iter().map(|view| (view.pos, view.age, view.cooldown)).collect::<Vec<_>>(), [(pos, 4, crate::end_gateway::COOLDOWN_TIME - 1)]);
+    }
+
+    #[test]
+    fn a_tamed_wolf_s_hearts_reach_the_snapshot() {
+        use crate::mob_particles::{MobPuff, PuffKind};
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let wolf = sim.mobs.spawn_wolf(minecraftoss_entities::wolf::Wolf::new(glam::DVec3::new(8.5, 80.0, 8.5)), true);
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.slots[0] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:bone", 64));
+        let mut input = idle_input();
+        let snapshot = |sim: &mut ServerSim, input: &mut TickInput| {
+            let mut out = run_ticks(sim, input, true, 1);
+            finish_batch(sim, input, &mut out);
+            out.entities.expect("a snapshot").mob_puffs
+        };
+        let tame = |sim: &mut ServerSim| sim.mobs.wolf_mut(wolf).is_some_and(|entity| entity.wolf.tame);
+        for _ in 0..100 {
+            sim.mob_action(0, minecraftoss_entities::world::MobHit::Wolf(wolf), None, inventory.clone(), 0, false);
+            let puffs = snapshot(&mut sim, &mut input);
+            let body = sim.mobs.body_of(wolf).expect("the wolf").clone();
+            let kind = if tame(&mut sim) { PuffKind::Heart } else { PuffKind::Smoke };
+            assert_eq!(puffs, vec![MobPuff { kind, count: 7, feet: body.position, width: body.width, height: body.height, lift: 0.5, range: 10 }]);
+            if kind == PuffKind::Heart {
+                break;
+            }
+        }
+        assert!(tame(&mut sim), "a bone tames one time in three");
+        assert!(snapshot(&mut sim, &mut input).is_empty(), "the hearts show once");
     }
 
     fn tnt_test_world() -> Option<(ServerSim, HandcraftedScene, TickInput)> {

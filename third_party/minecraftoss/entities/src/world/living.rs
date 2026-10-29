@@ -102,9 +102,8 @@ pub(crate) fn fall_on_farmland(body: &mut Body, world: &mut impl World, fallen: 
 /// block's (`playBlockFallSound`: under the feet by 0.2, at half its volume
 /// and three quarters its pitch). None when the fall does no damage.
 pub(crate) fn fall_damage(body: &Body, world: &impl World, fallen: f64, hostile: bool, voices: &mut Vec<(Voice, DVec3)>) -> Option<f32> {
-    let landed_on = world.block(body.on_pos(world, 0.2));
-    let multiplier = landed_on.as_ref().map_or(1.0, fall_multiplier);
-    let fallen = fallen * landed_on.as_ref().map_or(1.0, fall_reduction);
+    let (reduction, multiplier) = landed_block(body, world);
+    let fallen = fallen * reduction;
     // `calculateFallPower` less `SAFE_FALL_DISTANCE` 3, times the multiplier
     // and `FALL_DAMAGE_MULTIPLIER` 1.
     let damage = ((fallen + 1.0e-6 - 3.0) * f64::from(multiplier)).floor() as i32;
@@ -119,9 +118,17 @@ pub(crate) fn fall_damage(body: &Body, world: &impl World, fallen: f64, hostile:
         (false, true) => "entity.generic.big_fall",
     };
     voices.push((Voice::Event(event, 1.0, 1.0), p));
-    let below = (p.x.floor() as i32, (p.y - f64::from(0.2_f32)).floor() as i32, p.z.floor() as i32);
-    if let Some((event, volume, pitch)) = world.fall_sound(below) {
-        voices.push((Voice::Step(event, volume * 0.5, pitch * 0.75), p));
-    }
+    voices.extend(block_fall_sound(body, world));
     Some(damage as f32)
+}
+
+pub(crate) fn landed_block(body: &Body, world: &impl World) -> (f64, f32) {
+    let landed_on = world.block(body.on_pos(world, 0.2));
+    (landed_on.as_ref().map_or(1.0, fall_reduction), landed_on.as_ref().map_or(1.0, fall_multiplier))
+}
+
+pub(crate) fn block_fall_sound(body: &Body, world: &impl World) -> Option<(Voice, DVec3)> {
+    let p = body.position;
+    let below = (p.x.floor() as i32, (p.y - f64::from(0.2_f32)).floor() as i32, p.z.floor() as i32);
+    world.fall_sound(below).map(|(event, volume, pitch)| (Voice::Step(event, volume * 0.5, pitch * 0.75), p))
 }
