@@ -2,6 +2,7 @@ use crate::firework::{Explosion, Fireworks};
 use crate::thrown::ThrownView;
 use glam::DVec3;
 use minecraftoss_entities::potion::PotionTarget;
+pub use minecraftoss_entities::world::FireworkOwner as RocketOwner;
 use minecraftoss_player::World;
 use minecraftoss_player::collision::{Bounds, move_body};
 use minecraftoss_player::rng::LegacyRandom;
@@ -30,22 +31,6 @@ pub struct Burst {
 pub enum RocketEvent {
     Launched,
     Exploded,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RocketOwner {
-    Mob(u64),
-    Player(u64),
-    Nobody,
-}
-
-impl RocketOwner {
-    pub fn mob(self) -> Option<u64> {
-        match self {
-            Self::Mob(id) => Some(id),
-            Self::Player(_) | Self::Nobody => None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

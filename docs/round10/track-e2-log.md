@@ -664,3 +664,26 @@ After 077c2210.
   - The left-owner box of a villager owner is its own box, without its vehicle.
 - **Test steps:** none new in game yet: players can only launch rockets from group `fw-launch` on (FW-5, FW-6 and FW-9 then show this commit). A celebrating villager's rocket now bursts on a mob or player right above it instead of flying through.
 - **Kit:** none.
+
+### 3. Mobs hurt by a firework burst are knocked back
+
+After 4947f42c.
+
+- **Vanilla (26.3, checked with javap):** `dealExplosionDamage` hurts each mob with `damageSources().fireworks(rocket, owner)`. `minecraft:fireworks` is not in `#no_knockback`, so on a full hit (outside the damage cooldown, not blocked) `LivingEntity.hurtServer` calls `dealDefaultKnockback`: the direct entity is the rocket, a `Projectile`, whose `calculateHorizontalHurtKnockbackDirection` is `(mob.x - rocket.x, mob.z - rocket.z)`, negated into `knockback(0.4000000059604645, rocket.x - mob.x, rocket.z - mob.z)`: away from the burst, halving the motion, up by 0.4 on the ground, scaled by `1 - knockback_resistance`. `#is_explosion` and `#panic_causes` hold `fireworks`, so animals panic. The owner is the source's entity: a player gets the kill credit, and the mob remembers who hurt it.
+- **Changed:**
+  - Vendored `entities/src/world.rs`:
+    - New public `FireworkOwner { Mob, Player, Nobody }` (with `mob()`), next to the private `Blaster`.
+    - `hurt_by_blast` is now a wrapper of the new private `hurt_by_typed_blast(key, damage, push, blaster, kind)`, whose wolf, cat, trader, villager and wither arms take `kind` where they took `blaster.damage_type()`. Every other caller passes `blaster.damage_type()`, so explosions behave as before.
+    - New public `firework_blast(owner, id, damage, at)`: the typed blast hurt with `minecraft:fireworks` and no explosion push; for a player owner `blasted_by_player`, the hoglin anger and `credit(.., "minecraft:player", true)`, as `player_blast` does; a mob owner is the `Blaster::Mob` attacker (wolves, cats, traders, villagers); on a full hit `knock_back(id, 0.4F, at.x - x, at.z - z)`, which already holds the iron golem's and shulker's immunity and the ravager's and hoglin's resistance.
+  - `minecraft_terrain/src/firework_rocket.rs`: `RocketOwner` is now that vendored `FireworkOwner` (re-exported under the old name).
+  - `minecraft_terrain/src/server.rs` `rocket_blast`: mobs are hurt through `firework_blast` with the rocket's owner instead of `player_blast(None, .., 0.0)` (which used `minecraft:explosion`, no push and no owner).
+- **Tests:**
+  - Vendored `world::combat::tests`: `a_firework_burst_knocks_mobs_away_from_it` (a grounded zombie gets -0.4 in x, away from a burst at +x, and 0.4 up; an iron golem is hurt but not moved; a ravager gets 0.1; an unknown id is `None`), `a_second_firework_burst_inside_the_cooldown_does_not_push` (the second, bigger hit lands without a push; a player's burst angers the zombie at the player), `a_firework_burst_makes_a_cow_panic_and_credits_a_player_with_the_kill` (the cow's last damage panics it and pushes it away; a zombie killed by a player's burst is the player's kill; a burst with no owner angers no one).
+  - `server::tests::a_villager_s_rocket_passes_its_villager_and_bursts_on_a_mob_or_a_player_in_its_path` now also checks that the zombie the rocket bursts on is knocked back at 0.4.
+  - All tests of the touched crates pass: minecraftoss-entities 433, minecraft_terrain 1429 (3 ignored), minecraft_survival 766 (+1 in its second test binary).
+- **Decisions:**
+  - The burst's knockback comes from the rocket's position, as vanilla's projectile direction does, and a mob hit by two bursts inside its damage cooldown is pushed only by the first, as in vanilla.
+  - A villager owner angers only the mobs whose blast arms already take a mob attacker (wolves, cats, traders, villagers), as `Blaster::Mob` does for other explosions; zombies and the like do not turn on the villager.
+  - **For the merge with D0:** D0's `EntityKey::Family` arm in `hurt_by_blast` calls `families::Hurt::new(damage, blaster.damage_type(), source)`. After the merge it sits in `hurt_by_typed_blast` and should pass `kind` instead, so the new families see `minecraft:fireworks` from a burst.
+- **Test steps:** the knockback shows once players can launch rockets (group `fw-launch`, steps FW-5 to FW-9 of the brief). Until then there is nothing new to see in game.
+- **Kit:** none.

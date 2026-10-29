@@ -574,6 +574,62 @@ mod tests {
     }
 
     #[test]
+    fn a_firework_burst_knocks_mobs_away_from_it() {
+        let mut world = EntityWorld::default();
+        let zombie = world.spawn_zombie(crate::zombie::Zombie::new(at(0.5)), true);
+        let golem = world.spawn_iron_golem(crate::iron_golem::IronGolem::new(at(10.5)), true);
+        let ravager = world.spawn_ravager(crate::ravager::Ravager::new(at(20.5)), true);
+        let power = f64::from(0.4_f32);
+        for (id, share) in [(zombie, 1.0), (golem, 0.0), (ravager, 1.0 - crate::ravager::KNOCKBACK_RESISTANCE)] {
+            world.body_mut(id).unwrap().on_ground = true;
+            let before = health(&world, id);
+            let feet = world.mob_body(id).unwrap().0.position;
+            let hit = world.firework_blast(FireworkOwner::Nobody, id, 5.0, feet + DVec3::new(1.0, 0.5, 0.0));
+            assert!(hit.is_some_and(|hit| hit.applied && hit.full), "{:?}", world.entity_type(id));
+            assert!(health(&world, id) < before, "{:?}", world.entity_type(id));
+            let v = world.mob_body(id).unwrap().0.velocity;
+            assert!((v.x + power * share).abs() < 1.0e-6 && (v.y - power * share).abs() < 1.0e-6 && v.z == 0.0, "{:?} {v}", world.entity_type(id));
+        }
+        assert_eq!(world.firework_blast(FireworkOwner::Nobody, 9999, 5.0, at(0.5)), None);
+    }
+
+    #[test]
+    fn a_second_firework_burst_inside_the_cooldown_does_not_push() {
+        let mut world = EntityWorld::default();
+        let zombie = world.spawn_zombie(crate::zombie::Zombie::new(at(0.5)), true);
+        assert!(world.firework_blast(FireworkOwner::Player(6), zombie, 3.0, at(1.5)).is_some_and(|hit| hit.full));
+        world.body_mut(zombie).unwrap().velocity = DVec3::ZERO;
+        let again = world.firework_blast(FireworkOwner::Player(6), zombie, 5.0, at(1.5)).unwrap();
+        assert!(again.applied && !again.full, "{again:?}");
+        assert_eq!(world.mob_body(zombie).unwrap().0.velocity, DVec3::ZERO);
+        let angry = world.zombie_mut(zombie).unwrap();
+        let blamed = angry.target_player_id == Some(6) || angry.ai.as_ref().is_some_and(|ai| ai.state.hurt_by.map(|(by, _)| by) == Some(Target::Player(6)));
+        assert!(blamed, "a player's firework angers the mob at the player");
+    }
+
+    #[test]
+    fn a_firework_burst_makes_a_cow_panic_and_credits_a_player_with_the_kill() {
+        let mut world = EntityWorld::default();
+        let cow = world.spawn_cow(crate::cow::Cow::new(at(5.5)), true);
+        world.body_mut(cow).unwrap().on_ground = true;
+        assert!(world.firework_blast(FireworkOwner::Mob(77), cow, 3.0, at(6.5)).is_some_and(|hit| hit.applied));
+        let entity = world.cows.iter().find(|e| e.id == cow).unwrap();
+        assert!(DamageSourceKind::panics(entity.last_damage_source));
+        assert!(entity.cow.body.velocity.x < -0.3, "pushed away from the burst: {}", entity.cow.body.velocity);
+        let mut weak = crate::zombie::Zombie::new(at(10.5));
+        weak.health = 0.5;
+        let weak = world.spawn_zombie(weak, true);
+        assert!(world.firework_blast(FireworkOwner::Player(6), weak, 7.0, at(10.5)).is_some_and(|hit| hit.died));
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert!(deaths[0].context.killed_by_player);
+        let nobody = world.spawn_zombie(crate::zombie::Zombie::new(at(15.5)), true);
+        world.firework_blast(FireworkOwner::Nobody, nobody, 1.0, at(15.5));
+        let calm = world.zombie_mut(nobody).unwrap();
+        assert_eq!((calm.target_player_id, calm.ai.as_ref().and_then(|ai| ai.state.hurt_by)), (None, None));
+    }
+
+    #[test]
     fn a_trident_angers_a_hoglin_and_a_piglin_at_the_thrower() {
         let mut world = EntityWorld::default();
         let hoglin = world.spawn_hoglin(crate::hoglin::Hoglin::new(crate::hoglin::HoglinKind::Hoglin, at(0.5)), true);

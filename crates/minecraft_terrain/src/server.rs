@@ -1453,7 +1453,7 @@ impl ServerSim {
             match crate::thrown::struck_player(id) {
                 Some(player) => self.rocket_hits.push(minecraftoss_entities::world::PlayerHit { player_id: player, damage, kind: minecraftoss_entities::world::PlayerHitKind::Fireworks { at: rocket.position }, source: rocket.owner.mob() }),
                 None => {
-                    self.mobs.player_blast(None, id, damage, rocket.position, 0.0);
+                    self.mobs.firework_blast(rocket.owner, id, damage, rocket.position);
                 }
             }
         }
@@ -12966,6 +12966,8 @@ mod tests {
         assert!(ticks < 20, "it bursts on the zombie before its time is up: {ticks}");
         assert!(at.y > 205.5 && at.y < 206.5, "{at}");
         assert_eq!(hurts(&server, zombie), 1);
+        let pushed = server.mobs.body_of(zombie).unwrap().velocity;
+        assert!((pushed.x.hypot(pushed.z) - 0.4).abs() < 1.0e-6, "the burst knocks the zombie back: {pushed}");
         let (ticks, at) = fly(&mut server, 12.5, &[]);
         assert!(ticks <= 3, "another villager is in its path: {ticks}");
         assert!(at.y < 202.2, "{at}");

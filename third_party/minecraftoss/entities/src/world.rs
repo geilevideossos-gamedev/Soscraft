@@ -1115,6 +1115,22 @@ fn explosion_direction(body: &Body, eye_height: f32, center: DVec3) -> DVec3 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FireworkOwner {
+    Mob(u64),
+    Player(u64),
+    Nobody,
+}
+
+impl FireworkOwner {
+    pub fn mob(self) -> Option<u64> {
+        match self {
+            FireworkOwner::Mob(id) => Some(id),
+            FireworkOwner::Player(_) | FireworkOwner::Nobody => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Blaster {
     Mob(u64),
     Player(u64),
@@ -2992,6 +3008,10 @@ impl EntityWorld {
     /// armor counts, no default knockback), then its push
     /// (`pushFromExplosion`), which lands even when the hurt does not.
     fn hurt_by_blast(&mut self, key: EntityKey, damage: f32, push: DVec3, blaster: Blaster) -> Option<DamageResult> {
+        self.hurt_by_typed_blast(key, damage, push, blaster, blaster.damage_type())
+    }
+
+    fn hurt_by_typed_blast(&mut self, key: EntityKey, damage: f32, push: DVec3, blaster: Blaster, kind: &'static str) -> Option<DamageResult> {
         let time = self.game_time;
         let source = DamageSourceKind::Explosion;
         let blaster_undead = matches!(blaster, Blaster::Mob(mob) if self.entity_type(mob).is_some_and(crate::wither::is_undead));
@@ -3005,10 +3025,10 @@ impl EntityWorld {
             EntityKey::Enderman(id) => self.endermen.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.enderman.body)),
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, false, false), &mut e.witch.body)),
             EntityKey::IronGolem(id) => self.iron_golems.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.golem.body)),
-            EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.wolf.body)),
-            EntityKey::Feline(id) => self.felines.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.feline.body)),
-            EntityKey::Trader(id) => self.wandering_traders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.trader.body)),
-            EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.villager_attacker(), time), &mut e.villager.body)),
+            EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, kind, blaster.wolf_attacker(), time), &mut e.wolf.body)),
+            EntityKey::Feline(id) => self.felines.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, kind, blaster.wolf_attacker(), time), &mut e.feline.body)),
+            EntityKey::Trader(id) => self.wandering_traders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, kind, blaster.wolf_attacker(), time), &mut e.trader.body)),
+            EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, kind, blaster.villager_attacker(), time), &mut e.villager.body)),
             EntityKey::Cow(id) => self.cows.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.cow.body)),
             EntityKey::Sheep(id) => self.sheep.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.body)),
             EntityKey::Pig(id) => self.pigs.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.pig.body)),
@@ -3019,7 +3039,7 @@ impl EntityWorld {
             EntityKey::Illager(id) => self.illagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.illager.body)),
             EntityKey::Vex(id) => self.vexes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.vex.body)),
             EntityKey::Ravager(id) => self.ravagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.ravager.body)),
-            EntityKey::Wither(id) => self.withers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_typed(damage, blaster.damage_type(), blaster_undead, false), &mut e.wither.body)),
+            EntityKey::Wither(id) => self.withers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_typed(damage, kind, blaster_undead, false), &mut e.wither.body)),
             EntityKey::Strider(id) => self.striders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.strider.body)),
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.hoglin.body)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.piglin.body)),
@@ -3047,6 +3067,30 @@ impl EntityWorld {
                 self.note_hoglin_hurt(id, crate::monster_ai::Target::Player(player));
             }
             self.credit(id, result, "minecraft:player", true);
+        }
+        Some(result)
+    }
+
+    pub fn firework_blast(&mut self, owner: FireworkOwner, id: u64, damage: f32, at: DVec3) -> Option<DamageResult> {
+        let key = *self.order.iter().find(|key| key.id() == id)?;
+        self.blast_target(key)?;
+        let blaster = match owner {
+            FireworkOwner::Mob(mob) => Blaster::Mob(mob),
+            FireworkOwner::Player(player) => Blaster::Player(player),
+            FireworkOwner::Nobody => Blaster::Nobody,
+        };
+        let result = self.hurt_by_typed_blast(key, damage, DVec3::ZERO, blaster, "minecraft:fireworks")?;
+        if let FireworkOwner::Player(player) = owner {
+            if result.applied {
+                self.blasted_by_player(key, player);
+                self.note_hoglin_hurt(id, crate::monster_ai::Target::Player(player));
+            }
+            self.credit(id, result, "minecraft:player", true);
+        }
+        if result.applied && result.full {
+            if let Some((body, _)) = self.mob_body(id) {
+                self.knock_back(id, f64::from(0.4_f32), at.x - body.position.x, at.z - body.position.z);
+            }
         }
         Some(result)
     }
