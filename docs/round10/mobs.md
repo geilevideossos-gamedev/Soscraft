@@ -48,7 +48,7 @@ A MW2 bullet finds a mob through one number: the kind in the top byte, the entit
 | 19 | Panda | jungles (dormant today) | spawn row with the animal rules | genes and personalities, bamboo, sneeze, roll | L | `pandas` | 52 | left | |
 | 20 | Turtle | beaches (dormant today) | size row; zombies' baby-turtle target slot | home beach, eggs hatching, scute | L | `turtles` | 53 | left | |
 | 21 | Armadillo | savanna, badlands (dormant today) | spawn row and finalize | brain, roll up, scute and brushing, keyframes | M | `armadillos` | 54 | left | |
-| 22 | Polar bear | frozen biomes (dormant today) | size row | defends cubs, standing attack | M | `polar_bears` | 55 | left | |
+| 22 | Polar bear | frozen biomes (live, not spawned naturally yet) | size row; `polar_bears` family: saved, loaded, hatched and seen by friends (standing through `FamilyShow`); panic (cubs from any hit, adults from fire), cubs following adults, the standing warning and the six-point swipe, hit cubs calling adults, attacking players near cubs, hunting foxes, `NeutralMob` anger saved with `angry_at`, the cub's own ambient sound, the golden dandelion lock | the spawn row, the models, `mustReach`, the 0.98 water slow-down, the standing bear's taller box, freeze immunity | M | `polar_bears` | 55 | live | 4d6f6a32, "Minecraft polar bears live, defend their cubs and stand up to strike" (M1 `polar-bears-live`) |
 | 46 | Sniffer | sniffer eggs | | egg hatching, digging seeds, brain, keyframes | M | `sniffers` | 56 | left | |
 | 44 | Bee | flower forests, plains, nests | generator places nests with bees | flying (P3 from D0), nests and hives, pollination, honey, anger | L | `bees` | 57 | left | |
 

@@ -1,4 +1,5 @@
 use crate::feline_ai::find_nearest_block;
+use crate::follow_parent::{CowCandidate, FollowParentState};
 use crate::goals::{Control, Controls, Goal};
 use crate::monster_ai::{MonsterGoalContext, is_enemy};
 use crate::navigation::{navigate_walk_to, navigate_walk_to_entity};
@@ -27,6 +28,16 @@ pub const MOVE_TO_BLOCK_GIVE_UP_TICKS: i32 = 1200;
 pub const MOVE_TO_BLOCK_STAY_TICKS: i32 = 1200;
 pub const MOVE_TO_BLOCK_RECALCULATE: i32 = 40;
 pub const MOVE_TO_BLOCK_ACCEPTED_DISTANCE: f64 = 1.0;
+pub const PANIC_ENVIRONMENTAL_CAUSES: [&str; 8] = [
+    "minecraft:cactus",
+    "minecraft:freeze",
+    "minecraft:hot_floor",
+    "minecraft:sulfur_cube_hot",
+    "minecraft:in_fire",
+    "minecraft:lava",
+    "minecraft:lightning_bolt",
+    "minecraft:on_fire",
+];
 pub const NOT_MONSTERS: [&str; 7] = [
     "minecraft:ghast",
     "minecraft:slime",
@@ -39,6 +50,10 @@ pub const NOT_MONSTERS: [&str; 7] = [
 
 pub fn is_monster_class(kind: &str) -> bool {
     is_enemy(kind) && !NOT_MONSTERS.contains(&kind)
+}
+
+pub fn panic_environmental_cause(kind: &str) -> bool {
+    PANIC_ENVIRONMENTAL_CAUSES.contains(&kind)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,6 +88,10 @@ pub struct AnimalGoals {
     pub partner: Option<u64>,
     pub love_time: i32,
     pub breed_with: Option<u64>,
+    pub id: u64,
+    pub age: i32,
+    pub kin: Vec<CowCandidate>,
+    pub follow_parent: FollowParentState,
 }
 
 pub trait AnimalExtra: Any + Clone + Send {
@@ -390,6 +409,105 @@ impl<E: AnimalExtra> Goal<MonsterGoalContext> for BreedGoal<E> {
                 animal.breed_with = Some(partner.id);
             }
         }
+    }
+}
+
+pub struct FollowParentGoal<E> {
+    pub speed: f64,
+    extra: PhantomData<fn() -> E>,
+}
+
+impl<E> Clone for FollowParentGoal<E> {
+    fn clone(&self) -> Self {
+        Self {
+            speed: self.speed,
+            extra: PhantomData,
+        }
+    }
+}
+
+impl<E: AnimalExtra> FollowParentGoal<E> {
+    pub fn new(speed: f64) -> Self {
+        Self {
+            speed,
+            extra: PhantomData,
+        }
+    }
+
+    fn child(ctx: &MonsterGoalContext, animal: &AnimalGoals) -> CowCandidate {
+        CowCandidate {
+            id: animal.id,
+            position: ctx.body.position,
+            width: ctx.body.width,
+            height: ctx.body.height,
+            age: animal.age,
+            alive: true,
+            in_love: 0,
+            panicking: false,
+        }
+    }
+}
+
+impl<E: AnimalExtra> Goal<MonsterGoalContext> for FollowParentGoal<E> {
+    fn controls(&self) -> Controls {
+        Controls::new(&[])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        let Some(animal) = animal::<E>(&ctx.extra) else {
+            return false;
+        };
+        let child = Self::child(ctx, animal);
+        let Some(animal) = animal_mut::<E>(&mut ctx.extra) else {
+            return false;
+        };
+        let AnimalGoals {
+            follow_parent, kin, ..
+        } = animal;
+        follow_parent.can_use(child, kin)
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        let Some(animal) = animal::<E>(&ctx.extra) else {
+            return false;
+        };
+        let child = Self::child(ctx, animal);
+        animal.follow_parent.can_continue(child, &animal.kin)
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(animal) = animal_mut::<E>(&mut ctx.extra) {
+            animal.follow_parent.start();
+        }
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        if let Some(animal) = animal_mut::<E>(&mut ctx.extra) {
+            animal.follow_parent.stop();
+        }
+    }
+
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let parent = animal_mut::<E>(&mut ctx.extra).and_then(|animal| {
+            let AnimalGoals {
+                follow_parent, kin, ..
+            } = animal;
+            follow_parent.tick(kin)
+        });
+        let Some(parent) = parent else {
+            return;
+        };
+        let profile = ctx.profile();
+        let _ = navigate_walk_to_entity(
+            &ctx.body,
+            &mut ctx.navigation,
+            world,
+            &profile,
+            ctx.fluid,
+            parent,
+            self.speed,
+            1,
+        );
     }
 }
 
