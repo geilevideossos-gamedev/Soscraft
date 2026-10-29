@@ -992,7 +992,11 @@ mod tests {
         let died = |x: f64| vibrations.catalyst_near(DVec3::new(x, 64.0, 8.5));
         assert_eq!(died(8.5), Some((4, 64, 8)), "four blocks against six");
         assert_eq!(died(10.5), Some((14, 64, 8)));
-        assert_eq!(died(9.6), Some((14, 64, 8)), "the same block distance: the nearer centre");
+        assert_eq!(
+            died(9.6),
+            Some((14, 64, 8)),
+            "the same block distance: the nearer centre"
+        );
         assert_eq!(died(22.4), Some((14, 64, 8)), "eight blocks away");
         assert_eq!(died(23.5), None, "nine blocks away");
         assert_eq!(died(-20.0), None);

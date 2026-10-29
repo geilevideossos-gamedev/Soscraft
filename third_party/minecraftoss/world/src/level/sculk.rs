@@ -5,7 +5,9 @@ use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::pos::Direction;
 use minecraftoss_core::random::RandomSource;
 use minecraftoss_core::{BlockPos, BlockStateId};
-use minecraftoss_generator::feature::kinds::sculk::{add_cursors, Cursor, SculkSpreader, SpreadEffects, CHARGE_EVENT, MAX_CHARGE, MAX_CURSORS};
+use minecraftoss_generator::feature::kinds::sculk::{
+    CHARGE_EVENT, Cursor, MAX_CHARGE, MAX_CURSORS, SculkSpreader, SpreadEffects, add_cursors,
+};
 use std::collections::BTreeMap;
 
 pub const SENSOR_ACTIVE_TICKS: i32 = 30;
@@ -252,7 +254,9 @@ impl Level<'_> {
     }
 
     fn shrieker_can_respond_as(&self, state: BlockStateId) -> bool {
-        self.sensor_property(state, CAN_SUMMON) == Some("true") && self.difficulty != 0 && self.spawn_wardens
+        self.sensor_property(state, CAN_SUMMON) == Some("true")
+            && self.difficulty != 0
+            && self.spawn_wardens
     }
 
     pub fn shrieker_can_respond(&self, pos: BlockPos) -> bool {
@@ -331,7 +335,12 @@ impl Level<'_> {
             .and_then(|tag| tag.get(CURSORS))
             .and_then(Tag::as_list);
         saved
-            .map(|list| list.iter().filter_map(cursor_from_tag).take(MAX_CURSORS).collect())
+            .map(|list| {
+                list.iter()
+                    .filter_map(cursor_from_tag)
+                    .take(MAX_CURSORS)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -768,14 +777,21 @@ mod tests {
         let mut level = level(&lib);
         shrieker(&mut level, "minecraft:sculk_shrieker[can_summon=true]", 1);
         level.set_block(SHRIEKER, BlockStateId::AIR, update::ALL, update::LIMIT);
-        assert!(level.shrieker_responses.is_empty(), "a quiet one says nothing");
+        assert!(
+            level.shrieker_responses.is_empty(),
+            "a quiet one says nothing"
+        );
         shrieker(&mut level, "minecraft:sculk_shrieker[can_summon=true]", 1);
         level.sculk_shriek(SHRIEKER, None);
         ticks(&mut level, 10);
         level.set_block(SHRIEKER, BlockStateId::AIR, update::ALL, update::LIMIT);
         assert_eq!(level.shrieker_responses, vec![(SHRIEKER, 1)]);
         ticks(&mut level, SHRIEK_TICKS);
-        assert_eq!(level.shrieker_responses.len(), 1, "its tick finds no shrieker");
+        assert_eq!(
+            level.shrieker_responses.len(),
+            1,
+            "its tick finds no shrieker"
+        );
     }
 
     fn found(level: &Level<'_>, name: &str) -> Vec<BlockPos> {
@@ -803,15 +819,29 @@ mod tests {
         level.add_catalyst_cursors(catalyst, death, 2500);
         let cursors = level.catalyst_cursors(catalyst);
         assert_eq!(
-            cursors.iter().map(|cursor| (cursor.pos, cursor.charge)).collect::<Vec<_>>(),
+            cursors
+                .iter()
+                .map(|cursor| (cursor.pos, cursor.charge))
+                .collect::<Vec<_>>(),
             vec![(death, 1000), (death, 1000), (death, 500)],
             "a charge above 1000 splits"
         );
-        let saved = level.block_entity(catalyst).and_then(|tag| tag.get(CURSORS)).cloned().unwrap();
+        let saved = level
+            .block_entity(catalyst)
+            .and_then(|tag| tag.get(CURSORS))
+            .cloned()
+            .unwrap();
         let first = &saved.as_list().unwrap()[0];
-        assert_eq!(first.get("pos").and_then(Tag::as_ints), Some(vec![7, 65, 4]));
+        assert_eq!(
+            first.get("pos").and_then(Tag::as_ints),
+            Some(vec![7, 65, 4])
+        );
         assert_eq!(first.get("charge").and_then(Tag::as_i64), Some(1000));
-        assert!(first.get("decay_delay").is_none() && first.get("update_delay").is_none() && first.get("facings").is_none());
+        assert!(
+            first.get("decay_delay").is_none()
+                && first.get("update_delay").is_none()
+                && first.get("facings").is_none()
+        );
         let travelled = Cursor {
             pos: BlockPos::new(1, 2, 3),
             charge: 40,
@@ -835,12 +865,39 @@ mod tests {
         assert!(spent, "the charge runs out");
         let sculk = found(&level, "minecraft:sculk");
         assert!(sculk.len() >= 5, "{} sculk blocks", sculk.len());
-        assert!(sculk.iter().all(|pos| pos.y == 64), "the stone floor turns to sculk");
-        assert!(level.level_events.iter().any(|&(id, _, data)| id == CHARGE_EVENT && data > 0), "charges glow");
-        assert!(level.level_events.iter().any(|&(id, _, data)| id == CHARGE_EVENT && data == 0), "and pop when spent");
-        assert!(level.sounds.iter().any(|sound| sound.event == "minecraft:block.sculk.spread"));
-        let growths: Vec<BlockPos> = found(&level, "minecraft:sculk_sensor").into_iter().chain(found(&level, "minecraft:sculk_shrieker")).collect();
-        assert!(growths.iter().all(|pos| pos.y == 65 && (pos.x - catalyst.x).pow(2) + (pos.z - catalyst.z).pow(2) >= 16), "no growth within four blocks: {growths:?}");
+        assert!(
+            sculk.iter().all(|pos| pos.y == 64),
+            "the stone floor turns to sculk"
+        );
+        assert!(
+            level
+                .level_events
+                .iter()
+                .any(|&(id, _, data)| id == CHARGE_EVENT && data > 0),
+            "charges glow"
+        );
+        assert!(
+            level
+                .level_events
+                .iter()
+                .any(|&(id, _, data)| id == CHARGE_EVENT && data == 0),
+            "and pop when spent"
+        );
+        assert!(
+            level
+                .sounds
+                .iter()
+                .any(|sound| sound.event == "minecraft:block.sculk.spread")
+        );
+        let growths: Vec<BlockPos> = found(&level, "minecraft:sculk_sensor")
+            .into_iter()
+            .chain(found(&level, "minecraft:sculk_shrieker"))
+            .collect();
+        assert!(
+            growths.iter().all(|pos| pos.y == 65
+                && (pos.x - catalyst.x).pow(2) + (pos.z - catalyst.z).pow(2) >= 16),
+            "no growth within four blocks: {growths:?}"
+        );
     }
 
     #[test]
@@ -848,9 +905,15 @@ mod tests {
         let Some(lib) = library() else { return };
         let level = level(&lib);
         let runtime = SculkSpreader::new(level.registries(), false).unwrap();
-        assert_eq!(level.sensor_property(runtime.shrieker(), CAN_SUMMON), Some("false"));
+        assert_eq!(
+            level.sensor_property(runtime.shrieker(), CAN_SUMMON),
+            Some("false")
+        );
         let generated = SculkSpreader::new(level.registries(), true).unwrap();
-        assert_eq!(level.sensor_property(generated.shrieker(), CAN_SUMMON), Some("true"));
+        assert_eq!(
+            level.sensor_property(generated.shrieker(), CAN_SUMMON),
+            Some("true")
+        );
     }
 
     #[test]
@@ -859,13 +922,17 @@ mod tests {
         let mut level = level(&lib);
         place(&mut level, SHRIEKER, "minecraft:sculk_catalyst");
         level.sounds.clear();
-        let bloom = |level: &Level<'_>| level.sensor_property(level.block(SHRIEKER), BLOOM) == Some("true");
+        let bloom =
+            |level: &Level<'_>| level.sensor_property(level.block(SHRIEKER), BLOOM) == Some("true");
         level.sculk_bloom(SHRIEKER);
         assert!(bloom(&level));
         assert_eq!(level.catalyst_blooms, vec![SHRIEKER]);
         assert_eq!(level.sounds.len(), 1);
         let sound = &level.sounds[0];
-        assert_eq!((sound.event, sound.pos, sound.volume), (BLOOM_SOUND, centre(SHRIEKER), 2.0));
+        assert_eq!(
+            (sound.event, sound.pos, sound.volume),
+            (BLOOM_SOUND, centre(SHRIEKER), 2.0)
+        );
         assert!((0.6..1.0).contains(&sound.pitch));
         ticks(&mut level, BLOOM_TICKS - 1);
         assert!(bloom(&level));

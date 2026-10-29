@@ -475,6 +475,17 @@ Combined kit for the group (steps w23 to w26; 20 stacks):
 IW4L_MINECRAFT_KIT=minecraft:sculk_shrieker*8,minecraft:sculk_sensor*16,minecraft:sculk_catalyst*4,minecraft:sculk*64,minecraft:cow_spawn_egg*16,minecraft:chicken_spawn_egg*8,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:white_wool*32,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:totem_of_undying,minecraft:ender_pearl*16,minecraft:snowball*16,minecraft:experience_bottle*16
 ```
 
+## Review of segment w1
+
+### 1. Track W's new sculk files pass rustfmt
+
+After 6fb428f4 ("Minecraft sculk spreads from catalysts like vanilla").
+
+- **Cause:** two files this track added failed the new-file rule (`git show :<path> | rustfmt --check` must print nothing): `crates/minecraft_terrain/src/vibrations.rs` (one assert of `the_nearest_catalyst_within_eight_takes_a_death`, from the catalyst commit) and vendored `world/src/level/sculk.rs` (its generator import, `shrieker_can_respond_as`, `catalyst_cursors` and several catalyst and shrieker test lines, from the shriekers-catalysts commits).
+- **Changed:** both files formatted with rustfmt (the repo's `rustfmt.toml`); no code changed. Every other new file of the track already passed.
+- **Tests:** none added (formatting only); `level::sculk::tests` (12) and `vibrations::tests` (11) pass, `check -p launcher` is green.
+- **Test steps:** none (no behaviour changed).
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -498,6 +509,8 @@ Group shriekers-catalysts, commit 1: no message or codec change. The shriek reac
 Group shriekers-catalysts, commit 2: `EntitySnapshot` (inside `ToClient::Bursts` and the state frames) gains `sculk_souls: Vec<DVec3>`; it rides in the protocol bump group vibrations already needs at the release. `Command::AwardExperience` stays on the host.
 
 Group shriekers-catalysts, commit 3: no message or codec change (the 3006 events travel as `ToClient::LevelEvent`, the cursors in the catalyst's block entity).
+
+Review of segment w1: no message or codec change.
 
 ## State doc changes
 
