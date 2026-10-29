@@ -1,3 +1,4 @@
+use crate::firework::{Explosion, Fireworks};
 use crate::thrown::ThrownView;
 use glam::DVec3;
 use minecraftoss_player::World;
@@ -19,7 +20,7 @@ pub const HORIZONTAL_SPEED_UP: f64 = 1.15;
 pub struct Burst {
     pub position: DVec3,
     pub velocity: DVec3,
-    pub colors: Vec<i32>,
+    pub explosions: Vec<Explosion>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,15 +29,31 @@ pub enum RocketEvent {
     Exploded,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RocketOwner {
+    Mob(u64),
+    Player(u64),
+    Nobody,
+}
+
+impl RocketOwner {
+    pub fn mob(self) -> Option<u64> {
+        match self {
+            Self::Mob(id) => Some(id),
+            Self::Player(_) | Self::Nobody => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rocket {
-    pub owner: Option<u64>,
+    pub owner: RocketOwner,
     pub previous: DVec3,
     pub position: DVec3,
     pub velocity: DVec3,
     pub life: i32,
     pub lifetime: i32,
-    pub colors: Vec<i32>,
+    pub explosions: Vec<Explosion>,
     pub alive: bool,
 }
 
@@ -46,14 +63,14 @@ fn triangle(random: &mut LegacyRandom, deviation: f64) -> f64 {
 
 impl Rocket {
     pub fn launch(
-        owner: Option<u64>,
+        owner: RocketOwner,
         position: DVec3,
-        colors: Vec<i32>,
-        flight: i32,
+        fireworks: Fireworks,
         random: &mut LegacyRandom,
     ) -> Self {
         let x = triangle(random, SPREAD);
         let z = triangle(random, SPREAD);
+        let flight = fireworks.flight;
         let lifetime = 10 * (1 + flight) + random.next_int(6) as i32 + random.next_int(7) as i32;
         Self {
             owner,
@@ -62,7 +79,7 @@ impl Rocket {
             velocity: DVec3::new(x, RISE, z),
             life: 0,
             lifetime,
-            colors,
+            explosions: fireworks.explosions,
             alive: true,
         }
     }
@@ -93,7 +110,7 @@ impl Rocket {
         Burst {
             position: self.position,
             velocity: self.velocity,
-            colors: self.colors.clone(),
+            explosions: self.explosions.clone(),
         }
     }
 
@@ -111,8 +128,11 @@ impl Rocket {
     }
 
     pub fn damage_to(&self, world: &dyn World, feet: DVec3, height: f64) -> Option<f32> {
-        let explosions = 1;
-        let strength = 5.0_f32 + (explosions * 2) as f32;
+        let stars = self.explosions.len();
+        if stars == 0 {
+            return None;
+        }
+        let strength = 5.0_f32 + (stars * 2) as f32;
         if self.position.distance_squared(feet) > BLAST_RADIUS * BLAST_RADIUS {
             return None;
         }
@@ -147,12 +167,15 @@ mod tests {
     }
 
     fn rocket(flight: i32, seed: u64) -> Rocket {
+        starred(flight, seed, vec![Explosion::burst(15790320)])
+    }
+
+    fn starred(flight: i32, seed: u64, explosions: Vec<Explosion>) -> Rocket {
         let mut random = LegacyRandom::new(seed);
         Rocket::launch(
-            Some(3),
+            RocketOwner::Mob(3),
             DVec3::new(0.5, 65.62, 0.5),
-            vec![15790320],
-            flight,
+            Fireworks { flight, explosions },
             &mut random,
         )
     }
@@ -189,7 +212,7 @@ mod tests {
         let risen = RISE * n + LIFT * n * (n + 1.0) / 2.0;
         assert!((rocket.position.y - (65.62 + risen)).abs() < 1e-9);
         let burst = rocket.burst();
-        assert_eq!(burst.colors, [15790320]);
+        assert_eq!(burst.explosions, [Explosion::burst(15790320)]);
         assert!(burst.velocity.y > RISE);
     }
 
@@ -231,5 +254,33 @@ mod tests {
                 .is_none()
         );
         assert!(is_rocket(&rocket.view()));
+    }
+
+    #[test]
+    fn a_starless_rocket_hurts_no_one_and_each_star_adds_two() {
+        let world = Sky { roof: None };
+        let feet = DVec3::new(0.5, 64.0, 0.5);
+        let mut plain = starred(1, 1, Vec::new());
+        plain.position = feet;
+        assert_eq!(plain.damage_to(&world, feet, 1.8), None);
+        assert!(plain.burst().explosions.is_empty());
+        let stars = vec![
+            Explosion::burst(15790320),
+            Explosion {
+                shape: crate::firework::Shape::SmallBall,
+                ..Explosion::burst(2437522)
+            },
+            Explosion {
+                shape: crate::firework::Shape::LargeBall,
+                ..Explosion::burst(14602026)
+            },
+        ];
+        let mut three = starred(0, 1, stars);
+        three.position = feet;
+        assert_eq!(three.damage_to(&world, feet, 1.8), Some(11.0));
+        let mut one = rocket(0, 1);
+        one.position = feet;
+        assert_eq!(one.damage_to(&world, feet, 1.8), Some(7.0));
+        assert_eq!(three.burst().explosions.len(), 3);
     }
 }

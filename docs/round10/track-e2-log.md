@@ -6,7 +6,7 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 
 ## Protocol
 
-No commit of this track has changed a `ToClient` or `ToServer` message or the codec yet.
+- Group `fw-burst`, commit 1 ("Minecraft firework rockets carry their stars"): `firework_rocket::Burst` (inside `EntitySnapshot.firework_bursts`, sent to friends in the `ToClient::Bursts` blob) carries `explosions: Vec<firework::Explosion>` instead of `colors: Vec<i32>`. The release step bumps `PROTOCOL`.
 
 ## Group ti1-targets-and-hurt
 
@@ -611,3 +611,32 @@ After d5559520.
 ```
 IW4L_MINECRAFT_KIT=minecraft:cat_spawn_egg*4,minecraft:cod*64,minecraft:chest*4,minecraft:cooked_beef*16
 ```
+
+## Group fw-burst
+
+### 1. Minecraft firework rockets carry their stars
+
+After 2dc233c9.
+
+- **Vanilla (26.3, checked with javap):**
+  - `FireworkRocketEntity.dealExplosionDamage`: the strength is `5.0F + explosions.size() * 2`; with no stars it is 0 and nobody is hurt. Every other `LivingEntity` within 5 blocks (feet to rocket) whose feet or middle the rocket sees takes `strength * sqrt((5 - distance) / 5)`.
+  - `ClientLevel.createFireworks`: with no stars the client adds `poof` particles at the rocket with motion `(gaussian * 0.05, 0.005, gaussian * 0.05)` while `i < random.nextInt(3) + 2`, the bound drawn again on every pass (so 2 to 4 puffs), and no sound and no `Starter`.
+  - `minecraft:fireworks {flight_duration, explosions}` and `minecraft:firework_explosion {shape, colors, fade_colors, has_trail, has_twinkle}`; the shapes are `small_ball`, `large_ball`, `star`, `creeper` and `burst`; at most 256 explosions. `Codec.BOOL` reads a number as `byteValue() != 0`.
+- **Changed:**
+  - `minecraft_terrain/src/firework.rs`: `Shape`, `Explosion { shape, colors, fade_colors, trail, twinkle }` (`Explosion::from_json`, `Explosion::burst(color)` for a villager's one-colour BURST star) and `Fireworks { flight, explosions }`, read from a stack by `fireworks(stack)`. `has_trail` and `has_twinkle` may be a bool or a number; an explosion with an unknown shape is skipped.
+  - `minecraft_terrain/src/firework_rocket.rs`: `Rocket` keeps `explosions` and `owner: RocketOwner { Mob, Player, Nobody }` (it was `Option<u64>` and the colours of one star). `Rocket::launch(owner, position, fireworks, random)`. `damage_to` uses `5 + 2 * stars` and returns `None` with no stars. `Burst` carries `explosions` instead of `colors`.
+  - `minecraft_terrain/src/firework_particles.rs`: the burst takes its spark colours from all its stars (the drawing is unchanged until `fw-shapes`); new `FireworkParticles::poofs()`, the puff motions of a starless burst.
+  - `minecraft_survival/src/entity_view.rs` (the firework loop in `bursts()`): a starless burst adds those `poof` particles and plays no bang.
+  - `minecraft_terrain/src/server.rs`: a celebrating villager's rocket is `RocketOwner::Mob` with one `Explosion::burst` star; a rocket's `PlayerHit.source` is its mob owner.
+  - The `Burst` sent to friends changed (see Protocol); no `PROTOCOL` bump.
+- **Tests:**
+  - `firework::tests::a_rocket_carries_the_stars_of_its_fireworks`: a plain rocket (flight 1, no stars), a two-star rocket read from JSON with a number trail and a bool twinkle, an unknown shape skipped, a star with no colours, a removed component, and the villager star.
+  - `firework_rocket::tests::a_starless_rocket_hurts_no_one_and_each_star_adds_two`: no damage and no stars in the burst without stars, 7 at the centre with one star and 11 with three.
+  - `firework_particles::tests::a_starless_burst_puffs_two_to_four_times_and_rises_slowly` (2, 3 and 4 puffs all happen over 200 bursts, each rising 0.005, with no sparks).
+  - `entity_view::tests::a_starless_firework_burst_only_puffs` (no sound, no sparks, 2 to 4 ambient puffs).
+  - `server::tests::a_villager_s_rocket_climbs_bursts_under_a_roof_and_hurts_who_is_near` and the other rocket and burst tests pass, with the stars in place of the colours.
+- **Decisions:**
+  - The puffs use the burst view's own random (vanilla uses the client level's random).
+  - A starred burst still draws today's BURST sparks in all its stars' colours, and a star without colours still draws black, until group `fw-shapes`.
+- **Test steps:** nothing new to see yet. The only rockets in game are those of villagers celebrating a won raid, and they look and hurt as before (one star). Starred and plain rockets from the kit come with group `fw-launch` (steps FW-1 to FW-4 of the brief).
+- **Kit:** none.

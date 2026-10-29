@@ -8,6 +8,105 @@ pub const LAUNCH_VOLUME: f32 = 3.0;
 const FIREWORKS: &str = "minecraft:fireworks";
 const REMOVED_FIREWORKS: &str = "!minecraft:fireworks";
 const DEFAULT_FLIGHT: i32 = 1;
+const MAX_EXPLOSIONS: usize = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Shape {
+    SmallBall,
+    LargeBall,
+    Star,
+    Creeper,
+    Burst,
+}
+
+impl Shape {
+    pub fn of(name: &str) -> Option<Self> {
+        match name {
+            "small_ball" => Some(Self::SmallBall),
+            "large_ball" => Some(Self::LargeBall),
+            "star" => Some(Self::Star),
+            "creeper" => Some(Self::Creeper),
+            "burst" => Some(Self::Burst),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Explosion {
+    pub shape: Shape,
+    pub colors: Vec<i32>,
+    pub fade_colors: Vec<i32>,
+    pub trail: bool,
+    pub twinkle: bool,
+}
+
+impl Explosion {
+    pub fn burst(color: i32) -> Self {
+        Self {
+            shape: Shape::Burst,
+            colors: vec![color],
+            fade_colors: Vec::new(),
+            trail: false,
+            twinkle: false,
+        }
+    }
+
+    pub fn from_json(value: &Value) -> Option<Self> {
+        let shape = Shape::of(value.get("shape")?.as_str()?)?;
+        let colors = |key: &str| -> Vec<i32> {
+            value
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(Value::as_i64)
+                        .map(|c| c as i32)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let flag = |key: &str| {
+            value.get(key).is_some_and(|flag| {
+                flag.as_bool()
+                    .unwrap_or_else(|| flag.as_i64().is_some_and(|n| n as i8 != 0))
+            })
+        };
+        Some(Self {
+            shape,
+            colors: colors("colors"),
+            fade_colors: colors("fade_colors"),
+            trail: flag("has_trail"),
+            twinkle: flag("has_twinkle"),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Fireworks {
+    pub flight: i32,
+    pub explosions: Vec<Explosion>,
+}
+
+pub fn fireworks(stack: &ItemStack) -> Fireworks {
+    let explosions = stack
+        .components
+        .as_ref()
+        .and_then(|patch| patch.get(FIREWORKS))
+        .and_then(|fireworks| fireworks.get("explosions"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .take(MAX_EXPLOSIONS)
+                .filter_map(Explosion::from_json)
+                .collect()
+        })
+        .unwrap_or_default();
+    Fireworks {
+        flight: flight_duration(stack),
+        explosions,
+    }
+}
 
 pub fn flight_duration(stack: &ItemStack) -> i32 {
     let patch = stack.components.as_ref().and_then(Value::as_object);
@@ -79,6 +178,60 @@ mod tests {
         assert_eq!(
             flight_duration(&rocket(Some(json!({"!minecraft:fireworks": {}})))),
             0
+        );
+    }
+
+    #[test]
+    fn a_rocket_carries_the_stars_of_its_fireworks() {
+        assert_eq!(fireworks(&rocket(None)), Fireworks { flight: 1, explosions: Vec::new() });
+        let starred = rocket(Some(json!({"minecraft:fireworks": {
+            "flight_duration": 2,
+            "explosions": [
+                {"shape": "large_ball", "colors": [11743532], "has_trail": 1},
+                {"shape": "star", "colors": [14602026, 4312372], "fade_colors": [2437522], "has_twinkle": true},
+                {"shape": "square", "colors": [1]},
+                {"shape": "creeper", "has_trail": 0, "has_twinkle": false}
+            ]
+        }})));
+        let read = fireworks(&starred);
+        assert_eq!(read.flight, 2);
+        assert_eq!(
+            read.explosions,
+            vec![
+                Explosion {
+                    shape: Shape::LargeBall,
+                    colors: vec![11743532],
+                    fade_colors: Vec::new(),
+                    trail: true,
+                    twinkle: false
+                },
+                Explosion {
+                    shape: Shape::Star,
+                    colors: vec![14602026, 4312372],
+                    fade_colors: vec![2437522],
+                    trail: false,
+                    twinkle: true
+                },
+                Explosion {
+                    shape: Shape::Creeper,
+                    colors: Vec::new(),
+                    fade_colors: Vec::new(),
+                    trail: false,
+                    twinkle: false
+                },
+            ]
+        );
+        let removed = rocket(Some(json!({"!minecraft:fireworks": {}})));
+        assert_eq!(fireworks(&removed), Fireworks::default());
+        assert_eq!(
+            Explosion::burst(2437522),
+            Explosion {
+                shape: Shape::Burst,
+                colors: vec![2437522],
+                fade_colors: Vec::new(),
+                trail: false,
+                twinkle: false
+            }
         );
     }
 

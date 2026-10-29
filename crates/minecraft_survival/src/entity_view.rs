@@ -319,6 +319,12 @@ impl EntityView {
             self.ambient.add(kind, at, DVec3::ZERO);
         }
         for burst in std::mem::take(&mut snapshot.firework_bursts) {
+            if burst.explosions.is_empty() {
+                for motion in self.fireworks.poofs() {
+                    self.ambient.add(minecraft_terrain::ambient_particles::Kind::Poof, burst.position, motion);
+                }
+                continue;
+            }
             let (event, volume, pitch) = self.fireworks.burst(&burst, self.firework_camera);
             self.sounds.push((event.to_owned(), burst.position, volume, pitch));
         }
@@ -1484,7 +1490,7 @@ mod tests {
     fn a_firework_burst_bangs_and_sparkles_for_whoever_sees_it() {
         use minecraft_terrain::firework_rocket::{Burst, BLAST_FAR_SOUND, BLAST_SOUND};
         let mut view = EntityView::new(3);
-        let burst = Burst { position: DVec3::new(0.5, 80.0, 0.5), velocity: DVec3::new(0.0, 0.9, 0.0), colors: vec![4312372] };
+        let burst = Burst { position: DVec3::new(0.5, 80.0, 0.5), velocity: DVec3::new(0.0, 0.9, 0.0), explosions: vec![minecraft_terrain::firework::Explosion::burst(4312372)] };
         let mut snapshot = EntitySnapshot { firework_bursts: vec![burst.clone()], ..EntitySnapshot::default() };
         view.bursts(&mut snapshot);
         assert!(snapshot.firework_bursts.is_empty());
@@ -1494,6 +1500,18 @@ mod tests {
         let mut near = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
         view.bursts(&mut near);
         assert_eq!(view.sounds.last().map(|(event, ..)| event.as_str()), Some(BLAST_SOUND));
+    }
+
+    #[test]
+    fn a_starless_firework_burst_only_puffs() {
+        use minecraft_terrain::firework_rocket::Burst;
+        let mut view = EntityView::new(3);
+        let burst = Burst { position: DVec3::new(0.5, 80.0, 0.5), velocity: DVec3::new(0.0, 0.9, 0.0), explosions: Vec::new() };
+        let mut snapshot = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
+        view.bursts(&mut snapshot);
+        assert!(view.sounds.is_empty(), "no bang");
+        assert_eq!(view.fireworks.len(), 0, "no sparks");
+        assert!((2..=4).contains(&view.ambient.len()), "{}", view.ambient.len());
     }
 
     #[test]

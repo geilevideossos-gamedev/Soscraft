@@ -1434,7 +1434,7 @@ impl ServerSim {
         };
         for (id, damage) in damages {
             match crate::thrown::struck_player(id) {
-                Some(player) => self.rocket_hits.push(minecraftoss_entities::world::PlayerHit { player_id: player, damage, kind: minecraftoss_entities::world::PlayerHitKind::Fireworks { at: rocket.position }, source: rocket.owner }),
+                Some(player) => self.rocket_hits.push(minecraftoss_entities::world::PlayerHit { player_id: player, damage, kind: minecraftoss_entities::world::PlayerHitKind::Fireworks { at: rocket.position }, source: rocket.owner.mob() }),
                 None => {
                     self.mobs.player_blast(None, id, damage, rocket.position, 0.0);
                 }
@@ -1457,7 +1457,8 @@ impl ServerSim {
         }
         for launch in self.mobs.take_fireworks() {
             let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
-            self.rockets.push(crate::firework_rocket::Rocket::launch(Some(launch.villager), launch.position, vec![launch.color], launch.flight, &mut random));
+            let fireworks = crate::firework::Fireworks { flight: launch.flight, explosions: vec![crate::firework::Explosion::burst(launch.color)] };
+            self.rockets.push(crate::firework_rocket::Rocket::launch(crate::firework_rocket::RocketOwner::Mob(launch.villager), launch.position, fireworks, &mut random));
         }
         for gift in self.mobs.take_hero_gifts() {
             let Some(stacks) = self.entity_loot.as_mut().and_then(|loot| loot.roll_hero_gift(gift.table)) else { continue };
@@ -12889,7 +12890,8 @@ mod tests {
         let pillager = server.mobs.illagers()[0].id;
         let health = server.mobs.illagers()[0].illager.health;
         let mut random = minecraftoss_player::rng::LegacyRandom::new(2);
-        server.rockets.push(crate::firework_rocket::Rocket::launch(Some(77), glam::DVec3::new(8.5, 201.6, 8.5), vec![2437522], 1, &mut random));
+        let fireworks = crate::firework::Fireworks { flight: 1, explosions: vec![crate::firework::Explosion::burst(2437522)] };
+        server.rockets.push(crate::firework_rocket::Rocket::launch(crate::firework_rocket::RocketOwner::Mob(77), glam::DVec3::new(8.5, 201.6, 8.5), fireworks, &mut random));
         assert_eq!(server.rocket_views().len(), 1);
         assert!(crate::firework_rocket::is_rocket(&server.rocket_views()[0]));
         let player = crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(8.5, 200.0, 7.5), alive: true, spectator: false };
@@ -12902,7 +12904,7 @@ mod tests {
         assert!(ticks < 20, "the roof stops it early: {ticks}");
         assert!(server.level.sounds.iter().any(|s| s.event == crate::firework::LAUNCH_SOUND && s.volume == 3.0));
         assert_eq!(server.firework_bursts.len(), 1);
-        assert_eq!(server.firework_bursts[0].colors, [2437522]);
+        assert_eq!(server.firework_bursts[0].explosions, [crate::firework::Explosion::burst(2437522)]);
         assert!((server.firework_bursts[0].position.y - 204.0).abs() < 1e-6);
         let hits = server.take_rocket_hits();
         assert_eq!(hits.len(), 1);
