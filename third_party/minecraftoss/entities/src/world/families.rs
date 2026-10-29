@@ -521,6 +521,20 @@ pub struct MobTraits {
     pub vehicle_attachment: f64,
 }
 
+pub(in crate::world) type AiStep<W> = fn(
+    &mut MonsterAi,
+    &mut Body,
+    f32,
+    &mut LegacyRandom,
+    &mut Vec<(Voice, DVec3)>,
+    &mut i32,
+    DVec3,
+    i32,
+    u64,
+    &W,
+    &MonsterStep,
+) -> Option<f64>;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BaseTick {
     pub alive: bool,
@@ -1433,6 +1447,18 @@ impl EntityWorld {
         movement_speed: f64,
         ai: fn(&mut S) -> &mut MonsterAi,
     ) -> Option<Target> {
+        self.family_goal_step_with::<S, W>(id, level, players, movement_speed, ai, monster_ai_step)
+    }
+
+    pub(in crate::world) fn family_goal_step_with<S: Registered, W: World>(
+        &mut self,
+        id: u64,
+        level: &W,
+        players: &[PlayerCandidate],
+        movement_speed: f64,
+        ai: fn(&mut S) -> &mut MonsterAi,
+        run: AiStep<W>,
+    ) -> Option<Target> {
         let (game_time, difficulty) = (self.game_time, self.difficulty);
         let (griefing, bright) = (self.mob_griefing, self.bright_outside);
         let mobs = self.mob_candidates();
@@ -1459,7 +1485,7 @@ impl EntityWorld {
             movement_speed: core.effects.movement_speed(movement_speed),
             sounds,
         };
-        let landed = monster_ai_step(
+        let landed = run(
             ai,
             &mut core.body,
             core.health,

@@ -193,7 +193,7 @@ pub fn cat_targets() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(
         1,
-        NearestTargetGoal::every(Prey::Absent, false, 5).wild_only(),
+        NearestTargetGoal::every(Prey::Kinds(&["minecraft:rabbit"]), false, 5).wild_only(),
     );
     selector.add(
         1,

@@ -143,6 +143,9 @@ pub trait World {
     fn biome(&self, _pos: Pos) -> Option<String> {
         None
     }
+    fn biome_in_tag(&self, _pos: Pos, _tag: &str) -> bool {
+        false
+    }
     /// The block's collision boxes at `pos` in block-local units,
     /// `[min_x, min_y, min_z, max_x, max_y, max_z]` (`BlockState.getCollisionShape`
     /// in an empty context). The default knows a few authored shapes by name

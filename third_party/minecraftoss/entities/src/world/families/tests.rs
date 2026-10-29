@@ -3,7 +3,8 @@ use super::*;
 use crate::creeper::CreeperExplosion;
 use crate::effects::{EffectInstance, MobEffect};
 use crate::fireball::{Fireball, FireballKind, Shooter};
-use crate::monster_ai::{MonsterKind, Target};
+use crate::goals::Goal;
+use crate::monster_ai::{MeleeAttackGoal, MonsterKind, Target, TargetInfo};
 use crate::projectile::ArrowImpact;
 use minecraftoss_player::survival::EffectKind;
 use minecraftoss_player::{Block, Pos};
@@ -566,6 +567,92 @@ fn a_hurt_registered_monster_turns_on_its_attacker() {
     );
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct OwnStep {
+    hurt_by: Option<(Target, i32)>,
+    position: DVec3,
+    health: f32,
+    max_health: f32,
+    eye_height: f32,
+    movement_speed: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn own_step<W: World>(
+    ai: &mut MonsterAi,
+    body: &mut Body,
+    health: f32,
+    _random: &mut LegacyRandom,
+    _voices: &mut Vec<(Voice, DVec3)>,
+    _no_action_time: &mut i32,
+    _previous_position: DVec3,
+    _tick_count: i32,
+    _id: u64,
+    _level: &W,
+    step: &MonsterStep,
+) -> Option<f64> {
+    ai.state.extra.set(OwnStep {
+        hurt_by: ai.state.hurt_by,
+        position: body.position,
+        health,
+        max_health: ai.state.max_health,
+        eye_height: ai.state.eye_height,
+        movement_speed: step.movement_speed,
+    });
+    ai.yaw = 135.0;
+    ai.state.look_control.head_yaw = 60.0;
+    ai.state.hurt_by = Some((Target::Player(2), 40));
+    body.on_ground = true;
+    Some(8.0)
+}
+
+#[test]
+fn a_registered_mob_runs_its_own_ai_step_with_its_core_in_sync() {
+    let mut world = EntityWorld::default();
+    let field = Field::default();
+    let id = probe_at(&mut world, KIND, at(0.5));
+    probe_mut(&mut world, id).core.hurt_by = Some((Target::Player(1), 3));
+    probe_mut(&mut world, id).core.health = 9.0;
+    let players = [player_at(1, at(4.5))];
+    let strike = world.family_goal_step_with::<Probe, Field>(
+        id,
+        &field,
+        &players,
+        probe::SPEED,
+        |probe| &mut *probe.ai,
+        own_step::<Field>,
+    );
+    assert_eq!(strike, None);
+    let mob = probe(&world, id);
+    let seen = mob.state.ai.state.extra.get::<OwnStep>().cloned();
+    assert_eq!(
+        seen,
+        Some(OwnStep {
+            hurt_by: Some((Target::Player(1), 3)),
+            position: at(0.5),
+            health: 9.0,
+            max_health: probe::MAX_HEALTH,
+            eye_height: probe::EYE_HEIGHT,
+            movement_speed: probe::SPEED,
+        }),
+        "the step sees the core"
+    );
+    assert_eq!(mob.core.yaw, 135.0);
+    assert_eq!(mob.core.look.head_yaw, 60.0);
+    assert_eq!(mob.core.hurt_by, Some((Target::Player(2), 40)));
+    assert_eq!(
+        mob.core.health, 4.0,
+        "the eight blocks it fell hurt for five"
+    );
+    assert!(
+        world
+            .take_sounds()
+            .iter()
+            .any(|sound| sound.event == "entity.hostile.big_fall"),
+        "and sound like a monster's fall"
+    );
+}
+
 #[test]
 fn an_iron_golem_hunts_an_enemy_registered_mob() {
     for (kind, hunted) in [(KIND, true), (ANIMAL, false)] {
@@ -721,6 +808,102 @@ fn a_registered_monster_runs_its_goals_and_strikes_a_player() {
         Some(Target::Player(3)),
         "its targets stay"
     );
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct OwnCheck {
+    targets: Vec<Target>,
+    cooldowns: Vec<i32>,
+}
+
+fn own_check(ctx: &mut MonsterGoalContext, world: &dyn World, target: TargetInfo) {
+    let cooldown = ctx.melee.ticks_until_attack();
+    if ctx.melee.is_time_to_attack() && ctx.within_melee_range(target) && ctx.sees(world, target) {
+        ctx.melee.reset_attack_cooldown();
+        ctx.attack = Some(target.target);
+    }
+    let mut seen = ctx.extra.get::<OwnCheck>().cloned().unwrap_or_default();
+    seen.targets.push(target.target);
+    seen.cooldowns.push(cooldown);
+    ctx.extra.set(seen);
+}
+
+fn holds_back(_ctx: &mut MonsterGoalContext, _world: &dyn World, _target: TargetInfo) {}
+
+#[test]
+fn a_melee_goal_with_its_own_check_lands_hits_through_it() {
+    let field = Field::default();
+    let mut body = Body::new(at(0.5), probe::WIDTH, probe::HEIGHT);
+    body.on_ground = true;
+    let fresh = || {
+        let mut ctx = MonsterAi::of_kind(MonsterKind::Registered(KIND), &body, 0.0).state;
+        ctx.players = vec![player_at(1, at(1.5))];
+        ctx.target = Some(Target::Player(1));
+        ctx
+    };
+    let plain = MeleeAttackGoal {
+        hits: true,
+        raises_arms: false,
+        follow_unseen: true,
+        gives_up_in_light: false,
+        speed: 1.0,
+    };
+    let run = |goal: &mut dyn Goal<MonsterGoalContext>, ctx: &mut MonsterGoalContext| {
+        goal.start(ctx);
+        let mut hits = Vec::new();
+        for tick in 0..45 {
+            goal.tick_world(ctx, &field);
+            if let Some(target) = ctx.attack.take() {
+                hits.push((tick, target));
+            }
+        }
+        hits
+    };
+    let landed = vec![
+        (0, Target::Player(1)),
+        (20, Target::Player(1)),
+        (40, Target::Player(1)),
+    ];
+
+    let mut ctx = fresh();
+    let mut checked = plain.clone().checked(own_check);
+    assert_eq!(checked.controls(), plain.controls());
+    assert!(checked.every_tick() && checked.interruptible());
+    assert_eq!(
+        run(&mut checked, &mut ctx),
+        landed,
+        "its own check lands them"
+    );
+    let seen = ctx.extra.get::<OwnCheck>().cloned().unwrap();
+    assert_eq!(
+        seen.targets,
+        vec![Target::Player(1); 45],
+        "every tick, on its target"
+    );
+    assert_eq!(&seen.cooldowns[..3], &[0, 19, 18]);
+    assert_eq!(seen.cooldowns[20], 0, "the cooldown it reset ran down");
+    assert_eq!(ctx.melee.swings, 0, "the goal's own swing never ran");
+    assert!(ctx.melee.aggressive);
+    checked.stop(&mut ctx);
+    assert!(!ctx.melee.aggressive && ctx.navigation.is_done());
+
+    let mut ctx = fresh();
+    let mut quiet = plain.clone().checked(holds_back);
+    assert!(
+        run(&mut quiet, &mut ctx).is_empty(),
+        "a check that holds back never hits"
+    );
+    assert!(ctx.melee.is_time_to_attack());
+
+    let mut ctx = fresh();
+    let mut inline = plain.clone();
+    assert_eq!(
+        run(&mut inline, &mut ctx),
+        landed,
+        "the plain goal hits as before"
+    );
+    assert_eq!(ctx.melee.swings, 3);
+    assert!(ctx.extra.get::<OwnCheck>().is_none());
 }
 
 #[test]

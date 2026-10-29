@@ -498,6 +498,40 @@ fn silverfish_spawn_by_any_light_from_spawners_and_never_near_a_player() {
 }
 
 #[test]
+fn chunk_generation_asks_a_family_row_for_its_spawn_rule() {
+    let Some((spawns, mut level)) = flat() else {
+        return;
+    };
+    let pos = BlockPos::new(0, 64, 0);
+    let generation = |level: &mut Flat, kind: &str| {
+        let info = type_info(kind).unwrap();
+        let by_row = super::generation_rule(&spawns, level, kind, &info, pos);
+        let plain = spawns.check_spawn_rules(level, &info, pos);
+        (by_row, plain)
+    };
+    assert_eq!(
+        generation(&mut level, "minecraft:silverfish"),
+        (true, false),
+        "a row's own rule decides: stone in the dark is fine for a silverfish"
+    );
+    assert_eq!(
+        generation(&mut level, "minecraft:mooshroom"),
+        (false, false),
+        "a row without a rule keeps the animal rules"
+    );
+    level.floor = spawns
+        .registries
+        .blocks
+        .parse_state("minecraft:grass_block")
+        .unwrap();
+    level.sky = 15;
+    for kind in ["minecraft:mooshroom", "minecraft:cow"] {
+        assert_eq!(generation(&mut level, kind), (true, true), "{kind}");
+    }
+    assert!(level.notes.is_empty(), "{:?}", level.notes);
+}
+
+#[test]
 fn a_family_finalize_runs_for_summons_and_natural_spawns_and_shares_group_data() {
     let Some((mut spawns, mut level)) = flat() else {
         return;

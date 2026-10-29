@@ -10,9 +10,9 @@ mod water;
 
 use super::spawning::{DifficultyInstance, MobCategory, MonsterGroup, SpawnContext};
 use super::{CreatureSpawns, Group, RandomRef, SpawnLevel, TypeInfo, ageable, set};
-use minecraftoss_core::BlockPos;
 use minecraftoss_core::entity_data::finalize_mob;
 use minecraftoss_core::nbt::Tag;
+use minecraftoss_core::{BiomeId, BlockPos, ChunkPos};
 
 pub(super) type FamilyRule = fn(
     &CreatureSpawns,
@@ -76,6 +76,39 @@ pub(super) fn rule(
         Some(rule) => rule(spawns, level, context, kind, info, pos, spawner),
         None => true,
     }
+}
+
+pub(super) fn generation_rule(
+    spawns: &CreatureSpawns,
+    level: &mut dyn SpawnLevel,
+    kind: &str,
+    info: &TypeInfo,
+    pos: BlockPos,
+) -> bool {
+    let Some(rule) = row(kind).and_then(|row| row.rule) else {
+        return spawns.check_spawn_rules(level, info, pos);
+    };
+    let no_slimes = |_: BiomeId| 0.0;
+    let any_chunk = |_: ChunkPos| true;
+    let no_structures = |_: BlockPos| Vec::new();
+    let context = SpawnContext {
+        players: &[],
+        respawn: None,
+        difficulty: 0,
+        overworld_time: 0,
+        moon_brightness: 0.0,
+        raining: false,
+        thundering: false,
+        seed: 0,
+        surface_slime_chance: &no_slimes,
+        halloween: false,
+        can_spawn_in_chunk: &any_chunk,
+        obstacles: Vec::new(),
+        chickens: Vec::new(),
+        structures: &no_structures,
+        spawning_monsters: false,
+    };
+    rule(spawns, level, &context, kind, info, pos, false)
 }
 
 pub(super) fn walk_over(

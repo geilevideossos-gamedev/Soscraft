@@ -456,6 +456,20 @@ pub struct MeleeState {
     pub swings: u32,
 }
 
+impl MeleeState {
+    pub(crate) fn ticks_until_attack(&self) -> i32 {
+        self.ticks_until_attack
+    }
+
+    pub(crate) fn reset_attack_cooldown(&mut self) {
+        self.ticks_until_attack = 20;
+    }
+
+    pub(crate) fn is_time_to_attack(&self) -> bool {
+        self.ticks_until_attack <= 0
+    }
+}
+
 /// `RangedBowAttackGoal`'s state, with the bow's draw (`LivingEntity`'s
 /// item use: `isUsingItem`, `getTicksUsingItem`).
 #[derive(Clone, Debug)]
@@ -1757,6 +1771,7 @@ impl Goal<MonsterGoalContext> for FleeSunGoal {
 pub(crate) struct AvoidEntityGoal {
     kind: &'static str,
     also: &'static [&'static str],
+    matching: Option<fn(&str) -> bool>,
     max_dist: f64,
     walk: f64,
     sprint: f64,
@@ -1765,11 +1780,15 @@ pub(crate) struct AvoidEntityGoal {
 }
 impl AvoidEntityGoal {
     pub(crate) fn new(kind: &'static str, max_dist: f64, walk: f64, sprint: f64) -> Self {
-        Self { kind, also: &[], max_dist, walk, sprint, to_avoid: None, path: None }
+        Self { kind, also: &[], matching: None, max_dist, walk, sprint, to_avoid: None, path: None }
     }
 
     pub(crate) fn also(self, also: &'static [&'static str]) -> Self {
         Self { also, ..self }
+    }
+
+    pub(crate) fn matching(self, matching: fn(&str) -> bool) -> Self {
+        Self { matching: Some(matching), ..self }
     }
 }
 impl Goal<MonsterGoalContext> for AvoidEntityGoal {
@@ -1788,7 +1807,7 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
         let range = self.max_dist.max(2.0);
         let mut best: Option<(f64, TargetInfo)> = None;
         for m in ctx.mobs.clone() {
-            if m.kind != self.kind && !self.also.contains(&m.kind) {
+            if m.kind != self.kind && !self.also.contains(&m.kind) && !self.matching.is_some_and(|matches| matches(m.kind)) {
                 continue;
             }
             let mh = f64::from(m.width / 2.0);
@@ -2307,6 +2326,18 @@ impl Goal<MonsterGoalContext> for MeleeAttackGoal {
         ctx.navigation.stop();
     }
     fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        self.tick_with(ctx, world, None);
+    }
+}
+
+pub(crate) type MeleeCheck = fn(&mut MonsterGoalContext, &dyn World, TargetInfo);
+
+impl MeleeAttackGoal {
+    pub(crate) fn checked(self, check: MeleeCheck) -> CheckedMeleeAttackGoal {
+        CheckedMeleeAttackGoal { goal: self, check }
+    }
+
+    pub(crate) fn tick_with(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World, check: Option<MeleeCheck>) {
         if let Some(target) = ctx.target() {
             let eye = target.position + DVec3::new(0.0, f64::from(target.eye_height), 0.0);
             ctx.look_control.set_look_at_with_limits(eye, 30.0, 30.0);
@@ -2330,7 +2361,9 @@ impl Goal<MonsterGoalContext> for MeleeAttackGoal {
                 }
             }
             ctx.melee.ticks_until_attack = (ctx.melee.ticks_until_attack - 1).max(0);
-            if ctx.melee.ticks_until_attack <= 0 && ctx.within_melee_range(target) && ctx.sees(world, target) {
+            if let Some(check) = check {
+                check(ctx, world, target);
+            } else if ctx.melee.ticks_until_attack <= 0 && ctx.within_melee_range(target) && ctx.sees(world, target) {
                 ctx.melee.ticks_until_attack = 20;
                 ctx.melee.swings = ctx.melee.swings.wrapping_add(1);
                 if self.hits {
@@ -2348,6 +2381,38 @@ impl Goal<MonsterGoalContext> for MeleeAttackGoal {
             ctx.melee.raise_arm_ticks += 1;
             ctx.melee.aggressive = ctx.melee.raise_arm_ticks >= 5 && ctx.melee.ticks_until_attack < 10;
         }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct CheckedMeleeAttackGoal {
+    goal: MeleeAttackGoal,
+    check: MeleeCheck,
+}
+impl Goal<MonsterGoalContext> for CheckedMeleeAttackGoal {
+    fn controls(&self) -> Controls {
+        self.goal.controls()
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.goal.can_start(ctx, world)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.goal.can_continue(ctx, world)
+    }
+    fn interruptible(&self) -> bool {
+        self.goal.interruptible()
+    }
+    fn every_tick(&self) -> bool {
+        self.goal.every_tick()
+    }
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.goal.start(ctx);
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.goal.stop(ctx);
+    }
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        self.goal.tick_with(ctx, world, Some(self.check));
     }
 }
 
