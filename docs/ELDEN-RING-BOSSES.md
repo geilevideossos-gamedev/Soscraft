@@ -178,10 +178,10 @@ One `Brain` per boss, stepped once per server tick with a `Sense` and returning 
 | `Kneel` | Stance broke: 80 ticks on one knee, no strikes | `Idle` |
 | `Shift` | The phase change: 30 ticks, the hammer forms, stance cannot break | `Idle` in the new phase |
 | `Fade` | 20 ticks: vanishes in golden mist and appears somewhere else | `Idle` |
-| `Return` | After a reset or a load: walks back to his anchor at full health and takes no damage; fades home if no path is found within 100 ticks | `Asleep`, or `Wake` if a player comes within the wake radius |
+| `Return` | After a reset or a load: walks back to his anchor at full health and takes no damage; fades home if he gets no closer to it for 100 ticks | `Asleep`, or `Wake` if a player comes within the wake radius |
 | `Dead` | 20 ticks: collapses into golden mist | removed |
 
-`Sense` holds: the tick, his position, facing and anchor, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them). The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, whether it is held, phase, awake). His health is kept by the brain, which takes every hit (`Brain::take`).
+`Sense` holds: the tick, his position, facing and anchor, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them, and a spot beside them with room for his box, if the game found one, for the stuck fade). The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, whether it is held, phase, awake). His health is kept by the brain, which takes every hit (`Brain::take`).
 
 **Choosing a move:** the moves of his phase that are off cooldown, whose distance band holds his target and whose angle band holds the angle to it. One is rolled by weight. If none fits, he walks closer, or turns. Follow-ups ignore cooldowns.
 
@@ -282,7 +282,7 @@ Branches are tried in table order; the first that passes wins.
 | Falling | none: he takes no fall damage | | |
 | Potion effects | none apply to him | | |
 | While kneeling | everything x 1.5 | | |
-| A critical (first melee hit from the front while kneeling) | x 3, and he gets up | | |
+| A critical (first melee hit from the front while kneeling) | x 3 (instead of x 1.5), and he gets up | | |
 
 Examples (one player, 800 health): an M4A1 body hit at close range (30 MW2 points) takes 3 health and 0.5 stance; a head hit (x1.4) takes 4.2. A Barrett chest hit (105) takes 10.5 and 1.75 stance. A frag at its centre (150) takes 30 and 10 stance. A netherite sword with Sharpness V (11) takes 11 and 16.5 stance, or 16.5 and about 25 stance with a crit.
 
@@ -330,7 +330,7 @@ His **anchor** is where he appeared. The arena is a circle around it; there are 
 |---|---|---|
 | Wake | 24 blocks | An eligible player within 24 blocks of the anchor wakes him. The fight starts: health is scaled and the bar shows |
 | Leash | 24 blocks | He never walks or leaps to a point farther than 24 from his anchor. A target outside gets daggers |
-| Reset | 40 blocks, 100 ticks | No eligible player within 40 of the anchor for 5 s: full health, phase 1, full stance, cooldowns and threat cleared, the bar goes, he walks back (or fades home if no path is found within 100 ticks) and sleeps |
+| Reset | 40 blocks, 100 ticks | No eligible player within 40 of the anchor for 5 s: full health, phase 1, full stance, cooldowns and threat cleared, the bar goes, he walks back (or fades home if he gets no closer to it for 100 ticks) and sleeps |
 | Stuck | 100 ticks | His target is inside the leash, but no path reaches it and none of his hits landed on it for 5 s (a hole deeper than his swings reach, a nook walled in so he cannot get next to it): he fades and appears beside it, within 3 blocks across and 2 blocks up or down of its feet. If there is no room there (a player on a pillar), he keeps throwing daggers instead. Our own anti-cheese rule, not Elden Ring's |
 | Fog ring | 24 blocks | While he fights, golden particles mark the leash circle near each viewer. They stand in for Elden Ring's fog wall and block nothing |
 

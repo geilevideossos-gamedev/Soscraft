@@ -3,6 +3,8 @@ use glam::DVec3;
 use crate::data::{
     BossDef, BranchTo, ClipDef, Cue, Harm, Motion, MoveDef, PlayerId, Reaction, Shape, Weapon, When,
 };
+use crate::fight::Rules;
+use crate::hurt::Wounds;
 use crate::random::SplitMix64;
 use crate::shape::{self, Body, Frame};
 
@@ -44,6 +46,7 @@ pub struct Seen {
     pub eye: f64,
     pub ground: f64,
     pub reachable: bool,
+    pub room: Option<DVec3>,
 }
 
 impl Seen {
@@ -155,6 +158,8 @@ pub struct Brain {
     pub(crate) playing: Option<Playing>,
     pub(crate) last: usize,
     pub(crate) fade_to: Option<DVec3>,
+    pub(crate) wounds: Wounds,
+    pub(crate) rules: Rules,
 }
 
 impl Brain {
@@ -173,6 +178,8 @@ impl Brain {
             playing: None,
             last: 0,
             fade_to: None,
+            wounds: Wounds::new(def),
+            rules: Rules::new(),
         }
     }
 
@@ -213,12 +220,13 @@ impl Brain {
             motion: DVec3::ZERO,
             hits: Vec::new(),
             throws: Vec::new(),
-            cues: Vec::new(),
+            cues: std::mem::take(&mut self.wounds.cues),
             fade: None,
             target: None,
             clip: self.shown(self.clock, false),
         };
         self.retarget(sense);
+        self.referee(sense);
         match self.state {
             State::Asleep => self.asleep(sense, &mut act),
             State::Idle => self.idle(sense, &mut act),
@@ -233,6 +241,7 @@ impl Brain {
         if act.clip.awake {
             act.look = self.target_seen(sense).map(Seen::eyes);
         }
+        self.watch(sense, &act);
         act
     }
 
@@ -245,22 +254,26 @@ impl Brain {
     }
 
     pub(crate) fn wake(&mut self, sense: &Sense, rise: bool) {
+        self.open(sense);
         if rise {
             self.enter(State::Wake, sense.tick);
         } else {
             self.rest(sense);
         }
-        self.target = self.nearest(sense);
+        self.target = self.chosen(sense);
     }
 
     pub(crate) fn rest(&mut self, sense: &Sense) {
+        if self.settle(sense) {
+            return;
+        }
         let gap = self.def.phase(self.phase).idle;
         self.state = State::Idle;
         self.clock = 0;
         self.playing = None;
         self.gap = self.random.between(gap.min, gap.max);
         self.around = if self.random.chance(0.5) { 1.0 } else { -1.0 };
-        self.target = self.nearest(sense);
+        self.target = self.chosen(sense);
     }
 
     pub(crate) fn nearest(&self, sense: &Sense) -> Option<PlayerId> {
@@ -284,11 +297,11 @@ impl Brain {
             .find(|player| player.id == id && self.in_arena(sense, player))
     }
 
-    fn in_arena(&self, sense: &Sense, player: &Seen) -> bool {
+    pub(crate) fn in_arena(&self, sense: &Sense, player: &Seen) -> bool {
         shape::flat_distance(player.feet, sense.anchor) <= self.def.arena.reset
     }
 
-    fn anyone_within(&self, sense: &Sense, radius: f64) -> bool {
+    pub(crate) fn anyone_within(&self, sense: &Sense, radius: f64) -> bool {
         sense
             .players
             .iter()
@@ -296,12 +309,12 @@ impl Brain {
     }
 
     fn retarget(&mut self, sense: &Sense) {
-        if !self.state.awake() {
+        if !self.awake() {
             self.target = None;
             return;
         }
         if self.target_seen(sense).is_none() {
-            self.target = self.nearest(sense);
+            self.target = self.chosen(sense);
         }
     }
 
@@ -316,7 +329,7 @@ impl Brain {
             clock,
             held,
             phase: self.phase,
-            awake: self.state.awake(),
+            awake: self.awake(),
         }
     }
 
@@ -412,8 +425,7 @@ impl Brain {
             .filter(|(index, mv)| {
                 mv.in_phase(self.phase)
                     && self.ready[*index] <= sense.tick
-                    && mv.pick.near <= distance
-                    && distance <= mv.pick.far
+                    && self.reaches(mv, distance)
                     && angle <= mv.pick.angle
             })
             .map(|(index, _)| index)
@@ -760,40 +772,41 @@ impl Brain {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashSet;
     use std::f64::consts::TAU;
 
     use super::*;
     use crate::margit::MARGIT;
 
-    const RUN: f64 = 0.265;
+    pub(crate) const RUN: f64 = 0.265;
 
-    fn player(id: PlayerId, x: f64, z: f64) -> Seen {
+    pub(crate) fn player(id: PlayerId, x: f64, z: f64) -> Seen {
         Seen {
             id,
             feet: DVec3::new(x, 0.0, z),
             eye: 1.62,
             ground: 0.0,
             reachable: true,
+            room: None,
         }
     }
 
-    fn index(key: &str) -> usize {
+    pub(crate) fn index(key: &str) -> usize {
         MARGIT.move_index(key).unwrap()
     }
 
-    struct Field {
-        brain: Brain,
-        position: DVec3,
-        yaw: f64,
-        anchor: DVec3,
-        tick: u64,
-        walks: bool,
+    pub(crate) struct Field {
+        pub(crate) brain: Brain,
+        pub(crate) position: DVec3,
+        pub(crate) yaw: f64,
+        pub(crate) anchor: DVec3,
+        pub(crate) tick: u64,
+        pub(crate) walks: bool,
     }
 
     impl Field {
-        fn new(seed: u64) -> Field {
+        pub(crate) fn new(seed: u64) -> Field {
             Field {
                 brain: Brain::new(&MARGIT, seed),
                 position: DVec3::ZERO,
@@ -804,7 +817,7 @@ mod tests {
             }
         }
 
-        fn step(&mut self, players: &[Seen]) -> Act {
+        pub(crate) fn step(&mut self, players: &[Seen]) -> Act {
             let sense = Sense {
                 tick: self.tick,
                 position: self.position,
@@ -824,12 +837,24 @@ mod tests {
                     self.position += offset * (length.min(0.15) / length);
                 }
             }
+            if let Some(fade) = act.fade {
+                self.position = fade;
+            }
             self.yaw = act.yaw;
             self.tick += 1;
             act
         }
 
-        fn first_move(&mut self, players: &[Seen]) -> &'static str {
+        pub(crate) fn woken(&mut self, players: &[Seen]) {
+            for _ in 0..100 {
+                if self.step(players).clip.state == State::Idle {
+                    return;
+                }
+            }
+            panic!("he never woke")
+        }
+
+        pub(crate) fn first_move(&mut self, players: &[Seen]) -> &'static str {
             for _ in 0..400 {
                 let act = self.step(players);
                 if act.clip.state == State::Move {
@@ -839,7 +864,7 @@ mod tests {
             panic!("no move in 400 ticks")
         }
 
-        fn play_out(&mut self, players: &[Seen]) -> Vec<Act> {
+        pub(crate) fn play_out(&mut self, players: &[Seen]) -> Vec<Act> {
             let mut acts = Vec::new();
             loop {
                 let act = self.step(players);

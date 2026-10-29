@@ -61,3 +61,88 @@ After 6fc4c759.
   - He does not start a move while he is off the ground.
   - `Brain::begin(key)` starts a move at once, for tests here and in the game crates later.
 - **Owner's steps:** none in game: the crate is not in the game yet. No kit line.
+
+## Group er-rules
+
+### 3. An Elden Ring boss staggers, changes phase and resets like Margit
+
+After 7c16b429.
+
+- **Changed:**
+  - New `src/hurt.rs` (design doc 7.1-7.3 and 9.2):
+    - `Source`: `Bullet { mw2 }`, `Blast { mw2 }`, `Melee { damage, from }`, `Projectile { damage }`, `Explosion { damage }` and `Environment { damage }`. `Hurt` is a source, the attacker's player id if any, and the tick. `Taken` is the health and stance dealt, and whether it was a critical, started a kneel or killed him.
+    - `uses_hurt_cooldown(&source)` is true only for `Environment`.
+    - `Brain::take(&Hurt) -> Taken` uses his resistances from `MARGIT.resist`:
+
+      | Source | Health | Stance |
+      |---|---|---|
+      | Bullet | MW2 points x 0.2 x 0.5 | points / 60 |
+      | Blast | MW2 points x 0.8 x 0.25 | points / 15 |
+      | Melee | x 1 | x 1.5 |
+      | Projectile | x 1 | x 1 |
+      | Explosion | x 0.5 | x 1 |
+      | Environment | x 1 | none |
+
+    - While he kneels, every hit does x 1.5. The first melee hit from within 60 degrees of his facing and 4 blocks of him while he kneels is a critical: x 3, the critical cues on his next `Act`, and the kneel clock jumps to its last 20 ticks, so he rises. Stance refills after 120 ticks with no stance damage, and when he rises.
+    - Threat is each player's damage over the last 200 ticks. `chosen` picks the eligible player within 40 blocks of the anchor with the most threat, or the nearest when nobody has any: at the wake, after every move and as soon as his target is gone.
+    - `hurt_by()` lists everyone who hurt him since the wake. `fighters()` is the wake's fighters plus those, for F4's reward.
+    - `health()`, `max_health()`, `stance()`, and `set_health()` for a summon's `Health` (clamped to 1 to his maximum).
+    - He takes nothing while asleep, returning, fading home or dead.
+  - New `src/fight.rs` (design doc 6, 8 and 9.1):
+    - `Brain::awake()`, and `Brain::reset(tick)`, which is public so F2's loader can call it: base health, phase 1, full stance, cooldowns, threat and the hurt list cleared, then `Return`.
+    - The wake (`open`): the eligible players within 40 blocks of the anchor are the fighters and set the health factor. Health keeps its share, and stance, threat and the hurt list start fresh.
+    - The referee runs every tick before the state's own step: stance refill, the threat window, the reset after 100 ticks with nobody within 40 blocks, the phase shift, a stance break that had to wait, and the stuck fade or daggers.
+    - The watch runs after the step: it keeps his frame for the critical's front check and counts how long he has been stuck.
+    - `settle` runs where a timed state or a move ends: a home fade ends asleep, a kneel refills his stance, and a waiting shift or a broken stance comes next.
+    - The pinned dagger pick and the home fade.
+  - `brain.rs`:
+    - `Seen.room`: a standing spot with room for his box beside the player, within 3 blocks across and 2 up or down of their feet (design doc 8), which the game finds; `None` when there is none.
+    - `Brain` keeps `Wounds` (hurt) and `Rules` (fight). `step` runs the referee and the watch and passes on the queued cues. `wake` opens the fight, and `rest` settles first.
+    - Targets are picked by threat. `choose` asks `reaches`: when he is pinned, only moves that throw, at any distance. `awake()` is false during a home fade.
+    - The test field is shared with the new modules (`woken`, and fades are applied).
+  - Design doc kept in step: 4.4 (`room`, the home fade), 7.1 (a critical replaces the x 1.5), 8 (the home fade).
+- **Tests:**
+  - `hurt::tests`:
+    - `an_m4_body_hit_takes_3_health_and_half_a_stance_point`
+    - `a_frag_at_its_centre_takes_30_health_and_10_stance`
+    - `two_sword_hits_in_one_tick_both_count`
+    - `environment_damage_uses_the_hurt_cooldown_and_player_hits_do_not`
+    - `a_broken_stance_kneels_80_ticks_and_refills_after_6_quiet_seconds`
+    - `a_melee_hit_from_the_front_on_a_kneeling_boss_is_a_critical_and_one_from_behind_is_not`
+    - `an_asleep_or_returning_boss_takes_no_damage`
+    - `the_player_who_hurt_him_most_lately_is_his_target`
+    - three more: `a_stance_broken_in_a_leap_kneels_when_he_lands`, `a_killing_blow_kills_him_once_and_he_is_gone_after_20_ticks`, `the_fighters_are_the_players_at_the_wake_and_everyone_who_hurt_him`
+  - `fight::tests`:
+    - `half_health_starts_the_shift_when_the_current_swing_ends` (also at once between moves and during a wind-up)
+    - `stance_does_not_break_during_the_shift`
+    - `two_fighters_at_the_wake_give_1280_health_and_keep_the_share` (and 2240 with four)
+    - `nobody_within_40_blocks_for_5_seconds_resets_the_fight`
+    - `an_unreachable_target_for_5_seconds_asks_for_a_fade`
+    - `a_target_on_a_pillar_gets_daggers_not_a_fade`
+    - three more: `a_shift_in_a_leap_waits_for_the_landing_strike`, `a_reset_boss_that_gets_no_closer_to_home_for_5_seconds_fades_there`, `phase_two_idles_6_to_12_ticks_and_cools_moves_by_four_fifths`
+  - `test -p elden_boss --locked`: 49 green. `clippy -p elden_boss --all-targets`: clean.
+- **Decisions:**
+  - **Hurt cooldown:** the game applies it (the vendored `hurt_absorbed`) before `take`, and only for `Environment`. The brain only says which sources use it and counts every hit it is given, so there is one cooldown, the vendored one.
+  - **Criticals:**
+    - A critical is x 3 instead of the kneeling x 1.5, not on top of it: 33 for an 11-damage sword hit.
+    - It moves the kneel clip to its last 20 ticks, where it goes from `Kneel` to `Rise`, so the renderer draws him getting up. Hits in those 20 ticks are normal: no x 1.5 and no second critical.
+    - A melee hit from behind or from farther than 4 blocks does not use up the critical. The first melee hit from the front gets it.
+    - The critical's cues go on his next `Act`, which the host plays like the clip cues; `Taken.critical` reports it as well.
+  - **Kneeling and phases:**
+    - A hit on a kneeling boss takes no stance: his stance is 0 and refills when he rises.
+    - A stance break or a shift waits while he is in a leap, between take-off and landing. The break comes on the landing tick, which cancels the landing strike; the shift comes after the landing strike's window. He never stops in mid-air.
+    - A shift that comes during `Wake`, `Kneel` or `Fade` waits for that state to end. A stance broken during `Shift`, `Wake` or `Fade` kneels as soon as that state ends.
+    - His phase is 2 from the shift's first tick, so the shown clip has phase 2 while the hammer forms.
+    - "Health at or below half for the first time" is checked after every hit. A Margit summoned at 50.1% shifts on his first hit (step 9 of the owner's test), and one summoned below half does too.
+  - **Stuck:**
+    - The stuck count runs from the wake whenever his target is inside the leash, unreachable, and none of his hits landed on it. Daggers do not count as hits here, since the game resolves them.
+    - The fade starts at his next idle tick. The spot comes from the game (`Seen.room`).
+    - With no room he is pinned: he picks only moves that throw daggers, at any distance and with their cooldowns, until the target is reachable again or a hit lands.
+  - **The home fade** after a reset:
+    - "No path home found within 100 ticks" is measured as no progress: 100 ticks in `Return` without getting 1 block closer to the anchor than before. This needs no path plan from the game.
+    - During the home fade he is not awake (no bar, no target, he takes nothing), and it ends with him asleep at his anchor.
+  - **Health:**
+    - The reset puts him back at base health (factor 1), and the next wake scales it again.
+    - `set_health` keeps at least 1 health.
+    - `Taken.died` is set on the killing hit, and the game credits that hit's player.
+- **Owner's steps:** none in game: the crate is not in the game yet. No kit line.
