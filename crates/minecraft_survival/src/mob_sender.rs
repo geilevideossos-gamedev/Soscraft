@@ -484,6 +484,23 @@ mod tests {
     }
 
     #[test]
+    fn margits_daggers_cross_the_state_lane() {
+        use minecraft_terrain::elden_show::{DaggerShow, EldenShow};
+        let dagger = DaggerShow { start: DVec3::new(0.5, 66.2, 1.0), velocity: DVec3::new(0.1, -0.02, 1.49), age: 7 };
+        let mut margit = mob(7, 1.5, 0.5);
+        margit.show.elden = Some(EldenShow { daggers: [Some(dagger), None, None] });
+        let plain = mob(9, 2.5, 0.5);
+        let bytes = minecraft_net::encode(Lane::State, &vec![margit, plain]).unwrap();
+        let back: Vec<ServerMob> = minecraft_net::decode(Lane::State, &bytes).unwrap();
+        assert_eq!(back[0].show.elden, margit.show.elden);
+        assert_eq!(back[1].show.elden, None, "other mobs carry no daggers");
+        let calm = ServerMob { show: minecraft_terrain::mob_tracking::MobShow { elden: Some(EldenShow::default()), ..plain.show }, ..plain };
+        let size = |mob: ServerMob| minecraft_net::encode(Lane::State, &vec![mob]).unwrap().len();
+        assert_eq!(size(calm), size(plain) + 3, "no dagger in flight costs a byte each");
+        assert!(size(margit) > size(calm));
+    }
+
+    #[test]
     fn ominous_items_reach_friends_eight_chunks_away_with_their_tint_and_age() {
         let mut sender = MobSender::default();
         let ominous = |id: i32, x: f64| minecraft_terrain::trial_spawner::OminousItemView {

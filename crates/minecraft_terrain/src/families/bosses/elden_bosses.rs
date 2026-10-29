@@ -1,8 +1,10 @@
 use crate::client_mobs::ClientMobs;
 use crate::elden_effects::Sparks;
+use crate::elden_show::EldenShow;
 use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
+use crate::mob_tracking::MobShow;
 use elden_boss::shape::Frame;
 use elden_boss::{Clip, State};
 use minecraftoss_core::nbt::Tag;
@@ -69,6 +71,14 @@ impl TerrainFamily for EldenBoss {
         if let Some(clip) = shown_clip(show) {
             mob.state.shown = clip;
         }
+    }
+
+    fn show_more(mob: &FamilyMob<Self>, show: &mut MobShow) {
+        show.elden = Some(EldenShow::of(&mob.state.daggers));
+    }
+
+    fn show_more_on(mob: &mut FamilyMob<Self>, show: &MobShow) {
+        mob.state.daggers = show.elden.map_or_else(Vec::new, |elden| elden.flights());
     }
 
     fn draw(
@@ -313,6 +323,146 @@ mod tests {
             values: [0; 8],
         };
         assert_eq!(shown_clip(&unknown), None);
+    }
+
+    fn friend_of(host: &EntityWorld, id: u64) -> EntityWorld {
+        let tags = crate::server_mobs::mob_tags_where(
+            host,
+            |_, _| true,
+            &std::collections::HashMap::new(),
+            false,
+        );
+        let (_, tag) = tags.into_iter().find(|(saved, _)| *saved == id).unwrap();
+        let mut friend = EntityWorld::default();
+        assert!(crate::mob_tracking::spawn_tracked(&mut friend, id, &tag));
+        friend
+    }
+
+    fn mirror(host: &EntityWorld, friend: &mut EntityWorld) {
+        for mob in crate::client_mobs::server_mobs(host) {
+            crate::mob_tracking::show_on(friend, &mob);
+        }
+    }
+
+    fn shown_state(world: &EntityWorld) -> (Clip, Vec<elden_boss::Flight>) {
+        let state = &world.elden_bosses()[0].state;
+        (state.shown, state.daggers.clone())
+    }
+
+    #[test]
+    fn a_friend_sees_margit_swing_and_his_daggers_fly() {
+        let mut host = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = host.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let near = [player_at(1, DVec3::new(0.5, 64.0, 3.0))];
+        for _ in 0..40 {
+            host.tick_with_players(&mut Field, &near);
+        }
+        assert!(host.elden_bosses()[0].state.brain.awake());
+        assert_eq!(
+            crate::mob_tracking::tracking_range(MARGIT.id),
+            10,
+            "ten chunks, as vanilla's bosses"
+        );
+        let mut friend = friend_of(&host, id);
+        assert!(friend.elden_bosses()[0].state.daggers.is_empty());
+        host.elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("cane_combo");
+        let combo = MARGIT.move_index("cane_combo").unwrap() as u8;
+        let mut swinging = 0;
+        for _ in 0..14 {
+            host.tick_with_players(&mut Field, &near);
+            mirror(&host, &mut friend);
+            assert_eq!(shown_state(&friend), shown_state(&host));
+            let (clip, _) = shown_state(&friend);
+            if clip.state == State::Move && clip.index == combo {
+                swinging += 1;
+            }
+        }
+        assert_eq!(swinging, 14, "the friend sees the first swing");
+        let far = [player_at(1, DVec3::new(0.5, 64.0, 20.0))];
+        host.elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("backstep_daggers");
+        let mut most = 0;
+        for _ in 0..60 {
+            host.tick_with_players(&mut Field, &far);
+            mirror(&host, &mut friend);
+            assert_eq!(shown_state(&friend), shown_state(&host));
+            most = most.max(friend.elden_bosses()[0].state.daggers.len());
+        }
+        assert!(most >= 2, "two daggers in the air at once: {most}");
+        for _ in 0..60 {
+            host.tick_with_players(&mut Field, &far);
+            mirror(&host, &mut friend);
+            if host.elden_bosses()[0].state.daggers.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            friend.elden_bosses()[0].state.daggers.is_empty(),
+            "a spent dagger is gone for the friend too"
+        );
+    }
+
+    #[test]
+    fn a_friend_draws_the_same_clip_time_as_the_host() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let meta = r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#;
+        std::fs::write(temp.path().join("pack.mcmeta"), meta).unwrap();
+        let packs = crate::pack::PackStack::open(vec![temp.path().into()]).unwrap();
+        let texture = crate::pack::ResourceId::parse(crate::elden_skin::TEXTURE).unwrap();
+        let atlas = crate::mesh::make_atlas(&packs, vec![texture]).unwrap();
+        let light =
+            SkyLight::from_levels((-8, 56, -8), (17, 17, 17), vec![15; 4913], vec![0; 4913]);
+        let draw = |world: &EntityWorld, poses: &ClientMobs, partial: f32| {
+            let (mut models, mut culled, mut translucent, mut held) = Default::default();
+            let mut out = FamilyDraw {
+                models: &mut models,
+                culled: &mut culled,
+                translucent: &mut translucent,
+                held: &mut held,
+            };
+            crate::families::draw(&mut out, world, poses, &atlas, &light, partial);
+            models.vertices
+        };
+        let mut host = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = host.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 14.0))];
+        for _ in 0..40 {
+            host.tick_with_players(&mut Field, &players);
+        }
+        let mut friend = friend_of(&host, id);
+        host.elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("dagger_throw");
+        let (mut holding, mut flying) = (0, 0);
+        for _ in 0..70 {
+            host.tick_with_players(&mut Field, &players);
+            mirror(&host, &mut friend);
+            let mut poses = ClientMobs::default();
+            poses.spawn_missing(&crate::client_mobs::server_mobs(&host));
+            for partial in [0.0, 0.5, 0.9] {
+                let seen = draw(&host, &poses, partial);
+                assert!(!seen.is_empty());
+                assert_eq!(draw(&friend, &poses, partial), seen);
+            }
+            let (clip, daggers) = shown_state(&host);
+            holding += usize::from(clip.held);
+            flying += usize::from(!daggers.is_empty());
+        }
+        assert!(
+            holding >= 10 && flying > 0,
+            "a held throw and a dagger in flight: {holding} {flying}"
+        );
     }
 
     struct View {

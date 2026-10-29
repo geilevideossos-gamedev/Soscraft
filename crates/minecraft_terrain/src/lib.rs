@@ -104,6 +104,7 @@ pub mod elden_effects;
 pub mod elden_felled;
 pub mod elden_render;
 pub mod elden_save;
+pub mod elden_show;
 pub mod elden_skin;
 pub mod wither_save;
 pub mod wither_bar;
