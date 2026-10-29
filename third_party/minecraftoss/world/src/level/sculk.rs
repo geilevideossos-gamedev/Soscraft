@@ -14,6 +14,26 @@ const PHASE: &str = "sculk_sensor_phase";
 const TENDRILS_CLICKING: &str = "minecraft:sculk_sensor_tendrils_clicking";
 const CLICKING: &str = "minecraft:block.sculk_sensor.clicking";
 const CLICKING_STOP: &str = "minecraft:block.sculk_sensor.clicking_stop";
+const RESONATORS: &str = "minecraft:vibration_resonators";
+const RESONATE: &str = "minecraft:block.amethyst_block.resonate";
+const RESONANCE_NOTES: [i32; 16] = [0, 0, 2, 4, 6, 7, 9, 10, 12, 14, 15, 18, 19, 21, 22, 24];
+const RESONATE_EVENTS: [&str; 15] = [
+    "minecraft:resonate_1",
+    "minecraft:resonate_2",
+    "minecraft:resonate_3",
+    "minecraft:resonate_4",
+    "minecraft:resonate_5",
+    "minecraft:resonate_6",
+    "minecraft:resonate_7",
+    "minecraft:resonate_8",
+    "minecraft:resonate_9",
+    "minecraft:resonate_10",
+    "minecraft:resonate_11",
+    "minecraft:resonate_12",
+    "minecraft:resonate_13",
+    "minecraft:resonate_14",
+    "minecraft:resonate_15",
+];
 
 impl Level<'_> {
     pub fn is_sculk_sensor(&self, state: BlockStateId) -> bool {
@@ -68,7 +88,7 @@ impl Level<'_> {
         self.set_block_entity_value(pos, LAST_FREQUENCY, Tag::Int(frequency));
         let state = self.block(pos);
         if self.is_sculk_sensor(state) {
-            self.sculk_activate(source, pos, state, power);
+            self.sculk_activate(source, pos, state, power, frequency);
         }
     }
 
@@ -78,6 +98,7 @@ impl Level<'_> {
         pos: BlockPos,
         state: BlockStateId,
         power: i32,
+        frequency: i32,
     ) {
         let active = self.sensor_with(state, PHASE, "active");
         let active = self.sensor_with(active, "power", &power.clamp(0, 15).to_string());
@@ -89,6 +110,7 @@ impl Level<'_> {
         };
         self.schedule_block_tick(pos, active, ticks);
         self.sculk_update_neighbours(pos, active);
+        self.sculk_resonate(source, pos, frequency);
         self.game_event_from(TENDRILS_CLICKING, centre(pos), source, None);
         if self.sensor_property(state, "waterlogged") != Some("true") {
             let pitch = self.random.next_f32() * 0.2 + 0.8;
@@ -98,6 +120,33 @@ impl Level<'_> {
                 volume: 1.0,
                 pitch,
             });
+        }
+    }
+
+    fn sculk_resonate(&mut self, source: Option<EventSource>, pos: BlockPos, frequency: i32) {
+        let Some(tag) = self.registries().block_tags.id(RESONATORS) else {
+            return;
+        };
+        let Some(index) = usize::try_from(frequency - 1)
+            .ok()
+            .filter(|&index| index < RESONATE_EVENTS.len())
+        else {
+            return;
+        };
+        let event = RESONATE_EVENTS[index];
+        let pitch = 2f64.powf(f64::from(RESONANCE_NOTES[index + 1] - 12) / 12.0) as f32;
+        for direction in Direction::ALL {
+            let at = pos.relative(direction, 1);
+            let state = self.block(at);
+            if self.registries().block_in_tag(state, tag) {
+                self.game_event_from(event, centre(at), source, Some(state));
+                self.sounds.push(LevelSound {
+                    event: RESONATE,
+                    pos: centre(at),
+                    volume: 1.0,
+                    pitch,
+                });
+            }
         }
     }
 
@@ -377,5 +426,54 @@ mod tests {
         let mut level = level(&lib);
         place(&mut level, SENSOR, "minecraft:sculk_sensor[power=7]");
         assert_eq!(power(&level), 0);
+    }
+
+    #[test]
+    fn an_amethyst_block_beside_a_sensor_resonates_its_frequency_to_a_calibrated_sensor() {
+        let Some(lib) = library() else { return };
+        let mut level = level(&lib);
+        place(&mut level, SENSOR, "minecraft:sculk_sensor");
+        let east = SENSOR.relative(Direction::East, 1);
+        let amethyst = place(&mut level, east, "minecraft:amethyst_block");
+        place(&mut level, SENSOR.above(), "minecraft:amethyst_block");
+        place(
+            &mut level,
+            SENSOR.relative(Direction::West, 1),
+            "minecraft:budding_amethyst",
+        );
+        level.take_game_events();
+        level.sounds.clear();
+        level.sculk_receive(SENSOR, 8, 12, Some(EventSource::Player(4)));
+        let posted: Vec<_> = level
+            .take_game_events()
+            .into_iter()
+            .map(|event| (event.event, event.pos, event.source, event.affected))
+            .collect();
+        let player = Some(EventSource::Player(4));
+        assert_eq!(
+            posted,
+            vec![
+                (
+                    "minecraft:resonate_8",
+                    centre(SENSOR.above()),
+                    player,
+                    Some(amethyst)
+                ),
+                ("minecraft:resonate_8", centre(east), player, Some(amethyst)),
+                (TENDRILS_CLICKING, centre(SENSOR), player, None),
+            ],
+            "each amethyst block beside it, in vanilla's direction order, before the tendrils"
+        );
+        let resonating: Vec<_> = level
+            .sounds
+            .iter()
+            .filter(|sound| sound.event == RESONATE)
+            .map(|sound| sound.pitch)
+            .collect();
+        assert_eq!(resonating, vec![1.0, 1.0], "frequency 8 is note 12");
+        assert_eq!(RESONATE_EVENTS[0], "minecraft:resonate_1");
+        assert_eq!(RESONATE_EVENTS[14], "minecraft:resonate_15");
+        let highest = 2f64.powf(f64::from(RESONANCE_NOTES[15] - 12) / 12.0) as f32;
+        assert_eq!(highest, 2.0);
     }
 }

@@ -11853,6 +11853,25 @@ mod tests {
     }
 
     #[test]
+    fn amethyst_carries_an_eaten_vibration_to_a_calibrated_sensor_out_of_its_reach() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let calibrated = (15, 200, 15);
+        place(&mut sim, &mut scene, (9, 200, 8), Block::new("minecraft:amethyst_block"));
+        place(&mut sim, &mut scene, calibrated, Block::new("minecraft:calibrated_sculk_sensor"));
+        let eater = [2.5, 200.0, 5.5];
+        let mut input = walker_input(eater);
+        run_ticks(&mut sim, &mut input, true, 1);
+        input.game_events.push(crate::game_events::PlayerEvent { player: 0, event: crate::game_events::EAT, pos: eater, affected: None });
+        run_ticks(&mut sim, &mut input, true, 8);
+        assert_eq!(last_frequency(&sim), Some(8), "the near sensor hears the eating");
+        let heard = |sim: &ServerSim| sim.command_block_entity(calibrated).and_then(|tag| tag.get(minecraftoss_world::level::sculk::LAST_FREQUENCY)).and_then(minecraftoss_core::nbt::Tag::as_i64);
+        assert_ne!(heard(&sim), Some(8), "too far to hear it itself");
+        run_ticks(&mut sim, &mut input, true, 14);
+        assert_eq!(heard(&sim), Some(8), "the amethyst resonates frequency 8 to it");
+        assert_eq!(block_property(&sim, calibrated, "sculk_sensor_phase").as_deref(), Some("active"));
+    }
+
+    #[test]
     fn a_lever_beside_a_sensor_is_ten_on_and_nine_off() {
         let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
         let mut input = walker_input([20.5, 200.0, 20.5]);

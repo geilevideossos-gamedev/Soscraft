@@ -295,6 +295,29 @@ After a8407b26 ("Minecraft blocks make vibrations when used").
 IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*8,minecraft:comparator*2,minecraft:redstone*32,minecraft:apple*16,minecraft:milk_bucket,minecraft:diamond_helmet,minecraft:chicken_spawn_egg*4,minecraft:sheep_spawn_egg*2,minecraft:shears,minecraft:horse_spawn_egg*2,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cooked_beef*16
 ```
 
+### 3. Minecraft amethyst resonates sculk vibrations to calibrated sensors
+
+After the commit above (its subject: "Minecraft players and mobs make vibrations when they eat, drink, equip, ride, glide, shear, teleport, get hurt and die").
+
+- **Vanilla (javap on the 26.3 jar, and its data pack):**
+  - `SculkSensorBlock.activate`: after the phase, the scheduled tick and `updateNeighbours`, `tryResonateVibration(entity, level, pos, frequency)` runs, then the tendrils event and the clicking sound. It is in `SculkSensorBlock`, so plain and calibrated sensors both resonate.
+  - `tryResonateVibration`: for each `Direction.values()` (down, up, north, south, west, east), a neighbour in block `#vibration_resonators` (26.3: only `amethyst_block`; budding amethyst is not in it) posts `VibrationSystem.getResonanceEventByFrequency(frequency)` (`resonate_<frequency>`) at its centre with `Context.of(entity, its state)`, the sensor's own vibration source, and plays `block.amethyst_block.resonate` there with no source entity, volume 1 and pitch `RESONANCE_PITCH_BEND[frequency]` = `NoteBlock.getPitchFromNote` of the notes 0, 0, 2, 4, 6, 7, 9, 10, 12, 14, 15, 18, 19, 21, 22, 24 (`2^((note - 12) / 12)`).
+  - `resonate_1` to `resonate_15` are in `#vibrations` with frequency N and radius 16, so every sensor in reach hears them; a calibrated sensor set to N by its back input takes only `resonate_N`.
+- **Changed:** vendored `world/src/level/sculk.rs`: `sculk_activate` takes the frequency, and `sculk_resonate` posts the resonance events and sounds from each amethyst neighbour (the tag read from the data pack's block tags at runtime).
+- **Tests:**
+  - `level::sculk::tests::an_amethyst_block_beside_a_sensor_resonates_its_frequency_to_a_calibrated_sensor` (vendored world, gated on the 26.3 data: amethyst above and east resonate `resonate_8` in vanilla's direction order with the source and the amethyst state, before the tendrils; budding amethyst does not; pitch 1 for frequency 8 and 2 for 15).
+  - `server::tests::amethyst_carries_an_eaten_vibration_to_a_calibrated_sensor_out_of_its_reach` (through `run_tick`: a player eats 6 blocks from a sensor with amethyst beside it and 16.4 blocks from a calibrated sensor; the calibrated one reads 8 from the resonance).
+- **Decisions:** none beyond vanilla.
+- **Vendored files:** patched `world/src/level/sculk.rs` again.
+- **Test steps (survival, open stone floor; 2 s between actions):**
+  1. Place a sculk sensor with an amethyst block against its side. 14 blocks away on the other side place a calibrated sculk sensor with a comparator and a line of redstone dust out of it. Lay a lever and 8 redstone dust so the last dust ends against the calibrated sensor's back face (the face that looked at you when you placed it): its back input is 8.
+  2. Walk to 4 blocks from the first sensor on the side away from the calibrated one (18 blocks from it, out of its 16-block reach) and eat an apple: the first sensor triggers, the amethyst chimes, and a moment later a ripple flies from the amethyst to the calibrated sensor, whose line shows 8. **w08_amethyst_resonance**
+  3. Walk there instead (frequency 1): the first sensor triggers and the amethyst chimes, but the calibrated sensor, set to 8, stays dark.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*4,minecraft:calibrated_sculk_sensor*2,minecraft:amethyst_block*4,minecraft:comparator*2,minecraft:redstone*64,minecraft:lever*2,minecraft:apple*16,minecraft:stone*64,minecraft:cooked_beef*16
+```
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -308,6 +331,8 @@ Group vibrations, commit 3: no message or codec change.
 Group vibrations-more, commit 1: no message or codec change.
 
 Group vibrations-more, commit 2: no message or codec change (`Body` and `DamageState` stay on the host).
+
+Group vibrations-more, commit 3: no message or codec change.
 
 ## State doc changes
 
