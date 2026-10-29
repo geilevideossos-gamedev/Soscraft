@@ -8,7 +8,13 @@ Segment f1 (groups `er-core` and `er-rules`) builds the pure crate `crates/elden
 
 ## Combined kit
 
-None for segment f1: no commit of it has owner steps in game, so no kit line is needed. Segment f2 adds the kit line with Margit's summon.
+None for segment f1: no commit of it has owner steps in game, so no kit line is needed.
+
+Segment f2 so far (commits 7 to 12), 20 stacks:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:shield,minecraft:cooked_beef*32,minecraft:iron_sword,minecraft:zombie_spawn_egg*4,minecraft:iron_golem_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:bone*16,minecraft:skeleton_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:silverfish_spawn_egg*4,minecraft:cobblestone*256,minecraft:iron_pickaxe
+```
 
 ## Protocol
 
@@ -19,7 +25,7 @@ Nothing on the wire changed yet.
 Files under `third_party/minecraftoss` this track patched or added. Files that track D0 added count as patched here.
 
 - Patched (6): `entities/Cargo.toml`, `entities/src/world.rs`, `entities/src/world/families.rs`, `entities/src/world/families/bosses.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only).
-- Added (1): `entities/src/world/families/bosses/elden_bosses.rs`.
+- Added (2): `entities/src/world/families/bosses/elden_bosses.rs`, `entities/src/world/families/bosses/elden_bosses/arena.rs`.
 - `entities/Cargo.toml` depends on `elden_boss` (a path dependency on `crates/elden_boss`): the first vendored crate that depends on a fork crate. The root `Cargo.lock` covers it, as the minecraftoss crates have no workspace of their own.
 
 ## Group er-core
@@ -398,3 +404,47 @@ After bcb20591. Brief F2, commit 3 (its summon part landed in commit 8).
   3. `/summon minecraft:zombie ~ ~ ~5` under a roof: the chat says "Summoned new Zombie", as before.
 
 Kit: none needed for these steps.
+
+### 12. Margit walks, turns and leaps on blocks and stays in his arena
+
+After 86d53bb1. Brief F2, commit 4.
+
+- **Changed (vendored entities crate):**
+  - New `world/families/bosses/elden_bosses/arena.rs` (`pub mod arena;` in `elden_bosses.rs`), between the brain and the blocks:
+    - **The `Sense`** (`seen`): every eligible player (alive, not a spectator, attackable) with the ground under their feet from the blocks (`ground_under`: the highest collision top under the player's 0.6-wide footprint, at most 8 blocks down; 8 below the feet when there is none, so a ring never reaches a player in the air), and `reachable` and `room` from his last survey.
+    - **The survey** (`survey`), at most every 10 ticks and only while he is awake: for each eligible player within 40 blocks of his anchor, a walk path (`plan_walk_path` on a scratch `GroundNavigation`, reach 1) decides `reachable`; while he is in the air, the last answer stays. For a player no path reaches, `room` is the nearest standing spot within 3 blocks across and 2 up or down of their feet (`fade_across`, `fade_rise` of his def) whose box does not overlap the player's.
+    - **A standing spot** (`stands`): his 1.4 x 3.0 box meets no block, and the block under his centre has its top at his feet.
+    - **Walking** (`act.walk`): a `GroundNavigation` path to the brain's point (reach 0), replanned when the point moves to another block, at most every 10 ticks while a path is under way. Each tick he follows it with vanilla's ground travel at speed 0.3 (his def's), heading along the path while his body keeps the brain's facing, so he circles his target facing it. His walk profile: a monster's (no fire maluses), step 1.0, a fall of at most 3, follow range 40 (640 nodes), no floating.
+    - **Root motion** (`act.motion`): a step or a hop is that exact sideways move through the collision move, with gravity; a leap is the brain's displacement, up and down, through the same move. A leap that meets a wall drops: from that tick on, the leap's motion is ignored and he falls. Moves stop his path.
+    - **The fade** (`act.fade`): he appears on a standing spot near the point (the brain's `room`, which is one already, or his anchor when he fades home), or on the point itself when there is none.
+  - `elden_bosses.rs`: his state gains the path, the survey, his stride and the leap's drop flag; `think` takes the level, keeps the `Act`'s hits and daggers on his state (`hits`, `throws`, replaced on every tick his brain steps, so a dying Margit holds none from before his death) for group `er-fight`, and returns the `Act`; his tick hands the `Act` to `arena::carry_out` (he only fell before). `steady` now keeps his own stride from the last tick and still drops anything else, so pushes and blasts never move him.
+- **Tests** (`world::families::bosses::elden_bosses::arena::tests`, flat test worlds as the wither's tests use):
+  - `margit_walks_to_a_player_10_blocks_away` (between moves he walks more than 3 blocks, never faster than 0.25 a tick, and comes within 5.5 blocks of the player)
+  - `margit_stops_at_his_leash` (with the player 34 blocks from his anchor, he goes at least 21 and never more than 25 from it, keeps the fight and faces the player)
+  - `a_leap_over_a_one_block_wall_lands_beyond_it` (a forced leap rises above 66 and lands on the ground beyond the wall; a 6-high wall stops him and he drops to its foot)
+  - `margit_resets_when_everyone_leaves_for_5_seconds` (hurt and moved, the player 60 blocks away: awake for 99 ticks, then `Return` at 800 health in phase 1, and he walks home and sleeps within a block of his anchor, with no fade)
+  - `margit_fades_inside_a_wall_ring_he_cannot_reach` (a player inside a 6-high ring 4 blocks out: no hit lands, after at least 100 stuck ticks he fades with the player unreachable and a room found, and appears on a standing spot inside; then a path reaches the player)
+  - `a_player_in_a_two_deep_hole_beside_him_is_still_hit` (ground 62 in the hole, never in the hole himself, a hit for the player, and no path ends in the hole)
+  - `a_standing_spot_needs_a_block_under_him_and_room_for_his_box` (ground, air, inside the ground, a block in his box; no room beside a player on a 1 x 1 pillar; room on flat ground is beside him)
+- **Runs:** `test -p minecraftoss-entities --locked --lib`: 457 passed, the older Margit tests unchanged. `test -p minecraft_terrain --locked --lib`: 1440 passed and 3 ignored. `test -p minecraft_survival --locked`: 778 + 1 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The hits and daggers then moved from `carry_out` into `think` (so a dying Margit holds none): `test -p minecraftoss-entities --locked --lib` 457 passed again, `test -p minecraft_terrain --locked --lib` with `elden` and `margit` 11 passed, `check -p launcher --locked` green. `arena.rs` and `elden_bosses.rs` pass `rustfmt --check --edition 2021` with empty output on their staged content.
+- **Decisions:**
+  - **He walks facing his target:** vanilla's `MoveControl` turns a mob to where it walks. Margit's facing belongs to the brain (it turns 30 degrees a tick inside tracking windows), so the path gives only the heading of his steps. The speed and the travel physics are vanilla's ground travel, about 0.2 blocks a tick at full stride.
+  - **His stride survives the tick:** commit 8 dropped all sideways velocity at the start of each tick, which would have held him to one tick's acceleration (0.09 a tick). He now keeps the velocity his own walking left and drops anything else.
+  - **Reach 1 for "a path reaches them", reach 0 for walking:** vanilla's `moveTo(entity)` uses 1. Walking aims at the exact block, because a 1.4-wide mob stands at a node's corner (`getEntityPosAtNode` adds 1.0) and his home check is 1 block.
+  - **A standing spot needs the block under his centre:** an edge would do for vanilla's on-ground test, but then a player on a 1 x 1 pillar would always have room beside them, and the design wants daggers there.
+  - **The ring in the fade test is 4 blocks out, not 3:** at 3 out his sword sweep (4.5 blocks) reaches the player through the wall, so his hits land and the stuck clock never runs. His strikes have no line of sight (see "Left for later").
+  - **The stuck clock counts from the wake:** the brain counts while he is awake with an unreachable target, the 30 wake ticks included, so the fade can come 100 ticks after the wake starts.
+- **Left for later:**
+  - His strikes ignore walls: an arc or a ring hits a player behind a block when the shape reaches. Group `er-fight` applies the hits and can check a line from his chest to the player first; the brain would then need that answer for its stuck rule.
+  - He walks in water and lava with the dry ground travel.
+- **Owner's steps.** He is still a round shadow about 2 blocks wide until group `er-look`, and his swings and daggers hurt nobody until group `er-fight`: watch the shadow and listen. Release build, survival, Normal, by day, flat open ground in the Overworld, F3 on for distances. Name each screenshot by its label, `f2-12-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~10`: you hear him rise, and about a second and a half later the shadow comes toward you. Walk around it at 6-10 blocks: it follows and circles you at about walking pace. **Screenshot f2-12-1** with the shadow near you.
+  2. Step back to about 12 blocks and stand still: within a few seconds a ravager roar, the shadow jumps, and it lands 1-2 blocks in front of you with a mace smash and a low boom.
+  3. Walk straight away until you are 30 blocks from where he appeared: the shadow stops about 24 blocks from its spot and stays there while you stand. **Screenshot f2-12-2** with the shadow and your coordinates.
+  4. Go on to 45 blocks, wait 5 seconds, then come back to 30 blocks: the shadow walks back to where it appeared and goes quiet (asleep). Come within 24: it rises again.
+  5. Build a ring of cobblestone 6 high around yourself, 4 blocks out from your block on every side (a 9 x 9 square), with the shadow outside: it cannot get in, and after about 5 seconds you hear the mirror sound and the shadow appears inside the ring beside you. **Screenshot f2-12-3** inside the ring. Break out with the pickaxe.
+  6. Pillar up 5 blocks on a single column of cobblestone: the shadow stays below and does not fade up to you.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cobblestone*256,minecraft:iron_pickaxe,minecraft:cooked_beef*32
+```

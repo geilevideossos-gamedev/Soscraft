@@ -2,13 +2,16 @@ use crate::effects::MobEffects;
 use crate::health::{DamageResult, DamageState};
 use crate::look::LookControl;
 use crate::monster_ai::Target;
+use crate::navigation::GroundNavigation;
 use crate::tempt::PlayerCandidate;
 use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore};
 use crate::world::{DamageSourceKind, EntityWorld, Voice, voice_pitch};
 use elden_boss::data::{Cue, Sound};
-use elden_boss::{BossDef, Brain, Seen, Sense, Source};
+use elden_boss::{Act, BossDef, Brain, Dagger, Hit, Sense, Source};
 use glam::DVec3;
 use minecraftoss_player::World;
+
+pub mod arena;
 
 pub const KEY: u8 = 96;
 pub const EYE_SHARE: f64 = 0.85;
@@ -35,6 +38,15 @@ pub struct EldenBoss {
     pub walk: Option<DVec3>,
     pub seen: Vec<(u64, DVec3)>,
     pub voiced: i32,
+    pub navigation: GroundNavigation,
+    pub walk_block: Option<(i32, i32, i32)>,
+    pub walked: i32,
+    pub ways: Vec<arena::Way>,
+    pub planned: i32,
+    pub stride: DVec3,
+    pub dropped: bool,
+    pub hits: Vec<Hit>,
+    pub throws: Vec<Dagger>,
 }
 
 impl EldenBoss {
@@ -64,6 +76,15 @@ pub fn boss(def: &'static BossDef, position: DVec3) -> FamilyMob<EldenBoss> {
             walk: None,
             seen: Vec::new(),
             voiced: -HURT_VOICE_GAP,
+            navigation: GroundNavigation::default(),
+            walk_block: None,
+            walked: -arena::PLAN_GAP,
+            ways: Vec::new(),
+            planned: -arena::PLAN_GAP,
+            stride: DVec3::ZERO,
+            dropped: false,
+            hits: Vec::new(),
+            throws: Vec::new(),
         },
     }
 }
@@ -72,32 +93,19 @@ pub fn tick_of(core: &MobCore) -> u64 {
     u64::try_from(core.tick_count).unwrap_or(0)
 }
 
-fn steady(core: &mut MobCore) {
+fn steady(mob: &mut FamilyMob<EldenBoss>) {
+    let FamilyMob { core, state } = mob;
     core.effects = MobEffects::default();
-    core.body.velocity.x = 0.0;
-    core.body.velocity.z = 0.0;
+    core.body.velocity.x = state.stride.x;
+    core.body.velocity.z = state.stride.z;
     core.body.fall_distance = 0.0;
 }
 
-fn sense_of(players: &[PlayerCandidate]) -> Vec<Seen> {
-    players
-        .iter()
-        .filter(|player| player.alive && !player.spectator && player.attackable)
-        .map(|player| Seen {
-            id: player.id,
-            feet: player.position,
-            eye: f64::from(player.eye_height),
-            ground: player.position.y,
-            reachable: true,
-            room: None,
-        })
-        .collect()
-}
-
-fn think(mob: &mut FamilyMob<EldenBoss>, players: &[PlayerCandidate]) {
+fn think<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, players: &[PlayerCandidate]) -> Act {
+    arena::survey(mob, level, players);
     let FamilyMob { core, state } = mob;
     state.seen = players.iter().map(|p| (p.id, p.position)).collect();
-    let seen = sense_of(players);
+    let seen = arena::seen(level, players, &state.ways);
     let position = core.body.position;
     let sense = Sense {
         tick: tick_of(core),
@@ -108,6 +116,8 @@ fn think(mob: &mut FamilyMob<EldenBoss>, players: &[PlayerCandidate]) {
         players: &seen,
     };
     let act = state.brain.step(&sense);
+    state.hits.clone_from(&act.hits);
+    state.throws.clone_from(&act.throws);
     core.yaw = act.yaw as f32;
     if let Some(look) = act.look {
         core.look
@@ -121,6 +131,7 @@ fn think(mob: &mut FamilyMob<EldenBoss>, players: &[PlayerCandidate]) {
             core.voices.push((voice, position));
         }
     }
+    act
 }
 
 fn spoken(sound: Sound, pitch: f32) -> Voice {
@@ -263,19 +274,17 @@ impl Family for EldenBoss {
         ticks: &dyn Fn(DVec3) -> bool,
     ) {
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
-            steady(&mut mob.core);
+            steady(mob);
         }
         let Some(base) = world.family_base_tick::<Self, W>(id, level, players) else {
             return;
         };
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
             if !base.no_ai {
-                think(mob, players);
+                let act = think(mob, &*level, players);
                 if base.alive {
-                    let yaw = mob.core.yaw;
                     mob.core.body.trim_small_velocity();
-                    let _ = mob.core.body.travel_air(&*level, DVec3::ZERO, 0.0, yaw);
-                    mob.core.body.fall_distance = 0.0;
+                    arena::carry_out(mob, &*level, &act);
                 }
             }
             speak(mob);
@@ -369,7 +378,7 @@ mod tests {
         fn set_block(&mut self, _: Pos, _: Option<Block>) {}
     }
 
-    fn player_at(id: u64, position: DVec3) -> PlayerCandidate {
+    pub(super) fn player_at(id: u64, position: DVec3) -> PlayerCandidate {
         PlayerCandidate {
             id,
             position,
@@ -397,7 +406,7 @@ mod tests {
         world.spawn_elden_boss(&MARGIT, at, 0.0, at, false)
     }
 
-    fn margit(world: &EntityWorld, id: u64) -> &FamilyMob<EldenBoss> {
+    pub(super) fn margit(world: &EntityWorld, id: u64) -> &FamilyMob<EldenBoss> {
         let bosses = world.elden_bosses();
         bosses.iter().find(|mob| mob.core.id == id).unwrap()
     }
