@@ -24,6 +24,7 @@ const RESPAWN_BLOCK_REACH: f64 = 5.0;
 const BLOCK_RANGE_BUFFER: f64 = 1.0;
 const ENTITY_RANGE_BUFFER: f64 = 3.0;
 const HIT_SLACK: f64 = 1.0000001;
+const SHEARS: &str = "minecraft:shears";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Hands {
@@ -781,7 +782,27 @@ pub fn act(
                         .is_some()
                 })
             });
+            let sheared = use_pressed
+                && held.as_ref().is_some_and(|stack| stack.id == SHEARS)
+                && entities
+                    .knot_target(
+                        player_id,
+                        eye_block,
+                        look,
+                        game_mode.entity_reach(),
+                        block_distance,
+                    )
+                    .is_some_and(|pos| entities.shear_knot(player_id, pos));
+            if sheared
+                && game_mode.consumes_items()
+                && minecraft_terrain::durability::wear(inventory, slot, 1, || {
+                    entities.random_float()
+                })
+            {
+                entities.broken_items.push(SHEARS.to_owned());
+            }
             let leashed_fence = main
+                && !sheared
                 && player
                     .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                     .map(|hit| hit.pos)
@@ -792,6 +813,7 @@ pub fn act(
                     .filter(|&pos| entities.has_knot(pos) || !(player.crouching && has_item))
                     .is_some_and(|pos| entities.leash_fence(player_id, pos, player.crouching));
             let bell = main
+                && !sheared
                 && !leashed_fence
                 && !(player.crouching && has_item)
                 && player
@@ -805,6 +827,7 @@ pub fn act(
                     .map(|hit| entities.ring_bell(hit.pos, minecraft_terrain::bells::face_name(hit.face)))
                     .is_some();
             let used = if main
+                && !sheared
                 && !leashed_fence
                 && !bell
                 && table.is_none()
@@ -827,7 +850,10 @@ pub fn act(
             } else {
                 None
             };
-            if let Some(pos) = table {
+            if sheared {
+                hand.swing = Some(0.0);
+                HandUse::Consumed
+            } else if let Some(pos) = table {
                 if use_pressed {
                     open_table = Some(pos);
                     hand.swing = Some(0.0);
@@ -2432,6 +2458,54 @@ pub(crate) mod tests {
         );
         let entities = level.entities.as_ref().expect("entities");
         assert!(entities.has_knot(KNOT_FENCE), "the knot stays");
+    }
+
+    #[test]
+    fn shears_on_a_knot_cut_the_leads_and_wear_one_point() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        knotted_fence(&mut level);
+        let mut player = holding(SHEARS, 1);
+        if let Some(shears) = player.inventory.slots[0].as_mut() {
+            shears.components = Some(serde_json::json!({ "minecraft:max_damage": 238 }));
+        }
+        let damage = |player: &Player| {
+            player.inventory.slots[0]
+                .as_ref()
+                .and_then(|stack| stack.components.as_ref())
+                .and_then(|components| components.get("minecraft:damage"))
+                .and_then(serde_json::Value::as_u64)
+        };
+        let looking = actor(-90.0, pitch_to(actor(0.0, 0.0).eye, [6.3125, 201.6, 4.5]));
+        let right_click = |player: &mut Player, level: &mut Level| {
+            act(
+                player,
+                level,
+                &globals,
+                &mut Flat,
+                &looking,
+                press(),
+                &moved(),
+                None,
+                0.0,
+            )
+        };
+        right_click(&mut player, &mut level);
+        assert_eq!(damage(&player), Some(1), "one point of 238");
+        assert_eq!(player.hand.swing, Some(0.0));
+        let entities = level.entities.as_mut().expect("entities");
+        assert!(entities.broken_items.is_empty());
+        entities.view.world.break_knot(KNOT_FENCE);
+        player.hand.swing = None;
+        right_click(&mut player, &mut level);
+        assert_eq!(damage(&player), Some(1), "nothing is tied, nothing is cut");
+        knotted_fence(&mut level);
+        player.mode = PlayerMode::new(GameMode::Creative);
+        player.hand.swing = None;
+        right_click(&mut player, &mut level);
+        assert_eq!(damage(&player), Some(1), "creative shears do not wear");
+        assert_eq!(player.hand.swing, Some(0.0));
     }
 
     #[test]

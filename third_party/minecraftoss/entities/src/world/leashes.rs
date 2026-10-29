@@ -763,6 +763,28 @@ impl EntityWorld {
         true
     }
 
+    pub fn shear_knot(&mut self, pos: Pos) -> bool {
+        let knot = LeashHolder::Knot(pos);
+        let tied = self.leashed_near(knot, center(knot_position(pos), KNOT_HEIGHT));
+        let saved = self.saved_to_knot(pos);
+        if tied.is_empty() && saved.is_empty() {
+            return false;
+        }
+        for mob in tied {
+            self.drop_leash(mob, true);
+        }
+        for mob in saved {
+            self.drop_saved_leash(mob);
+        }
+        let block = DVec3::new(
+            f64::from(pos.0) + 0.5,
+            f64::from(pos.1) + 0.5,
+            f64::from(pos.2) + 0.5,
+        );
+        self.leash_sound(SNIP_SOUND, block, "players_volume");
+        true
+    }
+
     pub(super) fn tick_leashes(
         &mut self,
         world: &impl World,
@@ -1253,6 +1275,53 @@ mod tests {
         assert_eq!(entities.knots(), [(9, 64, 9)]);
         assert_eq!(entities.take_lead_drops(), [DVec3::new(0.5, 64.0, 0.5)]);
         assert_eq!(sounds(&mut entities), [UNTIED_SOUND]);
+    }
+
+    #[test]
+    fn shears_cut_every_lead_off_a_knot_with_a_snip_and_no_untie() {
+        let mut entities = EntityWorld::default();
+        let cow = cow_at(&mut entities, DVec3::new(0.5, 64.0, 0.5));
+        let other = cow_at(&mut entities, DVec3::new(0.5, 64.0, 2.5));
+        let saved = cow_at(&mut entities, DVec3::new(1.5, 64.0, 1.5));
+        let mine = cow_at(&mut entities, DVec3::new(4.5, 64.0, 0.5));
+        entities.set_leash(cow, LeashHolder::Knot((3, 64, 0)));
+        entities.set_leash(other, LeashHolder::Knot((3, 64, 0)));
+        entities.load_leash(saved, SavedLeash::Knot((3, 64, 0)));
+        entities.set_leash(mine, LeashHolder::Knot((3, 64, 5)));
+        assert!(entities.shear_knot((3, 64, 0)));
+        assert_eq!(entities.knots(), [(3, 64, 5)]);
+        for mob in [cow, other, saved] {
+            assert!(entities.leash_of(mob).is_none(), "{mob}");
+        }
+        assert_eq!(
+            entities.leash_holder(mine),
+            Some(LeashHolder::Knot((3, 64, 5)))
+        );
+        assert_eq!(entities.take_lead_drops().len(), 3);
+        let snipped = entities.take_sounds();
+        assert_eq!(snipped.len(), 1, "no untie");
+        assert_eq!(snipped[0].event, SNIP_SOUND);
+        assert_eq!(snipped[0].position, DVec3::new(3.5, 64.5, 0.5));
+        assert_eq!(snipped[0].category, "players_volume");
+    }
+
+    #[test]
+    fn shears_on_an_empty_knot_do_nothing() {
+        let mut entities = EntityWorld::default();
+        let cow = cow_at(&mut entities, DVec3::new(0.5, 64.0, 0.5));
+        entities.set_leash_players(&[player(0, DVec3::new(1.5, 64.0, 0.5))]);
+        entities.set_leash(cow, LeashHolder::Player(0));
+        assert!(!entities.shear_knot((3, 64, 0)));
+        assert_eq!(entities.leash_holder(cow), Some(LeashHolder::Player(0)));
+        assert!(entities.take_lead_drops().is_empty());
+        assert!(entities.take_sounds().is_empty());
+        let far = cow_at(&mut entities, DVec3::new(40.5, 64.0, 0.5));
+        entities.set_leash(far, LeashHolder::Knot((3, 64, 0)));
+        assert!(
+            !entities.shear_knot((3, 64, 0)),
+            "only leads within 16 blocks are cut"
+        );
+        assert_eq!(entities.leash_holder(far), Some(LeashHolder::Knot((3, 64, 0))));
     }
 
     #[test]

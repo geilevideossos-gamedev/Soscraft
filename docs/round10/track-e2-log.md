@@ -521,3 +521,34 @@ After 3188f4f8.
 ```
 IW4L_MINECRAFT_KIT=minecraft:lead*16,minecraft:cow_spawn_egg*4,minecraft:oak_fence*16,minecraft:iron_sword,minecraft:wheat*16,minecraft:cooked_beef*16
 ```
+
+### 3. Minecraft shears cut every lead off a lead knot
+
+After b64f8651.
+
+- **Vanilla (26.3, checked with javap):** `LeashFenceKnotEntity.interact` with shears first runs `Entity.interact` (its sneaking branch needs a `Leashable`, which a knot is not) → `shearOffAllLeashConnections(player)` → `dropAllLeashConnections`: every mob in `Leashable.leashableInArea` (a 32-block box around the knot's centre) whose holder is the knot gets `dropLeash()`, one lead each, and the `SHEAR` game event fires. Then `ServerLevel.playSound(null, blockPosition(), SHEARS_SNIP, player's sound source)`, volume 1 and pitch 1 at the block centre, and `hurtAndBreak(1, player, hand)` (unbreaking applies; players with infinite materials take no wear). The knot discards itself once its last mob is gone, with no untied sound. With nothing tied, the click falls through to the knot's own tie and hand-back. The shears win over tying the player's own mobs, so a player who holds shears and leads a cow cuts the knot.
+- **Changed:**
+  - Vendored `entities/src/world/leashes.rs`: new `shear_knot(pos)`: every mob tied to the knot within the vanilla area, and every mob only saved to it, drops its leash with a lead; the snip plays at the block centre in `players_volume`; the knot goes through `forget_empty_knot`, with no untie. False when nothing was tied.
+  - `minecraft_terrain/src/leash_render.rs`: `KnotAction::Shear`. `minecraft_terrain/src/server.rs`: `ServerSim::knot_action` runs `shear_knot` for it and spawns the leads.
+  - `minecraft_survival/src/entities.rs`: `shear_knot(player, pos)`, tried on a copy of the view's mob world first, like `leash_fence`, and sent only when the copy cuts something.
+  - `minecraft_survival/src/actions.rs`: on a use press with shears in either hand, the knot on the ray (`knot_target`, within the entity reach and nearer than the block and every entity) is sheared. In survival the shears wear one point through `durability::wear` (unbreaking applies), and broken shears go to `broken_items` for the break sound. The hand swings and the use ends there; tying at the fence, the bell and the block use are skipped for that click.
+  - No protocol change.
+- **Tests:**
+  - Vendored `world::leashes::tests::shears_cut_every_lead_off_a_knot_with_a_snip_and_no_untie` (two tied cows and one saved to the knot are cut with three leads, a cow on another knot stays, one snip at (3.5, 64.5, 0.5) in `players_volume` and no untie) and `shears_on_an_empty_knot_do_nothing` (a bare fence, and a knot whose cow is beyond the 32-block box).
+  - `server::tests::punching_a_knot_drops_a_lead_for_each_tied_cow_and_leaves_the_fence` now also shears: nothing to cut on the bare fence, then both cows tied again are cut with two more leads, only the snip sound, and the fence stays.
+  - `actions::tests::shears_on_a_knot_cut_the_leads_and_wear_one_point` (gated on game data): a right-click at the knot wears fresh shears to damage 1 and swings; with the knot gone nothing wears; in creative the shears cut without wear.
+- **Decisions:**
+  - Shears cut on a fresh use press only, not on the repeat while use is held, so the shears can never wear twice before the host's view sees the knot gone.
+  - Shears work from the offhand too, as vanilla tries each hand in turn.
+  - The wear goes through `durability::wear`, so unbreaking can spare it as in vanilla. The older shear sites in `mob_actions.rs` (a lead off a mob, sheep, snow golems, mooshrooms) still wear one point flat; that is left as it was.
+  - No `SHEAR` game event: track W wires game events.
+- **Test steps (survival, by day, flat grass):**
+  1. Tie both cows to a nether brick fence. Hold fresh shears and right-click the knot from the side: the snip sound, two leads drop and the knot is gone. There is no untie sound. The shears now show a durability bar (one point of 238 used; the bar itself still looks full) (**lk-4_shears**).
+  2. Right-click a fence with no knot with the shears: nothing is cut and the shears do not wear. Then with an empty hand and a cow on your lead, right-click the fence: it ties as before.
+  3. Lead a cow yourself, tie another cow to a fence, hold the shears and right-click the knot: the knot's cow is cut loose; your own cow stays on your lead.
+  4. **Friend window:** the friend ties their own cow to a fence and cuts the knot with shears. The host sees the knot go and the lead drop, and the friend's fresh shears show a durability bar (**lk-5_friend_shears**, the friend's view).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lead*16,minecraft:cow_spawn_egg*4,minecraft:oak_fence*16,minecraft:nether_brick_fence*8,minecraft:shears,minecraft:shears,minecraft:iron_sword,minecraft:wheat*16,minecraft:cooked_beef*16
+```

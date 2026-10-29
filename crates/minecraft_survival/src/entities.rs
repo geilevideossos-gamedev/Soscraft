@@ -1330,6 +1330,15 @@ impl Entities {
         self.view.world.has_knot(pos)
     }
 
+    pub fn shear_knot(&mut self, player: u64, pos: (i32, i32, i32)) -> bool {
+        let mut world = self.view.world.clone();
+        if !world.shear_knot(pos) {
+            return false;
+        }
+        self.server.knot_action(player, pos, minecraft_terrain::leash_render::KnotAction::Shear);
+        true
+    }
+
     pub fn totem_pop(&mut self, key: u128, feet: [f64; 3], width: f64, height: f64) {
         self.view.totem_pop(key, feet, width, height);
     }

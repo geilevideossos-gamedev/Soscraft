@@ -1484,6 +1484,7 @@ impl ServerSim {
     pub fn knot_action(&mut self, pos: BlockPos, action: crate::leash_render::KnotAction) -> bool {
         let done = match action {
             crate::leash_render::KnotAction::Punch => self.mobs.break_knot(pos),
+            crate::leash_render::KnotAction::Shear => self.mobs.shear_knot(pos),
         };
         self.drop_leads();
         done
@@ -12545,6 +12546,17 @@ mod tests {
         assert_eq!(sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["item.lead.untied"]);
         assert!(!server.knot_action((8, 201, 10), KnotAction::Punch), "nothing is left to punch");
         assert_eq!(item_ids(&server).len(), 2);
+        assert!(!server.knot_action((8, 201, 10), KnotAction::Shear), "nothing is left to cut");
+        for &cow in &cows {
+            server.mobs.set_leash(cow, LeashHolder::Knot((8, 201, 10)));
+        }
+        assert!(server.knot_action((8, 201, 10), KnotAction::Shear));
+        assert!(server.mobs.knots().is_empty());
+        assert!(cows.iter().all(|&cow| server.mobs.leash_holder(cow).is_none()));
+        assert_eq!(item_ids(&server).len(), 4, "shears drop a lead for each cow too");
+        let sounds = server.mobs.take_sounds();
+        assert_eq!(sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["item.shears.snip"]);
+        assert_eq!(block_name(&server, (8, 201, 10)), "minecraft:oak_fence");
     }
 
     #[test]

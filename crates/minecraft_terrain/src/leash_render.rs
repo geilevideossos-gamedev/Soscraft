@@ -29,6 +29,7 @@ pub enum RopeEnd {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KnotAction {
     Punch,
+    Shear,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
