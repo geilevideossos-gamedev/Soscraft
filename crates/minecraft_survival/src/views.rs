@@ -165,6 +165,14 @@ pub fn sent_key(view: &PlayerView) -> PlayerView {
     key
 }
 
+pub fn lengthened(before: &[EffectView], now: &[EffectView]) -> bool {
+    now.iter().any(|effect| {
+        before
+            .iter()
+            .any(|old| old.kind == effect.kind && effect.duration > old.duration)
+    })
+}
+
 pub fn slot_nbt(stack: &ItemStack) -> Option<Nbt> {
     let tag = match weapon_of(stack) {
         Some(_) => Tag::Compound(BTreeMap::from([
@@ -197,6 +205,7 @@ pub struct HudClock {
     changed_at: u64,
     display_health: i32,
     effects_seen: Vec<EffectView>,
+    effects_view: u32,
     effects_at: u64,
 }
 
@@ -251,9 +260,10 @@ impl HudClock {
         }
     }
 
-    pub fn effects(&mut self, view: &PlayerView) -> Vec<EffectView> {
-        if self.effects_seen != view.effects {
+    pub fn effects(&mut self, view: &PlayerView, received: u32) -> Vec<EffectView> {
+        if self.effects_seen != view.effects || self.effects_view != received {
             self.effects_seen = view.effects.clone();
+            self.effects_view = received;
             self.effects_at = self.tick;
         }
         let passed = i32::try_from(self.tick - self.effects_at).unwrap_or(i32::MAX);
@@ -504,22 +514,47 @@ mod tests {
         };
         view.effects = vec![effect(REGENERATION, 230), effect(HUNGER, i32::MAX)];
         clock.vitals(&view, 0.0, false, false);
-        assert_eq!(clock.effects(&view), view.effects);
+        assert_eq!(clock.effects(&view, 0), view.effects);
         clock.vitals(&view, 1.5, false, false);
-        let shown = clock.effects(&view);
+        let shown = clock.effects(&view, 0);
         assert_eq!(
             shown.iter().map(|e| e.duration).collect::<Vec<_>>(),
             [200, i32::MAX],
             "thirty ticks later, and the unending one stays"
         );
         view.effects[0].duration = 120;
-        assert_eq!(clock.effects(&view)[0].duration, 120, "a new view is taken as it is");
+        assert_eq!(clock.effects(&view, 0)[0].duration, 120, "a new view is taken as it is");
         clock.vitals(&view, 6.0, false, false);
         assert_eq!(
-            clock.effects(&view),
+            clock.effects(&view, 0),
             vec![effect(HUNGER, i32::MAX)],
             "a run-out effect is gone before the host says so"
         );
+    }
+
+    #[test]
+    fn a_friend_s_effect_given_again_with_the_same_length_counts_down_from_the_start() {
+        let mut clock = HudClock::default();
+        let view = PlayerView {
+            effects: vec![EffectView {
+                kind: "minecraft:darkness".to_owned(),
+                amplifier: 0,
+                duration: 260,
+                ambient: false,
+            }],
+            ..Default::default()
+        };
+        clock.vitals(&view, 0.0, false, false);
+        assert_eq!(clock.effects(&view, 1)[0].duration, 260);
+        clock.vitals(&view, 3.0, false, false);
+        assert_eq!(clock.effects(&view, 1)[0].duration, 200);
+        assert_eq!(
+            clock.effects(&view, 2)[0].duration,
+            260,
+            "the same view sent again is a new grant"
+        );
+        clock.vitals(&view, 13.0, false, false);
+        assert!(clock.effects(&view, 2).is_empty());
     }
 
     #[test]

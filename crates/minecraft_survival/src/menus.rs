@@ -1884,7 +1884,7 @@ pub fn lids(
             spectator,
         ));
     }
-    lid_effects(lids.entities, lids.terrain, lids.body, events)
+    lid_effects(lids.entities, lids.terrain, lids.body, Some(player), events)
 }
 
 pub fn recheck_lids(
@@ -1897,13 +1897,14 @@ pub fn recheck_lids(
     let events = lids
         .openers
         .recheck(|player, pos| open_cells(player).is_none_or(|cells| cells.contains(&pos)));
-    lid_effects(lids.entities, lids.terrain, lids.body, events)
+    lid_effects(lids.entities, lids.terrain, lids.body, None, events)
 }
 
 fn lid_effects(
     entities: &mut Entities,
     terrain: &mut Terrain,
     body: &mut dyn Body,
+    player: Option<u64>,
     events: Vec<minecraft_terrain::openers::OpenerEvent>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
@@ -1911,8 +1912,11 @@ fn lid_effects(
         let outcome = crate::level::opener_outcome(&terrain.scene, &event);
         let (cell, id, count) = outcome.block_event;
         entities.lid_event(&terrain.scene, cell, id, count);
+        if let (Some(player), Some(heard)) = (player, event.game_event()) {
+            entities.game_event(player, heard, minecraft_terrain::bucket::centre(event.pos), None);
+        }
         if let Some((pos, viewers)) = outcome.chest_openers {
-            entities.chest_openers(pos, viewers);
+            entities.chest_openers(player, pos, viewers);
         }
         if let Some(sound) = outcome.sound {
             let pitch = minecraft_terrain::openers::pitch(entities.random_float());

@@ -232,6 +232,7 @@ fn tick_level(
                 &registries,
                 shaping,
                 entities,
+                None,
                 writes,
             );
         }
@@ -254,6 +255,7 @@ fn tick_level(
                 .any(|friend| friend.id == id && friend.infinite)
         })
     };
+    let guns = crate::minecraft_world::gun_vibrations(&events, credit);
     let (mob_shots, events): (Vec<_>, Vec<_>) = events.into_iter().partition(|event| {
         matches!(
             event,
@@ -271,13 +273,14 @@ fn tick_level(
         .collect();
     if let Some(entities) = level.entities.as_mut() {
         let scene = &level.terrain.scene;
+        crate::minecraft_world::post_gun_vibrations(entities, scene, guns);
         events.retain(|event| match *event {
-            VoxelEvent::Shot { block, .. } => {
+            VoxelEvent::Shot { block, attacker, .. } => {
                 let pos = (block[0], block[1], block[2]);
                 let egg =
                     Scene::block(scene, pos).is_some_and(minecraft_terrain::dragon_egg::is_egg);
-                if egg {
-                    entities.attack_block(scene, pos);
+                if let Some(id) = credit(attacker).filter(|_| egg) {
+                    entities.attack_block(id, scene, pos);
                 }
                 !egg
             }

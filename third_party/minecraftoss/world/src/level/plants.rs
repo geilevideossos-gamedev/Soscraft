@@ -365,6 +365,7 @@ impl Level<'_> {
         self.random.next_f32();
         let picked = if bush { self.with(state, "age", "1") } else { self.with(state, "berries", "false") };
         self.set_block(pos, picked, update::CLIENTS, update::LIMIT);
+        self.block_game_event("minecraft:block_change", pos, Some(picked));
         true
     }
 }

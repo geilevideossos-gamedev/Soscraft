@@ -70,6 +70,7 @@ impl Level<'_> {
         let tnt = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], owner);
         self.add_entity(tnt);
         // The priming sound's seed comes from the sound seed generator.
+        self.block_game_event_from("minecraft:prime_fuse", pos, owner.map(super::game_event::EventSource::Player), None);
         true
     }
 
@@ -149,6 +150,7 @@ impl Level<'_> {
     }
 
     fn explode_from(&mut self, ex: Explosion, shield: Option<BlockPos>, dangerous: bool) -> usize {
+        self.game_event_from("minecraft:explode", ex.center, ex.source.map(super::game_event::EventSource::Entity), None);
         let mut to_blow = self.exploded_positions(&ex, shield, dangerous, false);
         self.hurt_entities(&ex);
         if ex.interaction != BlockInteraction::Keep {

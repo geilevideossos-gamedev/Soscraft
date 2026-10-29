@@ -92,6 +92,8 @@ impl Level<'_> {
         self.set_block_entity_value(pos, "Page", Tag::Int(0));
         self.update_neighbour_for_output_signal(pos, block);
         self.reset_book_state(pos, state, true);
+        let placed = self.block(pos);
+        self.block_game_event("minecraft:block_change", pos, Some(placed));
         self.sounds.push(LevelSound {
             event: BOOK_PUT,
             pos: [
@@ -141,6 +143,8 @@ impl Level<'_> {
         let block = self.block_id(state);
         self.update_neighbour_for_output_signal(pos, block);
         self.reset_book_state(pos, state, false);
+        let taken = self.block(pos);
+        self.block_game_event_from("minecraft:block_change", pos, None, Some(taken));
         Some(book)
     }
 

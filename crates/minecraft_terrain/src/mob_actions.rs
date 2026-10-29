@@ -32,7 +32,7 @@ pub struct MobOutcome {
     /// Items the mob dropped, where they appear.
     pub drops: Vec<(ItemStack, DVec3)>,
     /// Experience killed mobs left, where they died.
-    pub experience: Vec<(DVec3, i32)>,
+    pub experience: Vec<(DVec3, i32, i32)>,
     /// The acting player's inventory changed.
     pub inventory_changed: bool,
     pub broken: Vec<String>,
@@ -57,13 +57,14 @@ pub struct Actor<'a> {
     pub shearing_loot: Option<&'a mut ShearingLootBook>,
 }
 
+type DeathRemains = (Vec<(ItemStack, DVec3)>, Vec<(DVec3, i32, i32)>);
 
 /// What the mobs that died since the last call leave where each died: their
 /// drops ([`EntityLootBook::death_drops`]; without loot tables nothing
 /// drops) and their experience.
-pub fn death_remains(world: &mut EntityWorld, loot: Option<&mut EntityLootBook>) -> (Vec<(ItemStack, DVec3)>, Vec<(DVec3, i32)>) {
+pub fn death_remains(world: &mut EntityWorld, loot: Option<&mut EntityLootBook>) -> DeathRemains {
     let deaths = world.take_deaths();
-    let experience = deaths.iter().filter(|d| d.experience > 0).map(|d| (d.position, d.experience)).collect();
+    let experience = deaths.iter().map(|d| (d.position, d.experience, d.reward)).collect();
     (loot.map(|book| book.death_drops(deaths)).unwrap_or_default(), experience)
 }
 
@@ -206,6 +207,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             let Some(result) = entity.sheep.use_shears(loot) else { return outcome };
             if let ShearsResult::Sheared { drops, tool_damage } = result {
                 outcome.sound("entity.sheep.shear", position, 1.0, "friendly_volume");
+                world.game_event(crate::game_events::SHEAR, position, Some(crate::thrown::PLAYER_TARGET + actor.player), None);
                 for stack in drops {
                     for _ in 0..stack.count {
                         outcome.drops.push((ItemStack { count: 1, ..stack.clone() }, position + DVec3::Y));
@@ -290,6 +292,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             use minecraftoss_entities::snow_golem::{SHEAR_LOOT, SHEAR_SOUND};
             let Some((position, eye)) = world.shear_snow_golem(id) else { return outcome };
             outcome.sound(SHEAR_SOUND, position, 1.0, "players_volume");
+            world.game_event(crate::game_events::SHEAR, position, Some(crate::thrown::PLAYER_TARGET + actor.player), None);
             let at = position + DVec3::new(0.0, f64::from(eye), 0.0);
             let drops = actor.shearing_loot.as_deref_mut().and_then(|loot| loot.roll_items(SHEAR_LOOT));
             outcome.drops.extend(drops.into_iter().flatten().map(|stack| (stack, at)));
@@ -301,6 +304,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             let Some(position) = world.mooshroom_mut(id).map(|entity| entity.cow.body.position) else { return outcome };
             let Some(shearing) = world.shear_mooshroom(id) else { return outcome };
             outcome.sound("entity.mooshroom.shear", position, 1.0, "players_volume");
+            world.game_event(crate::game_events::SHEAR, position, Some(crate::thrown::PLAYER_TARGET + actor.player), None);
             for _ in 0..shearing.drop_count {
                 outcome.drops.push((ItemStack::new(shearing.drop_item, 1), position + DVec3::Y));
             }

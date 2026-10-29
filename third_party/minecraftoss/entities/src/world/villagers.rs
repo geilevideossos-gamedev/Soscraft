@@ -1137,6 +1137,7 @@ impl EntityWorld {
                 let pitch = self.level_random.next_float() * 0.1 + 0.9;
                 let center = DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5);
                 voices.push((Voice::Event(event, 1.0, pitch), center));
+                self.game_event(if open { "minecraft:block_open" } else { "minecraft:block_close" }, center, Some(id), None);
                 changed.extend(halves.into_iter().map(|(half, _)| half));
             }
         }
@@ -1144,6 +1145,7 @@ impl EntityWorld {
             changed.push(pos);
             changed.extend(crate::villager_brain::door_halves(&*world, pos, false).into_iter().skip(1).map(|(half, _)| half));
             world.set_block(pos, None);
+            if let Some(&(x, y, z)) = changed.last() { self.game_event("minecraft:block_destroy", DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5), None, None); }
         }
         self.level_events.extend(work.events.into_iter().map(|(event, pos)| (event, pos, 0)));
         for pos in changed {

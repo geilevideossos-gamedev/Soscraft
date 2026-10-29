@@ -21,6 +21,8 @@ use minecraftoss_player::survival::EffectKind;
 mod combat;
 mod merchants;
 mod emissions;
+mod game_events;
+pub use game_events::MobGameEvent;
 mod endermen;
 mod golems;
 mod wolves;
@@ -649,6 +651,7 @@ pub struct MobDeath {
     pub equipment: Vec<ItemStack>,
     /// The experience it leaves (`LivingEntity.dropExperience`).
     pub experience: i32,
+    pub reward: i32,
 }
 
 /// `Items.BOW`'s durability.
@@ -660,7 +663,7 @@ const STONE_SWORD_DURABILITY: u32 = 131;
 fn death_of(id: u64, damage: &mut DamageState, kind: &'static str, table: Option<&'static str>, context: EntityLootContext) -> Option<(u64, MobDeath)> {
     let Death { order, position, killed_by_player, on_fire, attacker, direct, charged_creeper } = damage.death.take()?;
     let context = EntityLootContext { this_type: Some(kind), on_fire, killed_by_player, attacker, has_direct_attacker: direct, ..context };
-    Some((order, MobDeath { id, table, position, context, charged_creeper, equipment: Vec::new(), experience: 0 }))
+    Some((order, MobDeath { id, table, position, context, charged_creeper, equipment: Vec::new(), experience: 0, reward: 0 }))
 }
 
 /// A sound a mob made, for the client to play: its event, where, volume,
@@ -2600,6 +2603,7 @@ pub struct EntityWorld {
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
     sounds: Vec<MobSound>,
+    game_events: Vec<MobGameEvent>,
     /// The `mob_drops` game rule.
     mob_drops: bool,
     /// The living mobs and players by entity section, for pushing.
@@ -2738,6 +2742,7 @@ impl Default for EntityWorld {
             sea_level: 63,
             difficulty: 2,
             sounds: Vec::new(),
+            game_events: Vec::new(),
             mob_drops: true,
             sections: pushing::Sections::default(),
             pushing_players: Vec::new(),
@@ -3330,6 +3335,7 @@ impl EntityWorld {
     }
 
     fn spawn_arrow(&mut self, owner_id: u64, arrow: Arrow) -> u64 {
+        self.game_event("minecraft:projectile_shoot", arrow.position, Some(owner_id), None);
         self.next_id += 1;
         let id = self.next_id;
         self.arrows.push(ArrowEntity {
@@ -4513,10 +4519,7 @@ impl EntityWorld {
         // Animals, bats and villagers drop their loot only as adults
         // (`LivingEntity.shouldDropLoot`); monsters as babies too.
         let adult = |baby: bool, table: &'static str| (!baby).then_some(table);
-        // `dropExperience`: only a kill within a player's memory leaves
-        // experience, from monsters at any age and other mobs as adults
-        // (`shouldDropExperience`).
-        let earns = |death: &MobDeath, monster: bool| mob_drops && death.context.killed_by_player && (monster || !death.context.baby);
+        let earns = |death: &MobDeath, monster: bool| monster || !death.context.baby;
         // `Animal.getBaseExperienceReward`: 1 to 3, from the mob's random.
         let animal = |death: &mut MobDeath, random: &mut LegacyRandom| {
             if earns(death, false) {
@@ -4875,8 +4878,21 @@ impl EntityWorld {
         }
         self.families.take_deaths(&mut deaths, mob_drops);
         deaths.sort_by_key(|&(order, _)| order);
+        for (_, death) in &mut deaths {
+            death.reward = death.experience;
+            if !(mob_drops && death.context.killed_by_player) {
+                death.experience = 0;
+            }
+        }
+        for (_, death) in &deaths {
+            self.game_event("minecraft:entity_die", death.position, Some(death.id), None);
+        }
         if !mob_drops {
-            return Vec::new();
+            for (_, death) in &mut deaths {
+                death.table = None;
+                death.equipment.clear();
+                death.charged_creeper = None;
+            }
         }
         deaths.into_iter().map(|(_, death)| death).collect()
     }
@@ -5809,6 +5825,7 @@ impl EntityWorld {
             sea_level: self.sea_level,
             difficulty: 2,
             sounds: Vec::new(),
+            game_events: Vec::new(),
             mob_drops: self.mob_drops,
             sections: self.sections.clone(),
             pushing_players: self.pushing_players.clone(),
@@ -6842,6 +6859,7 @@ impl EntityWorld {
                     // `entity.arrow.hit`, from the arrow (`SoundSource.NEUTRAL`).
                     if let Some((event, (position, pitch))) = self.arrows.iter_mut().find(|entity| entity.id == id).and_then(|entity| Some((entity.hit_sound, entity.arrow.take_hit_sound()?))) {
                         self.sounds.push(MobSound { event: event.to_owned(), position, volume: 1.0, pitch, category: "friendly_volume" });
+                        self.arrow_landed(id, owner_id, position);
                     }
                     continue;
                 }
@@ -8828,6 +8846,65 @@ mod tests {
         assert_eq!(arrows.len(), 2, "{hits:?}");
         assert!(arrows.contains(&(7, None, poison)), "an arrow from above names no shooter: {arrows:?}");
         assert!(arrows.contains(&(7, Some(archer), None)), "a skeleton's arrow still names it: {arrows:?}");
+    }
+
+    #[test]
+    fn a_mob_posts_its_landing_and_steps_and_an_arrow_its_shot_and_landing() {
+        let mut world = EntityWorld::default();
+        let zombie = world.spawn_zombie_active(Zombie::new(DVec3::new(0.5, 3.0, 0.5)), 0.0);
+        let player = candidate(7, DVec3::new(0.5, 1.0, 12.5));
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            world.tick_with_players(&mut Floor, &[player]);
+            events.extend(world.take_game_events());
+        }
+        let posted = |event: &str| events.iter().filter(|e| e.event == event && e.mob == Some(zombie)).count();
+        assert!(posted("minecraft:hit_ground") >= 1, "{events:?}");
+        assert!(posted("minecraft:step") >= 2, "{events:?}");
+        assert!(events.iter().filter(|e| e.event == "minecraft:step").all(|e| e.affected.as_deref() == Some("minecraft:stone")));
+        let archer = world.spawn_skeleton(Skeleton::new(DVec3::new(20.5, 1.0, 0.5)), true);
+        world.take_game_events();
+        world.spawn_owned_arrow(archer, Arrow::in_flight(DVec3::new(20.5, 3.0, 4.5), DVec3::new(0.0, -0.6, 0.0), LegacyRandom::new(0)));
+        let shot = world.take_game_events();
+        assert_eq!(shot.len(), 1);
+        assert_eq!((shot[0].event, shot[0].mob, shot[0].pos), ("minecraft:projectile_shoot", Some(archer), DVec3::new(20.5, 3.0, 4.5)));
+        let mut landed = Vec::new();
+        for _ in 0..20 {
+            world.tick(&mut Floor);
+            landed.extend(world.take_game_events().into_iter().filter(|e| e.event == "minecraft:projectile_land"));
+        }
+        assert_eq!(landed.len(), 1);
+        assert_eq!((landed[0].owner, landed[0].mob), (Some(archer), None));
+        assert_eq!(landed[0].pos, DVec3::new(20.5, 0.5, 4.5), "the centre of the block it struck");
+        assert_eq!(landed[0].affected.as_deref(), Some("minecraft:stone"));
+    }
+
+    #[test]
+    fn a_hurt_cow_posts_entity_damage_its_death_entity_die_and_a_falling_chicken_flaps() {
+        let mut world = EntityWorld::default();
+        let cow = world.spawn_cow(Cow::new(DVec3::new(0.5, 1.0, 0.5)), true);
+        let blast = DVec3::new(0.5, 1.0, -1.5);
+        world.player_blast(Some(7), cow, 2.0, blast, 0.0);
+        let posted = |events: &[MobGameEvent], event: &str| events.iter().filter(|e| e.event == event && e.mob == Some(cow)).count();
+        assert_eq!(posted(&world.take_game_events(), "minecraft:entity_damage"), 1);
+        world.player_blast(Some(7), cow, 1.0, blast, 0.0);
+        assert_eq!(posted(&world.take_game_events(), "minecraft:entity_damage"), 0, "a weaker hit inside the cooldown takes nothing");
+        let at = world.cows()[0].cow.body.position;
+        world.player_blast(Some(7), cow, 40.0, blast, 0.0);
+        let deaths = world.take_deaths();
+        let events = world.take_game_events();
+        assert_eq!(posted(&events, "minecraft:entity_die"), 1, "{events:?}");
+        assert!(events.iter().filter(|e| e.event == "minecraft:entity_die").all(|e| e.pos == at));
+        assert_eq!(deaths.iter().map(|death| death.id).collect::<Vec<_>>(), vec![cow], "the death and its experience come with the event");
+        let chicken = world.spawn_chicken(Chicken::new(DVec3::new(4.5, 6.0, 0.5)), false);
+        let player = candidate(7, DVec3::new(4.5, 1.0, 12.5));
+        let mut flaps = Vec::new();
+        for _ in 0..80 {
+            world.tick_with_players(&mut Floor, &[player]);
+            flaps.extend(world.take_game_events().into_iter().filter(|e| e.event == "minecraft:flap" && e.mob == Some(chicken)));
+        }
+        assert!(!flaps.is_empty(), "it flaps as it falls");
+        assert!(flaps.iter().all(|e| e.pos.y > 1.0), "only in the air: {flaps:?}");
     }
 
     fn zombified_piglin(x: f64) -> Zombie {

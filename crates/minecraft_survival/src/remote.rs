@@ -162,6 +162,7 @@ pub struct RemoteWorld {
     pub chat: Vec<Clientbound>,
     pub command_level: u8,
     pub player: Option<PlayerView>,
+    pub player_views: u32,
     pub menu: Option<MenuView>,
     pub inventory_menu: Option<MenuView>,
     pub gear: BTreeMap<u32, GearView>,
@@ -199,6 +200,7 @@ impl RemoteWorld {
             chat: Vec::new(),
             command_level: 0,
             player: None,
+            player_views: 0,
             menu: None,
             inventory_menu: None,
             gear: BTreeMap::new(),
@@ -455,7 +457,10 @@ impl RemoteWorld {
                     level.view.world.remove_mobs(&ids);
                 }
             }
-            ToClient::Player(view) => self.player = Some(*view),
+            ToClient::Player(view) => {
+                self.player = Some(*view);
+                self.player_views = self.player_views.wrapping_add(1);
+            }
             ToClient::MenuOpen(view) if view.menu == crate::menus::INVENTORY_MENU => {
                 self.inventory_menu = Some(view);
             }
@@ -1328,6 +1333,20 @@ mod tests {
     }
 
     #[test]
+    fn a_player_view_sent_again_counts_as_a_new_one() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut friend = RemoteWorld::new(registries);
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        let view = PlayerView::default();
+        friend.apply(ToClient::Player(Box::new(view.clone())));
+        friend.apply(ToClient::Player(Box::new(view.clone())));
+        assert_eq!(friend.player.as_ref(), Some(&view));
+        assert_eq!(friend.player_views, 2);
+    }
+
+    #[test]
     fn a_resent_batch_is_ignored() {
         let Some(registries) = registries() else {
             return;
@@ -1867,6 +1886,7 @@ mod tests {
                 jumping: false,
                 swirl: None,
                 omens: Default::default(),
+                warden: Default::default(),
             };
             let mut actors = [crate::entities::TickActor {
                 id: 1,

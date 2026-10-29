@@ -67,6 +67,8 @@ pub struct EntityView {
     fireworks: minecraft_terrain::firework_particles::FireworkParticles,
     firework_camera: DVec3,
     family_seen: HashMap<u64, i32>,
+    vibrations: minecraft_terrain::vibration_particles::VibrationSignals,
+    shrieks: minecraft_terrain::shriek_particles::ShriekRings,
 }
 
 impl EntityView {
@@ -121,6 +123,8 @@ impl EntityView {
             fireworks: minecraft_terrain::firework_particles::FireworkParticles::new((seed ^ 0xf14e) as u64),
             firework_camera: DVec3::ZERO,
             family_seen: HashMap::new(),
+            vibrations: Default::default(),
+            shrieks: Default::default(),
         }
     }
 
@@ -359,6 +363,16 @@ impl EntityView {
             let (event, volume, pitch) = self.fireworks.burst(&burst, self.firework_camera);
             self.sounds.push((event.to_owned(), burst.position, volume, pitch));
         }
+        for vibration in std::mem::take(&mut snapshot.vibrations) {
+            self.vibrations.add(vibration);
+        }
+        for at in std::mem::take(&mut snapshot.sculk_souls) {
+            for _ in 0..minecraft_terrain::vibrations::SOULS {
+                let spread = minecraft_terrain::vibrations::SOUL_SPREAD;
+                let offset = DVec3::new(self.random.next_gaussian() * spread, 0.0, self.random.next_gaussian() * spread);
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::SculkSoul, at + offset, DVec3::ZERO);
+            }
+        }
     }
 
     pub fn receive(
@@ -496,6 +510,9 @@ impl EntityView {
             let holders = &self.rope_holders;
             let players = |uuid: u128| holders.get(&uuid).map(|holder| (holder.feet, holder.height));
             self.vaults.activation(pos, scene, &players, &mut self.ambient);
+        }
+        if id == minecraft_terrain::level_events::SCULK_SHRIEK {
+            self.shrieks.shriek(pos);
         }
         let is_a = minecraft_terrain::level_events::class_test(scene);
         let effects = minecraft_terrain::level_events::level_event(
@@ -853,6 +870,8 @@ impl EntityView {
                 self.fireworks.trail(rocket.position, rocket.position.y - rocket.previous.y);
             }
             self.fireworks.tick(|cell| !minecraftoss_player::World::collision_boxes(scene, cell).is_empty());
+            self.vibrations.tick();
+            self.shrieks.tick();
             self.poof.tick(scene);
             let bodies = &self.bodies;
             self.ambient.tick_emitters(|key| bodies.get(&key).copied());
@@ -1429,6 +1448,10 @@ impl EntityView {
         self.firework_camera = camera;
         self.fireworks
             .append_mesh(&mut out.translucent, atlas, forward, partial, light);
+        self.vibrations
+            .append_mesh(&mut out.translucent, atlas, partial, light);
+        self.shrieks
+            .append_mesh(&mut out.translucent, atlas, partial, light);
         let held: Vec<_> = skeleton_items
             .into_iter()
             .chain(zombie_items)

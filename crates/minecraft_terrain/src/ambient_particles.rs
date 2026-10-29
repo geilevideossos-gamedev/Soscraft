@@ -23,6 +23,10 @@ const MAX_BLAST_PARTICLES: usize = 512;
 const SMALL_BLAST_RADIUS: f32 = 2.0;
 const SPLASH_SPRITES: u32 = 4;
 const GLITTER_SPRITES: i32 = 8;
+const SCULK_SOUL_SPRITES: i32 = 11;
+const SCULK_CHARGE_SPRITES: i32 = 7;
+const SCULK_CHARGE_POP_SPRITES: i32 = 4;
+const RISING_DRIFT: f64 = 0.009999999776482582;
 const END_ROD_FADE: [f32; 3] = [242.0 / 255.0, 222.0 / 255.0, 201.0 / 255.0];
 const BREATH_RED: (f32, f32) = (0.7176471, 0.8745098);
 const BREATH_BLUE: (f32, f32) = (0.8235294, 0.9764706);
@@ -74,6 +78,9 @@ pub enum Kind {
     Heart,
     AngryVillager,
     Splash,
+    SculkSoul,
+    SculkCharge,
+    SculkChargePop,
 }
 
 #[derive(Clone, Debug)]
@@ -315,6 +322,33 @@ impl Particle {
         let mut particle = Self::base(Kind::ExplosionEmitter, at, DVec3::ZERO, random);
         particle.velocity = DVec3::ZERO;
         particle.lifetime = EMITTER_TICKS;
+        particle
+    }
+
+    fn sculk_soul(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::SculkSoul, at, motion, random);
+        particle.friction = 0.96;
+        particle.velocity = particle.velocity * RISING_DRIFT + motion;
+        let mut jitter = || f64::from((random.next_float() - random.next_float()) * 0.05);
+        particle.position += DVec3::new(jitter(), jitter(), jitter());
+        particle.previous = particle.position;
+        particle.lifetime = (8.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32 + 4;
+        particle.quad_size *= 1.5;
+        particle.size = f64::from(0.2_f32 * 1.5);
+        particle
+    }
+
+    fn sculk_charge(kind: Kind, at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(kind, at, motion, random);
+        particle.friction = 0.96;
+        particle.velocity = motion;
+        if kind == Kind::SculkCharge {
+            particle.quad_size *= 1.5;
+            particle.size = f64::from(0.2_f32 * 1.5);
+            particle.lifetime = 8 + random.next_int(12) as i32;
+        } else {
+            particle.lifetime = 6 + random.next_int(4) as i32;
+        }
         particle
     }
 
@@ -575,7 +609,15 @@ impl Particle {
     fn translucent(&self) -> bool {
         matches!(
             self.kind,
-            Kind::CosySmoke | Kind::SignalSmoke | Kind::EndRod | Kind::Totem | Kind::TrialOmen | Kind::VaultConnection
+            Kind::CosySmoke
+                | Kind::SignalSmoke
+                | Kind::EndRod
+                | Kind::Totem
+                | Kind::TrialOmen
+                | Kind::VaultConnection
+                | Kind::SculkSoul
+                | Kind::SculkCharge
+                | Kind::SculkChargePop
         )
     }
 
@@ -619,6 +661,18 @@ impl Particle {
                 )
             }
             Kind::Crit => "critical_hit".to_owned(),
+            Kind::SculkSoul => {
+                let step = self.age * (SCULK_SOUL_SPRITES - 1) / self.lifetime.max(1);
+                format!("sculk_soul_{}", step.clamp(0, SCULK_SOUL_SPRITES - 1))
+            }
+            Kind::SculkCharge => {
+                let step = self.age * (SCULK_CHARGE_SPRITES - 1) / self.lifetime.max(1);
+                format!("sculk_charge_{}", step.clamp(0, SCULK_CHARGE_SPRITES - 1))
+            }
+            Kind::SculkChargePop => {
+                let step = self.age * (SCULK_CHARGE_POP_SPRITES - 1) / self.lifetime.max(1);
+                format!("sculk_charge_pop_{}", step.clamp(0, SCULK_CHARGE_POP_SPRITES - 1))
+            }
             Kind::DragonBreath => {
                 let step = self.age * (BREATH_SPRITES - 1) / self.lifetime.max(1);
                 format!("generic_{}", BREATH_FIRST_SPRITE + step.clamp(0, BREATH_SPRITES - 1))
@@ -655,7 +709,10 @@ impl Particle {
             | Kind::Totem
             | Kind::TrialOmen
             | Kind::OminousSpawning
-            | Kind::VaultConnection => self.quad_size,
+            | Kind::VaultConnection
+            | Kind::SculkSoul
+            | Kind::SculkCharge
+            | Kind::SculkChargePop => self.quad_size,
             Kind::Heart => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
             Kind::AngryVillager => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
             Kind::Splash => self.quad_size,
@@ -843,6 +900,9 @@ pub fn textures() -> Vec<ResourceId> {
             format!("trial_spawner_detection_ominous_{index}"),
         ]
     });
+    let souls = (0..SCULK_SOUL_SPRITES).map(|index| format!("sculk_soul_{index}"));
+    let charges = (0..SCULK_CHARGE_SPRITES).map(|index| format!("sculk_charge_{index}"));
+    let pops = (0..SCULK_CHARGE_POP_SPRITES).map(|index| format!("sculk_charge_pop_{index}"));
     ["lava", "glint", "flame", "soul_fire_flame", "critical_hit", "heart", "angry", "trial_omen", "ominous_spawning", "vault_connection"]
         .into_iter()
         .map(str::to_owned)
@@ -850,6 +910,9 @@ pub fn textures() -> Vec<ResourceId> {
         .chain(big_smoke)
         .chain(explosion)
         .chain(glitter)
+        .chain(souls)
+        .chain(charges)
+        .chain(pops)
         .filter_map(|name| ResourceId::parse(&format!("minecraft:particle/{name}")).ok())
         .collect()
 }
@@ -1253,6 +1316,8 @@ impl AmbientParticles {
             Kind::Heart => Particle::heart(kind, at, random),
             Kind::AngryVillager => Particle::heart(kind, at + DVec3::new(0.0, 0.5, 0.0), random),
             Kind::Splash => Particle::splash(at, motion, random),
+            Kind::SculkSoul => Particle::sculk_soul(at, motion, random),
+            Kind::SculkCharge | Kind::SculkChargePop => Particle::sculk_charge(kind, at, motion, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -1356,7 +1421,7 @@ impl AmbientParticles {
             );
             let (sky, block) = match particle.kind {
                 Kind::Explosion | Kind::EndRod | Kind::Totem => (FULL_BRIGHT, FULL_BRIGHT),
-                Kind::Lava | Kind::TrialSpawnerDetection | Kind::TrialSpawnerDetectionOminous | Kind::OminousSpawning | Kind::VaultConnection => (f32::from(light.get(cell)), FULL_BRIGHT),
+                Kind::Lava | Kind::TrialSpawnerDetection | Kind::TrialSpawnerDetectionOminous | Kind::OminousSpawning | Kind::VaultConnection | Kind::SculkSoul | Kind::SculkCharge | Kind::SculkChargePop => (f32::from(light.get(cell)), FULL_BRIGHT),
                 Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
                 _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
             };
@@ -2095,6 +2160,49 @@ mod tests {
             particles.tick(&scene);
         }
         assert!(particles.is_empty());
+    }
+
+    #[test]
+    fn a_sculk_soul_hangs_glowing_and_runs_through_its_eleven_frames() {
+        let mut particles = AmbientParticles::new(7);
+        let at = DVec3::new(4.5, 65.15, 8.5);
+        particles.add(Kind::SculkSoul, at, DVec3::ZERO);
+        let soul = particles.particles[0].clone();
+        assert!(soul.position.distance(at) < 0.09, "{}", soul.position);
+        assert!((12..=44).contains(&soul.lifetime), "{}", soul.lifetime);
+        assert!(soul.velocity.length() < 0.004, "it barely drifts: {}", soul.velocity);
+        assert!(soul.quad_size > 0.14 && soul.quad_size <= 0.3);
+        assert!(soul.translucent());
+        assert_eq!(soul.sprite().map(|id| id.path).as_deref(), Some("particle/sculk_soul_0"));
+        let lifetime = soul.lifetime;
+        let open = open();
+        for _ in 0..lifetime - 1 {
+            particles.tick(&open);
+        }
+        let last = particles.particles[0].sprite().map(|id| id.path);
+        assert!(last.as_deref().is_some_and(|name| name.starts_with("particle/sculk_soul_")));
+        assert_ne!(last.as_deref(), Some("particle/sculk_soul_0"));
+        particles.tick(&open);
+        particles.tick(&open);
+        assert!(particles.is_empty());
+        assert!(textures().iter().any(|id| id.path == "particle/sculk_soul_10"));
+    }
+
+    #[test]
+    fn sculk_charges_drift_at_their_given_speed_and_glow() {
+        let mut particles = AmbientParticles::new(9);
+        let motion = DVec3::new(0.004, 0.0, -0.003);
+        particles.add(Kind::SculkCharge, DVec3::new(2.5, 64.15, 2.5), motion);
+        particles.add(Kind::SculkChargePop, DVec3::new(2.5, 64.5, 2.5), DVec3::ZERO);
+        let (charge, pop) = (particles.particles[0].clone(), particles.particles[1].clone());
+        assert_eq!(charge.velocity, motion);
+        assert!((8..20).contains(&charge.lifetime) && (6..10).contains(&pop.lifetime));
+        assert!(charge.quad_size > pop.quad_size * 0.75, "one and a half times bigger at most");
+        assert!(charge.translucent() && pop.translucent());
+        assert_eq!(charge.sprite().map(|id| id.path).as_deref(), Some("particle/sculk_charge_0"));
+        assert_eq!(pop.sprite().map(|id| id.path).as_deref(), Some("particle/sculk_charge_pop_0"));
+        assert!(textures().iter().any(|id| id.path == "particle/sculk_charge_6"));
+        assert!(textures().iter().any(|id| id.path == "particle/sculk_charge_pop_3"));
     }
 
     #[test]

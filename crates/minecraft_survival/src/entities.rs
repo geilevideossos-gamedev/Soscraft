@@ -68,6 +68,7 @@ pub struct Entities {
     /// Client drops handed to the server: the command count that sent each.
     server_handed: HashMap<u32, (u64, ItemEntity)>,
     players: PlayerQueues,
+    left_game_events: Vec<minecraft_terrain::game_events::PlayerEvent>,
     block_entity_changes: Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)>,
     server_snapshot: Option<EntitySnapshot>,
     server_handled: u64,
@@ -147,6 +148,7 @@ pub struct PlayerView {
     pub jumping: bool,
     pub swirl: Option<minecraft_terrain::spell_particles::SwirlView>,
     pub omens: minecraft_terrain::server::PlayerOmens,
+    pub warden: minecraft_terrain::warden_tracker::WardenSpawnTracker,
 }
 
 fn player_controls(id: u64, player: &PlayerView, inventory: &Inventory) -> minecraftoss_entities::controls::PlayerControls {
@@ -183,6 +185,8 @@ pub struct PlayerOutputs {
     pub item_uses_done: Vec<SentItemUse>,
     pub raid_omens: Vec<(i32, (i32, i32, i32))>,
     pub trial_omen: bool,
+    pub warden_tracker: Option<minecraft_terrain::warden_tracker::WardenSpawnTracker>,
+    pub effects: Vec<minecraft_terrain::warden_tracker::EffectGrant>,
     pub raid_heroes: Vec<i32>,
     pub raid_horns: Vec<DVec3>,
     pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
@@ -213,6 +217,7 @@ pub(crate) struct PlayerQueue {
     merchant_waiting: usize,
     raid_omens_waiting: Vec<(i32, (i32, i32, i32))>,
     lodestones_gone: Vec<(i32, i32, i32)>,
+    game_events: Vec<minecraft_terrain::game_events::PlayerEvent>,
     pub(crate) out: PlayerOutputs,
 }
 
@@ -403,6 +408,16 @@ impl PlayerQueues {
                 queue.lodestones_gone.push(pos);
             }
         }
+        for (player, tracker) in std::mem::take(&mut output.warden_trackers) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.warden_tracker = Some(tracker);
+            }
+        }
+        for (player, grant) in std::mem::take(&mut output.player_effects) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.effects.push(grant);
+            }
+        }
         for (player, amplifier) in std::mem::take(&mut output.raid_heroes) {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.out.raid_heroes.push(amplifier);
@@ -487,6 +502,7 @@ impl Entities {
             broken_items: Vec::new(),
             server_handed: HashMap::new(),
             players: PlayerQueues::default(),
+            left_game_events: Vec::new(),
             block_entity_changes: Vec::new(),
             server_snapshot: None,
             server_handled: 0,
@@ -743,6 +759,10 @@ impl Entities {
 
     pub fn award_experience(&mut self, at: [f64; 3], amount: i32) {
         self.server.award_experience(at, amount);
+    }
+
+    pub fn award_death_experience(&mut self, player: u64, at: [f64; 3], amount: i32) {
+        self.server.award_death_experience(player, at, amount);
     }
 
     pub fn award_block_experience(&mut self, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
@@ -1031,24 +1051,39 @@ impl Entities {
     }
 
     /// A block the player placed, for the level the mobs walk in.
-    pub fn placed(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
-        self.server.player_edit(scene, pos, PlayerEdit::Place);
+    pub fn placed(&mut self, player: Option<u64>, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
+        self.server.player_edit(player, scene, pos, PlayerEdit::Place);
+    }
+
+    pub fn game_event(&mut self, player: u64, event: &'static str, pos: [f64; 3], affected: Option<String>) {
+        self.post_game_event(minecraft_terrain::game_events::PlayerEvent { player, event, pos, affected, projectile: false });
+    }
+
+    pub fn projectile_landed(&mut self, player: u64, pos: [f64; 3], affected: Option<String>) {
+        self.post_game_event(minecraft_terrain::game_events::PlayerEvent { player, event: minecraft_terrain::game_events::PROJECTILE_LAND, pos, affected, projectile: true });
+    }
+
+    fn post_game_event(&mut self, event: minecraft_terrain::game_events::PlayerEvent) {
+        match self.players.0.get_mut(&event.player) {
+            Some(queue) => queue.game_events.push(event),
+            None => self.left_game_events.push(event),
+        }
     }
 
     pub fn keep_dropped_contents(&mut self, pos: (i32, i32, i32), id: &str, components: &serde_json::Value) {
         self.server.keep_dropped_contents(pos, id, &components.to_string());
     }
 
-    pub fn use_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
-        self.server.use_block(scene, pos, facing)
+    pub fn use_block(&mut self, player: u64, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
+        self.server.use_block(player, scene, pos, facing)
     }
 
-    pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
-        self.server.attack_block(scene, pos)
+    pub fn attack_block(&mut self, player: u64, scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
+        self.server.attack_block(player, scene, pos)
     }
 
-    pub fn ring_bell(&mut self, pos: (i32, i32, i32), face: &'static str) {
-        self.server.ring_bell(pos, face);
+    pub fn ring_bell(&mut self, player: u64, pos: (i32, i32, i32), face: &'static str) {
+        self.server.ring_bell(player, pos, face);
     }
 
     pub fn item_on_block(&mut self, player: u64, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
@@ -1247,6 +1282,7 @@ impl Entities {
             }
             picked.splice(0..0, queue.picked);
             experience = experience.saturating_add(queue.experience);
+            self.left_game_events.append(&mut queue.game_events);
         }
         for rest in take_picked(inventory, selected, picked) {
             if let Some(feet) = feet {
@@ -1403,8 +1439,8 @@ impl Entities {
         stack
     }
 
-    pub fn chest_openers(&mut self, pos: (i32, i32, i32), count: u32) {
-        self.server.chest_openers(pos, count);
+    pub fn chest_openers(&mut self, player: Option<u64>, pos: (i32, i32, i32), count: u32) {
+        self.server.chest_openers(player, pos, count);
     }
 
     pub fn cat_on_chest(&self, pos: (i32, i32, i32)) -> bool {
@@ -1437,14 +1473,14 @@ impl Entities {
     }
 
     /// Blocks the player's weapons broke, for the level the mobs walk in.
-    pub fn broke(&mut self, positions: &[(i32, i32, i32)]) {
-        self.server.player_breaks(positions);
+    pub fn broke(&mut self, player: Option<u64>, positions: &[(i32, i32, i32)]) {
+        self.server.player_breaks(player, positions);
     }
 
-    pub fn mined(&mut self, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
+    pub fn mined(&mut self, player: u64, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
         let silk_touch = Self::hand_has_silk_touch(held);
         let how: Vec<_> = broken.iter().map(|(pos, _, blast)| (*pos, how_broken(*pos, *blast, by_hand, silk_touch, creative))).collect();
-        self.server.player_mines(&how);
+        self.server.player_mines(player, &how);
     }
 
     pub fn anger_piglins(&mut self, player: u64, feet: [f64; 3], sight: bool) {
@@ -1625,7 +1661,9 @@ impl Entities {
                     })
                     .collect(),
                 lodestones: actors.iter().map(|actor| (actor.id, minecraft_terrain::lodestone::tracked_targets(actor.inventory, self.dimension))).filter(|(_, targets)| !targets.is_empty()).collect(),
+                warden_trackers: actors.iter().map(|actor| (actor.id, actor.view.warden)).collect(),
                 view_distance: self.view_distance,
+                game_events: std::mem::take(&mut self.left_game_events).into_iter().chain(actors.iter().flat_map(|actor| std::mem::take(&mut self.players.queue(actor.id).game_events))).collect(),
             }, batch.normal.clone());
         }
         let mut changes = Vec::new();
@@ -2318,6 +2356,7 @@ mod tests {
             jumping: false,
             swirl: None,
             omens: Default::default(),
+            warden: Default::default(),
         };
         let survival = player_candidate(HOST, &view(true, false));
         assert!(survival.alive && survival.attackable && !survival.spectator);
@@ -2474,7 +2513,7 @@ mod tests {
         entities.summon(minecraft_commands::PlayerId(0), "minecraft:pig".to_owned(), [0.5, 200.0, 2.5], Some(nbt));
         let mut inventory = Inventory::default();
         inventory.slots[3] = Some(ItemStack::new("minecraft:saddle", 1));
-        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default() };
+        let view = PlayerView { feet: [0.5, 200.0, 0.5], alive: true, attackable: true, spectator: false, picks_up: false, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default(), warden: Default::default() };
         let started = std::time::Instant::now();
         let tick = |entities: &mut Entities, inventory: &mut Inventory| {
             assert!(started.elapsed().as_secs() < 60, "the server answers");
@@ -2564,7 +2603,7 @@ mod tests {
         let mut inventory = Inventory::default();
         inventory.slots[36] = Some(ItemStack::new("minecraft:golden_boots", 1));
         inventory.slots[39] = Some(ItemStack::new("minecraft:chainmail_helmet", 1));
-        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default() };
+        let view = PlayerView { feet: [0.0; 3], alive: true, attackable: true, spectator: false, picks_up: true, health: 20.0, yaw: 0.0, pitch: 0.0, main_hand: None, offhand: None, sneaking: false, hero: None, sleeping: None, sleep_timer: 0, forward: 0.0, strafe: 0.0, jumping: false, swirl: None, omens: Default::default(), warden: Default::default() };
         let controls = player_controls(HOST, &view, &inventory);
         assert_eq!(controls.armor, [Some("minecraft:golden_boots".to_owned()), None, None, Some("minecraft:chainmail_helmet".to_owned())]);
     }
@@ -3141,7 +3180,7 @@ mod tests {
         for x in 8..17 {
             for z in 8..17 {
                 scene.set((x, 200, z), Some(Block::new("minecraft:stone")));
-                entities.placed(&scene, (x, 200, z));
+                entities.placed(None, &scene, (x, 200, z));
             }
         }
         Some(entities)
@@ -3171,6 +3210,7 @@ mod tests {
             jumping: false,
             swirl: None,
             omens: Default::default(),
+            warden: Default::default(),
         };
         let batch = crate::tick_rate::TickBatch {
             normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },
@@ -3182,6 +3222,56 @@ mod tests {
         ];
         let _ = entities.tick(&mut actors, 0.05, &batch, crate::tick_rate::ClientTiming::default(), minecraft_terrain::server::ClockTicks::default(), true);
         std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    #[test]
+    fn a_leaving_player_s_vibrations_go_out_with_the_next_tick_and_leave_no_queue() {
+        use minecraft_terrain::game_events::{CONTAINER_CLOSE, STEP};
+        let Some(mut entities) = friend_world() else {
+            return;
+        };
+        let (mut host, mut friend) = (Inventory::default(), Inventory::default());
+        tick_both(&mut entities, &mut host, &mut friend);
+        entities.game_event(FRIEND, STEP, FRIEND_FEET, None);
+        entities.leave(FRIEND, &mut friend, 0, Some(FRIEND_FEET));
+        entities.game_event(FRIEND, CONTAINER_CLOSE, [12.5, 201.5, 13.5], None);
+        assert!(!entities.players.0.contains_key(&FRIEND), "no queue is made again for a player who left");
+        let left: Vec<(u64, &str)> = entities.left_game_events.iter().map(|event| (event.player, event.event)).collect();
+        assert_eq!(left, [(FRIEND, STEP), (FRIEND, CONTAINER_CLOSE)]);
+        let view = PlayerView {
+            feet: HOST_FEET,
+            alive: true,
+            attackable: true,
+            spectator: false,
+            picks_up: true,
+            health: 20.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            main_hand: None,
+            offhand: None,
+            sneaking: false,
+            hero: None,
+            sleeping: None,
+            sleep_timer: 0,
+            forward: 0.0,
+            strafe: 0.0,
+            jumping: false,
+            swirl: None,
+            omens: Default::default(),
+            warden: Default::default(),
+        };
+        let started = std::time::Instant::now();
+        while !entities.left_game_events.is_empty() {
+            assert!(started.elapsed().as_secs() < 60, "a tick goes out");
+            let batch = crate::tick_rate::TickBatch {
+                normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },
+                overload: None,
+            };
+            let mut actors = [TickActor { id: HOST, view: view.clone(), inventory: &mut host, selected: 0 }];
+            let _ = entities.tick(&mut actors, 0.05, &batch, crate::tick_rate::ClientTiming::default(), minecraft_terrain::server::ClockTicks::default(), true);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!entities.players.0.contains_key(&FRIEND), "the host's tick takes them without the friend");
     }
 
     #[test]
@@ -3219,6 +3309,7 @@ mod tests {
                 jumping: false,
                 swirl,
                 omens: Default::default(),
+                warden: Default::default(),
             };
             let batch = crate::tick_rate::TickBatch {
                 normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },

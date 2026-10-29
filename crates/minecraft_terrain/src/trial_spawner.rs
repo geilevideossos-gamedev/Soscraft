@@ -1368,6 +1368,8 @@ impl TrialWorld for LevelTrials<'_, '_> {
         let uuid = mob.get("UUID").and_then(uuid_of_tag)?;
         let feet = saved_pos(&mob).unwrap_or(at);
         self.level.spawned.push(mob);
+        self.level
+            .block_game_event(crate::game_events::ENTITY_PLACE, block_at(feet), None);
         Some((uuid, block_at(feet)))
     }
 

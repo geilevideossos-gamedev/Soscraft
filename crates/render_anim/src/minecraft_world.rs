@@ -95,6 +95,7 @@ pub(crate) struct Runtime {
     carried_survival: Option<minecraft_survival::survival::Survival>,
     environment_accumulator: f64,
     environment_primed: bool,
+    darkness: minecraft_terrain::darkness::Darkness,
     light: Option<SkyLight>,
     light_volume_at: Option<[i32; 3]>,
     light_volume_age: u32,
@@ -620,6 +621,7 @@ fn update(
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
                 runtime.environment_primed = false;
+                runtime.darkness = Default::default();
                 runtime.light = Some(SkyLight::streamed());
                 runtime.light_volume_at = None;
                 runtime.cloud_center = None;
@@ -665,6 +667,7 @@ fn update(
         shape_ids,
         environment_accumulator,
         environment_primed,
+        darkness,
         light,
         light_volume_at,
         light_volume_age,
@@ -950,7 +953,7 @@ fn update(
             }
         }
         if !writes.is_empty() {
-            write_blocks(terrain, &globals.registries, (shapes, shape_ids, band), entities, writes);
+            write_blocks(terrain, &globals.registries, (shapes, shape_ids, band), entities, None, writes);
         }
     }
     let hands = crate::minecraft_input::host_hands(&ui, hud_input.as_deref(), &buttons, pad);
@@ -967,6 +970,7 @@ fn update(
 
     // Shots and explosions from the authoritative game: bullets that met a
     // mob hurt it, the rest mine.
+    let guns = gun_vibrations(&all_events, credit);
     let (mob_shots, events): (Vec<_>, Vec<_>) = all_events
         .into_iter()
         .partition(|event| matches!(event, sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::MobBlast { .. }));
@@ -981,11 +985,11 @@ fn update(
             _ => true,
         })
         .filter(|event| match *event {
-            sim::voxel::VoxelEvent::Shot { block, .. } => {
+            sim::voxel::VoxelEvent::Shot { block, attacker, .. } => {
                 let pos = (block[0], block[1], block[2]);
                 let egg = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::dragon_egg::is_egg);
-                if let Some(entities) = entities.as_mut().filter(|_| egg) {
-                    entities.attack_block(&terrain.scene, pos);
+                if let (Some(entities), Some(id)) = (entities.as_mut().filter(|_| egg), credit(attacker)) {
+                    entities.attack_block(id, &terrain.scene, pos);
                 }
                 !egg
             }
@@ -993,6 +997,7 @@ fn update(
         })
         .collect();
     if let Some(entities) = entities.as_mut() {
+        post_gun_vibrations(entities, &terrain.scene, guns);
         for shot in mob_shots {
             match shot {
                 sim::voxel::VoxelEvent::MobShot { key, damage, from, attacker, .. } => {
@@ -1076,7 +1081,7 @@ fn update(
             let _ = minecraft_survival::actions::harvest(friend, level, globals, (mined, Vec::new()), &[], at);
         }
     }
-    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, sleeping: host_sleeping, sleep_timer: host_sleep_timer, .. } = &mut *player;
+    let minecraft_survival::player::Player { survival, mode: player_mode, death_watch, inventory, selected, hand, sleeping: host_sleeping, sleep_timer: host_sleep_timer, warden_tracker: host_warden, .. } = &mut *player;
     let minecraft_survival::level::Level { entities, containers, terrain, openers, dimension, shots, pending_batch, .. } = &mut *level;
     if let Some(entities) = entities.as_mut() {
         entities.broken_items.extend(harvest.worn_out);
@@ -1142,6 +1147,7 @@ fn update(
             jumping: host_ride.2,
             swirl: minecraft_survival::swirls::player_swirl(&survival.status, feet, ps.pm_flags & (playerstate_iw4::pm_flags::CROUCH | playerstate_iw4::pm_flags::PRONE) != 0),
             omens: survival.omens(),
+            warden: *host_warden,
         };
         let bright_outside = terrain.environment.sky_light_level() > 11.0;
         entities.difficulty = minecraft_commands::difficulty_id(globals.difficulty);
@@ -1419,7 +1425,7 @@ fn update(
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
         };
-        crate::minecraft_players::drop_on_death(death_watch, inventory, hand, entities);
+        crate::minecraft_players::drop_on_death(host_id, death_watch, inventory, hand, entities);
         crate::minecraft_inventory::throw(&mut entities.view.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(inventory, arsenal.guns(), selected, ps.weapon).filter(|_| player_mode.interacts());
         let refused = ui.weapon_request.filter(|&weapon| sky_bits(&terrain.environment) != 0 && sim::voxel::needs_sky(authority.0.weapon_script_name(weapon)));
@@ -1566,6 +1572,7 @@ fn update(
     };
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     let powder_snow = (alive && lava.is_none() && minecraft_terrain::scene::Scene::block(&terrain.scene, eye_block).is_some_and(|b| b.id.key() == "minecraft:powder_snow")).then_some(player_mode.mode == minecraftoss_player::GameMode::Spectator);
+    darkness.advance(dt, survival.status.effect(minecraftoss_player::survival::EffectKind::Darkness).map(|effect| effect.duration), 0);
     let inputs = SkyInputs {
         eye,
         forward,
@@ -1577,6 +1584,7 @@ fn update(
         thunder_level: weather.thunder_level,
         lava,
         powder_snow,
+        darkness: *darkness,
         world_fog: ui.boss_bars.iter().any(|bar| bar.world_fog),
         credits: ui.credits.is_some(),
     };
@@ -1608,6 +1616,7 @@ pub(crate) struct SkyInputs {
     pub(crate) thunder_level: f32,
     pub(crate) lava: Option<(bool, bool)>,
     pub(crate) powder_snow: Option<bool>,
+    pub(crate) darkness: minecraft_terrain::darkness::Darkness,
     pub(crate) world_fog: bool,
     pub(crate) credits: bool,
 }
@@ -1642,7 +1651,7 @@ pub(crate) struct SkyTicked {
 }
 
 pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft_survival::level::Terrain, registries: &Registries, light: &SkyLight, (accumulator, primed): (&mut f64, &mut bool), inputs: &SkyInputs) -> SkyTicked {
-    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, powder_snow, world_fog, credits } = *inputs;
+    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, powder_snow, darkness, world_fog, credits } = *inputs;
     let mut ticked = SkyTicked::default();
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
@@ -1680,18 +1689,16 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
         render_distance: VIEW_DISTANCE as u32,
         rain_level,
         thunder_level,
+        darkness: darkness.blend().unwrap_or(0.0),
     });
     let render_distance = VIEW_DISTANCE as f32 * 16.0;
-    let sky = match (lava, powder_snow) {
-        (Some((spectator, fire_resistant)), _) => minecraft_terrain::lava_fog::in_lava(sky, spectator, fire_resistant, render_distance),
-        (None, Some(spectator)) => minecraft_terrain::lava_fog::in_powder_snow(sky, spectator, render_distance),
-        (None, None) => sky,
-    };
+    let sky = minecraft_terrain::darkness::camera_fog(sky, lava, powder_snow, darkness.blend(), render_distance);
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];
+    let (brightness, pulse) = darkness.light();
     view.environment = [
-        put(forward),
+        [forward.x, forward.y, forward.z, pulse],
         put(right),
         put(up),
         [eye[0] as f32, eye[1] as f32, eye[2] as f32, 0.0],
@@ -1706,8 +1713,7 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
         sky.sunset,
         [sky.sun_direction.x, sky.sun_direction.y, sky.sun_direction.z, sky.rain_brightness],
         [sky.moon_direction.x, sky.moon_direction.y, sky.moon_direction.z, sky.rain_brightness],
-        // The brightness option at its default.
-        [sky.cloud.x, sky.cloud.y, sky.cloud.z, 0.5],
+        [sky.cloud.x, sky.cloud.y, sky.cloud.z, brightness],
         [aspect, sky.cloud_alpha, sky.star_brightness, sky.star_angle],
         [sky.moon_phase as f32, (game_time as f32) * 0.03, 96.0, 160.0],
         [
@@ -2115,6 +2121,7 @@ pub(crate) fn write_blocks(
     registries: &Registries,
     (shapes, shape_ids, level): ShapeTables<'_>,
     entities: &mut minecraft_survival::entities::Entities,
+    player: Option<u64>,
     writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
 ) {
     for (at, block) in &writes {
@@ -2122,7 +2129,7 @@ pub(crate) fn write_blocks(
         let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
         sim::voxel::set_block_shape(level, at.0, at.1, at.2, shape);
     }
-    minecraft_survival::level::write_blocks(terrain, entities, writes);
+    minecraft_survival::level::write_blocks(terrain, entities, player, writes);
 }
 
 pub(crate) fn refresh_shapes(
@@ -2157,6 +2164,65 @@ pub(crate) fn event_level(event: &sim::voxel::VoxelEvent) -> u8 {
         | sim::voxel::VoxelEvent::MobShot { level, .. }
         | sim::voxel::VoxelEvent::MobBlast { level, .. }
         | sim::voxel::VoxelEvent::Ray { level, .. } => level,
+    }
+}
+
+pub(crate) struct GunVibration {
+    pub(crate) player: u64,
+    pub(crate) landed: bool,
+    pub(crate) pos: [f64; 3],
+    pub(crate) block: Option<(i32, i32, i32)>,
+}
+
+pub(crate) fn gun_vibrations(events: &[sim::voxel::VoxelEvent], credit: impl Fn(Option<u32>) -> Option<u64>) -> Vec<GunVibration> {
+    use sim::voxel::VoxelEvent;
+    let mut shots = Vec::new();
+    let mut mob_shots = Vec::new();
+    let mut rays = Vec::new();
+    for event in events {
+        match *event {
+            VoxelEvent::Shot { block, attacker, .. } => shots.extend(credit(attacker).map(|player| (player, block))),
+            VoxelEvent::MobShot { from, attacker, .. } => mob_shots.extend(credit(attacker).map(|player| (player, from))),
+            VoxelEvent::Ray { from, to, attacker, .. } => rays.extend(credit(attacker).map(|player| (player, from, to))),
+            _ => {}
+        }
+    }
+    let mut heard = Vec::new();
+    for (index, &(player, from, _)) in rays.iter().enumerate() {
+        if rays[..index].iter().all(|ray| ray.0 != player) {
+            heard.push(GunVibration { player, landed: false, pos: from, block: None });
+        }
+    }
+    let mut open = Vec::new();
+    for &(player, from, to) in &rays {
+        let (start, end) = (glam::DVec3::from_array(from), glam::DVec3::from_array(to));
+        let ahead = (end + (end - start).normalize_or_zero() * 0.05).floor();
+        let block = [ahead.x as i32, ahead.y as i32, ahead.z as i32];
+        if shots.contains(&(player, block)) {
+            let centre = block.map(|axis| f64::from(axis) + 0.5);
+            heard.push(GunVibration { player, landed: true, pos: centre, block: Some((block[0], block[1], block[2])) });
+        } else {
+            open.push((start.distance(end), player, from, to));
+        }
+    }
+    open.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, player, from, to) in open {
+        if let Some(index) = mob_shots.iter().position(|&shot| shot == (player, from)) {
+            mob_shots.swap_remove(index);
+            heard.push(GunVibration { player, landed: true, pos: to, block: None });
+        }
+    }
+    heard
+}
+
+pub(crate) fn post_gun_vibrations(entities: &mut minecraft_survival::entities::Entities, scene: &HandcraftedScene, guns: Vec<GunVibration>) {
+    for gun in guns {
+        if gun.landed {
+            let affected = gun.block.and_then(|pos| minecraft_terrain::scene::Scene::block(scene, pos)).map(|block| block.id.key());
+            entities.projectile_landed(gun.player, gun.pos, affected);
+        } else {
+            entities.game_event(gun.player, minecraft_terrain::game_events::PROJECTILE_SHOOT, gun.pos, None);
+        }
     }
 }
 
@@ -2255,7 +2321,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let local = runtime.local.take();
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref()) {
         for level in server.levels.values_mut() {
-            minecraft_survival::level::leave(level, local);
+            minecraft_survival::level::leave(level, local, None);
         }
     }
     runtime.shown = None;
@@ -2462,13 +2528,16 @@ fn leave_level(
             let outcome = minecraft_survival::level::opener_outcome(&level.terrain.scene, &event);
             let (cell, id, count) = outcome.block_event;
             entities.view.lids.block_event(&level.terrain.scene, cell, id, count);
+            if let Some(heard) = event.game_event() {
+                entities.game_event(u64::from(player.id.0), heard, minecraft_terrain::bucket::centre(event.pos), None);
+            }
             if let Some((pos, viewers)) = outcome.chest_openers {
-                entities.chest_openers(pos, viewers);
+                entities.chest_openers(Some(u64::from(player.id.0)), pos, viewers);
             }
             writes.extend(outcome.state.map(|(cell, state)| (cell, Some(state))));
         }
         if !writes.is_empty() {
-            minecraft_survival::level::write_blocks(&mut level.terrain, entities, writes);
+            minecraft_survival::level::write_blocks(&mut level.terrain, entities, Some(u64::from(player.id.0)), writes);
         }
     }
     let minecraft_survival::player::Player { survival, hand, steps, .. } = player;
@@ -2568,6 +2637,52 @@ mod skate_tests {
         assert!(!board_allowed(true, false, MC_RIDING | CROUCH, false, false, false));
         assert!(!board_allowed(true, false, 0, false, true, false), "in a bed");
         assert!(!board_allowed(true, false, 0, false, false, true), "held in powder snow");
+    }
+}
+
+#[cfg(test)]
+mod darkness_tests {
+    use super::{MinecraftWorldView, SkyInputs, present_sky};
+    use minecraft_survival::level::Terrain;
+    use minecraft_terrain::darkness::{Darkness, TICK_SECONDS};
+    use minecraft_terrain::lighting::SkyLight;
+    use minecraft_terrain::terrain::Dimension;
+    use minecraftoss_core::registries::{DataPaths, Registries};
+    use std::sync::Arc;
+
+    fn overworld() -> Option<(Arc<Registries>, Terrain)> {
+        let registries = Arc::new(Registries::load(&DataPaths::discover().ok()?).ok()?);
+        let stream = minecraft_terrain::terrain::TerrainStream::for_dimension(registries.clone(), 0, 2, Dimension::Overworld, None).ok()?;
+        let environment = minecraft_terrain::environment::DimensionEnvironment::load(&registries, Dimension::Overworld.dimension_type()).ok()?;
+        let rules = minecraft_survival::dimension::DimensionRules::load(&registries, Dimension::Overworld).ok()?;
+        let scene = minecraft_terrain::scene::HandcraftedScene::streamed(stream.states.clone());
+        Some((registries, Terrain { stream, scene, environment, rules, friend_changes: None, friend_breaks: None }))
+    }
+
+    fn environment(terrain: &mut Terrain, registries: &Registries, darkness: Darkness, lava: Option<(bool, bool)>) -> [[f32; 4]; 16] {
+        let inputs = SkyInputs { eye: [0.5, 80.0, 0.5], forward: glam::Vec3::Z, aspect: 1.5, dt: 0.0, clock_ticks: 6000, game_time: 6000.0, rain_level: 0.0, thunder_level: 0.0, lava, powder_snow: None, darkness, world_fog: false, credits: false };
+        let mut view = MinecraftWorldView::default();
+        present_sky(&mut view, terrain, registries, &SkyLight::streamed(), (&mut 0.0, &mut false), &inputs);
+        view.environment
+    }
+
+    #[test]
+    fn darkness_reaches_the_environment_block() {
+        let Some((registries, mut terrain)) = overworld() else { return };
+        let mut darkness = Darkness::default();
+        let clear = environment(&mut terrain, &registries, darkness, None);
+        assert!(clear[13][1] > 15.0 && clear[5][..3].iter().any(|c| *c > 0.0), "{clear:?}");
+        for _ in 0..80 {
+            darkness.advance(TICK_SECONDS, Some(600), 0);
+        }
+        let dark = environment(&mut terrain, &registries, darkness, None);
+        assert_eq!((dark[13][0], dark[13][1]), (11.25, 15.0), "fog start and end");
+        assert_eq!((clear[0][3], clear[10][3]), (0.0, 0.5), "no pulse, the default brightness");
+        assert!((dark[0][3] - 0.45).abs() < 1e-5, "the pulse at its darkest: {:?}", dark[0]);
+        assert_eq!(dark[10][3], 0.0, "the brightness option is gone");
+        assert_eq!(dark[5], [0.0, 0.0, 0.0, 15.0], "black fog that hides the sky past 15 blocks");
+        let lava = environment(&mut terrain, &registries, darkness, Some((false, false)));
+        assert_eq!((lava[13][0], lava[13][1]), (0.25, 1.0), "lava keeps its own fog");
     }
 }
 
@@ -2674,5 +2789,36 @@ mod band_tests {
         let shot = VoxelEvent::Shot { level: 1, block: [0; 3], damage: 1.0, attacker: None };
         let blast = VoxelEvent::MobBlast { level: 2, key: 0, damage: 1.0, center: [0.0; 3], impact: 0.0, attacker: None, slow_ticks: 0 };
         assert_eq!((event_level(&shot), event_level(&blast)), (bands::level(Dimension::Nether), bands::level(Dimension::End)));
+    }
+}
+
+#[cfg(test)]
+mod gun_tests {
+    use super::gun_vibrations;
+    use sim::voxel::VoxelEvent;
+
+    const MUZZLE: [f64; 3] = [0.5, 65.6, 0.5];
+
+    type Heard = (bool, [f64; 3], Option<(i32, i32, i32)>);
+
+    fn ray(to: [f64; 3]) -> VoxelEvent {
+        VoxelEvent::Ray { level: 0, from: MUZZLE, to, damage: 10.0, attacker: Some(3) }
+    }
+
+    fn heard(events: &[VoxelEvent]) -> Vec<Heard> {
+        gun_vibrations(events, |attacker| attacker.map(u64::from)).into_iter().map(|gun| (gun.landed, gun.pos, gun.block)).collect()
+    }
+
+    #[test]
+    fn an_mw2_bullet_posts_its_shot_and_landing_and_a_ray_into_the_air_lands_nowhere() {
+        let wall = VoxelEvent::Shot { level: 0, block: [10, 65, 0], damage: 10.0, attacker: Some(3) };
+        assert_eq!(heard(&[ray([10.0, 65.6, 0.5]), wall]), vec![(false, MUZZLE, None), (true, [10.5, 65.5, 0.5], Some((10, 65, 0)))]);
+        assert_eq!(heard(&[ray([0.5, 265.6, 0.5])]), vec![(false, MUZZLE, None)], "a ray into the air lands nowhere");
+        let other = VoxelEvent::Shot { level: 0, block: [10, 65, 0], damage: 10.0, attacker: Some(4) };
+        assert_eq!(heard(&[ray([10.0, 65.6, 0.5]), other]).len(), 1, "another shooter's block is not this bullet's");
+        let mob = VoxelEvent::MobShot { level: 0, key: 1, damage: 10.0, from: MUZZLE, attacker: Some(3) };
+        let pellets = [ray([0.5, 65.6, 200.5]), ray([0.5, 65.6, 5.5]), ray([0.5, 65.6, 180.5]), mob];
+        assert_eq!(heard(&pellets), vec![(false, MUZZLE, None), (true, [0.5, 65.6, 5.5], None)], "one shot for the whole shell; the pellet that met the mob lands on it");
+        assert!(heard(&[VoxelEvent::Ray { level: 0, from: MUZZLE, to: [10.0, 65.6, 0.5], damage: 10.0, attacker: None }]).is_empty(), "no player behind it");
     }
 }

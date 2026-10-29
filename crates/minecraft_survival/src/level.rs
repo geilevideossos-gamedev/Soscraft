@@ -169,7 +169,7 @@ pub fn spill(containers: &mut Containers, entities: &mut Entities, pos: (i32, i3
     }
 }
 
-pub fn write_blocks(terrain: &mut Terrain, entities: &mut Entities, writes: Writes) {
+pub fn write_blocks(terrain: &mut Terrain, entities: &mut Entities, player: Option<u64>, writes: Writes) {
     let positions: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
     for (at, block) in writes {
         terrain.scene.set(at, block);
@@ -178,9 +178,9 @@ pub fn write_blocks(terrain: &mut Terrain, entities: &mut Entities, writes: Writ
     terrain.stream.mark_edited(&terrain.scene, &positions);
     for &at in &positions {
         if Scene::block(&terrain.scene, at).is_some() {
-            entities.placed(&terrain.scene, at);
+            entities.placed(player, &terrain.scene, at);
         } else {
-            entities.broke(&[at]);
+            entities.broke(player, &[at]);
         }
     }
 }
@@ -404,7 +404,7 @@ pub fn leave_containers(
         .collect()
 }
 
-pub fn leave(level: &mut Level, player: &PlayerUuid) {
+pub fn leave(level: &mut Level, player: &PlayerUuid, leaver: Option<u64>) {
     let events = level.openers.leave(opener_key(player));
     let mut writes: Writes = Vec::new();
     for event in &events {
@@ -412,8 +412,11 @@ pub fn leave(level: &mut Level, player: &PlayerUuid) {
         if let Some(entities) = level.entities.as_mut() {
             let (cell, id, count) = outcome.block_event;
             entities.lid_event(&level.terrain.scene, cell, id, count);
+            if let (Some(leaver), Some(heard)) = (leaver, event.game_event()) {
+                entities.game_event(leaver, heard, minecraft_terrain::bucket::centre(event.pos), None);
+            }
             if let Some((pos, viewers)) = outcome.chest_openers {
-                entities.chest_openers(pos, viewers);
+                entities.chest_openers(leaver, pos, viewers);
             }
             if let Some(sound) = outcome.sound {
                 let pitch = minecraft_terrain::openers::pitch(entities.random_float());
@@ -747,9 +750,9 @@ mod tests {
             entities.view.lids.lid_closed(chest)
         };
         assert!(!settle(&mut level), "both players opened it");
-        leave(&mut level, &friend());
+        leave(&mut level, &friend(), None);
         assert!(!settle(&mut level), "the host still has it open");
-        leave(&mut level, &host());
+        leave(&mut level, &host(), None);
         assert!(settle(&mut level), "the last player left");
         let heard: Vec<&str> = level
             .entities
@@ -942,6 +945,7 @@ mod tests {
                         jumping: false,
                         swirl: None,
                         omens: Default::default(),
+                        warden: Default::default(),
                     },
                     inventory: &mut *inventory,
                     selected: 0,

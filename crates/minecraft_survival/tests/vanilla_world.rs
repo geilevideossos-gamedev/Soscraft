@@ -346,8 +346,18 @@ fn check_player_file(path: &Path) {
             ("recipeBook", "compound"),
             ("respawn", "compound"),
             ("seenCredits", "byte"),
+            ("warden_spawn_tracker", "compound"),
         ],
         "the player file",
+    );
+    expect_kinds(
+        file.get("warden_spawn_tracker").unwrap(),
+        &[
+            ("cooldown_ticks", "int"),
+            ("ticks_since_last_warning", "int"),
+            ("warning_level", "int"),
+        ],
+        "the warden spawn tracker",
     );
     expect_kinds(
         file.get("recipeBook").unwrap(),

@@ -1213,7 +1213,7 @@ fn deplete(level: &mut Level, pos: Pos, state: BlockStateId) {
     let block = terrain.stream.states.block(state).cloned();
     match level.entities.as_mut() {
         Some(entities) => {
-            crate::level::write_blocks(terrain, entities, vec![(pos, block)]);
+            crate::level::write_blocks(terrain, entities, None, vec![(pos, block)]);
             let center = centre(pos);
             entities.sound(
                 ANCHOR_DEPLETE_SOUND,

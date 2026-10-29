@@ -122,6 +122,13 @@ pub struct ServerSim {
     firework_bursts: Vec<crate::firework_rocket::Burst>,
     mob_puffs: Vec<crate::mob_particles::MobPuff>,
     rocket_hits: Vec<minecraftoss_entities::world::PlayerHit>,
+    vibrations: crate::vibrations::Vibrations,
+    event_tags: Arc<crate::game_events::EventTags>,
+    vibration_bursts: Vec<crate::vibration_particles::VibrationView>,
+    warden_trackers: std::collections::HashMap<u64, crate::warden_tracker::WardenSpawnTracker>,
+    warned: std::collections::HashMap<u64, (crate::warden_tracker::WardenSpawnTracker, i32)>,
+    warden_updates: Vec<(u64, crate::warden_tracker::WardenSpawnTracker)>,
+    player_effects: Vec<(u64, crate::warden_tracker::EffectGrant)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -349,6 +356,8 @@ pub struct EntitySnapshot {
     pub dragons: Vec<crate::ender_dragon::DragonView>,
     pub dragon_fireballs: Vec<crate::dragon_fireball::FireballView>,
     pub breath_bursts: Vec<glam::DVec3>,
+    pub vibrations: Vec<crate::vibration_particles::VibrationView>,
+    pub sculk_souls: Vec<glam::DVec3>,
     pub gateways: Vec<crate::end_gateway::GatewayView>,
     pub frames: Vec<crate::item_frame::FrameView>,
     pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
@@ -416,6 +425,10 @@ impl ServerSim {
         level.defer_tnt_blasts = true;
         let dragon_fight_level = minecraftoss_core::ident::Identifier::parse(dimension_type).ok().and_then(|id| level.registries().datapack.read_json("dimension_type", &id).ok()).is_some_and(|json| json.get("has_ender_dragon_fight").and_then(|flag| flag.as_bool()).unwrap_or(false));
         let mob_tables = crate::server_mobs::MobTables::new(&level, &states);
+        let event_tags = crate::game_events::EventTags::load(level.registries()).unwrap_or_else(|e| {
+            eprintln!("vibration tags unavailable: {e}");
+            crate::game_events::EventTags::default()
+        });
         // Natural spawning, when the entity catalog can create mobs.
         if level.registries().entities.is_some() {
             match minecraftoss_world::natural_spawner::CreatureSpawns::load(worldgen.terrain.registries.clone(), dimension_type, false) {
@@ -506,6 +519,13 @@ impl ServerSim {
             firework_bursts: Vec::new(),
             mob_puffs: Vec::new(),
             rocket_hits: Vec::new(),
+            vibrations: crate::vibrations::Vibrations::default(),
+            event_tags: Arc::new(event_tags),
+            vibration_bursts: Vec::new(),
+            warden_trackers: std::collections::HashMap::new(),
+            warned: std::collections::HashMap::new(),
+            warden_updates: Vec::new(),
+            player_effects: Vec::new(),
         }
     }
 
@@ -557,8 +577,8 @@ impl ServerSim {
             let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
             self.level.spawn_at_location(position.to_array(), stack);
         }
-        for (position, amount) in outcome.experience {
-            self.level.award_experience(position.to_array(), amount);
+        for (position, amount, reward) in outcome.experience {
+            self.award_death(position.to_array(), amount, reward);
         }
         let slots = inventory
             .slots
@@ -580,8 +600,8 @@ impl ServerSim {
             let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
             self.level.spawn_at_location(position.to_array(), stack);
         }
-        for (position, amount) in outcome.experience {
-            self.level.award_experience(position.to_array(), amount);
+        for (position, amount, reward) in outcome.experience {
+            self.award_death(position.to_array(), amount, reward);
         }
         MobResult { sounds: outcome.sounds, ..MobResult::default() }
     }
@@ -589,7 +609,11 @@ impl ServerSim {
     fn mount(&mut self, player: u64, vehicle: u64) -> bool {
         let Self { level, states, mobs, mob_tables, .. } = self;
         let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-        mobs.start_riding(minecraftoss_entities::world::Rider::Player(player), vehicle, &world)
+        let mounted = mobs.start_riding(minecraftoss_entities::world::Rider::Player(player), vehicle, &world);
+        if let Some(at) = mobs.body_mut(vehicle).map(|body| body.position).filter(|_| mounted) {
+            mobs.game_event(crate::game_events::ENTITY_MOUNT, at, Some(crate::thrown::PLAYER_TARGET + player), None);
+        }
+        mounted
     }
 
     pub fn ride_tick(&mut self, controls: &[minecraftoss_entities::controls::PlayerControls]) -> Vec<(u64, u64, Option<[f64; 3]>)> {
@@ -752,6 +776,8 @@ impl ServerSim {
         let feet = self.player_feet.remove(&player);
         self.take_xp_delay.remove(&player);
         self.merchant_closing.remove(&player);
+        self.warden_trackers.remove(&player);
+        self.warned.remove(&player);
         let mut inventory = minecraftoss_player::inventory::Inventory::default();
         let overflow = self.mobs.merchant_close(player, &mut inventory, 0);
         let stacks: Vec<_> = inventory.slots.into_iter().flatten().chain(inventory.cursor).chain(overflow).collect();
@@ -884,6 +910,7 @@ impl ServerSim {
         crate::containers::leave_to_client(&mut copy.block_entities);
         self.level.insert_chunk(copy);
         self.gateways.load_chunk(chunk);
+        self.load_listeners(chunk);
         if !fresh {
             return;
         }
@@ -925,6 +952,217 @@ impl ServerSim {
             let old = self.mobs.pois.kind((x, y, z));
             self.mobs.pois.block_changed((x, y, z), old, new);
             self.gateways.sync((x, y, z), crate::end_gateway::tag_at(&self.level, (x, y, z)));
+            self.sync_listener((x, y, z));
+        }
+    }
+
+    fn load_listeners(&mut self, chunk: &Chunk) {
+        for (&pos, tag) in &chunk.block_entities.entities {
+            if let Some(kind) = tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).and_then(crate::vibrations::Kind::of) {
+                self.vibrations.add(pos, kind, Some(tag));
+            }
+        }
+    }
+
+    fn sync_listener(&mut self, pos: BlockPos) {
+        let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        let tag = self.level.chunk(at.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&pos));
+        match tag.and_then(|tag| tag.get("id")).and_then(minecraftoss_core::nbt::Tag::as_str).and_then(crate::vibrations::Kind::of) {
+            Some(kind) => self.vibrations.add(pos, kind, tag),
+            None => {
+                self.vibrations.remove(pos);
+            }
+        }
+    }
+
+    pub fn listeners(&self) -> &crate::vibrations::Vibrations {
+        &self.vibrations
+    }
+
+    fn acting<T>(&mut self, player: Option<u64>, act: impl FnOnce(&mut Self) -> T) -> T {
+        let before = std::mem::replace(&mut self.level.acting_player, player);
+        let done = act(self);
+        self.level.acting_player = before;
+        done
+    }
+
+    fn hear_game_events(&mut self, input: &mut TickInput, before: i64, normal: bool) {
+        if self.vibrations.is_empty() {
+            input.game_events.clear();
+            self.level.game_events.clear();
+            self.mobs.take_game_events();
+            return;
+        }
+        let players: Vec<(u64, bool, bool)> = input.mob_players.iter().map(|p| (p.id, input.controls.iter().any(|c| c.id == p.id && c.sneaking), p.spectator)).collect();
+        let mut posted: Vec<(crate::game_events::Posted, Option<BlockPos>)> = Vec::new();
+        for event in std::mem::take(&mut input.game_events) {
+            let source = self.player_source(event.player, &players);
+            let dampened = self.named_block_dampens(event.affected.as_deref());
+            let uuid = Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + event.player));
+            let fresh = crate::game_events::Posted { dampened, ..crate::game_events::Posted::new(event.event, glam::DVec3::from_array(event.pos), before) };
+            let posted_event = if event.projectile { crate::game_events::Posted { owner: Some(source), owner_uuid: uuid, ..fresh } } else { crate::game_events::Posted { source_uuid: uuid, ..fresh.by(source) } };
+            posted.push((posted_event, None));
+        }
+        for event in self.level.take_game_events() {
+            let (source, source_uuid) = event.source.map(|source| self.event_source(source, &players)).unzip();
+            let (owner, owner_uuid) = event.owner.map(|owner| self.event_source(owner, &players)).unzip();
+            let dampened = event.affected.is_some_and(|state| self.event_tags.block_dampens(self.level.registries(), state));
+            let forced = event.forced_to.map(|pos| (pos.x, pos.y, pos.z));
+            let posted_event = crate::game_events::Posted { source, source_uuid: source_uuid.flatten(), owner, owner_uuid: owner_uuid.flatten(), dampened, ..crate::game_events::Posted::new(event.event, glam::DVec3::from_array(event.pos), event.tick) };
+            posted.push((posted_event, forced));
+        }
+        let now = self.level.game_time;
+        let nearby: Vec<(u64, glam::DVec3)> = input.mob_players.iter().filter(|p| p.alive && !p.spectator).map(|p| (p.id, p.position)).collect();
+        let grounded = self.mobs.grounded();
+        let stepping: Vec<(BlockPos, u64)> = input.players.iter().filter(|player| player.alive && !players.iter().any(|p| p.0 == player.id && p.2)).filter_map(|player| Some((self.shrieker_under(player.feet)?, player.id))).chain(grounded.iter().filter_map(|&(id, feet)| Some((self.shrieker_under(feet.to_array())?, self.mobs.controlling_player(id)?)))).collect();
+        for (pos, player) in stepping {
+            self.try_shriek(pos, player, &nearby);
+        }
+        for player in input.players.iter().filter(|player| player.alive) {
+            let source = self.player_source(player.id, &players);
+            let Some(on) = self.sensor_under(player.feet).filter(|_| !matches!(source, crate::game_events::Source::Player { spectator: true, .. })) else { continue };
+            let uuid = Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player.id));
+            posted.push((crate::game_events::Posted { source_uuid: uuid, ..crate::game_events::Posted::new(crate::game_events::STEP, glam::DVec3::from_array(player.feet), before).by(source) }, Some(on)));
+        }
+        for &(id, feet) in &grounded {
+            if let Some(on) = self.sensor_under(feet.to_array()) {
+                let uuid = Some(self.mobs.uuid_of(id));
+                posted.push((crate::game_events::Posted { source_uuid: uuid, ..crate::game_events::Posted::new(crate::game_events::STEP, feet, now).by(crate::game_events::Source::Mob { id }) }, Some(on)));
+            }
+        }
+        for event in self.mobs.take_game_events() {
+            let (source, source_uuid) = event.mob.map(|id| self.event_source(Self::mob_or_player(id), &players)).unzip();
+            let owner = event.owner.map(|id| self.event_source(Self::mob_or_player(id), &players));
+            let posted_event = crate::game_events::Posted {
+                source,
+                source_uuid: source_uuid.flatten(),
+                owner: owner.map(|(owner, _)| owner),
+                owner_uuid: owner.and_then(|(_, uuid)| uuid),
+                dampened: self.named_block_dampens(event.affected.as_deref()),
+                ..crate::game_events::Posted::new(event.event, event.pos, now)
+            };
+            posted.push((posted_event, None));
+        }
+        let tags = self.event_tags.clone();
+        let Self { vibrations, level, vibration_bursts, mobs, .. } = self;
+        let mut hearing = Hearing { level, tags: &tags, bursts: vibration_bursts, mobs, shrieks: Vec::new() };
+        for (event, forced) in &posted {
+            match forced {
+                Some(pos) => {
+                    vibrations.force(*pos, event, &mut hearing);
+                }
+                None => vibrations.post(&tags, event, &mut hearing),
+            }
+        }
+        if normal {
+            vibrations.tick(now, &mut hearing);
+        }
+        for (pos, player) in std::mem::take(&mut hearing.shrieks) {
+            self.try_shriek(pos, player, &nearby);
+        }
+    }
+
+    fn shrieker_under(&self, feet: [f64; 3]) -> Option<BlockPos> {
+        let on = (feet[0].floor() as i32, (feet[1] - 0.2).floor() as i32, feet[2].floor() as i32);
+        let listener = self.vibrations.listener(on).filter(|listener| listener.kind == crate::vibrations::Kind::Shrieker)?;
+        ((feet[1] - f64::from(on.1) - SENSOR_TOP).abs() <= STANDING_REACH).then_some(listener.pos)
+    }
+
+    fn try_shriek(&mut self, (x, y, z): BlockPos, player: u64, nearby: &[(u64, glam::DVec3)]) {
+        let at = minecraftoss_core::BlockPos::new(x, y, z);
+        if !self.level.is_sculk_shrieker(self.level.block(at)) || self.level.shrieker_shrieking(at) {
+            return;
+        }
+        self.level.set_shrieker_warning_level(at, 0);
+        if self.level.shrieker_can_respond(at) {
+            let centre = crate::vibrations::centre((x, y, z));
+            let warden_nearby = self.warden_within(centre);
+            let Some(warning) = crate::warden_tracker::try_warn(centre, player, nearby, warden_nearby, &mut self.warden_trackers) else { return };
+            for id in &warning.players {
+                if let Some(tracker) = self.warden_trackers.get(id).copied() {
+                    self.warned.insert(*id, (tracker, WARNED_HOLD));
+                    self.warden_updates.push((*id, tracker));
+                }
+            }
+            self.level.set_shrieker_warning_level(at, warning.level);
+        }
+        self.level.sculk_shriek(at, Some(minecraftoss_world::level::game_event::EventSource::Player(player)));
+    }
+
+    fn warden_within(&mut self, centre: glam::DVec3) -> bool {
+        let (low, high) = crate::warden_tracker::warning_box(centre);
+        let wardens: Vec<u64> = self.mobs.mob_ids().filter(|&id| self.mobs.entity_type(id) == Some(crate::warden_tracker::WARDEN)).collect();
+        wardens.into_iter().any(|id| {
+            self.mobs.body_mut(id).is_some_and(|body| {
+                let half = f64::from(body.width) / 2.0;
+                let (min, max) = (body.position - glam::DVec3::new(half, 0.0, half), body.position + glam::DVec3::new(half, f64::from(body.height), half));
+                min.x < high.x && max.x > low.x && min.y < high.y && max.y > low.y && min.z < high.z && max.z > low.z
+            })
+        })
+    }
+
+    fn take_warden_trackers(&mut self, from: &[(u64, crate::warden_tracker::WardenSpawnTracker)]) {
+        self.warned.retain(|_, (tracker, hold)| {
+            tracker.tick();
+            *hold -= 1;
+            *hold > 0
+        });
+        self.warden_trackers = from.iter().map(|&(id, tracker)| (id, self.warned.get(&id).map_or(tracker, |held| held.0))).collect();
+    }
+
+    fn respond_shriekers(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) -> Vec<minecraftoss_entities::world::MobSound> {
+        use crate::warden_tracker::{players_around, reply_sound, DARKNESS_RADIUS, REPLY_SPREAD, REPLY_VOLUME, SHRIEK_DARKNESS};
+        use minecraftoss_core::random::RandomSource;
+        let around: Vec<(u64, glam::DVec3)> = players.iter().filter(|p| p.alive).map(|p| (p.id, p.position)).collect();
+        let mut sounds = Vec::new();
+        for (pos, warning) in std::mem::take(&mut self.level.shrieker_responses) {
+            if let Some(event) = reply_sound(warning) {
+                let random = &mut self.level.random;
+                let mut offset = || random.next_i32_bound(2 * REPLY_SPREAD + 1) - REPLY_SPREAD;
+                let position = glam::DVec3::new(f64::from(pos.x + offset()), f64::from(pos.y + offset()), f64::from(pos.z + offset()));
+                sounds.push(minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume: REPLY_VOLUME, pitch: 1.0, category: "hostile" });
+            }
+            for id in players_around(crate::vibrations::centre((pos.x, pos.y, pos.z)), DARKNESS_RADIUS, &around) {
+                self.player_effects.push((id, SHRIEK_DARKNESS));
+            }
+        }
+        sounds
+    }
+
+    fn sensor_under(&self, feet: [f64; 3]) -> Option<BlockPos> {
+        let on = (feet[0].floor() as i32, (feet[1] - 0.2).floor() as i32, feet[2].floor() as i32);
+        let listener = self.vibrations.listener(on).filter(|listener| listener.kind.is_sensor())?;
+        ((feet[1] - f64::from(on.1) - SENSOR_TOP).abs() <= STANDING_REACH).then_some(listener.pos)
+    }
+
+    fn named_block_dampens(&self, name: Option<&str>) -> bool {
+        let registries = self.level.registries();
+        name.and_then(|name| registries.blocks.block_by_name(name)).map(|block| registries.blocks.block(block).default_state()).is_some_and(|state| self.event_tags.block_dampens(registries, state))
+    }
+
+    fn mob_or_player(id: u64) -> minecraftoss_world::level::game_event::EventSource {
+        use minecraftoss_world::level::game_event::EventSource;
+        crate::thrown::struck_player(id).map_or(EventSource::Mob(id), EventSource::Player)
+    }
+
+    fn player_source(&self, id: u64, players: &[(u64, bool, bool)]) -> crate::game_events::Source {
+        let (sneaking, spectator) = players.iter().find(|player| player.0 == id).map_or((false, false), |player| (player.1, player.2));
+        crate::game_events::Source::Player { id, sneaking, spectator }
+    }
+
+    fn event_source(&self, source: minecraftoss_world::level::game_event::EventSource, players: &[(u64, bool, bool)]) -> (crate::game_events::Source, Option<u128>) {
+        use minecraftoss_world::level::game_event::EventSource;
+        match source {
+            EventSource::Player(id) => (self.player_source(id, players), Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + id))),
+            EventSource::Mob(id) => (crate::game_events::Source::Mob { id }, Some(self.mobs.uuid_of(id))),
+            EventSource::Entity(id) => {
+                let item = self.level.entities.iter().find(|e| e.id == id).and_then(|e| e.item_data());
+                let source = match item {
+                    Some(item) => crate::game_events::Source::Item { id, dampens: self.event_tags.item_dampens(&item.stack.id) },
+                    None => crate::game_events::Source::Entity { id },
+                };
+                (source, None)
+            }
         }
     }
 
@@ -1449,6 +1687,7 @@ impl ServerSim {
                     }
                     RocketEvent::Exploded => {
                         self.firework_bursts.push(rocket.burst());
+                        self.level.game_event_from(crate::game_events::EXPLODE, rocket.position.to_array(), rocket.owner.player().map(minecraftoss_world::level::game_event::EventSource::Player).or(rocket.owner.mob().map(minecraftoss_world::level::game_event::EventSource::Mob)), None);
                         self.rocket_blast(rocket, players);
                     }
                 }
@@ -1566,8 +1805,38 @@ impl ServerSim {
                 crate::wither_save::extend_lifetime(&mut self.level, id);
             }
         }
-        for (position, amount) in experience {
-            self.level.award_experience(position.to_array(), amount);
+        for (position, amount, reward) in experience {
+            self.award_death(position.to_array(), amount, reward);
+        }
+    }
+
+    pub fn award_death(&mut self, position: [f64; 3], amount: i32, reward: i32) {
+        if self.catalyst_takes(glam::DVec3::from_array(position), reward) {
+            return;
+        }
+        if amount > 0 {
+            self.level.award_experience(position, amount);
+        }
+    }
+
+    fn catalyst_takes(&mut self, at: glam::DVec3, reward: i32) -> bool {
+        let Some((x, y, z)) = self.vibrations.catalyst_near(at) else { return false };
+        let catalyst = minecraftoss_core::BlockPos::new(x, y, z);
+        if reward > 0 {
+            let (cx, cy, cz) = crate::vibrations::block_of(at + glam::DVec3::Y * 0.5);
+            self.level.add_catalyst_cursors(catalyst, minecraftoss_core::BlockPos::new(cx, cy, cz), reward);
+        }
+        self.level.sculk_bloom(catalyst);
+        true
+    }
+
+    fn tick_catalysts(&mut self) {
+        let catalysts: Vec<BlockPos> = self.vibrations.listeners().filter(|listener| listener.kind == crate::vibrations::Kind::Catalyst).map(|listener| listener.pos).collect();
+        for (x, y, z) in catalysts {
+            let chunk = ChunkPos::new(x >> 4, z >> 4);
+            if self.level.ticking_chunks.as_ref().is_none_or(|ticking| ticking.contains(&chunk)) {
+                self.level.tick_catalyst(minecraftoss_core::BlockPos::new(x, y, z));
+            }
         }
     }
 
@@ -1636,6 +1905,8 @@ impl ServerSim {
             return Err(format!("{kind} is not simulated"));
         }
         self.mob_tags.extend(spawned);
+        let (x, y, z) = crate::vibrations::block_of(glam::DVec3::from_array(position));
+        self.level.block_game_event(crate::game_events::ENTITY_PLACE, minecraftoss_core::BlockPos::new(x, y, z), None);
         Ok(())
     }
 
@@ -1648,6 +1919,7 @@ impl ServerSim {
             return Err(crate::spawn_egg::SPAWNER_DISABLED.to_owned());
         }
         if crate::trial_spawner::spawn_egg(&mut self.level, minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), kind) {
+            self.level.block_game_event(crate::game_events::BLOCK_CHANGE, minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), None);
             return Ok(());
         }
         let chunk = self.level.chunk(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2).chunk());
@@ -1656,6 +1928,7 @@ impl ServerSim {
             return Err(format!("no monster spawner at {pos:?}"));
         }
         minecraftoss_generator::feature::World::set_spawner_entity(&mut self.level, pos.0, pos.1, pos.2, kind);
+        self.level.block_game_event(crate::game_events::BLOCK_CHANGE, minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), None);
         Ok(())
     }
 
@@ -1879,7 +2152,24 @@ impl ServerSim {
     }
 
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
+        self.level.game_event_from(crate::game_events::PROJECTILE_SHOOT, thrown.position().to_array(), Some(Self::thrower(&thrown)), None);
         self.thrown.push(thrown);
+    }
+
+    fn thrower(thrown: &crate::thrown::Thrown) -> minecraftoss_world::level::game_event::EventSource {
+        use minecraftoss_world::level::game_event::EventSource;
+        thrown.shooter.map_or(EventSource::Player(thrown.owner), EventSource::Mob)
+    }
+
+    fn projectile_landed(&mut self, at: glam::DVec3, block: Option<BlockPos>, owner: minecraftoss_world::level::game_event::EventSource) {
+        match block {
+            Some((x, y, z)) => {
+                let pos = minecraftoss_core::BlockPos::new(x, y, z);
+                let state = self.level.block(pos);
+                self.level.projectile_game_event(crate::game_events::PROJECTILE_LAND, minecraftoss_world::level::game_event::centre(pos), Some(owner), Some(state));
+            }
+            None => self.level.projectile_game_event(crate::game_events::PROJECTILE_LAND, at.to_array(), Some(owner), None),
+        }
     }
 
     pub fn tick_clouds(&mut self, players: &[crate::thrown::PlayerBody]) {
@@ -1941,7 +2231,15 @@ impl ServerSim {
         }
         trident.id = self.next_trident;
         self.next_trident = self.next_trident.wrapping_add(1).max(TRIDENT_IDS);
+        if !trident.in_ground {
+            self.level.game_event_from(crate::game_events::PROJECTILE_SHOOT, trident.position.to_array(), Some(Self::trident_thrower(&trident)), None);
+        }
         self.tridents.push(trident);
+    }
+
+    fn trident_thrower(trident: &crate::trident::ThrownTrident) -> minecraftoss_world::level::game_event::EventSource {
+        use minecraftoss_world::level::game_event::EventSource;
+        trident.mob_owner.map_or(EventSource::Player(trident.owner), EventSource::Mob)
     }
 
     pub fn trident_views(&self) -> Vec<crate::trident::TridentView> {
@@ -1961,6 +2259,7 @@ impl ServerSim {
     }
 
     fn wind_burst(&mut self, center: glam::DVec3, players: &[crate::thrown::PlayerBody], charge: crate::wind::Charge) {
+        self.level.game_event_from(crate::game_events::EXPLODE, center.to_array(), None, None);
         let blocks = self.level.wind_charge_blocks(center.to_array(), charge.radius());
         let pushes = {
             let Self { level, states, mob_tables, mobs, .. } = self;
@@ -2022,11 +2321,18 @@ impl ServerSim {
                 thrower.owner = true;
                 Some(crate::trident::TridentOwner { eye: (thrower.min + thrower.max) / 2.0, alive: true, spectator: false, bounds: (thrower.min, thrower.max) })
             });
+            let flying = !trident.in_ground;
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
                 trident.tick(&world, &targets, owner)
             };
+            if events.iter().any(|event| matches!(event, TridentEvent::Struck { .. })) {
+                self.projectile_landed(trident.position, None, Self::trident_thrower(trident));
+            } else if flying && trident.in_ground {
+                let ahead = trident.position + (trident.position - trident.previous).normalize_or_zero() * 0.1;
+                self.projectile_landed(trident.position, Some(crate::vibrations::block_of(ahead)), Self::trident_thrower(trident));
+            }
             for event in events {
                 match event {
                     TridentEvent::Struck { target, .. } if crate::item_frame::struck_frame(target).is_some() => {
@@ -2185,6 +2491,7 @@ impl ServerSim {
         let mut lingering = Vec::new();
         let mut bursts = Vec::new();
         let mut aged = Vec::new();
+        let mut landings = Vec::new();
         {
             let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, mobs, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -2219,6 +2526,7 @@ impl ServerSim {
                     }
                 }
                 let Some(landed) = landed else { continue };
+                landings.push((landed.at, landed.block.filter(|_| landed.mob.is_none()), Self::thrower(t)));
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
                 let frame = landed.mob.and_then(crate::item_frame::struck_frame);
                 frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));
@@ -2283,6 +2591,9 @@ impl ServerSim {
         for (pos, age) in aged {
             crate::end_gateway::write_age(&mut self.level, pos, age);
         }
+        for (at, block, owner) in landings {
+            self.projectile_landed(at, block, owner);
+        }
         for id in frame_hits {
             self.frame_action(id, crate::item_frame::FrameAction::Shot { infinite: false });
         }
@@ -2346,6 +2657,7 @@ impl ServerSim {
         self.collect_block_entity_changes();
         self.save_chunk_entities(pos, true);
         self.level.remove_chunk(pos);
+        self.vibrations.remove_chunk(pos.x, pos.z);
         self.gateways.unload_chunk(pos);
         self.mobs.pois.unload_chunk(pos.x, pos.z);
     }
@@ -2369,6 +2681,9 @@ impl ServerSim {
             .zip(broken.iter().map(|(_, how)| *how))
             .filter(|(_, how)| *how != HowBroken::Blasted)
             .collect();
+        for ((pos, old), _) in &destroyed {
+            self.level.block_game_event(crate::game_events::BLOCK_DESTROY, *pos, Some(*old));
+        }
         destroyed.sort_by_key(|((pos, _), _)| pos.y);
         for ((pos, old), how) in destroyed {
             self.level.ice_player_destroyed(pos, old, how == HowBroken::SilkTouched);
@@ -2519,6 +2834,7 @@ impl ServerSim {
         let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
         if self.level.grow_crop(at) {
             self.level.level_events.push((crate::level_events::BONE_MEAL_USE, at, crate::level_events::BONE_MEAL_PARTICLES));
+            self.used_by_hand();
             return true;
         }
         let Some(face) = minecraftoss_core::pos::Direction::from_name(face) else { return false };
@@ -2526,8 +2842,15 @@ impl ServerSim {
         let grown = self.level.registries().blocks.is_face_sturdy(state, face, minecraftoss_core::SupportType::Full) && self.level.grow_water_plant(at.relative(face, 1));
         if grown {
             self.level.level_events.push((crate::level_events::BONE_MEAL_USE, at.relative(face, 1), crate::level_events::BONE_MEAL_PARTICLES));
+            self.used_by_hand();
         }
         grown
+    }
+
+    fn used_by_hand(&mut self) {
+        if let Some(feet) = self.level.acting_player.and_then(|player| self.player_feet.get(&player)).copied() {
+            self.level.game_event(crate::game_events::ITEM_INTERACT_FINISH, feet, None);
+        }
     }
 
     pub fn attack_block(&mut self, pos: BlockPos) -> bool {
@@ -3213,6 +3536,7 @@ impl ServerSim {
         level.lava_source_conversion = rules.bool("lava_source_conversion");
         level.tnt_explodes = rules.bool("tnt_explodes");
         level.tnt_explosion_drop_decay = rules.bool("tnt_explosion_drop_decay");
+        level.spawn_wardens = rules.bool("spawn_wardens");
         self.block_explosion_drop_decay = rules.bool("block_explosion_drop_decay");
         level.set_advance_weather(rules.bool("advance_weather"));
         self.mobs.set_mob_griefing(rules.bool("mob_griefing"));
@@ -3405,6 +3729,7 @@ impl ServerSim {
 
     fn frame_sound(&mut self, frame: &crate::item_frame::ItemFrame, sound: crate::item_frame::FrameSound) {
         self.frame_sounds.push(minecraftoss_entities::world::MobSound { event: sound.event(frame.glow).to_owned(), position: frame.position(), volume: 1.0, pitch: 1.0, category: "neutral" });
+        self.level.game_event(sound.game_event(), frame.position().to_array(), None);
     }
 
     fn frame_broken(&mut self, frame: &crate::item_frame::ItemFrame, infinite: bool) {
@@ -3595,6 +3920,105 @@ fn tag_uuid_at(tag: &minecraftoss_core::nbt::Tag, key: &str) -> Option<u128> {
     Some(minecraftoss_entities::gossip::uuid_from_ints([a, b, c, d]))
 }
 
+const SENSOR_TOP: f64 = 0.5;
+const STANDING_REACH: f64 = 0.05;
+const WARNED_HOLD: i32 = 20;
+
+struct Hearing<'a, 'l> {
+    level: &'a mut Level<'l>,
+    tags: &'a crate::game_events::EventTags,
+    bursts: &'a mut Vec<crate::vibration_particles::VibrationView>,
+    mobs: &'a minecraftoss_entities::world::EntityWorld,
+    shrieks: Vec<(BlockPos, u64)>,
+}
+
+fn level_source(source: crate::game_events::Source) -> minecraftoss_world::level::game_event::EventSource {
+    use crate::game_events::Source;
+    use minecraftoss_world::level::game_event::EventSource;
+    match source {
+        Source::Player { id, .. } => EventSource::Player(id),
+        Source::Mob { id } => EventSource::Mob(id),
+        Source::Item { id, .. } | Source::Entity { id } => EventSource::Entity(id),
+    }
+}
+
+impl Hearing<'_, '_> {
+    fn ticking(&self, x: i32, z: i32) -> bool {
+        let chunk = ChunkPos::new(x, z);
+        self.level.chunk(chunk).is_some() && self.level.ticking_chunks.as_ref().is_none_or(|ticking| ticking.contains(&chunk))
+    }
+
+    fn player_behind(&self, source: Option<crate::game_events::Source>, owner: Option<crate::game_events::Source>) -> Option<u64> {
+        use crate::game_events::Source;
+        let player = |source: Source| match source {
+            Source::Player { id, .. } => Some(id),
+            Source::Mob { id } => self.mobs.controlling_player(id),
+            Source::Item { .. } | Source::Entity { .. } => None,
+        };
+        owner.and_then(player).or_else(|| source.and_then(player))
+    }
+}
+
+impl crate::vibrations::User for Hearing<'_, '_> {
+    fn can_receive(&self, listener: &crate::vibrations::Listener, at: BlockPos, posted: &crate::game_events::Posted) -> bool {
+        if listener.kind == crate::vibrations::Kind::Shrieker {
+            let (x, y, z) = listener.pos;
+            return !self.level.shrieker_shrieking(minecraftoss_core::BlockPos::new(x, y, z)) && self.player_behind(posted.source, posted.owner).is_some();
+        }
+        if !listener.kind.is_sensor() {
+            return false;
+        }
+        let own = at == listener.pos && matches!(posted.event, crate::game_events::BLOCK_PLACE | crate::game_events::BLOCK_DESTROY);
+        let frequency = crate::game_events::frequency(posted.event);
+        if own || frequency == 0 {
+            return false;
+        }
+        let (x, y, z) = listener.pos;
+        let at = minecraftoss_core::BlockPos::new(x, y, z);
+        let back = self.level.sculk_back_signal(at);
+        if back != 0 && back != frequency {
+            return false;
+        }
+        self.level.sculk_can_activate(at)
+    }
+
+    fn occludes(&self, (x, y, z): BlockPos) -> bool {
+        self.tags.block_occludes(self.level.registries(), self.level.block(minecraftoss_core::BlockPos::new(x, y, z)))
+    }
+
+    fn ticks(&self, (x, _, z): BlockPos) -> bool {
+        self.ticking(x >> 4, z >> 4)
+    }
+
+    fn neighbours_tick(&self, (x, _, z): BlockPos) -> bool {
+        (-1..=1).all(|dx| (-1..=1).all(|dz| self.ticking((x >> 4) + dx, (z >> 4) + dz)))
+    }
+
+    fn receive(&mut self, listener: &crate::vibrations::Listener, info: &crate::vibrations::Info, _: BlockPos, distance: f32) {
+        if listener.kind == crate::vibrations::Kind::Shrieker {
+            if let Some(player) = self.player_behind(info.source, info.owner) {
+                self.shrieks.push((listener.pos, player));
+            }
+            return;
+        }
+        if !listener.kind.is_sensor() {
+            return;
+        }
+        let (x, y, z) = listener.pos;
+        let power = crate::vibrations::redstone_strength(distance, listener.kind.radius());
+        self.level.sculk_receive(minecraftoss_core::BlockPos::new(x, y, z), crate::game_events::frequency(info.event), power, info.source.or(info.owner).map(level_source));
+    }
+
+    fn particle(&mut self, from: glam::DVec3, to: glam::DVec3, ticks: i32) {
+        self.bursts.push(crate::vibration_particles::VibrationView { from, to, ticks });
+    }
+
+    fn changed(&mut self, listener: &crate::vibrations::Listener) {
+        let (x, y, z) = listener.pos;
+        self.level.set_block_entity_value(minecraftoss_core::BlockPos::new(x, y, z), crate::vibrations::LISTENER, listener.to_tag());
+    }
+}
+
 struct FrameLevel<'a, 'l>(&'a Level<'l>);
 
 impl crate::item_frame::FrameWorld for FrameLevel<'_, '_> {
@@ -3617,13 +4041,13 @@ pub enum Command {
     LoadChunk(Arc<Chunk>),
     UnloadChunk(ChunkPos),
     /// A block the client set, as the client scene now shows it.
-    PlayerEdit { pos: BlockPos, block: Option<Block>, edit: PlayerEdit },
-    PlayerBreaks(Vec<BlockPos>),
-    PlayerMines(Vec<(BlockPos, HowBroken)>),
-    UseBlock { pos: BlockPos, facing: &'static str },
-    RingBell { pos: BlockPos, face: &'static str },
-    BoneMeal { pos: BlockPos, face: &'static str },
-    Attack(BlockPos),
+    PlayerEdit { player: Option<u64>, pos: BlockPos, block: Option<Block>, edit: PlayerEdit },
+    PlayerBreaks { player: Option<u64>, positions: Vec<BlockPos> },
+    PlayerMines { player: u64, broken: Vec<(BlockPos, HowBroken)> },
+    UseBlock { player: u64, pos: BlockPos, facing: &'static str },
+    RingBell { player: u64, pos: BlockPos, face: &'static str },
+    BoneMeal { player: u64, pos: BlockPos, face: &'static str },
+    Attack { player: u64, pos: BlockPos },
     ItemOnBlock { player: u64, pos: BlockPos, action: ItemOnBlock },
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
     KeepDroppedContents { pos: BlockPos, item: String, components: String },
@@ -3633,7 +4057,7 @@ pub enum Command {
     LootTables { jar: std::path::PathBuf, seed: u64 },
     /// `summon minecraft:experience_orb`.
     SummonOrb { position: [f64; 3], value: i32 },
-    AwardExperience { position: [f64; 3], amount: i32 },
+    AwardExperience { position: [f64; 3], amount: i32, died: Option<u64> },
     /// `/summon` for a mob, with the command's NBT and the new mob's own
     /// random yaw.
     Summon { player: u64, kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>, y_rot: f32 },
@@ -3676,7 +4100,7 @@ pub enum Command {
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
     FrameAction { player: u64, id: u64, action: crate::item_frame::FrameAction },
-    ChestOpeners { pos: BlockPos, count: u32 },
+    ChestOpeners { player: Option<u64>, pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
     VaultKey { player: u64, pos: BlockPos, stack: Box<minecraftoss_player::inventory::ItemStack> },
     LeashFence { player: u64, pos: BlockPos, sneaking: bool },
@@ -3794,7 +4218,9 @@ pub struct TickInput {
     pub controls: Vec<minecraftoss_entities::controls::PlayerControls>,
     pub omens: Vec<(u64, PlayerOmens)>,
     pub lodestones: Vec<(u64, Vec<BlockPos>)>,
+    pub warden_trackers: Vec<(u64, crate::warden_tracker::WardenSpawnTracker)>,
     pub view_distance: i32,
+    pub game_events: Vec<crate::game_events::PlayerEvent>,
 }
 
 impl TickInput {
@@ -3814,6 +4240,11 @@ impl TickInput {
         }
     }
 
+    pub fn carry_game_events(&mut self, older: &mut TickInput) {
+        let newer = std::mem::replace(&mut self.game_events, std::mem::take(&mut older.game_events));
+        self.game_events.extend(newer);
+    }
+
     pub fn remove_player(&mut self, player: u64) {
         self.players.retain(|p| p.id != player);
         self.mob_players.retain(|p| p.id != player);
@@ -3824,6 +4255,8 @@ impl TickInput {
         self.controls.retain(|controls| controls.id != player);
         self.omens.retain(|(id, _)| *id != player);
         self.lodestones.retain(|(id, _)| *id != player);
+        self.warden_trackers.retain(|(id, _)| *id != player);
+        self.game_events.retain(|event| event.player != player);
     }
 }
 
@@ -3905,6 +4338,8 @@ pub struct Output {
     pub raid_omens: Vec<(u64, i32, (i32, i32, i32))>,
     pub trial_omens: Vec<u64>,
     pub lodestones_gone: Vec<(u64, (i32, i32, i32))>,
+    pub warden_trackers: Vec<(u64, crate::warden_tracker::WardenSpawnTracker)>,
+    pub player_effects: Vec<(u64, crate::warden_tracker::EffectGrant)>,
     pub raid_heroes: Vec<(u64, i32)>,
     pub raid_horns: Vec<(u64, [f64; 3])>,
     pub raid_bars: Option<Vec<(u64, Vec<crate::raids::RaidBar>)>>,
@@ -3966,20 +4401,20 @@ impl ServerHandle {
         self.send(Command::UnloadChunk(pos));
     }
 
-    pub fn player_edit(&mut self, scene: &HandcraftedScene, pos: BlockPos, edit: PlayerEdit) {
+    pub fn player_edit(&mut self, player: Option<u64>, scene: &HandcraftedScene, pos: BlockPos, edit: PlayerEdit) {
         let block = Scene::block(scene, pos).cloned();
-        self.send(Command::PlayerEdit { pos, block, edit });
+        self.send(Command::PlayerEdit { player, pos, block, edit });
     }
 
-    pub fn player_breaks(&mut self, positions: &[BlockPos]) {
+    pub fn player_breaks(&mut self, player: Option<u64>, positions: &[BlockPos]) {
         if !positions.is_empty() {
-            self.send(Command::PlayerBreaks(positions.to_vec()));
+            self.send(Command::PlayerBreaks { player, positions: positions.to_vec() });
         }
     }
 
-    pub fn player_mines(&mut self, broken: &[(BlockPos, HowBroken)]) {
+    pub fn player_mines(&mut self, player: u64, broken: &[(BlockPos, HowBroken)]) {
         if !broken.is_empty() {
-            self.send(Command::PlayerMines(broken.to_vec()));
+            self.send(Command::PlayerMines { player, broken: broken.to_vec() });
         }
     }
 
@@ -3989,28 +4424,28 @@ impl ServerHandle {
 
     /// `useWithoutItem` on a simulated block: true (and sent) when the level
     /// acts on the block the scene shows.
-    pub fn use_block(&mut self, scene: &HandcraftedScene, pos: BlockPos, facing: &'static str) -> bool {
+    pub fn use_block(&mut self, player: u64, scene: &HandcraftedScene, pos: BlockPos, facing: &'static str) -> bool {
         let handled = self.state_in(scene, pos).is_some_and(|s| self.uses.get(usize::from(s.0)).copied().unwrap_or(false));
         if handled {
-            self.send(Command::UseBlock { pos, facing });
+            self.send(Command::UseBlock { player, pos, facing });
         }
         handled
     }
 
     /// Bone meal on a clicked face; whether it was used arrives in an output.
-    pub fn bone_meal(&mut self, pos: BlockPos, face: &'static str) {
-        self.send(Command::BoneMeal { pos, face });
+    pub fn bone_meal(&mut self, player: u64, pos: BlockPos, face: &'static str) {
+        self.send(Command::BoneMeal { player, pos, face });
     }
 
-    pub fn ring_bell(&mut self, pos: BlockPos, face: &'static str) {
-        self.send(Command::RingBell { pos, face });
+    pub fn ring_bell(&mut self, player: u64, pos: BlockPos, face: &'static str) {
+        self.send(Command::RingBell { player, pos, face });
     }
 
     /// A player's attack; true (and sent) when the level acts on the block.
-    pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: BlockPos) -> bool {
+    pub fn attack_block(&mut self, player: u64, scene: &HandcraftedScene, pos: BlockPos) -> bool {
         let handled = self.state_in(scene, pos).is_some_and(|s| self.attacks.get(usize::from(s.0)).copied().unwrap_or(false));
         if handled {
-            self.send(Command::Attack(pos));
+            self.send(Command::Attack { player, pos });
         }
         handled
     }
@@ -4061,8 +4496,12 @@ impl ServerHandle {
 
     pub fn award_experience(&mut self, position: [f64; 3], amount: i32) {
         if amount > 0 {
-            self.send(Command::AwardExperience { position, amount });
+            self.send(Command::AwardExperience { position, amount, died: None });
         }
+    }
+
+    pub fn award_death_experience(&mut self, player: u64, position: [f64; 3], amount: i32) {
+        self.send(Command::AwardExperience { position, amount, died: Some(player) });
     }
 
     /// `/summon` for a mob; what it did arrives in an output. The new
@@ -4205,8 +4644,8 @@ impl ServerHandle {
         self.send(Command::FrameAction { player, id, action });
     }
 
-    pub fn chest_openers(&mut self, pos: BlockPos, count: u32) {
-        self.send(Command::ChestOpeners { pos, count });
+    pub fn chest_openers(&mut self, player: Option<u64>, pos: BlockPos, count: u32) {
+        self.send(Command::ChestOpeners { player, pos, count });
     }
 
     pub fn lectern(&mut self, player: u64, pos: BlockPos, action: crate::lectern::LecternAction) {
@@ -4295,27 +4734,27 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
             match command {
                 Command::LoadChunk(chunk) => sim.load_chunk(&chunk),
                 Command::UnloadChunk(pos) => sim.unload_chunk(pos),
-                Command::PlayerEdit { pos, block, edit } => sim.player_edit_block(pos, block.as_ref(), edit),
-                Command::PlayerBreaks(positions) => sim.player_breaks(&positions),
-                Command::PlayerMines(broken) => sim.player_mines(&broken),
-                Command::UseBlock { pos, facing } => {
-                    sim.use_block(pos, facing);
+                Command::PlayerEdit { player, pos, block, edit } => sim.acting(player, |sim| sim.player_edit_block(pos, block.as_ref(), edit)),
+                Command::PlayerBreaks { player, positions } => sim.acting(player, |sim| sim.player_breaks(&positions)),
+                Command::PlayerMines { player, broken } => sim.acting(Some(player), |sim| sim.player_mines(&broken)),
+                Command::UseBlock { player, pos, facing } => {
+                    sim.acting(Some(player), |sim| sim.use_block(pos, facing));
                     out.egg_teleports.extend(sim.take_egg_teleports());
                 }
-                Command::RingBell { pos, face } => {
-                    sim.ring_bell(pos, Some(face));
+                Command::RingBell { player, pos, face } => {
+                    sim.acting(Some(player), |sim| sim.ring_bell(pos, Some(face)));
                 }
-                Command::BoneMeal { pos, face } => {
-                    if sim.bone_meal(pos, face) {
+                Command::BoneMeal { player, pos, face } => {
+                    if sim.acting(Some(player), |sim| sim.bone_meal(pos, face)) {
                         out.bone_meal_used.push(pos);
                     }
                 }
-                Command::Attack(pos) => {
-                    sim.attack_block(pos);
+                Command::Attack { player, pos } => {
+                    sim.acting(Some(player), |sim| sim.attack_block(pos));
                     out.egg_teleports.extend(sim.take_egg_teleports());
                 }
                 Command::ItemOnBlock { player, pos, action } => {
-                    out.item_uses.push((player, sim.item_on_block_by(Some(player), pos, action)));
+                    out.item_uses.push((player, sim.acting(Some(player), |sim| sim.item_on_block_by(Some(player), pos, action))));
                 }
                 Command::SpawnItem { item, count, components, position, velocity, pickup_delay, age } => {
                     sim.spawn_item(&item, count, components.as_deref(), position, velocity, pickup_delay, age);
@@ -4324,15 +4763,16 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::RecipeBook(recipes) => sim.set_recipe_book(recipes),
                 Command::LootTables { jar, seed } => sim.load_loot(&jar, seed),
                 Command::SummonOrb { position, value } => sim.summon_orb(position, value),
-                Command::AwardExperience { position, amount } => sim.award_experience(position, amount),
+                Command::AwardExperience { position, amount, died: None } => sim.award_experience(position, amount),
+                Command::AwardExperience { position, amount, died: Some(_) } => sim.award_death(position, amount, amount),
                 Command::Summon { player, kind, position, nbt, y_rot } => {
                     out.command_summons.push((player, sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind)));
                 }
                 Command::HatchEgg { player, kind, position, y_rot } => {
-                    out.summoned.push((player, sim.hatch_egg(&kind, position, y_rot).map(|()| kind)));
+                    out.summoned.push((player, sim.acting(Some(player), |sim| sim.hatch_egg(&kind, position, y_rot)).map(|()| kind)));
                 }
                 Command::SpawnerEgg { player, pos, kind } => {
-                    out.summoned.push((player, sim.spawner_egg(pos, &kind).map(|()| kind)));
+                    out.summoned.push((player, sim.acting(Some(player), |sim| sim.spawner_egg(pos, &kind)).map(|()| kind)));
                 }
                 Command::MobAction { player, hit, attack, inventory, selected, infinite } => {
                     out.mob_results.push((player, sim.mob_action(player, hit, attack, *inventory, selected, infinite)));
@@ -4386,14 +4826,14 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::EndHit { target, damage } => sim.end_hit(target, damage),
                 Command::FrameAction { player, id, action } => {
                     let answers = matches!(action, crate::item_frame::FrameAction::Use { held: Some(_), .. });
-                    let outcome = sim.frame_action(id, action);
+                    let outcome = sim.acting(Some(player), |sim| sim.frame_action(id, action));
                     if answers {
                         out.item_uses.push((player, outcome.consumed));
                     }
                 }
-                Command::ChestOpeners { pos, count } => sim.set_chest_openers(pos, count),
+                Command::ChestOpeners { player, pos, count } => sim.acting(player, |sim| sim.set_chest_openers(pos, count)),
                 Command::Lectern { player, pos, action } => {
-                    if let Some(placed) = sim.lectern(player, pos, action) {
+                    if let Some(placed) = sim.acting(Some(player), |sim| sim.lectern(player, pos, action)) {
                         out.item_uses.push((player, placed));
                     }
                 }
@@ -4413,6 +4853,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     Some((running, flags)) => {
                         let mut input = *input;
                         input.carry_omens(running);
+                        input.carry_game_events(running);
                         *running = input;
                         flags.extend(normal);
                     }
@@ -4450,6 +4891,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.save_all_entities();
     }
     sim.set_clocks(input.clocks);
+    let before = sim.level.game_time;
     sim.trackers.tick();
     sim.player_feet.extend(input.players.iter().map(|p| (p.id, p.feet)));
     let alive: Vec<[f64; 3]> = input.players.iter().filter(|p| p.alive).map(|p| p.feet).collect();
@@ -4459,6 +4901,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     if let Some(natural) = &mut sim.level.natural_spawning {
         natural.spawn_mobs = input.spawn_mobs;
     }
+    sim.take_warden_trackers(&input.warden_trackers);
     let omens = std::mem::take(&mut input.omens);
     let raid = sim.tick_raids(&input.mob_players, &omens, normal);
     input.omens = omens.into_iter().map(|(id, omen)| (id, PlayerOmens { bad_omen: omen.bad_omen, trial_omen: omen.trial_omen, raid_omens: Vec::new() })).collect();
@@ -4474,6 +4917,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.tick();
         out.trial_omens.extend(sim.tick_trial_spawners(&input.mob_players, &mut input.omens));
         sim.tick_vaults(&input.mob_players);
+        sim.tick_catalysts();
         sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
         sim.tick_custom_spawners(&input.mob_players);
         sim.tick_trader_spawner(&input.mob_players);
@@ -4511,6 +4955,10 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     } else {
         sim.tick_ridden_mobs(&input.mob_players, input.bright_outside);
     }
+    sim.hear_game_events(input, before, normal);
+    out.mob_sounds.extend(sim.respond_shriekers(&input.mob_players));
+    out.warden_trackers.append(&mut sim.warden_updates);
+    out.player_effects.append(&mut sim.player_effects);
     out.dismounts.extend(sim.take_vehicle_losses());
     out.rider_falls.extend(sim.mobs.take_rider_falls());
     out.player_hits.extend(sim.take_end_hits());
@@ -4616,7 +5064,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), ominous_items: crate::trial_spawner::ominous_item_views(&sim.level), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), ominous_items: crate::trial_spawner::ominous_item_views(&sim.level), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), vibrations: std::mem::take(&mut sim.vibration_bursts), sculk_souls: std::mem::take(&mut sim.level.catalyst_blooms).into_iter().map(crate::vibrations::soul_burst).collect(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -12402,7 +12850,9 @@ mod tests {
             controls: Vec::new(),
             omens: Vec::new(),
             lodestones: Vec::new(),
+            warden_trackers: Vec::new(),
             view_distance: 8,
+            game_events: Vec::new(),
         }
     }
 
@@ -12498,6 +12948,636 @@ mod tests {
             run_tick(sim, input, normal, &mut out);
         }
         out
+    }
+
+    const SENSOR: BlockPos = (8, 200, 8);
+    const SENSOR_POS: minecraftoss_core::BlockPos = minecraftoss_core::BlockPos { x: 8, y: 200, z: 8 };
+
+    fn sensor_world(sensor: &str) -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut sim, mut scene) = frozen_sim()?;
+        for x in -4..21 {
+            for z in -4..21 {
+                place(&mut sim, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        place(&mut sim, &mut scene, SENSOR, Block::new(sensor));
+        Some((sim, scene))
+    }
+
+    fn walker_input(feet: [f64; 3]) -> TickInput {
+        TickInput { players: vec![standing(0, feet, false)], mob_players: vec![candidate(0, feet)], ..idle_input() }
+    }
+
+    fn step_of(player: u64, feet: [f64; 3]) -> crate::game_events::PlayerEvent {
+        crate::game_events::PlayerEvent { player, event: crate::game_events::STEP, pos: feet, affected: Some("minecraft:stone".to_owned()), projectile: false }
+    }
+
+    fn travelling(sim: &ServerSim) -> Option<&'static str> {
+        sim.listeners().listener(SENSOR)?.current.as_ref().map(|info| info.event)
+    }
+
+    #[test]
+    fn a_player_s_step_reaches_a_sensor_s_listener_through_the_tick() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let feet = [12.5, 200.0, 8.5];
+        let mut input = walker_input(feet);
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(sim.listeners().listener(SENSOR).map(|listener| listener.kind), Some(crate::vibrations::Kind::Sensor));
+        input.game_events.push(step_of(0, feet));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(travelling(&sim), Some(crate::game_events::STEP), "a step from before the tick is picked in it");
+        let listener = sim.listeners().listener(SENSOR).unwrap();
+        assert_eq!(listener.travel, 3);
+        assert_eq!(listener.current.as_ref().and_then(|info| info.source_uuid), Some(sim.mobs.uuid_of(crate::thrown::PLAYER_TARGET)));
+        let saved = sim.command_block_entity(SENSOR).and_then(|tag| tag.get(crate::vibrations::LISTENER)).and_then(|listener| listener.get("event")).and_then(|event| event.get("game_event")).and_then(minecraftoss_core::nbt::Tag::as_str);
+        assert_eq!(saved, Some(crate::game_events::STEP), "the block entity saves the travelling vibration");
+        run_ticks(&mut sim, &mut input, true, 3);
+        assert_eq!(travelling(&sim), None, "received four blocks away after four ticks");
+        input.controls = vec![minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }];
+        input.game_events.push(step_of(0, feet));
+        run_ticks(&mut sim, &mut input, true, 2);
+        assert_eq!(travelling(&sim), None, "a sneaking step is not heard");
+        input.controls.clear();
+        input.game_events.push(step_of(0, [40.5, 200.0, 8.5]));
+        run_ticks(&mut sim, &mut input, true, 2);
+        assert_eq!(travelling(&sim), None, "too far for the sensor's eight blocks");
+        run_ticks(&mut sim, &mut input, true, 40);
+        input.game_events.push(step_of(0, [15.5, 200.0, 8.5]));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(travelling(&sim), Some(crate::game_events::STEP));
+    }
+
+    #[test]
+    fn other_dimensions_never_hear() {
+        let Some((mut first, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let Some((mut second, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let feet = [12.5, 200.0, 8.5];
+        let (mut heard, mut quiet) = (walker_input(feet), walker_input(feet));
+        run_ticks(&mut first, &mut heard, true, 1);
+        run_ticks(&mut second, &mut quiet, true, 1);
+        heard.game_events.push(step_of(0, feet));
+        run_ticks(&mut first, &mut heard, true, 1);
+        run_ticks(&mut second, &mut quiet, true, 1);
+        assert_eq!(travelling(&first), Some(crate::game_events::STEP));
+        assert_eq!(travelling(&second), None);
+    }
+
+    #[test]
+    fn game_events_wait_in_a_replaced_tick_input_and_leave_with_their_player() {
+        let mut running = idle_input();
+        running.game_events = vec![step_of(0, [1.0; 3]), step_of(2, [2.0; 3])];
+        let mut newer = TickInput { game_events: vec![step_of(0, [3.0; 3])], ..idle_input() };
+        newer.carry_game_events(&mut running);
+        assert!(running.game_events.is_empty());
+        assert_eq!(newer.game_events.iter().map(|event| event.pos[0]).collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
+        newer.remove_player(2);
+        assert_eq!(newer.game_events.iter().map(|event| event.player).collect::<Vec<_>>(), vec![0, 0]);
+    }
+
+    #[test]
+    fn a_broken_sensor_stops_listening_and_its_chunk_takes_it_away() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:calibrated_sculk_sensor") else { return };
+        let mut input = walker_input([12.5, 200.0, 8.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(sim.listeners().listener(SENSOR).map(|listener| listener.kind), Some(crate::vibrations::Kind::CalibratedSensor));
+        take(&mut sim, &mut scene, SENSOR);
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert!(sim.listeners().listener(SENSOR).is_none());
+        place(&mut sim, &mut scene, SENSOR, Block::new("minecraft:sculk_shrieker"));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(sim.listeners().listener(SENSOR).map(|listener| listener.kind), Some(crate::vibrations::Kind::Shrieker));
+        sim.unload_chunk(ChunkPos::new(0, 0));
+        assert!(sim.listeners().is_empty());
+    }
+
+    const SHRIEKER: BlockPos = (8, 200, 8);
+    const ON_SHRIEKER: [f64; 3] = [8.5, 200.5, 8.5];
+    const OFF_SHRIEKER: [f64; 3] = [11.5, 200.0, 8.5];
+
+    fn shrieker_world(shrieker: Block) -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut sim, mut scene) = frozen_sim()?;
+        for x in -4..21 {
+            for z in -4..21 {
+                place(&mut sim, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        place(&mut sim, &mut scene, SHRIEKER, shrieker);
+        Some((sim, scene))
+    }
+
+    fn summoning() -> Block {
+        Block::new("minecraft:sculk_shrieker").with("can_summon", "true")
+    }
+
+    #[derive(Default)]
+    struct Shrieked {
+        sounds: Vec<minecraftoss_entities::world::MobSound>,
+        effects: Vec<(u64, crate::warden_tracker::EffectGrant)>,
+        trackers: Vec<(u64, crate::warden_tracker::WardenSpawnTracker)>,
+        events: Vec<(i32, (i32, i32, i32), i32)>,
+    }
+
+    fn client_ticks(sim: &mut ServerSim, input: &mut TickInput, count: usize, heard: &mut Shrieked) {
+        for _ in 0..count {
+            for (_, tracker) in &mut input.warden_trackers {
+                tracker.tick();
+            }
+            let mut out = Output::default();
+            run_tick(sim, input, true, &mut out);
+            for &(player, tracker) in &out.warden_trackers {
+                if let Some(kept) = input.warden_trackers.iter_mut().find(|(id, _)| *id == player) {
+                    kept.1 = tracker;
+                }
+            }
+            heard.sounds.extend(out.mob_sounds.into_iter().filter(|sound| sound.category == "hostile"));
+            heard.effects.extend(out.player_effects);
+            heard.trackers.extend(out.warden_trackers);
+            heard.events.extend(out.level_events);
+        }
+    }
+
+    fn stand(input: &mut TickInput, player: u64, feet: [f64; 3]) {
+        for p in input.players.iter_mut().filter(|p| p.id == player) {
+            p.feet = feet;
+        }
+        for p in input.mob_players.iter_mut().filter(|p| p.id == player) {
+            p.position = glam::DVec3::from_array(feet);
+        }
+    }
+
+    fn shrieking(sim: &ServerSim) -> bool {
+        block_property(sim, SHRIEKER, "shrieking").as_deref() == Some("true")
+    }
+
+    fn tracker_of(input: &TickInput, player: u64) -> crate::warden_tracker::WardenSpawnTracker {
+        input.warden_trackers.iter().find(|(id, _)| *id == player).map_or_else(crate::warden_tracker::WardenSpawnTracker::default, |(_, tracker)| *tracker)
+    }
+
+    fn shrieker_input(players: &[(u64, [f64; 3])]) -> TickInput {
+        TickInput {
+            players: players.iter().map(|&(id, feet)| standing(id, feet, false)).collect(),
+            mob_players: players.iter().map(|&(id, feet)| candidate(id, feet)).collect(),
+            warden_trackers: players.iter().map(|&(id, _)| (id, crate::warden_tracker::WardenSpawnTracker::default())).collect(),
+            ..idle_input()
+        }
+    }
+
+    fn warn_once(sim: &mut ServerSim, input: &mut TickInput, heard: &mut Shrieked) {
+        stand(input, 0, ON_SHRIEKER);
+        client_ticks(sim, input, 1, heard);
+        stand(input, 0, OFF_SHRIEKER);
+        client_ticks(sim, input, minecraftoss_world::level::sculk::SHRIEK_TICKS as usize, heard);
+    }
+
+    #[test]
+    fn warnings_one_to_three_play_the_nearby_sounds_and_darken_within_forty() {
+        let Some((mut sim, _)) = shrieker_world(summoning()) else { return };
+        let (friend, far) = ([8.5, 200.0, 38.0], [8.5, 200.0, 50.0]);
+        let mut input = shrieker_input(&[(0, OFF_SHRIEKER), (1, friend), (2, far)]);
+        let mut heard = Shrieked::default();
+        client_ticks(&mut sim, &mut input, 2, &mut heard);
+        assert_eq!(sim.listeners().listener(SHRIEKER).map(|listener| listener.kind), Some(crate::vibrations::Kind::Shrieker));
+        stand(&mut input, 0, ON_SHRIEKER);
+        client_ticks(&mut sim, &mut input, 1, &mut heard);
+        assert!(shrieking(&sim), "standing on it shrieks it");
+        assert_eq!(heard.events, vec![(crate::level_events::SCULK_SHRIEK, SHRIEKER, 0)]);
+        let first = crate::warden_tracker::WardenSpawnTracker { ticks_since_last_warning: 0, warning_level: 1, cooldown_ticks: 200 };
+        assert_eq!(heard.trackers, vec![(0, first)], "only the player within sixteen blocks is warned");
+        assert_eq!(sim.level.shrieker_warning_level(minecraftoss_core::BlockPos::new(8, 200, 8)), 1);
+        stand(&mut input, 0, OFF_SHRIEKER);
+        client_ticks(&mut sim, &mut input, 89, &mut heard);
+        assert!(shrieking(&sim));
+        assert!(heard.sounds.is_empty() && heard.effects.is_empty());
+        client_ticks(&mut sim, &mut input, 1, &mut heard);
+        assert!(!shrieking(&sim), "ninety ticks later it is quiet");
+        assert_eq!(heard.sounds.len(), 1);
+        let reply = &heard.sounds[0];
+        assert_eq!((reply.event.as_str(), reply.volume, reply.pitch), ("minecraft:entity.warden.nearby_close", 5.0, 1.0));
+        let offset = reply.position - glam::DVec3::new(8.0, 200.0, 8.0);
+        assert!(offset.abs().max_element() <= 10.0 && offset.round() == offset, "{offset}");
+        let darkness = crate::warden_tracker::SHRIEK_DARKNESS;
+        assert_eq!(heard.effects, vec![(0, darkness), (1, darkness)], "darkness within forty blocks");
+        stand(&mut input, 0, ON_SHRIEKER);
+        client_ticks(&mut sim, &mut input, 1, &mut heard);
+        assert!(!shrieking(&sim), "silent while the warning cools down");
+        assert_eq!(tracker_of(&input, 0).warning_level, 1);
+        stand(&mut input, 0, OFF_SHRIEKER);
+        client_ticks(&mut sim, &mut input, 110, &mut heard);
+        assert!(!tracker_of(&input, 0).on_cooldown());
+        heard = Shrieked::default();
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(tracker_of(&input, 0).warning_level, 2);
+        assert_eq!(heard.sounds.iter().map(|sound| sound.event.as_str()).collect::<Vec<_>>(), vec!["minecraft:entity.warden.nearby_closer"]);
+        client_ticks(&mut sim, &mut input, 110, &mut heard);
+        heard = Shrieked::default();
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(tracker_of(&input, 0).warning_level, 3);
+        assert_eq!(heard.sounds.iter().map(|sound| sound.event.as_str()).collect::<Vec<_>>(), vec!["minecraft:entity.warden.nearby_closest"]);
+        assert_eq!((tracker_of(&input, 1).warning_level, tracker_of(&input, 1).cooldown_ticks), (0, 0), "the friend at thirty blocks is never warned");
+    }
+
+    #[test]
+    fn the_fourth_warning_plays_the_angry_sound_while_no_warden_can_come() {
+        let Some((mut sim, _)) = shrieker_world(summoning()) else { return };
+        let mut input = shrieker_input(&[(0, OFF_SHRIEKER), (1, [10.5, 200.0, 12.5])]);
+        input.warden_trackers[0].1.set_warning_level(3);
+        let mut heard = Shrieked::default();
+        client_ticks(&mut sim, &mut input, 2, &mut heard);
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(tracker_of(&input, 0).warning_level, 4);
+        assert_eq!(tracker_of(&input, 1), tracker_of(&input, 0), "a player nearby rises with them");
+        assert_eq!(heard.sounds.iter().map(|sound| sound.event.as_str()).collect::<Vec<_>>(), vec!["minecraft:entity.warden.listening_angry"]);
+        assert_eq!(heard.effects.len(), 2);
+        client_ticks(&mut sim, &mut input, 110, &mut heard);
+        heard = Shrieked::default();
+        sim.level.spawn_wardens = false;
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(heard.events, vec![(crate::level_events::SCULK_SHRIEK, SHRIEKER, 0)], "it shrieks");
+        assert!(heard.trackers.is_empty() && heard.sounds.is_empty() && heard.effects.is_empty(), "but nothing answers");
+    }
+
+    #[test]
+    fn a_sensor_s_click_makes_a_shrieker_nearby_shriek() {
+        let Some((mut sim, mut scene)) = shrieker_world(Block::new("minecraft:sculk_shrieker")) else { return };
+        place(&mut sim, &mut scene, (10, 200, 8), Block::new("minecraft:sculk_sensor"));
+        let feet = [14.5, 200.0, 8.5];
+        let mut input = shrieker_input(&[(0, feet)]);
+        let mut heard = Shrieked::default();
+        client_ticks(&mut sim, &mut input, 2, &mut heard);
+        input.game_events.push(step_of(0, feet));
+        client_ticks(&mut sim, &mut input, 12, &mut heard);
+        assert!(shrieking(&sim), "the tendrils' click carries the player on to the shrieker");
+        assert_eq!(heard.events, vec![(crate::level_events::SCULK_SHRIEK, SHRIEKER, 0)]);
+        client_ticks(&mut sim, &mut input, 90, &mut heard);
+        assert!(!shrieking(&sim));
+        assert!(heard.trackers.is_empty() && heard.sounds.is_empty() && heard.effects.is_empty(), "a shrieker that cannot summon never warns");
+    }
+
+    const CATALYST: BlockPos = (8, 200, 8);
+
+    fn catalyst_world(catalysts: &[BlockPos]) -> Option<(ServerSim, TickInput)> {
+        let (mut sim, mut scene) = frozen_sim()?;
+        for x in -4..21 {
+            for z in -4..21 {
+                place(&mut sim, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        for &catalyst in catalysts {
+            place(&mut sim, &mut scene, catalyst, Block::new("minecraft:sculk_catalyst"));
+        }
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        Some((sim, input))
+    }
+
+    fn kill_cow(sim: &mut ServerSim, at: [f64; 3]) {
+        sim.summon("minecraft:cow", at, None, 0.0).unwrap();
+        let cow = sim.mobs.cows().last().unwrap().id;
+        sim.mob_blast(minecraftoss_entities::world::MobHit::Cow(cow), 40.0, [at[0], at[1] + 0.5, at[2] - 2.0], 1.0, Some(0), 0);
+    }
+
+    fn blooming(sim: &ServerSim, pos: BlockPos) -> bool {
+        block_property(sim, pos, "bloom").as_deref() == Some("true")
+    }
+
+    #[test]
+    fn a_cow_killed_five_blocks_from_a_catalyst_blooms_it_and_drops_no_orbs() {
+        let Some((mut sim, mut input)) = catalyst_world(&[CATALYST]) else { return };
+        assert_eq!(sim.listeners().listener(CATALYST).map(|listener| listener.kind), Some(crate::vibrations::Kind::Catalyst));
+        sim.level.sounds.clear();
+        kill_cow(&mut sim, [13.5, 200.0, 8.5]);
+        assert!(sim.orbs().is_empty(), "the catalyst takes its experience");
+        assert!(blooming(&sim, CATALYST));
+        assert_eq!(sim.level.sounds.iter().map(|sound| sound.event).collect::<Vec<_>>(), vec!["minecraft:block.sculk_catalyst.bloom"]);
+        let mut out = run_ticks(&mut sim, &mut input, true, 1);
+        finish_batch(&mut sim, &input, &mut out);
+        let souls = out.entities.map_or_else(Vec::new, |snapshot| snapshot.sculk_souls);
+        assert_eq!(souls, vec![glam::DVec3::new(8.5, 201.15, 8.5)], "the soul burst rises over it for every viewer");
+        run_ticks(&mut sim, &mut input, true, 6);
+        assert!(blooming(&sim, CATALYST));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert!(!blooming(&sim, CATALYST), "eight ticks later it rests");
+        sim.mobs.set_mob_drops(false);
+        let items = sim.items().len();
+        kill_cow(&mut sim, [11.5, 200.0, 11.5]);
+        assert!(blooming(&sim, CATALYST), "a death without drops still feeds it");
+        assert!(sim.orbs().is_empty());
+        assert_eq!(sim.items().len(), items, "and drops no loot");
+    }
+
+    fn catalyst_charge(sim: &ServerSim, catalyst: BlockPos) -> Vec<(BlockPos, i32)> {
+        sim.level.catalyst_cursors(minecraftoss_core::BlockPos::new(catalyst.0, catalyst.1, catalyst.2)).iter().map(|cursor| ((cursor.pos.x, cursor.pos.y, cursor.pos.z), cursor.charge)).collect()
+    }
+
+    #[test]
+    fn a_cow_dying_in_lava_near_a_catalyst_feeds_it() {
+        let Some((mut sim, mut input)) = catalyst_world(&[CATALYST]) else { return };
+        sim.summon("minecraft:cow", [11.5, 200.0, 8.5], None, 0.0).unwrap();
+        let cow = sim.mobs.cows().last().unwrap().id;
+        sim.mob_blast(minecraftoss_entities::world::MobHit::Cow(cow), 40.0, [11.5, 200.5, 6.5], 1.0, None, 0);
+        assert!(sim.orbs().is_empty(), "nobody killed it");
+        assert!(blooming(&sim, CATALYST), "it still blooms");
+        let charge = catalyst_charge(&sim, CATALYST);
+        assert_eq!(charge.len(), 1);
+        assert_eq!(charge[0].0 .1, 200, "half a block over the death: {charge:?}");
+        assert!((1..=3).contains(&charge[0].1), "a cow's 1 to 3: {charge:?}");
+        run_ticks(&mut sim, &mut input, true, 100);
+        let spread = (-4..21).flat_map(|x| (-4..21).map(move |z| (x, z))).filter(|&(x, z)| {
+            let name = |y| sim.command_registries().blocks.block(sim.command_registries().blocks.block_of(sim.command_block((x, y, z)))).name.to_string();
+            name(199) == "minecraft:sculk" || name(200) == "minecraft:sculk_vein"
+        });
+        assert!(spread.count() > 0, "sculk spread at the death spot");
+    }
+
+    #[test]
+    fn a_player_s_death_charge_is_its_experience() {
+        let Some((mut sim, _)) = catalyst_world(&[CATALYST]) else { return };
+        sim.award_death([11.5, 200.0, 8.5], 49, 49);
+        assert_eq!(catalyst_charge(&sim, CATALYST), vec![((11, 200, 8), 49)]);
+        sim.award_death([11.5, 200.0, 8.5], 0, 0);
+        assert_eq!(catalyst_charge(&sim, CATALYST).len(), 1, "a death with no experience only blooms it");
+    }
+
+    #[test]
+    fn ten_blocks_away_it_drops_orbs() {
+        let Some((mut sim, _)) = catalyst_world(&[CATALYST]) else { return };
+        kill_cow(&mut sim, [18.5, 200.0, 8.5]);
+        assert!(!sim.orbs().is_empty(), "out of the catalyst's eight blocks");
+        assert!(!blooming(&sim, CATALYST));
+    }
+
+    #[test]
+    fn two_catalysts_the_nearer_takes_it() {
+        let far = (16, 200, 8);
+        let Some((mut sim, _)) = catalyst_world(&[CATALYST, far]) else { return };
+        kill_cow(&mut sim, [14.5, 200.0, 8.5]);
+        assert!(sim.orbs().is_empty());
+        assert!(blooming(&sim, far), "1.5 blocks away");
+        assert!(!blooming(&sim, CATALYST), "6.5 blocks away, and the experience is taken");
+    }
+
+    #[test]
+    fn a_player_s_death_beside_a_catalyst_leaves_no_orbs() {
+        let Some((mut sim, _)) = catalyst_world(&[CATALYST]) else { return };
+        sim.award_death([11.5, 200.0, 8.5], 21, 21);
+        assert!(sim.orbs().is_empty());
+        assert!(blooming(&sim, CATALYST));
+        sim.award_death([1.5, 200.0, 18.5], 21, 21);
+        assert!(!sim.orbs().is_empty(), "too far from it");
+        sim.award_experience([11.5, 200.0, 8.5], 30);
+        assert!(sim.orbs().iter().map(|orb| orb.value).sum::<i32>() > 21, "experience that is no death is not taken");
+    }
+
+    fn block_property(sim: &ServerSim, pos: BlockPos, name: &str) -> Option<String> {
+        sim.command_registries().blocks.property(sim.command_block(pos), name).map(str::to_owned)
+    }
+
+    fn sensor_phase(sim: &ServerSim) -> String {
+        block_property(sim, SENSOR, "sculk_sensor_phase").unwrap_or_else(|| "no sensor".to_owned())
+    }
+
+    #[test]
+    fn a_redstone_lamp_lights_when_a_player_walks_near_a_sensor() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let lamp = (9, 200, 8);
+        place(&mut sim, &mut scene, lamp, Block::new("minecraft:redstone_lamp"));
+        let (host, friend) = ([12.5, 200.0, 8.5], [8.5, 200.0, 2.5]);
+        let mut input = TickInput { players: vec![standing(0, host, false), standing(7, friend, false)], mob_players: vec![candidate(0, host), candidate(7, friend)], ..idle_input() };
+        run_ticks(&mut sim, &mut input, true, 2);
+        let lit = |sim: &ServerSim| block_property(sim, lamp, "lit").as_deref() == Some("true");
+        assert!(!lit(&sim));
+        input.game_events.push(step_of(0, host));
+        run_ticks(&mut sim, &mut input, true, 1);
+        let ripple = sim.vibration_bursts.clone();
+        assert_eq!(ripple.len(), 1, "the ripple flies to the sensor");
+        assert_eq!((ripple[0].from, ripple[0].to, ripple[0].ticks), (glam::DVec3::from_array(host), glam::DVec3::new(8.5, 200.5, 8.5), 4));
+        run_ticks(&mut sim, &mut input, true, 2);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        sim.level.sounds.clear();
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(sensor_phase(&sim), "active");
+        assert_eq!(block_property(&sim, SENSOR, "power").as_deref(), Some("8"), "four blocks away");
+        assert!(lit(&sim));
+        assert_eq!(sim.command_block_entity(SENSOR).and_then(|tag| tag.get(minecraftoss_world::level::sculk::LAST_FREQUENCY)).and_then(minecraftoss_core::nbt::Tag::as_i64), Some(1));
+        run_ticks(&mut sim, &mut input, true, 29);
+        assert_eq!(sensor_phase(&sim), "active");
+        input.game_events.push(step_of(7, friend));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(sensor_phase(&sim), "cooldown");
+        run_ticks(&mut sim, &mut input, true, 10);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        assert!(!lit(&sim));
+        input.game_events.push(step_of(7, friend));
+        run_ticks(&mut sim, &mut input, true, 7);
+        assert_eq!(sensor_phase(&sim), "active", "the friend's step reaches it too");
+        assert_eq!(block_property(&sim, SENSOR, "power").as_deref(), Some("4"), "six blocks away");
+        assert!(lit(&sim));
+    }
+
+    #[test]
+    fn a_sensor_does_not_hear_its_own_placing_or_breaking() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([12.5, 200.0, 8.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        let state = sim.command_block(SENSOR);
+        for event in [crate::game_events::BLOCK_PLACE, crate::game_events::BLOCK_DESTROY] {
+            sim.level.block_game_event(event, SENSOR_POS, Some(state));
+            run_ticks(&mut sim, &mut input, true, 3);
+            assert_eq!(sensor_phase(&sim), "inactive", "{event}");
+        }
+        sim.level.block_game_event(crate::game_events::BLOCK_PLACE, SENSOR_POS.above(), Some(state));
+        run_ticks(&mut sim, &mut input, true, 2);
+        assert_eq!(sensor_phase(&sim), "active", "a block placed on top of it is heard");
+    }
+
+    #[test]
+    fn standing_on_a_sensor_activates_it_even_crouched() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let feet = [8.5, 200.5, 8.5];
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        input = walker_input(feet);
+        input.controls = vec![minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }];
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(sensor_phase(&sim), "active");
+        assert_eq!(block_property(&sim, SENSOR, "power").as_deref(), Some("15"));
+        let mut floating = walker_input([8.5, 201.5, 8.5]);
+        let Some((mut other, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        run_ticks(&mut other, &mut floating, true, 3);
+        assert_eq!(sensor_phase(&other), "inactive", "a player above it does not stand on it");
+    }
+
+    #[test]
+    fn an_item_or_a_cow_on_a_sensor_activates_it() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.spawn_item("minecraft:cobblestone", 1, None, [8.5, 201.0, 8.5], [0.0; 3], 40, 0);
+        run_ticks(&mut sim, &mut input, true, 20);
+        assert_eq!(sensor_phase(&sim), "active", "an item on it");
+        let Some((mut sim, _)) = sensor_world("minecraft:calibrated_sculk_sensor") else { return };
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.summon("minecraft:cow", [8.5, 200.5, 8.5], None, 0.0).unwrap();
+        let mut active = false;
+        for _ in 0..20 {
+            run_ticks(&mut sim, &mut input, true, 1);
+            active |= sensor_phase(&sim) == "active";
+        }
+        assert!(active, "a cow on it");
+    }
+
+    #[test]
+    fn a_calibrated_sensor_hears_only_the_frequency_coming_in_from_behind() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:calibrated_sculk_sensor") else { return };
+        let facing = block_property(&sim, SENSOR, "facing").unwrap();
+        let back = minecraftoss_core::pos::Direction::from_name(&facing).unwrap().opposite();
+        let behind = SENSOR_POS.relative(back, 1);
+        let walker = [8.5 + 12.0, 200.0, 8.5];
+        let mut input = walker_input(walker);
+        run_ticks(&mut sim, &mut input, true, 1);
+        place(&mut sim, &mut scene, (behind.x, behind.y, behind.z), Block::new("minecraft:redstone_block"));
+        input.game_events.push(step_of(0, walker));
+        run_ticks(&mut sim, &mut input, true, 15);
+        assert_eq!(sensor_phase(&sim), "inactive", "a back input of 15 hears only frequency 15");
+        sim.level.game_event(crate::game_events::EXPLODE, [walker[0], 200.5, walker[2]], None);
+        run_ticks(&mut sim, &mut input, true, 13);
+        assert_eq!(sensor_phase(&sim), "active", "an explosion is frequency 15, heard twelve blocks away");
+    }
+
+    fn last_frequency(sim: &ServerSim) -> Option<i64> {
+        sim.command_block_entity(SENSOR).and_then(|tag| tag.get(minecraftoss_world::level::sculk::LAST_FREQUENCY)).and_then(minecraftoss_core::nbt::Tag::as_i64)
+    }
+
+    #[test]
+    fn mining_beside_a_sensor_is_heard_but_a_blasted_block_is_no_destroy() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        place(&mut sim, &mut scene, (11, 200, 8), Block::new("minecraft:stone"));
+        place(&mut sim, &mut scene, (8, 200, 11), Block::new("minecraft:stone"));
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.acting(Some(0), |sim| sim.player_mines(&[((8, 200, 11), HowBroken::Blasted)]));
+        run_ticks(&mut sim, &mut input, true, 5);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        sim.acting(Some(0), |sim| sim.player_mines(&[((11, 200, 8), HowBroken::Mined)]));
+        run_ticks(&mut sim, &mut input, true, 4);
+        assert_eq!(sensor_phase(&sim), "active");
+        assert_eq!(last_frequency(&sim), Some(12));
+    }
+
+    fn snowball_down(eye: [f64; 3], seed: u64) -> crate::thrown::Thrown {
+        let throw = crate::thrown::Throw { owner: 0, item: "minecraft:snowball", components: None, eye: glam::DVec3::from_array(eye), yaw: 0.0, pitch: 90.0, motion: glam::DVec3::ZERO, on_ground: true };
+        crate::thrown::Thrown::launch(&throw, &mut minecraftoss_player::rng::LegacyRandom::new(seed)).expect("a snowball")
+    }
+
+    #[test]
+    fn a_crouched_throw_is_heard_only_where_it_lands() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([15.5, 200.0, 8.5]);
+        input.controls = vec![minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }];
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.throw(snowball_down([11.5, 203.0, 8.5], 3));
+        run_ticks(&mut sim, &mut input, true, 20);
+        assert_eq!(last_frequency(&sim), Some(2), "only the landing");
+        run_ticks(&mut sim, &mut input, true, 40);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        input.controls.clear();
+        sim.throw(snowball_down([11.5, 203.0, 8.5], 4));
+        run_ticks(&mut sim, &mut input, true, 20);
+        assert_eq!(last_frequency(&sim), Some(3), "standing up, the throw itself is heard first");
+    }
+
+    #[test]
+    fn an_mw2_blast_near_a_sensor_is_an_explosion() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.weapon_blast([12.5, 200.5, 8.5], 1.0);
+        run_ticks(&mut sim, &mut input, true, 6);
+        assert_eq!(last_frequency(&sim), Some(15));
+    }
+
+    #[test]
+    fn a_bell_ring_is_frequency_eleven() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        let bell = (12, 200, 8);
+        place(&mut sim, &mut scene, bell, Block::new("minecraft:bell"));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert!(sim.acting(Some(0), |sim| sim.ring_bell(bell, Some("east"))));
+        run_ticks(&mut sim, &mut input, true, 6);
+        assert_eq!(last_frequency(&sim), Some(11));
+    }
+
+    #[test]
+    fn a_dead_cow_posts_entity_die_before_its_experience() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.summon("minecraft:cow", [12.5, 200.0, 8.5], None, 0.0).unwrap();
+        let cow = sim.mobs.cows()[0].id;
+        sim.mob_blast(minecraftoss_entities::world::MobHit::Cow(cow), 40.0, [12.5, 200.5, 6.5], 1.0, Some(0), 0);
+        assert!(!sim.orbs().is_empty(), "a player's kill leaves experience");
+        run_ticks(&mut sim, &mut input, true, 6);
+        assert_eq!(sensor_phase(&sim), "active");
+        assert_eq!(last_frequency(&sim), Some(15), "its death outweighs its hurt (7) at the same spot");
+    }
+
+    #[test]
+    fn amethyst_carries_an_eaten_vibration_to_a_calibrated_sensor_out_of_its_reach() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let calibrated = (15, 200, 15);
+        place(&mut sim, &mut scene, (9, 200, 8), Block::new("minecraft:amethyst_block"));
+        place(&mut sim, &mut scene, calibrated, Block::new("minecraft:calibrated_sculk_sensor"));
+        let eater = [2.5, 200.0, 5.5];
+        let mut input = walker_input(eater);
+        run_ticks(&mut sim, &mut input, true, 1);
+        input.game_events.push(crate::game_events::PlayerEvent { player: 0, event: crate::game_events::EAT, pos: eater, affected: None, projectile: false });
+        run_ticks(&mut sim, &mut input, true, 8);
+        assert_eq!(last_frequency(&sim), Some(8), "the near sensor hears the eating");
+        let heard = |sim: &ServerSim| sim.command_block_entity(calibrated).and_then(|tag| tag.get(minecraftoss_world::level::sculk::LAST_FREQUENCY)).and_then(minecraftoss_core::nbt::Tag::as_i64);
+        assert_ne!(heard(&sim), Some(8), "too far to hear it itself");
+        run_ticks(&mut sim, &mut input, true, 14);
+        assert_eq!(heard(&sim), Some(8), "the amethyst resonates frequency 8 to it");
+        assert_eq!(block_property(&sim, calibrated, "sculk_sensor_phase").as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn a_crouched_gun_shot_is_heard_only_where_it_lands() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([14.5, 200.0, 8.5]);
+        input.controls = vec![minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }];
+        run_ticks(&mut sim, &mut input, true, 1);
+        let shoot = |input: &mut TickInput| {
+            input.game_events.push(crate::game_events::PlayerEvent { player: 0, event: crate::game_events::PROJECTILE_SHOOT, pos: [14.5, 201.6, 8.5], affected: None, projectile: false });
+            input.game_events.push(crate::game_events::PlayerEvent { player: 0, event: crate::game_events::PROJECTILE_LAND, pos: [8.5, 199.5, 1.5], affected: Some("minecraft:stone".to_owned()), projectile: true });
+        };
+        shoot(&mut input);
+        run_ticks(&mut sim, &mut input, true, 1);
+        let travelling = sim.listeners().listener(SENSOR).and_then(|listener| listener.current.as_ref()).map(|info| (info.event, info.source, info.owner.and_then(|owner| owner.player())));
+        assert_eq!(travelling, Some((crate::game_events::PROJECTILE_LAND, None, Some(0))), "the bullet lands with its shooter as owner");
+        run_ticks(&mut sim, &mut input, true, 9);
+        assert_eq!(last_frequency(&sim), Some(2), "crouched, only the landing");
+        run_ticks(&mut sim, &mut input, true, 40);
+        input.controls.clear();
+        shoot(&mut input);
+        run_ticks(&mut sim, &mut input, true, 10);
+        assert_eq!(last_frequency(&sim), Some(3), "standing, the nearer shot itself");
+    }
+
+    #[test]
+    fn a_lever_beside_a_sensor_is_ten_on_and_nine_off() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        let lever = (13, 200, 8);
+        place(&mut sim, &mut scene, lever, Block::new("minecraft:lever").with("face", "floor"));
+        run_ticks(&mut sim, &mut input, true, 1);
+        for heard in [10, 9] {
+            assert!(sim.acting(Some(0), |sim| sim.use_block(lever, "north")));
+            run_ticks(&mut sim, &mut input, true, 7);
+            assert_eq!(sensor_phase(&sim), "active");
+            assert_eq!(last_frequency(&sim), Some(heard));
+            run_ticks(&mut sim, &mut input, true, 40);
+        }
     }
 
     #[test]
@@ -13329,7 +14409,7 @@ mod tests {
         assert_eq!(lit(&closed, (8, 200, 9)), Some(false));
         assert_eq!(lit(&closed, (8, 198, 8)), Some(false));
         let mut handle = ServerHandle::spawn(server);
-        handle.chest_openers((8, 200, 8), 1);
+        handle.chest_openers(Some(0), (8, 200, 8), 1);
         handle.wait_idle();
         let sent: std::collections::HashMap<_, _> = handle.poll().into_iter().flat_map(|out| out.changes).collect();
         assert_eq!(lit(&sent, (8, 200, 9)), Some(true), "the command reaches the server thread");

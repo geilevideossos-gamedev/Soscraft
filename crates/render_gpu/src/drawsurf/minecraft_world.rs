@@ -963,6 +963,7 @@ fn lightmap(sky_level: f32, block_level: f32) -> vec3<f32> {
     let parabolic = (2.0 * block - 1.0) * (2.0 * block - 1.0);
     let block_color = mix(environment.block_tint.rgb, vec3<f32>(1.0), 0.9 * parabolic);
     color += block_color * (light_brightness(block) * environment.block_tint.w);
+    color = color - vec3<f32>(environment.forward.w);
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     let greatest = max(color.r, max(color.g, color.b));
     let inverted = 1.0 - greatest;
@@ -1725,6 +1726,17 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
             .validate(&module)
             .unwrap();
+    }
+
+    #[test]
+    fn darkness_dims_the_terrain_lightmap_before_its_clamp() {
+        let source = super::TERRAIN_WGSL;
+        let lightmap = &source[source.find("fn lightmap(").unwrap()..];
+        let lightmap = &lightmap[..lightmap.find("\n}\n").unwrap()];
+        let pulse = lightmap.find("color = color - vec3<f32>(environment.forward.w);").unwrap();
+        let clamp = lightmap.find("color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));").unwrap();
+        assert!(pulse < clamp);
+        assert!(lightmap.ends_with("return mix(color, gamma, environment.cloud.w);"));
     }
 
     #[test]

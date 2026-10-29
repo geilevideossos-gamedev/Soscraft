@@ -24,6 +24,12 @@ pub const ZOMBIE_ATTACK_WOODEN_DOOR_SOUND: &str = "minecraft:entity.zombie.attac
 pub const ZOMBIE_BREAK_WOODEN_DOOR: i32 = minecraftoss_entities::door_goals::BREAK_WOODEN_DOOR;
 pub const ZOMBIE_BREAK_WOODEN_DOOR_SOUND: &str = "minecraft:entity.zombie.break_wooden_door";
 pub const LAVA_EXTINGUISH: &str = "minecraft:block.lava.extinguish";
+pub const SCULK_SHRIEK: i32 = 3007;
+pub const SCULK_CHARGE: i32 = 3006;
+pub const CHARGE_SOUND: &str = "minecraft:block.sculk.charge";
+const FACES: [(i32, i32, i32); 6] = [(0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1), (-1, 0, 0), (1, 0, 0)];
+const CHARGE_DRIFT: f64 = 0.004999999888241291;
+pub const SHRIEK_SOUND: &str = "minecraft:block.sculk_shrieker.shriek";
 const FIZZ_SMOKE: usize = 8;
 const EVAPORATION_SMOKE: usize = 8;
 const SPREAD_FACTOR: i32 = 3;
@@ -222,6 +228,20 @@ pub fn level_event<S: Scene + ?Sized>(
                 pitch: (random.next_float() - random.next_float()) * 0.2 + 1.0,
             });
         }
+        SCULK_SHRIEK => {
+            let waterlogged = scene
+                .block(pos)
+                .is_some_and(|block| block.properties.get("waterlogged").is_some_and(|value| value == "true"));
+            if !waterlogged {
+                out.sounds.push(AmbientSound {
+                    event: SHRIEK_SOUND,
+                    at: crate::shriek_particles::shriek_at(pos).to_array(),
+                    volume: 2.0,
+                    pitch: 0.6 + random.next_float() * 0.4,
+                });
+            }
+        }
+        SCULK_CHARGE => charge_effects(scene, pos, data, is_a, random, &mut out),
         BONE_MEAL_USE => {
             growth_particles(scene, pos, data, is_a, random, &mut out);
             out.sounds.push(AmbientSound {
@@ -283,6 +303,76 @@ fn detect_particles(
         let y = base.y + 0.1 + f64::from(random.next_float()) * 0.8;
         let at = DVec3::new(base.x + 0.5 + x, y, base.z + 0.5 + z);
         out.particles.push((kind, at, DVec3::ZERO));
+    }
+}
+
+fn charge_effects<S: Scene + ?Sized>(
+    scene: &S,
+    pos: BlockPos,
+    data: i32,
+    is_a: &dyn Fn(&Block, &str) -> bool,
+    random: &mut LegacyRandom,
+    out: &mut DisplayTick,
+) {
+    let centre = corner(pos) + DVec3::splat(0.5);
+    let charge = data >> 6;
+    if charge <= 0 {
+        out.sounds.push(AmbientSound {
+            event: CHARGE_SOUND,
+            at: centre.to_array(),
+            volume: 1.0,
+            pitch: 1.0,
+        });
+        let block = scene.block(pos);
+        let full = !is_air(block) && block.is_some_and(|block| !is_a(block, "MultifaceBlock"));
+        let (count, spread) = if full { (40, 0.45) } else { (20, 0.25) };
+        for _ in 0..count {
+            let mut unit = || f64::from(2.0 * random.next_float() - 1.0);
+            let offset = DVec3::new(unit(), unit(), unit());
+            out.particles.push((Kind::SculkChargePop, centre + offset * spread, offset * f64::from(0.07_f32)));
+        }
+        return;
+    }
+    let level = charge as f32;
+    if random.next_float() < 0.3 + level * 0.1 {
+        let volume = 0.15 + 0.02 * level * level * random.next_float();
+        let pitch = 0.4 + 0.3 * level * random.next_float();
+        out.sounds.push(AmbientSound {
+            event: CHARGE_SOUND,
+            at: centre.to_array(),
+            volume,
+            pitch,
+        });
+    }
+    let faces = data & 63;
+    for (index, &(x, y, z)) in FACES.iter().enumerate() {
+        let (on, factor) = if faces == 0 {
+            (true, if y != 0 { 0.65 } else { 0.57 })
+        } else {
+            (faces & (1 << index) != 0, 0.35)
+        };
+        if !on {
+            continue;
+        }
+        let count = random.next_int(charge as u32 + 1);
+        for _ in 0..count {
+            let mut drift = || random.next_double() * 2.0 * CHARGE_DRIFT - CHARGE_DRIFT;
+            let speed = DVec3::new(drift(), drift(), drift());
+            let mut along = |step: i32| {
+                if step == 0 {
+                    random.next_double() - 0.5
+                } else {
+                    f64::from(step) * factor
+                }
+            };
+            let at = centre + DVec3::new(along(x), along(y), along(z));
+            let motion = DVec3::new(
+                if x == 0 { speed.x } else { 0.0 },
+                if y == 0 { speed.y } else { 0.0 },
+                if z == 0 { speed.z } else { 0.0 },
+            );
+            out.particles.push((Kind::SculkCharge, at, motion));
+        }
     }
 }
 
@@ -448,6 +538,7 @@ mod tests {
             "grass_block" => &["GrassBlock"],
             "rooted_dirt" => &["RootedDirtBlock"],
             "sweet_berry_bush" => &["SweetBerryBushBlock"],
+            "sculk_vein" => &["SculkVeinBlock", "MultifaceBlock"],
             _ => &[],
         };
         chain.contains(&class)
@@ -565,6 +656,54 @@ mod tests {
             assert!((0.8..=1.2).contains(&played.pitch));
             assert!(event.particles.is_empty());
         }
+    }
+
+    #[test]
+    fn a_shriek_screams_over_the_shrieker_unless_it_is_under_water() {
+        let mut random = LegacyRandom::new(6);
+        let mut mirror = LegacyRandom::new(6);
+        let dry = Blocks(HashMap::from([((1, 64, 1), Block::new("minecraft:sculk_shrieker"))]));
+        let event = level_event(SCULK_SHRIEK, (1, 64, 1), 0, &dry, &classes, &mut random);
+        assert_eq!(event.sounds.len(), 1);
+        let sound = &event.sounds[0];
+        assert_eq!((sound.event, sound.at, sound.volume), (SHRIEK_SOUND, [1.5, 64.5, 1.5], 2.0));
+        assert_eq!(sound.pitch, 0.6 + mirror.next_float() * 0.4);
+        let wet = Blocks(HashMap::from([(
+            (1, 64, 1),
+            Block::new("minecraft:sculk_shrieker").with("waterlogged", "true"),
+        )]));
+        let event = level_event(SCULK_SHRIEK, (1, 64, 1), 0, &wet, &classes, &mut random);
+        assert!(event.sounds.is_empty());
+    }
+
+    #[test]
+    fn a_charge_sparkles_on_the_faces_and_pops_when_it_is_spent() {
+        let mut random = LegacyRandom::new(8);
+        let veined = Blocks(HashMap::from([((2, 64, 2), Block::new("minecraft:sculk_vein"))]));
+        let mut glows = 0;
+        for _ in 0..20 {
+            let event = level_event(SCULK_CHARGE, (2, 64, 2), (2 << 6) + 1, &veined, &classes, &mut random);
+            for (kind, at, motion) in &event.particles {
+                assert_eq!(*kind, Kind::SculkCharge);
+                assert!((at.y - 64.15).abs() < 1e-9, "on the down face: {at}");
+                assert!((2.0..3.0).contains(&at.x) && (2.0..3.0).contains(&at.z));
+                assert_eq!(motion.y, 0.0);
+                assert!(motion.x.abs() <= 0.005 && motion.z.abs() <= 0.005);
+            }
+            assert!(event.particles.len() <= 2);
+            glows += event.particles.len();
+            assert!(event.sounds.iter().all(|sound| sound.event == CHARGE_SOUND));
+        }
+        assert!(glows > 0);
+        let open = level_event(SCULK_CHARGE, (2, 64, 2), 3 << 6, &veined, &classes, &mut random);
+        assert!(open.particles.len() <= 6 * 3, "every face");
+        let popped = level_event(SCULK_CHARGE, (2, 64, 2), 0, &veined, &classes, &mut random);
+        assert_eq!(popped.particles.len(), 20, "a vein is no full block");
+        assert!(popped.particles.iter().all(|(kind, at, _)| *kind == Kind::SculkChargePop && at.distance(DVec3::new(2.5, 64.5, 2.5)) <= 0.25 * 3f64.sqrt() + 1e-9));
+        assert_eq!(popped.sounds.len(), 1);
+        assert_eq!((popped.sounds[0].event, popped.sounds[0].volume, popped.sounds[0].pitch), (CHARGE_SOUND, 1.0, 1.0));
+        let solid = Blocks(HashMap::from([((2, 64, 2), Block::new("minecraft:sculk"))]));
+        assert_eq!(level_event(SCULK_CHARGE, (2, 64, 2), 0, &solid, &classes, &mut random).particles.len(), 40);
     }
 
     #[test]
