@@ -640,3 +640,27 @@ After 2dc233c9.
   - A starred burst still draws today's BURST sparks in all its stars' colours, and a star without colours still draws black, until group `fw-shapes`.
 - **Test steps:** nothing new to see yet. The only rockets in game are those of villagers celebrating a won raid, and they look and hurt as before (one star). Starred and plain rockets from the kit come with group `fw-launch` (steps FW-1 to FW-4 of the brief).
 - **Kit:** none.
+
+### 2. Minecraft firework rockets burst on mobs and players in their path
+
+After 077c2210.
+
+- **Vanilla (26.3, checked with javap):**
+  - `FireworkRocketEntity.tick` for a rocket that is not attached: first `Projectile.tick` (`checkLeftOwner`: the rocket's box swept by its last motion and grown by 1 must touch none of the owner's root vehicle and its passengers); then, unless shot at an angle, `motion *= (h, 1, h)` with `h = 1.0` after a `horizontalCollision`, else 1.15, and `+0.04` in y; then `ProjectileUtil.getHitResultOnMoveVector` **before** the move; then `move(SELF, motion)` with block collision (a 0.25 x 0.25 box) and the motion put back; then `hitTargetOrDeflectSelf(hit)`; then the launch sound on `life == 0`, `life++`, and `explode` when `life > lifetime`.
+  - `getHitResult`: a COLLIDER clip (no fluids) along the motion; the entity search box is the rocket's box swept by the motion and grown by 1; each candidate's box is grown by `computeMargin` (`max(0, min(0.3, (tickCount - 2) / 20))`) and clipped from the position to the block hit or the end of the motion; an entity beats the block. `getEntityHitResult(Level, ...)` has no check for a start inside a box, and `AABB.clip` finds nothing from inside, so a rocket that starts inside a mob passes through it.
+  - `Projectile.canHitEntity`: `canBeHitByProjectile` (alive and pickable: mobs, players, item frames) and, until the rocket has left its owner, not `owner.isPassengerOfSameVehicle(target)` (the owner and everything in its vehicle).
+  - `onHitEntity` always explodes; `onHitBlock` explodes only with stars. The burst is at the rocket's position after the move.
+- **Changed:**
+  - `minecraft_terrain/src/firework_rocket.rs`: `Rocket::tick(world, targets, owner_box)` in that order, with `left_owner` and `horizontal_collision` kept on the rocket, `bounds_at`/`bounds` (`SIZE` 0.25), `margin` (from `life + 1`, the tick count) and the private `hit_on_move`. The move goes through the player crate's `collision::move_body` (no step). A starless rocket that meets a block keeps flying and bursts only at the end of its life; a starred one bursts there. A rocket bursts once even if a hit and the end of its life come in the same tick.
+  - `minecraft_terrain/src/server.rs` `tick_rockets`: each rocket's targets are `thrown::targets` (every mob store), the item frames and `thrown::player_targets`. A villager owner's box is flagged as the owner and used for the left-owner check; a player owner (from group `fw-launch`) uses `thrown::owner_box` and `skip_own_mount`, as thrown items do.
+- **Tests:**
+  - `firework_rocket::tests`: `a_rocket_bursts_on_the_first_tick_at_a_zombie_just_above_it` (at the end of its move, and the launch sound still comes), `a_rocket_launched_inside_a_zombie_rises_through_it`, `a_rocket_passes_its_owner_until_it_has_left_it` (and a stranger in the same place is hit; a far owner is left at once), `a_starless_rocket_under_a_roof_waits_out_its_lifetime` (pinned with its box under the roof), `a_rocket_against_a_wall_stops_speeding_up_sideways` (and a starred one bursts on the wall).
+  - `server::tests::a_villager_s_rocket_passes_its_villager_and_bursts_on_a_mob_or_a_player_in_its_path`: a villager's rocket rises through its own villager and bursts on a zombie hovering 4 blocks above (hurt once) before its time is up; a rocket rising into another villager bursts there on the second tick; one rising into a hovering player bursts at the player's feet with a hit of about 7 blamed on the villager.
+  - `server::tests::a_villager_s_rocket_climbs_bursts_under_a_roof_and_hurts_who_is_near` now expects the burst at 203.75, where the rocket's box meets the roof at 204 (it was the point where the old point clip met it).
+  - The other rocket tests pass with the new `tick` arguments.
+- **Decisions:**
+  - The brief's "a target whose box holds the start point is hit at once" is not in 26.3's projectile hit test (it is in the other `getEntityHitResult`, used for the player's pick). A rocket placed at a mob's feet rises through that mob, as in vanilla, so the brief's test "a rocket launched at a zombie's feet bursts on the first tick" became "a rocket just under a zombie bursts on the first tick" plus "a rocket inside a zombie rises through it". Owner step FW-5 (group `fw-launch`) should click the ground just in front of a zombie that walks over it, or use the dispenser of FW-9, which shoots the rocket into the mob from outside.
+  - Item frames are rocket targets too (they are pickable in vanilla); the frame itself is not hurt. End crystals and the dragon's parts are not targets yet.
+  - The left-owner box of a villager owner is its own box, without its vehicle.
+- **Test steps:** none new in game yet: players can only launch rockets from group `fw-launch` on (FW-5, FW-6 and FW-9 then show this commit). A celebrating villager's rocket now bursts on a mob or player right above it instead of flying through.
+- **Kit:** none.

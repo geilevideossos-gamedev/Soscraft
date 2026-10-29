@@ -1,7 +1,9 @@
 use crate::firework::{Explosion, Fireworks};
 use crate::thrown::ThrownView;
 use glam::DVec3;
+use minecraftoss_entities::potion::PotionTarget;
 use minecraftoss_player::World;
+use minecraftoss_player::collision::{Bounds, move_body};
 use minecraftoss_player::rng::LegacyRandom;
 
 pub const ITEM: &str = crate::firework::FIREWORK_ROCKET;
@@ -15,6 +17,7 @@ pub const SPREAD: f64 = 0.002297;
 pub const RISE: f64 = 0.05;
 pub const LIFT: f64 = 0.04;
 pub const HORIZONTAL_SPEED_UP: f64 = 1.15;
+pub const SIZE: f64 = 0.25;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Burst {
@@ -55,10 +58,40 @@ pub struct Rocket {
     pub lifetime: i32,
     pub explosions: Vec<Explosion>,
     pub alive: bool,
+    pub left_owner: bool,
+    pub horizontal_collision: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RocketHit {
+    Entity,
+    Block,
 }
 
 fn triangle(random: &mut LegacyRandom, deviation: f64) -> f64 {
     deviation * (random.next_double() - random.next_double())
+}
+
+pub fn bounds_at(position: DVec3) -> (DVec3, DVec3) {
+    let half = DVec3::new(SIZE / 2.0, 0.0, SIZE / 2.0);
+    (position - half, position + half + DVec3::Y * SIZE)
+}
+
+fn swept((min, max): (DVec3, DVec3), by: DVec3) -> (DVec3, DVec3) {
+    (min.min(min + by), max.max(max + by))
+}
+
+fn grown((min, max): (DVec3, DVec3), by: f64) -> (DVec3, DVec3) {
+    (min - DVec3::splat(by), max + DVec3::splat(by))
+}
+
+fn overlaps(a: (DVec3, DVec3), b: (DVec3, DVec3)) -> bool {
+    a.0.x < b.1.x
+        && a.1.x > b.0.x
+        && a.0.y < b.1.y
+        && a.1.y > b.0.y
+        && a.0.z < b.1.z
+        && a.1.z > b.0.z
 }
 
 impl Rocket {
@@ -81,29 +114,93 @@ impl Rocket {
             lifetime,
             explosions: fireworks.explosions,
             alive: true,
+            left_owner: false,
+            horizontal_collision: false,
         }
     }
 
-    pub fn tick(&mut self, world: &dyn World) -> Vec<RocketEvent> {
+    pub fn bounds(&self) -> (DVec3, DVec3) {
+        bounds_at(self.position)
+    }
+
+    pub fn margin(&self) -> f64 {
+        let tick_count = self.life + 1;
+        f64::from(0.0_f32.max(0.3_f32.min((tick_count - 2) as f32 / 20.0)))
+    }
+
+    pub fn tick(
+        &mut self,
+        world: &impl World,
+        targets: &[PotionTarget],
+        owner: Option<(DVec3, DVec3)>,
+    ) -> Vec<RocketEvent> {
         let mut events = Vec::new();
         self.previous = self.position;
+        if !self.left_owner {
+            let near = grown(swept(self.bounds(), self.velocity), 1.0);
+            self.left_owner = owner.is_none_or(|owner| !overlaps(owner, near));
+        }
+        let speed_up = if self.horizontal_collision {
+            1.0
+        } else {
+            HORIZONTAL_SPEED_UP
+        };
         self.velocity = DVec3::new(
-            self.velocity.x * HORIZONTAL_SPEED_UP,
+            self.velocity.x * speed_up,
             self.velocity.y,
-            self.velocity.z * HORIZONTAL_SPEED_UP,
+            self.velocity.z * speed_up,
         ) + DVec3::Y * LIFT;
-        let to = self.position + self.velocity;
-        let hit = minecraftoss_entities::sight::clip(world, self.position, to);
-        self.position = hit.map_or(to, |(_, at)| at);
+        let delta = self.velocity;
+        let hit = self.hit_on_move(world, targets, delta);
+        let (min, max) = self.bounds();
+        let moved = move_body(world, Bounds { min, max }, delta, false, 0.0);
+        self.position += moved;
+        let same = |a: f64, b: f64| (b - a).abs() < f64::from(1.0e-5_f32);
+        self.horizontal_collision = !same(delta.x, moved.x) || !same(delta.z, moved.z);
+        let bursts = match hit {
+            Some(RocketHit::Entity) => true,
+            Some(RocketHit::Block) => !self.explosions.is_empty(),
+            None => false,
+        };
+        if bursts {
+            self.alive = false;
+            events.push(RocketEvent::Exploded);
+        }
         if self.life == 0 {
             events.push(RocketEvent::Launched);
         }
         self.life += 1;
-        if hit.is_some() || self.life > self.lifetime {
+        if self.alive && self.life > self.lifetime {
             self.alive = false;
             events.push(RocketEvent::Exploded);
         }
         events
+    }
+
+    fn hit_on_move(
+        &self,
+        world: &impl World,
+        targets: &[PotionTarget],
+        delta: DVec3,
+    ) -> Option<RocketHit> {
+        let from = self.position;
+        let block = minecraftoss_entities::sight::clip(world, from, from + delta);
+        let to = block.map_or(from + delta, |(_, at)| at);
+        let search = grown(swept(self.bounds(), delta), 1.0);
+        let margin = self.margin();
+        let struck = targets
+            .iter()
+            .filter(|target| self.left_owner || !target.owner)
+            .filter(|target| overlaps((target.min, target.max), search))
+            .any(|target| {
+                let (min, max) = grown((target.min, target.max), margin);
+                minecraftoss_entities::sight::clip_box(min, max, from, to).is_some()
+            });
+        if struck {
+            Some(RocketHit::Entity)
+        } else {
+            block.map(|_| RocketHit::Block)
+        }
     }
 
     pub fn burst(&self) -> Burst {
@@ -201,7 +298,7 @@ mod tests {
         let mut events = Vec::new();
         let mut ticks = 0;
         while rocket.alive {
-            events.extend(rocket.tick(&world));
+            events.extend(rocket.tick(&world, &[], None));
             ticks += 1;
         }
         assert_eq!(ticks, lifetime + 1);
@@ -222,15 +319,129 @@ mod tests {
         let mut rocket = rocket(2, 4);
         let mut ticks = 0;
         while rocket.alive {
-            rocket.tick(&world);
+            rocket.tick(&world, &[], None);
             ticks += 1;
         }
         assert!(ticks < rocket.lifetime, "{ticks}");
         assert!(
-            (rocket.position.y - 68.0).abs() < 1e-6,
+            (rocket.position.y - (68.0 - SIZE)).abs() < 1e-6,
             "{}",
             rocket.position
         );
+    }
+
+    struct Wall;
+
+    impl World for Wall {
+        fn block(&self, pos: Pos) -> Option<Block> {
+            (pos.1 < 64 || pos.0 >= 1).then(|| Block::new("minecraft:stone"))
+        }
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+    }
+
+    fn zombie_at(feet: DVec3) -> PotionTarget {
+        PotionTarget {
+            id: 9,
+            min: feet - DVec3::new(0.3, 0.0, 0.3),
+            max: feet + DVec3::new(0.3, 1.95, 0.3),
+            owner: false,
+        }
+    }
+
+    fn fly(
+        rocket: &mut Rocket,
+        world: &impl World,
+        targets: &[PotionTarget],
+        owner: Option<(DVec3, DVec3)>,
+    ) -> (i32, Vec<RocketEvent>) {
+        let mut events = Vec::new();
+        let mut ticks = 0;
+        while rocket.alive {
+            events.extend(rocket.tick(world, targets, owner));
+            ticks += 1;
+        }
+        (ticks, events)
+    }
+
+    #[test]
+    fn a_rocket_bursts_on_the_first_tick_at_a_zombie_just_above_it() {
+        let world = Sky { roof: None };
+        let mut rising = rocket(1, 2);
+        let events = rising.tick(&world, &[zombie_at(DVec3::new(0.5, 65.7, 0.5))], None);
+        assert!(!rising.alive);
+        assert_eq!(events, [RocketEvent::Exploded, RocketEvent::Launched]);
+        assert!(
+            (rising.position.y - (65.62 + RISE + LIFT)).abs() < 1e-9,
+            "it bursts where its move ends: {}",
+            rising.position
+        );
+    }
+
+    #[test]
+    fn a_rocket_launched_inside_a_zombie_rises_through_it() {
+        let world = Sky { roof: None };
+        let mut inside = rocket(1, 2);
+        let lifetime = inside.lifetime;
+        let zombie = zombie_at(DVec3::new(0.5, 65.0, 0.5));
+        let (ticks, events) = fly(&mut inside, &world, &[zombie], None);
+        assert_eq!(ticks, lifetime + 1);
+        assert_eq!(events, [RocketEvent::Launched, RocketEvent::Exploded]);
+    }
+
+    #[test]
+    fn a_rocket_passes_its_owner_until_it_has_left_it() {
+        let world = Sky { roof: None };
+        let owner = PotionTarget {
+            owner: true,
+            ..zombie_at(DVec3::new(0.5, 65.7, 0.5))
+        };
+        let mut own = rocket(1, 2);
+        let lifetime = own.lifetime;
+        let (ticks, _) = fly(&mut own, &world, &[owner], Some((owner.min, owner.max)));
+        assert_eq!(ticks, lifetime + 1, "it never bursts on its owner");
+        assert!(own.left_owner);
+        let mut stranger = rocket(1, 2);
+        let events = stranger.tick(&world, &[PotionTarget { owner: false, ..owner }], None);
+        assert!(events.contains(&RocketEvent::Exploded));
+        let mut far = rocket(1, 2);
+        far.tick(&world, &[], Some((DVec3::splat(20.0), DVec3::splat(21.0))));
+        assert!(far.left_owner && far.alive);
+    }
+
+    #[test]
+    fn a_starless_rocket_under_a_roof_waits_out_its_lifetime() {
+        let world = Sky { roof: Some(68) };
+        let mut plain = starred(1, 4, Vec::new());
+        let lifetime = plain.lifetime;
+        let (ticks, events) = fly(&mut plain, &world, &[], None);
+        assert_eq!(ticks, lifetime + 1);
+        assert_eq!(events, [RocketEvent::Launched, RocketEvent::Exploded]);
+        assert!(
+            (plain.position.y - (68.0 - SIZE)).abs() < 1e-6,
+            "{}",
+            plain.position
+        );
+        assert!(plain.burst().explosions.is_empty());
+    }
+
+    #[test]
+    fn a_rocket_against_a_wall_stops_speeding_up_sideways() {
+        let mut plain = starred(1, 1, Vec::new());
+        plain.position = DVec3::new(0.8, 65.0, 0.5);
+        plain.velocity = DVec3::new(0.1, RISE, 0.0);
+        plain.tick(&Wall, &[], None);
+        assert!(plain.horizontal_collision);
+        assert!((plain.position.x - (1.0 - SIZE / 2.0)).abs() < 1e-9, "{}", plain.position);
+        let pressed = plain.velocity.x;
+        assert!((pressed - 0.1 * HORIZONTAL_SPEED_UP).abs() < 1e-12);
+        plain.tick(&Wall, &[], None);
+        assert_eq!(plain.velocity.x, pressed, "no speed-up against the wall");
+        assert!(plain.alive, "a starless rocket does not burst on the wall");
+        let mut starry = rocket(1, 1);
+        starry.position = DVec3::new(0.85, 65.0, 0.5);
+        starry.velocity = DVec3::new(0.2, RISE, 0.0);
+        assert!(starry.tick(&Wall, &[], None).contains(&RocketEvent::Exploded));
+        assert!((starry.position.x - (1.0 - SIZE / 2.0)).abs() < 1e-9);
     }
 
     #[test]

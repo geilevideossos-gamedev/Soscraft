@@ -1391,17 +1391,34 @@ impl ServerSim {
     }
 
     pub fn tick_rockets(&mut self, players: &[crate::thrown::PlayerBody]) {
-        use crate::firework_rocket::RocketEvent;
+        use crate::firework_rocket::{RocketEvent, RocketOwner};
         let mut rockets = std::mem::take(&mut self.rockets);
         for rocket in &mut rockets {
             let chunk = ChunkPos::new((rocket.position.x.floor() as i32) >> 4, (rocket.position.z.floor() as i32) >> 4);
             if self.level.chunk(chunk).is_none() {
                 continue;
             }
+            let mut targets = crate::thrown::targets(&self.mobs);
+            targets.extend(self.frames.targets());
+            let owner_player = match rocket.owner {
+                RocketOwner::Player(player) => player,
+                RocketOwner::Mob(_) | RocketOwner::Nobody => crate::thrown::MOB_THROWER,
+            };
+            targets.extend(crate::thrown::player_targets(players, owner_player));
+            let mut owner_box = match rocket.owner {
+                RocketOwner::Player(player) => crate::thrown::owner_box(players, player).map(|bounds| crate::thrown::skip_own_mount(&self.mobs, &mut targets, player, bounds)),
+                RocketOwner::Mob(_) | RocketOwner::Nobody => None,
+            };
+            if let RocketOwner::Mob(id) = rocket.owner {
+                for target in targets.iter_mut().filter(|target| target.id == id) {
+                    target.owner = true;
+                    owner_box = Some((target.min, target.max));
+                }
+            }
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-                rocket.tick(&world)
+                rocket.tick(&world, &targets, owner_box)
             };
             for event in events {
                 match event {
@@ -12905,7 +12922,7 @@ mod tests {
         assert!(server.level.sounds.iter().any(|s| s.event == crate::firework::LAUNCH_SOUND && s.volume == 3.0));
         assert_eq!(server.firework_bursts.len(), 1);
         assert_eq!(server.firework_bursts[0].explosions, [crate::firework::Explosion::burst(2437522)]);
-        assert!((server.firework_bursts[0].position.y - 204.0).abs() < 1e-6);
+        assert!((server.firework_bursts[0].position.y - (204.0 - crate::firework_rocket::SIZE)).abs() < 1e-6, "its box stops under the roof");
         let hits = server.take_rocket_hits();
         assert_eq!(hits.len(), 1);
         assert_eq!((hits[0].player_id, hits[0].source), (4, Some(77)));
@@ -12913,6 +12930,54 @@ mod tests {
         assert!(hits[0].damage > 0.0 && hits[0].damage < 7.0);
         let hurt = server.mobs.illagers().iter().find(|e| e.id == pillager).map_or(0.0, |e| e.illager.health);
         assert!(hurt < health, "the pillager below is hurt too");
+    }
+
+    #[test]
+    fn a_villager_s_rocket_passes_its_villager_and_bursts_on_a_mob_or_a_player_in_its_path() {
+        use crate::firework::{Explosion, Fireworks};
+        use crate::firework_rocket::{Rocket, RocketOwner};
+        let Some((mut server, _)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        let summon = |server: &mut ServerSim, kind: &str, at: [f64; 3]| {
+            let before: Vec<u64> = server.mobs.mob_ids().collect();
+            server.summon(kind, at, None, 0.0).unwrap();
+            server.mobs.mob_ids().find(|id| !before.contains(id)).unwrap()
+        };
+        let hurts = |server: &ServerSim, id: u64| crate::client_mobs::server_mobs(&server.mobs).iter().find(|mob| mob.id == id).map_or(0, |mob| mob.hurts);
+        let red = || Fireworks { flight: 1, explosions: vec![Explosion::burst(11743532)] };
+        let villager = summon(&mut server, "minecraft:villager", [4.5, 202.0, 4.5]);
+        let zombie = summon(&mut server, "minecraft:zombie", [4.5, 206.0, 4.5]);
+        let other = summon(&mut server, "minecraft:villager", [12.5, 202.0, 4.5]);
+        let fly = |server: &mut ServerSim, x: f64, players: &[crate::thrown::PlayerBody]| {
+            let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+            server.rockets.push(Rocket::launch(RocketOwner::Mob(villager), glam::DVec3::new(x, 201.8, 4.5), red(), &mut random));
+            server.firework_bursts.clear();
+            let mut ticks = 0;
+            while !server.rockets.is_empty() && ticks < 40 {
+                server.tick_rockets(players);
+                ticks += 1;
+            }
+            assert_eq!(server.firework_bursts.len(), 1);
+            (ticks, server.firework_bursts[0].position)
+        };
+        let (ticks, at) = fly(&mut server, 4.5, &[]);
+        assert!(ticks < 20, "it bursts on the zombie before its time is up: {ticks}");
+        assert!(at.y > 205.5 && at.y < 206.5, "{at}");
+        assert_eq!(hurts(&server, zombie), 1);
+        let (ticks, at) = fly(&mut server, 12.5, &[]);
+        assert!(ticks <= 3, "another villager is in its path: {ticks}");
+        assert!(at.y < 202.2, "{at}");
+        assert_eq!(hurts(&server, other), 1);
+        server.take_rocket_hits();
+        let player = crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(20.5, 203.0, 4.5), alive: true, spectator: false };
+        let (ticks, at) = fly(&mut server, 20.5, &[player]);
+        assert!(ticks < 10, "{ticks}");
+        assert!(at.y > 202.7 && at.y < 203.3, "{at}");
+        let hits = server.take_rocket_hits();
+        assert_eq!(hits.iter().map(|hit| (hit.player_id, hit.source)).collect::<Vec<_>>(), [(4, Some(villager))]);
+        assert!(hits[0].damage > 6.5, "it bursts at the player's feet: {}", hits[0].damage);
     }
 
     #[test]
