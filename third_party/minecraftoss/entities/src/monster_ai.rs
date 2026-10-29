@@ -1754,6 +1754,7 @@ impl Goal<MonsterGoalContext> for FleeSunGoal {
 pub(crate) struct AvoidEntityGoal {
     kind: &'static str,
     also: &'static [&'static str],
+    matching: Option<fn(&str) -> bool>,
     max_dist: f64,
     walk: f64,
     sprint: f64,
@@ -1762,11 +1763,15 @@ pub(crate) struct AvoidEntityGoal {
 }
 impl AvoidEntityGoal {
     pub(crate) fn new(kind: &'static str, max_dist: f64, walk: f64, sprint: f64) -> Self {
-        Self { kind, also: &[], max_dist, walk, sprint, to_avoid: None, path: None }
+        Self { kind, also: &[], matching: None, max_dist, walk, sprint, to_avoid: None, path: None }
     }
 
     pub(crate) fn also(self, also: &'static [&'static str]) -> Self {
         Self { also, ..self }
+    }
+
+    pub(crate) fn matching(self, matching: fn(&str) -> bool) -> Self {
+        Self { matching: Some(matching), ..self }
     }
 }
 impl Goal<MonsterGoalContext> for AvoidEntityGoal {
@@ -1785,7 +1790,7 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
         let range = self.max_dist.max(2.0);
         let mut best: Option<(f64, TargetInfo)> = None;
         for m in ctx.mobs.clone() {
-            if m.kind != self.kind && !self.also.contains(&m.kind) {
+            if m.kind != self.kind && !self.also.contains(&m.kind) && !self.matching.is_some_and(|matches| matches(m.kind)) {
                 continue;
             }
             let mh = f64::from(m.width / 2.0);
