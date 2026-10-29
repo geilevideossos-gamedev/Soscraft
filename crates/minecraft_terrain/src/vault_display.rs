@@ -651,6 +651,6 @@ mod tests {
             one.vertices.len() * 3
         );
         let shiny = draw(&[view(1, 0.0, true)]);
-        assert_eq!(shiny.glint, [0..shiny.vertices.len() as u32]);
+        assert_eq!(shiny.glint, vec![0..shiny.vertices.len() as u32]);
     }
 }

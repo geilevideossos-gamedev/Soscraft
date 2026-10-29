@@ -522,7 +522,7 @@ mod tests {
             "minecraft:compass#minecraft:item/compass_16",
             "the plain compass keeps its own needle"
         );
-        assert_eq!(dials.watched, [key.clone()]);
+        assert_eq!(dials.watched, std::slice::from_ref(&key));
         assert_eq!(
             dials.key(&lost),
             "minecraft:compass#minecraft:item/compass_16",

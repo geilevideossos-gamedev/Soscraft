@@ -6528,7 +6528,7 @@ mod tests {
         let breaks: Vec<_> = sounds.iter().filter(|s| s.event == minecraftoss_entities::wither::BREAK_BLOCK_SOUND).collect();
         assert_eq!(breaks.len(), 1);
         assert_eq!((breaks[0].position, breaks[0].volume), (glam::DVec3::new(8.5, 200.5, 8.5), 2.0));
-        let obsidian: i32 = server.items().iter().filter(|item| item.item == "minecraft:obsidian").map(|item| i32::from(item.count)).sum();
+        let obsidian: i32 = server.items().iter().filter(|item| item.item == "minecraft:obsidian").map(|item| item.count).sum();
         assert_eq!(obsidian, 31, "the broken blocks drop");
     }
 

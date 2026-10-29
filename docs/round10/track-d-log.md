@@ -606,6 +606,21 @@ After 50782150.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket*2,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:totem_of_undying,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:cobblestone*64,minecraft:ladder*32,minecraft:water_bucket
 ```
 
+## Final verification
+
+Clippy and the tests of every crate the track touched (`git diff --stat r9-d5-base..HEAD`): `frame`, `hud`, `minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `minecraftoss-entities` and `minecraftoss-world`.
+
+### 1. Track D code passes clippy
+
+After e9ea905e.
+
+- **Clippy** (`clippy -p` on the eight crates, `--all-targets`, `-A clippy::approx_constant`): six warnings on lines the track added, all in `minecraft_terrain`; the older warnings stay. The vendored crates have none.
+  - `trial_spawner.rs`: three `unwrap_or_default` calls, which the workspace's `clippy.toml` forbids, now name their fallback (`unwrap_or_else(BTreeMap::new)` for a block entity tag that is not a compound, `unwrap_or_else(|_| Vec::new())` for a reward table that does not roll), as `vault.rs` does.
+  - Tests only: `dials.rs` (`cloned_ref_to_slice_refs`: `std::slice::from_ref`), `vault_display.rs` (`single_range_in_vec_init`: `vec!` as `item_frame.rs` does) and `server.rs`'s wither test (`useless_conversion`: the count is already `i32`).
+  - Clippy on `minecraft_terrain` again finds nothing on the track's lines. The track's new `.rs` files all pass `rustfmt --check`, and its added lines hold no comments.
+- **Tests:** none new; the same behaviour. `check -p launcher` passes.
+- **Test steps and kit:** none (no change in game).
+
 ## Protocol
 
 `minecraft_net::PROTOCOL` stays 6 (the release step bumps it).

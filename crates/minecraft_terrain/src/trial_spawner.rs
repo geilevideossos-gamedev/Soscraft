@@ -430,7 +430,7 @@ pub fn override_entity(pack: &DataPack, tag: &Tag, kind: &str) -> Tag {
         ominous: full.ominous.with_spawning(kind),
         ..full
     };
-    let mut map = tag.as_compound().cloned().unwrap_or_default();
+    let mut map = tag.as_compound().cloned().unwrap_or_else(BTreeMap::new);
     for key in RESET_STATE_DATA {
         map.remove(key);
     }
@@ -1291,7 +1291,7 @@ impl TrialWorld for LevelTrials<'_, '_> {
                 &mut level.random_sequences,
                 &mut level.random,
             )
-            .unwrap_or_default();
+            .unwrap_or_else(|_| Vec::new());
         let items = dispensing_list(stacks);
         self.dispensing.insert(key, items.clone());
         items
@@ -1504,7 +1504,7 @@ fn tick_at(
         },
     );
     if spawner.data != before {
-        let mut map = tag.as_compound().cloned().unwrap_or_default();
+        let mut map = tag.as_compound().cloned().unwrap_or_else(BTreeMap::new);
         spawner.data.write(&mut map);
         level.set_block_entity_tag(pos, Tag::Compound(map));
     }
