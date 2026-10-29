@@ -64,6 +64,7 @@ pub struct EntityView {
     ravager_roars: HashSet<u64>,
     fireworks: minecraft_terrain::firework_particles::FireworkParticles,
     firework_camera: DVec3,
+    family_seen: HashMap<u64, i32>,
 }
 
 impl EntityView {
@@ -115,6 +116,7 @@ impl EntityView {
             ravager_roars: HashSet::new(),
             fireworks: minecraft_terrain::firework_particles::FireworkParticles::new((seed ^ 0xf14e) as u64),
             firework_camera: DVec3::ZERO,
+            family_seen: HashMap::new(),
         }
     }
 
@@ -149,6 +151,7 @@ impl EntityView {
             self.fang_crits();
             self.ravager_effects();
             self.wither_effects();
+            minecraft_terrain::families::client_effects(&self.world, &self.client, &mut minecraft_terrain::families::ClientFx { ambient: &mut self.ambient, spell: &mut self.spell, portal: &mut self.portal, poof: &mut self.poof, sounds: &mut self.sounds, random: &mut self.random, seen: &mut self.family_seen });
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);
             self.drawn_fireballs.tick();
@@ -735,6 +738,9 @@ impl EntityView {
         for e in w.piglins().iter().filter(|e| e.piglin.health > 0.0) {
             add(MobHit::Piglin(e.id), &e.piglin.body);
         }
+        for (key, core) in w.family_cores().into_iter().filter(|(_, core)| core.alive() && !core.removed) {
+            add(MobHit::Family(key, core.id), &core.body);
+        }
         for e in w.shulkers().iter().filter(|e| e.shulker.health > 0.0) {
             let (low, high) = e.shulker.bounding_box();
             out.push((
@@ -1120,6 +1126,7 @@ impl EntityView {
             let _ = witch_render::append_witches(&mut mob, std::iter::once(e), poses, atlas, light, partial);
             minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, &mob);
         }
+        minecraft_terrain::families::draw_glowing(w, poses, atlas, light, partial, &|id| w.glowing(id), &mut |_, mob| minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, mob));
         shulker_render::append_shulkers(
             &mut out.models,
             w.shulkers().iter(),
@@ -1185,6 +1192,8 @@ impl EntityView {
             light,
             partial,
         );
+        let mut family_items = Vec::new();
+        families::draw(&mut families::FamilyDraw { models: &mut out.models, culled: &mut out.culled, translucent: &mut out.translucent, held: &mut family_items }, w, poses, atlas, light, partial);
         leash_render::append_knots(&mut out.models, &w.knots(), atlas, light);
         leash_render::append_ropes(
             &mut out.models,
@@ -1356,6 +1365,7 @@ impl EntityView {
             .chain(piglin_items)
             .chain(illager_items)
             .chain(vex_items)
+            .chain(family_items)
             .chain(placed_items.iter().cloned())
             .collect();
         let _ = self
@@ -1433,6 +1443,57 @@ mod tests {
     fn a_dragon_frozen_on_the_host_makes_no_flap_or_growl_on_the_client() {
         assert!(voices(false) > 0);
         assert_eq!(voices(true), 0);
+    }
+
+    #[test]
+    fn a_registered_mob_is_shot_by_its_family_hit_box() {
+        let mut view = EntityView::new(3);
+        let fish = view.world.spawn_family_kind("minecraft:silverfish", DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        let mite = view.world.spawn_family_kind("minecraft:endermite", DVec3::new(3.5, 64.0, 0.5)).unwrap();
+        let boxes = view.boxes();
+        assert_eq!(boxes.len(), 2);
+        let (key, bounds) = boxes[0];
+        assert_eq!((key, key >> 56), (encode(MobHit::Family(36, fish)), 36));
+        let expected = [0.3, 64.0, 0.3, 0.7, 64.0 + f64::from(0.3_f32), 0.7];
+        assert!(bounds.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6), "{bounds:?}");
+        assert_eq!(decode(boxes[1].0), Some(MobHit::Family(37, mite)));
+        assert_eq!(view.shot_boxes(Some(mite)).len(), 1, "the mob a player rides is never shot");
+        let hit = decode(key).unwrap();
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        let mut actor = minecraft_terrain::mob_actions::Actor { player: 0, inventory: &mut inventory, selected: 0, infinite: false, entity_loot: None, shearing_loot: None };
+        let shot = minecraftoss_entities::world::PlayerAttack { player_id: 0, position: DVec3::new(0.5, 64.0, -3.0), yaw: 0.0, attack_damage: 3.0, strength: 1.0, sprinting: false, can_critical: false, can_sweep: false };
+        assert!(minecraft_terrain::mob_actions::attack(&mut view.world, hit, &mut actor, &shot).handled);
+        let core = view.world.family_core(fish).unwrap().1;
+        assert!(core.health < 8.0 && core.damage.hurts > 0, "the bullet hurts it: {}", core.health);
+        view.world.family_core_mut(fish).unwrap().1.health = 0.0;
+        assert_eq!(view.boxes().iter().map(|(key, _)| decode(*key)).collect::<Vec<_>>(), [Some(MobHit::Family(37, mite))], "a dead mob is not shot");
+        view.world.family_core_mut(mite).unwrap().1.removed = true;
+        assert!(view.boxes().is_empty(), "nor one that left");
+    }
+
+    #[test]
+    fn a_glowing_registered_mob_is_outlined() {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        let mut view = EntityView::new(5);
+        let lit = view.world.spawn_family_kind("minecraft:silverfish", DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        let dark = view.world.spawn_family_kind("minecraft:endermite", DVec3::new(3.5, 64.0, 0.5)).unwrap();
+        view.world.add_mob_effect(lit, EffectInstance::new(MobEffect::Glowing, 60, 0));
+        assert!(view.world.glowing(lit) && !view.world.glowing(dark));
+        view.show_mobs(server_mobs(&view.world));
+        let packs = PackStack::open(Vec::new()).unwrap();
+        let atlas = minecraft_terrain::mesh::make_atlas(&packs, Vec::new()).unwrap();
+        let light = SkyLight::from_levels((0, 0, 0), (1, 1, 1), vec![15], vec![0]);
+        let meshes = view.meshes(&HandcraftedScene::default(), &packs, &atlas, &light, Vec3::Z, DVec3::new(0.5, 65.0, -4.0), 0, &|_| true, &[]);
+        let mut outlined = Vec::new();
+        let (mut glow, mut cover) = (minecraft_terrain::mesh::ChunkMesh::default(), minecraft_terrain::mesh::ChunkMesh::default());
+        let world = &view.world;
+        minecraft_terrain::families::draw_glowing(world, &view.client, &atlas, &light, view.partial(), &|id| world.glowing(id), &mut |id, mob| {
+            outlined.push(id);
+            minecraft_terrain::glow_render::append_glowing(&mut glow, &mut cover, mob);
+        });
+        assert_eq!(outlined, [lit], "only the glowing one is outlined");
+        let positions = |mesh: &minecraft_terrain::mesh::ChunkMesh| mesh.vertices.iter().map(|v| v.position).collect::<Vec<_>>();
+        assert_eq!((positions(&meshes.glow), positions(&meshes.glow_cover)), (positions(&glow), positions(&cover)));
     }
 
     #[test]

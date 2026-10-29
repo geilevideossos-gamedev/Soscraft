@@ -659,6 +659,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     if packs.texture(&wings)?.is_some() {
         textures.insert(wings, ());
     }
+    for texture in crate::families::textures() {
+        textures.insert(ResourceId::parse(texture)?, ());
+    }
     for chunk in scene.chunks() {
         for x in chunk.0 * 16..chunk.0 * 16 + 16 {
             for z in chunk.1 * 16..chunk.1 * 16 + 16 {

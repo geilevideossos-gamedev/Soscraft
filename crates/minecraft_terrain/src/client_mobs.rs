@@ -1330,6 +1330,9 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         if ravagers.contains(&mob.id) {
             mob.max_head_y_rot = minecraftoss_entities::ravager::MAX_HEAD_Y_ROT;
         }
+        if let Some(turn) = crate::families::max_head_y_rot(world, mob.id) {
+            mob.max_head_y_rot = turn;
+        }
         mob.resting = resting_bats.contains(&mob.id);
         if let Some(damage) = world.damage_state(mob.id) {
             mob.hurts = damage.hurts;
@@ -1375,6 +1378,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.striders().iter().map(|e| (e.id, crate::strider_render::shadow_radius(e.strider.age.baby()))));
     kinds.extend(world.hoglins().iter().map(|e| (e.id, crate::hoglin_render::shadow_radius(e.hoglin.is_baby()))));
     kinds.extend(world.piglins().iter().map(|e| (e.id, 0.5 * age(e.piglin.is_baby()))));
+    crate::families::shadows(world, &mut kinds);
     kinds
         .into_iter()
         .filter_map(|(id, radius)| {

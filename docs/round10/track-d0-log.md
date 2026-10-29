@@ -336,3 +336,76 @@ After 2842608b.
 - **Tests:** none (spacing only). **Runs:** `check -p launcher --locked` green.
 - **Decision:** a separate commit instead of an amend, because the track's rule is no amending.
 - **Test steps:** none (no change in the game).
+
+## Group registry-draw
+
+### 1. Registered Minecraft mobs are drawn, shot and used through one registry
+
+After 2a325d3c.
+
+- **Changed (`minecraft_terrain`, D0-5.3 and D0-6.1):**
+  - Root `families.rs`:
+    - `FamilyDraw { models, culled, translucent, held }` and `ClientFx { ambient, spell, portal, poof, sounds, random, seen }`.
+    - `TerrainFamily` gains `TEXTURES` and `SHADOW_RADIUS` (no default), `MAX_HEAD_Y_ROT` (75) and `CAGE_MARGIN` (0.05), `draw` (no default), `interact` (default: pass) and `client_effects` (default: nothing).
+    - `terrain_group!` and the root gain `textures`, `draw`, `draw_glowing`, `shadows`, `max_head_y_rot`, `cage_margin`, `interact` and `client_effects`, plus the root `knows(kind)`.
+  - `client_mobs`: the head-turn tweaks ask `families::max_head_y_rot(world, id)` after the ravagers, and `shadow_casters` ends with `families::shadows` (`SHADOW_RADIUS`, halved for babies, none for a mob that left).
+  - `mesh.rs` `build_internal`: one `for texture in crate::families::textures()` after the elytra wings.
+  - `spawner_display`: `Shown::build` takes `DRAWN_KINDS` or `families::knows(kind)`, and the draw match has one `kind if families::knows(kind)` arm before `_ => {}`.
+  - `mob_actions::interact`: a `MobHit::Family(key, id)` arm before `_ => return outcome` hands the click to `families::interact`.
+  - `keyframes.rs`: `install(jar) -> bool` (the first call wins) and `shared() -> &'static AnimationLibrary`.
+  - Glue: the silverfish (`minecraft:entity/silverfish/silverfish`) and the endermite (`minecraft:entity/endermite/endermite`) give their textures and a shadow of 0.3. Their `draw` adds nothing yet; group silverfish-drawn ports the models.
+- **Changed (`minecraft_survival`):**
+  - `entities.rs` `decode`: any byte with `families::has_key` gives `MobHit::Family(byte, id)`, so MW2 bullets, blasts and a friend's shots reach registered mobs.
+  - `entity_view.rs`:
+    - `boxes` has one generic loop of living registered cores (`MobHit::Family(key, id)`).
+    - `meshes` makes one `families::draw` call after the felines, with its held items chained after the vexes'.
+    - One `families::draw_glowing` pass after the witches' glow loop, which hands each glowing registered mob to `glow_render::append_glowing`.
+    - `advance` makes one `families::client_effects` call after `wither_effects`, with a `ClientFx` built from the view's particles, sounds, random and the new `family_seen` map.
+- **Changed (`render_anim`):** `minecraft_world::load_look` calls `minecraft_terrain::keyframes::install(data_jar())` first. Both the host's world load and the friend's `prepare` run `load_look`, so host and friend install the same jar.
+- **Tests added:**
+  - In terrain `families::tests` (new file):
+    - `a_registered_mob_is_tracked_textured_and_shadowed_through_its_family`: textures, `knows`, `cage_margin` with or without `minecraft:`, the head turn in `server_mobs`, shadows of 0.3 and 0.15 for a baby, and none once removed.
+    - `a_glowing_registered_mob_is_drawn_alone_for_its_outline`: only the glowing ids, in store order, each with exactly its own draw, and none once removed.
+    - `a_click_on_a_registered_mob_passes_unless_its_family_takes_it`: the silverfish passes, an unknown key passes, a lead in hand stays, and `would_interact` is false.
+    - `client_effects_forget_registered_mobs_that_are_gone`.
+  - `spawner_display::tests::every_registered_kind_is_shown_inside_its_cage`: every registered kind gets a display in its own world, inside the cage within its `CAGE_MARGIN`, and turns with the spin once it draws.
+  - `keyframes::tests::the_shared_library_reads_after_install_and_says_why_before`: before install it says "no client jar"; the first install takes and a second does not; with `MINECRAFTOSS_ROOT` it reads `WardenAnimation` once and `BatAnimation`.
+  - In survival:
+    - `entities::tests::every_registered_family_hit_key_encodes_and_decodes`: every `has_key` byte is above 35, round-trips and is no crystal, fireball, bullet, frame or End key. 38 and the probe's 39 decode to nothing.
+    - `entity_view::tests::a_registered_mob_is_shot_by_its_family_hit_box`: the silverfish's box is 0.4 x 0.3 under key 36 and the endermite's is under key 37. A ridden mob is left out of `shot_boxes`. The decoded hit hurts it through `mob_actions::attack`. A dead or removed mob has no box.
+    - `entity_view::tests::a_glowing_registered_mob_is_outlined`: `meshes` outlines the silverfish with the Glowing effect and not the endermite without it, exactly as `draw_glowing` with `w.glowing` does.
+- **javap this round:** `SilverfishRenderer` and `EndermiteRenderer` both call `MobRenderer(context, model, 0.3F)`, use `getFlipDegrees` 180 and take their textures from `textures/entity/silverfish/silverfish.png` and `textures/entity/endermite/endermite.png`.
+- **Decisions:**
+  - **Where the glow loop lives.** `entity_view` cannot name each family's type, so the generic loop is `families::draw_glowing` in terrain, called once beside the per-kind loops. It draws each glowing registered mob alone (`std::slice::from_ref`) and merges its models, culled and translucent output into one mesh, so the hull is one box around the whole model. Held items get no outline, as in the illager loop. Mobs that left are skipped.
+  - **Shadows before models.** The silverfish and endermite shadows show from this commit on, while the models come with group silverfish-drawn. The shadow is the vanilla renderer's, so the owner can see where the mobs are.
+  - **Clicks on registered mobs.** The `MobHit::Family` arm sets `outcome.handled` to the family's answer and returns at once. The family sets `inventory_changed`, `mount` and the other fields itself; the shared tail, which marks every handled click as an inventory change, does not run for it.
+  - **The keyframe holder.** `shared()` before any install hands out a separate empty library, so an early call never takes the slot that `install` fills. `install` returns whether it took; `load_look` ignores the answer, because a second world opened in the same run keeps the first jar.
+  - **Placement.**
+    - The `boxes` loop sits after the piglins and before the shulkers, the last user of the `add` closure (the shulker loop pushes to `out` directly).
+    - The `meshes` draw sits after the felines (the last mob draw before the leashes), the glow pass after the witches' glow loop, and the held items after the vexes'.
+    - `client_effects` comes after `wither_effects`.
+  - **No held items in cages.** The spawner display's arm passes a throwaway held list, as its other arms drop their held items.
+  - **`ClientFx.seen`** is cleared of mobs that are gone before the families run, so it never grows.
+  - The look-tag test named in D0-9.4 (`a_registered_look_tag_drops_only_its_own_volatile_keys`) landed with group registry-client (2842608b).
+- **Left for later:**
+  - **Geometry checks.** Silverfish and endermites draw nothing until group silverfish-drawn, so the cage test and both glow tests compare against each family's own (empty) draw. Group silverfish-drawn should add non-empty asserts for the two kinds there.
+  - **Unused hooks.** `client_effects` (the endermite's portal particles), `interact` and `FamilyDraw.held` have no family that uses them yet; the first family that does adds its test (D0-9.4).
+  - Moving the bat to `BatAnimation` (optional, round 9 leftover) is not done.
+- **Protocol:** no message or codec change.
+- **Runs:**
+  - `test -p minecraft_terrain --locked --lib`: 1404 passed, 3 ignored.
+  - `test -p minecraft_survival --locked`: 764 + 1 passed.
+  - `test -p render_anim --locked --lib`: 212 passed.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - The new and changed new files pass `rustfmt --check --edition 2021` with empty output.
+- **Test steps** (the silverfish and endermite models come with group silverfish-drawn; until then each shows as a small round shadow on the ground). Release build, survival, Normal, by day, flat open ground in the Overworld. Step 4 needs two windows (`scripts\mp-local.ps1`). Name each screenshot by its label, `D0-10-1.png`, and for both windows `D0-10-4-host.png` and `D0-10-4-friend.png`.
+  1. Use a silverfish egg on the ground 5 blocks away. A small round shadow slides over the ground towards you, and you take bites of half a heart. **Screenshot D0-10-1** with the shadow in view.
+  2. Shoot the ground where the shadow is with the M4A1. After a few hits the bites stop, the shadow is gone and experience orbs drop there.
+  3. Use an endermite egg and shoot its shadow the same way: it dies and leaves experience.
+  4. Two windows: the host uses a silverfish egg next to the friend. Both windows show the shadow. The friend shoots it with the M4A1: in both windows the shadow goes and the orbs drop. **Screenshots D0-10-4-host and D0-10-4-friend** before the shot.
+  5. Hold a lead and right-click where a silverfish's shadow is: nothing happens and the lead stays in your hand. Right-click a cow with wheat: it eats and shows hearts as before.
+  6. Use a pillager egg and a zombie egg 8 blocks away. Shoot the pillager with a spectral arrow from the bow: it gets the white outline as before. Shoot both with the M4A1: they flash and die as before. **Screenshot D0-10-6** with the outlined pillager.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*4,minecraft:endermite_spawn_egg*4,minecraft:pillager_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:wheat*8,minecraft:lead*2,minecraft:bow,minecraft:spectral_arrow*16,minecraft:iron_sword,minecraft:cooked_beef*32
+```

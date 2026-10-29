@@ -2058,6 +2058,7 @@ pub(crate) fn decode(key: u64) -> Option<MobHit> {
         VEX_KEY => MobHit::Vex(id),
         RAVAGER_KEY => MobHit::Ravager(id),
         WITHER_KEY => MobHit::Wither(id),
+        kind if minecraftoss_entities::world::families::has_key(kind as u8) => MobHit::Family(kind as u8, id),
         _ => return None,
     })
 }
@@ -2445,6 +2446,24 @@ mod tests {
         let key = encode(MobHit::Wither(93));
         assert_eq!(key >> 56, 35);
         assert_eq!(decode(key), Some(MobHit::Wither(93)));
+    }
+
+    #[test]
+    fn every_registered_family_hit_key_encodes_and_decodes() {
+        use minecraftoss_entities::world::families::has_key;
+        let keys: Vec<u8> = (0..=255).filter(|&key| has_key(key)).collect();
+        assert!(keys.contains(&36) && keys.contains(&37), "{keys:?}");
+        for key in keys {
+            assert!(key > 35, "byte {key} belongs to an older mob");
+            let hit = MobHit::Family(key, 77);
+            let encoded = encode(hit);
+            assert_eq!(encoded >> 56, u64::from(key));
+            assert_eq!(decode(encoded), Some(hit));
+            assert_eq!((crystal_of(encoded), fireball_of(encoded), shulker_bullet_of(encoded), frame_of(encoded), end_target_of(encoded)), (None, None, None, None, None));
+        }
+        assert_eq!(decode((38 << 56) | 77), None, "a free byte of the pests group");
+        assert_eq!(decode((39 << 56) | 77), None, "the test probe lives only in the entity crate's own tests");
+        assert_eq!(decode(encode(MobHit::Wither(77))), Some(MobHit::Wither(77)));
     }
 
     #[test]
