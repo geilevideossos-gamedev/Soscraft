@@ -575,3 +575,22 @@ After 60216c2f.
 
 - **Defect:** the "Vendored files" list said 23 added files, but it names 22 (13 in the entities crate, 9 in the world crate), which is also what `git diff --diff-filter=A r10-d0a-base` shows. The patched count (15) was right.
 - **Changed:** the count. **Tests:** none (docs only). **Test steps:** none.
+
+## Final test run
+
+Commit: "Track D0 log records the final test run and the combined kit", after 1bde398f. Log only.
+
+- **Touched crates** (`git diff --stat r10-d0a-base..HEAD`): `minecraftoss-entities`, `minecraftoss-world`, `minecraft_terrain`, `minecraft_survival`, `render_anim`.
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render_anim -p minecraftoss-entities -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant` exits 0. No warning points at a line the track added (every warning location checked against `git diff -U0 r10-d0a-base..HEAD`); the remaining warnings in the touched files are on older lines (`git blame` gives the base). The two vendored crates show none.
+- **Tests** on the code of 1bde398f, `test -p <crate> --locked` for each touched crate, all passed: `minecraftoss-world` 107, `minecraftoss-entities` 420 (every `check_*` bin builds), `minecraft_terrain` 1412 (3 ignored), `minecraft_survival` 766 + 1, `render_anim` 212.
+- **Checks:** every file the track added passes `rustfmt --check` with empty output at its crate's edition (2021 for `minecraft_terrain` and the entities crate, 2024 for the world crate), and no added line holds a comment.
+- **Fixes:** none needed.
+- **Owner's test steps:** none new; the steps of each commit above stand, with the combined kit below.
+
+## Combined kit
+
+27 stacks. It holds everything the steps of 757bfed8 to 1bde398f need (the silverfish and endermites, the spawner and stone brick steps, the bed and the friend steps), plus the shield, the arrows, the TNT, the harming potion and the golem and enderman eggs of the earlier steps. The earlier regression steps (9eecb2ff to bdbc8852) also use items this kit lacks, such as the skeleton, spider, wolf, horse, strider, cave spider, evoker and sheep eggs, bones, a saddle, the warped fungus on a stick, a water or milk bucket and stone: use that commit's own kit line, or `/give @s <id> <count>` for each. The class loadout's M4A1 is used as well.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*16,minecraft:endermite_spawn_egg*8,minecraft:spawner*3,minecraft:stone_bricks*64,minecraft:stone_bricks*64,minecraft:andesite*64,minecraft:andesite*64,minecraft:torch*64,minecraft:zombie_spawn_egg*4,minecraft:creeper_spawn_egg*2,minecraft:cow_spawn_egg*4,minecraft:villager_spawn_egg*2,minecraft:pillager_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:wheat*8,minecraft:lead*2,minecraft:bow,minecraft:arrow*64,minecraft:spectral_arrow*16,minecraft:iron_sword,minecraft:shield,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:splash_potion@harming,minecraft:white_bed,minecraft:cooked_beef*32
+```
