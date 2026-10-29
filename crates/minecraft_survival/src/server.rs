@@ -738,7 +738,7 @@ impl Server {
                         entities.drop_given(stack, feet);
                     }
                 }
-                crate::level::leave(level, uuid);
+                crate::level::leave(level, uuid, Some(u64::from(player.id.0)));
                 dropped
             }
             None => player.close_menu(),

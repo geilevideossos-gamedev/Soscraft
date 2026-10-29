@@ -568,6 +568,7 @@ pub(crate) fn movement(
                     &globals.registries,
                     (shapes, shape_ids, level),
                     entities,
+                    Some(u64::from(client.0)),
                     frozen
                         .into_iter()
                         .map(|(pos, block)| (pos, scene_block(&block)))
@@ -591,6 +592,7 @@ pub(crate) fn movement(
                     &globals.registries,
                     (shapes, shape_ids, level),
                     entities,
+                    Some(u64::from(client.0)),
                     writes,
                 );
                 entities.destroyed.extend(gone);
@@ -704,6 +706,7 @@ impl Body for MwBody<'_> {
             self.registries,
             (self.shapes, self.shape_ids, self.level),
             entities,
+            Some(u64::from(self.client.0)),
             writes,
         );
     }
@@ -1463,7 +1466,7 @@ fn leave_level(player: &mut Player, level: &mut Level) {
             }
         }
     }
-    minecraft_survival::level::leave(level, &player.uuid);
+    minecraft_survival::level::leave(level, &player.uuid, Some(u64::from(player.id.0)));
     let Player {
         survival,
         hand,

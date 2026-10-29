@@ -21,6 +21,8 @@ use minecraftoss_player::survival::EffectKind;
 mod combat;
 mod merchants;
 mod emissions;
+mod game_events;
+pub use game_events::MobGameEvent;
 mod endermen;
 mod golems;
 mod wolves;
@@ -2571,6 +2573,7 @@ pub struct EntityWorld {
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
     sounds: Vec<MobSound>,
+    game_events: Vec<MobGameEvent>,
     /// The `mob_drops` game rule.
     mob_drops: bool,
     /// The living mobs and players by entity section, for pushing.
@@ -2707,6 +2710,7 @@ impl Default for EntityWorld {
             sea_level: 63,
             difficulty: 2,
             sounds: Vec::new(),
+            game_events: Vec::new(),
             mob_drops: true,
             sections: pushing::Sections::default(),
             pushing_players: Vec::new(),
@@ -5713,6 +5717,7 @@ impl EntityWorld {
             sea_level: self.sea_level,
             difficulty: 2,
             sounds: Vec::new(),
+            game_events: Vec::new(),
             mob_drops: self.mob_drops,
             sections: self.sections.clone(),
             pushing_players: self.pushing_players.clone(),

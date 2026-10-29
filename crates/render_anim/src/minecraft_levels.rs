@@ -232,6 +232,7 @@ fn tick_level(
                 &registries,
                 shaping,
                 entities,
+                None,
                 writes,
             );
         }
@@ -272,12 +273,12 @@ fn tick_level(
     if let Some(entities) = level.entities.as_mut() {
         let scene = &level.terrain.scene;
         events.retain(|event| match *event {
-            VoxelEvent::Shot { block, .. } => {
+            VoxelEvent::Shot { block, attacker, .. } => {
                 let pos = (block[0], block[1], block[2]);
                 let egg =
                     Scene::block(scene, pos).is_some_and(minecraft_terrain::dragon_egg::is_egg);
-                if egg {
-                    entities.attack_block(scene, pos);
+                if let Some(id) = credit(attacker).filter(|_| egg) {
+                    entities.attack_block(id, scene, pos);
                 }
                 !egg
             }

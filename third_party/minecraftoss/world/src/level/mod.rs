@@ -17,6 +17,7 @@ pub mod entity;
 pub mod explosion;
 pub mod falling;
 pub mod fire;
+pub mod game_event;
 pub mod golem_build;
 pub mod wither_build;
 pub mod grow;
@@ -205,6 +206,8 @@ pub struct Level<'a> {
     pub frame_outputs: HashMap<BlockPos, Vec<(Direction, i32)>>,
     pub chest_openers: HashMap<BlockPos, i32>,
     pub level_events: Vec<(i32, BlockPos, i32)>,
+    pub game_events: Vec<game_event::GameEvent>,
+    pub acting_player: Option<u64>,
     pub bell_rings: Vec<(BlockPos, Direction)>,
     /// Entity-ticking chunks in vanilla's iteration order, when known.
     pub ticking_chunks: Option<Vec<ChunkPos>>,
@@ -301,6 +304,8 @@ impl<'a> Level<'a> {
             frame_outputs: HashMap::new(),
             chest_openers: HashMap::new(),
             level_events: Vec::new(),
+            game_events: Vec::new(),
+            acting_player: None,
             bell_rings: Vec::new(),
             ticking_chunks: None,
             random_counts: Default::default(),

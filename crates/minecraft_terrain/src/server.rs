@@ -118,6 +118,8 @@ pub struct ServerSim {
     rockets: Vec<crate::firework_rocket::Rocket>,
     firework_bursts: Vec<crate::firework_rocket::Burst>,
     rocket_hits: Vec<minecraftoss_entities::world::PlayerHit>,
+    vibrations: crate::vibrations::Vibrations,
+    event_tags: Arc<crate::game_events::EventTags>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -405,6 +407,10 @@ impl ServerSim {
         level.defer_tnt_blasts = true;
         let dragon_fight_level = minecraftoss_core::ident::Identifier::parse(dimension_type).ok().and_then(|id| level.registries().datapack.read_json("dimension_type", &id).ok()).is_some_and(|json| json.get("has_ender_dragon_fight").and_then(|flag| flag.as_bool()).unwrap_or(false));
         let mob_tables = crate::server_mobs::MobTables::new(&level, &states);
+        let event_tags = crate::game_events::EventTags::load(level.registries()).unwrap_or_else(|e| {
+            eprintln!("vibration tags unavailable: {e}");
+            crate::game_events::EventTags::default()
+        });
         // Natural spawning, when the entity catalog can create mobs.
         if level.registries().entities.is_some() {
             match minecraftoss_world::natural_spawner::CreatureSpawns::load(worldgen.terrain.registries.clone(), dimension_type, false) {
@@ -491,6 +497,8 @@ impl ServerSim {
             rockets: Vec::new(),
             firework_bursts: Vec::new(),
             rocket_hits: Vec::new(),
+            vibrations: crate::vibrations::Vibrations::default(),
+            event_tags: Arc::new(event_tags),
         }
     }
 
@@ -861,6 +869,7 @@ impl ServerSim {
         crate::containers::leave_to_client(&mut copy.block_entities);
         self.level.insert_chunk(copy);
         self.gateways.load_chunk(chunk);
+        self.load_listeners(chunk);
         if !fresh {
             return;
         }
@@ -902,6 +911,122 @@ impl ServerSim {
             let old = self.mobs.pois.kind((x, y, z));
             self.mobs.pois.block_changed((x, y, z), old, new);
             self.gateways.sync((x, y, z), crate::end_gateway::tag_at(&self.level, (x, y, z)));
+            self.sync_listener((x, y, z));
+        }
+    }
+
+    fn load_listeners(&mut self, chunk: &Chunk) {
+        for (&pos, tag) in &chunk.block_entities.entities {
+            if let Some(kind) = tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).and_then(crate::vibrations::Kind::of) {
+                self.vibrations.add(pos, kind, Some(tag));
+            }
+        }
+    }
+
+    fn sync_listener(&mut self, pos: BlockPos) {
+        let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        let tag = self.level.chunk(at.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&pos));
+        match tag.and_then(|tag| tag.get("id")).and_then(minecraftoss_core::nbt::Tag::as_str).and_then(crate::vibrations::Kind::of) {
+            Some(kind) => self.vibrations.add(pos, kind, tag),
+            None => {
+                self.vibrations.remove(pos);
+            }
+        }
+    }
+
+    pub fn listeners(&self) -> &crate::vibrations::Vibrations {
+        &self.vibrations
+    }
+
+    fn acting<T>(&mut self, player: Option<u64>, act: impl FnOnce(&mut Self) -> T) -> T {
+        let before = std::mem::replace(&mut self.level.acting_player, player);
+        let done = act(self);
+        self.level.acting_player = before;
+        done
+    }
+
+    fn hear_game_events(&mut self, input: &mut TickInput, before: i64, normal: bool) {
+        if self.vibrations.is_empty() {
+            input.game_events.clear();
+            self.level.game_events.clear();
+            self.mobs.take_game_events();
+            return;
+        }
+        let players: Vec<(u64, bool, bool)> = input.mob_players.iter().map(|p| (p.id, input.controls.iter().any(|c| c.id == p.id && c.sneaking), p.spectator)).collect();
+        let mut posted: Vec<(crate::game_events::Posted, Option<BlockPos>)> = Vec::new();
+        for event in std::mem::take(&mut input.game_events) {
+            let source = self.player_source(event.player, &players);
+            let dampened = self.named_block_dampens(event.affected.as_deref());
+            let uuid = Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + event.player));
+            let posted_event = crate::game_events::Posted { source_uuid: uuid, dampened, ..crate::game_events::Posted::new(event.event, glam::DVec3::from_array(event.pos), before).by(source) };
+            posted.push((posted_event, None));
+        }
+        for event in self.level.take_game_events() {
+            let (source, source_uuid) = event.source.map(|source| self.event_source(source, &players)).unzip();
+            let (owner, owner_uuid) = event.owner.map(|owner| self.event_source(owner, &players)).unzip();
+            let dampened = event.affected.is_some_and(|state| self.event_tags.block_dampens(self.level.registries(), state));
+            let forced = event.forced_to.map(|pos| (pos.x, pos.y, pos.z));
+            let posted_event = crate::game_events::Posted { source, source_uuid: source_uuid.flatten(), owner, owner_uuid: owner_uuid.flatten(), dampened, ..crate::game_events::Posted::new(event.event, glam::DVec3::from_array(event.pos), event.tick) };
+            posted.push((posted_event, forced));
+        }
+        let now = self.level.game_time;
+        for event in self.mobs.take_game_events() {
+            let (source, source_uuid) = event.mob.map(|id| self.event_source(Self::mob_or_player(id), &players)).unzip();
+            let owner = event.owner.map(|id| self.event_source(Self::mob_or_player(id), &players));
+            let posted_event = crate::game_events::Posted {
+                source,
+                source_uuid: source_uuid.flatten(),
+                owner: owner.map(|(owner, _)| owner),
+                owner_uuid: owner.and_then(|(_, uuid)| uuid),
+                dampened: self.named_block_dampens(event.affected.as_deref()),
+                ..crate::game_events::Posted::new(event.event, event.pos, now)
+            };
+            posted.push((posted_event, None));
+        }
+        let tags = self.event_tags.clone();
+        let Self { vibrations, level, .. } = self;
+        let mut hearing = Hearing { level, tags: &tags };
+        for (event, forced) in &posted {
+            match forced {
+                Some(pos) => {
+                    vibrations.force(*pos, event, &mut hearing);
+                }
+                None => vibrations.post(&tags, event, &mut hearing),
+            }
+        }
+        if normal {
+            vibrations.tick(now, &mut hearing);
+        }
+    }
+
+    fn named_block_dampens(&self, name: Option<&str>) -> bool {
+        let registries = self.level.registries();
+        name.and_then(|name| registries.blocks.block_by_name(name)).map(|block| registries.blocks.block(block).default_state()).is_some_and(|state| self.event_tags.block_dampens(registries, state))
+    }
+
+    fn mob_or_player(id: u64) -> minecraftoss_world::level::game_event::EventSource {
+        use minecraftoss_world::level::game_event::EventSource;
+        crate::thrown::struck_player(id).map_or(EventSource::Mob(id), EventSource::Player)
+    }
+
+    fn player_source(&self, id: u64, players: &[(u64, bool, bool)]) -> crate::game_events::Source {
+        let (sneaking, spectator) = players.iter().find(|player| player.0 == id).map_or((false, false), |player| (player.1, player.2));
+        crate::game_events::Source::Player { id, sneaking, spectator }
+    }
+
+    fn event_source(&self, source: minecraftoss_world::level::game_event::EventSource, players: &[(u64, bool, bool)]) -> (crate::game_events::Source, Option<u128>) {
+        use minecraftoss_world::level::game_event::EventSource;
+        match source {
+            EventSource::Player(id) => (self.player_source(id, players), Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + id))),
+            EventSource::Mob(id) => (crate::game_events::Source::Mob { id }, Some(self.mobs.uuid_of(id))),
+            EventSource::Entity(id) => {
+                let item = self.level.entities.iter().find(|e| e.id == id).and_then(|e| e.item_data());
+                let source = match item {
+                    Some(item) => crate::game_events::Source::Item { id, dampens: self.event_tags.item_dampens(&item.stack.id) },
+                    None => crate::game_events::Source::Entity { id },
+                };
+                (source, None)
+            }
         }
     }
 
@@ -2260,6 +2385,7 @@ impl ServerSim {
         self.collect_block_entity_changes();
         self.save_chunk_entities(pos, true);
         self.level.remove_chunk(pos);
+        self.vibrations.remove_chunk(pos.x, pos.z);
         self.gateways.unload_chunk(pos);
         self.mobs.pois.unload_chunk(pos.x, pos.z);
     }
@@ -3376,6 +3502,49 @@ fn tag_uuid_at(tag: &minecraftoss_core::nbt::Tag, key: &str) -> Option<u128> {
     Some(minecraftoss_entities::gossip::uuid_from_ints([a, b, c, d]))
 }
 
+struct Hearing<'a, 'l> {
+    level: &'a mut Level<'l>,
+    tags: &'a crate::game_events::EventTags,
+}
+
+impl Hearing<'_, '_> {
+    fn ticking(&self, x: i32, z: i32) -> bool {
+        let chunk = ChunkPos::new(x, z);
+        self.level.chunk(chunk).is_some() && self.level.ticking_chunks.as_ref().is_none_or(|ticking| ticking.contains(&chunk))
+    }
+}
+
+impl crate::vibrations::User for Hearing<'_, '_> {
+    fn can_receive(&self, listener: &crate::vibrations::Listener, at: BlockPos, posted: &crate::game_events::Posted) -> bool {
+        if !listener.kind.is_sensor() {
+            return false;
+        }
+        let own = at == listener.pos && matches!(posted.event, crate::game_events::BLOCK_PLACE | crate::game_events::BLOCK_DESTROY);
+        !own && crate::game_events::frequency(posted.event) != 0
+    }
+
+    fn occludes(&self, (x, y, z): BlockPos) -> bool {
+        self.tags.block_occludes(self.level.registries(), self.level.block(minecraftoss_core::BlockPos::new(x, y, z)))
+    }
+
+    fn ticks(&self, (x, _, z): BlockPos) -> bool {
+        self.ticking(x >> 4, z >> 4)
+    }
+
+    fn neighbours_tick(&self, (x, _, z): BlockPos) -> bool {
+        (-1..=1).all(|dx| (-1..=1).all(|dz| self.ticking((x >> 4) + dx, (z >> 4) + dz)))
+    }
+
+    fn receive(&mut self, _: &crate::vibrations::Listener, _: &crate::vibrations::Info, _: BlockPos, _: f32) {}
+
+    fn particle(&mut self, _: glam::DVec3, _: glam::DVec3, _: i32) {}
+
+    fn changed(&mut self, listener: &crate::vibrations::Listener) {
+        let (x, y, z) = listener.pos;
+        self.level.set_block_entity_value(minecraftoss_core::BlockPos::new(x, y, z), crate::vibrations::LISTENER, listener.to_tag());
+    }
+}
+
 struct FrameLevel<'a, 'l>(&'a Level<'l>);
 
 impl crate::item_frame::FrameWorld for FrameLevel<'_, '_> {
@@ -3398,13 +3567,13 @@ pub enum Command {
     LoadChunk(Arc<Chunk>),
     UnloadChunk(ChunkPos),
     /// A block the client set, as the client scene now shows it.
-    PlayerEdit { pos: BlockPos, block: Option<Block>, edit: PlayerEdit },
-    PlayerBreaks(Vec<BlockPos>),
-    PlayerMines(Vec<(BlockPos, HowBroken)>),
-    UseBlock { pos: BlockPos, facing: &'static str },
-    RingBell { pos: BlockPos, face: &'static str },
-    BoneMeal { pos: BlockPos, face: &'static str },
-    Attack(BlockPos),
+    PlayerEdit { player: Option<u64>, pos: BlockPos, block: Option<Block>, edit: PlayerEdit },
+    PlayerBreaks { player: Option<u64>, positions: Vec<BlockPos> },
+    PlayerMines { player: u64, broken: Vec<(BlockPos, HowBroken)> },
+    UseBlock { player: u64, pos: BlockPos, facing: &'static str },
+    RingBell { player: u64, pos: BlockPos, face: &'static str },
+    BoneMeal { player: u64, pos: BlockPos, face: &'static str },
+    Attack { player: u64, pos: BlockPos },
     ItemOnBlock { player: u64, pos: BlockPos, action: ItemOnBlock },
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
     KeepDroppedContents { pos: BlockPos, item: String, components: String },
@@ -3455,7 +3624,7 @@ pub enum Command {
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
     FrameAction { player: u64, id: u64, action: crate::item_frame::FrameAction },
-    ChestOpeners { pos: BlockPos, count: u32 },
+    ChestOpeners { player: Option<u64>, pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
     LeashFence { player: u64, pos: BlockPos, sneaking: bool },
     ShieldBlock { attacker: u64, player: u64, feet: [f64; 3] },
@@ -3571,6 +3740,7 @@ pub struct TickInput {
     pub controls: Vec<minecraftoss_entities::controls::PlayerControls>,
     pub omens: Vec<(u64, PlayerOmens)>,
     pub view_distance: i32,
+    pub game_events: Vec<crate::game_events::PlayerEvent>,
 }
 
 impl TickInput {
@@ -3590,6 +3760,11 @@ impl TickInput {
         }
     }
 
+    pub fn carry_game_events(&mut self, older: &mut TickInput) {
+        let newer = std::mem::replace(&mut self.game_events, std::mem::take(&mut older.game_events));
+        self.game_events.extend(newer);
+    }
+
     pub fn remove_player(&mut self, player: u64) {
         self.players.retain(|p| p.id != player);
         self.mob_players.retain(|p| p.id != player);
@@ -3599,6 +3774,7 @@ impl TickInput {
         self.player_hurts.retain(|(id, _, _)| *id != player);
         self.controls.retain(|controls| controls.id != player);
         self.omens.retain(|(id, _)| *id != player);
+        self.game_events.retain(|event| event.player != player);
     }
 }
 
@@ -3738,20 +3914,20 @@ impl ServerHandle {
         self.send(Command::UnloadChunk(pos));
     }
 
-    pub fn player_edit(&mut self, scene: &HandcraftedScene, pos: BlockPos, edit: PlayerEdit) {
+    pub fn player_edit(&mut self, player: Option<u64>, scene: &HandcraftedScene, pos: BlockPos, edit: PlayerEdit) {
         let block = Scene::block(scene, pos).cloned();
-        self.send(Command::PlayerEdit { pos, block, edit });
+        self.send(Command::PlayerEdit { player, pos, block, edit });
     }
 
-    pub fn player_breaks(&mut self, positions: &[BlockPos]) {
+    pub fn player_breaks(&mut self, player: Option<u64>, positions: &[BlockPos]) {
         if !positions.is_empty() {
-            self.send(Command::PlayerBreaks(positions.to_vec()));
+            self.send(Command::PlayerBreaks { player, positions: positions.to_vec() });
         }
     }
 
-    pub fn player_mines(&mut self, broken: &[(BlockPos, HowBroken)]) {
+    pub fn player_mines(&mut self, player: u64, broken: &[(BlockPos, HowBroken)]) {
         if !broken.is_empty() {
-            self.send(Command::PlayerMines(broken.to_vec()));
+            self.send(Command::PlayerMines { player, broken: broken.to_vec() });
         }
     }
 
@@ -3761,28 +3937,28 @@ impl ServerHandle {
 
     /// `useWithoutItem` on a simulated block: true (and sent) when the level
     /// acts on the block the scene shows.
-    pub fn use_block(&mut self, scene: &HandcraftedScene, pos: BlockPos, facing: &'static str) -> bool {
+    pub fn use_block(&mut self, player: u64, scene: &HandcraftedScene, pos: BlockPos, facing: &'static str) -> bool {
         let handled = self.state_in(scene, pos).is_some_and(|s| self.uses.get(usize::from(s.0)).copied().unwrap_or(false));
         if handled {
-            self.send(Command::UseBlock { pos, facing });
+            self.send(Command::UseBlock { player, pos, facing });
         }
         handled
     }
 
     /// Bone meal on a clicked face; whether it was used arrives in an output.
-    pub fn bone_meal(&mut self, pos: BlockPos, face: &'static str) {
-        self.send(Command::BoneMeal { pos, face });
+    pub fn bone_meal(&mut self, player: u64, pos: BlockPos, face: &'static str) {
+        self.send(Command::BoneMeal { player, pos, face });
     }
 
-    pub fn ring_bell(&mut self, pos: BlockPos, face: &'static str) {
-        self.send(Command::RingBell { pos, face });
+    pub fn ring_bell(&mut self, player: u64, pos: BlockPos, face: &'static str) {
+        self.send(Command::RingBell { player, pos, face });
     }
 
     /// A player's attack; true (and sent) when the level acts on the block.
-    pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: BlockPos) -> bool {
+    pub fn attack_block(&mut self, player: u64, scene: &HandcraftedScene, pos: BlockPos) -> bool {
         let handled = self.state_in(scene, pos).is_some_and(|s| self.attacks.get(usize::from(s.0)).copied().unwrap_or(false));
         if handled {
-            self.send(Command::Attack(pos));
+            self.send(Command::Attack { player, pos });
         }
         handled
     }
@@ -3969,8 +4145,8 @@ impl ServerHandle {
         self.send(Command::FrameAction { player, id, action });
     }
 
-    pub fn chest_openers(&mut self, pos: BlockPos, count: u32) {
-        self.send(Command::ChestOpeners { pos, count });
+    pub fn chest_openers(&mut self, player: Option<u64>, pos: BlockPos, count: u32) {
+        self.send(Command::ChestOpeners { player, pos, count });
     }
 
     pub fn lectern(&mut self, player: u64, pos: BlockPos, action: crate::lectern::LecternAction) {
@@ -4051,27 +4227,27 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
             match command {
                 Command::LoadChunk(chunk) => sim.load_chunk(&chunk),
                 Command::UnloadChunk(pos) => sim.unload_chunk(pos),
-                Command::PlayerEdit { pos, block, edit } => sim.player_edit_block(pos, block.as_ref(), edit),
-                Command::PlayerBreaks(positions) => sim.player_breaks(&positions),
-                Command::PlayerMines(broken) => sim.player_mines(&broken),
-                Command::UseBlock { pos, facing } => {
-                    sim.use_block(pos, facing);
+                Command::PlayerEdit { player, pos, block, edit } => sim.acting(player, |sim| sim.player_edit_block(pos, block.as_ref(), edit)),
+                Command::PlayerBreaks { player, positions } => sim.acting(player, |sim| sim.player_breaks(&positions)),
+                Command::PlayerMines { player, broken } => sim.acting(Some(player), |sim| sim.player_mines(&broken)),
+                Command::UseBlock { player, pos, facing } => {
+                    sim.acting(Some(player), |sim| sim.use_block(pos, facing));
                     out.egg_teleports.extend(sim.take_egg_teleports());
                 }
-                Command::RingBell { pos, face } => {
-                    sim.ring_bell(pos, Some(face));
+                Command::RingBell { player, pos, face } => {
+                    sim.acting(Some(player), |sim| sim.ring_bell(pos, Some(face)));
                 }
-                Command::BoneMeal { pos, face } => {
-                    if sim.bone_meal(pos, face) {
+                Command::BoneMeal { player, pos, face } => {
+                    if sim.acting(Some(player), |sim| sim.bone_meal(pos, face)) {
                         out.bone_meal_used.push(pos);
                     }
                 }
-                Command::Attack(pos) => {
-                    sim.attack_block(pos);
+                Command::Attack { player, pos } => {
+                    sim.acting(Some(player), |sim| sim.attack_block(pos));
                     out.egg_teleports.extend(sim.take_egg_teleports());
                 }
                 Command::ItemOnBlock { player, pos, action } => {
-                    out.item_uses.push((player, sim.item_on_block_by(Some(player), pos, action)));
+                    out.item_uses.push((player, sim.acting(Some(player), |sim| sim.item_on_block_by(Some(player), pos, action))));
                 }
                 Command::SpawnItem { item, count, components, position, velocity, pickup_delay, age } => {
                     sim.spawn_item(&item, count, components.as_deref(), position, velocity, pickup_delay, age);
@@ -4145,7 +4321,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         out.item_uses.push((player, outcome.consumed));
                     }
                 }
-                Command::ChestOpeners { pos, count } => sim.set_chest_openers(pos, count),
+                Command::ChestOpeners { player, pos, count } => sim.acting(player, |sim| sim.set_chest_openers(pos, count)),
                 Command::Lectern { player, pos, action } => {
                     if let Some(placed) = sim.lectern(player, pos, action) {
                         out.item_uses.push((player, placed));
@@ -4163,6 +4339,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     Some((running, flags)) => {
                         let mut input = *input;
                         input.carry_omens(running);
+                        input.carry_game_events(running);
                         *running = input;
                         flags.extend(normal);
                     }
@@ -4200,6 +4377,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.save_all_entities();
     }
     sim.set_clocks(input.clocks);
+    let before = sim.level.game_time;
     sim.trackers.tick();
     sim.player_feet.extend(input.players.iter().map(|p| (p.id, p.feet)));
     let alive: Vec<[f64; 3]> = input.players.iter().filter(|p| p.alive).map(|p| p.feet).collect();
@@ -4257,6 +4435,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     } else {
         sim.tick_ridden_mobs(&input.mob_players, input.bright_outside);
     }
+    sim.hear_game_events(input, before, normal);
     out.dismounts.extend(sim.take_vehicle_losses());
     out.player_hits.extend(sim.take_end_hits());
     out.player_hits.extend(sim.take_rocket_hits());
@@ -11170,6 +11349,7 @@ mod tests {
             controls: Vec::new(),
             omens: Vec::new(),
             view_distance: 8,
+            game_events: Vec::new(),
         }
     }
 
@@ -11265,6 +11445,104 @@ mod tests {
             run_tick(sim, input, normal, &mut out);
         }
         out
+    }
+
+    const SENSOR: BlockPos = (8, 200, 8);
+
+    fn sensor_world(sensor: &str) -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut sim, mut scene) = frozen_sim()?;
+        for x in -4..21 {
+            for z in -4..21 {
+                place(&mut sim, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        place(&mut sim, &mut scene, SENSOR, Block::new(sensor));
+        Some((sim, scene))
+    }
+
+    fn walker_input(feet: [f64; 3]) -> TickInput {
+        TickInput { players: vec![standing(0, feet, false)], mob_players: vec![candidate(0, feet)], ..idle_input() }
+    }
+
+    fn step_of(player: u64, feet: [f64; 3]) -> crate::game_events::PlayerEvent {
+        crate::game_events::PlayerEvent { player, event: crate::game_events::STEP, pos: feet, affected: Some("minecraft:stone".to_owned()) }
+    }
+
+    fn travelling(sim: &ServerSim) -> Option<&'static str> {
+        sim.listeners().listener(SENSOR)?.current.as_ref().map(|info| info.event)
+    }
+
+    #[test]
+    fn a_player_s_step_reaches_a_sensor_s_listener_through_the_tick() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let feet = [12.5, 200.0, 8.5];
+        let mut input = walker_input(feet);
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(sim.listeners().listener(SENSOR).map(|listener| listener.kind), Some(crate::vibrations::Kind::Sensor));
+        input.game_events.push(step_of(0, feet));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(travelling(&sim), Some(crate::game_events::STEP), "a step from before the tick is picked in it");
+        let listener = sim.listeners().listener(SENSOR).unwrap();
+        assert_eq!(listener.travel, 3);
+        assert_eq!(listener.current.as_ref().and_then(|info| info.source_uuid), Some(sim.mobs.uuid_of(crate::thrown::PLAYER_TARGET)));
+        let saved = sim.command_block_entity(SENSOR).and_then(|tag| tag.get(crate::vibrations::LISTENER)).and_then(|listener| listener.get("event")).and_then(|event| event.get("game_event")).and_then(minecraftoss_core::nbt::Tag::as_str);
+        assert_eq!(saved, Some(crate::game_events::STEP), "the block entity saves the travelling vibration");
+        run_ticks(&mut sim, &mut input, true, 3);
+        assert_eq!(travelling(&sim), None, "received four blocks away after four ticks");
+        input.controls = vec![minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }];
+        input.game_events.push(step_of(0, feet));
+        run_ticks(&mut sim, &mut input, true, 2);
+        assert_eq!(travelling(&sim), None, "a sneaking step is not heard");
+        input.controls.clear();
+        input.game_events.push(step_of(0, [40.5, 200.0, 8.5]));
+        run_ticks(&mut sim, &mut input, true, 2);
+        assert_eq!(travelling(&sim), None, "too far for the sensor's eight blocks");
+        input.game_events.push(step_of(0, [15.5, 200.0, 8.5]));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(travelling(&sim), Some(crate::game_events::STEP));
+    }
+
+    #[test]
+    fn other_dimensions_never_hear() {
+        let Some((mut first, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let Some((mut second, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let feet = [12.5, 200.0, 8.5];
+        let (mut heard, mut quiet) = (walker_input(feet), walker_input(feet));
+        run_ticks(&mut first, &mut heard, true, 1);
+        run_ticks(&mut second, &mut quiet, true, 1);
+        heard.game_events.push(step_of(0, feet));
+        run_ticks(&mut first, &mut heard, true, 1);
+        run_ticks(&mut second, &mut quiet, true, 1);
+        assert_eq!(travelling(&first), Some(crate::game_events::STEP));
+        assert_eq!(travelling(&second), None);
+    }
+
+    #[test]
+    fn game_events_wait_in_a_replaced_tick_input_and_leave_with_their_player() {
+        let mut running = idle_input();
+        running.game_events = vec![step_of(0, [1.0; 3]), step_of(2, [2.0; 3])];
+        let mut newer = TickInput { game_events: vec![step_of(0, [3.0; 3])], ..idle_input() };
+        newer.carry_game_events(&mut running);
+        assert!(running.game_events.is_empty());
+        assert_eq!(newer.game_events.iter().map(|event| event.pos[0]).collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
+        newer.remove_player(2);
+        assert_eq!(newer.game_events.iter().map(|event| event.player).collect::<Vec<_>>(), vec![0, 0]);
+    }
+
+    #[test]
+    fn a_broken_sensor_stops_listening_and_its_chunk_takes_it_away() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:calibrated_sculk_sensor") else { return };
+        let mut input = walker_input([12.5, 200.0, 8.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(sim.listeners().listener(SENSOR).map(|listener| listener.kind), Some(crate::vibrations::Kind::CalibratedSensor));
+        take(&mut sim, &mut scene, SENSOR);
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert!(sim.listeners().listener(SENSOR).is_none());
+        place(&mut sim, &mut scene, SENSOR, Block::new("minecraft:sculk_shrieker"));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert_eq!(sim.listeners().listener(SENSOR).map(|listener| listener.kind), Some(crate::vibrations::Kind::Shrieker));
+        sim.unload_chunk(ChunkPos::new(0, 0));
+        assert!(sim.listeners().is_empty());
     }
 
     #[test]
@@ -12046,7 +12324,7 @@ mod tests {
         assert_eq!(lit(&closed, (8, 200, 9)), Some(false));
         assert_eq!(lit(&closed, (8, 198, 8)), Some(false));
         let mut handle = ServerHandle::spawn(server);
-        handle.chest_openers((8, 200, 8), 1);
+        handle.chest_openers(Some(0), (8, 200, 8), 1);
         handle.wait_idle();
         let sent: std::collections::HashMap<_, _> = handle.poll().into_iter().flat_map(|out| out.changes).collect();
         assert_eq!(lit(&sent, (8, 200, 9)), Some(true), "the command reaches the server thread");

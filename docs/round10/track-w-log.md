@@ -88,9 +88,49 @@ After the commit above (its subject: "Minecraft darkness closes in the fog like 
 IW4L_MINECRAFT_KIT=minecraft:milk_bucket,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:lava_bucket,minecraft:powder_snow_bucket,minecraft:torch*64,minecraft:cobblestone*64,minecraft:glass*16,minecraft:cooked_beef*32
 ```
 
+## Group vibrations
+
+### 1. Minecraft game events reach their listeners like vanilla
+
+After 4b09009f.
+
+- **Vanilla (javap on the 26.3 jar, and its data pack):**
+  - `GameEvent.<clinit>`: every event has radius 16 but `jukebox_play` and `jukebox_stop_play` (10) and `shriek` (32). `VibrationSystem.VIBRATION_FREQUENCY_FOR_EVENT` gives the frequencies of the brief (W2), `resonate_N` is N, everything else 0.
+  - Tags read from the data pack at load: game event `#vibrations`, `#warden_can_listen`, `#shrieker_can_listen`, `#ignore_vibrations_sneaking`, item `#dampens_vibrations`, block `#dampens_vibrations` and `#occludes_vibration_signals` (26.3 adds wool slabs and stairs to the dampening tags).
+  - `GameEventDispatcher.post`: the sections from `(x - r) >> 4` to `(x + r) >> 4` (r the event's radius) of loaded chunks, chunk x, then chunk z, then section y; a listener is in range when the squared distance between the block positions of event and listener is at most its own radius squared (`EuclideanGameEventListenerRegistry.getPostableListenerPosition`); `UNSPECIFIED` listeners handle it at once, `BY_DISTANCE` ones are sorted by distance (a stable sort) and handled after.
+  - `VibrationSystem$Listener.handleGameEvent`: nothing while a vibration travels; `isValidVibration` (the listenable tag; a spectator source never; a source stepping carefully with an event in `#ignore_vibrations_sneaking` never; a dampening source never; an affected state in block `#dampens_vibrations` never); `canReceiveVibration`; occlusion; then `scheduleVibration` adds `VibrationInfo(event, Vec3.distanceTo, pos, source)` to the selector at the game time.
+  - `isOccluded`: both ends moved to their block centres, then one `isBlockInLine` per `Direction.values()` (the start nudged `9.999999747378752e-6` along it); occluded only when every ray meets an `#occludes_vibration_signals` block. `traverseBlocks` tests the start block too.
+  - `VibrationSelector.shouldReplaceVibration` (**the brief was wrong here**): a candidate from another tick than the kept one never replaces it; in the same tick the nearer replaces, the farther does not, and at equal distance the higher frequency does. `chosenCandidate(now)` only hands over a candidate from before `now`.
+  - `VibrationSystem$Ticker.tick`: with no current vibration, the chosen candidate becomes it with `floor(distance)` travel ticks, the particle is sent and the selector starts over (`onDataChanged`); then the reloaded particle (after a load), the travel time counts down (`max(0, t - 1)`), and at 0 (sensors only with the 3 × 3 chunks around ticking) `onReceiveVibration(event pos, event, entity, projectile owner, distanceBetweenInBlocks)` and the vibration clears.
+  - Saved as `listener: {event?: {game_event, distance, pos, source?, projectile_owner?}, selector: {event?, tick}, event_delay}`; a loaded `Data` reloads its particle.
+- **Changed:**
+  - New `crates/minecraft_terrain/src/game_events.rs`: the event table, `Source` (player with its sneaking and spectator state, mob, item entity with its dampening, other entity), `Posted`, `PlayerEvent` (what a client tick hands the server), `EventTags` loaded from the data pack and the block tags, and `is_valid`.
+  - New `crates/minecraft_terrain/src/vibrations.rs`: listener kinds (sensor, calibrated sensor, shrieker, catalyst) by block entity id, `Info`, `Selector`, `Listener` with its NBT round trip, `Vibrations` (the listeners by position and by chunk section, `post`, `force` for `forceScheduleVibration`, `tick`), the `User` trait the level side answers, `occluded` with vanilla's block traversal and `redstone_strength`.
+  - New vendored `world/src/level/game_event.rs`: `Level::game_event`, `block_game_event`, `game_event_from` and `force_game_event` queue `GameEvent`s stamped with the game time; `Level.acting_player` is the source of `game_event`. `level/mod.rs` gains the two fields.
+  - New vendored `entities/src/world/game_events.rs`: `EntityWorld::game_event` and `take_game_events`.
+  - `TickInput.game_events` (from each player's `PlayerQueue.game_events`, filled by `Entities::game_event`): a tick input replacing a running batch keeps the older ones first (`carry_game_events`), `remove_player` drops a leaving player's, and `run_tick` takes them once.
+  - Commands with a player: `UseBlock`, `RingBell`, `BoneMeal`, `Attack` and `PlayerMines` gain `player: u64`; `PlayerEdit`, `PlayerBreaks` and `ChestOpeners` gain `player: Option<u64>`. The server loop sets `Level.acting_player` around every command that reaches the level (`ServerSim::acting`), `ItemOnBlock` included. The survival side and render_anim pass the acting player: `Body::write_blocks` of an MW2 body passes its client, `level::write_blocks` takes the player, `level::leave` takes the leaving player's id, menus pass the player whose screen opened or closed a trapped chest and `None` on the openers' recheck (vanilla's `recheckOpeners` posts with no source).
+  - `ServerSim` keeps a `Vibrations` index (block entities of loaded chunks, kept up to date from the level's block log in `sync_pois`, chunks unloaded take theirs), and `run_tick` dispatches every game event of the tick after the mobs (`hear_game_events`): the players' (stamped with the game time before the level tick, as vanilla handles their packets between ticks), the level's, the entity world's; then, on a normal tick, the listeners tick. A player source takes its sneaking flag from the tick's controls and its spectator flag from `mob_players`; its UUID is the entity world's.
+  - Until the next commit a sensor accepts every frequency other than 0 except its own placing or breaking, and shriekers and catalysts accept nothing.
+- **Tests:**
+  - `game_events::tests::frequencies_and_radii_match_vanilla` (the full table), `the_tags_load_from_the_data_pack` (gated on the 26.3 data), `sneaking_spectating_and_dampening_sources_are_not_valid`.
+  - `vibrations::tests::a_step_five_blocks_away_reaches_a_sensor_five_ticks_later_with_power_six`, `a_sneaking_step_is_not_heard_but_a_sneaking_block_place_is`, `a_wool_shell_occludes_and_one_open_side_does_not`, `stepping_on_a_carpet_is_dampened`, `the_nearest_candidate_wins_and_a_tie_goes_to_the_higher_frequency` (also: the older candidate is kept), `nothing_new_is_heard_while_a_vibration_travels`, `a_listener_with_a_travelling_vibration_round_trips_its_nbt` (vanilla field names), `a_catalyst_hears_by_distance_after_the_others`, `listeners_leave_with_their_chunk_and_their_block`.
+  - `server::tests::a_player_s_step_reaches_a_sensor_s_listener_through_the_tick` (stamped before the tick, its UUID, saved in the block entity, received after `floor(distance)` ticks, sneaking and out of reach), `other_dimensions_never_hear` (each `ServerSim` has its own listeners), `game_events_wait_in_a_replaced_tick_input_and_leave_with_their_player`, `a_broken_sensor_stops_listening_and_its_chunk_takes_it_away`.
+- **Decisions:**
+  - Game events are dispatched once a tick, after the mobs, instead of at the moment they are posted. Each keeps the game time it was posted in, so the selector sees what vanilla sees: nothing posted in a tick is picked before the next.
+  - `PlayerEdit` and `PlayerBreaks` take an `Option<u64>`, not a `u64`: every block the client writes goes through them, also writes no player made (container ticks, frost walker's ice, anchors used up on respawn), and those carry `None`. The block a player places posts its own `block_place` where the player places it (commit 3).
+  - The listener NBT is written to the block entity when a vibration is picked and when it arrives, not on every tick of its travel: every write is a block entity change sent to the client and the friends. A save while a vibration travels keeps its whole travel time, so after a load it arrives up to 16 ticks later than in vanilla.
+  - Unlike vanilla, which retries until a player is near enough to receive it, a reloaded vibration's particle is sent once.
+  - `Posted.dampened` holds "the affected state is in block `#dampens_vibrations`", worked out where the event is posted, instead of the state itself.
+  - The ticker runs for a listener in a loaded chunk of the level's simulation area (`Level.ticking_chunks`), and a sensor receives only when the 3 × 3 chunks around it are loaded and in it.
+- **Vendored files:** added `world/src/level/game_event.rs` and `entities/src/world/game_events.rs`; patched `world/src/level/mod.rs` and `entities/src/world.rs`.
+- **Test steps:** with commit 3 (the first sources).
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
+
+Group vibrations, commit 1: no message or codec change (`TickInput` and the commands stay on the host).
 
 ## State doc changes
 

@@ -951,7 +951,7 @@ fn update(
             }
         }
         if !writes.is_empty() {
-            write_blocks(terrain, &globals.registries, (shapes, shape_ids, band), entities, writes);
+            write_blocks(terrain, &globals.registries, (shapes, shape_ids, band), entities, None, writes);
         }
     }
     let hands = crate::minecraft_input::host_hands(&ui, hud_input.as_deref(), &buttons, pad);
@@ -982,11 +982,11 @@ fn update(
             _ => true,
         })
         .filter(|event| match *event {
-            sim::voxel::VoxelEvent::Shot { block, .. } => {
+            sim::voxel::VoxelEvent::Shot { block, attacker, .. } => {
                 let pos = (block[0], block[1], block[2]);
                 let egg = minecraft_terrain::scene::Scene::block(&terrain.scene, pos).is_some_and(minecraft_terrain::dragon_egg::is_egg);
-                if let Some(entities) = entities.as_mut().filter(|_| egg) {
-                    entities.attack_block(&terrain.scene, pos);
+                if let (Some(entities), Some(id)) = (entities.as_mut().filter(|_| egg), credit(attacker)) {
+                    entities.attack_block(id, &terrain.scene, pos);
                 }
                 !egg
             }
@@ -2114,6 +2114,7 @@ pub(crate) fn write_blocks(
     registries: &Registries,
     (shapes, shape_ids, level): ShapeTables<'_>,
     entities: &mut minecraft_survival::entities::Entities,
+    player: Option<u64>,
     writes: Vec<((i32, i32, i32), Option<minecraft_terrain::scene::Block>)>,
 ) {
     for (at, block) in &writes {
@@ -2121,7 +2122,7 @@ pub(crate) fn write_blocks(
         let shape = state.map_or(0, |state| shape_id(shapes, shape_ids, registries, state));
         sim::voxel::set_block_shape(level, at.0, at.1, at.2, shape);
     }
-    minecraft_survival::level::write_blocks(terrain, entities, writes);
+    minecraft_survival::level::write_blocks(terrain, entities, player, writes);
 }
 
 pub(crate) fn refresh_shapes(
@@ -2254,7 +2255,7 @@ fn close_world(runtime: &mut Runtime, blocking: bool) -> bool {
     let local = runtime.local.take();
     if let (Some(server), Some(local)) = (server.as_mut(), local.as_ref()) {
         for level in server.levels.values_mut() {
-            minecraft_survival::level::leave(level, local);
+            minecraft_survival::level::leave(level, local, None);
         }
     }
     runtime.shown = None;
@@ -2462,12 +2463,12 @@ fn leave_level(
             let (cell, id, count) = outcome.block_event;
             entities.view.lids.block_event(&level.terrain.scene, cell, id, count);
             if let Some((pos, viewers)) = outcome.trapped {
-                entities.chest_openers(pos, viewers);
+                entities.chest_openers(Some(u64::from(player.id.0)), pos, viewers);
             }
             writes.extend(outcome.state.map(|(cell, state)| (cell, Some(state))));
         }
         if !writes.is_empty() {
-            minecraft_survival::level::write_blocks(&mut level.terrain, entities, writes);
+            minecraft_survival::level::write_blocks(&mut level.terrain, entities, Some(u64::from(player.id.0)), writes);
         }
     }
     let minecraft_survival::player::Player { survival, hand, steps, .. } = player;

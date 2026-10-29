@@ -209,6 +209,7 @@ pub(crate) struct PlayerQueue {
     merchant: Vec<MerchantNews>,
     merchant_waiting: usize,
     raid_omens_waiting: Vec<(i32, (i32, i32, i32))>,
+    game_events: Vec<minecraft_terrain::game_events::PlayerEvent>,
     pub(crate) out: PlayerOutputs,
 }
 
@@ -971,24 +972,28 @@ impl Entities {
     }
 
     /// A block the player placed, for the level the mobs walk in.
-    pub fn placed(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
-        self.server.player_edit(scene, pos, PlayerEdit::Place);
+    pub fn placed(&mut self, player: Option<u64>, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
+        self.server.player_edit(player, scene, pos, PlayerEdit::Place);
+    }
+
+    pub fn game_event(&mut self, player: u64, event: &'static str, pos: [f64; 3], affected: Option<String>) {
+        self.players.queue(player).game_events.push(minecraft_terrain::game_events::PlayerEvent { player, event, pos, affected });
     }
 
     pub fn keep_dropped_contents(&mut self, pos: (i32, i32, i32), id: &str, components: &serde_json::Value) {
         self.server.keep_dropped_contents(pos, id, &components.to_string());
     }
 
-    pub fn use_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
-        self.server.use_block(scene, pos, facing)
+    pub fn use_block(&mut self, player: u64, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
+        self.server.use_block(player, scene, pos, facing)
     }
 
-    pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
-        self.server.attack_block(scene, pos)
+    pub fn attack_block(&mut self, player: u64, scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
+        self.server.attack_block(player, scene, pos)
     }
 
-    pub fn ring_bell(&mut self, pos: (i32, i32, i32), face: &'static str) {
-        self.server.ring_bell(pos, face);
+    pub fn ring_bell(&mut self, player: u64, pos: (i32, i32, i32), face: &'static str) {
+        self.server.ring_bell(player, pos, face);
     }
 
     pub fn item_on_block(&mut self, player: u64, pos: (i32, i32, i32), action: minecraft_terrain::server::ItemOnBlock, sent: SentItemUse) {
@@ -1324,8 +1329,8 @@ impl Entities {
         stack
     }
 
-    pub fn chest_openers(&mut self, pos: (i32, i32, i32), count: u32) {
-        self.server.chest_openers(pos, count);
+    pub fn chest_openers(&mut self, player: Option<u64>, pos: (i32, i32, i32), count: u32) {
+        self.server.chest_openers(player, pos, count);
     }
 
     pub fn campfire_douse(&mut self, pos: (i32, i32, i32), signal: bool) {
@@ -1354,14 +1359,14 @@ impl Entities {
     }
 
     /// Blocks the player's weapons broke, for the level the mobs walk in.
-    pub fn broke(&mut self, positions: &[(i32, i32, i32)]) {
-        self.server.player_breaks(positions);
+    pub fn broke(&mut self, player: Option<u64>, positions: &[(i32, i32, i32)]) {
+        self.server.player_breaks(player, positions);
     }
 
-    pub fn mined(&mut self, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
+    pub fn mined(&mut self, player: u64, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)], creative: bool) {
         let silk_touch = Self::hand_has_silk_touch(held);
         let how: Vec<_> = broken.iter().map(|(pos, _, blast)| (*pos, how_broken(*pos, *blast, by_hand, silk_touch, creative))).collect();
-        self.server.player_mines(&how);
+        self.server.player_mines(player, &how);
     }
 
     pub fn anger_piglins(&mut self, player: u64, feet: [f64; 3], sight: bool) {
@@ -1542,6 +1547,7 @@ impl Entities {
                     })
                     .collect(),
                 view_distance: self.view_distance,
+                game_events: actors.iter().flat_map(|actor| std::mem::take(&mut self.players.queue(actor.id).game_events)).collect(),
             }, batch.normal.clone());
         }
         let mut changes = Vec::new();
@@ -2910,7 +2916,7 @@ mod tests {
         for x in 8..17 {
             for z in 8..17 {
                 scene.set((x, 200, z), Some(Block::new("minecraft:stone")));
-                entities.placed(&scene, (x, 200, z));
+                entities.placed(None, &scene, (x, 200, z));
             }
         }
         Some(entities)

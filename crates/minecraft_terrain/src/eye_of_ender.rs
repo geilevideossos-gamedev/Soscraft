@@ -694,6 +694,7 @@ mod tests {
             controls: Vec::new(),
             omens: Vec::new(),
             view_distance: 8,
+            game_events: Vec::new(),
         }
     }
 

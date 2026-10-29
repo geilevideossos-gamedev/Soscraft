@@ -572,7 +572,7 @@ pub fn act(
                     use crate::digging::DigEvent;
                     let (pos, face, heard) = match event {
                         DigEvent::Attacked(pos) => {
-                            entities.attack_block(&terrain.scene, pos);
+                            entities.attack_block(player_id, &terrain.scene, pos);
                             continue;
                         }
                         DigEvent::Broke { pos, .. } => {
@@ -793,7 +793,7 @@ pub fn act(
                                 && minecraft_terrain::bells::proper_hit(&block, hit.face, hit.point.y - f64::from(hit.pos.1))
                         })
                     })
-                    .map(|hit| entities.ring_bell(hit.pos, minecraft_terrain::bells::face_name(hit.face)))
+                    .map(|hit| entities.ring_bell(player_id, hit.pos, minecraft_terrain::bells::face_name(hit.face)))
                     .is_some();
             let used = if main
                 && !leashed_fence
@@ -814,7 +814,7 @@ pub fn act(
                             },
                         )
                     })
-                    .filter(|&pos| entities.use_block(&terrain.scene, pos, facing))
+                    .filter(|&pos| entities.use_block(player_id, &terrain.scene, pos, facing))
             } else {
                 None
             };
@@ -1647,6 +1647,7 @@ pub fn harvest(
     let held = inventory.slots[*selected].clone();
     let positions: Vec<_> = broken.iter().map(|(pos, ..)| *pos).collect();
     entities.mined(
+        player_id,
         held.as_ref(),
         &broken,
         hand_mined,
@@ -1978,7 +1979,7 @@ pub(crate) mod tests {
             entities: &mut Entities,
             writes: Vec<(BlockPos, Option<Block>)>,
         ) {
-            crate::level::write_blocks(terrain, entities, writes);
+            crate::level::write_blocks(terrain, entities, None, writes);
         }
 
         fn obstacles(&self, _: &Entities) -> Vec<[f64; 6]> {
@@ -2027,7 +2028,7 @@ pub(crate) mod tests {
                 terrain
                     .scene
                     .set((x, 200, z), Some(Block::new("minecraft:stone")));
-                entities.placed(&terrain.scene, (x, 200, z));
+                entities.placed(None, &terrain.scene, (x, 200, z));
             }
         }
         level.entities = Some(entities);
@@ -2142,7 +2143,7 @@ pub(crate) mod tests {
         let entities = level.entities.as_mut().expect("entities");
         for (pos, half) in [((6, 201, 4), "lower"), ((6, 202, 4), "upper")] {
             terrain.scene.set(pos, Some(door(half)));
-            entities.placed(&terrain.scene, pos);
+            entities.placed(None, &terrain.scene, pos);
         }
         let mut player = holding("minecraft:cobblestone", 32);
         let looking = actor(-90.0, pitch_to(actor(0.0, 0.0).eye, [6.05, 201.8, 4.5]));
@@ -2485,7 +2486,7 @@ pub(crate) mod tests {
             .with("has_book", "false")
             .with("powered", "false");
         terrain.scene.set(pos, Some(lectern));
-        entities.placed(&terrain.scene, pos);
+        entities.placed(None, &terrain.scene, pos);
         let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
         player.inventory.slots[0] = Some(written_book());
         let looking = actor(-90.0, pitch_to(actor(0.0, 0.0).eye, [6.5, 201.5, 4.5]));
