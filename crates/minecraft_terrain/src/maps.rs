@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use minecraft_net::PlayerUuid;
+use minecraft_net::messages::{MapMark, MapPatch, MapUpdate};
 use minecraftoss_core::ChunkPos;
 use minecraftoss_core::loot::Exploring;
 use minecraftoss_core::nbt::Tag;
@@ -429,6 +430,91 @@ impl Carrier {
 #[derive(Clone, Debug, PartialEq)]
 struct Holding {
     uuid: PlayerUuid,
+    dirty_data: bool,
+    min_x: usize,
+    min_y: usize,
+    max_x: usize,
+    max_y: usize,
+    dirty_decorations: bool,
+    tick: i32,
+}
+
+impl Holding {
+    fn new(uuid: &PlayerUuid) -> Self {
+        Self {
+            uuid: uuid.clone(),
+            dirty_data: true,
+            min_x: 0,
+            min_y: 0,
+            max_x: MAP_SIZE - 1,
+            max_y: MAP_SIZE - 1,
+            dirty_decorations: true,
+            tick: 0,
+        }
+    }
+
+    fn mark_colors_dirty(&mut self, x: usize, y: usize) {
+        if self.dirty_data {
+            self.min_x = self.min_x.min(x);
+            self.min_y = self.min_y.min(y);
+            self.max_x = self.max_x.max(x);
+            self.max_y = self.max_y.max(y);
+        } else {
+            self.dirty_data = true;
+            (self.min_x, self.min_y, self.max_x, self.max_y) = (x, y, x, y);
+        }
+    }
+
+    fn patch(&self, data: &MapData) -> MapPatch {
+        let width = self.max_x + 1 - self.min_x;
+        let height = self.max_y + 1 - self.min_y;
+        let mut colors = vec![0; width * height];
+        for i in 0..width {
+            for j in 0..height {
+                colors[i + j * width] = data.colors[self.min_x + i + (self.min_y + j) * MAP_SIZE];
+            }
+        }
+        MapPatch {
+            x: self.min_x as u8,
+            y: self.min_y as u8,
+            width: width as u8,
+            height: height as u8,
+            colors,
+        }
+    }
+
+    fn next_update(
+        &mut self,
+        id: i32,
+        data: &MapData,
+        decorations: &[(String, Decoration)],
+    ) -> Option<MapUpdate> {
+        let patch = std::mem::take(&mut self.dirty_data).then(|| self.patch(data));
+        let due = self.dirty_decorations && {
+            let tick = self.tick;
+            self.tick = tick.wrapping_add(1);
+            tick % 5 == 0
+        };
+        let decorations = due.then(|| {
+            self.dirty_decorations = false;
+            decorations
+                .iter()
+                .map(|(_, decoration)| MapMark {
+                    kind: decoration.kind.clone(),
+                    x: decoration.x,
+                    y: decoration.y,
+                    rot: decoration.rot,
+                })
+                .collect()
+        });
+        (patch.is_some() || decorations.is_some()).then_some(MapUpdate {
+            id,
+            scale: data.scale,
+            locked: data.locked,
+            decorations,
+            patch,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -483,6 +569,7 @@ impl Held {
             if tracks_count(&decoration.kind) {
                 self.tracked += 1;
             }
+            self.decorations_dirty();
         }
     }
 
@@ -492,6 +579,13 @@ impl Held {
             if tracks_count(&old.kind) {
                 self.tracked -= 1;
             }
+        }
+        self.decorations_dirty();
+    }
+
+    fn decorations_dirty(&mut self) {
+        for holding in &mut self.holders {
+            holding.dirty_decorations = true;
         }
     }
 }
@@ -505,6 +599,7 @@ pub struct MapStore {
     claims: BTreeMap<String, Claims>,
     claims_dirty: BTreeSet<String>,
     held: BTreeMap<i32, Held>,
+    pending: BTreeMap<PlayerUuid, Vec<MapUpdate>>,
 }
 
 impl Default for MapStore {
@@ -517,6 +612,7 @@ impl Default for MapStore {
             claims: BTreeMap::new(),
             claims_dirty: BTreeSet::new(),
             held: BTreeMap::new(),
+            pending: BTreeMap::new(),
         }
     }
 }
@@ -762,7 +858,63 @@ impl MapStore {
             for map in &carrier.maps {
                 self.tick_carried_by(carrier, map, carriers, game_time);
             }
+            let updates = self.next_updates(carrier);
+            if !updates.is_empty() {
+                let pending = self.pending.entry(carrier.uuid.clone()).or_default();
+                pending.extend(updates);
+            }
         }
+        self.pending
+            .retain(|uuid, _| carriers.iter().any(|carrier| carrier.uuid == *uuid));
+    }
+
+    pub fn take_updates(&mut self, uuid: &PlayerUuid) -> Vec<MapUpdate> {
+        self.pending.remove(uuid).unwrap_or_default()
+    }
+
+    pub fn update_color(&mut self, id: i32, x: usize, y: usize, color: u8) -> bool {
+        let changed = self
+            .maps
+            .get(&id)
+            .is_some_and(|data| data.colors[x + y * MAP_SIZE] != color);
+        if changed {
+            self.set_color(id, x, y, color);
+        }
+        changed
+    }
+
+    pub fn set_color(&mut self, id: i32, x: usize, y: usize, color: u8) {
+        let Some(data) = self.maps.get_mut(&id) else {
+            return;
+        };
+        data.colors[x + y * MAP_SIZE] = color;
+        self.dirty.insert(id);
+        if let Some(held) = self.held.get_mut(&id) {
+            for holding in &mut held.holders {
+                holding.mark_colors_dirty(x, y);
+            }
+        }
+    }
+
+    fn next_updates(&mut self, carrier: &Carrier) -> Vec<MapUpdate> {
+        let mut updates = Vec::new();
+        for map in &carrier.maps {
+            let (Some(data), Some(held)) = (self.maps.get(&map.id), self.held.get_mut(&map.id))
+            else {
+                continue;
+            };
+            let Held {
+                decorations,
+                holders,
+                ..
+            } = held;
+            let update = holders
+                .iter_mut()
+                .find(|holding| holding.uuid == carrier.uuid)
+                .and_then(|holding| holding.next_update(map.id, data, decorations));
+            updates.extend(update);
+        }
+        updates
     }
 
     fn tick_carried_by(
@@ -781,9 +933,7 @@ impl MapStore {
             .iter()
             .any(|holding| holding.uuid == carrier.uuid)
         {
-            held.holders.push(Holding {
-                uuid: carrier.uuid.clone(),
-            });
+            held.holders.push(Holding::new(&carrier.uuid));
         }
         let mut index = 0;
         while index < held.holders.len() {
@@ -812,6 +962,60 @@ impl MapStore {
                 held.add(data, (&mark.kind, key), at, game_time);
             }
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClientMap {
+    pub scale: u8,
+    pub locked: bool,
+    pub colors: Box<[u8; COLORS]>,
+    pub decorations: Vec<MapMark>,
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MapCache {
+    maps: BTreeMap<i32, ClientMap>,
+}
+
+impl MapCache {
+    pub fn apply(&mut self, update: MapUpdate) {
+        let map = self.maps.entry(update.id).or_insert_with(|| ClientMap {
+            scale: update.scale,
+            locked: update.locked,
+            colors: Box::new([0; COLORS]),
+            decorations: Vec::new(),
+            version: 0,
+        });
+        if let Some(decorations) = update.decorations {
+            map.decorations = decorations;
+        }
+        if let Some(patch) = update.patch {
+            let (width, height) = (usize::from(patch.width), usize::from(patch.height));
+            for i in 0..width {
+                for j in 0..height {
+                    let (x, y) = (usize::from(patch.x) + i, usize::from(patch.y) + j);
+                    let inside = x < MAP_SIZE && y < MAP_SIZE;
+                    if let Some(&color) = patch.colors.get(i + j * width).filter(|_| inside) {
+                        map.colors[x + y * MAP_SIZE] = color;
+                    }
+                }
+            }
+        }
+        map.version = map.version.wrapping_add(1);
+    }
+
+    pub fn get(&self, id: i32) -> Option<&ClientMap> {
+        self.maps.get(&id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.maps.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.maps.is_empty()
     }
 }
 
@@ -1830,5 +2034,183 @@ mod tests {
         assert!(wears_map_invisibility(&inventory));
         inventory.slots[39] = Some(ItemStack::new("minecraft:diamond_helmet", 1));
         assert!(!wears_map_invisibility(&inventory));
+    }
+
+    fn sent(store: &mut MapStore, uuid: &str) -> Vec<MapUpdate> {
+        store.take_updates(&PlayerUuid(uuid.to_owned()))
+    }
+
+    #[test]
+    fn a_holder_gets_the_whole_map_first_and_then_only_the_dirty_rectangle() {
+        let mut map = MapData::create_fresh(1000.0, -300.0, 1, "minecraft:overworld", true, true);
+        map.colors[5 + 7 * MAP_SIZE] = 9;
+        map.colors[COLORS - 1] = 0xfe;
+        let mut store = store_with(&[(0, map.clone())]);
+        let treasure = carried(
+            "minecraft:buried_treasure_map",
+            0,
+            &[("+", "minecraft:red_x", 1000.0, -300.0)],
+        );
+        let mut steve = holder("steve", (1000.0, -300.0, 0.0), vec![treasure.clone()]);
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        let first = sent(&mut store, "steve");
+        assert_eq!(first.len(), 1);
+        let update = &first[0];
+        assert_eq!((update.id, update.scale, update.locked), (0, 1, false));
+        let patch = update.patch.as_ref().expect("the whole map");
+        assert_eq!(
+            (patch.x, patch.y, patch.width, patch.height),
+            (0, 0, 128, 128)
+        );
+        assert_eq!(patch.colors, map.colors.to_vec());
+        let marks: Vec<_> = update
+            .decorations
+            .as_ref()
+            .expect("the marks with it")
+            .iter()
+            .map(|mark| (mark.kind.as_str(), mark.x, mark.y, mark.rot))
+            .collect();
+        assert_eq!(
+            marks,
+            [(PLAYER, -87, -107, 0), ("minecraft:red_x", -87, -107, 8)]
+        );
+        store.tick_carried(std::slice::from_ref(&steve), 1);
+        assert!(sent(&mut store, "steve").is_empty(), "nothing changed");
+        steve.x = 1010.0;
+        for tick in 2..6 {
+            store.tick_carried(std::slice::from_ref(&steve), tick);
+            assert!(
+                sent(&mut store, "steve").is_empty(),
+                "moved markers wait for every fifth try"
+            );
+        }
+        store.tick_carried(std::slice::from_ref(&steve), 6);
+        let moved = sent(&mut store, "steve");
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].patch, None);
+        assert_eq!(
+            moved[0].decorations.as_ref().map(|marks| marks[0].x),
+            Some(-77)
+        );
+        store.set_color(0, 5, 7, 20);
+        store.set_color(0, 9, 3, 21);
+        assert!(
+            !store.update_color(0, 9, 3, 21),
+            "the same colour changes nothing"
+        );
+        assert!(store.update_color(0, 6, 4, 22));
+        store.tick_carried(std::slice::from_ref(&steve), 7);
+        let painted = sent(&mut store, "steve");
+        assert_eq!(painted.len(), 1);
+        assert_eq!(painted[0].decorations, None);
+        let patch = painted[0].patch.as_ref().expect("a patch");
+        assert_eq!((patch.x, patch.y, patch.width, patch.height), (5, 3, 5, 5));
+        let mut expected = vec![0; 25];
+        expected[4 * 5] = 20;
+        expected[4] = 21;
+        expected[1 + 5] = 22;
+        assert_eq!(patch.colors, expected);
+        assert_eq!(
+            store.take_writes().maps.len(),
+            1,
+            "a new colour is saved, a marker is not"
+        );
+        let alex = holder("alex", (1000.0, -300.0, 0.0), vec![treasure]);
+        store.set_color(0, 0, 0, 1);
+        store.tick_carried(&[steve.clone(), alex.clone()], 8);
+        let alex_first = sent(&mut store, "alex");
+        assert_eq!(
+            alex_first[0].patch.as_ref().map(|patch| patch.colors.len()),
+            Some(COLORS),
+            "a new holder gets the whole map"
+        );
+        assert_eq!(
+            sent(&mut store, "steve")[0]
+                .patch
+                .as_ref()
+                .map(|patch| patch.colors.clone()),
+            Some(vec![1])
+        );
+        store.set_color(0, 1, 1, 2);
+        store.tick_carried(&[steve.clone(), alex.clone()], 9);
+        store.tick_carried(std::slice::from_ref(&alex), 10);
+        assert!(
+            sent(&mut store, "steve").is_empty(),
+            "the updates of a player who is gone are dropped"
+        );
+        assert_eq!(sent(&mut store, "alex").len(), 1);
+    }
+
+    #[test]
+    fn a_map_cache_takes_whole_maps_patches_and_marks_like_the_vanilla_client() {
+        let mut map = MapData::create_fresh(0.0, 0.0, 2, "minecraft:overworld", true, false);
+        for (index, color) in map.colors.iter_mut().enumerate() {
+            *color = (index % 200) as u8;
+        }
+        let mut store = store_with(&[(3, map)]);
+        let mut steve = holder(
+            "steve",
+            (100.0, 50.0, 45.0),
+            vec![carried("minecraft:filled_map", 3, &[])],
+        );
+        let mut cache = MapCache::default();
+        assert!(cache.is_empty());
+        let follow = |store: &mut MapStore, cache: &mut MapCache, steve: &Carrier, tick| {
+            store.tick_carried(std::slice::from_ref(steve), tick);
+            for update in sent(store, "steve") {
+                cache.apply(update);
+            }
+        };
+        follow(&mut store, &mut cache, &steve, 0);
+        let shown = cache.get(3).expect("the map");
+        assert_eq!((shown.scale, shown.locked, shown.version), (2, false, 1));
+        assert_eq!(shown.colors, store.get(3).unwrap().colors);
+        assert_eq!(
+            shown.decorations,
+            [MapMark {
+                kind: PLAYER.to_owned(),
+                x: -45,
+                y: -70,
+                rot: 2
+            }]
+        );
+        store.set_color(3, 127, 127, 0x33);
+        store.set_color(3, 64, 100, 0x44);
+        steve.x = 150.0;
+        for tick in 1..6 {
+            follow(&mut store, &mut cache, &steve, tick);
+        }
+        let shown = cache.get(3).unwrap();
+        assert_eq!(shown.colors, store.get(3).unwrap().colors);
+        assert_eq!(shown.decorations[0].x, -20);
+        assert_eq!(cache.len(), 1);
+        let mut later = MapUpdate {
+            id: 3,
+            scale: 4,
+            locked: true,
+            decorations: Some(Vec::new()),
+            patch: Some(MapPatch {
+                x: 127,
+                y: 0,
+                width: 3,
+                height: 1,
+                colors: vec![1, 2, 3],
+            }),
+        };
+        cache.apply(later.clone());
+        let shown = cache.get(3).unwrap();
+        assert_eq!(
+            (shown.scale, shown.locked),
+            (2, false),
+            "a known map keeps its scale and lock"
+        );
+        assert!(shown.decorations.is_empty());
+        assert_eq!(shown.colors[127], 1, "a patch is cut at the map's edge");
+        later.id = 9;
+        later.patch = None;
+        cache.apply(later);
+        let fresh = cache.get(9).unwrap();
+        assert_eq!((fresh.scale, fresh.locked, fresh.version), (4, true, 1));
+        assert!(fresh.colors.iter().all(|&color| color == 0));
     }
 }

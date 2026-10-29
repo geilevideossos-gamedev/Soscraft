@@ -8,6 +8,7 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 
 - Group `fw-burst`, commit 1 ("Minecraft firework rockets carry their stars"): `firework_rocket::Burst` (inside `EntitySnapshot.firework_bursts`, sent to friends in the `ToClient::Bursts` blob) carries `explosions: Vec<firework::Explosion>` instead of `colors: Vec<i32>`. The release step bumps `PROTOCOL`.
 - Group `fw-elytra` ("An elytra rocket goes off at the end of its boost"): no format change, but a rocket's `ThrownView.owner` in `EntitySnapshot.thrown_views` now names the rider of an elytra rocket (other rockets keep `MOB_THROWER`). A friend on an older build would draw that rocket's sprite in the rider's hand. The bump for `fw-burst` covers it.
+- Group `maps-held`, commit 2 ("Minecraft friends get the pictures of the maps they carry"): new `ToClient::MapData(MapUpdate)` between `SkateRefused` and `SpawnPosition`, so `MapData` takes index 35 and `SpawnPosition` moves from 35 to 36. New structs `MapUpdate`, `MapMark` and `MapPatch` in `messages.rs`. The release step bumps `PROTOCOL`.
 
 ## Group ti1-targets-and-hurt
 
@@ -1151,4 +1152,37 @@ After a0285a18.
   - The markers are kept in `MapStore` beside `MapData`, so ticking them never marks a map file for saving.
   - Vanilla's skip of the holder after a removed one is kept.
 - **Test steps:** none in game for this commit alone: nothing draws the markers until group `maps-view`, whose steps check them (the brief's E-maps steps 4 and 5).
+- **Kit:** none.
+
+### 2. Minecraft friends get the pictures of the maps they carry
+
+After 08bf2ed1.
+
+- **Vanilla (26.3, checked with javap):**
+  - `ServerPlayer.doTick`, after the player's own tick (and so after its maps' `tickCarriedBy`), runs `synchronizeSpecialItemUpdates` for every stack of the inventory: `MapItemSavedData.getUpdatePacket(id, player)` asks that player's `HoldingPlayer` for `nextUpdatePacket`.
+  - `HoldingPlayer` starts with `dirtyData` set over the whole map (0,0 to 127,127) and `dirtyDecorations` set. `nextUpdatePacket`: a dirty map becomes one `MapPatch` of the dirty rectangle (`colors[i + j * width]`) and is clean again; dirty markers are sent, all of them, only when `tick++ % 5 == 0` (the count moves only while they are dirty); no packet when neither. The packet is `ClientboundMapItemDataPacket(id, scale, locked, Optional<markers>, Optional<patch>)`.
+  - `setColor` marks the map for saving and every holder's rectangle (`markColorsDirty` grows it, or starts it when clean); `updateColor` only when the colour changes. `addDecoration` (on a changed marker) and `removeDecoration` (always) mark every holder's markers dirty.
+  - The client (`ClientPacketListener.handleMapItemData`) makes the map with the packet's scale and lock the first time (`createForClient`), then replaces all markers when sent and copies the patch in. `handleRespawn` carries the client's maps over to the new level.
+- **Changed:**
+  - `minecraft_net/src/messages.rs`: `ToClient::MapData(MapUpdate)`; `MapUpdate { id, scale, locked, decorations: Option<Vec<MapMark>>, patch: Option<MapPatch> }`, `MapMark { kind, x, y, rot }`, `MapPatch { x, y, width, height, colors }`.
+  - `minecraft_terrain/src/maps.rs`:
+    - `Holding` keeps vanilla's `HoldingPlayer` state (the dirty rectangle, dirty markers and the send count) and builds the next `MapUpdate`; `Held` marks every holder's markers dirty as vanilla does.
+    - `MapStore::tick_carried` queues each carrier's updates right after its maps tick, `take_updates(uuid)` hands them over, and a player who no longer carries anything loses waiting updates. `set_color` and `update_color` (vanilla's `setColor` and `updateColor`) for group `maps-explore`.
+    - `MapCache` and `ClientMap` (scale, lock, colours, markers and a `version` that counts applied updates, for the drawing in `maps-view`): `apply(update)` as vanilla's client.
+  - `minecraft_survival/src/maps.rs`: `take_updates`. `session.rs`: `Sessions::send_maps` puts each friend's updates in its outbox. `remote.rs`: `RemoteWorld.maps`, filled from `ToClient::MapData`.
+  - `render_anim/src/minecraft_host.rs`: `send_maps` every frame next to `send_spawns`. `render_anim/src/minecraft_world.rs`: `Runtime.map_cache`, cleared when a world loads and filled from the host's own updates right after the map tick.
+  - `docs/MINECRAFT-SURVIVAL.md`: a paragraph on maps.
+- **Tests:**
+  - `minecraft_net` `codec::tests::a_map_picture_reaches_the_friend_whole_or_in_part` (index 35; the whole 128 x 128 picture in less than 16 KB plus 32 bytes; markers only; no markers is not an empty list); `every_message_to_the_client_round_trips` covers `MapData`; the world spawn test takes index 36.
+  - `maps::tests::a_holder_gets_the_whole_map_first_and_then_only_the_dirty_rectangle`: the first update is the whole map with the markers; nothing when nothing changed; moved markers on the fifth try; three painted pixels give a 5 x 5 patch without markers; an unchanged `update_color` changes nothing; a painted map is saved; a new holder gets the whole map while the old one gets one pixel; a player who leaves loses waiting updates.
+  - `maps::tests::a_map_cache_takes_whole_maps_patches_and_marks_like_the_vanilla_client`: the cache follows the store's colours and markers; a known map keeps its first scale and lock; an empty marker list clears them; a patch is cut at the edge; a new id starts blank.
+  - `session::tests::each_friend_gets_the_pictures_of_the_maps_it_carries` (with the 26.3 data): nothing before a tick; the friend's session gets the whole picture with its marker once; the host's queue stays empty; a repainted pixel arrives alone.
+  - `remote::tests::the_friend_keeps_the_pictures_of_its_maps` (with the 26.3 data).
+- **Decisions:**
+  - `MapData` sits next to `SpawnPosition` (the compasses' spawn): only `SpawnPosition`'s index moves.
+  - The message keeps vanilla's optional markers: none sent leaves the friend's markers, an empty list clears them. Marker names (banners) are not sent, as there are no banner markers yet.
+  - The host's own picture comes through the same per-player updates, taken straight from `globals.maps` without the wire, so its markers move at most every fifth tick, like a vanilla single-player client on its built-in server.
+  - The friend's cache belongs to `RemoteWorld`, not to the level, so it outlives a dimension change, as vanilla's `handleRespawn` keeps the maps.
+  - Only the 17 map items are synced. Vanilla syncs any stack with a `map_id`, which outside of commands only map items have.
+- **Test steps:** none in game for this commit alone: nothing draws a map until group `maps-view`, whose friend steps (the brief's E-maps F1 to F3) check the pictures.
 - **Kit:** none.

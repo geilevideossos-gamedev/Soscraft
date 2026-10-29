@@ -1274,6 +1274,13 @@ impl Sessions {
         }
     }
 
+    pub fn send_maps(&mut self, globals: &Globals) {
+        for session in self.sessions.values_mut() {
+            let updates = crate::maps::take_updates(&globals.maps, &session.uuid);
+            session.outbox.extend(updates.into_iter().map(ToClient::MapData));
+        }
+    }
+
     pub fn send_gear(&mut self, gears: &[(u32, GearView)]) {
         for session in self.sessions.values_mut() {
             session.send_gear(gears);
@@ -2320,6 +2327,55 @@ mod tests {
         sessions.send_spawns(&server.globals);
         let moved = ToClient::SpawnPosition { dimension: Dimension::Overworld, pos: [0, 64, 0] };
         assert_eq!(spawns(&mut sessions), [(1, moved.clone()), (2, moved)], "/setworldspawn reaches everyone");
+    }
+
+    #[test]
+    fn each_friend_gets_the_pictures_of_the_maps_it_carries() {
+        let Some((_dir, mut server)) = host_server("session-maps") else {
+            return;
+        };
+        let origins = [(Dimension::Overworld, [0.5, 64.0, 0.5])];
+        let mut sessions = Sessions::default();
+        sessions.hello(&mut server, 1, "Alex", HELLO, &context(&origins), Instant::now());
+        sessions.take_outgoing();
+        let (alex, host) = (uuid_of(&server, 1), uuid_of(&server, HOST.0));
+        let mut map = minecraft_terrain::maps::MapData::create_fresh(1000.0, -300.0, 1, "minecraft:overworld", true, true);
+        map.colors[3] = 61;
+        server.globals.maps.lock().unwrap().insert(0, map.clone());
+        let mut treasure = minecraftoss_player::inventory::ItemStack::new("minecraft:buried_treasure_map", 1);
+        treasure.components = Some(serde_json::json!({"minecraft:map_id": 0}));
+        for player in server.players.values_mut() {
+            player.place = Some(crate::player_nbt::Place::standing(Dimension::Overworld, [1000.0, 64.0, -300.0], 0.0, 0.0));
+        }
+        server.players.get_mut(&alex).unwrap().inventory.slots[0] = Some(treasure);
+        let maps = |sessions: &mut Sessions| -> Vec<(u32, minecraft_net::messages::MapUpdate)> {
+            sessions.take_outgoing().into_iter().filter_map(|(client, message)| match message {
+                ToClient::MapData(update) => Some((client, update)),
+                _ => None,
+            }).collect()
+        };
+        sessions.send_maps(&server.globals);
+        assert!(maps(&mut sessions).is_empty(), "nothing before a tick");
+        crate::maps::tick(&server.globals.maps, &server.players, 0, 1);
+        sessions.send_maps(&server.globals);
+        let sent = maps(&mut sessions);
+        assert_eq!(sent.len(), 1);
+        let (client, update) = &sent[0];
+        assert_eq!((*client, update.id, update.scale, update.locked), (1, 0, 1, false));
+        let patch = update.patch.as_ref().expect("the whole picture first");
+        assert_eq!((patch.x, patch.y, patch.width, patch.height), (0, 0, 128, 128));
+        assert_eq!(patch.colors, map.colors.to_vec());
+        let marks = update.decorations.as_ref().expect("the markers with it");
+        assert_eq!(marks.iter().map(|mark| (mark.kind.as_str(), mark.x, mark.y)).collect::<Vec<_>>(), [("minecraft:player", -87, -107)]);
+        sessions.send_maps(&server.globals);
+        assert!(maps(&mut sessions).is_empty(), "sent once");
+        assert!(crate::maps::take_updates(&server.globals.maps, &host).is_empty(), "the host carries no map");
+        server.globals.maps.lock().unwrap().set_color(0, 3, 0, 4);
+        crate::maps::tick(&server.globals.maps, &server.players, 1, 1);
+        sessions.send_maps(&server.globals);
+        let sent = maps(&mut sessions);
+        let patch = minecraft_net::messages::MapPatch { x: 3, y: 0, width: 1, height: 1, colors: vec![4] };
+        assert_eq!(sent.iter().map(|(client, update)| (*client, update.patch.clone(), update.decorations.is_some())).collect::<Vec<_>>(), [(1, Some(patch), false)], "then only what changed");
     }
 
     #[test]

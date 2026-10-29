@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 
 use minecraft_net::PlayerUuid;
+use minecraft_net::messages::MapUpdate;
 use minecraft_terrain::maps::{CarriedMap, Carrier, MapStore, wears_map_invisibility};
 
 use crate::player::Player;
@@ -40,6 +41,12 @@ pub fn tick(
         let behind = (ticks - 1 - tick) as i64;
         maps.tick_carried(&carriers, game_time - behind);
     }
+}
+
+pub fn take_updates(maps: &Mutex<MapStore>, uuid: &PlayerUuid) -> Vec<MapUpdate> {
+    maps.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take_updates(uuid)
 }
 
 #[cfg(test)]

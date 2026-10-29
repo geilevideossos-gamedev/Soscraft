@@ -170,6 +170,7 @@ pub struct RemoteWorld {
     pub clocks: Clocks,
     pub weather: [f32; 2],
     pub spawn: Option<(Dimension, [i32; 3])>,
+    pub maps: minecraft_terrain::maps::MapCache,
     pub boss_bars: BTreeMap<u64, BossBar>,
     pub lecterns: Vec<Option<BookView>>,
     pub open_books: Vec<u8>,
@@ -207,6 +208,7 @@ impl RemoteWorld {
             clocks: Clocks::default(),
             weather: [0.0; 2],
             spawn: None,
+            maps: minecraft_terrain::maps::MapCache::default(),
             boss_bars: BTreeMap::new(),
             lecterns: Vec::new(),
             open_books: Vec::new(),
@@ -502,6 +504,7 @@ impl RemoteWorld {
             }
             ToClient::Weather { rain, thunder } => self.weather = [rain, thunder],
             ToClient::SpawnPosition { dimension, pos } => self.spawn = Some((dimension, pos)),
+            ToClient::MapData(update) => self.maps.apply(update),
             ToClient::Dimension {
                 epoch,
                 dimension,
@@ -889,6 +892,56 @@ mod tests {
         let context = friend.dial_context([1.5, 64.0, 2.5], 90.0).unwrap();
         assert_eq!(context.last_death, Some((Dimension::Nether, (-3, 40, 9))));
         assert_eq!(context.spawn, Some((Dimension::Overworld, (100, 64, 100))), "a new world spawn");
+    }
+
+    #[test]
+    fn the_friend_keeps_the_pictures_of_its_maps() {
+        use minecraft_net::messages::{MapMark, MapPatch, MapUpdate};
+        use minecraft_terrain::maps::COLORS;
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut friend = RemoteWorld::new(registries);
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        assert!(friend.maps.is_empty());
+        let marker = MapMark {
+            kind: "minecraft:player".to_owned(),
+            x: 1,
+            y: -2,
+            rot: 3,
+        };
+        let whole = MapUpdate {
+            id: 4,
+            scale: 2,
+            locked: true,
+            decorations: Some(vec![marker.clone()]),
+            patch: Some(MapPatch {
+                x: 0,
+                y: 0,
+                width: 128,
+                height: 128,
+                colors: vec![7; COLORS],
+            }),
+        };
+        friend.apply(ToClient::MapData(whole.clone()));
+        let map = friend.maps.get(4).expect("the map");
+        assert_eq!((map.scale, map.locked, map.decorations.clone()), (2, true, vec![marker.clone()]));
+        assert!(map.colors.iter().all(|&color| color == 7));
+        friend.apply(ToClient::MapData(MapUpdate {
+            decorations: None,
+            patch: Some(MapPatch {
+                x: 127,
+                y: 126,
+                width: 1,
+                height: 2,
+                colors: vec![9, 10],
+            }),
+            ..whole
+        }));
+        let map = friend.maps.get(4).unwrap();
+        assert_eq!((map.colors[0], map.colors[127 + 126 * 128], map.colors[COLORS - 1]), (7, 9, 10));
+        assert_eq!(map.decorations, [marker], "no marks sent keeps the old ones");
+        assert!(friend.effects.is_empty(), "the map is not left for the frame to handle");
     }
 
     #[test]

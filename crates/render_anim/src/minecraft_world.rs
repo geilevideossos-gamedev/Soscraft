@@ -101,6 +101,7 @@ pub(crate) struct Runtime {
     cloud_center: Option<(i32, i32)>,
     mining: crate::minecraft_mining::Mining,
     minimap: crate::minecraft_minimap::Minimap,
+    map_cache: minecraft_terrain::maps::MapCache,
     sounds: Option<crate::minecraft_sounds::Sounds>,
     inventory_ui: crate::minecraft_inventory::InventoryUi,
     /// Shape id of each block state already seen.
@@ -582,6 +583,7 @@ fn update(
                 runtime.animation_clock = 0.0;
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
+                runtime.map_cache = Default::default();
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
                 minecraft_survival::server::start_level(globals, level);
@@ -673,6 +675,7 @@ fn update(
         inventory_ui,
         sounds,
         minimap,
+        map_cache,
         fire_frames,
         atlas_animation,
         animation_clock,
@@ -706,6 +709,9 @@ fn update(
         minecraft_survival::server::autosave(globals, levels, players);
     }
     minecraft_survival::maps::tick(&globals.maps, players, globals.game_time(), planned.len());
+    for update in minecraft_survival::maps::take_updates(&globals.maps, local_uuid) {
+        map_cache.apply(update);
+    }
     let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
     let clients: Vec<u32> = players.values().filter(|player| &player.uuid != local_uuid).map(|player| player.id.0).chain([local.0.0]).collect();
     queues.drain(|client| clients.contains(&client));

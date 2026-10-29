@@ -260,7 +260,8 @@ mod tests {
             ToClient::RecipeBook(_) => 32,
             ToClient::Animate { .. } => 33,
             ToClient::SkateRefused { .. } => 34,
-            ToClient::SpawnPosition { .. } => 35,
+            ToClient::MapData(_) => 35,
+            ToClient::SpawnPosition { .. } => 36,
         }
     }
 
@@ -729,11 +730,41 @@ mod tests {
                 offhand: true,
             },
             ToClient::SkateRefused { tick: 41 },
+            ToClient::MapData(map_update()),
             ToClient::SpawnPosition {
                 dimension: Dimension::Nether,
                 pos: [-120, 70, 33],
             },
         ]
+    }
+
+    fn map_update() -> MapUpdate {
+        MapUpdate {
+            id: 7,
+            scale: 1,
+            locked: false,
+            decorations: Some(vec![
+                MapMark {
+                    kind: "minecraft:player".to_owned(),
+                    x: -128,
+                    y: 127,
+                    rot: 15,
+                },
+                MapMark {
+                    kind: "minecraft:red_x".to_owned(),
+                    x: -87,
+                    y: -107,
+                    rot: 8,
+                },
+            ]),
+            patch: Some(MapPatch {
+                x: 3,
+                y: 5,
+                width: 2,
+                height: 3,
+                colors: vec![0, 61, 62, 119, 255, 4],
+            }),
+        }
     }
 
     fn round_trip<T>(lane: Lane, value: &T)
@@ -766,7 +797,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 36];
+        let mut seen = [false; 37];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -1053,8 +1084,8 @@ mod tests {
             dimension: Dimension::Overworld,
             pos: [8, 64, -8],
         };
-        assert_eq!(client_index(&spawn), 35);
-        assert_eq!(encode(Lane::Reliable, &spawn).unwrap()[0], 35);
+        assert_eq!(client_index(&spawn), 36);
+        assert_eq!(encode(Lane::Reliable, &spawn).unwrap()[0], 36);
         round_trip(Lane::Reliable, &spawn);
         for last_death in [None, Some((Dimension::Nether, [-1, 0, i32::MAX]))] {
             let view = PlayerView {
@@ -1069,6 +1100,52 @@ mod tests {
             assert_eq!(back.jump_bar, Some(0.75));
         }
         assert_eq!(PlayerView::default().last_death, None);
+    }
+
+    #[test]
+    fn a_map_picture_reaches_the_friend_whole_or_in_part() {
+        let update = ToClient::MapData(map_update());
+        assert_eq!(client_index(&update), 35);
+        assert_eq!(encode(Lane::Reliable, &update).unwrap()[0], 35);
+        round_trip(Lane::Reliable, &update);
+        let full = ToClient::MapData(MapUpdate {
+            id: i32::MAX,
+            scale: 4,
+            locked: true,
+            decorations: Some(Vec::new()),
+            patch: Some(MapPatch {
+                x: 0,
+                y: 0,
+                width: 128,
+                height: 128,
+                colors: (0..128 * 128).map(|i| (i % 248) as u8).collect(),
+            }),
+        });
+        let bytes = encode(Lane::Reliable, &full).unwrap();
+        assert!(bytes.len() > 128 * 128 && bytes.len() < 128 * 128 + 32);
+        assert_eq!(decode::<ToClient>(Lane::Reliable, &bytes).unwrap(), full);
+        let marks_only = ToClient::MapData(MapUpdate {
+            patch: None,
+            ..map_update()
+        });
+        round_trip(Lane::Reliable, &marks_only);
+        let unchanged_marks = ToClient::MapData(MapUpdate {
+            decorations: None,
+            ..map_update()
+        });
+        round_trip(Lane::Reliable, &unchanged_marks);
+        assert_ne!(
+            encode(Lane::Reliable, &unchanged_marks).unwrap(),
+            encode(
+                Lane::Reliable,
+                &ToClient::MapData(MapUpdate {
+                    decorations: Some(Vec::new()),
+                    ..map_update()
+                })
+            )
+            .unwrap(),
+            "no marks sent is not an empty list of marks"
+        );
     }
 
     #[test]

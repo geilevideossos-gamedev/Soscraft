@@ -332,6 +332,7 @@ pub enum ToClient {
     SkateRefused {
         tick: u32,
     },
+    MapData(MapUpdate),
     SpawnPosition {
         dimension: Dimension,
         pos: [i32; 3],
@@ -358,6 +359,32 @@ pub struct BookView {
     pub pages: Vec<String>,
     pub page: u32,
     pub take: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapUpdate {
+    pub id: i32,
+    pub scale: u8,
+    pub locked: bool,
+    pub decorations: Option<Vec<MapMark>>,
+    pub patch: Option<MapPatch>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapMark {
+    pub kind: String,
+    pub x: i8,
+    pub y: i8,
+    pub rot: i8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapPatch {
+    pub x: u8,
+    pub y: u8,
+    pub width: u8,
+    pub height: u8,
+    pub colors: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
