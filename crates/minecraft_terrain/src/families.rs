@@ -105,7 +105,7 @@ macro_rules! terrain_group {
             $($(#[$attr])* $crate::families::glowing_of::<$ty>(world, poses, atlas, light, partial, glows, each);)*
         }
 
-        #[allow(unused_variables)]
+        #[allow(unused_variables, clippy::ptr_arg)]
         pub fn shadows(world: &minecraftoss_entities::world::EntityWorld, out: &mut Vec<(u64, f32)>) {
             $($(#[$attr])* $crate::families::shadows_of::<$ty>(world, out);)*
         }

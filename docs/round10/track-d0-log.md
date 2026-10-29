@@ -432,3 +432,16 @@ After 126b07a1.
 ```
 IW4L_MINECRAFT_KIT=minecraft:white_bed*2,minecraft:silverfish_spawn_egg*2,minecraft:iron_sword,minecraft:cooked_beef*32
 ```
+
+### 3. Empty Minecraft mob groups pass clippy
+
+After 153fdcb5.
+
+- **Changed:** `terrain_group!` in `crates/minecraft_terrain/src/families.rs` also allows `clippy::ptr_arg` on the generated `shadows`. 126b07a1 gave each group a `shadows(world, out: &mut Vec<..>)`. In the six groups that have no family yet, nothing pushes to `out`, so clippy asked for a slice there, which a group with a family cannot take. Nothing changes in behaviour.
+- **Tests:** none (lint only).
+- **Runs:**
+  - `clippy -p minecraft_terrain -p minecraft_survival --locked --lib --tests -A clippy::approx_constant` shows no warning on a line of this group. The remaining warnings are on older lines.
+  - `check -p launcher --locked` is green.
+  - `families.rs` passes `rustfmt --check --edition 2021` with empty output.
+- **Decision:** a separate commit instead of an amend, because the track's rule is no amending.
+- **Test steps:** none (no change in the game).
