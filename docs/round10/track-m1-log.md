@@ -19,6 +19,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (polar-bears-live 1): `entities/src/monster_ai.rs` (`MeleeState`'s three accessors, `MeleeCheck`, `MeleeAttackGoal::checked` and `tick_with`, `CheckedMeleeAttackGoal`), `entities/src/world/families/tests.rs` (its test).
 - Added (polar-bears-live 2): `entities/src/world/families/land/polar_bears.rs`, `entities/src/world/families/land/polar_bears/ai.rs`, `entities/src/world/families/land/polar_bears/tests.rs` (test only). Changed again: `entities/src/world/families/land.rs` (registration), `entities/src/world/families/land/animal_goals.rs` (`FollowParentGoal`, `panic_environmental_cause`, four `AnimalGoals` fields).
 - Patched (polar-bears-live 3): `world/src/natural_spawner/families.rs` (`generation_rule`), `world/src/natural_spawner.rs` (its one call in `spawn_for_chunk_generation`), `world/src/natural_spawner/families/tests.rs` (its test).
+- Changed again (polar-bears-live 4): `world/src/natural_spawner/families/land.rs` (the polar bear row, `polar_bear_rule` and their tests).
 
 ## Hooks
 
@@ -44,11 +45,13 @@ For the orchestrator to copy at the merge of segment m1a (rabbits done):
 
 - `docs/MINECRAFT-SURVIVAL.md:441`: drop "rabbit" from the eggs that spawn nothing: "Spawn eggs for unsimulated mobs (fox, goat, the wither and others; ...)".
 - `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs, drawn with vanilla's adult and baby models and their 16 textures (Toast and the killer bunny's among them), hopping and tilting their heads with vanilla's keyframes, and seen by friends at the same moments. With `mob_griefing` they raid full-grown carrots, a stage a bite. The killer bunny (`RabbitType` 99) has armour 8, never flees, leaps at players and wolves within 4 blocks, bites for 8 before difficulty and calls the rabbits around it when hurt; its sounds are hostile. Wild cats hunt rabbits."
+- At the merge of segment m1a (polar bears live; drawn with `polar-bears-drawn`): under World simulation in `docs/MINECRAFT-SURVIVAL.md`: "Polar bears (round 10, track M1): wander, defend their cubs (a hit cub runs and calls the adults within 20 blocks; adults attack players within 10 blocks of a cub), rear up with a growl every two seconds and swipe for 6 before difficulty, hunt foxes, panic only from fire (cubs from any hit), stay angry 20 to 39 seconds (saved with `angry_at`), follow their mothers as cubs; spawn on grass in snowy plains and ice spikes and on sea ice in frozen oceans, an adult with cubs; saved, hatched from eggs and seen by friends." Family creature rows now decide chunk-generation spawns with their own rules (`generation_rule`).
 
 ## Left for later
 
 - The hop's dust (entity event 1, `spawnSprintParticle`): `ClientFx` has no block particles (M1-1).
 - A rabbit's bite on a carrot: level event 2001 (the crumbs and the break sound) waits for foxes' `World::destroy_effect` (M1-4). The `block_change` game event for W's vibrations is one line where the rabbit's tick applies the bite, added by whichever of W and M1 merges second (rabbits-behaviour 1).
+- Polar bears (M1-2): `mustReach` (ported nowhere, so a bear may take a target it cannot path to), the 0.98 water slow-down, the standing bear's taller client box and freeze immunity. The old `AngerTime` key is not read.
 - The shared `FloatGoal` uses a fixed 0.4 water height; vanilla's `getFluidJumpThreshold` is 0 for an eye below 0.4 (a baby rabbit, a silverfish). The rabbit's own jump uses the right threshold.
 
 ## Segment m1a
@@ -453,3 +456,27 @@ After feed5dab.
 - **Runs:** `test -p minecraftoss-world --locked --lib` (117 passed, with the polar bear row of the next commit in the tree), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The touched files keep `rustfmt --check --edition 2024` clean.
 - **Test steps:** nothing new to see until the next commit gives a family row a rule of its own (the polar bear's).
 - **Kit:** none.
+
+#### 4. Minecraft polar bears spawn in snowy biomes and on sea ice
+
+After fa44b301.
+
+- **javap this round:** `PolarBear.checkPolarBearSpawnRules`: in a biome of `#polar_bears_spawn_on_alternate_blocks` (frozen and deep frozen ocean in 26.3), raw light above 8 and a block of `#polar_bears_spawnable_on_alternate` (ice) below, with no spawner exception; elsewhere `Animal.checkAnimalSpawnRules` (`#animals_spawnable_on`, grass, below, and raw light above 8 unless `EntitySpawnReason.ignoresLightRequirements`, as for spawners). `finalizeSpawn` uses `AgeableMobGroupData(1.0)` when there is no group data. `SpawnPlacements` registers it `ON_GROUND`, `MOTION_BLOCKING_NO_LEAVES`.
+- **Changed (vendored world crate, `natural_spawner/families/land.rs`):** the row `minecraft:polar_bear`: 1.4 x 1.4, `OnGround`, `MotionBlockingNoLeaves`, not fire immune, `Rules::Family { creature: true }`, `Walk::Animal`, kept when far, cluster 4, `MobCategory::Creature`, follow range 20, `baby_chance: Some(1.0)` (the first of a group an adult, every other a cub), no finalize; and `polar_bear_rule`, which looks both tags up by name as `check_spawn_rules` does. The built-in size row (`natural_spawner.rs`, rules `Other`, so it never spawned) is overridden by the row; ice as a valid floor and powder snow as no danger were already there.
+- **Tests added:**
+  - `natural_spawner::families::land::tests::polar_bears_spawn_on_grass_in_the_light_and_on_ice_in_frozen_oceans`: the row (size, placement, heightmap, rules, walk, cluster, category, follow range, baby chance); the rule allows grass in daylight in snowy plains and sea ice in frozen and deep frozen oceans, and a spawner on grass in the dark; it refuses grass in the dark, snow, ice on land, sea ice in the dark even from a spawner, packed ice and grass in a frozen ocean. Natural spawns and chunk generation both put bears on sea ice and none on packed ice.
+  - `natural_spawner::families::land::tests::a_polar_bear_group_is_an_adult_with_cubs`: natural spawns (with a `SpawnContext`) and chunk generation (without one) in snowy plains start every group with an adult, the rest cubs; a summoned bear is an adult.
+- **Decisions:**
+  - A spawner ignores the light on grass but not on sea ice, as vanilla's two branches do.
+  - The row's walk is `Walk::Animal` (`Animal.getWalkTargetValue`: grass is best, else the light), so a bear on sea ice needs daylight there too, as in vanilla.
+- **Runs:** `test -p minecraftoss-world --locked --lib` (117 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The first run failed both new tests: chunk generation drew its seeds as 0..39, whose first `nextFloat` is about 0.73 for every small seed, so with the 0.5 probability no group ever started; the test now spreads its seeds. Natural spawning puts each of its three packs in a group of its own, often of one bear, so the group test counts cubs instead of asking for one per adult. `land.rs` keeps `rustfmt --check --edition 2024` clean.
+- **Test steps** (bears are not drawn yet, so look for their round shadows). Release build, survival, Normal, by day. Name each screenshot by its label.
+  1. `/locate biome minecraft:frozen_ocean`, `/tp` there and fly over new sea ice (chunks you have not loaded before): here and there a big shadow on the ice, sometimes with one or two small ones beside it. **m1-polar-spawn-1**
+  2. `/locate biome minecraft:snowy_plains`, `/tp` there and walk into new land: now and then a big shadow, alone or with small ones, among the rabbits. **m1-polar-spawn-2**
+  3. Stay a few minutes on a frozen ocean by day in loaded chunks after killing the bears there: new ones turn up on the ice over time.
+  4. In creative, place the spawner on grass in a dark room and use the polar bear egg on it: bears spawn around it (none in a dark room on ice).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:polar_bear_spawn_egg*2,minecraft:spawner,minecraft:grass_block*64,minecraft:ice*32,minecraft:torch*16
+```
