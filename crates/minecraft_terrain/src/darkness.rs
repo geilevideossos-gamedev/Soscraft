@@ -3,8 +3,12 @@ use crate::lava_fog;
 
 pub const BLEND_TICKS: u32 = 22;
 pub const TICK_SECONDS: f64 = 1.0 / 20.0;
+pub const GAMMA: f32 = 0.5;
 const FOG_DISTANCE: f32 = 15.0;
 const FOG_START: f32 = 0.75;
+const PULSE_SCALE: f32 = 0.45;
+const PULSE_SPEED: f32 = 0.025;
+const PULSE_TICKS: u32 = 80;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DarknessBlend {
@@ -35,6 +39,7 @@ pub struct Darkness {
     given: Option<(u32, u32)>,
     since: u32,
     clock: f64,
+    ticks: u32,
 }
 
 impl Darkness {
@@ -50,6 +55,7 @@ impl Darkness {
         self.clock += seconds.clamp(0.0, 1.0);
         while self.clock >= TICK_SECONDS {
             self.clock -= TICK_SECONDS;
+            self.ticks = self.ticks.wrapping_add(1);
             self.tick();
         }
     }
@@ -74,6 +80,17 @@ impl Darkness {
         self.given
             .map(|_| self.blend.map_or(0.0, |blend| blend.factor(partial)))
     }
+
+    pub fn light(&self) -> (f32, f32) {
+        light(self.blend().unwrap_or(0.0), self.ticks, self.partial())
+    }
+}
+
+pub fn light(blend: f32, tick: u32, partial: f32) -> (f32, f32) {
+    let brightness = (GAMMA - blend).max(0.0);
+    let time = (tick % PULSE_TICKS) as f32 - partial;
+    let wave = (time * std::f32::consts::PI * PULSE_SPEED).cos();
+    (brightness, (wave * PULSE_SCALE * blend).max(0.0))
 }
 
 pub fn fog(mut sky: SkyState, blend: f32, render_distance: f32) -> SkyState {
@@ -208,6 +225,50 @@ mod tests {
             again.advance(TICK_SECONDS, Some(260), view);
         }
         assert_eq!(again.blend(), Some(1.0), "the second grant keeps it dark");
+    }
+
+    #[test]
+    fn the_light_pulses_every_four_seconds() {
+        let (brightness, scale) = light(1.0, 0, 0.0);
+        assert_eq!(brightness, 0.0);
+        assert!(close(scale, 0.45));
+        assert!(close(
+            light(1.0, 10, 0.0).1,
+            0.45 * std::f32::consts::FRAC_1_SQRT_2
+        ));
+        assert!(close(light(1.0, 20, 0.0).1, 0.0));
+        assert_eq!(light(1.0, 40, 0.0).1, 0.0, "the dark half is clamped");
+        assert!(close(light(1.0, 80, 0.0).1, 0.45));
+        assert!(
+            close(light(1.0, 1, 1.0).1, 0.45),
+            "the partial tick runs it back"
+        );
+        assert!(close(light(0.5, 0, 0.0).1, 0.225));
+        assert_eq!(light(0.0, 0, 0.0), (GAMMA, 0.0));
+        assert_eq!(light(0.25, 0, 0.0).0, 0.25);
+        assert_eq!(light(0.5, 0, 0.0).0, 0.0);
+        assert_eq!(light(0.75, 0, 0.0).0, 0.0);
+
+        let mut darkness = Darkness::default();
+        assert_eq!(darkness.light(), (GAMMA, 0.0), "no darkness, no pulse");
+        for _ in 0..PULSE_TICKS {
+            darkness.advance(TICK_SECONDS, Some(600), 0);
+        }
+        let mut dimmed = 0;
+        for _ in 0..PULSE_TICKS {
+            darkness.advance(TICK_SECONDS, Some(600), 0);
+            assert_eq!(darkness.light().0, 0.0);
+            if darkness.light().1 > 1e-6 {
+                dimmed += 1;
+            }
+        }
+        assert_eq!(dimmed, 39, "dark for half of the 80 ticks");
+        darkness.advance(0.0, None, 0);
+        assert_eq!(
+            darkness.light(),
+            (GAMMA, 0.0),
+            "milk ends the pulse at once"
+        );
     }
 
     #[test]

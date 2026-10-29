@@ -1689,8 +1689,9 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];
+    let (brightness, pulse) = darkness.light();
     view.environment = [
-        put(forward),
+        [forward.x, forward.y, forward.z, pulse],
         put(right),
         put(up),
         [eye[0] as f32, eye[1] as f32, eye[2] as f32, 0.0],
@@ -1705,8 +1706,7 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
         sky.sunset,
         [sky.sun_direction.x, sky.sun_direction.y, sky.sun_direction.z, sky.rain_brightness],
         [sky.moon_direction.x, sky.moon_direction.y, sky.moon_direction.z, sky.rain_brightness],
-        // The brightness option at its default.
-        [sky.cloud.x, sky.cloud.y, sky.cloud.z, 0.5],
+        [sky.cloud.x, sky.cloud.y, sky.cloud.z, brightness],
         [aspect, sky.cloud_alpha, sky.star_brightness, sky.star_angle],
         [sky.moon_phase as f32, (game_time as f32) * 0.03, 96.0, 160.0],
         [
@@ -2607,6 +2607,9 @@ mod darkness_tests {
         }
         let dark = environment(&mut terrain, &registries, darkness, None);
         assert_eq!((dark[13][0], dark[13][1]), (11.25, 15.0), "fog start and end");
+        assert_eq!((clear[0][3], clear[10][3]), (0.0, 0.5), "no pulse, the default brightness");
+        assert!((dark[0][3] - 0.45).abs() < 1e-5, "the pulse at its darkest: {:?}", dark[0]);
+        assert_eq!(dark[10][3], 0.0, "the brightness option is gone");
         assert_eq!(dark[5], [0.0, 0.0, 0.0, 15.0], "black fog that hides the sky past 15 blocks");
         let lava = environment(&mut terrain, &registries, darkness, Some((false, false)));
         assert_eq!((lava[13][0], lava[13][1]), (0.25, 1.0), "lava keeps its own fog");
