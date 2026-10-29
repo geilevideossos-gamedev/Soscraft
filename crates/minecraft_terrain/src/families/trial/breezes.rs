@@ -37,7 +37,7 @@ fn pose_of(id: i32) -> Pose {
         .ok()
         .and_then(|id| POSES.get(id))
         .copied()
-        .unwrap_or_default()
+        .unwrap_or(Pose::Standing)
 }
 
 impl TerrainFamily for Breeze {

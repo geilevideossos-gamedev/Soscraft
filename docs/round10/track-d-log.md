@@ -892,6 +892,19 @@ After abd1202f.
 IW4L_MINECRAFT_KIT=minecraft:breeze_spawn_egg*4,minecraft:trident*2,minecraft:trident+loyalty=3,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
 
+## Final verification of the second segment
+
+Clippy and the tests of every crate the second segment touched (`git diff --stat r10-d2-base..HEAD`): `minecraft_survival`, `minecraft_terrain`, `render_anim`, `minecraftoss-entities` and `minecraftoss-world`.
+
+### 1. Track D's breeze code passes clippy
+
+After c3ee9d67.
+
+- **Clippy** (`clippy -p` on the five crates, `--all-targets`, `-A clippy::approx_constant`): one warning on a line the segment added, in `minecraft_terrain/src/families/trial/breezes.rs` (`pose_of`): an `unwrap_or_default` call, which the workspace's `clippy.toml` forbids, now names its fallback (`unwrap_or(Pose::Standing)`, the default pose). The other warnings in the touched files (`block_particles.rs` `len_without_is_empty`, `server.rs` lines 666 and 3502, `minecraft_world.rs` `too_many_arguments`) are on older lines and stay. The vendored crates have none. Clippy on `minecraft_terrain` again finds nothing on the segment's lines.
+- The segment's five new `.rs` files pass `rustfmt --check --edition 2021`, and its added lines hold no comments.
+- **Tests:** none new; the same behaviour. `check -p launcher` passes.
+- **Test steps and kit:** none (no change in game).
+
 ## Combined kit
 
 27 stacks. It holds everything the steps of the groups trial-spawners to review need (97db956b to e9ea905e: trial spawners and their eggs, the mob spawner steps, glass for the sight step, ominous trials with both bottles, vaults with both keys, lodestones with the Nether portal, the friend's clock and recovery compass), with enchanted diamond armour. Left out: the bow and arrows (the sword does), golden apples, milk (`/effect clear @s` does), the totem, the skeleton egg (egg step 2: use the husk egg), the ladder and the water bucket. The steps of group d5-review (bad8dd84 and 0ff5716c: wind charges, the wither and its skull) use their own kit lines above.
