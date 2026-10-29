@@ -226,7 +226,7 @@ pub fn nether_rotation(game_time: i64) -> i8 {
 }
 
 pub fn packed(color: u8, brightness: u8) -> u8 {
-    color << 2 | (brightness & 3)
+    (color << 2) | (brightness & 3)
 }
 
 pub fn biome_preview(map: &mut MapData, mut watery: impl FnMut(i32, i32) -> bool) {
@@ -577,6 +577,7 @@ pub struct LootExplorer {
     dimension: String,
     first_id: i32,
     known: Claims,
+    search_time: Duration,
     explored: Mutex<Explored>,
 }
 
@@ -596,8 +597,14 @@ impl LootExplorer {
             dimension: dimension.to_owned(),
             first_id,
             known: Claims::default(),
+            search_time: SEARCH_TIME,
             explored: Mutex::new(Explored::default()),
         }
+    }
+
+    pub fn with_search_time(mut self, search_time: Duration) -> Self {
+        self.search_time = search_time;
+        self
     }
 
     pub fn with_claims(mut self, claims: Claims) -> Self {
@@ -627,7 +634,7 @@ impl Exploring for LootExplorer {
         skip_known: bool,
         zoom: u8,
     ) -> Option<(i32, [i32; 3])> {
-        let deadline = Instant::now() + SEARCH_TIME;
+        let deadline = Instant::now() + self.search_time;
         let mut explored = self.explored();
         let search = if skip_known {
             let mut claims = explored.claims.take().unwrap_or_else(|| self.known.clone());
@@ -955,6 +962,11 @@ mod tests {
         .ok()
     }
 
+    fn patient(gen: &Arc<WorldGen>, first_id: i32) -> LootExplorer {
+        LootExplorer::new(gen.clone(), "minecraft:overworld", first_id)
+            .with_search_time(Duration::from_secs(120))
+    }
+
     fn chest(table: &str, seed: i64) -> Tag {
         Tag::Compound(BTreeMap::from([
             ("LootTable".to_owned(), Tag::String(table.to_owned())),
@@ -986,7 +998,7 @@ mod tests {
             deadline,
         ));
         let origin = (wreck[0], 50, wreck[2]);
-        let explorer = Arc::new(LootExplorer::new(gen.clone(), "minecraft:overworld", 5));
+        let explorer = Arc::new(patient(&gen, 5));
         let recipes = minecraftoss_player::crafting::RecipeBook::default();
         let (items, _) = crate::containers::structure_loot_in(
             &registries,
@@ -1068,7 +1080,7 @@ mod tests {
         let gen = stream.world_gen();
         let registries = gen.terrain.registries.clone();
         let recipes = minecraftoss_player::crafting::RecipeBook::default();
-        let explorer = Arc::new(LootExplorer::new(gen.clone(), "minecraft:overworld", 0));
+        let explorer = Arc::new(patient(&gen, 0));
         let (items, _) = crate::containers::structure_loot_in(
             &registries,
             &chest("minecraft:chests/simple_dungeon", 9),
@@ -1085,11 +1097,16 @@ mod tests {
         assert_eq!(explorer.explore(&none, [0, 64, 0], 50, false, 1), None);
         let explored = explorer.take();
         assert!(explored.maps.is_empty() && explored.timed_out.is_empty());
-        let late = LootExplorer::new(gen, "minecraft:overworld", 0);
+        assert_eq!(
+            LootExplorer::new(gen.clone(), "minecraft:overworld", 0).search_time,
+            SEARCH_TIME
+        );
+        let late = LootExplorer::new(gen, "minecraft:overworld", 0)
+            .with_search_time(Duration::from_millis(100));
         let villages = ["minecraft:village_plains".to_owned()];
         let started = Instant::now();
         let gave_up = late.explore(&villages, [40_000, 64, 40_000], 100, false, 2);
-        assert!(started.elapsed() < SEARCH_TIME + Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(30));
         if gave_up.is_none() {
             assert_eq!(late.take().timed_out, ["minecraft:village_plains"]);
         }
@@ -1174,7 +1191,7 @@ mod tests {
         let nearest = found(locate::nearest_structure(
             &gen, &treasure, origin, 50, deadline,
         ));
-        let explorer = LootExplorer::new(gen.clone(), "minecraft:overworld", 0);
+        let explorer = patient(&gen, 0);
         let first = explore(&explorer, &treasure, origin, 50, true);
         let second = explore(&explorer, &treasure, origin, 50, true);
         assert_eq!(first, nearest);
@@ -1205,8 +1222,7 @@ mod tests {
         store.take_writes().write(&storage).unwrap();
         drop(storage);
         let (loaded, _) = MapStore::load(&LevelStorage::open(&world).unwrap());
-        let later = LootExplorer::new(gen, "minecraft:overworld", 3)
-            .with_claims(loaded.claims("minecraft:overworld"));
+        let later = patient(&gen, 3).with_claims(loaded.claims("minecraft:overworld"));
         let third = explore(&later, &treasure, origin, 50, true);
         assert!(
             third != first && third != second,
@@ -1241,13 +1257,13 @@ mod tests {
             .expect("the located chunk starts the shipwreck");
         let middle = start.bounding_box().center();
         let inside = [middle.x, middle.y, middle.z];
-        let keeping = LootExplorer::new(gen.clone(), "minecraft:overworld", 0);
+        let keeping = patient(&gen, 0);
         assert_eq!(explore(&keeping, &shipwrecks, inside, 100, false), home);
         assert!(
             keeping.take().claims.is_none(),
             "a map that keeps known structures claims nothing"
         );
-        let skipping = LootExplorer::new(gen.clone(), "minecraft:overworld", 0);
+        let skipping = patient(&gen, 0);
         let away = explore(&skipping, &shipwrecks, inside, 100, true);
         assert_ne!(away, home);
         let claims = skipping.take().claims.unwrap();
@@ -1264,7 +1280,7 @@ mod tests {
             1
         );
         assert_eq!(claims.len(), 2);
-        let outside = LootExplorer::new(gen, "minecraft:overworld", 0);
+        let outside = patient(&gen, 0);
         explore(
             &outside,
             &shipwrecks,

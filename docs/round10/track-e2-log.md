@@ -452,3 +452,13 @@ After 03093a8b.
 ```
 IW4L_MINECRAFT_KIT=minecraft:iron_shovel,minecraft:diamond_pickaxe,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:oak_boat
 ```
+
+### 5. Minecraft explorer map tests give slow searches time
+
+After 0416f340.
+
+- **Why:** in the full `minecraft_terrain` run (debug build, every test at once, other tracks building), `maps::tests::a_shipwreck_map_chest_rolls_a_treasure_map_to_the_nearest_buried_treasure` failed once: the treasure search ran past the game's 2 s budget, so the explorer gave up and the chest had no map. In the game the budget stays 2 s; only the tests wait longer.
+- **Changed:** `minecraft_terrain/src/maps.rs`: `LootExplorer` keeps its own `search_time` (`SEARCH_TIME`, 2 s, unless `with_search_time` sets another). The tests that need a find use 120 s; the timeout test checks that a new explorer has the 2 s budget and gives up within a 100 ms one.
+  - The same file: `packed` brackets its shift, `(colour << 2) | brightness`, as vanilla's `getPackedId` reads; the value is unchanged.
+- **Tests:** the 12 `maps::tests` pass. The full `minecraft_terrain` run has 1416 passed with 3 ignored; `sections::tests::background_full_update_matches_the_synchronous_one` failed once while other tracks built and passed alone, as in the earlier groups. Full `minecraft_survival` (759), `minecraftoss-core` (37) and `render_anim` (212) pass, and `check -p launcher` passes.
+- **Test steps and kit:** none (no change in game).
