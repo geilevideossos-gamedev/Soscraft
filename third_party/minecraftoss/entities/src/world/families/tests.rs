@@ -494,6 +494,77 @@ fn a_fireball_spares_a_fire_immune_registered_mob() {
 }
 
 #[test]
+fn a_registered_mob_that_deflects_turns_arrows_and_fireballs_back() {
+    let mut world = EntityWorld::default();
+    let mut field = Field::default();
+    let blaze = world.spawn_blaze(
+        crate::blaze::Blaze::new(DVec3::new(0.5, 64.0, -40.5)),
+        true,
+    );
+    let plain = probe_at(&mut world, KIND, at(0.5));
+    let mirror = probe_at(&mut world, KIND, at(10.5));
+    probe_mut(&mut world, mirror).state.deflects = true;
+    let mut arrows = Vec::new();
+    for x in [0.5, 10.5] {
+        let arrow = crate::projectile::Arrow::in_flight(
+            DVec3::new(x, 64.5, -2.5),
+            DVec3::Z,
+            LegacyRandom::new(0),
+        );
+        arrows.push(world.spawn_owned_arrow(blaze, arrow));
+    }
+    for _ in 0..6 {
+        world.tick(&mut field);
+    }
+    assert!(probe(&world, plain).core.health < probe::MAX_HEALTH);
+    assert_eq!(probe(&world, mirror).core.health, probe::MAX_HEALTH);
+    assert_eq!(
+        probe(&world, mirror).state.deflected,
+        vec!["minecraft:arrow".to_owned()]
+    );
+    let turned = &world.arrows.iter().find(|e| e.id == arrows[1]).unwrap().arrow;
+    assert!(turned.alive && turned.velocity.z < 0.0, "{:?}", turned.velocity);
+    assert!(turned.position.z < 0.0, "it left the box");
+    world.spawn_fireball(Fireball::shoot(
+        FireballKind::Small,
+        Shooter::Mob(blaze),
+        DVec3::new(10.5, 64.5, -1.5),
+        DVec3::Z,
+    ));
+    for _ in 0..10 {
+        world.tick(&mut field);
+    }
+    let shown = probe(&world, mirror);
+    assert_eq!(
+        (shown.core.health, shown.core.body.fire_ticks),
+        (probe::MAX_HEALTH, 0)
+    );
+    assert!(
+        shown
+            .state
+            .deflected
+            .iter()
+            .any(|kind| kind == "minecraft:small_fireball"),
+        "{:?}",
+        shown.state.deflected
+    );
+    assert!(
+        world
+            .fireballs
+            .iter()
+            .any(|e| e.fireball.alive && e.fireball.velocity.z < 0.0)
+    );
+    assert!(
+        world
+            .fireballs
+            .iter()
+            .filter(|e| e.fireball.velocity.z < 0.0)
+            .all(|e| e.fireball.acceleration_power == 0.05),
+        "a turned fireball speeds up half as fast"
+    );
+}
+
+#[test]
 fn two_registered_mobs_push_apart_and_cram() {
     let mut world = EntityWorld::default();
     let mut field = Field::default();

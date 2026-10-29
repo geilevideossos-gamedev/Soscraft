@@ -48,6 +48,7 @@ impl Throwable {
             "minecraft:splash_potion" => Some(Self::SplashPotion),
             "minecraft:lingering_potion" => Some(Self::LingeringPotion),
             "minecraft:wind_charge" => Some(Self::WindCharge),
+            "minecraft:breeze_wind_charge" => Some(Self::WindCharge),
             _ => None,
         }
     }
@@ -336,6 +337,7 @@ pub struct Thrown {
     pub components: Option<serde_json::Value>,
     pub previous: DVec3,
     pub shooter: Option<u64>,
+    pub shooter_uuid: Option<u128>,
     flight: ThrownPotion,
     random: LegacyRandom,
 }
@@ -386,6 +388,7 @@ impl Thrown {
             components: throw.components.cloned(),
             previous: start,
             shooter: None,
+            shooter_uuid: None,
             flight,
             random: LegacyRandom::new(random.next_long()),
         })
@@ -409,6 +412,7 @@ impl Thrown {
             components: None,
             previous: from,
             shooter: Some(shooter),
+            shooter_uuid: None,
             flight,
             random: LegacyRandom::new(random.next_long()),
         })
@@ -432,6 +436,37 @@ impl Thrown {
             components,
             previous: from,
             shooter: None,
+            shooter_uuid: None,
+            flight,
+            random: LegacyRandom::new(random.next_long()),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn resumed(
+        item: &str,
+        shooter_uuid: Option<u128>,
+        position: DVec3,
+        velocity: DVec3,
+        yaw: f32,
+        pitch: f32,
+        left_owner: bool,
+        random: &mut LegacyRandom,
+    ) -> Option<Self> {
+        let kind = Throwable::of(item)?;
+        let mut flight = ThrownPotion::shoot(Potion::Healing, MOB_THROWER, position, velocity, 1.0, 0.0, random);
+        flight.velocity = velocity;
+        flight.yaw = yaw;
+        flight.pitch = pitch;
+        flight.left_owner = left_owner;
+        Some(Self {
+            item: item.to_owned(),
+            kind,
+            owner: MOB_THROWER,
+            components: None,
+            previous: position,
+            shooter: None,
+            shooter_uuid,
             flight,
             random: LegacyRandom::new(random.next_long()),
         })
@@ -447,6 +482,14 @@ impl Thrown {
 
     pub fn discard(&mut self) {
         self.flight.alive = false;
+    }
+
+    pub fn deflect(&mut self) {
+        let spin = 170.0 + self.random.next_float() * 20.0;
+        self.flight.alive = true;
+        self.flight.velocity *= -0.5;
+        self.flight.position += self.flight.velocity;
+        self.flight.yaw += spin;
     }
 
     pub fn alive(&self) -> bool {
@@ -467,6 +510,10 @@ impl Thrown {
 
     pub fn margin(&self) -> f64 {
         self.flight.margin()
+    }
+
+    pub fn left_owner(&self) -> bool {
+        self.flight.left_owner
     }
 
     pub fn contents(&self) -> crate::potions::PotionContents {
@@ -577,6 +624,7 @@ pub fn hatch_point(at: DVec3, before: DVec3) -> DVec3 {
 
 pub fn texture(item: &str) -> Option<ResourceId> {
     let path = item.strip_prefix("minecraft:")?;
+    let path = if path == "breeze_wind_charge" { "wind_charge" } else { path };
     ResourceId::parse(&format!("minecraft:item/{path}")).ok()
 }
 
@@ -992,6 +1040,30 @@ mod tests {
             assert!(charge.tick(&world, &[], None).is_none());
         }
         assert!((charge.velocity() - before).length() < 1e-9, "{:?} {:?}", charge.velocity(), before);
+    }
+
+    #[test]
+    fn a_deflected_thrown_thing_flies_back_at_half_speed() {
+        let world = Blocks::default();
+        let mut snowball = throw("minecraft:snowball", 0.0);
+        let start = snowball.position();
+        let wall = PotionTarget { id: 5, min: start + DVec3::new(-1.0, -1.0, 3.0), max: start + DVec3::new(1.0, 1.0, 4.0), owner: false };
+        let mut landed = None;
+        for _ in 0..10 {
+            landed = snowball.tick(&world, &[wall], None);
+            if landed.is_some() {
+                break;
+            }
+        }
+        assert_eq!(landed.and_then(|landed| landed.mob), Some(5));
+        assert!(!snowball.alive());
+        let (at, before, yaw) = (snowball.position(), snowball.velocity(), snowball.yaw());
+        snowball.deflect();
+        assert!(snowball.alive());
+        assert!((snowball.velocity() + before * 0.5).length() < 1e-9);
+        assert!(snowball.position().z < at.z, "it leaves the box");
+        assert!((170.0..=190.0).contains(&(snowball.yaw() - yaw)));
+        assert!(snowball.tick(&world, &[wall], None).is_none(), "it does not hit the box again");
     }
 
     #[test]
