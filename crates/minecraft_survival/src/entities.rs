@@ -68,6 +68,7 @@ pub struct Entities {
     /// Client drops handed to the server: the command count that sent each.
     server_handed: HashMap<u32, (u64, ItemEntity)>,
     players: PlayerQueues,
+    left_game_events: Vec<minecraft_terrain::game_events::PlayerEvent>,
     block_entity_changes: Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)>,
     server_snapshot: Option<EntitySnapshot>,
     server_handled: u64,
@@ -476,6 +477,7 @@ impl Entities {
             broken_items: Vec::new(),
             server_handed: HashMap::new(),
             players: PlayerQueues::default(),
+            left_game_events: Vec::new(),
             block_entity_changes: Vec::new(),
             server_snapshot: None,
             server_handled: 0,
@@ -994,11 +996,18 @@ impl Entities {
     }
 
     pub fn game_event(&mut self, player: u64, event: &'static str, pos: [f64; 3], affected: Option<String>) {
-        self.players.queue(player).game_events.push(minecraft_terrain::game_events::PlayerEvent { player, event, pos, affected, projectile: false });
+        self.post_game_event(minecraft_terrain::game_events::PlayerEvent { player, event, pos, affected, projectile: false });
     }
 
     pub fn projectile_landed(&mut self, player: u64, pos: [f64; 3], affected: Option<String>) {
-        self.players.queue(player).game_events.push(minecraft_terrain::game_events::PlayerEvent { player, event: minecraft_terrain::game_events::PROJECTILE_LAND, pos, affected, projectile: true });
+        self.post_game_event(minecraft_terrain::game_events::PlayerEvent { player, event: minecraft_terrain::game_events::PROJECTILE_LAND, pos, affected, projectile: true });
+    }
+
+    fn post_game_event(&mut self, event: minecraft_terrain::game_events::PlayerEvent) {
+        match self.players.0.get_mut(&event.player) {
+            Some(queue) => queue.game_events.push(event),
+            None => self.left_game_events.push(event),
+        }
     }
 
     pub fn keep_dropped_contents(&mut self, pos: (i32, i32, i32), id: &str, components: &serde_json::Value) {
@@ -1208,6 +1217,7 @@ impl Entities {
             }
             picked.splice(0..0, queue.picked);
             experience = experience.saturating_add(queue.experience);
+            self.left_game_events.append(&mut queue.game_events);
         }
         for rest in take_picked(inventory, selected, picked) {
             if let Some(feet) = feet {
@@ -1569,7 +1579,7 @@ impl Entities {
                     .collect(),
                 warden_trackers: actors.iter().map(|actor| (actor.id, actor.view.warden)).collect(),
                 view_distance: self.view_distance,
-                game_events: actors.iter().flat_map(|actor| std::mem::take(&mut self.players.queue(actor.id).game_events)).collect(),
+                game_events: std::mem::take(&mut self.left_game_events).into_iter().chain(actors.iter().flat_map(|actor| std::mem::take(&mut self.players.queue(actor.id).game_events))).collect(),
             }, batch.normal.clone());
         }
         let mut changes = Vec::new();
@@ -2981,6 +2991,56 @@ mod tests {
         ];
         let _ = entities.tick(&mut actors, 0.05, &batch, crate::tick_rate::ClientTiming::default(), minecraft_terrain::server::ClockTicks::default(), true);
         std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    #[test]
+    fn a_leaving_player_s_vibrations_go_out_with_the_next_tick_and_leave_no_queue() {
+        use minecraft_terrain::game_events::{CONTAINER_CLOSE, STEP};
+        let Some(mut entities) = friend_world() else {
+            return;
+        };
+        let (mut host, mut friend) = (Inventory::default(), Inventory::default());
+        tick_both(&mut entities, &mut host, &mut friend);
+        entities.game_event(FRIEND, STEP, FRIEND_FEET, None);
+        entities.leave(FRIEND, &mut friend, 0, Some(FRIEND_FEET));
+        entities.game_event(FRIEND, CONTAINER_CLOSE, [12.5, 201.5, 13.5], None);
+        assert!(!entities.players.0.contains_key(&FRIEND), "no queue is made again for a player who left");
+        let left: Vec<(u64, &str)> = entities.left_game_events.iter().map(|event| (event.player, event.event)).collect();
+        assert_eq!(left, [(FRIEND, STEP), (FRIEND, CONTAINER_CLOSE)]);
+        let view = PlayerView {
+            feet: HOST_FEET,
+            alive: true,
+            attackable: true,
+            spectator: false,
+            picks_up: true,
+            health: 20.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            main_hand: None,
+            offhand: None,
+            sneaking: false,
+            hero: None,
+            sleeping: None,
+            sleep_timer: 0,
+            forward: 0.0,
+            strafe: 0.0,
+            jumping: false,
+            swirl: None,
+            omens: Default::default(),
+            warden: Default::default(),
+        };
+        let started = std::time::Instant::now();
+        while !entities.left_game_events.is_empty() {
+            assert!(started.elapsed().as_secs() < 60, "a tick goes out");
+            let batch = crate::tick_rate::TickBatch {
+                normal: if entities.ready_for_ticks() { vec![true] } else { Vec::new() },
+                overload: None,
+            };
+            let mut actors = [TickActor { id: HOST, view: view.clone(), inventory: &mut host, selected: 0 }];
+            let _ = entities.tick(&mut actors, 0.05, &batch, crate::tick_rate::ClientTiming::default(), minecraft_terrain::server::ClockTicks::default(), true);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!entities.players.0.contains_key(&FRIEND), "the host's tick takes them without the friend");
     }
 
     #[test]

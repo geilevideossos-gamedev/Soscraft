@@ -486,6 +486,24 @@ After 6fb428f4 ("Minecraft sculk spreads from catalysts like vanilla").
 - **Tests:** none added (formatting only); `level::sculk::tests` (12) and `vibrations::tests` (11) pass, `check -p launcher` is green.
 - **Test steps:** none (no behaviour changed).
 
+### 2. A player who leaves a level with a container open is heard closing it at once
+
+After e6ddd950 ("Track W's new sculk files pass rustfmt").
+
+- **Cause:** all three ways out of a level (a friend leaving through `Server` in `minecraft_survival/src/server.rs`, `minecraft_players::leave_level` and the host's `leave_level` in `render_anim/src/minecraft_world.rs`) call `Entities::leave`, which drops the player's queue, before the openers post `container_close` through `Entities::game_event` (group vibrations-more, commit 1). `game_event` then made a new queue for the player who had left. Only an actor's queue goes into a tick input, so the close was never heard when the player left. It sat in that queue until the same player came back to the level, maybe hours later, and was then heard at the old chest. Events a player made in the frame before leaving were dropped with the queue as well.
+- **Vanilla:** a player who leaves with a container open closes it then (`AbstractContainerMenu.removed` → `stopOpen` → `ContainerOpenersCounter.decrementOpeners`), and that posts `container_close` from that player at once.
+- **Changed:** `Entities.left_game_events` (`crates/minecraft_survival/src/entities.rs`) holds the events of a player who has no queue in the level, and `Entities::leave` moves the leaving player's unsent events into it. The level's next tick input takes these events first, whoever ticks it, so no queue is made again for a player who left.
+- **Tests:** `entities::tests::a_leaving_player_s_vibrations_go_out_with_the_next_tick_and_leave_no_queue` (gated on the 26.3 data: a step made before leaving and a close made after it both go out with the host's next tick, and the friend gets no queue). Checked to fail with the old routing.
+- **Decisions:** when the leaving player was the last one in the level, the level stops ticking and the close goes out with its next tick, when someone comes back. That matches a level that froze at the moment the last player left.
+- **EMITS_SOUNDS check (static, against D0 as merged into `minecraft-survival`; D0 is not merged into `track-w` yet):** D0's `play_movement` (`entities/src/world/emissions.rs`) drops only `Body.emission` when `Family::emits_sounds` is false (silverfish and endermites, vanilla's `MovementEmission.EVENTS`). Track W's `step`, `swim`, `splash`, `hit_ground` and `flap` go into `Body.game_events` in `Body::movement_emission` and `Body::move`, so they are posted anyway. D0's `body_mut` and `damage_state_mut` fall back to `families.core_mut`, so `EntityWorld::take_game_events` drains the registry families' bodies and their `entity_damage` as well. To confirm with a silverfish step test at the w2 merge; the warden's own steps come with W4.
+- **Test steps (multiplayer, survival; a sculk sensor with a comparator out of it into a straight line of 15 redstone dust, a chest 5 blocks from the sensor):**
+  1. Friend window: the friend opens the chest (the line shows 10). Wait 2 s. With the chest still open, the friend quits the world (Esc, then quit): the host's line shows 9 at once (the close). **w27_friend_leaves_chest**
+  2. Wait 2 s, then the friend joins again and stays crouched where they appear: the line stays dark. Before this fix, the line showed 9 only now, when the friend came back.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*4,minecraft:comparator*2,minecraft:redstone*32,minecraft:chest*2,minecraft:stone*64,minecraft:cooked_beef*16
+```
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -520,3 +538,4 @@ Review of segment w1: no message or codec change.
 - `docs/MINECRAFT-SURVIVAL.md` (group shriekers-catalysts): sculk shriekers shriek when a player stands on one (or rides a mob onto it) or when a sculk sensor within 8 blocks clicks for a player or a player's projectile. A shrieker that can summon (generated ones in ancient cities, or `can_summon=true`) only shrieks when it can warn: each player's warden warning level (saved in the player file, shared with the players within 16 blocks) rises by one with a 10 s cooldown and drops one every 10 minutes; after the 4.5 s shriek a warden sound answers by level (closer and angrier) and players within 40 blocks get darkness. Peaceful or `spawn_wardens false`: it shrieks, nothing answers. Until the warden groups (W4) a fourth warning only plays the angry sound.
 - `docs/MINECRAFT-SURVIVAL.md` (group shriekers-catalysts, commit 2): a sculk catalyst takes the death of any mob or player within 8 blocks (the nearest catalyst; no player kill needed): it blooms with soul wisps and the death drops no experience orbs.
 - `docs/MINECRAFT-SURVIVAL.md` (group shriekers-catalysts, commit 3): a catalyst that takes a death turns its experience into charge that spreads sculk and sculk veins over the replaceable ground around it, saved with the catalyst; larger charges grow sculk sensors and shriekers (which cannot summon) at least 4 blocks from it.
+- `docs/MULTIPLAYER.md` (review of segment w1): the game events (vibrations) of a player who has left a level, such as the container close of a friend who quits with a chest open, go out with that level's next tick (`Entities.left_game_events`).
