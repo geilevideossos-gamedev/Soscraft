@@ -1065,6 +1065,7 @@ mod tests {
             phase: 2,
             awake: true,
             from: 0,
+            criticals: 0,
         }
     }
 

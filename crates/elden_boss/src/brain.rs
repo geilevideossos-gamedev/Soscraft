@@ -91,6 +91,7 @@ pub struct Clip {
     pub phase: u8,
     pub awake: bool,
     pub from: u16,
+    pub criticals: u8,
 }
 
 impl Clip {
@@ -168,6 +169,7 @@ pub struct Brain {
     pub(crate) gap: u16,
     pub(crate) recovery: u16,
     pub(crate) from: u16,
+    pub(crate) criticals: u8,
     pub(crate) around: f64,
     pub(crate) ready: Vec<u64>,
     pub(crate) playing: Option<Playing>,
@@ -189,6 +191,7 @@ impl Brain {
             gap: 0,
             recovery: 0,
             from: 0,
+            criticals: 0,
             around: 1.0,
             ready: vec![0; def.moves.len()],
             playing: None,
@@ -360,6 +363,7 @@ impl Brain {
             } else {
                 0
             },
+            criticals: self.criticals,
         }
     }
 

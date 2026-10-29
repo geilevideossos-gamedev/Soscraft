@@ -16,9 +16,15 @@ Segment f2 (commits 7 to 16), 20 stacks:
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:shield,minecraft:cooked_beef*32,minecraft:iron_sword,minecraft:zombie_spawn_egg*4,minecraft:iron_golem_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:bone*16,minecraft:skeleton_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:silverfish_spawn_egg*4,minecraft:cobblestone*256,minecraft:iron_pickaxe
 ```
 
+Group er-look (commits 17 to 19), 7 stacks:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cobblestone*256,minecraft:iron_pickaxe,minecraft:cooked_beef*32
+```
+
 ## Protocol
 
-Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip; the message format is the same, so it needs no bump of its own.
+Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own.
 
 ## Vendored files
 
@@ -589,4 +595,48 @@ After 239488a8.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cooked_beef*32
+```
+
+### 19. Golden mist, sparks and dust show Margit's spawn, phase change, slams and death
+
+After 837f9572.
+
+- **Changed (`elden_boss`):** `Clip.criticals`, a wrapping count of his criticals that the brain keeps across resets, so a viewer can tell a critical from the shown state alone.
+- **Changed (vendored entities crate, `elden_bosses.rs`):** his steps. After his move each tick (walking or root motion), vanilla's step emission (`play_movement`, one step per block walked, none in the air, a monster's swim and splash) plays his own step, `entity.iron_golem.step` at volume 1.0 and pitch 0.7 (design doc 14.1), as a `Voice::Event`. Every other `Cue::Sound` already played on its tick (commit 8).
+- **Changed (`minecraft_terrain`):**
+  - New `elden_effects.rs`, what a viewer draws from the shown clip, with nothing sent:
+    - Each `Cue::Burst` of the clip's cue table (the move's, or the wake, kneel, fade, death or phase 2 shift clip's) fires once on its tick. The view keeps the last clip it showed in one `i32` per mob (D0's `ClientFx.seen`: state, move, clock and the critical count), so a tick seen twice fires nothing, and ticks the view skipped are caught up, at most 4 ticks back.
+    - **Golden mist:** totem sparkles in a sphere around his box with the totem's upward drift, and 16 gold `SpellKind::Effect` motes (gold is 1.0, 0.82, 0.25). It shows his rise, the shift's flash, both halves of a fade and his death.
+    - **Conjure sparks:** 10 `EndRod` sparks at his left hand (the def's dagger hand) as a golden weapon forms.
+    - **A slam:** 16 `Poof` puffs in a 1-block ring, flying outward, and one `Explosion` cloud, centred where the strike lands: a circle's or ring's centre ahead of him (the leap slams, the hammer's shockwave), or half the arc's reach for the cane slam.
+    - **Crits:** 16 `Crit` sparks from his chest when he kneels, and again when the critical count changes while he kneels.
+    - **Phase 2:** 2 gold `SpellKind::Effect` motes a tick drip from his body while he is awake and alive in phase 2.
+    - Nothing was added to `ambient_particles.rs`: the kinds and the spell particles' colour are the existing ones.
+  - `families/bosses/elden_bosses.rs`: the family's `client_effects` (D0's hook, called from every view's tick) runs the above from the client mob's position and facing, the same for the host and every friend. `FamilyShow` carries the critical count as its fifth value.
+  - `lib.rs`: the module beside `elden_render`.
+- **Tests:**
+  - `elden_effects::tests`: `what_he_showed_last_is_remembered_in_one_number`, `each_burst_fires_once_on_its_tick_and_skipped_ticks_catch_up` (the cane slam's dust on clock 29 only, not twice, caught up from 27 to 31, not from a first look at 40; the wake's mist after sleep; the sword's sparks when a branch starts it; a critical's crits during a kneel and none after a reset), `a_slam_rings_dust_where_his_strike_lands` (1, 2 and 1.75 blocks ahead for the leap, the hammer's ring and the cane slam; one explosion and 16 puffs on a 1-block ring).
+  - `families::bosses::elden_bosses::tests`: `a_slam_cue_bursts_on_its_tick_for_host_and_friend_views` (a host Margit plays the cane slam; the host's view and a friend's copy fed by `server_mobs` and `show_on` each draw one explosion, on the tick he shows clock 29, and the same 16 puffs), `golden_mist_shows_his_rise_and_phase_two_drips_gold` (nothing asleep; totem sparkles and 16 gold motes the tick he wakes; then 2 gold motes every tick in phase 2, none in phase 1 or dead). `a_friend_sees_margits_clip_from_his_show` also round-trips the critical count.
+  - `world::families::bosses::elden_bosses::tests::margit_steps_like_an_iron_golem_low` (entities: no step asleep; walking to a player 10 blocks away, at least 3 steps, all at volume 1.0 and pitch 0.7 in `hostile_volume`).
+  - `elden_boss::hurt::tests::a_melee_hit_from_the_front_on_a_kneeling_boss_is_a_critical_and_one_from_behind_is_not` also checks the count on his clip (0, then 1).
+- **Decisions:**
+  - **The critical count rides on the clip.** A critical jumps the kneel clock to its rise, but a view that skipped a tick sees the same jump, so the clock alone cannot show it. A count kept by the brain can, and a burst fires only while he kneels, so a reset (which starts a fresh count) never shows one.
+  - **Catch-up is 4 ticks:** a view that missed a few server ticks still shows a burst it skipped, and a friend who first sees him mid-clip sees no old slam.
+  - **Steps follow vanilla's step emission** (a step per block walked), not the walk clip's footfalls, so they match his speed and stop in the air.
+- **Runs (the whole group):** `test -p elden_boss -p minecraft_terrain -p minecraftoss-entities --locked --lib`: 54, 1575 (and 3 ignored) and 498 passed. After commit 18 the same run without the entities crate gave 54 and 1570; during commit 17, `minecraft_terrain` gave 1560 passed and one failure, D0's spawner cage test, until his root took the display turn; the spawner and Margit tests then passed (28). `check -p launcher --locked`: green after each commit, with only the old render_frame and skate warnings. `minecraft_survival` is not touched. The new files (`elden_skin.rs`, `elden_render.rs`, `elden_effects.rs`) pass `rustfmt --check --edition 2021` with empty output on their staged content, and no added line holds a comment.
+- **Closes from release 3's known limits:** "He has no particles (golden mist, sparks, dust)". The golden ring at the leash is group `er-altar`'s.
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. His strikes and daggers still hurt nobody until group `er-fight`. Name each screenshot by its label, `f3-19-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~20` and walk to 15 blocks: as he rises from his knee, green-gold sparkles and gold motes swirl around him with the mirror sound. **Screenshot f3-19-1** while they swirl.
+  2. Walk around him at 6-10 blocks: low, heavy iron golem steps as he limps after you.
+  3. Stand 2-3 blocks in front of him and wait for the cane slam: where the cane hits the ground, 1-2 blocks in front of him, a ring of white puffs flies outward with a small grey explosion cloud and the mace's smash. **Screenshot f3-19-2** at the slam.
+  4. When the golden sword or a dagger forms in his left hand, white sparks fly from the hand with the chime.
+  5. At 10-14 blocks: the leap slam; the ring of puffs and the cloud where he lands.
+  6. Hit him with the netherite sword at full charge five times quickly: sparks burst from his chest as he drops to one knee. Hit him once from the front while he kneels: another burst of sparks with the critical sound, and he rises. **Screenshot f3-19-3** at the second burst.
+  7. `/summon iw4l:margit ~ ~ ~6 {Health:401f}` and hit him once: green-gold sparkles and gold motes flash around him as the hammer forms, and from then on gold motes keep dripping from him. Wait for the hammer slam: a ring of puffs 2 blocks in front of him. **Screenshot f3-19-4** with the gold motes.
+  8. `/summon iw4l:margit ~ ~ ~6 {Health:20f}` and hit him twice: sparkles and gold motes as he falls, and again as he slumps and vanishes.
+  9. Optional, the fade: build a ring of cobblestone 6 high, 4 blocks out from your block on every side, with him outside: after about 5 seconds sparkles where he vanishes, and again inside the ring where he appears.
+  10. Optional, two windows (`scripts\mp-local.ps1`): the friend sees the same sparkles, sparks, puffs and dripping gold, and hears the steps. **Screenshot f3-19-5**, both windows.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cobblestone*256,minecraft:iron_pickaxe,minecraft:cooked_beef*32
 ```

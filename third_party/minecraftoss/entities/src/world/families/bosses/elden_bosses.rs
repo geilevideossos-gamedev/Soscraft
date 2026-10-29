@@ -4,6 +4,7 @@ use crate::look::LookControl;
 use crate::monster_ai::Target;
 use crate::navigation::GroundNavigation;
 use crate::tempt::PlayerCandidate;
+use crate::world::emissions::{MovementSounds, play_movement};
 use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore};
 use crate::world::{DamageSourceKind, EntityWorld, Voice, voice_pitch};
 use elden_boss::data::{Cue, Sound};
@@ -137,6 +138,27 @@ fn think<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, players: &[PlayerC
         }
     }
     act
+}
+
+fn step(mob: &mut FamilyMob<EldenBoss>) {
+    let FamilyMob { core, state } = mob;
+    let step = state.def.voices.step;
+    let sounds = MovementSounds::monster(Some(step.event)).with_step_volume(step.volume);
+    let from = core.voices.len();
+    play_movement(
+        &mut core.body,
+        core.tick_count,
+        &mut core.random,
+        &mut core.voices,
+        sounds,
+    );
+    for (voice, _) in &mut core.voices[from..] {
+        if let Voice::Event(event, _, pitch) = voice {
+            if *event == step.event {
+                *pitch = step.pitch;
+            }
+        }
+    }
 }
 
 fn spoken(sound: Sound, pitch: f32) -> Voice {
@@ -290,6 +312,7 @@ impl Family for EldenBoss {
                 if base.alive {
                     mob.core.body.trim_small_velocity();
                     arena::carry_out(mob, &*level, &act);
+                    step(mob);
                 }
             }
             speak(mob);
@@ -771,5 +794,39 @@ mod tests {
         let lava = Hurt::new(4.0, "minecraft:lava", DamageSourceKind::Hazard);
         assert!(world.hurt_family(id, &lava).unwrap().applied);
         assert_eq!(health(&world, id), 796.0, "lava does");
+    }
+
+    #[test]
+    fn margit_steps_like_an_iron_golem_low() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let far = [player_at(1, DVec3::new(0.5, 64.0, 40.5))];
+        let mut sounds = Vec::new();
+        for _ in 0..60 {
+            world.tick_with_players(&mut Field, &far);
+            sounds.extend(world.take_sounds());
+        }
+        let steps = |sounds: &[crate::world::MobSound]| {
+            sounds
+                .iter()
+                .filter(|sound| sound.event == "entity.iron_golem.step")
+                .count()
+        };
+        assert_eq!(steps(&sounds), 0, "asleep, he does not walk");
+        let near = [player_at(1, DVec3::new(0.5, 64.0, 10.5))];
+        sounds.clear();
+        for _ in 0..300 {
+            world.tick_with_players(&mut Field, &near);
+            sounds.extend(world.take_sounds());
+        }
+        assert!(margit(&world, id).state.brain.awake());
+        assert!(steps(&sounds) >= 3, "{}", steps(&sounds));
+        for sound in sounds
+            .iter()
+            .filter(|sound| sound.event == "entity.iron_golem.step")
+        {
+            assert_eq!((sound.volume, sound.pitch), (1.0, 0.7));
+            assert_eq!(sound.category, "hostile_volume");
+        }
     }
 }

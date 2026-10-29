@@ -1,7 +1,9 @@
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, FamilyShow, TerrainFamily};
+use crate::elden_effects::Sparks;
+use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
+use elden_boss::shape::Frame;
 use elden_boss::{Clip, State};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::world::families::FamilyMob;
@@ -27,12 +29,13 @@ pub fn show_clip(clip: &Clip) -> FamilyShow {
     values[1] = i32::from(clip.clock);
     values[2] = i32::from(clip.phase);
     values[3] = i32::from(clip.from);
+    values[4] = i32::from(clip.criticals);
     FamilyShow { flags, values }
 }
 
 pub fn shown_clip(show: &FamilyShow) -> Option<Clip> {
     let state = *State::ALL.get((show.flags & STATE_BITS) as usize)?;
-    let [index, clock, phase, from, ..] = show.values;
+    let [index, clock, phase, from, criticals, ..] = show.values;
     Some(Clip {
         state,
         index: u8::try_from(index).ok()?,
@@ -41,6 +44,7 @@ pub fn shown_clip(show: &FamilyShow) -> Option<Clip> {
         phase: u8::try_from(phase).ok()?,
         awake: show.flags & AWAKE != 0,
         from: u16::try_from(from).ok()?,
+        criticals: u8::try_from(criticals).ok()?,
     })
 }
 
@@ -76,6 +80,27 @@ impl TerrainFamily for EldenBoss {
         partial: f32,
     ) {
         crate::elden_render::append_bosses(out.models, mobs, poses, atlas, light, partial);
+    }
+
+    fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            let id = mob.core.id;
+            let Some(shown) = poses.get(id) else {
+                continue;
+            };
+            let frame = Frame {
+                origin: shown.position,
+                yaw: f64::from(shown.y_rot),
+            };
+            let mut sparks = Sparks {
+                ambient: &mut *fx.ambient,
+                spell: &mut *fx.spell,
+                random: &mut *fx.random,
+            };
+            let last = fx.seen.get(&id).copied();
+            let now = sparks.show(mob.state.def, &mob.state.shown, &frame, last);
+            fx.seen.insert(id, now);
+        }
     }
 }
 
@@ -279,6 +304,7 @@ mod tests {
                 phase: 2,
                 awake: false,
                 from: 26,
+                criticals: 3,
             };
             assert_eq!(shown_clip(&show_clip(&clip)), Some(clip));
         }
@@ -287,5 +313,151 @@ mod tests {
             values: [0; 8],
         };
         assert_eq!(shown_clip(&unknown), None);
+    }
+
+    struct View {
+        world: EntityWorld,
+        poses: ClientMobs,
+        ambient: crate::ambient_particles::AmbientParticles,
+        spell: crate::spell_particles::SpellParticles,
+        portal: crate::portal_particles::PortalParticles,
+        poof: crate::poof_particles::PoofParticles,
+        sounds: Vec<(String, DVec3, f32, f32)>,
+        random: minecraftoss_player::rng::LegacyRandom,
+        seen: std::collections::HashMap<u64, i32>,
+    }
+
+    impl View {
+        fn of(world: EntityWorld) -> View {
+            let mut poses = ClientMobs::default();
+            poses.spawn_missing(&crate::client_mobs::server_mobs(&world));
+            View {
+                world,
+                poses,
+                ambient: crate::ambient_particles::AmbientParticles::new(1),
+                spell: crate::spell_particles::SpellParticles::new(1),
+                portal: Default::default(),
+                poof: Default::default(),
+                sounds: Vec::new(),
+                random: minecraftoss_player::rng::LegacyRandom::new(1),
+                seen: Default::default(),
+            }
+        }
+
+        fn effects(&mut self) {
+            let mut fx = ClientFx {
+                ambient: &mut self.ambient,
+                spell: &mut self.spell,
+                portal: &mut self.portal,
+                poof: &mut self.poof,
+                sounds: &mut self.sounds,
+                random: &mut self.random,
+                seen: &mut self.seen,
+            };
+            crate::families::client_effects(&self.world, &self.poses, &mut fx);
+        }
+
+        fn count(&self, kind: crate::ambient_particles::Kind) -> usize {
+            let kinds = self.ambient.kinds_at();
+            kinds.filter(|(seen, _)| *seen == kind).count()
+        }
+    }
+
+    #[test]
+    fn a_slam_cue_bursts_on_its_tick_for_host_and_friend_views() {
+        use crate::ambient_particles::Kind;
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = world.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 3.0))];
+        for _ in 0..40 {
+            world.tick_with_players(&mut Field, &players);
+        }
+        let tags = crate::server_mobs::mob_tags_where(
+            &world,
+            |_, _| true,
+            &std::collections::HashMap::new(),
+            false,
+        );
+        let (_, tag) = tags.into_iter().find(|(saved, _)| *saved == id).unwrap();
+        let mut copy = EntityWorld::default();
+        assert!(crate::mob_tracking::spawn_tracked(&mut copy, id, &tag));
+        let mut host = View::of(world);
+        let mut friend = View::of(copy);
+        host.world
+            .elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("cane_slam");
+        let mut slams = Vec::new();
+        for _ in 0..80 {
+            host.world.tick_with_players(&mut Field, &players);
+            for mob in crate::client_mobs::server_mobs(&host.world) {
+                crate::mob_tracking::show_on(&mut friend.world, &mob);
+            }
+            let before = (host.count(Kind::Explosion), friend.count(Kind::Explosion));
+            host.effects();
+            friend.effects();
+            let after = (host.count(Kind::Explosion), friend.count(Kind::Explosion));
+            if after != before {
+                let clip = host.world.elden_bosses()[0].state.shown;
+                slams.push((clip.state, clip.clock, clip.held, after));
+            }
+        }
+        assert_eq!(slams, [(State::Move, 29, false, (1, 1))]);
+        let poofs = host.count(Kind::Poof);
+        assert_eq!(poofs, crate::elden_effects::SLAM_POOFS);
+        assert_eq!(friend.count(Kind::Poof), poofs);
+    }
+
+    #[test]
+    fn golden_mist_shows_his_rise_and_phase_two_drips_gold() {
+        use crate::ambient_particles::Kind;
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = world.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let mut view = View::of(world);
+        view.effects();
+        assert_eq!(
+            (view.count(Kind::Totem), view.spell.len()),
+            (0, 0),
+            "asleep"
+        );
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 10.0))];
+        for _ in 0..2 {
+            view.world.tick_with_players(&mut Field, &players);
+        }
+        let rise = view.world.elden_bosses()[0].state.shown;
+        assert_eq!((rise.state, rise.clock), (State::Wake, 0));
+        view.effects();
+        assert!(view.count(Kind::Totem) > 0);
+        assert_eq!(view.spell.len(), crate::elden_effects::MIST_SPELLS);
+        let mut drips = |clip: Clip| {
+            view.world.elden_boss_mut(id).unwrap().state.shown = clip;
+            let before = view.spell.len();
+            view.effects();
+            view.spell.len() - before
+        };
+        let idle = Clip {
+            state: State::Idle,
+            index: 0,
+            clock: 3,
+            held: false,
+            phase: 1,
+            awake: true,
+            from: 0,
+            criticals: 0,
+        };
+        assert_eq!(drips(idle), 0, "phase 1");
+        let second = Clip { phase: 2, ..idle };
+        assert_eq!(drips(second), crate::elden_effects::SHIMMER);
+        assert_eq!(drips(second), crate::elden_effects::SHIMMER, "every tick");
+        let dead = Clip {
+            state: State::Dead,
+            clock: 15,
+            ..second
+        };
+        assert_eq!(drips(dead), 0);
     }
 }
