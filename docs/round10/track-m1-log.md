@@ -15,6 +15,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Changed again, no new file (rabbits-drawn 2): `entities/src/world/families/land/rabbits.rs` (`RabbitAnimations`), `entities/src/world/families/land/rabbits/tests.rs` (its test).
 - Changed again, no new file (rabbits-behaviour 1): `entities/src/world/families/land/animal_goals.rs` (`MoveToBlockGoal`), `entities/src/world/families/land/rabbits/ai.rs` (`RaidGardenGoal`), `entities/src/world/families/land/rabbits.rs` (the bite), `entities/src/world/families/land/rabbits/tests.rs`.
 - Changed again, no new file (rabbits-behaviour 2): `entities/src/world/families/land/rabbits.rs` (armour, voice, the strike), `entities/src/world/families/land/rabbits/ai.rs` (the evil goals and the leap), `entities/src/world/families/land/rabbits/tests.rs`.
+- Patched (rabbits-behaviour 3): `entities/src/feline_ai.rs` (the cat's rabbit target slot, one line); `entities/src/world/families/land/rabbits/tests.rs` changed again (the cat test).
 
 ## Hooks
 
@@ -33,10 +34,10 @@ No commit of this track has changed a `ToClient`/`ToServer` message or the codec
 
 ## State doc changes
 
-For the orchestrator to copy at the merge of segment m1a (rabbits live and drawn):
+For the orchestrator to copy at the merge of segment m1a (rabbits done):
 
 - `docs/MINECRAFT-SURVIVAL.md:441`: drop "rabbit" from the eggs that spawn nothing: "Spawn eggs for unsimulated mobs (fox, goat, the wither and others; ...)".
-- `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs, drawn with vanilla's adult and baby models and their 16 textures (Toast and the killer bunny's among them), hopping and tilting their heads with vanilla's keyframes, and seen by friends at the same moments."
+- `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs, drawn with vanilla's adult and baby models and their 16 textures (Toast and the killer bunny's among them), hopping and tilting their heads with vanilla's keyframes, and seen by friends at the same moments. With `mob_griefing` they raid full-grown carrots, a stage a bite. The killer bunny (`RabbitType` 99) has armour 8, never flees, leaps at players and wolves within 4 blocks, bites for 8 before difficulty and calls the rabbits around it when hurt; its sounds are hostile. Wild cats hunt rabbits."
 
 ## Left for later
 
@@ -314,4 +315,49 @@ After ed19a463.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:wolf_spawn_egg*2,minecraft:bow,minecraft:arrow*32,minecraft:iron_sword,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:cooked_beef*16
+```
+
+#### 3. Minecraft cats hunt rabbits
+
+After ee0a08da.
+
+- **javap this round:** `Cat.registerGoals` adds the target goals `1 NonTameRandomTargetGoal(Rabbit, false, null)` and then `1 NonTameRandomTargetGoal(Turtle, false, Turtle.BABY_ON_LAND_SELECTOR)`. `NonTameRandomTargetGoal` is a `NearestAttackableTargetGoal` (random interval 10, so one roll in five after `reducedTickDelay`, no sight needed to keep it) that only starts while the cat is not tame.
+- **Changed (vendored entities crate):** `feline_ai.rs` `cat_targets`: the first slot, `Prey::Absent` until now, is `Prey::Kinds(&["minecraft:rabbit"])` with its `wild_only` kept (M10's anchor `feline_ai.rs:196`). The turtle slot after it is left for `turtles-hunted`. The cat's attack goal, leap and bite were already there for the ocelot's chickens.
+- **Tests added:** `world::families::land::rabbits::tests::a_wild_cat_hunts_a_rabbit_and_a_tame_cat_does_not` (a wild cat 6 blocks from a rabbit takes it as its target and bites it; a tame one in the same place never targets it in 600 ticks).
+- **Decisions:**
+  - The test is in the rabbit's own `rabbits/tests.rs`, not in `world/felines.rs` as M1-1 names it: D0-3 and M10 rule 8 put a family's tests in its own files, and this keeps the shared `felines.rs` to the one line in `feline_ai.rs` (M3 also touches the cats).
+  - Row 15 of `docs/round10/mobs.md` is `done` with this commit: the rabbit is live, drawn and has its vanilla behaviours, its natural spawns were already vanilla, and the owner's steps are in this log. What is still missing is in its "Left" column and under "Left for later".
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (459 passed), `test -p minecraft_terrain --locked` (1440 passed, 3 ignored; nothing of the terrain changed in this group, run once as a check), `check -p launcher --locked` (green; only the old render_frame and skate warnings). `rabbits/tests.rs` still passes `rustfmt --check --edition 2021`.
+- **Test steps** (release build, survival, Normal, by day on flat grass; name each screenshot by its label):
+  1. Use the rabbit egg twice, then the cat egg 6 blocks from the rabbits, and walk 20 blocks away (a wild cat runs from a player within 16 blocks). Within a minute the cat creeps up on a rabbit, pounces and kills it with a bite. **m1-cats-rabbits-1**
+  2. Use another cat egg, tame it with raw cod (feed it until hearts show) and tell it to stand (right-click it so it is not sitting). Use the rabbit egg twice next to it and watch for a minute: the tame cat never goes for the rabbits. **m1-cats-rabbits-2**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:cat_spawn_egg*4,minecraft:cod*16
+```
+
+#### Group rabbits-behaviour: all steps together
+
+The owner's full rabbit test after this group (M1-1, "Owner's steps", with step 6 as vanilla has it), on a release build with all of segment m1a: survival, Normal, by day on flat grass. The earlier entries above have the detail and the screenshot names.
+
+1. Use the rabbit egg three times on grass 8 blocks away: small rabbits that move only in hops, with a soft jump sound. Each hop tucks the back legs and stretches the body. **rabbit1_hop**
+2. Walk at them: within about 8 blocks they flee in quick hops. Hold a carrot and stand still: they come to about 2 blocks from you.
+3. Feed two adults a carrot each: a baby appears, smaller, with a big head and its own texture. Feed the baby dandelions: it grows faster. **rabbit3_baby**
+4. Stand near one for about 10 s: it tilts its head for 4 s, then stops turning its head to you until its next hop.
+5. `/summon minecraft:rabbit ~ ~ ~3 {RabbitType:1}`, then 2, 3, 4 and 5: white, black, white with black patches, gold, salt-and-pepper. `/summon minecraft:rabbit ~ ~ ~3 {CustomName:"Toast"}`: Toast. **rabbit5_colours**
+6. Hoe a 5 x 5 patch by water, plant carrots, bone-meal them full and fence three rabbits in; stand more than 8 blocks away. Within a few minutes a rabbit hops onto a full-grown carrot and bites it down one stage; it bites only full-grown carrots, so a bitten one waits until it is full grown again. **rabbit6_carrots** Then `/gamerule mob_griefing false` and bone-meal them full: no more bites. `/gamerule mob_griefing true`.
+7. `/summon minecraft:rabbit ~ ~ ~6 {RabbitType:99}`: a white rabbit with red eyes leaps at you from 4 blocks and bites for 4 hearts (less in iron armour). It never flees, only runs off for a moment after you hit it. Use a wolf egg 5 blocks away: the two fight. **rabbit7_killer_bunny**
+8. A wolf egg near two rabbits: the wolf kills one. A cat egg near two rabbits, with you 20 blocks away: the cat stalks and pounces on one. A zombie egg 3 blocks from a rabbit: the rabbit flees.
+9. Kill rabbits with the sword: raw rabbit, often a hide, now and then a rabbit's foot. Set the grass by one on fire: if it dies burning, it drops cooked rabbit. Shoot one with the bow and one with the M4A1: each flashes red and dies.
+10. Lead a rabbit: it hops after you, roped at the neck.
+11. Leave an adult, a baby and the killer bunny alive, save, quit and load: the same three are there and the bunny still attacks. In a world from an older build, the rabbits that stood frozen now hop.
+12. `/locate biome minecraft:snowy_plains`, `/tp` there and walk into new land: groups of white or patched rabbits, one adult with babies of its colour. In a desert they are gold. **rabbit12_snowy**
+13. In creative, place the spawner and use a rabbit egg on it: a small rabbit turns in the cage and rabbits spawn around it.
+14. Two windows (`scripts\mp-local.ps1`). The host hatches three rabbits and a killer bunny. The friend sees the same rabbits, colours, hops and head tilts at the same moments; the rabbits come to the friend's carrot; the killer bunny goes for the friend too; the friend shoots a rabbit with the M4A1 and it dies in both windows. **rabbit14-host**, **rabbit14-friend**
+
+The kit for all of it (M1-1's, 25 stacks; the friend's `.env` needs the same line):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*16,minecraft:carrot*64,minecraft:golden_carrot*16,minecraft:dandelion*16,minecraft:iron_hoe,minecraft:bone_meal*64,minecraft:water_bucket,minecraft:oak_fence*64,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:lead*4,minecraft:iron_sword,minecraft:shield,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:spawner,minecraft:cooked_beef*32,minecraft:bow,minecraft:arrow*64,minecraft:grass_block*64,minecraft:flint_and_steel,minecraft:lava_bucket
 ```

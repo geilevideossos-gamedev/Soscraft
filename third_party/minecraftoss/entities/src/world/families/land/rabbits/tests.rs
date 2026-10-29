@@ -934,6 +934,41 @@ fn a_wild_wolf_hunts_a_rabbit() {
     );
 }
 
+#[test]
+fn a_wild_cat_hunts_a_rabbit_and_a_tame_cat_does_not() {
+    use crate::feline::{Feline, FelineKind};
+    for tame in [false, true] {
+        let mut world = EntityWorld::default();
+        let mut meadow = Meadow::default();
+        let id = rabbit_at(&mut world, at(0.5, 0.5));
+        rabbit_mut(&mut world, id).core.no_ai = true;
+        let mut cat = Feline::new(FelineKind::Cat, at(6.5, 0.5));
+        cat.tame = tame;
+        cat.owner = tame.then_some(7);
+        let cat = world.spawn_feline(cat, false);
+        let hurt = |world: &EntityWorld| {
+            world
+                .family_core(id)
+                .is_none_or(|(_, core)| core.health < MAX_HEALTH)
+        };
+        let mut hunted = false;
+        for _ in 0..600 {
+            world.tick(&mut meadow);
+            let target = world
+                .felines()
+                .iter()
+                .find(|e| e.id == cat)
+                .and_then(|e| e.ai.state.target);
+            hunted |= target == Some(Target::Mob(id));
+            if hurt(&world) {
+                break;
+            }
+        }
+        assert_eq!(hunted, !tame, "tame {tame}");
+        assert_eq!(hurt(&world), !tame, "tame {tame}");
+    }
+}
+
 struct Snowfield;
 
 impl World for Snowfield {
