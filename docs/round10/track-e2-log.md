@@ -420,3 +420,35 @@ After 79d69c23.
   - The coastline is drawn on the main thread with the chest open, like the search; it adds about a tenth of a second in a release build.
 - **Test steps:** the coastline is drawn into the map data now, but no map is shown on screen until group `maps-held`/`maps-view`. Nothing new to see in game; the check is with the map held in the later groups (orange outlines of the coast around the X).
 - **Kit:** none.
+
+### 4. Minecraft explorer maps skip structures another map already points to
+
+After 03093a8b.
+
+- **Vanilla (26.3, checked with javap):**
+  - `ExplorationMapFunction.run` with `skip_existing_chunks` first runs `claimStructureAt`: `StructureManager.getStructureAt(pos, destination)` takes the first start of a destination structure, among those referenced in the chest's chunk, whose bounding box holds the chest, and adds a reference when it `isValid() && canBeReferenced()` (`references < getMaxReferences()`, which is 1). It looks no further when that start is already referenced.
+  - `ChunkGenerator.getStructureGeneratingAt` with skip: `checkStructurePresence` reports a start that already has a reference as not present, and a start found in the chunk counts only when `tryAddReference` succeeds. So each skipping search claims the start it returns, and a claimed start is never found again by a skipping search.
+  - Shipwreck and ocean ruin treasure maps pass `skip_existing_chunks: false`; camp maps and the secret chest's maps keep the default `true`.
+- **Changed:**
+  - `minecraft_terrain/src/locate.rs`: `Claim` (an optional `FnMut(structure, start chunk) -> bool`), threaded through `search_structures`, `nearest_ring`, `nearest_in_ring` and `generating_at`, which counts a start only when the claim takes it. `nearest_structure` passes none and works as before; new `nearest_unclaimed_structure` passes one. New `claim_structure_at(gen, targets, pos, claim)`: the start of a target structure, from the potential chunks of the 3 x 3 spread regions around the chest, whose bounding box holds the chest.
+  - `minecraft_terrain/src/maps.rs`: `Claims` ((structure, start chunk) to references, `try_claim` up to `MAX_REFERENCES` 1, NBT `{claims: [{structure, chunk_x, chunk_z, references}]}`). `MapStore` keeps the claims per dimension, reads them from `dimensions/minecraft/<dim>/data/iw4l/map_claims.dat` when the world opens, and `take_writes` hands over the changed ones. `LootExplorer::with_claims` takes the level's claims; a skipping `explore` claims the chest's own structure, then searches with claims, and `Explored.claims` holds the result.
+  - `minecraft_survival/src/menus.rs`: the explorer starts from the level's claims, and a kept roll stores the new claims with its maps, so the autosave and the closing save write them.
+- **Tests:**
+  - `maps::tests::claims_hold_one_reference_and_are_saved_beside_each_level`: one reference per start, the NBT round trip, the file in the overworld's `data/iw4l`, no file for an empty list, nothing written again unchanged, and the claims back after a reload.
+  - `maps::tests::treasure_maps_that_skip_known_treasures_each_point_to_another` (seed 77, gated): from the nearest shipwreck, the first skipping treasure map points to the nearest treasure and the second to another; a map that keeps known treasures still points to the nearest; both treasures are claimed; after a save and a load a third skipping map points to neither.
+  - `maps::tests::a_map_that_skips_known_structures_never_points_at_the_one_it_lies_in` (gated): from the middle of a shipwreck, a keeping search finds that wreck and claims nothing; a skipping one claims that wreck and points to another; outside any wreck only the target is claimed.
+  - The `locate::tests` pass unchanged.
+- **Decisions:**
+  - Our chunks save no structure starts (`chunk_nbt.rs:246`), so the claims are kept in a fork file, `dimensions/minecraft/<dim>/data/iw4l/map_claims.dat`, which vanilla ignores. Vanilla keeps them as `references` on the start in the chunk.
+  - `claim_structure_at` looks at the starts of the 3 x 3 spread regions around the chest instead of the chunk's structure references, which our chunks do not keep. A structure reaching more than one spread region from its start would be missed; none of the map structures does.
+  - As in vanilla, a search that claims a start and then finds a closer one in a later placement of the same ring keeps both claims; the map destinations here have one placement each.
+  - The claims are taken with the roll and kept only when the chest's loot is kept, like the map ids.
+- **Test steps (survival, by day; the maps' targets can be seen once group `maps-held` lands):**
+  1. Load a world with the kit. Run `/locate structure #minecraft:abandoned_camp` and `/tp` there.
+  2. Open the camp's chests. A common chest now rolls its loot (arrows, bones, candles and the like) and often a camp map named after another biome's camp, such as a **Swamp Camp Map** (**maps-4_camp**). Dig around the camp for the secret chest: it can hold an explorer map such as a **Woodland Mansion Map**, a **Buried Trial Chambers Map** or a **Buried Ancient City Map**; opening it may pause the game for up to 2 seconds while the map searches (**maps-5_secret**).
+  3. Save and quit. In the world folder, `dimensions/minecraft/overworld/data/iw4l/map_claims.dat` is there once a camp map was found (**maps-6_claims**, a screenshot of the folder). Shipwreck and ruin treasure maps alone do not make this file.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:iron_shovel,minecraft:diamond_pickaxe,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:oak_boat
+```

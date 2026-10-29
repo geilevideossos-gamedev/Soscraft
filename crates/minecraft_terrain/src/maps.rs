@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use minecraftoss_core::ChunkPos;
 use minecraftoss_core::loot::Exploring;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_generator::zoom;
@@ -14,6 +15,13 @@ pub const MAP_SIZE: usize = 128;
 pub const COLORS: usize = MAP_SIZE * MAP_SIZE;
 pub const MAX_SCALE: u8 = 4;
 pub const LAST_ID: &str = "minecraft:maps/last_id";
+pub const MAP_CLAIMS: &str = "iw4l:map_claims";
+pub const MAX_REFERENCES: i32 = 1;
+pub const DIMENSIONS: [&str; 3] = [
+    "minecraft:overworld",
+    "minecraft:the_nether",
+    "minecraft:the_end",
+];
 pub const PLAYER: &str = "minecraft:player";
 pub const PLAYER_OFF_MAP: &str = "minecraft:player_off_map";
 pub const PLAYER_OFF_LIMITS: &str = "minecraft:player_off_limits";
@@ -309,6 +317,8 @@ pub struct MapStore {
     last_id: i32,
     dirty: BTreeSet<i32>,
     index_dirty: bool,
+    claims: BTreeMap<String, Claims>,
+    claims_dirty: BTreeSet<String>,
 }
 
 impl Default for MapStore {
@@ -318,7 +328,71 @@ impl Default for MapStore {
             last_id: -1,
             dirty: BTreeSet::new(),
             index_dirty: false,
+            claims: BTreeMap::new(),
+            claims_dirty: BTreeSet::new(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Claims(BTreeMap<(String, i32, i32), i32>);
+
+impl Claims {
+    pub fn try_claim(&mut self, structure: &str, chunk: ChunkPos) -> bool {
+        let references = self
+            .0
+            .entry((structure.to_owned(), chunk.x, chunk.z))
+            .or_insert(0);
+        if *references >= MAX_REFERENCES {
+            return false;
+        }
+        *references += 1;
+        true
+    }
+
+    pub fn references(&self, structure: &str, chunk: ChunkPos) -> i32 {
+        self.0
+            .get(&(structure.to_owned(), chunk.x, chunk.z))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn to_tag(&self) -> Tag {
+        let claims = self
+            .0
+            .iter()
+            .map(|((structure, x, z), references)| {
+                Tag::Compound(BTreeMap::from([
+                    ("structure".to_owned(), Tag::String(structure.clone())),
+                    ("chunk_x".to_owned(), Tag::Int(*x)),
+                    ("chunk_z".to_owned(), Tag::Int(*z)),
+                    ("references".to_owned(), Tag::Int(*references)),
+                ]))
+            })
+            .collect();
+        Tag::Compound(BTreeMap::from([("claims".to_owned(), Tag::List(claims))]))
+    }
+
+    pub fn from_tag(tag: &Tag) -> Self {
+        let mut claims = BTreeMap::new();
+        for entry in tag.get("claims").and_then(Tag::as_list).unwrap_or_default() {
+            let int = |key: &str| entry.get(key).and_then(Tag::as_i64).map(|v| v as i32);
+            let structure = entry.get("structure").and_then(Tag::as_str);
+            let (Some(structure), Some(x), Some(z)) = (structure, int("chunk_x"), int("chunk_z"))
+            else {
+                continue;
+            };
+            claims.insert((structure.to_owned(), x, z), int("references").unwrap_or(1));
+        }
+        Self(claims)
     }
 }
 
@@ -326,11 +400,12 @@ impl Default for MapStore {
 pub struct MapWrites {
     pub maps: Vec<(i32, Tag)>,
     pub last_id: Option<i32>,
+    pub claims: Vec<(String, Tag)>,
 }
 
 impl MapWrites {
     pub fn is_empty(&self) -> bool {
-        self.maps.is_empty() && self.last_id.is_none()
+        self.maps.is_empty() && self.last_id.is_none() && self.claims.is_empty()
     }
 
     pub fn write(&self, storage: &LevelStorage) -> Result<(), String> {
@@ -343,6 +418,11 @@ impl MapWrites {
         if let Some(last_id) = self.last_id {
             let index = Tag::Compound(BTreeMap::from([("map".to_owned(), Tag::Int(last_id))]));
             if let Err(error) = storage.write_saved(LAST_ID, index) {
+                failed.push(error);
+            }
+        }
+        for (dimension, claims) in &self.claims {
+            if let Err(error) = storage.write_saved_in(dimension, MAP_CLAIMS, claims.clone()) {
                 failed.push(error);
             }
         }
@@ -396,7 +476,31 @@ impl MapStore {
                 Err(error) => warnings.push(format!("Minecraft map {id} unreadable: {error}")),
             }
         }
+        for dimension in DIMENSIONS {
+            match storage.read_saved_in(dimension, MAP_CLAIMS) {
+                Ok(Some(tag)) => {
+                    store
+                        .claims
+                        .insert(dimension.to_owned(), Claims::from_tag(&tag));
+                }
+                Ok(None) => {}
+                Err(error) => warnings.push(format!(
+                    "Minecraft map claims of {dimension} unreadable: {error}"
+                )),
+            }
+        }
         (store, warnings)
+    }
+
+    pub fn claims(&self, dimension: &str) -> Claims {
+        self.claims.get(dimension).cloned().unwrap_or_default()
+    }
+
+    pub fn set_claims(&mut self, dimension: &str, claims: Claims) {
+        if self.claims.get(dimension).unwrap_or(&Claims::default()) != &claims {
+            self.claims.insert(dimension.to_owned(), claims);
+            self.claims_dirty.insert(dimension.to_owned());
+        }
     }
 
     pub fn last_id(&self) -> i32 {
@@ -446,7 +550,18 @@ impl MapStore {
             .filter_map(|id| self.maps.get(&id).map(|data| (id, data.to_tag())))
             .collect();
         let last_id = std::mem::take(&mut self.index_dirty).then_some(self.last_id);
-        MapWrites { maps, last_id }
+        let claims = std::mem::take(&mut self.claims_dirty)
+            .into_iter()
+            .filter_map(|dimension| {
+                let tag = self.claims.get(&dimension)?.to_tag();
+                Some((dimension, tag))
+            })
+            .collect();
+        MapWrites {
+            maps,
+            last_id,
+            claims,
+        }
     }
 }
 
@@ -454,12 +569,14 @@ impl MapStore {
 pub struct Explored {
     pub maps: Vec<(i32, MapData)>,
     pub timed_out: Vec<String>,
+    pub claims: Option<Claims>,
 }
 
 pub struct LootExplorer {
     gen: Arc<WorldGen>,
     dimension: String,
     first_id: i32,
+    known: Claims,
     explored: Mutex<Explored>,
 }
 
@@ -478,8 +595,18 @@ impl LootExplorer {
             gen,
             dimension: dimension.to_owned(),
             first_id,
+            known: Claims::default(),
             explored: Mutex::new(Explored::default()),
         }
+    }
+
+    pub fn with_claims(mut self, claims: Claims) -> Self {
+        self.known = claims;
+        self
+    }
+
+    pub fn dimension(&self) -> &str {
+        &self.dimension
     }
 
     pub fn take(&self) -> Explored {
@@ -497,19 +624,36 @@ impl Exploring for LootExplorer {
         destination: &[String],
         origin: [i32; 3],
         radius: i32,
-        _skip_known: bool,
+        skip_known: bool,
         zoom: u8,
     ) -> Option<(i32, [i32; 3])> {
         let deadline = Instant::now() + SEARCH_TIME;
-        let target =
-            match locate::nearest_structure(&self.gen, destination, origin, radius, deadline) {
-                Search::Found(target, _) => target,
-                Search::NotFound => return None,
-                Search::TimedOut => {
-                    self.explored().timed_out.push(destination.join(", "));
-                    return None;
-                }
-            };
+        let mut explored = self.explored();
+        let search = if skip_known {
+            let mut claims = explored.claims.take().unwrap_or_else(|| self.known.clone());
+            let mut claim = |name: &str, chunk: ChunkPos| claims.try_claim(name, chunk);
+            locate::claim_structure_at(&self.gen, destination, origin, &mut claim);
+            let search = locate::nearest_unclaimed_structure(
+                &self.gen,
+                destination,
+                origin,
+                radius,
+                deadline,
+                Some(&mut claim),
+            );
+            explored.claims = Some(claims);
+            search
+        } else {
+            locate::nearest_structure(&self.gen, destination, origin, radius, deadline)
+        };
+        let target = match search {
+            Search::Found(target, _) => target,
+            Search::NotFound => return None,
+            Search::TimedOut => {
+                explored.timed_out.push(destination.join(", "));
+                return None;
+            }
+        };
         let mut map = MapData::create_fresh(
             f64::from(target[0]),
             f64::from(target[2]),
@@ -519,7 +663,6 @@ impl Exploring for LootExplorer {
             true,
         );
         coastline(&self.gen, &mut map);
-        let mut explored = self.explored();
         let id = self.first_id + explored.maps.len() as i32;
         explored.maps.push((id, map));
         Some((id, target))
@@ -950,5 +1093,189 @@ mod tests {
         if gave_up.is_none() {
             assert_eq!(late.take().timed_out, ["minecraft:village_plains"]);
         }
+    }
+
+    #[test]
+    fn claims_hold_one_reference_and_are_saved_beside_each_level() {
+        let mut claims = Claims::default();
+        let chunk = ChunkPos::new(3, -7);
+        assert!(claims.try_claim("minecraft:buried_treasure", chunk));
+        assert!(!claims.try_claim("minecraft:buried_treasure", chunk));
+        assert!(claims.try_claim("minecraft:buried_treasure", ChunkPos::new(3, -6)));
+        assert!(claims.try_claim("minecraft:village_plains", chunk));
+        assert_eq!(claims.references("minecraft:buried_treasure", chunk), 1);
+        assert_eq!(claims.references("minecraft:mansion", chunk), 0);
+        assert_eq!(claims.len(), 3);
+        assert_eq!(Claims::from_tag(&claims.to_tag()), claims);
+        let dir = crate::test_dir::tempdir().unwrap();
+        let world = dir.path().join("world");
+        let storage = LevelStorage::open(&world).unwrap();
+        let (mut store, _) = MapStore::load(&storage);
+        store.set_claims("minecraft:overworld", claims.clone());
+        store.set_claims("minecraft:the_end", Claims::default());
+        let writes = store.take_writes();
+        assert_eq!(writes.claims.len(), 1, "an empty claim list is not written");
+        writes.write(&storage).unwrap();
+        let file = world.join("dimensions/minecraft/overworld/data/iw4l/map_claims.dat");
+        assert!(file.is_file());
+        assert!(
+            !world
+                .join("dimensions/minecraft/the_end/data/iw4l/map_claims.dat")
+                .exists()
+        );
+        store.set_claims("minecraft:overworld", claims.clone());
+        assert!(
+            store.take_writes().is_empty(),
+            "unchanged claims are not written again"
+        );
+        drop(storage);
+        let storage = LevelStorage::open(&world).unwrap();
+        let (again, warnings) = MapStore::load(&storage);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(again.claims("minecraft:overworld"), claims);
+        assert!(again.claims("minecraft:the_nether").is_empty());
+    }
+
+    fn explore(
+        explorer: &LootExplorer,
+        targets: &[String],
+        origin: [i32; 3],
+        radius: i32,
+        skip: bool,
+    ) -> [i32; 3] {
+        explorer
+            .explore(targets, origin, radius, skip, 1)
+            .unwrap_or_else(|| {
+                panic!(
+                    "nothing found from {origin:?}: {:?}",
+                    explorer.take().timed_out
+                )
+            })
+            .1
+    }
+
+    #[test]
+    fn treasure_maps_that_skip_known_treasures_each_point_to_another() {
+        let Some(stream) = overworld_stream(77) else {
+            return;
+        };
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let shipwrecks = ["minecraft:shipwreck".to_owned()];
+        let wreck = found(locate::nearest_structure(
+            &gen,
+            &shipwrecks,
+            [0, 64, 0],
+            100,
+            deadline,
+        ));
+        let origin = [wreck[0], 50, wreck[2]];
+        let treasure = ["minecraft:buried_treasure".to_owned()];
+        let nearest = found(locate::nearest_structure(
+            &gen, &treasure, origin, 50, deadline,
+        ));
+        let explorer = LootExplorer::new(gen.clone(), "minecraft:overworld", 0);
+        let first = explore(&explorer, &treasure, origin, 50, true);
+        let second = explore(&explorer, &treasure, origin, 50, true);
+        assert_eq!(first, nearest);
+        assert_ne!(second, first);
+        assert_eq!(
+            explore(&explorer, &treasure, origin, 50, false),
+            nearest,
+            "a map that keeps known treasures points to the nearest"
+        );
+        let explored = explorer.take();
+        assert_eq!(
+            explored.maps.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        let claims = explored
+            .claims
+            .expect("the skipping maps claimed their treasures");
+        assert_eq!(claims.len(), 2);
+        for target in [first, second] {
+            let chunk = ChunkPos::new(target[0] >> 4, target[2] >> 4);
+            assert_eq!(claims.references("minecraft:buried_treasure", chunk), 1);
+        }
+        let dir = crate::test_dir::tempdir().unwrap();
+        let world = dir.path().join("world");
+        let storage = LevelStorage::open(&world).unwrap();
+        let (mut store, _) = MapStore::load(&storage);
+        store.set_claims("minecraft:overworld", claims);
+        store.take_writes().write(&storage).unwrap();
+        drop(storage);
+        let (loaded, _) = MapStore::load(&LevelStorage::open(&world).unwrap());
+        let later = LootExplorer::new(gen, "minecraft:overworld", 3)
+            .with_claims(loaded.claims("minecraft:overworld"));
+        let third = explore(&later, &treasure, origin, 50, true);
+        assert!(
+            third != first && third != second,
+            "{third:?} after {first:?} and {second:?}"
+        );
+        assert_eq!(later.take().claims.map(|claims| claims.len()), Some(3));
+    }
+
+    #[test]
+    fn a_map_that_skips_known_structures_never_points_at_the_one_it_lies_in() {
+        let Some(stream) = overworld_stream(77) else {
+            return;
+        };
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let shipwrecks = ["minecraft:shipwreck".to_owned()];
+        let home = found(locate::nearest_structure(
+            &gen,
+            &shipwrecks,
+            [0, 64, 0],
+            100,
+            deadline,
+        ));
+        let chunk = ChunkPos::new(home[0] >> 4, home[2] >> 4);
+        let wreck = gen.structures.id("minecraft:shipwreck").unwrap();
+        let start = gen
+            .structures
+            .starts_in(&gen.library, &gen.terrain, chunk)
+            .iter()
+            .find(|start| start.structure == wreck)
+            .cloned()
+            .expect("the located chunk starts the shipwreck");
+        let middle = start.bounding_box().center();
+        let inside = [middle.x, middle.y, middle.z];
+        let keeping = LootExplorer::new(gen.clone(), "minecraft:overworld", 0);
+        assert_eq!(explore(&keeping, &shipwrecks, inside, 100, false), home);
+        assert!(
+            keeping.take().claims.is_none(),
+            "a map that keeps known structures claims nothing"
+        );
+        let skipping = LootExplorer::new(gen.clone(), "minecraft:overworld", 0);
+        let away = explore(&skipping, &shipwrecks, inside, 100, true);
+        assert_ne!(away, home);
+        let claims = skipping.take().claims.unwrap();
+        assert_eq!(
+            claims.references("minecraft:shipwreck", start.chunk),
+            1,
+            "the wreck it lies in"
+        );
+        assert_eq!(
+            claims.references(
+                "minecraft:shipwreck",
+                ChunkPos::new(away[0] >> 4, away[2] >> 4)
+            ),
+            1
+        );
+        assert_eq!(claims.len(), 2);
+        let outside = LootExplorer::new(gen, "minecraft:overworld", 0);
+        explore(
+            &outside,
+            &shipwrecks,
+            [home[0] + 2000, 64, home[2]],
+            100,
+            true,
+        );
+        assert_eq!(
+            outside.take().claims.map(|claims| claims.len()),
+            Some(1),
+            "outside any wreck only the target is claimed"
+        );
     }
 }

@@ -365,16 +365,12 @@ pub fn open_station(
 }
 
 fn loot_explorer(terrain: &Terrain, globals: &Globals, dimension: Dimension) -> Arc<LootExplorer> {
-    let first_id = globals
-        .maps
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .next_id();
-    Arc::new(LootExplorer::new(
-        terrain.stream.world_gen(),
-        dimension.dimension_type(),
-        first_id,
-    ))
+    let maps = globals.maps.lock().unwrap_or_else(PoisonError::into_inner);
+    let dimension = dimension.dimension_type();
+    Arc::new(
+        LootExplorer::new(terrain.stream.world_gen(), dimension, maps.next_id())
+            .with_claims(maps.claims(dimension)),
+    )
 }
 
 fn keep_explored(globals: &Globals, explorer: &LootExplorer) {
@@ -389,6 +385,9 @@ fn keep_explored(globals: &Globals, explorer: &LootExplorer) {
     let mut maps = globals.maps.lock().unwrap_or_else(PoisonError::into_inner);
     for (id, map) in explored.maps {
         maps.insert(id, map);
+    }
+    if let Some(claims) = explored.claims {
+        maps.set_claims(explorer.dimension(), claims);
     }
 }
 
