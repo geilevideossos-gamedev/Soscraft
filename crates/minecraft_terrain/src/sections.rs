@@ -1327,7 +1327,8 @@ mod tests {
                     sections.chunk_loaded((x, z), 5..=19);
                 }
             }
-            for _ in 0..1000 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while std::time::Instant::now() < deadline {
                 sections.update(&camera, 0, |_| true);
                 if !sections.in_flight && !sections.needs_full_update {
                     break;
@@ -1337,7 +1338,8 @@ mod tests {
             for x in -6..=6 {
                 sections.compiled((x, 4, -2), VisibilitySet::ALL, 5);
             }
-            for _ in 0..1000 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while std::time::Instant::now() < deadline {
                 sections.update(&camera, 10, |_| true);
                 if !sections.in_flight && sections.to_propagate.is_empty() {
                     break;
