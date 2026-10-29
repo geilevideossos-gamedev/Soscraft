@@ -10,7 +10,7 @@ Segment f1 (groups `er-core` and `er-rules`) builds the pure crate `crates/elden
 
 None for segment f1: no commit of it has owner steps in game, so no kit line is needed.
 
-Segment f2 so far (commits 7 to 12), 20 stacks:
+Segment f2 so far (commits 7 to 15), 20 stacks:
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:shield,minecraft:cooked_beef*32,minecraft:iron_sword,minecraft:zombie_spawn_egg*4,minecraft:iron_golem_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:bone*16,minecraft:skeleton_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:silverfish_spawn_egg*4,minecraft:cobblestone*256,minecraft:iron_pickaxe
@@ -495,3 +495,7 @@ After 274f48e9.
   3. Repeat steps 1 and 2 twice from other block corners: each time he walks all the way home.
 
 Kit: none needed for these steps.
+
+### Checks after the review
+
+After 65505460. `test -p minecraftoss-entities --locked --lib`: 460 passed. `test -p minecraft_terrain --locked --lib` with `elden`, `margit` and `summoned_health`: 9 passed. `clippy -p minecraftoss-entities --locked --all-targets -- -A clippy::approx_constant`: nothing in Margit's files. The combined kit at the top covers commits 13 to 15 (their items are already in it). Still left for later, as commit 8 says: `sleep::MONSTERS` does not list `iw4l:margit`, so a player may sleep beside him.
