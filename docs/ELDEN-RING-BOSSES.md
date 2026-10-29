@@ -114,6 +114,7 @@ Who he is, briefly: a hunched old man in a dark hooded cloak who walks with a ca
 | `margit` | Margit's table (section 5), `source: DataSource::Estimate` |
 | `brain` | The state machine: one `step(&Sense) -> Act` per server tick |
 | `shape` | Hit geometry: arcs, circles, rings, a segment against a box |
+| `random` | The brain's own seeded random (SplitMix64) |
 | `hurt` | Damage into the boss: resistances, stance, kneeling, criticals, threat |
 | `fight` | The arena: waking, scaling, leash, reset, being stuck |
 | tests | Unit tests per module, and a headless whole fight |
@@ -159,7 +160,7 @@ All times are server ticks from the start of the move (20 a second).
 | `branches` | Follow-ups: at a tick, with a chance and a condition, switch to another move, or end early with a short recovery |
 
 **Shapes**, in his own frame (forward is where he faces when the window starts):
-- **Arc:** reach, half-angle, low and high height. A player is hit when the near side of their box is within reach, inside the angle, and overlaps the height band. Margit's arcs reach 1 block below his feet (2.5 above unless the table says otherwise), so a player in a 2-deep hole beside him is still hit.
+- **Arc:** reach, angle (its full width: 100 degrees is 50 to each side), low and high height. A player is hit when the near side of their box is within reach, inside the angle, and overlaps the height band. Margit's arcs reach 1 block below his feet (2.5 above unless the table says otherwise), so a player in a 2-deep hole beside him is still hit.
 - **Circle:** a point in front of him and a radius. Used for leap landings.
 - **Ring:** a point and a radius that grows over the window. A player is hit when the ring's edge passes under their feet and their feet are less than 1 block above the ground. Jumping clears it.
 
@@ -180,7 +181,7 @@ One `Brain` per boss, stepped once per server tick with a `Sense` and returning 
 | `Return` | After a reset or a load: walks back to his anchor at full health and takes no damage; fades home if no path is found within 100 ticks | `Asleep`, or `Wake` if a player comes within the wake radius |
 | `Dead` | 20 ticks: collapses into golden mist | removed |
 
-`Sense` holds: the tick, his position, facing and health, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them). The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, phase).
+`Sense` holds: the tick, his position, facing and anchor, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them). The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, whether it is held, phase, awake). His health is kept by the brain, which takes every hit (`Brain::take`).
 
 **Choosing a move:** the moves of his phase that are off cooldown, whose distance band holds his target and whose angle band holds the angle to it. One is rolled by weight. If none fits, he walks closer, or turns. Follow-ups ignore cooldowns.
 

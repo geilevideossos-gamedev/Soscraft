@@ -922,6 +922,12 @@ mod tests {
             mv.branches = leak(branches);
         });
         assert!(check(&branch).unwrap_err().contains("cane_flurry"));
+        let first = with_move("leap_slam", |mv| {
+            let mut branches = mv.branches.to_vec();
+            branches[0].at = 0;
+            mv.branches = leak(branches);
+        });
+        assert!(check(&first).unwrap_err().contains("at its start"));
         let order = with_move("cane_slam", |mv| {
             let mut poses = mv.poses.to_vec();
             poses.swap(1, 2);

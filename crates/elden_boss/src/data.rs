@@ -736,9 +736,9 @@ fn check_move(def: &BossDef, mv: &MoveDef) -> Result<(), String> {
     }
     check_poses(key, length, mv.poses)?;
     for branch in mv.branches {
-        if branch.at >= length {
+        if branch.at == 0 || branch.at >= length {
             return Err(format!(
-                "{key}: a branch at {} is past its {length} ticks",
+                "{key}: a branch at {} is at its start or past its {length} ticks",
                 branch.at
             ));
         }
