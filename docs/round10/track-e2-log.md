@@ -7,6 +7,7 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 ## Protocol
 
 - Group `fw-burst`, commit 1 ("Minecraft firework rockets carry their stars"): `firework_rocket::Burst` (inside `EntitySnapshot.firework_bursts`, sent to friends in the `ToClient::Bursts` blob) carries `explosions: Vec<firework::Explosion>` instead of `colors: Vec<i32>`. The release step bumps `PROTOCOL`.
+- Group `fw-elytra` ("An elytra rocket goes off at the end of its boost"): no format change, but a rocket's `ThrownView.owner` in `EntitySnapshot.thrown_views` now names the rider of an elytra rocket (other rockets keep `MOB_THROWER`). A friend on an older build would draw that rocket's sprite in the rider's hand. The bump for `fw-burst` covers it.
 
 ## Group ti1-targets-and-hurt
 
@@ -979,4 +980,55 @@ After ceadbff0.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:black_banner*4,minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:shield*2,minecraft:shield+unbreaking=3+damage=200,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:stick*4,minecraft:cooked_beef*32
+```
+
+## Group fw-elytra
+
+### 1. An elytra rocket goes off at the end of its boost
+
+After 6d7cfdaf.
+
+- **Vanilla (26.3, checked with javap):**
+  - `FireworkRocketItem.use` while fall flying spawns `new FireworkRocketEntity(level, stack, player)`: owned by the player and attached to it, at the player's feet, with the usual lifetime `10 * (1 + flight) + nextInt(6) + nextInt(7)`. The boost lasts as long as the rocket, so the fork's boost of `lifetime + 1` ticks (`firework::boost_ticks`) gives the attached rocket a lifetime of `boost_ticks - 1`.
+  - `FireworkRocketEntity.tick` for an attached rocket: while the rider is fall flying it boosts the rider and sits at the rider's position plus `getHandHoldingItemAngle(FIREWORK_ROCKET)`, else at the rider's position; its motion is the rider's motion; then `getHitResultOnMoveVector` along that motion, with no move of its own, and `hitTargetOrDeflectSelf` on a hit. `checkLeftOwner` never lets it leave its owner, which it touches, so it never hits its rider. The launch sound, `life++` and `explode` after `lifetime` follow as for any rocket.
+  - `Entity.getHandHoldingItemAngle`: for a player, `calculateViewVector(0, yRot + 80) * 0.5` for the right arm, or `yRot - 80` when only the offhand holds the item (the main arm is right by default).
+  - `dealExplosionDamage`: the attached entity takes the full `5 + 2 * stars` through `fireworks(rocket, owner)`, with no distance or sight check; every other living entity within 5 blocks is hurt as by any burst. With no stars nobody is hurt. `calculateHorizontalHurtKnockbackDirection` pushes the rider away from the rocket.
+  - `shouldRender` is false for an attached rocket: only its client-side trail particles show.
+- **Changed:**
+  - `minecraft_terrain/src/firework_rocket.rs`: `Rocket` keeps `rider` and `hand`. `Rocket::attached(rider, feet, hand, boost_ticks, fireworks, random)` (lifetime `boost_ticks - 1`); `Rocket::follow(world, targets, rider)` puts the rocket at the rider's feet plus the hand, takes the rider's movement since the last tick as its motion, tests the hit along it and ends like `tick` (the shared end is the new private `after_hit`). New `hand_offset(controls)`, `strength()` (now used by `damage_to`), `HAND_REACH`, `HAND_TURN` and `is_attached(view)`. An attached rocket's view names its rider as `owner`.
+  - `minecraft_terrain/src/server.rs`:
+    - `Command::AttachRocket { rider, launch, boost_ticks }` (next to `LaunchRocket`), `ServerHandle::attach_rocket` and `ServerSim::attach_rocket`, with the hand from the rider's controls.
+    - `tick_rockets` moves an attached rocket with its rider's body from the `players` it already gets and the hand from that player's controls, so a friend's rocket follows the friend. Its first tick plays no launch sound.
+    - `rocket_blast` gives the rider the full strength; the others are hurt as before.
+  - `minecraft_survival/src/actions.rs`: the `Change::Rocket` arm calls the new `Entities::attach_rocket` with the player's feet and the stack's fireworks when the body boosts. A friend's rocket use runs through the same arm on the host.
+  - `minecraft_survival/src/entity_view.rs`: an attached rocket's sprite is not drawn; its trail still is (the trail loop takes every rocket view).
+  - `docs/MINECRAFT-SURVIVAL.md`: the elytra paragraph says the rocket goes off at the end of the boost.
+- **Tests:**
+  - `firework_rocket::tests::the_rocket_sits_half_a_block_out_in_the_hand_that_holds_it`: west of a player facing south, east with the rocket only in the offhand, the right hand with rockets in both hands or none, south of a player facing east, no offset without controls.
+  - `firework_rocket::tests::an_elytra_rocket_rides_at_its_riders_hand_and_bursts_when_the_boost_ends`: lifetime 20 for a 21-tick boost; every tick at the rider's feet plus the hand, with the rider's movement as its motion; it goes off on tick 21 without ever hitting the rider standing in its path; 7 for one star; a starless one lives as long and has no strength.
+  - `firework_rocket::tests::an_elytra_rocket_bursts_early_on_a_mob_in_its_riders_path_and_stays_put_without_its_rider`.
+  - `server::tests::an_elytra_rocket_rides_its_player_and_goes_off_at_it_when_the_boost_ends` (needs the 26.3 data): for the host (id 4) and a friend (id 5) gliding apart, each rocket's view rides its own player's hand, the level plays no launch sound, the burst is on tick 21 at the rider's hand, and the only hit is the rider's 7.0 with `by` the rider; a starless rocket bursts on tick 21 with no hit.
+  - `actions::tests::a_gliding_players_rocket_rides_along_and_goes_off_at_the_player_when_the_boost_ends` (needs the 26.3 data): a gliding player's one-star rocket boosts the body, leaves 63, rides at the player's right hand and hits the player for 7 as `PlayerFireworks` by that player.
+- **Decisions:**
+  - The host does not know when a player stops gliding, so the rocket keeps the hand offset until it goes off (vanilla moves it to the feet once the rider lands). The hand is the right one unless only the offhand holds a rocket, as the fork has no left-handed main arm.
+  - The host does not know a player's motion either, so the rocket's hit test runs along the rider's movement over the last tick.
+  - The launch whoosh stays the item use's sound (at the player, heard by everyone), and the attached rocket plays none on its first tick, so it is heard once.
+  - An attached rocket's view names its rider in `ThrownView.owner`, which no client read for rockets, so the wire format stays and the client can leave its sprite out.
+  - A rider who has left or changed dimension leaves the rocket where it was; it goes off there at the end of its life, as vanilla's rocket does without its attached entity.
+  - With pvp off the rider takes nothing, as `canHarmPlayer` refuses a player's own rocket (the `fw-launch` filter). The rider is pushed away from the rocket in its hand, half a block to the side, like vanilla's knockback from the rocket.
+- **Left for later:**
+  - An elytra rocket that bursts early on a mob or a block still boosts for its full time (in the brief).
+  - A second rocket used during a boost extends the body's boost to the longer of the two (`launch_rocket` takes the maximum), while vanilla adds both boosts; each rocket still goes off at the end of its own lifetime.
+- **Protocol:** see the Protocol section (no format change).
+- **Test steps** (survival, by day, open ground, `/gamerule pvp true`; the red and three-star rockets need E1's kit parser):
+  1. **FW-E1. The red rocket.** Put on the elytra (chest slot), `/tp ~ ~60 ~`, jump and jump again in the air to glide, then use the red rocket. You boost forward and a trail of white sparks follows you; no rocket sprite sits at your hand. After 1 to 1.6 s the rocket goes off at your right side: the deep bang, a big red ball with trails around you, and you lose 3.5 hearts. **Screenshot FW-E1** (the red ball around you).
+  2. **FW-E2. A plain rocket.** Glide again and use a plain rocket: the same boost, then a few grey puffs at your side, no bang and no damage.
+  3. **FW-E3. Three stars.** Glide and use the three-star rocket: a short boost, three bursts one after another and 5.5 hearts lost. Eat a golden apple.
+  4. **FW-E4. Without pvp.** `/gamerule pvp false`, glide and use the red rocket: the boost and the red ball, but no damage. `/gamerule pvp true`.
+  5. **FW-E5. Near a zombie.** Hatch 3 zombies on flat ground, `/tp ~ ~8 ~` above them, glide down past them and use the red rocket a second before you pass: when it goes off within 5 blocks of a zombie, that zombie flashes red and is knocked away from the burst.
+  6. **FW-E6. The friend's rocket** (two windows with `scripts\mp-local.ps1`, `/kit @a` from the host). The friend glides from `/tp ~ ~60 ~` and uses the red rocket. The friend boosts and, at the end of the boost, the red ball goes off at the friend and the friend loses 3.5 hearts. The host sees the trail behind the friend and the red ball at the friend. **Screenshots FW-E6a (host) and FW-E6b (friend).**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:zombie_spawn_egg*8,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```

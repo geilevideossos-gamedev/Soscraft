@@ -1,6 +1,7 @@
 use crate::firework::{Explosion, Fireworks};
 use crate::thrown::ThrownView;
 use glam::DVec3;
+use minecraftoss_entities::controls::PlayerControls;
 use minecraftoss_entities::potion::PotionTarget;
 pub use minecraftoss_entities::world::FireworkOwner as RocketOwner;
 use minecraftoss_player::World;
@@ -22,6 +23,8 @@ pub const SIZE: f64 = 0.25;
 pub const SHOT_SPREAD: f64 = 0.0172275;
 pub const DISPENSE_POWER: f32 = 0.5;
 pub const DISPENSE_UNCERTAINTY: f32 = 1.0;
+pub const HAND_REACH: f64 = 0.5;
+pub const HAND_TURN: f32 = 80.0;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Burst {
@@ -49,6 +52,8 @@ pub struct Rocket {
     pub left_owner: bool,
     pub horizontal_collision: bool,
     pub shot_at_angle: bool,
+    pub rider: Option<u64>,
+    pub hand: DVec3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +77,19 @@ fn swept((min, max): (DVec3, DVec3), by: DVec3) -> (DVec3, DVec3) {
 
 fn grown((min, max): (DVec3, DVec3), by: f64) -> (DVec3, DVec3) {
     (min - DVec3::splat(by), max + DVec3::splat(by))
+}
+
+pub fn hand_offset(controls: Option<&PlayerControls>) -> DVec3 {
+    let Some(controls) = controls else {
+        return DVec3::ZERO;
+    };
+    let holds = |item: &Option<String>| item.as_deref() == Some(ITEM);
+    let turn = if holds(&controls.offhand) && !holds(&controls.main_hand) {
+        -HAND_TURN
+    } else {
+        HAND_TURN
+    };
+    minecraftoss_entities::enderman::view_vector(0.0, controls.yaw + turn) * HAND_REACH
 }
 
 fn overlaps(a: (DVec3, DVec3), b: (DVec3, DVec3)) -> bool {
@@ -106,7 +124,24 @@ impl Rocket {
             left_owner: false,
             horizontal_collision: false,
             shot_at_angle: false,
+            rider: None,
+            hand: DVec3::ZERO,
         }
+    }
+
+    pub fn attached(
+        rider: u64,
+        feet: DVec3,
+        hand: DVec3,
+        boost_ticks: i32,
+        fireworks: Fireworks,
+        random: &mut LegacyRandom,
+    ) -> Self {
+        let mut rocket = Self::launch(RocketOwner::Player(rider), feet + hand, fireworks, random);
+        rocket.lifetime = boost_ticks - 1;
+        rocket.rider = Some(rider);
+        rocket.hand = hand;
+        rocket
     }
 
     pub fn shot(
@@ -143,7 +178,6 @@ impl Rocket {
         targets: &[PotionTarget],
         owner: Option<(DVec3, DVec3)>,
     ) -> Vec<RocketEvent> {
-        let mut events = Vec::new();
         self.previous = self.position;
         if !self.left_owner {
             let near = grown(swept(self.bounds(), self.velocity), 1.0);
@@ -168,6 +202,27 @@ impl Rocket {
         self.position += moved;
         let same = |a: f64, b: f64| (b - a).abs() < f64::from(1.0e-5_f32);
         self.horizontal_collision = !same(delta.x, moved.x) || !same(delta.z, moved.z);
+        self.after_hit(hit)
+    }
+
+    pub fn follow(
+        &mut self,
+        world: &impl World,
+        targets: &[PotionTarget],
+        rider: Option<(DVec3, DVec3)>,
+    ) -> Vec<RocketEvent> {
+        self.previous = self.position;
+        if let Some((feet, hand)) = rider {
+            self.velocity = feet - (self.position - self.hand);
+            self.hand = hand;
+            self.position = feet + hand;
+        }
+        let hit = self.hit_on_move(world, targets, self.velocity);
+        self.after_hit(hit)
+    }
+
+    fn after_hit(&mut self, hit: Option<RocketHit>) -> Vec<RocketEvent> {
+        let mut events = Vec::new();
         let bursts = match hit {
             Some(RocketHit::Entity) => true,
             Some(RocketHit::Block) => !self.explosions.is_empty(),
@@ -225,7 +280,7 @@ impl Rocket {
     pub fn view(&self) -> ThrownView {
         ThrownView {
             item: ITEM.to_owned(),
-            owner: crate::thrown::MOB_THROWER,
+            owner: self.rider.unwrap_or(crate::thrown::MOB_THROWER),
             previous: self.previous,
             position: self.position,
             age: self.life,
@@ -235,12 +290,13 @@ impl Rocket {
         }
     }
 
-    pub fn damage_to(&self, world: &dyn World, feet: DVec3, height: f64) -> Option<f32> {
+    pub fn strength(&self) -> Option<f32> {
         let stars = self.explosions.len();
-        if stars == 0 {
-            return None;
-        }
-        let strength = 5.0_f32 + (stars * 2) as f32;
+        (stars > 0).then(|| 5.0_f32 + (stars * 2) as f32)
+    }
+
+    pub fn damage_to(&self, world: &dyn World, feet: DVec3, height: f64) -> Option<f32> {
+        let strength = self.strength()?;
         if self.position.distance_squared(feet) > BLAST_RADIUS * BLAST_RADIUS {
             return None;
         }
@@ -256,6 +312,10 @@ impl Rocket {
 
 pub fn is_rocket(view: &ThrownView) -> bool {
     view.item == ITEM
+}
+
+pub fn is_attached(view: &ThrownView) -> bool {
+    is_rocket(view) && view.owner != crate::thrown::MOB_THROWER
 }
 
 #[cfg(test)]
@@ -543,5 +603,156 @@ mod tests {
         one.position = feet;
         assert_eq!(one.damage_to(&world, feet, 1.8), Some(7.0));
         assert_eq!(three.burst().explosions.len(), 3);
+    }
+
+    fn rider_at(id: u64, feet: DVec3) -> PotionTarget {
+        PotionTarget {
+            id: crate::thrown::PLAYER_TARGET + id,
+            min: feet - DVec3::new(0.3, 0.0, 0.3),
+            max: feet + DVec3::new(0.3, 1.8, 0.3),
+            owner: true,
+        }
+    }
+
+    fn holding(main_hand: Option<&str>, offhand: Option<&str>, yaw: f32) -> PlayerControls {
+        PlayerControls {
+            id: 4,
+            yaw,
+            main_hand: main_hand.map(str::to_owned),
+            offhand: offhand.map(str::to_owned),
+            ..PlayerControls::default()
+        }
+    }
+
+    #[test]
+    fn the_rocket_sits_half_a_block_out_in_the_hand_that_holds_it() {
+        assert_eq!(hand_offset(None), DVec3::ZERO);
+        let right = hand_offset(Some(&holding(Some(ITEM), None, 0.0)));
+        let turned = (80.0_f64).to_radians();
+        assert!(
+            (right - DVec3::new(-turned.sin(), 0.0, turned.cos()) * 0.5).length() < 1e-3,
+            "facing south the right hand is west: {right}"
+        );
+        let left = hand_offset(Some(&holding(None, Some(ITEM), 0.0)));
+        assert!(
+            (left - DVec3::new(turned.sin(), 0.0, turned.cos()) * 0.5).length() < 1e-3,
+            "{left}"
+        );
+        assert_eq!(
+            hand_offset(Some(&holding(Some(ITEM), Some(ITEM), 0.0))),
+            right
+        );
+        assert_eq!(hand_offset(Some(&holding(None, None, 0.0))), right);
+        let east = hand_offset(Some(&holding(Some(ITEM), None, -90.0)));
+        let ten = (10.0_f64).to_radians();
+        assert!(
+            (east - DVec3::new(ten.sin(), 0.0, ten.cos()) * 0.5).length() < 1e-3,
+            "facing east the right hand is south: {east}"
+        );
+    }
+
+    #[test]
+    fn an_elytra_rocket_rides_at_its_riders_hand_and_bursts_when_the_boost_ends() {
+        let world = Sky { roof: None };
+        let hand = DVec3::new(-0.49, 0.0, 0.09);
+        let feet = |tick: i32| {
+            DVec3::new(
+                0.5,
+                100.0 - 0.2 * f64::from(tick),
+                0.5 + 1.5 * f64::from(tick),
+            )
+        };
+        let mut random = LegacyRandom::new(7);
+        let one_star = Fireworks {
+            flight: 1,
+            explosions: vec![Explosion::burst(11743532)],
+        };
+        let mut rocket = Rocket::attached(4, feet(0), hand, 21, one_star, &mut random);
+        assert_eq!(
+            (rocket.lifetime, rocket.rider, rocket.owner),
+            (20, Some(4), RocketOwner::Player(4))
+        );
+        assert!((rocket.position - (feet(0) + hand)).length() < 1e-12);
+        assert!(is_attached(&rocket.view()) && rocket.view().owner == 4);
+        let mut events = Vec::new();
+        let mut ticks = 0;
+        while rocket.alive {
+            ticks += 1;
+            let rider = rider_at(4, feet(ticks));
+            events.extend(rocket.follow(&world, &[rider], Some((feet(ticks), hand))));
+            assert!(
+                (rocket.position - (feet(ticks) + hand)).length() < 1e-9,
+                "{}",
+                rocket.position
+            );
+            assert!(
+                (rocket.velocity - DVec3::new(0.0, -0.2, 1.5)).length() < 1e-9,
+                "{}",
+                rocket.velocity
+            );
+        }
+        assert_eq!(ticks, 21, "it bursts on the last tick of the boost");
+        assert_eq!(
+            events,
+            [RocketEvent::Launched, RocketEvent::Exploded],
+            "it never hits its rider"
+        );
+        assert_eq!(rocket.strength(), Some(7.0));
+        assert!((rocket.burst().velocity - DVec3::new(0.0, -0.2, 1.5)).length() < 1e-9);
+        let mut plain = Rocket::attached(5, feet(0), hand, 21, Fireworks::default(), &mut random);
+        while plain.alive {
+            plain.follow(&world, &[], Some((feet(0), hand)));
+        }
+        assert_eq!(
+            (plain.life, plain.strength()),
+            (21, None),
+            "a starless one only puffs"
+        );
+        assert!(plain.burst().explosions.is_empty());
+    }
+
+    #[test]
+    fn an_elytra_rocket_bursts_early_on_a_mob_in_its_riders_path_and_stays_put_without_its_rider() {
+        let world = Sky { roof: None };
+        let feet = |tick: i32| DVec3::new(0.5, 100.0, 0.5 + f64::from(tick));
+        let mut random = LegacyRandom::new(7);
+        let mut rocket = Rocket::attached(
+            4,
+            feet(0),
+            DVec3::ZERO,
+            21,
+            Fireworks {
+                flight: 1,
+                explosions: vec![Explosion::burst(1)],
+            },
+            &mut random,
+        );
+        let zombie = zombie_at(DVec3::new(0.5, 99.5, 6.0));
+        let mut ticks = 0;
+        while rocket.alive {
+            ticks += 1;
+            rocket.follow(
+                &world,
+                &[rider_at(4, feet(ticks)), zombie],
+                Some((feet(ticks), DVec3::ZERO)),
+            );
+        }
+        assert!(ticks < 6, "it meets the zombie ahead: {ticks}");
+        let mut alone = Rocket::attached(
+            4,
+            feet(0),
+            DVec3::ZERO,
+            21,
+            Fireworks::default(),
+            &mut random,
+        );
+        alone.follow(&world, &[], Some((feet(1), DVec3::ZERO)));
+        let left = alone.position;
+        alone.follow(&world, &[], None);
+        assert_eq!(
+            (alone.position, alone.previous),
+            (left, left),
+            "its rider is gone"
+        );
     }
 }

@@ -1245,6 +1245,14 @@ pub fn act(
                     }
                     minecraft_terrain::bucket::Change::Rocket(boost_ticks) => {
                         if body.launch_rocket(boost_ticks) {
+                            entities.attach_rocket(
+                                player_id,
+                                minecraft_terrain::firework::RocketLaunch {
+                                    at: player.pos,
+                                    fireworks: minecraft_terrain::firework::fireworks(stack),
+                                },
+                                boost_ticks,
+                            );
                             hand.swing = Some(0.0);
                             finish_item_use(
                                 entities,
@@ -2090,6 +2098,30 @@ pub(crate) mod tests {
         }
     }
 
+    struct Gliding(Vec<i32>);
+
+    impl Body for Gliding {
+        fn write_blocks(
+            &mut self,
+            terrain: &mut Terrain,
+            entities: &mut Entities,
+            writes: Vec<(BlockPos, Option<Block>)>,
+        ) {
+            crate::level::write_blocks(terrain, entities, writes);
+        }
+
+        fn obstacles(&self, _: &Entities) -> Vec<[f64; 6]> {
+            Vec::new()
+        }
+
+        fn push(&mut self, _: DVec3) {}
+
+        fn launch_rocket(&mut self, boost_ticks: i32) -> bool {
+            self.0.push(boost_ticks);
+            true
+        }
+    }
+
     pub(crate) fn level_and_globals() -> Option<(Level, Globals)> {
         let mut level =
             crate::commands::tests::test_stream().and_then(crate::commands::tests::test_level)?;
@@ -2440,6 +2472,75 @@ pub(crate) mod tests {
         assert!(
             (rocket.position.x - 4.5).hypot(rocket.position.z - 6.5) < 0.25,
             "{rocket:?}"
+        );
+    }
+
+    #[test]
+    fn a_gliding_players_rocket_rides_along_and_goes_off_at_the_player_when_the_boost_ends() {
+        use minecraft_terrain::firework_rocket::{hand_offset, is_attached};
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding(minecraft_terrain::firework::FIREWORK_ROCKET, 64);
+        if let Some(stack) = player.inventory.slots[0].as_mut() {
+            stack.components = Some(serde_json::json!({"minecraft:fireworks": {
+                "flight_duration": 1,
+                "explosions": [{"shape": "small_ball", "colors": [11743532]}]
+            }}));
+        }
+        let gliding = Actor {
+            gliding: true,
+            ..actor(0.0, -60.0)
+        };
+        let mut body = Gliding(Vec::new());
+        act(
+            &mut player,
+            &mut level,
+            &globals,
+            &mut body,
+            &gliding,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        assert_eq!(body.0.len(), 1, "the rocket boosts the glide");
+        assert_eq!(count(&player), Some(63));
+        let id = u64::from(player.id.0);
+        let entities = level.entities.as_mut().expect("entities");
+        tick_until(entities, id, |entities| {
+            entities.view.thrown.iter().any(is_attached)
+        });
+        let rocket = entities
+            .view
+            .thrown
+            .iter()
+            .find(|view| is_attached(view))
+            .expect("the rocket rides along")
+            .clone();
+        assert_eq!(rocket.owner, id);
+        let hand = hand_offset(Some(&minecraftoss_entities::controls::PlayerControls {
+            id,
+            ..Default::default()
+        }));
+        assert!(
+            (rocket.position - (DVec3::from_array(FEET) + hand)).length() < 1e-9,
+            "it sits in the right hand: {rocket:?}"
+        );
+        tick_until(entities, id, |entities| {
+            entities
+                .player_outputs(id)
+                .is_some_and(|outputs| !outputs.hits.is_empty())
+        });
+        let hits = entities.take_player_outputs(id).hits;
+        assert_eq!(
+            hits.iter().map(|hit| (hit.0, hit.3)).collect::<Vec<_>>(),
+            [(
+                7.0,
+                crate::death::DamageCause::PlayerFireworks {
+                    client: player.id.0
+                }
+            )]
         );
     }
 

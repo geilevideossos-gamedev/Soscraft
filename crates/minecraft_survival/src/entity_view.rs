@@ -1391,7 +1391,9 @@ impl EntityView {
         );
         minecraft_terrain::thrown::append_views(
             &mut out.items,
-            &self.thrown,
+            self.thrown
+                .iter()
+                .filter(|view| !minecraft_terrain::firework_rocket::is_attached(view)),
             partial,
             camera,
             atlas,

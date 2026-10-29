@@ -1437,13 +1437,18 @@ impl ServerSim {
                     owner_box = Some((target.min, target.max));
                 }
             }
+            let rider = rocket.rider.map(|rider| players.iter().find(|p| p.id == rider).map(|p| (p.feet, crate::firework_rocket::hand_offset(self.mobs.player_controls(rider)))));
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-                rocket.tick(&world, &targets, owner_box)
+                match rider {
+                    Some(at) => rocket.follow(&world, &targets, at),
+                    None => rocket.tick(&world, &targets, owner_box),
+                }
             };
             for event in events {
                 match event {
+                    RocketEvent::Launched if rocket.rider.is_some() => {}
                     RocketEvent::Launched => {
                         self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::firework::LAUNCH_SOUND, pos: rocket.position.to_array(), volume: crate::firework::LAUNCH_VOLUME, pitch: 1.0 });
                     }
@@ -1468,7 +1473,8 @@ impl ServerSim {
                 .filter(|mob| !mob.dead)
                 .filter_map(|mob| rocket.damage_to(&world, mob.position, f64::from(mob.size.1)).map(|damage| (mob.id, damage)))
                 .collect();
-            hits.extend(players.iter().filter(|p| p.targetable()).filter_map(|p| rocket.damage_to(&world, p.feet, 1.8).map(|damage| (crate::thrown::PLAYER_TARGET + p.id, damage))));
+            let damage_to = |p: &crate::thrown::PlayerBody| if rocket.rider == Some(p.id) { rocket.strength() } else { rocket.damage_to(&world, p.feet, 1.8) };
+            hits.extend(players.iter().filter(|p| p.targetable()).filter_map(|p| damage_to(p).map(|damage| (crate::thrown::PLAYER_TARGET + p.id, damage))));
             hits
         };
         for (id, damage) in damages {
@@ -2146,6 +2152,12 @@ impl ServerSim {
         let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
         self.rockets.push(crate::firework_rocket::Rocket::launch(crate::firework_rocket::RocketOwner::Player(owner), launch.at, launch.fireworks, &mut random));
         true
+    }
+
+    pub fn attach_rocket(&mut self, rider: u64, launch: crate::firework::RocketLaunch, boost_ticks: i32) {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
+        let hand = crate::firework_rocket::hand_offset(self.mobs.player_controls(rider));
+        self.rockets.push(crate::firework_rocket::Rocket::attached(rider, launch.at, hand, boost_ticks, launch.fireworks, &mut random));
     }
 
     pub fn take_eye_answers(&mut self) -> Vec<crate::eye_of_ender::EyeAnswer> {
@@ -3658,6 +3670,7 @@ pub enum Command {
     ThrowTrident(Box<crate::trident::ThrownTrident>),
     ThrowEye { owner: u64, throw: Box<crate::ender_eye::EyeThrow> },
     LaunchRocket { owner: u64, launch: Box<crate::firework::RocketLaunch> },
+    AttachRocket { rider: u64, launch: Box<crate::firework::RocketLaunch>, boost_ticks: i32 },
     BottleBreath { player: u64, feet: glam::DVec3, height: f64 },
     Save,
     SetWeather { weather: &'static str, duration: i32 },
@@ -4189,6 +4202,10 @@ impl ServerHandle {
         self.send(Command::LaunchRocket { owner, launch: Box::new(launch) });
     }
 
+    pub fn attach_rocket(&mut self, rider: u64, launch: crate::firework::RocketLaunch, boost_ticks: i32) {
+        self.send(Command::AttachRocket { rider, launch: Box::new(launch), boost_ticks });
+    }
+
     pub fn bottle_breath(&mut self, player: u64, feet: glam::DVec3, height: f64) {
         self.send(Command::BottleBreath { player, feet, height });
     }
@@ -4363,6 +4380,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.eye_answers.extend(sim.take_eye_answers());
                 }
                 Command::LaunchRocket { owner, launch } => out.item_uses.push((owner, sim.launch_rocket(owner, *launch))),
+                Command::AttachRocket { rider, launch, boost_ticks } => sim.attach_rocket(rider, *launch, boost_ticks),
                 Command::BottleBreath { player, feet, height } => out.item_uses.push((player, sim.bottle_breath(feet, height))),
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);
@@ -14027,6 +14045,56 @@ mod tests {
         }).collect();
         hits.sort_unstable();
         assert_eq!(hits, [(4, Some(4), None), (5, Some(4), None)], "the owner is hurt by its own rocket too");
+    }
+
+    #[test]
+    fn an_elytra_rocket_rides_its_player_and_goes_off_at_it_when_the_boost_ends() {
+        use crate::firework::{Explosion, Fireworks, RocketLaunch, FIREWORK_ROCKET};
+        use crate::firework_rocket::{hand_offset, is_attached};
+        use minecraftoss_entities::controls::PlayerControls;
+        use minecraftoss_entities::world::PlayerHitKind;
+        let Some((mut server, _)) = door_world() else { return };
+        let holding = |id: u64, yaw: f32| PlayerControls { id, yaw, main_hand: Some(FIREWORK_ROCKET.to_owned()), ..PlayerControls::default() };
+        server.mobs.set_player_controls(&[holding(4, 0.0), holding(5, 90.0)]);
+        let host = |tick: i32| crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(2.5, 230.0, 2.0 + 0.5 * f64::from(tick)), alive: true, spectator: false };
+        let friend = |tick: i32| crate::thrown::PlayerBody { id: 5, feet: glam::DVec3::new(14.5, 220.0 - 0.3 * f64::from(tick), 2.0 + 0.7 * f64::from(tick)), alive: true, spectator: false };
+        let glide = |server: &mut ServerSim, rider: u64, explosions: Vec<Explosion>| {
+            let body = |tick| if rider == 4 { host(tick) } else { friend(tick) };
+            server.attach_rocket(rider, RocketLaunch { at: body(0).feet, fireworks: Fireworks { flight: 1, explosions } }, 21);
+            server.firework_bursts.clear();
+            server.level.sounds.clear();
+            let hand = hand_offset(server.mobs.player_controls(rider));
+            let mut hits = Vec::new();
+            let mut ticks = 0;
+            while !server.rockets.is_empty() && ticks < 40 {
+                ticks += 1;
+                server.tick_rockets(&[host(ticks), friend(ticks)]);
+                if let Some(view) = server.rocket_views().first() {
+                    assert!(is_attached(view) && view.owner == rider, "{view:?}");
+                    assert!((view.position - (body(ticks).feet + hand)).length() < 1e-9, "it rides its own player: {view:?}");
+                }
+                hits.extend(server.take_rocket_hits().into_iter().map(|hit| match hit.kind {
+                    PlayerHitKind::Fireworks { by, at } => (ticks, hit.player_id, hit.damage, by, hit.source, at),
+                    other => panic!("{other:?}"),
+                }));
+            }
+            assert!(!server.level.sounds.iter().any(|s| s.event == crate::firework::LAUNCH_SOUND), "the item use already whooshed");
+            assert_eq!(server.firework_bursts.len(), 1);
+            assert!((server.firework_bursts[0].position - (body(21).feet + hand)).length() < 1e-9);
+            (ticks, hits, server.firework_bursts[0].explosions.len())
+        };
+        let red = || vec![Explosion::burst(11743532)];
+        for rider in [4, 5] {
+            let (ticks, hits, stars) = glide(&mut server, rider, red());
+            let feet = if rider == 4 { host(21).feet } else { friend(21).feet };
+            let hand = hand_offset(server.mobs.player_controls(rider));
+            assert_eq!((ticks, stars), (21, 1), "it goes off on the boost's last tick");
+            assert_eq!(hits, [(21, rider, 7.0, Some(rider), None, feet + hand)], "only its rider is hit, at full strength");
+            let (ticks, hits, stars) = glide(&mut server, rider, Vec::new());
+            assert_eq!((ticks, stars), (21, 0));
+            assert!(hits.is_empty(), "a starless rocket only puffs");
+        }
+        assert!(hand_offset(server.mobs.player_controls(5)).z < -0.49, "the friend faces west, so its right hand is north");
     }
 
     #[test]

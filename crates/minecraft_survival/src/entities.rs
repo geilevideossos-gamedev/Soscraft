@@ -1066,6 +1066,10 @@ impl Entities {
         self.players.queue(player).item_use_waiting = Some(sent);
     }
 
+    pub fn attach_rocket(&mut self, rider: u64, launch: minecraft_terrain::firework::RocketLaunch, boost_ticks: i32) {
+        self.server.attach_rocket(rider, launch, boost_ticks);
+    }
+
     pub fn bottle_breath(&mut self, player: u64, feet: DVec3, height: f64, sent: SentItemUse) {
         self.server.bottle_breath(player, feet, height);
         self.players.queue(player).item_use_waiting = Some(sent);
