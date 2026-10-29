@@ -95,6 +95,7 @@ pub(crate) struct Runtime {
     carried_survival: Option<minecraft_survival::survival::Survival>,
     environment_accumulator: f64,
     environment_primed: bool,
+    darkness: minecraft_terrain::darkness::Darkness,
     light: Option<SkyLight>,
     light_volume_at: Option<[i32; 3]>,
     light_volume_age: u32,
@@ -618,6 +619,7 @@ fn update(
                 players.insert(uuid.clone(), player);
                 runtime.environment_accumulator = 0.0;
                 runtime.environment_primed = false;
+                runtime.darkness = Default::default();
                 runtime.light = Some(SkyLight::streamed());
                 runtime.light_volume_at = None;
                 runtime.cloud_center = None;
@@ -663,6 +665,7 @@ fn update(
         shape_ids,
         environment_accumulator,
         environment_primed,
+        darkness,
         light,
         light_volume_at,
         light_volume_age,
@@ -1562,6 +1565,7 @@ fn update(
     };
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     let powder_snow = (alive && lava.is_none() && minecraft_terrain::scene::Scene::block(&terrain.scene, eye_block).is_some_and(|b| b.id.key() == "minecraft:powder_snow")).then_some(player_mode.mode == minecraftoss_player::GameMode::Spectator);
+    darkness.advance(dt, survival.status.effect(minecraftoss_player::survival::EffectKind::Darkness).map(|effect| effect.duration), 0);
     let inputs = SkyInputs {
         eye,
         forward,
@@ -1573,6 +1577,7 @@ fn update(
         thunder_level: weather.thunder_level,
         lava,
         powder_snow,
+        darkness: *darkness,
         world_fog: ui.boss_bars.iter().any(|bar| bar.world_fog),
         credits: ui.credits.is_some(),
     };
@@ -1604,6 +1609,7 @@ pub(crate) struct SkyInputs {
     pub(crate) thunder_level: f32,
     pub(crate) lava: Option<(bool, bool)>,
     pub(crate) powder_snow: Option<bool>,
+    pub(crate) darkness: minecraft_terrain::darkness::Darkness,
     pub(crate) world_fog: bool,
     pub(crate) credits: bool,
 }
@@ -1638,7 +1644,7 @@ pub(crate) struct SkyTicked {
 }
 
 pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft_survival::level::Terrain, registries: &Registries, light: &SkyLight, (accumulator, primed): (&mut f64, &mut bool), inputs: &SkyInputs) -> SkyTicked {
-    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, powder_snow, world_fog, credits } = *inputs;
+    let SkyInputs { eye, forward, aspect, dt, clock_ticks, game_time, rain_level, thunder_level, lava, powder_snow, darkness, world_fog, credits } = *inputs;
     let mut ticked = SkyTicked::default();
     let eye_block = (eye[0].floor() as i32, eye[1].floor() as i32, eye[2].floor() as i32);
     view.eye_light = [
@@ -1676,13 +1682,10 @@ pub(crate) fn present_sky(view: &mut MinecraftWorldView, terrain: &mut minecraft
         render_distance: VIEW_DISTANCE as u32,
         rain_level,
         thunder_level,
+        darkness: darkness.blend().unwrap_or(0.0),
     });
     let render_distance = VIEW_DISTANCE as f32 * 16.0;
-    let sky = match (lava, powder_snow) {
-        (Some((spectator, fire_resistant)), _) => minecraft_terrain::lava_fog::in_lava(sky, spectator, fire_resistant, render_distance),
-        (None, Some(spectator)) => minecraft_terrain::lava_fog::in_powder_snow(sky, spectator, render_distance),
-        (None, None) => sky,
-    };
+    let sky = minecraft_terrain::darkness::camera_fog(sky, lava, powder_snow, darkness.blend(), render_distance);
     let right = forward.cross(glam::Vec3::Y).normalize_or(glam::Vec3::X);
     let up = right.cross(forward).normalize_or(glam::Vec3::Y);
     let put = |v: glam::Vec3| [v.x, v.y, v.z, 0.0];
@@ -2564,6 +2567,49 @@ mod skate_tests {
         assert!(!board_allowed(true, false, MC_RIDING | CROUCH, false, false, false));
         assert!(!board_allowed(true, false, 0, false, true, false), "in a bed");
         assert!(!board_allowed(true, false, 0, false, false, true), "held in powder snow");
+    }
+}
+
+#[cfg(test)]
+mod darkness_tests {
+    use super::{MinecraftWorldView, SkyInputs, present_sky};
+    use minecraft_survival::level::Terrain;
+    use minecraft_terrain::darkness::{Darkness, TICK_SECONDS};
+    use minecraft_terrain::lighting::SkyLight;
+    use minecraft_terrain::terrain::Dimension;
+    use minecraftoss_core::registries::{DataPaths, Registries};
+    use std::sync::Arc;
+
+    fn overworld() -> Option<(Arc<Registries>, Terrain)> {
+        let registries = Arc::new(Registries::load(&DataPaths::discover().ok()?).ok()?);
+        let stream = minecraft_terrain::terrain::TerrainStream::for_dimension(registries.clone(), 0, 2, Dimension::Overworld, None).ok()?;
+        let environment = minecraft_terrain::environment::DimensionEnvironment::load(&registries, Dimension::Overworld.dimension_type()).ok()?;
+        let rules = minecraft_survival::dimension::DimensionRules::load(&registries, Dimension::Overworld).ok()?;
+        let scene = minecraft_terrain::scene::HandcraftedScene::streamed(stream.states.clone());
+        Some((registries, Terrain { stream, scene, environment, rules, friend_changes: None, friend_breaks: None }))
+    }
+
+    fn environment(terrain: &mut Terrain, registries: &Registries, darkness: Darkness, lava: Option<(bool, bool)>) -> [[f32; 4]; 16] {
+        let inputs = SkyInputs { eye: [0.5, 80.0, 0.5], forward: glam::Vec3::Z, aspect: 1.5, dt: 0.0, clock_ticks: 6000, game_time: 6000.0, rain_level: 0.0, thunder_level: 0.0, lava, powder_snow: None, darkness, world_fog: false, credits: false };
+        let mut view = MinecraftWorldView::default();
+        present_sky(&mut view, terrain, registries, &SkyLight::streamed(), (&mut 0.0, &mut false), &inputs);
+        view.environment
+    }
+
+    #[test]
+    fn darkness_reaches_the_environment_block() {
+        let Some((registries, mut terrain)) = overworld() else { return };
+        let mut darkness = Darkness::default();
+        let clear = environment(&mut terrain, &registries, darkness, None);
+        assert!(clear[13][1] > 15.0 && clear[5][..3].iter().any(|c| *c > 0.0), "{clear:?}");
+        for _ in 0..80 {
+            darkness.advance(TICK_SECONDS, Some(600), 0);
+        }
+        let dark = environment(&mut terrain, &registries, darkness, None);
+        assert_eq!((dark[13][0], dark[13][1]), (11.25, 15.0), "fog start and end");
+        assert_eq!(dark[5], [0.0, 0.0, 0.0, 15.0], "black fog that hides the sky past 15 blocks");
+        let lava = environment(&mut terrain, &registries, darkness, Some((false, false)));
+        assert_eq!((lava[13][0], lava[13][1]), (0.25, 1.0), "lava keeps its own fog");
     }
 }
 

@@ -37,6 +37,7 @@ const HELLO_EVERY: Duration = Duration::from_secs(2);
 pub(crate) const NO_ANSWER: &str =
     "The host's Minecraft world does not answer: the host may run a different build";
 const FIRE_RESISTANCE: &str = "minecraft:fire_resistance";
+const DARKNESS: &str = "minecraft:darkness";
 
 struct Prepared {
     look: Loaded,
@@ -145,6 +146,7 @@ pub(crate) struct Friend {
     cloud_center: Option<(i32, i32)>,
     environment_accumulator: f64,
     environment_primed: bool,
+    darkness: minecraft_terrain::darkness::Darkness,
     weather: [f32; 2],
     shapes: HashMap<BlockStateId, u16>,
     shape_ids: HashMap<(Vec<[u32; 6]>, u16), u16>,
@@ -1491,6 +1493,14 @@ fn show_menus(
     *screen_open = ui.inventory_open;
 }
 
+fn darkness_ticks(view: Option<&minecraft_net::messages::PlayerView>) -> Option<u32> {
+    view?
+        .effects
+        .iter()
+        .find(|effect| effect.kind == DARKNESS)
+        .map(|effect| u32::try_from(effect.duration).unwrap_or(0))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn present(
     friend: &mut Friend,
@@ -1511,6 +1521,7 @@ fn present(
         cloud_center,
         environment_accumulator,
         environment_primed,
+        darkness,
         weather,
         shapes,
         shape_ids,
@@ -1674,6 +1685,7 @@ fn present(
             });
             (spectator, fire_resistant)
         });
+    darkness.advance(dt, darkness_ticks(remote.player.as_ref()), remote.player_views);
     let inputs = SkyInputs {
         eye,
         forward,
@@ -1701,6 +1713,7 @@ fn present(
                     .as_ref()
                     .is_some_and(|view| view.game_mode == GameMode::Spectator)
             }),
+        darkness: *darkness,
         world_fog,
         credits,
     };
@@ -2147,6 +2160,60 @@ mod tests {
         assert!(activation.pose(0.0, 1.5).is_some());
         activation.tick(crate::minecraft_hand::ACTIVATION_TICKS);
         assert!(activation.pose(0.0, 1.5).is_none(), "it ends after two seconds");
+    }
+
+    #[test]
+    fn a_friend_with_darkness_gets_the_same_fog() {
+        use minecraft_survival::views::{effect_views, lengthened, sent_key};
+        use minecraft_terrain::darkness::{Darkness, TICK_SECONDS, camera_fog};
+        use minecraftoss_player::survival::{EffectKind, SurvivalStatus};
+        let sent = |status: &SurvivalStatus| minecraft_net::messages::PlayerView {
+            effects: effect_views(status),
+            ..Default::default()
+        };
+        let sky = minecraft_terrain::day_cycle::DayCycle::default().sample();
+        let fog = |darkness: &Darkness| camera_fog(sky, None, None, darkness.blend(), 192.0);
+        let mut status = SurvivalStatus::default();
+        status.add_effect(EffectKind::Darkness, 260, 0);
+        let mut view = sent(&status);
+        let first = view.clone();
+        let mut views = 1;
+        let mut seen = view.effects.clone();
+        let mut host = Darkness::default();
+        let mut friend = Darkness::default();
+        for tick in 0..340 {
+            if tick == 61 {
+                status.add_effect(EffectKind::Darkness, 260, 0);
+                assert_eq!(sent(&status), first, "a warden's next pulse sends the same view again");
+            }
+            let now = sent(&status);
+            if sent_key(&now) != sent_key(&view) || lengthened(&seen, &now.effects) {
+                view = now.clone();
+                views += 1;
+            }
+            seen = now.effects;
+            host.advance(
+                TICK_SECONDS,
+                status.effect(EffectKind::Darkness).map(|effect| effect.duration),
+                0,
+            );
+            friend.advance(TICK_SECONDS, darkness_ticks(Some(&view)), views);
+            assert_eq!(friend.blend(), host.blend(), "{tick}");
+            assert_eq!(fog(&friend).fog_end, fog(&host).fog_end, "{tick}");
+            if tick == 30 || tick == 250 {
+                assert_eq!((fog(&friend).fog_start, fog(&friend).fog_end), (11.25, 15.0), "{tick}");
+            }
+            status.tick_effects();
+        }
+        assert_eq!(friend.blend(), None, "the effect ran out");
+        assert_eq!(darkness_ticks(Some(&view)), None);
+        assert_eq!(darkness_ticks(None), None);
+        status.add_effect(EffectKind::Darkness, 600, 0);
+        friend.advance(TICK_SECONDS, darkness_ticks(Some(&sent(&status))), views + 1);
+        assert_eq!(friend.blend(), Some(0.0));
+        status.remove_effect(EffectKind::Darkness);
+        friend.advance(0.0, darkness_ticks(Some(&sent(&status))), views + 2);
+        assert_eq!(friend.blend(), None, "milk clears the friend's view at once");
     }
 
     #[test]
