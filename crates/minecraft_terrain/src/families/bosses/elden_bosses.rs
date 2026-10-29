@@ -1,13 +1,48 @@
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, TerrainFamily};
+use crate::families::{FamilyDraw, FamilyShow, TerrainFamily};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
+use elden_boss::{Clip, State};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::world::families::FamilyMob;
 pub use minecraftoss_entities::world::families::bosses::elden_bosses::EldenBoss;
 
 pub const TRACKING_RANGE: i32 = 10;
 pub const SHADOW_RADIUS: f32 = 1.0;
+pub const STATE_BITS: u32 = 0xf;
+pub const HELD: u32 = 1 << 4;
+pub const AWAKE: u32 = 1 << 5;
+
+pub fn show_clip(clip: &Clip) -> FamilyShow {
+    let state = State::ALL.iter().position(|state| *state == clip.state);
+    let mut flags = state.map_or(0, |state| state as u32);
+    if clip.held {
+        flags |= HELD;
+    }
+    if clip.awake {
+        flags |= AWAKE;
+    }
+    let mut values = [0; 8];
+    values[0] = i32::from(clip.index);
+    values[1] = i32::from(clip.clock);
+    values[2] = i32::from(clip.phase);
+    values[3] = i32::from(clip.from);
+    FamilyShow { flags, values }
+}
+
+pub fn shown_clip(show: &FamilyShow) -> Option<Clip> {
+    let state = *State::ALL.get((show.flags & STATE_BITS) as usize)?;
+    let [index, clock, phase, from, ..] = show.values;
+    Some(Clip {
+        state,
+        index: u8::try_from(index).ok()?,
+        clock: u16::try_from(clock).ok()?,
+        held: show.flags & HELD != 0,
+        phase: u8::try_from(phase).ok()?,
+        awake: show.flags & AWAKE != 0,
+        from: u16::try_from(from).ok()?,
+    })
+}
 
 impl TerrainFamily for EldenBoss {
     const TRACKING_RANGE: i32 = TRACKING_RANGE;
@@ -20,6 +55,16 @@ impl TerrainFamily for EldenBoss {
 
     fn fields(mob: &FamilyMob<Self>) -> Vec<(&'static str, Tag)> {
         crate::elden_save::fields(mob)
+    }
+
+    fn show(mob: &FamilyMob<Self>) -> FamilyShow {
+        show_clip(&mob.state.shown)
+    }
+
+    fn show_on(mob: &mut FamilyMob<Self>, show: &FamilyShow) {
+        if let Some(clip) = shown_clip(show) {
+            mob.state.shown = clip;
+        }
     }
 
     fn draw(
@@ -179,6 +224,68 @@ mod tests {
             .iter()
             .map(|v| v.position[1])
             .fold(f32::MIN, f32::max);
-        assert!(top > 66.8 && top < 67.1, "{top}");
+        assert!(top > 66.4 && top < 66.7, "asleep, he kneels: {top}");
+    }
+
+    #[test]
+    fn a_friend_sees_margits_clip_from_his_show() {
+        let mut host = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let id = host.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 3.0))];
+        for _ in 0..40 {
+            host.tick_with_players(&mut Field, &players);
+        }
+        assert!(host.elden_bosses()[0].state.brain.awake());
+        host.elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .begin("dagger_throw");
+        let shown = |world: &EntityWorld| world.elden_bosses()[0].state.shown;
+        for _ in 0..12 {
+            host.tick_with_players(&mut Field, &players);
+        }
+        let held = shown(&host);
+        let index = MARGIT.move_index("dagger_throw").unwrap() as u8;
+        assert_eq!(
+            (held.state, held.index, held.clock, held.held),
+            (State::Move, index, 10, true)
+        );
+        let tags = crate::server_mobs::mob_tags_where(
+            &host,
+            |_, _| true,
+            &std::collections::HashMap::new(),
+            false,
+        );
+        let (_, tag) = tags.into_iter().find(|(saved, _)| *saved == id).unwrap();
+        let mut friend = EntityWorld::default();
+        assert!(crate::mob_tracking::spawn_tracked(&mut friend, id, &tag));
+        assert_eq!(
+            shown(&friend).state,
+            State::Return,
+            "a loaded copy walks home"
+        );
+        for mob in crate::client_mobs::server_mobs(&host) {
+            crate::mob_tracking::show_on(&mut friend, &mob);
+        }
+        assert_eq!(shown(&friend), held);
+        for state in State::ALL {
+            let clip = Clip {
+                state,
+                index: 5,
+                clock: 77,
+                held: true,
+                phase: 2,
+                awake: false,
+                from: 26,
+            };
+            assert_eq!(shown_clip(&show_clip(&clip)), Some(clip));
+        }
+        let unknown = FamilyShow {
+            flags: 12,
+            values: [0; 8],
+        };
+        assert_eq!(shown_clip(&unknown), None);
     }
 }

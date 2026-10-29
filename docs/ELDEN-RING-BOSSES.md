@@ -181,7 +181,7 @@ One `Brain` per boss, stepped once per server tick with a `Sense` and returning 
 | `Return` | After a reset or a load: walks back to his anchor at full health and takes no damage; fades home if he gets no closer to it for 100 ticks | `Asleep`, or `Wake` if a player comes within the wake radius |
 | `Dead` | 20 ticks: collapses into golden mist | removed |
 
-`Sense` holds: the tick, his position, facing and anchor, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them, and a spot beside them with room for his box, if the game found one, for the stuck fade). The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, whether it is held, phase, awake). His health is kept by the brain, which takes every hit (`Brain::take`).
+`Sense` holds: the tick, his position, facing and anchor, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them, and a spot beside them with room for his box, if the game found one, for the stuck fade). The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, whether it is held, phase, awake, and the move clock a recovery started from). His health is kept by the brain, which takes every hit (`Brain::take`).
 
 **Choosing a move:** the moves of his phase that are off cooldown, whose distance band holds his target and whose angle band holds the angle to it. One is rolled by weight. If none fits, he walks closer, or turns. Follow-ups ignore cooldowns.
 
@@ -361,7 +361,8 @@ After each move, and at the wake, he picks the eligible player with the most **t
 |---|---|---|
 | The boss itself | `MobAdd` with his saved tag (the marker carrier, with his anchor) | no |
 | Position and facing | the per-tick `ServerMob` | no |
-| Pose, phase, daggers | `MobShow.elden: Option<EldenShow>` (clip, the move's own clock, held, phase, awake, up to 3 daggers as start, velocity and age) | yes, a wire change |
+| Pose and phase | the clip in D0's per-family `MobShow.family` (`FamilyShow`: state, held and awake as flags; the move, its own clock, the phase and the recovery's start as values) | no |
+| Daggers | `MobShow.elden: Option<EldenShow>` (up to 3 daggers as start, velocity and age) | yes, a wire change |
 | Sounds | the mob voice path (`Voice::Event`), like every mob sound | no |
 | Particles | drawn by each viewer from the clip and the cue table, so nothing is sent | no |
 | The bar | `ToClient::BossBar` | no |

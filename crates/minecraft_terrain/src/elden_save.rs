@@ -44,6 +44,7 @@ pub fn read(mob: &mut FamilyMob<EldenBoss>, tag: &Tag) {
         .and_then(Tag::as_f64);
     mob.state.rest_yaw = rest.map_or(mob.core.yaw, |yaw| yaw as f32);
     mob.state.brain.reset(elden_bosses::tick_of(&mob.core));
+    mob.state.shown = mob.state.brain.clip();
     mob.core.max_health = mob.state.brain.max_health();
     mob.core.health = mob.state.brain.health();
     mob.core.persistent = true;

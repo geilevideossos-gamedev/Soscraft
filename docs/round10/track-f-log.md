@@ -18,7 +18,7 @@ IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:bow+power=5,m
 
 ## Protocol
 
-Nothing on the wire changed yet.
+Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip; the message format is the same, so it needs no bump of its own.
 
 ## Vendored files
 
@@ -547,3 +547,46 @@ After 48b1ecf2.
   4. Hit him with the sword: he flashes red like any mob.
 
 Kit: none needed for these steps (step 4: any sword).
+
+### 18. Margit's moves and golden weapons are animated from his move table
+
+After 239488a8.
+
+- **Changed (`elden_boss`):** `Clip.from`, the move clock a recovery started from (0 in every other state), so the renderer knows which branch ended the move and how long its recovery lasts. `Brain::clip()`, the clip he shows now (a move's own clock and hold while he plays one), for a copy made from a saved tag. `State::ALL`, the states in a fixed order, whose places are their codes in `FamilyShow`.
+- **Changed (vendored entities crate, `elden_bosses.rs`):** `EldenBoss.shown`, the clip of his last brain step (`Act.clip`), set at his spawn from `Brain::clip()`. The host's view world is a copy of the server's, so the host draws from it.
+- **Changed (`minecraft_terrain`):**
+  - `elden_save::read`: after the reset, `shown` is his walk home, so a loaded Margit and a friend's new copy show it.
+  - `families/bosses/elden_bosses.rs`: `show` and `show_on` carry the clip in D0's `FamilyShow`: the state (four bits, its place in `State::ALL`), held and awake as flags, and the move, its own clock, the phase and the recovery's start as values (`show_clip`, `shown_clip`). The friend's copy never steps its brain; it draws from this.
+  - `elden_render.rs`:
+    - **The pose table:** bone rotations for all 24 `Pose` keys (and the root sinking or rising, and the cane sliding in his grip so it stays planted in low poses). Each pose turns the head back against the body's twist, so his head keeps facing ahead through a swing; the look turn comes on top.
+    - **Clips:** one `keyframes::Definition` per move and per clip that is not picked (wake, kneel, fade, death and the phase 2 shift), built once from their `poses` (Catmull-Rom, seconds are ticks / 20). The renderer samples the shown clip's clock plus the partial tick. During a hold the clock stops, and the tick the hold starts on is drawn frozen too, so a delayed swing stays still on screen exactly as long as the brain holds it.
+    - Asleep, he kneels (the wake clip's first pose), so his wake rises from one knee. A recovery eases from the move's pose where the branch cut it back to Ready over that branch's recovery. Idle and the walk home keep commit 17's idle and walk.
+    - **Golden weapons:** the dagger (3 cubes), the sword (3) and the hammer (2), all in the skin's gold area, on the left hand bone. Each shows only inside its `conjure` window (of a move, or of the shift), grows from nothing to full size over 4 ticks (a scale about the hand, so no translucent pass), and is drawn at full light (`Skin` sky and block 15) without shading. No `append_glowing` and no tint.
+    - **The tell (design doc 5.4):** his eye cubes grow to twice their size and go full bright in the 8 ticks before each strike that follows the move's hold: the cane combo's third swing (clocks 36-43), the cane slam (21-27, 7 ticks after its hold) and the hammer slam (32-39).
+    - **The fade:** he is not drawn from 2 ticks before to 2 ticks after the fade's swap, so the jump to the new spot is not seen sliding.
+- **Tests:**
+  - `elden_render::tests`: `every_pose_sets_every_bone_it_names` (each pose names a bone once, a clip of it sets exactly those bones and leaves the rest), `each_moves_clip_lasts_as_long_as_the_move` (every move, the clips and the shift; the cane combo's first swing is drawn on its strike tick and he is back to ready at its end), `a_held_swing_keeps_its_pose_while_the_clock_stops` (the cane stays raised over any partial tick during the hold and on its first tick, and runs on after it), `the_dagger_part_shows_only_while_conjured` (clocks 2-22 of the dagger throw, growing 0, 0.25, 0.5, 0.75, 1 over 4 ticks, three more cubes drawn; the sword in the sweep, the hammer in the shift, nothing in a kneel), `the_golden_weapons_are_full_bright_and_gold_in_the_skin` (every weapon vertex at sky and block 15 inside the gold area, every pixel of their UV boxes gold, the body not full bright, a half-grown sword reaches less far), `his_eyes_flare_before_a_delayed_swing` (only the three windows above, never during the hold, rising through the window; the flaring eyes are full bright and twice as wide), and two more: `asleep_he_kneels_and_a_fade_hides_him_around_its_swap`, `a_recovery_eases_from_where_the_combo_was_cut_back_to_ready`.
+  - `families::bosses::elden_bosses::tests::a_friend_sees_margits_clip_from_his_show` (a host Margit held in his dagger throw; the friend's copy from his saved tag shows the walk home, then the host's `server_mobs` and `show_on` give it the same clip; every state round-trips through `FamilyShow`, an unknown state code is ignored). `margit_is_drawn_from_his_painted_skin_through_his_family` now finds him asleep on one knee, 2.56 blocks tall.
+  - `elden_boss::brain::tests::a_recovery_shows_the_move_clock_it_was_cut_at` (over 200 seeds: recoveries from clock 16 last under 14 ticks and from 26 under 16; a move shows 0; `clip()` shows a begun move and an asleep brain).
+- **Decisions:**
+  - **The clip goes through D0's `FamilyShow` now,** not a new `MobShow.elden` field: D0's rule is that every drawn state of a registered family goes through `show` and `show_on`, `FamilyShow` is already on the wire, and so friends draw his moves from this commit on with nothing new on the wire. Group `er-bar-friend` (F6) adds only the daggers in flight. Design doc 9.3 says so now.
+  - **A "delayed swing" is a strike that comes after its move's hold.** The flare starts when the hold is over (at most 8 ticks before the strike), never during the hold, so a long hold does not give the timing away. The dagger throw's hold has no strike after it, so it has no flare (the dagger shows in his hand the whole time).
+  - **Weapons and flaring eyes are unshaded** at full light, as vanilla's emissive layers (`RenderType.eyes`) are. They grow in over 4 ticks and vanish at the end of their window without shrinking.
+  - **Asleep, he kneels.** A Margit walking home after a reset drops to his knee when he reaches his anchor; there is no blend between clips, as the host's view is a copy of the server's each tick and keeps no memory of the last clip.
+  - **The poses were checked against the ground:** with a script on the model's own numbers (not committed), no part of any pose goes more than 0.01 blocks below his feet without a weapon; a hammer slammed down goes into the ground, as it should.
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. His particles come in the next commit, and his strikes and daggers hurt nobody until group `er-fight`, so you can stand next to him. Name each screenshot by its label, `f3-18-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~20`: he kneels on one knee, his head bowed, leaning on his cane (asleep). Walk to 15 blocks: he rises from the knee over about a second and a half. **Screenshot f3-18-1** while he rises.
+  2. Stand 2-3 blocks in front of him and do not attack. The cane combo: a swing from his right to his left, a backhand from left to right, then the cane goes up overhead and stays there a moment; his two gold eyes grow and glow just before it comes down. Sometimes he stops after one or two swings and settles back. **Screenshot f3-18-2** with the cane up and the eyes bright.
+  3. The cane slam: the cane up overhead, held, the eyes flare, and it comes down in front of him.
+  4. The golden sword: a glowing gold sword grows in his left hand with a chime, he draws it back to his left and sweeps it across to his right. **Screenshot f3-18-3** mid-sweep.
+  5. Step back to 15-20 blocks: a small golden dagger grows in his left hand, he raises it behind his head and holds it for one to one and a half seconds, then throws (no dagger flies yet). **Screenshot f3-18-4** while he holds it.
+  6. At 10-14 blocks: he crouches, roars, leaps with his arms up and lands crouched with the cane down.
+  7. Stand right next to him: he hops back and throws two or three times.
+  8. Hit him with the netherite sword at full charge five times quickly: he drops to one knee, leaning on his cane, for 4 seconds, then rises. Do it again and hit him once from the front while he kneels: he rises at once.
+  9. `/summon iw4l:margit ~ ~ ~6 {Health:401f}` and hit him once: he raises his left hand and a gold hammer grows in it. Then the hammer slam: the hammer high behind his head, held, the eyes flare, and he slams it down in front of him. **Screenshot f3-18-5** with the hammer raised.
+  10. `/summon iw4l:margit ~ ~ ~6 {Health:20f}` and hit him twice: he sinks to his knees and slumps forward, then is gone.
+  11. Optional, two windows (`scripts\mp-local.ps1`): the friend sees the same kneel, swings, golden weapons and eye flare. **Screenshot f3-18-6**, both windows.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cooked_beef*32
+```

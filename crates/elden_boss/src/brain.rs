@@ -25,6 +25,19 @@ pub enum State {
 }
 
 impl State {
+    pub const ALL: [State; 10] = [
+        State::Asleep,
+        State::Wake,
+        State::Idle,
+        State::Move,
+        State::Recover,
+        State::Kneel,
+        State::Shift,
+        State::Fade,
+        State::Return,
+        State::Dead,
+    ];
+
     pub fn awake(self) -> bool {
         matches!(
             self,
@@ -77,6 +90,7 @@ pub struct Clip {
     pub held: bool,
     pub phase: u8,
     pub awake: bool,
+    pub from: u16,
 }
 
 impl Clip {
@@ -153,6 +167,7 @@ pub struct Brain {
     pub(crate) target: Option<PlayerId>,
     pub(crate) gap: u16,
     pub(crate) recovery: u16,
+    pub(crate) from: u16,
     pub(crate) around: f64,
     pub(crate) ready: Vec<u64>,
     pub(crate) playing: Option<Playing>,
@@ -173,6 +188,7 @@ impl Brain {
             target: None,
             gap: 0,
             recovery: 0,
+            from: 0,
             around: 1.0,
             ready: vec![0; def.moves.len()],
             playing: None,
@@ -197,6 +213,15 @@ impl Brain {
 
     pub fn target(&self) -> Option<PlayerId> {
         self.target
+    }
+
+    pub fn clip(&self) -> Clip {
+        match &self.playing {
+            Some(playing) if self.state == State::Move => {
+                self.shown(playing.clock, playing.holding > 0)
+            }
+            _ => self.shown(self.clock, false),
+        }
     }
 
     pub fn gone(&self) -> bool {
@@ -330,6 +355,11 @@ impl Brain {
             held,
             phase: self.phase,
             awake: self.awake(),
+            from: if self.state == State::Recover {
+                self.from
+            } else {
+                0
+            },
         }
     }
 
@@ -507,6 +537,7 @@ impl Brain {
                     self.state = State::Recover;
                     self.clock = 0;
                     self.recovery = recovery;
+                    self.from = clock;
                     self.recover(sense, act);
                 }
             }
@@ -1077,6 +1108,38 @@ pub(crate) mod tests {
         assert!(
             counts[1] > 60 && counts[2] > 50 && counts[3] > 150,
             "{counts:?}"
+        );
+    }
+
+    #[test]
+    fn a_recovery_shows_the_move_clock_it_was_cut_at() {
+        let target = player(1, 0.0, 2.5);
+        let combo = index("cane_combo");
+        let mut cuts = Vec::new();
+        for seed in 0..200 {
+            let mut field = Field::new(seed);
+            assert_eq!(field.brain.clip().state, State::Asleep);
+            field.brain.begin("cane_combo");
+            let clip = field.brain.clip();
+            assert_eq!(
+                (clip.state, usize::from(clip.index), clip.clock, clip.held),
+                (State::Move, combo, 0, false)
+            );
+            loop {
+                let act = field.step(&[target]);
+                match act.clip.state {
+                    State::Move => assert_eq!(act.clip.from, 0),
+                    State::Recover => cuts.push((act.clip.from, act.clip.clock)),
+                    _ => break,
+                }
+            }
+        }
+        assert!(cuts.iter().any(|&(from, _)| from == 16), "{cuts:?}");
+        assert!(cuts.iter().any(|&(from, _)| from == 26), "{cuts:?}");
+        assert!(
+            cuts.iter()
+                .all(|&(from, clock)| (from == 16 && clock < 14) || (from == 26 && clock < 16)),
+            "{cuts:?}"
         );
     }
 

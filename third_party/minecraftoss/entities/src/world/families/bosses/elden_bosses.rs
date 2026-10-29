@@ -7,7 +7,7 @@ use crate::tempt::PlayerCandidate;
 use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore};
 use crate::world::{DamageSourceKind, EntityWorld, Voice, voice_pitch};
 use elden_boss::data::{Cue, Sound};
-use elden_boss::{Act, BossDef, Brain, Dagger, Hit, Sense, Source};
+use elden_boss::{Act, BossDef, Brain, Clip, Dagger, Hit, Sense, Source};
 use glam::DVec3;
 use minecraftoss_player::World;
 
@@ -33,6 +33,7 @@ const REFUSED: DamageResult = DamageResult {
 pub struct EldenBoss {
     pub def: &'static BossDef,
     pub brain: Brain,
+    pub shown: Clip,
     pub anchor: DVec3,
     pub rest_yaw: f32,
     pub walk: Option<DVec3>,
@@ -66,11 +67,13 @@ pub fn boss(def: &'static BossDef, position: DVec3) -> FamilyMob<EldenBoss> {
     let seed = position.x.to_bits()
         ^ position.y.to_bits().rotate_left(21)
         ^ position.z.to_bits().rotate_left(42);
+    let brain = Brain::new(def, seed);
     FamilyMob {
         core,
         state: EldenBoss {
             def,
-            brain: Brain::new(def, seed),
+            shown: brain.clip(),
+            brain,
             anchor: position,
             rest_yaw: 0.0,
             walk: None,
@@ -117,6 +120,7 @@ fn think<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, players: &[PlayerC
         players: &seen,
     };
     let act = state.brain.step(&sense);
+    state.shown = act.clip;
     state.hits.clone_from(&act.hits);
     state.throws.clone_from(&act.throws);
     core.yaw = act.yaw as f32;
