@@ -198,6 +198,9 @@ impl IllagerEntity {
         {
             ai.move_control.set_wanted_position(wanted, speed);
         }
+        if self.illager.kind == il::IllagerKind::Vindicator {
+            ai.state.walk.can_open_doors = ai.state.illager.near_raid;
+        }
         self.random = std::mem::take(&mut ai.state.random);
         let obstacle_top = crate::control::obstacle_top(world, position);
         let control = ai.move_control.tick(
@@ -689,6 +692,7 @@ impl EntityWorld {
         let old = entity.previous_position;
         super::hazards::blocks_act(entity, &*world, old, game_time);
         self.level_random = level_random;
+        self.apply_door_work(id, world, game_time);
         if let Some(shot) = shot {
             self.illager_shoots(id, shot);
         }
@@ -1196,6 +1200,160 @@ mod tests {
         assert_eq!(targeted, Some(Target::Mob(cow)));
         assert_ne!(targeted, Some(Target::Mob(pillager)));
         assert!(hurt, "Johnny strikes the cow");
+    }
+
+    const DOOR: Pos = (0, 64, 3);
+
+    struct DoorWall {
+        doors: std::collections::HashMap<Pos, Block>,
+        removed: Vec<Pos>,
+        opened: bool,
+    }
+
+    impl DoorWall {
+        fn new() -> Self {
+            let half = |half: &str| {
+                Block::new("minecraft:oak_door")
+                    .with("facing", "north")
+                    .with("half", half)
+                    .with("hinge", "left")
+                    .with("open", "false")
+                    .with("powered", "false")
+            };
+            DoorWall {
+                doors: std::collections::HashMap::from([
+                    (DOOR, half("lower")),
+                    ((0, 65, 3), half("upper")),
+                ]),
+                removed: Vec::new(),
+                opened: false,
+            }
+        }
+
+        fn open(&self) -> bool {
+            self.doors[&DOOR].property("open") == Some("true")
+        }
+    }
+
+    impl World for DoorWall {
+        fn block(&self, (x, y, z): Pos) -> Option<Block> {
+            if y < 64 {
+                return Some(Block::new("minecraft:stone"));
+            }
+            if self.removed.contains(&(x, y, z)) {
+                return None;
+            }
+            if let Some(door) = self.doors.get(&(x, y, z)) {
+                return Some(door.clone());
+            }
+            if z != 3 || !(-3..=3).contains(&x) || y > 66 || (x, y) == (1, 65) {
+                return None;
+            }
+            Some(Block::new("minecraft:stone"))
+        }
+
+        fn set_block(&mut self, pos: Pos, block: Option<Block>) {
+            match block {
+                Some(block) if self.doors.contains_key(&pos) => {
+                    self.opened |= block.property("open") == Some("true");
+                    self.doors.insert(pos, block);
+                }
+                Some(_) => {}
+                None => self.removed.push(pos),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Chase {
+        through: bool,
+        around: bool,
+        closed_behind: bool,
+        z: f64,
+        door_sounds: Vec<&'static str>,
+    }
+
+    fn chase_a_villager_behind_a_door(raids: bool, raid_id: Option<i32>) -> (Chase, DoorWall) {
+        let mut world = EntityWorld::default();
+        world.set_difficulty(3);
+        let bell = (2, 64, 12);
+        assert!(world.pois.add(bell, crate::poi::PoiType::Meeting));
+        assert!(world.pois.acquire(bell));
+        if raids {
+            world.set_raids(vec![crate::raid::RaidView {
+                id: 2,
+                center: bell,
+                active: true,
+                over: false,
+                loss: false,
+                groups_spawned: 1,
+                victory: false,
+                stopped: false,
+                between_waves: false,
+            }]);
+        }
+        world.spawn_villager(Villager::new(DVec3::new(2.5, 64.0, 6.5)), true);
+        let id = vindicator_at(&mut world, DVec3::new(0.5, 64.0, 0.5), false);
+        world.illager_mut(id).unwrap().illager.raider.raid_id = raid_id;
+        let mut wall = DoorWall::new();
+        let mut chase = Chase::default();
+        for _ in 0..600 {
+            world.tick(&mut wall);
+            let entity = world.illagers().iter().find(|e| e.id == id).unwrap();
+            let nodes = &entity.ai.state.navigation.nodes;
+            chase.through |= nodes.contains(&DOOR);
+            chase.around |= nodes.iter().any(|node| node.0.abs() >= 4);
+            chase.z = entity.illager.body.position.z;
+            chase.closed_behind |= wall.opened && !wall.open() && chase.z > 4.5;
+            if chase.closed_behind {
+                break;
+            }
+        }
+        let entity = world.illagers().iter().find(|e| e.id == id).unwrap();
+        chase.door_sounds = entity
+            .voices
+            .iter()
+            .filter_map(|(voice, _)| match voice {
+                Voice::Event(sound, ..) if sound.contains("door") => Some(*sound),
+                _ => None,
+            })
+            .collect();
+        (chase, wall)
+    }
+
+    #[test]
+    fn a_raiding_vindicator_opens_a_wooden_door_and_shuts_it_behind() {
+        let (chase, wall) = chase_a_villager_behind_a_door(true, Some(2));
+        assert!(chase.through, "it paths through the door");
+        assert!(wall.opened, "it opens the door");
+        assert!(
+            chase.closed_behind,
+            "and the door shuts behind it: {}",
+            chase.z
+        );
+        assert!(wall.removed.is_empty(), "opening ends any chopping");
+        assert!(chase.door_sounds.contains(&"block.wooden_door.open"));
+        assert_eq!(chase.door_sounds.last(), Some(&"block.wooden_door.close"));
+    }
+
+    #[test]
+    fn a_vindicator_outside_a_raid_paths_around_doors_and_never_opens_them() {
+        let (chase, wall) = chase_a_villager_behind_a_door(false, None);
+        assert!(chase.around && !chase.through, "it goes round the wall");
+        assert!(!wall.opened && wall.removed.is_empty());
+        assert!(chase.door_sounds.is_empty());
+    }
+
+    #[test]
+    fn a_vindicator_near_a_raid_it_is_not_in_paths_through_doors_but_does_not_open_them() {
+        let (chase, wall) = chase_a_villager_behind_a_door(true, None);
+        assert!(chase.through, "isRaided lets its paths cross the door");
+        assert!(
+            !wall.opened && wall.removed.is_empty(),
+            "but it has no raid to open it for"
+        );
+        assert!(chase.z < 3.6, "it waits at the door: {}", chase.z);
+        assert!(chase.door_sounds.is_empty());
     }
 
     #[test]

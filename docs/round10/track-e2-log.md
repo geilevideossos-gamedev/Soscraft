@@ -285,3 +285,54 @@ After bc57c07f.
 ```
 IW4L_MINECRAFT_KIT=minecraft:villager_spawn_egg*4,minecraft:oak_door*8,minecraft:copper_door*4,minecraft:iron_door*2,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:oak_fence*16,minecraft:torch*16,minecraft:diamond_sword
 ```
+
+## Group doors-raiders
+
+### 1. Minecraft vindicators open and break doors in raids
+
+After 70809097.
+
+- **Vanilla (26.3, checked with javap):**
+  - `Vindicator.registerGoals`: slot 2 `VindicatorBreakDoorGoal`, slot 3 `AbstractIllager.RaiderOpenDoorGoal`.
+  - `VindicatorBreakDoorGoal`: `BreakDoorGoal(mob, 6, DOOR_BREAKING_PREDICATE)` (Normal or Hard; the break time is still `max(240, 6)`), `setFlags(MOVE)`. `canUse`: `hasActiveRaid()`, then the vindicator's own `random.nextInt(reducedTickDelay(10)) == 0` (`nextInt(5)`), then `BreakDoorGoal.canUse`. `canContinueToUse`: `hasActiveRaid()` and `BreakDoorGoal.canContinueToUse`. `start`: `BreakDoorGoal.start`, then `setNoActionTime(0)`.
+  - `RaiderOpenDoorGoal`: `OpenDoorGoal(raider, false)` whose `canUse` is `DoorInteractGoal.canUse` and then `hasActiveRaid()`. `OpenDoorGoal`: `start` sets `forgetTime = 20` and opens the door (it does not call `DoorInteractGoal.start`); `tick` counts `forgetTime` down; `canContinueToUse` is `closeDoor && forgetTime > 0 && !passed`, so false at once for a raider; `stop` shuts the door. `setOpen` acts only when `hasDoor` and the block is still a `DoorBlock`.
+  - `Raider.hasActiveRaid`: a current raid that `isActive()`.
+  - `Vindicator.customServerAiStep` (after the goals and the navigation tick): when not NoAI and on ground navigation, `navigation.setCanOpenDoors(level.isRaided(blockPosition()))`.
+  - The goal selector stops a goal that cannot continue and then starts the goals that can, in one pass. While the vindicator still bumps into the door, its open goal shuts the door and opens it again in the same pass (two door sounds, the door stays open). Once it no longer bumps into the door, the next full pass shuts it.
+- **Changed:**
+  - Vendored `entities/src/door_goals.rs`:
+    - `BreakDoorGoal` has a `raider` flag. New `BreakDoorGoal::vindicator()`: Normal or Hard, no `CanBreakDoors` needed, `Control::Move`, inert without an active raid, the `nextInt(5)` roll before the door checks, and `start` sets `illager.reset_idle` (the existing `setNoActionTime(0)`).
+    - New `OpenDoorGoal::raider()` (`close_door: false`, the active-raid check after the door check, `forget_time` 20, every tick). `start` asks for the door open and `stop` asks for it shut, through `DoorInteract::set_open`, which pushes a toggle only when the goal found a wooden door.
+  - Vendored `illager_ai.rs`: the vindicator's slots 2 and 3 are these goals instead of `NeverGoal`s. The goal names were already right.
+  - Vendored `world/illagers.rs`: `tick_ai` sets a vindicator's `walk.can_open_doors` to `illager.near_raid` right after the navigation tick, and `tick_illager` calls `apply_door_work` after the illager's tick.
+  - Vendored `world/villagers.rs`: `apply_door_work` takes the door work of a zombie or an illager, and gives the door sounds to the illager's voices.
+  - `docs/MINECRAFT-SURVIVAL.md`: a new "Vindicators and doors" item after "Door breaking". The doc has no vindicator paragraph, so the brief's sentence went there.
+- **Tests:**
+  - Vendored `door_goals::tests`:
+    - `a_raiding_vindicator_opens_a_door_and_shuts_it_once_it_stops_bumping_into_it`: the toggles are open on the first full tick, nothing on the half tick, then shut and open in one pass while it still bumps into the door, then shut once it no longer does. After that nothing more happens.
+    - `a_vindicator_outside_an_active_raid_leaves_doors_alone_and_draws_nothing`: no raid and an inactive raid. No toggles, nothing runs, and the random is untouched.
+    - `a_raiding_vindicator_chops_at_a_door_on_one_full_tick_in_five_on_normal_and_hard`: for 40 seeds the chop starts on the first full tick whose `nextInt(5)` is 0, sets `reset_idle` and the first crack, and breaks the door 240 ticks later. The goal holds `Move` and the zombie's holds nothing. It never starts on Easy.
+    - `a_vindicator_stops_chopping_when_the_raid_ends`: the crack goes when the raid stops being active.
+  - Vendored `world::illagers::tests`, in a village (an acquired bell) with a stone wall, an oak door and a window, and a villager seen through the window:
+    - `a_raiding_vindicator_opens_a_wooden_door_and_shuts_it_behind`: its path crosses the door, the door opens, it walks through and the door is shut behind it. Nothing is broken, and the last door sound is `block.wooden_door.close`.
+    - `a_vindicator_outside_a_raid_paths_around_doors_and_never_opens_them`.
+    - `a_vindicator_near_a_raid_it_is_not_in_paths_through_doors_but_does_not_open_them`: it stops against the shut door.
+  - Entities 423 pass. `minecraft_terrain` 1404 pass with 3 ignored. `sections::tests::background_full_update_matches_the_synchronous_one` failed once in the full run while other tracks were building and passed when run alone. `check -p launcher` passes.
+- **Decisions:**
+  - No optional fourth commit. In the test trace the vindicator bumps into the shut door and opens it, walks through on the next tick and is in the doorway when the door shuts, then walks out of the shut door's panel. The door flapping (shut and open in one pass) leaves the door open and its path unchanged. With `canOpenDoors` set, a wooden door on the path can be walked through whether it is open or shut, so recomputing its own path on the toggle, as vanilla's `sendBlockUpdated` does, would give the same path. As before, only villagers recompute their paths on mob door changes.
+  - The door work is applied after the vindicator's tick, as for zombies. In the tick it opens the door it still meets the shut door, and it walks through on the next tick. A door it shuts is shut after that tick's move. Vanilla changes the door during the goal tick, before the move.
+  - The roll is drawn on every full goal pass of a raiding vindicator whose break goal could start, before the door checks, as in vanilla. Raiding vindicators therefore draw one more number from their random per full tick than before this commit.
+  - `OpenDoorGoal.start` leaves `passed` and the start direction alone, as in vanilla. That only matters with `close_door`, which no fork mob uses.
+  - Kept from the brief: `finalizeSpawn`'s `setCanOpenDoors(true)` is not modelled (the first tick overwrites it), and a raid door seldom breaks, because the open goal opens it in the same pass and that ends the chop.
+  - Pillagers, evokers, witches and ravagers keep no door goals and no door flag, as in vanilla.
+- **Test steps (survival, Hard, in a plains village; put on the kit's armour):**
+  - Setup: `/difficulty hard`, `/gamerule keep_inventory true`. Run `/locate structure minecraft:village_plains` and `/tp` there. Pick a village house with a wooden door and a window.
+  1. Walk at least 70 blocks out of the village, drink an ominous bottle (Bad Omen), then walk back into the village. About 30 seconds later the raid starts and its bar shows at the top.
+  2. Go into the house, shut its door and stand 3 blocks inside, where raiders can see you through the window. Fight the first wave from inside or outside as you like. From wave 2 on, vindicators come with axes. A vindicator that runs at you swings the door open with the door's sound, comes in, and the door swings shut behind it with the shut sound (**doors-5_raid_door**).
+  3. Watch the door when a vindicator reaches it. Now and then a crack flashes on the door's upper half for a moment just before it opens. The door never breaks while it can be opened.
+  4. Win the raid or leave it running, and go at least 110 blocks from the village, build a 5 by 5 plank room with a roof, one oak door and a glass window next to the door, and stand inside 3 blocks from the door. Use a vindicator spawn egg 6 blocks outside the door. It sees you through the window, walks round the house looking for a way in and never opens the door (**doors-6_no_raid**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*2,minecraft:vindicator_spawn_egg*2,minecraft:oak_door*4,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:glass*16,minecraft:torch*16,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```

@@ -1123,7 +1123,8 @@ fn recompute_others<W: World>(villagers: &mut [VillagerEntity], except: u64, wor
 
 impl EntityWorld {
     pub(super) fn apply_door_work(&mut self, id: u64, world: &mut impl World, time: i64) {
-        let Some(work) = self.zombies.iter_mut().find(|e| e.id == id).and_then(|e| e.ai.as_deref_mut()).map(|ai| ai.state.door.take_requests()) else { return };
+        let zombie = self.zombies.iter_mut().find(|e| e.id == id).and_then(|e| e.ai.as_deref_mut()).map(|ai| ai.state.door.take_requests());
+        let Some(work) = zombie.or_else(|| self.illagers.iter_mut().find(|e| e.id == id).map(|e| e.ai.state.door.take_requests())) else { return };
         let mut changed = Vec::new();
         let mut voices = Vec::new();
         for (pos, open) in work.toggles {
@@ -1145,6 +1146,8 @@ impl EntityWorld {
             recompute_for_block(&mut self.villagers, pos, &*world, time);
         }
         if let Some(entity) = self.zombies.iter_mut().find(|e| e.id == id) {
+            entity.voices.extend(voices);
+        } else if let Some(entity) = self.illagers.iter_mut().find(|e| e.id == id) {
             entity.voices.extend(voices);
         }
     }

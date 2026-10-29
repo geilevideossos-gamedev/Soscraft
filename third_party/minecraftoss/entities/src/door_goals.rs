@@ -1,4 +1,4 @@
-use crate::goals::{Controls, Goal};
+use crate::goals::{Control, Controls, Goal};
 use crate::monster_ai::MonsterGoalContext;
 use glam::DVec3;
 use minecraftoss_player::{Block, Pos, World};
@@ -7,6 +7,8 @@ pub const ATTACK_WOODEN_DOOR: i32 = 1019;
 pub const BREAK_WOODEN_DOOR: i32 = 1021;
 pub const DOOR_BREAK_TIME: i32 = 240;
 const SWING_TICKS: i64 = 6;
+const RAIDER_BREAK_ROLL: u32 = 5;
+const OPEN_DOOR_FORGET_TIME: i32 = 20;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DoorWork {
@@ -43,6 +45,10 @@ pub fn is_wooden_door(block: &Block) -> bool {
 
 fn wooden_door_at(world: &dyn World, pos: Pos) -> bool {
     world.block(pos).is_some_and(|b| is_wooden_door(&b))
+}
+
+fn has_active_raid(ctx: &MonsterGoalContext) -> bool {
+    ctx.illager.raid.is_some_and(|raid| raid.active)
 }
 
 fn closer_to_center(pos: Pos, position: DVec3, distance: f64) -> bool {
@@ -116,6 +122,12 @@ impl DoorInteract {
         )
     }
 
+    pub fn set_open(&self, work: &mut DoorWork, open: bool) {
+        if self.has_door {
+            work.toggles.push((self.pos, open));
+        }
+    }
+
     pub fn start(&mut self, ctx: &MonsterGoalContext) {
         self.passed = false;
         self.open_dir = self.direction(ctx.body.position);
@@ -134,6 +146,7 @@ pub struct BreakDoorGoal {
     door: DoorInteract,
     valid_difficulty: fn(i32) -> bool,
     needs_can_break_doors: bool,
+    raider: bool,
     break_time: i32,
     last_progress: i32,
 }
@@ -144,23 +157,43 @@ impl BreakDoorGoal {
             door: DoorInteract::default(),
             valid_difficulty: |difficulty| difficulty == 3,
             needs_can_break_doors: true,
+            raider: false,
+            break_time: 0,
+            last_progress: -1,
+        }
+    }
+
+    pub fn vindicator() -> Self {
+        Self {
+            door: DoorInteract::default(),
+            valid_difficulty: |difficulty| difficulty == 2 || difficulty == 3,
+            needs_can_break_doors: false,
+            raider: true,
             break_time: 0,
             last_progress: -1,
         }
     }
 
     fn unable(&self, ctx: &MonsterGoalContext) -> bool {
-        self.needs_can_break_doors && !ctx.can_break_doors
+        (self.needs_can_break_doors && !ctx.can_break_doors)
+            || (self.raider && !has_active_raid(ctx))
     }
 }
 
 impl Goal<MonsterGoalContext> for BreakDoorGoal {
     fn controls(&self) -> Controls {
-        Controls::new(&[])
+        if self.raider {
+            Controls::new(&[Control::Move])
+        } else {
+            Controls::new(&[])
+        }
     }
 
     fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
         if self.unable(ctx) {
+            return false;
+        }
+        if self.raider && ctx.random.next_int(RAIDER_BREAK_ROLL) != 0 {
             return false;
         }
         self.door.can_use(ctx, world)
@@ -186,6 +219,9 @@ impl Goal<MonsterGoalContext> for BreakDoorGoal {
     fn start(&mut self, ctx: &mut MonsterGoalContext) {
         self.door.start(ctx);
         self.break_time = 0;
+        if self.raider {
+            ctx.illager.reset_idle = true;
+        }
     }
 
     fn stop(&mut self, ctx: &mut MonsterGoalContext) {
@@ -215,6 +251,57 @@ impl Goal<MonsterGoalContext> for BreakDoorGoal {
             ctx.door.broken = Some(pos);
             ctx.door.events.push((BREAK_WOODEN_DOOR, pos));
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct OpenDoorGoal {
+    door: DoorInteract,
+    close_door: bool,
+    raider: bool,
+    forget_time: i32,
+}
+
+impl OpenDoorGoal {
+    pub fn raider() -> Self {
+        Self {
+            door: DoorInteract::default(),
+            close_door: false,
+            raider: true,
+            forget_time: 0,
+        }
+    }
+}
+
+impl Goal<MonsterGoalContext> for OpenDoorGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.door.can_use(ctx, world) && (!self.raider || has_active_raid(ctx))
+    }
+
+    fn can_continue(&mut self, _: &mut MonsterGoalContext, _: &dyn World) -> bool {
+        self.close_door && self.forget_time > 0 && !self.door.passed()
+    }
+
+    fn every_tick(&self) -> bool {
+        true
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.forget_time = OPEN_DOOR_FORGET_TIME;
+        self.door.set_open(&mut ctx.door, true);
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.door.set_open(&mut ctx.door, false);
+    }
+
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        self.forget_time -= 1;
+        self.door.tick(ctx);
     }
 }
 
@@ -457,6 +544,167 @@ mod tests {
         assert!(door.passed());
         ctx.navigation.stop();
         assert!(!door.can_use(&ctx, &world), "no path, no door");
+    }
+
+    fn raid(active: bool) -> crate::raid::RaidView {
+        crate::raid::RaidView {
+            id: 1,
+            center: (0, 1, 20),
+            active,
+            over: false,
+            loss: false,
+            groups_spawned: 1,
+            victory: false,
+            stopped: false,
+            between_waves: false,
+        }
+    }
+
+    fn vindicator_at_the_door(
+        difficulty: i32,
+        raid: Option<crate::raid::RaidView>,
+        seed: u64,
+    ) -> MonsterGoalContext {
+        let mut body = Body::new(DVec3::new(0.5, 1.0, 0.5), 0.6, 1.95);
+        body.horizontal_collision = true;
+        let mut ctx = MonsterAi::of_kind(MonsterKind::Vindicator, &body, 0.0).state;
+        ctx.difficulty = difficulty;
+        ctx.illager.raid = raid;
+        ctx.random = LegacyRandom::new(seed);
+        ctx.navigation
+            .follow(vec![(0, 1, 0), (0, 1, 1), (0, 1, 2)], 1.0, body.position);
+        ctx
+    }
+
+    fn raider_doors() -> GoalSelector<MonsterGoalContext> {
+        let mut selector = GoalSelector::default();
+        selector.add(2, BreakDoorGoal::vindicator());
+        selector.add(3, OpenDoorGoal::raider());
+        selector
+    }
+
+    fn swing_door(world: &mut Doors, ctx: &mut MonsterGoalContext) -> Vec<bool> {
+        let toggles = ctx.door.take_requests().toggles;
+        for &(pos, open) in &toggles {
+            assert_eq!(pos, UPPER);
+            for half in [UPPER, (0, 1, 1)] {
+                let value = if open { "true" } else { "false" };
+                let door = world.block(half).unwrap().with("open", value);
+                world.set_block(half, Some(door));
+            }
+        }
+        toggles.into_iter().map(|(_, open)| open).collect()
+    }
+
+    #[test]
+    fn a_raiding_vindicator_opens_a_door_and_shuts_it_once_it_stops_bumping_into_it() {
+        let mut world = house("minecraft:oak_door");
+        let mut ctx = vindicator_at_the_door(3, Some(raid(true)), 5);
+        let mut selector = raider_doors();
+        tick(&mut selector, &mut ctx, &world);
+        assert_eq!(swing_door(&mut world, &mut ctx), vec![true]);
+        tick(&mut selector, &mut ctx, &world);
+        assert_eq!(swing_door(&mut world, &mut ctx), Vec::<bool>::new());
+        tick(&mut selector, &mut ctx, &world);
+        assert_eq!(
+            swing_door(&mut world, &mut ctx),
+            vec![false, true],
+            "OpenDoorGoal(mob, false) stops and starts again in one goal pass"
+        );
+        ctx.body.horizontal_collision = false;
+        for _ in 0..2 {
+            tick(&mut selector, &mut ctx, &world);
+        }
+        assert_eq!(swing_door(&mut world, &mut ctx), vec![false]);
+        assert_eq!(world.block(UPPER).unwrap().property("open"), Some("false"));
+        for _ in 0..40 {
+            tick(&mut selector, &mut ctx, &world);
+        }
+        assert_eq!(swing_door(&mut world, &mut ctx), Vec::<bool>::new());
+        assert!(!breaking(&selector));
+        assert_eq!(ctx.door.crack, None);
+    }
+
+    #[test]
+    fn a_vindicator_outside_an_active_raid_leaves_doors_alone_and_draws_nothing() {
+        for raid in [None, Some(raid(false))] {
+            let mut world = house("minecraft:oak_door");
+            let mut ctx = vindicator_at_the_door(3, raid, 5);
+            let mut selector = raider_doors();
+            for _ in 0..40 {
+                tick(&mut selector, &mut ctx, &world);
+            }
+            assert!(!breaking(&selector), "{raid:?}");
+            assert_eq!(swing_door(&mut world, &mut ctx), Vec::<bool>::new());
+            assert_eq!(ctx.door, DoorWork::default());
+            assert_eq!(
+                ctx.random.next_int(1 << 30),
+                LegacyRandom::new(5).next_int(1 << 30),
+                "the roll waits for an active raid"
+            );
+        }
+    }
+
+    #[test]
+    fn a_raiding_vindicator_chops_at_a_door_on_one_full_tick_in_five_on_normal_and_hard() {
+        assert_eq!(
+            BreakDoorGoal::vindicator().controls(),
+            Controls::new(&[Control::Move])
+        );
+        assert_eq!(BreakDoorGoal::zombie().controls(), Controls::new(&[]));
+        let mut at_once = 0;
+        for seed in 0..40 {
+            let difficulty = 2 + (seed % 2) as i32;
+            let world = house("minecraft:oak_door");
+            let mut ctx = vindicator_at_the_door(difficulty, Some(raid(true)), seed);
+            let mut selector = GoalSelector::default();
+            selector.add(2, BreakDoorGoal::vindicator());
+            let mut rolls = LegacyRandom::new(seed);
+            let full_ticks = (0..).position(|_| rolls.next_int(5) == 0).unwrap() as i64;
+            at_once += i32::from(full_ticks == 0);
+            let started = 2 * full_ticks + 1;
+            while ctx.game_time < started {
+                assert!(!breaking(&selector), "seed {seed}");
+                tick(&mut selector, &mut ctx, &world);
+            }
+            assert!(breaking(&selector), "seed {seed}");
+            assert!(ctx.illager.reset_idle, "setNoActionTime(0)");
+            assert_eq!(ctx.door.crack, Some((UPPER, 0)));
+            while ctx.door.broken.is_none() {
+                tick(&mut selector, &mut ctx, &world);
+            }
+            assert_eq!(ctx.game_time, started + i64::from(DOOR_BREAK_TIME) - 1);
+            assert_eq!(ctx.door.events.last(), Some(&(BREAK_WOODEN_DOOR, UPPER)));
+        }
+        assert!(
+            (2..=16).contains(&at_once),
+            "about one in five starts on its first full tick: {at_once}"
+        );
+        let world = house("minecraft:oak_door");
+        let mut ctx = vindicator_at_the_door(1, Some(raid(true)), 5);
+        let mut selector = GoalSelector::default();
+        selector.add(2, BreakDoorGoal::vindicator());
+        for _ in 0..100 {
+            tick(&mut selector, &mut ctx, &world);
+        }
+        assert!(!breaking(&selector), "not on Easy");
+    }
+
+    #[test]
+    fn a_vindicator_stops_chopping_when_the_raid_ends() {
+        let world = house("minecraft:oak_door");
+        let mut ctx = vindicator_at_the_door(2, Some(raid(true)), 5);
+        let mut selector = GoalSelector::default();
+        selector.add(2, BreakDoorGoal::vindicator());
+        while !matches!(ctx.door.crack, Some((_, stage)) if stage >= 2) {
+            tick(&mut selector, &mut ctx, &world);
+        }
+        ctx.illager.raid = Some(raid(false));
+        for _ in 0..2 {
+            tick(&mut selector, &mut ctx, &world);
+        }
+        assert!(!breaking(&selector));
+        assert_eq!(ctx.door.crack, None);
     }
 
     #[test]
