@@ -23,13 +23,14 @@ impl TerrainFamily for EldenBoss {
     }
 
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        crate::elden_render::append_bosses(out.models, mobs, poses, atlas, light, partial);
     }
 }
 
@@ -131,5 +132,53 @@ mod tests {
             1,
             "one hurt voice for both"
         );
+    }
+
+    #[test]
+    fn margit_is_drawn_from_his_painted_skin_through_his_family() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let meta = r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#;
+        std::fs::write(temp.path().join("pack.mcmeta"), meta).unwrap();
+        let packs = crate::pack::PackStack::open(vec![temp.path().into()]).unwrap();
+        let texture = crate::pack::ResourceId::parse(crate::elden_skin::TEXTURE).unwrap();
+        let atlas = crate::mesh::make_atlas(&packs, vec![texture.clone()]).unwrap();
+        assert!(atlas.missing.is_empty(), "{:?}", atlas.missing);
+        let width = atlas.pixels.width() as f32;
+        let region = atlas.region(&texture);
+        let (x, y) = (
+            (region[0] * width).floor() as u32,
+            (region[1] * width).floor() as u32,
+        );
+        let skin = crate::elden_skin::paint();
+        for (u, v) in [(9, 11), (33, 3), (45, 20)] {
+            assert_eq!(atlas.pixels.get_pixel(x + u, y + v), skin.get_pixel(u, v));
+        }
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        world.spawn_elden_boss(&MARGIT, at, 0.0, at, false);
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&world));
+        let light =
+            SkyLight::from_levels((-8, 56, -8), (17, 17, 17), vec![15; 4913], vec![0; 4913]);
+        let (mut models, mut culled, mut translucent, mut held) = Default::default();
+        let mut out = FamilyDraw {
+            models: &mut models,
+            culled: &mut culled,
+            translucent: &mut translucent,
+            held: &mut held,
+        };
+        crate::families::draw(&mut out, &world, &poses, &atlas, &light, 0.0);
+        assert_eq!(models.faces, 6 * 16, "one Margit of sixteen cubes");
+        let skin = atlas.entity_region(&texture);
+        assert!(models.vertices.iter().all(|vertex| {
+            (skin[0]..=skin[2]).contains(&vertex.uv[0])
+                && (skin[1]..=skin[3]).contains(&vertex.uv[1])
+        }));
+        let top = models
+            .vertices
+            .iter()
+            .map(|v| v.position[1])
+            .fold(f32::MIN, f32::max);
+        assert!(top > 66.8 && top < 67.1, "{top}");
     }
 }

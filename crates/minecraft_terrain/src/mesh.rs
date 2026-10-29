@@ -528,6 +528,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse(crate::dragon_render::EYES)?, ());
     textures.insert(ResourceId::parse(crate::dragon_fireball::TEXTURE)?, ());
     textures.insert(ResourceId::parse(WHITE_TEXTURE)?, ());
+    textures.insert(ResourceId::parse(crate::elden_skin::TEXTURE)?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman_eyes")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/witch/witch")?, ());
@@ -1702,7 +1703,7 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
     let mut images = Vec::with_capacity(textures.len());
     let mut spans = Vec::with_capacity(textures.len());
     for id in &textures {
-        let bytes = if id.path == "missingno" || id.path == WHITE_PATH { None } else { packs.texture(id)? };
+        let bytes = if id.path == "missingno" || id.path == WHITE_PATH || id.path == crate::elden_skin::PATH { None } else { packs.texture(id)? };
         let span = match &bytes {
             Some(bytes) if id.path.starts_with("entity/") && packs.animation(id)?.is_none() => {
                 let (width, height) = image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png).into_dimensions()?;
@@ -1792,6 +1793,8 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
             }
         } else if id.path == WHITE_PATH {
             RgbaImage::from_pixel(tile, tile, image::Rgba([255; 4]))
+        } else if id.path == crate::elden_skin::PATH {
+            image::imageops::resize(&crate::elden_skin::paint(), tile, tile, FilterType::Nearest)
         } else {
             if id.path != "missingno" {
                 missing.push(id.clone());
