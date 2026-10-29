@@ -1468,6 +1468,18 @@ impl ServerSim {
         self.rockets.iter().map(crate::firework_rocket::Rocket::view).collect()
     }
 
+    fn shoot_dispensed_rockets(&mut self) {
+        use crate::firework_rocket::{Rocket, RocketOwner, DISPENSE_POWER, DISPENSE_UNCERTAINTY};
+        for dispensed in std::mem::take(&mut self.level.dispensed_rockets) {
+            let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
+            let mut stack = minecraftoss_player::inventory::ItemStack::new(dispensed.stack.id.as_str(), 1);
+            stack.components = dispensed.stack.components.as_ref().and_then(crate::item_nbt::saved_components).map(|components| crate::item_nbt::tag_json(&components));
+            let (x, y, z) = dispensed.facing.offset();
+            let facing = glam::DVec3::new(f64::from(x), f64::from(y), f64::from(z));
+            self.rockets.push(Rocket::shot(RocketOwner::Nobody, glam::DVec3::from_array(dispensed.at), facing, DISPENSE_POWER, DISPENSE_UNCERTAINTY, crate::firework::fireworks(&stack), &mut random));
+        }
+    }
+
     fn raid_villager_events(&mut self) {
         for pos in self.mobs.take_bell_rings() {
             self.ring_bell(pos, None);
@@ -3191,6 +3203,7 @@ impl ServerSim {
 
     pub fn tick(&mut self) {
         self.level.tick();
+        self.shoot_dispensed_rockets();
         self.explode_tnt();
         self.hear_bells();
         self.level.tick_spawners();
@@ -12992,6 +13005,77 @@ mod tests {
         let hits = server.take_rocket_hits();
         assert_eq!(hits.iter().map(|hit| (hit.player_id, hit.source)).collect::<Vec<_>>(), [(4, Some(villager))]);
         assert!(hits[0].damage > 6.5, "it bursts at the player's feet: {}", hits[0].damage);
+    }
+
+    #[test]
+    fn a_dispenser_shoots_a_rocket_level_into_a_zombie_and_a_plain_one_puffs_at_the_end_of_its_life() {
+        use crate::firework::{Explosion, Shape, FIREWORK_ROCKET};
+        use crate::firework_rocket::RocketOwner;
+        use minecraftoss_core::item::ItemStack;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().entities.is_none() || server.level.registries().block_entities.is_none() {
+            return;
+        }
+        let at = |z: i32| minecraftoss_core::BlockPos::new(2, 201, z);
+        let dispenser = |server: &mut ServerSim, scene: &mut HandcraftedScene, z: i32, rockets: ItemStack| {
+            place(server, scene, (2, 201, z), Block::new("minecraft:dispenser").with("facing", "east").with("triggered", "false"));
+            assert!(server.level.replace_block_item(at(z), 0, rockets));
+        };
+        let mut red = ItemStack::new(FIREWORK_ROCKET, 4);
+        red.components = crate::item_nbt::components_tag(&serde_json::json!({"minecraft:fireworks": {"flight_duration": 1, "explosions": [{"shape": "large_ball", "colors": [11743532], "has_trail": 1}]}}));
+        dispenser(&mut server, &mut scene, 4, red);
+        dispenser(&mut server, &mut scene, 12, ItemStack::new(FIREWORK_ROCKET, 4));
+        let before: Vec<u64> = server.mobs.mob_ids().collect();
+        server.summon("minecraft:zombie", [8.5, 201.0, 4.5], None, 0.0).unwrap();
+        let zombie = server.mobs.mob_ids().find(|id| !before.contains(id)).unwrap();
+        server.set_simulation_area((0, 0), 4);
+        server.level.sounds.clear();
+        place(&mut server, &mut scene, (1, 201, 4), Block::new("minecraft:redstone_block"));
+        place(&mut server, &mut scene, (1, 201, 12), Block::new("minecraft:redstone_block"));
+        let mut ticks = 0;
+        while server.rockets.len() < 2 && ticks < 10 {
+            server.tick();
+            ticks += 1;
+        }
+        assert_eq!(server.rockets.len(), 2, "both dispensers shoot");
+        let mut shots: Vec<_> = server.level.sounds.iter().filter(|s| s.event == minecraftoss_world::level::dispenser::ROCKET_SHOOT_SOUND).map(|s| (s.pos, s.volume, s.pitch)).collect();
+        shots.sort_by(|a, b| a.0[2].total_cmp(&b.0[2]));
+        assert_eq!(shots, [([2.5, 201.5, 4.5], 1.0, 1.2), ([2.5, 201.5, 12.5], 1.0, 1.2)]);
+        for z in [4, 12] {
+            let left = server.level.block_container_items(at(z)).map(|items| items.iter().map(|s| s.count).sum::<i32>());
+            assert_eq!(left, Some(3), "one rocket leaves the dispenser at z {z}");
+        }
+        for rocket in &server.rockets {
+            assert!(rocket.shot_at_angle && rocket.owner == RocketOwner::Nobody);
+            assert!((rocket.position.x - 3.0000099999997474).abs() < 1e-9 && rocket.position.y == 201.5, "{}", rocket.position);
+            assert!(rocket.velocity.x > 0.49 && rocket.velocity.y.abs() < 0.01 && rocket.velocity.z.abs() < 0.01, "{}", rocket.velocity);
+        }
+        let starred = server.rockets.iter().find(|rocket| rocket.position.z == 4.5).expect("the red rocket");
+        assert_eq!(starred.explosions, [Explosion { shape: Shape::LargeBall, colors: vec![11743532], fade_colors: Vec::new(), trail: true, twinkle: false }]);
+        let plain_lifetime = server.rockets.iter().find(|rocket| rocket.position.z == 12.5).expect("the plain rocket").lifetime;
+        let health = |server: &ServerSim| server.mobs.zombies().iter().find(|e| e.id == zombie).map_or(0.0, |e| e.zombie.health);
+        let hurts = |server: &ServerSim| crate::client_mobs::server_mobs(&server.mobs).iter().find(|mob| mob.id == zombie).map_or(0, |mob| mob.hurts);
+        server.firework_bursts.clear();
+        let mut flown = 0;
+        let mut red_burst = None;
+        while !server.rockets.is_empty() && flown < 40 {
+            server.tick_rockets(&[]);
+            flown += 1;
+            if red_burst.is_none() {
+                red_burst = server.firework_bursts.iter().find(|burst| burst.position.z < 8.0).map(|burst| (flown, burst.position));
+            }
+        }
+        let (red_ticks, red_at) = red_burst.expect("the red rocket bursts");
+        assert!(red_ticks < 15, "it bursts on the zombie before its time is up: {red_ticks}");
+        assert!(red_at.x > 7.5 && red_at.x < 9.0 && (red_at.y - 201.5).abs() < 0.1, "level, at the zombie: {red_at}");
+        assert_eq!(hurts(&server), 1);
+        assert!(health(&server) < 20.0, "{}", health(&server));
+        let pushed = server.mobs.body_of(zombie).unwrap().velocity;
+        assert!((pushed.x.hypot(pushed.z) - 0.4).abs() < 1.0e-6, "the burst knocks the zombie back: {pushed}");
+        assert_eq!(flown, plain_lifetime + 1, "the plain rocket flies out its life");
+        let plain = server.firework_bursts.iter().find(|burst| burst.position.z > 8.0).expect("the plain rocket puffs");
+        assert!(plain.explosions.is_empty());
+        assert!(plain.position.x > 12.0 && (plain.position.y - 201.5).abs() < 0.3, "{}", plain.position);
     }
 
     #[test]

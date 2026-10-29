@@ -19,6 +19,9 @@ pub const RISE: f64 = 0.05;
 pub const LIFT: f64 = 0.04;
 pub const HORIZONTAL_SPEED_UP: f64 = 1.15;
 pub const SIZE: f64 = 0.25;
+pub const SHOT_SPREAD: f64 = 0.0172275;
+pub const DISPENSE_POWER: f32 = 0.5;
+pub const DISPENSE_UNCERTAINTY: f32 = 1.0;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Burst {
@@ -45,6 +48,7 @@ pub struct Rocket {
     pub alive: bool,
     pub left_owner: bool,
     pub horizontal_collision: bool,
+    pub shot_at_angle: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,7 +105,27 @@ impl Rocket {
             alive: true,
             left_owner: false,
             horizontal_collision: false,
+            shot_at_angle: false,
         }
+    }
+
+    pub fn shot(
+        owner: RocketOwner,
+        position: DVec3,
+        direction: DVec3,
+        power: f32,
+        uncertainty: f32,
+        fireworks: Fireworks,
+        random: &mut LegacyRandom,
+    ) -> Self {
+        let mut rocket = Self::launch(owner, position, fireworks, random);
+        let spread = SHOT_SPREAD * f64::from(uncertainty);
+        let x = triangle(random, spread);
+        let y = triangle(random, spread);
+        let z = triangle(random, spread);
+        rocket.velocity = (direction.normalize() + DVec3::new(x, y, z)) * f64::from(power);
+        rocket.shot_at_angle = true;
+        rocket
     }
 
     pub fn bounds(&self) -> (DVec3, DVec3) {
@@ -125,16 +149,18 @@ impl Rocket {
             let near = grown(swept(self.bounds(), self.velocity), 1.0);
             self.left_owner = owner.is_none_or(|owner| !overlaps(owner, near));
         }
-        let speed_up = if self.horizontal_collision {
-            1.0
-        } else {
-            HORIZONTAL_SPEED_UP
-        };
-        self.velocity = DVec3::new(
-            self.velocity.x * speed_up,
-            self.velocity.y,
-            self.velocity.z * speed_up,
-        ) + DVec3::Y * LIFT;
+        if !self.shot_at_angle {
+            let speed_up = if self.horizontal_collision {
+                1.0
+            } else {
+                HORIZONTAL_SPEED_UP
+            };
+            self.velocity = DVec3::new(
+                self.velocity.x * speed_up,
+                self.velocity.y,
+                self.velocity.z * speed_up,
+            ) + DVec3::Y * LIFT;
+        }
         let delta = self.velocity;
         let hit = self.hit_on_move(world, targets, delta);
         let (min, max) = self.bounds();
@@ -427,6 +453,45 @@ mod tests {
         starry.velocity = DVec3::new(0.2, RISE, 0.0);
         assert!(starry.tick(&Wall, &[], None).contains(&RocketEvent::Exploded));
         assert!((starry.position.x - (1.0 - SIZE / 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_rocket_shot_at_an_angle_flies_straight_without_lift_or_speed_up() {
+        let world = Sky { roof: None };
+        let start = DVec3::new(0.5, 70.5, 0.5);
+        let mut random = LegacyRandom::new(3);
+        let plain = Fireworks {
+            flight: 1,
+            explosions: Vec::new(),
+        };
+        let mut shot = Rocket::shot(
+            RocketOwner::Nobody,
+            start,
+            DVec3::X,
+            DISPENSE_POWER,
+            DISPENSE_UNCERTAINTY,
+            plain,
+            &mut random,
+        );
+        assert!(shot.shot_at_angle);
+        let velocity = shot.velocity;
+        let wobble = f64::from(DISPENSE_POWER) * SHOT_SPREAD;
+        assert!(velocity.x > 0.49 && velocity.x < 0.51, "{velocity}");
+        assert!(
+            velocity.y.abs() < wobble && velocity.z.abs() < wobble,
+            "{velocity}"
+        );
+        let lifetime = shot.lifetime;
+        assert!((20..=31).contains(&lifetime));
+        let (ticks, events) = fly(&mut shot, &world, &[], None);
+        assert_eq!(ticks, lifetime + 1);
+        assert_eq!(events, [RocketEvent::Launched, RocketEvent::Exploded]);
+        assert_eq!(shot.velocity, velocity, "no lift and no speed-up");
+        assert!(
+            (shot.position - (start + velocity * f64::from(ticks))).length() < 1e-9,
+            "{}",
+            shot.position
+        );
     }
 
     #[test]

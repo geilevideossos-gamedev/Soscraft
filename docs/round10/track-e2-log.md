@@ -721,3 +721,29 @@ After b299a298.
 ```
 IW4L_MINECRAFT_KIT=minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:zombie_spawn_egg*16,minecraft:cow_spawn_egg*8,minecraft:iron_golem_spawn_egg*2,minecraft:elytra,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
+
+### 2. Minecraft dispensers shoot firework rockets
+
+After 2f658af5.
+
+- **Vanilla (26.3, checked with javap):** `FireworkRocketItem` is a `ProjectileItem`, so the dispenser uses `ProjectileDispenseBehavior`: `asProjectile` makes `new FireworkRocketEntity(level, stack.copyWithCount(1), x, y, z, true)` (shot at an angle, no owner) at `getEntityJustOutsideOfBlockPos`, the block centre plus the facing times 0.5000099999997474; `Projectile.spawnProjectileUsingShoot` then calls `shoot(facing, power 0.5, uncertainty 1.0)`: `getMovementToShoot` is the facing normalised plus three `triangle(0, 0.0172275 * uncertainty)` draws, scaled by the power; the stack shrinks by one. `playSound` sends level event 1004 in place of the dispense click: `entity.firework_rocket.shoot`, volume 1.0, pitch 1.2, at the dispenser. In `FireworkRocketEntity.tick` a rocket shot at an angle skips the 1.15 speed-up and the 0.04 lift, so it flies straight.
+- **Changed:**
+  - Vendored `world/src/level/dispenser.rs`: `firework_rocket` left `OTHER_BEHAVIOURS`; its new branch `dispense_rocket` takes one rocket into a `DispensedRocket { at, facing, stack }` and plays the shoot sound (volume 1, pitch 1.2) at the dispenser's centre.
+  - Vendored `world/src/level/mod.rs`: `Level::dispensed_rockets`, beside `unsupported`.
+  - `minecraft_terrain/src/firework_rocket.rs`: `Rocket::shot(owner, position, direction, power, uncertainty, fireworks, random)` (the launch, then `getMovementToShoot`), the `shot_at_angle` flag, and `tick` skips the speed-up and the lift for such a rocket. `SHOT_SPREAD`, `DISPENSE_POWER` and `DISPENSE_UNCERTAINTY`.
+  - `minecraft_terrain/src/server.rs`: `ServerSim::tick` drains the queue right after the level tick (`shoot_dispensed_rockets`): each rocket is `Rocket::shot` with no owner, power 0.5 and uncertainty 1.0, with the stars of the dispensed stack, so it flies in the same tick's rocket step.
+- **Tests:**
+  - `firework_rocket::tests::a_rocket_shot_at_an_angle_flies_straight_without_lift_or_speed_up`: an east shot at power 0.5 keeps its velocity for its whole life and ends where the straight line says.
+  - `server::tests::a_dispenser_shoots_a_rocket_level_into_a_zombie_and_a_plain_one_puffs_at_the_end_of_its_life` (needs the 26.3 data): two east-facing dispensers powered by redstone blocks shoot one rocket each, with the shoot sound at their centres, and keep 3 of 4; the rockets start at x + 1.00001 with the stack's stars; the red one stays level and bursts on a zombie 6 blocks away within 15 ticks (hurt once, knocked back 0.4); the plain one flies its whole life and puffs with no stars.
+- **Decisions:**
+  - Only the shoot sound replaces the click: the dispensers in this port play no click and no smoke yet for any item.
+  - A dispensed rocket has no owner, so its burst blames no one (`minecraft:fireworks` with no attacker: "went off with a bang").
+  - The rocket stays a billboard, as the brief leaves the angled rocket model for later.
+- **Test steps** (survival, by day, flat ground):
+  1. **FW-8. A dispenser.** A placed dispenser faces the player who places it. Stand at one end of a flat 10-block lane with your back to the lane, look straight ahead (level) and place the dispenser on the ground in front of you: its hole faces you and the lane behind you. Put a lever on its side and 4 red rockets in it. Hatch a zombie 7 blocks down the lane, and stand beside the dispenser, not in front of it. Flip the lever on. A rocket shoots out level, with no arc, and a sharp shoot sound instead of the click. It bursts on the zombie, which flashes red and hops back. The dispenser holds 3 rockets. **Screenshot FW-8.**
+  2. **FW-9. A plain rocket from the dispenser.** Take the red rockets out, put plain rockets in, and flip the lever off and on. The rocket flies level 10 to 15 blocks and puffs in grey smoke with no bang.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:dispenser*4,minecraft:lever*4,minecraft:zombie_spawn_egg*16,minecraft:cooked_beef*32
+```
