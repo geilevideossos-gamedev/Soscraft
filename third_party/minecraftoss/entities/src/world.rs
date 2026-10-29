@@ -2218,7 +2218,7 @@ impl DamageSourceKind {
     /// Whether `PanicGoal` runs from it (`#panic_causes`, as the fixtures
     /// measured it: magic and explosions).
     fn panics(source: Option<Self>) -> bool {
-        matches!(source, Some(Self::Magic | Self::Explosion | Self::PlayerAttack | Self::MobAttack | Self::Hazard))
+        matches!(source, Some(Self::Magic | Self::Projectile | Self::Explosion | Self::PlayerAttack | Self::MobAttack | Self::Hazard))
     }
 }
 

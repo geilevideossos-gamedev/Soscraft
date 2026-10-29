@@ -775,3 +775,23 @@ After a737737d.
 ```
 IW4L_MINECRAFT_KIT=minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:zombie_spawn_egg*16,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
+
+## Review fixes
+
+### 1. Minecraft farm animals panic when thrown things and arrows hit them
+
+After 8db19b25.
+
+- **Defect (group ti1):** a snowball, egg, pearl, trident or wind charge that hit a cow, pig, sheep, chicken, horse, llama or strider made it neither run nor flee. The thrown hit passes `DamageSourceKind::Projectile`, and the vendored `DamageSourceKind::panics` left that kind out. The ti1 decision "the fixtures measured that it does not make them panic" was wrong: the only panic fixtures (`check_cow_panic`, `check_pig_panic`) measure `magic` and a change to `generic`, nothing thrown.
+- **Vanilla (26.3, checked with javap and the jar's tags):** `AbstractCow`, `Pig`, `Sheep` and `Chicken` register `new PanicGoal(this, speed)`, which takes `DamageTypeTags.PANIC_CAUSES`; `PanicGoal.shouldPanic` is `getLastDamageSource() != null && getLastDamageSource().is(PANIC_CAUSES)`. `#minecraft:panic_causes` holds `arrow`, `thrown`, `trident`, `wind_charge` and `mob_projectile`, and `LivingEntity.hurtServer` records the last damage source even for a 0-damage snowball. The fork's own cat AI already treats `arrow` as a panic cause (`feline_ai::the_panic_causes_follow_the_damage_type_tag`).
+- **Changed:** vendored `entities/src/world.rs`: `DamageSourceKind::panics` now includes `Projectile`. Its only users are the thrown hit (`player_projectile_hurt`) and the arrow hit (`apply_arrow_hit`), and every damage type behind them is in `#panic_causes`, so arrows from players and skeletons now make the animals run too.
+- **Tests:** vendored `world::combat::tests::a_thrown_hit_makes_farm_animals_and_striders_panic`: a player's snowball leaves a cow, a pig, a sheep, a chicken and a strider with a last damage source that panics, and the cow, pig, sheep and chicken (with AI, on a stone floor) run `PanicGoal` within two ticks. Entities 434, `minecraft_terrain` 1432 with 3 ignored (the known `sections::tests::background_full_update_matches_the_synchronous_one` failed once while other tracks built and passed alone), `minecraft_survival` 770 + 1; `check -p launcher` passes.
+- **Decision:** this supersedes the ti1 decision about the farm animals' `Projectile` source.
+- **Test steps (survival, Normal, by day, flat grass):**
+  1. Use the cow egg and the sheep egg 6 blocks away and throw a snowball at each: each is knocked back and runs off at a gallop for a few seconds, as when you punch it (**rv-1_snowball_panic**).
+  2. Use the pig egg and shoot it once with a half-drawn bow: it squeals and runs off (**rv-2_arrow_panic**).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:snowball*16,minecraft:bow,minecraft:arrow*16,minecraft:cow_spawn_egg*2,minecraft:sheep_spawn_egg*2,minecraft:pig_spawn_egg*2,minecraft:cooked_beef*16
+```

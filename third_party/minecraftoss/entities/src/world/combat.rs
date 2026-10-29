@@ -629,6 +629,50 @@ mod tests {
         assert_eq!((calm.target_player_id, calm.ai.as_ref().and_then(|ai| ai.state.hurt_by)), (None, None));
     }
 
+    struct Floor;
+
+    impl minecraftoss_player::World for Floor {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            (pos.1 < 64).then(|| minecraftoss_player::Block::new("minecraft:stone"))
+        }
+        fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    #[test]
+    fn a_thrown_hit_makes_farm_animals_and_striders_panic() {
+        let mut world = EntityWorld::default();
+        let cow = world.spawn_cow(crate::cow::Cow::new(at(0.5)), false);
+        let pig = world.spawn_pig(crate::pig::Pig::new(at(8.5)), false);
+        let sheep = world.spawn_sheep(crate::sheep::Sheep::default(), at(16.5), false);
+        let chicken = world.spawn_chicken(crate::chicken::Chicken::new(at(24.5)), false);
+        let strider = world.spawn_strider(crate::strider::Strider::new(at(32.5)), true);
+        for id in [cow, pig, sheep, chicken, strider] {
+            assert!(world.player_projectile_hurt(id, snowball(2)).is_some_and(|hit| hit.applied), "{:?}", world.entity_type(id));
+        }
+        let sources = [
+            world.cows.iter().find(|e| e.id == cow).unwrap().last_damage_source,
+            world.pigs.iter().find(|e| e.id == pig).unwrap().last_damage_source,
+            world.sheep.iter().find(|e| e.id == sheep).unwrap().last_damage_source,
+            world.chickens.iter().find(|e| e.id == chicken).unwrap().last_damage_source,
+            world.striders.iter().find(|e| e.id == strider).unwrap().last_damage_source,
+        ];
+        assert!(sources.iter().all(|&source| DamageSourceKind::panics(source)), "{sources:?}");
+        let mut panicked = [false; 4];
+        for _ in 0..2 {
+            world.tick(&mut Floor);
+            let running = [
+                world.cows.iter().find(|e| e.id == cow).unwrap().running_goals(),
+                world.pigs.iter().find(|e| e.id == pig).unwrap().running_goals(),
+                world.sheep.iter().find(|e| e.id == sheep).unwrap().running_goals(),
+                world.chickens.iter().find(|e| e.id == chicken).unwrap().running_goals(),
+            ];
+            for (seen, goals) in panicked.iter_mut().zip(&running) {
+                *seen |= goals.contains(&"PanicGoal");
+            }
+        }
+        assert_eq!(panicked, [true; 4], "the cow, pig, sheep and chicken run from the hit");
+    }
+
     #[test]
     fn a_trident_angers_a_hoglin_and_a_piglin_at_the_thrower() {
         let mut world = EntityWorld::default();
