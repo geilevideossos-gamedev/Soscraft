@@ -565,6 +565,29 @@ After 9ff87228.
 - **Tests:** none new; the lodestone tests and `check -p launcher` pass.
 - **Test steps and kit:** none (no change in game).
 
+## Group review
+
+The adversarial review of the whole track (base `r9-d5-base`, so round 9's d5 commits too). Each entry is one defect the review found and its fix.
+
+### 1. Minecraft arrows from an ominous trial hurt the same on every difficulty
+
+After aba7374c.
+
+- **Defect:** an arrow an ominous item spawner drops (group trial-ominous, commit 2, `ServerSim::drop_ominous_items`) is an entity-world arrow with owner id 0. The entity world reported every arrow that hits a player with `source: Some(owner_id)`, so this arrow came with `Some(0)`, and `minecraft_survival` `mob_hit` scaled its damage with the difficulty (`scales` is true for any source): on Hard an arrow from above did 4.5 instead of 3, on Easy 2.5.
+- **Vanilla (javap, 26.3):** `DamageSource.scalesWithDifficulty` for the `arrow` damage type (`when_caused_by_living_non_player`) is true only when the causing entity is a `LivingEntity` that is not a player. The arrow from above is owned by the `OminousItemSpawner` (`spawnProjectile`), which is no living entity and is gone the same tick, so `AbstractArrow.onHitEntity` falls back to `arrow(this, this)`: no scaling, and the death line is "%1$s was shot by Arrow".
+- **Changed:** vendored `entities/src/world.rs`: an arrow with owner 0 (no mob has id 0) hits a player with `source: None`. `mob_hit` then names the fork's ownerless arrow (`Mob { id: 0, type_id: "minecraft:arrow" }`, "shot by Arrow", as before) and leaves the damage as it is.
+- **Tests:**
+  - vendored `world::tests::an_arrow_without_an_owner_hits_a_player_with_no_source` (an arrow with owner 0 and its poison hits with no source; a skeleton's arrow still names the skeleton).
+  - `minecraft_survival` `entities::tests::an_arrow_dropped_by_an_ominous_trial_hurts_the_same_on_every_difficulty` (3 on every difficulty, told as an arrow, its poison kept; a skeleton's arrow still does 4.5 on Hard).
+- **Decisions:** none beyond vanilla.
+- **Test steps (world `trial10`, survival, no armour, in the chamber; a fresh zombie spawner):**
+  1. `/difficulty hard`, drink a plain ominous bottle and walk into sight of the spawner: it turns blue. Stand still and wait for an arrow to fall on you from above (the floating item is an arrow): it takes about 1.5 hearts, as on Normal, not 2 and a quarter (**328_ominous_arrow_hard**). If it kills you, the chat says "<name> was shot by Arrow". `/difficulty normal`.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket*2,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:totem_of_undying,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:cobblestone*64,minecraft:ladder*32,minecraft:water_bucket
+```
+
 ## Protocol
 
 `minecraft_net::PROTOCOL` stays 6 (the release step bumps it).
@@ -591,4 +614,4 @@ After 9ff87228.
 
 ## Vendored files
 
-Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2), and `world/src/level/container.rs` (group trial-spawners, commit 2: `Level::set_block_entity_tag`). All three were already patched by the fork (the first two are in round 9's list, `docs/round9/track-d-log.md`, Vendored files; `container.rs` since c5efeed0), so the fork's counts do not change. Group trial-spawners-run, commit 1: `world/src/natural_spawner/spawning.rs` and `world/src/level/spawning.rs` (both patched by the fork before). Commit 2: `world/src/level/physics.rs`, patched by the fork for the first time (one more patched file). Commit 3: `world/src/level/spawning.rs` again and `world/src/level/dispenser.rs` (patched by the fork before, c987075b). Group trial-ominous, commit 1: `world/src/level/spawning.rs` again (`summon_trial_mob` no longer adds the mob itself). Commit 2: `world/src/level/entity.rs`, `world/src/level/mod.rs` and `entities/src/world.rs`, all patched by the fork before. Group vaults patches and adds no vendored file. Group lodestones patches and adds no vendored file.
+Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2), and `world/src/level/container.rs` (group trial-spawners, commit 2: `Level::set_block_entity_tag`). All three were already patched by the fork (the first two are in round 9's list, `docs/round9/track-d-log.md`, Vendored files; `container.rs` since c5efeed0), so the fork's counts do not change. Group trial-spawners-run, commit 1: `world/src/natural_spawner/spawning.rs` and `world/src/level/spawning.rs` (both patched by the fork before). Commit 2: `world/src/level/physics.rs`, patched by the fork for the first time (one more patched file). Commit 3: `world/src/level/spawning.rs` again and `world/src/level/dispenser.rs` (patched by the fork before, c987075b). Group trial-ominous, commit 1: `world/src/level/spawning.rs` again (`summon_trial_mob` no longer adds the mob itself). Commit 2: `world/src/level/entity.rs`, `world/src/level/mod.rs` and `entities/src/world.rs`, all patched by the fork before. Group vaults patches and adds no vendored file. Group lodestones patches and adds no vendored file. Group review, commit 1: `entities/src/world.rs` again (patched by the fork before).

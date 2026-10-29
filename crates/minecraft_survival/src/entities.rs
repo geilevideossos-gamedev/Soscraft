@@ -2646,6 +2646,23 @@ mod tests {
     }
 
     #[test]
+    fn an_arrow_dropped_by_an_ominous_trial_hurts_the_same_on_every_difficulty() {
+        let hit = minecraftoss_entities::world::PlayerHit {
+            player_id: HOST,
+            damage: 3.0,
+            kind: PlayerHitKind::Arrow { velocity: DVec3::new(0.0, -1.1, 0.0), effect: Some((EffectKind::Poison, 900)) },
+            source: None,
+        };
+        let damage = |difficulty| mob_hit(&hit, [0.0; 3], difficulty, None).map(|h| h.0);
+        assert_eq!((damage(0), damage(1), damage(2), damage(3)), (Some(3.0), Some(3.0), Some(3.0), Some(3.0)));
+        let (_, _, _, cause, _, effect) = mob_hit(&hit, [0.0; 3], 3, None).unwrap();
+        assert_eq!(cause, crate::death::DamageCause::Mob { id: 0, type_id: "minecraft:arrow", attack: crate::death::MobAttack::Arrow });
+        assert_eq!(effect, Some((EffectKind::Poison, 900, 0)));
+        let shot = minecraftoss_entities::world::PlayerHit { source: Some(9), ..hit };
+        assert_eq!(mob_hit(&shot, [0.0; 3], 3, Some("minecraft:skeleton")).map(|h| h.0), Some(4.5), "a skeleton's arrow still scales");
+    }
+
+    #[test]
     fn blasts_hurt_mobs_four_times_as_hard_as_bullets() {
         assert_eq!(HEALTH_SCALE, 0.2);
         assert_eq!(BLAST_HEALTH_SCALE, 0.8);
