@@ -3227,7 +3227,7 @@ impl ServerSim {
                 mob_ids.insert(uuid, id);
             }
         }
-        let simulated = |kind: &str| crate::server_mobs::SIMULATED_KINDS.contains(&kind);
+        let simulated = |kind: &str| crate::server_mobs::is_simulated(kind);
         let mut trial_players: Vec<crate::trial_spawner::TrialPlayer> = players.iter().map(|(_, player)| *player).collect();
         let mut trials = crate::trial_spawner::Trials { players: &mut trial_players, mobs: &mobs, simulated: &simulated, dispensing: &mut self.trial_dispensing };
         let outcome = crate::trial_spawner::tick_spawners(&mut self.level, &spawners, &mut trials, &mut self.trial_configs);
@@ -10591,6 +10591,79 @@ mod tests {
         let (_, none, seen) = run(true, 200);
         assert!(none.is_empty(), "a creative player starts no trial");
         assert_eq!(seen, ["waiting_for_players"]);
+    }
+
+    #[test]
+    fn a_trial_spawner_spawns_registered_silverfish() {
+        use crate::trial_spawner::STATE;
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() || registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let spawner = (8, 200, 8);
+        let at = minecraftoss_core::BlockPos::new(spawner.0, spawner.1, spawner.2);
+        let mut server = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        for x in 2..=14 {
+            for z in 2..=14 {
+                server.player_edit_block((x, 199, z), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+                for y in 200..=203 {
+                    server.player_edit_block((x, y, z), Some(&Block::new("minecraft:air")), PlayerEdit::Place);
+                }
+            }
+        }
+        server.player_edit_block(spawner, Some(&Block::new("minecraft:trial_spawner")), PlayerEdit::Place);
+        server.level.difficulty = 2;
+        assert_eq!(server.spawner_egg(spawner, "minecraft:silverfish"), Ok(()));
+        server.set_game_time(1_000_000);
+        server.set_player_uuid(0, 0x5eed);
+        let feet = glam::DVec3::new(8.5, 200.0, 12.5);
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: feet,
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let (mut spawned, mut seen) = (0, Vec::new());
+        for _ in 0..200 {
+            server.set_players(&[feet.to_array()], 2);
+            server.set_simulation_area((0, 0), 2);
+            server.prepare_spawning(&[player]);
+            server.tick();
+            server.tick_trial_spawners(&[player], &mut []);
+            spawned += server.level.spawned.iter().filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:silverfish")).count();
+            server.take_spawned();
+            let state = server.level.registries().blocks.property(server.level.block(at), STATE).unwrap().to_owned();
+            if seen.last() != Some(&state) {
+                seen.push(state);
+            }
+        }
+        assert_eq!(seen[..2], ["waiting_for_players", "active"]);
+        assert!(spawned > 0, "the trial spawns silverfish");
     }
 
     #[test]
