@@ -1127,7 +1127,8 @@ impl ServerSim {
         let around: Vec<(u64, glam::DVec3)> = players.iter().filter(|p| p.alive).map(|p| (p.id, p.position)).collect();
         let mut sounds = Vec::new();
         for (pos, warning) in std::mem::take(&mut self.level.shrieker_responses) {
-            if let Some(event) = reply_sound(warning) {
+            let summoned = warning >= crate::warden_tracker::MAX_WARNING_LEVEL && self.summon_warden(pos, &mut sounds);
+            if let Some(event) = reply_sound(warning).filter(|_| !summoned) {
                 let random = &mut self.level.random;
                 let mut offset = || random.next_i32_bound(2 * REPLY_SPREAD + 1) - REPLY_SPREAD;
                 let position = glam::DVec3::new(f64::from(pos.x + offset()), f64::from(pos.y + offset()), f64::from(pos.z + offset()));
@@ -1138,6 +1139,47 @@ impl ServerSim {
             }
         }
         sounds
+    }
+
+    pub fn summon_warden(&mut self, pos: minecraftoss_core::BlockPos, sounds: &mut Vec<minecraftoss_entities::world::MobSound>) -> bool {
+        use minecraftoss_core::random::RandomSource;
+        use minecraftoss_entities::golem_spawn::{try_spawn_mob, SpawnSite, Strategy};
+        struct Emergence<'a> {
+            world: crate::server_mobs::MobWorld<'a>,
+        }
+        impl SpawnSite for Emergence<'_> {
+            fn world(&self) -> &dyn minecraftoss_player::World {
+                &self.world
+            }
+
+            fn between(&mut self, low: i32, high: i32) -> i32 {
+                self.world.level.borrow_mut().random.next_i32_bound(high - low + 1) + low
+            }
+        }
+        let Self { level, states, mob_tables, .. } = self;
+        let mut site = Emergence { world: crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables } };
+        let found = try_spawn_mob(&mut site, (pos.x, pos.y, pos.z), SUMMON_ATTEMPTS, SUMMON_XZ, SUMMON_Y, Strategy::OnTopOfCollider, |site, (x, y, z)| {
+            let at = [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5];
+            let mut level = site.world.level.borrow_mut();
+            let yaw = (level.random.next_f32() * 360.0 + 180.0).rem_euclid(360.0) - 180.0;
+            let _follow_bonus = level.random.next_f64() - level.random.next_f64();
+            let _left_handed = level.random.next_f32() < 0.05;
+            if level.triggered_spawn_ok(crate::warden_tracker::WARDEN, at) {
+                return Some((at, yaw));
+            }
+            sounds.push(minecraftoss_entities::world::MobSound { event: SUMMON_SOUND.to_owned(), position: glam::DVec3::from_array(at), volume: SUMMON_VOLUME, pitch: 1.0, category: "hostile" });
+            None
+        });
+        let Some((at, yaw)) = found else { return false };
+        let id = self.mobs.spawn_emerging_warden(glam::DVec3::from_array(at), yaw);
+        let uuid = minecraftoss_world::natural_spawner::SpawnLevel::next_uuid(&mut self.level);
+        self.mobs.set_uuid(id, minecraftoss_entities::gossip::uuid_from_ints(uuid));
+        let mut tag = self.level.registries().entities.as_ref().and_then(|catalog| catalog.default_tag(crate::warden_tracker::WARDEN)).unwrap_or_else(|| minecraftoss_core::nbt::Tag::Compound(std::collections::BTreeMap::new()));
+        if let minecraftoss_core::nbt::Tag::Compound(map) = &mut tag {
+            map.insert("UUID".to_owned(), minecraftoss_core::nbt::Tag::IntArray(uuid.to_vec()));
+        }
+        self.mob_tags.insert(id, tag);
+        true
     }
 
     fn sensor_under(&self, feet: [f64; 3]) -> Option<BlockPos> {
@@ -3934,6 +3976,11 @@ fn tag_uuid_at(tag: &minecraftoss_core::nbt::Tag, key: &str) -> Option<u128> {
 const SENSOR_TOP: f64 = 0.5;
 const STANDING_REACH: f64 = 0.05;
 const WARNED_HOLD: i32 = 20;
+const SUMMON_ATTEMPTS: u32 = 20;
+const SUMMON_XZ: i32 = 5;
+const SUMMON_Y: i32 = 6;
+const SUMMON_SOUND: &str = "entity.warden.agitated";
+const SUMMON_VOLUME: f32 = 5.0;
 
 struct Hearing<'a, 'l> {
     level: &'a mut Level<'l>,
@@ -13225,13 +13272,17 @@ mod tests {
     fn the_fourth_warning_plays_the_angry_sound_while_no_warden_can_come() {
         let Some((mut sim, _)) = shrieker_world(summoning()) else { return };
         let mut input = shrieker_input(&[(0, OFF_SHRIEKER), (1, [10.5, 200.0, 12.5])]);
+        input.clocks.overworld = 6000;
         input.warden_trackers[0].1.set_warning_level(3);
         let mut heard = Shrieked::default();
         client_ticks(&mut sim, &mut input, 2, &mut heard);
         warn_once(&mut sim, &mut input, &mut heard);
         assert_eq!(tracker_of(&input, 0).warning_level, 4);
         assert_eq!(tracker_of(&input, 1), tracker_of(&input, 0), "a player nearby rises with them");
-        assert_eq!(heard.sounds.iter().map(|sound| sound.event.as_str()).collect::<Vec<_>>(), vec!["minecraft:entity.warden.listening_angry"]);
+        let (growls, replies): (Vec<_>, Vec<_>) = heard.sounds.iter().map(|sound| sound.event.as_str()).partition(|event| *event == SUMMON_SOUND);
+        assert_eq!(replies, vec!["minecraft:entity.warden.listening_angry"], "in daylight no warden can come");
+        assert_eq!(growls.len(), SUMMON_ATTEMPTS as usize, "each warden made for a spot on the floor growled before the light sent it away");
+        assert!(sim.mobs.wardens().is_empty());
         assert_eq!(heard.effects.len(), 2);
         client_ticks(&mut sim, &mut input, 110, &mut heard);
         heard = Shrieked::default();
@@ -13239,6 +13290,108 @@ mod tests {
         warn_once(&mut sim, &mut input, &mut heard);
         assert_eq!(heard.events, vec![(crate::level_events::SCULK_SHRIEK, SHRIEKER, 0)], "it shrieks");
         assert!(heard.trackers.is_empty() && heard.sounds.is_empty() && heard.effects.is_empty(), "but nothing answers");
+    }
+
+    fn summoned(sim: &ServerSim) -> Vec<(u64, glam::DVec3)> {
+        sim.mobs.wardens().iter().map(|mob| (mob.core.id, mob.core.body.position)).collect()
+    }
+
+    #[test]
+    fn a_triggered_warden_needs_darkness_and_room() {
+        use minecraftoss_entities::world::families::deep_dark::wardens::{Activity, Pose};
+        let Some((mut sim, mut scene)) = shrieker_world(Block::new("minecraft:sculk_shrieker")) else { return };
+        let at = minecraftoss_core::BlockPos::new(8, 200, 8);
+        let mut sounds = Vec::new();
+        sim.set_time(6000);
+        sim.tick();
+        assert!(!sim.summon_warden(at, &mut sounds), "no warden comes out by day");
+        assert!(summoned(&sim).is_empty());
+        assert_eq!(sounds.len(), SUMMON_ATTEMPTS as usize);
+        assert!(sounds.iter().all(|sound| (sound.event.as_str(), sound.volume, sound.category) == (SUMMON_SOUND, SUMMON_VOLUME, "hostile")));
+        sim.set_time(18000);
+        sim.tick();
+        sounds.clear();
+        assert!(sim.summon_warden(at, &mut sounds), "it climbs out in the dark");
+        let wardens = summoned(&sim);
+        assert_eq!(wardens.len(), 1);
+        let (id, position) = wardens[0];
+        assert!((position.x - 8.5).abs() <= 5.0 && (position.z - 8.5).abs() <= 5.0 && position.y == 200.0, "{position}");
+        assert!(sounds.len() < SUMMON_ATTEMPTS as usize, "only the tries that failed growled");
+        let mob = sim.mobs.wardens().iter().find(|mob| mob.core.id == id).unwrap();
+        assert_eq!((mob.state.pose, mob.state.activity()), (Pose::Emerging, Activity::Emerge));
+        assert_eq!(mob.state.memories().is_emerging.ttl(), Some(minecraftoss_entities::world::families::deep_dark::wardens::EMERGE_DURATION));
+        assert!(mob.state.memories().dig_cooldown.present());
+        let uuid = sim.mob_tags[&id].get("UUID").and_then(minecraftoss_core::nbt::Tag::as_ints).expect("its tag has a UUID");
+        assert_eq!(sim.mobs.uuid_of(id), minecraftoss_entities::gossip::uuid_from_ints([uuid[0], uuid[1], uuid[2], uuid[3]]));
+        let taken: Vec<String> = sim.mobs.take_sounds().into_iter().map(|sound| sound.event).collect();
+        assert_eq!(taken, vec![SUMMON_SOUND.to_owned()], "the one that came out growls too");
+        sim.mobs.family_core_mut(id).unwrap().1.removed = true;
+        sim.mobs.remove_where(|_| true);
+        for x in 2..=14 {
+            for z in 2..=14 {
+                for y in 202..=206 {
+                    place(&mut sim, &mut scene, (x, y, z), Block::new("minecraft:stone"));
+                }
+            }
+        }
+        sounds.clear();
+        assert!(!sim.summon_warden(at, &mut sounds), "no room under a low roof");
+        assert!(summoned(&sim).is_empty());
+    }
+
+    #[test]
+    fn a_warden_from_an_egg_or_a_command_stands_at_once_and_waits_a_minute_to_dig() {
+        use minecraftoss_entities::world::families::deep_dark::wardens::{Pose, DIGGING_COOLDOWN};
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        server.hatch_egg("minecraft:warden", [8.5, 200.0, 8.5], 0.0).unwrap();
+        server.summon("minecraft:warden", [8.5, 200.0, 4.5], None, 90.0).unwrap();
+        assert_eq!(server.mobs.wardens().len(), 2);
+        for mob in server.mobs.wardens() {
+            assert_eq!((mob.state.pose, mob.core.body.height), (Pose::Standing, 2.9), "it needs no darkness and does not climb out");
+            assert_eq!(mob.state.memories().dig_cooldown.ttl(), Some(DIGGING_COOLDOWN));
+            assert!(!mob.core.persistent);
+        }
+        server.set_players(&[[8.5, 200.0, 11.5]], 0);
+        assert!(server.summon("minecraft:warden", [8.5, 200.0, 4.5], None, 0.0).is_err(), "never on peaceful");
+    }
+
+    #[test]
+    fn the_fourth_warning_summons_a_warden_in_the_dark_within_five_and_six() {
+        let Some((mut sim, _)) = shrieker_world(summoning()) else { return };
+        let mut input = shrieker_input(&[(0, OFF_SHRIEKER)]);
+        input.clocks.overworld = 18000;
+        input.warden_trackers[0].1.set_warning_level(3);
+        let mut heard = Shrieked::default();
+        client_ticks(&mut sim, &mut input, 2, &mut heard);
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(tracker_of(&input, 0).warning_level, 4);
+        let wardens = summoned(&sim);
+        assert_eq!(wardens.len(), 1, "a warden digs out");
+        let offset = wardens[0].1 - glam::DVec3::new(8.5, 200.0, 8.5);
+        assert!(offset.x.abs() <= 5.0 && offset.z.abs() <= 5.0 && offset.y.abs() <= 6.0, "{offset}");
+        assert!(heard.sounds.iter().all(|sound| sound.event != "minecraft:entity.warden.listening_angry"), "no reply when it came");
+        assert_eq!(heard.effects, vec![(0, crate::warden_tracker::SHRIEK_DARKNESS)], "the shrieker still darkens");
+    }
+
+    #[test]
+    fn a_summoned_warden_nearby_stops_the_next_warning() {
+        let Some((mut sim, _)) = shrieker_world(summoning()) else { return };
+        let mut input = shrieker_input(&[(0, OFF_SHRIEKER)]);
+        input.clocks.overworld = 18000;
+        input.warden_trackers[0].1.set_warning_level(3);
+        let mut heard = Shrieked::default();
+        client_ticks(&mut sim, &mut input, 2, &mut heard);
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(summoned(&sim).len(), 1);
+        client_ticks(&mut sim, &mut input, 110, &mut heard);
+        assert!(!tracker_of(&input, 0).on_cooldown());
+        heard = Shrieked::default();
+        stand(&mut input, 0, ON_SHRIEKER);
+        client_ticks(&mut sim, &mut input, 1, &mut heard);
+        assert!(!shrieking(&sim), "with a warden within the box it does not even shriek");
+        assert!(heard.events.is_empty() && heard.trackers.is_empty());
+        assert_eq!(tracker_of(&input, 0).warning_level, 4);
     }
 
     #[test]

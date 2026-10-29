@@ -57,20 +57,67 @@ fn legacy_golem_ground(world: &dyn World, pos: Pos, block: Option<&Block>, above
     (is_air(above) || is_liquid(above)) && (world.solid(pos) || block.is_some_and(|b| b.id == "minecraft:powder_snow"))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Strategy {
+    LegacyIronGolem,
+    OnTopOfCollider,
+}
+
+impl Strategy {
+    fn can_spawn_on(self, world: &dyn World, pos: Pos, block: Option<&Block>, above: Option<&Block>) -> bool {
+        match self {
+            Self::LegacyIronGolem => legacy_golem_ground(world, pos, block, above),
+            Self::OnTopOfCollider => world.collision_boxes((pos.0, pos.1 + 1, pos.2)).is_empty() && top_face_full(&world.collision_boxes(pos)),
+        }
+    }
+}
+
+pub trait SpawnSite {
+    fn world(&self) -> &dyn World;
+    fn between(&mut self, low: i32, high: i32) -> i32;
+}
+
 /// `moveToPossibleSpawnPosition`: down from `pos` (six above the start)
 /// through twelve more blocks for ground; the spot above it.
-fn possible_spawn_position(world: &dyn World, pos: Pos) -> Option<Pos> {
+fn possible_spawn_position(world: &dyn World, pos: Pos, range_y: i32, strategy: Strategy) -> Option<Pos> {
     let (x, mut y, z) = pos;
     let mut above = world.block((x, y, z));
-    for _ in -RANGE_Y..=RANGE_Y {
+    for _ in -range_y..=range_y {
         y -= 1;
         let current = world.block((x, y, z));
-        if legacy_golem_ground(world, (x, y, z), current.as_ref(), above.as_ref()) {
+        if strategy.can_spawn_on(world, (x, y, z), current.as_ref(), above.as_ref()) {
             return Some((x, y + 1, z));
         }
         above = current;
     }
     None
+}
+
+pub fn try_spawn_mob<S: SpawnSite, T>(site: &mut S, start: Pos, attempts: u32, xz: i32, y: i32, strategy: Strategy, mut create: impl FnMut(&mut S, Pos) -> Option<T>) -> Option<T> {
+    for _ in 0..attempts {
+        let dx = site.between(-xz, xz);
+        let dz = site.between(-xz, xz);
+        let Some(pos) = possible_spawn_position(site.world(), (start.0 + dx, start.1 + y, start.2 + dz), y, strategy) else { continue };
+        if let Some(spawned) = create(site, pos) {
+            return Some(spawned);
+        }
+    }
+    None
+}
+
+struct GolemSite<'a> {
+    world: &'a dyn World,
+    random: &'a mut LegacyRandom,
+}
+
+impl SpawnSite for GolemSite<'_> {
+    fn world(&self) -> &dyn World {
+        self.world
+    }
+
+    fn between(&mut self, low: i32, high: i32) -> i32 {
+        self.random.next_int((high - low + 1) as u32) as i32 + low
+    }
 }
 
 /// Whether a block's collision boxes fill its whole cube.
@@ -167,38 +214,30 @@ pub struct SummonedGolem {
 /// drawing from the level's random; `blocked` says whether a living thing's
 /// box would meet the golem's (`isUnobstructed`).
 pub fn try_spawn_golem(world: &dyn World, start: Pos, level_random: &mut LegacyRandom, blocked: impl Fn(DVec3, DVec3) -> bool) -> Option<SummonedGolem> {
-    for _ in 0..ATTEMPTS {
-        // `Mth.randomBetweenInclusive(random, -8, 8)` twice.
-        let dx = level_random.next_int((RANGE_XZ * 2 + 1) as u32) as i32 - RANGE_XZ;
-        let dz = level_random.next_int((RANGE_XZ * 2 + 1) as u32) as i32 - RANGE_XZ;
-        let Some(pos) = possible_spawn_position(world, (start.0 + dx, start.1 + RANGE_Y, start.2 + dz)) else { continue };
-        // `EntityType.create`: the facing, then `Mob.finalizeSpawn`'s
-        // `random.triangle(0, 0.11485)` and left-handed roll, all from the
-        // level's random.
-        let yaw = wrap_degrees(level_random.next_float() * 360.0);
-        let follow_bonus = 0.114_850_000_000_000_01 * (level_random.next_double() - level_random.next_double());
-        let _left_handed = level_random.next_float() < 0.05;
+    let mut site = GolemSite { world, random: level_random };
+    try_spawn_mob(&mut site, start, ATTEMPTS, RANGE_XZ, RANGE_Y, Strategy::LegacyIronGolem, |site, pos| {
+        let yaw = wrap_degrees(site.random.next_float() * 360.0);
+        let follow_bonus = 0.114_850_000_000_000_01 * (site.random.next_double() - site.random.next_double());
+        let _left_handed = site.random.next_float() < 0.05;
         let at = DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1), f64::from(pos.2) + 0.5);
-        // `checkSpawnRules` holds (its walk values are all 0);
-        // `IronGolem.checkSpawnObstruction`.
+        let world = site.world;
         let below = (pos.0, pos.1 - 1, pos.2);
         if !top_face_full(&world.collision_boxes(below)) {
-            continue;
+            return None;
         }
         if !(1..3).all(|i| valid_empty(world, (pos.0, pos.1 + i, pos.2), true)) {
-            continue;
+            return None;
         }
         if !valid_empty(world, pos, false) {
-            continue;
+            return None;
         }
         let half = f64::from(crate::iron_golem::WIDTH) / 2.0;
         let (min, max) = (at - DVec3::new(half, 0.0, half), at + DVec3::new(half, f64::from(crate::iron_golem::HEIGHT), half));
         if blocked(min, max) {
-            continue;
+            return None;
         }
-        return Some(SummonedGolem { at, yaw, follow_bonus });
-    }
-    None
+        Some(SummonedGolem { at, yaw, follow_bonus })
+    })
 }
 
 #[cfg(test)]
@@ -218,5 +257,55 @@ mod tests {
         assert!(top_face_full(&[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]));
         assert!(!top_face_full(&[[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]));
         assert!(top_face_full(&[[0.0, 0.5, 0.0, 0.5, 1.0, 1.0], [0.5, 0.5, 0.0, 1.0, 1.0, 1.0]]));
+    }
+
+    struct Columns;
+
+    impl World for Columns {
+        fn block(&self, (x, y, z): Pos) -> Option<Block> {
+            match (x, z) {
+                (1, 0) if y == 63 => Some(Block::new("minecraft:smooth_stone_slab").with("type", "bottom")),
+                (1, 0) if y < 63 => None,
+                (2, 0) if y == 64 => Some(Block::new("minecraft:stone")),
+                (3, 0) if y == 63 => Some(Block::new("minecraft:glass")),
+                _ => (y < 64).then(|| Block::new("minecraft:stone")),
+            }
+        }
+
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+    }
+
+    #[test]
+    fn on_top_of_collider_needs_a_full_top_face() {
+        let on = |x: i32| possible_spawn_position(&Columns, (x, 70, 0), 6, Strategy::OnTopOfCollider);
+        assert_eq!(on(0), Some((0, 64, 0)));
+        assert_eq!(on(1), None, "a slab's top is not full and there is nothing under it");
+        assert_eq!(on(2), Some((2, 65, 0)), "on top of the block in the way");
+        assert_eq!(on(3), Some((3, 64, 0)), "glass is a collider");
+        let legacy = |x: i32| possible_spawn_position(&Columns, (x, 70, 0), 6, Strategy::LegacyIronGolem);
+        assert_eq!(legacy(3), None, "the golem's rule refuses glass and finds nothing under it in reach");
+        assert_eq!(legacy(0), on(0));
+    }
+
+    #[test]
+    fn a_golem_still_spawns_where_it_did() {
+        let mut expected = LegacyRandom::new(17);
+        let mut draw = || {
+            let dx = expected.next_int(17) as i32 - 8;
+            let dz = expected.next_int(17) as i32 - 8;
+            let yaw = wrap_degrees(expected.next_float() * 360.0);
+            let bonus = 0.114_850_000_000_000_01 * (expected.next_double() - expected.next_double());
+            let _ = expected.next_float();
+            (dx, dz, yaw, bonus)
+        };
+        let (first, second) = (draw(), draw());
+        let blocked_once = std::cell::Cell::new(true);
+        for (blocked, (dx, dz, yaw, bonus)) in [(true, second), (false, first)] {
+            blocked_once.set(blocked);
+            let mut random = LegacyRandom::new(17);
+            let golem = try_spawn_golem(&Columns, (20, 64, -20), &mut random, |_, _| blocked_once.replace(false)).unwrap();
+            assert_eq!(golem.at, DVec3::new(f64::from(20 + dx) + 0.5, 64.0, f64::from(dz - 20) + 0.5));
+            assert_eq!((golem.yaw, golem.follow_bonus), (yaw, bonus));
+        }
     }
 }

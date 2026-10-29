@@ -43,7 +43,7 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 14 | Warden | deep dark, shriekers | dormant, sleep and fire lists; darkness effect; `WardenAnimation` readable; ancient cities generate with shriekers and loot; `wardens` family: attributes, anger, its vibration listener at its eyes (kept in `minecraft_terrain`), brain (emerge, dig, investigate, sniff, idle), touches, digging away | saving its anger and listener, the shrieker's summon, roar, fight, sonic boom, darkness pulses, model, keyframes, heartbeat | XL | `wardens` | 44 | left | "Minecraft wardens live in the entity world" (W `warden-live`) |
+| 14 | Warden | deep dark, shriekers | dormant, sleep and fire lists; darkness effect; `WardenAnimation` readable; ancient cities generate with shriekers and loot; `wardens` family: attributes, anger, its vibration listener at its eyes (kept in `minecraft_terrain`), brain (emerge, dig, investigate, sniff, idle), touches, digging away; saved with its anger, memories and listener, hatched, summoned, dug out by shriekers (`try_spawn_mob`, `ON_TOP_OF_COLLIDER`, the monster light rule), seen by friends (pose and anger in `FamilyShow`) | roar, fight, sonic boom, darkness pulses, model, keyframes, heartbeat | XL | `wardens` | 44 | live | e3495a40, "Minecraft wardens are saved, hatch from eggs and dig out when shriekers summon them" (W `warden-live`) |
 
 ## M1: land animals (group `land`, bytes 48-63)
 
