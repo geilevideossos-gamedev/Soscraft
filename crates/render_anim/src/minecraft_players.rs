@@ -834,6 +834,24 @@ pub(crate) fn struck(
         let hurt = survival.struck(amount, blocked, armor, from, cause, effect);
         landed.extend(push.landing(hurt, blocked > 0.0, knockback_resistance));
     }
+    for (distance, multiplier) in outputs.rider_falls.into_iter().filter(|_| alive) {
+        let damage = survival.rider_fall(distance, multiplier);
+        if damage > 0
+            && let Some(sounds) = sounds.as_mut()
+        {
+            sounds.play(
+                packs,
+                minecraft_survival::survival::fall_sound(damage),
+                None,
+                1.0,
+                1.0,
+            );
+            let voice = (sounds.random() - sounds.random()) * 0.2 + 1.0;
+            if survival.status.health > 0.0 {
+                sounds.play(packs, "minecraft:entity.player.hurt", None, 1.0, voice);
+            }
+        }
+    }
     for (slot, held) in entities.take_boosts(player_id) {
         hand.swing = Some(0.0);
         hand.swing_offhand = slot == minecraft_survival::offhand::OFFHAND;

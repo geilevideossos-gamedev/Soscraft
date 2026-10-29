@@ -3671,6 +3671,7 @@ pub struct Output {
     pub bone_meal_used: Vec<BlockPos>,
     pub item_uses: Vec<(u64, bool)>,
     pub dismounts: Vec<(u64, u64, Option<[f64; 3]>)>,
+    pub rider_falls: Vec<(u64, f64, f32)>,
     pub boosts: Vec<(u64, bool)>,
     pub mounts: Vec<(u64, u64)>,
     pub root_vehicles: Vec<(u64, Option<minecraftoss_core::nbt::Tag>)>,
@@ -4272,6 +4273,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.tick_ridden_mobs(&input.mob_players, input.bright_outside);
     }
     out.dismounts.extend(sim.take_vehicle_losses());
+    out.rider_falls.extend(sim.mobs.take_rider_falls());
     out.player_hits.extend(sim.take_end_hits());
     out.player_hits.extend(sim.take_rocket_hits());
     out.player_hits.append(&mut sim.mob_trident_hits);

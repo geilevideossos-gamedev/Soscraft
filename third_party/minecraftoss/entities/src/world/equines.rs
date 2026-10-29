@@ -1568,12 +1568,30 @@ mod tests {
             let (mut world, id, _) = fall_ridden(HorseKind::Horse, height, ground);
             let (left, fall) = health_and_fall(&mut world, id);
             assert_eq!(left, health, "{height} onto {ground}");
-            let (fallen, multiplier) = fall.expect("the fall waits for its riders");
+            assert!(fall.is_some(), "the fall waits for its riders");
+            let falls = world.take_rider_falls();
+            assert_eq!(falls.len(), 1, "{height} onto {ground}: {falls:?}");
+            let (rider, fallen, multiplier) = falls[0];
             assert!(
-                (fallen - distance).abs() < 1.0e-5 && multiplier == 1.0,
-                "{height} onto {ground}: {fallen} {multiplier}"
+                rider == 0 && (fallen - distance).abs() < 1.0e-5 && multiplier == 1.0,
+                "{height} onto {ground}: {falls:?}"
             );
+            assert!(world.take_rider_falls().is_empty(), "handed on once");
+            assert_eq!(health_and_fall(&mut world, id), (health, None));
         }
+        let mut world = EntityWorld::default();
+        let mut ground = Ground("minecraft:stone");
+        let id = equine(&mut world, HorseKind::Horse, DVec3::new(0.5, 74.0, 0.5));
+        let players = [player(0, DVec3::new(30.5, 64.0, 30.5))];
+        for _ in 0..60 {
+            world.tick_with_players(&mut ground, &players);
+        }
+        assert_eq!(health_and_fall(&mut world, id).0, 18.0);
+        assert!(
+            world.take_rider_falls().is_empty(),
+            "a horse with no rider hands nothing on"
+        );
+        assert_eq!(health_and_fall(&mut world, id).1, None);
     }
 
     #[test]
@@ -1581,6 +1599,7 @@ mod tests {
         for height in [4.0, 7.0] {
             let (mut world, id, sounds) = fall_ridden(HorseKind::Horse, height, "minecraft:stone");
             assert_eq!(health_and_fall(&mut world, id), (20.0, None), "{height}");
+            assert!(world.take_rider_falls().is_empty(), "{height}");
             assert_eq!(
                 heard(&sounds, "entity.horse.land"),
                 [(0.4, 1.0)],
@@ -1598,13 +1617,18 @@ mod tests {
         for ground in ["minecraft:hay_block", "minecraft:slime_block"] {
             let (mut world, id, _) = fall_ridden(HorseKind::Horse, 10.0, ground);
             assert_eq!(health_and_fall(&mut world, id), (20.0, None), "{ground}");
+            assert!(world.take_rider_falls().is_empty(), "{ground}");
         }
         let (mut world, id, _) = fall_ridden(HorseKind::Horse, 20.0, "minecraft:hay_block");
-        let (health, fall) = health_and_fall(&mut world, id);
-        assert_eq!(health, 19.0, "twenty blocks onto hay still hurt a little");
+        assert_eq!(
+            health_and_fall(&mut world, id).0,
+            19.0,
+            "twenty blocks onto hay still hurt a little"
+        );
+        let falls = world.take_rider_falls();
         assert!(
-            fall.is_some_and(|(_, multiplier)| multiplier == 0.2),
-            "{fall:?}"
+            falls.len() == 1 && falls[0].2 == 0.2,
+            "the rider lands on the hay too: {falls:?}"
         );
     }
 
@@ -1638,6 +1662,7 @@ mod tests {
         }
         assert!(peak > 5.0, "{peak}");
         assert_eq!(health_and_fall(&mut world, id), (20.0, None));
+        assert!(world.take_rider_falls().is_empty());
     }
 
     #[test]
@@ -1686,6 +1711,11 @@ mod tests {
         let (health, fall) = health_and_fall(&mut world, id);
         assert_eq!(health, 18.0, "a llama takes a horse's fall");
         assert!(fall.is_some());
+        assert_eq!(
+            world.take_rider_falls().len(),
+            1,
+            "and hands it to its rider"
+        );
     }
 
     #[test]

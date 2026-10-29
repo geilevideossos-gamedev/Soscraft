@@ -510,8 +510,16 @@ impl Survival {
     }
 
     pub fn fall(&mut self, distance: f64, landed_on: Option<&str>, crouching: bool) -> i32 {
+        self.hurt_by_fall(landing_damage(distance, landed_on, crouching), distance)
+    }
+
+    pub fn rider_fall(&mut self, distance: f64, multiplier: f32) -> i32 {
+        self.hurt_by_fall(fall_damage(distance, multiplier), 0.0)
+    }
+
+    fn hurt_by_fall(&mut self, damage: i32, distance: f64) -> i32 {
         let damage = if self.rules.fall_damage && !self.invulnerable && !self.protection.immune(DamageCause::Fall.damage_type()) {
-            landing_damage(distance, landed_on, crouching)
+            damage
         } else {
             0
         };
@@ -3149,6 +3157,7 @@ mod tests {
                 "%1$s didn't want to live in the same world as %2$s",
             ),
             ("death.fell.accident.ladder", "%1$s fell off a ladder"),
+            ("death.attack.fall", "%1$s hit the ground too hard"),
             ("entity.minecraft.zombie", "Zombie"),
             ("block.minecraft.lava", "Lava"),
         ]
@@ -3230,6 +3239,43 @@ mod tests {
         assert_eq!(
             death(&survival),
             said("%1$s fell off a ladder", "fell off a ladder")
+        );
+    }
+
+    #[test]
+    fn a_rider_takes_the_horse_s_fall_and_hits_the_ground_too_hard() {
+        let mut survival = fresh();
+        assert_eq!(survival.rider_fall(10.0, 1.0), 7);
+        assert!((survival.status.health - 13.0).abs() < 1e-6);
+        let mut thrown = fresh();
+        thrown.status.health = 5.0;
+        assert_eq!(thrown.rider_fall(20.0, 0.2), 3);
+        assert_eq!(thrown.rider_fall(30.0, 1.0), 27);
+        assert_eq!(thrown.status.health, 0.0);
+        assert_eq!(
+            death(&thrown),
+            said("%1$s hit the ground too hard", "hit the ground too hard"),
+            "the rider's own fall is none"
+        );
+        for (distance, multiplier) in [(3.0, 1.0), (7.9, 0.2), (30.0, 0.0)] {
+            assert_eq!(
+                fresh().rider_fall(distance, multiplier),
+                0,
+                "{distance} {multiplier}"
+            );
+        }
+        assert_eq!(creative().rider_fall(30.0, 1.0), 0);
+        let mut ruled = fresh();
+        ruled.rules.fall_damage = false;
+        assert_eq!(ruled.rider_fall(30.0, 1.0), 0);
+        assert_eq!(ruled.status.health, 20.0);
+        let mut cushioned = fresh();
+        cushioned.wear(wearing("minecraft:feather_falling", 4));
+        assert_eq!(cushioned.rider_fall(10.0, 1.0), 7);
+        assert!(
+            (cushioned.status.health - (20.0 - 7.0 * (1.0 - 12.0 / 25.0))).abs() < 1e-5,
+            "{}",
+            cushioned.status.health
         );
     }
 

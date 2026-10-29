@@ -390,3 +390,39 @@ Commit: "Minecraft horses fall like vanilla horses", the one after `7c253993`.
 ```
 IW4L_MINECRAFT_KIT=minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:hay_block*16,minecraft:cooked_beef*16
 ```
+
+### Riders share their horse's fall
+
+Commit: "Minecraft riders share their horse's fall", the one after `704004c8`.
+
+- **Cause** (as in the brief, re-checked at `704004c8`): a seated player's own fall is switched off (`minecraft_riding.rs` clears `steps.air_peak` every tick, as vanilla's `rideTick` resets the rider's fall distance), and nothing handed the horse's landing on to its riders, so a rider never took fall damage.
+- **Vanilla 26.3** (javap): `AbstractHorse.causeFallDamage` calls `propagateFallToPassengers(d, mult, src)` only after the horse itself was hurt; `Entity.propagateFallToPassengers` calls `causeFallDamage(d, mult, src)` on every passenger with the **horse's** distance and block multiplier. `Player.causeFallDamage` takes nothing while `mayfly` (creative and spectator), then `LivingEntity.causeFallDamage`: `floor((d + 1e-6 - 3) * mult)`, the fall sound (`big_fall` above 4) and the hurt. The rider's own fall distance is 0, so a death is `death.attack.fall` ("hit the ground too hard").
+- **Changed:**
+  - `third_party/minecraftoss/entities/src/world/riding.rs`: `EntityWorld::take_rider_falls() -> Vec<(player, distance, multiplier)>`, next to `take_player_dismounts`: it drains every horse's `pending_fall` and gives one entry per player passenger. Mob riders are skipped.
+  - `crates/minecraft_terrain/src/server.rs`: `Output.rider_falls` beside `dismounts`, filled in `run_tick` right after the vehicle losses, so a frozen tick's ridden horses count too.
+  - `crates/minecraft_survival/src/entities.rs`: `route` hands each fall to its player's `PlayerOutputs.rider_falls`.
+  - `crates/minecraft_survival/src/survival.rs`: `Survival::rider_fall(distance, multiplier) -> i32` with `fall_damage(distance, multiplier)`. `fall` and `rider_fall` share `hurt_by_fall`: the fall damage gamerule, invulnerability (creative and spectator), damage-type immunity and Feather Falling, then `DamageCause::Fall` recorded with the given fall distance (0 for a rider).
+  - `crates/render_anim/src/minecraft_players.rs` `struck()`: each rider fall of a living player is applied and, when it hurts, plays `fall_sound(damage)` and `entity.player.hurt`, as a landing on foot does. `struck()` runs for the host and every friend, on the host.
+- **Tests:**
+  - `minecraftoss-entities` `world::equines::tests`: `a_ridden_horse_falling_ten_blocks_takes_two_and_hands_its_rider_the_fall` now takes the fall with `take_rider_falls` (`(0, 10.0, 1.0)` for 10 blocks, `(0, 10.0, 1.0)` for 20 onto a bed, once only, and the pending fall is gone after); a horse with no rider hands nothing on. The 4- and 7-block, hay, slime and full-jump tests check that no rider fall comes out; 20 blocks onto hay hand the rider multiplier 0.2; the llama hands its fall on too. All 410 tests pass.
+  - `minecraft_survival` `survival::tests::a_rider_takes_the_horse_s_fall_and_hits_the_ground_too_hard`: 10 blocks take 7; 20 onto hay take 3; a fatal one reads "hit the ground too hard"; 3 blocks, 7.9 onto hay and slime take 0; creative and the gamerule off take 0; Feather Falling IV softens 7 as on foot.
+  - `minecraft_survival` `entities::tests::rider_falls_reach_the_host_and_the_friend`: each fall reaches only its own player's outputs.
+  - `minecraft_survival` (766), `minecraft_terrain` (1409) and `render_anim` (213) pass.
+- **Decisions:**
+  - The test the brief named `a_rider_takes_the_horse_s_fall_from_three_blocks_up_and_hits_the_ground_too_hard` is `a_rider_takes_the_horse_s_fall_and_hits_the_ground_too_hard`: nothing in it is about three blocks up.
+  - The rider hears no block fall sound: vanilla's `playBlockFallSound` looks 0.2 below the rider's own feet, which on a horse is the air above the horse's feet.
+  - A wind charge's impulse does not shorten a rider's share (vanilla would clip it at the rider's impulse height); a seated rider almost never has one.
+  - No `FALL_ONE_CM` statistic, as for falls on foot (the fork keeps no statistics).
+  - Mob riders take no share yet (the brief's "Left out": no generic "hurt mob by id" before D0's registry).
+- **Owner's test steps** (survival, a new world, by day on flat ground, the kit below; full health and no golden apple's extra hearts before each drop; the mount's own hearts on the HUD come with group `vehicle-hearts`):
+  1. **Ten blocks.** Run `/fill ~3 ~ ~-3 ~9 ~9 ~3 stone` (a stone block 10 high), then `/tp @s ~6 ~10 ~` and `/summon minecraft:horse ~ ~ ~2 {Tame:1b}`. Saddle it, ride it and ride straight off the edge. On landing you hear the horse's heavy thud and your own big fall sound and hurt, and you lose 3.5 hearts (7 damage). The horse flashes red. **Screenshot 1**, the hearts just after landing.
+  2. **Seven blocks.** At a fresh spot run `/fill ~3 ~ ~-3 ~9 ~6 ~3 stone` (7 high), `/tp @s ~6 ~7 ~`, summon and saddle a new tame horse and ride off the edge: the thud plays, but you lose no hearts. **Screenshot 2.**
+  3. **Hay.** Go back to the foot of the 10-high block where you landed in step 1 and run `/fill ~-1 ~-1 ~-1 ~1 ~-1 ~1 hay_block`. Go back up as in step 1 and ride off at the same place onto the hay: no hearts lost.
+  4. **Jumps.** On flat grass, jump with a full jump bar ten times: you never lose a heart.
+  5. **Creative.** Run `/gamemode creative`, go back up the 10-high block on a horse and ride off: no damage. Run `/gamemode survival`.
+  6. **Two windows** (host H, friend F, `scripts\mp-local.ps1` or over the relay, both with the kit): F builds a 10-high block as in step 1, summons a tame horse, saddles it and rides off while H watches from the ground. F loses 3.5 hearts and hears the fall; H hears F's horse thud. **Screenshot 3**, both windows.
+- **Kit** (the whole `horse-fall` group; 5 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:hay_block*16,minecraft:cooked_beef*16
+```

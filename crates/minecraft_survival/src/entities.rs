@@ -178,6 +178,7 @@ pub struct PlayerOutputs {
     pub pearl_landings: Vec<DVec3>,
     pub potions: Vec<minecraft_terrain::potions::PlayerPotionHit>,
     pub pushes: Vec<DVec3>,
+    pub rider_falls: Vec<(f64, f32)>,
     pub item_uses_done: Vec<SentItemUse>,
     pub raid_omens: Vec<(i32, (i32, i32, i32))>,
     pub raid_heroes: Vec<i32>,
@@ -360,6 +361,11 @@ impl PlayerQueues {
         for &(player, vehicle, spot) in &output.dismounts {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.dismounts.push((vehicle, spot.map(DVec3::from_array)));
+            }
+        }
+        for (player, distance, multiplier) in std::mem::take(&mut output.rider_falls) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.rider_falls.push((distance, multiplier));
             }
         }
         for &(player, vehicle) in &output.mounts {
@@ -2833,6 +2839,17 @@ mod tests {
         assert!(host.mob_slots.is_empty() && host.mounts.is_empty() && host.lecterns.is_empty());
         assert_eq!(host.dismounts, [(39, None)]);
         assert!(host.boosts_done.is_empty() && host.boost_waiting.is_none(), "a refused boost is let go");
+    }
+
+    #[test]
+    fn rider_falls_reach_the_host_and_the_friend() {
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output { rider_falls: vec![(FRIEND, 10.0, 1.0), (HOST, 20.0, 0.2), (99, 8.0, 1.0)], ..Default::default() };
+        let _ = queues.route(&mut output, 2, |_| None);
+        assert!(output.rider_falls.is_empty());
+        assert_eq!(queues.queue(FRIEND).out.rider_falls, [(10.0, 1.0)]);
+        assert_eq!(queues.queue(HOST).out.rider_falls, [(20.0, 0.2)]);
+        assert!(!queues.0.contains_key(&99), "a player who is not here gets nothing");
     }
 
     #[test]

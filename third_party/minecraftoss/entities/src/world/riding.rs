@@ -645,6 +645,27 @@ impl EntityWorld {
         std::mem::take(&mut self.player_dismounts)
     }
 
+    pub fn take_rider_falls(&mut self) -> Vec<(u64, f64, f32)> {
+        let falls: Vec<(u64, (f64, f32))> = self
+            .cows
+            .iter_mut()
+            .filter_map(|e| Some((e.id, e.horse.as_mut()?.pending_fall.take()?)))
+            .collect();
+        let world = &*self;
+        falls
+            .into_iter()
+            .flat_map(|(vehicle, (distance, multiplier))| {
+                world
+                    .passengers_of(vehicle)
+                    .iter()
+                    .filter_map(move |rider| match rider {
+                        Rider::Player(player) => Some((*player, distance, multiplier)),
+                        Rider::Mob(_) => None,
+                    })
+            })
+            .collect()
+    }
+
     pub fn eject_passengers(&mut self, vehicle: u64, world: &impl World) {
         for rider in self.passengers_of(vehicle).to_vec() {
             let spot = self.stop_riding(rider, 0.0, world);
