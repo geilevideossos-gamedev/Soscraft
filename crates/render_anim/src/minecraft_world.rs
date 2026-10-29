@@ -315,6 +315,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         day,
         end_clock: opened.end_clock,
         weather: opened.weather,
+        maps: std::sync::Mutex::new(opened.maps),
         weather_random: minecraft_survival::server::weather_random(seed),
         forced_weather: std::env::var("IW4L_MINECRAFT_WEATHER").ok(),
         chat,
@@ -1552,6 +1553,7 @@ fn update(
     let mut cracks = minecraft_survival::level::shot_cracks(shots);
     cracks.extend(hand.dig.crack());
     cracks.extend(friends.iter().filter(|friend| friend.dimension == *dimension).filter_map(|friend| friend.hand.dig.crack()));
+    cracks.extend(entities.iter().flat_map(|entities| entities.view.world.door_cracks()).map(|(_, pos, stage)| (pos, stage)));
     view.cracks = mining.crack_mesh(&terrain.scene, &terrain.stream.states, &world.packs, &cracks);
     let lava = (alive && sim::voxel::eye_in_lava(ps.origin, ps.view_height_current)).then(|| {
         let fire_resistant = survival.status.effect(minecraftoss_player::survival::EffectKind::FireResistance).is_some();
@@ -2460,7 +2462,7 @@ fn leave_level(
             let outcome = minecraft_survival::level::opener_outcome(&level.terrain.scene, &event);
             let (cell, id, count) = outcome.block_event;
             entities.view.lids.block_event(&level.terrain.scene, cell, id, count);
-            if let Some((pos, viewers)) = outcome.trapped {
+            if let Some((pos, viewers)) = outcome.chest_openers {
                 entities.chest_openers(pos, viewers);
             }
             writes.extend(outcome.state.map(|(cell, state)| (cell, Some(state))));

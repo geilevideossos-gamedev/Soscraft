@@ -144,6 +144,7 @@ pub struct Level<'a> {
     dispensing_slot: Option<usize>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
+    pub dispensed_rockets: Vec<dispenser::DispensedRocket>,
     pub sounds: Vec<burning::LevelSound>,
     /// Time, weather and sky light, once `set_dimension` has run.
     pub sky: Option<time::Sky>,
@@ -266,6 +267,7 @@ impl<'a> Level<'a> {
             hopper_ticked: HashMap::new(),
             dispensing_slot: None,
             unsupported: Vec::new(),
+            dispensed_rockets: Vec::new(),
             sounds: Vec::new(),
             sky: None,
             entities: Vec::new(),

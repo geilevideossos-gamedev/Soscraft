@@ -14,6 +14,7 @@ pub mod cow;
 pub mod cow_ai;
 pub mod creeper;
 pub mod crops;
+pub mod door_goals;
 pub mod drowned_ai;
 pub mod monster_ai;
 /// The creeper's AI lives with the other monsters'.

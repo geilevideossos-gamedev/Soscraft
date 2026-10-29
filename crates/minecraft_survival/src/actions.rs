@@ -24,6 +24,7 @@ const RESPAWN_BLOCK_REACH: f64 = 5.0;
 const BLOCK_RANGE_BUFFER: f64 = 1.0;
 const ENTITY_RANGE_BUFFER: f64 = 3.0;
 const HIT_SLACK: f64 = 1.0000001;
+const SHEARS: &str = "minecraft:shears";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Hands {
@@ -396,10 +397,19 @@ pub fn act(
                     .map(|hit| hit.distance),
                 creative: !game_mode.consumes_items(),
             };
-            let pvp = entities.punch_player(
-                player_id, inventory, *selected, eye_block, look, mc_yaw, damage, strength, &blow,
-            );
-            if let Some(hurt) = pvp {
+            let knot = entities.punch_knot(player_id, eye_block, look, blow.reach, blow.block);
+            let pvp = if knot {
+                None
+            } else {
+                entities.punch_player(
+                    player_id, inventory, *selected, eye_block, look, mc_yaw, damage, strength,
+                    &blow,
+                )
+            };
+            if knot {
+                punched = true;
+                hand.attack_ticks = 0;
+            } else if let Some(hurt) = pvp {
                 punched = true;
                 hand.attack_ticks = 0;
                 if hurt {
@@ -781,7 +791,27 @@ pub fn act(
                         .is_some()
                 })
             });
+            let sheared = use_pressed
+                && held.as_ref().is_some_and(|stack| stack.id == SHEARS)
+                && entities
+                    .knot_target(
+                        player_id,
+                        eye_block,
+                        look,
+                        game_mode.entity_reach(),
+                        block_distance,
+                    )
+                    .is_some_and(|pos| entities.shear_knot(player_id, pos));
+            if sheared
+                && game_mode.consumes_items()
+                && minecraft_terrain::durability::wear(inventory, slot, 1, || {
+                    entities.random_float()
+                })
+            {
+                entities.broken_items.push(SHEARS.to_owned());
+            }
             let leashed_fence = main
+                && !sheared
                 && player
                     .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
                     .map(|hit| hit.pos)
@@ -792,6 +822,7 @@ pub fn act(
                     .filter(|&pos| entities.has_knot(pos) || !(player.crouching && has_item))
                     .is_some_and(|pos| entities.leash_fence(player_id, pos, player.crouching));
             let bell = main
+                && !sheared
                 && !leashed_fence
                 && !(player.crouching && has_item)
                 && player
@@ -805,6 +836,7 @@ pub fn act(
                     .map(|hit| entities.ring_bell(hit.pos, minecraft_terrain::bells::face_name(hit.face)))
                     .is_some();
             let used = if main
+                && !sheared
                 && !leashed_fence
                 && !bell
                 && table.is_none()
@@ -827,7 +859,10 @@ pub fn act(
             } else {
                 None
             };
-            if let Some(pos) = table {
+            if sheared {
+                hand.swing = Some(0.0);
+                HandUse::Consumed
+            } else if let Some(pos) = table {
                 if use_pressed {
                     open_table = Some(pos);
                     hand.swing = Some(0.0);
@@ -852,8 +887,11 @@ pub fn act(
                             })
                     };
                     let blocked = match opened.station {
-                        minecraft_terrain::containers::Station::Chest
-                        | minecraft_terrain::containers::Station::Ender => {
+                        minecraft_terrain::containers::Station::Chest => opened
+                            .cells
+                            .iter()
+                            .any(|&pos| conductor(pos) || entities.cat_on_chest(pos)),
+                        minecraft_terrain::containers::Station::Ender => {
                             opened.cells.iter().any(|&pos| conductor(pos))
                         }
                         minecraft_terrain::containers::Station::Shulker => {
@@ -1155,6 +1193,14 @@ pub fn act(
                     })
                     .or_else(|| minecraft_terrain::item_frame::frame_use(&player, &outlined, stack))
                     .or_else(|| {
+                        minecraft_terrain::firework::rocket_place(
+                            &player,
+                            &outlined,
+                            stack,
+                            actor.gliding,
+                        )
+                    })
+                    .or_else(|| {
                         minecraft_terrain::firework::rocket_use(stack, actor.gliding, || {
                             entities.random_float()
                         })
@@ -1208,6 +1254,9 @@ pub fn act(
                                 &mut effects,
                             );
                         }
+                    }
+                    minecraft_terrain::bucket::Change::LaunchRocket(launch) => {
+                        entities.launch_rocket(player_id, launch, sent)
                     }
                     minecraft_terrain::bucket::Change::Breath => entities.bottle_breath(
                         player_id,
@@ -2278,6 +2327,122 @@ pub(crate) mod tests {
         }
     }
 
+    fn tick_until(
+        entities: &mut Entities,
+        player: u64,
+        mut done: impl FnMut(&mut Entities) -> bool,
+    ) {
+        let mut inventory = Inventory::default();
+        let started = std::time::Instant::now();
+        while !done(entities) {
+            assert!(
+                started.elapsed().as_secs() < 300,
+                "no answer from the level"
+            );
+            let batch = crate::tick_rate::TickBatch {
+                normal: if entities.ready_for_ticks() {
+                    vec![true]
+                } else {
+                    Vec::new()
+                },
+                overload: None,
+            };
+            let view = PlayerView {
+                feet: FEET,
+                alive: true,
+                attackable: true,
+                spectator: false,
+                picks_up: false,
+                health: 20.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                main_hand: None,
+                offhand: None,
+                sneaking: false,
+                hero: None,
+                sleeping: None,
+                sleep_timer: 0,
+                forward: 0.0,
+                strafe: 0.0,
+                jumping: false,
+                swirl: None,
+                omens: Default::default(),
+            };
+            let mut actors = [TickActor {
+                id: player,
+                view,
+                inventory: &mut inventory,
+                selected: 0,
+            }];
+            let _ = entities.tick(
+                &mut actors,
+                0.05,
+                &batch,
+                crate::tick_rate::ClientTiming::default(),
+                minecraft_terrain::server::ClockTicks::default(),
+                true,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_rocket_clicked_on_the_ground_leaves_the_stack_and_rises_from_the_click() {
+        use minecraft_terrain::firework_rocket::{LIFT, RISE, is_rocket};
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding(minecraft_terrain::firework::FIREWORK_ROCKET, 64);
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, [4.5, 201.0, 6.5]));
+        act(
+            &mut player,
+            &mut level,
+            &globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        let id = u64::from(player.id.0);
+        let entities = level.entities.as_mut().expect("entities");
+        assert!(entities.awaits_item_use(id), "the level launches it");
+        assert_eq!(count(&player), Some(64));
+        tick_until(entities, id, |entities| {
+            entities
+                .player_outputs(id)
+                .is_some_and(|outputs| !outputs.item_uses_done.is_empty())
+        });
+        let done = entities.take_player_outputs(id).item_uses_done;
+        assert_eq!(done.len(), 1);
+        for used in done {
+            let heard = crate::level::finish_item_use(entities, &mut player.inventory, used, true);
+            assert!(heard.is_empty(), "the rocket sounds its own launch");
+        }
+        assert_eq!(count(&player), Some(63));
+        tick_until(entities, id, |entities| {
+            entities.view.thrown.iter().any(is_rocket)
+        });
+        let rocket = entities
+            .view
+            .thrown
+            .iter()
+            .find(|view| is_rocket(view))
+            .expect("a rocket flies")
+            .clone();
+        let ticks = f64::from(rocket.age);
+        let risen = RISE * ticks + LIFT * ticks * (ticks + 1.0) / 2.0;
+        assert!(
+            (rocket.position.y - (201.15 + risen)).abs() < 1e-6,
+            "it starts 0.15 above the click: {rocket:?}"
+        );
+        assert!(
+            (rocket.position.x - 4.5).hypot(rocket.position.z - 6.5) < 0.25,
+            "{rocket:?}"
+        );
+    }
+
     #[test]
     fn held_food_is_eaten_while_use_is_held() {
         let Some((mut level, globals)) = level_and_globals() else {
@@ -2381,6 +2546,255 @@ pub(crate) mod tests {
         step(&mut player, &actor(0.0, -60.0), attack);
         assert_eq!(player.hand.swing, Some(0.0));
         assert!(player.hand.swing_predicted, "the friend swung on its own press");
+    }
+
+    const KNOT_FENCE: BlockPos = (6, 201, 4);
+
+    fn knotted_fence(level: &mut Level) -> Vec<u64> {
+        let fence = ["north", "east", "south", "west", "waterlogged"]
+            .into_iter()
+            .fold(Block::new("minecraft:oak_fence"), |fence, side| {
+                fence.with(side, "false")
+            });
+        level.terrain.scene.set(KNOT_FENCE, Some(fence));
+        let entities = level.entities.as_mut().expect("entities");
+        entities.placed(&level.terrain.scene, KNOT_FENCE);
+        let world = &mut entities.view.world;
+        [7.5, 8.5]
+            .into_iter()
+            .map(|z| {
+                let cow = minecraftoss_entities::cow::Cow::new(DVec3::new(4.5, 201.0, z));
+                let cow = world.spawn_cow(cow, true);
+                world.set_leash(cow, minecraftoss_entities::world::LeashHolder::Knot(KNOT_FENCE));
+                cow
+            })
+            .collect()
+    }
+
+    fn left_click_at(level: &mut Level, globals: &Globals, at: [f64; 3]) -> (Player, Acted) {
+        let mut player = holding("minecraft:iron_sword", 1);
+        player.hand.attack_ticks = 20;
+        let looking = actor(-90.0, pitch_to(actor(0.0, 0.0).eye, at));
+        let attack = Hands {
+            attack_pressed: true,
+            attack_held: true,
+            ..Hands::default()
+        };
+        let acted = act(
+            &mut player,
+            level,
+            globals,
+            &mut Flat,
+            &looking,
+            attack,
+            &moved(),
+            None,
+            0.0,
+        );
+        (player, acted)
+    }
+
+    #[test]
+    fn a_left_click_at_a_knot_breaks_the_knot_and_not_the_fence() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        knotted_fence(&mut level);
+        let (player, acted) = left_click_at(&mut level, &globals, [6.3125, 201.6, 4.5]);
+        assert_eq!(player.hand.swing, Some(0.0));
+        assert_eq!(player.hand.attack_ticks, 0, "the attack strength resets");
+        assert!(player.hand.dig.destroying.is_none(), "the fence is not dug");
+        assert!(!player.hand.dig.pressed);
+        assert!(
+            !acted
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Dig { .. })),
+            "{:?}",
+            acted.effects
+        );
+        assert!(acted.hand_mined.is_empty() && acted.creative_broken.is_empty());
+        assert_eq!(player.survival.status.food.exhaustion, 0.0, "no hunger");
+    }
+
+    #[test]
+    fn a_left_click_at_the_post_below_the_knot_still_digs_the_fence() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        knotted_fence(&mut level);
+        let (player, _) = left_click_at(&mut level, &globals, [6.375, 201.2, 4.5]);
+        assert_eq!(
+            player.hand.dig.destroying.as_ref().map(|(pos, ..)| *pos),
+            Some(KNOT_FENCE)
+        );
+        let entities = level.entities.as_ref().expect("entities");
+        assert!(entities.has_knot(KNOT_FENCE), "the knot stays");
+    }
+
+    #[test]
+    fn shears_on_a_knot_cut_the_leads_and_wear_one_point() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        knotted_fence(&mut level);
+        let mut player = holding(SHEARS, 1);
+        if let Some(shears) = player.inventory.slots[0].as_mut() {
+            shears.components = Some(serde_json::json!({ "minecraft:max_damage": 238 }));
+        }
+        let damage = |player: &Player| {
+            player.inventory.slots[0]
+                .as_ref()
+                .and_then(|stack| stack.components.as_ref())
+                .and_then(|components| components.get("minecraft:damage"))
+                .and_then(serde_json::Value::as_u64)
+        };
+        let looking = actor(-90.0, pitch_to(actor(0.0, 0.0).eye, [6.3125, 201.6, 4.5]));
+        let right_click = |player: &mut Player, level: &mut Level| {
+            act(
+                player,
+                level,
+                &globals,
+                &mut Flat,
+                &looking,
+                press(),
+                &moved(),
+                None,
+                0.0,
+            )
+        };
+        right_click(&mut player, &mut level);
+        assert_eq!(damage(&player), Some(1), "one point of 238");
+        assert_eq!(player.hand.swing, Some(0.0));
+        let entities = level.entities.as_mut().expect("entities");
+        assert!(entities.broken_items.is_empty());
+        entities.view.world.break_knot(KNOT_FENCE);
+        player.hand.swing = None;
+        right_click(&mut player, &mut level);
+        assert_eq!(damage(&player), Some(1), "nothing is tied, nothing is cut");
+        knotted_fence(&mut level);
+        player.mode = PlayerMode::new(GameMode::Creative);
+        player.hand.swing = None;
+        right_click(&mut player, &mut level);
+        assert_eq!(damage(&player), Some(1), "creative shears do not wear");
+        assert_eq!(player.hand.swing, Some(0.0));
+    }
+
+    const CAT_CHEST: BlockPos = (6, 201, 4);
+
+    fn chest_half(id: &str, kind: &str) -> Block {
+        Block::new(id)
+            .with("facing", "west")
+            .with("type", kind)
+            .with("waterlogged", "false")
+    }
+
+    fn set_block(level: &mut Level, pos: BlockPos, block: Block) {
+        level.terrain.scene.set(pos, Some(block));
+        let entities = level.entities.as_mut().expect("entities");
+        entities.placed(&level.terrain.scene, pos);
+    }
+
+    fn sitting_cat_on(level: &mut Level, pos: BlockPos) -> u64 {
+        use minecraftoss_entities::feline::{Feline, FelineKind};
+        let top = DVec3::new(
+            f64::from(pos.0) + 0.5,
+            f64::from(pos.1) + 0.875,
+            f64::from(pos.2) + 0.5,
+        );
+        let mut cat = Feline::new(FelineKind::Cat, top);
+        cat.sitting = true;
+        let entities = level.entities.as_mut().expect("entities");
+        entities.view.world.spawn_feline(cat, true)
+    }
+
+    fn right_click_chest(level: &mut Level, globals: &Globals) -> (Player, Acted) {
+        let mut player = holding("minecraft:cobblestone", 32);
+        let looking = actor(-90.0, pitch_to(actor(0.0, 0.0).eye, [6.0625, 201.5, 4.5]));
+        let acted = act(
+            &mut player,
+            level,
+            globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        (player, acted)
+    }
+
+    #[test]
+    fn a_chest_with_a_sitting_cat_on_it_stays_shut_but_the_arm_swings() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        for id in [
+            "minecraft:chest",
+            "minecraft:trapped_chest",
+            "minecraft:copper_chest",
+        ] {
+            set_block(&mut level, CAT_CHEST, chest_half(id, "single"));
+            let cat = sitting_cat_on(&mut level, CAT_CHEST);
+            let (player, acted) = right_click_chest(&mut level, &globals);
+            assert!(acted.open_block.is_none(), "{id} stays shut");
+            assert_eq!(player.hand.swing, Some(0.0), "the arm swings at {id}");
+            assert_eq!(count(&player), Some(32), "nothing is built against {id}");
+            let entities = level.entities.as_mut().expect("entities");
+            let feline = &mut entities.view.world.feline_mut(cat).unwrap().feline;
+            feline.sitting = false;
+            let (_, acted) = right_click_chest(&mut level, &globals);
+            assert_eq!(
+                acted.open_block.map(|opened| opened.cells),
+                Some(vec![CAT_CHEST]),
+                "{id} opens once the cat stands"
+            );
+        }
+    }
+
+    #[test]
+    fn either_half_of_a_double_chest_with_a_cat_on_it_keeps_both_shut() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let other = (6, 201, 5);
+        set_block(&mut level, CAT_CHEST, chest_half("minecraft:chest", "right"));
+        set_block(&mut level, other, chest_half("minecraft:chest", "left"));
+        let cat = sitting_cat_on(&mut level, other);
+        let (player, acted) = right_click_chest(&mut level, &globals);
+        assert!(acted.open_block.is_none(), "a cat on the other half");
+        assert_eq!(player.hand.swing, Some(0.0));
+        let entities = level.entities.as_mut().expect("entities");
+        let feline = &mut entities.view.world.feline_mut(cat).unwrap().feline;
+        feline.body.position = DVec3::new(6.5, 201.875, 4.5);
+        let (_, acted) = right_click_chest(&mut level, &globals);
+        assert!(acted.open_block.is_none(), "a cat on the clicked half");
+        let entities = level.entities.as_mut().expect("entities");
+        entities.view.world.feline_mut(cat).unwrap().feline.sitting = false;
+        let (_, acted) = right_click_chest(&mut level, &globals);
+        assert_eq!(
+            acted.open_block.map(|opened| opened.cells),
+            Some(vec![CAT_CHEST, other])
+        );
+    }
+
+    #[test]
+    fn an_ender_chest_ignores_cats() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let ender = Block::new("minecraft:ender_chest")
+            .with("facing", "west")
+            .with("waterlogged", "false");
+        set_block(&mut level, CAT_CHEST, ender);
+        sitting_cat_on(&mut level, CAT_CHEST);
+        let (player, acted) = right_click_chest(&mut level, &globals);
+        assert_eq!(
+            acted.open_block.map(|opened| opened.station),
+            Some(minecraft_terrain::containers::Station::Ender)
+        );
+        assert_eq!(player.hand.swing, Some(0.0));
     }
 
     #[test]

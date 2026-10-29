@@ -18,12 +18,23 @@ const OTHER_BEHAVIOURS: &[&str] = &[
     "acacia_boat", "acacia_chest_boat", "armor_stand", "arrow", "axolotl_bucket", "bamboo_chest_raft", "bamboo_raft", "birch_boat",
     "birch_chest_boat", "blue_egg", "brown_egg", "brush", "carved_pumpkin", "cherry_boat", "cherry_chest_boat", "chest",
     "chest_minecart", "cod_bucket", "command_block_minecart", "dark_oak_boat", "dark_oak_chest_boat", "egg", "experience_bottle",
-    "firework_rocket", "fire_charge", "flint_and_steel", "furnace_minecart", "glass_bottle", "glowstone", "hopper_minecart", "jungle_boat",
+    "fire_charge", "flint_and_steel", "furnace_minecart", "glass_bottle", "glowstone", "hopper_minecart", "jungle_boat",
     "jungle_chest_boat", "lingering_potion", "mangrove_boat", "mangrove_chest_boat", "minecart", "oak_boat", "oak_chest_boat",
     "pale_oak_boat", "pale_oak_chest_boat", "poplar_boat", "poplar_chest_boat", "potion", "powder_snow_bucket", "pufferfish_bucket",
     "salmon_bucket", "shears", "snowball", "spectral_arrow", "splash_potion", "spruce_boat", "spruce_chest_boat", "sulfur_cube_bucket",
     "tadpole_bucket", "tipped_arrow", "tnt", "tnt_minecart", "tropical_fish_bucket", "wind_charge", "wither_skeleton_skull",
 ];
+
+pub const ROCKET_SHOOT_SOUND: &str = "minecraft:entity.firework_rocket.shoot";
+pub const ROCKET_SHOOT_PITCH: f32 = 1.2;
+const ROCKET_OFFSET: f64 = 0.5000099999997474;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DispensedRocket {
+    pub at: [f64; 3],
+    pub facing: Direction,
+    pub stack: Stack,
+}
 
 impl Level<'_> {
     fn dispenser_facing(&self, pos: BlockPos) -> Direction {
@@ -93,6 +104,7 @@ impl Level<'_> {
             "water_bucket" | "lava_bucket" => self.dispense_filled_bucket(pos, stack),
             "bucket" => self.dispense_empty_bucket(pos, stack),
             "honeycomb" => self.dispense_honeycomb(pos, stack),
+            "firework_rocket" => self.dispense_rocket(pos, stack),
             "bone_meal" => {
                 // `OptionalDispenseItemBehavior` for bone meal: nothing is
                 // thrown when it fails.
@@ -317,5 +329,18 @@ impl Level<'_> {
             }
             None => self.default_dispense(pos, stack),
         }
+    }
+
+    fn dispense_rocket(&mut self, pos: BlockPos, mut stack: Stack) -> Stack {
+        let facing = self.dispenser_facing(pos);
+        let (dx, dy, dz) = facing.offset();
+        let centre = [pos.x as f64 + 0.5, pos.y as f64 + 0.5, pos.z as f64 + 0.5];
+        let at = [centre[0] + dx as f64 * ROCKET_OFFSET, centre[1] + dy as f64 * ROCKET_OFFSET, centre[2] + dz as f64 * ROCKET_OFFSET];
+        let mut one = stack.clone();
+        one.count = 1;
+        stack.count -= 1;
+        self.dispensed_rockets.push(DispensedRocket { at, facing, stack: one });
+        self.sounds.push(super::burning::LevelSound { event: ROCKET_SHOOT_SOUND, pos: centre, volume: 1.0, pitch: ROCKET_SHOOT_PITCH });
+        stack
     }
 }

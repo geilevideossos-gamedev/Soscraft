@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use minecraftoss_core::ChunkPos;
+use minecraftoss_core::{BlockPos, ChunkPos};
 use minecraftoss_core::datapack::DataPack;
 use minecraftoss_core::ident::Identifier;
 use minecraftoss_generator::structure::StructureId;
@@ -22,6 +22,8 @@ pub enum Search {
 }
 
 struct TimedOut;
+
+pub type Claim<'a> = Option<&'a mut dyn FnMut(&str, ChunkPos) -> bool>;
 
 fn check(deadline: Instant) -> Result<(), TimedOut> {
     if Instant::now() > deadline {
@@ -116,11 +118,18 @@ fn generating_at(
     members: &[StructureId],
     placement: &Placement,
     chunk: ChunkPos,
+    claim: &mut Claim,
 ) -> Option<([i32; 3], StructureId)> {
     let starts = gen.structures.starts_in(&gen.library, &gen.terrain, chunk);
+    let defs = &gen.structures.defs;
     members
         .iter()
-        .find(|member| starts.iter().any(|start| start.structure == **member))
+        .find(|member| {
+            starts.iter().any(|start| start.structure == **member)
+                && claim
+                    .as_mut()
+                    .is_none_or(|claim| claim(&defs[usize::from(member.0)].name, chunk))
+        })
         .map(|member| (locate_pos(placement, chunk), *member))
 }
 
@@ -148,12 +157,65 @@ pub fn nearest_structure(
     radius: i32,
     deadline: Instant,
 ) -> Search {
-    match search_structures(gen, targets, origin, radius, deadline) {
+    nearest_unclaimed_structure(gen, targets, origin, radius, deadline, None)
+}
+
+pub fn nearest_unclaimed_structure(
+    gen: &WorldGen,
+    targets: &[String],
+    origin: [i32; 3],
+    radius: i32,
+    deadline: Instant,
+    mut claim: Claim,
+) -> Search {
+    match search_structures(gen, targets, origin, radius, deadline, &mut claim) {
         Ok(Some((pos, id))) => {
             Search::Found(pos, gen.structures.defs[usize::from(id.0)].name.clone())
         }
         Ok(None) => Search::NotFound,
         Err(TimedOut) => Search::TimedOut,
+    }
+}
+
+pub fn claim_structure_at(
+    gen: &WorldGen,
+    targets: &[String],
+    pos: [i32; 3],
+    claim: &mut dyn FnMut(&str, ChunkPos) -> bool,
+) {
+    let structures = &gen.structures;
+    if !structures.enabled {
+        return;
+    }
+    let at = BlockPos::new(pos[0], pos[1], pos[2]);
+    let (chunk_x, chunk_z) = (pos[0] >> 4, pos[2] >> 4);
+    for id in targets.iter().filter_map(|name| structures.id(name)) {
+        for (index, set) in structures.sets().iter().enumerate() {
+            if !set.structures.iter().any(|(member, _)| *member == id) {
+                continue;
+            }
+            let placement = structures.placement(index);
+            let Kind::RandomSpread { spacing, .. } = placement.kind else {
+                continue;
+            };
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    let x = chunk_x.wrapping_add(spacing.wrapping_mul(dx));
+                    let z = chunk_z.wrapping_add(spacing.wrapping_mul(dz));
+                    let Some(chunk) = placement.potential_chunk(gen.terrain.seed, x, z) else {
+                        continue;
+                    };
+                    let starts = structures.starts_in(&gen.library, &gen.terrain, chunk);
+                    if let Some(start) = starts
+                        .iter()
+                        .find(|start| start.structure == id && start.bounding_box().is_inside(at))
+                    {
+                        claim(&structures.defs[usize::from(id.0)].name, start.chunk);
+                        return;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -163,6 +225,7 @@ fn search_structures(
     origin: [i32; 3],
     radius: i32,
     deadline: Instant,
+    claim: &mut Claim,
 ) -> Result<Option<([i32; 3], StructureId)>, TimedOut> {
     let structures = &gen.structures;
     if !structures.enabled {
@@ -189,7 +252,7 @@ fn search_structures(
         let placement = structures.placement(*index);
         match placement.kind {
             Kind::ConcentricRings { .. } => {
-                let found = nearest_ring(gen, members, placement, origin, deadline)?;
+                let found = nearest_ring(gen, members, placement, origin, deadline, claim)?;
                 if let Some((pos, id)) = found {
                     let distance = distance_squared(origin, pos);
                     if distance < best_distance {
@@ -217,6 +280,7 @@ fn search_structures(
                 ring,
                 *spacing,
                 deadline,
+                claim,
             )?;
             if let Some((pos, id)) = found {
                 found_any = true;
@@ -240,6 +304,7 @@ fn nearest_ring(
     placement: &Placement,
     origin: [i32; 3],
     deadline: Instant,
+    claim: &mut Claim,
 ) -> Result<Option<([i32; 3], StructureId)>, TimedOut> {
     let mut best = None;
     let mut best_distance = f64::MAX;
@@ -250,7 +315,7 @@ fn nearest_ring(
         if best.is_some() && distance >= best_distance {
             continue;
         }
-        if let Some(found) = generating_at(gen, members, placement, chunk) {
+        if let Some(found) = generating_at(gen, members, placement, chunk, claim) {
             best = Some(found);
             best_distance = distance;
         }
@@ -258,6 +323,7 @@ fn nearest_ring(
     Ok(best)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn nearest_in_ring(
     gen: &WorldGen,
     members: &[StructureId],
@@ -266,6 +332,7 @@ fn nearest_in_ring(
     ring: i32,
     spacing: i32,
     deadline: Instant,
+    claim: &mut Claim,
 ) -> Result<Option<([i32; 3], StructureId)>, TimedOut> {
     let seed = gen.terrain.seed;
     for dx in -ring..=ring {
@@ -281,7 +348,7 @@ fn nearest_in_ring(
             let Some(chunk) = placement.potential_chunk(seed, x, z) else {
                 continue;
             };
-            if let Some(found) = generating_at(gen, members, placement, chunk) {
+            if let Some(found) = generating_at(gen, members, placement, chunk, claim) {
                 return Ok(Some(found));
             }
         }

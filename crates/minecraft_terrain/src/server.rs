@@ -1137,6 +1137,7 @@ impl ServerSim {
         }
         self.carry_zombie_conversions();
         self.infect_villagers();
+        self.level.level_events.extend(self.mobs.take_level_events().into_iter().map(|(event, (x, y, z), data)| (event, minecraftoss_core::BlockPos::new(x, y, z), data)));
         self.cure_zombie_villagers(players);
         self.throw_mob_tridents();
         self.throw_mob_snowballs();
@@ -1412,17 +1413,34 @@ impl ServerSim {
     }
 
     pub fn tick_rockets(&mut self, players: &[crate::thrown::PlayerBody]) {
-        use crate::firework_rocket::RocketEvent;
+        use crate::firework_rocket::{RocketEvent, RocketOwner};
         let mut rockets = std::mem::take(&mut self.rockets);
         for rocket in &mut rockets {
             let chunk = ChunkPos::new((rocket.position.x.floor() as i32) >> 4, (rocket.position.z.floor() as i32) >> 4);
             if self.level.chunk(chunk).is_none() {
                 continue;
             }
+            let mut targets = crate::thrown::targets(&self.mobs);
+            targets.extend(self.frames.targets());
+            let owner_player = match rocket.owner {
+                RocketOwner::Player(player) => player,
+                RocketOwner::Mob(_) | RocketOwner::Nobody => crate::thrown::MOB_THROWER,
+            };
+            targets.extend(crate::thrown::player_targets(players, owner_player));
+            let mut owner_box = match rocket.owner {
+                RocketOwner::Player(player) => crate::thrown::owner_box(players, player).map(|bounds| crate::thrown::skip_own_mount(&self.mobs, &mut targets, player, bounds)),
+                RocketOwner::Mob(_) | RocketOwner::Nobody => None,
+            };
+            if let RocketOwner::Mob(id) = rocket.owner {
+                for target in targets.iter_mut().filter(|target| target.id == id) {
+                    target.owner = true;
+                    owner_box = Some((target.min, target.max));
+                }
+            }
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-                rocket.tick(&world)
+                rocket.tick(&world, &targets, owner_box)
             };
             for event in events {
                 match event {
@@ -1455,9 +1473,9 @@ impl ServerSim {
         };
         for (id, damage) in damages {
             match crate::thrown::struck_player(id) {
-                Some(player) => self.rocket_hits.push(minecraftoss_entities::world::PlayerHit { player_id: player, damage, kind: minecraftoss_entities::world::PlayerHitKind::Fireworks { at: rocket.position }, source: rocket.owner }),
+                Some(player) => self.rocket_hits.push(minecraftoss_entities::world::PlayerHit { player_id: player, damage, kind: minecraftoss_entities::world::PlayerHitKind::Fireworks { at: rocket.position, by: rocket.owner.player() }, source: rocket.owner.mob() }),
                 None => {
-                    self.mobs.player_blast(None, id, damage, rocket.position, 0.0);
+                    self.mobs.firework_blast(rocket.owner, id, damage, rocket.position);
                 }
             }
         }
@@ -1472,13 +1490,26 @@ impl ServerSim {
         self.rockets.iter().map(crate::firework_rocket::Rocket::view).collect()
     }
 
+    fn shoot_dispensed_rockets(&mut self) {
+        use crate::firework_rocket::{Rocket, RocketOwner, DISPENSE_POWER, DISPENSE_UNCERTAINTY};
+        for dispensed in std::mem::take(&mut self.level.dispensed_rockets) {
+            let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
+            let mut stack = minecraftoss_player::inventory::ItemStack::new(dispensed.stack.id.as_str(), 1);
+            stack.components = dispensed.stack.components.as_ref().and_then(crate::item_nbt::saved_components).map(|components| crate::item_nbt::tag_json(&components));
+            let (x, y, z) = dispensed.facing.offset();
+            let facing = glam::DVec3::new(f64::from(x), f64::from(y), f64::from(z));
+            self.rockets.push(Rocket::shot(RocketOwner::Nobody, glam::DVec3::from_array(dispensed.at), facing, DISPENSE_POWER, DISPENSE_UNCERTAINTY, crate::firework::fireworks(&stack), &mut random));
+        }
+    }
+
     fn raid_villager_events(&mut self) {
         for pos in self.mobs.take_bell_rings() {
             self.ring_bell(pos, None);
         }
         for launch in self.mobs.take_fireworks() {
             let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
-            self.rockets.push(crate::firework_rocket::Rocket::launch(Some(launch.villager), launch.position, vec![launch.color], launch.flight, &mut random));
+            let fireworks = crate::firework::Fireworks { flight: launch.flight, explosions: vec![crate::firework::Explosion::burst(launch.color)] };
+            self.rockets.push(crate::firework_rocket::Rocket::launch(crate::firework_rocket::RocketOwner::Mob(launch.villager), launch.position, fireworks, &mut random));
         }
         for gift in self.mobs.take_hero_gifts() {
             let Some(stacks) = self.entity_loot.as_mut().and_then(|loot| loot.roll_hero_gift(gift.table)) else { continue };
@@ -1500,6 +1531,15 @@ impl ServerSim {
         let tied = self.mobs.leash_fence(player, pos, sneaking);
         self.drop_leads();
         tied
+    }
+
+    pub fn knot_action(&mut self, pos: BlockPos, action: crate::leash_render::KnotAction) -> bool {
+        let done = match action {
+            crate::leash_render::KnotAction::Punch => self.mobs.break_knot(pos),
+            crate::leash_render::KnotAction::Shear => self.mobs.shear_knot(pos),
+        };
+        self.drop_leads();
+        done
     }
 
     fn throw_barters(&mut self) {
@@ -1974,7 +2014,10 @@ impl ServerSim {
             let mut targets = mob_targets.clone();
             targets.extend(crate::thrown::player_targets(players, trident.owner));
             targets.extend(self.frames.targets());
-            let owner = players.iter().find(|p| p.id == trident.owner).map(crate::trident::TridentOwner::of).or_else(|| {
+            let owner = players.iter().find(|p| p.id == trident.owner).map(|p| {
+                let owner = crate::trident::TridentOwner::of(p);
+                crate::trident::TridentOwner { bounds: crate::thrown::skip_own_mount(&self.mobs, &mut targets, p.id, owner.bounds), ..owner }
+            }).or_else(|| {
                 let thrower = targets.iter_mut().find(|t| Some(t.id) == trident.mob_owner)?;
                 thrower.owner = true;
                 Some(crate::trident::TridentOwner { eye: (thrower.min + thrower.max) / 2.0, alive: true, spectator: false, bounds: (thrower.min, thrower.max) })
@@ -1995,8 +2038,7 @@ impl ServerSim {
                     TridentEvent::Struck { target, velocity } => match crate::thrown::struck_player(target) {
                         Some(player) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: trident.owner, damage: crate::trident::DAMAGE, kind: crate::trident::DAMAGE_TYPE, velocity }),
                         None => {
-                            let seed = self.sound_random.next_long();
-                            crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+                            crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner);
                         }
                     },
                     TridentEvent::Sound { event, at, volume, pitch } => {
@@ -2100,6 +2142,12 @@ impl ServerSim {
         self.eyes.throw(self.worldgen, &mut self.level, owner, throw)
     }
 
+    pub fn launch_rocket(&mut self, owner: u64, launch: crate::firework::RocketLaunch) -> bool {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
+        self.rockets.push(crate::firework_rocket::Rocket::launch(crate::firework_rocket::RocketOwner::Player(owner), launch.at, launch.fireworks, &mut random));
+        true
+    }
+
     pub fn take_eye_answers(&mut self) -> Vec<crate::eye_of_ender::EyeAnswer> {
         self.eyes.take_answers()
     }
@@ -2138,7 +2186,7 @@ impl ServerSim {
         let mut bursts = Vec::new();
         let mut aged = Vec::new();
         {
-            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, .. } = self;
+            let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, mobs, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
             for t in thrown.iter_mut() {
                 let mut targets = mob_targets.clone();
@@ -2151,6 +2199,8 @@ impl ServerSim {
                         target.owner = true;
                         owner_box = Some((target.min, target.max));
                     }
+                } else {
+                    owner_box = owner_box.map(|bounds| crate::thrown::skip_own_mount(mobs, &mut targets, t.owner, bounds));
                 }
                 let landed = t.tick(&world, &targets, owner_box);
                 if t.kind == Throwable::EnderPearl {
@@ -2176,7 +2226,7 @@ impl ServerSim {
                     match t.shooter {
                         Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
                         None if t.owner == crate::thrown::MOB_THROWER => {}
-                        None => struck.push((mob, landed.velocity, t.owner, t.random().next_long())),
+                        None => struck.push((mob, t.kind, landed.velocity, t.owner)),
                     }
                 }
                 if hurts {
@@ -2200,7 +2250,7 @@ impl ServerSim {
                     }
                     Throwable::WindCharge => {
                         let center = if landed.mob.is_some() { t.position() } else { crate::wind::burst_point(landed.at, landed.face) };
-                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, t.random().next_long(), center));
+                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, center));
                     }
                     Throwable::SplashPotion | Throwable::LingeringPotion => {
                         let contents = t.contents();
@@ -2253,18 +2303,18 @@ impl ServerSim {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: crate::thrown::sound_cell(at), volume: 1.0, pitch });
         }
         self.clouds.append(&mut lingering);
-        for (mob, velocity, owner, seed, center) in bursts {
+        for (mob, velocity, owner, center) in bursts {
             match mob.map(|id| (id, crate::thrown::struck_player(id))) {
                 Some((_, Some(player))) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: owner, damage: crate::wind::DAMAGE, kind: crate::wind::DAMAGE_TYPE, velocity }),
                 Some((id, None)) if owner != crate::thrown::MOB_THROWER => {
-                    crate::thrown::hurt_by(&mut self.mobs, id, crate::wind::DAMAGE, crate::wind::DAMAGE_TYPE, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+                    crate::thrown::hurt_by(&mut self.mobs, id, crate::wind::DAMAGE, crate::wind::DAMAGE_TYPE, velocity, owner);
                 }
                 _ => {}
             }
             self.wind_burst(center, players, crate::wind::Charge::Player);
         }
-        for (mob, velocity, owner, seed) in struck {
-            crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
+        for (mob, kind, velocity, owner) in struck {
+            crate::thrown::hurt(&mut self.mobs, mob, kind, velocity, owner);
         }
         for (shooter, mob, velocity) in shot_by_mobs {
             self.mobs.snowball_hits_mob(shooter, mob, velocity);
@@ -3190,6 +3240,7 @@ impl ServerSim {
     pub fn tick(&mut self) {
         self.level.tick();
         self.drop_ominous_items();
+        self.shoot_dispensed_rockets();
         self.explode_tnt();
         self.hear_bells();
         self.level.tick_spawners();
@@ -3606,6 +3657,7 @@ pub enum Command {
     Throw(Box<crate::thrown::Thrown>),
     ThrowTrident(Box<crate::trident::ThrownTrident>),
     ThrowEye { owner: u64, throw: Box<crate::ender_eye::EyeThrow> },
+    LaunchRocket { owner: u64, launch: Box<crate::firework::RocketLaunch> },
     BottleBreath { player: u64, feet: glam::DVec3, height: f64 },
     Save,
     SetWeather { weather: &'static str, duration: i32 },
@@ -3628,6 +3680,7 @@ pub enum Command {
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
     VaultKey { player: u64, pos: BlockPos, stack: Box<minecraftoss_player::inventory::ItemStack> },
     LeashFence { player: u64, pos: BlockPos, sneaking: bool },
+    Knot { player: u64, pos: BlockPos, action: crate::leash_render::KnotAction },
     ShieldBlock { attacker: u64, player: u64, feet: [f64; 3] },
 }
 
@@ -4132,6 +4185,10 @@ impl ServerHandle {
         self.send(Command::ThrowEye { owner, throw: Box::new(throw) });
     }
 
+    pub fn launch_rocket(&mut self, owner: u64, launch: crate::firework::RocketLaunch) {
+        self.send(Command::LaunchRocket { owner, launch: Box::new(launch) });
+    }
+
     pub fn bottle_breath(&mut self, player: u64, feet: glam::DVec3, height: f64) {
         self.send(Command::BottleBreath { player, feet, height });
     }
@@ -4162,6 +4219,10 @@ impl ServerHandle {
 
     pub fn leash_fence(&mut self, player: u64, pos: BlockPos, sneaking: bool) {
         self.send(Command::LeashFence { player, pos, sneaking });
+    }
+
+    pub fn knot_action(&mut self, player: u64, pos: BlockPos, action: crate::leash_render::KnotAction) {
+        self.send(Command::Knot { player, pos, action });
     }
 
     pub fn save(&mut self) {
@@ -4301,6 +4362,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.item_uses.push((owner, sim.throw_eye(owner, &throw)));
                     out.eye_answers.extend(sim.take_eye_answers());
                 }
+                Command::LaunchRocket { owner, launch } => out.item_uses.push((owner, sim.launch_rocket(owner, *launch))),
                 Command::BottleBreath { player, feet, height } => out.item_uses.push((player, sim.bottle_breath(feet, height))),
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);
@@ -4338,6 +4400,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::VaultKey { player, pos, stack } => out.item_uses.push((player, sim.vault_key(player, pos, &stack))),
                 Command::LeashFence { player, pos, sneaking } => {
                     sim.leash_fence(player, pos, sneaking);
+                }
+                Command::Knot { pos, action, .. } => {
+                    sim.knot_action(pos, action);
                 }
                 Command::Save => {
                     sim.ticks_since_save = 0;
@@ -6390,6 +6455,84 @@ mod tests {
         assert_eq!(broken.get(&(8, 200, 8)), Some(&None));
     }
 
+    fn door_breaker(server: &mut ServerSim, scene: &mut HandcraftedScene) -> u64 {
+        use minecraftoss_core::nbt::Tag;
+        for z in 6..=10 {
+            place(server, scene, (8, 199, z), Block::new("minecraft:stone"));
+        }
+        server.take_changes();
+        let mut tag = std::collections::BTreeMap::new();
+        tag.insert("id".to_owned(), Tag::String("minecraft:zombie".to_owned()));
+        tag.insert("Pos".to_owned(), Tag::List(vec![Tag::Double(8.5), Tag::Double(200.0), Tag::Double(6.5)]));
+        tag.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(0.0), Tag::Float(0.0)]));
+        tag.insert("UUID".to_owned(), Tag::IntArray(vec![5, 6, 7, 8]));
+        tag.insert("CanBreakDoors".to_owned(), Tag::Byte(1));
+        tag.insert("PersistenceRequired".to_owned(), Tag::Byte(1));
+        let id = crate::server_mobs::spawn_saved(&mut server.mobs, &Tag::Compound(tag)).expect("zombies are simulated");
+        let zombie = server.mobs.zombie_mut(id).unwrap();
+        assert!(zombie.zombie.can_break_doors, "the tag is loaded");
+        let ai = zombie.ai.as_deref_mut().unwrap();
+        ai.retain_goals(&["BreakDoorGoal"]);
+        ai.state.navigation.follow(vec![(8, 200, 6), (8, 200, 7), (8, 200, 8), (8, 200, 9), (8, 200, 10)], 1.0, glam::DVec3::new(8.5, 200.0, 6.5));
+        server.set_time(18000);
+        id
+    }
+
+    type DoorTrace = (Vec<(i32, BlockPos)>, std::collections::HashMap<BlockPos, Option<Block>>);
+
+    fn knocked_on_hard(server: &mut ServerSim, ticks: usize) -> DoorTrace {
+        let player = candidate(0, [8.5, 200.0, 20.5]);
+        let (mut events, mut changes) = (Vec::new(), std::collections::HashMap::new());
+        for _ in 0..ticks {
+            server.set_players(&[player.position.to_array()], 3);
+            server.set_simulation_area((0, 0), 4);
+            server.tick();
+            server.tick_mobs(&[player], false);
+            let door_events = std::mem::take(&mut server.level.level_events).into_iter().filter(|(id, ..)| matches!(*id, 1019 | 1021));
+            events.extend(door_events.map(|(id, pos, _)| (id, (pos.x, pos.y, pos.z))));
+            changes.extend(server.take_changes());
+        }
+        (events, changes)
+    }
+
+    #[test]
+    fn a_zombie_breaks_a_door_and_the_door_drops() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:oak_door");
+        door_breaker(&mut server, &mut scene);
+        server.take_destroyed();
+        let (events, changes) = knocked_on_hard(&mut server, 400);
+        assert_eq!(changes.get(&(8, 201, 8)), Some(&None), "the upper half is broken");
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None), "and the lower half goes with it");
+        let destroyed: Vec<_> = server.take_destroyed().into_iter().map(|(pos, block)| (pos, block.id.key())).collect();
+        assert_eq!(destroyed, vec![((8, 200, 8), "minecraft:oak_door".to_owned())], "with its particles and break sound");
+        let doors: i32 = server.items().iter().filter(|item| item.item == "minecraft:oak_door").map(|item| item.count).sum();
+        assert_eq!(doors, 1, "one door drops");
+        assert!(events.iter().all(|&(_, pos)| pos == (8, 201, 8)), "{events:?}");
+        assert_eq!(events.iter().filter(|e| e.0 == 1021).count(), 1, "{events:?}");
+        assert!(events.iter().any(|e| e.0 == 1019), "it knocks first");
+    }
+
+    #[test]
+    fn a_copper_door_breaks_and_an_iron_door_holds() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:copper_door");
+        door_breaker(&mut server, &mut scene);
+        let (events, changes) = knocked_on_hard(&mut server, 400);
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None), "the copper door is broken");
+        assert!(events.iter().any(|e| e.0 == 1021));
+        assert!(server.items().iter().any(|item| item.item == "minecraft:copper_door"));
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:iron_door");
+        let id = door_breaker(&mut server, &mut scene);
+        let (events, changes) = knocked_on_hard(&mut server, 400);
+        assert!(events.is_empty(), "no knocks at an iron door: {events:?}");
+        assert!(!changes.contains_key(&(8, 200, 8)) && !changes.contains_key(&(8, 201, 8)), "{changes:?}");
+        let zombie = server.mobs.zombies().iter().find(|e| e.id == id).expect("it waits outside");
+        assert_eq!(zombie.ai.as_deref().unwrap().state.door.crack, None);
+        assert!(zombie.zombie.body.position.z < 8.6, "it is held at the door: {}", zombie.zombie.body.position);
+    }
+
     fn place(server: &mut ServerSim, scene: &mut HandcraftedScene, pos: BlockPos, block: Block) {
         scene.set(pos, Some(block));
         server.player_edit(scene, pos, PlayerEdit::Place);
@@ -6513,6 +6656,39 @@ mod tests {
         assert!(seen_snowball, "the golem's snowballs fly as thrown items");
         assert!(turned, "a snowball strikes the zombie, which turns on the golem");
         assert_eq!(server.mobs.zombies().iter().find(|e| e.id == zombie).map(|e| e.zombie.health), Some(20.0), "snowballs do it no harm");
+    }
+
+    #[test]
+    fn a_snow_golem_s_snowball_hits_a_blaze() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        for x in 6..=10 {
+            for z in 4..=16 {
+                place(&mut server, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        server.take_changes();
+        if server.level.snow_golem_melts_at(8, 200, 8) {
+            return;
+        }
+        server.set_players(&[[8.5, 200.0, 30.5]], 2);
+        server.set_simulation_area((0, 0), 1);
+        server.summon("minecraft:snow_golem", [8.5, 200.0, 5.5], None, 0.0).unwrap();
+        let still = minecraftoss_core::snbt::parse_compound("{NoAI:1b}").unwrap();
+        server.summon("minecraft:blaze", [8.5, 200.0, 10.5], Some(&still), 180.0).unwrap();
+        server.take_spawned();
+        let blaze = server.mobs.blazes()[0].id;
+        assert_eq!(server.mobs.blazes()[0].blaze.health, 20.0);
+        let mut struck = None;
+        for _ in 0..1200 {
+            server.tick_mobs(&[], false);
+            server.tick_thrown(&[]);
+            let now = server.mobs.blazes().iter().find(|e| e.id == blaze).map(|e| e.blaze.health);
+            if now != Some(20.0) {
+                struck = now;
+                break;
+            }
+        }
+        assert_eq!(struck, Some(17.0), "the golem's snowball strikes the blaze for 3");
     }
 
     #[test]
@@ -7267,6 +7443,27 @@ mod tests {
         items.sort_by_key(|(item, _)| *item);
         assert_eq!(items, vec![("minecraft:brown_egg", crate::thrown::Throwable::Egg), ("minecraft:ender_pearl", crate::thrown::Throwable::EnderPearl), ("minecraft:snowball", crate::thrown::Throwable::Snowball)]);
         assert!(hits.iter().all(|h| h.at.y >= 199.9 && h.at.y < 202.0 && (h.at.x - 8.5).abs() < 0.5), "{hits:?}");
+    }
+
+    #[test]
+    fn a_player_snowball_stops_on_a_pillager_and_knocks_it_back() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:pillager", [8.5, 200.0, 9.5], None, 180.0).unwrap();
+        server.take_spawned();
+        let (pillager, health) = server.mobs.illagers().first().map(|e| (e.id, e.illager.health)).expect("a pillager");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        server.throw(crate::thrown::Thrown::throw("minecraft:snowball", glam::DVec3::new(8.5, 201.6, 5.5), 0.0, 0.0, glam::DVec3::ZERO, true, &mut random).expect("a snowball"));
+        let mut hits = Vec::new();
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+            hits.extend(server.take_thrown_hits());
+        }
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].at.z > 8.8 && hits[0].at.z < 9.3 && hits[0].at.y > 201.0, "it breaks on the pillager's front: {hits:?}");
+        let e = server.mobs.illagers().iter().find(|e| e.id == pillager).expect("the pillager lives");
+        assert_eq!(e.illager.health, health, "a snowball does it no harm");
+        assert!(e.illager.body.velocity.z > 0.3 && e.illager.body.velocity.x.abs() < 0.05, "pushed along the throw: {:?}", e.illager.body.velocity);
+        assert_eq!(e.ai.state.hurt_by.map(|(by, _)| by), Some(minecraftoss_entities::monster_ai::Target::Player(0)));
     }
 
     #[test]
@@ -8075,6 +8272,27 @@ mod tests {
         hatching.extend(crate::families::kinds().into_iter().filter_map(|kind| kind.strip_prefix("minecraft:")));
         hatching.sort_unstable();
         assert_eq!(hatched, hatching);
+    }
+
+    #[test]
+    fn every_hatching_mob_is_a_thrown_target_and_takes_a_trident() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.set_players(&[[8.5, 200.0, 11.5]], 2);
+        for name in HATCHING_EGGS.iter().filter(|&&name| name != "ender_dragon") {
+            let kind = format!("minecraft:{name}");
+            let before: std::collections::HashSet<u64> = server.mobs.mob_ids().collect();
+            server.hatch_egg(&kind, [8.5, 200.0, 8.5], 0.0).unwrap();
+            let new: Vec<u64> = server.mobs.mob_ids().filter(|id| !before.contains(id)).collect();
+            assert!(!new.is_empty(), "{kind}");
+            let targets = crate::thrown::targets(&server.mobs);
+            for id in new {
+                let what = server.mobs.entity_type(id);
+                assert!(targets.iter().any(|target| target.id == id), "{kind}: {what:?} is a thrown target");
+                let landed = crate::thrown::hurt_by(&mut server.mobs, id, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, glam::DVec3::Z, 0);
+                let refuses = matches!(what, Some("minecraft:enderman" | "minecraft:shulker"));
+                assert_eq!(landed, !refuses, "{kind}: {what:?}");
+            }
+        }
     }
 
     #[test]
@@ -9969,6 +10187,51 @@ mod tests {
     fn dismounting_over_open_lava_lands_on_top_of_the_strider() {
         let Some((mut server, id)) = ridden_strider("minecraft:lava", 100.5) else { return };
         assert_eq!(server.ride_tick(&crouch(0.0)), vec![(0, id, Some([8.5, 100.5 + f64::from(1.7_f32), 8.5]))]);
+    }
+
+    fn throw_from_the_saddle(server: &ServerSim, item: &'static str) -> (crate::thrown::PlayerBody, crate::thrown::Throw<'static>) {
+        let feet = server.mobs.seat(minecraftoss_entities::world::Rider::Player(0)).expect("the player sits on the strider");
+        let throw = crate::thrown::Throw { owner: 0, item, components: None, eye: feet + glam::DVec3::new(0.0, 1.62, 0.0), yaw: 0.0, pitch: 72.0, motion: glam::DVec3::ZERO, on_ground: false };
+        (player_at(0, feet.to_array(), true), throw)
+    }
+
+    fn strider_state(server: &ServerSim, id: u64) -> (f32, glam::DVec3) {
+        server.mobs.striders().iter().find(|e| e.id == id).map(|e| (e.strider.health, e.strider.body.velocity)).expect("the strider lives")
+    }
+
+    #[test]
+    fn a_snowball_thrown_from_a_strider_passes_its_strider_but_hits_another() {
+        let Some((mut server, ridden)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        let other = server.mobs.spawn_strider(minecraftoss_entities::strider::Strider::new(glam::DVec3::new(8.5, 101.0, 9.5)), true);
+        assert_eq!(crate::thrown::ride_group(&server.mobs, 0), vec![ridden, crate::thrown::PLAYER_TARGET], "the strider and its rider");
+        assert!(crate::thrown::ride_group(&server.mobs, 1).is_empty(), "a player on foot rides with nobody");
+        let (rider, throw) = throw_from_the_saddle(&server, "minecraft:snowball");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        server.throw(crate::thrown::Thrown::launch(&throw, &mut random).expect("a snowball"));
+        let mut hits = Vec::new();
+        for _ in 0..10 {
+            server.tick_thrown(&[rider]);
+            hits.extend(server.take_thrown_hits());
+        }
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].at.z > 9.0 && hits[0].at.z < 9.1 && hits[0].at.y > 101.0, "it breaks on the other strider's front: {hits:?}");
+        assert_eq!(strider_state(&server, ridden).1, glam::DVec3::ZERO, "its own mount is passed");
+        assert!(strider_state(&server, other).1.z > 0.1, "the other strider is pushed along the throw");
+    }
+
+    #[test]
+    fn a_trident_thrown_from_a_strider_passes_its_strider_but_hits_another() {
+        let Some((mut server, ridden)) = ridden_strider("minecraft:netherrack", 101.0) else { return };
+        let other = server.mobs.spawn_strider(minecraftoss_entities::strider::Strider::new(glam::DVec3::new(8.5, 101.0, 9.5)), true);
+        let (rider, throw) = throw_from_the_saddle(&server, crate::trident::ITEM);
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        let stack = minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1);
+        server.throw_trident(crate::trident::ThrownTrident::launch(&throw, stack, false, &mut random));
+        for _ in 0..5 {
+            server.tick_tridents(&[rider]);
+        }
+        assert_eq!(strider_state(&server, ridden).0, minecraftoss_entities::strider::MAX_HEALTH, "its own mount is passed");
+        assert_eq!(strider_state(&server, other).0, minecraftoss_entities::strider::MAX_HEALTH - crate::trident::DAMAGE);
     }
 
     #[test]
@@ -13026,6 +13289,28 @@ mod tests {
     }
 
     #[test]
+    fn the_mob_world_reports_a_chest_s_openers() {
+        use minecraftoss_player::World as _;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let chest = Block::new("minecraft:chest").with("facing", "north").with("type", "single").with("waterlogged", "false");
+        place(&mut server, &mut scene, (8, 200, 8), chest);
+        let openers = |server: &mut ServerSim, pos: BlockPos| {
+            let ServerSim { level, states, mob_tables, .. } = server;
+            let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+            world.chest_open_count(pos)
+        };
+        assert_eq!(openers(&mut server, (8, 200, 8)), 0);
+        server.set_chest_openers((8, 200, 8), 2);
+        assert_eq!(openers(&mut server, (8, 200, 8)), 2);
+        assert_eq!(openers(&mut server, (8, 200, 9)), 0, "only that chest");
+        server.set_chest_openers((8, 200, 8), 0);
+        assert_eq!(openers(&mut server, (8, 200, 8)), 0);
+        server.set_chest_openers((8, 200, 8), 1);
+        take(&mut server, &mut scene, (8, 200, 8));
+        assert_eq!(openers(&mut server, (8, 200, 8)), 0, "a broken chest has no openers");
+    }
+
+    #[test]
     fn opening_a_trapped_chest_lights_a_lamp_beside_it() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 200, 8), trapped_chest());
@@ -13285,6 +13570,58 @@ mod tests {
         assert_eq!(server.mobs.leash_holder(cow), None, "beyond twelve blocks the lead snaps");
         assert!(item_ids(&server).contains(&"minecraft:lead".to_owned()));
         assert!(server.mobs.take_sounds().iter().any(|s| s.event == "item.lead.break"));
+    }
+
+    #[test]
+    fn punching_a_knot_drops_a_lead_for_each_tied_cow_and_leaves_the_fence() {
+        use crate::leash_render::KnotAction;
+        use minecraftoss_entities::world::LeashHolder;
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=16 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        server.player_edit_block((8, 201, 10), Some(&Block::new("minecraft:oak_fence")), PlayerEdit::Place);
+        server.take_changes();
+        server.set_players(&[[8.5, 201.0, 8.5]], 2);
+        server.set_simulation_area((0, 0), 4);
+        let mut cows = Vec::new();
+        for z in [6.5, 7.5] {
+            server.summon("minecraft:cow", [6.5, 201.0, z], None, 0.0).unwrap();
+            cows.push(server.mobs.cows().last().expect("a cow").id);
+        }
+        let me = candidate(0, [8.5, 201.0, 8.5]);
+        server.tick_mobs(&[me], true);
+        for &cow in &cows {
+            server.mobs.set_leash(cow, LeashHolder::Player(0));
+        }
+        assert!(server.leash_fence(0, (8, 201, 10), false));
+        assert_eq!(server.mobs.mobs_leashed_to(LeashHolder::Knot((8, 201, 10))), cows);
+        server.mobs.take_sounds();
+        assert!(server.knot_action((8, 201, 10), KnotAction::Punch));
+        assert_eq!(block_name(&server, (8, 201, 10)), "minecraft:oak_fence", "the fence stays");
+        assert!(server.mobs.knots().is_empty());
+        assert!(cows.iter().all(|&cow| server.mobs.leash_holder(cow).is_none()));
+        assert_eq!(item_ids(&server), ["minecraft:lead", "minecraft:lead"]);
+        let saved = crate::server_mobs::mob_tags_where(&server.mobs, |id, _| cows.contains(&id), &server.mob_tags, false);
+        assert_eq!(saved.len(), 2);
+        assert!(saved.iter().all(|(_, tag)| tag.get("leash").is_none()), "the save has no leash");
+        let sounds = server.mobs.take_sounds();
+        assert_eq!(sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["item.lead.untied"]);
+        assert!(!server.knot_action((8, 201, 10), KnotAction::Punch), "nothing is left to punch");
+        assert_eq!(item_ids(&server).len(), 2);
+        assert!(!server.knot_action((8, 201, 10), KnotAction::Shear), "nothing is left to cut");
+        for &cow in &cows {
+            server.mobs.set_leash(cow, LeashHolder::Knot((8, 201, 10)));
+        }
+        assert!(server.knot_action((8, 201, 10), KnotAction::Shear));
+        assert!(server.mobs.knots().is_empty());
+        assert!(cows.iter().all(|&cow| server.mobs.leash_holder(cow).is_none()));
+        assert_eq!(item_ids(&server).len(), 4, "shears drop a lead for each cow too");
+        let sounds = server.mobs.take_sounds();
+        assert_eq!(sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["item.shears.snip"]);
+        assert_eq!(block_name(&server, (8, 201, 10)), "minecraft:oak_fence");
     }
 
     #[test]
@@ -13595,7 +13932,8 @@ mod tests {
         let pillager = server.mobs.illagers()[0].id;
         let health = server.mobs.illagers()[0].illager.health;
         let mut random = minecraftoss_player::rng::LegacyRandom::new(2);
-        server.rockets.push(crate::firework_rocket::Rocket::launch(Some(77), glam::DVec3::new(8.5, 201.6, 8.5), vec![2437522], 1, &mut random));
+        let fireworks = crate::firework::Fireworks { flight: 1, explosions: vec![crate::firework::Explosion::burst(2437522)] };
+        server.rockets.push(crate::firework_rocket::Rocket::launch(crate::firework_rocket::RocketOwner::Mob(77), glam::DVec3::new(8.5, 201.6, 8.5), fireworks, &mut random));
         assert_eq!(server.rocket_views().len(), 1);
         assert!(crate::firework_rocket::is_rocket(&server.rocket_views()[0]));
         let player = crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(8.5, 200.0, 7.5), alive: true, spectator: false };
@@ -13608,8 +13946,8 @@ mod tests {
         assert!(ticks < 20, "the roof stops it early: {ticks}");
         assert!(server.level.sounds.iter().any(|s| s.event == crate::firework::LAUNCH_SOUND && s.volume == 3.0));
         assert_eq!(server.firework_bursts.len(), 1);
-        assert_eq!(server.firework_bursts[0].colors, [2437522]);
-        assert!((server.firework_bursts[0].position.y - 204.0).abs() < 1e-6);
+        assert_eq!(server.firework_bursts[0].explosions, [crate::firework::Explosion::burst(2437522)]);
+        assert!((server.firework_bursts[0].position.y - (204.0 - crate::firework_rocket::SIZE)).abs() < 1e-6, "its box stops under the roof");
         let hits = server.take_rocket_hits();
         assert_eq!(hits.len(), 1);
         assert_eq!((hits[0].player_id, hits[0].source), (4, Some(77)));
@@ -13617,6 +13955,149 @@ mod tests {
         assert!(hits[0].damage > 0.0 && hits[0].damage < 7.0);
         let hurt = server.mobs.illagers().iter().find(|e| e.id == pillager).map_or(0.0, |e| e.illager.health);
         assert!(hurt < health, "the pillager below is hurt too");
+    }
+
+    #[test]
+    fn a_villager_s_rocket_passes_its_villager_and_bursts_on_a_mob_or_a_player_in_its_path() {
+        use crate::firework::{Explosion, Fireworks};
+        use crate::firework_rocket::{Rocket, RocketOwner};
+        let Some((mut server, _)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        let summon = |server: &mut ServerSim, kind: &str, at: [f64; 3]| {
+            let before: Vec<u64> = server.mobs.mob_ids().collect();
+            server.summon(kind, at, None, 0.0).unwrap();
+            server.mobs.mob_ids().find(|id| !before.contains(id)).unwrap()
+        };
+        let hurts = |server: &ServerSim, id: u64| crate::client_mobs::server_mobs(&server.mobs).iter().find(|mob| mob.id == id).map_or(0, |mob| mob.hurts);
+        let red = || Fireworks { flight: 1, explosions: vec![Explosion::burst(11743532)] };
+        let villager = summon(&mut server, "minecraft:villager", [4.5, 202.0, 4.5]);
+        let zombie = summon(&mut server, "minecraft:zombie", [4.5, 206.0, 4.5]);
+        let other = summon(&mut server, "minecraft:villager", [12.5, 202.0, 4.5]);
+        let fly = |server: &mut ServerSim, x: f64, players: &[crate::thrown::PlayerBody]| {
+            let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+            server.rockets.push(Rocket::launch(RocketOwner::Mob(villager), glam::DVec3::new(x, 201.8, 4.5), red(), &mut random));
+            server.firework_bursts.clear();
+            let mut ticks = 0;
+            while !server.rockets.is_empty() && ticks < 40 {
+                server.tick_rockets(players);
+                ticks += 1;
+            }
+            assert_eq!(server.firework_bursts.len(), 1);
+            (ticks, server.firework_bursts[0].position)
+        };
+        let (ticks, at) = fly(&mut server, 4.5, &[]);
+        assert!(ticks < 20, "it bursts on the zombie before its time is up: {ticks}");
+        assert!(at.y > 205.5 && at.y < 206.5, "{at}");
+        assert_eq!(hurts(&server, zombie), 1);
+        let pushed = server.mobs.body_of(zombie).unwrap().velocity;
+        assert!((pushed.x.hypot(pushed.z) - 0.4).abs() < 1.0e-6, "the burst knocks the zombie back: {pushed}");
+        let (ticks, at) = fly(&mut server, 12.5, &[]);
+        assert!(ticks <= 3, "another villager is in its path: {ticks}");
+        assert!(at.y < 202.2, "{at}");
+        assert_eq!(hurts(&server, other), 1);
+        server.take_rocket_hits();
+        let player = crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(20.5, 203.0, 4.5), alive: true, spectator: false };
+        let (ticks, at) = fly(&mut server, 20.5, &[player]);
+        assert!(ticks < 10, "{ticks}");
+        assert!(at.y > 202.7 && at.y < 203.3, "{at}");
+        let hits = server.take_rocket_hits();
+        assert_eq!(hits.iter().map(|hit| (hit.player_id, hit.source)).collect::<Vec<_>>(), [(4, Some(villager))]);
+        assert!(hits[0].damage > 6.5, "it bursts at the player's feet: {}", hits[0].damage);
+    }
+
+    #[test]
+    fn a_player_s_rocket_names_its_player_in_every_hit_and_no_mob() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 204, 8), Block::new("minecraft:stone"));
+        let fireworks = crate::firework::Fireworks { flight: 1, explosions: vec![crate::firework::Explosion::burst(11743532)] };
+        assert!(server.launch_rocket(4, crate::firework::RocketLaunch { at: glam::DVec3::new(8.5, 201.15, 8.5), fireworks }));
+        let owner = crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(8.5, 200.0, 6.5), alive: true, spectator: false };
+        let friend = crate::thrown::PlayerBody { id: 5, feet: glam::DVec3::new(9.5, 200.0, 9.5), alive: true, spectator: false };
+        let mut ticks = 0;
+        while !server.rockets.is_empty() && ticks < 40 {
+            server.tick_rockets(&[owner, friend]);
+            ticks += 1;
+        }
+        assert!(ticks < 20, "it bursts under the roof: {ticks}");
+        let mut hits: Vec<_> = server.take_rocket_hits().into_iter().map(|hit| match hit.kind {
+            minecraftoss_entities::world::PlayerHitKind::Fireworks { by, .. } => (hit.player_id, by, hit.source),
+            other => panic!("{other:?}"),
+        }).collect();
+        hits.sort_unstable();
+        assert_eq!(hits, [(4, Some(4), None), (5, Some(4), None)], "the owner is hurt by its own rocket too");
+    }
+
+    #[test]
+    fn a_dispenser_shoots_a_rocket_level_into_a_zombie_and_a_plain_one_puffs_at_the_end_of_its_life() {
+        use crate::firework::{Explosion, Shape, FIREWORK_ROCKET};
+        use crate::firework_rocket::RocketOwner;
+        use minecraftoss_core::item::ItemStack;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().entities.is_none() || server.level.registries().block_entities.is_none() {
+            return;
+        }
+        let at = |z: i32| minecraftoss_core::BlockPos::new(2, 201, z);
+        let dispenser = |server: &mut ServerSim, scene: &mut HandcraftedScene, z: i32, rockets: ItemStack| {
+            place(server, scene, (2, 201, z), Block::new("minecraft:dispenser").with("facing", "east").with("triggered", "false"));
+            assert!(server.level.replace_block_item(at(z), 0, rockets));
+        };
+        let mut red = ItemStack::new(FIREWORK_ROCKET, 4);
+        red.components = crate::item_nbt::components_tag(&serde_json::json!({"minecraft:fireworks": {"flight_duration": 1, "explosions": [{"shape": "large_ball", "colors": [11743532], "has_trail": 1}]}}));
+        dispenser(&mut server, &mut scene, 4, red);
+        dispenser(&mut server, &mut scene, 12, ItemStack::new(FIREWORK_ROCKET, 4));
+        let before: Vec<u64> = server.mobs.mob_ids().collect();
+        server.summon("minecraft:zombie", [8.5, 201.0, 4.5], None, 0.0).unwrap();
+        let zombie = server.mobs.mob_ids().find(|id| !before.contains(id)).unwrap();
+        server.set_simulation_area((0, 0), 4);
+        server.level.sounds.clear();
+        place(&mut server, &mut scene, (1, 201, 4), Block::new("minecraft:redstone_block"));
+        place(&mut server, &mut scene, (1, 201, 12), Block::new("minecraft:redstone_block"));
+        let mut ticks = 0;
+        while server.rockets.len() < 2 && ticks < 10 {
+            server.tick();
+            ticks += 1;
+        }
+        assert_eq!(server.rockets.len(), 2, "both dispensers shoot");
+        let mut shots: Vec<_> = server.level.sounds.iter().filter(|s| s.event == minecraftoss_world::level::dispenser::ROCKET_SHOOT_SOUND).map(|s| (s.pos, s.volume, s.pitch)).collect();
+        shots.sort_by(|a, b| a.0[2].total_cmp(&b.0[2]));
+        assert_eq!(shots, [([2.5, 201.5, 4.5], 1.0, 1.2), ([2.5, 201.5, 12.5], 1.0, 1.2)]);
+        for z in [4, 12] {
+            let left = server.level.block_container_items(at(z)).map(|items| items.iter().map(|s| s.count).sum::<i32>());
+            assert_eq!(left, Some(3), "one rocket leaves the dispenser at z {z}");
+        }
+        for rocket in &server.rockets {
+            assert!(rocket.shot_at_angle && rocket.owner == RocketOwner::Nobody);
+            assert!((rocket.position.x - 3.0000099999997474).abs() < 1e-9 && rocket.position.y == 201.5, "{}", rocket.position);
+            assert!(rocket.velocity.x > 0.49 && rocket.velocity.y.abs() < 0.01 && rocket.velocity.z.abs() < 0.01, "{}", rocket.velocity);
+        }
+        let starred = server.rockets.iter().find(|rocket| rocket.position.z == 4.5).expect("the red rocket");
+        assert_eq!(starred.explosions, [Explosion { shape: Shape::LargeBall, colors: vec![11743532], fade_colors: Vec::new(), trail: true, twinkle: false }]);
+        let plain_lifetime = server.rockets.iter().find(|rocket| rocket.position.z == 12.5).expect("the plain rocket").lifetime;
+        let health = |server: &ServerSim| server.mobs.zombies().iter().find(|e| e.id == zombie).map_or(0.0, |e| e.zombie.health);
+        let hurts = |server: &ServerSim| crate::client_mobs::server_mobs(&server.mobs).iter().find(|mob| mob.id == zombie).map_or(0, |mob| mob.hurts);
+        server.firework_bursts.clear();
+        let mut flown = 0;
+        let mut red_burst = None;
+        while !server.rockets.is_empty() && flown < 40 {
+            server.tick_rockets(&[]);
+            flown += 1;
+            if red_burst.is_none() {
+                red_burst = server.firework_bursts.iter().find(|burst| burst.position.z < 8.0).map(|burst| (flown, burst.position));
+            }
+        }
+        let (red_ticks, red_at) = red_burst.expect("the red rocket bursts");
+        assert!(red_ticks < 15, "it bursts on the zombie before its time is up: {red_ticks}");
+        assert!(red_at.x > 7.5 && red_at.x < 9.0 && (red_at.y - 201.5).abs() < 0.1, "level, at the zombie: {red_at}");
+        assert_eq!(hurts(&server), 1);
+        assert!(health(&server) < 20.0, "{}", health(&server));
+        let pushed = server.mobs.body_of(zombie).unwrap().velocity;
+        assert!((pushed.x.hypot(pushed.z) - 0.4).abs() < 1.0e-6, "the burst knocks the zombie back: {pushed}");
+        assert_eq!(flown, plain_lifetime + 1, "the plain rocket flies out its life");
+        let plain = server.firework_bursts.iter().find(|burst| burst.position.z > 8.0).expect("the plain rocket puffs");
+        assert!(plain.explosions.is_empty());
+        assert!(plain.position.x > 12.0 && (plain.position.y - 201.5).abs() < 0.3, "{}", plain.position);
     }
 
     #[test]

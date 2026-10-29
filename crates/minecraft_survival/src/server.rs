@@ -43,6 +43,7 @@ pub struct Globals {
     pub day: DayCycle,
     pub end_clock: DayCycle,
     pub weather: Option<WeatherData>,
+    pub maps: std::sync::Mutex<minecraft_terrain::maps::MapStore>,
     pub weather_random: LegacyRandom,
     pub forced_weather: Option<String>,
     pub chat: CommandServer,
@@ -922,6 +923,7 @@ struct WorldFiles {
     rules: GameRules,
     difficulty: Difficulty,
     weather: Option<WeatherData>,
+    maps: minecraft_terrain::maps::MapWrites,
     players: Vec<(String, PlayerData)>,
 }
 
@@ -936,6 +938,11 @@ impl WorldFiles {
             rules: globals.game_rules.clone(),
             difficulty: globals.difficulty,
             weather: globals.weather,
+            maps: globals
+                .maps
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take_writes(),
             players: players
                 .values()
                 .map(|player| (player.uuid.0.clone(), player.data()))
@@ -951,6 +958,11 @@ impl WorldFiles {
             && let Err(error) = save.write_weather(&weather)
         {
             diag::warn!(World, "{prefix} weather.dat not written: {error}");
+        }
+        if !self.maps.is_empty()
+            && let Err(error) = save.write_maps(&self.maps)
+        {
+            diag::warn!(World, "{prefix} map files not written: {error}");
         }
         write_players(
             save,
@@ -1552,6 +1564,7 @@ pub(crate) mod tests {
             day: DayCycle::default(),
             end_clock: crate::save::END_CLOCK_START,
             weather: None,
+            maps: Default::default(),
             weather_random: weather_random(1),
             forced_weather: None,
             chat: CommandServer::new(crate::commands::HOST),
@@ -1915,6 +1928,47 @@ pub(crate) mod tests {
         assert_eq!(saved.place, Some(nether));
         let back = join(Some(&save), &recipes, &rules, joining(&steve));
         assert_eq!(held(&back, 0), Some(("minecraft:netherrack", 7)));
+    }
+
+    #[test]
+    fn autosaves_and_closing_write_new_maps_into_the_vanilla_map_files() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let (dir, save) = world("maps");
+        let mut globals = test_globals(registries, Some(save));
+        let treasure = minecraft_terrain::maps::MapData::create_fresh(1000.0, -300.0, 1, "minecraft:overworld", true, true);
+        {
+            let mut maps = globals.maps.lock().unwrap();
+            let id = maps.free_id();
+            maps.insert(id, treasure.clone());
+        }
+        autosave(&mut globals, &mut BTreeMap::new(), &mut BTreeMap::new());
+        globals.writer.finish();
+        let folder = dir.0.join("world/data/minecraft/maps");
+        assert!(folder.join("0.dat").is_file() && folder.join("last_id.dat").is_file());
+        let _ = std::fs::remove_file(folder.join("0.dat"));
+        let mut plain = minecraft_terrain::maps::MapData::create_fresh(5.0, 5.0, 0, "minecraft:the_nether", true, false);
+        plain.colors[100] = 9;
+        {
+            let mut maps = globals.maps.lock().unwrap();
+            let id = maps.free_id();
+            maps.insert(id, plain.clone());
+        }
+        let server = Server {
+            globals,
+            levels: BTreeMap::new(),
+            opening: BTreeMap::new(),
+            players: BTreeMap::new(),
+            published: false,
+        };
+        server.save_and_close(Instant::now());
+        assert!(!folder.join("0.dat").exists(), "a map written once is not written again unchanged");
+        let opened = crate::save::open_world(&dir.0, None, None, 2);
+        assert!(opened.warnings.is_empty(), "{:?}", opened.warnings);
+        assert_eq!(opened.maps.last_id(), 1);
+        assert_eq!(opened.maps.get(1), Some(&plain));
+        assert_eq!(opened.maps.get(0), None);
     }
 
     #[test]

@@ -29,6 +29,26 @@ pub struct PlayerAttack {
     pub can_sweep: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ProjectileHit {
+    pub amount: f32,
+    pub kind: &'static str,
+    pub player: u64,
+    pub velocity: DVec3,
+}
+
+pub const NO_ANGER_FROM_WIND_CHARGE: [&str; 9] = [
+    "minecraft:breeze",
+    "minecraft:skeleton",
+    "minecraft:bogged",
+    "minecraft:stray",
+    "minecraft:zombie",
+    "minecraft:husk",
+    "minecraft:spider",
+    "minecraft:cave_spider",
+    "minecraft:slime",
+];
+
 /// What an attack did.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AttackResult {
@@ -307,14 +327,40 @@ impl EntityWorld {
     /// cooldown, the attacker remembered, and on a full hit the default
     /// knockback away from the player. `None` when no such mob lives.
     fn hurt_by_player(&mut self, id: u64, amount: f32, attack: &PlayerAttack) -> Option<DamageResult> {
-        let source = DamageSourceKind::PlayerAttack;
-        let player = attack.player_id;
+        let hit = self.hurt_for_player(id, amount, attack.player_id, "minecraft:player_attack", DamageSourceKind::PlayerAttack, true)?;
+        if hit.applied && hit.full {
+            if let Some((body, _)) = self.mob_body(id) {
+                let (xd, zd) = (attack.position.x - body.position.x, attack.position.z - body.position.z);
+                self.knock_back(id, f64::from(0.4_f32), xd, zd);
+            }
+        }
+        Some(hit)
+    }
+
+    pub fn player_projectile_hurt(&mut self, id: u64, hit: ProjectileHit) -> Option<DamageResult> {
+        let refused = DamageResult { applied: false, dealt: 0.0, died: false, full: false };
+        if let Some(e) = self.endermen.iter_mut().find(|e| e.id == id) {
+            e.dodge_pending = true;
+            return Some(refused);
+        }
+        if hit.kind == "minecraft:trident" && self.shulkers.iter().any(|e| e.id == id && e.refuses_arrows()) {
+            return Some(refused);
+        }
+        let angers = hit.kind != "minecraft:wind_charge" || !self.entity_type(id).is_some_and(|kind| NO_ANGER_FROM_WIND_CHARGE.contains(&kind));
+        let result = self.hurt_for_player(id, hit.amount, hit.player, hit.kind, DamageSourceKind::Projectile, angers)?;
+        if result.applied && result.full {
+            self.knock_back(id, f64::from(0.4_f32), -hit.velocity.x, -hit.velocity.z);
+        }
+        Some(result)
+    }
+
+    fn hurt_for_player(&mut self, id: u64, amount: f32, player: u64, kind: &'static str, source: DamageSourceKind, angers: bool) -> Option<DamageResult> {
         let hit = if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
         } else if let Some(e) = self.zombies.iter_mut().find(|e| e.id == id) {
             // `Zombie.createAttributes`: 2 armor.
             let hit = e.hurt(damage_after_armor(amount, 2.0, 0.0));
-            if hit.applied {
+            if hit.applied && angers {
                 if let Some(ai) = e.ai.as_deref_mut() {
                     // `setLastHurtByMob`, for `HurtByTargetGoal`.
                     ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
@@ -328,7 +374,7 @@ impl EntityWorld {
             hit
         } else if let Some(e) = self.skeletons.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
-            if hit.applied {
+            if hit.applied && angers {
                 if let Some(ai) = e.ai.as_deref_mut() {
                     ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
                 } else {
@@ -345,13 +391,13 @@ impl EntityWorld {
             hit
         } else if let Some(e) = self.spiders.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
-            if hit.applied {
+            if hit.applied && angers {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
             hit
         } else if let Some(e) = self.slimes.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(damage_after_armor(amount, e.slime.armor(), 0.0));
-            if hit.applied {
+            if hit.applied && angers {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
             hit
@@ -368,7 +414,7 @@ impl EntityWorld {
             }
             hit
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
-            e.hurt_from(amount, "minecraft:player_attack", Some(PLAYER_TARGET + player), self.game_time)
+            e.hurt_from(amount, kind, Some(PLAYER_TARGET + player), self.game_time)
         } else if let Some(e) = self.iron_golems.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
             if hit.applied {
@@ -377,13 +423,13 @@ impl EntityWorld {
             hit
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
             let time = self.game_time;
-            e.hurt_from(amount, "minecraft:player_attack", Some(crate::monster_ai::Target::Player(player)), time)
+            e.hurt_from(amount, kind, Some(crate::monster_ai::Target::Player(player)), time)
         } else if let Some(e) = self.felines.iter_mut().find(|e| e.id == id) {
             let time = self.game_time;
-            e.hurt_from(amount, "minecraft:player_attack", Some(crate::monster_ai::Target::Player(player)), time)
+            e.hurt_from(amount, kind, Some(crate::monster_ai::Target::Player(player)), time)
         } else if let Some(e) = self.wandering_traders.iter_mut().find(|e| e.id == id) {
             let time = self.game_time;
-            e.hurt_from(amount, "minecraft:player_attack", Some(crate::monster_ai::Target::Player(player)), time)
+            e.hurt_from(amount, kind, Some(crate::monster_ai::Target::Player(player)), time)
         } else if let Some(e) = self.snow_golems.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
             if hit.applied {
@@ -409,7 +455,7 @@ impl EntityWorld {
             }
             hit
         } else if let Some(e) = self.withers.iter_mut().find(|e| e.id == id) {
-            let hit = e.hurt_typed(amount, "minecraft:player_attack", false, false);
+            let hit = e.hurt_typed(amount, kind, false, false);
             if hit.applied {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
@@ -461,12 +507,252 @@ impl EntityWorld {
             self.villager_hurt_by(id, PLAYER_TARGET + player);
             self.note_hoglin_hurt(id, crate::monster_ai::Target::Player(player));
         }
-        if hit.applied && hit.full {
-            if let Some((body, _)) = self.mob_body(id) {
-                let (xd, zd) = (attack.position.x - body.position.x, attack.position.z - body.position.z);
-                self.knock_back(id, f64::from(0.4_f32), xd, zd);
+        Some(hit)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::monster_ai::Target;
+
+    fn trident(player: u64) -> ProjectileHit {
+        ProjectileHit { amount: 8.0, kind: "minecraft:trident", player, velocity: DVec3::new(0.0, 0.0, 2.0) }
+    }
+
+    fn snowball(player: u64) -> ProjectileHit {
+        ProjectileHit { amount: 0.0, kind: "minecraft:thrown", player, velocity: DVec3::new(0.0, 0.0, 1.5) }
+    }
+
+    fn at(x: f64) -> DVec3 {
+        DVec3::new(x, 64.0, 0.5)
+    }
+
+    fn raiders_and_nether_mobs(world: &mut EntityWorld) -> Vec<u64> {
+        use crate::{hoglin::HoglinKind, illager::IllagerKind, piglin::PiglinKind};
+        vec![
+            world.spawn_illager(crate::illager::Illager::new(IllagerKind::Pillager, at(0.5)), true),
+            world.spawn_illager(crate::illager::Illager::new(IllagerKind::Vindicator, at(3.5)), true),
+            world.spawn_illager(crate::illager::Illager::new(IllagerKind::Evoker, at(6.5)), true),
+            world.spawn_vex(crate::vex::Vex::new(at(9.5)), true),
+            world.spawn_ravager(crate::ravager::Ravager::new(at(12.5)), true),
+            world.spawn_ghast(crate::ghast::Ghast::new(at(20.5)), true),
+            world.spawn_blaze(crate::blaze::Blaze::new(at(30.5)), true),
+            world.spawn_strider(crate::strider::Strider::new(at(33.5)), true),
+            world.spawn_hoglin(crate::hoglin::Hoglin::new(HoglinKind::Hoglin, at(36.5)), true),
+            world.spawn_hoglin(crate::hoglin::Hoglin::new(HoglinKind::Zoglin, at(40.5)), true),
+            world.spawn_piglin(crate::piglin::Piglin::new(PiglinKind::Piglin, at(44.5)), true),
+            world.spawn_piglin(crate::piglin::Piglin::new(PiglinKind::Brute, at(47.5)), true),
+        ]
+    }
+
+    fn health(world: &EntityWorld, id: u64) -> f32 {
+        world.mob_body(id).map_or(0.0, |(_, health)| health)
+    }
+
+    #[test]
+    fn a_thrown_hit_lands_on_pillagers_vexes_ravagers_and_the_nether_mobs() {
+        let mut world = EntityWorld::default();
+        for id in raiders_and_nether_mobs(&mut world) {
+            let before = health(&world, id);
+            let hit = world.player_projectile_hurt(id, snowball(3));
+            assert!(hit.is_some_and(|hit| hit.applied && hit.full), "{:?}", world.entity_type(id));
+            assert_eq!(health(&world, id), before, "{:?}", world.entity_type(id));
+        }
+        let mut world = EntityWorld::default();
+        for id in raiders_and_nether_mobs(&mut world) {
+            let before = health(&world, id);
+            assert!(world.player_projectile_hurt(id, trident(3)).is_some_and(|hit| hit.applied), "{:?}", world.entity_type(id));
+            assert!(health(&world, id) < before, "{:?}", world.entity_type(id));
+        }
+        assert_eq!(world.player_projectile_hurt(9999, trident(3)), None);
+    }
+
+    #[test]
+    fn a_projectile_knocks_a_hoglin_and_a_ravager_back_less() {
+        let mut world = EntityWorld::default();
+        let pillager = world.spawn_illager(crate::illager::Illager::new(crate::illager::IllagerKind::Pillager, at(0.5)), true);
+        let hoglin = world.spawn_hoglin(crate::hoglin::Hoglin::new(crate::hoglin::HoglinKind::Hoglin, at(5.5)), true);
+        let ravager = world.spawn_ravager(crate::ravager::Ravager::new(at(10.5)), true);
+        let mut pushed = Vec::new();
+        for id in [pillager, hoglin, ravager] {
+            world.player_projectile_hurt(id, snowball(1));
+            pushed.push(world.mob_body(id).unwrap().0.velocity.z);
+        }
+        let power = f64::from(0.4_f32);
+        for (z, share) in pushed.into_iter().zip([1.0, 1.0 - crate::hoglin::KNOCKBACK_RESISTANCE, 1.0 - crate::ravager::KNOCKBACK_RESISTANCE]) {
+            assert!((z - power * share).abs() < 1.0e-9, "{z} {share}");
+        }
+    }
+
+    #[test]
+    fn a_firework_burst_knocks_mobs_away_from_it() {
+        let mut world = EntityWorld::default();
+        let zombie = world.spawn_zombie(crate::zombie::Zombie::new(at(0.5)), true);
+        let golem = world.spawn_iron_golem(crate::iron_golem::IronGolem::new(at(10.5)), true);
+        let ravager = world.spawn_ravager(crate::ravager::Ravager::new(at(20.5)), true);
+        let power = f64::from(0.4_f32);
+        for (id, share) in [(zombie, 1.0), (golem, 0.0), (ravager, 1.0 - crate::ravager::KNOCKBACK_RESISTANCE)] {
+            world.body_mut(id).unwrap().on_ground = true;
+            let before = health(&world, id);
+            let feet = world.mob_body(id).unwrap().0.position;
+            let hit = world.firework_blast(FireworkOwner::Nobody, id, 5.0, feet + DVec3::new(1.0, 0.5, 0.0));
+            assert!(hit.is_some_and(|hit| hit.applied && hit.full), "{:?}", world.entity_type(id));
+            assert!(health(&world, id) < before, "{:?}", world.entity_type(id));
+            let v = world.mob_body(id).unwrap().0.velocity;
+            assert!((v.x + power * share).abs() < 1.0e-6 && (v.y - power * share).abs() < 1.0e-6 && v.z == 0.0, "{:?} {v}", world.entity_type(id));
+        }
+        assert_eq!(world.firework_blast(FireworkOwner::Nobody, 9999, 5.0, at(0.5)), None);
+    }
+
+    #[test]
+    fn a_second_firework_burst_inside_the_cooldown_does_not_push() {
+        let mut world = EntityWorld::default();
+        let zombie = world.spawn_zombie(crate::zombie::Zombie::new(at(0.5)), true);
+        assert!(world.firework_blast(FireworkOwner::Player(6), zombie, 3.0, at(1.5)).is_some_and(|hit| hit.full));
+        world.body_mut(zombie).unwrap().velocity = DVec3::ZERO;
+        let again = world.firework_blast(FireworkOwner::Player(6), zombie, 5.0, at(1.5)).unwrap();
+        assert!(again.applied && !again.full, "{again:?}");
+        assert_eq!(world.mob_body(zombie).unwrap().0.velocity, DVec3::ZERO);
+        let angry = world.zombie_mut(zombie).unwrap();
+        let blamed = angry.target_player_id == Some(6) || angry.ai.as_ref().is_some_and(|ai| ai.state.hurt_by.map(|(by, _)| by) == Some(Target::Player(6)));
+        assert!(blamed, "a player's firework angers the mob at the player");
+    }
+
+    #[test]
+    fn a_firework_burst_makes_a_cow_panic_and_credits_a_player_with_the_kill() {
+        let mut world = EntityWorld::default();
+        let cow = world.spawn_cow(crate::cow::Cow::new(at(5.5)), true);
+        world.body_mut(cow).unwrap().on_ground = true;
+        assert!(world.firework_blast(FireworkOwner::Mob(77), cow, 3.0, at(6.5)).is_some_and(|hit| hit.applied));
+        let entity = world.cows.iter().find(|e| e.id == cow).unwrap();
+        assert!(DamageSourceKind::panics(entity.last_damage_source));
+        assert!(entity.cow.body.velocity.x < -0.3, "pushed away from the burst: {}", entity.cow.body.velocity);
+        let mut weak = crate::zombie::Zombie::new(at(10.5));
+        weak.health = 0.5;
+        let weak = world.spawn_zombie(weak, true);
+        assert!(world.firework_blast(FireworkOwner::Player(6), weak, 7.0, at(10.5)).is_some_and(|hit| hit.died));
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert!(deaths[0].context.killed_by_player);
+        let nobody = world.spawn_zombie(crate::zombie::Zombie::new(at(15.5)), true);
+        world.firework_blast(FireworkOwner::Nobody, nobody, 1.0, at(15.5));
+        let calm = world.zombie_mut(nobody).unwrap();
+        assert_eq!((calm.target_player_id, calm.ai.as_ref().and_then(|ai| ai.state.hurt_by)), (None, None));
+    }
+
+    struct Floor;
+
+    impl minecraftoss_player::World for Floor {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            (pos.1 < 64).then(|| minecraftoss_player::Block::new("minecraft:stone"))
+        }
+        fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    #[test]
+    fn a_thrown_hit_makes_farm_animals_and_striders_panic() {
+        let mut world = EntityWorld::default();
+        let cow = world.spawn_cow(crate::cow::Cow::new(at(0.5)), false);
+        let pig = world.spawn_pig(crate::pig::Pig::new(at(8.5)), false);
+        let sheep = world.spawn_sheep(crate::sheep::Sheep::default(), at(16.5), false);
+        let chicken = world.spawn_chicken(crate::chicken::Chicken::new(at(24.5)), false);
+        let strider = world.spawn_strider(crate::strider::Strider::new(at(32.5)), true);
+        for id in [cow, pig, sheep, chicken, strider] {
+            assert!(world.player_projectile_hurt(id, snowball(2)).is_some_and(|hit| hit.applied), "{:?}", world.entity_type(id));
+        }
+        let sources = [
+            world.cows.iter().find(|e| e.id == cow).unwrap().last_damage_source,
+            world.pigs.iter().find(|e| e.id == pig).unwrap().last_damage_source,
+            world.sheep.iter().find(|e| e.id == sheep).unwrap().last_damage_source,
+            world.chickens.iter().find(|e| e.id == chicken).unwrap().last_damage_source,
+            world.striders.iter().find(|e| e.id == strider).unwrap().last_damage_source,
+        ];
+        assert!(sources.iter().all(|&source| DamageSourceKind::panics(source)), "{sources:?}");
+        let mut panicked = [false; 4];
+        for _ in 0..2 {
+            world.tick(&mut Floor);
+            let running = [
+                world.cows.iter().find(|e| e.id == cow).unwrap().running_goals(),
+                world.pigs.iter().find(|e| e.id == pig).unwrap().running_goals(),
+                world.sheep.iter().find(|e| e.id == sheep).unwrap().running_goals(),
+                world.chickens.iter().find(|e| e.id == chicken).unwrap().running_goals(),
+            ];
+            for (seen, goals) in panicked.iter_mut().zip(&running) {
+                *seen |= goals.contains(&"PanicGoal");
             }
         }
-        Some(hit)
+        assert_eq!(panicked, [true; 4], "the cow, pig, sheep and chicken run from the hit");
+    }
+
+    #[test]
+    fn a_trident_angers_a_hoglin_and_a_piglin_at_the_thrower() {
+        let mut world = EntityWorld::default();
+        let hoglin = world.spawn_hoglin(crate::hoglin::Hoglin::new(crate::hoglin::HoglinKind::Hoglin, at(0.5)), true);
+        let piglin = world.spawn_piglin(crate::piglin::Piglin::new(crate::piglin::PiglinKind::Piglin, at(5.5)), true);
+        world.player_projectile_hurt(hoglin, trident(5));
+        world.player_projectile_hurt(piglin, trident(5));
+        assert_eq!(world.hoglin_mut(hoglin).unwrap().hurt_by, vec![Target::Player(5)]);
+        assert_eq!(world.piglin_mut(piglin).unwrap().hurt_by, vec![Target::Player(5)]);
+    }
+
+    #[test]
+    fn a_closed_shulker_turns_a_trident_away() {
+        let mut world = EntityWorld::default();
+        let id = world.spawn_shulker(crate::shulker::Shulker::new(at(0.5)), true);
+        let max = health(&world, id);
+        assert_eq!(world.player_projectile_hurt(id, trident(2)).map(|hit| hit.applied), Some(false));
+        assert_eq!(health(&world, id), max);
+        world.shulker_mut(id).unwrap().shulker.raw_peek = 30;
+        assert!(world.player_projectile_hurt(id, trident(2)).is_some_and(|hit| hit.applied));
+        assert!(health(&world, id) < max);
+        assert_eq!(world.shulker_mut(id).unwrap().ai.state.hurt_by.map(|(t, _)| t), Some(Target::Player(2)));
+        assert_eq!(world.mob_body(id).unwrap().0.velocity, DVec3::ZERO);
+    }
+
+    #[test]
+    fn a_wind_charge_leaves_a_zombie_calm_but_angers_a_pillager() {
+        let mut world = EntityWorld::default();
+        let wind = ProjectileHit { amount: 1.0, kind: "minecraft:wind_charge", player: 4, velocity: DVec3::new(0.0, 0.0, 1.0) };
+        let zombie = world.spawn_zombie_active(crate::zombie::Zombie::new(at(0.5)), 0.0);
+        let spider = world.spawn_spider(crate::spider::Spider::new(at(3.5)), true);
+        let slime = world.spawn_slime(crate::slime::Slime::new(at(6.5), 2), true);
+        let pillager = world.spawn_illager(crate::illager::Illager::new(crate::illager::IllagerKind::Pillager, at(9.5)), true);
+        let drowned = world.spawn_drowned(crate::zombie::Zombie::new(at(12.5)));
+        let mut weak = crate::zombie::Zombie::new(at(15.5));
+        weak.health = 0.5;
+        let weak = world.spawn_zombie(weak, true);
+        for id in [zombie, spider, slime, pillager, drowned, weak] {
+            let before = health(&world, id);
+            assert!(world.player_projectile_hurt(id, wind).is_some_and(|hit| hit.applied && hit.full), "{:?}", world.entity_type(id));
+            assert!(health(&world, id) < before, "{:?}", world.entity_type(id));
+        }
+        let calm = world.zombie_mut(zombie).unwrap();
+        assert_eq!((calm.ai.as_ref().map(|ai| ai.state.hurt_by), calm.target_player_id), (Some(None), None));
+        assert_eq!(world.spider_mut(spider).unwrap().ai.state.hurt_by, None);
+        assert_eq!(world.slime_mut(slime).unwrap().ai.state.hurt_by, None);
+        assert_ne!(world.mob_body(zombie).unwrap().0.velocity, DVec3::ZERO, "it is still pushed");
+        assert_eq!(world.illager_mut(pillager).unwrap().ai.state.hurt_by.map(|(by, _)| by), Some(Target::Player(4)));
+        assert_eq!(world.zombie_mut(drowned).unwrap().target_player_id, Some(4), "a drowned is not on the calm list");
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert!(deaths[0].context.killed_by_player, "the player is still credited");
+        let trident = world.player_projectile_hurt(spider, ProjectileHit { amount: 8.0, kind: "minecraft:trident", ..wind });
+        assert!(trident.is_some_and(|hit| hit.applied));
+        assert_eq!(world.spider_mut(spider).unwrap().ai.state.hurt_by.map(|(by, _)| by), Some(Target::Player(4)));
+    }
+
+    #[test]
+    fn an_enderman_dodges_every_thrown_thing() {
+        let mut world = EntityWorld::default();
+        let id = world.spawn_enderman(crate::enderman::Enderman::new(at(0.5)), true);
+        let max = health(&world, id);
+        for kind in ["minecraft:thrown", "minecraft:trident", "minecraft:wind_charge"] {
+            world.enderman_mut(id).unwrap().dodge_pending = false;
+            let hit = world.player_projectile_hurt(id, ProjectileHit { kind, ..trident(1) });
+            assert_eq!(hit.map(|hit| hit.applied), Some(false));
+            assert!(world.enderman_mut(id).unwrap().dodge_pending, "{kind}");
+        }
+        assert_eq!(health(&world, id), max);
     }
 }

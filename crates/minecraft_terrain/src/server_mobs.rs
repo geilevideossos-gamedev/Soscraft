@@ -233,6 +233,10 @@ impl PlayerWorld for MobWorld<'_> {
             .collect()
     }
 
+    fn chest_open_count(&self, (x, y, z): (i32, i32, i32)) -> i32 {
+        self.level.borrow().chest_openers.get(&minecraftoss_core::BlockPos::new(x, y, z)).copied().unwrap_or(0)
+    }
+
     fn biome(&self, (x, y, z): (i32, i32, i32)) -> Option<String> {
         let level = self.level.borrow();
         let biome = minecraftoss_generator::feature::World::biome(&**level, x, y, z)?;

@@ -52,6 +52,7 @@ pub(crate) mod interface;
 pub mod lighting;
 pub mod locate;
 pub mod lodestone;
+pub mod maps;
 pub mod mesh;
 pub mod model;
 pub mod pack;

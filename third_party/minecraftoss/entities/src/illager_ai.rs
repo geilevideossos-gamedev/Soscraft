@@ -170,13 +170,8 @@ pub fn vindicator_goals() -> GoalSelector<MonsterGoalContext> {
             il::CREAKING_SPRINT_SPEED,
         ),
     );
-    selector.add(
-        2,
-        NeverGoal {
-            controls: &[Control::Move],
-        },
-    );
-    selector.add(3, NeverGoal { controls: &[] });
+    selector.add(2, crate::door_goals::BreakDoorGoal::vindicator());
+    selector.add(3, crate::door_goals::OpenDoorGoal::raider());
     selector.add(
         4,
         HoldGroundAttackGoal {

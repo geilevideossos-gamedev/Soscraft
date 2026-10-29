@@ -33,6 +33,7 @@ pub const TIME_EVERY: Duration = Duration::from_secs(1);
 pub const HELD_FOR: Duration = Duration::from_millis(500);
 pub const HAND_EVENTS: usize = 256;
 pub const BULLETS: u32 = u32::MAX;
+pub const MOB_BREAKER: u32 = 0x4000_0000;
 pub const CRACK_RANGE: f64 = 32.0;
 pub const BREAK_EVENT: i32 = 2001;
 pub const DRAGON_BAR: u64 = 1;
@@ -530,7 +531,14 @@ pub fn level_cracks(
             cracks.insert((player.id.0, pos), stage);
         }
     }
+    for (mob, pos, stage) in level.entities.iter().flat_map(|entities| entities.view.world.door_cracks()) {
+        cracks.insert((mob_breaker(mob), pos), stage);
+    }
     cracks
+}
+
+pub fn mob_breaker(mob: u64) -> u32 {
+    MOB_BREAKER | (mob as u32 & (MOB_BREAKER - 1))
 }
 
 fn near(feet: [f64; 3], pos: BlockPos, range: f64) -> bool {
@@ -2958,5 +2966,47 @@ mod tests {
         );
         assert!(near([0.5, 64.0, 0.5], (20, 64, 20), CRACK_RANGE));
         assert!(!near([0.5, 64.0, 0.5], (30, 64, 30), CRACK_RANGE));
+    }
+
+    #[test]
+    fn a_friend_sees_a_zombies_door_crack_grow_and_clear() {
+        let Some(mut level) =
+            crate::commands::tests::test_stream().and_then(crate::commands::tests::test_level)
+        else {
+            return;
+        };
+        let mut entities = crate::entities::Entities::new(
+            &level.terrain.stream,
+            Dimension::Overworld,
+            0,
+            &crate::data::GameData::default(),
+            None,
+            None,
+        );
+        let feet = glam::DVec3::new(1.5, 64.0, 0.5);
+        let zombie = minecraftoss_entities::zombie::Zombie::new(feet);
+        let id = entities.view.world.spawn_zombie_active(zombie, 0.0);
+        level.entities = Some(entities);
+        let door = (1, 65, 1);
+        let mut session = session_with(1, Dimension::Overworld);
+        let mut crack = |level: &mut Level, stage: Option<u8>| {
+            let world = &mut level.entities.as_mut().unwrap().view.world;
+            let ai = world.zombie_mut(id).unwrap().ai.as_deref_mut().unwrap();
+            ai.state.door.crack = stage.map(|stage| (door, stage));
+            let cracks = level_cracks(Dimension::Overworld, level, &BTreeMap::new());
+            session.send_cracks(cracks);
+        };
+        crack(&mut level, Some(0));
+        crack(&mut level, Some(0));
+        crack(&mut level, Some(5));
+        crack(&mut level, None);
+        let breaker = mob_breaker(id);
+        assert!(breaker != BULLETS && breaker >= MOB_BREAKER);
+        let shown = |stage| ToClient::Crack {
+            breaker,
+            pos: [1, 65, 1],
+            stage,
+        };
+        assert_eq!(session.outbox, vec![shown(0), shown(5), shown(-1)]);
     }
 }

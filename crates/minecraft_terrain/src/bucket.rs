@@ -146,6 +146,7 @@ pub enum Change {
     Server(Pos, ItemOnBlock),
     ThrowEye(crate::ender_eye::EyeThrow),
     Rocket(i32),
+    LaunchRocket(crate::firework::RocketLaunch),
     Breath,
     Frame(u64),
     Lectern(Pos),
@@ -545,6 +546,7 @@ mod tests {
             Change::Set(..)
             | Change::ThrowEye(..)
             | Change::Rocket(..)
+            | Change::LaunchRocket(..)
             | Change::Breath
             | Change::Frame(..)
             | Change::Lectern(..)

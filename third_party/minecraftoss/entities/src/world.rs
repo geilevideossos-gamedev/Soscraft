@@ -61,7 +61,7 @@ pub use piglins::{BarterThrow, PICKUP_DELAY as BARTER_PICKUP_DELAY, PiglinConver
 mod riding;
 pub use riding::Rider;
 mod leashes;
-pub use leashes::{is_fence, knot_position, Leash, LeashHolder, LeashPlayer, LeashUse, SavedLeash, LEAD, SNAP_DISTANCE};
+pub use leashes::{is_fence, knot_position, Leash, LeashHolder, LeashPlayer, LeashUse, SavedLeash, KNOT_HEIGHT, KNOT_WIDTH, LEAD, SNAP_DISTANCE};
 mod shulkers;
 mod shulker_bullets;
 mod equines;
@@ -79,7 +79,7 @@ pub use witches::{PlayerSplash, PotionBreak, PotionEntity, WitchEntity};
 use emissions::{base_tick_fluid, play_movement, MovementSounds};
 pub use slimes::SlimeEntity;
 pub use hazards::fire_immune;
-pub use combat::{AttackResult, PlayerAttack};
+pub use combat::{AttackResult, PlayerAttack, ProjectileHit, NO_ANGER_FROM_WIND_CHARGE};
 pub use merchants::{max_xp_for_level, min_xp_for_level, VillagerUse};
 pub mod families;
 use crate::eat_block::{
@@ -625,7 +625,7 @@ pub enum PlayerHitKind {
     Trident { velocity: DVec3 },
     Spit { velocity: DVec3 },
     Magic { at: DVec3 },
-    Fireworks { at: DVec3 },
+    Fireworks { at: DVec3, by: Option<u64> },
     Typed { damage_type: &'static str, message: &'static str, from: DVec3, push: DVec3, bypasses_armor: bool, bypasses_shield: bool, disable_shield_seconds: f32, effect: Option<(EffectKind, u32, u8)> },
 }
 
@@ -1114,6 +1114,29 @@ fn explosion_direction(body: &Body, eye_height: f32, center: DVec3) -> DVec3 {
     let offset = body.position + DVec3::new(0.0, f64::from(eye_height), 0.0) - center;
     let length = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z).sqrt();
     if length < f64::from(1.0e-5_f32) { DVec3::ZERO } else { DVec3::new(offset.x / length, offset.y / length, offset.z / length) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FireworkOwner {
+    Mob(u64),
+    Player(u64),
+    Nobody,
+}
+
+impl FireworkOwner {
+    pub fn mob(self) -> Option<u64> {
+        match self {
+            FireworkOwner::Mob(id) => Some(id),
+            FireworkOwner::Player(_) | FireworkOwner::Nobody => None,
+        }
+    }
+
+    pub fn player(self) -> Option<u64> {
+        match self {
+            FireworkOwner::Player(id) => Some(id),
+            FireworkOwner::Mob(_) | FireworkOwner::Nobody => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2200,7 +2223,7 @@ impl DamageSourceKind {
     /// Whether `PanicGoal` runs from it (`#panic_causes`, as the fixtures
     /// measured it: magic and explosions).
     fn panics(source: Option<Self>) -> bool {
-        matches!(source, Some(Self::Magic | Self::Explosion | Self::PlayerAttack | Self::MobAttack | Self::Hazard))
+        matches!(source, Some(Self::Magic | Self::Projectile | Self::Explosion | Self::PlayerAttack | Self::MobAttack | Self::Hazard))
     }
 }
 
@@ -2569,6 +2592,7 @@ pub struct EntityWorld {
     piglin_conversions: Vec<piglins::PiglinConversion>,
     zombie_conversions: Vec<(u64, u64)>,
     villager_infections: Vec<(u64, u64)>,
+    level_events: Vec<(i32, minecraftoss_player::Pos, i32)>,
     zombie_cures: Vec<u64>,
     trident_throws: Vec<crate::drowned_ai::TridentThrow>,
     sea_level: i32,
@@ -2708,6 +2732,7 @@ impl Default for EntityWorld {
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
             villager_infections: Vec::new(),
+            level_events: Vec::new(),
             zombie_cures: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: 63,
@@ -3001,6 +3026,10 @@ impl EntityWorld {
     /// armor counts, no default knockback), then its push
     /// (`pushFromExplosion`), which lands even when the hurt does not.
     fn hurt_by_blast(&mut self, key: EntityKey, damage: f32, push: DVec3, blaster: Blaster) -> Option<DamageResult> {
+        self.hurt_by_typed_blast(key, damage, push, blaster, blaster.damage_type())
+    }
+
+    fn hurt_by_typed_blast(&mut self, key: EntityKey, damage: f32, push: DVec3, blaster: Blaster, kind: &'static str) -> Option<DamageResult> {
         let time = self.game_time;
         let source = DamageSourceKind::Explosion;
         let blaster_undead = matches!(blaster, Blaster::Mob(mob) if self.entity_type(mob).is_some_and(crate::wither::is_undead));
@@ -3014,10 +3043,10 @@ impl EntityWorld {
             EntityKey::Enderman(id) => self.endermen.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.enderman.body)),
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, false, false), &mut e.witch.body)),
             EntityKey::IronGolem(id) => self.iron_golems.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.golem.body)),
-            EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.wolf.body)),
-            EntityKey::Feline(id) => self.felines.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.feline.body)),
-            EntityKey::Trader(id) => self.wandering_traders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.wolf_attacker(), time), &mut e.trader.body)),
-            EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, blaster.damage_type(), blaster.villager_attacker(), time), &mut e.villager.body)),
+            EntityKey::Wolf(id) => self.wolves.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, kind, blaster.wolf_attacker(), time), &mut e.wolf.body)),
+            EntityKey::Feline(id) => self.felines.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, kind, blaster.wolf_attacker(), time), &mut e.feline.body)),
+            EntityKey::Trader(id) => self.wandering_traders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, kind, blaster.wolf_attacker(), time), &mut e.trader.body)),
+            EntityKey::Villager(id) => self.villagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_from(damage, kind, blaster.villager_attacker(), time), &mut e.villager.body)),
             EntityKey::Cow(id) => self.cows.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.cow.body)),
             EntityKey::Sheep(id) => self.sheep.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.body)),
             EntityKey::Pig(id) => self.pigs.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.pig.body)),
@@ -3028,7 +3057,7 @@ impl EntityWorld {
             EntityKey::Illager(id) => self.illagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.illager.body)),
             EntityKey::Vex(id) => self.vexes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.vex.body)),
             EntityKey::Ravager(id) => self.ravagers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.ravager.body)),
-            EntityKey::Wither(id) => self.withers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_typed(damage, blaster.damage_type(), blaster_undead, false), &mut e.wither.body)),
+            EntityKey::Wither(id) => self.withers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_typed(damage, kind, blaster_undead, false), &mut e.wither.body)),
             EntityKey::Strider(id) => self.striders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, source), &mut e.strider.body)),
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.hoglin.body)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.piglin.body)),
@@ -3066,6 +3095,30 @@ impl EntityWorld {
                 self.note_hoglin_hurt(id, crate::monster_ai::Target::Player(player));
             }
             self.credit(id, result, "minecraft:player", true);
+        }
+        Some(result)
+    }
+
+    pub fn firework_blast(&mut self, owner: FireworkOwner, id: u64, damage: f32, at: DVec3) -> Option<DamageResult> {
+        let key = *self.order.iter().find(|key| key.id() == id)?;
+        self.blast_target(key)?;
+        let blaster = match owner {
+            FireworkOwner::Mob(mob) => Blaster::Mob(mob),
+            FireworkOwner::Player(player) => Blaster::Player(player),
+            FireworkOwner::Nobody => Blaster::Nobody,
+        };
+        let result = self.hurt_by_typed_blast(key, damage, DVec3::ZERO, blaster, "minecraft:fireworks")?;
+        if let FireworkOwner::Player(player) = owner {
+            if result.applied {
+                self.blasted_by_player(key, player);
+                self.note_hoglin_hurt(id, crate::monster_ai::Target::Player(player));
+            }
+            self.credit(id, result, "minecraft:player", true);
+        }
+        if result.applied && result.full {
+            if let Some((body, _)) = self.mob_body(id) {
+                self.knock_back(id, f64::from(0.4_f32), at.x - body.position.x, at.z - body.position.z);
+            }
         }
         Some(result)
     }
@@ -3303,6 +3356,108 @@ impl EntityWorld {
         id
     }
 
+    pub fn hit_boxes(&self) -> Vec<crate::potion::PotionTarget> {
+        let mut out = Vec::new();
+        let mut add = |id: u64, body: &Body, health: f32| {
+            if health > 0.0 {
+                let half_width = f64::from(body.width / 2.0);
+                out.push(crate::potion::PotionTarget {
+                    id,
+                    min: body.position - DVec3::new(half_width, 0.0, half_width),
+                    max: body.position + DVec3::new(half_width, f64::from(body.height), half_width),
+                    owner: false,
+                });
+            }
+        };
+        for e in &self.bats {
+            add(e.id, &e.bat.body, e.bat.health);
+        }
+        for e in &self.zombies {
+            add(e.id, &e.zombie.body, e.zombie.health);
+        }
+        for e in &self.skeletons {
+            add(e.id, &e.skeleton.body, e.skeleton.health);
+        }
+        for e in self.creepers.iter().filter(|e| !e.creeper.exploded) {
+            add(e.id, &e.creeper.body, e.creeper.health);
+        }
+        for e in &self.spiders {
+            add(e.id, &e.spider.body, e.spider.health);
+        }
+        for e in &self.slimes {
+            add(e.id, &e.slime.body, e.slime.health);
+        }
+        for e in &self.endermen {
+            add(e.id, &e.enderman.body, e.enderman.health);
+        }
+        for e in &self.witches {
+            add(e.id, &e.witch.body, e.witch.health);
+        }
+        for e in &self.iron_golems {
+            add(e.id, &e.golem.body, e.golem.health);
+        }
+        for e in &self.wolves {
+            add(e.id, &e.wolf.body, e.wolf.health);
+        }
+        for e in &self.felines {
+            add(e.id, &e.feline.body, e.feline.health);
+        }
+        for e in &self.wandering_traders {
+            add(e.id, &e.trader.body, e.trader.health);
+        }
+        for e in &self.snow_golems {
+            add(e.id, &e.golem.body, e.golem.health);
+        }
+        for e in &self.illagers {
+            add(e.id, &e.illager.body, e.illager.health);
+        }
+        for e in &self.vexes {
+            add(e.id, &e.vex.body, e.vex.health);
+        }
+        for e in &self.ravagers {
+            add(e.id, &e.ravager.body, e.ravager.health);
+        }
+        for e in &self.withers {
+            add(e.id, &e.wither.body, e.wither.health);
+        }
+        for e in &self.villagers {
+            add(e.id, &e.villager.body, e.villager.health);
+        }
+        for e in &self.cows {
+            add(e.id, &e.cow.body, e.cow.health);
+        }
+        for e in &self.sheep {
+            add(e.id, &e.body, e.health);
+        }
+        for e in &self.pigs {
+            add(e.id, &e.pig.body, e.pig.health);
+        }
+        for e in &self.chickens {
+            add(e.id, &e.chicken.body, e.chicken.health);
+        }
+        for e in &self.ghasts {
+            add(e.id, &e.ghast.body, e.ghast.health);
+        }
+        for e in &self.blazes {
+            add(e.id, &e.blaze.body, e.blaze.health);
+        }
+        for e in &self.striders {
+            add(e.id, &e.strider.body, e.strider.health);
+        }
+        for e in &self.hoglins {
+            add(e.id, &e.hoglin.body, e.hoglin.health);
+        }
+        for e in &self.piglins {
+            add(e.id, &e.piglin.body, e.piglin.health);
+        }
+        self.families.for_each(&mut |_, core| add(core.id, &core.body, core.health));
+        for e in self.shulkers.iter().filter(|e| e.shulker.health > 0.0) {
+            let (min, max) = e.shulker.bounding_box();
+            out.push(crate::potion::PotionTarget { id: e.id, min, max, owner: false });
+        }
+        out
+    }
+
     fn arrow_targets(&self, owner_id: u64, players: &[PlayerCandidate]) -> Vec<ArrowTarget> {
         // Players are pickable unless spectating (`canHitEntity`).
         let players = players.iter().filter(|p| self.players_pickable && p.alive && !p.spectator).map(|p| ArrowTarget {
@@ -3310,142 +3465,10 @@ impl EntityWorld {
             min: p.position - DVec3::new(0.3, 0.0, 0.3),
             max: p.position + DVec3::new(0.3, 1.8, 0.3),
         });
-        self.order
-            .iter()
-            .filter_map(|key| {
-                let (id, body, health) = match *key {
-                    EntityKey::Bat(id) => {
-                        let entity = self.bats.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.bat.body, entity.bat.health)
-                    }
-                    EntityKey::Zombie(id) => {
-                        let entity = self.zombies.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.zombie.body, entity.zombie.health)
-                    }
-                    EntityKey::Skeleton(id) => {
-                        let entity = self.skeletons.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.skeleton.body, entity.skeleton.health)
-                    }
-                    EntityKey::Creeper(id) => {
-                        let entity = self.creepers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.creeper.body, entity.creeper.health)
-                    }
-                    EntityKey::Spider(id) => {
-                        let entity = self.spiders.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.spider.body, entity.spider.health)
-                    }
-                    EntityKey::Slime(id) => {
-                        let entity = self.slimes.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.slime.body, entity.slime.health)
-                    }
-                    EntityKey::Enderman(id) => {
-                        let entity = self.endermen.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.enderman.body, entity.enderman.health)
-                    }
-                    EntityKey::Witch(id) => {
-                        let entity = self.witches.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.witch.body, entity.witch.health)
-                    }
-                    EntityKey::IronGolem(id) => {
-                        let entity = self.iron_golems.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.golem.body, entity.golem.health)
-                    }
-                    EntityKey::Wolf(id) => {
-                        let entity = self.wolves.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.wolf.body, entity.wolf.health)
-                    }
-                    EntityKey::Feline(id) => {
-                        let entity = self.felines.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.feline.body, entity.feline.health)
-                    }
-                    EntityKey::Trader(id) => {
-                        let entity = self.wandering_traders.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.trader.body, entity.trader.health)
-                    }
-                    EntityKey::SnowGolem(id) => {
-                        let entity = self.snow_golems.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.golem.body, entity.golem.health)
-                    }
-                    EntityKey::Illager(id) => {
-                        let entity = self.illagers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.illager.body, entity.illager.health)
-                    }
-                    EntityKey::Vex(id) => {
-                        let entity = self.vexes.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.vex.body, entity.vex.health)
-                    }
-                    EntityKey::Ravager(id) => {
-                        let entity = self.ravagers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.ravager.body, entity.ravager.health)
-                    }
-                    EntityKey::Wither(id) => {
-                        let entity = self.withers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.wither.body, entity.wither.health)
-                    }
-                    EntityKey::Villager(id) => {
-                        let entity = self.villagers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.villager.body, entity.villager.health)
-                    }
-                    EntityKey::Cow(id) => {
-                        let entity = self.cows.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.cow.body, entity.cow.health)
-                    }
-                    EntityKey::Sheep(id) => {
-                        let entity = self.sheep.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.body, entity.health)
-                    }
-                    EntityKey::Pig(id) => {
-                        let entity = self.pigs.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.pig.body, entity.pig.health)
-                    }
-                    EntityKey::Chicken(id) => {
-                        let entity = self.chickens.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.chicken.body, entity.chicken.health)
-                    }
-                    EntityKey::Ghast(id) => {
-                        let entity = self.ghasts.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.ghast.body, entity.ghast.health)
-                    }
-                    EntityKey::Blaze(id) => {
-                        let entity = self.blazes.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.blaze.body, entity.blaze.health)
-                    }
-                    EntityKey::Strider(id) => {
-                        let entity = self.striders.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.strider.body, entity.strider.health)
-                    }
-                    EntityKey::Hoglin(id) => {
-                        let entity = self.hoglins.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.hoglin.body, entity.hoglin.health)
-                    }
-                    EntityKey::Piglin(id) => {
-                        let entity = self.piglins.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.piglin.body, entity.piglin.health)
-                    }
-                    EntityKey::Shulker(id) => {
-                        let entity = self.shulkers.iter().find(|entity| entity.id == id)?;
-                        if id == owner_id || entity.shulker.health <= 0.0 {
-                            return None;
-                        }
-                        let (min, max) = entity.shulker.bounding_box();
-                        return Some(ArrowTarget { id, min, max });
-                    }
-                    EntityKey::Family(key, id) => {
-                        let core = self.families.core_in(key, id)?;
-                        (id, &core.body, core.health)
-                    }
-                    EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => return None,
-                };
-                if id == owner_id || health <= 0.0 {
-                    return None;
-                }
-                let half_width = f64::from(body.width / 2.0);
-                Some(ArrowTarget {
-                    id,
-                    min: body.position - DVec3::new(half_width, 0.0, half_width),
-                    max: body.position + DVec3::new(half_width, f64::from(body.height), half_width),
-                })
-            })
+        self.hit_boxes()
+            .into_iter()
+            .filter(|target| target.id != owner_id)
+            .map(|target| ArrowTarget { id: target.id, min: target.min, max: target.max })
             .chain(players)
             .collect()
     }
@@ -3866,6 +3889,10 @@ impl EntityWorld {
 
     pub fn take_villager_infections(&mut self) -> Vec<(u64, u64)> {
         std::mem::take(&mut self.villager_infections)
+    }
+
+    pub fn take_level_events(&mut self) -> Vec<(i32, minecraftoss_player::Pos, i32)> {
+        std::mem::take(&mut self.level_events)
     }
 
     pub fn take_zombie_cures(&mut self) -> Vec<u64> {
@@ -5776,6 +5803,7 @@ impl EntityWorld {
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
             villager_infections: Vec::new(),
+            level_events: Vec::new(),
             zombie_cures: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: self.sea_level,
@@ -6248,6 +6276,7 @@ impl EntityWorld {
                                 ai.state.mobs = mobs;
                                 ai.state.pois = lent_pois.take();
                                 ai.state.can_break_doors = entity.zombie.can_break_doors;
+                                ai.state.walk.can_open_doors |= entity.zombie.can_break_doors;
                                 // The goals hit before the zombie moves.
                                 let position = entity.zombie.body.position;
                                 let landed = monster_ai_step(ai, &mut entity.zombie.body, entity.zombie.health, &mut entity.random, &mut entity.voices, &mut entity.no_action_time, entity.previous_position, entity.tick_count, entity.id, world, &step);
@@ -6330,6 +6359,7 @@ impl EntityWorld {
                             entity.zombie.tick_drowning(eye_in_water, entity.no_ai);
                         (entity.pending_attack_villager.take(), entity.pending_attack_player.take(), conversion_due, !removed)
                     };
+                    self.apply_door_work(id, world, game_time);
                     let throw = self.zombie_mut(id).and_then(|e| Some((e.drowned.as_mut()?.throw.take()?, e.zombie.main_hand.clone())));
                     if let Some(((position, velocity), item)) = throw {
                         let item = item.unwrap_or_else(|| "minecraft:trident".to_owned());
@@ -9207,6 +9237,57 @@ mod tests {
     }
 
     #[test]
+    fn hit_boxes_cover_every_live_mob() {
+        use crate::{feline::FelineKind, hoglin::HoglinKind, illager::IllagerKind, piglin::PiglinKind};
+        let mut world = EntityWorld::default();
+        let at = |x: f64| DVec3::new(x, 1.0, 0.5);
+        world.spawn_bat(Bat::new(at(0.5)), true);
+        let zombie = world.spawn_zombie(Zombie::new(at(2.5)), true);
+        world.spawn_skeleton(Skeleton::new(at(4.5)), true);
+        let creeper = world.spawn_creeper(Creeper::new(at(6.5)), true);
+        world.spawn_spider(Spider::new(at(8.5)), true);
+        world.spawn_slime(crate::slime::Slime::new(at(10.5), 2), true);
+        world.spawn_enderman(crate::enderman::Enderman::new(at(12.5)), true);
+        world.spawn_witch(crate::witch::Witch::new(at(14.5)), true);
+        world.spawn_iron_golem(crate::iron_golem::IronGolem::new(at(16.5)), true);
+        world.spawn_wolf(crate::wolf::Wolf::new(at(18.5)), true);
+        world.spawn_feline(crate::feline::Feline::new(FelineKind::Cat, at(20.5)), true);
+        world.spawn_wandering_trader(crate::wandering_trader::WanderingTrader::new(at(22.5)), true);
+        world.spawn_snow_golem(crate::snow_golem::SnowGolem::new(at(24.5)), true);
+        world.spawn_villager(Villager::new(at(26.5)), true);
+        world.spawn_cow(Cow::new(at(28.5)), true);
+        world.spawn_sheep(Sheep::default(), at(30.5), true);
+        world.spawn_pig(Pig::new(at(32.5)), true);
+        world.spawn_chicken(Chicken::new(at(34.5)), true);
+        world.spawn_illager(crate::illager::Illager::new(IllagerKind::Vindicator, at(36.5)), true);
+        world.spawn_vex(crate::vex::Vex::new(at(38.5)), true);
+        world.spawn_ravager(crate::ravager::Ravager::new(at(41.5)), true);
+        world.spawn_wither(crate::wither::Wither::new(at(45.5)), true);
+        world.spawn_ghast(crate::ghast::Ghast::new(at(52.5)), true);
+        world.spawn_blaze(crate::blaze::Blaze::new(at(58.5)), true);
+        world.spawn_strider(crate::strider::Strider::new(at(60.5)), true);
+        world.spawn_hoglin(crate::hoglin::Hoglin::new(HoglinKind::Zoglin, at(63.5)), true);
+        world.spawn_piglin(crate::piglin::Piglin::new(PiglinKind::Brute, at(66.5)), true);
+        let shulker = world.spawn_shulker(crate::shulker::Shulker::new(at(68.5)), true);
+        let potion = world.spawn_potion(crate::potion::ThrownPotion::shoot(crate::potion::Potion::Poison, 1, at(70.5), DVec3::Z, 0.5, 1.0, &mut LegacyRandom::new(0)));
+        let ids = |world: &EntityWorld| {
+            let mut ids: Vec<u64> = world.hit_boxes().iter().map(|target| target.id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        let mut live: Vec<u64> = world.mob_ids().filter(|&id| id != potion).collect();
+        live.sort_unstable();
+        assert_eq!(live.len(), 28);
+        assert_eq!(ids(&world), live);
+        let boxed = world.hit_boxes().into_iter().find(|target| target.id == shulker).unwrap();
+        assert_eq!((boxed.min, boxed.max, boxed.owner), (world.shulkers()[0].shulker.bounding_box().0, world.shulkers()[0].shulker.bounding_box().1, false));
+        world.zombie_mut(zombie).unwrap().zombie.health = 0.0;
+        world.creeper_mut(creeper).unwrap().creeper.exploded = true;
+        live.retain(|&id| id != zombie && id != creeper);
+        assert_eq!(ids(&world), live);
+    }
+
+    #[test]
     fn a_zombie_s_killing_blow_infects_a_villager_always_on_hard_half_the_time_on_normal_and_never_below() {
         let infections = |difficulty: i32| {
             let mut world = EntityWorld::default();
@@ -9240,6 +9321,110 @@ mod tests {
         let villager = world.spawn_villager(Villager::new(DVec3::new(0.0, 1.0, 1.0)), true);
         assert!(world.mob_shot_mob(skeleton, villager, 100.0, DVec3::Z));
         assert!(world.take_villager_infections().is_empty(), "only zombies infect");
+    }
+
+    struct WalledYard {
+        removed: Vec<minecraftoss_player::Pos>,
+    }
+
+    impl World for WalledYard {
+        fn block(&self, (x, y, z): minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            if y < 1 {
+                return Some(minecraftoss_player::Block::new("minecraft:stone"));
+            }
+            if z != 3 || !(-3..=3).contains(&x) || y > 3 || (x, y) == (1, 2) || self.removed.contains(&(x, y, z)) {
+                return None;
+            }
+            if x != 0 || y == 3 {
+                return Some(minecraftoss_player::Block::new("minecraft:stone"));
+            }
+            let half = if y == 1 { "lower" } else { "upper" };
+            Some(minecraftoss_player::Block::new("minecraft:oak_door").with("facing", "north").with("half", half).with("hinge", "left").with("open", "false").with("powered", "false"))
+        }
+        fn set_block(&mut self, pos: minecraftoss_player::Pos, block: Option<minecraftoss_player::Block>) {
+            if block.is_none() {
+                self.removed.push(pos);
+            }
+        }
+    }
+
+    #[test]
+    fn a_zombie_that_can_break_doors_paths_through_a_wooden_door_and_one_that_cannot_goes_around() {
+        let walk = |breaks: bool| {
+            let mut world = EntityWorld::default();
+            world.set_difficulty(3);
+            world.spawn_villager(Villager::new(DVec3::new(2.5, 1.0, 6.5)), true);
+            let mut zombie = Zombie::new(DVec3::new(0.5, 1.0, 0.5));
+            zombie.can_break_doors = breaks;
+            let id = world.spawn_zombie_active(zombie, 0.0);
+            world.zombie_mut(id).unwrap().set_random_seed(3);
+            let mut yard = WalledYard { removed: Vec::new() };
+            let (mut through, mut around) = (false, false);
+            for _ in 0..600 {
+                world.tick(&mut yard);
+                let Some(zombie) = world.zombies().iter().find(|e| e.id == id) else { break };
+                through |= zombie.navigation.nodes.contains(&(0, 1, 3));
+                around |= zombie.navigation.nodes.iter().any(|node| node.0.abs() >= 4);
+                if !yard.removed.is_empty() {
+                    break;
+                }
+            }
+            (through, around, yard.removed, world.take_level_events())
+        };
+        let (through, around, removed, events) = walk(false);
+        assert!(!through && around, "a zombie that cannot break doors goes round the wall");
+        assert!(removed.is_empty() && events.is_empty());
+        let (through, _, removed, events) = walk(true);
+        assert!(through, "a door breaker paths through the closed door");
+        assert_eq!(removed, vec![(0, 2, 3)], "and breaks its upper half");
+        assert!(events.iter().all(|&(_, pos, data)| pos == (0, 2, 3) && data == 0));
+        assert_eq!(events.last().map(|e| e.0), Some(crate::door_goals::BREAK_WOODEN_DOOR));
+        assert!(events.iter().any(|e| e.0 == crate::door_goals::ATTACK_WOODEN_DOOR), "it knocks before it breaks");
+    }
+
+    struct DoorMap(HashMap<minecraftoss_player::Pos, minecraftoss_player::Block>);
+
+    impl World for DoorMap {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            self.0.get(&pos).cloned()
+        }
+        fn set_block(&mut self, pos: minecraftoss_player::Pos, block: Option<minecraftoss_player::Block>) {
+            match block {
+                Some(block) => self.0.insert(pos, block),
+                None => self.0.remove(&pos),
+            };
+        }
+    }
+
+    #[test]
+    fn door_work_opens_a_door_with_its_sound_queues_the_events_and_breaks_the_upper_half() {
+        let half = |half: &str| minecraftoss_player::Block::new("minecraft:spruce_door").with("facing", "north").with("half", half).with("hinge", "left").with("open", "false").with("powered", "false");
+        let mut map = DoorMap(HashMap::from([((0, 1, 1), half("lower")), ((0, 2, 1), half("upper"))]));
+        fn door(world: &mut EntityWorld, id: u64) -> &mut crate::door_goals::DoorWork {
+            &mut world.zombie_mut(id).unwrap().ai.as_deref_mut().unwrap().state.door
+        }
+        let mut world = EntityWorld::default();
+        let id = world.spawn_zombie_active(Zombie::new(DVec3::new(0.5, 1.0, 0.5)), 0.0);
+        door(&mut world, id).toggles.push(((0, 2, 1), true));
+        door(&mut world, id).events.push((crate::door_goals::ATTACK_WOODEN_DOOR, (0, 2, 1)));
+        world.apply_door_work(id, &mut map, 0);
+        for pos in [(0, 1, 1), (0, 2, 1)] {
+            assert_eq!(map.0[&pos].property("open"), Some("true"), "both halves open");
+        }
+        let voices = std::mem::take(&mut world.zombie_mut(id).unwrap().voices);
+        assert_eq!(voices.len(), 1);
+        let Voice::Event(sound, volume, pitch) = voices[0].0.clone() else { panic!("{voices:?}") };
+        assert_eq!((sound, volume, voices[0].1), ("block.wooden_door.open", 1.0, DVec3::new(0.5, 2.5, 1.5)));
+        assert!((0.9..1.0).contains(&pitch), "{pitch}");
+        assert_eq!(world.take_level_events(), vec![(crate::door_goals::ATTACK_WOODEN_DOOR, (0, 2, 1), 0)]);
+        assert_eq!(door(&mut world, id).toggles, Vec::new(), "the requests are used up");
+        door(&mut world, id).toggles.push(((0, 2, 1), true));
+        world.apply_door_work(id, &mut map, 0);
+        assert!(world.zombie_mut(id).unwrap().voices.is_empty(), "an open door makes no sound again");
+        door(&mut world, id).broken = Some((0, 2, 1));
+        world.apply_door_work(id, &mut map, 0);
+        assert!(!map.0.contains_key(&(0, 2, 1)), "the upper half is broken");
+        assert_eq!(door(&mut world, id).broken, None);
     }
 
     #[test]

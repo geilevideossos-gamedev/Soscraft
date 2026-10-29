@@ -236,6 +236,25 @@ mod tests {
     }
 
     #[test]
+    fn a_burst_pushes_a_pillager_and_a_ravager() {
+        use minecraftoss_entities::illager::{Illager, IllagerKind};
+        use minecraftoss_entities::ravager::Ravager;
+        let mut mobs = EntityWorld::default();
+        let pillager = mobs.spawn_illager(
+            Illager::new(IllagerKind::Pillager, DVec3::new(1.5, 64.0, 0.5)),
+            true,
+        );
+        let ravager = mobs.spawn_ravager(Ravager::new(DVec3::new(-1.5, 64.0, 0.5)), true);
+        let center = DVec3::new(0.0, 64.0, 0.5);
+        let players = burst(&Blocks::default(), &mut mobs, center, &[], Charge::Player);
+        assert!(players.is_empty());
+        let pushed = mobs.body_mut(pillager).unwrap().velocity;
+        assert!(pushed.x > 0.0 && pushed.y > 0.0, "{pushed:?}");
+        let pushed = mobs.body_mut(ravager).unwrap().velocity;
+        assert!(pushed.x < 0.0 && pushed.y > 0.0, "{pushed:?}");
+    }
+
+    #[test]
     fn a_wall_shields_what_is_behind_it() {
         let mut world = Blocks::default();
         for y in 60..70 {
