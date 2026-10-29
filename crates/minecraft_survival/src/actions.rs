@@ -1166,6 +1166,14 @@ pub fn act(
                     })
                     .or_else(|| minecraft_terrain::item_frame::frame_use(&player, &outlined, stack))
                     .or_else(|| {
+                        minecraft_terrain::firework::rocket_place(
+                            &player,
+                            &outlined,
+                            stack,
+                            actor.gliding,
+                        )
+                    })
+                    .or_else(|| {
                         minecraft_terrain::firework::rocket_use(stack, actor.gliding, || {
                             entities.random_float()
                         })
@@ -1219,6 +1227,9 @@ pub fn act(
                                 &mut effects,
                             );
                         }
+                    }
+                    minecraft_terrain::bucket::Change::LaunchRocket(launch) => {
+                        entities.launch_rocket(player_id, launch, sent)
                     }
                     minecraft_terrain::bucket::Change::Breath => entities.bottle_breath(
                         player_id,
@@ -2272,6 +2283,122 @@ pub(crate) mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    fn tick_until(
+        entities: &mut Entities,
+        player: u64,
+        mut done: impl FnMut(&mut Entities) -> bool,
+    ) {
+        let mut inventory = Inventory::default();
+        let started = std::time::Instant::now();
+        while !done(entities) {
+            assert!(
+                started.elapsed().as_secs() < 300,
+                "no answer from the level"
+            );
+            let batch = crate::tick_rate::TickBatch {
+                normal: if entities.ready_for_ticks() {
+                    vec![true]
+                } else {
+                    Vec::new()
+                },
+                overload: None,
+            };
+            let view = PlayerView {
+                feet: FEET,
+                alive: true,
+                attackable: true,
+                spectator: false,
+                picks_up: false,
+                health: 20.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                main_hand: None,
+                offhand: None,
+                sneaking: false,
+                hero: None,
+                sleeping: None,
+                sleep_timer: 0,
+                forward: 0.0,
+                strafe: 0.0,
+                jumping: false,
+                swirl: None,
+                omens: Default::default(),
+            };
+            let mut actors = [TickActor {
+                id: player,
+                view,
+                inventory: &mut inventory,
+                selected: 0,
+            }];
+            let _ = entities.tick(
+                &mut actors,
+                0.05,
+                &batch,
+                crate::tick_rate::ClientTiming::default(),
+                minecraft_terrain::server::ClockTicks::default(),
+                true,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_rocket_clicked_on_the_ground_leaves_the_stack_and_rises_from_the_click() {
+        use minecraft_terrain::firework_rocket::{LIFT, RISE, is_rocket};
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding(minecraft_terrain::firework::FIREWORK_ROCKET, 64);
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, [4.5, 201.0, 6.5]));
+        act(
+            &mut player,
+            &mut level,
+            &globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        let id = u64::from(player.id.0);
+        let entities = level.entities.as_mut().expect("entities");
+        assert!(entities.awaits_item_use(id), "the level launches it");
+        assert_eq!(count(&player), Some(64));
+        tick_until(entities, id, |entities| {
+            entities
+                .player_outputs(id)
+                .is_some_and(|outputs| !outputs.item_uses_done.is_empty())
+        });
+        let done = entities.take_player_outputs(id).item_uses_done;
+        assert_eq!(done.len(), 1);
+        for used in done {
+            let heard = crate::level::finish_item_use(entities, &mut player.inventory, used, true);
+            assert!(heard.is_empty(), "the rocket sounds its own launch");
+        }
+        assert_eq!(count(&player), Some(63));
+        tick_until(entities, id, |entities| {
+            entities.view.thrown.iter().any(is_rocket)
+        });
+        let rocket = entities
+            .view
+            .thrown
+            .iter()
+            .find(|view| is_rocket(view))
+            .expect("a rocket flies")
+            .clone();
+        let ticks = f64::from(rocket.age);
+        let risen = RISE * ticks + LIFT * ticks * (ticks + 1.0) / 2.0;
+        assert!(
+            (rocket.position.y - (201.15 + risen)).abs() < 1e-6,
+            "it starts 0.15 above the click: {rocket:?}"
+        );
+        assert!(
+            (rocket.position.x - 4.5).hypot(rocket.position.z - 6.5) < 0.25,
+            "{rocket:?}"
+        );
     }
 
     #[test]

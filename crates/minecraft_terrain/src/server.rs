@@ -2096,6 +2096,12 @@ impl ServerSim {
         self.eyes.throw(self.worldgen, &mut self.level, owner, throw)
     }
 
+    pub fn launch_rocket(&mut self, owner: u64, launch: crate::firework::RocketLaunch) -> bool {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(self.sound_random.next_long());
+        self.rockets.push(crate::firework_rocket::Rocket::launch(crate::firework_rocket::RocketOwner::Player(owner), launch.at, launch.fireworks, &mut random));
+        true
+    }
+
     pub fn take_eye_answers(&mut self) -> Vec<crate::eye_of_ender::EyeAnswer> {
         self.eyes.take_answers()
     }
@@ -3470,6 +3476,7 @@ pub enum Command {
     Throw(Box<crate::thrown::Thrown>),
     ThrowTrident(Box<crate::trident::ThrownTrident>),
     ThrowEye { owner: u64, throw: Box<crate::ender_eye::EyeThrow> },
+    LaunchRocket { owner: u64, launch: Box<crate::firework::RocketLaunch> },
     BottleBreath { player: u64, feet: glam::DVec3, height: f64 },
     Save,
     SetWeather { weather: &'static str, duration: i32 },
@@ -3986,6 +3993,10 @@ impl ServerHandle {
         self.send(Command::ThrowEye { owner, throw: Box::new(throw) });
     }
 
+    pub fn launch_rocket(&mut self, owner: u64, launch: crate::firework::RocketLaunch) {
+        self.send(Command::LaunchRocket { owner, launch: Box::new(launch) });
+    }
+
     pub fn bottle_breath(&mut self, player: u64, feet: glam::DVec3, height: f64) {
         self.send(Command::BottleBreath { player, feet, height });
     }
@@ -4155,6 +4166,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.item_uses.push((owner, sim.throw_eye(owner, &throw)));
                     out.eye_answers.extend(sim.take_eye_answers());
                 }
+                Command::LaunchRocket { owner, launch } => out.item_uses.push((owner, sim.launch_rocket(owner, *launch))),
                 Command::BottleBreath { player, feet, height } => out.item_uses.push((player, sim.bottle_breath(feet, height))),
                 Command::SetWeather { weather, duration } => {
                     sim.set_weather_for(weather, duration);

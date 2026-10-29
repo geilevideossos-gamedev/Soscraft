@@ -1024,6 +1024,11 @@ impl Entities {
         self.players.queue(player).item_use_waiting = Some(sent);
     }
 
+    pub fn launch_rocket(&mut self, player: u64, launch: minecraft_terrain::firework::RocketLaunch, sent: SentItemUse) {
+        self.server.launch_rocket(player, launch);
+        self.players.queue(player).item_use_waiting = Some(sent);
+    }
+
     pub fn bottle_breath(&mut self, player: u64, feet: DVec3, height: f64, sent: SentItemUse) {
         self.server.bottle_breath(player, feet, height);
         self.players.queue(player).item_use_waiting = Some(sent);

@@ -687,3 +687,37 @@ After 4947f42c.
   - **For the merge with D0:** D0's `EntityKey::Family` arm in `hurt_by_blast` calls `families::Hurt::new(damage, blaster.damage_type(), source)`. After the merge it sits in `hurt_by_typed_blast` and should pass `kind` instead, so the new families see `minecraft:fireworks` from a burst.
 - **Test steps:** the knockback shows once players can launch rockets (group `fw-launch`, steps FW-5 to FW-9 of the brief). Until then there is nothing new to see in game.
 - **Kit:** none.
+
+## Group fw-launch
+
+### 1. Minecraft firework rockets launch from a clicked block
+
+After b299a298.
+
+- **Vanilla (26.3, checked with javap):** `FireworkRocketItem.useOn` passes while the player is fall flying (the elytra boost is `use`). Otherwise the server spawns `new FireworkRocketEntity(level, player, click.x + face.stepX * 0.15, click.y + face.stepY * 0.15, click.z + face.stepZ * 0.15, stack)` (owned by the player) and shrinks the stack by one; a creative player keeps it (`ServerPlayerGameMode.useItemOn` restores the count). The rocket sounds its launch on its first tick. In adventure mode `ItemStack.useOn` passes for want of `may_build`.
+- **Changed:**
+  - `minecraft_terrain/src/firework.rs`: `RocketLaunch { at, fireworks }` and `rocket_place(player, world, held, gliding)`: the block the player aims at within 4.5 blocks, the rocket at the click point plus 0.15 times the clicked face, with the stack's `Fireworks`. It does nothing while gliding or without a rocket.
+  - `minecraft_terrain/src/bucket.rs`: `Change::LaunchRocket(RocketLaunch)`, next to `Change::Rocket`.
+  - `minecraft_survival/src/actions.rs`: `rocket_place` joins the item-on-block chain just before `rocket_use`; its arm calls `entities.launch_rocket`.
+  - `minecraft_survival/src/entities.rs`: `launch_rocket(player, launch, sent)` (next to `throw_eye`) sends the launch and waits for the level's answer, so the stack shrinks and the arm swings when the rocket is in the world, for the host and for friends (whose uses run through the same `actions::act` on the host).
+  - `minecraft_terrain/src/server.rs`: `Command::LaunchRocket { owner, launch }` (next to `ThrowEye`), `ServerHandle::launch_rocket`, and `ServerSim::launch_rocket`, which pushes `Rocket::launch(RocketOwner::Player(owner), ..)` with a random drawn from the level's sound random, and answers the item use.
+  - No protocol change: the launch travels inside the host.
+- **Tests:**
+  - `firework::tests::a_rocket_clicked_on_a_block_launches_just_off_the_clicked_face`: 0.15 above the top of the clicked grass with the stack's stars and flight; 0.15 off the west face of a wall; nothing while gliding, with nothing in reach, or with another item.
+  - `actions::tests::a_rocket_clicked_on_the_ground_leaves_the_stack_and_rises_from_the_click` (needs the 26.3 data): a survival press at the stone floor waits for the level, the answer leaves 63 rockets, and the rocket view climbs from 0.15 above the click.
+- **Decisions:**
+  - A rocket clicked at a mob's feet starts inside the mob and rises through it, as in vanilla (fw-burst, commit 2). The owner's step for a burst near a mob therefore uses a roof (FW-5); the dispenser of the next commit shoots rockets into mobs from outside.
+  - The launch, like the other item-on-block uses, needs `may_build` (no rockets from adventure mode).
+- **Test steps** (survival, by day, open flat ground; the starred rockets need E1's kit parser; until group `fw-shapes` every starred burst draws the current spark burst in all its stars' colours with the bang):
+  1. **FW-1. A plain rocket.** Put the plain rockets in the hotbar and right-click the grass 3 blocks ahead. A rocket rises from just above the click with its launch whoosh and white trail, and after 1 to 1.5 s pops in 2 to 4 grey puffs with no bang. The stack shows 63. **Screenshot FW-1.**
+  2. **FW-2. A starred rocket.** Place the red rocket the same way. It rises and bursts into red sparks with a bang. Place the two-star rocket: it climbs higher before it bursts. Place the three-star rocket: it bursts lower.
+  3. **FW-3. Creative keeps it.** `/gamemode creative`, place a plain rocket: it flies and the stack stays at its count. `/gamemode survival`.
+  4. **FW-4. Gliding still boosts.** With the elytra on, glide from `/tp ~ ~30 ~` and right-click while looking at the ground below: you boost, and no rocket rises from the ground.
+  5. **FW-5. Bursts near mobs.** Build a 3x3 cobblestone roof 3 blocks above the ground on four pillars. Hatch a zombie under it, and when it is 2 blocks from you, right-click the ground under the roof next to it with the red rocket. The rocket meets the roof at once and bursts: the zombie flashes red and hops away from the burst, and you lose about two hearts (you are within 5 blocks). **Screenshot FW-5.**
+  6. **FW-6. Animals.** Hatch 3 cows under the roof and burst the red rocket among them the same way: all three are hurt, pushed away from the burst and run in panic.
+  7. **FW-7. An iron golem.** Hatch an iron golem under the roof and burst the red rocket next to it: it flashes red, does not move, and turns on you (a player's rocket blames the player). Run. **Screenshot FW-7.**
+- **Kit:** the plain rockets, the three starred rockets of the brief, eggs and the roof.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:zombie_spawn_egg*16,minecraft:cow_spawn_egg*8,minecraft:iron_golem_spawn_egg*2,minecraft:elytra,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```

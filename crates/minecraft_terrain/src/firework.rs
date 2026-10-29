@@ -1,10 +1,14 @@
 use crate::bucket::{Change, ItemUse, Sound};
+use glam::DVec3;
 use minecraftoss_player::inventory::ItemStack;
+use minecraftoss_player::{Player, World};
 use serde_json::Value;
 
 pub const FIREWORK_ROCKET: &str = "minecraft:firework_rocket";
 pub const LAUNCH_SOUND: &str = "minecraft:entity.firework_rocket.launch";
 pub const LAUNCH_VOLUME: f32 = 3.0;
+pub const PLACEMENT_OFFSET: f64 = 0.15;
+const USE_REACH: f64 = 4.5;
 const FIREWORKS: &str = "minecraft:fireworks";
 const REMOVED_FIREWORKS: &str = "!minecraft:fireworks";
 const DEFAULT_FLIGHT: i32 = 1;
@@ -129,6 +133,36 @@ pub fn lifetime(flight: i32, mut random: impl FnMut() -> f32) -> i32 {
 
 pub fn boost_ticks(stack: &ItemStack, random: impl FnMut() -> f32) -> i32 {
     lifetime(flight_duration(stack), random) + 1
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RocketLaunch {
+    pub at: DVec3,
+    pub fireworks: Fireworks,
+}
+
+pub fn rocket_place(
+    player: &Player,
+    world: &impl World,
+    held: &ItemStack,
+    gliding: bool,
+) -> Option<ItemUse> {
+    if held.id != FIREWORK_ROCKET || gliding {
+        return None;
+    }
+    let hit = player.target(world, USE_REACH)?;
+    let (x, y, z) = hit.face.offset();
+    let face = DVec3::new(f64::from(x), f64::from(y), f64::from(z));
+    Some(ItemUse {
+        change: Change::LaunchRocket(RocketLaunch {
+            at: hit.point + face * PLACEMENT_OFFSET,
+            fireworks: fireworks(held),
+        }),
+        result: None,
+        wear: 0,
+        consumed: true,
+        sounds: Vec::new(),
+    })
 }
 
 pub fn rocket_use(held: &ItemStack, gliding: bool, random: impl FnMut() -> f32) -> Option<ItemUse> {
@@ -263,6 +297,90 @@ mod tests {
                 used.sounds[0].volume
             ),
             (LAUNCH_SOUND, None, 3.0)
+        );
+    }
+
+    use minecraftoss_player::{Block, Pos};
+
+    struct Blocks(Vec<Pos>);
+
+    impl World for Blocks {
+        fn block(&self, pos: Pos) -> Option<Block> {
+            self.0
+                .contains(&pos)
+                .then(|| Block::new("minecraft:grass_block"))
+        }
+
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+    }
+
+    fn launched(used: ItemUse) -> RocketLaunch {
+        assert!(used.consumed && used.result.is_none() && used.wear == 0);
+        assert!(
+            used.sounds.is_empty(),
+            "the launch sounds on its first tick"
+        );
+        match used.change {
+            Change::LaunchRocket(launch) => launch,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_rocket_clicked_on_a_block_launches_just_off_the_clicked_face() {
+        let ground = Blocks(vec![(0, 0, 0)]);
+        let mut looking_down = Player::new(DVec3::new(0.5, 1.0, 0.5));
+        looking_down.pitch = 90.0;
+        let starred = rocket(Some(json!({"minecraft:fireworks": {
+            "flight_duration": 2,
+            "explosions": [{"shape": "burst", "colors": [11743532]}]
+        }})));
+        let on_top = launched(
+            rocket_place(&looking_down, &ground, &starred, false).expect("the grass is clicked"),
+        );
+        assert!(
+            (on_top.at - DVec3::new(0.5, 1.15, 0.5)).length() < 1e-9,
+            "{}",
+            on_top.at
+        );
+        assert_eq!(on_top.fireworks, fireworks(&starred));
+        assert_eq!(on_top.fireworks.flight, 2);
+        let wall = Blocks(vec![(2, 2, 0)]);
+        let mut looking_east = Player::new(DVec3::new(0.5, 1.0, 0.5));
+        looking_east.yaw = -90.0;
+        let on_side = launched(
+            rocket_place(&looking_east, &wall, &rocket(None), false).expect("the wall is clicked"),
+        );
+        assert!(
+            (on_side.at - DVec3::new(2.0 - PLACEMENT_OFFSET, 2.62, 0.5)).length() < 1e-6,
+            "{}",
+            on_side.at
+        );
+        assert_eq!(
+            on_side.fireworks,
+            Fireworks {
+                flight: 1,
+                explosions: Vec::new()
+            }
+        );
+        assert_eq!(
+            rocket_place(&looking_down, &ground, &rocket(None), true),
+            None,
+            "a gliding player boosts instead"
+        );
+        assert_eq!(
+            rocket_place(&looking_down, &Blocks(Vec::new()), &rocket(None), false),
+            None,
+            "nothing in reach"
+        );
+        assert_eq!(
+            rocket_place(
+                &looking_down,
+                &ground,
+                &ItemStack::new("minecraft:stick", 1),
+                false
+            ),
+            None
         );
     }
 }
