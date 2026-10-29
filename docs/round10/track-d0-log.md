@@ -243,3 +243,37 @@ After 4fdf76e1.
 ```
 IW4L_MINECRAFT_KIT=minecraft:cow_spawn_egg*2,minecraft:zombie_spawn_egg*4,minecraft:horse_spawn_egg*2,minecraft:sheep_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:iron_golem_spawn_egg*2,minecraft:water_bucket,minecraft:stone*64,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
 ```
+
+## Group registry-client
+
+### 1. Registered Minecraft mobs are saved, loaded and hatched
+
+After bdbc8852.
+
+- **Changed (`minecraft_terrain`, D0-5.1):**
+  - New root `families.rs` (`pub mod families;` in `lib.rs`, after `server_mobs`): `Common` (the values `spawn_saved` already parses: position, yaw, health, persistence, `NoAI`, the UUID-seeded random, fire, `Age`), the `Add` callback type of `mob_tags_where`, the `TerrainFamily: Registered` trait with `read` and `fields` (defaults: nothing), the `terrain_group!` macro (per group: `kinds`, `spawn_saved`, `save`; it accepts zero entries and entries with attributes), and the root `kinds`, `spawn_saved` and `save` over the seven groups.
+  - Seven group files `families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, each one `terrain_group!` line; only `pests` has entries. The silverfish and endermite glue is in `families/pests/silverfish.rs` and `families/pests/endermites.rs`: each re-exports the entity type and implements `TerrainFamily`. Both `read` set their goals' head turn to the saved yaw. The endermite reads and writes `Lifetime` (vanilla `Endermite.readAdditionalSaveData`/`addAdditionalSaveData`).
+  - `server_mobs::spawn_saved`: its `_ => return None` arm becomes the generic arm. It finds the family whose `KINDS` holds the tag's `id`, calls `S::spawn` with that `'static` entry, applies the common values and `TerrainFamily::read`, then `spawn_family`. The existing tail (UUID, leash, effects, motion, ground, fire) then runs for registered mobs too.
+  - `mob_tags_where`: one `crate::families::save(world, &mut add)` after the last family (the chickens). It saves every core that has not left (`removed`) through the existing `add`, so the original tag is merged as for every mob and a dying mob is skipped as before.
+  - `is_simulated(kind)` and `simulated_kinds()` (sorted, each once): `SIMULATED_KINDS` plus the terrain registry's kinds. `carries` takes registered riders through `is_simulated`, and registered vehicles through `|| families::is_vehicle(id)` (the static `MOUNT` const).
+- **Changed (`minecraft_survival`):** `commands::registries` lists `simulated_kinds()`. `/summon` refuses any kind not on that list (`minecraft_commands` `summon`), so this is what lets `/summon minecraft:silverfish` and `/summon minecraft:endermite` work, and tab completion offers them.
+- **Changed (terrain tests, `server.rs`):** the eggs survey compares the hatched eggs with `HATCHING_EGGS` plus every registered kind without `minecraft:`, sorted; `HATCHING_EGGS` stays as it was. `command_summons_do_not_reach_the_egg_results` summons every kind of `simulated_kinds()`. `live_shulkers_stay_far_from_players_while_dormant_monsters_go` uses `minecraft:phantom` as its dormant monster instead of the now simulated silverfish (D0-9.4; M3's phantom commit must switch it again).
+- **What changes in the game:** silverfish and endermites from eggs, `/summon`, spawners, saved chunks and stronghold spawners now live in the entity world instead of lying dormant: they hunt, bite, are saved with their tags and load again. They are not drawn yet (group silverfish-drawn), and MW2 bullets do not hit them yet (group registry-draw).
+- **Tests added:** `server_mobs::tests::a_silverfish_and_an_endermite_save_and_load_with_its_lifetime` (position, yaw and head turn, health capped at the maximum, persistence, `NoAI`, fire, motion, ground, UUID and `Lifetime` load; health, persistence and `Lifetime` save, with an unsimulated field such as `CustomName` kept from the original; both load again the same; a removed mite is not saved; a silverfish saved with a rider stays dormant), `server_mobs::tests::every_registered_kind_is_simulated_and_summonable` (the terrain registry names exactly the entity registry's kinds; `simulated_kinds` sorted, each once, holding `SIMULATED_KINDS` and every registered kind; `is_simulated`; every registered kind loads from a bare tag and rides a ravager as a saved jockey), `commands::tests::summon_knows_the_registered_mobs` (survival: the `/summon` list holds the silverfish and the endermite, sorted). The eggs survey (gated on the 26.3 data) now hatches silverfish and endermites.
+- **Decisions:**
+  - A registered mob whose tag has `Passengers` stays dormant unless `carries` stripped them (a registered vehicle with simulated riders), exactly as the horse, vex and ravager arms do, so its riders are never lost on the next save.
+  - The saved health is capped at the family's maximum (vanilla `setHealth` clamps to `getMaxHealth`). A saved `Age` below 0 makes `core.baby` (vanilla `AgeableMob`); a family whose babies are saved another way (`IsBaby`) reads them in its `read`.
+  - `is_simulated` and `simulated_kinds` read the terrain registry (`crate::families::kinds()`), not the entity one, because a kind only loads when it has a `TerrainFamily`. The new test checks that the two registries name the same kinds.
+  - The new terrain tests sit next to the vex save test, not at the end of the test module, so other tracks' tests appended at the end never touch them.
+  - The family glue files `pub use` the entity type, so each terrain group file names its families as `silverfish::Silverfish`, the same as the entity group file does.
+- **Runs:** `test -p minecraft_terrain --locked --lib` (1395 passed, 3 ignored; the known flaky `sections::tests::background_full_update_matches_the_synchronous_one` failed once under load and passed when run alone), `test -p minecraft_survival --locked` (760 + 1 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new files pass `rustfmt --check --edition 2021` with empty output on their staged content.
+- **Test steps** (silverfish and endermites are live but not drawn yet, so the steps check what can be seen: the summons, the bites, saving and the old mobs). Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `D0-8-1.png`.
+  1. Type `/summon minecraft:s` and press Tab: `minecraft:silverfish` is offered. `/summon minecraft:silverfish ~ ~ ~3`: the chat says "Summoned new Silverfish" (before this change it said "Unable to summon entity"). **Screenshot D0-8-1** of the chat line.
+  2. Stand still for ten seconds: something you cannot see yet bites you for half a heart about once a second, with the hurt sound. Look down at your feet and swing the sword until the bites stop.
+  3. Use the endermite egg on the ground next to you: you take bites of a full heart. Run 30 blocks away and wait two minutes, then come back: nothing bites you any more (the endermite has left).
+  4. Use a silverfish egg next to you and save and quit at once. Load the world: the bites start again, so it was saved and loaded.
+  5. Use the zombie, cow and villager eggs, save and quit, load: all three are still there and move as before. **Screenshot D0-8-5.**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*4,minecraft:endermite_spawn_egg*4,minecraft:zombie_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:iron_sword,minecraft:cooked_beef*32
+```

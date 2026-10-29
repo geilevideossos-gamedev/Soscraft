@@ -7749,7 +7749,10 @@ mod tests {
             }
         }
         assert_eq!(eggs.len(), 88);
-        assert_eq!(hatched, HATCHING_EGGS);
+        let mut hatching: Vec<&str> = HATCHING_EGGS.to_vec();
+        hatching.extend(crate::families::kinds().into_iter().filter_map(|kind| kind.strip_prefix("minecraft:")));
+        hatching.sort_unstable();
+        assert_eq!(hatched, hatching);
     }
 
     #[test]
@@ -8147,7 +8150,7 @@ mod tests {
         let position = [8.5, 200.5, 8.5];
         let dormant = server.dormant.len();
         let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
-        for kind in crate::server_mobs::SIMULATED_KINDS {
+        for kind in crate::server_mobs::simulated_kinds() {
             server.summon(kind, position, Some(&fresh), 0.0).unwrap_or_else(|error| panic!("{kind}: {error}"));
             assert_eq!(server.dormant.len(), dormant, "{kind} is simulated");
         }
@@ -8170,9 +8173,9 @@ mod tests {
         let Some((mut server, _)) = door_world() else { return };
         let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
         server.summon("minecraft:shulker", [8.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
-        server.summon("minecraft:silverfish", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
+        server.summon("minecraft:phantom", [9.5, 200.0, 8.5], Some(&fresh), 0.0).unwrap();
         let kinds = |server: &ServerSim| server.dormant.iter().map(|(group, _)| group[0].kind.clone()).collect::<Vec<_>>();
-        assert_eq!(kinds(&server), ["minecraft:silverfish"]);
+        assert_eq!(kinds(&server), ["minecraft:phantom"]);
         assert_eq!(server.mobs.shulkers().len(), 1, "shulkers are simulated");
         let player = minecraftoss_entities::tempt::PlayerCandidate {
             id: 0,

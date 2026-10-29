@@ -1,0 +1,1 @@
+terrain_group!(night {});
