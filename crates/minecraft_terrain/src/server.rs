@@ -347,6 +347,7 @@ pub struct EntitySnapshot {
     pub dragon_fireballs: Vec<crate::dragon_fireball::FireballView>,
     pub breath_bursts: Vec<glam::DVec3>,
     pub vibrations: Vec<crate::vibration_particles::VibrationView>,
+    pub sculk_souls: Vec<glam::DVec3>,
     pub gateways: Vec<crate::end_gateway::GatewayView>,
     pub frames: Vec<crate::item_frame::FrameView>,
     pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
@@ -562,7 +563,7 @@ impl ServerSim {
             self.level.spawn_at_location(position.to_array(), stack);
         }
         for (position, amount) in outcome.experience {
-            self.level.award_experience(position.to_array(), amount);
+            self.award_death(position.to_array(), amount);
         }
         let slots = inventory
             .slots
@@ -585,7 +586,7 @@ impl ServerSim {
             self.level.spawn_at_location(position.to_array(), stack);
         }
         for (position, amount) in outcome.experience {
-            self.level.award_experience(position.to_array(), amount);
+            self.award_death(position.to_array(), amount);
         }
         MobResult { sounds: outcome.sounds, ..MobResult::default() }
     }
@@ -1742,8 +1743,23 @@ impl ServerSim {
             }
         }
         for (position, amount) in experience {
-            self.level.award_experience(position.to_array(), amount);
+            self.award_death(position.to_array(), amount);
         }
+    }
+
+    pub fn award_death(&mut self, position: [f64; 3], amount: i32) {
+        if self.catalyst_takes(glam::DVec3::from_array(position)) {
+            return;
+        }
+        if amount > 0 {
+            self.level.award_experience(position, amount);
+        }
+    }
+
+    fn catalyst_takes(&mut self, at: glam::DVec3) -> bool {
+        let Some((x, y, z)) = self.vibrations.catalyst_near(at) else { return false };
+        self.level.sculk_bloom(minecraftoss_core::BlockPos::new(x, y, z));
+        true
     }
 
     /// `Player.tick`'s `takeXpDelay` countdown, then `Player.aiStep` touching
@@ -3805,7 +3821,7 @@ pub enum Command {
     LootTables { jar: std::path::PathBuf, seed: u64 },
     /// `summon minecraft:experience_orb`.
     SummonOrb { position: [f64; 3], value: i32 },
-    AwardExperience { position: [f64; 3], amount: i32 },
+    AwardExperience { position: [f64; 3], amount: i32, died: Option<u64> },
     /// `/summon` for a mob, with the command's NBT and the new mob's own
     /// random yaw.
     Summon { player: u64, kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>, y_rot: f32 },
@@ -4235,8 +4251,12 @@ impl ServerHandle {
 
     pub fn award_experience(&mut self, position: [f64; 3], amount: i32) {
         if amount > 0 {
-            self.send(Command::AwardExperience { position, amount });
+            self.send(Command::AwardExperience { position, amount, died: None });
         }
+    }
+
+    pub fn award_death_experience(&mut self, player: u64, position: [f64; 3], amount: i32) {
+        self.send(Command::AwardExperience { position, amount, died: Some(player) });
     }
 
     /// `/summon` for a mob; what it did arrives in an output. The new
@@ -4482,7 +4502,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::RecipeBook(recipes) => sim.set_recipe_book(recipes),
                 Command::LootTables { jar, seed } => sim.load_loot(&jar, seed),
                 Command::SummonOrb { position, value } => sim.summon_orb(position, value),
-                Command::AwardExperience { position, amount } => sim.award_experience(position, amount),
+                Command::AwardExperience { position, amount, died: None } => sim.award_experience(position, amount),
+                Command::AwardExperience { position, amount, died: Some(_) } => sim.award_death(position, amount),
                 Command::Summon { player, kind, position, nbt, y_rot } => {
                     out.command_summons.push((player, sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind)));
                 }
@@ -4769,7 +4790,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), vibrations: std::mem::take(&mut sim.vibration_bursts), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), vibrations: std::mem::take(&mut sim.vibration_bursts), sculk_souls: std::mem::take(&mut sim.level.catalyst_blooms).into_iter().map(crate::vibrations::soul_burst).collect(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -11939,6 +11960,88 @@ mod tests {
         client_ticks(&mut sim, &mut input, 90, &mut heard);
         assert!(!shrieking(&sim));
         assert!(heard.trackers.is_empty() && heard.sounds.is_empty() && heard.effects.is_empty(), "a shrieker that cannot summon never warns");
+    }
+
+    const CATALYST: BlockPos = (8, 200, 8);
+
+    fn catalyst_world(catalysts: &[BlockPos]) -> Option<(ServerSim, TickInput)> {
+        let (mut sim, mut scene) = frozen_sim()?;
+        for x in -4..21 {
+            for z in -4..21 {
+                place(&mut sim, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        for &catalyst in catalysts {
+            place(&mut sim, &mut scene, catalyst, Block::new("minecraft:sculk_catalyst"));
+        }
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        Some((sim, input))
+    }
+
+    fn kill_cow(sim: &mut ServerSim, at: [f64; 3]) {
+        sim.summon("minecraft:cow", at, None, 0.0).unwrap();
+        let cow = sim.mobs.cows().last().unwrap().id;
+        sim.mob_blast(minecraftoss_entities::world::MobHit::Cow(cow), 40.0, [at[0], at[1] + 0.5, at[2] - 2.0], 1.0, Some(0), 0);
+    }
+
+    fn blooming(sim: &ServerSim, pos: BlockPos) -> bool {
+        block_property(sim, pos, "bloom").as_deref() == Some("true")
+    }
+
+    #[test]
+    fn a_cow_killed_five_blocks_from_a_catalyst_blooms_it_and_drops_no_orbs() {
+        let Some((mut sim, mut input)) = catalyst_world(&[CATALYST]) else { return };
+        assert_eq!(sim.listeners().listener(CATALYST).map(|listener| listener.kind), Some(crate::vibrations::Kind::Catalyst));
+        sim.level.sounds.clear();
+        kill_cow(&mut sim, [13.5, 200.0, 8.5]);
+        assert!(sim.orbs().is_empty(), "the catalyst takes its experience");
+        assert!(blooming(&sim, CATALYST));
+        assert_eq!(sim.level.sounds.iter().map(|sound| sound.event).collect::<Vec<_>>(), vec!["minecraft:block.sculk_catalyst.bloom"]);
+        let mut out = run_ticks(&mut sim, &mut input, true, 1);
+        finish_batch(&mut sim, &input, &mut out);
+        let souls = out.entities.map(|snapshot| snapshot.sculk_souls).unwrap_or_default();
+        assert_eq!(souls, vec![glam::DVec3::new(8.5, 201.15, 8.5)], "the soul burst rises over it for every viewer");
+        run_ticks(&mut sim, &mut input, true, 6);
+        assert!(blooming(&sim, CATALYST));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert!(!blooming(&sim, CATALYST), "eight ticks later it rests");
+        sim.mobs.set_mob_drops(false);
+        let items = sim.items().len();
+        kill_cow(&mut sim, [11.5, 200.0, 11.5]);
+        assert!(blooming(&sim, CATALYST), "a death without drops still feeds it");
+        assert!(sim.orbs().is_empty());
+        assert_eq!(sim.items().len(), items, "and drops no loot");
+    }
+
+    #[test]
+    fn ten_blocks_away_it_drops_orbs() {
+        let Some((mut sim, _)) = catalyst_world(&[CATALYST]) else { return };
+        kill_cow(&mut sim, [18.5, 200.0, 8.5]);
+        assert!(!sim.orbs().is_empty(), "out of the catalyst's eight blocks");
+        assert!(!blooming(&sim, CATALYST));
+    }
+
+    #[test]
+    fn two_catalysts_the_nearer_takes_it() {
+        let far = (16, 200, 8);
+        let Some((mut sim, _)) = catalyst_world(&[CATALYST, far]) else { return };
+        kill_cow(&mut sim, [14.5, 200.0, 8.5]);
+        assert!(sim.orbs().is_empty());
+        assert!(blooming(&sim, far), "1.5 blocks away");
+        assert!(!blooming(&sim, CATALYST), "6.5 blocks away, and the experience is taken");
+    }
+
+    #[test]
+    fn a_player_s_death_beside_a_catalyst_leaves_no_orbs() {
+        let Some((mut sim, _)) = catalyst_world(&[CATALYST]) else { return };
+        sim.award_death([11.5, 200.0, 8.5], 21);
+        assert!(sim.orbs().is_empty());
+        assert!(blooming(&sim, CATALYST));
+        sim.award_death([1.5, 200.0, 18.5], 21);
+        assert!(!sim.orbs().is_empty(), "too far from it");
+        sim.award_experience([11.5, 200.0, 8.5], 30);
+        assert!(sim.orbs().iter().map(|orb| orb.value).sum::<i32>() > 21, "experience that is no death is not taken");
     }
 
     fn block_property(sim: &ServerSim, pos: BlockPos, name: &str) -> Option<String> {

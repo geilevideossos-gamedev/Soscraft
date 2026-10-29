@@ -722,6 +722,10 @@ impl Entities {
         self.server.award_experience(at, amount);
     }
 
+    pub fn award_death_experience(&mut self, player: u64, at: [f64; 3], amount: i32) {
+        self.server.award_death_experience(player, at, amount);
+    }
+
     pub fn award_block_experience(&mut self, held: Option<&ItemStack>, broken: &[BrokenBlock], by_hand: &[(i32, i32, i32)]) {
         if !self.block_drops {
             return;

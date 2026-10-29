@@ -1285,6 +1285,8 @@ pub(crate) fn drop_on_death(
         death.spot.feet,
         None,
     );
+    let experience = if death.keep_inventory { 0 } else { death.experience };
+    entities.award_death_experience(client, death.spot.feet, experience);
     if death.keep_inventory {
         return;
     }
@@ -1292,7 +1294,6 @@ pub(crate) fn drop_on_death(
     for stack in minecraft_survival::death::dropped_on_death(&death, inventory) {
         entities.view.world_items.drop_on_death(stack, eye);
     }
-    entities.award_experience(death.spot.feet, death.experience);
     hand.blocking = None;
 }
 

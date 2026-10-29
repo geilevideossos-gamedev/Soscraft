@@ -400,6 +400,42 @@ After 6a9a7594 ("MW2 guns make Minecraft vibrations").
 IW4L_MINECRAFT_KIT=minecraft:sculk_shrieker*8,minecraft:sculk_sensor*16,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:white_wool*32,minecraft:snowball*16,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet
 ```
 
+### 2. Minecraft sculk catalysts bloom when mobs die nearby
+
+After 1180b5fb ("Minecraft sculk shriekers warn players and darken them").
+
+- **Vanilla (javap on the 26.3 jar):**
+  - `SculkCatalystBlockEntity$CatalystListener`: radius 8, `BY_DISTANCE`; `handleGameEvent` takes `entity_die` from a `LivingEntity` whose experience was not consumed (`wasExperienceConsumed`): when `shouldDropExperience` (not a baby, for animals) and `getExperienceReward(level, killer)` (no player kill and no `mob_drops` needed) is above 0 it adds cursors at `BlockPos.containing(event position + 0.5 up)` (commit 3); then, for every such death, `skipDropExperience` and `bloom`. Every catalyst in reach handles the event in distance order, so the nearest one takes the experience and the others find it consumed.
+  - `bloom`: `bloom=true` (`setBlockAndUpdate`), a tick after 8 that sets it back, `sendParticles(SCULK_SOUL, x + 0.5, y + 1.15, z + 0.5, 2, 0.2, 0.0, 0.2, 0.0)` and `block.sculk_catalyst.bloom` at the block, volume 2, pitch `0.6 + random × 0.4`.
+  - `LivingEntity.die` posts `entity_die` before `dropAllDeathLoot` and `dropExperience` (which needs a player kill, `shouldDropExperience` and `mob_drops`); `ServerPlayer.die` posts it first too.
+  - The sculk soul particle is `EmissiveRisingParticle` in 26.3 (`EmissiveProvider`: glowing, alpha 1): `RisingParticle` (friction 0.96, the base velocity times 0.01 plus the given one, the position nudged `(random - random) × 0.05` per axis, lifetime `8 / (random × 0.8 + 0.2) + 4`), `scale(1.5)`, the 11 `sculk_soul` sprites by age, translucent, block light 15. `sendParticles` places each of its 2 particles at a gaussian offset times the spread (0.2, 0, 0.2).
+- **Changed:**
+  - Vendored `entities/src/world.rs` `take_deaths`: with `mob_drops` off the deaths still come back, without loot, equipment or charged creeper heads, instead of an empty list. `mob_actions::death_remains` reports every death's spot, also with no experience.
+  - `server.rs`: the three places that turned mob deaths into orbs (melee, sweep, `drop_death_loot`) call `ServerSim::award_death`, which asks the catalysts first (`catalyst_takes`: `Vibrations::catalyst_near`, the nearest catalyst listener within 8 blocks by vanilla's block distance, nearest centre first); a catalyst that takes it blooms and no orbs drop. `Command::AwardExperience` gains `died: Option<u64>`; `ServerHandle::award_death_experience` and `Entities::award_death_experience` send a player's death experience marked with the player, and `minecraft_players::drop_on_death` sends it for every death (0 with `keep_inventory`, so a catalyst still blooms).
+  - Vendored `world/src/level/sculk.rs`: `sculk_bloom` and the bloom's end in the scheduled tick (`mod.rs` dispatches catalysts too); `Level.catalyst_blooms` collects the blooms, which `finish_batch` turns into `EntitySnapshot.sculk_souls` (`vibrations::soul_burst`, 1.15 over the block).
+  - Client: `ambient_particles` `Kind::SculkSoul` with its 11 sprites in the atlas; `EntityView` spawns 2 per soul burst for the host and friends; `mob_sender` keeps the bursts until sent and sends a friend the ones within 32 blocks in chunks it has.
+- **Tests:**
+  - `server::tests::a_cow_killed_five_blocks_from_a_catalyst_blooms_it_and_drops_no_orbs` (no orbs, bloom, its sound, the soul burst at 1.15 over it, rest after 8 ticks; with `mob_drops` off a death still blooms it and drops nothing), `ten_blocks_away_it_drops_orbs`, `two_catalysts_the_nearer_takes_it`, `a_player_s_death_beside_a_catalyst_leaves_no_orbs` (a death out of reach still drops orbs; plain awarded experience is never taken).
+  - `vibrations::tests::the_nearest_catalyst_within_eight_takes_a_death`, vendored `level::sculk::tests::a_catalyst_blooms_for_eight_ticks_with_its_sound`, `ambient_particles::tests::a_sculk_soul_hangs_glowing_and_runs_through_its_eleven_frames`, `mob_sender::tests::a_catalyst_s_souls_reach_friends_near_it`.
+  - Full runs of the touched crates pass: minecraft_terrain 1455 (3 ignored), minecraft_survival 766 + 1, minecraftoss-entities 400, minecraftoss-world 113, render_anim 215.
+- **Decisions:**
+  - The catalyst takes a death where its experience is awarded, not through the game event dispatch: vanilla consumes it inside `die()`, before the orbs, while the fork dispatches game events after the mobs' tick, when the orbs would already be in the level. The `entity_die` game event still reaches the sensors as before.
+  - The brief put the raw experience reward (`MobDeath` without the player kill check) in this commit; it moves to commit 3, where it feeds the cursors. Blooming needs only the death's spot.
+  - A death with `keep_inventory` sends 0 experience, so the catalyst still blooms (vanilla consumes every player death in reach).
+  - The ender dragon's experience is not a death report (vanilla drops it over its death animation in `tickDeath`), so catalysts leave it alone.
+- **Vendored files:** patched `world/src/level/sculk.rs` and `world/src/level/mod.rs` again, `entities/src/world.rs`.
+- **Test steps (survival, Normal; flat open ground):**
+  1. Place a sculk catalyst; hatch cows 2-5 blocks away and kill them with the sword: the catalyst flashes, two soul wisps rise over it with its bloom sound, and no experience orbs drop. (From commit 3 on, sculk also spreads.) **w25_catalyst_bloom**
+  2. Kill a cow 10 blocks from the catalyst: orbs drop as usual.
+  3. Place a second catalyst 8 blocks from the first and kill a cow between them, closer to one: only the nearer one blooms.
+  4. `/gamerule mob_drops false` and kill a cow beside a catalyst: it still blooms. `/gamerule mob_drops true`.
+  5. Drink the 16 experience bottles, take the totem out of your hands and `/kill @s` 3 blocks from the catalyst: it blooms and no orbs drop where you died.
+  6. Friend window: the friend kills a cow beside the host's catalyst: both see it bloom and the souls rise.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sculk_catalyst*4,minecraft:cow_spawn_egg*16,minecraft:diamond_sword+sharpness=5,minecraft:experience_bottle*16,minecraft:deepslate*64,minecraft:cooked_beef*32
+```
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -420,9 +456,12 @@ Group vibrations-more, commit 4: no message or codec change (`PlayerEvent` and `
 
 Group shriekers-catalysts, commit 1: no message or codec change. The shriek reaches friends as the existing `ToClient::LevelEvent` (3007), the reply as a sound, and the darkness in the friend's `PlayerView`; the trackers and `Output.player_effects` stay on the host.
 
+Group shriekers-catalysts, commit 2: `EntitySnapshot` (inside `ToClient::Bursts` and the state frames) gains `sculk_souls: Vec<DVec3>`; it rides in the protocol bump group vibrations already needs at the release. `Command::AwardExperience` stays on the host.
+
 ## State doc changes
 
 - `docs/MULTIPLAYER.md`: a friend's `PlayerView` is also sent again when an effect is given again with a longer duration (`views::lengthened`), and the friend restarts its effect count-down for every view it receives, also one equal to the last (`RemoteWorld.player_views`).
 - `docs/MINECRAFT-SURVIVAL.md` (group vibrations-more): sculk sensors and calibrated sensors hear vanilla's game events from blocks used (doors, trapdoors, gates, levers, buttons, plates, note blocks, bells, containers, buckets, TNT, fire, pistons, dispensers, lecterns, item frames, wind charges), from players and mobs (eating, drinking, armour, riding, gliding, shearing, teleports, hurts, deaths, chicken flaps and eggs, spawn eggs) and from MW2 guns (the shot, unless crouched or prone, and where the bullet lands); an amethyst block beside a sensor resonates its frequency. Not yet: composters, cakes, jukeboxes, tripwires, beehives, bounces, bats' flaps, mob equipment, players and mobs on pressure plates.
 - `docs/round10/decisions.md` (group vibrations-more): MW2 bullets are projectiles for vibrations: crouched or prone shots are not heard, the impact on a block or a mob always is (from the bullet, with the shooter as projectile owner), and a bullet that hits nothing lands nowhere.
 - `docs/MINECRAFT-SURVIVAL.md` (group shriekers-catalysts): sculk shriekers shriek when a player stands on one (or rides a mob onto it) or when a sculk sensor within 8 blocks clicks for a player or a player's projectile. A shrieker that can summon (generated ones in ancient cities, or `can_summon=true`) only shrieks when it can warn: each player's warden warning level (saved in the player file, shared with the players within 16 blocks) rises by one with a 10 s cooldown and drops one every 10 minutes; after the 4.5 s shriek a warden sound answers by level (closer and angrier) and players within 40 blocks get darkness. Peaceful or `spawn_wardens false`: it shrieks, nothing answers. Until the warden groups (W4) a fourth warning only plays the angry sound.
+- `docs/MINECRAFT-SURVIVAL.md` (group shriekers-catalysts, commit 2): a sculk catalyst takes the death of any mob or player within 8 blocks (the nearest catalyst; no player kill needed): it blooms with soul wisps and the death drops no experience orbs.

@@ -4806,7 +4806,11 @@ impl EntityWorld {
             self.game_event("minecraft:entity_die", death.position, Some(death.id), None);
         }
         if !mob_drops {
-            return Vec::new();
+            for (_, death) in &mut deaths {
+                death.table = None;
+                death.equipment.clear();
+                death.charged_creeper = None;
+            }
         }
         deaths.into_iter().map(|(_, death)| death).collect()
     }

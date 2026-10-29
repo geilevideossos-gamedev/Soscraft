@@ -63,7 +63,7 @@ pub struct Actor<'a> {
 /// drops) and their experience.
 pub fn death_remains(world: &mut EntityWorld, loot: Option<&mut EntityLootBook>) -> (Vec<(ItemStack, DVec3)>, Vec<(DVec3, i32)>) {
     let deaths = world.take_deaths();
-    let experience = deaths.iter().filter(|d| d.experience > 0).map(|d| (d.position, d.experience)).collect();
+    let experience = deaths.iter().map(|d| (d.position, d.experience)).collect();
     (loot.map(|book| book.death_drops(deaths)).unwrap_or_default(), experience)
 }
 

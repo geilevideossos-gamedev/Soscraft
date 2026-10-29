@@ -195,6 +195,9 @@ pub fn near(
         vibrations: filtered(&snapshot.vibrations, |vibration| {
             has_chunk(chunk_of(vibration.from)) && vibration.from.distance_squared(feet) < PARTICLE_RANGE * PARTICLE_RANGE
         }),
+        sculk_souls: filtered(&snapshot.sculk_souls, |at| {
+            has_chunk(chunk_of(*at)) && at.distance_squared(feet) < PARTICLE_RANGE * PARTICLE_RANGE
+        }),
         gateways: snapshot.gateways.clone(),
         frames: filtered(&snapshot.frames, |frame| keeps(FRAMES, frame.position)),
         dragon_breath: snapshot.dragon_breath.clone(),
@@ -213,6 +216,7 @@ pub fn take_bursts(snapshot: &mut EntitySnapshot) -> EntitySnapshot {
     let mut bursts = EntitySnapshot {
         breath_bursts: std::mem::take(&mut snapshot.breath_bursts),
         vibrations: std::mem::take(&mut snapshot.vibrations),
+        sculk_souls: std::mem::take(&mut snapshot.sculk_souls),
         dragon_breath: std::mem::take(&mut snapshot.dragon_breath),
         dragon_explosions: std::mem::take(&mut snapshot.dragon_explosions),
         firework_bursts: std::mem::take(&mut snapshot.firework_bursts),
@@ -226,6 +230,7 @@ fn add_bursts(into: &mut EntitySnapshot, from: EntitySnapshot) {
     into.eyes.shattered.extend(from.eyes.shattered);
     into.breath_bursts.extend(from.breath_bursts);
     into.vibrations.extend(from.vibrations);
+    into.sculk_souls.extend(from.sculk_souls);
     into.dragon_breath.extend(from.dragon_breath);
     into.dragon_explosions.extend(from.dragon_explosions);
     into.firework_bursts.extend(from.firework_bursts);
@@ -241,6 +246,7 @@ pub fn has_bursts(snapshot: &EntitySnapshot) -> bool {
     !(snapshot.eyes.shattered.is_empty()
         && snapshot.breath_bursts.is_empty()
         && snapshot.vibrations.is_empty()
+        && snapshot.sculk_souls.is_empty()
         && snapshot.dragon_breath.is_empty()
         && snapshot.dragon_explosions.is_empty()
         && snapshot.firework_bursts.is_empty())
@@ -525,6 +531,25 @@ mod tests {
         let sent: EntitySnapshot = minecraft_net::decode(Lane::Reliable, &entities.0).unwrap();
         assert_eq!(sent.vibrations, vec![ripple(10.5)], "a ripple 40 blocks away is out of particle range");
         assert_eq!(bursts_message(&bursts, here, |_| false), None, "nor in a chunk the friend lacks");
+    }
+
+    #[test]
+    fn a_catalyst_s_souls_reach_friends_near_it() {
+        let mut older = EntitySnapshot::default();
+        older.sculk_souls.push(DVec3::new(8.5, 65.15, 0.5));
+        let mut newer = EntitySnapshot::default();
+        newer.sculk_souls.push(DVec3::new(40.5, 65.15, 0.5));
+        keep_bursts(&mut older, &mut newer);
+        assert!(!has_bursts(&older));
+        assert_eq!(newer.sculk_souls.len(), 2, "kept until the next snapshot is sent");
+        let bursts = take_bursts(&mut newer);
+        assert!(newer.sculk_souls.is_empty());
+        let here = (DVec3::new(0.5, 64.0, 0.5), 8);
+        let Some(ToClient::Bursts { entities }) = bursts_message(&bursts, here, |_| true) else {
+            panic!("the souls go on the reliable stream");
+        };
+        let sent: EntitySnapshot = minecraft_net::decode(Lane::Reliable, &entities.0).unwrap();
+        assert_eq!(sent.sculk_souls, vec![DVec3::new(8.5, 65.15, 0.5)], "40 blocks away is out of particle range");
     }
 
     #[test]

@@ -329,6 +329,13 @@ impl EntityView {
         for vibration in std::mem::take(&mut snapshot.vibrations) {
             self.vibrations.add(vibration);
         }
+        for at in std::mem::take(&mut snapshot.sculk_souls) {
+            for _ in 0..minecraft_terrain::vibrations::SOULS {
+                let spread = minecraft_terrain::vibrations::SOUL_SPREAD;
+                let offset = DVec3::new(self.random.next_gaussian() * spread, 0.0, self.random.next_gaussian() * spread);
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::SculkSoul, at + offset, DVec3::ZERO);
+            }
+        }
     }
 
     pub fn receive(

@@ -16,6 +16,9 @@ pub const SHRIEK_EVENT: i32 = 3007;
 const SHRIEKING: &str = "shrieking";
 const CAN_SUMMON: &str = "can_summon";
 const SHRIEK: &str = "minecraft:shriek";
+pub const BLOOM_TICKS: i32 = 8;
+const BLOOM: &str = "bloom";
+const BLOOM_SOUND: &str = "minecraft:block.sculk_catalyst.bloom";
 const PHASE: &str = "sculk_sensor_phase";
 const TENDRILS_CLICKING: &str = "minecraft:sculk_sensor_tendrils_clicking";
 const CLICKING: &str = "minecraft:block.sculk_sensor.clicking";
@@ -291,6 +294,32 @@ impl Level<'_> {
             self.set_block_and_update(pos, quiet);
             self.shrieker_respond(pos, quiet);
         }
+        if self.is_sculk_catalyst(state) && self.sensor_property(state, BLOOM) == Some("true") {
+            let rest = self.sensor_with(state, BLOOM, "false");
+            self.set_block_and_update(pos, rest);
+        }
+    }
+
+    pub fn is_sculk_catalyst(&self, state: BlockStateId) -> bool {
+        self.is_a(state, "SculkCatalystBlock")
+    }
+
+    pub fn sculk_bloom(&mut self, pos: BlockPos) {
+        let state = self.block(pos);
+        if !self.is_sculk_catalyst(state) {
+            return;
+        }
+        let bloom = self.sensor_with(state, BLOOM, "true");
+        self.set_block_and_update(pos, bloom);
+        self.schedule_block_tick(pos, bloom, BLOOM_TICKS);
+        self.catalyst_blooms.push(pos);
+        let pitch = 0.6 + self.random.next_f32() * 0.4;
+        self.sounds.push(LevelSound {
+            event: BLOOM_SOUND,
+            pos: centre(pos),
+            volume: 2.0,
+            pitch,
+        });
     }
 
     pub(super) fn sculk_pre_remove(&mut self, pos: BlockPos, old: BlockStateId) {
@@ -637,5 +666,28 @@ mod tests {
         assert_eq!(level.shrieker_responses, vec![(SHRIEKER, 1)]);
         ticks(&mut level, SHRIEK_TICKS);
         assert_eq!(level.shrieker_responses.len(), 1, "its tick finds no shrieker");
+    }
+
+    #[test]
+    fn a_catalyst_blooms_for_eight_ticks_with_its_sound() {
+        let Some(lib) = library() else { return };
+        let mut level = level(&lib);
+        place(&mut level, SHRIEKER, "minecraft:sculk_catalyst");
+        level.sounds.clear();
+        let bloom = |level: &Level<'_>| level.sensor_property(level.block(SHRIEKER), BLOOM) == Some("true");
+        level.sculk_bloom(SHRIEKER);
+        assert!(bloom(&level));
+        assert_eq!(level.catalyst_blooms, vec![SHRIEKER]);
+        assert_eq!(level.sounds.len(), 1);
+        let sound = &level.sounds[0];
+        assert_eq!((sound.event, sound.pos, sound.volume), (BLOOM_SOUND, centre(SHRIEKER), 2.0));
+        assert!((0.6..1.0).contains(&sound.pitch));
+        ticks(&mut level, BLOOM_TICKS - 1);
+        assert!(bloom(&level));
+        ticks(&mut level, 1);
+        assert!(!bloom(&level), "eight ticks later it rests");
+        level.catalyst_blooms.clear();
+        level.sculk_bloom(SHRIEKER.above());
+        assert!(level.catalyst_blooms.is_empty(), "only a catalyst blooms");
     }
 }

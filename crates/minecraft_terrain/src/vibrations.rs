@@ -12,6 +12,9 @@ pub const CATALYST: &str = "minecraft:sculk_catalyst";
 pub const LISTENER: &str = "listener";
 const OCCLUSION_NUDGE: f64 = 9.999_999_747_378_752e-6;
 const TRAVERSE_NUDGE: f64 = -1.0e-7;
+pub const SOUL_HEIGHT: f64 = 1.15;
+pub const SOUL_SPREAD: f64 = 0.2;
+pub const SOULS: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -366,6 +369,38 @@ impl Vibrations {
         }
     }
 
+    pub fn catalyst_near(&self, at: DVec3) -> Option<Pos> {
+        let radius = game_events::radius(game_events::ENTITY_DIE);
+        let block = block_of(at);
+        let low = |v: i32| (v - radius) >> 4;
+        let high = |v: i32| (v + radius) >> 4;
+        let mut found: Vec<(f64, Pos)> = Vec::new();
+        for sx in low(block.0)..=high(block.0) {
+            for sz in low(block.2)..=high(block.2) {
+                for sy in low(block.1)..=high(block.1) {
+                    let Some(positions) = self.sections.get(&(sx, sy, sz)) else {
+                        continue;
+                    };
+                    for &pos in positions {
+                        let Some(listener) = self
+                            .listeners
+                            .get(&pos)
+                            .filter(|listener| listener.kind == Kind::Catalyst)
+                        else {
+                            continue;
+                        };
+                        let reach = i64::from(listener.kind.radius());
+                        if distance_squared(pos, block) <= reach * reach {
+                            found.push((at.distance_squared(listener.position()), pos));
+                        }
+                    }
+                }
+            }
+        }
+        found.sort_by(|a, b| a.0.total_cmp(&b.0));
+        found.first().map(|(_, pos)| *pos)
+    }
+
     pub fn force(&mut self, pos: Pos, posted: &Posted, user: &mut impl User) -> bool {
         let Some(listener) = self.listeners.get_mut(&pos) else {
             return false;
@@ -453,6 +488,14 @@ fn handle(
     }
     listener.schedule(posted);
     true
+}
+
+pub fn soul_burst(pos: minecraftoss_core::BlockPos) -> DVec3 {
+    DVec3::new(
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y) + SOUL_HEIGHT,
+        f64::from(pos.z) + 0.5,
+    )
 }
 
 pub fn centre(pos: Pos) -> DVec3 {
@@ -937,6 +980,25 @@ mod tests {
         assert_eq!(
             heard.caught,
             vec![((2, 64, 8), "minecraft:eat"), ((4, 64, 8), "minecraft:eat")]
+        );
+    }
+
+    #[test]
+    fn the_nearest_catalyst_within_eight_takes_a_death() {
+        let mut vibrations = Vibrations::default();
+        vibrations.add((4, 64, 8), Kind::Catalyst, None);
+        vibrations.add((14, 64, 8), Kind::Catalyst, None);
+        vibrations.add((9, 64, 8), Kind::Sensor, None);
+        let died = |x: f64| vibrations.catalyst_near(DVec3::new(x, 64.0, 8.5));
+        assert_eq!(died(8.5), Some((4, 64, 8)), "four blocks against six");
+        assert_eq!(died(10.5), Some((14, 64, 8)));
+        assert_eq!(died(9.6), Some((14, 64, 8)), "the same block distance: the nearer centre");
+        assert_eq!(died(22.4), Some((14, 64, 8)), "eight blocks away");
+        assert_eq!(died(23.5), None, "nine blocks away");
+        assert_eq!(died(-20.0), None);
+        assert_eq!(
+            soul_burst(minecraftoss_core::BlockPos::new(4, 64, 8)),
+            DVec3::new(4.5, 65.15, 8.5)
         );
     }
 
