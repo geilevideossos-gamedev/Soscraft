@@ -622,6 +622,15 @@ fn a_registered_mob_left_out_of_targets_is_never_hunted() {
 }
 
 #[test]
+fn a_registered_mob_may_carry_its_own_name() {
+    assert_eq!(display_name(SHY), Some(probe::SHY_NAME));
+    assert_eq!(display_name(KIND), None);
+    assert_eq!(display_name(ANIMAL), None);
+    assert_eq!(display_name("minecraft:zombie"), None);
+    assert_eq!(display_name("minecraft:nothing"), None);
+}
+
+#[test]
 fn a_registered_monster_runs_its_goals_and_strikes_a_player() {
     let registered = MonsterKind::Registered(KIND);
     assert_eq!(registered.goal_names(), probe::GOAL_NAMES);

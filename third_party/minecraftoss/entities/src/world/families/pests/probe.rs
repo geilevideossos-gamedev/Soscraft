@@ -15,6 +15,7 @@ use minecraftoss_player::inventory::ItemStack;
 pub const KIND: &str = "minecraft:registry_probe";
 pub const ANIMAL: &str = "minecraft:registry_probe_animal";
 pub const SHY: &str = "minecraft:registry_probe_shy";
+pub const SHY_NAME: &str = "Shy Probe";
 pub const WIDTH: f32 = 0.6;
 pub const HEIGHT: f32 = 0.9;
 pub const EYE_HEIGHT: f32 = 0.7;
@@ -236,6 +237,10 @@ impl Family for Probe {
 
     fn targetable(kind: &str) -> bool {
         kind != SHY
+    }
+
+    fn display_name(kind: &str) -> Option<&'static str> {
+        (kind == SHY).then_some(SHY_NAME)
     }
 
     fn undead(mob: &FamilyMob<Self>) -> bool {

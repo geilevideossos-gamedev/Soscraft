@@ -355,3 +355,19 @@ After 03534171.
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:shield,minecraft:cooked_beef*32
 ```
+
+## Group er-arena
+
+Brief F2, commits 3 and 4. The summon itself landed in commit 8 (see "Moved from group `er-arena`" there), so this group adds the registry hook a boss's name needs (commit 10), the death names and the summon's remaining tests (commit 11), and his walking, leaping and fading on blocks (commit 12).
+
+### 10. Registered Minecraft mobs can carry their own name
+
+After 439e2172.
+
+- **Why:** brief F2, commit 3 wants death lines to name Margit ("Sos was slain by Margit, the Fell Omen"). Vanilla names a mob through its `entity.minecraft.<kind>` language key, and `iw4l:margit` has none, so `death.rs` would print the bare id. D0's checklist lists `death.rs` among the files never edited for one family, and says a missing hook goes into the registry's root file in a commit of its own. This is that hook.
+- **Changed (vendored entities crate):**
+  - Root `world/families.rs`: the hook `Family::display_name(kind) -> Option<&'static str>` (default `None`, so every vanilla kind keeps its language key) next to `targetable`; `family_group!` generates `display_name(kind)` next to `untargetable`; the root `display_name(kind)` (the first group that knows the kind answers) next to `targetable`.
+  - The test probe names its shy kind "Shy Probe".
+- **Tests:** `world::families::tests::a_registered_mob_may_carry_its_own_name` (the shy probe has its name; the other probe kinds, a vanilla kind and an unknown kind have none). `test -p minecraftoss-entities --locked --lib families::tests`: 18 passed.
+- **Decision:** a static hook per kind, like `enemy` and `targetable`: a death line or a summon line knows only the kind, not the mob.
+- **Owner's steps:** nothing changes in game until the next commit uses the hook. No kit line.
