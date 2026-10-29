@@ -146,3 +146,39 @@ After 7c16b429.
     - `set_health` keeps at least 1 health.
     - `Taken.died` is set on the killing hit, and the game credits that hit's player.
 - **Owner's steps:** none in game: the crate is not in the game yet. No kit line.
+
+### 4. A whole Margit fight plays through without a window
+
+After 77a03ca8.
+
+- **Changed:**
+  - New `src/whole_fight.rs`, test only (`#[cfg(test)] mod whole_fight` in `lib.rs`). It plays a headless fight (design doc 4.4) on flat ground with no blocks: Margit's anchor is at the origin, the rifleman (player 1) starts 15 blocks away and the swordsman (player 2) 6 blocks away, so both are fighters at the wake (1280 health). It runs for at most 6000 ticks with a fixed seed.
+  - **The boss:** each tick the fight applies his root motion, or walks him toward his walk point at 0.15 blocks a tick and drops him 0.5 a tick when he is above the ground. It also applies fades and his facing.
+  - **Daggers:**
+    - Each dagger flies its velocity every tick.
+    - It hits the first player whose box its segment crosses (`shape::segment`).
+    - It ends at the ground or after 40 ticks.
+  - **The rifleman:**
+    - He backs off at 0.265 blocks a tick (MW2's run) when nearer than 12 blocks and closes in when farther than 18.
+    - Between those, he strafes at 0.15 a tick, stops to aim for the first 30 of every 60 ticks and turns his strafe every 60 ticks.
+    - While Margit is awake he lands 7 bullets a second of 30 MW2 points (`Source::Bullet`), with a 40-tick reload after every 30.
+  - **The swordsman:**
+    - He runs straight away at 0.265 a tick when a move with strikes starts within 4 blocks of him (a new move, a branch to another move included).
+    - He steps back in when a strike window of that move ends, or when the move ends, and closes to 2 blocks.
+    - He hits for 11 (`Source::Melee` from his feet) every 13 ticks when within 3 blocks and not running.
+    - During a kneel he walks to 1.5 blocks in front of Margit and hits only from there, so his first hit of the kneel is the critical.
+  - Both stay within 38 blocks of the anchor. Players take their hits but are never killed: their health is not modelled.
+- **Tests:**
+  - `whole_fight::a_whole_margit_fight_shows_every_move_both_phases_a_kneel_and_ends` (seed 24): every one of the eight move keys is seen, phase 2 is reached, he kneels and takes a critical, and both players are hit by a strike or a dagger. He dies within 6000 ticks and is gone 20 ticks later. He never resets and never stands outside the leash. The same seed gives the same record, death tick included, and seed 25 dies on another tick.
+  - One more, `every_seed_of_the_whole_fight_reaches_phase_two_kneels_and_dies_inside_his_arena`: seeds 0-29 each reach phase 2, kneel and take a critical, target both players at some point, die within 6000 ticks, never reset and stay inside the leash.
+  - `test -p elden_boss --locked`: 51 green. `clippy -p elden_boss --all-targets`: clean.
+- **Decisions:**
+  - **Wind-up:** the swordsman's "wind-up" is the start of a move that has strikes, not the wind-up of each strike. He steps back in after the first strike window and so meets the delayed swings, which is how he gets hit (the third cane swing, the hammer's ring). If he ran from every strike, he would never be hit.
+  - **The rifleman stops to aim** half the time. Strafing without a stop dodged every dagger (it flies about 10 ticks at 12-18 blocks, and the box is 0.6 wide), so he was never hit on any seed.
+  - **The seed is 24.** Across seeds 0-29, seeds 15 and 24 show all eight moves and hits on both players in one fight. The others miss one to four moves, because the fight is short. Any change to Margit's numbers changes the fight, so the seed may need to be picked again. The every-seed test keeps what holds for all seeds.
+- **Observations for the owner's tuning (no number changed):**
+  - The scripted duo never misses and kills him in 797-976 ticks (40-49 s), with 6 or 7 kneels and a critical in almost every kneel.
+  - The sword breaks his stance after 5 hits (16.5 stance each against 80), about every 7 s.
+  - Design doc 7.5 expected longer fights, with 70% of shots landing and half the time spent dodging.
+  - If he kneels too often in game, raise `stance.points` or lower `resist.melee.stance` in `margit.rs`.
+- **Owner's steps:** none in game: the crate is not in the game yet. No kit line.
