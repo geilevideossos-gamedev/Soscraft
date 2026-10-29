@@ -41,11 +41,15 @@ impl DragonFireball {
         }
     }
 
-    pub fn tick(&mut self, world: &impl World, targets: &[FireballTarget]) -> Option<DVec3> {
+    pub fn tick(
+        &mut self,
+        world: &impl World,
+        targets: &[FireballTarget],
+    ) -> Option<minecraftoss_entities::fireball::FireballHit> {
         self.previous_position = self.fireball.position;
-        self.fireball.tick(world, targets, None)?;
+        let hit = self.fireball.tick(world, targets, None)?;
         self.fireball.alive = false;
-        Some(self.fireball.position)
+        Some(hit)
     }
 
     pub fn view(&self) -> FireballView {

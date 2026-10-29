@@ -33,10 +33,15 @@ pub struct Burst {
     pub explosions: Vec<Explosion>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RocketEvent {
     Launched,
     Exploded,
+    Block {
+        pos: minecraftoss_player::Pos,
+        at: DVec3,
+        velocity: DVec3,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,10 +61,10 @@ pub struct Rocket {
     pub hand: DVec3,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum RocketHit {
     Entity,
-    Block,
+    Block(minecraftoss_player::Pos, DVec3),
 }
 
 fn triangle(random: &mut LegacyRandom, deviation: f64) -> f64 {
@@ -225,12 +230,19 @@ impl Rocket {
         let mut events = Vec::new();
         let bursts = match hit {
             Some(RocketHit::Entity) => true,
-            Some(RocketHit::Block) => !self.explosions.is_empty(),
+            Some(RocketHit::Block(..)) => !self.explosions.is_empty(),
             None => false,
         };
         if bursts {
             self.alive = false;
             events.push(RocketEvent::Exploded);
+        }
+        if let Some(RocketHit::Block(pos, at)) = hit {
+            events.push(RocketEvent::Block {
+                pos,
+                at,
+                velocity: self.velocity,
+            });
         }
         if self.life == 0 {
             events.push(RocketEvent::Launched);
@@ -265,7 +277,7 @@ impl Rocket {
         if struck {
             Some(RocketHit::Entity)
         } else {
-            block.map(|_| RocketHit::Block)
+            block.map(|(pos, at)| RocketHit::Block(pos, at))
         }
     }
 
@@ -486,7 +498,15 @@ mod tests {
         let lifetime = plain.lifetime;
         let (ticks, events) = fly(&mut plain, &world, &[], None);
         assert_eq!(ticks, lifetime + 1);
+        let (roof, events): (Vec<_>, Vec<_>) = events
+            .into_iter()
+            .partition(|event| matches!(event, RocketEvent::Block { .. }));
         assert_eq!(events, [RocketEvent::Launched, RocketEvent::Exploded]);
+        assert!(!roof.is_empty());
+        assert!(
+            roof.iter().all(|event| matches!(event, RocketEvent::Block { pos: (0, 68, 0), at, .. } if (at.y - 68.0).abs() < 1e-6)),
+            "it strikes the roof each tick it presses on it: {roof:?}"
+        );
         assert!(
             (plain.position.y - (68.0 - SIZE)).abs() < 1e-6,
             "{}",
@@ -513,6 +533,40 @@ mod tests {
         starry.velocity = DVec3::new(0.2, RISE, 0.0);
         assert!(starry.tick(&Wall, &[], None).contains(&RocketEvent::Exploded));
         assert!((starry.position.x - (1.0 - SIZE / 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_rocket_reports_the_block_it_strikes_and_a_starless_one_strikes_it_every_tick() {
+        let mut starry = rocket(1, 1);
+        starry.position = DVec3::new(0.85, 65.0, 0.5);
+        starry.velocity = DVec3::new(0.2, RISE, 0.0);
+        let events = starry.tick(&Wall, &[], None);
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert_eq!(
+            (events[0], events[2]),
+            (RocketEvent::Exploded, RocketEvent::Launched)
+        );
+        let RocketEvent::Block { pos, at, velocity } = events[1] else {
+            panic!("{events:?}");
+        };
+        assert_eq!((pos, velocity), ((1, 65, 0), starry.velocity));
+        let rise = (RISE + LIFT) * 0.15 / (0.2 * HORIZONTAL_SPEED_UP);
+        assert!(
+            (at - DVec3::new(1.0, 65.0 + rise, 0.5)).length() < 1e-6,
+            "{at}"
+        );
+        let mut plain = starred(1, 1, Vec::new());
+        plain.position = DVec3::new(0.8, 65.0, 0.5);
+        plain.velocity = DVec3::new(0.2, RISE, 0.0);
+        for _ in 0..3 {
+            let events = plain.tick(&Wall, &[], None);
+            let struck = events
+                .iter()
+                .filter(|event| matches!(event, RocketEvent::Block { pos: (1, 65, 0), .. }))
+                .count();
+            assert_eq!(struck, 1, "{events:?}");
+            assert!(plain.alive);
+        }
     }
 
     #[test]

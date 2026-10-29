@@ -169,6 +169,11 @@ pub enum TridentEvent {
         target: u64,
         velocity: DVec3,
     },
+    Block {
+        pos: Pos,
+        at: DVec3,
+        velocity: DVec3,
+    },
     Sound {
         event: &'static str,
         at: DVec3,
@@ -551,6 +556,11 @@ impl ThrownTrident {
                 self.previous_yaw += turn;
             } else if let Some((pos, at)) = block {
                 self.last_state = world.block(pos);
+                events.push(TridentEvent::Block {
+                    pos,
+                    at,
+                    velocity: self.velocity,
+                });
                 let sign = DVec3::new(
                     signum(self.velocity.x),
                     signum(self.velocity.y),
@@ -1087,6 +1097,28 @@ mod tests {
             thrown.tick(&world, &[], None);
         }
         assert!(!thrown.alive);
+    }
+
+    #[test]
+    fn a_trident_reports_the_block_it_sticks_in_once_with_its_flight() {
+        let world = floor();
+        let mut thrown = launched(worn(0), 0.0, 1);
+        let mut blocks = Vec::new();
+        for _ in 0..40 {
+            let before = thrown.velocity;
+            for event in thrown.tick(&world, &[], None) {
+                if let TridentEvent::Block { pos, at, velocity } = event {
+                    blocks.push((pos, at, velocity, before));
+                }
+            }
+        }
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        let (pos, at, velocity, before) = blocks[0];
+        assert_eq!((pos.0, pos.1), (0, 60));
+        assert!((at.y - 61.0).abs() < 1e-6, "on the floor's top: {at}");
+        assert_eq!(velocity, before, "the flight it struck with, before it stops");
+        assert!(velocity.y < 0.0 && velocity.z > 1.0, "{velocity}");
+        assert_eq!(world.block(pos), Some(Block::new("minecraft:stone")));
     }
 
     #[test]

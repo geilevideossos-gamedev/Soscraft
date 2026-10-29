@@ -1401,6 +1401,23 @@ impl ServerSim {
         self.level.ring_bell(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), direction)
     }
 
+    pub fn projectile_hit_block(&mut self, pos: BlockPos, face: minecraftoss_player::Face, at: glam::DVec3) {
+        let state = self.level.block(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
+        let rings = self.mob_tables.names.get(usize::from(state.0)).and_then(Option::as_ref).is_some_and(|block| crate::bells::rings_from(block, face, at.y - f64::from(pos.1)));
+        if rings {
+            self.ring_bell(pos, Some(crate::bells::face_name(face)));
+        }
+    }
+
+    fn projectile_struck(&mut self, pos: BlockPos, at: glam::DVec3, motion: glam::DVec3) {
+        let face = {
+            let Self { level, states, mob_tables, .. } = self;
+            let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+            crate::thrown::struck_face(&world, pos, at, motion)
+        };
+        self.projectile_hit_block(pos, face, at);
+    }
+
     pub fn tick_bells(&mut self) {
         let game_time = self.level.game_time;
         let level = &self.level;
@@ -1456,6 +1473,7 @@ impl ServerSim {
                         self.firework_bursts.push(rocket.burst());
                         self.rocket_blast(rocket, players);
                     }
+                    RocketEvent::Block { pos, at, velocity } => self.projectile_struck(pos, at, velocity),
                 }
             }
         }
@@ -2047,6 +2065,7 @@ impl ServerSim {
                             crate::thrown::hurt_by(&mut self.mobs, target, crate::trident::DAMAGE, crate::trident::DAMAGE_TYPE, velocity, trident.owner);
                         }
                     },
+                    TridentEvent::Block { pos, at, velocity } => self.projectile_struck(pos, at, velocity),
                     TridentEvent::Sound { event, at, volume, pitch } => {
                         self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event, pos: at.to_array(), volume, pitch });
                     }
@@ -2189,6 +2208,7 @@ impl ServerSim {
         let mob_targets = crate::thrown::targets(&self.mobs);
         let frame_targets = self.frames.targets();
         let mut frame_hits = Vec::new();
+        let mut block_hits = Vec::new();
         let mut struck = Vec::new();
         let mut shot_by_mobs = Vec::new();
         let mut hatched = Vec::new();
@@ -2234,6 +2254,7 @@ impl ServerSim {
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
                 let frame = landed.mob.and_then(crate::item_frame::struck_frame);
                 frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));
+                block_hits.extend(landed.block.zip(landed.face).map(|(block, face)| (block, face, landed.at)));
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
                     match t.shooter {
                         Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
@@ -2297,6 +2318,9 @@ impl ServerSim {
         }
         for id in frame_hits {
             self.frame_action(id, crate::item_frame::FrameAction::Shot { infinite: false });
+        }
+        for (pos, face, at) in block_hits {
+            self.projectile_hit_block(pos, face, at);
         }
         for (cell, pitch, hit, direction, amount) in awards {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: cell, volume: 1.0, pitch });
@@ -2796,11 +2820,15 @@ impl ServerSim {
                     fireball.fireball.alive = false;
                     continue;
                 }
-                bursts.extend(fireball.tick(&world, &targets));
+                bursts.extend(fireball.tick(&world, &targets).map(|hit| (hit, fireball.fireball.velocity)));
             }
             dragon_fireballs.list.retain(|fireball| fireball.fireball.alive);
         }
-        for at in bursts {
+        for (hit, velocity) in bursts {
+            let at = hit.location;
+            if let Some(pos) = hit.block {
+                self.projectile_struck(pos, at, velocity);
+            }
             self.clouds.push(crate::dragon_fireball::breath_cloud(crate::dragon_fireball::cloud_position(at, &targets)));
             self.dragon_fireballs.burst(at);
             let pitch = crate::dragon_fireball::explode_pitch(self.sound_random.next_float());
@@ -13937,6 +13965,118 @@ mod tests {
             server.tick_mobs(&[], true);
         }
         assert!(!server.mobs.glowing(near), "the glow lasts three seconds");
+    }
+
+    fn bell_at(server: &mut ServerSim, scene: &mut HandcraftedScene, pos: BlockPos, attachment: &str, facing: &str) {
+        place(server, scene, pos, Block::new("minecraft:bell").with("attachment", attachment).with("facing", facing));
+        server.level.sounds.clear();
+    }
+
+    fn bell_uses(server: &ServerSim) -> usize {
+        server.level.sounds.iter().filter(|s| s.event == crate::bells::USE_SOUND && s.volume == 2.0).count()
+    }
+
+    fn bell_rings(server: &mut ServerSim) -> Vec<(BlockPos, minecraftoss_core::pos::Direction)> {
+        server.level.tick();
+        let rings = server.level.bell_rings.iter().map(|(pos, direction)| ((pos.x, pos.y, pos.z), *direction)).collect();
+        server.hear_bells();
+        rings
+    }
+
+    fn thrown_from(item: &str, eye: [f64; 3], yaw: f32, seed: u64) -> crate::thrown::Thrown {
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(seed);
+        crate::thrown::Thrown::throw(item, glam::DVec3::from_array(eye), yaw, 0.0, glam::DVec3::ZERO, true, &mut random).expect("a throwable")
+    }
+
+    #[test]
+    fn a_snowball_on_a_bells_side_rings_it_and_one_on_its_top_does_not() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        if server.level.registries().entities.is_none() {
+            return;
+        }
+        let bell = (8, 200, 8);
+        bell_at(&mut server, &mut scene, bell, "floor", "north");
+        server.summon("minecraft:villager", [8.5, 200.0, 12.5], None, 0.0).unwrap();
+        let heard = |server: &ServerSim| server.mobs.villagers()[0].ai.as_ref().unwrap().brain.memories.heard_bell_time.get().copied();
+        server.throw(thrown_down("minecraft:snowball", 1));
+        for _ in 0..20 {
+            server.tick_thrown(&[]);
+        }
+        let hits = server.take_thrown_hits();
+        assert!(hits.len() == 1 && (hits[0].at.y - 201.0).abs() < 1e-6, "it breaks on the bell's top: {hits:?}");
+        assert_eq!(bell_uses(&server), 0);
+        assert!(bell_rings(&mut server).is_empty());
+        assert_eq!(heard(&server), None);
+        server.throw(thrown_from("minecraft:snowball", [12.5, 200.6, 8.5], 90.0, 2));
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+        }
+        let hits = server.take_thrown_hits();
+        assert!(hits.len() == 1 && (hits[0].at.x - 9.0).abs() < 1e-6, "it breaks on the frame's east side: {hits:?}");
+        assert_eq!(bell_uses(&server), 0, "a floor bell facing north rings only from the north and the south");
+        assert!(bell_rings(&mut server).is_empty());
+        server.throw(thrown_from("minecraft:snowball", [8.5, 200.6, 4.5], 0.0, 3));
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+        }
+        let hits = server.take_thrown_hits();
+        assert!(hits.len() == 1 && (hits[0].at.z - 8.25).abs() < 1e-6, "it breaks on the frame's north side: {hits:?}");
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::North)], "it swings from the struck side");
+        assert!(heard(&server).is_some(), "the villager hears it");
+    }
+
+    #[test]
+    fn a_thrown_trident_rings_a_hanging_bell() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 202, 8);
+        place(&mut server, &mut scene, (8, 203, 8), Block::new("minecraft:stone"));
+        bell_at(&mut server, &mut scene, bell, "ceiling", "east");
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(5);
+        let throw = crate::thrown::Throw { owner: 0, item: crate::trident::ITEM, components: None, eye: glam::DVec3::new(8.5, 202.6, 5.5), yaw: 0.0, pitch: 0.0, motion: glam::DVec3::ZERO, on_ground: true };
+        let stack = minecraftoss_player::inventory::ItemStack::new(crate::trident::ITEM, 1);
+        server.throw_trident(crate::trident::ThrownTrident::launch(&throw, stack, false, &mut random));
+        for _ in 0..10 {
+            server.tick_tridents(&[]);
+        }
+        assert!(server.level.sounds.iter().any(|s| s.event == crate::trident::HIT_GROUND_SOUND), "it sticks in the bell");
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::North)], "a hanging bell rings from every side");
+    }
+
+    #[test]
+    fn a_wind_charge_on_a_bells_side_rings_it_twice_and_ends_on_its_facing() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        bell_at(&mut server, &mut scene, bell, "floor", "north");
+        server.throw(thrown_from("minecraft:wind_charge", [8.5, 200.5, 11.5], 180.0, 9));
+        for _ in 0..10 {
+            server.tick_thrown(&[]);
+        }
+        assert!(server.thrown_views().is_empty());
+        assert_eq!(bell_uses(&server), 2, "the hit and the burst both ring it");
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::South), (bell, Direction::North)]);
+    }
+
+    #[test]
+    fn a_wind_burst_beside_a_bell_rings_it() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        bell_at(&mut server, &mut scene, bell, "floor", "east");
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 9.5), &[], crate::wind::Charge::Player);
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::East)], "along its facing");
+        server.level.sounds.clear();
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 11.5), &[], crate::wind::Charge::Player);
+        assert_eq!(bell_uses(&server), 0, "a burst three blocks away is too far");
+        server.mobs.set_mob_griefing(false);
+        server.wind_burst(glam::DVec3::new(8.5, 200.5, 9.5), &[], crate::wind::Charge::Breeze);
+        assert_eq!(bell_uses(&server), 0, "a breeze's burst rings it only with mob griefing");
+        assert!(bell_rings(&mut server).is_empty());
     }
 
     #[test]

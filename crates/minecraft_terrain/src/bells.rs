@@ -51,6 +51,10 @@ pub fn proper_hit(block: &Block, face: Face, hit_y: f64) -> bool {
     }
 }
 
+pub fn rings_from(block: &Block, face: Face, hit_y: f64) -> bool {
+    is_bell(block) && proper_hit(block, face, hit_y)
+}
+
 pub fn center(pos: Pos) -> glam::DVec3 {
     glam::DVec3::new(
         f64::from(pos.0) + 0.5,
@@ -312,5 +316,22 @@ mod tests {
             .with("facing", "east");
         assert!(proper_hit(&ceiling, Face::North, 0.3));
         assert!(proper_hit(&ceiling, Face::West, 0.3));
+    }
+
+    #[test]
+    fn a_projectile_rings_only_a_bell_and_only_from_a_proper_side() {
+        let floor = Block::new(BELL)
+            .with("attachment", "floor")
+            .with("facing", "east");
+        assert!(rings_from(&floor, Face::West, 0.5));
+        assert!(!rings_from(&floor, Face::North, 0.5));
+        assert!(!rings_from(&floor, Face::Up, 0.5));
+        assert!(!rings_from(&floor, Face::East, 0.82));
+        let ceiling = Block::new(BELL)
+            .with("attachment", "ceiling")
+            .with("facing", "north");
+        assert!(rings_from(&ceiling, Face::South, 0.5));
+        assert!(!rings_from(&ceiling, Face::Down, 0.5));
+        assert!(!rings_from(&Block::new("minecraft:stone"), Face::West, 0.5));
     }
 }

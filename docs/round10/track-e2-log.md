@@ -1032,3 +1032,55 @@ After 6d7cfdaf.
 ```
 IW4L_MINECRAFT_KIT=minecraft:elytra,minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:zombie_spawn_egg*8,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
+
+## Group bell-hits
+
+### 1. Snowballs, tridents and wind charges ring Minecraft bells
+
+After 89c60502.
+
+- **Vanilla (26.3, checked with javap):**
+  - `Projectile.onHitBlock` calls `BlockState.onProjectileHit` with the hit, and every projectile's own `onHitBlock` calls it through `super`: thrown items and potions, arrows and tridents (`AbstractArrow.onHitBlock`, after `lastState` and before the arrow stops), wind charges, fireballs, shulker bullets, llama spit and firework rockets. `DragonFireball.onHit` calls `super.onHit` before its cloud.
+  - `BellBlock.onProjectileHit`: `onHit(level, state, hit, the owner if it is a player, true)`, which checks `isProperHit` (a side, not up or down, at most 0.8124 above the block's bottom, a side that fits the attachment) and then `attemptToRing` with the struck face: block event 1 with the face's 3D value and `block.bell.use` at volume 2.
+  - `FireworkRocketEntity.onHitBlock`: `explode` when it has stars, then `super.onHitBlock`, so a rocket rings a bell with or without stars. A rocket keeps its motion after its move (`setDeltaMovement(dm)`), so one pressing on a block strikes it again every tick.
+  - `AbstractWindCharge.onHitBlock`: `super.onHitBlock` first (the ring from the struck side), then the burst a quarter block off the face, whose `BellBlock.onExplosionHit` rings the bell along its facing. `ServerLevel.blockEvent` queues equal events once.
+- **Changed:**
+  - `minecraft_terrain/src/bells.rs`: `rings_from(block, face, hit_y)` (`is_bell && proper_hit`).
+  - `minecraft_terrain/src/server.rs`:
+    - `ServerSim::projectile_hit_block(pos, face, at)`, vanilla's `BlockState.onProjectileHit`: on a proper hit it rings the bell through `ring_bell` with the struck face. Later block reactions (target blocks, chorus flowers, decorated pots) belong here too.
+    - The private `projectile_struck(pos, at, motion)` finds the face with `thrown::struck_face` along the motion and calls the seam.
+    - `tick_thrown` collects each landing's block and face and calls the seam after the frame hits, before the splashes and the wind bursts, so a wind charge's burst ring comes last.
+    - `tick_tridents` calls it for the new `TridentEvent::Block`, `tick_rockets` for the new `RocketEvent::Block`, and `tick_dragon_fireballs` for a fireball's block hit before its cloud.
+  - `minecraft_terrain/src/trident.rs`: `TridentEvent::Block { pos, at, velocity }` (next to `Struck`), pushed where the trident sticks, with the flight it struck with.
+  - `minecraft_terrain/src/firework_rocket.rs`: `RocketHit::Block` keeps the block and the hit point, and `after_hit` pushes `RocketEvent::Block { pos, at, velocity }` on every block hit, after a burst. `RocketEvent` loses `Eq`.
+  - `minecraft_terrain/src/dragon_fireball.rs`: `DragonFireball::tick` returns its `FireballHit`; the hit's location is the burst point it returned before.
+  - `docs/MINECRAFT-SURVIVAL.md`: a paragraph on projectiles ringing bells.
+- **Tests:**
+  - `bells::tests::a_projectile_rings_only_a_bell_and_only_from_a_proper_side`.
+  - `trident::tests::a_trident_reports_the_block_it_sticks_in_once_with_its_flight`.
+  - `firework_rocket::tests::a_rocket_reports_the_block_it_strikes_and_a_starless_one_strikes_it_every_tick`; `a_starless_rocket_under_a_roof_waits_out_its_lifetime` now also checks that it strikes the roof.
+  - `server::tests` (with the 26.3 data):
+    - `a_snowball_on_a_bells_side_rings_it_and_one_on_its_top_does_not`: on a floor bell facing north, a snowball on the top or the east side makes no sound and no block event; one on the north side plays one `block.bell.use` at volume 2, queues block event 1 north, and the villager 4 blocks away hears it.
+    - `a_thrown_trident_rings_a_hanging_bell`: a ceiling bell rings north from a trident flying south into it.
+    - `a_wind_charge_on_a_bells_side_rings_it_twice_and_ends_on_its_facing`: two use sounds, the block events south and then north.
+    - `a_wind_burst_beside_a_bell_rings_it` (the existing burst ring had no test): a player's burst one block away rings it along its facing; one three blocks away does not; a breeze's burst without mob griefing does not.
+  - The tests read the direction from the level's `bell_rings` after its block events run. E1's `Output.block_events` is not on this branch, so the swing on the client is not tested here.
+- **Decisions:**
+  - A projectile's ring is queued while the projectiles tick, after `ServerSim::tick` has run this tick's block events, so the bell hears it (and swings) one tick later than in vanilla.
+  - There is no `bell_ring` statistic, because the fork has no statistics. The seam takes no owner: vanilla gives `GameEvent.BLOCK_CHANGE` the player who threw it, and that game event is track W's (`Level::ring_bell`).
+  - A rocket rings a bell on every block hit, with or without stars, as vanilla's `onHitBlock` does. A plain rocket pressing on a bell's side therefore rings it every tick until it puffs.
+  - Tridents, rockets and dragon fireballs take their struck face from `thrown::struck_face` along their motion, as thrown items already do.
+  - MW2 bullets don't ring bells, because vanilla has no bullets. The player has no bow, so the player's rings come from snowballs, eggs, potions, pearls, bottles, tridents, wind charges and rockets.
+- **Merge notes:** track D's breeze charges fly in `ServerSim.thrown` as wind charges, so they ring bells through `tick_thrown` once both are merged. W's `projectile_landed` calls sit next to the new lines in `tick_thrown` and `tick_tridents`; keep both.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, by day, flat ground; the swing needs E1's `bells-swing`, so until it is merged a ring is the sound only):
+  1. **BH-1. Throws.** Look north and place a bell on cobblestone, so that it faces you. From 5 blocks in front of it, throw a snowball at the side facing you, below the rim: it rings. Throw one onto its top: no ring. Throw an egg, a splash water potion and the trident at the side facing you: each rings. Walk round and throw a snowball at one of the two other sides: no ring. **Screenshot BH-1** (just after a ring).
+  2. **BH-2. Villagers.** Place the bed 10 blocks away, use a villager spawn egg next to the bell and ring the bell with a snowball: the villager reacts as to a hand ring and goes to hide.
+  3. **BH-3. Wind charges.** Throw a wind charge at the side facing you: it rings twice in quick succession. Throw one at the ground one block beside the bell: it rings once. **Screenshot BH-3.**
+  4. **BH-4. Rockets.** Place a dispenser two blocks in front of the bell, facing it, with a lever on it and a plain rocket inside. Pull the lever: the rocket flies into the bell and rings it again and again while it presses on it, then puffs. Put the red rocket in and pull the lever again: it bursts on the bell with one ring.
+  5. **BH-5. Friend** (two windows with `scripts\mp-local.ps1`, `/kit @a` from the host). The friend throws a snowball at the side facing them: both windows hear the ring.
+- **Kit** (18 backpack slots; the red rocket needs E1's kit parser):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bell*4,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:egg*16,minecraft:splash_potion@water*4,minecraft:trident+loyalty=3,minecraft:wind_charge*32,minecraft:dispenser*2,minecraft:lever*2,minecraft:firework_rocket*16,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*16,minecraft:villager_spawn_egg*2,minecraft:white_bed,minecraft:ender_pearl*8,minecraft:cooked_beef*16
+```
