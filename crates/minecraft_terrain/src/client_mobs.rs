@@ -1316,7 +1316,7 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for (_, core) in world.family_cores().into_iter().filter(|(_, core)| !core.removed) {
         push(core.id, core.yaw, &core.look, &core.body, core.baby, core.eye_height);
     }
-    let shulkers:std::collections::HashSet<u64> = world.shulkers().iter().map(|e| e.id).collect();
+    let shulkers: std::collections::HashSet<u64> = world.shulkers().iter().map(|e| e.id).collect();
     let ravagers: std::collections::HashSet<u64> = world.ravagers().iter().map(|e| e.id).collect();
     let shows = crate::mob_tracking::shows(world);
     for mob in &mut out {

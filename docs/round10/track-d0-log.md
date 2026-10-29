@@ -327,3 +327,12 @@ After 757bfed8.
 ```
 IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*2,minecraft:creeper_spawn_egg*2,minecraft:silverfish_spawn_egg*4,minecraft:endermite_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:iron_sword,minecraft:cooked_beef*32
 ```
+
+### 3. Minecraft client mob list keeps its spacing
+
+After 2842608b.
+
+- **Changed:** `client_mobs::server_mobs`. 2842608b lost the space after `let shulkers:` on the line after its new loop; this puts it back, so that commit's change to `client_mobs.rs` is only its two generic additions. There is no change in behaviour.
+- **Tests:** none (spacing only). **Runs:** `check -p launcher --locked` green.
+- **Decision:** a separate commit instead of an amend, because the track's rule is no amending.
+- **Test steps:** none (no change in the game).
