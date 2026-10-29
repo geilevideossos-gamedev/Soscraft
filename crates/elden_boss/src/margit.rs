@@ -719,7 +719,7 @@ pub static MARGIT: BossDef = BossDef {
             poses: &[
                 pose(0, Pose::Ready),
                 pose(6, Pose::Kneel),
-                pose(72, Pose::Kneel),
+                pose(60, Pose::Kneel),
                 pose(80, Pose::Rise),
             ],
             cues: &[cue(0, STUNNED), burst(0, Burst::Crit)],
@@ -954,6 +954,18 @@ mod tests {
         assert!(check(&late).unwrap_err().contains("Sword"));
         let thrown = with_move("dagger_throw", |mv| mv.conjure = &[]);
         assert!(check(&thrown).unwrap_err().contains("no dagger"));
+    }
+
+    #[test]
+    fn a_critical_lands_where_his_twenty_tick_rise_starts() {
+        let kneel = MARGIT.clips.kneel;
+        let rise = kneel.length - MARGIT.critical.recovery;
+        assert_eq!(rise, 60);
+        let keys: Vec<(u16, Pose)> = kneel.poses.iter().map(|key| (key.at, key.pose)).collect();
+        assert_eq!(
+            &keys[keys.len() - 2..],
+            [(rise, Pose::Kneel), (kneel.length, Pose::Rise)]
+        );
     }
 
     #[test]

@@ -182,3 +182,14 @@ After 77a03ca8.
   - Design doc 7.5 expected longer fights, with 70% of shots landing and half the time spent dodging.
   - If he kneels too often in game, raise `stance.points` or lower `resist.melee.stance` in `margit.rs`.
 - **Owner's steps:** none in game: the crate is not in the game yet. No kit line.
+
+## Review of segment f1
+
+### 5. Margit rises at once after a critical
+
+After a5983466.
+
+- **Defect:** a critical moves the kneel clock to its last 20 ticks (tick 60), so that he rises at once with the 20-tick recovery of design doc 7.3. The kneel clip's poses were Kneel at 6, Kneel at 72 and Rise at 80, so after a critical he stayed fully down for 12 more ticks and rose in the last 8.
+- **Changed:** the kneel clip's last Kneel key is at 60 (`kneel.length - critical.recovery`), so the rise takes the last 20 ticks of every kneel, and a critical lands where it starts.
+- **Tests:** `margit::tests::a_critical_lands_where_his_twenty_tick_rise_starts`. `test -p elden_boss --locked`: 52 green.
+- **Owner's steps:** none in game: the crate is not in the game yet. No kit line.
