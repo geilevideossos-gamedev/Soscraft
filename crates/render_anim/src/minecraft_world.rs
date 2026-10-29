@@ -315,6 +315,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
         day,
         end_clock: opened.end_clock,
         weather: opened.weather,
+        maps: std::sync::Mutex::new(opened.maps),
         weather_random: minecraft_survival::server::weather_random(seed),
         forced_weather: std::env::var("IW4L_MINECRAFT_WEATHER").ok(),
         chat,

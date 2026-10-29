@@ -336,3 +336,32 @@ After 70809097.
 ```
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*2,minecraft:vindicator_spawn_egg*2,minecraft:oak_door*4,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:glass*16,minecraft:torch*16,minecraft:diamond_sword,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
+
+## Group maps-loot
+
+### 1. Minecraft keeps map data in the vanilla 26.3 map files
+
+After 701ee0df.
+
+- **Vanilla (26.3, checked with javap):**
+  - `MapItemSavedData.CODEC`: `dimension` (level key), `xCenter`, `zCenter` (ints), `scale` (byte, default 0), `colors` (16384 bytes, required; any other length leaves the map blank), `trackingPosition` (default true), `unlimitedTracking` (default false), `locked` (default false), `banners` and `frames` (lists, default empty). `optionalFieldOf` leaves out a value equal to its default. The codec clamps `scale` to 0-4.
+  - `MapId.key()` is `maps/<id>` in the server's own data storage, so a map is `data/minecraft/maps/<id>.dat`. `MapIndex` is `maps/last_id` with one field `map` (default -1); `getNextMapId` adds one first, so the first map is 0.
+  - `createFresh(x, z, scale)`: `i = 128 << scale`, `centre = floor((x + 64) / i) * i + i / 2 - 64`.
+  - `addDecoration`: `f = (worldX - centreX) / (1 << scale)` as a float. `clampMapCoordinate`: f <= -63 is -128, f >= 63 is 127, else `(byte)(int)(f * 2 + 0.5)`. `isInsideMap`: -63 <= f <= 63 on both axes. `calculateRotation`: `(byte)(int)((rot +- 8) * 16 / 360)`, and in the Nether `(t * t * 34187121 + t * 121) >> 15 & 15` with `t = gameTime / 10`. Other markers show only inside the map or with `unlimitedTracking`; the holder outside it is `player_off_map` within 320 map units, `player_off_limits` with `unlimitedTracking`, else nothing.
+- **Changed:**
+  - `minecraft_terrain/src/maps.rs` (new):
+    - `MapData` with the codec's fields (`colors: Box<[u8; 16384]>`, banners and frames kept as raw NBT so they round trip), `create_fresh`, `map_units`, `decoration(kind, x, z, rot, game_time)` (vanilla's `calculateDecorationLocationAndType`), `to_tag` and `from_tag`.
+    - The pure helpers `inside`, `clamp_coordinate`, `rotation_byte`, `nether_rotation`, `player_marker`.
+    - `MapStore`: the loaded maps, `last_id` (-1 in a new world), the dirty maps and whether the index changed. `load(storage)` reads `last_id.dat` and every `<id>.dat` in the folder; `free_id` is `getFreeMapId`; `insert`, `get`, `get_mut` (marks the map dirty); `take_writes` hands the dirty maps and the index to a `MapWrites`, which the save thread writes with `LevelStorage::write_saved`.
+  - `minecraft_survival/src/server.rs`: `Globals.maps: Mutex<MapStore>` next to `weather`. `WorldFiles` takes the map writes with the rest of the world files, so the autosave and the closing save write new and changed maps next to `weather.dat`.
+  - `minecraft_survival/src/save.rs`: `OpenedWorld.maps`, read when the world opens (an unreadable map is a warning and is left out); `WorldSave::write_maps`.
+  - `render_anim/src/minecraft_world.rs`: the host's `Globals` takes `opened.maps`.
+- **Tests:**
+  - `maps::tests`: `a_fresh_map_snaps_its_centre_to_the_vanilla_grid` ((1000, -300) at scale 1 is centred on (1088, -192), (0, 0) on (0, 0), and the grid edges and scale 4), `a_target_is_placed_clamped_and_turned_like_vanilla` (the target (1000, -300) is (-87, -107) with rotation 8; f = +-63 clamps to -128 and 127; far targets stay on the edge of an unlimited map and vanish from a plain one), `the_holder_marker_leaves_the_map_like_vanilla` (off the map at 300 map units, off limits at 400 only with unlimited tracking, the Nether spin), `map_data_keeps_the_vanilla_keys_and_skips_defaults`, `maps_are_saved_in_the_vanilla_files_and_come_back` (the first id is 0, `last_id.dat` holds `map: 0`, an unchanged map is not written again), `a_map_file_beyond_the_index_is_never_overwritten`.
+  - `server::tests::autosaves_and_closing_write_new_maps_into_the_vanilla_map_files`: an autosave writes `0.dat` and `last_id.dat`; the closing save writes only the map that changed after it; the reopened world has both ids counted and the new map back.
+- **Decisions:**
+  - `Globals.maps` is a `Mutex`, because the host and the friends open chests with a shared `&Globals` (`menus::open_station`, `FriendWorld.globals`). It is only locked on the main thread and for the save snapshot.
+  - All map files are read when the world opens, so later groups can draw and tick maps without reading files in a frame. The next id is past the highest map file even when `last_id.dat` says less, so a lost index never overwrites a map. Vanilla trusts the index.
+  - The map decorations of a held map (`maps-held`) are not saved, as in vanilla; only banners and frames are, and those stay as they were read.
+- **Test steps:** none in game for this commit alone; the next commit makes the first maps. The check is step 6 of commit 2.
+- **Kit:** none.
