@@ -5,12 +5,13 @@ use crate::monster_ai::Target;
 use crate::navigation::GroundNavigation;
 use crate::tempt::PlayerCandidate;
 use crate::world::emissions::{MovementSounds, play_movement};
-use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore};
+use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore, Registered};
 use crate::world::{DamageSourceKind, EntityWorld, Voice, voice_pitch};
 use elden_boss::data::{Cue, Sound};
 use elden_boss::{Act, BossDef, Brain, Clip, Dagger, Flight, Hit, Sense, Source};
 use glam::DVec3;
 use minecraftoss_player::World;
+use minecraftoss_player::inventory::ItemStack;
 
 pub mod arena;
 pub mod blows;
@@ -21,6 +22,7 @@ pub const LOOK_TURN: f32 = 30.0;
 pub const LOOK_PITCH: f32 = 40.0;
 pub const HURT_VOICE_GAP: i32 = 10;
 pub const FALL: &str = "minecraft:fall";
+pub const STACK: u32 = 64;
 
 const UNSEEN: DVec3 = DVec3::splat(f64::INFINITY);
 
@@ -51,6 +53,7 @@ pub struct EldenBoss {
     pub hits: Vec<Hit>,
     pub throws: Vec<Dagger>,
     pub daggers: Vec<Flight>,
+    pub felled: Vec<u64>,
 }
 
 impl EldenBoss {
@@ -92,6 +95,7 @@ pub fn boss(def: &'static BossDef, position: DVec3) -> FamilyMob<EldenBoss> {
             hits: Vec::new(),
             throws: Vec::new(),
             daggers: Vec::new(),
+            felled: Vec::new(),
         },
     }
 }
@@ -270,6 +274,9 @@ pub fn take(mob: &mut FamilyMob<EldenBoss>, source: Source, player: Option<u64>)
     };
     let result = record(core, loss, full);
     core.health = state.brain.health();
+    if taken.died {
+        state.felled = state.brain.fighters();
+    }
     let position = core.body.position;
     let burning = core.body.fire_ticks > 0;
     core.damage.place_death(result, position, burning);
@@ -341,8 +348,24 @@ impl Family for EldenBoss {
         }
     }
 
-    fn experience(_mob: &mut FamilyMob<Self>) -> i32 {
-        0
+    fn experience(mob: &mut FamilyMob<Self>) -> i32 {
+        let fighters = mob.state.brain.fighters().len();
+        let points = mob.state.def.experience.for_fighters(fighters);
+        i32::try_from(points).unwrap_or(i32::MAX)
+    }
+
+    fn death_drops(mob: &mut FamilyMob<Self>) -> Vec<ItemStack> {
+        let fighters = mob.state.brain.fighters().len();
+        let mut drops = Vec::new();
+        for loot in mob.state.def.drops {
+            let mut left = loot.count_for(fighters);
+            while left > 0 {
+                let count = left.min(STACK);
+                drops.push(ItemStack::new(loot.item, count as u8));
+                left -= count;
+            }
+        }
+        drops
     }
 
     fn despawn(_mob: &FamilyMob<Self>) -> Despawn {
@@ -389,6 +412,17 @@ impl EntityWorld {
 
     pub fn elden_boss_mut(&mut self, id: u64) -> Option<&mut FamilyMob<EldenBoss>> {
         self.family_mob_mut::<EldenBoss>(id)
+    }
+
+    pub fn take_elden_felled(&mut self) -> Vec<(&'static BossDef, u64)> {
+        let store = <EldenBoss as Registered>::store_mut(self);
+        let mut felled = Vec::new();
+        for mob in &mut store.mobs {
+            let def = mob.state.def;
+            let players = std::mem::take(&mut mob.state.felled);
+            felled.extend(players.into_iter().map(|player| (def, player)));
+        }
+        felled
     }
 }
 
@@ -766,8 +800,8 @@ mod tests {
         let death = &deaths[0];
         assert_eq!((death.id, death.table), (id, Some("iw4l:margit")));
         assert!(death.context.killed_by_player);
-        assert_eq!(death.experience, 0, "no reward yet");
-        assert!(death.equipment.is_empty());
+        assert_eq!(death.experience, 100, "one fighter's reward");
+        assert_eq!(death.equipment.len(), 3);
         let mut sounds = Vec::new();
         for _ in 0..25 {
             world.tick_with_players(&mut Field, &players);
@@ -778,6 +812,60 @@ mod tests {
             "{sounds:?}"
         );
         assert!(world.mob_ids().all(|mob| mob != id), "gone after his death");
+    }
+
+    #[test]
+    fn margit_drops_gold_and_experience_by_fighters() {
+        for drops in [true, false] {
+            let mut world = EntityWorld::default();
+            world.set_mob_drops(drops);
+            let id = margit_at(&mut world, 0.5, 0.5);
+            let front = DVec3::new(0.5, 64.0, 3.0);
+            let pair = [
+                player_at(1, front),
+                player_at(2, DVec3::new(3.0, 64.0, 0.5)),
+            ];
+            woken(&mut world, id, &pair);
+            assert_eq!(health(&world, id), 1280.0, "two fighters at the wake");
+            let late = DVec3::new(0.5, 64.0, -3.0);
+            let three = [pair[0], pair[1], player_at(3, late)];
+            world.tick_with_players(&mut Field, &three);
+            assert!(world.player_attack(&sword(3, late), id).hurt);
+            let brain = &mut world.elden_boss_mut(id).unwrap().state.brain;
+            brain.set_health(5.0);
+            assert!(world.player_attack(&sword(1, front), id).died);
+            let deaths = world.take_deaths();
+            let mut felled: Vec<u64> = world
+                .take_elden_felled()
+                .into_iter()
+                .map(|(def, player)| {
+                    assert_eq!(def.id, "iw4l:margit");
+                    player
+                })
+                .collect();
+            felled.sort_unstable();
+            assert_eq!(felled, [1, 2, 3], "the wake's two and a later one");
+            assert!(world.take_elden_felled().is_empty(), "told once");
+            if !drops {
+                assert!(deaths.is_empty(), "no drops without mob drops");
+                continue;
+            }
+            let death = &deaths[0];
+            let items: Vec<(&str, u8)> = death
+                .equipment
+                .iter()
+                .map(|stack| (stack.id.as_str(), stack.count))
+                .collect();
+            assert_eq!(
+                items,
+                [
+                    ("minecraft:enchanted_golden_apple", 1),
+                    ("minecraft:gold_block", 2),
+                    ("minecraft:gold_ingot", 9),
+                ]
+            );
+            assert_eq!(death.experience, 200, "100 and 50 for each more fighter");
+        }
     }
 
     #[test]

@@ -453,12 +453,29 @@ pub struct Experience {
     pub per_fighter: u32,
 }
 
+impl Experience {
+    pub fn for_fighters(&self, fighters: usize) -> u32 {
+        let more = u32::try_from(fighters.max(1) - 1).unwrap_or(u32::MAX);
+        self.base
+            .saturating_add(self.per_fighter.saturating_mul(more))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Loot {
     pub item: &'static str,
     pub count: u8,
     pub per_fighter: u8,
 }
+
+impl Loot {
+    pub fn count_for(&self, fighters: usize) -> u32 {
+        let fighters = u32::try_from(fighters.max(1)).unwrap_or(u32::MAX);
+        u32::from(self.count).saturating_add(u32::from(self.per_fighter).saturating_mul(fighters))
+    }
+}
+
+pub const FELLED: &str = "GREAT ENEMY FELLED";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Voices {

@@ -187,6 +187,7 @@ pub struct PlayerOutputs {
     pub raid_horns: Vec<DVec3>,
     pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
     pub wither_bars: Option<Vec<minecraft_terrain::wither_bar::WitherBar>>,
+    pub own_sounds: Vec<(String, f32, f32)>,
     pub told: Vec<minecraft_commands::Clientbound>,
 }
 
@@ -421,6 +422,12 @@ impl PlayerQueues {
         for (player, bars) in output.wither_bars.take().into_iter().flatten() {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.out.wither_bars = Some(bars);
+            }
+        }
+        for felled in std::mem::take(&mut output.elden_felled) {
+            if let Some(queue) = self.0.get_mut(&felled.player) {
+                queue.out.told.push(minecraft_commands::Clientbound::System { text: minecraft_commands::Text::literal(felled.text), overlay: true });
+                queue.out.own_sounds.extend(felled.sounds);
             }
         }
         unclaimed
@@ -3613,5 +3620,27 @@ mod tests {
         assert!(queues.queue(HOST).out.told.is_empty(), "another refusal says nothing in the chat");
         assert_eq!(host.slots[0].as_ref().map(|egg| egg.count), Some(2), "a refused egg is kept");
         assert_eq!(friend.slots[0].as_ref().map(|egg| egg.count), Some(2), "only the hatched egg is spent");
+    }
+
+    #[test]
+    fn every_fighter_is_told_great_enemy_felled() {
+        let mut queues = two_queues();
+        let chime = ("minecraft:ui.toast.challenge_complete".to_owned(), 1.0, 1.0);
+        let felled = |player: u64| minecraft_terrain::elden_felled::Felled { player, text: "GREAT ENEMY FELLED", sounds: vec![chime.clone()] };
+        let mut output = minecraft_terrain::server::Output { elden_felled: vec![felled(HOST), felled(FRIEND), felled(99)], ..Default::default() };
+        let _ = queues.route(&mut output, 2, |_| None);
+        assert!(output.elden_felled.is_empty());
+        for player in [HOST, FRIEND] {
+            let out = &queues.queue(player).out;
+            assert_eq!(out.told.len(), 1, "{player}");
+            let minecraft_commands::Clientbound::System { text, overlay } = &out.told[0] else {
+                panic!("a system line");
+            };
+            assert!(overlay, "on the action bar");
+            assert_eq!(text.resolve(&|_| None).text, "GREAT ENEMY FELLED");
+            assert_eq!(out.own_sounds, [chime.clone()], "the chime for this player");
+        }
+        assert!(!queues.0.contains_key(&99), "a player not in this level is not queued");
+        assert!(crate::heard::actor_only(&chime.0), "heard by that player only");
     }
 }

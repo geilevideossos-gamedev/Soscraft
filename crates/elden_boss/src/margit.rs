@@ -1027,4 +1027,27 @@ mod tests {
         assert!((factors[4] - 3.4).abs() < 1e-6);
         assert_eq!(MARGIT.scaling.factor(0), 1.0);
     }
+
+    #[test]
+    fn his_reward_grows_with_the_fighters() {
+        let experience: Vec<u32> = (0..=4).map(|n| MARGIT.experience.for_fighters(n)).collect();
+        assert_eq!(experience, [100, 100, 150, 200, 250]);
+        let drops = |n: usize| -> Vec<(&str, u32)> {
+            MARGIT
+                .drops
+                .iter()
+                .map(|loot| (loot.item, loot.count_for(n)))
+                .collect()
+        };
+        assert_eq!(
+            drops(1),
+            [
+                ("minecraft:enchanted_golden_apple", 1),
+                ("minecraft:gold_block", 2),
+                ("minecraft:gold_ingot", 3),
+            ]
+        );
+        assert_eq!(drops(4)[2], ("minecraft:gold_ingot", 12));
+        assert_eq!(drops(4)[..2], drops(1)[..2]);
+    }
 }

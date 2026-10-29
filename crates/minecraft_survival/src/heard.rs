@@ -16,11 +16,12 @@ pub const ITEM_PICKUP_SOUND: &str = "minecraft:entity.item.pickup";
 pub const ORB_PICKUP_SOUND: &str = "minecraft:entity.experience_orb.pickup";
 pub const LEVEL_UP_SOUND: &str = "minecraft:entity.player.levelup";
 pub const LIMIT: usize = 4096;
-const ACTOR_ONLY: [&str; 4] = [
+const ACTOR_ONLY: [&str; 5] = [
     "minecraft:ui.hud.bubble_pop",
     "minecraft:block.portal.trigger",
     "minecraft:block.portal.travel",
     minecraft_terrain::raids::HORN_SOUND,
+    "minecraft:ui.toast.challenge_complete",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -391,6 +392,8 @@ mod tests {
         assert_eq!(bubble.only, Some(4));
         let travel = played("minecraft:block.portal.travel", None, (0.25, 1.0), 4, eye);
         assert_eq!(travel.only, Some(4));
+        let felled = played("minecraft:ui.toast.challenge_complete", None, (1.0, 1.0), 4, eye);
+        assert_eq!(felled.only, Some(4));
         let hurt = played("minecraft:entity.player.hurt", None, (1.0, 1.0), 4, eye);
         assert_eq!(
             hurt,

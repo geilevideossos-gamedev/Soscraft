@@ -437,7 +437,9 @@ A loaded Margit stands where he was saved, at full health, in phase 1, with full
 - **Death:** 20 ticks; he sinks to his knees and dissolves into golden mist (`entity.evoker.death` low, `entity.illusioner.mirror_move`).
 - **Drops,** where he dies: 1 enchanted golden apple, 2 gold blocks (the altar's gold back) and 3 gold ingots per fighter.
 - **Experience:** 100, plus 50 per fighter after the first, as orbs.
-- **Every fighter** (the fighters at the wake, plus anyone who hurt him) sees "GREAT ENEMY FELLED" on the action bar and hears `ui.toast.challenge_complete`. The action bar line is white: our overlay line has no colour (`frame::minecraft_ui::McOverlayMessage` holds plain text, drawn white in `hud/src/minecraft_hotbar.rs`). A gold line is left for later.
+- **Every fighter** (the fighters at the wake, plus anyone who hurt him) sees "GREAT ENEMY FELLED" on the action bar and hears `ui.toast.challenge_complete`, which only that player hears. The action bar line is white: our overlay line has no colour (`frame::minecraft_ui::McOverlayMessage` holds plain text, drawn white in `hud/src/minecraft_hotbar.rs`). A gold line is left for later.
+- **Game rules:** the drops and the experience follow `mob_drops` like every mob's loot (vanilla's `dropCustomDeathLoot` and `dropExperience`), and the experience needs a player's kill, as vanilla's does. The line and the chime come either way.
+- **Where it lives:** the counts are `experience` and `drops` in `margit.rs`; the entity's `death_drops` and `experience` hooks give them, and the fighters leave the level as `Output.elden_felled` (`crates/minecraft_terrain/src/elden_felled.rs`), routed to each player beside the wither bars.
 - **A player he kills** dies like any player killed by a mob: drops, death message (section 7.4), respawn.
 
 The loot is our decision, not Elden Ring data.

@@ -22,7 +22,7 @@ Group er-look (commits 17 to 19), 7 stacks:
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cobblestone*256,minecraft:iron_pickaxe,minecraft:cooked_beef*32
 ```
 
-Group er-fight (commit 20 so far), 9 stacks:
+Group er-fight (commits 20 and 21), 9 stacks:
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
@@ -30,7 +30,7 @@ IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:shield,minecr
 
 ## Protocol
 
-Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own.
+Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own. Commit 21 tells a friend "GREAT ENEMY FELLED" as an existing `ToClient::Chat` system line with the overlay flag and plays the chime as an existing `ToClient::Sound`, so it adds nothing to the wire either.
 
 ## Vendored files
 
@@ -702,4 +702,44 @@ After 2815efff.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+### 21. Margit drops gold and experience when he dies, and every fighter sees GREAT ENEMY FELLED
+
+After 55daa528.
+
+- **Changed (`elden_boss`, `data.rs`):** `Experience::for_fighters` (the base plus the per-fighter amount for each fighter after the first), `Loot::count_for` (the count plus the per-fighter count for each fighter, at least one fighter), and `FELLED`, "GREAT ENEMY FELLED". The numbers stay in `margit.rs` (design doc 13): 1 enchanted golden apple, 2 gold blocks, 3 gold ingots per fighter, and 100 experience plus 50 per fighter after the first.
+- **Changed (vendored entities crate, `elden_bosses.rs`):**
+  - D0's `experience` hook gives his experience by `Brain::fighters()` (the wake's fighters plus everyone who hurt him), and the `death_drops` hook his items by the same count, in stacks of at most 64. D0's `take_deaths` applies vanilla's rules to both: no drops and no experience with `mob_drops` off, and experience only for a player's kill.
+  - `EldenBoss.felled`: on the hit that kills him, `take` keeps the fighters. `EntityWorld::take_elden_felled()` hands each fighter out once, with his def.
+- **Changed (`minecraft_terrain`):**
+  - New `elden_felled.rs`: `Felled { player, text, sounds }` and `felled(world)`, each fighter with "GREAT ENEMY FELLED" and the def's `felled` cue sounds (`minecraft:ui.toast.challenge_complete`).
+  - `server.rs`: `Output.elden_felled`, filled in `run_tick` beside `dragons_killed`, every tick, so a kill by a player's swing between ticks is told on the next one.
+- **Changed (`minecraft_survival`):**
+  - `entities.rs`: `PlayerOutputs.own_sounds` (sounds only that player hears), and `route` sends each `Felled` to its player's queue beside the wither bars: the line as `Clientbound::System { overlay: true }` in `told`, and the chime in `own_sounds`. A fighter not in the level (gone to another dimension) is skipped.
+  - `heard.rs`: `minecraft:ui.toast.challenge_complete` joins `ACTOR_ONLY`, so the chime a friend's recorded sounds retell reaches that friend only, and the host's reaches no friend.
+- **Changed (`render_anim`):**
+  - `minecraft_players.rs` `struck`: each own sound plays for that player, not at a place (the host hears it, a friend's recorder retells it to the friend). The line goes out with the other `told` lines: to a friend as `ToClient::Chat`, which the friend shows on the action bar (`show_overlays`).
+  - `minecraft_world.rs`: the host's struck lines now also go to `minecraft_respawn::show_messages`, which puts an overlay line on the action bar; the chat still takes the others. Until now no struck line was an overlay.
+- **Tests:**
+  - `elden_boss`: `margit::tests::his_reward_grows_with_the_fighters`.
+  - Entities: `world::families::bosses::elden_bosses::tests::margit_drops_gold_and_experience_by_fighters` (two fighters at the wake and a third who hurt him later: an enchanted golden apple, 2 gold blocks, 9 gold ingots and 200 experience; with `mob_drops` off no death drops anything; the three are felled once either way). `a_killing_blow_credits_the_player_and_joins_the_death_list` now expects one fighter's reward (100 experience, three stacks).
+  - Terrain: `elden_felled::tests::each_fighter_is_told_once_with_the_challenge_chime`.
+  - Survival: `entities::tests::every_fighter_is_told_great_enemy_felled` (the host and a friend each get the white action-bar line and the chime; a player of another level gets nothing; the chime is actor only), and `heard::tests::bubbles_and_portal_noises_stay_with_the_player_who_made_them` also checks the chime.
+- **Runs:** `test -p elden_boss --locked`: 57 passed. `test -p minecraftoss-entities --locked --lib elden`: 30 passed (the whole crate gave 505 in commit 20, and only Margit's files changed since). `test -p minecraft_terrain --locked --lib`: 1577 passed and 3 ignored. `test -p minecraft_survival --locked`: 803 passed, `vanilla_world` 1 passed. `test -p render_anim --locked --lib`: 217 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The new `elden_felled.rs` and the track's own files touched here pass `rustfmt --check` with empty output on their content with LF line ends.
+- **Decisions:**
+  - **The drops are the death's equipment**, as the wither's nether star is, so they drop where he dies through the existing death drops, after the (empty) loot table.
+  - **The line and the chime do not depend on `mob_drops`**: only the items and the experience do, as in vanilla. They come whether a player or the world landed the killing hit, since he only dies in a fight.
+  - **The fighters are told from his state, not from the death list:** with `mob_drops` off the death list is empty, and a death's experience needs a player's kill.
+  - **The chime is an own sound of the player, not a mob voice:** mob voices are heard by everyone near, and the design wants it for the fighters alone, so it rides `ACTOR_ONLY` like the raid horn.
+- **Closes from release 3's known limits:** "he gives no drops, experience or reward" (the boss bar, music and altar are groups er-bar-friend and er-altar).
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld, best in a fresh world so the experience bar starts empty. Name each screenshot by its label, `f4-21-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~6 {Health:20f}`, walk up as he rises and hit him twice with the netherite sword: he sinks into golden mist. "GREAT ENEMY FELLED" shows in white above the hotbar with the challenge-complete fanfare, and where he fell lie an enchanted golden apple, 2 gold blocks, 3 gold ingots and experience orbs. **Screenshot f4-21-1** with the line and the drops in view.
+  2. Pick it all up: the orbs give 100 points, about level 7 from an empty bar.
+  3. `/gamerule mob_drops false`, then summon and kill another the same way: the line and the fanfare come, and nothing drops. `/gamerule mob_drops true`.
+  4. Optional, two windows (`scripts\mp-local.ps1`): both stand within 24 blocks as the host runs `/summon iw4l:margit ~ ~ ~6 {Health:20f}`, and the friend lands the last hit. Both windows show "GREAT ENEMY FELLED" and each hears the fanfare once; the drops are 6 gold ingots with the apple and the 2 gold blocks, and 150 points of orbs. **Screenshot f4-21-2**, both windows.
+  5. Optional, two windows: the friend stays 60 blocks away and never hits him while the host kills one: only the host sees the line and hears the fanfare.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cooked_beef*32
 ```

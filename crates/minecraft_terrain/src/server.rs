@@ -3897,6 +3897,7 @@ pub struct Output {
     pub tick_phases: Option<([f64; 6], (u32, f64), f64)>,
     pub jobs: Vec<Box<dyn std::any::Any + Send>>,
     pub dragons_killed: Vec<[i32; 4]>,
+    pub elden_felled: Vec<crate::elden_felled::Felled>,
     pub fight_reports: Vec<FightReport>,
     pub tick_nanos: Vec<u64>,
     pub eye_answers: Vec<crate::eye_of_ender::EyeAnswer>,
@@ -4521,6 +4522,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.mob_sounds.extend(sim.take_wind_sounds());
     out.mob_sounds.append(&mut sim.vaults.sounds);
     out.dragons_killed.extend(sim.take_dragons_killed());
+    out.elden_felled.extend(crate::elden_felled::felled(&mut sim.mobs));
     out.fight_reports.extend(sim.take_fight_reports());
     out.pearl_teleports.extend(sim.take_pearl_teleports());
     out.pearl_gateways.extend(sim.take_pearl_gateways());
