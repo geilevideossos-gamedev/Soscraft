@@ -9,7 +9,7 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 Files under `third_party/minecraftoss` this track patched or added (round 8 counted 73 patched and 37 added).
 
 - Patched (15): `entities/src/world.rs`, `entities/src/world/combat.rs`, `entities/src/world/witches.rs`, `entities/src/world/pushing.rs`, `entities/src/world/fireballs.rs`, `entities/src/world/riding.rs`, `entities/src/world/villagers.rs`, `entities/src/world/leashes.rs`, `entities/src/monster_ai.rs`, `entities/src/bin/check_zombie_player_hits.rs`, `entities/src/world/emissions.rs`, `entities/src/walk_path.rs`, `entities/src/stroll.rs`, `world/src/natural_spawner.rs`, `world/src/natural_spawner/spawning.rs`.
-- Added (23): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/goals.rs`, `entities/src/world/families/pests/{silverfish,endermites}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only), `world/src/natural_spawner/families.rs`, `world/src/natural_spawner/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `world/src/natural_spawner/families/tests.rs` (test only).
+- Added (22): `entities/src/world/families.rs`, `entities/src/world/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `entities/src/world/families/goals.rs`, `entities/src/world/families/pests/{silverfish,endermites}.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only), `world/src/natural_spawner/families.rs`, `world/src/natural_spawner/families/{pests,trial,deep_dark,land,water,night,bosses}.rs`, `world/src/natural_spawner/families/tests.rs` (test only).
 
 ## Protocol
 
@@ -568,3 +568,10 @@ After 6120edf5.
 - **Changed:** steps 1 to 3 of that commit now clear each monster with `/difficulty peaceful` and `/difficulty normal`. `check_despawn` removes every monster, the wither included, on peaceful.
 - **Tests:** none (docs only). **Protocol:** no change.
 - **Test steps:** the corrected steps of 153fdcb5 above, with its kit.
+
+### 3. Track D0 log counts its 22 added vendored files
+
+After 60216c2f.
+
+- **Defect:** the "Vendored files" list said 23 added files, but it names 22 (13 in the entities crate, 9 in the world crate), which is also what `git diff --diff-filter=A r10-d0a-base` shows. The patched count (15) was right.
+- **Changed:** the count. **Tests:** none (docs only). **Test steps:** none.
