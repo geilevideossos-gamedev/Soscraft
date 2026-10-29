@@ -1275,6 +1275,7 @@ fn show_player(
     }
     let Some(ps) = alive else {
         ui.vitals = None;
+        ui.vehicle_health = None;
         ui.effects.clear();
         ui.weapon_request = None;
         ui.holding_item = false;
@@ -1297,6 +1298,7 @@ fn show_player(
     ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));
     ui.effects = crate::minecraft_world::mc_effects(&hud.effects(view));
     ui.jump_bar = view.jump_bar;
+    ui.vehicle_health = view.vehicle_health.map(|[health, max]| (health, max));
     ui.fire_frames = fire_frames.clone();
     let mut guns = [None; minecraft_survival::guns::HOTBAR];
     for (gun, stack) in guns.iter_mut().zip(&inventory.slots) {

@@ -7,6 +7,7 @@ A commit can't name its own hash, so each entry is written with its commit and n
 ## Protocol
 
 - "Minecraft taming shows hearts, and a failed try or a bucking horse shows smoke" (after `280f5fe9`): `EntitySnapshot` has a new field `mob_puffs`. The snapshot rides in the state frame's `entities` blob and in `ToClient::Bursts`, so host and friend must run the same build. No message or codec tag changed.
+- "Friends see their mount's hearts" (after `ac0b573a`): `minecraft_net::PlayerView` (sent as `ToClient::Player`) has a new last field `vehicle_health: Option<[f32; 2]>`. An old friend build can't read the new view, so the release step must bump `PROTOCOL`. No message index or codec tag changed.
 
 ## E-kit. Kits and /give take banner patterns, loaded crossbows and firework stars
 
@@ -463,6 +464,34 @@ Commit: "Minecraft riders see their mount's hearts in place of the food bar", th
   6. **A strider.** Use a strider egg, saddle the strider and ride it holding the warped fungus on a stick: 10 mount hearts. **Screenshot 3.**
   7. **Optional, the bubbles.** Dig a pool 3 deep next to a saddled tame horse, dive until most bubbles are gone, then climb out and ride the 30-health horse at once: for the few seconds while the bubbles refill, they show just above the top row of mount hearts.
 - **Kit** (9 backpack slots; saddles do not stack):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:golden_carrot*16,minecraft:cooked_beef*16
+```
+
+### Friends see their mount's hearts
+
+Commit: "Friends see their mount's hearts", the one after `ac0b573a`.
+
+- **Cause:** the last commit worked out every player's mount health on the host (`struck()` runs for the host and each friend), but the friend's HUD is built from `minecraft_net::PlayerView`, which had no field for it, so a friend riding a horse still saw the food bar.
+- **Changed:**
+  - `crates/minecraft_net/src/messages.rs`: `PlayerView.vehicle_health: Option<[f32; 2]>` (health, max), next to `jump_bar`, `None` by default.
+  - `crates/minecraft_survival/src/views.rs` `player_view`: fills it from `Player.vehicle_health`. A change makes a new `sent_key`, so a hurt or healed mount is sent at once.
+  - `crates/render_anim/src/minecraft_remote.rs` `show_player`: the friend's `ui.vehicle_health` comes from the view, next to the jump bar, and is cleared while the friend is dead (the hearts are drawn outside the vitals block, so a stale value would otherwise stay on the death screen).
+- **Tests:**
+  - `minecraft_net` `codec::tests::a_player_view_carries_the_mount_s_health`: `Some([22.0, 26.0])` comes back through `ToClient::Player`, and a default view comes back with `None`. The shared `player_view()` fixture now carries `Some([22.0, 26.0])`, so `every_message_to_the_client_round_trips` covers it too.
+  - `minecraft_survival` `views::tests::a_rider_s_view_carries_the_mount_s_health_and_a_change_makes_a_new_key`.
+  - `minecraft_net`, `minecraft_survival` (767) and `render_anim` (213) pass; `check -p launcher` passes.
+- **Decisions:**
+  - No `PROTOCOL` bump in this commit (see `## Protocol`): the release step bumps it once.
+  - The pair is `[f32; 2]` on the wire, as the brief planned, and `(f32, f32)` everywhere else.
+- **Owner's test steps** (host H and friend F, `scripts\mp-local.ps1` or over the relay, both on the new build and with the kit below, survival, by day on flat grass):
+  1. **The friend rides.** F runs `/summon minecraft:horse ~ ~ ~2 {Tame:1b,attributes:[{id:"minecraft:max_health",base:30.0d}]}` (or H runs it next to F), saddles it and rides it. F's food bar is replaced by 15 mount hearts in two rows on the right. **Screenshot 4**, F's window.
+  2. **A hurt mount.** H punches F's horse once with an empty hand: in F's window the leftmost heart of the top row turns into a half heart within a moment. F dismounts: F's food bar comes back.
+  3. **A strider.** F uses a strider egg, saddles the strider and rides it: 10 mount hearts in F's window.
+  4. **Both at once.** H rides a horse from the kit's egg (tame it first) while F rides the 30-health horse: each window shows its own mount's hearts, not the other's. **Screenshot 5**, both windows.
+  5. **An old friend build** is refused at `Hello` once the release has bumped `PROTOCOL`.
+- **Kit** (the whole `vehicle-hearts` group, the same as for the last commit; 9 backpack slots):
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:golden_carrot*16,minecraft:cooked_beef*16

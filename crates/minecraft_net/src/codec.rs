@@ -420,6 +420,7 @@ mod tests {
                 kind: UseKind::Eat { duration: 16 },
             }),
             jump_bar: Some(0.75),
+            vehicle_health: Some([22.0, 26.0]),
             ..PlayerView::default()
         };
         view.slots[0] = Some(Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0]));
@@ -905,6 +906,23 @@ mod tests {
         assert_eq!(back.slots[43], view.slots[43]);
         assert_eq!(back.slots[44], view.slots[44]);
         assert!(back.slots[43].is_some() && back.slots[44].is_some());
+    }
+
+    #[test]
+    fn a_player_view_carries_the_mount_s_health() {
+        let message = ToClient::Player(Box::new(player_view()));
+        let bytes = encode(Lane::Reliable, &message).unwrap();
+        let ToClient::Player(back) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+            panic!("not a player view");
+        };
+        assert_eq!(back.vehicle_health, Some([22.0, 26.0]));
+        let on_foot = ToClient::Player(Box::new(PlayerView::default()));
+        let bytes = encode(Lane::Reliable, &on_foot).unwrap();
+        let ToClient::Player(back) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+            panic!("not a player view");
+        };
+        assert_eq!(back.vehicle_health, None);
+        assert_eq!(*back, PlayerView::default());
     }
 
     #[test]

@@ -90,6 +90,7 @@ pub fn player_view(player: &Player) -> PlayerView {
             .collect(),
         using: using(player),
         jump_bar: player.jump_bar,
+        vehicle_health: player.vehicle_health.map(|(health, max)| [health, max]),
     }
 }
 
@@ -473,6 +474,18 @@ mod tests {
         );
         view.food = 19;
         assert_ne!(sent_key(&view), key);
+    }
+
+    #[test]
+    fn a_rider_s_view_carries_the_mount_s_health_and_a_change_makes_a_new_key() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut alex = player(&mut chat, 1, "Alex");
+        assert_eq!(player_view(&alex).vehicle_health, None);
+        alex.vehicle_health = Some((22.0, 26.0));
+        let riding = player_view(&alex);
+        assert_eq!(riding.vehicle_health, Some([22.0, 26.0]));
+        alex.vehicle_health = Some((21.0, 26.0));
+        assert_ne!(sent_key(&player_view(&alex)), sent_key(&riding), "a hurt mount is sent");
     }
 
     #[test]
