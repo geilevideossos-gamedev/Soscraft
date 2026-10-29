@@ -600,7 +600,7 @@ fn update(
                     }
                 }
                 let chosen_mode = std::env::var("IW4L_MINECRAFT_GAMEMODE").ok();
-                let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
+                let kit = minecraft_commands::kit::kit_line(minecraft_survival::commands::env_file().as_deref());
                 let joining = minecraft_survival::server::Joining { profile: &profile, spawn, chosen_mode: chosen_mode.as_deref(), kit: kit.as_deref(), carried: runtime.carried_survival.take() };
                 let mut player = minecraft_survival::server::join(globals.save.as_ref(), &globals.data.recipes, &globals.game_rules, joining);
                 match minecraft_survival::server::debug_dimension(std::env::var("IW4L_MINECRAFT_DIMENSION").as_deref().unwrap_or("")) {

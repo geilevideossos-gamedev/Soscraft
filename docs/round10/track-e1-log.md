@@ -589,3 +589,25 @@ Commit: "Minecraft kits dye leather with the 26.3 dye tag", the one after `8c9db
 ```
 IW4L_MINECRAFT_KIT=minecraft:leather_horse_armor@red,minecraft:leather_horse_armor@blue,minecraft:leather_horse_armor@lime,minecraft:leather_horse_armor,minecraft:leather_chestplate@red,minecraft:leather_boots@blue,minecraft:compass,minecraft:clock,minecraft:cooked_beef*16
 ```
+
+## Review fixes
+
+### The starting kit keeps the quotes inside its components
+
+Commit: "Minecraft starting kits keep the quotes inside their components", the one after `3bd690c4`.
+
+- **Defect** (found in the track review): the kit a player gets on joining a world (the host in `render_anim/src/minecraft_world.rs`, a friend in `minecraft_host.rs`) read `IW4L_MINECRAFT_KIT` from the process environment, which `asset_transport::load_dotenv` fills with `dotenvy`. `dotenvy` reads an unquoted value like a shell does: a `"` in the middle opens and closes a quote and is dropped. So the E-kit line's `{pattern:"minecraft:creeper",color:"black"}` arrived as `{pattern:minecraft:creeper,color:black}`, which is not SNBT (a bare string can't hold `:`), and the banner patterns, the shield's patterns and the crossbow's arrow were left out without a word. Only `/kit`, which reads the `.env` itself (`minecraft_commands::kit::read_env_file`), kept them. The same was true of the book kits of round 8 (`pages:["One, two"]` became two pages, `One` and `two`).
+- **Changed:**
+  - `crates/minecraft_commands/src/kit.rs`: `kit_line(env_file)` reads the kit line from the `.env` the way `/kit` does and falls back to the process environment when the file has none.
+  - `render_anim` `minecraft_world.rs` (the host's join) and `minecraft_host.rs` (a friend's join): one line each, `kit_line(minecraft_survival::commands::env_file())` in place of `std::env::var`, so the starting kit and `/kit` read the same line.
+- **Tests:** `minecraft_commands` `kit::tests::the_kit_line_keeps_the_quotes_inside_its_components`: a `.env` with the E-kit banner and crossbow entries gives the line back with its quotes, and `kit_entries` reads the banner's patterns and the crossbow's arrow from it.
+- **Decisions:** when the `.env` names the kit, the file wins over the process environment, as for `/kit`.
+- **Owner's test steps** (survival, a new world each time, the kit below in the `.env`):
+  1. **A quoted book.** Start the world with the kit below and open the written book "Kit" from the backpack: it has one page reading "One, two". Before this fix it had two pages, "One" and "two". **Screenshot R1.**
+  2. **The same through `/kit`.** Empty a backpack slot and run `/kit`: the new book also has the one page "One, two".
+  3. **Banners and the crossbow.** With the E-kit line of this log in the `.env` and a new world, the starting kit's banners, shield and crossbow now carry their patterns and the arrow like the ones `/kit` gives. This only shows once the later E1 groups draw banner patterns and the loaded crossbow; until then step 1 is the check.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two"]}]
+```
