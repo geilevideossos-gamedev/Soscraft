@@ -32,7 +32,7 @@ pub struct MobOutcome {
     /// Items the mob dropped, where they appear.
     pub drops: Vec<(ItemStack, DVec3)>,
     /// Experience killed mobs left, where they died.
-    pub experience: Vec<(DVec3, i32)>,
+    pub experience: Vec<(DVec3, i32, i32)>,
     /// The acting player's inventory changed.
     pub inventory_changed: bool,
     pub broken: Vec<String>,
@@ -61,9 +61,9 @@ pub struct Actor<'a> {
 /// What the mobs that died since the last call leave where each died: their
 /// drops ([`EntityLootBook::death_drops`]; without loot tables nothing
 /// drops) and their experience.
-pub fn death_remains(world: &mut EntityWorld, loot: Option<&mut EntityLootBook>) -> (Vec<(ItemStack, DVec3)>, Vec<(DVec3, i32)>) {
+pub fn death_remains(world: &mut EntityWorld, loot: Option<&mut EntityLootBook>) -> (Vec<(ItemStack, DVec3)>, Vec<(DVec3, i32, i32)>) {
     let deaths = world.take_deaths();
-    let experience = deaths.iter().map(|d| (d.position, d.experience)).collect();
+    let experience = deaths.iter().map(|d| (d.position, d.experience, d.reward)).collect();
     (loot.map(|book| book.death_drops(deaths)).unwrap_or_default(), experience)
 }
 

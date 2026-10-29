@@ -436,6 +436,45 @@ After 1180b5fb ("Minecraft sculk shriekers warn players and darken them").
 IW4L_MINECRAFT_KIT=minecraft:sculk_catalyst*4,minecraft:cow_spawn_egg*16,minecraft:diamond_sword+sharpness=5,minecraft:experience_bottle*16,minecraft:deepslate*64,minecraft:cooked_beef*32
 ```
 
+### 3. Minecraft sculk spreads from catalysts like vanilla
+
+After 539a40dd ("Minecraft sculk catalysts bloom when mobs die nearby").
+
+- **Vanilla (javap on the 26.3 jar):**
+  - `SculkSpreader.createLevelSpreader`: not world generation, `#sculk_replaceable`, growth spawn cost 10, no-growth radius 4, charge decay rate 10, additional decay rate 5 (world generation: `#sculk_replaceable_world_gen`, 50, 1, 5, 10). `MAX_CHARGE` 1000, at most 32 cursors; `addCursors` splits a charge above 1000; `load` reads `cursors` (`sizeLimitedListOf(32)`), `save` writes them. `SculkCatalystBlockEntity.serverTick` calls `updateCursors(level, pos, random, true)` every tick.
+  - `ChargeCursor.update` for the level spreader: only while `shouldTickBlocksAt`; a vein spread plays `block.sculk.spread` at the cursor; with nowhere to move a cursor keeps its charge where it is (world generation discharges it and drops it); no 12-block limit on moves (`canMoveToPos` is world generation only). `SculkBlock.attemptUseCharge`: a growth 1 in 11 a shrieker with `can_summon` set to `isWorldGeneration` (false here), else a sensor, its place sound at the cursor. `SculkVeinBlock.attemptPlaceSculk` plays `block.sculk.spread` at the block it turns to sculk.
+  - `updateCursors`: a cursor farther than 1024 (chessboard) is dropped; a spent cursor posts level event 3006 with data 0; cursors meeting at one spot merge when the two charges stay within 1000 (level only), otherwise both stay; each spot whose kept cursor has facings posts 3006 with `((int)(log1p(charge) / 2.3) + 1) << 6` plus `MultifaceBlock.pack(facings)`.
+  - `ChargeCursor.CODEC`: `pos` (int array), `charge` (0 to 1000, default 0), `decay_delay` (0 to 1, default 1), `update_delay` (default 0), `facings` (a lenient optional list of direction names); defaults are not written.
+  - `CatalystListener.handleGameEvent`: `addCursors(BlockPos.containing(position + 0.5 up), reward)` when `shouldDropExperience` and the reward is above 0. `LivingEntity.getExperienceReward` is `getBaseExperienceReward` without the player kill and `mob_drops` checks of `dropExperience`.
+  - `LevelEventHandler` 3006: with a charge (`data >> 6`): `block.sculk.charge` with chance `0.3 + charge × 0.1` (volume `0.15 + 0.02 × charge² × random`, pitch `0.4 + 0.3 × charge × random`), then `UniformInt(0, charge)` sculk charge particles on every face (no facings; factor 0.65 up and down, 0.57 on the sides) or on each packed face (factor 0.35), each at a random spot of the face with a drift of ±0.005 along it (`ParticleUtils.spawnParticleOnFace`). Without a charge: `block.sculk.charge` at volume 1, then 40 pops (a full collision block, spread 0.45) or 20 (spread 0.25) at a random offset, moving with it times 0.07. `SculkChargeParticle`: friction 0.96, scale 1.5, no physics, sprites by age, block light 15, translucent, the given speed, lifetime `8 + random(12)`, a roll from its options; `SculkChargePopParticle`: the same at scale 1, lifetime `6 + random(4)`.
+- **Changed:**
+  - Vendored `generator/src/feature/kinds/sculk.rs`: the spreader is now `SculkSpreader` (public, `new(registries, world_generation)` with both configurations), with public `Cursor`, `add_cursors`, `pack_facings`, `SpreadEffects` (the level's sounds and 3006 events; world generation drops them) and `update_cursors` (vanilla's `updateCursors` with the merging). `SculkPatch` keeps its parameters and holds a world-generation spreader; world generation does exactly what it did.
+  - Vendored `world/src/level/sculk.rs`: the catalyst's cursors live in its block entity's `cursors` (vanilla's codec, `cursor_tag` and `cursor_from_tag`); `add_catalyst_cursors`; `tick_catalyst` runs the level spreader on the level with the level random (`with_feature_random`), saves the cursors back and queues the 3006 events and the sounds.
+  - Vendored `entities/src/world.rs`: `MobDeath.reward` is the raw reward (`shouldDropExperience`: monsters at any age, other mobs as adults), and `experience` keeps it only for a player's kill with `mob_drops` on. `death_remains` hands both on.
+  - `server.rs`: `award_death(position, experience, reward)`; the catalyst that takes a death adds its reward as cursors half a block over the death; a player's death reward is its experience. `ServerSim::tick_catalysts` ticks every catalyst in a ticking chunk on each normal tick, after the level's tick.
+  - Client: `level_events.rs` plays 3006 (the charge sounds, the face sparks and the pops), with `ambient_particles` `Kind::SculkCharge` and `Kind::SculkChargePop` and their sprites in the atlas. Friends get 3006 as a level event.
+- **Tests:**
+  - Vendored `level::sculk::tests::a_catalyst_s_cursors_spread_sculk_and_round_trip` (a charge of 2500 splits into 1000, 1000, 500 and saves with vanilla's keys and defaults; a cursor round trips; 40 charge turns the stone floor to sculk until spent, with 3006 sparks and pops and the spread sound, and no growth within four blocks), `a_runtime_shrieker_cannot_summon`.
+  - `server::tests::a_cow_dying_in_lava_near_a_catalyst_feeds_it` (killed by nobody: no orbs, the catalyst blooms and gets the cow's 1 to 3 as charge half a block over it, and sculk spreads there), `a_player_s_death_charge_is_its_experience`.
+  - `level_events::tests::a_charge_sparkles_on_the_faces_and_pops_when_it_is_spent`, `ambient_particles::tests::sculk_charges_drift_at_their_given_speed_and_glow`.
+  - Full runs of the touched crates: minecraft_terrain 1459 (3 ignored), minecraftoss-entities 400, minecraftoss-generator 30, minecraftoss-world 115, render_anim 215, minecraft_survival 766 + 1. One survival test, `the_end::tests::an_arrival_rebuilds_the_platform_once_its_chunks_are_in` (it waits for streamed chunks with sleeps; untouched here), failed once while other tracks held both build slots and passes on its own.
+- **Decisions:**
+  - The cursors are read from and written back to the catalyst's block entity on every tick that it holds any: the block entity is the only copy, so a save, a chunk unload or a friend sees the spread where it is. The write sends a block entity change only when the cursors changed.
+  - The charge sparks are drawn without their roll (the fork's ambient particles face the camera upright); vanilla turns the sprite half a turn on the up and down faces.
+  - The 3006 pops count a block as a full block when it is not air and not a multiface block (veins, lichen), instead of vanilla's collision shape test; the cursor's spot is sculk, a vein or air.
+- **Vendored files:** patched `generator/src/feature/kinds/sculk.rs`, `world/src/level/sculk.rs` again, `entities/src/world.rs` again.
+- **Test steps (survival, Normal; flat open ground of grass or stone):**
+  1. Place a sculk catalyst; hatch cows 2-5 blocks away and kill them with the sword: besides the bloom, a few blocks of sculk spread over the ground at the death spots with soft sparks and a crackle (a cow's 1-3 experience is too little to grow anything). **w25_catalyst_bloom**
+  2. Drink the 16 experience bottles (about level 7), take the totem out of your hands and `/kill @s` 3 blocks from the catalyst: no orbs drop, and the bigger charge spreads sculk further, now and then growing a sculk sensor or a shrieker 4 or more blocks from the catalyst. Step on such a shrieker: it shrieks but never warns (it cannot summon).
+  3. Save and quit while the sculk still spreads, load: it carries on.
+  4. Friend window: the friend sees the sculk spread and its sparks.
+
+Combined kit for the group (steps w23 to w26; 20 stacks):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sculk_shrieker*8,minecraft:sculk_sensor*16,minecraft:sculk_catalyst*4,minecraft:sculk*64,minecraft:cow_spawn_egg*16,minecraft:chicken_spawn_egg*8,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:white_wool*32,minecraft:milk_bucket,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:totem_of_undying,minecraft:ender_pearl*16,minecraft:snowball*16,minecraft:experience_bottle*16
+```
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -458,6 +497,8 @@ Group shriekers-catalysts, commit 1: no message or codec change. The shriek reac
 
 Group shriekers-catalysts, commit 2: `EntitySnapshot` (inside `ToClient::Bursts` and the state frames) gains `sculk_souls: Vec<DVec3>`; it rides in the protocol bump group vibrations already needs at the release. `Command::AwardExperience` stays on the host.
 
+Group shriekers-catalysts, commit 3: no message or codec change (the 3006 events travel as `ToClient::LevelEvent`, the cursors in the catalyst's block entity).
+
 ## State doc changes
 
 - `docs/MULTIPLAYER.md`: a friend's `PlayerView` is also sent again when an effect is given again with a longer duration (`views::lengthened`), and the friend restarts its effect count-down for every view it receives, also one equal to the last (`RemoteWorld.player_views`).
@@ -465,3 +506,4 @@ Group shriekers-catalysts, commit 2: `EntitySnapshot` (inside `ToClient::Bursts`
 - `docs/round10/decisions.md` (group vibrations-more): MW2 bullets are projectiles for vibrations: crouched or prone shots are not heard, the impact on a block or a mob always is (from the bullet, with the shooter as projectile owner), and a bullet that hits nothing lands nowhere.
 - `docs/MINECRAFT-SURVIVAL.md` (group shriekers-catalysts): sculk shriekers shriek when a player stands on one (or rides a mob onto it) or when a sculk sensor within 8 blocks clicks for a player or a player's projectile. A shrieker that can summon (generated ones in ancient cities, or `can_summon=true`) only shrieks when it can warn: each player's warden warning level (saved in the player file, shared with the players within 16 blocks) rises by one with a 10 s cooldown and drops one every 10 minutes; after the 4.5 s shriek a warden sound answers by level (closer and angrier) and players within 40 blocks get darkness. Peaceful or `spawn_wardens false`: it shrieks, nothing answers. Until the warden groups (W4) a fourth warning only plays the angry sound.
 - `docs/MINECRAFT-SURVIVAL.md` (group shriekers-catalysts, commit 2): a sculk catalyst takes the death of any mob or player within 8 blocks (the nearest catalyst; no player kill needed): it blooms with soul wisps and the death drops no experience orbs.
+- `docs/MINECRAFT-SURVIVAL.md` (group shriekers-catalysts, commit 3): a catalyst that takes a death turns its experience into charge that spreads sculk and sculk veins over the replaceable ground around it, saved with the catalyst; larger charges grow sculk sensors and shriekers (which cannot summon) at least 4 blocks from it.

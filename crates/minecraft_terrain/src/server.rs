@@ -562,8 +562,8 @@ impl ServerSim {
             let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
             self.level.spawn_at_location(position.to_array(), stack);
         }
-        for (position, amount) in outcome.experience {
-            self.award_death(position.to_array(), amount);
+        for (position, amount, reward) in outcome.experience {
+            self.award_death(position.to_array(), amount, reward);
         }
         let slots = inventory
             .slots
@@ -585,8 +585,8 @@ impl ServerSim {
             let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
             self.level.spawn_at_location(position.to_array(), stack);
         }
-        for (position, amount) in outcome.experience {
-            self.award_death(position.to_array(), amount);
+        for (position, amount, reward) in outcome.experience {
+            self.award_death(position.to_array(), amount, reward);
         }
         MobResult { sounds: outcome.sounds, ..MobResult::default() }
     }
@@ -1742,13 +1742,13 @@ impl ServerSim {
                 crate::wither_save::extend_lifetime(&mut self.level, id);
             }
         }
-        for (position, amount) in experience {
-            self.award_death(position.to_array(), amount);
+        for (position, amount, reward) in experience {
+            self.award_death(position.to_array(), amount, reward);
         }
     }
 
-    pub fn award_death(&mut self, position: [f64; 3], amount: i32) {
-        if self.catalyst_takes(glam::DVec3::from_array(position)) {
+    pub fn award_death(&mut self, position: [f64; 3], amount: i32, reward: i32) {
+        if self.catalyst_takes(glam::DVec3::from_array(position), reward) {
             return;
         }
         if amount > 0 {
@@ -1756,10 +1756,25 @@ impl ServerSim {
         }
     }
 
-    fn catalyst_takes(&mut self, at: glam::DVec3) -> bool {
+    fn catalyst_takes(&mut self, at: glam::DVec3, reward: i32) -> bool {
         let Some((x, y, z)) = self.vibrations.catalyst_near(at) else { return false };
-        self.level.sculk_bloom(minecraftoss_core::BlockPos::new(x, y, z));
+        let catalyst = minecraftoss_core::BlockPos::new(x, y, z);
+        if reward > 0 {
+            let (cx, cy, cz) = crate::vibrations::block_of(at + glam::DVec3::Y * 0.5);
+            self.level.add_catalyst_cursors(catalyst, minecraftoss_core::BlockPos::new(cx, cy, cz), reward);
+        }
+        self.level.sculk_bloom(catalyst);
         true
+    }
+
+    fn tick_catalysts(&mut self) {
+        let catalysts: Vec<BlockPos> = self.vibrations.listeners().filter(|listener| listener.kind == crate::vibrations::Kind::Catalyst).map(|listener| listener.pos).collect();
+        for (x, y, z) in catalysts {
+            let chunk = ChunkPos::new(x >> 4, z >> 4);
+            if self.level.ticking_chunks.as_ref().is_none_or(|ticking| ticking.contains(&chunk)) {
+                self.level.tick_catalyst(minecraftoss_core::BlockPos::new(x, y, z));
+            }
+        }
     }
 
     /// `Player.tick`'s `takeXpDelay` countdown, then `Player.aiStep` touching
@@ -4503,7 +4518,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::LootTables { jar, seed } => sim.load_loot(&jar, seed),
                 Command::SummonOrb { position, value } => sim.summon_orb(position, value),
                 Command::AwardExperience { position, amount, died: None } => sim.award_experience(position, amount),
-                Command::AwardExperience { position, amount, died: Some(_) } => sim.award_death(position, amount),
+                Command::AwardExperience { position, amount, died: Some(_) } => sim.award_death(position, amount, amount),
                 Command::Summon { player, kind, position, nbt, y_rot } => {
                     out.command_summons.push((player, sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind)));
                 }
@@ -4646,6 +4661,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.prepare_spawning(&input.mob_players);
         sim.blast_players.clone_from(&input.mob_players);
         sim.tick();
+        sim.tick_catalysts();
         sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
         sim.tick_custom_spawners(&input.mob_players);
         sim.tick_trader_spawner(&input.mob_players);
@@ -12014,6 +12030,39 @@ mod tests {
         assert_eq!(sim.items().len(), items, "and drops no loot");
     }
 
+    fn catalyst_charge(sim: &ServerSim, catalyst: BlockPos) -> Vec<(BlockPos, i32)> {
+        sim.level.catalyst_cursors(minecraftoss_core::BlockPos::new(catalyst.0, catalyst.1, catalyst.2)).iter().map(|cursor| ((cursor.pos.x, cursor.pos.y, cursor.pos.z), cursor.charge)).collect()
+    }
+
+    #[test]
+    fn a_cow_dying_in_lava_near_a_catalyst_feeds_it() {
+        let Some((mut sim, mut input)) = catalyst_world(&[CATALYST]) else { return };
+        sim.summon("minecraft:cow", [11.5, 200.0, 8.5], None, 0.0).unwrap();
+        let cow = sim.mobs.cows().last().unwrap().id;
+        sim.mob_blast(minecraftoss_entities::world::MobHit::Cow(cow), 40.0, [11.5, 200.5, 6.5], 1.0, None, 0);
+        assert!(sim.orbs().is_empty(), "nobody killed it");
+        assert!(blooming(&sim, CATALYST), "it still blooms");
+        let charge = catalyst_charge(&sim, CATALYST);
+        assert_eq!(charge.len(), 1);
+        assert_eq!(charge[0].0 .1, 200, "half a block over the death: {charge:?}");
+        assert!((1..=3).contains(&charge[0].1), "a cow's 1 to 3: {charge:?}");
+        run_ticks(&mut sim, &mut input, true, 100);
+        let spread = (-4..21).flat_map(|x| (-4..21).map(move |z| (x, z))).filter(|&(x, z)| {
+            let name = |y| sim.command_registries().blocks.block(sim.command_registries().blocks.block_of(sim.command_block((x, y, z)))).name.to_string();
+            name(199) == "minecraft:sculk" || name(200) == "minecraft:sculk_vein"
+        });
+        assert!(spread.count() > 0, "sculk spread at the death spot");
+    }
+
+    #[test]
+    fn a_player_s_death_charge_is_its_experience() {
+        let Some((mut sim, _)) = catalyst_world(&[CATALYST]) else { return };
+        sim.award_death([11.5, 200.0, 8.5], 49, 49);
+        assert_eq!(catalyst_charge(&sim, CATALYST), vec![((11, 200, 8), 49)]);
+        sim.award_death([11.5, 200.0, 8.5], 0, 0);
+        assert_eq!(catalyst_charge(&sim, CATALYST).len(), 1, "a death with no experience only blooms it");
+    }
+
     #[test]
     fn ten_blocks_away_it_drops_orbs() {
         let Some((mut sim, _)) = catalyst_world(&[CATALYST]) else { return };
@@ -12035,10 +12084,10 @@ mod tests {
     #[test]
     fn a_player_s_death_beside_a_catalyst_leaves_no_orbs() {
         let Some((mut sim, _)) = catalyst_world(&[CATALYST]) else { return };
-        sim.award_death([11.5, 200.0, 8.5], 21);
+        sim.award_death([11.5, 200.0, 8.5], 21, 21);
         assert!(sim.orbs().is_empty());
         assert!(blooming(&sim, CATALYST));
-        sim.award_death([1.5, 200.0, 18.5], 21);
+        sim.award_death([1.5, 200.0, 18.5], 21, 21);
         assert!(!sim.orbs().is_empty(), "too far from it");
         sim.award_experience([11.5, 200.0, 8.5], 30);
         assert!(sim.orbs().iter().map(|orb| orb.value).sum::<i32>() > 21, "experience that is no death is not taken");

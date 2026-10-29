@@ -5,6 +5,8 @@ use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::pos::Direction;
 use minecraftoss_core::random::RandomSource;
 use minecraftoss_core::{BlockPos, BlockStateId};
+use minecraftoss_generator::feature::kinds::sculk::{add_cursors, Cursor, SculkSpreader, SpreadEffects, CHARGE_EVENT, MAX_CHARGE, MAX_CURSORS};
+use std::collections::BTreeMap;
 
 pub const SENSOR_ACTIVE_TICKS: i32 = 30;
 pub const CALIBRATED_ACTIVE_TICKS: i32 = 10;
@@ -19,6 +21,7 @@ const SHRIEK: &str = "minecraft:shriek";
 pub const BLOOM_TICKS: i32 = 8;
 const BLOOM: &str = "bloom";
 const BLOOM_SOUND: &str = "minecraft:block.sculk_catalyst.bloom";
+pub const CURSORS: &str = "cursors";
 const PHASE: &str = "sculk_sensor_phase";
 const TENDRILS_CLICKING: &str = "minecraft:sculk_sensor_tendrils_clicking";
 const CLICKING: &str = "minecraft:block.sculk_sensor.clicking";
@@ -322,11 +325,118 @@ impl Level<'_> {
         });
     }
 
+    pub fn catalyst_cursors(&self, pos: BlockPos) -> Vec<Cursor> {
+        let saved = self
+            .block_entity(pos)
+            .and_then(|tag| tag.get(CURSORS))
+            .and_then(Tag::as_list);
+        saved
+            .map(|list| list.iter().filter_map(cursor_from_tag).take(MAX_CURSORS).collect())
+            .unwrap_or_default()
+    }
+
+    fn set_catalyst_cursors(&mut self, pos: BlockPos, cursors: &[Cursor]) {
+        let list = cursors.iter().map(cursor_tag).collect();
+        self.set_block_entity_value(pos, CURSORS, Tag::List(list));
+    }
+
+    pub fn add_catalyst_cursors(&mut self, catalyst: BlockPos, at: BlockPos, charge: i32) {
+        let mut cursors = self.catalyst_cursors(catalyst);
+        add_cursors(&mut cursors, at, charge);
+        self.set_catalyst_cursors(catalyst, &cursors);
+    }
+
+    pub fn tick_catalyst(&mut self, pos: BlockPos) {
+        let spreading = self
+            .block_entity(pos)
+            .and_then(|tag| tag.get(CURSORS))
+            .and_then(Tag::as_list)
+            .is_some_and(|list| !list.is_empty());
+        if !spreading || !self.is_sculk_catalyst(self.block(pos)) {
+            return;
+        }
+        let Ok(spreader) = SculkSpreader::new(self.registries(), false) else {
+            return;
+        };
+        let mut cursors = self.catalyst_cursors(pos);
+        let mut effects = SpreadEffects::default();
+        self.with_feature_random(|ctx, random| {
+            spreader.update_cursors(ctx, random, &mut cursors, pos, true, &mut effects);
+            true
+        });
+        self.set_catalyst_cursors(pos, &cursors);
+        for (at, data) in effects.level_events {
+            self.level_events.push((CHARGE_EVENT, at, data));
+        }
+        for (at, event) in effects.sounds {
+            self.sounds.push(LevelSound {
+                event,
+                pos: centre(at),
+                volume: 1.0,
+                pitch: 1.0,
+            });
+        }
+    }
+
     pub(super) fn sculk_pre_remove(&mut self, pos: BlockPos, old: BlockStateId) {
         if self.is_sculk_shrieker(old) && self.sensor_property(old, SHRIEKING) == Some("true") {
             self.shrieker_respond(pos, old);
         }
     }
+}
+
+pub fn cursor_tag(cursor: &Cursor) -> Tag {
+    let mut map = BTreeMap::new();
+    let pos = cursor.pos;
+    map.insert("pos".to_owned(), Tag::IntArray(vec![pos.x, pos.y, pos.z]));
+    for (key, value, default) in [
+        ("charge", cursor.charge, 0),
+        ("decay_delay", cursor.decay_delay, 1),
+        ("update_delay", cursor.update_delay, 0),
+    ] {
+        if value != default {
+            map.insert(key.to_owned(), Tag::Int(value));
+        }
+    }
+    if let Some(facings) = &cursor.facings {
+        let names = facings
+            .iter()
+            .map(|facing| Tag::String(facing.name().to_owned()))
+            .collect();
+        map.insert("facings".to_owned(), Tag::List(names));
+    }
+    Tag::Compound(map)
+}
+
+pub fn cursor_from_tag(tag: &Tag) -> Option<Cursor> {
+    let ints = tag.get("pos")?.as_ints()?;
+    let [x, y, z] = ints[..] else {
+        return None;
+    };
+    let int = |key: &str, default: i32, high: i32| match tag.get(key) {
+        None => Some(default),
+        Some(value) => value
+            .as_i64()
+            .filter(|value| (0..=i64::from(high)).contains(value))
+            .map(|value| value as i32),
+    };
+    let facings = tag.get("facings").and_then(Tag::as_list).map(|list| {
+        let named: Vec<Direction> = list
+            .iter()
+            .filter_map(|name| name.as_str().and_then(Direction::from_name))
+            .collect();
+        Direction::ALL
+            .into_iter()
+            .filter(|direction| named.contains(direction))
+            .collect()
+    });
+    Some(Cursor {
+        pos: BlockPos::new(x, y, z),
+        charge: int("charge", 0, MAX_CHARGE)?,
+        decay_delay: int("decay_delay", 1, 1)?,
+        update_delay: int("update_delay", 0, i32::MAX)?,
+        facings,
+    })
 }
 
 #[cfg(test)]
@@ -666,6 +776,81 @@ mod tests {
         assert_eq!(level.shrieker_responses, vec![(SHRIEKER, 1)]);
         ticks(&mut level, SHRIEK_TICKS);
         assert_eq!(level.shrieker_responses.len(), 1, "its tick finds no shrieker");
+    }
+
+    fn found(level: &Level<'_>, name: &str) -> Vec<BlockPos> {
+        let mut at = Vec::new();
+        for x in -16..32 {
+            for z in -16..32 {
+                for y in 60..72 {
+                    let pos = BlockPos::new(x, y, z);
+                    if level.name(level.block(pos)) == name {
+                        at.push(pos);
+                    }
+                }
+            }
+        }
+        at
+    }
+
+    #[test]
+    fn a_catalyst_s_cursors_spread_sculk_and_round_trip() {
+        let Some(lib) = library() else { return };
+        let mut level = level(&lib);
+        let catalyst = BlockPos::new(4, 65, 4);
+        place(&mut level, catalyst, "minecraft:sculk_catalyst");
+        let death = BlockPos::new(7, 65, 4);
+        level.add_catalyst_cursors(catalyst, death, 2500);
+        let cursors = level.catalyst_cursors(catalyst);
+        assert_eq!(
+            cursors.iter().map(|cursor| (cursor.pos, cursor.charge)).collect::<Vec<_>>(),
+            vec![(death, 1000), (death, 1000), (death, 500)],
+            "a charge above 1000 splits"
+        );
+        let saved = level.block_entity(catalyst).and_then(|tag| tag.get(CURSORS)).cloned().unwrap();
+        let first = &saved.as_list().unwrap()[0];
+        assert_eq!(first.get("pos").and_then(Tag::as_ints), Some(vec![7, 65, 4]));
+        assert_eq!(first.get("charge").and_then(Tag::as_i64), Some(1000));
+        assert!(first.get("decay_delay").is_none() && first.get("update_delay").is_none() && first.get("facings").is_none());
+        let travelled = Cursor {
+            pos: BlockPos::new(1, 2, 3),
+            charge: 40,
+            update_delay: 1,
+            decay_delay: 0,
+            facings: Some(vec![Direction::Down, Direction::West]),
+        };
+        assert_eq!(cursor_from_tag(&cursor_tag(&travelled)), Some(travelled));
+        level.set_catalyst_cursors(catalyst, &[]);
+        level.add_catalyst_cursors(catalyst, death, 40);
+        level.level_events.clear();
+        let mut spent = false;
+        for _ in 0..4000 {
+            level.tick();
+            level.tick_catalyst(catalyst);
+            if level.catalyst_cursors(catalyst).is_empty() {
+                spent = true;
+                break;
+            }
+        }
+        assert!(spent, "the charge runs out");
+        let sculk = found(&level, "minecraft:sculk");
+        assert!(sculk.len() >= 5, "{} sculk blocks", sculk.len());
+        assert!(sculk.iter().all(|pos| pos.y == 64), "the stone floor turns to sculk");
+        assert!(level.level_events.iter().any(|&(id, _, data)| id == CHARGE_EVENT && data > 0), "charges glow");
+        assert!(level.level_events.iter().any(|&(id, _, data)| id == CHARGE_EVENT && data == 0), "and pop when spent");
+        assert!(level.sounds.iter().any(|sound| sound.event == "minecraft:block.sculk.spread"));
+        let growths: Vec<BlockPos> = found(&level, "minecraft:sculk_sensor").into_iter().chain(found(&level, "minecraft:sculk_shrieker")).collect();
+        assert!(growths.iter().all(|pos| pos.y == 65 && (pos.x - catalyst.x).pow(2) + (pos.z - catalyst.z).pow(2) >= 16), "no growth within four blocks: {growths:?}");
+    }
+
+    #[test]
+    fn a_runtime_shrieker_cannot_summon() {
+        let Some(lib) = library() else { return };
+        let level = level(&lib);
+        let runtime = SculkSpreader::new(level.registries(), false).unwrap();
+        assert_eq!(level.sensor_property(runtime.shrieker(), CAN_SUMMON), Some("false"));
+        let generated = SculkSpreader::new(level.registries(), true).unwrap();
+        assert_eq!(level.sensor_property(generated.shrieker(), CAN_SUMMON), Some("true"));
     }
 
     #[test]

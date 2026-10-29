@@ -649,6 +649,7 @@ pub struct MobDeath {
     pub equipment: Vec<ItemStack>,
     /// The experience it leaves (`LivingEntity.dropExperience`).
     pub experience: i32,
+    pub reward: i32,
 }
 
 /// `Items.BOW`'s durability.
@@ -660,7 +661,7 @@ const STONE_SWORD_DURABILITY: u32 = 131;
 fn death_of(id: u64, damage: &mut DamageState, kind: &'static str, table: Option<&'static str>, context: EntityLootContext) -> Option<(u64, MobDeath)> {
     let Death { order, position, killed_by_player, on_fire, attacker, direct, charged_creeper } = damage.death.take()?;
     let context = EntityLootContext { this_type: Some(kind), on_fire, killed_by_player, attacker, has_direct_attacker: direct, ..context };
-    Some((order, MobDeath { id, table, position, context, charged_creeper, equipment: Vec::new(), experience: 0 }))
+    Some((order, MobDeath { id, table, position, context, charged_creeper, equipment: Vec::new(), experience: 0, reward: 0 }))
 }
 
 /// A sound a mob made, for the client to play: its event, where, volume,
@@ -4441,10 +4442,7 @@ impl EntityWorld {
         // Animals, bats and villagers drop their loot only as adults
         // (`LivingEntity.shouldDropLoot`); monsters as babies too.
         let adult = |baby: bool, table: &'static str| (!baby).then_some(table);
-        // `dropExperience`: only a kill within a player's memory leaves
-        // experience, from monsters at any age and other mobs as adults
-        // (`shouldDropExperience`).
-        let earns = |death: &MobDeath, monster: bool| mob_drops && death.context.killed_by_player && (monster || !death.context.baby);
+        let earns = |death: &MobDeath, monster: bool| monster || !death.context.baby;
         // `Animal.getBaseExperienceReward`: 1 to 3, from the mob's random.
         let animal = |death: &mut MobDeath, random: &mut LegacyRandom| {
             if earns(death, false) {
@@ -4802,6 +4800,12 @@ impl EntityWorld {
             deaths.push((order, death));
         }
         deaths.sort_by_key(|&(order, _)| order);
+        for (_, death) in &mut deaths {
+            death.reward = death.experience;
+            if !(mob_drops && death.context.killed_by_player) {
+                death.experience = 0;
+            }
+        }
         for (_, death) in &deaths {
             self.game_event("minecraft:entity_die", death.position, Some(death.id), None);
         }
