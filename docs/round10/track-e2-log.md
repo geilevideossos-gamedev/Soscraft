@@ -399,3 +399,24 @@ After 6d6c26ca.
 ```
 IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:diamond_pickaxe,minecraft:iron_shovel,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet
 ```
+
+### 3. Minecraft explorer maps show the coastline around their target
+
+After 79d69c23.
+
+- **Vanilla (26.3, `MapItem.renderBiomePreviewMap`, checked with javap):** with `s = 1 << scale`, it reads `getBiome(((centreX / s - 64) + x) * s, seaLevel, ((centreZ / s - 64) + z) * s)` for each of the 128 x 128 map pixels and asks whether the biome is in `#minecraft:water_on_map_outlines` (`#is_ocean`, `#is_river`, `swamp`, `mangrove_swamp`). For the inner pixels 1-126 it counts the watery neighbours n out of 8 and sets `colors[x + z * 128]` to `id << 2 | brightness`:
+  - a watery pixel is `COLOR_ORANGE` (15): with n > 7 on an even z its brightness is `((x + (int)(Mth.sin(z) * 7)) / 8) % 5` (0 and 4 LOW, 1 and 3 NORMAL, 2 HIGH); with n > 7 on an odd z it stays clear; n > 5 NORMAL; n > 1 LOW; else LOWEST;
+  - a dry pixel with n > 0 is `COLOR_BROWN` (26), NORMAL when n > 3, else LOWEST; other pixels stay clear.
+  - Brightness ids: LOW 0, NORMAL 1, HIGH 2, LOWEST 3. `Mth.sin` is the 65536-entry table, which the generator crate already ports (`providers::sin`).
+- **Changed:** `minecraft_terrain/src/maps.rs`:
+  - `biome_preview(map, watery)` ports the function over any `watery(x, z)` test, with `packed(colour, brightness)` and the colour and brightness ids as constants.
+  - `coastline(gen, map)` runs it on the level's generator: the zoomed biome at sea level (`zoom::quart_for_block` with the world's zoom seed, then `biome_at_quart`), each quart worked out once, and the 26.3 tag through the registries' biome tags.
+  - `LootExplorer::explore` draws the coastline on each new map before it is handed over, so the map file holds it from the start.
+- **Tests:**
+  - `maps::tests::the_coastline_preview_outlines_water_like_vanilla`: on a hand-made shore, a dry spot in the water, a lone pond and open water, the shore's water and land, the stripe (including a negative `sin`), the clear odd rows, the 6-7 neighbour NORMAL, the lone pond's LOWEST and the untouched border match the formula; a scale 1 map centred on (1088, -192) samples blocks (960, -320) to (1214, -66).
+  - `maps::tests::a_shipwreck_map_chest_rolls_a_treasure_map_to_the_nearest_buried_treasure` now also checks that the explorer's map equals a fresh map run through `coastline`, and that it holds only clear, orange and brown pixels, with both orange and brown (the treasure lies on a coast).
+- **Decisions:**
+  - The quarts are cached per map only (about 66 x 66 at scale 1); the biomes come from the noise, which is what the chunks would hold.
+  - The coastline is drawn on the main thread with the chest open, like the search; it adds about a tenth of a second in a release build.
+- **Test steps:** the coastline is drawn into the map data now, but no map is shown on screen until group `maps-held`/`maps-view`. Nothing new to see in game; the check is with the map held in the later groups (orange outlines of the coast around the X).
+- **Kit:** none.

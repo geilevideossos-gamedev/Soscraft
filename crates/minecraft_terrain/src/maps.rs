@@ -1,9 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use minecraftoss_core::loot::Exploring;
 use minecraftoss_core::nbt::Tag;
+use minecraftoss_generator::zoom;
 use minecraftoss_world::chunk_map::WorldGen;
 use minecraftoss_world::level_storage::LevelStorage;
 
@@ -17,6 +18,13 @@ pub const PLAYER: &str = "minecraft:player";
 pub const PLAYER_OFF_MAP: &str = "minecraft:player_off_map";
 pub const PLAYER_OFF_LIMITS: &str = "minecraft:player_off_limits";
 pub const SEARCH_TIME: Duration = Duration::from_secs(2);
+pub const WATER_ON_MAP_OUTLINES: &str = "minecraft:water_on_map_outlines";
+pub const COLOR_ORANGE: u8 = 15;
+pub const COLOR_BROWN: u8 = 26;
+pub const LOW: u8 = 0;
+pub const NORMAL: u8 = 1;
+pub const HIGH: u8 = 2;
+pub const LOWEST: u8 = 3;
 const INSIDE: f32 = 63.0;
 const OFF_MAP: f32 = 320.0;
 
@@ -207,6 +215,80 @@ pub fn nether_rotation(game_time: i64) -> i8 {
     let t = (game_time / 10) as i32;
     let spin = t.wrapping_mul(t).wrapping_mul(34_187_121);
     ((spin.wrapping_add(t.wrapping_mul(121)) >> 15) & 15) as i8
+}
+
+pub fn packed(color: u8, brightness: u8) -> u8 {
+    color << 2 | (brightness & 3)
+}
+
+pub fn biome_preview(map: &mut MapData, mut watery: impl FnMut(i32, i32) -> bool) {
+    let step = 1i32 << map.scale;
+    let left = map.x_center / step - 64;
+    let top = map.z_center / step - 64;
+    let mut wet = vec![false; COLORS];
+    for z in 0..MAP_SIZE {
+        for x in 0..MAP_SIZE {
+            wet[z * MAP_SIZE + x] = watery((left + x as i32) * step, (top + z as i32) * step);
+        }
+    }
+    for x in 1..MAP_SIZE - 1 {
+        for z in 1..MAP_SIZE - 1 {
+            let mut around = 0;
+            for dx in 0..3 {
+                for dz in 0..3 {
+                    if (dx, dz) != (1, 1) && wet[(z + dz - 1) * MAP_SIZE + x + dx - 1] {
+                        around += 1;
+                    }
+                }
+            }
+            let shade = if wet[z * MAP_SIZE + x] {
+                if around > 7 && z % 2 == 0 {
+                    let ripple =
+                        (minecraftoss_generator::providers::sin(f64::from(z as f32)) * 7.0) as i32;
+                    let band = match (x as i32 + ripple) / 8 % 5 {
+                        0 | 4 => LOW,
+                        1 | 3 => NORMAL,
+                        2 => HIGH,
+                        _ => LOWEST,
+                    };
+                    Some((COLOR_ORANGE, band))
+                } else if around > 7 {
+                    None
+                } else if around > 5 {
+                    Some((COLOR_ORANGE, NORMAL))
+                } else if around > 1 {
+                    Some((COLOR_ORANGE, LOW))
+                } else {
+                    Some((COLOR_ORANGE, LOWEST))
+                }
+            } else if around > 3 {
+                Some((COLOR_BROWN, NORMAL))
+            } else if around > 0 {
+                Some((COLOR_BROWN, LOWEST))
+            } else {
+                None
+            };
+            if let Some((color, brightness)) = shade {
+                map.colors[z * MAP_SIZE + x] = packed(color, brightness);
+            }
+        }
+    }
+}
+
+pub fn coastline(gen: &WorldGen, map: &mut MapData) {
+    let terrain = &gen.terrain;
+    let registries = &terrain.registries;
+    let Some(tag) = registries.biome_tags.id(WATER_ON_MAP_OUTLINES) else {
+        return;
+    };
+    let zoom_seed = zoom::zoom_seed(terrain.seed);
+    let mut quarts = HashMap::new();
+    biome_preview(map, |x, z| {
+        let quart = zoom::quart_for_block(zoom_seed, x, terrain.sea_level, z);
+        *quarts.entry(quart).or_insert_with(|| {
+            registries.biome_in_tag(terrain.biome_at_quart(quart[0], quart[1], quart[2]), tag)
+        })
+    });
 }
 
 pub fn player_marker(fx: f32, fz: f32, unlimited: bool) -> Option<&'static str> {
@@ -428,7 +510,7 @@ impl Exploring for LootExplorer {
                     return None;
                 }
             };
-        let map = MapData::create_fresh(
+        let mut map = MapData::create_fresh(
             f64::from(target[0]),
             f64::from(target[2]),
             zoom.min(MAX_SCALE),
@@ -436,6 +518,7 @@ impl Exploring for LootExplorer {
             true,
             true,
         );
+        coastline(&self.gen, &mut map);
         let mut explored = self.explored();
         let id = self.first_id + explored.maps.len() as i32;
         explored.maps.push((id, map));
@@ -593,6 +676,74 @@ mod tests {
     }
 
     #[test]
+    fn the_coastline_preview_outlines_water_like_vanilla() {
+        let mut map = MapData::create_fresh(0.0, 0.0, 0, "minecraft:overworld", true, true);
+        let mut asked = Vec::new();
+        biome_preview(&mut map, |x, z| {
+            asked.push((x, z));
+            (x < 0 && (x, z) != (-30, 0)) || (x, z) == (36, 0)
+        });
+        assert_eq!(asked.len(), COLORS);
+        assert_eq!(
+            (asked[0], asked[1], asked[MAP_SIZE]),
+            ((-64, -64), (-63, -64), (-64, -63))
+        );
+        let at = |x: usize, z: usize| map.colors[z * MAP_SIZE + x];
+        assert_eq!(
+            at(63, 40),
+            packed(COLOR_ORANGE, LOW),
+            "the water at the shore"
+        );
+        assert_eq!(
+            at(64, 40),
+            packed(COLOR_BROWN, LOWEST),
+            "the land at the shore"
+        );
+        assert_eq!(at(65, 40), 0);
+        assert_eq!(at(10, 20), packed(COLOR_ORANGE, HIGH));
+        assert_eq!(at(30, 20), packed(COLOR_ORANGE, LOW));
+        assert_eq!(at(10, 4), packed(COLOR_ORANGE, LOW));
+        assert_eq!(at(13, 4), packed(COLOR_ORANGE, NORMAL));
+        assert_eq!(at(10, 21), 0, "odd rows of open water stay clear");
+        assert_eq!(
+            at(33, 64),
+            packed(COLOR_ORANGE, NORMAL),
+            "water beside a dry spot"
+        );
+        assert_eq!(
+            at(34, 64),
+            packed(COLOR_BROWN, NORMAL),
+            "a dry spot in the water"
+        );
+        assert_eq!(
+            at(100, 64),
+            packed(COLOR_ORANGE, LOWEST),
+            "a pond on its own"
+        );
+        assert_eq!(at(101, 64), packed(COLOR_BROWN, LOWEST));
+        assert_eq!(
+            (at(0, 40), at(10, 0), at(127, 64)),
+            (0, 0, 0),
+            "the border is never drawn"
+        );
+        assert_eq!(
+            (packed(COLOR_ORANGE, HIGH), packed(COLOR_BROWN, LOWEST)),
+            (62, 107)
+        );
+        let mut wide = MapData::create_fresh(1000.0, -300.0, 1, "minecraft:overworld", true, true);
+        let mut corners = Vec::new();
+        biome_preview(&mut wide, |x, z| {
+            corners.push((x, z));
+            false
+        });
+        assert_eq!(
+            (corners[0], corners[COLORS - 1]),
+            ((960, -320), (1214, -66))
+        );
+        assert!(wide.colors.iter().all(|&c| c == 0));
+    }
+
+    #[test]
     fn maps_are_saved_in_the_vanilla_files_and_come_back() {
         let dir = crate::test_dir::tempdir().unwrap();
         let world = dir.path().join("world");
@@ -732,7 +883,7 @@ mod tests {
         assert!(explored.timed_out.is_empty());
         assert_eq!(explored.maps.len(), 1);
         let (id, data) = &explored.maps[0];
-        let fresh = MapData::create_fresh(
+        let mut fresh = MapData::create_fresh(
             f64::from(target[0]),
             f64::from(target[1]),
             1,
@@ -740,7 +891,17 @@ mod tests {
             true,
             true,
         );
+        coastline(&gen, &mut fresh);
         assert_eq!((*id, data), (5, &fresh));
+        let colours: BTreeSet<u8> = data.colors.iter().map(|&c| c >> 2).collect();
+        assert!(
+            colours.is_subset(&BTreeSet::from([0, COLOR_ORANGE, COLOR_BROWN])),
+            "{colours:?}"
+        );
+        assert!(
+            colours.contains(&COLOR_ORANGE) && colours.contains(&COLOR_BROWN),
+            "the treasure lies on a coast: {colours:?}"
+        );
         let column = stream.load_chunk_now(minecraftoss_core::ChunkPos::new(
             target[0] >> 4,
             target[1] >> 4,
