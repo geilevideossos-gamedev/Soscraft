@@ -365,3 +365,37 @@ After 701ee0df.
   - The map decorations of a held map (`maps-held`) are not saved, as in vanilla; only banners and frames are, and those stay as they were read.
 - **Test steps:** none in game for this commit alone; the next commit makes the first maps. The check is step 6 of commit 2.
 - **Kit:** none.
+
+### 2. Minecraft shipwreck, ocean ruin and camp chests roll explorer maps
+
+After 6d6c26ca.
+
+- **Vanilla (26.3, `ExplorationMapFunction.run`, checked with javap):** an empty stack or a roll with no `ORIGIN` comes back unchanged, and the item is not checked. Otherwise `findNearestMapStructure(destination, BlockPos.containing(origin), search_radius, skip_existing_chunks)`; when nothing is found the stack comes back unchanged and the table's `filtered{map_id}` step discards it. When found, `applyNewSavedData(x, z, zoom, tracking true, unlimited true)` sets `minecraft:map_id`, and `addTargetDecoration` adds `minecraft:map_decorations` entry `"+"` = `{type, x, z, rotation: 180.0f}` (`x` and `z` doubles). Defaults: decoration `minecraft:mansion`, zoom 2, radius 50, skip true. In 26.3 the explorer maps are their own items (`minecraft:buried_treasure_map` and so on), so the stack keeps its id.
+- **Changed:**
+  - Vendored `core/src/loot.rs`: new `pub trait Exploring` (`explore(destination, origin, radius, skip_known, zoom) -> Option<(map id, target)>`) next to `Enchanting`, `LootParams.exploring`, and an `exploration_map` arm next to `filtered`. It resolves `destination` through `tags/worldgen/structure`, reads the defaults, floors the origin, and writes `map_id` (Int) and merges the `"+"` mark into any marks already there. Without a stack, an origin, a hook or a result it leaves the stack alone.
+  - The same file's tests: `unknown_functions_still_fail` now uses `minecraft:furnace_smelt`; the survey has no exception left and runs every table with a stub explorer.
+  - `minecraft_terrain/src/maps.rs`: `LootExplorer` (the level's `WorldGen`, its dimension and the first free map id) implements `Exploring` with `locate::nearest_structure` and a 2 s deadline (`SEARCH_TIME`). Each find makes a `MapData::create_fresh(target, zoom, tracking, unlimited)` with the next id; a timeout counts as nothing found and is kept for the log. `take()` hands over the new maps and the timeouts.
+  - `minecraft_terrain/src/containers.rs`: `structure_loot_in` takes the explorer and puts it in `LootParams`.
+  - `minecraft_survival/src/menus.rs` `open_station`: a chest or barrel opened for the first time gets an explorer for the player's level, with the store's next id. When the roll is used, its new maps go into `globals.maps` (which moves `last_id` on) and timeouts are logged. The host and the friends share this path.
+- **Tests:**
+  - Vendored `loot::tests`: `exploration_maps_ask_the_explorer_and_mark_its_target` (map id, the red X at the target with rotation 180.0, the treasure map's radius, zoom and skip, the defaults `minecraft:mansion`, zoom 2, radius 50, skip true, and other marks kept), `an_exploration_map_with_nothing_found_or_no_origin_is_filtered_out` (nothing found, no origin or no hook discards the map; no origin and an empty stack never search; a seeded `chests/shipwreck_map` roll has the map only when one is found, and the rest of the chest rolls either way), `unknown_functions_still_fail` (furnace_smelt), and the survey of every chest, spawner, equipment and gameplay table with no unsupported function and every destination resolved.
+  - `maps::tests::a_shipwreck_map_chest_rolls_a_treasure_map_to_the_nearest_buried_treasure` (seed 77, gated on `MINECRAFTOSS_ROOT`): the nearest shipwreck's map chest rolls a `minecraft:buried_treasure_map` with map id 5; its X is `nearest_structure(["minecraft:buried_treasure"], origin, 50)` at block 9, 9 of its chunk; the explorer made exactly that map (scale 1, unlimited); and the generated chunk holds the `chests/buried_treasure` chest in that column.
+  - `maps::tests::a_chest_without_maps_or_with_nothing_to_find_makes_no_map`: a dungeon chest makes no map; a search for a Nether fortress finds nothing; a far search gives up within about 2 s and is kept as a timeout.
+  - The existing `containers::tests` loot tests pass unchanged apart from the new argument.
+- **Decisions:**
+  - `unknown_functions_still_fail` uses `minecraft:furnace_smelt`: of the 26.3 functions in the loot tables only it and `enchanted_count_increase` are left unported in this file, both in entity tables.
+  - The search runs on the main thread when the chest is opened, as in vanilla, and stops after 2 s. A woodland mansion map in a camp's secret chest can therefore pause the game for up to 2 s.
+  - New maps get their ids only when the roll is kept. A roll that fails frees its ids again; vanilla would have used them up.
+  - A map's zoom is clamped to 4, as the vanilla codec does when it loads a map.
+  - The `skip_existing_chunks` flag reaches the explorer but is not used until commit 4, so a camp map can still point at its own camp until then.
+  - Cartographer trades still skip explorer maps (left for later).
+- **Test steps (survival, Normal; holding a map shows nothing yet, that is group `maps-held`):**
+  1. Load a world with the kit. Run `/locate structure minecraft:shipwreck` and `/tp` to it. Drink a water breathing potion.
+  2. Open the shipwreck's chests. The map chest is usually in the cabin at the back. It now holds paper, feathers, a compass, map or clock, and a **Buried Treasure Map** (**maps-1_shipwreck**). If the wreck has no map chest (half wrecks), locate the next one.
+  3. Run `/locate structure minecraft:ocean_ruin_warm` (or `ocean_ruin_cold`) and `/tp` there. The ruin chests roll coal, wheat, gold nuggets and the like again instead of nothing, and about 4 in 10 also hold a Buried Treasure Map (**maps-2_ruin**).
+  4. Save and quit. In the world folder, `data/minecraft/maps/0.dat` and `data/minecraft/maps/last_id.dat` are there, and there is one numbered file for each treasure map found (**maps-3_files**, a screenshot of the folder).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:diamond_pickaxe,minecraft:iron_shovel,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet
+```

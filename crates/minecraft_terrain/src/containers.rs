@@ -672,9 +672,10 @@ pub fn structure_loot(
     recipes: &RecipeBook,
     enchanting: Option<Arc<minecraftoss_entities::enchant::Enchantments>>,
 ) -> Option<(Vec<ItemStack>, u64)> {
-    structure_loot_in(registries, entity, pos, world_seed, recipes, enchanting, None)
+    structure_loot_in(registries, entity, pos, world_seed, recipes, enchanting, None, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn structure_loot_in(
     registries: &minecraftoss_core::Registries,
     entity: &minecraftoss_core::nbt::Tag,
@@ -683,6 +684,7 @@ pub fn structure_loot_in(
     recipes: &RecipeBook,
     enchanting: Option<Arc<minecraftoss_entities::enchant::Enchantments>>,
     biome: Option<String>,
+    exploring: Option<Arc<dyn minecraftoss_core::loot::Exploring>>,
 ) -> Option<(Vec<ItemStack>, u64)> {
     let table = entity.get("LootTable")?.as_str()?;
     let seed = entity
@@ -704,6 +706,7 @@ pub fn structure_loot_in(
         enchanting: enchanting.map(|book| {
             Arc::new(LootEnchanting(book)) as Arc<dyn minecraftoss_core::loot::Enchanting>
         }),
+        exploring,
         biome,
         ..Default::default()
     };
@@ -1925,7 +1928,7 @@ mod tests {
         let recipes = book();
         let roll = |table: &str, seed: i64, biome: Option<&str>| {
             let chest = loot_chest(table, seed);
-            structure_loot_in(&registries, &chest, (5, -40, 5), 7, &recipes, Some(enchantments.clone()), biome.map(str::to_owned)).unwrap().0
+            structure_loot_in(&registries, &chest, (5, -40, 5), 7, &recipes, Some(enchantments.clone()), biome.map(str::to_owned), None).unwrap().0
         };
         let (mut worn, mut regeneration, mut bottles) = (0, 0, 0);
         for seed in 1..=100 {

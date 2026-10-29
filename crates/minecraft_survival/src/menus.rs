@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, PoisonError};
 
 use minecraft_commands::Text;
 use minecraft_net::messages::{
@@ -9,6 +10,7 @@ use minecraft_terrain::containers::{Containers, Opened, Station};
 use minecraft_terrain::crafting::{self, Grid, Spot};
 use minecraft_terrain::mount_inventory::MountInventory;
 use minecraft_terrain::gun_mods::GunRules;
+use minecraft_terrain::maps::{LootExplorer, SEARCH_TIME};
 use minecraft_terrain::openers::RECHECK_TICKS;
 use minecraft_terrain::scene::{BlockPos, HandcraftedScene, Scene};
 use minecraft_terrain::server::{MerchantOp, MerchantView};
@@ -297,7 +299,10 @@ pub fn open_station(
     if let Some(opened) = block {
         let storage = matches!(opened.station, Station::Chest | Station::Barrel);
         for &pos in opened.cells.iter().filter(|_| storage) {
-            if containers.is_new(pos)
+            let explorer = containers
+                .is_new(pos)
+                .then(|| loot_explorer(terrain, globals, player.dimension));
+            if let Some(explorer) = &explorer
                 && let Some(chunk) = terrain
                     .scene
                     .generated_chunk((pos.0.div_euclid(16), pos.2.div_euclid(16)))
@@ -316,8 +321,10 @@ pub fn open_station(
                     Some(terrain.stream.states.biome_name(pos, |at| {
                         terrain.scene.generated_chunk(at).map(|c| &**c)
                     })),
+                    Some(explorer.clone()),
                 )
             {
+                keep_explored(globals, explorer);
                 containers.fill(pos, items, seed);
             }
         }
@@ -355,6 +362,34 @@ pub fn open_station(
         Text::translate(bench_title(kind), Vec::new()),
         shelves,
     )
+}
+
+fn loot_explorer(terrain: &Terrain, globals: &Globals, dimension: Dimension) -> Arc<LootExplorer> {
+    let first_id = globals
+        .maps
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .next_id();
+    Arc::new(LootExplorer::new(
+        terrain.stream.world_gen(),
+        dimension.dimension_type(),
+        first_id,
+    ))
+}
+
+fn keep_explored(globals: &Globals, explorer: &LootExplorer) {
+    let explored = explorer.take();
+    for destination in &explored.timed_out {
+        diag::warn!(
+            World,
+            "Minecraft explorer map search for {destination} stopped after {} s",
+            SEARCH_TIME.as_secs()
+        );
+    }
+    let mut maps = globals.maps.lock().unwrap_or_else(PoisonError::into_inner);
+    for (id, map) in explored.maps {
+        maps.insert(id, map);
+    }
 }
 
 pub fn still_valid(menu: &Menu, scene: &HandcraftedScene, eye: [f64; 3]) -> bool {

@@ -1,7 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
+use minecraftoss_core::loot::Exploring;
 use minecraftoss_core::nbt::Tag;
+use minecraftoss_world::chunk_map::WorldGen;
 use minecraftoss_world::level_storage::LevelStorage;
+
+use crate::locate::{self, Search};
 
 pub const MAP_SIZE: usize = 128;
 pub const COLORS: usize = MAP_SIZE * MAP_SIZE;
@@ -10,6 +16,7 @@ pub const LAST_ID: &str = "minecraft:maps/last_id";
 pub const PLAYER: &str = "minecraft:player";
 pub const PLAYER_OFF_MAP: &str = "minecraft:player_off_map";
 pub const PLAYER_OFF_LIMITS: &str = "minecraft:player_off_limits";
+pub const SEARCH_TIME: Duration = Duration::from_secs(2);
 const INSIDE: f32 = 63.0;
 const OFF_MAP: f32 = 320.0;
 
@@ -361,6 +368,81 @@ impl MapStore {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct Explored {
+    pub maps: Vec<(i32, MapData)>,
+    pub timed_out: Vec<String>,
+}
+
+pub struct LootExplorer {
+    gen: Arc<WorldGen>,
+    dimension: String,
+    first_id: i32,
+    explored: Mutex<Explored>,
+}
+
+impl std::fmt::Debug for LootExplorer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LootExplorer")
+            .field("dimension", &self.dimension)
+            .field("first_id", &self.first_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LootExplorer {
+    pub fn new(gen: Arc<WorldGen>, dimension: &str, first_id: i32) -> Self {
+        Self {
+            gen,
+            dimension: dimension.to_owned(),
+            first_id,
+            explored: Mutex::new(Explored::default()),
+        }
+    }
+
+    pub fn take(&self) -> Explored {
+        std::mem::take(&mut *self.explored())
+    }
+
+    fn explored(&self) -> MutexGuard<'_, Explored> {
+        self.explored.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Exploring for LootExplorer {
+    fn explore(
+        &self,
+        destination: &[String],
+        origin: [i32; 3],
+        radius: i32,
+        _skip_known: bool,
+        zoom: u8,
+    ) -> Option<(i32, [i32; 3])> {
+        let deadline = Instant::now() + SEARCH_TIME;
+        let target =
+            match locate::nearest_structure(&self.gen, destination, origin, radius, deadline) {
+                Search::Found(target, _) => target,
+                Search::NotFound => return None,
+                Search::TimedOut => {
+                    self.explored().timed_out.push(destination.join(", "));
+                    return None;
+                }
+            };
+        let map = MapData::create_fresh(
+            f64::from(target[0]),
+            f64::from(target[2]),
+            zoom.min(MAX_SCALE),
+            &self.dimension,
+            true,
+            true,
+        );
+        let mut explored = self.explored();
+        let id = self.first_id + explored.maps.len() as i32;
+        explored.maps.push((id, map));
+        Some((id, target))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,5 +645,149 @@ mod tests {
         assert_eq!(store.len(), 1);
         assert_eq!(store.next_id(), 4);
         assert_eq!(store.free_id(), 4);
+    }
+
+    fn overworld_stream(seed: i64) -> Option<crate::terrain::TerrainStream> {
+        let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
+        let registries = Arc::new(minecraftoss_core::Registries::load(&paths).ok()?);
+        crate::terrain::TerrainStream::for_dimension_at(
+            registries,
+            seed,
+            2,
+            crate::terrain::Dimension::Overworld,
+            None,
+            Some((0, 64, 0)),
+        )
+        .ok()
+    }
+
+    fn chest(table: &str, seed: i64) -> Tag {
+        Tag::Compound(BTreeMap::from([
+            ("LootTable".to_owned(), Tag::String(table.to_owned())),
+            ("LootTableSeed".to_owned(), Tag::Long(seed)),
+        ]))
+    }
+
+    fn found(search: Search) -> [i32; 3] {
+        match search {
+            Search::Found(at, _) => at,
+            other => panic!("nothing found: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_shipwreck_map_chest_rolls_a_treasure_map_to_the_nearest_buried_treasure() {
+        let Some(mut stream) = overworld_stream(77) else {
+            return;
+        };
+        let gen = stream.world_gen();
+        let registries = gen.terrain.registries.clone();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let shipwrecks = ["minecraft:shipwreck".to_owned()];
+        let wreck = found(locate::nearest_structure(
+            &gen,
+            &shipwrecks,
+            [0, 64, 0],
+            100,
+            deadline,
+        ));
+        let origin = (wreck[0], 50, wreck[2]);
+        let explorer = Arc::new(LootExplorer::new(gen.clone(), "minecraft:overworld", 5));
+        let recipes = minecraftoss_player::crafting::RecipeBook::default();
+        let (items, _) = crate::containers::structure_loot_in(
+            &registries,
+            &chest("minecraft:chests/shipwreck_map", 9),
+            origin,
+            77,
+            &recipes,
+            None,
+            None,
+            Some(explorer.clone()),
+        )
+        .expect("the chest rolls");
+        let map = items
+            .iter()
+            .find(|item| item.id == "minecraft:buried_treasure_map")
+            .unwrap_or_else(|| panic!("a treasure map: {items:?}"));
+        let components = map.components.as_ref().unwrap();
+        assert_eq!(components["minecraft:map_id"], 5);
+        let mark = &components["minecraft:map_decorations"]["+"];
+        assert_eq!(mark["type"], "minecraft:red_x");
+        assert_eq!(mark["rotation"], 180.0);
+        let target = [
+            mark["x"].as_f64().unwrap() as i32,
+            mark["z"].as_f64().unwrap() as i32,
+        ];
+        let treasure = ["minecraft:buried_treasure".to_owned()];
+        let nearest = found(locate::nearest_structure(
+            &gen,
+            &treasure,
+            [origin.0, origin.1, origin.2],
+            50,
+            deadline,
+        ));
+        assert_eq!(target, [nearest[0], nearest[2]]);
+        assert_eq!((target[0] & 15, target[1] & 15), (9, 9));
+        let explored = explorer.take();
+        assert!(explored.timed_out.is_empty());
+        assert_eq!(explored.maps.len(), 1);
+        let (id, data) = &explored.maps[0];
+        let fresh = MapData::create_fresh(
+            f64::from(target[0]),
+            f64::from(target[1]),
+            1,
+            "minecraft:overworld",
+            true,
+            true,
+        );
+        assert_eq!((*id, data), (5, &fresh));
+        let column = stream.load_chunk_now(minecraftoss_core::ChunkPos::new(
+            target[0] >> 4,
+            target[1] >> 4,
+        ));
+        let chests: Vec<_> = column
+            .block_entities
+            .pending
+            .iter()
+            .chain(column.block_entities.entities.iter())
+            .filter(|(pos, _)| (pos.0, pos.2) == (target[0], target[1]))
+            .filter_map(|(_, tag)| tag.get("LootTable").and_then(Tag::as_str))
+            .collect();
+        assert_eq!(chests, ["minecraft:chests/buried_treasure"]);
+    }
+
+    #[test]
+    fn a_chest_without_maps_or_with_nothing_to_find_makes_no_map() {
+        let Some(stream) = overworld_stream(77) else {
+            return;
+        };
+        let gen = stream.world_gen();
+        let registries = gen.terrain.registries.clone();
+        let recipes = minecraftoss_player::crafting::RecipeBook::default();
+        let explorer = Arc::new(LootExplorer::new(gen.clone(), "minecraft:overworld", 0));
+        let (items, _) = crate::containers::structure_loot_in(
+            &registries,
+            &chest("minecraft:chests/simple_dungeon", 9),
+            (0, 30, 0),
+            77,
+            &recipes,
+            None,
+            None,
+            Some(explorer.clone()),
+        )
+        .unwrap();
+        assert!(!items.is_empty());
+        let none = ["minecraft:fortress".to_owned()];
+        assert_eq!(explorer.explore(&none, [0, 64, 0], 50, false, 1), None);
+        let explored = explorer.take();
+        assert!(explored.maps.is_empty() && explored.timed_out.is_empty());
+        let late = LootExplorer::new(gen, "minecraft:overworld", 0);
+        let villages = ["minecraft:village_plains".to_owned()];
+        let started = Instant::now();
+        let gave_up = late.explore(&villages, [40_000, 64, 40_000], 100, false, 2);
+        assert!(started.elapsed() < SEARCH_TIME + Duration::from_secs(2));
+        if gave_up.is_none() {
+            assert_eq!(late.take().timed_out, ["minecraft:village_plains"]);
+        }
     }
 }
