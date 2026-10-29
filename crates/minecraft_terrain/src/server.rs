@@ -937,6 +937,10 @@ impl ServerSim {
             self.throw_trident(trident);
             return;
         }
+        if let Some(charge) = crate::breeze_charge::from_tag(&tag, &mut self.sound_random) {
+            self.throw(charge);
+            return;
+        }
         if crate::server_mobs::load_level_entity(&mut self.level, &tag) {
             return;
         }
@@ -967,11 +971,13 @@ impl ServerSim {
         tags.extend(self.dormant.iter().filter(|(group, _)| inside(glam::DVec3::from_array(group[0].pos))).map(|(_, tag)| tag.clone()));
         tags.extend(crate::server_mobs::level_entity_tags(&self.level, inside));
         tags.extend(self.tridents.iter().filter(|t| t.alive && inside(t.position)).map(|t| t.to_tag(t.owner_uuid)));
+        tags.extend(self.thrown.iter().filter(|t| inside(t.position())).filter_map(|t| crate::breeze_charge::to_tag(t, t.shooter.map(|id| self.mobs.uuid_of(id)).or(t.shooter_uuid))));
         tags.extend(self.crystals.tags_where(inside));
         tags.extend(self.dragons.tags_where(inside));
         tags.extend(self.frames.tags_where(inside));
         if unload {
             self.tridents.retain(|t| !inside(t.position));
+            self.thrown.retain(|t| !(crate::breeze_charge::is_charge(t) && inside(t.position())));
             self.crystals.remove_where(inside);
             self.dragons.remove_where(inside);
             self.frames.remove_where(inside);
@@ -1140,6 +1146,7 @@ impl ServerSim {
         self.cure_zombie_villagers(players);
         self.throw_mob_tridents();
         self.throw_mob_snowballs();
+        self.throw_breeze_charges();
         self.explode_creepers();
         self.explode_fireballs();
         self.break_around_withers();
@@ -1160,6 +1167,15 @@ impl ServerSim {
         use minecraftoss_entities::snow_golem::{SNOWBALL, SNOWBALL_POWER, SNOWBALL_UNCERTAINTY};
         for shot in self.mobs.take_snowball_shots() {
             if let Some(thrown) = crate::thrown::Thrown::shot_by_mob(SNOWBALL, shot.shooter, shot.from, shot.direction, SNOWBALL_POWER, SNOWBALL_UNCERTAINTY, &mut self.sound_random) {
+                self.throw(thrown);
+            }
+        }
+    }
+
+    fn throw_breeze_charges(&mut self) {
+        use minecraftoss_entities::world::families::trial::breezes;
+        for (shooter, shot) in breezes::take_shots(&mut self.mobs) {
+            if let Some(thrown) = crate::thrown::Thrown::shot_by_mob(breezes::CHARGE, shooter, shot.from, shot.direction, shot.power, shot.uncertainty, &mut self.sound_random) {
                 self.throw(thrown);
             }
         }
@@ -2117,6 +2133,9 @@ impl ServerSim {
         if self.thrown.is_empty() {
             return;
         }
+        for t in self.thrown.iter_mut().filter(|t| t.shooter.is_none()) {
+            t.shooter = t.shooter_uuid.and_then(|uuid| self.mobs.id_of_uuid(uuid));
+        }
         let mob_targets = crate::thrown::targets(&self.mobs);
         let frame_targets = self.frames.targets();
         let mut frame_hits = Vec::new();
@@ -2191,7 +2210,7 @@ impl ServerSim {
                     }
                     Throwable::WindCharge => {
                         let center = if landed.mob.is_some() { t.position() } else { crate::wind::burst_point(landed.at, landed.face) };
-                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, t.random().next_long(), center));
+                        bursts.push((landed.mob.filter(|_| frame.is_none()), landed.velocity, t.owner, t.random().next_long(), center, t.shooter, crate::wind::Charge::of(&t.item)));
                     }
                     Throwable::SplashPotion | Throwable::LingeringPotion => {
                         let contents = t.contents();
@@ -2244,15 +2263,19 @@ impl ServerSim {
             self.level.sounds.push(minecraftoss_world::level::burning::LevelSound { event: crate::thrown::BREAK_SOUND, pos: crate::thrown::sound_cell(at), volume: 1.0, pitch });
         }
         self.clouds.append(&mut lingering);
-        for (mob, velocity, owner, seed, center) in bursts {
-            match mob.map(|id| (id, crate::thrown::struck_player(id))) {
-                Some((_, Some(player))) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: owner, damage: crate::wind::DAMAGE, kind: crate::wind::DAMAGE_TYPE, velocity }),
-                Some((id, None)) if owner != crate::thrown::MOB_THROWER => {
+        for (mob, velocity, owner, seed, center, shooter, charge) in bursts {
+            match (mob.map(|id| (id, crate::thrown::struck_player(id))), shooter) {
+                (Some((_, Some(player))), Some(shooter)) => self.mob_trident_hits.extend(crate::breeze_charge::player_hit(player, shooter, velocity, players)),
+                (Some((id, None)), Some(shooter)) => {
+                    self.mobs.mob_shot_mob(shooter, id, crate::wind::DAMAGE, velocity);
+                }
+                (Some((_, Some(player))), None) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: owner, damage: crate::wind::DAMAGE, kind: crate::wind::DAMAGE_TYPE, velocity }),
+                (Some((id, None)), None) if owner != crate::thrown::MOB_THROWER => {
                     crate::thrown::hurt_by(&mut self.mobs, id, crate::wind::DAMAGE, crate::wind::DAMAGE_TYPE, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
                 }
                 _ => {}
             }
-            self.wind_burst(center, players, crate::wind::Charge::Player);
+            self.wind_burst(center, players, charge);
         }
         for (mob, velocity, owner, seed) in struck {
             crate::thrown::hurt(&mut self.mobs, mob, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
@@ -7728,6 +7751,92 @@ mod tests {
         assert_eq!(open(&changes, (8, 200, 8)), Some(false), "a player's charge ignores the rule");
     }
 
+    fn breeze_aiming_at(server: &mut ServerSim, breeze_at: [f64; 3]) -> u64 {
+        use minecraftoss_entities::world::families::trial::breezes::Breeze;
+        for x in 2..=14 {
+            for z in 0..=15 {
+                if (x, z) != (8, 8) {
+                    server.player_edit_block((x, 199, z), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+                }
+            }
+        }
+        server.set_simulation_area((0, 0), 2);
+        server.level.difficulty = 2;
+        server.summon("minecraft:breeze", breeze_at, None, 0.0).expect("a breeze");
+        let id = server.mobs.family::<Breeze>()[0].core.id;
+        let brain = &mut server.mobs.family_mob_mut::<Breeze>(id).unwrap().state.brain;
+        brain.attack_target = Some(minecraftoss_entities::monster_ai::Target::Player(0));
+        brain.shoot.set_for((), 60);
+        id
+    }
+
+    fn run_breeze(server: &mut ServerSim, feet: [f64; 3], ticks: usize) -> (Vec<crate::thrown::ThrownView>, Vec<(u64, glam::DVec3)>) {
+        let (mut views, mut pushed) = (Vec::new(), Vec::new());
+        for _ in 0..ticks {
+            server.tick_mobs(&[candidate(0, feet)], true);
+            server.tick_thrown(&[player_at(0, feet, true)]);
+            views.extend(server.thrown_views());
+            pushed.extend(server.take_players_pushed());
+        }
+        (views, pushed)
+    }
+
+    #[test]
+    fn a_breeze_charge_opens_a_door_only_with_mob_griefing() {
+        for griefing in [true, false] {
+            let Some((mut server, mut scene)) = door_world() else { return };
+            place_door(&mut server, &mut scene, "minecraft:oak_door");
+            server.take_changes();
+            server.mobs.set_mob_griefing(griefing);
+            breeze_aiming_at(&mut server, [8.5, 200.0, 2.5]);
+            let (views, _) = run_breeze(&mut server, [8.5, 200.0, 12.5], 40);
+            assert!(views.iter().any(|view| view.item == crate::breeze_charge::ENTITY), "it shoots");
+            assert!(server.thrown_views().is_empty(), "the charge burst on the door");
+            assert!(server.level.sounds.iter().any(|s| s.event == crate::wind::BREEZE_BURST_SOUND));
+            let changes: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
+            assert_eq!(open(&changes, (8, 200, 8)), griefing.then_some(true), "griefing {griefing}");
+        }
+    }
+
+    #[test]
+    fn a_breeze_charge_hits_its_player_for_the_breeze_and_pushes_them() {
+        let Some((mut server, _)) = door_world() else { return };
+        let breeze = breeze_aiming_at(&mut server, [8.5, 200.0, 2.5]);
+        server.level.difficulty = 1;
+        let feet = [8.5, 200.0, 11.5];
+        let (_, pushed) = run_breeze(&mut server, feet, 40);
+        let hits = std::mem::take(&mut server.mob_trident_hits);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!((hits[0].player_id, hits[0].damage, hits[0].source), (0, 1.0, Some(breeze)));
+        let minecraftoss_entities::world::PlayerHitKind::Typed { damage_type, message, from, .. } = hits[0].kind else {
+            panic!("{:?}", hits[0].kind);
+        };
+        assert_eq!((damage_type, message), ("minecraft:wind_charge", "mob"));
+        assert!(from.z < feet[2], "it came from the breeze's side: {from}");
+        assert!(server.take_players_struck().is_empty());
+        assert!(pushed.iter().any(|(player, push)| *player == 0 && push.z > 0.0), "{pushed:?}");
+    }
+
+    #[test]
+    fn a_loaded_breeze_charge_finds_its_breeze_again() {
+        use minecraftoss_entities::world::families::trial::breezes::{self, Breeze};
+        let Some((mut server, _)) = door_world() else { return };
+        server.summon("minecraft:breeze", [8.5, 200.0, 2.5], None, 0.0).expect("a breeze");
+        let breeze = server.mobs.family::<Breeze>()[0].core.id;
+        let uuid = server.mobs.uuid_of(breeze);
+        let mut random = minecraftoss_player::rng::LegacyRandom::new(4);
+        let shot = crate::thrown::Thrown::shot_by_mob(breezes::CHARGE, breeze, glam::DVec3::new(8.5, 201.2, 3.5), glam::DVec3::Z, 0.7, 0.0, &mut random).unwrap();
+        let tag = crate::breeze_charge::to_tag(&shot, Some(server.mobs.uuid_of(breeze))).unwrap();
+        server.add_saved_entity(tag);
+        assert_eq!(server.thrown.len(), 1);
+        assert_eq!((server.thrown[0].shooter, server.thrown[0].shooter_uuid), (None, Some(uuid)));
+        server.tick_thrown(&[]);
+        assert_eq!(server.thrown[0].shooter, Some(breeze), "found by its UUID before it flies");
+        let saved: Vec<_> = server.thrown.iter().filter_map(|t| crate::breeze_charge::to_tag(t, t.shooter.map(|id| server.mobs.uuid_of(id)).or(t.shooter_uuid))).collect();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].get("Owner"), Some(&minecraftoss_core::nbt::Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec())));
+    }
+
     #[test]
     fn a_witch_potion_breaks_with_the_glass_sound() {
         let Some((mut server, _)) = door_world() else { return };
@@ -10386,10 +10495,13 @@ mod tests {
                 server.level.set_block_entity_value(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), "normal_config", Tag::String(config.to_owned()));
             }
         };
-        let (zombies, breezes, empty, far) = ((2, 200, 2), (6, 200, 2), (10, 200, 2), (100, 200, 2));
+        let (zombies, breezes, empty, phantoms, far) = ((2, 200, 2), (6, 200, 2), (10, 200, 2), (14, 200, 2), (100, 200, 2));
         place(&mut server, zombies, Some("minecraft:trial_chamber/melee/zombie/normal"));
         place(&mut server, breezes, Some("minecraft:trial_chamber/breeze/normal"));
         place(&mut server, empty, None);
+        place(&mut server, phantoms, None);
+        let unsimulated = minecraftoss_core::snbt::parse_compound("{spawn_potentials:[{data:{entity:{id:\"minecraft:phantom\"}},weight:1}]}").unwrap();
+        server.level.set_block_entity_value(minecraftoss_core::BlockPos::new(phantoms.0, phantoms.1, phantoms.2), "normal_config", unsimulated);
         place(&mut server, far, Some("minecraft:trial_chamber/melee/zombie/normal"));
         server.take_block_entity_changes();
         server.take_changes();
@@ -10405,14 +10517,15 @@ mod tests {
             (state.unwrap(), kind)
         };
         assert_eq!(at(&server, zombies), ("waiting_for_players".to_owned(), Some(Some("minecraft:zombie".to_owned()))));
-        assert_eq!(at(&server, breezes), ("inactive".to_owned(), Some(Some("minecraft:breeze".to_owned()))), "breezes are not simulated yet");
+        assert_eq!(at(&server, breezes), ("waiting_for_players".to_owned(), Some(Some("minecraft:breeze".to_owned()))), "breezes are simulated");
+        assert_eq!(at(&server, phantoms), ("inactive".to_owned(), Some(Some("minecraft:phantom".to_owned()))), "phantoms are not simulated yet");
         assert_eq!(at(&server, empty), ("inactive".to_owned(), Some(None)), "the default config spawns nothing");
         assert_eq!(at(&server, far), ("inactive".to_owned(), None), "outside the simulation area nothing ticks");
-        let spawners = [zombies, breezes, empty, far];
+        let spawners = [zombies, breezes, empty, phantoms, far];
         let changed: Vec<BlockPos> = server.take_block_entity_changes().into_iter().filter(|(pos, tag)| spawners.contains(pos) && tag.as_ref().is_some_and(|tag| tag.get("spawn_data").is_some())).map(|(pos, _)| pos).collect();
-        assert_eq!(changed, [zombies, breezes, empty]);
+        assert_eq!(changed, [zombies, breezes, empty, phantoms]);
         let blocks: Vec<BlockPos> = server.take_changes().into_iter().map(|(pos, _)| pos).filter(|pos| spawners.contains(pos)).collect();
-        assert_eq!(blocks, [zombies]);
+        assert_eq!(blocks, [zombies, breezes]);
         let before = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
         for _ in 0..5 {
             server.tick();
@@ -10420,7 +10533,7 @@ mod tests {
         }
         let after = server.level.chunk(ChunkPos::new(0, 0)).and_then(|chunk| chunk.block_entities.entities.get(&zombies)).cloned();
         assert_eq!(before, after, "a waiting spawner keeps its mob");
-        assert_eq!(at(&server, breezes).0, "inactive");
+        assert_eq!(at(&server, phantoms).0, "inactive");
         assert!(server.take_block_entity_changes().iter().all(|(pos, _)| !spawners.contains(pos)));
     }
 

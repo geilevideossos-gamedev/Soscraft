@@ -52,6 +52,7 @@ impl Throwable {
             "minecraft:splash_potion" => Some(Self::SplashPotion),
             "minecraft:lingering_potion" => Some(Self::LingeringPotion),
             "minecraft:wind_charge" => Some(Self::WindCharge),
+            "minecraft:breeze_wind_charge" => Some(Self::WindCharge),
             _ => None,
         }
     }
@@ -308,6 +309,7 @@ pub struct Thrown {
     pub components: Option<serde_json::Value>,
     pub previous: DVec3,
     pub shooter: Option<u64>,
+    pub shooter_uuid: Option<u128>,
     flight: ThrownPotion,
     random: LegacyRandom,
 }
@@ -358,6 +360,7 @@ impl Thrown {
             components: throw.components.cloned(),
             previous: start,
             shooter: None,
+            shooter_uuid: None,
             flight,
             random: LegacyRandom::new(random.next_long()),
         })
@@ -381,6 +384,7 @@ impl Thrown {
             components: None,
             previous: from,
             shooter: Some(shooter),
+            shooter_uuid: None,
             flight,
             random: LegacyRandom::new(random.next_long()),
         })
@@ -404,6 +408,37 @@ impl Thrown {
             components,
             previous: from,
             shooter: None,
+            shooter_uuid: None,
+            flight,
+            random: LegacyRandom::new(random.next_long()),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn resumed(
+        item: &str,
+        shooter_uuid: Option<u128>,
+        position: DVec3,
+        velocity: DVec3,
+        yaw: f32,
+        pitch: f32,
+        left_owner: bool,
+        random: &mut LegacyRandom,
+    ) -> Option<Self> {
+        let kind = Throwable::of(item)?;
+        let mut flight = ThrownPotion::shoot(Potion::Healing, MOB_THROWER, position, velocity, 1.0, 0.0, random);
+        flight.velocity = velocity;
+        flight.yaw = yaw;
+        flight.pitch = pitch;
+        flight.left_owner = left_owner;
+        Some(Self {
+            item: item.to_owned(),
+            kind,
+            owner: MOB_THROWER,
+            components: None,
+            previous: position,
+            shooter: None,
+            shooter_uuid,
             flight,
             random: LegacyRandom::new(random.next_long()),
         })
@@ -439,6 +474,10 @@ impl Thrown {
 
     pub fn margin(&self) -> f64 {
         self.flight.margin()
+    }
+
+    pub fn left_owner(&self) -> bool {
+        self.flight.left_owner
     }
 
     pub fn contents(&self) -> crate::potions::PotionContents {
@@ -807,6 +846,7 @@ pub fn hatch_point(at: DVec3, before: DVec3) -> DVec3 {
 
 pub fn texture(item: &str) -> Option<ResourceId> {
     let path = item.strip_prefix("minecraft:")?;
+    let path = if path == "breeze_wind_charge" { "wind_charge" } else { path };
     ResourceId::parse(&format!("minecraft:item/{path}")).ok()
 }
 

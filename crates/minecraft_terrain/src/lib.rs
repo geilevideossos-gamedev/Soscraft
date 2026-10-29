@@ -141,6 +141,7 @@ pub mod splash;
 pub mod effect_cloud;
 pub mod trident;
 pub mod wind;
+pub mod breeze_charge;
 pub mod weather;
 pub mod bottle;
 pub mod bucket;
