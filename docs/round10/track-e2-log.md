@@ -826,3 +826,52 @@ One kit for the whole track (27 stacks). It needs E1's kit parser for the two st
 ```
 IW4L_MINECRAFT_KIT=minecraft:trident+loyalty=3,minecraft:snowball*16,minecraft:egg*16,minecraft:wind_charge*16,minecraft:splash_potion@harming,minecraft:splash_potion@healing,minecraft:blaze_spawn_egg*2,minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:zombie_spawn_egg*16,minecraft:pillager_spawn_egg*4,minecraft:villager_spawn_egg*4,minecraft:oak_door*8,minecraft:oak_planks*64,minecraft:oak_fence*16,minecraft:lead*16,minecraft:cow_spawn_egg*8,minecraft:shears,minecraft:cat_spawn_egg*4,minecraft:cod*64,minecraft:chest*4,minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:dispenser*4,minecraft:lever*4,minecraft:cobblestone*64
 ```
+
+## Group fw-shapes
+
+### 1. Minecraft firework stars burst in their own shapes
+
+After 48b1ecf2.
+
+- **Vanilla (26.3, checked with javap):**
+  - `ClientLevel.createFireworks` hands a starred burst to a `FireworkParticles$Starter` (it plays sounds unless the rocket is silent). `ParticleEngine.add` queues it, and the queue joins the particle groups at the end of the next engine tick, after the groups have ticked; so the Starter's first tick is the tick after that, and the sparks and flash it makes tick from the tick after theirs.
+  - `Starter`: lifetime `2 * stars - 1`, plus 15 when any star twinkles. It does not move.
+    - On `life == 0`: `entity.firework_rocket.large_blast` (or `large_blast_far`) when there are 3 or more stars or any `large_ball`, else `blast` (or `blast_far`); "far" is a camera 16 or more blocks away (`distanceToSqr >= 256`); AMBIENT, volume 20, pitch `0.95 + nextFloat * 0.1`.
+    - On every even `life` with `life / 2 < stars`, star `life / 2` bursts. A star without colours uses black (`DyeColor.BLACK`, 1973019). `small_ball` is `createParticleBall(0.25, 2)`, `large_ball` `createParticleBall(0.5, 4)`, `star` `createParticleShape(0.5, STAR_PARTICLE_COORDS, false)`, `creeper` `createParticleShape(0.5, CREEPER_PARTICLE_COORDS, true)`, `burst` `createParticleBurst`. Then a `flash` particle at the Starter in the star's first colour.
+    - `life++`; when `life > lifetime` the Starter goes, first playing `twinkle` (or `twinkle_far`), volume 20, pitch `0.9 + nextFloat * 0.15`, when a star twinkles.
+  - `createParticleBall(speed, size)`: y, x and z run from `-size` to `size` over the cube's surface only (inside, z jumps from `-size` to `size`). A spark's direction is the cell plus `(nextDouble - nextDouble) * 0.5` on each axis, divided by `length / speed + nextGaussian * 0.05`. That is 98 sparks for a small ball and 386 for a large one.
+  - `createParticleShape(speed, coords, creeper)`: one spark at `coords[0] * speed` (no z), then three copies of the outline turned by `start + i * PI * 0.34` around the up axis (0.034 for the creeper; `start = nextFloat * PI`), each walking from point to point in quarter steps with a spark on each side (x and z mirrored). That is 121 sparks for a star and 265 for a creeper face.
+  - `createParticleBurst`: 70 sparks from half the rocket's motion, as before.
+  - `createParticle`: a `firework` spark with alpha 0.99 and a random colour of the star (fade, trail and twinkle are the next commit).
+  - `ParticleGroup.add`: a group holds at most 16384 particles; from 12288 on, a new one is kept with chance `((16384 - size) / 4096)^2`.
+- **Changed:**
+  - `minecraft_terrain/src/firework_particles.rs`:
+    - `burst(burst)` queues a `Starter` (a starless burst queues nothing); the queue joins at the end of the next `tick`.
+    - `tick(camera, blocked)` ticks the sparks, the flashes, then the starters, and returns the bangs and twinkles as `FireworkSound { event, at, volume, pitch }`.
+    - New `starter_lifetime`, `blast_sound` and `twinkle_sound`; the ball, star, creeper and burst sparks (`STAR_COORDS`, `CREEPER_COORDS`); one flash per star in its first colour; the `large_blast`, `large_blast_far`, `twinkle` and `twinkle_far` sound ids; `TWINKLE_DELAY`; the spark cap `MAX_SPARKS` (16384, thinning from 12288).
+  - `minecraft_survival/src/entity_view.rs`: `bursts()` hands a starred burst to the particles (the firework loop, `:359`); `tick_scene` plays the sounds the starters return (`:854`), heard from the camera of the last frame.
+- **Tests:**
+  - `firework_particles::tests`:
+    - `a_burst_waits_a_tick_then_throws_seventy_sparks_of_its_colour_with_a_flash_and_a_bang` (replaces the old burst test: nothing on the first tick, then 70 sparks, one flash and the bang at volume 20; far from 16 blocks).
+    - `a_starter_lives_two_ticks_a_star_and_fifteen_more_with_a_twinkle` (lifetimes 1, 5 and 18; the twinkle, or its far form, 18 ticks after the bang of a two-star rocket with a twinkling star; a one-star Starter is gone after its second tick).
+    - `the_bang_is_large_for_a_large_ball_or_three_stars_and_far_from_sixteen_blocks` (one small ball, two, one large ball, three stars, a small and a large one, the far forms, exactly 16 blocks).
+    - `each_shape_throws_the_sparks_of_its_loops` (98, 386, 121, 265 and 70, one flash each).
+    - `balls_fly_out_at_their_speed_and_shapes_start_straight_up_in_mirrored_pairs` (ball sparks within 10% of 0.25 or 0.5; the star's first spark is (0, 0.5, 0), the creeper's (0, 0.1, 0), and the rest come in left-right mirrored pairs).
+    - `stars_burst_one_every_second_tick_each_with_a_flash_in_its_first_colour` (70, 70, 168, 168, 238 sparks over ticks 0 to 4; the flashes red, black and blue; each star's sparks only in its own colours, black for the star without colours).
+    - `sparks_thin_out_when_crowded_and_stop_at_the_cap`.
+    - `sparks_fall_fade_and_go_while_the_flash_lasts_four_ticks` and `a_rocket_leaves_a_white_trail_that_stops_on_the_ground` pass with the new `tick`.
+  - `entity_view::tests`: `a_firework_burst_bangs_and_sparkles_a_tick_later_for_whoever_sees_it` (was `a_firework_burst_bangs_and_sparkles_for_whoever_sees_it`: the sparks and the bang come with the ticks), new `a_twinkling_large_ball_bangs_deep_then_crackles_sixteen_ticks_later`.
+- **Decisions:**
+  - A burst's bang and sparks come a tick later than before, as vanilla's queued Starter does.
+  - The starters, the sparks and the cap share the particles' one random (vanilla gives every particle its own and the engine another).
+  - The cap counts sparks only. Vanilla's translucent group also holds the flashes and other translucent particles.
+- **Test steps** (survival, `/time set night`, open flat ground; put the four rockets of the kit in the hotbar):
+  1. **FW-S1. A small ball.** Right-click the grass 3 blocks ahead with the lime rocket. It bursts into a small round ball of lime sparks with a lime flash and the normal bang. **Screenshot FW-S1.**
+  2. **FW-S2. A large ball.** Place the red rocket the same way. Its ball of red sparks is about twice as wide, and the bang is the deeper "large blast". (Its trail comes with the next commit.) **Screenshot FW-S2.**
+  3. **FW-S3. A star and a creeper.** Place the two-star rocket. It climbs higher, then shows a yellow five-pointed star (three thin stars turned a little around the up axis), and a tenth of a second later a lime creeper face, with the normal bang. About 0.8 s after the bang comes a crackling sound. (The fade to blue and the flicker come with the next commit.) **Screenshot FW-S3.**
+  4. **FW-S4. Three stars.** Place the three-star rocket. It stays low and bursts three times, a tenth of a second apart: a white and red fountain, a small blue ball and a large yellow ball, each with a flash of its first colour, and the deep bang. **Screenshot FW-S4.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:small_ball,colors:[I;4312372]}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:cooked_beef*32
+```

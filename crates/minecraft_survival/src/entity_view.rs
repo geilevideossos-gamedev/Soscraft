@@ -356,8 +356,7 @@ impl EntityView {
                 }
                 continue;
             }
-            let (event, volume, pitch) = self.fireworks.burst(&burst, self.firework_camera);
-            self.sounds.push((event.to_owned(), burst.position, volume, pitch));
+            self.fireworks.burst(&burst);
         }
     }
 
@@ -852,7 +851,9 @@ impl EntityView {
             for rocket in self.thrown.iter().filter(|view| minecraft_terrain::firework_rocket::is_rocket(view)) {
                 self.fireworks.trail(rocket.position, rocket.position.y - rocket.previous.y);
             }
-            self.fireworks.tick(|cell| !minecraftoss_player::World::collision_boxes(scene, cell).is_empty());
+            for sound in self.fireworks.tick(self.firework_camera, |cell| !minecraftoss_player::World::collision_boxes(scene, cell).is_empty()) {
+                self.sounds.push((sound.event.to_owned(), sound.at, sound.volume, sound.pitch));
+            }
             self.poof.tick(scene);
             let bodies = &self.bodies;
             self.ambient.tick_emitters(|key| bodies.get(&key).copied());
@@ -1646,19 +1647,44 @@ mod tests {
     }
 
     #[test]
-    fn a_firework_burst_bangs_and_sparkles_for_whoever_sees_it() {
+    fn a_firework_burst_bangs_and_sparkles_a_tick_later_for_whoever_sees_it() {
         use minecraft_terrain::firework_rocket::{Burst, BLAST_FAR_SOUND, BLAST_SOUND};
         let mut view = EntityView::new(3);
+        let scene = HandcraftedScene::default();
         let burst = Burst { position: DVec3::new(0.5, 80.0, 0.5), velocity: DVec3::new(0.0, 0.9, 0.0), explosions: vec![minecraft_terrain::firework::Explosion::burst(4312372)] };
         let mut snapshot = EntitySnapshot { firework_bursts: vec![burst.clone()], ..EntitySnapshot::default() };
         view.bursts(&mut snapshot);
         assert!(snapshot.firework_bursts.is_empty());
+        assert_eq!((view.fireworks.len(), view.sounds.len()), (0, 0), "the burst starts with the ticks");
+        view.tick_scene(&scene, 2);
         assert_eq!(view.fireworks.len(), minecraft_terrain::firework_particles::BURST_SPARKS);
         assert_eq!(view.sounds.last().map(|(event, at, volume, _)| (event.as_str(), *at, *volume)), Some((BLAST_FAR_SOUND, burst.position, 20.0)));
         view.firework_camera = DVec3::new(0.5, 75.0, 0.5);
         let mut near = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
         view.bursts(&mut near);
+        view.tick_scene(&scene, 2);
         assert_eq!(view.sounds.last().map(|(event, ..)| event.as_str()), Some(BLAST_SOUND));
+    }
+
+    #[test]
+    fn a_twinkling_large_ball_bangs_deep_then_crackles_sixteen_ticks_later() {
+        use minecraft_terrain::firework::{Explosion, Shape};
+        use minecraft_terrain::firework_particles::{LARGE_BLAST_SOUND, TWINKLE_SOUND};
+        use minecraft_terrain::firework_rocket::Burst;
+        let mut view = EntityView::new(7);
+        let scene = HandcraftedScene::default();
+        view.firework_camera = DVec3::new(0.5, 75.0, 0.5);
+        let star = Explosion { shape: Shape::LargeBall, colors: vec![11743532], fade_colors: Vec::new(), trail: false, twinkle: true };
+        let burst = Burst { position: DVec3::new(0.5, 80.0, 0.5), velocity: DVec3::new(0.0, 0.9, 0.0), explosions: vec![star] };
+        view.bursts(&mut EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() });
+        let heard = |view: &EntityView| view.sounds.iter().map(|(event, ..)| event.clone()).collect::<Vec<_>>();
+        view.tick_scene(&scene, 2);
+        assert_eq!(heard(&view), [LARGE_BLAST_SOUND]);
+        assert_eq!(view.fireworks.len(), 9 * 9 * 9 - 7 * 7 * 7);
+        view.tick_scene(&scene, 15);
+        assert_eq!(heard(&view), [LARGE_BLAST_SOUND]);
+        view.tick_scene(&scene, 1);
+        assert_eq!(heard(&view), [LARGE_BLAST_SOUND, TWINKLE_SOUND]);
     }
 
     #[test]
