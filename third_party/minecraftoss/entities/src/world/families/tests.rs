@@ -1,4 +1,4 @@
-use super::pests::probe::{self, ANIMAL, KIND, Probe};
+use super::pests::probe::{self, ANIMAL, KIND, Probe, SHY};
 use super::*;
 use crate::creeper::CreeperExplosion;
 use crate::effects::{EffectInstance, MobEffect};
@@ -594,6 +594,31 @@ fn an_iron_golem_hunts_an_enemy_registered_mob() {
         }
         assert_eq!(target, hunted.then_some(Target::Mob(prey)), "{kind}");
     }
+}
+
+#[test]
+fn a_registered_mob_left_out_of_targets_is_never_hunted() {
+    assert!(!targetable(SHY));
+    assert!(targetable(KIND) && targetable("minecraft:zombie"));
+    let mut world = EntityWorld::default();
+    let mut field = Field::default();
+    let shy = probe_at(&mut world, SHY, at(0.5));
+    probe_mut(&mut world, shy).core.no_ai = true;
+    assert!(crate::monster_ai::is_enemy(SHY));
+    assert!(world.mob_candidates().iter().all(|m| m.id != shy));
+    let golem = world.spawn_iron_golem(
+        crate::iron_golem::IronGolem::new(DVec3::new(0.5, 64.0, 8.5)),
+        false,
+    );
+    for _ in 0..40 {
+        world.tick(&mut field);
+        let golems = world.iron_golems();
+        let hunter = golems.iter().find(|e| e.id == golem).unwrap();
+        assert_eq!(hunter.ai.state.target, None);
+    }
+    assert!(world.mob_ids().any(|id| id == shy));
+    let hit = world.player_attack(&attack(1, at(2.5), 3.0), shy);
+    assert!(hit.hurt, "players still hit it");
 }
 
 #[test]

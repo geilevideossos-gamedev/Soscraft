@@ -1,6 +1,6 @@
 # Track F log: the first Elden Ring boss, Margit
 
-Branch `track-f`, worktree `C:\Dev\mc-wt\track-f`, target dir `C:\iw4l-wt\track-f`. Briefs: `docs/round10/track-f.md` and the design doc `docs/ELDEN-RING-BOSSES.md`.
+Branch `track-f`, worktree `C:\Dev\mc-wt\track-f`, target dir `C:\iw4l-wt\track-f` for segment f1 and `D:\iw4l-wt\track-f` for segment f2. Briefs: `docs/round10/track-f.md` and the design doc `docs/ELDEN-RING-BOSSES.md`; segment f2 also follows track D0's plug-in checklist (`docs/round10/track-d0.md`, D0-3).
 
 A commit can't name its own hash, so each entry names the commit before it. Its own hash is in `git log` under its subject.
 
@@ -16,7 +16,10 @@ Nothing on the wire changed yet.
 
 ## Vendored files
 
-None patched or added yet.
+Files under `third_party/minecraftoss` this track patched or added. Files that track D0 added count as patched here.
+
+- Patched (4): `entities/src/world.rs`, `entities/src/world/families.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only).
+- Added (0).
 
 ## Group er-core
 
@@ -216,3 +219,29 @@ After fac9df13.
 - `test -p elden_boss --locked`: 53 green.
 - Every new `.rs` file passes `rustfmt --check --edition 2024` on its committed content, and none has a comment.
 - **Owner's steps:** none in game. No kit line.
+
+## Group er-entity
+
+Segment f2 starts here, on cea44a86 (minecraft-survival with D0's registry and E1 merged into `track-f`). Margit is a registered family in group `bosses` (hit-key byte 96, `docs/round10/mobs.md`), by D0's checklist. The sites D0's checklist does not cover are listed per commit under "Outside the registry".
+
+### 7. Registered Minecraft mobs can stay out of other mobs' targets
+
+After cea44a86.
+
+- **Why:** design doc 16 and the brief (F2, commit 1): mobs ignore Margit, so iron golems, tame wolves, withers and the like never pick him. Every mob AI picks its targets from `EntityWorld::mob_candidates`, and D0's generic arm there lists every registered mob. D0's checklist says a missing hook goes into the root file in a commit of its own.
+- **Changed (vendored entities crate):**
+  - Root `world/families.rs`: the hook `Family::targetable(kind)` (default true) next to `enemy`; `family_group!` generates `untargetable(kind)` next to `enemy`; the root `targetable(kind)` next to `enemy`.
+  - `world.rs` `mob_candidates`: D0's generic arm adds only the registered mobs whose kind is targetable.
+  - The test probe gets a third kind, `minecraft:registry_probe_shy`: an enemy that is not targetable.
+- **Tests:** `world::families::tests::a_registered_mob_left_out_of_targets_is_never_hunted`: the shy probe is not targetable but is an enemy, is not among `mob_candidates`, and an iron golem 8 blocks away never targets it in 40 ticks; it is still in `mob_ids`, and a player's hit still hurts it. `test -p minecraftoss-entities --locked --lib`: 438 passed.
+- **Decisions:**
+  - A static hook per kind, like `enemy`, not a per-mob trait: `mob_candidates` runs on every AI step of every mob, and for a boss the answer depends on the kind only.
+  - Only other mobs' targeting changes. Players, arrows, explosions and MW2 shots find mobs through their own walks (`arrow_targets`, `blast_target`, `mob_on_ray_except`, the hit boxes), so they still reach a mob that is not targetable.
+- **Owner's steps** (nothing new is visible: no family answers false until the next commit, and Margit cannot be summoned until group `er-arena`; the steps check that mobs still pick their targets). Release build, survival, Normal, at night or under a roof, flat ground in the Overworld.
+  1. Use a zombie egg, then an iron golem egg 8 blocks from it: the golem walks to the zombie and throws it up.
+  2. Tame a wolf with bones, then hit a new zombie once with the sword: the wolf attacks the zombie.
+  3. Use a skeleton egg 10 blocks away: it shoots you. Use an enderman egg and look at its head: it comes for you.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*4,minecraft:iron_golem_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:bone*16,minecraft:skeleton_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
+```

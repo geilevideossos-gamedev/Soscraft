@@ -4202,7 +4202,7 @@ impl EntityWorld {
         for e in &self.shulkers {
             add(e.id, "minecraft:shulker", &e.shulker.body, e.shulker.eye_height(), e.shulker.health > 0.0, false);
         }
-        self.families.for_each(&mut |_, core| add(core.id, core.kind, &core.body, core.eye_height, core.health > 0.0, core.baby));
+        self.families.for_each(&mut |_, core| if families::targetable(core.kind) { add(core.id, core.kind, &core.body, core.eye_height, core.health > 0.0, core.baby) });
         out
     }
 
