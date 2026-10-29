@@ -126,11 +126,44 @@ After 4b09009f.
 - **Vendored files:** added `world/src/level/game_event.rs` and `entities/src/world/game_events.rs`; patched `world/src/level/mod.rs` and `entities/src/world.rs`.
 - **Test steps:** with commit 3 (the first sources).
 
+### 2. Minecraft sculk sensors hear vibrations and power redstone
+
+After 21c929e1 ("Minecraft game events reach their listeners like vanilla").
+
+- **Vanilla (javap on the 26.3 jar):**
+  - `SculkSensorBlock.activate(entity, level, pos, state, power, frequency)`: phase `active` with that power (`setBlockAndUpdate`), a scheduled tick after `getActiveTicks` (30, calibrated 10), `updateNeighbours` (the sensor and the block under it), `tryResonateVibration` (W3), the game event `sculk_sensor_tendrils_clicking` with the vibration's own source entity, and, unless waterlogged, `block.sculk_sensor.clicking` at the centre (volume 1, pitch `0.8 + random × 0.2`).
+  - `SculkSensorBlock.tick`: `active` → `deactivate` (`cooldown`, power 0, a tick after 10, neighbours); `cooldown` → `inactive` and, unless waterlogged, `clicking_stop`. `onPlace`: another block replaced by a powered sensor with no tick waiting loses its power (flags 18). `affectNeighborsAfterRemoval`: an active one updates its neighbours. `ownSignal` is the power, `getDirectSignal` only upwards, and the comparator reads `last_vibration_frequency` while `active`, else 0.
+  - `SculkSensorBlockEntity$VibrationUser`: radius 8; `canReceiveVibration`: not its own `block_place` or `block_destroy` (the event's block is the sensor's), a frequency other than 0, and `canActivate` (`inactive`); `onReceiveVibration`: `last_vibration_frequency` = the frequency, power `getRedstoneStrengthForDistance(distance, radius) = max(1, 15 - floor(15 / radius × distance))`, then `activate`; `requiresAdjacentChunksToBeTicking`.
+  - `CalibratedSculkSensorBlock`: `getActiveTicks` 10, `getSignal` 0 towards its `facing` (to the block it reads); its user: radius 16, refuses a frequency other than `getBackSignal` (`level.getSignal(pos.relative(facing.opposite), facing.opposite)`) when that is not 0.
+  - `SculkSensorBlock.stepOn` (`LivingEntity.aiStep` → `applyEffectsFromBlocks` runs it every tick an entity stands on it, sneaking or not; not a warden): when `inactive` and its user `canReceiveVibration(step, Context.of(state))`, `forceScheduleVibration(step, Context.of(entity), entity.position())`, which skips the tag, sneak, dampening and occlusion checks.
+  - `VibrationSignalParticle` (client): lives for the travel ticks; every tick it moves `1 / ticks left` of the way to the listener, so it arrives on its last tick; two quads of size 0.3 turned along its path (`rotationY(rot)·rotateX(-(pitch + π/2))·rotateY(w)` and `rotationY(rot - π)·rotateX(pitch + π/2)·rotateY(w)`, `w = sin((age + partial - 2π) × 0.05) × 2`), block light 15, translucent, sprite `particle/vibration`. `ServerLevel.sendParticles` sends it to the players within 32 blocks.
+- **Changed:**
+  - New vendored `world/src/level/sculk.rs`: `sculk_can_activate`, `sculk_back_signal`, `sculk_receive` (frequency into the block entity, then `activate` with the original source), the phases on the scheduled ticks with their sounds, `sculk_on_place`, `sculk_after_removal`, `sculk_signal` (calibrated: nothing towards its back) and `sculk_comparator`.
+  - `world/src/level/redstone.rs`: `Kind::SculkSensor` (`SculkSensorBlock`, which the calibrated sensor extends) in own signal, signal, direct signal (upwards), analog output, `onPlace`, removal and the scheduled tick.
+  - `world/src/level/entity.rs` `step_on`: an item or other level entity on an `inactive` sensor forces a `step` (`Level::force_game_event`); sensors are no longer reported as unsupported (shriekers still are, until W7).
+  - `server.rs` `Hearing`: a sensor receives with the checks above and activates through `Level::sculk_receive`; the ripple goes into `EntitySnapshot.vibrations` (`VibrationView { from, to, ticks }`), sent again after a load. Players (alive, not spectators) and mobs (`EntityWorld::grounded`) whose feet are on a sensor's top (`floor(y - 0.2)` is the sensor and the feet within 0.05 of its 0.5 high top) force a `step` every tick.
+  - New `crates/minecraft_terrain/src/vibration_particles.rs` (the client particle and its mesh), drawn by the host and friends through `EntityView` (bursts, client ticks, translucent mesh; the sprite joins the atlas in `mesh.rs`). `mob_sender` keeps the ripples with the other one-shot bursts and sends a friend the ones that start within 32 blocks of it in chunks it has.
+- **Tests:**
+  - `level::sculk::tests` (vendored world, gated on the 26.3 data): `phases_go_active_thirty_cooldown_ten_inactive` (sounds, the tendrils event with its source, nothing new while active), `a_calibrated_sensor_is_active_ten_and_filters_by_its_back_input` (only the back face, no signal back into it), `the_comparator_reads_the_last_frequency_while_active` (and the power lights a lamp), `a_powered_sensor_placed_without_a_tick_loses_its_power`.
+  - `server::tests::a_redstone_lamp_lights_when_a_player_walks_near_a_sensor` (through `run_tick`: the ripple, power 8 four blocks away, frequency 1 saved, 30 active and 10 cooling, a second player id six blocks away gives power 4), `a_sensor_does_not_hear_its_own_placing_or_breaking`, `standing_on_a_sensor_activates_it_even_crouched` (power 15; a player above it does not), `an_item_or_a_cow_on_a_sensor_activates_it`, `a_calibrated_sensor_hears_only_the_frequency_coming_in_from_behind` (a back input of 15: steps no, an explosion 12 blocks away yes).
+  - `vibration_particles::tests::a_ripple_reaches_its_listener_on_its_last_tick_and_goes`, `a_ripple_turns_along_its_path`.
+  - `mob_sender::tests::a_vibration_burst_reaches_friends_near_it`.
+- **Decisions:**
+  - The server tells a player standing on a sensor from its feet: the block `0.2` under them is a sensor and the feet are within 0.05 of its top. The fork's players send no ground contact to the server, and MW2's hull can rest a hair above a surface.
+  - Shriekers (W7) and catalysts still receive nothing.
+  - A vibration loaded from a save knows only its source's UUID, so the sensor's tendrils event goes out without a source; nothing reads it before W7's shriekers, which only answer players.
+  - A listener loaded with no vibration in flight does not mark its particle for reloading (vanilla's `Data` codec always does, so its first ripple after a load is sent twice, at the same place). The block entities of sensors placed in the fork come from the catalog's default tag, so this also keeps fresh sensors from doubling their first ripple. This changes commit 1's `Listener::from_tag`.
+  - Commit 1's `a_player_s_step_reaches_a_sensor_s_listener_through_the_tick` now waits 40 ticks before its last step: from this commit on the first step activates the sensor, which then hears nothing for 40 ticks.
+- **Vendored files:** added `world/src/level/sculk.rs`; patched `world/src/level/redstone.rs` and `world/src/level/entity.rs` (and `mod.rs` again, `entities/src/world/game_events.rs` again).
+- **Test steps:** with commit 3.
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
 
 Group vibrations, commit 1: no message or codec change (`TickInput` and the commands stay on the host).
+
+Group vibrations, commit 2: `EntitySnapshot` (sent to friends inside `ToClient::Bursts` and the state frames) gains `vibrations: Vec<VibrationView>`. The snapshot is serde-encoded, so a friend on an older build cannot read the new one: `minecraft_net::PROTOCOL` must go up at the release (not bumped here).
 
 ## State doc changes
 

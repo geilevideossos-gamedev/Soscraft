@@ -13,6 +13,7 @@ pub mod lava_fog;
 pub mod darkness;
 pub mod game_events;
 pub mod vibrations;
+pub mod vibration_particles;
 pub mod lectern;
 pub mod block_particles;
 #[cfg(test)]

@@ -1231,9 +1231,15 @@ impl Level<'_> {
     }
 
     /// `BlockBehaviour.stepOn`.
-    fn step_on(&mut self, _e: &mut Entity, state: BlockStateId, _pos: BlockPos) {
+    fn step_on(&mut self, e: &mut Entity, state: BlockStateId, pos: BlockPos) {
+        if self.is_sculk_sensor(state) {
+            if self.sculk_can_activate(pos) {
+                self.force_game_event(pos, "minecraft:step", e.pos, Some(super::game_event::EventSource::Entity(e.id)));
+            }
+            return;
+        }
         let name = self.name(state);
-        if matches!(name, "minecraft:redstone_ore" | "minecraft:deepslate_redstone_ore" | "minecraft:sculk_sensor" | "minecraft:calibrated_sculk_sensor" | "minecraft:sculk_shrieker") {
+        if matches!(name, "minecraft:redstone_ore" | "minecraft:deepslate_redstone_ore" | "minecraft:sculk_shrieker") {
             self.unsupported.push(format!("stepping on {name}"));
         }
     }

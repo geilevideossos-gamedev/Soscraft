@@ -723,6 +723,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         for id in crate::firework_particles::textures() {
             textures.insert(id, ());
         }
+        for id in crate::vibration_particles::textures() {
+            textures.insert(id, ());
+        }
         textures.insert(ResourceId::parse("minecraft:misc/shadow")?, ());
         for id in crate::fork_look::textures() {
             textures.insert(id, ());

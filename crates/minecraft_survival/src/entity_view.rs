@@ -64,6 +64,7 @@ pub struct EntityView {
     ravager_roars: HashSet<u64>,
     fireworks: minecraft_terrain::firework_particles::FireworkParticles,
     firework_camera: DVec3,
+    vibrations: minecraft_terrain::vibration_particles::VibrationSignals,
 }
 
 impl EntityView {
@@ -115,6 +116,7 @@ impl EntityView {
             ravager_roars: HashSet::new(),
             fireworks: minecraft_terrain::firework_particles::FireworkParticles::new((seed ^ 0xf14e) as u64),
             firework_camera: DVec3::ZERO,
+            vibrations: Default::default(),
         }
     }
 
@@ -321,6 +323,9 @@ impl EntityView {
         for burst in std::mem::take(&mut snapshot.firework_bursts) {
             let (event, volume, pitch) = self.fireworks.burst(&burst, self.firework_camera);
             self.sounds.push((event.to_owned(), burst.position, volume, pitch));
+        }
+        for vibration in std::mem::take(&mut snapshot.vibrations) {
+            self.vibrations.add(vibration);
         }
     }
 
@@ -806,6 +811,7 @@ impl EntityView {
                 self.fireworks.trail(rocket.position, rocket.position.y - rocket.previous.y);
             }
             self.fireworks.tick(|cell| !minecraftoss_player::World::collision_boxes(scene, cell).is_empty());
+            self.vibrations.tick();
             self.poof.tick(scene);
             let bodies = &self.bodies;
             self.ambient.tick_emitters(|key| bodies.get(&key).copied());
@@ -1347,6 +1353,8 @@ impl EntityView {
         self.firework_camera = camera;
         self.fireworks
             .append_mesh(&mut out.translucent, atlas, forward, partial, light);
+        self.vibrations
+            .append_mesh(&mut out.translucent, atlas, partial, light);
         let held: Vec<_> = skeleton_items
             .into_iter()
             .chain(zombie_items)

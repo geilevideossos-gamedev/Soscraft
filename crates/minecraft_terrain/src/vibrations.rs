@@ -211,10 +211,12 @@ impl Listener {
         let Some(tag) = listener.filter(|tag| tag.as_compound().is_some()) else {
             return Self::new(pos, kind);
         };
+        let current = tag.get("event").and_then(Info::from_tag);
         Self {
             pos,
             kind,
-            current: tag.get("event").and_then(Info::from_tag),
+            reload_particle: current.is_some(),
+            current,
             travel: tag
                 .get("event_delay")
                 .and_then(Tag::as_i64)
@@ -223,7 +225,6 @@ impl Listener {
                 .get("selector")
                 .map(Selector::from_tag)
                 .unwrap_or_default(),
-            reload_particle: true,
         }
     }
 

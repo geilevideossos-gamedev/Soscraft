@@ -63,6 +63,7 @@ pub enum Kind {
     CopperBulb,
     /// `DaylightDetectorBlock`.
     DaylightDetector,
+    SculkSensor,
     /// `BasePressurePlateBlock`.
     PressurePlate,
     /// `LightningRodBlock`.
@@ -112,6 +113,7 @@ impl Kinds {
             ("DispenserBlock", Kind::Dispenser { dropper: false }),
             ("CopperBulbBlock", Kind::CopperBulb),
             ("DaylightDetectorBlock", Kind::DaylightDetector),
+            ("SculkSensorBlock", Kind::SculkSensor),
             ("BasePressurePlateBlock", Kind::PressurePlate),
             ("LightningRodBlock", Kind::LightningRod),
             ("LecternBlock", Kind::Lectern),
@@ -288,6 +290,7 @@ impl Level<'_> {
             }
             Some(Kind::RedstoneBlock) => 15,
             Some(Kind::DaylightDetector) => self.int_prop(state, "power"),
+            Some(Kind::SculkSensor) => self.int_prop(state, "power"),
             Some(Kind::PressurePlate) => self.plate_signal(state),
             Some(Kind::Container) => self.trapped_chest_signal(state, pos),
             _ => 0,
@@ -357,6 +360,7 @@ impl Level<'_> {
                     0
                 }
             }
+            Some(Kind::SculkSensor) => self.sculk_signal(state, direction),
             _ => self.own_signal(state, pos),
         }
     }
@@ -386,6 +390,7 @@ impl Level<'_> {
                     0
                 }
             }
+            Some(Kind::SculkSensor) if direction == Direction::Up => self.state_signal(state, pos, direction),
             Some(Kind::Container) if direction == Direction::Up => self.trapped_chest_signal(state, pos),
             Some(Kind::Lectern) if direction == Direction::Up => self.own_signal(state, pos),
             Some(Kind::Lever | Kind::Button(_)) => {
@@ -487,6 +492,9 @@ impl Level<'_> {
         if self.redstone_kind(state) == Some(Kind::Lectern) {
             return Some(self.lectern_signal(pos));
         }
+        if self.redstone_kind(state) == Some(Kind::SculkSensor) {
+            return Some(self.sculk_comparator(state, pos));
+        }
         self.state_analog_output(state)
     }
 
@@ -572,7 +580,7 @@ impl Level<'_> {
     }
 
     pub(super) fn has_analog_output(&self, state: BlockStateId) -> bool {
-        self.store_of(state).is_some() || self.state_analog_output(state).is_some() || self.redstone_kind(state) == Some(Kind::Lectern)
+        self.store_of(state).is_some() || self.state_analog_output(state).is_some() || matches!(self.redstone_kind(state), Some(Kind::Lectern | Kind::SculkSensor))
     }
 
     // ---- block hooks --------------------------------------------------------
@@ -613,6 +621,7 @@ impl Level<'_> {
                     self.piston_check_if_extend(pos, state);
                 }
             }
+            Kind::SculkSensor => self.sculk_on_place(state, pos, old),
             Kind::Observer => {
                 if self.block_id(old) != block && self.flag(state, "powered") && !self.has_block_tick_at(pos, block) {
                     let off = self.with_bool(state, "powered", false);
@@ -646,6 +655,7 @@ impl Level<'_> {
                 self.update_neighbors_at(pos, block);
                 self.update_neighbors_at(pos.below(), block);
             }
+            Kind::SculkSensor => self.sculk_after_removal(state, pos),
             // `Containers.updateNeighboursAfterDestroy`.
             Kind::Hopper | Kind::Container | Kind::Dispenser { .. } => self.update_neighbour_for_output_signal(pos, block),
             Kind::Observer => {
@@ -822,6 +832,7 @@ impl Level<'_> {
                 }
             }
             Kind::Dispenser { dropper } => self.dispense_from(pos, dropper),
+            Kind::SculkSensor => self.sculk_tick(state, pos),
             Kind::Torch | Kind::WallTorch => {
                 let signal = self.torch_input(kind, state, pos);
                 let now = self.game_time;

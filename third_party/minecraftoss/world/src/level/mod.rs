@@ -31,6 +31,7 @@ pub mod piston;
 pub mod rail;
 pub mod random_tick;
 pub mod redstone;
+pub mod sculk;
 pub mod spawning;
 pub mod ticks;
 pub mod time;
