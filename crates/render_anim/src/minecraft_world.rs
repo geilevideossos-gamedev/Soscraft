@@ -2460,7 +2460,7 @@ fn leave_level(
             let outcome = minecraft_survival::level::opener_outcome(&level.terrain.scene, &event);
             let (cell, id, count) = outcome.block_event;
             entities.view.lids.block_event(&level.terrain.scene, cell, id, count);
-            if let Some((pos, viewers)) = outcome.trapped {
+            if let Some((pos, viewers)) = outcome.chest_openers {
                 entities.chest_openers(pos, viewers);
             }
             writes.extend(outcome.state.map(|(cell, state)| (cell, Some(state))));

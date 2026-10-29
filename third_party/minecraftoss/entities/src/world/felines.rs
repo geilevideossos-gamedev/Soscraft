@@ -1328,6 +1328,67 @@ mod tests {
         );
     }
 
+    struct Den {
+        openers: i32,
+    }
+    impl World for Den {
+        fn block(&self, pos: Pos) -> Option<Block> {
+            if pos == CHEST {
+                return Some(
+                    Block::new("minecraft:chest")
+                        .with("facing", "north")
+                        .with("type", "single"),
+                );
+            }
+            (pos.1 < 64).then(|| Block::new("minecraft:grass_block"))
+        }
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+        fn block_in_tag(&self, pos: Pos, tag: &str) -> bool {
+            tag == "minecraft:cats_can_sit_on" && pos == CHEST
+        }
+        fn chest_open_count(&self, pos: Pos) -> i32 {
+            if pos == CHEST {
+                self.openers
+            } else {
+                0
+            }
+        }
+    }
+
+    #[test]
+    fn a_tame_cat_does_not_sit_on_an_open_chest_and_gets_up_when_it_is_opened() {
+        let mut den = Den { openers: 1 };
+        assert!(!crate::feline_ai::can_sit_on(&den, CHEST));
+        den.openers = 0;
+        assert!(crate::feline_ai::can_sit_on(&den, CHEST));
+        let players = [player(1, DVec3::new(6.5, 64.0, 0.5))];
+        let mut world = EntityWorld::default();
+        world.set_player_uuid(1, OWNER);
+        tame_cat(&mut world, CHEST_TOP);
+        den.openers = 1;
+        for _ in 0..300 {
+            world.tick_with_players(&mut den, &players);
+            assert!(!world.cat_sits_on(CHEST), "it does not sit on an open chest");
+        }
+        let mut world = EntityWorld::default();
+        world.set_player_uuid(1, OWNER);
+        let cat = tame_cat(&mut world, CHEST_TOP);
+        den.openers = 0;
+        let mut ticks = 0;
+        while !world.cat_sits_on(CHEST) {
+            assert!(ticks < 300, "it sits on the shut chest");
+            world.tick_with_players(&mut den, &players);
+            ticks += 1;
+        }
+        den.openers = 1;
+        for _ in 0..4 {
+            world.tick_with_players(&mut den, &players);
+        }
+        let feline = &world.feline_mut(cat).unwrap().feline;
+        assert!(!feline.sitting, "it gets up once the chest is opened");
+        assert!(!world.cat_sits_on(CHEST));
+    }
+
     #[test]
     fn a_cat_curls_up_on_its_sleeping_owner_s_bed_and_brings_a_morning_gift() {
         let mut world = EntityWorld::default();

@@ -583,3 +583,31 @@ After 2085bded.
 ```
 IW4L_MINECRAFT_KIT=minecraft:cat_spawn_egg*4,minecraft:cod*64,minecraft:chest*4,minecraft:trapped_chest*2,minecraft:copper_chest*2,minecraft:ender_chest,minecraft:cooked_beef*16
 ```
+
+### 2. Minecraft cats leave chests that someone has open
+
+After d5559520.
+
+- **Vanilla (26.3, checked with javap):** `CatSitOnBlockGoal.isValidTarget` needs air above, `#cats_can_sit_on` and its `BLOCK_TYPE_VALIDATION`: for `Blocks.CHEST` (the plain chest only) `ChestBlockEntity.getOpenCount(level, pos) < 1`, a furnace must be lit, and a bed must not be its head. `MoveToBlockGoal.canContinueToUse` checks `isValidTarget` again, so a sitting cat stands up and leaves once someone opens its chest. A double chest counts its openers on both halves (`CompoundContainer.startOpen`).
+- **Changed:**
+  - Vendored `player/src/lib.rs`: the `World` trait has a new default method `chest_open_count(pos)`, 0 for worlds without chests.
+  - `minecraft_terrain/src/server_mobs.rs`: `MobWorld` answers it from the level's `chest_openers`.
+  - Vendored `entities/src/feline_ai.rs`: `can_sit_on` takes a plain chest only while `chest_open_count(pos) < 1`. `BlockGoal::can_continue` already checks `valid` again, so a cat on a chest that is opened stands up.
+  - `minecraft_survival/src/level.rs`: the server's level used to hear the openers of trapped chests only (for their redstone signal). `OpenerOutcome.trapped` is now `chest_openers` and covers plain chests too, so the cats can see them. The trapped chest's signal still reads only trapped chests (`trapped_chest_signal`), and a broken chest still forgets its openers. The callers in `level.rs` (a player leaving), `menus.rs` (`lid_effects`) and `render_anim/src/minecraft_world.rs` (a player leaving the level) use the new name.
+  - Friends open chests through the host's `act` and menus, so their openers reach the cats the same way. No protocol change.
+- **Tests:**
+  - Vendored `world::felines::tests::a_tame_cat_does_not_sit_on_an_open_chest_and_gets_up_when_it_is_opened`: `can_sit_on` refuses a chest with an opener and takes it with none; a tame cat placed on an open chest never sits on it in 300 ticks; on the shut chest it sits, and within 4 ticks of the chest being opened it stands up. `a_tame_cat_lies_down_on_a_bed` passes unchanged.
+  - `server::tests::the_mob_world_reports_a_chest_s_openers`: the mob world reads 0, then 2 after `set_chest_openers`, 0 beside the chest, 0 after the count goes back, and 0 once the chest is broken.
+  - `level::tests::a_double_trapped_chest_counts_on_both_halves` now expects the plain chest's count too, and `a_barrel_shows_open_until_its_player_leaves_the_world` checks that a barrel gives none.
+- **Decisions:**
+  - The test of the mob world is in `server::tests`, not `server_mobs::tests` as the brief named it, because the level it needs comes from the `door_world` helper there.
+  - Only plain and trapped chests send their openers to the server's level, the two kinds something there reads (the cats and the redstone signal). Copper chests do not; copper golems would need them.
+  - A sitting cat keeps its chest shut (commit 1), so nobody can open the chest under it. In game the re-check only makes a cat on its way give up when someone opens the chest first. The test steps check the visible part: a cat does not sit on a chest that is open.
+- **Test steps (survival, by day, flat grass):**
+  1. Tame a cat and make it stand (as in step 1 of the commit before). Place a chest 2 blocks from it, open the chest and stay in its screen: the cat does not climb onto it (watch for 20 seconds). Close it: within about 10 seconds the cat walks onto it and sits (**cc-3_open_chest**, the cat beside the open chest).
+  2. **Friend window:** the friend opens a fresh chest near the host's standing cat and keeps the screen open while the host watches the cat: it does not sit on it. The friend closes it: within about 10 seconds the cat sits on it (**cc-4_friend_open_chest**, the host's view).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cat_spawn_egg*4,minecraft:cod*64,minecraft:chest*4,minecraft:cooked_beef*16
+```

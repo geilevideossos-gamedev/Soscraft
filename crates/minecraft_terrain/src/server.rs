@@ -12246,6 +12246,28 @@ mod tests {
     }
 
     #[test]
+    fn the_mob_world_reports_a_chest_s_openers() {
+        use minecraftoss_player::World as _;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let chest = Block::new("minecraft:chest").with("facing", "north").with("type", "single").with("waterlogged", "false");
+        place(&mut server, &mut scene, (8, 200, 8), chest);
+        let openers = |server: &mut ServerSim, pos: BlockPos| {
+            let ServerSim { level, states, mob_tables, .. } = server;
+            let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
+            world.chest_open_count(pos)
+        };
+        assert_eq!(openers(&mut server, (8, 200, 8)), 0);
+        server.set_chest_openers((8, 200, 8), 2);
+        assert_eq!(openers(&mut server, (8, 200, 8)), 2);
+        assert_eq!(openers(&mut server, (8, 200, 9)), 0, "only that chest");
+        server.set_chest_openers((8, 200, 8), 0);
+        assert_eq!(openers(&mut server, (8, 200, 8)), 0);
+        server.set_chest_openers((8, 200, 8), 1);
+        take(&mut server, &mut scene, (8, 200, 8));
+        assert_eq!(openers(&mut server, (8, 200, 8)), 0, "a broken chest has no openers");
+    }
+
+    #[test]
     fn opening_a_trapped_chest_lights_a_lamp_beside_it() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 200, 8), trapped_chest());

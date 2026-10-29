@@ -135,6 +135,9 @@ pub trait World {
     fn block_drops(&self, _pos: Pos, _block: &Block) -> Vec<inventory::ItemStack> {
         Vec::new()
     }
+    fn chest_open_count(&self, _pos: Pos) -> i32 {
+        0
+    }
     /// `Level.getBiome` at a block (the zoomed biome), by ID; worlds without
     /// biomes have none.
     fn biome(&self, _pos: Pos) -> Option<String> {

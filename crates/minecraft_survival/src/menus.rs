@@ -1880,7 +1880,7 @@ fn lid_effects(
         let outcome = crate::level::opener_outcome(&terrain.scene, &event);
         let (cell, id, count) = outcome.block_event;
         entities.lid_event(&terrain.scene, cell, id, count);
-        if let Some((pos, viewers)) = outcome.trapped {
+        if let Some((pos, viewers)) = outcome.chest_openers {
             entities.chest_openers(pos, viewers);
         }
         if let Some(sound) = outcome.sound {
