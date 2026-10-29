@@ -156,6 +156,38 @@ Commit: "Minecraft llama spit leaves a puff", the one after `8f39a9ae`.
 IW4L_MINECRAFT_KIT=minecraft:llama_spawn_egg*4,minecraft:iron_sword,minecraft:shield,minecraft:oak_fence*32,minecraft:cooked_beef*16
 ```
 
+### Fed farm animals show love hearts
+
+Commit: "Minecraft cows, sheep, pigs, chickens, mooshrooms, striders and hoglins show hearts when fed for love", the one after `0ffb375e`.
+
+- **Cause** (as in the brief, re-checked at `0ffb375e`): feeding an adult cow, sheep, pig, chicken, mooshroom, strider or hoglin sets its love time to 600 and returns `AnimalEvent::Hearts` (`CowEvent::Hearts` for cows and mooshrooms) from the vendored `animal::interact`. `mob_actions::interact` read only the milk and the age lock out of those events, so no entity event 18 was recorded and the server's puff list (group `particles-events`) never saw one. Wolves, cats, ocelots and horses already record their own 18 in the vendored world.
+- **Vanilla 26.3** (javap): `Animal.setInLove(Player)` sets `inLove` to 600 and calls `level.broadcastEntityEvent(this, 18)`. `Animal.handleEntityEvent(18)` draws 7 `HEART` particles half a block up. Strider and hoglin food goes through `Animal.mobInteract`, and the sheep's and hoglin's own `handleEntityEvent` pass 18 on to `Animal`.
+- **Changed:**
+  - Vendored `entities/src/world.rs`: `EntityWorld::broadcast_entity_event(id, event)`, next to `take_entity_events`.
+  - `mob_actions.rs`: `love(world, id, hearts)` records event 18 when the feeding gave hearts. Each of the cow, sheep, pig, strider, hoglin, chicken and mooshroom arms calls it with one line after its sounds.
+  - Nothing else: the event takes the existing route (`take_entity_events`, `mob_particles::mob_puffs` with the "any other type" row of 7 hearts half a block up, `EntitySnapshot.mob_puffs`, the host's view and `ToClient::Bursts` for friends).
+- **Tests:**
+  - `minecraft_terrain` `mob_actions::tests::feeding_an_adult_cow_wheat_records_the_love_event`: an adult cow fed wheat records `(cow, 18)`, which `mob_puffs` turns into one heart puff of 7 at the cow's feet. A calf fed wheat eats but records nothing, and the cow, now in love, takes no more wheat and records nothing.
+  - `minecraft_terrain` `mob_actions::tests::every_farm_animal_fed_for_love_records_the_love_event`: a sheep (wheat), pig (carrot), chicken (wheat seeds), mooshroom (wheat), strider (warped fungus) and hoglin (crimson fungus) each record exactly their own 18. A fed hoglin piglet and a lamb given a golden dandelion (the age lock) record nothing.
+  - All 1549 `minecraft_terrain` tests (3 ignored, as before), all 792 `minecraft_survival` tests (plus `vanilla_world`) and the 439 `minecraftoss-entities` library tests pass, and `check -p launcher` passes.
+- **Decisions:**
+  - D0 has merged (`39654c55`), but it kept these per-kind arms: its generic `MobHit::Family` arm serves only the registry's families. So the calls sit in the per-kind arms, as the brief planned for that case.
+  - Left for later: vanilla also sends 18 to the parent that spawns the baby (`Animal.finalizeSpawnChildFromBreeding`), so hearts show on it when the baby is born. The fork's breeding of cows, mooshrooms, sheep, pigs, chickens, horses, striders and hoglins (vendored `world.rs`, `world/equines.rs`, `world/striders.rs`, `world/hoglins.rs`) records no 18, so no hearts show at a birth; wolves and cats do show them. The brief scoped this commit to feeding, and those breeding sites are in code that D0 and M1-M3 rewrite.
+- **Protocol:** no change.
+- **Owner's test steps** (survival, Normal, by day on plains, the kit below; hearts are small red hearts that rise slowly for under a second):
+  1. **Cows.** Put up a small fence pen. Use the cow egg twice inside it and feed each cow wheat: 7 red hearts rise around each, about half a block above its body. Soon a calf appears. **Screenshot love_01_cows.**
+  2. **No love for a calf.** Feed the calf wheat: it eats, but shows no hearts. Feed one of the parents wheat again: it takes nothing (it bred a moment ago).
+  3. **Sheep, pigs and chickens.** Use each egg twice and feed sheep wheat, pigs carrots and chickens wheat seeds: hearts on each, then a lamb, a piglet and a chick.
+  4. **Mooshrooms.** Use the mooshroom egg twice and feed each wheat: hearts. **Screenshot love_02_mooshrooms.**
+  5. **Striders.** Use the strider egg twice and feed each warped fungus: hearts.
+  6. **Hoglins.** `/gamemode creative` (a hoglin charges a survival player). Use the hoglin egg twice and feed each crimson fungus within 15 seconds, before the overworld turns them into zoglins: hearts. `/gamemode survival` after.
+  7. **Two windows** (host H, friend F, both on this build): F feeds a cow wheat while H stands 10 blocks away: both windows show the hearts. **Screenshot love_03_friend**, both windows.
+- **Kit** (14 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cow_spawn_egg*2,minecraft:sheep_spawn_egg*2,minecraft:pig_spawn_egg*2,minecraft:chicken_spawn_egg*2,minecraft:mooshroom_spawn_egg*2,minecraft:strider_spawn_egg*2,minecraft:hoglin_spawn_egg*2,minecraft:wheat*64,minecraft:carrot*64,minecraft:wheat_seeds*64,minecraft:warped_fungus*16,minecraft:crimson_fungus*16,minecraft:oak_fence*64,minecraft:cooked_beef*16
+```
+
 ## E-trading. Trading screen: number keys, F, Q, drags and double-click
 
 ### Number keys and F on the payment and result slots

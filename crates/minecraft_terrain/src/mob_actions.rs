@@ -144,6 +144,12 @@ fn cow_lock(events: &[CowEvent]) -> Option<bool> {
     })
 }
 
+fn love(world: &mut EntityWorld, id: u64, hearts: bool) {
+    if hearts {
+        world.broadcast_entity_event(id, 18);
+    }
+}
+
 /// Using the held item on a mob. A pass (nothing happens) leaves the
 /// outcome unhandled, so the click may use the item or a block instead.
 pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobOutcome {
@@ -198,6 +204,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             if events.contains(&CowEvent::Milk) {
                 outcome.sound("entity.cow.milk", position, 1.0, "friendly_volume");
             }
+            love(world, id, events.contains(&CowEvent::Hearts));
         }
         MobHit::Sheep(id) if held.as_deref() == Some("minecraft:shears") => {
             let Some(loot) = actor.shearing_loot.as_deref_mut() else { return outcome };
@@ -225,6 +232,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 return outcome;
             }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
+            love(world, id, events.contains(&AnimalEvent::Hearts));
         }
         MobHit::Pig(id) => {
             let Some(entity) = world.pig_mut(id) else { return outcome };
@@ -243,6 +251,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 outcome.sound("entity.pig.saddle", position, 1.0, "friendly_volume");
             }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
+            love(world, id, events.contains(&AnimalEvent::Hearts));
         }
         MobHit::Strider(id) => {
             let food = held.as_deref().is_some_and(|item| recipes.item_in_tag(minecraftoss_entities::strider::FOOD_TAG, item));
@@ -260,6 +269,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 let (a, b) = (entity.random.next_float(), entity.random.next_float());
                 outcome.sounds.push(MobSound { event: "entity.strider.eat".to_owned(), position, volume: 1.0, pitch: 1.0 + (a - b) * 0.2, category: "neutral_volume" });
                 age_lock_sound(&mut outcome, animal_lock(&events), position);
+                love(world, id, events.contains(&AnimalEvent::Hearts));
             } else if entity.strider.interact_saddle(actor.inventory, selected, infinite) != InteractionResult::Pass {
                 outcome.sound("entity.strider.saddle", position, 1.0, "neutral_volume");
             } else {
@@ -275,6 +285,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 return outcome;
             }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
+            love(world, id, events.contains(&AnimalEvent::Hearts));
         }
         MobHit::Chicken(id) => {
             let Some(entity) = world.chicken_mut(id) else { return outcome };
@@ -285,6 +296,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 return outcome;
             }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
+            love(world, id, events.contains(&AnimalEvent::Hearts));
         }
         MobHit::SnowGolem(id) if held.as_deref() == Some("minecraft:shears") => {
             use minecraftoss_entities::snow_golem::{SHEAR_LOOT, SHEAR_SOUND};
@@ -326,6 +338,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 outcome.sound("entity.mooshroom.eat", position, 2.0, "friendly_volume");
             }
             age_lock_sound(&mut outcome, cow_lock(&events), position);
+            love(world, id, events.contains(&CowEvent::Hearts));
         }
         MobHit::Villager(id) => {
             // `Villager.mobInteract`: trading opens, or it shakes its head.
@@ -808,6 +821,55 @@ mod tests {
         let entity = world.hoglin_mut(piglet).unwrap();
         assert_eq!(entity.hoglin.age.ticks, -24000 + 2400);
         assert!(entity.hoglin.persistence_required);
+    }
+
+    #[test]
+    fn feeding_an_adult_cow_wheat_records_the_love_event() {
+        use crate::mob_particles::{mob_puffs, PuffKind};
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let mut world = EntityWorld::default();
+        let cow = world.spawn_cow(Cow::new(at), true);
+        let mut young = Cow::new(at);
+        young.age = baby(young.age);
+        let calf = world.spawn_cow(young, true);
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(cow), "minecraft:wheat");
+        assert!(outcome.handled);
+        let events = world.take_entity_events();
+        assert_eq!(events, [(cow, 18)]);
+        let puffs = mob_puffs(&world, &events);
+        assert_eq!(puffs.iter().map(|puff| (puff.kind, puff.count, puff.feet)).collect::<Vec<_>>(), [(PuffKind::Heart, 7, at)]);
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(calf), "minecraft:wheat");
+        assert!(outcome.handled, "the calf eats to grow");
+        assert!(world.take_entity_events().is_empty(), "a calf fed wheat shows no love");
+        let (outcome, _) = use_on(&mut world, MobHit::Cow(cow), "minecraft:wheat");
+        assert!(!outcome.handled && world.take_entity_events().is_empty(), "a cow already in love eats nothing");
+    }
+
+    #[test]
+    fn every_farm_animal_fed_for_love_records_the_love_event() {
+        let at = DVec3::new(0.5, 64.0, 0.5);
+        let mut world = EntityWorld::default();
+        let fed = [
+            (MobHit::Sheep(world.spawn_sheep_no_ai(Sheep::default(), at)), "minecraft:wheat"),
+            (MobHit::Pig(world.spawn_pig_no_ai(Pig::new(at))), "minecraft:carrot"),
+            (MobHit::Chicken(world.spawn_chicken(minecraftoss_entities::chicken::Chicken::new(at), true)), "minecraft:wheat_seeds"),
+            (MobHit::Mooshroom(world.spawn_mooshroom(MushroomCow::new(at, MushroomVariant::Red), true)), "minecraft:wheat"),
+            (MobHit::Strider(strider(&mut world, 0.5, false, false)), "minecraft:warped_fungus"),
+            (MobHit::Hoglin(hoglin(&mut world, 0.5, false)), "minecraft:crimson_fungus"),
+        ];
+        for (hit, food) in fed {
+            let (outcome, _) = use_on(&mut world, hit, food);
+            assert!(outcome.handled, "{hit:?}");
+            assert_eq!(world.take_entity_events(), [(hit.id(), 18)], "{hit:?}");
+        }
+        let piglet = hoglin(&mut world, 3.5, true);
+        let (outcome, _) = use_on(&mut world, MobHit::Hoglin(piglet), "minecraft:crimson_fungus");
+        assert!(outcome.handled && world.take_entity_events().is_empty(), "a fed piglet only grows");
+        let mut lamb = Sheep::default();
+        lamb.age = baby(lamb.age);
+        let lamb = world.spawn_sheep_no_ai(lamb, at);
+        let (outcome, _) = use_on(&mut world, MobHit::Sheep(lamb), "minecraft:golden_dandelion");
+        assert!(outcome.handled && world.take_entity_events().is_empty(), "the age lock is no love");
     }
 
     #[test]

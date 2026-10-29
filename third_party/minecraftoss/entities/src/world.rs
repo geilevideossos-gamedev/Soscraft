@@ -4114,6 +4114,10 @@ impl EntityWorld {
         std::mem::take(&mut self.entity_events)
     }
 
+    pub fn broadcast_entity_event(&mut self, id: u64, event: u8) {
+        self.entity_events.push((id, event));
+    }
+
     pub fn villager_mut(&mut self, id: u64) -> Option<&mut VillagerEntity> {
         self.villagers.iter_mut().find(|entity| entity.id == id)
     }
