@@ -62,13 +62,12 @@ impl Explosion {
             value
                 .get(key)
                 .and_then(Value::as_array)
-                .map(|list| {
+                .map_or_else(Vec::new, |list| {
                     list.iter()
                         .filter_map(Value::as_i64)
                         .map(|c| c as i32)
                         .collect()
                 })
-                .unwrap_or_default()
         };
         let flag = |key: &str| {
             value.get(key).is_some_and(|flag| {
@@ -99,13 +98,12 @@ pub fn fireworks(stack: &ItemStack) -> Fireworks {
         .and_then(|patch| patch.get(FIREWORKS))
         .and_then(|fireworks| fireworks.get("explosions"))
         .and_then(Value::as_array)
-        .map(|list| {
+        .map_or_else(Vec::new, |list| {
             list.iter()
                 .take(MAX_EXPLOSIONS)
                 .filter_map(Explosion::from_json)
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     Fireworks {
         flight: flight_duration(stack),
         explosions,

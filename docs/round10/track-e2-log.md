@@ -795,3 +795,18 @@ After 8db19b25.
 ```
 IW4L_MINECRAFT_KIT=minecraft:snowball*16,minecraft:bow,minecraft:arrow*16,minecraft:cow_spawn_egg*2,minecraft:sheep_spawn_egg*2,minecraft:pig_spawn_egg*2,minecraft:cooked_beef*16
 ```
+
+## Final checks
+
+### 1. Track E2 code passes clippy
+
+After c23cef6d.
+
+- **Clippy:** `clippy -p minecraft_survival -p minecraft_terrain -p render_anim -p minecraftoss-core -p minecraftoss-entities -p minecraftoss-player -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant`, with the stand-in `third_party/scenarios/survival` files that `scripts/full-suite.ps1` makes for the player crate's tests (removed again afterwards). Nine warnings fell on lines the track added, and all nine are fixed; the older warnings stay. The vendored crates are outside the workspace, so clippy does not lint them, and rustc gave them no warnings.
+- **Changed (same behaviour):**
+  - `minecraft_terrain/src/firework.rs`: a star's colours and a rocket's explosions fall back with `map_or_else(Vec::new, ..)` instead of `unwrap_or_default`, which `clippy.toml` disallows (`unwrap_or_else(Vec::new)` would trip `clippy::unwrap_or_default` instead).
+  - `minecraft_terrain/src/maps.rs`: the map's banner and frame lists and the claims list fall back to `&[]`, and `MapStore::claims` is `map_or_else(Claims::default, Claims::clone)`, for the same rule.
+  - `minecraft_terrain/src/server.rs` tests: `knocked_on_hard` returns a `DoorTrace` alias (`type_complexity`), and the dropped-door count no longer wraps an `i32` in `i32::from` (`useless_conversion`).
+  - `minecraft_survival/src/entities.rs` tests: the pvp-on rocket test puts its hits in the `Output` initializer (`field_reassign_with_default`).
+- **Tests:** none added (no behaviour change). The final test run is the next entry.
+- **Test steps and kit:** none (no change in game).

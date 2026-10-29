@@ -3344,8 +3344,7 @@ mod tests {
     #[test]
     fn with_pvp_on_a_players_rocket_names_the_player_and_does_not_scale_with_difficulty() {
         let mut queues = two_queues();
-        let mut output = minecraft_terrain::server::Output::default();
-        output.player_hits = vec![rocket_hit(FRIEND, Some(HOST), None), rocket_hit(HOST, None, Some(9)), rocket_hit(HOST, None, None)];
+        let mut output = minecraft_terrain::server::Output { player_hits: vec![rocket_hit(FRIEND, Some(HOST), None), rocket_hit(HOST, None, Some(9)), rocket_hit(HOST, None, None)], ..Default::default() };
         let villager = |id: u64| (id == 9).then_some("minecraft:villager");
         queues.route(&mut output, 3, villager);
         let friend = std::mem::take(&mut queues.queue(FRIEND).out.hits);

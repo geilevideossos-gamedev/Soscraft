@@ -6208,7 +6208,9 @@ mod tests {
         id
     }
 
-    fn knocked_on_hard(server: &mut ServerSim, ticks: usize) -> (Vec<(i32, BlockPos)>, std::collections::HashMap<BlockPos, Option<Block>>) {
+    type DoorTrace = (Vec<(i32, BlockPos)>, std::collections::HashMap<BlockPos, Option<Block>>);
+
+    fn knocked_on_hard(server: &mut ServerSim, ticks: usize) -> DoorTrace {
         let player = candidate(0, [8.5, 200.0, 20.5]);
         let (mut events, mut changes) = (Vec::new(), std::collections::HashMap::new());
         for _ in 0..ticks {
@@ -6234,7 +6236,7 @@ mod tests {
         assert_eq!(changes.get(&(8, 200, 8)), Some(&None), "and the lower half goes with it");
         let destroyed: Vec<_> = server.take_destroyed().into_iter().map(|(pos, block)| (pos, block.id.key())).collect();
         assert_eq!(destroyed, vec![((8, 200, 8), "minecraft:oak_door".to_owned())], "with its particles and break sound");
-        let doors: i32 = server.items().iter().filter(|item| item.item == "minecraft:oak_door").map(|item| i32::from(item.count)).sum();
+        let doors: i32 = server.items().iter().filter(|item| item.item == "minecraft:oak_door").map(|item| item.count).sum();
         assert_eq!(doors, 1, "one door drops");
         assert!(events.iter().all(|&(_, pos)| pos == (8, 201, 8)), "{events:?}");
         assert_eq!(events.iter().filter(|e| e.0 == 1021).count(), 1, "{events:?}");

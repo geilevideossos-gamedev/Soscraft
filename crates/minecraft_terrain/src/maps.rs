@@ -169,12 +169,7 @@ impl MapData {
                 .and_then(Tag::as_i64)
                 .map_or(default, |v| v != 0)
         };
-        let list = |key: &str| {
-            tag.get(key)
-                .and_then(Tag::as_list)
-                .unwrap_or_default()
-                .to_vec()
-        };
+        let list = |key: &str| tag.get(key).and_then(Tag::as_list).unwrap_or(&[]).to_vec();
         let Some(Tag::ByteArray(bytes)) = tag.get("colors") else {
             return Err("map data lacks its colors".to_owned());
         };
@@ -383,7 +378,7 @@ impl Claims {
 
     pub fn from_tag(tag: &Tag) -> Self {
         let mut claims = BTreeMap::new();
-        for entry in tag.get("claims").and_then(Tag::as_list).unwrap_or_default() {
+        for entry in tag.get("claims").and_then(Tag::as_list).unwrap_or(&[]) {
             let int = |key: &str| entry.get(key).and_then(Tag::as_i64).map(|v| v as i32);
             let structure = entry.get("structure").and_then(Tag::as_str);
             let (Some(structure), Some(x), Some(z)) = (structure, int("chunk_x"), int("chunk_z"))
@@ -493,7 +488,9 @@ impl MapStore {
     }
 
     pub fn claims(&self, dimension: &str) -> Claims {
-        self.claims.get(dimension).cloned().unwrap_or_default()
+        self.claims
+            .get(dimension)
+            .map_or_else(Claims::default, Claims::clone)
     }
 
     pub fn set_claims(&mut self, dimension: &str, claims: Claims) {
