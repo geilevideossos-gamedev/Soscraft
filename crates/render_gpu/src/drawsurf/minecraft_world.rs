@@ -18,7 +18,8 @@ use bevy::render::render_resource::{
     MipmapFilterMode, MultisampleState, Origin3d, PipelineCompilationOptions,
     PipelineLayoutDescriptor, PrimitiveState, RawFragmentState, RawRenderPipelineDescriptor,
     RawVertexBufferLayout, RawVertexState, RenderPipeline, Sampler, SamplerBindingType,
-    SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp,
+    SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilFaceState,
+    StencilOperation, StencilState, StoreOp,
     TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect, TextureDescriptor,
     Texture, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
     TextureViewDescriptor, VertexAttribute, VertexFormat, VertexStepMode,
@@ -168,7 +169,7 @@ struct TerrainGpu {
     bind: Option<BindGroup>,
     sections: HashMap<[i32; 3], SectionGpu>,
     visible: Vec<[i32; 3]>,
-    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 14]>,
+    pipelines: HashMap<(TextureFormat, u32), [RenderPipeline; 16]>,
 }
 
 pub(super) fn register(app: &mut App) {
@@ -765,7 +766,7 @@ fn draw_terrain(
     let (target, depth, extracted_view, msaa) = view.into_inner();
     let format = target.main_texture_format();
     let samples = msaa.map_or(1, Msaa::samples);
-    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand, sections, weather, glow] = gpu
+    let [sky, opaque, translucent, clouds, crack, entity, entity_culled, entity_translucent, shadow, backdrop, hand, sections, weather, glow, glow_mask, glow_clear] = gpu
         .pipelines
         .entry((format, samples))
         .or_insert_with(|| pipelines(&device, &registry, format, samples))
@@ -874,7 +875,8 @@ fn draw_terrain(
         pass.set_index_buffer(indices.slice(..), IndexFormat::Uint32);
         pass.draw_indexed(0..*count, 0, 0..1);
     }
-    for (pipeline, mesh) in [(&glow, &gpu.entities[4]), (&entity, &gpu.entities[5])] {
+    pass.set_stencil_reference(OUTLINE_STENCIL);
+    for (pipeline, mesh) in [(&glow_mask, &gpu.entities[5]), (&glow, &gpu.entities[4]), (&glow_clear, &gpu.entities[5])] {
         if let Some((vertices, indices, count)) = mesh.as_ref() {
             pass.set_render_pipeline(pipeline);
             pass.set_vertex_buffer(0, vertices.slice(..));
@@ -1417,12 +1419,42 @@ fn weather_fragment(in: WeatherOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+const OUTLINE_STENCIL: u32 = 0x80;
+
+fn outline_states() -> [(DepthStencilState, ColorWrites); 3] {
+    let state = |compare: CompareFunction, pass_op: StencilOperation| {
+        let face = StencilFaceState {
+            compare,
+            fail_op: StencilOperation::Keep,
+            depth_fail_op: StencilOperation::Keep,
+            pass_op,
+        };
+        DepthStencilState {
+            format: SCENE_DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(CompareFunction::Always),
+            stencil: StencilState {
+                front: face,
+                back: face,
+                read_mask: OUTLINE_STENCIL,
+                write_mask: OUTLINE_STENCIL,
+            },
+            bias: DepthBiasState::default(),
+        }
+    };
+    [
+        (state(CompareFunction::Always, StencilOperation::Replace), ColorWrites::empty()),
+        (state(CompareFunction::NotEqual, StencilOperation::Keep), ColorWrites::ALL),
+        (state(CompareFunction::Always, StencilOperation::Zero), ColorWrites::empty()),
+    ]
+}
+
 fn pipelines(
     device: &RenderDevice,
     registry: &ExactPipelineRegistry,
     format: TextureFormat,
     samples: u32,
-) -> [RenderPipeline; 14] {
+) -> [RenderPipeline; 16] {
     let shader = unsafe {
         device.create_shader_module(ShaderModuleDescriptor {
             label: Some("iw4l_minecraft_terrain"),
@@ -1596,7 +1628,7 @@ fn pipelines(
             operation: bevy::render::render_resource::BlendOperation::Add,
         },
     };
-    let make_biased = |vertex: &str, fragment: &str, buffers: &[RawVertexBufferLayout], depth_write: bool, compare: CompareFunction, blend: Option<BlendState>, cull: Option<bevy::render::render_resource::Face>, bias: DepthBiasState| {
+    let make_stenciled = |vertex: &str, fragment: &str, buffers: &[RawVertexBufferLayout], blend: Option<BlendState>, cull: Option<bevy::render::render_resource::Face>, (depth_stencil, write_mask): (DepthStencilState, ColorWrites)| {
         device.create_render_pipeline(&RawRenderPipelineDescriptor {
             label: Some("iw4l_minecraft_terrain"),
             layout: Some(&pipeline_layout),
@@ -1612,7 +1644,7 @@ fn pipelines(
                 targets: &[Some(ColorTargetState {
                     format,
                     blend,
-                    write_mask: ColorWrites::ALL,
+                    write_mask,
                 })],
                 compilation_options: options.clone(),
             }),
@@ -1620,13 +1652,7 @@ fn pipelines(
                 cull_mode: cull,
                 ..default()
             },
-            depth_stencil: Some(DepthStencilState {
-                format: SCENE_DEPTH_FORMAT,
-                depth_write_enabled: Some(depth_write),
-                depth_compare: Some(compare),
-                stencil: default(),
-                bias,
-            }),
+            depth_stencil: Some(depth_stencil),
             multisample: MultisampleState {
                 count: samples,
                 ..default()
@@ -1635,9 +1661,20 @@ fn pipelines(
             cache: None,
         })
     };
+    let make_biased = |vertex: &str, fragment: &str, buffers: &[RawVertexBufferLayout], depth_write: bool, compare: CompareFunction, blend: Option<BlendState>, cull: Option<bevy::render::render_resource::Face>, bias: DepthBiasState| {
+        let depth_stencil = DepthStencilState {
+            format: SCENE_DEPTH_FORMAT,
+            depth_write_enabled: Some(depth_write),
+            depth_compare: Some(compare),
+            stencil: default(),
+            bias,
+        };
+        make_stenciled(vertex, fragment, buffers, blend, cull, (depth_stencil, ColorWrites::ALL))
+    };
     let make = |vertex: &str, fragment: &str, buffers: &[RawVertexBufferLayout], depth_write: bool, compare: CompareFunction, blend: Option<BlendState>, cull: Option<bevy::render::render_resource::Face>| {
         make_biased(vertex, fragment, buffers, depth_write, compare, blend, cull, DepthBiasState::default())
     };
+    let [glow_mask, glow, glow_clear] = outline_states().map(|state| make_stenciled("entity_vertex", "glow_fragment", &entity_buffers, None, None, state));
     [
         make("sky_vertex", "sky_fragment", &[], false, CompareFunction::Equal, None, None),
         make("vertex", "opaque", &buffers, true, CompareFunction::GreaterEqual, None, None),
@@ -1713,7 +1750,9 @@ fn pipelines(
             Some(BlendState::ALPHA_BLENDING),
             None,
         ),
-        make("entity_vertex", "glow_fragment", &entity_buffers, false, CompareFunction::Always, None, None),
+        glow,
+        glow_mask,
+        glow_clear,
     ]
 }
 
@@ -1728,10 +1767,53 @@ mod tests {
     }
 
     #[test]
-    fn glowing_mobs_draw_through_walls_in_white_with_their_cover_after() {
+    fn glowing_mobs_draw_an_outline_through_walls_masked_by_their_own_shape() {
+        use bevy::render::render_resource::{ColorWrites, CompareFunction, DepthStencilState, StencilOperation};
         let module = naga::front::wgsl::parse_str(super::TERRAIN_WGSL).unwrap();
         assert!(module.entry_points.iter().any(|entry| entry.name == "glow_fragment"));
         assert_eq!(std::mem::size_of::<[(Vec<u8>, Vec<u32>); 6]>(), std::mem::size_of_val(&super::MinecraftWorldFrame::default().entity_meshes));
+        let [mask, hull, clear] = super::outline_states();
+        for (state, _) in [&mask, &hull, &clear] {
+            assert_eq!((state.depth_write_enabled, state.depth_compare), (Some(false), Some(CompareFunction::Always)), "seen through walls, the depth left alone");
+            assert_eq!(state.stencil.front, state.stencil.back, "both faces, as the glow is not culled");
+            assert_eq!((state.stencil.read_mask, state.stencil.write_mask), (super::OUTLINE_STENCIL, super::OUTLINE_STENCIL));
+        }
+        assert_eq!((mask.1, hull.1, clear.1), (ColorWrites::empty(), ColorWrites::ALL, ColorWrites::empty()), "only the hull is drawn");
+        let step = |state: &DepthStencilState, value: u32| {
+            let face = state.stencil.front;
+            let pass = match face.compare {
+                CompareFunction::Always => true,
+                CompareFunction::NotEqual => (super::OUTLINE_STENCIL & state.stencil.read_mask) != (value & state.stencil.read_mask),
+                other => panic!("{other:?}"),
+            };
+            let written = match if pass { face.pass_op } else { face.fail_op } {
+                StencilOperation::Keep => value,
+                StencilOperation::Zero => 0,
+                StencilOperation::Replace => super::OUTLINE_STENCIL,
+                other => panic!("{other:?}"),
+            };
+            (pass, (value & !state.stencil.write_mask) | (written & state.stencil.write_mask))
+        };
+        let before: Vec<u32> = (0..10).map(|x| if x % 3 == 0 { 0x45 } else { 0 }).collect();
+        let mut stencil = before.clone();
+        for value in &mut stencil[3..7] {
+            *value = step(&mask.0, *value).1;
+        }
+        assert_eq!(stencil.iter().map(|value| value & super::OUTLINE_STENCIL != 0).collect::<Vec<_>>(), (0..10).map(|x| (3..7).contains(&x)).collect::<Vec<_>>());
+        let white: Vec<usize> = (2..8)
+            .filter(|&x| {
+                let (pass, value) = step(&hull.0, stencil[x]);
+                stencil[x] = value;
+                pass
+            })
+            .collect();
+        assert_eq!(white, [2, 7], "white only on the rim outside the mob's own shape");
+        for value in &mut stencil[3..7] {
+            *value = step(&clear.0, *value).1;
+        }
+        assert_eq!(stencil, before, "the bit is given back, so the MW2 passes after read what they did before");
+        let mw2 = super::super::scene_depth::stencil_state(0x40);
+        assert_eq!(mw2.read_mask & super::OUTLINE_STENCIL, super::OUTLINE_STENCIL, "MW2 passes read every bit, so it must be cleared");
     }
 
     #[test]

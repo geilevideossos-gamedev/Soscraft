@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn a_glowing_mob_gets_a_white_hull_a_sixteenth_bigger_and_a_copy_drawn_over_it() {
+    fn a_glowing_mob_gets_a_white_hull_a_sixteenth_bigger_and_a_copy_that_masks_its_shape() {
         let mut glow = ChunkMesh::default();
         let mut cover = ChunkMesh::default();
         append_glowing(&mut glow, &mut cover, &cube([10.0, 64.0, 3.0], 1.0));
