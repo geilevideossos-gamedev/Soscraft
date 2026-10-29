@@ -128,7 +128,7 @@ pub fn spot_near<W: World>(
     });
     spots.into_iter().find(|&at| {
         let bounds = Bounds::standing(at, width, height);
-        let apart = clear_of.map_or(true, |(min, max)| !overlaps(bounds, min, max));
+        let apart = clear_of.is_none_or(|(min, max)| !overlaps(bounds, min, max));
         apart && stands(world, at, width, height)
     })
 }
@@ -204,7 +204,7 @@ pub fn seen<W: World>(level: &W, players: &[PlayerCandidate], ways: &[Way]) -> V
                 feet: player.position,
                 eye: f64::from(player.eye_height),
                 ground: ground_under(level, player.position),
-                reachable: way.map_or(true, |way| way.reachable),
+                reachable: way.is_none_or(|way| way.reachable),
                 room: way.and_then(|way| way.room),
             }
         })

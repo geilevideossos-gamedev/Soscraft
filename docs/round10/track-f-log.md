@@ -10,7 +10,7 @@ Segment f1 (groups `er-core` and `er-rules`) builds the pure crate `crates/elden
 
 None for segment f1: no commit of it has owner steps in game, so no kit line is needed.
 
-Segment f2 so far (commits 7 to 15), 20 stacks:
+Segment f2 (commits 7 to 16), 20 stacks:
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:shield,minecraft:cooked_beef*32,minecraft:iron_sword,minecraft:zombie_spawn_egg*4,minecraft:iron_golem_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:bone*16,minecraft:skeleton_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:silverfish_spawn_egg*4,minecraft:cobblestone*256,minecraft:iron_pickaxe
@@ -499,3 +499,22 @@ Kit: none needed for these steps.
 ### Checks after the review
 
 After 65505460. `test -p minecraftoss-entities --locked --lib`: 460 passed. `test -p minecraft_terrain --locked --lib` with `elden`, `margit` and `summoned_health`: 9 passed. `clippy -p minecraftoss-entities --locked --all-targets -- -A clippy::approx_constant`: nothing in Margit's files. The combined kit at the top covers commits 13 to 15 (their items are already in it). Still left for later, as commit 8 says: `sleep::MONSTERS` does not list `iw4l:margit`, so a player may sleep beside him.
+
+## Final checks of segment f2
+
+### 16. Margit's arena code passes clippy
+
+After 4556eca4.
+
+- **Why:** `third_party/minecraftoss` is excluded from the workspace, so `cargo clippy -p minecraftoss-entities` only checks that crate with rustc: clippy's wrapper runs on workspace members alone. The "nothing in Margit's files" of the checks after the review therefore saw no clippy lints. Run through clippy for real (`check -p minecraftoss-entities --locked --all-targets` with `RUSTC_WRAPPER=clippy-driver`, which reads the root `clippy.toml`), the crate's lib test build has 84 warnings, two of them on this track's lines: `clippy::unnecessary_map_or` in `arena.rs`.
+- **Changed (vendored entities crate, `world/families/bosses/elden_bosses/arena.rs`):** `spot_near` and `seen` use `Option::is_none_or` instead of `map_or(true, ...)`. Same behaviour.
+- **Tests:** none new; nothing changes in behaviour.
+- **Runs** (touched crates from `git diff --stat r10-f2-base..HEAD`: `minecraftoss-entities`, `minecraft_terrain`, `minecraft_survival`):
+  - `clippy -p minecraftoss-entities -p minecraft_terrain -p minecraft_survival --locked --all-targets -- -A clippy::approx_constant`: no warning on a line of this track in `minecraft_terrain` or `minecraft_survival` (their older warnings stay), and with `clippy-driver` as above none left in the entities crate either. The other 82 warnings of its lib test build are on older lines (`families.rs` 246-262 `&mut Vec`, `world.rs` `unwrap_or_default`, villagers and others) and stay.
+  - `test -p minecraftoss-entities --locked --tests`: 460 passed (the bins have no tests).
+  - `test -p minecraft_terrain --locked`: 1440 passed and 3 ignored; doc-tests 0.
+  - `test -p minecraft_survival --locked`: 778 passed, `vanilla_world` 1 passed; doc-tests 0.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - The new `.rs` files of segment f2 (`elden_bosses.rs` and `arena.rs` in the entities crate, `elden_save.rs` and `families/bosses/elden_bosses.rs` in `minecraft_terrain`) pass `rustfmt --check --edition 2021` with empty output on their staged content, and no line the segment added holds a comment.
+- **Decision:** a `RUSTC_WRAPPER` change does not change cargo's fingerprints, so the check units built through `clippy-driver` replay clippy's warnings on a later plain `check`. Touching `arena.rs` afterwards rebuilt them with rustc; the launcher check above shows no entities warnings again.
+- **Owner's steps:** none: no behaviour changes. The combined kit at the top covers every commit of segment f2 (7 to 16).
