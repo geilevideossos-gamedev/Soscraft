@@ -875,3 +875,32 @@ After 48b1ecf2.
 ```
 IW4L_MINECRAFT_KIT=minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:small_ball,colors:[I;4312372]}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:cooked_beef*32
 ```
+
+### 2. Minecraft firework sparks fade, trail and twinkle
+
+After a4abdfa5.
+
+- **Vanilla (26.3, checked with javap):**
+  - `Starter.createParticle` sets the spark's trail and twinkle from its star, alpha 0.99, a random colour of the star and, when the star has fade colours, `setFadeColor` with a random one of them.
+  - `SimpleAnimatedParticle.tick` (the spark's base): once `age > lifetime / 2`, the alpha drops as before and, with a fade colour, each of red, green and blue moves a fifth of the way to the fade colour every tick (`rCol += (fadeR - rCol) * 0.2`).
+  - `SparkParticle.tick`: after that, a spark with a trail, `age < lifetime / 2` and `(age + lifetime) % 2 == 0` adds a new spark at its own position with no motion, alpha 0.99, its current colour, its twinkle and no trail, whose age starts at half its own lifetime (so it fades and shrinks at once). The copy of the fade reads `SparkParticle`'s own `hasFade`, a field nothing else sets (`setFadeColor` sets the one in `SimpleAnimatedParticle`), so a trail spark never fades.
+  - `SparkParticle.extract`: a twinkling spark is drawn only while `age < lifetime / 3` or `((age + lifetime) / 3) % 2 == 0`, so after a third of its life it blinks in three-tick steps.
+- **Changed:** `minecraft_terrain/src/firework_particles.rs`: a spark keeps `fade`, `trail` and `twinkle` from its star; `tick` fades its colour in the second half of its life and lays the trail sparks (added after the sparks have ticked, through the cap); `append_mesh` skips a twinkling spark while it blinks off (`Spark::shown`). The rocket's own flight trail is unchanged (no fade, trail or twinkle, as vanilla's).
+- **Tests** (`firework_particles::tests`):
+  - `a_fading_spark_turns_to_its_fade_colour_by_the_end_of_its_life`: both fade colours of a star are picked; no fade in the first half; at age 47 every spark is within 0.02 of its fade colour and matches `fade + (start - fade) * 0.8^(age - lifetime / 2)`; a star without fade colours keeps its colour.
+  - `a_trailing_spark_leaves_still_sparks_of_its_colour_behind_in_its_first_half`: trail sparks appear exactly on the ticks with `age < lifetime / 2` and `(age + lifetime) % 2 == 0`, at the spark's position with no motion, in its colour, at half their lifetime, twinkling like it, without trail or fade; they keep their colour while the spark fades.
+  - `a_twinkling_spark_blinks_in_threes_after_a_third_of_its_life`: the hidden ages of a 48-tick twinkling spark (16, 17, 21-23, 27-29, ...), none without twinkle.
+  - `a_twinkling_spark_draws_nothing_while_it_blinks_off`: one quad at ages 15 and 18, none at 16.
+  - All tests of the touched crates pass on this commit's code: `minecraft_terrain` 1566 with 3 ignored, `minecraft_survival` 801 + 1; `check -p launcher` is clean.
+- **Decisions:**
+  - Trail sparks never fade, as in vanilla (the leftover `hasFade` field above): a fading star's trail keeps the colour of the spark that laid it.
+  - The trail sparks are drawn from their first frame with the sprite of their age; vanilla shows the largest sprite until their first tick (one tick at most).
+- **Test steps** (survival, `/time set night`, open flat ground; the kit of commit 1):
+  1. **FW-S5. Trails.** Place the red rocket 3 blocks ahead. Its big red ball leaves short red streaks behind each spark as they fly out and fall (sparks hanging in the air where the ball's sparks were), which fade away soon after. **Screenshot FW-S5.**
+  2. **FW-S6. Fade and twinkle.** Place the two-star rocket. From about 1.2 s after the burst the yellow star turns blue as its sparks fall and dim. The lime creeper face starts to flicker on and off after about 0.8 s, together with the crackling sound. **Screenshot FW-S6** (while the star is turning blue).
+  3. **FW-S7. Plain stars stay plain.** Place the three-star rocket. Its three bursts keep their colours to the end, with no streaks and no flicker.
+- **Kit:** the kit of commit 1.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:small_ball,colors:[I;4312372]}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:cooked_beef*32
+```

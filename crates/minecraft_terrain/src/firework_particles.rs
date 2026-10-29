@@ -56,6 +56,19 @@ struct Spark {
     alpha: f32,
     quad_size: f32,
     stopped: bool,
+    fade: Option<[f32; 3]>,
+    trail: bool,
+    twinkle: bool,
+}
+
+impl Spark {
+    fn shown(&self) -> bool {
+        !self.twinkle || self.age < self.lifetime / 3 || ((self.age + self.lifetime) / 3) % 2 == 0
+    }
+
+    fn leaves_trail(&self) -> bool {
+        self.trail && self.age < self.lifetime / 2 && (self.age + self.lifetime) % 2 == 0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -90,6 +103,9 @@ impl Starter {
 
 struct Look {
     colors: Vec<i32>,
+    fade_colors: Vec<i32>,
+    trail: bool,
+    twinkle: bool,
 }
 
 impl Look {
@@ -99,7 +115,12 @@ impl Look {
         } else {
             explosion.colors.clone()
         };
-        Self { colors }
+        Self {
+            colors,
+            fade_colors: explosion.fade_colors.clone(),
+            trail: explosion.trail,
+            twinkle: explosion.twinkle,
+        }
     }
 }
 
@@ -160,6 +181,9 @@ fn new_spark(
         alpha: 0.99,
         quad_size,
         stopped: false,
+        fade: None,
+        trail: false,
+        twinkle: false,
     }
 }
 
@@ -224,8 +248,14 @@ impl FireworkParticles {
 
     fn star_spark(&mut self, position: DVec3, velocity: DVec3, look: &Look) {
         let mut spark = new_spark(&mut self.random, position, velocity, [1.0, 1.0, 1.0]);
+        spark.trail = look.trail;
+        spark.twinkle = look.twinkle;
         let color = look.colors[self.random.next_int(look.colors.len() as u32) as usize];
         spark.color = rgb(color);
+        if !look.fade_colors.is_empty() {
+            let fade = self.random.next_int(look.fade_colors.len() as u32) as usize;
+            spark.fade = Some(rgb(look.fade_colors[fade]));
+        }
         add_spark(&mut self.sparks, &mut self.random, spark);
     }
 
@@ -369,6 +399,8 @@ impl FireworkParticles {
         camera: DVec3,
         blocked: impl Fn((i32, i32, i32)) -> bool,
     ) -> Vec<FireworkSound> {
+        let random = &mut self.random;
+        let mut trails = Vec::new();
         self.sparks.retain_mut(|spark| {
             spark.previous = spark.position;
             let age = spark.age;
@@ -395,9 +427,23 @@ impl FireworkParticles {
             if spark.age > spark.lifetime / 2 {
                 let fading = (spark.age - spark.lifetime / 2) as f32 / spark.lifetime as f32;
                 spark.alpha = 1.0 - fading;
+                if let Some(fade) = spark.fade {
+                    for (color, fade) in spark.color.iter_mut().zip(fade) {
+                        *color += (fade - *color) * 0.2;
+                    }
+                }
+            }
+            if spark.leaves_trail() {
+                let mut trail = new_spark(random, spark.position, DVec3::ZERO, spark.color);
+                trail.age = trail.lifetime / 2;
+                trail.twinkle = spark.twinkle;
+                trails.push(trail);
             }
             true
         });
+        for trail in trails {
+            add_spark(&mut self.sparks, &mut self.random, trail);
+        }
         self.flashes.retain_mut(|flash| {
             let age = flash.age;
             flash.age += 1;
@@ -455,7 +501,7 @@ impl FireworkParticles {
             ]);
             mesh.faces += 1;
         };
-        for spark in &self.sparks {
+        for spark in self.sparks.iter().filter(|spark| spark.shown()) {
             let Ok(id) = ResourceId::parse(&spark_texture(spark.age, spark.lifetime)) else {
                 continue;
             };
@@ -825,5 +871,135 @@ mod tests {
         assert_eq!(spark_texture(55, 56), "minecraft:particle/spark_1");
         assert_eq!(spark_texture(56, 56), "minecraft:particle/spark_0");
         assert_eq!(textures().len(), 9);
+    }
+
+    #[test]
+    fn a_fading_spark_turns_to_its_fade_colour_by_the_end_of_its_life() {
+        let (red, blue, white) = (0xff0000, 0x0000ff, 0xffffff);
+        let mut fading = star(Shape::SmallBall, &[red]);
+        fading.fade_colors = vec![blue, white];
+        let mut particles = FireworkParticles::new(14);
+        let explosions = vec![fading, star(Shape::Burst, &[red])];
+        start(&mut particles, &burst_of(explosions), DVec3::ZERO);
+        let fades: Vec<Option<[f32; 3]>> = particles.sparks.iter().map(|s| s.fade).collect();
+        assert!(fades.contains(&Some(rgb(blue))) && fades.contains(&Some(rgb(white))));
+        assert!(fades.iter().all(|fade| fade.is_some()));
+        for _ in 0..24 {
+            particles.tick(DVec3::ZERO, |_| false);
+        }
+        assert!(particles.sparks.iter().all(|s| s.color == rgb(red)));
+        for _ in 24..47 {
+            particles.tick(DVec3::ZERO, |_| false);
+        }
+        let (faded, plain) = particles.sparks.split_at(98);
+        assert!(plain.len() == BURST_SPARKS && plain.iter().all(|s| s.fade.is_none()));
+        assert!(plain.iter().all(|s| s.color == rgb(red)));
+        for spark in faded {
+            let fade = spark.fade.expect("a fade colour");
+            let left = 0.8f32.powi(spark.age - spark.lifetime / 2);
+            for ((color, fade), start) in spark.color.iter().zip(fade).zip(rgb(red)) {
+                assert!((color - (fade + (start - fade) * left)).abs() < 1e-3);
+                assert!((color - fade).abs() < 0.02, "{spark:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_trailing_spark_leaves_still_sparks_of_its_colour_behind_in_its_first_half() {
+        let mut particles = FireworkParticles::new(15);
+        let (red, blue) = (rgb(0xff0000), rgb(0x0000ff));
+        let at = DVec3::new(0.5, 80.0, 0.5);
+        let mut spark = new_spark(&mut particles.random, at, DVec3::new(0.3, 0.0, 0.0), red);
+        spark.trail = true;
+        spark.twinkle = true;
+        spark.fade = Some(blue);
+        let lifetime = spark.lifetime;
+        particles.sparks.push(spark);
+        let mut born = Vec::new();
+        for tick in 1..lifetime {
+            particles.tick(DVec3::ZERO, |_| false);
+            let parent = particles.sparks[0].clone();
+            assert_eq!(parent.age, tick);
+            for trail in particles.sparks[1..]
+                .iter()
+                .filter(|s| s.age == s.lifetime / 2)
+            {
+                assert_eq!(
+                    (trail.position, trail.previous, trail.velocity),
+                    (parent.position, parent.position, DVec3::ZERO)
+                );
+                assert_eq!((trail.color, trail.alpha, trail.fade), (red, 0.99, None));
+                assert_eq!((trail.trail, trail.twinkle), (false, true));
+                born.push(tick);
+            }
+        }
+        let expected: Vec<i32> = (1..lifetime / 2)
+            .filter(|age| (age + lifetime) % 2 == 0)
+            .collect();
+        assert_eq!(born, expected);
+        assert!(particles.sparks[1..].iter().all(|s| s.color == red));
+        assert!(particles.sparks[0].color[2] > 0.9);
+    }
+
+    #[test]
+    fn a_twinkling_spark_blinks_in_threes_after_a_third_of_its_life() {
+        let mut random = LegacyRandom::new(3);
+        let mut spark = new_spark(&mut random, DVec3::ZERO, DVec3::ZERO, [1.0; 3]);
+        spark.lifetime = 48;
+        let hidden = |twinkle: bool| -> Vec<i32> {
+            let mut spark = spark.clone();
+            spark.twinkle = twinkle;
+            (0..48)
+                .filter(|&age| {
+                    spark.age = age;
+                    !spark.shown()
+                })
+                .collect()
+        };
+        assert_eq!(hidden(false), Vec::<i32>::new());
+        assert_eq!(
+            hidden(true),
+            vec![
+                16, 17, 21, 22, 23, 27, 28, 29, 33, 34, 35, 39, 40, 41, 45, 46, 47
+            ]
+        );
+    }
+
+    fn spark_atlas() -> Atlas {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(
+            root.join("pack.mcmeta"),
+            r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+        )
+        .unwrap();
+        let folder = root.join("assets/minecraft/textures/particle");
+        std::fs::create_dir_all(&folder).unwrap();
+        let names = (0..SPARK_FRAMES).map(|i| format!("spark_{i}"));
+        for name in names.chain(std::iter::once("flash".to_owned())) {
+            image::RgbaImage::from_pixel(8, 8, image::Rgba([255, 255, 255, 255]))
+                .save(folder.join(format!("{name}.png")))
+                .unwrap();
+        }
+        let packs = crate::pack::PackStack::open(vec![root.into()]).unwrap();
+        crate::mesh::make_atlas(&packs, textures()).unwrap()
+    }
+
+    #[test]
+    fn a_twinkling_spark_draws_nothing_while_it_blinks_off() {
+        let atlas = spark_atlas();
+        let light = SkyLight::from_levels((0, 64, 0), (1, 1, 1), vec![15], vec![0]);
+        let mut particles = FireworkParticles::new(16);
+        let at = DVec3::new(0.5, 64.5, 0.5);
+        let mut spark = new_spark(&mut particles.random, at, DVec3::ZERO, [1.0; 3]);
+        spark.lifetime = 48;
+        spark.twinkle = true;
+        for (age, faces) in [(15, 1), (16, 0), (18, 1)] {
+            spark.age = age;
+            particles.sparks = vec![spark.clone()];
+            let mut mesh = ChunkMesh::default();
+            particles.append_mesh(&mut mesh, &atlas, Vec3::Z, 0.5, &light);
+            assert_eq!(mesh.faces, faces, "{age}");
+        }
     }
 }
