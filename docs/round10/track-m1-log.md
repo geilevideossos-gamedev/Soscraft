@@ -16,6 +16,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Changed again, no new file (rabbits-behaviour 1): `entities/src/world/families/land/animal_goals.rs` (`MoveToBlockGoal`), `entities/src/world/families/land/rabbits/ai.rs` (`RaidGardenGoal`), `entities/src/world/families/land/rabbits.rs` (the bite), `entities/src/world/families/land/rabbits/tests.rs`.
 - Changed again, no new file (rabbits-behaviour 2): `entities/src/world/families/land/rabbits.rs` (armour, voice, the strike), `entities/src/world/families/land/rabbits/ai.rs` (the evil goals and the leap), `entities/src/world/families/land/rabbits/tests.rs`.
 - Patched (rabbits-behaviour 3): `entities/src/feline_ai.rs` (the cat's rabbit target slot, one line); `entities/src/world/families/land/rabbits/tests.rs` changed again (the cat test).
+- Patched (polar-bears-live 1): `entities/src/monster_ai.rs` (`MeleeState`'s three accessors, `MeleeCheck`, `MeleeAttackGoal::checked` and `tick_with`, `CheckedMeleeAttackGoal`), `entities/src/world/families/tests.rs` (its test).
 
 ## Hooks
 
@@ -27,6 +28,7 @@ Root hooks this track added (M10, "Hooks this track adds").
 - `AvoidEntityGoal::matching(fn(&str) -> bool)` (rabbits-live 2, `monster_ai.rs`): beside `also`; a field set by `new`, so no literal changes.
 - `World::biome_in_tag(pos, tag)` (rabbits-live 3): `player/src/lib.rs` after `biome`, false by default; the server's `MobWorld` answers it after its `biome` (`server_mobs.rs`) through `Level::biome_in_tag_at`. M2's tadpoles use it under this name.
 - **"The registry's texture test checks the pests' textures first, not the whole list"** (rabbits-drawn, before commit 1): not a hook, but a root-file change in its own commit. D0's `families::tests::a_registered_mob_is_tracked_textured_and_shadowed_through_its_family` (terrain root `families/tests.rs`) compared `textures()` with exactly the silverfish and endermite textures, so the first family with a texture of its own (the rabbit) fails it. It now compares `textures()[..2]`: `pests` comes first in the root's order, so the test still proves their two textures and lets every later family add its own. Every other round 10 track with a drawn family needs the same one-line change; whichever merges second keeps the identical line.
+- **"Registered Minecraft mobs can land their melee attacks their own way"** (polar-bears-live 1, `monster_ai.rs`): `type MeleeCheck = fn(&mut MonsterGoalContext, &dyn World, TargetInfo)`; `MeleeAttackGoal::tick_with(ctx, world, Option<MeleeCheck>)` is the old `tick_world` body, whose inline attack (cooldown, reach, sight, swing, `attack`, the iron golem's damage roll) runs only with `None`, and `tick_world` calls it with `None`; `MeleeAttackGoal::checked(self, check)` builds `CheckedMeleeAttackGoal { goal, check }`, which hands every `Goal` method to the goal and ticks through `tick_with(.., Some(check))`; `MeleeState` gains `pub(crate)` `ticks_until_attack()`, `reset_attack_cooldown()` (20, `adjustedTickDelay(20)` of an every-tick goal) and `is_time_to_attack()`. No field was added to `MeleeAttackGoal`, so every literal (the ten in the crate, the rabbit's and probe's, M2's dolphins) stays valid.
 
 ## Protocol
 
@@ -361,3 +363,17 @@ The kit for all of it (M1-1's, 25 stacks; the friend's `.env` needs the same lin
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*16,minecraft:carrot*64,minecraft:golden_carrot*16,minecraft:dandelion*16,minecraft:iron_hoe,minecraft:bone_meal*64,minecraft:water_bucket,minecraft:oak_fence*64,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:lead*4,minecraft:iron_sword,minecraft:shield,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:spawner,minecraft:cooked_beef*32,minecraft:bow,minecraft:arrow*64,minecraft:grass_block*64,minecraft:flint_and_steel,minecraft:lava_bucket
 ```
+
+### Group polar-bears-live
+
+#### 1. Registered Minecraft mobs can land their melee attacks their own way
+
+After 9bfbc35e.
+
+- **javap this round** (`MeleeAttackGoal`, `PolarBear$PolarBearMeleeAttackGoal`): `MeleeAttackGoal.tick` counts `ticksUntilNextAttack` down and calls `checkAndPerformAttack(target)` every tick it has a target; the default is `canPerformAttack` (`isTimeToAttack`, `isWithinMeleeAttackRange`, `hasLineOfSight`), then `resetAttackCooldown` (`adjustedTickDelay(20)` = 20), `swingForAttack` and `doHurtTarget`. The polar bear overrides `checkAndPerformAttack` and `stop` only, and reads `getTicksUntilNextAttack`, `isTimeToAttack` and `resetAttackCooldown`; its check never calls `swingForAttack`.
+- **Changed (vendored entities crate, `monster_ai.rs`):** the hook (see "Hooks"). The body of the old `tick_world` keeps its lines; it moved under `impl MeleeAttackGoal` as `tick_with`, and the attack's `if` became the `else` of `if let Some(check) = check`.
+- **Tests added:** `world::families::tests::a_melee_goal_with_its_own_check_lands_hits_through_it` (goal level, on the probe's context with a player in reach: a checked goal has the plain goal's controls, ticks every tick and is interruptible; its check gets the target every tick and the cooldown 0, 19, 18, .. and lands hits on ticks 0, 20 and 40 through `attack`, the goal's own swing never runs; `stop` still stands it down; a check that does nothing never hits; the plain goal still hits on ticks 0, 20 and 40 and swings three times). The melee tests of D0 (`a_registered_monster_runs_its_goals_and_strikes_a_player`) are unchanged and pass.
+- **Decisions:** decision 1 as recommended (the wrapper over `tick_with`). Until commit 2 uses them, `checked`, `CheckedMeleeAttackGoal` and the three accessors are only used by the test, so this commit alone builds with three dead-code warnings in `minecraftoss-entities`; commit 2 clears them.
+- **Runs:** `test -p minecraftoss-entities --locked --lib families::tests` (18 passed), `check -p launcher --locked` (green; the old render_frame and skate warnings and the three dead-code warnings above).
+- **Test steps:** nothing new to see; registered mobs bite as before. Release build, survival, Normal, by night in a stone cave: use the silverfish egg 6 blocks away; it crawls to you and bites about once a second. **m1-melee-hook-1**
+- **Kit:** none new (D0's kit line has the silverfish egg).
