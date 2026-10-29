@@ -35,7 +35,49 @@ impl Ingredient {
 enum Kind {
     Shaped(Vec<Vec<Option<Ingredient>>>),
     Shapeless(Vec<Ingredient>),
+    FireworkStar {
+        shapes: Vec<(String, Ingredient)>,
+        trail: Ingredient,
+        twinkle: Ingredient,
+        fuel: Ingredient,
+        dye: Ingredient,
+    },
+    FireworkStarFade {
+        target: Ingredient,
+        dye: Ingredient,
+    },
+    FireworkRocket {
+        shell: Ingredient,
+        fuel: Ingredient,
+        star: Ingredient,
+    },
 }
+
+const DYE_COLORS: [(&str, i32); 16] = [
+    ("white", 15790320),
+    ("orange", 15435844),
+    ("magenta", 12801229),
+    ("light_blue", 6719955),
+    ("yellow", 14602026),
+    ("lime", 4312372),
+    ("pink", 14188952),
+    ("gray", 4408131),
+    ("light_gray", 11250603),
+    ("cyan", 2651799),
+    ("purple", 8073150),
+    ("blue", 2437522),
+    ("brown", 5320730),
+    ("green", 3887386),
+    ("red", 11743532),
+    ("black", 1973019),
+];
+const FIREWORK_SHAPES: [&str; 5] = ["small_ball", "large_ball", "star", "creeper", "burst"];
+const DYE: &str = "minecraft:dye";
+const FIREWORK_EXPLOSION: &str = "minecraft:firework_explosion";
+const FIREWORKS: &str = "minecraft:fireworks";
+const DEFAULT_FLIGHT: u64 = 1;
+const MAX_FUEL: u64 = 3;
+
 #[derive(Debug)]
 struct Recipe {
     id: String,
@@ -327,7 +369,7 @@ impl RecipeBook {
     }
 
     pub fn with_extra(mut self, recipes: impl IntoIterator<Item = (String, Value)>) -> Self {
-        let vanilla = u32::try_from(self.recipes.len() + self.smelting.len()).unwrap_or(u32::MAX);
+        let vanilla = u32::try_from(self.crafting_recipes().count() + self.smelting.len()).unwrap_or(u32::MAX);
         let mut next = self
             .display_indices
             .values()
@@ -597,7 +639,7 @@ impl RecipeBook {
     }
 
     pub fn crafting_recipes(&self) -> impl Iterator<Item = CraftingRecipeRef<'_>> {
-        self.recipes.iter().map(|recipe| {
+        self.recipes.iter().filter_map(|recipe| {
             let (width, height, ingredients) = match &recipe.kind {
                 Kind::Shaped(rows) => (
                     rows[0].len(),
@@ -605,8 +647,9 @@ impl RecipeBook {
                     rows.iter().flatten().filter(|cell| cell.is_some()).count(),
                 ),
                 Kind::Shapeless(items) => (0, 0, items.len()),
+                _ => return None,
             };
-            CraftingRecipeRef {
+            Some(CraftingRecipeRef {
                 id: &recipe.id,
                 category: &recipe.category,
                 group: recipe.group.as_deref(),
@@ -614,7 +657,7 @@ impl RecipeBook {
                 width,
                 height,
                 ingredients,
-            }
+            })
         })
     }
 
@@ -661,6 +704,7 @@ impl RecipeBook {
                     grid[slot] = Some(self.ingredient_items(ingredient));
                 }
             }
+            _ => return None,
         }
         Some(grid)
     }
@@ -795,9 +839,12 @@ impl RecipeBook {
         if grid.len() != width * height {
             return None;
         }
-        self.recipes.iter().find_map(|recipe| {
-            let matched = self.recipe_matches(recipe, grid, width, height);
-            matched.then(|| recipe.result.clone())
+        self.recipes.iter().find_map(|recipe| match &recipe.kind {
+            Kind::Shaped(_) | Kind::Shapeless(_) => {
+                let matched = self.recipe_matches(recipe, grid, width, height);
+                matched.then(|| recipe.result.clone())
+            }
+            _ => self.special_result(recipe, grid),
         })
     }
 
@@ -839,6 +886,157 @@ impl RecipeBook {
         match &recipe.kind {
             Kind::Shaped(pattern) => self.matches_shaped(pattern, grid, width, height),
             Kind::Shapeless(ingredients) => self.matches_shapeless(ingredients, grid),
+            _ => self.special_result(recipe, grid).is_some(),
+        }
+    }
+
+    fn special_result(&self, recipe: &Recipe, grid: &[Option<ItemStack>]) -> Option<ItemStack> {
+        let items = grid.iter().filter_map(Option::as_ref).collect::<Vec<_>>();
+        match &recipe.kind {
+            Kind::FireworkStar {
+                shapes,
+                trail,
+                twinkle,
+                fuel,
+                dye,
+            } => {
+                if items.len() < 2 {
+                    return None;
+                }
+                let (mut shape, mut has_trail, mut has_twinkle, mut has_fuel) =
+                    (None, false, false, false);
+                let mut colors = Vec::new();
+                for stack in items {
+                    if self.matches_ingredient(twinkle, &stack.id) {
+                        if has_twinkle {
+                            return None;
+                        }
+                        has_twinkle = true;
+                    } else if self.matches_ingredient(trail, &stack.id) {
+                        if has_trail {
+                            return None;
+                        }
+                        has_trail = true;
+                    } else if self.matches_ingredient(fuel, &stack.id) {
+                        if has_fuel {
+                            return None;
+                        }
+                        has_fuel = true;
+                    } else if let Some(color) = dye_color(stack)
+                        .filter(|_| self.matches_ingredient(dye, &stack.id))
+                    {
+                        colors.push(color);
+                    } else if let Some((name, _)) = shapes
+                        .iter()
+                        .find(|(_, ingredient)| self.matches_ingredient(ingredient, &stack.id))
+                    {
+                        if shape.is_some() {
+                            return None;
+                        }
+                        shape = Some(name.as_str());
+                    } else {
+                        return None;
+                    }
+                }
+                if !has_fuel || colors.is_empty() {
+                    return None;
+                }
+                let mut explosion = serde_json::Map::new();
+                explosion.insert("shape".to_owned(), Value::from(shape.unwrap_or("small_ball")));
+                explosion.insert("colors".to_owned(), Value::from(colors));
+                if has_trail {
+                    explosion.insert("has_trail".to_owned(), Value::from(1));
+                }
+                if has_twinkle {
+                    explosion.insert("has_twinkle".to_owned(), Value::from(1));
+                }
+                let mut star = recipe.result.clone();
+                set_component(&mut star, FIREWORK_EXPLOSION, Some(Value::Object(explosion)));
+                Some(star)
+            }
+            Kind::FireworkStarFade { target, dye } => {
+                if items.len() < 2 {
+                    return None;
+                }
+                let mut star = None;
+                let mut fades = Vec::new();
+                for stack in items {
+                    if let Some(color) =
+                        dye_color(stack).filter(|_| self.matches_ingredient(dye, &stack.id))
+                    {
+                        fades.push(color);
+                    } else if self.matches_ingredient(target, &stack.id) {
+                        if star.is_some() {
+                            return None;
+                        }
+                        star = Some(stack);
+                    } else {
+                        return None;
+                    }
+                }
+                let star = star.filter(|_| !fades.is_empty())?;
+                let mut faded = transmuted(&recipe.result, star);
+                let mut explosion = faded
+                    .components
+                    .as_ref()
+                    .and_then(|patch| patch.get(FIREWORK_EXPLOSION))
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        serde_json::Map::from_iter([(
+                            "shape".to_owned(),
+                            Value::from("small_ball"),
+                        )])
+                    });
+                explosion.insert("fade_colors".to_owned(), Value::from(fades));
+                set_component(&mut faded, FIREWORK_EXPLOSION, Some(Value::Object(explosion)));
+                Some(faded)
+            }
+            Kind::FireworkRocket { shell, fuel, star } => {
+                if items.len() < 2 {
+                    return None;
+                }
+                let (mut has_shell, mut flight) = (false, 0);
+                let mut explosions = Vec::new();
+                for stack in items {
+                    if self.matches_ingredient(shell, &stack.id) {
+                        if has_shell {
+                            return None;
+                        }
+                        has_shell = true;
+                    } else if self.matches_ingredient(fuel, &stack.id) {
+                        flight += 1;
+                        if flight > MAX_FUEL {
+                            return None;
+                        }
+                    } else if self.matches_ingredient(star, &stack.id) {
+                        explosions.extend(
+                            stack
+                                .components
+                                .as_ref()
+                                .and_then(|patch| patch.get(FIREWORK_EXPLOSION))
+                                .cloned(),
+                        );
+                    } else {
+                        return None;
+                    }
+                }
+                if !has_shell || flight == 0 {
+                    return None;
+                }
+                let fireworks = (flight != DEFAULT_FLIGHT || !explosions.is_empty()).then(|| {
+                    let mut fireworks = serde_json::Map::new();
+                    fireworks.insert("flight_duration".to_owned(), Value::from(flight));
+                    if !explosions.is_empty() {
+                        fireworks.insert("explosions".to_owned(), Value::Array(explosions));
+                    }
+                    Value::Object(fireworks)
+                });
+                let mut rockets = recipe.result.clone();
+                set_component(&mut rockets, FIREWORKS, fireworks);
+                Some(rockets)
+            }
+            Kind::Shaped(_) | Kind::Shapeless(_) => None,
         }
     }
 
@@ -1038,6 +1236,30 @@ fn parse_recipe(value: &Value) -> Option<Recipe> {
                 .map(Ingredient::parse)
                 .collect::<Option<Vec<_>>>()?,
         ),
+        "minecraft:crafting_special_firework_star" => Kind::FireworkStar {
+            shapes: value
+                .get("shapes")?
+                .as_object()?
+                .iter()
+                .map(|(shape, ingredient)| {
+                    FIREWORK_SHAPES.contains(&shape.as_str()).then_some(())?;
+                    Some((shape.clone(), Ingredient::parse(ingredient)?))
+                })
+                .collect::<Option<Vec<_>>>()?,
+            trail: Ingredient::parse(value.get("trail")?)?,
+            twinkle: Ingredient::parse(value.get("twinkle")?)?,
+            fuel: Ingredient::parse(value.get("fuel")?)?,
+            dye: Ingredient::parse(value.get("dye")?)?,
+        },
+        "minecraft:crafting_special_firework_star_fade" => Kind::FireworkStarFade {
+            target: Ingredient::parse(value.get("target")?)?,
+            dye: Ingredient::parse(value.get("dye")?)?,
+        },
+        "minecraft:crafting_special_firework_rocket" => Kind::FireworkRocket {
+            shell: Ingredient::parse(value.get("shell")?)?,
+            fuel: Ingredient::parse(value.get("fuel")?)?,
+            star: Ingredient::parse(value.get("star")?)?,
+        },
         _ => return None,
     };
     Some(Recipe {
@@ -1059,6 +1281,44 @@ fn parse_result(value: &Value) -> Option<ItemStack> {
         .filter(|components| components.as_object().is_some_and(|map| !map.is_empty()))
         .cloned();
     Some(stack)
+}
+
+fn dye_color(stack: &ItemStack) -> Option<i32> {
+    let patch = stack.components.as_ref();
+    if patch.is_some_and(|patch| patch.get(format!("!{DYE}")).is_some()) {
+        return None;
+    }
+    let name = match patch.and_then(|patch| patch.get(DYE)) {
+        Some(dye) => dye.as_str()?,
+        None => stack.id.strip_prefix("minecraft:")?.strip_suffix("_dye")?,
+    };
+    DYE_COLORS
+        .iter()
+        .find(|(dye, _)| *dye == name)
+        .map(|(_, color)| *color)
+}
+
+fn set_component(stack: &mut ItemStack, key: &str, value: Option<Value>) {
+    let mut patch = match stack.components.take() {
+        Some(Value::Object(patch)) => patch,
+        _ => serde_json::Map::new(),
+    };
+    patch.remove(&format!("!{key}"));
+    match value {
+        Some(value) => patch.insert(key.to_owned(), value),
+        None => patch.remove(key),
+    };
+    stack.components = (!patch.is_empty()).then_some(Value::Object(patch));
+}
+
+fn transmuted(result: &ItemStack, input: &ItemStack) -> ItemStack {
+    let mut stack = result.clone();
+    if let Some(Value::Object(patch)) = &input.components {
+        for (key, value) in patch {
+            set_component(&mut stack, key, Some(value.clone()));
+        }
+    }
+    stack
 }
 
 fn trim_pattern(rows: Vec<Vec<Option<Ingredient>>>) -> Option<Vec<Vec<Option<Ingredient>>>> {
@@ -1226,6 +1486,233 @@ mod tests {
         let mut planks: [Option<ItemStack>; 4] = std::array::from_fn(|_| None);
         planks[0] = Some(ItemStack::new("minecraft:oak_log", 1));
         assert_eq!(book.matching(&planks, 2, 2).map(|stack| stack.components), Some(None));
+    }
+
+    fn firework_book() -> RecipeBook {
+        let mut book = RecipeBook::default();
+        book.tags.insert(
+            "minecraft:dyes".into(),
+            DYE_COLORS.iter().map(|(name, _)| format!("minecraft:{name}_dye")).collect(),
+        );
+        book.tags.insert(
+            "minecraft:skulls".into(),
+            vec!["minecraft:creeper_head".into(), "minecraft:zombie_head".into()],
+        );
+        for (id, recipe) in [
+            ("minecraft:firework_rocket", serde_json::json!({
+                "type": "minecraft:crafting_special_firework_rocket", "shell": "minecraft:paper",
+                "fuel": "minecraft:gunpowder", "star": "minecraft:firework_star",
+                "result": {"id": "minecraft:firework_rocket", "count": 3}
+            })),
+            ("minecraft:firework_rocket_simple", serde_json::json!({
+                "type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:gunpowder", "minecraft:paper"],
+                "result": {"id": "minecraft:firework_rocket", "count": 3}
+            })),
+            ("minecraft:firework_star", serde_json::json!({
+                "type": "minecraft:crafting_special_firework_star", "dye": "#minecraft:dyes", "fuel": "minecraft:gunpowder",
+                "shapes": {"burst": "minecraft:feather", "creeper": "#minecraft:skulls", "large_ball": "minecraft:fire_charge", "star": "minecraft:gold_nugget"},
+                "trail": "minecraft:diamond", "twinkle": "minecraft:glowstone_dust", "result": {"id": "minecraft:firework_star"}
+            })),
+            ("minecraft:firework_star_fade", serde_json::json!({
+                "type": "minecraft:crafting_special_firework_star_fade", "dye": "#minecraft:dyes",
+                "target": "minecraft:firework_star", "result": {"id": "minecraft:firework_star"}
+            })),
+        ] {
+            let mut recipe = parse_recipe(&recipe).unwrap();
+            recipe.id = id.to_owned();
+            book.recipes.push(recipe);
+        }
+        book
+    }
+
+    fn item(id: &str) -> ItemStack {
+        ItemStack::new(format!("minecraft:{id}"), 1)
+    }
+
+    fn with(mut stack: ItemStack, components: Value) -> ItemStack {
+        stack.components = Some(components);
+        stack
+    }
+
+    fn table(items: impl IntoIterator<Item = ItemStack>) -> Vec<Option<ItemStack>> {
+        let mut grid = items.into_iter().map(Some).collect::<Vec<_>>();
+        grid.resize(9, None);
+        grid
+    }
+
+    fn crafted(book: &RecipeBook, ids: &[&str]) -> Option<ItemStack> {
+        book.matching(&table(ids.iter().map(|id| item(id))), 3, 3)
+    }
+
+    fn star(explosion: Value) -> ItemStack {
+        with(item("firework_star"), serde_json::json!({"minecraft:firework_explosion": explosion}))
+    }
+
+    #[test]
+    fn firework_stars_take_their_shape_colours_trail_and_twinkle_from_the_grid() {
+        let book = firework_book();
+        let red = crafted(&book, &["gunpowder", "red_dye", "fire_charge", "diamond"]).unwrap();
+        assert_eq!((red.id.as_str(), red.count), ("minecraft:firework_star", 1));
+        assert_eq!(
+            red.components,
+            Some(serde_json::json!({"minecraft:firework_explosion": {"shape": "large_ball", "colors": [11743532], "has_trail": 1}}))
+        );
+        let explosion = |ids: &[&str]| {
+            crafted(&book, ids).and_then(|star| star.components).map(|patch| patch["minecraft:firework_explosion"].clone())
+        };
+        assert_eq!(
+            explosion(&["blue_dye", "gunpowder", "red_dye", "creeper_head", "glowstone_dust"]),
+            Some(serde_json::json!({"shape": "creeper", "colors": [2437522, 11743532], "has_twinkle": 1}))
+        );
+        assert_eq!(explosion(&["lime_dye", "gunpowder"]), Some(serde_json::json!({"shape": "small_ball", "colors": [4312372]})));
+        assert_eq!(explosion(&["gunpowder", "white_dye", "white_dye", "feather"]), Some(serde_json::json!({"shape": "burst", "colors": [15790320, 15790320]})));
+        assert_eq!(
+            explosion(&["gold_nugget", "yellow_dye", "gunpowder", "diamond", "glowstone_dust"]),
+            Some(serde_json::json!({"shape": "star", "colors": [14602026], "has_trail": 1, "has_twinkle": 1}))
+        );
+        for refused in [
+            &["gunpowder"][..],
+            &["red_dye", "fire_charge"],
+            &["gunpowder", "fire_charge", "diamond"],
+            &["gunpowder", "gunpowder", "red_dye"],
+            &["gunpowder", "red_dye", "feather", "gold_nugget"],
+            &["gunpowder", "red_dye", "diamond", "diamond"],
+            &["gunpowder", "red_dye", "glowstone_dust", "glowstone_dust"],
+            &["gunpowder", "red_dye", "stick"],
+        ] {
+            assert_eq!(crafted(&book, refused), None, "{refused:?}");
+        }
+        let lime = with(item("red_dye"), serde_json::json!({"minecraft:dye": "lime"}));
+        let made = book.matching(&table([item("gunpowder"), lime]), 3, 3).unwrap();
+        assert_eq!(made.components.unwrap()["minecraft:firework_explosion"]["colors"], serde_json::json!([4312372]));
+        let undyed = with(item("red_dye"), serde_json::json!({"!minecraft:dye": {}}));
+        assert_eq!(book.matching(&table([item("gunpowder"), undyed]), 3, 3), None);
+    }
+
+    #[test]
+    fn firework_rockets_fly_one_level_per_gunpowder_with_their_stars_in_grid_order() {
+        let book = firework_book();
+        let yellow = serde_json::json!({"shape": "star", "colors": [14602026], "fade_colors": [2437522]});
+        let lime = serde_json::json!({"shape": "creeper", "colors": [4312372], "has_twinkle": 1});
+        let mut grid = table([]);
+        grid[0] = Some(star(lime.clone()));
+        grid[2] = Some(item("paper"));
+        grid[4] = Some(item("gunpowder"));
+        grid[7] = Some(star(yellow.clone()));
+        grid[8] = Some(item("gunpowder"));
+        let rockets = book.matching(&grid, 3, 3).unwrap();
+        assert_eq!((rockets.id.as_str(), rockets.count), ("minecraft:firework_rocket", 3));
+        assert_eq!(
+            rockets.components,
+            Some(serde_json::json!({"minecraft:fireworks": {"flight_duration": 2, "explosions": [lime, yellow]}}))
+        );
+        assert_eq!(book.matching_id(&grid, 3, 3), Some("minecraft:firework_rocket"));
+        assert_eq!(
+            crafted(&book, &["paper", "gunpowder", "gunpowder", "gunpowder"]).and_then(|rockets| rockets.components),
+            Some(serde_json::json!({"minecraft:fireworks": {"flight_duration": 3}}))
+        );
+        let plain = crafted(&book, &["gunpowder", "paper"]).unwrap();
+        assert_eq!((plain.id.as_str(), plain.count, plain.components), ("minecraft:firework_rocket", 3, None));
+        let blank = book.matching(&table([item("paper"), item("gunpowder"), item("firework_star")]), 3, 3).unwrap();
+        assert_eq!((blank.count, blank.components), (3, None));
+        for refused in [
+            &["paper", "gunpowder", "gunpowder", "gunpowder", "gunpowder"][..],
+            &["paper"],
+            &["paper", "paper", "gunpowder"],
+            &["paper", "firework_star"],
+            &["gunpowder", "firework_star"],
+            &["paper", "gunpowder", "stick"],
+        ] {
+            assert_eq!(crafted(&book, refused), None, "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn dyes_give_a_firework_star_its_fade_colours() {
+        let book = firework_book();
+        let mut red = star(serde_json::json!({"shape": "large_ball", "colors": [11743532], "has_trail": 1}));
+        red.components.as_mut().unwrap()["minecraft:custom_name"] = serde_json::json!("Red");
+        red.count = 5;
+        let faded = book.matching(&table([red.clone(), item("blue_dye")]), 3, 3).unwrap();
+        assert_eq!((faded.id.as_str(), faded.count), ("minecraft:firework_star", 1));
+        assert_eq!(
+            faded.components,
+            Some(serde_json::json!({
+                "minecraft:custom_name": "Red",
+                "minecraft:firework_explosion": {"shape": "large_ball", "colors": [11743532], "fade_colors": [2437522], "has_trail": 1}
+            }))
+        );
+        let twice = book.matching(&table([item("white_dye"), faded, item("black_dye")]), 3, 3).unwrap();
+        assert_eq!(twice.components.unwrap()["minecraft:firework_explosion"]["fade_colors"], serde_json::json!([15790320, 1973019]));
+        assert_eq!(
+            crafted(&book, &["firework_star", "lime_dye"]).and_then(|star| star.components),
+            Some(serde_json::json!({"minecraft:firework_explosion": {"shape": "small_ball", "fade_colors": [4312372]}}))
+        );
+        assert_eq!(book.matching(&table([red.clone()]), 3, 3), None);
+        assert_eq!(book.matching(&table([red.clone(), red.clone(), item("blue_dye")]), 3, 3), None);
+        assert_eq!(book.matching(&table([red, item("blue_dye"), item("stick")]), 3, 3), None);
+    }
+
+    #[test]
+    fn special_recipes_stay_out_of_the_recipe_book_but_craft_from_the_grid() {
+        let book = firework_book();
+        let listed = book.crafting_recipes().map(|recipe| recipe.id.to_owned()).collect::<Vec<_>>();
+        assert_eq!(listed, ["minecraft:firework_rocket_simple"]);
+        assert!(book.crafting_grid_candidates("minecraft:firework_star", 3, 3).is_none());
+        assert!(book.crafting_grid_candidates("minecraft:firework_rocket_simple", 3, 3).is_some());
+        assert!(book.has_recipe("minecraft:firework_star_fade"));
+        let book = book.with_extra([("fork:gun".to_owned(), serde_json::json!({
+            "type": "minecraft:crafting_shapeless", "ingredients": ["minecraft:stick"], "result": {"id": "fork:gun"}
+        }))]);
+        assert_eq!(book.display_indices("fork:gun"), Some(&[1][..]));
+        let mut inventory = Inventory::default().with_recipes(book);
+        assert!(!inventory.unlock_recipe("minecraft:firework_rocket"));
+        let red = serde_json::json!({"shape": "large_ball", "colors": [11743532], "has_trail": 1});
+        inventory.workbench[0] = Some(ItemStack::new("minecraft:paper", 2));
+        inventory.workbench[1] = Some(ItemStack::new("minecraft:gunpowder", 4));
+        let mut stars = star(red.clone());
+        stars.count = 2;
+        inventory.workbench[3] = Some(stars);
+        assert!(inventory.take_workbench_output(false));
+        let rockets = inventory.cursor.clone().unwrap();
+        assert_eq!(rockets.count, 3);
+        assert_eq!(rockets.components, Some(serde_json::json!({"minecraft:fireworks": {"flight_duration": 1, "explosions": [red]}})));
+        assert_eq!(
+            inventory.workbench.iter().map(|cell| cell.as_ref().map_or(0, |stack| stack.count)).collect::<Vec<_>>(),
+            [1, 3, 0, 1, 0, 0, 0, 0, 0]
+        );
+        assert!(inventory.unlocked_recipes.is_empty());
+    }
+
+    #[test]
+    fn the_jar_firework_recipes_craft_stars_and_rockets() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        assert!(book.crafting_recipes().all(|recipe| !recipe.id.starts_with("minecraft:firework_star")));
+        let red = crafted(&book, &["gunpowder", "red_dye", "fire_charge", "diamond"]).unwrap();
+        let explosion = serde_json::json!({"shape": "large_ball", "colors": [11743532], "has_trail": 1});
+        assert_eq!(red.components, Some(serde_json::json!({"minecraft:firework_explosion": explosion.clone()})));
+        assert_eq!(
+            crafted(&book, &["gunpowder", "white_dye", "skeleton_skull"]).and_then(|star| star.components),
+            Some(serde_json::json!({"minecraft:firework_explosion": {"shape": "creeper", "colors": [15790320]}}))
+        );
+        let rockets = book.matching(&table([item("paper"), item("gunpowder"), red.clone(), item("gunpowder")]), 3, 3).unwrap();
+        assert_eq!(rockets.count, 3);
+        assert_eq!(
+            rockets.components,
+            Some(serde_json::json!({"minecraft:fireworks": {"flight_duration": 2, "explosions": [explosion]}}))
+        );
+        let plain = crafted(&book, &["paper", "gunpowder"]).unwrap();
+        assert_eq!((plain.id.as_str(), plain.count, plain.components), ("minecraft:firework_rocket", 3, None));
+        let faded = book.matching(&table([red, item("blue_dye")]), 3, 3).unwrap();
+        assert_eq!(faded.components.unwrap()["minecraft:firework_explosion"]["fade_colors"], serde_json::json!([2437522]));
+        assert_eq!(crafted(&book, &["paper", "gunpowder", "gunpowder", "gunpowder", "gunpowder"]), None);
     }
 
     #[test]

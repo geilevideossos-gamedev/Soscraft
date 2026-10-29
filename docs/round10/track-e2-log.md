@@ -904,3 +904,47 @@ After a4abdfa5.
 ```
 IW4L_MINECRAFT_KIT=minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:small_ball,colors:[I;4312372]}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:2,explosions:[{shape:star,colors:[I;14602026],fade_colors:[I;2437522]},{shape:creeper,colors:[I;4312372],has_twinkle:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:cooked_beef*32
 ```
+
+## Group fw-craft
+
+### 1. Minecraft firework stars and rockets are crafted like vanilla
+
+After e3acf73a.
+
+- **Vanilla (26.3, checked with javap and the jar's recipe files):**
+  - `recipe/firework_star.json` (`crafting_special_firework_star`), `firework_star_fade.json` (`_firework_star_fade`) and `firework_rocket.json` (`_firework_rocket`) name their ingredients as fields: the star's `shapes` map (`large_ball` fire charge, `star` gold nugget, `creeper` `#skulls`, `burst` feather), `trail` diamond, `twinkle` glowstone dust, `fuel` gunpowder and `dye` `#dyes`; the fade's `target` firework star and `dye`; the rocket's `shell` paper, `fuel` gunpowder and `star` firework star, with 3 rockets as the result.
+  - `FireworkStarRecipe.matches`: at least 2 items; each item is the twinkle, the trail or the fuel (each at most once), a dye (it must carry the `minecraft:dye` component; any number) or a shape (at most one); anything else fails; it needs the fuel and a dye. `assemble`: shape `small_ball` unless a shape item is there, the dyes' firework colours in grid order, no fade colours, the trail and the twinkle.
+  - `FireworkStarFadeRecipe`: at least 2 items; dyes (any number) and exactly one star, nothing else. The result is the star with all its components (`TransmuteRecipe.createWithOriginalComponents`, count 1) and its fade colours replaced by the dyes' colours; a star without `firework_explosion` starts from `FireworkExplosion.DEFAULT` (a `small_ball` without colours).
+  - `FireworkRocketRecipe`: at least 2 items; one paper, 1 to 3 gunpowder and any number of stars, nothing else. The result is the 3 rockets with `fireworks {flight_duration = gunpowder count, explosions = the stars' firework_explosion in grid order}`; a star without that component adds nothing.
+  - The rocket item's default `fireworks` is `{flight_duration 1, explosions []}` (`Items`), and a component set to its default leaves the stack's patch. The firework star has no default explosion. The codecs leave out `colors`, `fade_colors`, `has_trail`, `has_twinkle` and `explosions` at their defaults.
+  - `CustomRecipe.isSpecial` is true: these recipes are not placeable, not shown in the recipe book and never unlocked (`ServerRecipeBook.addRecipes`). The recipe manager tries crafting recipes in id order, so `firework_rocket` comes before `firework_rocket_simple` (paper and gunpowder).
+- **Changed:** vendored `third_party/minecraftoss/player/src/crafting.rs`:
+  - `Kind` gets `FireworkStar`, `FireworkStarFade` and `FireworkRocket`, read by `parse_recipe` from the three special types and their fields (an unknown shape name drops the recipe).
+  - New `special_result` follows each recipe's `matches` and `assemble`. `matching` uses it for the special kinds; `recipe_matches` (and so `matching_id`) asks whether it gives a result.
+  - `crafting_recipes` and `crafting_grid_candidates` leave the special kinds out, so the recipe book neither lists, places nor unlocks them. `with_extra` counts only the listed recipes, so the fork's display indices still start right after the vanilla ones.
+  - New `DYE_COLORS` (the 16 `DyeColor` names and firework colours in vanilla order), `dye_color`, `set_component` (sets a component, or with `None` leaves it at the item's default, and drops a `!` removal of it) and `transmuted` (the result with the input's components).
+- **Tests** (vendored `crafting::tests`):
+  - `firework_stars_take_their_shape_colours_trail_and_twinkle_from_the_grid`: gunpowder, red dye, fire charge and diamond make one red `large_ball` star with a trail; dyes keep grid order; a creeper head with glowstone gives a twinkling creeper; no shape gives `small_ball`; two fuels, two shapes, two trails, two twinkles, no dye, no fuel, a stray stick or a lone gunpowder make nothing; a dye's `minecraft:dye` component sets its colour and `!minecraft:dye` stops it being a dye.
+  - `firework_rockets_fly_one_level_per_gunpowder_with_their_stars_in_grid_order`: paper, 2 gunpowder and 2 stars make 3 rockets with flight 2 and both stars in grid order; 3 gunpowder give flight 3; paper with one gunpowder, or with one gunpowder and a star without an explosion, gives 3 plain rockets with no components (through the special recipe, which comes first); 4 gunpowder, two papers, no paper, no gunpowder or a stray item make nothing.
+  - `dyes_give_a_firework_star_its_fade_colours`: a named star of 5 and a blue dye give one star with the name, its shape, colours and trail, and the blue fade; a second craft replaces the fades; a plain star gives a `small_ball` with only fade colours; a lone star, two stars or a stray item make nothing.
+  - `special_recipes_stay_out_of_the_recipe_book_but_craft_from_the_grid`: only the plain rocket recipe is listed and placeable, a fork recipe's display index comes right after it, a special recipe is never unlocked, and taking the result from the table uses one paper, one gunpowder and one star.
+  - `the_jar_firework_recipes_craft_stars_and_rockets` (with the real 26.3 jar, skipped without it): the star, a skeleton-skull creeper, a 2-gunpowder rocket, the plain rocket without components, the fade, and no result for 4 gunpowder.
+  - On this commit's code: `minecraftoss-player` 204 tests pass (with the stand-in scenario files), `minecraft_terrain`'s recipe, crafting and firework tests (94, with the real data, among them `fork_display_indices_come_after_vanilla`) pass, and `check -p launcher` is clean.
+- **Decisions:**
+  - Special recipes stay in the one recipe list in id order, as vanilla's recipe manager tries them. Paper and one gunpowder go through the special rocket recipe first and give the same plain rockets as `firework_rocket_simple`.
+  - A crafted rocket with flight 1 and no stars has no `minecraft:fireworks` component (vanilla drops a default value from the patch), so it stacks with plain rockets. Fields at their default are left out, and a true `has_trail` or `has_twinkle` is written as `1`, the form kits, `/give` and loaded saves give, so crafted and given stars stack.
+  - A dye's colour comes from its `minecraft:dye` component when the stack sets one, otherwise from the colour in its `<colour>_dye` id; the item catalog does not carry the default component.
+  - A rocket copies each star's `firework_explosion` as the star holds it.
+- **Left for later:** the star's icon keeps the model's default grey (`minecraft:firework` tint), and neither the star nor the rocket has its tooltip lines; the colours show when the rocket bursts.
+- **Protocol:** no message change.
+- **Test steps** (survival, by day, open flat ground; place the crafting table first):
+  1. **FW-C1. Stars.** At the crafting table, put gunpowder, red dye, fire charge and diamond in any four cells: the result is one firework star (grey icon). Take it. Then put gunpowder, lime dye, the creeper head and glowstone dust in: a second star. Take it. **Screenshot FW-C1** (the second star in the result slot).
+  2. **FW-C2. Fade.** Put the lime star and one blue dye in: one star. Take it.
+  3. **FW-C3. Rockets.** Put paper and 2 gunpowder in the bottom row, the red star in the top left cell and the fading lime star in the middle: 3 rockets. Take them and place one on the grass 3 blocks ahead. It climbs higher than a plain rocket, bursts into a big red ball with trails and the deep bang, and a tenth of a second later into a lime creeper face that turns blue and flickers with a crackle. **Screenshot FW-C3.**
+  4. **FW-C4. Gunpowder.** Put paper and 4 gunpowder in: no result. Take one gunpowder out: 3 rockets. Put paper and one gunpowder in instead and take the 3 rockets onto the kit's stack of 16 plain rockets: they join it (19).
+  5. **FW-C5. Recipe book.** Open the recipe book and search "firework": it shows the plain rocket recipe only, as vanilla does.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crafting_table,minecraft:gunpowder*64,minecraft:paper*32,minecraft:red_dye*16,minecraft:lime_dye*16,minecraft:blue_dye*16,minecraft:fire_charge*8,minecraft:diamond*8,minecraft:glowstone_dust*16,minecraft:creeper_head,minecraft:firework_rocket*16,minecraft:cooked_beef*32
+```
