@@ -12,6 +12,7 @@ pub struct GearItem {
     pub glint: bool,
     pub dye: Option<u32>,
     pub potion: Option<u32>,
+    pub look: String,
 }
 
 impl GearItem {
@@ -21,7 +22,15 @@ impl GearItem {
             glint: crate::glint::has_glint(stack),
             dye: dyed_color(stack),
             potion: crate::potions::stack_color(stack.components.as_ref()),
+            look: crate::item_look::ItemLook::of(stack.components.as_ref(), None).suffix(),
         }
+    }
+
+    pub fn key(&self) -> String {
+        crate::item_tint::key(
+            &format!("{}{}", self.id, self.look),
+            self.potion.or(self.dye),
+        )
     }
 }
 
@@ -66,7 +75,11 @@ pub fn camera_overlay(slots: &[Option<ItemStack>]) -> bool {
 }
 
 pub fn dyed_color(stack: &ItemStack) -> Option<u32> {
-    let value = stack.components.as_ref()?.get(DYED_COLOR)?;
+    dye_in(stack.components.as_ref())
+}
+
+pub fn dye_in(components: Option<&Value>) -> Option<u32> {
+    let value = components?.get(DYED_COLOR)?;
     let rgb = match value {
         Value::Object(fields) => fields.get("rgb")?,
         number => number,
@@ -107,6 +120,7 @@ mod tests {
             glint: false,
             dye: None,
             potion: None,
+            look: String::new(),
         })
     }
 
@@ -191,6 +205,7 @@ mod tests {
                 glint: true,
                 dye: None,
                 potion: None,
+                look: String::new(),
             })
         );
         assert_eq!(gear.armor[1].as_ref().unwrap().dye, Some(0xB02E26));
@@ -217,6 +232,89 @@ mod tests {
         assert_eq!(gear.off.as_ref().unwrap().potion, None);
         let sword = body_gear(&inventory, 1, is_gun);
         assert_eq!(sword.main.as_ref().unwrap().potion, None);
+    }
+
+    #[test]
+    fn a_loaded_crossbow_and_the_ominous_banner_carry_their_look() {
+        let banner = crate::item_frame::stack_of_tag(
+            &minecraftoss_world::natural_spawner::spawning::ominous_banner(),
+        );
+        let loaded = stack(
+            "minecraft:crossbow",
+            Some(json!({"minecraft:charged_projectiles": [{"id": "minecraft:arrow"}]})),
+        );
+        let inventory = slots(&[
+            (0, loaded),
+            (1, stack("minecraft:crossbow", None)),
+            (39, banner.clone()),
+            (OFFHAND, banner.clone()),
+        ]);
+        let gear = body_gear(&inventory, 0, is_gun);
+        let crossbow = gear.main.as_ref().unwrap();
+        assert_eq!(crossbow.look, "|charge=arrow");
+        assert_eq!(crossbow.key(), "minecraft:crossbow|charge=arrow");
+        let ominous = gear.off.as_ref().unwrap();
+        let look = crate::item_look::ItemLook::parse(&ominous.look);
+        assert_eq!(
+            look,
+            crate::item_look::ItemLook::of(banner.as_ref().unwrap().components.as_ref(), None)
+        );
+        assert_eq!(look.layers.len(), 8);
+        assert_eq!(look.layers[0], ("minecraft:rhombus".to_owned(), "cyan"));
+        assert_eq!(look.layers[7], ("minecraft:border".to_owned(), "black"));
+        assert!(ominous.key().starts_with("minecraft:white_banner|layer=cyan,minecraft:rhombus|"));
+        assert_eq!(gear.armor[0].as_ref(), Some(ominous));
+        let unloaded = body_gear(&inventory, 1, is_gun);
+        assert_eq!(unloaded.main, plain("minecraft:crossbow"));
+        assert_eq!(unloaded.main.unwrap().key(), "minecraft:crossbow");
+    }
+
+    #[test]
+    fn a_worn_or_held_item_keys_like_the_stack_itself() {
+        let stacks = [
+            stack(
+                "minecraft:crossbow",
+                Some(json!({"minecraft:charged_projectiles": [{"id": "minecraft:firework_rocket"}]})),
+            ),
+            crate::item_frame::stack_of_tag(
+                &minecraftoss_world::natural_spawner::spawning::ominous_banner(),
+            ),
+            stack(
+                "minecraft:shield",
+                Some(json!({
+                    "minecraft:base_color": "red",
+                    "minecraft:banner_patterns": [{"pattern": "minecraft:cross", "color": "yellow"}]
+                })),
+            ),
+            stack(
+                "minecraft:potion",
+                Some(json!({
+                    "minecraft:potion_contents": {"potion": "minecraft:healing"},
+                    "minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}]
+                })),
+            ),
+            stack(
+                "minecraft:leather_horse_armor",
+                Some(json!({"minecraft:dyed_color": 0xB02E26, "minecraft:base_color": "blue"})),
+            ),
+            stack("minecraft:stone", None),
+        ];
+        for stack in stacks.iter().flatten() {
+            assert_eq!(
+                GearItem::of(stack).key(),
+                crate::item_tint::of_stack(stack),
+                "{}",
+                stack.id
+            );
+        }
+        assert_eq!(
+            GearItem::of(stacks[2].as_ref().unwrap()).key(),
+            "minecraft:shield|base=red|layer=yellow,minecraft:cross"
+        );
+        assert_eq!(
+            GearItem::of(stacks[3].as_ref().unwrap()).key(),
+            "minecraft:potion|layer=black,minecraft:creeper~f82423"
+        );
     }
 
     #[test]

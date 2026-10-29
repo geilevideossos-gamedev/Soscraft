@@ -81,6 +81,7 @@ pub enum Kind {
     SculkSoul,
     SculkCharge,
     SculkChargePop,
+    Spit,
 }
 
 #[derive(Clone, Debug)]
@@ -305,6 +306,13 @@ impl Particle {
         particle.lifetime = (16.0 / (f64::from(random.next_float()) * 0.8 + 0.2)) as i32 + 2;
         particle.gravity = -0.1;
         particle.friction = 0.9;
+        particle
+    }
+
+    fn spit(at: DVec3, motion: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::poof(at, motion, random);
+        particle.kind = Kind::Spit;
+        particle.gravity = 0.5;
         particle
     }
 
@@ -680,6 +688,10 @@ impl Particle {
             Kind::Heart => "heart".to_owned(),
             Kind::AngryVillager => "angry".to_owned(),
             Kind::Splash => format!("splash_{}", self.sprite),
+            Kind::Spit => {
+                let step = self.age * (GENERIC_SPRITES - 1) / self.lifetime.max(1);
+                format!("generic_{}", GENERIC_SPRITES - 1 - step.clamp(0, GENERIC_SPRITES - 1))
+            }
         };
         ResourceId::parse(&format!("minecraft:particle/{name}")).ok()
     }
@@ -716,6 +728,7 @@ impl Particle {
             Kind::Heart => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
             Kind::AngryVillager => self.quad_size * (grown * 32.0).clamp(0.0, 1.0),
             Kind::Splash => self.quad_size,
+            Kind::Spit => self.quad_size,
         }
     }
 
@@ -1318,6 +1331,7 @@ impl AmbientParticles {
             Kind::Splash => Particle::splash(at, motion, random),
             Kind::SculkSoul => Particle::sculk_soul(at, motion, random),
             Kind::SculkCharge | Kind::SculkChargePop => Particle::sculk_charge(kind, at, motion, random),
+            Kind::Spit => Particle::spit(at, motion, random),
         };
         self.particles.push(particle);
         if self.particles.len() > CAP {
@@ -2078,6 +2092,33 @@ mod tests {
         let mut sideways = AmbientParticles::new(41);
         sideways.add(Kind::Splash, DVec3::new(0.5, 70.0, 0.5), DVec3::new(0.2, 0.0, -0.1));
         assert_eq!(sideways.particles[0].velocity, DVec3::new(0.2, 0.1, -0.1));
+    }
+
+    #[test]
+    fn a_spit_speck_is_a_poof_that_falls_at_0_5() {
+        let at = DVec3::new(0.5, 70.0, 0.5);
+        let motion = DVec3::new(0.6, 0.0, -0.3);
+        let (mut spit, mut poof) = (AmbientParticles::new(43), AmbientParticles::new(43));
+        spit.add(Kind::Spit, at, motion);
+        poof.add(Kind::Poof, at, motion);
+        let (speck, puff) = (spit.particles[0].clone(), poof.particles[0].clone());
+        assert_eq!((speck.kind, speck.gravity, speck.friction), (Kind::Spit, 0.5, 0.9));
+        assert_eq!((speck.velocity, speck.color, speck.quad_size, speck.lifetime), (puff.velocity, puff.color, puff.quad_size, puff.lifetime));
+        assert!((speck.velocity - motion).abs().max_element() <= 0.05 + 1e-6);
+        assert_eq!(speck.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_7"));
+        let mut old = speck.clone();
+        old.age = old.lifetime;
+        assert_eq!(old.sprite().map(|id| id.key()).as_deref(), Some("minecraft:particle/generic_0"));
+        assert_eq!(speck.size_at(0.0), speck.quad_size);
+        assert!(!particles_translucent(Kind::Spit));
+        let scene = open();
+        spit.tick(&scene);
+        let expected = (speck.velocity.y - 0.04 * 0.5) * f64::from(0.9_f32);
+        assert!((spit.particles[0].velocity.y - expected).abs() < 1e-9, "{}", spit.particles[0].velocity.y);
+        for _ in 0..10 {
+            spit.tick(&scene);
+        }
+        assert!(spit.particles[0].position.y < at.y, "it falls: {}", spit.particles[0].position.y);
     }
 
     #[test]

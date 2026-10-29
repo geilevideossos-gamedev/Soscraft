@@ -1527,6 +1527,9 @@ fn update(
         for (pos, apart) in entities.view.lids.take_apart_changes() {
             terrain.stream.draw_apart(pos, apart);
         }
+        for (pos, apart) in entities.view.banners.take_apart_changes(&terrain.scene) {
+            terrain.stream.draw_apart(pos, apart);
+        }
         let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
             (bytemuck::cast_slice::<_, u8>(&mesh.vertices).to_vec(), mesh.indices.clone())
         };
@@ -2596,7 +2599,7 @@ mod skate_tests {
     use playerstate_iw4::pm_flags::{CROUCH, MC_FLYING, MC_GLIDING, MC_RIDING, SPRINTING};
 
     fn item(id: &str) -> Option<GearItem> {
-        Some(GearItem { id: id.to_owned(), glint: false, dye: None, potion: None })
+        Some(GearItem { id: id.to_owned(), glint: false, dye: None, potion: None, look: String::new() })
     }
 
     #[test]

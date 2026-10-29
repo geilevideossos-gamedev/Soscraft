@@ -1,6 +1,6 @@
 //! Inventory icons and names for items, as MinecraftOSS's viewer makes them
 //! (`engine/viewer/src/interface.rs`: `load_catalog_icons`, `item_name`).
-use crate::interface::{item_gui_model_reference, item_model_tints};
+use crate::interface::{item_gui_model_reference, item_look_tints};
 use crate::pack::{PackStack, ResourceId};
 use anyhow::Result;
 use image::{imageops::FilterType, RgbaImage};
@@ -19,20 +19,23 @@ pub fn item_icon_at(
     clock: &crate::item_icon::SpriteClock,
 ) -> Result<Option<RgbaImage>> {
     let (key, potion) = crate::item_tint::split(key);
+    let (key, look) = crate::item_look::split(key);
+    let look = crate::item_look::ItemLook::parse(look);
     let (key, dial) = crate::dials::split(key);
     if dial.is_some() {
         clock.mark_animated();
     }
     let id = ResourceId::parse(key)?;
     let definition = packs.item_definition(&id)?;
-    let model = dial.or_else(|| definition.as_ref().and_then(|value| item_gui_model_reference(&value["model"])));
+    let chosen = definition.as_ref().and_then(|value| look.leaf(&value["model"], Some("gui")));
+    let model = dial.or(chosen).or_else(|| definition.as_ref().and_then(|value| item_gui_model_reference(&value["model"])));
     let tints = definition
         .as_ref()
-        .map(|value| item_model_tints(packs, &value["model"], potion))
+        .map(|value| item_look_tints(packs, &value["model"], potion, &look))
         .transpose()?
         .unwrap_or_default();
     if definition.as_ref().is_some_and(|value| crate::special_models::uses_item_geometry(&value["model"])) {
-        if let Some(geometry) = crate::model::resolve_item_model(packs, &id)? {
+        if let Some(geometry) = crate::model::resolve_item_model_with(packs, &id, None, &look)? {
             let gui = crate::model::item_display_transform(packs, &id, "gui")?;
             let front_light = crate::model::item_gui_light_front(packs, &id)?;
             if let Some(icon) = crate::item_icon::model_icon(packs, &geometry, gui, front_light, &tints, icon_size, clock)? {
@@ -233,7 +236,7 @@ fn model_texture(packs: &PackStack, model: &str) -> Result<Option<ResourceId>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -252,6 +255,29 @@ mod tests {
             let expected = image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 32, 32, FilterType::Nearest);
             assert!(icon == expected, "{item} is drawn from {sprite}");
         }
+    }
+
+    #[test]
+    fn loaded_crossbow_icons_show_their_arrow_or_rocket() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let mut crossbow = minecraftoss_player::inventory::ItemStack::new("minecraft:crossbow", 1);
+        for (projectile, sprite) in [(None, "minecraft:item/crossbow_standby"), (Some("minecraft:arrow"), "minecraft:item/crossbow_arrow"), (Some("minecraft:firework_rocket"), "minecraft:item/crossbow_firework")] {
+            crossbow.components = projectile.map(|id| serde_json::json!({"minecraft:charged_projectiles": [{"id": id}]}));
+            let icon = item_icon(&packs, &crate::item_tint::of_stack(&crossbow), 32).unwrap().unwrap();
+            let bytes = packs.texture(&ResourceId::parse(sprite).unwrap()).unwrap().unwrap();
+            let expected = image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 32, 32, FilterType::Nearest);
+            assert!(icon == expected, "{projectile:?} is drawn from {sprite}");
+        }
+        let pulled = item_icon(&packs, &crate::item_look::keyed("minecraft:crossbow", &crate::item_look::ItemLook::of(None, Some(25))), 32).unwrap().unwrap();
+        let bytes = packs.texture(&ResourceId::parse("minecraft:item/crossbow_pulling_2").unwrap()).unwrap().unwrap();
+        assert!(pulled == image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 32, 32, FilterType::Nearest));
     }
 
     #[test]
@@ -324,5 +350,78 @@ mod tests {
             }
         }
         assert!(dyed > 0 && kept > 0, "{dyed} {kept}");
+    }
+
+    pub(crate) fn banner_pack() -> (crate::test_dir::TestDir, PackStack) {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();
+        for (name, contents) in [
+            (
+                "assets/minecraft/items/white_banner.json",
+                r#"{"model":{"type":"minecraft:special","base":"minecraft:item/template_banner","model":{"type":"minecraft:banner","color":"white"},"transformation":{"scale":[0.6666667,-0.6666667,-0.6666667],"translation":[0.5,0.0,0.5]}}}"#,
+            ),
+            (
+                "assets/minecraft/models/item/template_banner.json",
+                r#"{"gui_light":"front","display":{"gui":{"rotation":[30,20,0],"translation":[0,-3.25,0],"scale":[0.5325,0.5325,0.5325]}}}"#,
+            ),
+        ] {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        let sheets = root.join("assets/minecraft/textures/entity/banner");
+        std::fs::create_dir_all(&sheets).unwrap();
+        for (name, pixel) in [("banner_base", [120, 90, 60, 255]), ("base", [255, 255, 255, 255]), ("stripe", [255, 255, 255, 128])] {
+            RgbaImage::from_pixel(64, 64, image::Rgba(pixel)).save(sheets.join(format!("{name}.png"))).unwrap();
+        }
+        let packs = PackStack::open(vec![root.into()]).unwrap();
+        (temp, packs)
+    }
+
+    #[test]
+    fn banner_icons_blend_their_pattern_layers_and_skip_unknown_patterns() {
+        let (_temp, packs) = banner_pack();
+        let look = |layers: &[(&str, &'static str)]| crate::item_look::ItemLook {
+            layers: layers.iter().map(|&(asset, colour)| (asset.to_owned(), colour)).collect(),
+            ..Default::default()
+        };
+        let icon = |look: crate::item_look::ItemLook| item_icon(&packs, &crate::item_look::keyed("minecraft:white_banner", &look), 32).unwrap().unwrap();
+        let plain = icon(look(&[]));
+        let striped = icon(look(&[("minecraft:stripe", "red")]));
+        assert!(plain != striped);
+        let alphas = |icon: &RgbaImage| icon.pixels().map(|pixel| pixel[3]).collect::<Vec<_>>();
+        assert_eq!(alphas(&plain), alphas(&striped), "a half-clear layer blends over the flag and leaves no holes");
+        let reddened = plain.pixels().zip(striped.pixels()).filter(|(before, after)| before != after).inspect(|(before, after)| {
+            assert!(after[0] <= before[0] && after[1] < before[1] && after[1] > 0, "{before:?} {after:?}");
+        }).count();
+        assert!(reddened > 0);
+        assert!(icon(look(&[("minecraft:stripe", "red"), ("minecraft:no_such_pattern", "blue")])) == striped, "a pattern with no sheet is skipped");
+        assert!(icon(look(&[("minecraft:no_such_pattern", "blue"), ("minecraft:stripe", "red")])) == striped);
+    }
+
+    #[test]
+    fn a_dropped_banner_draws_its_pattern_layers_in_their_colours() {
+        let (_temp, packs) = banner_pack();
+        let textures = ["banner_base", "base", "stripe"].map(|name| ResourceId::parse(&format!("minecraft:entity/banner/{name}")).unwrap());
+        let atlas = crate::mesh::make_atlas(&packs, textures.to_vec()).unwrap();
+        let scene = crate::scene::HandcraftedScene::new();
+        let light = crate::lighting::SkyLight::build(&scene);
+        let mesh = |stack: minecraftoss_player::inventory::ItemStack| {
+            let mut items = minecraftoss_player::items::WorldItems::default();
+            items.spawn(stack, glam::DVec3::new(0.5, 1.0, 0.5));
+            crate::mesh::ItemVisuals::default().mesh(&items, &packs, &atlas, &light, 1.0).unwrap()
+        };
+        let mut banner = minecraftoss_player::inventory::ItemStack::new("minecraft:white_banner", 1);
+        assert_eq!(mesh(banner.clone()).faces, 18, "pole, bar and flag");
+        banner.components = Some(serde_json::json!({"minecraft:banner_patterns": [{"pattern": "minecraft:stripe", "color": "red"}]}));
+        let striped = mesh(banner);
+        assert_eq!(striped.faces, 24, "and one layer on the flag");
+        for (vertices, [red, green, _]) in [(&striped.vertices[48..72], [249.0, 255.0, 254.0]), (&striped.vertices[72..], [176.0, 46.0, 38.0])] {
+            for vertex in vertices {
+                let ratio = vertex.color[1] / vertex.color[0];
+                assert!((ratio - green / red).abs() < 1e-3, "{:?}", vertex.color);
+            }
+        }
     }
 }

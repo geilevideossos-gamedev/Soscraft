@@ -118,6 +118,7 @@ pub struct ServerSim {
     raids: crate::raids::Raids,
     raids_rule: bool,
     bells: crate::bells::Bells,
+    block_events: Vec<(BlockPos, u8, i32)>,
     rockets: Vec<crate::firework_rocket::Rocket>,
     firework_bursts: Vec<crate::firework_rocket::Burst>,
     mob_puffs: Vec<crate::mob_particles::MobPuff>,
@@ -515,6 +516,7 @@ impl ServerSim {
             raids: crate::raids::Raids::default(),
             raids_rule: true,
             bells: crate::bells::Bells::default(),
+            block_events: Vec::new(),
             rockets: Vec::new(),
             firework_bursts: Vec::new(),
             mob_puffs: Vec::new(),
@@ -1645,8 +1647,9 @@ impl ServerSim {
 
     fn hear_bells(&mut self) {
         let game_time = self.level.game_time;
-        for (pos, _) in std::mem::take(&mut self.level.bell_rings) {
+        for (pos, direction) in std::mem::take(&mut self.level.bell_rings) {
             self.bells.ring((pos.x, pos.y, pos.z), game_time, &mut self.mobs);
+            self.block_events.push(((pos.x, pos.y, pos.z), crate::lids::RING, direction.index() as i32));
         }
     }
 
@@ -2102,6 +2105,13 @@ impl ServerSim {
 
     pub fn take_lecterns(&mut self) -> Vec<crate::lectern::LecternView> {
         std::mem::take(&mut self.lecterns)
+    }
+
+    pub fn block_entity_components(&mut self, pos: BlockPos, components: &serde_json::Value) -> bool {
+        let Some(components) = crate::item_nbt::components_tag(components) else {
+            return false;
+        };
+        self.level.apply_block_entity_components(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), &components)
     }
 
     pub fn set_chest_openers(&mut self, pos: BlockPos, count: u32) {
@@ -4121,7 +4131,7 @@ pub enum Command {
     WakeVillagerIn(BlockPos),
     AngerPiglins { player: u64, feet: [f64; 3], sight: bool },
     Boost { player: u64 },
-    MountInventory { vehicle: u64, saddled: bool, body: Option<String>, items: Vec<Option<minecraftoss_player::inventory::ItemStack>> },
+    MountInventory { vehicle: u64, saddled: bool, body: Option<minecraftoss_player::inventory::ItemStack>, items: Vec<Option<minecraftoss_player::inventory::ItemStack>> },
     RootVehicle { player: u64, remove: bool },
     Reattach { player: u64, root: Box<minecraftoss_core::nbt::Tag> },
     Job(Job),
@@ -4129,6 +4139,7 @@ pub enum Command {
     FrameAction { player: u64, id: u64, action: crate::item_frame::FrameAction },
     ChestOpeners { player: Option<u64>, pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
+    BlockEntityComponents { pos: BlockPos, components: Box<serde_json::Value> },
     VaultKey { player: u64, pos: BlockPos, stack: Box<minecraftoss_player::inventory::ItemStack> },
     LeashFence { player: u64, pos: BlockPos, sneaking: bool },
     Knot { player: u64, pos: BlockPos, action: crate::leash_render::KnotAction },
@@ -4330,6 +4341,7 @@ pub struct Output {
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     pub explosion_effects: Vec<minecraftoss_world::level::explosion::ExplosionEffect>,
     pub level_events: Vec<(i32, (i32, i32, i32), i32)>,
+    pub block_events: Vec<((i32, i32, i32), u8, i32)>,
     /// Sounds mobs made this tick.
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
     pub bullet_puffs: Vec<minecraftoss_entities::world::BulletPuff>,
@@ -4574,7 +4586,7 @@ impl ServerHandle {
     }
 
     pub fn mount_inventory(&mut self, inventory: &crate::mount_inventory::MountInventory) {
-        self.send(Command::MountInventory { vehicle: inventory.vehicle, saddled: inventory.saddled(), body: inventory.body(), items: inventory.items() });
+        self.send(Command::MountInventory { vehicle: inventory.vehicle, saddled: inventory.saddled(), body: inventory.body_stack(), items: inventory.items() });
     }
 
     pub fn root_vehicle(&mut self, player: u64, remove: bool) {
@@ -4677,6 +4689,10 @@ impl ServerHandle {
 
     pub fn lectern(&mut self, player: u64, pos: BlockPos, action: crate::lectern::LecternAction) {
         self.send(Command::Lectern { player, pos, action });
+    }
+
+    pub fn block_entity_components(&mut self, pos: BlockPos, components: &serde_json::Value) {
+        self.send(Command::BlockEntityComponents { pos, components: Box::new(components.clone()) });
     }
 
     pub fn vault_key(&mut self, player: u64, pos: BlockPos, stack: &minecraftoss_player::inventory::ItemStack) {
@@ -4864,6 +4880,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         out.item_uses.push((player, placed));
                     }
                 }
+                Command::BlockEntityComponents { pos, components } => {
+                    sim.block_entity_components(pos, &components);
+                }
                 Command::VaultKey { player, pos, stack } => out.item_uses.push((player, sim.vault_key(player, pos, &stack))),
                 Command::LeashFence { player, pos, sneaking } => {
                     sim.leash_fence(player, pos, sneaking);
@@ -5017,6 +5036,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     sim.break_blasted_frames();
     out.explosion_effects.extend(sim.take_explosion_effects());
     out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
+    out.block_events.append(&mut sim.block_events);
     out.mob_sounds.extend(sim.mobs.take_sounds());
     out.egg_teleports.extend(sim.mobs.take_shulker_teleports());
     out.bullet_puffs.extend(sim.mobs.take_bullet_puffs());
@@ -14767,6 +14787,86 @@ mod tests {
         assert_eq!(server.take_lecterns().iter().map(|view| (view.player, view.closed)).collect::<Vec<_>>(), [(0, true)]);
     }
 
+    fn ominous_components() -> serde_json::Value {
+        crate::item_frame::stack_of_tag(&minecraftoss_world::natural_spawner::spawning::ominous_banner()).and_then(|stack| stack.components).expect("the ominous banner's components")
+    }
+
+    fn changed_banner(changes: &[(BlockPos, Option<minecraftoss_core::nbt::Tag>)], pos: BlockPos) -> minecraftoss_core::nbt::Tag {
+        changes.iter().rev().find(|(at, _)| *at == pos).and_then(|(_, tag)| tag.clone()).expect("the banner's block entity is reported")
+    }
+
+    fn banner_world() -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut server, mut scene) = door_world()?;
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:white_banner").with("rotation", "4"));
+        place(&mut server, &mut scene, (11, 200, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (12, 200, 8), Block::new("minecraft:blue_wall_banner").with("facing", "east"));
+        server.tick();
+        server.take_changes();
+        server.take_block_entity_changes();
+        Some((server, scene))
+    }
+
+    #[test]
+    fn a_placed_banner_takes_the_patterns_name_and_components_of_its_item() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = banner_world() else { return };
+        let ominous = ominous_components();
+        assert!(server.block_entity_components((8, 200, 8), &ominous));
+        let named = serde_json::json!({"minecraft:custom_name": "Flag", "minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}]});
+        assert!(server.block_entity_components((12, 200, 8), &named));
+        assert!(!server.block_entity_components((11, 200, 8), &named), "stone holds no block entity");
+        assert!(!server.block_entity_components((8, 200, 8), &serde_json::json!({})), "nothing to apply");
+        let changes = server.take_block_entity_changes();
+        let standing = changed_banner(&changes, (8, 200, 8));
+        assert_eq!(standing.get("id").and_then(Tag::as_str), Some("minecraft:banner"));
+        let patterns: Vec<(&str, &str)> = standing.get("patterns").and_then(Tag::as_list).unwrap_or_default().iter().filter_map(|layer| Some((layer.get("pattern")?.as_str()?, layer.get("color")?.as_str()?))).collect();
+        assert_eq!(patterns.len(), 8, "{standing:?}");
+        assert_eq!((patterns[0], patterns[7]), (("minecraft:rhombus", "cyan"), ("minecraft:border", "black")));
+        let stored = standing.get("components").and_then(Tag::as_compound).expect("the other components");
+        assert_eq!(stored.keys().map(String::as_str).collect::<Vec<_>>(), ["minecraft:item_name", "minecraft:rarity", "minecraft:tooltip_display"]);
+        assert_eq!(stored.get("minecraft:rarity"), Some(&Tag::String("uncommon".to_owned())));
+        assert_eq!(stored.get("minecraft:item_name").and_then(|name| name.get("translate")).and_then(Tag::as_str), Some("block.minecraft.ominous_banner"));
+        assert_eq!(standing.get("CustomName"), None);
+        let wall = changed_banner(&changes, (12, 200, 8));
+        assert_eq!(wall.get("CustomName"), Some(&Tag::String("Flag".to_owned())));
+        assert_eq!(wall.get("patterns").and_then(Tag::as_list).map(<[Tag]>::len), Some(1));
+        assert_eq!(wall.get("components"), Some(&Tag::Compound(Default::default())));
+        let at = minecraftoss_core::BlockPos::new(8, 200, 8);
+        assert_eq!(server.level.chunk(at.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&(8, 200, 8))), Some(&standing), "the level keeps it");
+    }
+
+    #[test]
+    fn a_banner_s_components_reach_the_server_thread_and_come_back_as_its_block_entity() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((server, _)) = banner_world() else { return };
+        let mut handle = ServerHandle::spawn(server);
+        handle.block_entity_components((8, 200, 8), &ominous_components());
+        handle.wait_idle();
+        let changes: Vec<_> = handle.poll().into_iter().flat_map(|out| out.block_entities).collect();
+        let tag = changed_banner(&changes, (8, 200, 8));
+        assert_eq!(tag.get("patterns").and_then(Tag::as_list).map(<[Tag]>::len), Some(8));
+    }
+
+    #[test]
+    fn a_banner_blown_up_or_torn_from_its_wall_drops_with_its_components() {
+        use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        let Some((mut server, mut scene)) = banner_world() else { return };
+        let ominous = ominous_components();
+        let named = serde_json::json!({"minecraft:custom_name": "Flag", "minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}]});
+        server.block_entity_components((8, 200, 8), &ominous);
+        server.block_entity_components((12, 200, 8), &named);
+        let dropped = |server: &ServerSim, id: &str| server.items().into_iter().filter(|item| item.item == id).map(|item| (item.count, item.components.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()))).collect::<Vec<_>>();
+        server.level.explode(Explosion { center: [8.5, 200.5, 8.5], radius: 1.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None, owner: None });
+        server.tick();
+        assert!(server.take_changes().contains(&((8, 200, 8), None)));
+        assert_eq!(dropped(&server, "minecraft:white_banner"), [(1, Some(ominous))], "a blast keeps the drop one time in its power, here always");
+        take(&mut server, &mut scene, (11, 200, 8));
+        server.tick();
+        assert!(server.take_changes().contains(&((12, 200, 8), None)), "the wall banner falls with its wall");
+        assert_eq!(dropped(&server, "minecraft:blue_banner"), [(1, Some(named))]);
+        assert!(dropped(&server, "minecraft:blue_wall_banner").is_empty());
+    }
+
     #[test]
     fn a_snowball_pops_a_framed_item_and_a_trident_breaks_the_empty_frame() {
         use minecraftoss_core::pos::Direction;
@@ -15181,6 +15281,26 @@ mod tests {
             server.tick_mobs(&[], true);
         }
         assert!(!server.mobs.glowing(near), "the glow lasts three seconds");
+    }
+
+    #[test]
+    fn a_rung_bell_sends_block_event_one_with_its_direction() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        place(&mut server, &mut scene, bell, Block::new("minecraft:bell").with("attachment", "floor").with("facing", "north"));
+        assert!(run_ticks(&mut server, &mut idle_input(), true, 1).block_events.is_empty());
+        assert!(server.ring_bell(bell, Some("east")));
+        let out = run_ticks(&mut server, &mut idle_input(), true, 1);
+        assert_eq!(out.block_events, [(bell, crate::lids::RING, 5)]);
+        assert!(server.ring_bell(bell, None));
+        assert!(server.ring_bell(bell, Some("south")));
+        assert!(!server.ring_bell((8, 199, 8), Some("north")), "stone is no bell");
+        let out = run_ticks(&mut server, &mut idle_input(), true, 2);
+        assert_eq!(out.block_events, [(bell, 1, 2), (bell, 1, 3)], "with no side it swings along its facing");
+        assert!(server.ring_bell(bell, Some("west")));
+        let frozen = run_ticks(&mut server, &mut idle_input(), false, 1);
+        assert!(frozen.block_events.is_empty(), "a frozen level runs no block events");
+        assert_eq!(run_ticks(&mut server, &mut idle_input(), true, 1).block_events, [(bell, 1, 4)]);
     }
 
     #[test]

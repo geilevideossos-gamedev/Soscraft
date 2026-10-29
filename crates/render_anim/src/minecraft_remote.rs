@@ -1995,6 +1995,9 @@ fn present_entities(
     for (pos, apart) in entities.lids.take_apart_changes() {
         level.terrain.stream.draw_apart(pos, apart);
     }
+    for (pos, apart) in entities.banners.take_apart_changes(&level.terrain.scene) {
+        level.terrain.stream.draw_apart(pos, apart);
+    }
     let (packs, atlas) = (&prepared.look.packs, &prepared.look.atlas);
     crate::minecraft_world::present_crumbs(entities, mining, packs, &level.terrain.scene, atlas);
     let heard = std::mem::take(&mut entities.sounds);

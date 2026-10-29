@@ -8,6 +8,7 @@ A commit can't name its own hash, so each entry is written with its commit and n
 
 - "Minecraft taming shows hearts, and a failed try or a bucking horse shows smoke" (after `280f5fe9`): `EntitySnapshot` has a new field `mob_puffs`. The snapshot rides in the state frame's `entities` blob and in `ToClient::Bursts`, so host and friend must run the same build. No message or codec tag changed.
 - "Friends see their mount's hearts" (after `ac0b573a`): `minecraft_net::PlayerView` (sent as `ToClient::Player`) has a new last field `vehicle_health: Option<[f32; 2]>`. An old friend build can't read the new view, so the release step must bump `PROTOCOL`. No message index or codec tag changed.
+- "Minecraft players and friends show loaded crossbows and patterned banners in their hands" (after `6e3ee0c0`): `minecraft_net::GearItem` (sent in `ToClient::Equipment`) has a new last field `look: String`, and `minecraft_terrain::item_frame::FrameView` (in `EntitySnapshot.frames`, which friends get with the snapshot) has a new field `look: String` after `potion`. An old friend build can't read either, so the release step must bump `PROTOCOL`. No message index or codec tag changed.
 
 ## E-kit. Kits and /give take banner patterns, loaded crossbows and firework stars
 
@@ -124,6 +125,67 @@ Commit: "Minecraft villagers show hearts, anger, happiness and raid sweat", the 
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:llama_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*4,minecraft:ocelot_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:wheat*64,minecraft:potato*64,minecraft:carrot*64,minecraft:beetroot*64,minecraft:golden_carrot*16,minecraft:bone*32,minecraft:cod*64,minecraft:bread*32,minecraft:white_bed,minecraft:white_bed,minecraft:white_bed,minecraft:composter,minecraft:emerald*64,minecraft:ominous_bottle*2,minecraft:iron_sword,minecraft:cooked_beef*32
+```
+
+### Llama spit leaves a puff
+
+Commit: "Minecraft llama spit leaves a puff", the one after `8f39a9ae`.
+
+- **Cause** (as in the brief, re-checked at `8f39a9ae`): vanilla puffs on the client when a spit appears (`LlamaSpit.recreateFromPacket`). The fork's view holds the spit with its velocity (the host copies the server's mob world in, a friend hatches it from its look tag with `Motion`) and draws its model, but drew no particles, and `ambient_particles` had no spit kind.
+- **Vanilla 26.3** (javap):
+  - `LlamaSpit.recreateFromPacket`: 7 `SPIT` particles at the spit's position. Particle `i` (0 to 6) gets the motion `(mx * (0.4 + 0.1 * i), my, mz * (0.4 + 0.1 * i))`, where `m` is the packet's movement; y is not scaled.
+  - `SpitParticle`: an `ExplodeParticle` whose constructor only sets `gravity = 0.5`; no tick or size of its own. `spit.json` lists `generic_7` to `generic_0`.
+- **Changed:**
+  - `ambient_particles.rs`: `Kind::Spit`, appended. `Particle::spit` is the poof with the spit's kind and gravity 0.5. It ticks in the default `tick` arm: it falls by 0.04 x 0.5 a tick, slows by 0.9, collides with blocks and slows sideways on the ground. Its sprites run `generic_7` to `generic_0` with age like the poof's, at its own size, opaque.
+  - `minecraft_survival` `entity_view.rs`: a `spit_puffs` id set beside `fang_crits`, and `spit_puffs()`, called in `advance` right after `fang_crits()`. Every alive spit in the view's world whose id is new puffs 7 specks at its position with vanilla's motion; the set keeps only the ids of spits still there.
+  - `docs/round9/track-d-log.md` (Left for later): the spit particles are marked as landed.
+- **Tests:**
+  - `minecraft_terrain` `ambient_particles::tests::a_spit_speck_is_a_poof_that_falls_at_0_5`: a spit speck takes exactly a poof's draws (motion, colour, size, lifetime) with gravity 0.5 and friction 0.9, starts on `generic_7` and ends on `generic_0`, is opaque, loses 0.02 of y speed in its first tick and is below its start after 11 ticks.
+  - `minecraft_survival` `entity_view::tests::a_new_spit_puffs_seven_specks_once_that_fall`: a new spit puffs 7 specks at its position, the next view tick none, after 10 ticks they have flown along its path and dropped; a dead spit puffs nothing more, and a second new spit puffs 7 of its own.
+- **Decisions:**
+  - The puff comes from the first view tick that holds a new spit, with the spit's position and velocity at that moment. On the host that is the spit after its first server tick, because the host's view gets the mob world after each tick; a friend sees the spit as hatched from its look tag. Both are within a tick of vanilla's add packet, and each viewer draws the specks with its own random, as with the other puffs.
+  - A spit that leaves a friend's tracking range and comes back puffs again, as vanilla's `recreateFromPacket` runs on every add.
+- **Protocol:** no change.
+- **Owner's test steps** (survival, Normal, by day, flat ground, the kit below):
+  1. **A llama spits.** Use a llama egg and hit the llama once with the iron sword. It turns and spits at you: a small white puff of 7 specks flies from its mouth towards you and drops within about a second, while the spit ball flies on. **Screenshot spit_01_puff**, just after a spit.
+  2. **Again.** Step back about 8 blocks and hit a second llama: each spit puffs once, where it leaves the llama's mouth, not along its flight.
+  3. **Two windows** (host H, friend F, both on this build): F hits a llama while H stands 10 blocks away. In both windows the puff flies from the llama's mouth towards F. **Screenshot spit_02_friend**, F's window.
+- **Kit** (5 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:llama_spawn_egg*4,minecraft:iron_sword,minecraft:shield,minecraft:oak_fence*32,minecraft:cooked_beef*16
+```
+
+### Fed farm animals show love hearts
+
+Commit: "Minecraft cows, sheep, pigs, chickens, mooshrooms, striders and hoglins show hearts when fed for love", the one after `0ffb375e`.
+
+- **Cause** (as in the brief, re-checked at `0ffb375e`): feeding an adult cow, sheep, pig, chicken, mooshroom, strider or hoglin sets its love time to 600 and returns `AnimalEvent::Hearts` (`CowEvent::Hearts` for cows and mooshrooms) from the vendored `animal::interact`. `mob_actions::interact` read only the milk and the age lock out of those events, so no entity event 18 was recorded and the server's puff list (group `particles-events`) never saw one. Wolves, cats, ocelots and horses already record their own 18 in the vendored world.
+- **Vanilla 26.3** (javap): `Animal.setInLove(Player)` sets `inLove` to 600 and calls `level.broadcastEntityEvent(this, 18)`. `Animal.handleEntityEvent(18)` draws 7 `HEART` particles half a block up. Strider and hoglin food goes through `Animal.mobInteract`, and the sheep's and hoglin's own `handleEntityEvent` pass 18 on to `Animal`.
+- **Changed:**
+  - Vendored `entities/src/world.rs`: `EntityWorld::broadcast_entity_event(id, event)`, next to `take_entity_events`.
+  - `mob_actions.rs`: `love(world, id, hearts)` records event 18 when the feeding gave hearts. Each of the cow, sheep, pig, strider, hoglin, chicken and mooshroom arms calls it with one line after its sounds.
+  - Nothing else: the event takes the existing route (`take_entity_events`, `mob_particles::mob_puffs` with the "any other type" row of 7 hearts half a block up, `EntitySnapshot.mob_puffs`, the host's view and `ToClient::Bursts` for friends).
+- **Tests:**
+  - `minecraft_terrain` `mob_actions::tests::feeding_an_adult_cow_wheat_records_the_love_event`: an adult cow fed wheat records `(cow, 18)`, which `mob_puffs` turns into one heart puff of 7 at the cow's feet. A calf fed wheat eats but records nothing, and the cow, now in love, takes no more wheat and records nothing.
+  - `minecraft_terrain` `mob_actions::tests::every_farm_animal_fed_for_love_records_the_love_event`: a sheep (wheat), pig (carrot), chicken (wheat seeds), mooshroom (wheat), strider (warped fungus) and hoglin (crimson fungus) each record exactly their own 18. A fed hoglin piglet and a lamb given a golden dandelion (the age lock) record nothing.
+  - All 1549 `minecraft_terrain` tests (3 ignored, as before), all 792 `minecraft_survival` tests (plus `vanilla_world`) and the 439 `minecraftoss-entities` library tests pass, and `check -p launcher` passes.
+- **Decisions:**
+  - D0 has merged (`39654c55`), but it kept these per-kind arms: its generic `MobHit::Family` arm serves only the registry's families. So the calls sit in the per-kind arms, as the brief planned for that case.
+  - Left for later: vanilla also sends 18 to the parent that spawns the baby (`Animal.finalizeSpawnChildFromBreeding`), so hearts show on it when the baby is born. The fork's breeding of cows, mooshrooms, sheep, pigs, chickens, horses, striders and hoglins (vendored `world.rs`, `world/equines.rs`, `world/striders.rs`, `world/hoglins.rs`) records no 18, so no hearts show at a birth; wolves and cats do show them. The brief scoped this commit to feeding, and those breeding sites are in code that D0 and M1-M3 rewrite.
+- **Protocol:** no change.
+- **Owner's test steps** (survival, Normal, by day on plains, the kit below; hearts are small red hearts that rise slowly for under a second):
+  1. **Cows.** Put up a small fence pen. Use the cow egg twice inside it and feed each cow wheat: 7 red hearts rise around each, about half a block above its body. Soon a calf appears. **Screenshot love_01_cows.**
+  2. **No love for a calf.** Feed the calf wheat: it eats, but shows no hearts. Feed one of the parents wheat again: it takes nothing (it bred a moment ago).
+  3. **Sheep, pigs and chickens.** Use each egg twice and feed sheep wheat, pigs carrots and chickens wheat seeds: hearts on each, then a lamb, a piglet and a chick.
+  4. **Mooshrooms.** Use the mooshroom egg twice and feed each wheat: hearts. **Screenshot love_02_mooshrooms.**
+  5. **Striders.** Use the strider egg twice and feed each warped fungus: hearts.
+  6. **Hoglins.** `/gamemode creative` (a hoglin charges a survival player). Use the hoglin egg twice and feed each crimson fungus within 15 seconds, before the overworld turns them into zoglins: hearts. `/gamemode survival` after.
+  7. **Two windows** (host H, friend F, both on this build): F feeds a cow wheat while H stands 10 blocks away: both windows show the hearts. **Screenshot love_03_friend**, both windows.
+- **Kit** (14 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cow_spawn_egg*2,minecraft:sheep_spawn_egg*2,minecraft:pig_spawn_egg*2,minecraft:chicken_spawn_egg*2,minecraft:mooshroom_spawn_egg*2,minecraft:strider_spawn_egg*2,minecraft:hoglin_spawn_egg*2,minecraft:wheat*64,minecraft:carrot*64,minecraft:wheat_seeds*64,minecraft:warped_fungus*16,minecraft:crimson_fungus*16,minecraft:oak_fence*64,minecraft:cooked_beef*16
 ```
 
 ## E-trading. Trading screen: number keys, F, Q, drags and double-click
@@ -590,6 +652,567 @@ Commit: "Minecraft kits dye leather with the 26.3 dye tag", the one after `8c9db
 IW4L_MINECRAFT_KIT=minecraft:leather_horse_armor@red,minecraft:leather_horse_armor@blue,minecraft:leather_horse_armor@lime,minecraft:leather_horse_armor,minecraft:leather_chestplate@red,minecraft:leather_boots@blue,minecraft:compass,minecraft:clock,minecraft:cooked_beef*16
 ```
 
+### Horses keep the dye of their leather armour
+
+Commit: "Minecraft horses keep the dye of their leather armour", the one after `674afcc0`.
+
+- **Cause** (as in the brief, re-checked at `674afcc0`): a horse kept only the id of what it wore (`HorseState.body_item`), so the dye was lost on every path: equipping by right-click (`equines.rs` `horse_interact`), the mount screen (`MountInventory::of` built the body stack with no components, and `body()` and `Command::MountInventory` passed only the id to `set_mount_inventory`), the death drop (`horse_death_equipment`), loading (`server_mobs.rs` read only `equipment.body.id`) and saving (`body_equipment` kept the old tag whenever the id matched, so a re-dyed armour under the same id came back with its old colour).
+- **Vanilla 26.3** (javap): `Equippable.equipOnTarget` puts `stack.split(1)` in the body slot, so the worn armour or carpet keeps all its components, and the slot saves and drops that stack. `LivingEntity.onEquipItem` plays the equip sound when the new stack is not `isSameItemSameComponents` with the old one.
+- **Changed:**
+  - `third_party/minecraftoss/entities/src/horse.rs`: `HorseState.body_components: Option<serde_json::Value>`, next to `body_item` (which stays the id, so every `body_item.as_deref()` site is unchanged); `None` at first.
+  - `world/equines.rs`: right-click equipping copies the held stack's components, for horse armour and llama carpets alike; `horse_death_equipment` drops the worn stack with its components; `set_mount_inventory` takes the body as `Option<ItemStack>` and counts a change of id or components as a new body (with the armour or carpet sound when one is put on).
+  - `crates/minecraft_terrain/src/mount_inventory.rs`: `MountInventory::of` builds the body cell with the worn components, and the new `body_stack()` beside `body()` gives the whole body stack.
+  - `server.rs`: `Command::MountInventory.body` is an `Option<ItemStack>`, filled from `body_stack()` (`minecraft_survival` `entities.rs` `set_mount_inventory` already passes the whole screen, so it is unchanged).
+  - `server_mobs.rs`: a horse loads `equipment.body.components` (`tag_json`), and `body_equipment` writes them (`json_tag`) and keeps the loaded body tag only when both the id and the components are unchanged.
+  - Friends: the horse's look is its save tag (`mob_tracking`), so a friend's copy gets the components through the same load with no other change, and a new dye is a new look.
+- **Tests:**
+  - `minecraftoss-entities` `world::equines::tests::equipping_and_dropping_dyed_leather_keeps_the_colour`: a red leather horse armour equipped by right-click keeps 0xB02E26 on the horse and in the dropped stack; through `set_mount_inventory` a lime one replaces it with the armour sound, the same lime stack again makes no sound, an undyed one clears the colour, an empty slot clears both; a llama's carpet with a custom name keeps it on the llama and in its drop.
+  - `minecraft_terrain` `mount_inventory::tests::the_body_slot_keeps_its_dye_both_ways`: the screen shows the worn red armour with its colour, picking it up puts the red stack on the cursor, a shift-clicked lime one fills the slot with its colour, and `set_mount_inventory` with `body_stack()` puts the lime on the horse, which the next screen shows again.
+  - `server_mobs::tests::a_horse_keeps_dyed_leather_armour_through_save_and_load`: a saved horse in red leather loads with 0xB02E26, saves back its untouched body tag, saves 0x80C71F after a re-dye under the same id, loads that again, saves no components once undyed, and an iron horse armour loads with none.
+  - `mob_tracking::tests::a_friend_sees_a_horse_s_dyed_armour_and_its_new_dye`: the friend's copy gets the red, and a re-dye on the host sends one new look with the lime.
+  - The donkey test's `set_mount_inventory` call passes an `ItemStack`.
+  - All 439 `minecraftoss-entities` tests and all 1511 `minecraft_terrain` tests pass (3 ignored, as before); `check -p launcher` passes.
+- **Decisions:**
+  - Llama carpets keep their components too (the brief had the carpet path clear them). Vanilla's `equipOnTarget` keeps the whole stack for every body item, so a named carpet comes back named; the llama renderer reads only the id, so nothing else changes.
+  - The loaded body tag is kept only when its components, read back through `tag_json`, equal the horse's. That is exactly what the load stored, so an untouched horse saves its exact NBT (bytes stay bytes), and any change writes the new stack.
+  - Components on a `body` slot with no id are not loaded (the horse wears nothing then).
+- **Protocol:** no message or codec change. `Command::MountInventory` is the host's in-process server command, and a friend's horse still comes as its save tag (now with the body's `components`, which an older build ignores).
+- **Owner's test steps:** the armour on the horse itself stays brown until the next commit, so the steps for the whole group are with it.
+
+### Dyed leather horse armour shows its colour on the horse
+
+Commit: "Minecraft dyed leather horse armour shows its colour on the horse", the one after `6c83db8b`.
+
+- **Cause** (as in the brief, re-checked at `6c83db8b`): `horse_render.rs` gave leather horse armour the fixed tint #A06540 and drew one layer only, so a dyed armour was brown on the horse and the untinted `leather_overlay` (buckles, straps and trim) was missing on every leather armour.
+- **Vanilla 26.3** (data, `assets/minecraft/equipment/leather.json` in `client.jar`): the `horse_body` layers are `minecraft:leather` with `dyeable.color_when_undyed = -6265536` (#A06540), then `minecraft:leather_overlay` with no tint. Both textures are in `textures/entity/equipment/horse_body/`. The other horse armour assets have no `dyeable` layer.
+- **Changed:**
+  - `crates/minecraft_terrain/src/body_gear.rs`: `dye_in(components)` reads `minecraft:dyed_color` (an int or `{rgb}`) from a component map; `dyed_color(stack)` calls it.
+  - `horse_render.rs`: `armor_layers(horse)` gives the worn armour's texture, its tint and, for leather, the overlay texture. Leather's tint is the dye (`dye_in` on `HorseState.body_components`, through `armor_render::dye_tint`) or else #A06540; every other armour stays untinted and has no overlay. `append_horses` draws the armour layer as before and the overlay over it, untinted, on the same cubes in the translucent pass, as the markings are drawn over the coat, so the two layers never fight for the same depth. `all_textures` adds `horse_body/leather_overlay`, which puts it in the entity atlas.
+  - Friends draw their copy of the horse with the same code, and it has the components since the previous commit.
+- **Tests:** `minecraft_terrain` `horse_render::tests::dyed_leather_tints_the_armour_and_draws_the_plain_overlay`: `armor_layers` gives nothing for a bare horse, #A06540 and the overlay for plain leather, the red for 0xB02E26, the blue for `{rgb: 0x3C44AA}`, and white with no overlay for iron armour with a stray dye; `all_textures` holds the overlay. Drawn from a saved horse in red leather on stand-in textures: after the coat, every armour vertex samples the leather texture with the red tint (times the face shade), and the translucent pass holds exactly as many overlay vertices, untinted. The horse_render, body_gear, item_tint, item_icons, llama_render, mob_tracking and mount_inventory tests pass (64); `check -p launcher` passes.
+- **Decisions:**
+  - Only leather takes a dye on the horse: a `dyed_color` on iron, gold, diamond, netherite or copper horse armour is ignored, as vanilla's only `dyeable` horse layer is leather's.
+  - The overlay goes in the translucent pass (the brief's plan), not in the opaque mesh after the dyed layer.
+- **Left out** (the brief's E-horses list): dyeing leather in the crafting grid (`minecraft:crafting_dye`, recipe `leather_horse_armor_dyed`) is not supported for any leather item; dyed armour comes from the kit and the leatherworker's level 4 trade. Wolves can't wear wolf armour yet, so a dyed wolf armour shows its colour only as an item.
+- **Owner's test steps** (the whole `horse-dye` group; survival, a new world, by day on flat grass, the kit below):
+  1. **Red on a horse.** Run `/summon minecraft:horse ~ ~ ~2 {Tame:1b}`. Move the red leather horse armour from the backpack to the hotbar, hold it and right-click the horse: you hear the armour sound, and the horse wears red armour with the plain brown buckles, straps and trim on top. Walk around it: the red and the trim do not flicker. **Screenshot A1.**
+  2. **Plain leather and iron.** Summon two more tame horses beside it. Put the plain leather horse armour on one: brown with the same trim. Put the iron horse armour on the other: iron, as before. **Screenshot A2**, all three horses.
+  3. **The screen.** Crouch and right-click the red horse. The armour slot shows the red icon. Take it out: it is red on the cursor and in your inventory. Shift-click the lime armour in your inventory: it goes into the armour slot with the armour sound. Close the screen: the horse wears lime with the trim. **Screenshot A3.**
+  4. **Save and load.** Save and quit to the title, then load the world. The horse still wears lime, and crouch-right-click shows the lime icon in its armour slot.
+  5. **The drop.** Kill the lime horse with the iron sword (`/kill` takes only players in the fork). The armour lies on the ground lime, and it is lime when you pick it up (hover: "Leather Horse Armor"). **Screenshot A4.**
+  6. **Riding.** Saddle the horse in plain leather and ride it: the armour, its trim, the saddle and the reins move with the horse.
+  7. **Friend (two windows, `scripts\mp-local.ps1` or over the relay, both on this build).** The friend gets the same kit (or `/kit @a` from the host). The host puts the blue armour on a horse and the friend puts the red one on another: each window shows the blue horse blue and the red horse red, both with the trim. Then the host opens the blue horse's screen and swaps the blue for the lime: in the friend's window the horse turns lime within a second. **Screenshot A5**, both windows.
+- **Kit** (8 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:leather_horse_armor@red,minecraft:leather_horse_armor@blue,minecraft:leather_horse_armor@lime,minecraft:leather_horse_armor,minecraft:iron_horse_armor,minecraft:saddle,minecraft:iron_sword,minecraft:cooked_beef*16
+```
+
+## E-banners. Banner patterns and crossbow states
+
+### Item models pick crossbow and bow states
+
+Commit: "Minecraft item models pick crossbow and bow states like vanilla", the one after `502b206b`.
+
+- **Cause** (as in the brief, re-checked at `502b206b`): the item model walker (`special_models.rs` `collect_leaves`) read only `minecraft:using_item` from a bool and `minecraft:display_context`; every other `select` and `range_dispatch` took its fallback. So `items/crossbow.json` always gave `item/crossbow` (no arrow, no rocket, no pull) and `items/bow.json` always `item/bow`. A drawn item's key (`item_tint`) held only the id, a dial model and a colour, so nothing about the stack's charge could reach the model.
+- **Vanilla 26.3** (javap and the 26.3 `items/` data):
+  - `Charge.get`: no `charged_projectiles` or an empty list is `none`; a list holding a `firework_rocket` is `rocket`; any other list is `arrow`. The case names are `none`, `arrow` and `rocket`.
+  - `CrossbowPull.get`: 0 when the crossbow is charged (or has no living holder), else `UseDuration.useDuration` (whole ticks used) over `CrossbowItem.getChargeDuration` as floats.
+  - `UseDuration.get`: 0 unless the holder is using this very stack, then the whole ticks used (or the ticks left with `remaining: true`).
+  - `crossbow.json`: select `charge_type` (`arrow` → `crossbow_arrow`, `rocket` → `crossbow_firework`), fallback condition `using_item`, on_true range_dispatch `crossbow/pull` (fallback `crossbow_pulling_0`, 0.58 `pulling_1`, 1.0 `pulling_2`). `bow.json`: condition `using_item`, on_true range_dispatch `use_duration` scale 0.05 (fallback `bow_pulling_0`, 0.65 `pulling_1`, 0.9 `pulling_2`). All six crossbow models and the three pulling bows take their `display` from `item/crossbow` and `item/bow`.
+- **Changed:**
+  - New `crates/minecraft_terrain/src/item_look.rs`:
+    - `ItemLook { charge, use_ticks, base, layers }` and `ItemLook::of(components, use_ticks)`: the charge as `Charge::of` reads it, the use ticks of the using hand, `minecraft:base_color` and up to 16 `minecraft:banner_patterns` layers (a pattern id or inline `asset_id`, and a dye).
+    - The key part: `suffix()` gives `|charge=arrow`, `|use=15`, `|base=red` and `|layer=<dye>,<asset>` parts (empty for a plain stack); `parse` reads them back; `keyed(base, look)` appends it; `split(key)` cuts it off again.
+    - `ItemState { using, charge, use_ticks, charge_duration }` (25 ticks) and `ItemLook::leaf(model, context)`: the one plain model leaf the look's state picks, or nothing when the look holds no state.
+  - `item_tint::of_stack_at` puts the look between its base (the id, a lodestone key or a dial key) and the `~rrggbb` colour, so `of_stack`, the first-person hand and the inventory icons all carry it, and `item_tint::split` and `dials::split` still give the id.
+  - `special_models.rs`: `collect_leaves` takes an `ItemState`. `select` `minecraft:charge_type` takes the case named by the charge; `range_dispatch` `minecraft:crossbow/pull` and `minecraft:use_duration` (times `scale`) take the last entry whose threshold is at most the value, as `dials.rs` does; the condition `minecraft:using_item` reads the state's flag. The chosen branch comes first, then the fallback, then the other entries, as before. `item_leaves_with(model, state, context)` is new; `item_leaves` and `item_leaves_in` keep their bool for the current callers.
+  - `mesh.rs` `ItemVisuals::model` (dropped items, items in the hand and on mobs) and `item_icons.rs` `item_icon_at` split the look off after the colour and resolve the leaf it picks with `model::resolve_item_leaf`; with no state they resolve as before.
+  - `render_anim` `minecraft_inventory.rs` `icon_source` splits the look off before the dial lookup and puts it back, so names stay keyed by the plain id.
+  - `dials.rs` is not touched.
+- **Tests:**
+  - `minecraft_terrain` `item_look::tests`: `a_look_reads_the_charge_the_patterns_and_the_base_colour` (empty, arrow, bare-string, rocket and un-namespaced rocket lists; id and inline patterns, a bad dye, a bad id and a missing pattern skipped; 20 layers keep the first 16; the suffix and `parse` round trip; junk parts ignored), `a_look_sits_after_the_dial_and_before_the_colour_and_splits_back` (a loaded crossbow, a potion with patterns and a colour, dyed leather with a base colour, and a dial-keyed compass all split back to the same id, dial model, look and colour), `a_look_picks_a_plain_leaf_only_when_it_holds_a_state`.
+  - `special_models::tests::crossbows_and_bows_pick_their_charge_and_pull_like_vanilla`: the real crossbow and bow trees. No state → `crossbow`; using for 0, 14, 15, 24, 25 and 40 ticks → `pulling_0`, `pulling_0`, `pulling_1`, `pulling_1`, `pulling_2`, `pulling_2`; an arrow → `crossbow_arrow` even while used; a rocket → `crossbow_firework`; a 15-tick charge at 15 ticks → `pulling_2`; the bow at 0, 12, 13, 17 and 18 ticks → `pulling_0`, `pulling_0`, `pulling_1`, `pulling_1`, `pulling_2`; a `remaining` use duration takes its fallback.
+  - `item_icons::tests::loaded_crossbow_icons_show_their_arrow_or_rocket` (real pack, skipped without it): the plain, arrow and rocket crossbow icons are the `crossbow_standby`, `crossbow_arrow` and `crossbow_firework` sprites, and a 25-tick look is `crossbow_pulling_2`.
+  - `render_anim` `minecraft_inventory::tests::a_loaded_crossbow_icon_keeps_its_look_and_shares_its_name`.
+  - All 1517 `minecraft_terrain` tests (3 ignored, as before) and all 218 `render_anim` tests pass; `check -p launcher` passes.
+- **Decisions:**
+  - The look sits after the dial or lodestone part and before the colour, behind its own mark `|`, which no id, model, lodestone key or colour holds. Code that wants the model splits the colour, then the look, then the dial; `dials::split` on a key with a look still gives the right id.
+  - The look already holds the base colour and the pattern layers, so a patterned banner or shield gets its own key and icon now; it draws as before until group `banner-items`. A pattern's asset is its id (true of all 43 vanilla patterns), or the inline `asset_id`. The first 16 layers count, as `BannerRenderer` draws indices 0 to 15; a malformed layer among them is dropped.
+  - Every stack with these components gets a look, whatever the item, since vanilla's properties read any stack; only models that ask for them change.
+  - A look replaces the default model only when its state picks exactly one plain model leaf; a stack with no charge and no use ticks resolves exactly as before. A `use_duration` with `remaining: true` is not read (no 26.3 item has one) and takes its fallback.
+  - The charge duration is the 25 ticks the AI uses; Quick Charge does not shorten the pull (the brief's decision).
+  - Players have no crossbow or bow use in the fork, so a player's crossbow shows standby, arrow or rocket and never the pull, and a player's bow never pulls.
+- **Protocol:** no change. Item keys are built on each client from the stacks it has.
+- **Owner's test steps** (survival, a new world, by day, the kit below):
+  1. **Icons.** Open the inventory. The first crossbow's icon has an arrow lying in it, the second a firework rocket, the third is the plain unloaded crossbow. Hover each: all three are named "Crossbow". **Screenshot C1.**
+  2. **Hotbar and hand.** Move the three crossbows to the hotbar: the hotbar icons are the same. Hold each in first person: the arrow, the rocket and the plain string show in your hand. **Screenshot C2.**
+  3. **On the ground.** Press Q with each crossbow: on the ground the first shows its arrow, the second its rocket, the third is plain. Pick them up again: the icons are unchanged.
+  4. **Not yet:** in third person (F5) and in an item frame the loaded crossbows still look plain (group `player-looks`), and pillagers and piglins still hold a plain crossbow (the next commit).
+  5. **Friend (two windows, both on this build).** The friend gets the same kit (or `/kit @a` from the host): the friend's own icons, hand and dropped crossbows show the arrow and the rocket in the friend's window.
+- **Kit** (5 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:firework_rocket"}]],minecraft:crossbow,minecraft:item_frame*2,minecraft:cooked_beef*16
+```
+
+### Pillagers and piglins show their crossbow's pull and loaded arrow
+
+Commit: "Minecraft pillagers and piglins show their crossbow's pull and loaded arrow", the one after `ed3792f7`.
+
+- **Cause** (as in the brief, re-checked at `ed3792f7`): `illager_render.rs` (`append_illagers`, the head item and both hands) and `piglin_render.rs` (`append_piglins`, both hands) keyed each held item by `stack.id` alone, so a pillager's or piglin's crossbow was always drawn as the plain `item/crossbow`, although the stack held its `charged_projectiles` (set by `Illager::set_crossbow_charged` and `Piglin::set_crossbow_charged`) and the entity its use ticks (`using_item`).
+- **Vanilla 26.3:** `IsUsingItem` and `UseDuration` count only for the stack in the using hand (`getUseItem() == stack`). Pillagers and piglins start using the hand from `ProjectileUtil.getWeaponHoldingHand(mob, CROSSBOW)`: the main hand when it holds a crossbow, else the off hand.
+- **Changed:**
+  - `item_look::held_key(stack, use_ticks)`: the id with the stack's look and the use ticks (whole ticks, as `using_item` holds them).
+  - `illager_render.rs`: `hand_key(entity, slot)` keys the stack in an equipment slot; the use ticks go only on `Illager::crossbow_hand()` and only while `using_item` is `Some`. `append_illagers` walks the two hand slots (right and left by `left_handed`, as before) through it, and keys the head item (the captain's banner) with `held_key` and no use ticks.
+  - `piglin_render.rs`: `hand_key(entity, main)` does the same for a piglin, whose using hand is the main hand when it holds a crossbow (`Piglin::holds_crossbow`), else the off hand. `append_piglins` walks the main and off hand through it.
+  - Friends: the friend's copy of the mob already gets the crossbow's components through the look tag (a load or a shot changes the saved equipment, so a new look is sent) and `using_item` through `MobShow`, so it keys the same with no other change.
+  - `docs/MINECRAFT-SURVIVAL.md`: the piglin fighting paragraph says the string pulls and the arrow shows; the "drawn uncharged" limit is gone.
+- **Tests:**
+  - `minecraft_terrain` `illager_render::tests::a_pillager_s_crossbow_pulls_in_its_using_hand_and_shows_its_arrow_when_loaded`: drawn through `append_illagers`, a pillager's crossbow keys plain, then `|use=0`, `|use=15` and `|use=25` while charging, `|charge=arrow` when loaded; left-handed with a rocket in the off hand, only the crossbow (now in the left hand) pulls; with the crossbow moved to the off hand, the off hand pulls; a patterned banner on the head keys its look.
+  - `piglin_render::tests::a_piglin_s_crossbow_pulls_in_its_using_hand_and_shows_its_arrow_when_loaded`: the same for a piglin with a gold ingot in the off hand, left-handed when loaded, and an off-hand crossbow pulling when the main hand holds a sword.
+  - `mob_tracking::tests::a_friend_keys_a_pillager_s_and_a_piglin_s_crossbow_like_the_host`: through the trackers' add, look and move events, a friend's pillager and piglin key their crossbows like the host's: plain, pulling at 15 and 20 ticks, loaded with an arrow, and plain again after the shot.
+  - All 1520 `minecraft_terrain` tests pass (3 ignored, as before); `check -p launcher` passes.
+- **Decisions:**
+  - Whole use ticks, as vanilla's `UseDuration`: a crossbow loads in 25 ticks, so each mob kind adds at most 26 pulling keys to the item model cache.
+  - The captain's banner is keyed with its look already; its patterns show from group `banner-items` on.
+  - Vindicators, evokers, skeletons and other mobs go through the same keys (illagers) or keep their plain ids (the others); a skeleton's bow pull belongs to the mob tracks (the brief's decision).
+- **Protocol:** no change.
+- **Owner's test steps** (survival, Normal, by day, flat open ground, the kit below):
+  1. **A pillager loads.** Use a pillager spawn egg about 12 blocks away and stand still with the shield raised. When it loads, the string of its crossbow pulls back in three steps (about a second in all). **Screenshot C3** while it pulls.
+  2. **The arrow.** When loaded, an arrow lies in its crossbow while it aims, for 1 to 2 seconds; after the shot the crossbow is empty again and the next load starts. **Screenshot C4** with the arrow.
+  3. **A left-handed one.** Use more pillager eggs: about one in twenty is left-handed and holds the crossbow in its left hand; its crossbow pulls and shows the arrow the same way.
+  4. **A piglin.** Run `/summon minecraft:piglin ~ ~ ~10 {IsImmuneToZombification:1b,equipment:{mainhand:{id:"minecraft:crossbow",count:1}}}` (if it holds no crossbow, summon another). Without gold armour it attacks: it steps back, its crossbow string pulls back in three steps, and the arrow shows until it shoots. **Screenshot C5.**
+  5. **Friend (two windows, both on this build).** The friend stands next to the host: in the friend's window the pillager's and the piglin's crossbows pull and show the arrow at the same moments. **Screenshot C6**, both windows.
+- **Kit** (4 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:pillager_spawn_egg*16,minecraft:shield,minecraft:iron_sword,minecraft:cooked_beef*16
+```
+
+### Banners and shields show their patterns in hand, on heads, on the ground and as icons
+
+Commit: "Minecraft banners and shields show their patterns in hand, on heads, on the ground and as icons", the one after `98cff7bf`.
+
+- **Cause** (as in the brief, re-checked at `98cff7bf`):
+  - `special_models.rs` `item_model(special)` built `minecraft:banner` and `minecraft:shield` without the stack. `push_banner` drew one flag tinted with the base colour, and `push_shield` always used `entity/shield/shield_base_nopattern`.
+  - `special_tints` gave only a banner's base colour. `Sheet.tinted` was a bool that always meant tint index 0, so a model could hold only one tint.
+  - The atlas held `entity/banner/banner_base`, `entity/banner/base` and `entity/shield/shield_base_nopattern`, but none of the 43 pattern sheets.
+  - The item key already carried the look's base colour and layers (group `item-states`), but nothing read them.
+- **Vanilla 26.3** (javap on the 26.3 jar, sheets checked in the 26.3 pack):
+  - `BannerRenderer.submitPatterns(.., model, state, banner, baseColor, patterns)` draws `Sheets.BANNER_PATTERN_BASE` (`entity/banner/base`) or, for a shield, `SHIELD_PATTERN_BASE` (`entity/shield/base`), tinted with `DyeColor.getTextureDiffuseColor` of the base colour.
+  - It then draws layers 0 to 15 (`i < 16 && i < size`), each with `Sheets.getBannerSprite` or `getShieldSprite` (`entity/banner/<asset path>` or `entity/shield/<asset path>`) and tinted with its own colour. Every layer goes through the same model, ordered after the base (`order(i + 2)`).
+  - `ShieldSpecialRenderer.submit`: a shield is patterned when `banner_patterns` is not empty or `base_color` is set.
+    - A patterned shield is drawn with `SHIELD_BASE` (`entity/shield/shield_base`), and then `submitPatterns` runs with the base colour, or `WHITE` when none is set.
+    - Otherwise the shield is drawn with `SHIELD_BASE_NO_PATTERN`.
+    - In 26.3 the patterns go over the whole `ShieldModel`. In the 26.3 pack, `entity/shield/base` and every shield pattern sheet are clear over the handle's part of the sheet, so drawing them on the plate alone looks the same.
+  - A banner item's base colour is the item model's `color` (`items/white_banner.json`). Its `base_color` component is not drawn.
+  - The pattern sheets mix alphas. `banner/creeper` and `banner/border` use 191 and 255, and `banner/gradient` runs from 255 at the top of the flag to 0 at the bottom.
+- **Changed:**
+  - `special_models.rs`:
+    - `Sheet.tint: Option<usize>` (`tinted(index)`) replaces the bool. `push_cube` gives the faces that tint index.
+    - `push_banner(.., layers)` adds one flag cube per layer after the flag, with the same cube, pose and UVs. Each layer uses `<namespace>:entity/banner/<path>` of its asset at tint index `i + 1`, for at most 16 layers. An asset that is not an id is skipped and keeps its tint slot. A placed banner passes no layers yet, so it is drawn as before.
+    - `push_shield(look)` draws the plate and handle with `shield_base`, then a plate cube of `entity/shield/base` at tint 0 and one plate cube per layer, when the look has a base colour or patterns. Otherwise it keeps `shield_base_nopattern`.
+    - `item_model(special, look)`.
+    - `special_tints(model, look)`: a banner gives `[base from the model's colour, layer colours...]`, and a patterned shield `[base colour or white, layer colours...]`. A plain shield gives none, as before.
+    - `pattern_textures(packs)` lists every sheet in the pack's `textures/entity/banner/` and `textures/entity/shield/`.
+  - `mesh.rs`:
+    - The world atlas adds `pattern_textures`, which is 89 sheets with the 26.3 pack.
+    - `ItemVisuals::model` parses the look once. It builds the model with `model::resolve_item_model_with(.., look)` and the tints with `interface::item_look_tints(.., look)`. This covers dropped items, the first-person hand, mobs' held and head items (the raid captain's banner) and every other posed item.
+  - `model.rs`: `resolve_item_model_with(pack, item, context, look)` is new, and `resolve_item_model_in` calls it with no look. `item_geometry` passes the look to the special models.
+  - `interface.rs`: `item_look_tints(.., look)` is new, and `item_model_tints` calls it with no look.
+  - `item_icons.rs`: `item_icon_at` builds a special item's geometry and tints with the look.
+  - `item_icon.rs`:
+    - `model_icon` blends a texel with partial alpha over what the earlier faces drew. It reads a copy taken before each face, so the two triangles of a face never blend twice.
+    - Before this, such a texel replaced the pixel and left a see-through hole. A gradient layer would have made the flag's base colour vanish from the icon.
+    - Block icons keep their old raster.
+  - `docs/MINECRAFT-SURVIVAL.md`: the limit "There are no banner or shield patterns" now says where patterns show, and where they don't yet.
+- **Tests** (`minecraft_terrain`):
+  - `special_models::tests::a_patterned_banner_item_lays_one_tinted_flag_per_pattern_over_its_base`:
+    - A white banner with creeper (black), a bad id and border (red) gets pole, bar, flag (`entity/banner/base`, tint 0), creeper (tint 1) and border (tint 2).
+    - Each layer has the flag's corners and UVs, and the tints are white, black and red.
+    - A wall banner has no pole.
+    - With 20 layers the model keeps 16, ending at `p15` with tint 16, and the tints are 17.
+    - A layer that isn't an id is skipped, while `test:sun` keeps tint slot 2.
+    - A placed banner is unchanged.
+  - `special_models::tests::the_ominous_banner_lays_its_eight_patterns_on_white`: the stack from `ominous_banner()` keys a look that splits back. It lists the eight vanilla layers in order, draws 3 + 8 elements with `entity/banner/<pattern>` sheets, and tints white, then cyan, through black.
+  - `special_models::tests::a_shield_takes_the_patterned_base_only_with_a_base_colour_or_patterns`:
+    - A plain shield uses `shield_base_nopattern` with no tints.
+    - A red base colour gives `shield_base` and a tinted `entity/shield/base` plate with the plate's corners and UVs (tints `[red]`).
+    - A yellow cross alone gives a white base under the cross (`[white, yellow]`).
+    - A base colour with two patterns gives five elements with tints red, yellow and black.
+  - `special_models::tests::every_vanilla_pattern_is_in_the_atlas_and_patterned_icons_differ_from_plain_ones` (with the real 26.3 pack and datapack, skipped without them):
+    - Each of the 43 `banner_pattern` registry entries has its banner and shield sheet in the world atlas, and so do `banner_base`, `shield_base` and `shield_base_nopattern`.
+    - The ominous banner's icon differs from the plain white banner's, and a red shield with a yellow gradient differs from the plain shield. Both keep the plain icon's outline alpha for alpha.
+  - `item_icons::tests::banner_icons_blend_their_pattern_layers_and_skip_unknown_patterns` (a small test pack): a half-clear red stripe changes the icon but keeps every pixel's alpha, so it blends and leaves no holes. Each changed pixel is redder. A pattern with no sheet, before or after the stripe, leaves the icon unchanged.
+  - `item_icons::tests::a_dropped_banner_draws_its_pattern_layers_in_their_colours`: a dropped plain banner has 18 faces and a striped one 24. The flag's vertices carry white and the stripe's red.
+  - All 1526 `minecraft_terrain` tests pass (3 ignored, as before), and `check -p launcher` passes.
+- **Decisions:**
+  - In the world, in the hand and on mobs, the layers are cut out at alpha 0.1, like every entity sheet here (`render_gpu .../minecraft_world.rs`, the `opaque` fragment for vertex alpha below 0.75). Vanilla blends them (`RenderTypes.bannerPattern`), so here:
+    - A gradient's fade becomes a hard edge near the bottom of the flag. The white gradient on the kit's blue banner covers about nine tenths of the flag.
+    - The creeper face and the border, which use alphas 191 and 255, are drawn in one solid colour.
+  - Icons blend like vanilla, because a cut-out icon needs the same hard edge and a replaced pixel left holes. Coplanar layers resolve to the later one, through `GreaterEqual` in the world and the blend in icons.
+  - The shield's layers are drawn on the plate only, because every 26.3 shield sheet is clear over the handle.
+  - A pattern whose sheet is not in the pack draws nothing and keeps its tint slot. Vanilla would refuse such a component. The atlas lists only the `minecraft` folders, so patterns from other namespaces are skipped the same way.
+  - Plain banners and shields are built exactly as before, with the same elements and tints, and placed banners are not changed (group `placed-banners`).
+- **Protocol:** no change. Keys and models are built on each client from the stacks it has.
+- **Not yet:**
+  - Placed banners still show their base colour only (group `placed-banners`).
+  - A player's banner or shield in third person, as a friend sees it, or in an item frame shows no pattern (group `player-looks`).
+  - Placed banners still drop nothing when broken (group `banner-roundtrip`).
+  - The shield recipe is E2's (`fw-craft`).
+- **Owner's test steps** (survival, a new world, by day, the kit below):
+  1. **Icons.** Open the inventory.
+     - The white banner shows a black creeper face inside a red border.
+     - The blue banner shows a white fade from the top, a lime globe and a yellow bottom stripe.
+     - The black banner is plain black.
+     - The first shield is red with a yellow cross, the second plain black, and the third the plain wooden shield.
+     - **Screenshot B1.**
+  2. **Hand.** Hold the white banner, then the blue banner, in first person: their patterns show on the flag. On the blue banner the fade has a hard edge near the bottom of the flag, and the flag above it is white (the cut-out decision). **Screenshot B2.**
+  3. **Raised shield.** Put the red shield in the offhand (F) and hold right-click to raise it: the yellow cross shows on the red plate. Swap in the black shield: it is plain black. **Screenshot B3.**
+  4. **On the ground.** Press Q with each banner and shield. On the ground they show the same patterns and colours as in the inventory. Pick them up again.
+  5. **The captain.**
+     - On open ground, use pillager eggs until one carries a banner on its head (a captain, about one in seventeen).
+     - Its banner shows the ominous pattern: a cyan diamond with grey and black stripes on white, in a black border. **Screenshot B4.**
+     - Kill it with the sword. The dropped "Ominous Banner" shows the pattern on the ground, as an icon and in your hand. **Screenshot B5.**
+  6. **Not yet.**
+     - Placing a patterned banner shows only its base colour.
+     - Breaking it drops nothing.
+     - In third person (F5), in an item frame and in a friend's window, a player's banner or shield shows no pattern.
+     - Later E1 groups fix these.
+  7. **Friend (two windows, both on this build).** The friend gets the same kit (or `/kit @a` from the host). The friend's own icons, hand and dropped banners show the patterns in the friend's window, and the captain's banner shows the ominous pattern in both windows. **Screenshot B6**, both windows.
+- **Kit** (9 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*4,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:shield[base_color=black],minecraft:shield,minecraft:pillager_spawn_egg*16,minecraft:diamond_sword,minecraft:cooked_beef*16
+```
+
+### Banners keep their patterns and name when placed
+
+Commit: "Minecraft banners keep their patterns and name when placed", the one after `ace496b4`.
+
+- **Cause** (as in the brief, re-checked at `ace496b4`): placing a banner item wrote only the block state (`actions.rs`, `body.write_blocks`). The server level made the default banner block entity, so `banner_patterns`, `custom_name` and every other component of the stack were lost, and the saved banner had none. Only shulker boxes took their components (`containers.place_shulker`).
+- **Vanilla 26.3** (javap on `BlockEntity` and `BannerBlockEntity`):
+  - `BlockItem.place` calls `BlockEntity.applyComponentsFromItemStack(stack)`, which runs `applyComponents(prototype, patch)`.
+  - `BannerBlockEntity.applyImplicitComponents` reads `BANNER_PATTERNS` (default empty) and `CUSTOM_NAME` (may be null). `saveAdditional` writes `patterns` only when they are not empty, and `CustomName` only when there is a name.
+  - `BlockEntity.applyComponents` then keeps the rest of the stack's patch in `components`: `patch.forget(implicit).split().added()`. The implicit set holds the components the block entity read, plus `block_entity_data` and `block_state`, and removals (`!minecraft:...`) are not kept. `saveWithoutMetadata` always writes `components`.
+- **Changed:**
+  - New vendored `third_party/minecraftoss/world/src/level/components.rs` (declared next to `lectern` in `level/mod.rs`):
+    - `implicit(kind)` lists the components a block entity kind reads itself. For `minecraft:banner` these are `banner_patterns` → `patterns` and `custom_name` → `CustomName`; other kinds have none.
+    - `applied(entity, components)` gives the block entity tag after vanilla's `applyComponents`. An implicit component replaces its field (an empty pattern list or a missing name clears it), and every other component except `block_entity_data`, `block_state` and removals goes into `components`, which replaces the old one.
+    - `Level::apply_block_entity_components(pos, components)` makes the block entity when it is missing (`ensure_block_entity`), writes the new tag with `set_block_entity_tag` and returns false where the block has no block entity. It is generic, so track D can use it for placed spawners and vaults.
+    - `is_banner(id)` and `kind(tag)` are small helpers for the callers.
+  - `crates/minecraft_terrain/src/server.rs`: `ServerSim::block_entity_components(pos, components)` turns the stack's JSON components into NBT (`item_nbt::components_tag`) and calls the level. `Command::BlockEntityComponents` sits next to `Command::Lectern`, with `ServerHandle::block_entity_components` next to `lectern`.
+  - `crates/minecraft_survival/src/actions.rs`: after `write_blocks`, beside `place_shulker`, a placed banner whose held stack has components sends them through the new `Entities::block_entity_components`. The command follows the placing edit on the same channel, so the level already holds the banner.
+  - The server reports the changed block entity as before (`collect_block_entity_changes`), so it reaches the stream and the chunk save.
+  - `crates/minecraft_survival/src/level.rs` `save_server_block_entities`: a banner block entity the server changed also goes into `friend_changes`, so `session::block_updates` sends friends its new tag.
+    - Before this, friends got a server block entity only with a block change (the banner's default tag, a tick before the patterns arrive) or as a spawner or vault (`spawner_tags`).
+  - `crates/minecraft_survival/Cargo.toml`: `minecraftoss-world` moves from the dev-dependencies to the dependencies (`Cargo.lock` already lists it).
+  - `docs/MINECRAFT-SURVIVAL.md`: placed banners keep `patterns`, `CustomName` and `components`, and the save limits name banners next to shulker boxes.
+- **Tests:**
+  - `minecraftoss-world` `level::components::tests`:
+    - `a_banner_takes_its_patterns_and_name_and_stores_the_other_components`: the ominous components give `patterns` and a `components` of `item_name`, `rarity` and `tooltip_display`. A custom name gives `CustomName`, and `block_state`, `block_entity_data` and a removal are not stored.
+    - `placing_again_replaces_the_patterns_the_name_and_the_components`: the old patterns, name and components go, and an empty pattern list writes no `patterns`.
+    - `other_block_entities_store_every_component`: a spawner keeps a custom name in `components`. A tag that is not a compound gives nothing. `is_banner` takes standing and wall banners but not shields or other namespaces.
+  - `minecraft_terrain` `server::tests` (real data, skipped without it):
+    - `a_placed_banner_takes_the_patterns_name_and_components_of_its_item`: a placed white banner given the components of `ominous_banner()` reports a block entity with the eight layers in order (rhombus cyan to border black), `components` with `item_name` (`block.minecraft.ominous_banner`), `rarity` (`uncommon`) and `tooltip_display`, and no `CustomName`, and the level keeps the same tag. A blue wall banner given a name and one layer gets `CustomName`, one layer and empty `components`. Stone takes nothing, and empty components change nothing.
+    - `a_banner_s_components_reach_the_server_thread_and_come_back_as_its_block_entity`: through `ServerHandle`, the command comes back in `Output.block_entities` with the eight layers.
+  - `minecraft_survival` `actions::tests::a_placed_banner_keeps_its_patterns_for_the_save_and_for_friends`: a player places the ominous banner with `act`. The server's block entity reaches the stream and `friend_changes` (only the banner's position), and `session::block_updates` sends friends the tag with eight layers and the three stored components.
+- **Decisions:**
+  - The level function lives in its own vendored file `level/components.rs`, declared next to `lectern`, not inside `lectern.rs`. It is generic and has nothing to do with lecterns.
+  - Like vanilla, the block entity keeps every other component of the stack, not only the three of the ominous banner, and a later placement replaces all of them.
+  - Only banners send their components for now (the brief's scope). Shulker boxes keep their own path through `Containers`, and other blocks still drop a placed item's name (the save limit in `MINECRAFT-SURVIVAL.md`).
+  - Friends learn of a banner's new block entity through `friend_changes` in `level.rs`. The line in `entities.rs` that fills `spawner_tags` stays as it is, because track W may add its sculk tags there.
+- **Protocol:** no message or codec change. Friends already receive `ToClient::BlockEntity`, and they now get it once more for a banner whose block entity the server changed.
+- **Owner's test steps:** a placed banner still shows only its base colour (group `placed-banners`), so nothing changes on screen yet. The steps for both commits of the group are with the next commit.
+
+### Banners drop with their patterns and name
+
+Commit: "Minecraft banners drop with their patterns and name", the one after `3bd5848d`.
+
+- **Cause** (as in the brief, re-checked at `3bd5848d`):
+  - `third_party/minecraftoss/player/src/loot.rs` `apply_modifiers` returned `None` for a `copy_components` from `block_entity` whose `include` names anything but `custom_name`. The `?` in `entry` then voided the whole roll. So a banner broken by hand or by an MW2 bullet or blast dropped nothing. The same was true of an empty, unnamed shulker box (a filled or named one dropped only through its `kept` stack), a player head and an unbroken decorated pot.
+  - `Entities::drop_blocks` gave `kept` components only to a drop whose id equals the block's, which a `*_wall_banner` never matches, and `harvest` built `kept` for shulker boxes only.
+  - The server level's own drops (TNT and other server explosions, a banner whose wall or floor goes, wither breaks: `drop_resources` and `on_explosion_hit`) roll `core/src/loot.rs`, whose `copy_components` passes without copying, so they dropped a plain banner.
+- **Vanilla 26.3** (the 26.3 data and javap):
+  - The 16 banner loot tables (`blocks/white_banner` and the others) hold one item under `survives_explosion`, with a `copy_components` from `block_entity` that includes `custom_name`, `item_name`, `tooltip_display`, `banner_patterns` and `rarity`. A wall banner drops like its standing banner.
+  - The `block_entity` source copies `BlockEntity.collectComponents()`: the stored `components` plus `collectImplicitComponents`, which for a banner sets `banner_patterns` and `custom_name`.
+  - `Block.dropResources` and `ServerExplosion` hand the block entity to the loot context, so explosions and a lost support drop the same components. `ServerExplosion.addOrAppendStack` merges only stacks with the same components.
+- **Changed:**
+  - `third_party/minecraftoss/player/src/loot.rs`: a `copy_components` from `block_entity` no longer voids the roll. It copies nothing itself, and the caller fills in the components. Other sources still void it. The stale comment about custom names went with the old check.
+  - `third_party/minecraftoss/world/src/level/components.rs`:
+    - `collected(entity)` is `collectComponents`: the stored `components` plus the kind's implicit fields.
+    - `dropped_components(entity)` gives what the banner loot table copies (`BANNER_LOOT`, the five ids above), or nothing for other kinds or when there is nothing to copy.
+    - `standing(id)` turns `*_wall_banner` into `*_banner`.
+    - `Level::keep_block_entity_components(pos, state, drops)` puts those components on the drops that are the block's own item.
+  - `level/drops.rs` `drop_resources` and `level/explosion.rs` `on_explosion_hit` call it after the roll, before the drops are popped or merged, while the block entity is still there.
+  - `third_party/minecraftoss/world/src/chunk_map.rs`: `ChunkMap::stored_block_entity(pos)` reads the block entity as last stored, from the waiting block entity edits or the chunk copy, without writing the waiting block edits. `TerrainStream::stored_block_entity` calls it.
+  - `crates/minecraft_survival/src/actions.rs` `harvest`: `kept` also holds, for each broken block, the `dropped_components` of its stored block entity, as JSON (`item_nbt::tag_json`). The break is already a waiting edit at that point, and the block entity is still readable.
+  - `crates/minecraft_survival/src/entities.rs` `drop_blocks`: kept components go to the drop that is the block's standing item, and the extra boxed stack is made for shulker boxes only.
+  - `docs/MINECRAFT-SURVIVAL.md`: a mining line on banner drops and on the other tables that now drop the plain item.
+- **Tests:**
+  - `minecraftoss-player` `loot::tests::components_copied_from_the_block_entity_leave_the_item_to_the_caller`: a wall banner rolls the standing banner's table with a `block_entity` copy and drops one plain banner, and another source still gives no answer. The jar test (skipped without the harness jar) now expects a yellow shulker box and a red banner from a red wall banner.
+  - `minecraftoss-world` `level::components::tests::a_broken_banner_gives_back_what_its_loot_table_copies`:
+    - A placed ominous banner gives back exactly its four components.
+    - A named banner with patterns, lore and a rarity gives back the name, the patterns and the rarity, but not the lore.
+    - A plain banner and a spawner give nothing, and `collected` reads a spawner's stored components.
+    - `standing` maps wall banners only.
+  - `minecraft_terrain` `server::tests::a_banner_blown_up_or_torn_from_its_wall_drops_with_its_components` (real data): a decaying explosion of power 1 on the placed ominous banner drops one white banner with the ominous components. Breaking the stone behind the named blue wall banner drops one blue banner with its name and pattern, and no wall banner item.
+  - `minecraft_terrain` `terrain::tests::a_broken_block_s_block_entity_stays_readable_until_the_break_is_written` (real data):
+    - A banner's block entity is read while its edit waits, and again after it is written.
+    - After the break is recorded, it is still read until the chunk is written, and then it is gone.
+    - A chunk that is not loaded gives nothing.
+  - `minecraft_survival` `actions::tests::a_broken_banner_drops_with_its_patterns_and_name` (real data and the 26.3 jar). Each banner is placed with `act` and broken through `harvest`:
+    - A standing ominous banner broken by hand drops one white banner with the ominous components.
+    - A named blue banner placed on a wall drops one blue banner with its components.
+    - An MW2 blast of power 1 keeps the ominous components.
+    - A plain red banner drops a plain red banner. In release 2 these all dropped nothing.
+    - A creative player's break drops nothing.
+  - With both commits, all tests of the touched crates pass:
+    - 1530 in `minecraft_terrain` (3 ignored, as before);
+    - 787 in `minecraft_survival`, plus `vanilla_world`;
+    - 199 in `minecraftoss-player`, with the `scenarios` stand-in files of `full-suite.ps1` made for the run and removed after;
+    - 118 in `minecraftoss-world`.
+
+    `check -p launcher` passes.
+- **Decisions:**
+  - **Server drops are handled in the server level, not at the two `render_anim` blast sites** (the brief's plan used `keep_dropped_contents` there). The level still holds the block entity when it rolls the loot, as vanilla does. That way:
+    - a patterned banner never merges with a plain one in a blast;
+    - a blast that keeps no drop (one in its power) adds none, whereas `keep_dropped_contents` spawns a banner when it finds none;
+    - a plain banner lying nearby can't take the components;
+    - a banner that falls with its wall or floor, and wither breaks, keep their patterns too.
+
+    `render_anim` is not touched.
+  - **`harvest` reads the stored block entity, not `loaded_chunk`** (the brief pointed at the read in `session.rs`). `loaded_chunk` writes the waiting edits first. The break is already one of them when `harvest` runs, so the banner's block entity would be gone. A banner broken within a tick or two of being placed, before the server's block entity reaches the stream, drops plain.
+  - The copied list is the 26.3 banner loot table's `include` list, written into `BANNER_LOOT` (all 16 tables are alike). Only banners get components this way. Shulker boxes keep their own `Containers` path.
+  - Every `copy_components` from `block_entity` now lets the roll through, as the brief says. So these blocks drop the plain item where they used to drop nothing:
+    - an empty, unnamed shulker box, as vanilla does;
+    - a player head, without the skin profile (heads use the default skin here, and a placed head doesn't keep one);
+    - an unbroken decorated pot, without its sherds (a cracked pot still rolls nothing, since the `dynamic` entry isn't ported).
+
+    Bee nests and beehives still roll nothing, because of their `copy_state`.
+- **Protocol:** no change.
+- **Owner's test steps** (both commits of the group `banner-roundtrip`; survival, a new world, by day on flat grass, the kit below). Placed banners still show their base colour only, until group `placed-banners`; the drops show the patterns.
+  1. **By hand.**
+     - Build a wall of planks two high.
+     - Place the patterned white banner on the ground, the patterned blue banner on the wall and a black banner on the ground.
+     - Break each with the axe. The white one drops a white banner whose icon shows the black creeper face in a red border. The blue one drops a blue banner (not a wall banner) with the white fade, the lime globe and the yellow stripe. The black one drops a plain black banner. In release 2 none of them dropped anything.
+     - **Screenshot D1**, the three drops on the ground.
+  2. **Save and load.** Place the patterned white banner, save and quit to the title, load the world and break it: it drops with its pattern.
+  3. **Its wall goes.** Hang the patterned blue banner on the plank wall and break the plank behind it. The banner falls and drops with its pattern.
+  4. **TNT.**
+     - Place three patterned white banners a few blocks apart around a TNT block and light it with flint and steel.
+     - A blast keeps each drop one time in four, so expect about one banner. Every banner that drops keeps its pattern.
+     - **Screenshot D2.**
+  5. **MW2.** Place a patterned white banner and shoot it until it breaks: it drops with its pattern. Throw a frag grenade at another one: when it drops (about one time in four), it has its pattern.
+  6. **The ominous banner.**
+     - Use pillager eggs on open ground until one carries a banner (a captain), and kill it.
+     - Pick up the "Ominous Banner", place it and break it. It drops as an "Ominous Banner" again (hover it in the inventory), with the pattern in its icon, and it stacks with no other banner.
+     - **Screenshot D3**, the inventory with the ominous banner hovered.
+  7. **Creative.** Run `/gamemode creative`, place a patterned banner and break it: nothing drops. Run `/gamemode survival`.
+  8. **The shulker box.** Place the empty shulker box and break it: it drops (in release 2 an empty box dropped nothing). Put a stone in it, break it again: it drops with the stone inside.
+  9. **Friend (two windows, both on this build).**
+     - The friend gets the same kit (or `/kit @a` from the host).
+     - The friend places the patterned white banner and the host breaks it: it drops with its pattern.
+     - The host places the patterned blue banner on a wall and the friend breaks it: it drops with its pattern.
+     - **Screenshot D4**, both windows.
+- **Kit** (11 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*8,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*2,minecraft:pillager_spawn_egg*16,minecraft:oak_planks*32,minecraft:diamond_axe,minecraft:diamond_sword,minecraft:tnt*2,minecraft:flint_and_steel,minecraft:shulker_box,minecraft:stone*4
+```
+
+### Players and friends show loaded crossbows and patterned banners in their hands
+
+Commit: "Minecraft players and friends show loaded crossbows and patterned banners in their hands", the one after `6e3ee0c0`.
+
+- **Cause** (as in the brief, re-checked at `6e3ee0c0`):
+  - A player's held and worn items reach the third-person body as `body_gear::GearItem { id, glint, dye, potion }`, built by `GearItem::of` from the stack. Friends get the same through the wire copy `minecraft_net::messages::GearItem` in `ToClient::Equipment` (`minecraft_survival/src/gear.rs` `gear_view`/`gear_of`).
+  - Neither held the stack's components, so `body_render::held_items` keyed the item by its id and colour alone, and `worn_head` by its id alone. In F5, and in every friend's window, a loaded crossbow was the plain crossbow and a patterned banner or shield was plain.
+  - Item frames have the same gap: `item_frame::FrameView` carried the item's id and potion colour only, so `mesh.rs` `append_frames` drew a framed banner plain and a framed loaded crossbow empty.
+  - The first-person hand (`render_anim` `minecraft_hand.rs`) keys with `item_tint::of_stack_at`, which carries the look since group `item-states`, so it needed no change.
+- **Changed:**
+  - `crates/minecraft_terrain/src/body_gear.rs`: `GearItem.look` (after `potion`) is the stack's `item_look` key part, `ItemLook::of(components, None).suffix()`, filled in `GearItem::of`. `GearItem::key()` builds the drawn key as `item_tint::of_stack_at` does: the id, the look, then the potion colour or the dye.
+  - `body_render.rs` `held_items` and `worn_head.rs` `append_worn_head` key with `GearItem::key()`.
+  - `item_frame.rs`: `FrameView.look` (after `potion`), filled in `ItemFrame::view`. `mesh.rs` `append_frames` keys the framed item with it.
+  - `crates/minecraft_net/src/messages.rs`: the wire `GearItem` has `look: String` after `potion`. `minecraft_survival/src/gear.rs` `item_view` and `item_of` copy it both ways, so `ToClient::Equipment` brings it to friends, and a crossbow being loaded or a banner swapped for another counts as a gear change.
+  - Struct literals in tests (`armor_render`, `body_render`, `body_gear`, `worn_head`, `mesh`, `codec`, `session`, `remote`, and `render_anim` `minecraft_gear.rs`, `minecraft_world.rs`, `minecraft_skaters.rs`) take an empty look.
+  - `item_icons.rs`: the test module and its `banner_pack` are `pub(crate)`, so the body and frame tests draw with the same small banner pack.
+  - `docs/MULTIPLAYER.md`: the `GearView` line names `potion` and `look`.
+  - `docs/MINECRAFT-SURVIVAL.md`: patterns now show in the hand in first and third person, to friends and in item frames; only placed banners still show their base colour alone.
+- **Tests:**
+  - `minecraft_terrain`:
+    - `body_gear::tests::a_loaded_crossbow_and_the_ominous_banner_carry_their_look`: a loaded crossbow in the main hand looks `|charge=arrow` and keys `minecraft:crossbow|charge=arrow`. The ominous banner (from `ominous_banner()`) in the offhand and on the head carries its eight layers (rhombus cyan first, border black last), as `ItemLook::of` reads them. An unloaded crossbow has no look.
+    - `body_gear::tests::a_worn_or_held_item_keys_like_the_stack_itself`: for a rocket-loaded crossbow, the ominous banner, a red shield with a yellow cross, a healing potion with a pattern, red leather horse armour with a base colour and plain stone, `GearItem::of(stack).key()` equals `item_tint::of_stack(stack)`.
+    - `body_render::tests::a_held_loaded_crossbow_and_a_patterned_banner_key_their_look`: the held keys are `minecraft:crossbow|charge=rocket` and `minecraft:white_banner|layer=red,minecraft:stripe`.
+    - `body_render::tests::a_patterned_banner_shows_its_layers_in_either_hand_and_on_the_head`: through `append_body_gear` with the small banner pack, a plain banner draws 18 faces and a striped one 24 in the right hand, the left hand and on the head.
+    - `item_frame::tests::a_framed_ominous_banner_or_loaded_crossbow_view_carries_its_look`: an empty frame and a plain item have no look; the framed ominous banner's view holds its eight layers and keys like the stack; a framed loaded crossbow looks `|charge=arrow`.
+    - `item_frame::tests::a_framed_banner_draws_its_pattern_layers`: through `ItemFrame::view` and `append_frames`, a framed plain banner draws 18 faces and a striped one 24.
+  - `minecraft_net` `codec::tests::a_held_crossbow_s_and_banner_s_look_round_trips`: a `GearItem` with a look, and `ToClient::Equipment` with a loaded crossbow in the hand and a patterned banner in the offhand and on the head, come back the same.
+  - `minecraft_survival` `gear::tests::a_loaded_crossbow_and_a_patterned_banner_keep_their_look_both_ways`: `gear_view` sends `|charge=arrow` and the banner's two layers, `gear_of` gives back the same `BodyGear`, and the keys are those of the stacks. A plain held item sends an empty look.
+  - All 1536 `minecraft_terrain` tests (3 ignored, as before), 27 `minecraft_net` tests and 788 `minecraft_survival` tests (plus `vanilla_world`) pass, and so do the `render_anim` tests; `check -p launcher` passes.
+- **Decisions:**
+  - The look travels as the key part string that `item_look` already writes, not as the stack's components: it holds exactly what the models read (charge, base colour, up to 16 layers), and the friend's game keys it the same way the host does.
+  - The worn head now keys with the whole key (look and colour) like the hands, as vanilla draws any head item with its components. In survival a player can't put a banner on the head (vanilla allows it only by command, and the fork has no `/item`), so this shows only for items that already go there.
+  - Players have no crossbow use in the fork, so `GearItem` carries no use ticks: a player's crossbow shows standby, arrow or rocket and never the pull (the brief's decision).
+  - A framed item still shows a potion colour but no dye (`FrameView` has no dye field); dyed leather in a frame is left as it was.
+- **Protocol:** see the `## Protocol` entry for this commit.
+- **Owner's test steps** (survival, a new world, by day, the kit below):
+  1. **Third person.** Hold the arrow crossbow and press F5 for the third-person view: the arrow lies in the crossbow in your right hand. Do the same with the firework crossbow (a rocket) and the plain crossbow (no arrow). **Screenshot P1.**
+  2. **Banners and the shield in third person.** Still in F5, hold the white banner: it shows the black creeper face in a red border. Hold the blue banner: the white fade, the lime globe and the yellow bottom stripe. Put the red shield in the offhand (F): it shows the yellow cross on red in your left hand. **Screenshot P2.**
+  3. **Item frames.** Build a plank wall, hang four item frames and put in the arrow crossbow, the firework crossbow, the white banner and the red shield. Each shows its arrow, rocket or pattern in the frame. Right-click to turn them: the look stays. **Screenshot P3.**
+  4. **The captain's banner in a frame.** Use pillager eggs until one carries a banner (a captain), kill it with the sword, pick up the "Ominous Banner" and put it in a frame: the frame shows the ominous pattern.
+  5. **Friend (two windows, both on this build).** The friend gets the same kit (or `/kit @a` from the host).
+     - The host holds the arrow crossbow, then the white banner, with the red shield in the offhand. In the friend's window the host's body shows the arrow, then the pattern, and the cross on the shield. **Screenshot P4**, both windows.
+     - The friend does the same: the host sees the friend's loaded crossbow and patterned banner and shield.
+     - The friend sees the host's item frames with the same looks as in the host's window. **Screenshot P5.**
+- **Kit** (11 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:firework_rocket"}]],minecraft:crossbow,minecraft:item_frame*8,minecraft:oak_planks*32,minecraft:pillager_spawn_egg*16,minecraft:diamond_sword,minecraft:cooked_beef*16
+```
+
+### Placed banners show their patterns
+
+Commit: "Minecraft placed banners show their patterns", the one after `c70815b6`.
+
+- **Cause** (as in the brief, re-checked at `c70815b6`):
+  - A placed banner was baked into its section mesh from the block state alone: `special_models::block_model` built pole, bar and flag with no layers, and the flag took the block's colour through `TintKind::Dye`. The block entity's `patterns` never reached the mesher.
+  - Baking the layers into the section would not have worked either: `TintKind::tint` gives white for every tint index above 0, so each layer would have lost its colour.
+  - Since group `banner-roundtrip` the block entity holds the patterns on the host, and friends already receive it (with the chunk, and as `ToClient::BlockEntity`). Structure banners have them too: the 26.3 `end_city/tower_top` template gives its four banners `triangle_top` and `triangle_bottom` in black.
+- **Vanilla 26.3** (javap on the 26.3 jar):
+  - `BannerRenderer` draws a placed banner as a block entity: the pole (standing only) and bar from `entity/banner/banner_base`, then the flag and `submitPatterns` (the base sheet in the block's colour, then up to 16 layers in their own colours), under the pose the baked model already uses, lit with the packed light of the banner's block.
+  - `BannerRenderer` keeps `BlockEntityRenderer.getViewDistance()`, which returns 64, and `shouldRender` is `Vec3.atCenterOf(pos).closerThan(camera, 64)`. Vanilla doesn't draw a banner at all when its centre is 64 blocks or more from the camera.
+- **Changed:**
+  - New `crates/minecraft_terrain/src/banner_look.rs`, modelled on `spawner_display::SpawnerDisplays`:
+    - `layers(tag)` reads a `minecraft:banner` block entity's `patterns` as look layers through `ItemLook::of`. A pattern can be an id or an inline `{asset_id}`, at most 16 layers count, and a layer without a dye or a valid id is dropped. Other block entities give none.
+    - `BannerLooks` keeps the banners with at least one layer. Its feeds are `load_chunk` (loaded and pending block entities, as for spawners), `unload_chunk` and `block_entities(changes)`. A change to a plain banner, to another block entity or to none drops the entry.
+    - `take_apart_changes(scene)` gives `(pos, true)` for each stored banner whose block in the scene is a banner and is not drawn apart yet. It gives `(pos, false)` for each cell drawn apart that no longer qualifies: mined away, patterns gone or chunk unloaded. The callers pass these to `TerrainStream::draw_apart` (`lids::ApartCells`), as for open lids, so the section is rebuilt without the banner or with it again.
+    - `posed(scene, camera)` gives the banners on a banner block whose centre is within 64 blocks of the camera. Each has its model (`special_models::placed_banner_model`) and tints `[base colour of the block, layer colours...]`, cached until the block at the cell changes.
+    - `append(mesh, scene, atlas, light, camera)` draws them with `mesh::append_elements` at the cell, lit with the cell's sky and block light. These are the same vertices the section bakes for the pole, bar and flag, followed by the layers.
+  - `special_models.rs`: the placed banner pose moved out of `block_model` into `placed_banner_elements(block, layers)`, and `placed_banner_model(block, layers)` is new. `block_model` still bakes a banner with no layers.
+  - `lib.rs`: `pub mod banner_look` next to `lids`.
+  - `minecraft_survival` `entity_view.rs`: `EntityView.banners` next to `lids`. `meshes` draws them into `out.items` right after the open lids.
+  - Host feeds, `entities.rs`: `Entities::load_chunk`, `unload_chunk` and the server's `output.block_entities`, next to the spawners and vaults.
+  - Friend feeds, `remote.rs`: `ToClient::BlockEntity`, the chunk batch loads and forgets, `forget`, and `set_blocks` (a block that is no longer a banner drops its entry).
+  - `render_anim`: the draw-apart loops in `minecraft_levels.rs` (`tick_level`), `minecraft_world.rs` (`update`) and `minecraft_remote.rs` (`present_entities`) also pass the banners' changes to `draw_apart`.
+  - `docs/MINECRAFT-SURVIVAL.md`: the end city limit no longer names plain tower banners. The rendering limit says placed banners show their patterns, drawn within 64 blocks.
+- **Tests:**
+  - `minecraft_terrain` `banner_look::tests`:
+    - `a_banner_s_layers_come_from_its_patterns_in_either_form`: id and inline patterns are read. A layer with no colour or a bad dye is dropped, a bare `stripe_top` gets its namespace, and 20 layers keep the first 16. A plain banner, an empty list and a spawner with `patterns` give none.
+    - `a_placed_banner_poses_like_its_block_model_with_its_layers_on_the_flag`: a standing white banner (rotation 4) and a blue wall banner (facing east) with two layers start with exactly the baked elements and sheets. They are followed by `creeper` (tint 1) and `border` (tint 2) cubes shaped like the flag, with tints `[base, black, red]`. Stone poses nothing.
+    - `only_patterned_banners_on_banner_blocks_are_drawn_apart`: the steps are a standing and a wall banner with patterns and a plain one, then the wall banner mined, placed again facing the other way and posed anew, then patterns taken off one and the other removed, and finally patterns on a stone block. Each step checks the apart changes and the posed cells.
+    - `banners_follow_their_chunks_and_are_drawn_within_sixty_four_blocks`: a chunk's loaded tag wins over its pending one, a pending banner is read, and a plain one is skipped. A banner just under 64 blocks away is drawn and one 64 blocks away is not. Unloading the chunk gives its cells back to the section.
+    - `a_placed_banner_draws_the_baked_faces_then_its_layers_in_their_colours` (the small banner pack): drawn apart, a striped banner has the same 18 faces as `append_block` bakes for it (positions, UVs and light equal, colours within 1e-5). Then come 6 stripe faces on the flag's corners in red at the flag's shade and light.
+  - `minecraft_terrain` `terrain::tests::an_apart_banner_leaves_both_of_its_cells_empty_and_every_other_face_alone` (real data): in both the baked and the slow section build, a red banner between stone draws 18 faces, some above its own cell. Drawn apart it leaves both cells empty, and every other vertex is the same.
+  - `minecraft_survival` `actions::tests::a_placed_banner_is_drawn_apart_with_its_patterns_on_the_host` (real data): a player places the ominous banner with `act`. Once the server answers, the host's `EntityView` holds its eight layers (rhombus cyan to border black), asks for its cell to be drawn apart and poses 3 + 8 elements with 9 tints.
+  - `minecraft_survival` `remote::tests::a_banner_streamed_to_the_friend_shows_its_patterns_until_the_block_or_chunk_goes` (real data), in the friend's world:
+    - A magenta banner with the end city's two triangles comes with its chunk, poses 5 elements and is drawn apart. Mined away, it is gone and its cell is given back.
+    - A plain wall banner placed by the host stays in its section. Its patterned `BlockEntity` makes it pose 4 elements and be drawn apart, a tag with no patterns gives the cell back, and forgetting the chunk leaves no cell apart.
+  - All 1542 `minecraft_terrain` tests (3 ignored, as before), 790 `minecraft_survival` tests (plus `vanilla_world`) and 218 `render_anim` tests pass, and `check -p launcher` passes.
+- **Decisions:**
+  - Only patterned banners are drawn apart, and plain ones stay baked into their sections (the brief's decision). This keeps the many plain banners of villages and outposts as cheap as before.
+  - A patterned placed banner is drawn only within 64 blocks of the camera, as vanilla draws every banner. A plain banner is part of its section and shows at any distance, which vanilla doesn't do.
+  - The cells drawn apart are worked out from the store and the scene on every frame, not from the feeds alone. A banner mined on the host before the server reports its block entity gone, or a chunk unloaded, can't leave a cell empty in its section. Nothing is drawn apart where the scene holds no banner.
+  - Drawn apart, the layers sit in the items mesh and are cut out at alpha 0.1, like held, dropped and framed banners (group `banner-items`), so the gradient patterns get the same hard edge.
+  - When a banner gets its patterns, the posed banner shows at once and the baked one stays until its section is rebuilt: one or two frames with both drawn in the same place. When a banner is mined, both go at once. Lids wait for the rebuild; banners don't, because their faces match the baked ones.
+  - No wave: the flag hangs still. Vanilla's phase, `(floorMod(x*7 + y*9 + z*13 + gameTime, 100) + partial) / 100`, is kept here for later.
+- **Protocol:** no change. Friends already receive the banner block entity with its chunk and as `ToClient::BlockEntity`.
+- **Owner's test steps** (survival, a new world, by day on flat grass, the kit below). Groups `banner-roundtrip` and `player-looks` are in, so the drops, the held banners and friends' hands already show their patterns.
+  1. **Ground and wall.**
+     - Build a plank wall three wide and two high.
+     - Place the patterned white banner on the ground two blocks in front of it, and the patterned blue banner on the wall.
+     - The white banner shows the black creeper face in a red border, and the blue banner shows the white fade, the lime globe and the yellow bottom stripe.
+     - Walk round both: the pattern shows from the front and the back.
+     - Place a black banner beside the white one: it is plain black.
+     - **Screenshot E1.**
+  2. **Turned.** Place three more patterned white banners on the ground, standing at different places around each spot as you place it. Each faces the way you stood, and its pattern turns with its flag.
+  3. **Torchlight.** Wait for night (or run `/time set night`) and put a torch on the ground beside the banners. Their patterns are lit and darkened like the black banner next to them. **Screenshot E2.**
+  4. **Mining.**
+     - Break the blue wall banner with the axe. It is gone at once, with no pattern left floating, and it drops with its pattern.
+     - Place it again: the pattern shows again.
+     - Break the plank behind it: it falls and drops with its pattern.
+  5. **Distance.**
+     - Walk straight away from the banners. About 64 blocks out the patterned banners vanish, as in vanilla, while the plain black banner stays.
+     - Walk back: they show again.
+     - **Screenshot E3** from about 70 blocks away.
+  6. **Save and load.** Save and quit to the title, then load the world: the placed banners show their patterns at once.
+  7. **The ominous banner.** Use pillager eggs on open ground until one carries a banner (a captain), kill it with the sword, and place its "Ominous Banner": it shows the cyan diamond, the grey and black stripes and the black border. **Screenshot E4.**
+  8. **End city (optional, its own world).** As in release 1 step C23, put `IW4L_MINECRAFT_WORLD=e1banners` and `IW4L_MINECRAFT_DIMENSION=the_end` in the `.env`, start on the End platform, run `/locate structure minecraft:end_city`, `/gamemode creative` and `/tp <x> 120 <z>`. The banners on the tower tops show their black triangles on magenta. **Screenshot E5.**
+  9. **Friend (two windows, both on this build).**
+     - The friend stands by the host's banners: in the friend's window they show the same patterns, and the plain black banner stays plain.
+     - The host breaks the white banner: it vanishes in both windows at once.
+     - The friend gets the same kit (or `/kit @a` from the host) and places the patterned blue banner on the wall: the host sees its pattern.
+     - The friend walks more than 64 blocks away and back: the banners vanish and come back as in the host's window.
+     - **Screenshot E6**, both windows.
+- **Kit** (9 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*8,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*2,minecraft:oak_planks*32,minecraft:torch*8,minecraft:diamond_axe,minecraft:diamond_sword,minecraft:pillager_spawn_egg*16,minecraft:cooked_beef*16
+```
+
+## E-bells. Bells swing when rung; the glow outline
+
+### Bells swing when rung
+
+Commit: "Minecraft bells swing when rung", the one after `995909d0`.
+
+- **Cause** (as in the brief, re-checked at `995909d0`):
+  - `special_models::push_bell` baked vanilla's `BellModel` body and lip into the section mesh with no rotation, through `extra_elements` in `resolve_block_variants`. Nothing ever posed it again.
+  - A ring (`Level::ring_bell`, vendored `redstone.rs:776`) queues block event 1 with the direction's 3D value. `piston.rs:386` turns it into `level.bell_rings`, and `ServerSim::hear_bells` handed it only to the server's `Bells` (listeners, resonance, glow). No block event left the level thread: `Output` had `level_events` but no block events.
+  - The client already animates chest and shulker lids from block event 1 (`Lids`, drawn apart from their section), but `LidKind::of` knew only shulker boxes and chests, so a bell's event would have been dropped there too.
+- **Vanilla 26.3** (javap on the 26.3 jar):
+  - `BellBlockEntity.triggerEvent(1, b)`: `clickDirection = Direction.from3DDataValue(b)`, `ticks = 0`, `shaking = true`, so a ring during a swing starts it again. `tick`: while shaking `ticks++`; at `ticks >= 50` it stops and `ticks = 0`.
+  - `BellRenderer.extractRenderState`: `ticks = be.ticks + partialTick`, `shakeDirection = shaking ? clickDirection : null`. `submit` poses `BellModel` with no facing rotation of its own.
+  - `BellModel.setupAnim`: `a = Mth.sin(ticks / 3.1415927f) / (4 + ticks / 3)`. The switch map gives NORTH `xRot = -a`, SOUTH `xRot = a`, EAST `zRot = -a`, WEST `zRot = a`; up and down leave it still. The body's pivot is (8, 12, 8) and the lip is its child.
+  - `ServerLevel.tick` runs `runBlockEvents` only while the tick rate runs normally, so a bell rung while `/tick freeze` holds rings and swings when the tick runs again.
+- **Changed:**
+  - `crates/minecraft_terrain/src/lids.rs`:
+    - `LidKind::Bell` (`minecraft:bell`) and `Lid::Bell(BellSwing)`. `BellSwing` keeps `shaking`, `ticks` and the struck side. `ring(param)` takes the side from the 3D value (`param % 6`) and starts at tick 0; `tick` counts to `bells::DURATION` (50) and stops; `swing(partial)` gives `[x_rot, z_rot]` from vanilla's formula at `ticks + partial` with the vendored `mth::sin` table, zero when still.
+    - `block_event` takes event `RING` (1) for bells and `SET_OPEN_COUNT` (1) for chests and shulker boxes. A bell is opening while it shakes and at rest when it stops; `lid_closed` is always true for a bell, and `lid_model` gives none for it.
+    - `Lids::tick` also ticks bells that are not drawn apart yet, so the swing keeps time with the ring's sound. `PosedLid` has a new field `swing`: the bell's angles once it is drawn apart, zero before.
+  - `special_models.rs`: `push_bell(elements, [x_rot, z_rot])` poses the body with `part([8, 12, 8], [x_rot, 0, z_rot])`; the lip stays its child. `extra_elements` passes `[0, 0]`, so baked bells are unchanged.
+  - `model.rs`: `swung_bell_variants(pack, block, swing)` is the bell's blockstate variants without the baked body (`resolve_variants`, whose blockstate rotation is in the elements) plus the swung body, unrotated as in vanilla.
+  - `mesh.rs` `append_open_lids`: a bell takes its variants from `swung_bell_variants`; chests and shulker boxes stay on `lid_model`. A bell whose model can't be resolved is skipped, so the other lids are still drawn.
+  - `server.rs`: `ServerSim.block_events`, filled by `hear_bells` with `(pos, RING, direction.index())` for every ring, and the new `Output.block_events: Vec<((i32, i32, i32), u8, i32)>` next to `level_events`, drained with them in `run_tick`. Only bells fill it for now; it has a generic name because vanilla sends every block event within 64 blocks.
+  - `minecraft_survival` `entities.rs`: `Entities.block_events` collects `output.block_events` beside the level events, and `present_level_events` hands each to `lid_event`. That feeds the host's `view.lids` and sends `Heard::Block` to friends within `BLOCK_EVENT_RANGE` (64). Friends need no change: `ToClient::BlockEvent` already reaches `lids.block_event` (`render_anim/src/minecraft_remote.rs`).
+  - Every ring source gets the swing, because they all go through `Level::ring_bell`: a hand use, redstone, villagers in a raid and wind charge bursts (and E2's projectile hits once they land).
+  - `docs/MINECRAFT-SURVIVAL.md`: the block entity paragraph says a rung bell swings, and "no bell swing" is gone from what never animates.
+  - `docs/round9/track-d-log.md` ("Left for later", bells): the swing and the resonance particles are taken off the list (see the decisions).
+- **Tests:**
+  - `minecraft_terrain` `lids::tests::a_rung_bell_swings_for_fifty_ticks_away_from_the_struck_side`: a bell is `LidKind::Bell` with no lid model. A north ring is still at tick 0, moves within the first tick, swings `-x` by vanilla's formula on every tick and peaks at tick 4 at about 0.179 rad (10°). It still shakes after 49 ticks and is at rest after 50. South gives `+x`, east `-z`, west `+z`, up and down nothing, and 8 reads as north. A second ring after 10 ticks starts again from 0 on its own side and lasts 50 more ticks.
+  - `minecraft_terrain` `lids::tests::a_bell_is_drawn_apart_while_it_swings_and_back_in_its_section_after`: only block event 1 rings it, and it never counts as an open lid. It is still while its section still draws it, and once drawn apart it shows the swing of the ticks since the ring (3.5 ticks on). It goes back to its section 50 ticks after the ring. Rung again before its section took it back, it is drawn apart again and swings the new way.
+  - `minecraft_terrain` `mesh::tests::a_still_bell_drawn_apart_matches_its_section_and_a_swung_one_keeps_its_pivot` (a small bell pack, floor bells facing north and east, the east one turned by the blockstate): drawn apart and still, the bell gives exactly the section's 16 faces. Swung, the stand is unchanged, every body and lip vertex is turned about (8, 12, 8)/16 by the swing, and the lip moves north for a south ring and west for an east ring.
+  - `minecraft_terrain` `server::tests::a_rung_bell_sends_block_event_one_with_its_direction` (real data): an east ring sends `(bell, 1, 5)`; a ring with no side sends the bell's facing (north, 2) and a south ring 3 in the same tick; a frozen tick sends nothing and the next one sends the held west ring (4).
+  - `minecraft_survival` `entities::tests::a_bell_rung_on_the_host_swings_for_the_host_and_reaches_friends_as_a_block_event` (real data): a bell placed in the shared world and rung from the south reaches friends as one `Heard::Block` (event 1, side 3). The host's view draws it apart and swings it about `+x`.
+  - All 1546 `minecraft_terrain` tests (3 ignored, as before) and 791 `minecraft_survival` tests (plus `vanilla_world`) pass, and `check -p launcher` passes.
+- **Decisions:**
+  - A bell's swing is a client animation, drawn apart from its section like a chest lid, from block event 1. Friends get it through the existing `ToClient::BlockEvent`.
+  - The swing's clock starts at the ring, not when the section has let the bell go: bell entries tick whatever their drawn state. Until the section is rebuilt without the bell, the posed bell is held still, exactly over the baked one, so no swinging bell shows inside a still one. Once apart it shows the swing at the point the ring has reached, a frame or two late at most.
+  - Vanilla's resonance particles (`ColorParticleOption.create(ENTITY_EFFECT, 16700985 + 5n)`, an ARGB int with alpha 0) are invisible in 26.3, so the fork draws none. They are off the round 9 "Left for later" list.
+  - The body swings about vanilla's pivot in world axes for every bell, as vanilla's renderer adds no facing rotation: a wall or ceiling bell swings the same way for the same struck side.
+  - At the end of the 50 ticks the swing snaps from about 0.01 rad to rest, as in vanilla.
+  - A swinging bell resolves its stand from the pack on every frame it is drawn (the pack's files are cached; only their JSON is read again). Only bells within their 2.5-second swing do this.
+- **Protocol:** no change. `ToClient::BlockEvent` exists, and `Output` stays on the host.
+- **Owner's test steps** (survival, Normal, by day on flat ground, the kit below):
+  1. **Floor bell.** Look straight ahead and place a bell on cobblestone in front of you: it faces the way you looked, and only its front and back ring.
+     - Right-click the side facing you, below the rim: it rings, and the bell body swings away from you, back and forth, dying out over 2.5 seconds. The posts and bar stay still. **Screenshot bell_01_swing** mid-swing.
+     - Right-click it again mid-swing: the swing starts over.
+     - Walk round and right-click the opposite side: it swings the other way.
+     - Right-click one of the two other sides, then the top: nothing happens (wrong side).
+  2. **Wall and ceiling bells.** Place a bell against a plank wall and one under a plank ceiling. Ring each from its allowed sides: each swings away from the side you hit. Put a lever next to one and pull it: the bell rings and swings. **Screenshot bell_02_wall_ceiling.**
+  3. **Villages.** Place a bell and two beds in the open, hatch four villagers there with the eggs, and wait until they have claimed the beds. Drink an ominous bottle (you get Raid Omen, then the raid starts). While the raid bar fills, a villager rings the bell now and then, and you see it swing.
+  4. **Friend (two windows, both on this build).**
+     - The friend stands near the bell while the host rings it: the friend's window shows the same swing at the same time.
+     - The friend rings it from the other side: both windows show it swinging the other way.
+     - The friend pulls the lever: both windows show the swing.
+     - **Screenshot bell_07_friend_swing**, both windows.
+- **Kit** (15 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bell*4,minecraft:lever*2,minecraft:cobblestone*64,minecraft:oak_planks*64,minecraft:villager_spawn_egg*4,minecraft:ominous_bottle*2,minecraft:white_bed*2,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*16
+```
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components
@@ -629,7 +1252,7 @@ Commit: "Track E1 code passes clippy", the one after `70df989a`.
 
 ## Combined kit
 
-One line for a quick look at the whole track in one world (27 backpack slots). Each section above has its full kit. The banner, shield and crossbow entries of E-kit are left out, since nothing draws their patterns or the loaded arrow yet; E-kit's `/give` steps still check them.
+One line for a quick look at the whole track in one world (27 backpack slots). Each section above has its full kit. The banner, shield and crossbow entries of E-kit are left out to stay within 27 slots; the E-banners kits carry the patterned banners and shields and the loaded crossbows, and E-kit's `/give` steps still check them.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two"]}],minecraft:firework_rocket[fireworks={flight_duration:3}]*16,minecraft:firework_rocket*16,minecraft:elytra,minecraft:horse_spawn_egg*4,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:strider_spawn_egg*2,minecraft:wheat*64,minecraft:potato*64,minecraft:carrot*64,minecraft:beetroot*64,minecraft:bone*32,minecraft:cod*64,minecraft:golden_carrot*16,minecraft:composter,minecraft:ominous_bottle*2,minecraft:ominous_bottle[ominous_bottle_amplifier=4],minecraft:potion@long_night_vision,minecraft:golden_apple*8,minecraft:milk_bucket,minecraft:saddle,minecraft:saddle,minecraft:hay_block*16,minecraft:leather_horse_armor@red,minecraft:leather_chestplate@red

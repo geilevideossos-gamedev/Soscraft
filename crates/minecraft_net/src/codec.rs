@@ -490,6 +490,7 @@ mod tests {
             glint: true,
             dye: Some(0xA06540),
             potion: None,
+            look: String::new(),
         };
         vec![
             ToClient::Login(Login {
@@ -620,12 +621,14 @@ mod tests {
                         glint: false,
                         dye: None,
                         potion: None,
+                        look: String::new(),
                     }),
                     off: Some(GearItem {
                         id: "minecraft:potion".to_string(),
                         glint: false,
                         dye: None,
                         potion: Some(0xF82423),
+                        look: String::new(),
                     }),
                     armor: [Some(helmet), None, None, None],
                     hides_gun: true,
@@ -892,11 +895,44 @@ mod tests {
             glint: false,
             dye: None,
             potion: Some(0x87A363),
+            look: String::new(),
         };
         round_trip(Lane::Reliable, &potion);
         let bytes = encode(Lane::Reliable, &potion).unwrap();
         let back: GearItem = decode(Lane::Reliable, &bytes).unwrap();
         assert_eq!(back.potion, Some(0x87A363));
+    }
+
+    #[test]
+    fn a_held_crossbow_s_and_banner_s_look_round_trips() {
+        let crossbow = GearItem {
+            id: "minecraft:crossbow".to_string(),
+            look: "|charge=arrow".to_string(),
+            ..GearItem::default()
+        };
+        let banner = GearItem {
+            id: "minecraft:white_banner".to_string(),
+            look: "|layer=cyan,minecraft:rhombus|layer=black,minecraft:border".to_string(),
+            ..GearItem::default()
+        };
+        round_trip(Lane::Reliable, &crossbow);
+        let message = ToClient::Equipment {
+            client: 3,
+            gear: GearView {
+                main: Some(crossbow.clone()),
+                off: Some(banner.clone()),
+                armor: [Some(banner.clone()), None, None, None],
+                hides_gun: true,
+            },
+        };
+        let bytes = encode(Lane::Reliable, &message).unwrap();
+        let ToClient::Equipment { client, gear } = decode(Lane::Reliable, &bytes).unwrap() else {
+            panic!("not equipment");
+        };
+        assert_eq!(client, 3);
+        assert_eq!(gear.main, Some(crossbow));
+        assert_eq!(gear.off.as_ref(), Some(&banner));
+        assert_eq!(gear.armor[0], Some(banner));
     }
 
     #[test]

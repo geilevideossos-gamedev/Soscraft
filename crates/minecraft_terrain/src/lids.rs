@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::f32::consts::PI;
 
 use anyhow::Result;
+use minecraftoss_core::pos::Direction;
 
 use crate::containers::{Opened, chest_partner, is_shulker_box};
 use crate::model::ResolvedModel;
@@ -8,12 +10,14 @@ use crate::scene::{Block, BlockPos, Scene};
 use crate::sections::SectionPos;
 
 pub const SET_OPEN_COUNT: u8 = 1;
+pub const RING: u8 = 1;
 const STEP: f32 = 0.1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LidKind {
     Shulker,
     Chest,
+    Bell,
 }
 
 impl LidKind {
@@ -24,6 +28,8 @@ impl LidKind {
             Some(Self::Shulker)
         } else if crate::special_models::is_chest(block) {
             Some(Self::Chest)
+        } else if block.id.path == "bell" {
+            Some(Self::Bell)
         } else {
             None
         }
@@ -36,7 +42,7 @@ pub fn lid_model(block: &Block, progress: f32) -> Result<Option<ResolvedModel>> 
             crate::special_models::shulker_box_model(block, progress).map(Some)
         }
         Some(LidKind::Chest) => crate::model::opened_chest_model(block, progress).map(Some),
-        None => Ok(None),
+        Some(LidKind::Bell) | None => Ok(None),
     }
 }
 
@@ -127,10 +133,51 @@ impl ChestLid {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BellSwing {
+    pub shaking: bool,
+    ticks: i32,
+    direction: Option<Direction>,
+}
+
+impl BellSwing {
+    pub fn ring(&mut self, param: u32) {
+        self.direction = Some(Direction::ALL[(param % 6) as usize]);
+        self.ticks = 0;
+        self.shaking = true;
+    }
+
+    pub fn tick(&mut self) {
+        if self.shaking {
+            self.ticks += 1;
+        }
+        if self.ticks >= crate::bells::DURATION {
+            self.shaking = false;
+            self.ticks = 0;
+        }
+    }
+
+    pub fn swing(&self, partial: f32) -> [f32; 2] {
+        if !self.shaking {
+            return [0.0; 2];
+        }
+        let ticks = self.ticks as f32 + partial;
+        let angle = minecraftoss_player::mth::sin(f64::from(ticks / PI)) / (4.0 + ticks / 3.0);
+        match self.direction {
+            Some(Direction::North) => [-angle, 0.0],
+            Some(Direction::South) => [angle, 0.0],
+            Some(Direction::East) => [0.0, -angle],
+            Some(Direction::West) => [0.0, angle],
+            _ => [0.0; 2],
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Lid {
     Shulker(ShulkerLid),
     Chest(ChestLid),
+    Bell(BellSwing),
 }
 
 impl Lid {
@@ -138,6 +185,7 @@ impl Lid {
         match kind {
             LidKind::Shulker => Self::Shulker(ShulkerLid::default()),
             LidKind::Chest => Self::Chest(ChestLid::default()),
+            LidKind::Bell => Self::Bell(BellSwing::default()),
         }
     }
 
@@ -145,6 +193,7 @@ impl Lid {
         match self {
             Self::Shulker(_) => LidKind::Shulker,
             Self::Chest(_) => LidKind::Chest,
+            Self::Bell(_) => LidKind::Bell,
         }
     }
 
@@ -152,6 +201,7 @@ impl Lid {
         match self {
             Self::Shulker(lid) => lid.set_open_count(count),
             Self::Chest(lid) => lid.set_open_count(count),
+            Self::Bell(bell) => bell.ring(count),
         }
     }
 
@@ -159,6 +209,7 @@ impl Lid {
         match self {
             Self::Shulker(lid) => lid.tick(),
             Self::Chest(lid) => lid.tick(),
+            Self::Bell(bell) => bell.tick(),
         }
     }
 
@@ -166,6 +217,7 @@ impl Lid {
         match self {
             Self::Shulker(lid) => lid.progress(partial),
             Self::Chest(lid) => lid.openness(partial),
+            Self::Bell(_) => 0.0,
         }
     }
 
@@ -175,6 +227,7 @@ impl Lid {
                 matches!(lid.status, ShulkerStatus::Opening | ShulkerStatus::Opened)
             }
             Self::Chest(lid) => lid.open,
+            Self::Bell(bell) => bell.shaking,
         }
     }
 
@@ -182,6 +235,7 @@ impl Lid {
         match self {
             Self::Shulker(lid) => lid.at_rest(),
             Self::Chest(lid) => lid.at_rest(),
+            Self::Bell(bell) => !bell.shaking,
         }
     }
 }
@@ -204,6 +258,7 @@ pub struct PosedLid {
     pub cell: BlockPos,
     pub block: Block,
     pub progress: f32,
+    pub swing: [f32; 2],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -221,12 +276,16 @@ impl Lids {
     }
 
     pub fn block_event<S: Scene>(&mut self, scene: &S, pos: BlockPos, id: u8, param: u32) {
-        if id != SET_OPEN_COUNT {
-            return;
-        }
         let Some(kind) = scene.block(pos).and_then(LidKind::of) else {
             return;
         };
+        let event = match kind {
+            LidKind::Bell => RING,
+            LidKind::Shulker | LidKind::Chest => SET_OPEN_COUNT,
+        };
+        if id != event {
+            return;
+        }
         if let Some(entry) = self
             .entries
             .get_mut(&pos)
@@ -257,6 +316,8 @@ impl Lids {
                 if entry.lid.at_rest() {
                     entry.drawn = Drawn::Sending(false);
                 }
+            } else if entry.lid.kind() == LidKind::Bell {
+                entry.lid.tick();
             }
         }
     }
@@ -306,10 +367,15 @@ impl Lids {
                     _ => None,
                 };
                 let progress = partner.map_or(own, |other| own.max(other.lid.progress(partial)));
+                let swing = match entry.lid {
+                    Lid::Bell(bell) if entry.drawn == Drawn::Apart => bell.swing(partial),
+                    _ => [0.0; 2],
+                };
                 Some(PosedLid {
                     cell,
                     block: block.clone(),
                     progress,
+                    swing,
                 })
             })
             .collect()
@@ -319,6 +385,7 @@ impl Lids {
         self.entries.get(&pos).is_none_or(|entry| match entry.lid {
             Lid::Shulker(lid) => lid.status == ShulkerStatus::Closed,
             Lid::Chest(lid) => lid.at_rest(),
+            Lid::Bell(_) => true,
         })
     }
 }
@@ -384,7 +451,7 @@ mod tests {
     fn shulker_status(lid: &Lid) -> ShulkerStatus {
         match lid {
             Lid::Shulker(lid) => lid.status,
-            Lid::Chest(_) => unreachable!(),
+            Lid::Chest(_) | Lid::Bell(_) => unreachable!(),
         }
     }
 
@@ -651,6 +718,139 @@ mod tests {
             assert_eq!(LidKind::of(&block), kind, "{id}");
             assert_eq!(lid_model(&block, 0.5).unwrap().is_some(), kind.is_some());
         }
+    }
+
+    fn bell_swing(lid: &Lid, partial: f32) -> [f32; 2] {
+        match lid {
+            Lid::Bell(bell) => bell.swing(partial),
+            _ => unreachable!(),
+        }
+    }
+
+    fn swing_at(ticks: f32) -> f32 {
+        minecraftoss_player::mth::sin(f64::from(ticks / PI)) / (4.0 + ticks / 3.0)
+    }
+
+    #[test]
+    fn a_rung_bell_swings_for_fifty_ticks_away_from_the_struck_side() {
+        let block = Block::new("minecraft:bell").with("attachment", "floor");
+        assert_eq!(LidKind::of(&block), Some(LidKind::Bell));
+        assert!(lid_model(&block, 0.5).unwrap().is_none());
+        let rung = |param: u32| {
+            let mut lid = Lid::new(LidKind::Bell);
+            lid.set_open_count(param);
+            lid
+        };
+        let mut north = rung(2);
+        assert!(north.opening() && !north.at_rest());
+        assert_eq!(bell_swing(&north, 0.0), [0.0; 2]);
+        assert!(
+            bell_swing(&north, 0.5)[0] < 0.0,
+            "it moves within the first tick"
+        );
+        let mut peak = (0, 0.0f32);
+        for tick in 1..50 {
+            north.tick();
+            let [x, z] = bell_swing(&north, 0.0);
+            assert_eq!((x, z), (-swing_at(tick as f32), 0.0), "tick {tick}");
+            if -x > peak.1 {
+                peak = (tick, -x);
+            }
+        }
+        assert_eq!(peak.0, 4);
+        assert!(
+            (peak.1 - 0.179).abs() < 0.001,
+            "about ten degrees: {peak:?}"
+        );
+        assert!(north.opening());
+        north.tick();
+        assert!(north.at_rest() && !north.opening());
+        assert_eq!(bell_swing(&north, 0.5), [0.0; 2]);
+        let mut sides = Vec::new();
+        for param in [3, 5, 4, 1, 0, 8] {
+            let mut lid = rung(param);
+            lid.tick();
+            lid.tick();
+            sides.push(bell_swing(&lid, 0.0));
+        }
+        let a = swing_at(2.0);
+        assert_eq!(
+            sides,
+            [[a, 0.0], [0.0, -a], [0.0, a], [0.0; 2], [0.0; 2], [-a, 0.0]]
+        );
+        let mut again = rung(3);
+        for _ in 0..10 {
+            again.tick();
+        }
+        again.set_open_count(4);
+        assert_eq!(bell_swing(&again, 0.0), [0.0; 2]);
+        assert_eq!(bell_swing(&again, 1.0), [0.0, swing_at(1.0)]);
+        for _ in 0..49 {
+            again.tick();
+        }
+        assert!(
+            again.opening(),
+            "a second ring starts the fifty ticks again"
+        );
+        again.tick();
+        assert!(again.at_rest());
+    }
+
+    #[test]
+    fn a_bell_is_drawn_apart_while_it_swings_and_back_in_its_section_after() {
+        let cell = (4, 70, -2);
+        let mut scene = HandcraftedScene::default();
+        let bell = Block::new("minecraft:bell")
+            .with("attachment", "floor")
+            .with("facing", "north");
+        scene.set(cell, Some(bell));
+        let mut lids = Lids::default();
+        lids.block_event(&scene, cell, 2, 3);
+        assert!(lids.is_empty(), "only block event one rings it");
+        lids.block_event(&scene, cell, RING, 3);
+        assert!(lids.lid_closed(cell), "a bell has no lid to keep shut");
+        lids.tick();
+        lids.tick();
+        assert_eq!(lids.posed(&scene, 0.0)[0].swing, [0.0; 2]);
+        assert_eq!(lids.take_apart_changes(), vec![(cell, true)]);
+        lids.settle(&scene, |_| false);
+        lids.tick();
+        assert_eq!(
+            lids.posed(&scene, 0.5)[0].swing,
+            [0.0; 2],
+            "still while its section still draws it"
+        );
+        lids.settle(&scene, |_| true);
+        let posed = lids.posed(&scene, 0.5);
+        assert_eq!(posed.len(), 1);
+        assert_eq!(
+            posed[0].swing,
+            [swing_at(3.5), 0.0],
+            "it kept time with the ring"
+        );
+        for _ in 0..46 {
+            lids.tick();
+            assert_eq!(lids.take_apart_changes(), Vec::new());
+        }
+        lids.tick();
+        assert_eq!(lids.take_apart_changes(), vec![(cell, false)]);
+        assert_eq!(lids.posed(&scene, 0.5)[0].swing, [0.0; 2]);
+        lids.block_event(&scene, cell, RING, 5);
+        lids.settle(&scene, |_| true);
+        assert_eq!(
+            lids.take_apart_changes(),
+            vec![(cell, true)],
+            "rung again before its section took it back"
+        );
+        lids.settle(&scene, |_| true);
+        lids.tick();
+        assert_eq!(lids.posed(&scene, 0.0)[0].swing, [0.0, -swing_at(1.0)]);
+        for _ in 0..49 {
+            lids.tick();
+        }
+        assert_eq!(lids.take_apart_changes(), vec![(cell, false)]);
+        lids.settle(&scene, |_| true);
+        assert!(lids.is_empty());
     }
 
     #[test]

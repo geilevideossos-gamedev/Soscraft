@@ -1596,6 +1596,16 @@ pub fn act(
                     {
                         containers.place_shulker(pos, stack, &entities.recipes);
                     }
+                    if let Some(components) = held
+                        .as_ref()
+                        .filter(|stack| minecraftoss_world::level::components::is_banner(&stack.id))
+                        .and_then(|stack| stack.components.as_ref())
+                        && Scene::block(&terrain.scene, pos).is_some_and(|block| {
+                            minecraftoss_world::level::components::is_banner(&block.id.key())
+                        })
+                    {
+                        entities.block_entity_components(pos, components);
+                    }
                     if !game_mode.consumes_items() {
                         inventory.slots[slot].clone_from(&held);
                     }
@@ -1761,6 +1771,13 @@ pub fn harvest(
                 .take_shulker(*pos)
                 .map(|components| (*pos, components))
         })
+        .chain(broken.iter().filter_map(|(pos, ..)| {
+            let components = terrain
+                .stream
+                .stored_block_entity(*pos)
+                .and_then(minecraftoss_world::level::components::dropped_components)?;
+            Some((*pos, minecraft_terrain::item_nbt::tag_json(&components)))
+        }))
         .collect();
     let dropping: Vec<_> = broken
         .iter()
@@ -2220,6 +2237,302 @@ pub(crate) mod tests {
         );
         assert!(again.effects.is_empty(), "a press acts once");
         assert_eq!(count(&player), Some(31));
+    }
+
+    pub(crate) fn ominous_banner() -> ItemStack {
+        minecraft_terrain::item_frame::stack_of_tag(
+            &minecraftoss_world::natural_spawner::spawning::ominous_banner(),
+        )
+        .expect("the ominous banner")
+    }
+
+    #[test]
+    fn a_placed_banner_keeps_its_patterns_for_the_save_and_for_friends() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.inventory.slots[0] = Some(ominous_banner());
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, [4.5, 201.0, 6.5]));
+        let _ = act(
+            &mut player,
+            &mut level,
+            &globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        let pos = (4, 201, 6);
+        let placed = Scene::block(&level.terrain.scene, pos).map(|b| b.id.key());
+        assert_eq!(placed.as_deref(), Some("minecraft:white_banner"));
+        level.terrain.friend_changes = Some(Vec::new());
+        let entities = level.entities.as_mut().expect("entities");
+        crate::level::save_server_block_entities(entities, &mut level.terrain, true);
+        let told = level.terrain.friend_changes.clone().unwrap_or_default();
+        assert!(
+            told.contains(&pos) && told.iter().all(|at| *at == pos),
+            "friends hear of the banner's block entity: {told:?}"
+        );
+        let updates = crate::session::block_updates(&mut level.terrain, &[pos]);
+        let sent = updates
+            .entities
+            .iter()
+            .find(|(at, _)| *at == [4, 201, 6])
+            .map(|(_, nbt)| minecraftoss_core::nbt::read(&nbt.0).expect("the sent tag"));
+        let field = |name: &str| sent.as_ref().and_then(|tag| tag.get(name)).cloned();
+        let patterns = field("patterns");
+        assert_eq!(
+            patterns.as_ref().and_then(Tag::as_list).map(<[Tag]>::len),
+            Some(8),
+            "{sent:?}"
+        );
+        let stored = field("components");
+        let names: Vec<&str> = stored
+            .as_ref()
+            .and_then(Tag::as_compound)
+            .map(|map| map.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            names,
+            [
+                "minecraft:item_name",
+                "minecraft:rarity",
+                "minecraft:tooltip_display"
+            ]
+        );
+        assert_eq!(field("CustomName"), None);
+    }
+
+    #[test]
+    fn a_placed_banner_is_drawn_apart_with_its_patterns_on_the_host() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.inventory.slots[0] = Some(ominous_banner());
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, [4.5, 201.0, 6.5]));
+        let _ = act(
+            &mut player,
+            &mut level,
+            &globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        let pos = (4, 201, 6);
+        let entities = level.entities.as_mut().expect("entities");
+        assert_eq!(entities.view.banners.layers(pos), None, "not before the server answers");
+        let mut inventory = Inventory::default();
+        let started = std::time::Instant::now();
+        while entities.view.banners.layers(pos).is_none() {
+            assert!(
+                started.elapsed().as_secs() < 300,
+                "the banner's patterns never reached the view"
+            );
+            let normal = if entities.ready_for_ticks() {
+                vec![true]
+            } else {
+                Vec::new()
+            };
+            let batch = crate::tick_rate::TickBatch {
+                normal,
+                overload: None,
+            };
+            let view = PlayerView {
+                feet: FEET,
+                alive: true,
+                attackable: true,
+                spectator: false,
+                picks_up: true,
+                health: 20.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                main_hand: None,
+                offhand: None,
+                sneaking: false,
+                hero: None,
+                sleeping: None,
+                sleep_timer: 0,
+                forward: 0.0,
+                strafe: 0.0,
+                jumping: false,
+                swirl: None,
+                omens: Default::default(),
+                warden: Default::default(),
+            };
+            let mut actors = [TickActor {
+                id: 0,
+                view,
+                inventory: &mut inventory,
+                selected: 0,
+            }];
+            let _ = entities.tick(
+                &mut actors,
+                0.05,
+                &batch,
+                crate::tick_rate::ClientTiming::default(),
+                minecraft_terrain::server::ClockTicks::default(),
+                true,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let banners = &mut entities.view.banners;
+        let layers = banners.layers(pos).unwrap_or_default();
+        assert_eq!(layers.len(), 8);
+        assert_eq!(layers[0], ("minecraft:rhombus".to_owned(), "cyan"));
+        assert_eq!(layers[7], ("minecraft:border".to_owned(), "black"));
+        let scene = &level.terrain.scene;
+        assert_eq!(banners.take_apart_changes(scene), [(pos, true)]);
+        let posed = banners.posed(scene, DVec3::from_array(FEET));
+        assert_eq!(posed.len(), 1);
+        assert_eq!(posed[0].cell, pos);
+        assert_eq!(posed[0].model.elements.len(), 3 + 8, "pole, bar, flag and eight layers");
+        assert_eq!(posed[0].tints.len(), 1 + 8);
+    }
+
+    fn place_held(level: &mut Level, globals: &Globals, stack: ItemStack, at: [f64; 3]) {
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.inventory.slots[0] = Some(stack);
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, at));
+        let _ = act(
+            &mut player,
+            level,
+            globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        let entities = level.entities.as_mut().expect("entities");
+        crate::level::save_server_block_entities(entities, &mut level.terrain, true);
+    }
+
+    fn break_and_collect(
+        level: &mut Level,
+        globals: &Globals,
+        mode: GameMode,
+        pos: BlockPos,
+        blast: Option<f32>,
+    ) -> Vec<(String, u8, Option<serde_json::Value>)> {
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.mode = PlayerMode::new(mode);
+        let block = Scene::block(&level.terrain.scene, pos)
+            .cloned()
+            .expect("a block to break");
+        level.terrain.scene.set(pos, None);
+        level.terrain.stream.record_edits(&level.terrain.scene, &[pos]);
+        let hand_mined: Vec<BlockPos> = blast.is_none().then_some(pos).into_iter().collect();
+        let mined = vec![(pos, block, blast)];
+        let (broken, dug) = match blast {
+            Some(_) => (mined, Vec::new()),
+            None => (Vec::new(), mined),
+        };
+        let _ = harvest(&mut player, level, globals, (broken, dug), &hand_mined, FEET);
+        let entities = level.entities.as_mut().expect("entities");
+        std::mem::take(&mut entities.view.world_items.entities)
+            .into_iter()
+            .map(|item| (item.stack.id, item.stack.count, item.stack.components))
+            .collect()
+    }
+
+    #[test]
+    fn a_broken_banner_drops_with_its_patterns_and_name() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let Some((mut level, mut globals)) = level_and_globals() else {
+            return;
+        };
+        globals.data = crate::data::GameData::load(None, Some(jar));
+        let terrain = &mut level.terrain;
+        let mut entities = Entities::new(
+            &terrain.stream,
+            minecraft_net::Dimension::Overworld,
+            0,
+            &globals.data,
+            None,
+            None,
+        );
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let chunk = terrain
+                    .stream
+                    .load_chunk_now(minecraftoss_core::ChunkPos::new(x, z));
+                entities.load_chunk(&chunk);
+            }
+        }
+        terrain
+            .scene
+            .set((4, 202, 7), Some(Block::new("minecraft:stone")));
+        for x in 0..10 {
+            for z in 0..10 {
+                entities.placed(None, &terrain.scene, (x, 200, z));
+            }
+        }
+        entities.placed(None, &terrain.scene, (4, 202, 7));
+        level.entities = Some(entities);
+        let ominous = ominous_banner();
+        let standing = (4, 201, 6);
+        let floor = [4.5, 201.0, 6.5];
+        let survival = GameMode::Survival;
+        place_held(&mut level, &globals, ominous.clone(), floor);
+        assert_eq!(
+            break_and_collect(&mut level, &globals, survival, standing, None),
+            [(
+                "minecraft:white_banner".to_owned(),
+                1,
+                ominous.components.clone()
+            )],
+            "broken by hand"
+        );
+        let mut named = ItemStack::new("minecraft:blue_banner", 1);
+        named.components = Some(serde_json::json!({
+            "minecraft:custom_name": "Flag",
+            "minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}]
+        }));
+        place_held(&mut level, &globals, named.clone(), [4.5, 202.5, 7.0]);
+        let wall = (4, 202, 6);
+        let hung = Scene::block(&level.terrain.scene, wall).map(|b| b.id.key());
+        assert_eq!(hung.as_deref(), Some("minecraft:blue_wall_banner"));
+        assert_eq!(
+            break_and_collect(&mut level, &globals, survival, wall, None),
+            [("minecraft:blue_banner".to_owned(), 1, named.components)],
+            "a wall banner drops the standing item"
+        );
+        place_held(&mut level, &globals, ominous.clone(), floor);
+        assert_eq!(
+            break_and_collect(&mut level, &globals, survival, standing, Some(1.0)),
+            [(
+                "minecraft:white_banner".to_owned(),
+                1,
+                ominous.components.clone()
+            )],
+            "an MW2 blast"
+        );
+        place_held(&mut level, &globals, ItemStack::new("minecraft:red_banner", 1), floor);
+        assert_eq!(
+            break_and_collect(&mut level, &globals, survival, standing, None),
+            [("minecraft:red_banner".to_owned(), 1, None)],
+            "a plain banner drops plain"
+        );
+        place_held(&mut level, &globals, ominous, floor);
+        assert!(
+            break_and_collect(&mut level, &globals, GameMode::Creative, standing, None).is_empty(),
+            "creative breaking drops nothing"
+        );
     }
 
     #[test]

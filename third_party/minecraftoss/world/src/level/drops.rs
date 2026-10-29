@@ -39,7 +39,8 @@ impl Level<'_> {
         let registries = self.lib.registries.clone();
         let drops = registries.loot.block_drops(&registries, state, &params, &mut self.random_sequences, &mut self.random);
         match drops {
-            Ok(stacks) => {
+            Ok(mut stacks) => {
+                self.keep_block_entity_components(pos, state, &mut stacks);
                 for stack in stacks {
                     self.pop_resource(pos, stack);
                 }

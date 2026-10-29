@@ -1293,6 +1293,10 @@ impl TerrainStream {
         self.server.as_mut()?.chunk(pos).cloned()
     }
 
+    pub fn stored_block_entity(&self, (x, y, z): BlockPos) -> Option<&minecraftoss_core::nbt::Tag> {
+        self.server.as_ref()?.stored_block_entity(minecraftoss_core::BlockPos::new(x, y, z))
+    }
+
     pub fn load_chunk_now(&mut self, pos: minecraftoss_core::ChunkPos) -> Arc<Chunk> {
         self.server.as_mut().expect(HOST_ONLY).load_now(pos)
     }
@@ -2386,6 +2390,56 @@ mod tests {
     }
 
     #[test]
+    fn an_apart_banner_leaves_both_of_its_cells_empty_and_every_other_face_alone() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Some(pack) = paths.datapack.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).map(|root| root.join("resourcepacks/local/minecraft-26.3")).filter(|p| p.is_dir()) else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let states = Arc::new(BlockStates::new(Arc::new(registries), 1, -64, 384).unwrap());
+        let plains = states.registries().biomes.id("minecraft:plains").unwrap_or(BiomeId(0));
+        let mut scene = HandcraftedScene::streamed(states.clone());
+        for x in -1..=1 {
+            for z in -1..=1 {
+                scene.insert_chunk(Arc::new(Chunk::new(minecraftoss_core::ChunkPos::new(x, z), -64, 384, plains)));
+            }
+        }
+        let cell = (5, 66, 5);
+        let banner = Block::new("minecraft:red_banner").with("rotation", "0");
+        scene.set(cell, Some(banner.clone()));
+        for (dx, dy, dz) in [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 0, -1), (0, 0, 1)] {
+            scene.set((cell.0 + dx, cell.1 + dy, cell.2 + dz), Some(Block::new("minecraft:stone")));
+        }
+        let mut textures = std::collections::BTreeSet::new();
+        for block in [banner, Block::new("minecraft:stone")] {
+            for (model, _) in &resolve_block_variants(&packs, &block).unwrap() {
+                textures.extend(model.elements.iter().flat_map(|e| e.faces.iter().map(|f| f.texture.clone())));
+            }
+        }
+        textures.extend(crate::special_models::textures().unwrap());
+        let atlas = mesh::make_atlas(&packs, textures.into_iter().collect()).unwrap();
+        let hood = Neighborhood::of(&scene, (0, 0)).unwrap();
+        let light = light_chunk(&states, &hood);
+        let view = View::new(&states, &hood, (-1, 63, -1), (18, 18, 18));
+        let mut models = ModelCache::default();
+        models.prepare(&states, &packs, &atlas, &view);
+        let tint = BiomeTint::from_pack(&packs).unwrap();
+        let bits = |m: &ChunkMesh| -> Vec<Vec<u32>> { m.vertices.iter().map(|v| v.position.iter().chain(&v.uv).chain(&v.color).chain([&v.sky_light, &v.block_light]).map(|f| f.to_bits()).collect()).collect() };
+        let low = [cell.0 as f32, cell.1 as f32, cell.2 as f32];
+        let within = |v: &mesh::Vertex| [0, 2].into_iter().all(|axis| v.position[axis] > low[axis] && v.position[axis] < low[axis] + 1.0) && v.position[1] >= low[1] && v.position[1] <= low[1] + 2.0;
+        let inside = |m: &ChunkMesh| m.vertices.iter().filter(|v| within(v)).count();
+        for baked in [true, false] {
+            let whole = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, baked, &[]).unwrap();
+            let apart = build_section_blocks(&states, &view, (0, 64, 0), &light, &models, &atlas, &tint, baked, &[cell]).unwrap();
+            assert_eq!(inside(&whole.0), 18 * 4, "pole, bar and flag are drawn in the section");
+            assert!(whole.0.vertices.iter().filter(|v| within(v)).any(|v| v.position[1] > low[1] + 1.0), "the flag reaches into the cell above");
+            assert_eq!(inside(&apart.0), 0, "an apart banner leaves both cells empty");
+            let kept: Vec<Vec<u32>> = bits(&whole.0).into_iter().zip(&whole.0.vertices).filter(|(_, v)| !within(v)).map(|(b, _)| b).collect();
+            assert_eq!(bits(&apart.0), kept, "every other face is the same");
+            assert_eq!(apart.0.faces, whole.0.faces - 18);
+        }
+    }
+
+    #[test]
     fn a_saved_world_reopens_at_its_spawn_with_the_edits_an_autosave_queued() {
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };
@@ -2733,6 +2787,34 @@ mod tests {
         }
         let heads = tags.iter().filter(|(pos, tag)| tag.get("id").and_then(Tag::as_str) == Some("minecraft:skull") && block_name(&registries, &chunks, *pos) == "minecraft:dragon_wall_head").count();
         assert_eq!(heads, 1, "the dragon head on the bow");
+    }
+
+    #[test]
+    fn a_broken_block_s_block_entity_stays_readable_until_the_break_is_written() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() {
+            return;
+        }
+        let mut stream = TerrainStream::for_dimension_at(Arc::new(registries), 77, 2, Dimension::Overworld, None, Some((0, 64, 0))).unwrap();
+        let mut scene = HandcraftedScene::streamed(stream.states.clone());
+        let chunk = minecraftoss_core::ChunkPos::new(0, 0);
+        scene.insert_chunk(stream.load_chunk_now(chunk));
+        let pos = (3, 200, 4);
+        scene.set(pos, Some(Block::new("minecraft:white_banner").with("rotation", "0")));
+        stream.record_edits(&scene, &[pos]);
+        let tag = minecraftoss_core::snbt::parse(r#"{id:"minecraft:banner",x:3,y:200,z:4,patterns:[{pattern:"minecraft:creeper",color:"black"}],components:{}}"#).unwrap();
+        stream.record_block_entities(&[(pos, Some(tag.clone()))]);
+        assert_eq!(stream.stored_block_entity(pos), Some(&tag), "one waiting to be written");
+        let written = stream.loaded_chunk(chunk).and_then(|chunk| chunk.block_entities.entities.get(&pos).cloned());
+        assert_eq!(written.as_ref(), Some(&tag));
+        assert_eq!(stream.stored_block_entity(pos), Some(&tag), "a written one");
+        scene.set(pos, None);
+        stream.record_edits(&scene, &[pos]);
+        assert_eq!(stream.stored_block_entity(pos), Some(&tag), "the broken banner's, until the break is written");
+        assert!(stream.loaded_chunk(chunk).is_some_and(|chunk| !chunk.block_entities.entities.contains_key(&pos)));
+        assert_eq!(stream.stored_block_entity(pos), None);
+        assert_eq!(stream.stored_block_entity((40, 200, 40)), None, "a chunk not loaded");
     }
 
     #[test]
