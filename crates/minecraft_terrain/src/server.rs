@@ -1142,6 +1142,7 @@ impl ServerSim {
         self.throw_mob_tridents();
         self.throw_mob_snowballs();
         self.explode_creepers();
+        self.mob_projectiles_hit_blocks();
         self.explode_fireballs();
         self.break_around_withers();
         if !frozen {
@@ -1416,6 +1417,12 @@ impl ServerSim {
             crate::thrown::struck_face(&world, pos, at, motion)
         };
         self.projectile_hit_block(pos, face, at);
+    }
+
+    fn mob_projectiles_hit_blocks(&mut self) {
+        for (pos, at, motion) in self.mobs.take_projectile_block_hits() {
+            self.projectile_struck(pos, at, motion);
+        }
     }
 
     pub fn tick_bells(&mut self) {
@@ -14077,6 +14084,47 @@ mod tests {
         server.wind_burst(glam::DVec3::new(8.5, 200.5, 9.5), &[], crate::wind::Charge::Breeze);
         assert_eq!(bell_uses(&server), 0, "a breeze's burst rings it only with mob griefing");
         assert!(bell_rings(&mut server).is_empty());
+    }
+
+    #[test]
+    fn a_skeletons_arrow_into_a_bell_rings_it() {
+        use minecraftoss_core::pos::Direction;
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        bell_at(&mut server, &mut scene, bell, "floor", "north");
+        let archer = server.mobs.spawn_skeleton(minecraftoss_entities::skeleton::Skeleton::new(glam::DVec3::new(8.5, 200.0, 2.5)), true);
+        let arrow = minecraftoss_entities::projectile::Arrow::in_flight(glam::DVec3::new(8.5, 200.5, 4.5), glam::DVec3::new(0.0, 0.0, 1.6), minecraftoss_player::rng::LegacyRandom::new(1));
+        server.mobs.spawn_owned_arrow(archer, arrow);
+        server.set_simulation_area((0, 0), 1);
+        for _ in 0..5 {
+            server.tick_mobs(&[], false);
+        }
+        assert!(server.mobs.arrows().iter().all(|entity| entity.arrow.in_ground), "it sticks in the bell");
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::North)]);
+        for _ in 0..5 {
+            server.tick_mobs(&[], false);
+        }
+        assert_eq!(bell_uses(&server), 1, "a stuck arrow rings it once");
+    }
+
+    #[test]
+    fn a_blazes_fireball_into_a_bell_rings_it() {
+        use minecraftoss_core::pos::Direction;
+        use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:stone"));
+        bell_at(&mut server, &mut scene, bell, "single_wall", "east");
+        let blaze = server.mobs.spawn_blaze(minecraftoss_entities::blaze::Blaze::new(glam::DVec3::new(8.5, 200.0, 2.5)), true);
+        server.mobs.spawn_fireball(Fireball::shoot(FireballKind::Small, Shooter::Mob(blaze), glam::DVec3::new(8.5, 200.5, 5.5), glam::DVec3::Z));
+        server.set_simulation_area((0, 0), 1);
+        for _ in 0..30 {
+            server.tick_mobs(&[], false);
+        }
+        assert!(server.mobs.fireballs().is_empty(), "it burst on the bell");
+        assert_eq!(bell_uses(&server), 1);
+        assert_eq!(bell_rings(&mut server), [(bell, Direction::North)], "a wall bell facing east rings from the north");
     }
 
     #[test]

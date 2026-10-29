@@ -2593,6 +2593,7 @@ pub struct EntityWorld {
     zombie_conversions: Vec<(u64, u64)>,
     villager_infections: Vec<(u64, u64)>,
     level_events: Vec<(i32, minecraftoss_player::Pos, i32)>,
+    projectile_block_hits: Vec<(minecraftoss_player::Pos, DVec3, DVec3)>,
     zombie_cures: Vec<u64>,
     trident_throws: Vec<crate::drowned_ai::TridentThrow>,
     sea_level: i32,
@@ -2733,6 +2734,7 @@ impl Default for EntityWorld {
             zombie_conversions: Vec::new(),
             villager_infections: Vec::new(),
             level_events: Vec::new(),
+            projectile_block_hits: Vec::new(),
             zombie_cures: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: 63,
@@ -3893,6 +3895,10 @@ impl EntityWorld {
 
     pub fn take_level_events(&mut self) -> Vec<(i32, minecraftoss_player::Pos, i32)> {
         std::mem::take(&mut self.level_events)
+    }
+
+    pub fn take_projectile_block_hits(&mut self) -> Vec<(minecraftoss_player::Pos, DVec3, DVec3)> {
+        std::mem::take(&mut self.projectile_block_hits)
     }
 
     pub fn take_zombie_cures(&mut self) -> Vec<u64> {
@@ -5804,6 +5810,7 @@ impl EntityWorld {
             zombie_conversions: Vec::new(),
             villager_infections: Vec::new(),
             level_events: Vec::new(),
+            projectile_block_hits: Vec::new(),
             zombie_cures: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: self.sea_level,
@@ -6839,6 +6846,7 @@ impl EntityWorld {
                             .arrow
                             .resolve_entity_hit(accepted);
                     }
+                    self.projectile_block_hits.extend(self.arrows.iter_mut().find(|entity| entity.id == id).and_then(|entity| entity.arrow.take_block_hit()));
                     // `entity.arrow.hit`, from the arrow (`SoundSource.NEUTRAL`).
                     if let Some((event, (position, pitch))) = self.arrows.iter_mut().find(|entity| entity.id == id).and_then(|entity| Some((entity.hit_sound, entity.arrow.take_hit_sound()?))) {
                         self.sounds.push(MobSound { event: event.to_owned(), position, volume: 1.0, pitch, category: "friendly_volume" });
@@ -8828,6 +8836,27 @@ mod tests {
         assert_eq!(arrows.len(), 2, "{hits:?}");
         assert!(arrows.contains(&(7, None, poison)), "an arrow from above names no shooter: {arrows:?}");
         assert!(arrows.contains(&(7, Some(archer), None)), "a skeleton's arrow still names it: {arrows:?}");
+    }
+
+    #[test]
+    fn mob_projectiles_report_the_block_they_strike_once() {
+        let mut world = EntityWorld::default();
+        let archer = world.spawn_skeleton(Skeleton::new(DVec3::new(30.5, 1.0, 30.5)), true);
+        world.spawn_owned_arrow(archer, Arrow::in_flight(DVec3::new(0.5, 3.0, 0.5), DVec3::new(0.0, -0.6, 0.0), LegacyRandom::new(0)));
+        world.spawn_fireball(crate::fireball::Fireball::shoot(crate::fireball::FireballKind::Small, crate::fireball::Shooter::Mob(archer), DVec3::new(4.5, 3.0, 0.5), DVec3::NEG_Y));
+        world.spawn_llama_spit(crate::llama_spit::LlamaSpit::spit(archer, DVec3::new(8.5, 3.0, 0.5), DVec3::new(8.5, 0.0, 0.5), &mut LegacyRandom::new(2)));
+        world.spawn_potion(crate::potion::ThrownPotion::shoot(crate::potion::Potion::Healing, archer, DVec3::new(12.5, 3.0, 0.5), DVec3::NEG_Y, 0.5, 0.0, &mut LegacyRandom::new(3)));
+        let mut hits = Vec::new();
+        for _ in 0..60 {
+            world.tick(&mut Floor);
+            hits.extend(world.take_projectile_block_hits());
+        }
+        assert_eq!(hits.len(), 4, "{hits:?}");
+        assert!(hits.iter().all(|(pos, at, velocity)| pos.1 == 0 && (at.y - 1.0).abs() < 1e-6 && velocity.y < 0.0), "{hits:?}");
+        let mut columns: Vec<i32> = hits.iter().map(|(pos, ..)| pos.0).collect();
+        columns.sort_unstable();
+        assert!(columns[0] == 0 && columns[1] == 4 && (7..=9).contains(&columns[2]) && columns[3] == 12, "the arrow, the fireball, the spit and the potion: {hits:?}");
+        assert!(world.arrows().iter().all(|entity| entity.arrow.in_ground), "the arrow stays stuck and is not reported again");
     }
 
     fn zombified_piglin(x: f64) -> Zombie {

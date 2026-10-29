@@ -235,6 +235,8 @@ impl EntityWorld {
         hit: FireballHit,
         players: &[PlayerCandidate],
     ) {
+        self.projectile_block_hits
+            .extend(hit.block.map(|pos| (pos, hit.location, fireball.velocity)));
         let source = match fireball.owner {
             Some(Shooter::Mob(id)) => Some(id),
             _ => None,

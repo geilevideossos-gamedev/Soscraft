@@ -24,6 +24,7 @@ pub struct Arrow {
     random: LegacyRandom,
     /// Where it played `entity.arrow.hit` this tick, and the pitch.
     hit_sound: Option<(DVec3, f32)>,
+    block_hit: Option<(Pos, DVec3, DVec3)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -73,6 +74,7 @@ impl Arrow {
             impact_state: None,
             random,
             hit_sound: None,
+            block_hit: None,
         }
     }
 
@@ -114,6 +116,7 @@ impl Arrow {
             impact_state: None,
             random: random.clone(),
             hit_sound: None,
+            block_hit: None,
         }
     }
 
@@ -216,6 +219,7 @@ impl Arrow {
             });
         }
         if let Some((_, hit, block)) = block_hit {
+            self.block_hit = Some((block, hit, self.velocity));
             // `Math.signum`: zero stays zero.
             let signum = |v: f64| if v == 0.0 { v } else { v.signum() };
             let sign = DVec3::new(signum(self.velocity.x), signum(self.velocity.y), signum(self.velocity.z));
@@ -287,6 +291,10 @@ impl Arrow {
             }
         }
         true
+    }
+
+    pub fn take_block_hit(&mut self) -> Option<(Pos, DVec3, DVec3)> {
+        self.block_hit.take()
     }
 }
 
@@ -378,5 +386,37 @@ mod tests {
             arrow.base_damage.to_bits(),
             2.4331762215570514_f64.to_bits()
         );
+    }
+
+    struct Wall;
+
+    impl World for Wall {
+        fn block(&self, pos: Pos) -> Option<Block> {
+            (pos.0 >= 5).then(|| Block::new("minecraft:stone"))
+        }
+
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+    }
+
+    #[test]
+    fn an_arrow_reports_the_block_it_sticks_in_once_with_its_flight() {
+        let mut arrow = Arrow::in_flight(
+            DVec3::new(0.5, 64.5, 0.5),
+            DVec3::new(1.5, 0.0, 0.0),
+            LegacyRandom::new(3),
+        );
+        let mut hits = Vec::new();
+        for _ in 0..40 {
+            let before = arrow.velocity;
+            assert!(arrow.tick_world(&Wall, &[]).is_none());
+            hits.extend(arrow.take_block_hit().map(|hit| (hit, before)));
+        }
+        assert!(arrow.in_ground && arrow.alive);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let ((pos, at, velocity), before) = hits[0];
+        assert_eq!(pos, (5, 64, 0));
+        assert!((at.x - 5.0).abs() < 1e-9, "{at}");
+        assert_eq!(velocity, before, "the flight it struck with");
+        assert_eq!(arrow.impact_block, Some(pos));
     }
 }

@@ -698,7 +698,11 @@ impl EntityWorld {
         }
         entity.previous_position = entity.spit.position;
         let velocity = entity.spit.velocity;
-        let Some(SpitHit::Entity(target)) = entity.spit.tick(world, &targets, owner_box) else {
+        let hit = entity.spit.tick(world, &targets, owner_box);
+        if let Some(SpitHit::Block(pos, at)) = hit {
+            self.projectile_block_hits.push((pos, at, velocity));
+        }
+        let Some(SpitHit::Entity(target)) = hit else {
             return;
         };
         let Some(llama) = owner.filter(|o| self.mob_body(*o).is_some()) else {

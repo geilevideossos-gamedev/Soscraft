@@ -1084,3 +1084,38 @@ After 89c60502.
 ```
 IW4L_MINECRAFT_KIT=minecraft:bell*4,minecraft:cobblestone*64,minecraft:snowball*16,minecraft:egg*16,minecraft:splash_potion@water*4,minecraft:trident+loyalty=3,minecraft:wind_charge*32,minecraft:dispenser*2,minecraft:lever*2,minecraft:firework_rocket*16,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*16,minecraft:villager_spawn_egg*2,minecraft:white_bed,minecraft:ender_pearl*8,minecraft:cooked_beef*16
 ```
+
+### 2. Skeleton arrows and fireballs ring Minecraft bells
+
+After 1247a5c0.
+
+- **Vanilla (26.3, checked with javap):** the mobs' projectiles reach `BlockState.onProjectileHit` the same way: `AbstractArrow.onHitBlock` (skeletons, strays, pillagers, piglins), `LargeFireball.onHit` and `WitherSkull.onHit` (through `super.onHit`, before their explosion), `SmallFireball.onHitBlock` (before it lights the fire), `ShulkerBullet.onHitBlock`, `LlamaSpit.onHitBlock` and `AbstractThrownPotion.onHitBlock` (a witch's potion, before the water douses).
+- **Changed:**
+  - Vendored `entities/src/projectile.rs`: `Arrow` keeps its block hit (the block, the hit point and the flight it struck with) from `tick_world`, and `take_block_hit()` hands it over once.
+  - Vendored `entities/src/world.rs`: `projectile_block_hits` (next to `level_events`) and `EntityWorld::take_projectile_block_hits()`. The arrow tick moves an arrow's block hit into it; `fireball_hit` (fireballs and wither skulls), `shulker_bullet_hit`, `tick_potion` (witch potions) and `tick_llama_spit` push theirs with one line each.
+  - Vendored `entities/src/llama_spit.rs`: `SpitHit::Block` carries the block and the hit point; `world/equines.rs` pushes it before the entity hit (E1 owns the rest of that file).
+  - `minecraft_terrain/src/server.rs`: `mob_projectiles_hit_blocks`, called in `tick_mobs_with` after the creepers explode and before the fireballs do, sends each hit through `projectile_struck` to the `projectile_hit_block` seam of commit 1.
+  - `docs/MINECRAFT-SURVIVAL.md`: the bell paragraph names the mobs' projectiles.
+- **Tests:**
+  - Vendored `projectile::tests::an_arrow_reports_the_block_it_sticks_in_once_with_its_flight`.
+  - Vendored `world::tests::mob_projectiles_report_the_block_they_strike_once`: an arrow, a small fireball, llama spit and a witch's potion falling on the floor are each reported once, on the floor's top with a downward flight; the stuck arrow is not reported again.
+  - Vendored `llama_spit::tests::spit_hurts_what_it_meets_and_ends_on_a_wall` checks the wall block and hit point of the spit's last hit.
+  - `server::tests` (with the 26.3 data): `a_skeletons_arrow_into_a_bell_rings_it` (a skeleton's arrow flying south sticks in a floor bell facing north, rings it north once and not again while it stays stuck) and `a_blazes_fireball_into_a_bell_rings_it` (a blaze's fireball flying south bursts on a wall bell facing east and rings it north).
+- **Decisions:**
+  - The mobs' hits are drained right after the mobs tick and before the fireball explosions, so a ghast's fireball rings a bell before its blast can break it. The ring's block event is then dropped with the bell, as vanilla drops an end-of-tick block event whose block is gone, while the sound still plays.
+  - Shulker bullets push their block hit with one line like the others, without a test of their own: a bullet homes on a target and needs one to fly.
+  - Arrows and fire charges an ominous trial spawner drops are the same world arrows and fireballs, so they ring bells too.
+  - Track D's breezes turn arrows back on main (`Arrow::deflect`); a deflected arrow strikes no block that tick, so it reports nothing until it does.
+- **Merge notes:** on main, W's `arrow_landed` sits inside the arrow's hit-sound block and D's `deflect` before it; the new line sits between them. D's deflection lines in `world/fireballs.rs` and `world/shulker_bullets.rs` are in the tick functions, the new lines in the hit functions.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, flat ground, `/time set night`; the swing needs E1's `bells-swing`):
+  1. **BH-6. Skeleton.** Look north and place a bell on cobblestone, so that it faces you, and stand 3 blocks south of it with the shield. Hatch a skeleton 12 blocks north of the bell, so that the bell stands between you. Crouch behind the bell: each arrow that hits the bell's front rings it and sticks in it. **Screenshot BH-6** (an arrow in the bell).
+  2. **BH-7. Blaze.** Do the same with a blaze: each fireball that hits the bell's front rings it and lights a fire beside it. Put the fire out with the water bucket.
+  3. **BH-8. Llama.** Hatch a llama 6 blocks north of the bell, hit it once with the sword and step behind the bell: when its spit hits the bell's front, the bell rings.
+  4. **BH-9. Witch.** Hatch a witch 8 blocks north of the bell and stand behind the bell: a potion it throws that breaks on the bell's front rings it.
+  5. **BH-10. Friend** (two windows with `scripts\mp-local.ps1`, `/kit @a` from the host). The friend stands next to the host while the skeleton shoots at them: both windows hear each ring.
+- **Kit** (16 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bell*4,minecraft:cobblestone*64,minecraft:oak_planks*64,minecraft:skeleton_spawn_egg*2,minecraft:blaze_spawn_egg*2,minecraft:llama_spawn_egg*2,minecraft:witch_spawn_egg*2,minecraft:iron_sword,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*16,minecraft:water_bucket
+```

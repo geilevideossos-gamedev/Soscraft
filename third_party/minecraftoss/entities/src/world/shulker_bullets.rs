@@ -274,6 +274,8 @@ impl EntityWorld {
         players: &[PlayerCandidate],
     ) {
         let owner = bullet.owner.filter(|&o| self.entity_type(o).is_some());
+        self.projectile_block_hits
+            .extend(hit.block.map(|pos| (pos, hit.location, bullet.velocity)));
         match hit.entity {
             Some(target) if target >= PLAYER_TARGET => {
                 let player = target - PLAYER_TARGET;
