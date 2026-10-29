@@ -553,6 +553,14 @@ fn a_registered_mob_that_deflects_turns_arrows_and_fireballs_back() {
             .iter()
             .any(|e| e.fireball.alive && e.fireball.velocity.z < 0.0)
     );
+    assert!(
+        world
+            .fireballs
+            .iter()
+            .filter(|e| e.fireball.velocity.z < 0.0)
+            .all(|e| e.fireball.acceleration_power == 0.05),
+        "a turned fireball speeds up half as fast"
+    );
 }
 
 #[test]

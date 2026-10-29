@@ -226,6 +226,7 @@ impl EntityWorld {
         let kind = entity.fireball.kind.type_id();
         if hit.entity.is_some_and(|target| target < PLAYER_TARGET && self.families.deflect(target, kind)) {
             entity.fireball.velocity *= -0.5;
+            entity.fireball.acceleration_power *= 0.5;
             entity.fireball.position += entity.fireball.velocity;
             return;
         }
