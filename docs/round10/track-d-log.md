@@ -755,7 +755,7 @@ IW4L_MINECRAFT_KIT=minecraft:breeze_spawn_egg*8,minecraft:skeleton_spawn_egg*2,m
 
 ### Left for later
 
-- Tridents do not turn back on a breeze (their hit is resolved inside the trident's tick), and llama spit never reaches registered mobs; both wait for E2's hit boxes, after which a trident needs the deflection arm in `tick_tridents`.
+- Tridents do not turn back on a breeze (their hit is resolved inside the trident's tick), and llama spit never reaches registered mobs; both wait for E2's hit boxes, after which a trident needs the deflection arm in `tick_tridents`. (The trident arm is done: group breeze-review, commit 3.)
 - A player's thrown things (wind charges, snowballs, eggs, pearls, potions) and tridents pass through breezes until E2's `hit_boxes` carries the registry's arm (D0-0); the deflection in `tick_thrown` is ready for them.
 - The breeze is not drawn yet (group breeze-render: model, wind and eyes layers, keyframes, particles, its pose for friends).
 
@@ -873,6 +873,25 @@ After 650d4af7.
 IW4L_MINECRAFT_KIT=minecraft:breeze_spawn_egg*4,minecraft:blaze_spawn_egg*2,minecraft:cobblestone*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
 
+### 3. Minecraft breezes turn tridents back like vanilla
+
+After abd1202f.
+
+- **Defect:** tridents were the one projectile the deflection hook (group breezes commit 2, 0c83047f) left out ("Left for later"). On `minecraft-survival`, E2's hit boxes (merge 7c017f0e, "thrown things on every mob") make `thrown::targets` list every registered mob, and `tick_tridents` uses the same list. Once track D is merged, a trident would hit a breeze for 8 instead of bouncing off it.
+- **Vanilla (javap, 26.3):** `ThrownTrident` is an `AbstractArrow`. `stepMoveAndHit` hands the hit to `hitTargetOrDeflectSelf`, which asks `Entity.deflection` before `onHitEntity`. The breeze's deflection plays `entity.breeze.deflect` and applies `ProjectileDeflection.REVERSE` (the motion × −0.5, the yaw turned by 170 + 20 × a random float). So `onHitEntity` never runs: no damage, no `dealtDamage` (Loyalty does not call it back before it lands) and no `item.trident.hit` sound.
+- **Changed:**
+  - `trident.rs`: `ThrownTrident::tick_deflected(world, targets, owner, deflects)`; `tick` is that with nothing deflecting. A struck target that deflects sends the trident back at half speed from where it struck, turned 170 to 190 degrees, then drag and gravity as usual, with no `Struck` event and no hit sound. It is moved out by its new motion at once, as 0c83047f does for arrows, thrown things, fireballs and shulker bullets.
+  - `server.rs` `tick_tridents` asks the struck mob through `EntityWorld::deflects_projectile(id, "minecraft:trident")`, which also plays the breeze's deflect sound.
+- **Correction to 0c83047f's vanilla note:** in 26.3 `AbstractArrow.stepMoveAndHit` leaves a deflected arrow at the point it struck (no further move that tick; drag and gravity follow), and vanilla relies on `lastDeflectedBy` to let it pass through the mob on the next tick. The fork's move out by the new motion remains the decision recorded there, not vanilla's own move.
+- **Tests:** `trident::tests::a_trident_a_mob_turns_back_flies_back_at_half_speed_without_a_hit`: the mob is asked once; the trident leaves the box at half speed, after drag and gravity; it has not dealt damage, and there is no strike and no hit sound.
+- **Test steps:** none before the merge with `minecraft-survival`, because tridents do not reach breezes before E2's hit boxes. After the merge (world `trial10`, survival, Normal):
+  1. Throw a trident at a breeze: it bounces back toward you with the breeze's deflect whoosh, and the breeze is unhurt (**335_breeze_trident**). A Loyalty trident comes back only after it has landed.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:breeze_spawn_egg*4,minecraft:trident*2,minecraft:trident+loyalty=3,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
 ## Combined kit
 
 27 stacks. It holds everything the steps of the groups trial-spawners to review need (97db956b to e9ea905e: trial spawners and their eggs, the mob spawner steps, glass for the sight step, ominous trials with both bottles, vaults with both keys, lodestones with the Nether portal, the friend's clock and recovery compass), with enchanted diamond armour. Left out: the bow and arrows (the sword does), golden apples, milk (`/effect clear @s` does), the totem, the skeleton egg (egg step 2: use the husk egg), the ladder and the water bucket. The steps of group d5-review (bad8dd84 and 0ff5716c: wind charges, the wither and its skull) use their own kit lines above.
@@ -910,6 +929,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_swor
 - `docs/MINECRAFT-SURVIVAL.md` and the mob list (breezes, group breeze-render, commit 2): breezes are drawn like vanilla: a whirling, see-through column of wind under a bobbing head with glowing eyes and three turning rods, with vanilla's keyframes for idling, shooting, sliding, gathering wind and leaping, the ground dust they kick up, and the same for friends and in spawner cages. Drop "Not yet: their model".
 - `docs/MINECRAFT-SURVIVAL.md` and the mob list (breezes, group breeze-review, commit 1): breezes notice survival players and iron golems they can see within 24 blocks (their follow range), shoot from within 16, and give up a target they have not seen for 5 seconds.
 - `docs/MINECRAFT-SURVIVAL.md` (breezes, group breeze-review, commit 2): a fireball, small fireball or wither skull a breeze turns back speeds up half as fast, like vanilla.
+- `docs/MINECRAFT-SURVIVAL.md` (breezes, group breeze-review, commit 3, after the merge with E2's hit boxes): tridents bounce off breezes too, with the deflect sound and no damage. Drop "tridents ... pass through them".
 
 ## Vendored files
 

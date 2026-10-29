@@ -1987,9 +1987,9 @@ impl ServerSim {
                 Some(crate::trident::TridentOwner { eye: (thrower.min + thrower.max) / 2.0, alive: true, spectator: false, bounds: (thrower.min, thrower.max) })
             });
             let events = {
-                let Self { level, states, mob_tables, .. } = self;
+                let Self { level, states, mob_tables, mobs, .. } = self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-                trident.tick(&world, &targets, owner)
+                trident.tick_deflected(&world, &targets, owner, &mut |id| crate::thrown::struck_player(id).is_none() && mobs.deflects_projectile(id, crate::trident::ITEM))
             };
             for event in events {
                 match event {
