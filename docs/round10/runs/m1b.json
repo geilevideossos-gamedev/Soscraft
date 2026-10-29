@@ -1,0 +1,32 @@
+{
+  "track": "m1",
+  "worktree": "C:\\Dev\\mc-wt\\track-m1",
+  "branch": "track-m1",
+  "target": "D:\\iw4l-wt\\track-m1",
+  "base": "r10-m1b-base",
+  "round": 10,
+  "briefs": "docs/round10/track-m1.md (read M10 and docs/round10/track-d0.md D0-2 and D0-3 first)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss) and M1-M3 (the remaining mobs on D0's registry). This is M1 (land animals, group `land`, bytes 48-63): every family plugs in by D0's checklist (docs/round10/track-d0.md D0-3: only the family's own files plus one line per registry, a missing hook in the root file in its own commit named for it), touches shared files only at the anchors track-m1.md M10 names, and reuses the hooks earlier M1 groups landed instead of adding its own. Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. RESTARTS: if this run was started again after a stop (the PC crashed on 2026-10-28 at 20:27 with six tracks building), the worktree may hold the current group's half-done work as uncommitted or staged changes: read `git status` and `git diff` (and `git diff --cached`) first, keep what is correct, finish the group and commit it; discard only what is broken. If cargo reports invalid or corrupt metadata, a truncated .rlib/.rmeta or a link error on a file that should exist, run `& .\\scripts\\cargo-slot.ps1 +target=<this track's target> clean -p <crate>` for that crate and build again. LOAD: builds now run at -j 4 per slot to keep the laptop cool; never start a second cargo command, the game, or any other long CPU-heavy process.",
+  "groups": [
+    {
+      "key": "pandas-live",
+      "prompt": "Track M1 group pandas-live (segment m1b): build track-m1.md section M1-3 (pandas, key 52). Commits: 1. 'Minecraft pandas live in the entity world with their genes' (genes and variants, goals 0-6, 9, 10, 13, 14 and the hurt-by target, the unhappy tail, breeding with genes from the parents, interact without eating from the hand, the worried panda's monsters from animal_goals::is_monster_class); 2. 'Minecraft pandas spawn in bamboo jungles and are saved, hatched and seen by friends' (the land.rs row with baby_chance 0.2 and the gene finalize, the weak and lazy attributes, TerrainFamily with an empty draw). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "pandas-drawn",
+      "prompt": "Track M1 group pandas-drawn (segment m1b): build track-m1.md section M1-3. One commit: 'Minecraft pandas are drawn like vanilla' (both models, every pose, the held item on the ground display, 14 textures, out.culled; row 19 drawn). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "pandas-eating",
+      "prompt": "Track M1 group pandas-eating (segment m1b): build track-m1.md section M1-3. Commits: 1. 'Registered Minecraft mobs can hold still while their goals run' (H1: MonsterAi.still checked after the goals in monster_ai_step, not a MonsterSpec field); 2. 'Registered Minecraft mobs can scatter item crumbs' (H2: ClientFx.item_crumbs into the existing crumb path, host and friends); 3. 'Minecraft pandas sit down to eat bamboo and cake' (the sit goal, pickup with mob_griefing, handleEating, eating from the hand, the crumbs). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "pandas-moods",
+      "prompt": "Track M1 group pandas-moods (segment m1b): build track-m1.md section M1-3. Commits: 1. 'Living Minecraft mobs can drop gifts from loot tables' (H3: family_gift and take_family_gifts in the root, EntityLootBook::roll_table beside roll_hero_gift, drop_family_gifts right after drop_cat_gifts at server.rs:1107); 2. 'Minecraft panda cubs sneeze, lazy pandas lie on their backs and playful pandas roll' (the lie, sneeze and roll goals, handleRoll, afterSneeze with the neighbours' jump, the gameplay/panda_sneeze gift, Kind::Sneeze after Poof). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "pandas-thunder",
+      "prompt": "Track M1 group pandas-thunder (segment m1b, its last group): build track-m1.md section M1-3. Commits: 1. 'Minecraft mobs know when it rains and thunders' (H4: World::raining and World::thundering right after rain_at in player/src/lib.rs, is_raining made pub and Level::is_thundering beside it with vanilla's thunder times rain rule, the MobWorld impls right after its rain_at; no EntityWorld field); 2. 'Minecraft worried pandas hide from thunder' (isScared through world.thundering(), the trembling sit, bamboo refused). Row 19 done. Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "track": "m1",
+  "worktree": "C:\\Dev\\mc-wt\\track-m1",
+  "branch": "track-m1",
+  "target": "D:\\iw4l-wt\\track-m1",
+  "base": "r10-m1h-base",
+  "round": 10,
+  "briefs": "docs/round10/track-m1.md (read M10 and docs/round10/track-d0.md D0-2 and D0-3 first)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss) and M1-M3 (the remaining mobs on D0's registry). This is M1 (land animals, group `land`, bytes 48-63): every family plugs in by D0's checklist (docs/round10/track-d0.md D0-3: only the family's own files plus one line per registry, a missing hook in the root file in its own commit named for it), touches shared files only at the anchors track-m1.md M10 names, and reuses the hooks earlier M1 groups landed instead of adding its own. Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. RESTARTS: if this run was started again after a stop (the PC crashed on 2026-10-28 at 20:27 with six tracks building), the worktree may hold the current group's half-done work as uncommitted or staged changes: read `git status` and `git diff` (and `git diff --cached`) first, keep what is correct, finish the group and commit it; discard only what is broken. If cargo reports invalid or corrupt metadata, a truncated .rlib/.rmeta or a link error on a file that should exist, run `& .\\scripts\\cargo-slot.ps1 +target=<this track's target> clean -p <crate>` for that crate and build again. LOAD: builds now run at -j 4 per slot to keep the laptop cool; never start a second cargo command, the game, or any other long CPU-heavy process.",
+  "groups": [
+    {
+      "key": "parrots-live",
+      "prompt": "Track M1 group parrots-live (segment m1h, once D0's d0b flying navigation is in minecraft-survival): build track-m1.md section M1-9 (parrots, key 51). Commits: 1. 'Minecraft parrots fly, wander to trees and imitate monsters like vanilla' (a root 'pushes players' trait first only if D0 lacks one; the family, the float, panic, look, wander and follow-mob goals, FlyingMoveControl(10, false) and the flying navigation wiring the bees reuse, the slow fall, no fall damage, the flap sound, imitation with the ambient remap, unsitting on hurt, the lead row after \"ocelot\"); 2. 'Minecraft parrots spawn in jungles in five colours and are saved, hatched and seen by friends' (the land.rs row with Rules::SpawnableOn, the variant finalize, TerrainFamily with an empty draw). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "parrots-drawn",
+      "prompt": "Track M1 group parrots-drawn (segment m1h): build track-m1.md section M1-9. One commit: 'Minecraft parrots are drawn like vanilla' (ParrotModel, five textures, the flying, standing and sitting poses, the flap from MobPose, shadow 0.3; row 18 drawn). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "parrots-tame",
+      "prompt": "Track M1 group parrots-tame (segment m1h): build track-m1.md section M1-9. One commit: 'Minecraft parrots are tamed with seeds, sit when told and die of cookies' (parrot_interact with events 7 and 6, the sit and follow-owner goals, the teleport that allows leaves, the panic teleport). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "parrots-shoulders",
+      "prompt": "Track M1 group parrots-shoulders (segment m1h): build track-m1.md section M1-9. Commits: 1. 'Minecraft parrots ride on their owners' shoulders and fly off when they jump' (the landing goal, PlayerVitals.perch through PlayerQueue, shoulder landings as tags next to root_vehicle, ReleaseShoulder next to Reattach, the release rules in crates/minecraft_survival/src/shoulders.rs after each sleep::tick, the shoulders field in player.rs, shoulder sounds); 2. 'Minecraft players keep their shoulder parrots in their player files' (ShoulderEntityLeft and ShoulderEntityRight in player_nbt.rs, both keys in OWNED, the data() line and the load line next to player.reattach). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "parrots-shoulders-seen",
+      "prompt": "Track M1 group parrots-shoulders-seen (segment m1h, its last group): build track-m1.md section M1-9. One commit: 'Friends see parrots on each other's shoulders' (GearView.shoulders and BodyGear.shoulders, gear.rs, the MW2 body drawing right after the elytra block in body_render.rs, re-checked against E1's player-looks lines; a line under '## Protocol' in the log). Row 18 done. Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    }
+  ]
+}

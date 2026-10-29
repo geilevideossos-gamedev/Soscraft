@@ -1,0 +1,32 @@
+{
+  "track": "m2",
+  "worktree": "C:\\Dev\\mc-wt\\track-m2",
+  "branch": "track-m2",
+  "target": "D:\\iw4l-wt\\track-m2",
+  "base": "r10-m2e-base",
+  "round": 10,
+  "briefs": "docs/round10/track-m2.md (read M20 and docs/round10/track-d0.md D0-2 and D0-3 first)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss) and the mob tracks M1 (land animals), M2 (this run: water mobs and buckets) and M3 (night, built mobs and horses), which all plug into D0's registry. Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. M2 edits only its own water group files (entities world/families/water*, world natural_spawner/families/water.rs, terrain families/water*) and the M2 section of docs/round10/mobs.md, plus the shared lines its brief names; every shared piece has one owner in the brief's M20 tables, so never build a copy of an M1, M3, E or W piece: if a group's M20 wait is not met in this branch, leave that group, note it in the log, and go on with the groups that do not need it. RESTARTS: if this run was started again after a stop (the PC crashed on 2026-10-28 at 20:27 with six tracks building), the worktree may hold the current group's half-done work as uncommitted or staged changes: read `git status` and `git diff` (and `git diff --cached`) first, keep what is correct, finish the group and commit it; discard only what is broken. If cargo reports invalid or corrupt metadata, a truncated .rlib/.rmeta or a link error on a file that should exist, run `& .\\scripts\\cargo-slot.ps1 +target=<this track's target> clean -p <crate>` for that crate and build again. LOAD: builds now run at -j 4 per slot to keep the laptop cool; never start a second cargo command, the game, or any other long CPU-heavy process.",
+  "groups": [
+    {
+      "key": "sulfur-cubes-live",
+      "prompt": "Track M2 group sulfur-cubes-live (segment m2e): build docs/round10/track-m2.md section M2-6. Two commits: 'Minecraft sulfur cubes hop about in the entity world' (family sulfur_cubes, key 72; cube_goals() before slime_goals; tempt and search goals; ageing, split, sizes, sounds) and 'Minecraft sulfur cubes are saved, hatched, seen by friends and spawn in sulfur caves' (terrain read, fields, show and show_on; the row with the 5% baby finalize). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "sulfur-cubes-drawn",
+      "prompt": "Track M2 group sulfur-cubes-drawn (segment m2e): build docs/round10/track-m2.md section M2-6. Commits: 'Registered Minecraft mobs can show a block inside their model' (FamilyDraw.blocks), 'Minecraft sulfur cubes are drawn like vanilla' (shell, core, the held block, the fuse swell and flash) and, only when the M1 hook ClientFx.item_crumbs is merged, optionally 'Minecraft sulfur cubes splash goo when they land'. Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "sulfur-cubes-blocks",
+      "prompt": "Track M2 group sulfur-cubes-blocks (segment m2e): build docs/round10/track-m2.md section M2-6. Two commits: 'Minecraft mobs slide, drift and bounce by their physics attributes' (BodyPhysics in movement.rs, unchanged for every existing mob, after the move_self split from squids) and 'Minecraft sulfur cubes swallow blocks and take on their archetypes' (archetypes read from the jar, swallowing by hand and by pickup, shears, floating, the square facing, leads, persistence, the player push, the hot contact). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "sulfur-cubes-kicks",
+      "prompt": "Track M2 group sulfur-cubes-kicks (segment m2e): build docs/round10/track-m2.md section M2-6. Two commits: 'Registered Minecraft mobs take knockback their own way' (Knock with the attacker's eye and look, asked before the D0 knockback, arrow, mob-hit and blast arms; through E2's hurt_for_player when ti1 is merged) and 'Minecraft sulfur cubes holding a block are kicked instead of hurt' (the immunity tag, the kick by aim, hit sounds, explosion knockback resistance, MW2 bullets). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "sulfur-cubes-items",
+      "prompt": "Track M2 group sulfur-cubes-items (segment m2e): build docs/round10/track-m2.md section M2-6. Three commits: the root hook 'Registered Minecraft mobs can set off explosions' (Families.blasts, take_blasts, one line in terrain explode_creepers with TNT rules under mob_griefing, the entity side through apply_explosion_by), 'Minecraft sulfur cubes holding TNT can be lit and blow up' (World::best_neighbor_signal and tnt_explodes after snow_golem_melts, flint, fire charges, fire, redstone, the cube's blasts through the hook, the friend's swell and flash) and 'Minecraft sulfur cubes go into empty buckets and baby cubes grow on slime balls' (PICKUP_ITEM minecraft:bucket, the sulfur_cube_bucket converters, feeding, the golden dandelion). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    }
+  ]
+}

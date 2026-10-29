@@ -1,0 +1,32 @@
+{
+  "track": "m1",
+  "worktree": "C:\\Dev\\mc-wt\\track-m1",
+  "branch": "track-m1",
+  "target": "D:\\iw4l-wt\\track-m1",
+  "base": "r10-m1d-base",
+  "round": 10,
+  "briefs": "docs/round10/track-m1.md (read M10 and docs/round10/track-d0.md D0-2 and D0-3 first)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss) and M1-M3 (the remaining mobs on D0's registry). This is M1 (land animals, group `land`, bytes 48-63): every family plugs in by D0's checklist (docs/round10/track-d0.md D0-3: only the family's own files plus one line per registry, a missing hook in the root file in its own commit named for it), touches shared files only at the anchors track-m1.md M10 names, and reuses the hooks earlier M1 groups landed instead of adding its own. Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. RESTARTS: if this run was started again after a stop (the PC crashed on 2026-10-28 at 20:27 with six tracks building), the worktree may hold the current group's half-done work as uncommitted or staged changes: read `git status` and `git diff` (and `git diff --cached`) first, keep what is correct, finish the group and commit it; discard only what is broken. If cargo reports invalid or corrupt metadata, a truncated .rlib/.rmeta or a link error on a file that should exist, run `& .\\scripts\\cargo-slot.ps1 +target=<this track's target> clean -p <crate>` for that crate and build again. LOAD: builds now run at -j 4 per slot to keep the laptop cool; never start a second cargo command, the game, or any other long CPU-heavy process.",
+  "groups": [
+    {
+      "key": "goats-live",
+      "prompt": "Track M1 group goats-live (segment m1d): build track-m1.md section M1-5 (goats, key 50, a brain family). Commits: 1. 'Minecraft animals share vanilla's brain behaviours for panic, temptation, love and following adults' (new world/families/animal_brain.rs with one pub mod line in the root families.rs; the tempting sensor takes the tempting test as a function; M2 uses the same names); 2. 'Minecraft goats live, breed and wander like vanilla' (the family with CORE and IDLE, the finalize in vanilla order, the land.rs row with Rules::SpawnableOn, TerrainFamily save/load/show with an empty draw and TEXTURES set); 3. 'Minecraft goats give milk and eat wheat'. Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "goats-drawn",
+      "prompt": "Track M1 group goats-drawn (segment m1d): build track-m1.md section M1-5. One commit: 'Minecraft goats are drawn like vanilla' (the GoatModel and BabyGoatModel tables, horns by flag, the ramming head angle from lower_head_tick; row 17 drawn). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "goats-ram",
+      "prompt": "Track M1 group goats-ram (segment m1d): build track-m1.md section M1-5. One commit: 'Minecraft goats ram players and mobs and snap their horns on stone and logs' (preparing and ramming, the Typed mob_attack_no_aggro hit, MeleePush.blocked with every literal updated, the #no_anger check in player_hurt, horns dropped through World::spawn_item with pickup delay 10; no drop hook). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "goats-leap",
+      "prompt": "Track M1 group goats-leap (segment m1d): build track-m1.md section M1-5. Commits: 1. 'Minecraft mobs can long-jump like vanilla goats and frogs' (new world/families/long_jump.rs with one pub mod line in the root); 2. 'Minecraft goats leap up to five blocks and shrug off short falls' (the LONG_JUMP activity, the 0.7 box, fall damage 10 less through E1's fall helper or the factors M1-4 opened; never edit living.rs here). Row 17 done. Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "goat-horns",
+      "prompt": "Track M1 group goat-horns (segment m1d, its last group, optional: skip it if the segment runs long and log it under left for later): build track-m1.md section M1-5. One commit: 'Minecraft goat horns play their eight calls' (crates/minecraft_survival/src/goat_horns.rs called from one arm next to the spyglass arm, the instrument data from the jar, the sound at volume 16, cooldown 140 ticks). Tests, owner's steps and kit as listed; update docs/round10/track-m1-log.md and the M1 rows of docs/round10/mobs.md"
+    }
+  ]
+}

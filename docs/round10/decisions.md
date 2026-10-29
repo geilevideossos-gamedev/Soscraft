@@ -11,4 +11,18 @@
 - **The mob split differs from round 9's batches.** Camels and camel husks moved to M3 (they share the cow store's horse kinds with the undead horses). Bees and sniffers moved to M1. The sulfur cube moved to M2 (it is bucketable). Silverfish and endermites moved to D0 as its proof.
 - **First Elden Ring boss: Margit, the Fell Omen** (track F's design doc, `docs/ELDEN-RING-BOSSES.md`). He is humanoid, has two phases and a readable moveset, and fits an altar summon. His numbers are marked as estimates until real game data exists. He is saved as a `minecraft:marker` carrying fork data, which vanilla keeps and ignores, and loading resets the fight.
 - **Lower load after the crash on 2026-10-28.** The PC hard-reset at 20:27 (Kernel-Power 41, no bugcheck, no low-memory event; the laptop has had seven earlier unexpected shutdowns since September) while six track runs and the brief workflows kept both cargo slots at `-j 8` for hours, with rustc kept off Windows power throttling. That points to heat or power under sustained all-core load, not memory. From then on the slot file is `slots=2`, `jobs=4`, `priority=low` (at most eight rustc threads, below normal priority), at most four track runs at once, and brief writers that never run cargo. Queued segments start when a running one ends. This replaces the "five tracks at a time" limit above.
+- **The M briefs give every cross-track hook one owner.**
+  - M1 owns `family_goal_step_with`, `animal_brain.rs`, `long_jump.rs`, `World::biome_in_tag`, the loot-context rewrite, `PlayerControls.sprinting`, `ClientFx.item_crumbs` and `TerrainFamily::shadow_radius`. If M2's fish-drawn needs the shadow hook first, it builds it under M1's exact name and subject, and the second track to merge drops its copy.
+  - M2 owns the water hooks (`swim.rs`, `Breath`, `swim_sounds`, `quiet_steps`, `OWN_DYING_TRAVEL`) and the player-effect queue. M3 owns `walk_target` and `Family::thunder_hit`.
+  - No track adds an ambient hook: families set `MobCore.ambient_interval` and voice it in their own tick.
+- **M run order: M1 first, then M3, then M2.** m1a and m3a need only d0a; most M2 segments wait for M1 hooks (m2b for rabbits' `family_goal_step_with`, m2f and m2g for `animal_brain.rs`). Parrots, bees, allays and happy ghasts wait for d0b; allay note blocks and creaking hearts wait for W's w2. The orchestrator merges `minecraft-survival` into an M track before each segment. A group whose wait is not met moves to the next segment.
+- **Small M brief points, settled the vanilla-like or smallest way:**
+  - **Frog legs:** a frog keeping its legs still mid-jump stays left for later, because M3's `walk_target` gets no mob.
+  - **`nautilus: false`:** M2 adds that one field to M3's horse literal at `mount_inventory.rs:53`.
+  - **`Prey::BabiesOnLand`:** stays a logged hook commit.
+  - **Root-file hooks:** D0-3 wins over D0-2.1's wording, so a mob track may add a hook to a root file in its own named commit.
+  - **Visibility commits:** M2 keeps its two one-word visibility commits.
+  - **Unchanged:** `undead-horses-live` stays one group, and the phantom spawner stays in `custom_spawners.rs`.
+  - **Frogspawn anchor:** M1's brief now names M2's coral anchor for frogspawn in `tick_block`.
+- **W checks D0's `Family::emits_sounds`.** It drops a family's whole movement emission, so W's runs check that the `EVENTS` mobs still post their step and swim game events (note in the w1 and w2 run specs).
 - **Elden Ring is not installed on this PC** (no Steam install on C: or D:). Track F's proof of concept cannot read game files. It uses a stand-in model and our own data. `docs/ELDEN-RING-BOSSES.md` says what real game data would need later.
