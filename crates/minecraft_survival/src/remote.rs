@@ -429,6 +429,7 @@ impl RemoteWorld {
                 if let Some(level) = self.level.as_mut() {
                     let at = (pos[0], pos[1], pos[2]);
                     if let Ok(parsed) = minecraftoss_core::nbt::parse(&tag.0) {
+                        level.view.banners.block_entities(&[(at, Some(parsed.clone()))]);
                         level.view.vaults.block_entities(&[(at, Some(parsed.clone()))]);
                         level.view.spawners.block_entities(&[(at, Some(parsed))]);
                     }
@@ -668,10 +669,12 @@ impl RemoteWorld {
         for chunk in &loaded {
             level.view.spawners.load_chunk(chunk);
             level.view.vaults.load_chunk(chunk);
+            level.view.banners.load_chunk(chunk);
         }
         for pos in &forgotten {
             level.view.spawners.unload_chunk(*pos);
             level.view.vaults.unload_chunk(*pos);
+            level.view.banners.unload_chunk(*pos);
         }
         self.shown.loaded.extend(loaded);
         self.shown.forgotten.extend(forgotten);
@@ -695,6 +698,7 @@ impl RemoteWorld {
         for pos in &forgotten {
             level.view.spawners.unload_chunk(*pos);
             level.view.vaults.unload_chunk(*pos);
+            level.view.banners.unload_chunk(*pos);
         }
         self.shown.forgotten.extend(forgotten);
     }
@@ -730,6 +734,9 @@ impl RemoteWorld {
             }
             if !block.as_ref().is_some_and(minecraft_terrain::vault::is_vault_block) {
                 level.view.vaults.block_entities(&[(at, None)]);
+            }
+            if !block.as_ref().is_some_and(minecraft_terrain::banner_look::is_banner_block) {
+                level.view.banners.block_entities(&[(at, None)]);
             }
             level.terrain.scene.set(at, block);
             positions.push(at);
@@ -1033,6 +1040,62 @@ mod tests {
         assert_eq!(friend.level.as_ref().map(|level| level.view.vaults.len()), Some(1));
         friend.apply(ToClient::ChunkForget { pos: [0, 0] });
         assert_eq!(friend.level.as_ref().map(|level| level.view.vaults.len()), Some(0), "its chunk was forgotten");
+    }
+
+    #[test]
+    fn a_banner_streamed_to_the_friend_shows_its_patterns_until_the_block_or_chunk_goes() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let banner = |(x, y, z): BlockPos, patterns: &str| {
+            minecraftoss_core::snbt::parse(&format!(r#"{{id:"minecraft:banner",x:{x},y:{y},z:{z},patterns:{patterns},components:{{}}}}"#)).unwrap()
+        };
+        let triangles = r#"[{pattern:"minecraft:triangle_top",color:"black"},{pattern:"minecraft:triangle_bottom",color:"black"}]"#;
+        let creeper = r#"[{pattern:{asset_id:"minecraft:creeper"},color:"black"},{pattern:"minecraft:border",color:"red"}]"#;
+        let posed = |friend: &mut RemoteWorld| -> Vec<(BlockPos, usize, usize)> {
+            let Some(level) = friend.level.as_mut() else {
+                return Vec::new();
+            };
+            let camera = glam::DVec3::new(4.0, -59.0, 8.0);
+            level.view.banners.posed(&level.terrain.scene, camera).iter().map(|banner| (banner.cell, banner.model.elements.len(), banner.tints.len())).collect()
+        };
+        let apart = |friend: &mut RemoteWorld| {
+            friend.level.as_mut().map(|level| level.view.banners.take_apart_changes(&level.terrain.scene)).unwrap_or_default()
+        };
+        let at: BlockPos = (3, -60, 4);
+        let Ok(mut chunk) = Arc::try_unwrap(stone_chunk(&registries, 0, 0, -64, 384)) else {
+            panic!("a fresh chunk has one owner");
+        };
+        let standing = registries.blocks.parse_state("minecraft:magenta_banner[rotation=4]").unwrap();
+        chunk.set_block_raw(3, at.1, 4, standing, &registries);
+        chunk.block_entities.entities.insert(at, banner(at, triangles));
+        let mut friend = RemoteWorld::new(registries.clone());
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        friend.apply(ToClient::ChunkBatch { seq: 1 });
+        friend.receive_batch(blob(&registries, 1, &[Arc::new(chunk)]));
+        friend.decode_now();
+        assert_eq!(posed(&mut friend), [(at, 3 + 2, 1 + 2)], "the banner came with its chunk");
+        assert_eq!(apart(&mut friend), [(at, true)]);
+        friend.apply(ToClient::BlockUpdates { changes: vec![([at.0, at.1, at.2], 0)] });
+        assert!(posed(&mut friend).is_empty(), "mined away");
+        assert_eq!(apart(&mut friend), [(at, false)]);
+        assert_eq!(friend.level.as_ref().map(|level| level.view.banners.len()), Some(0));
+        let placed: BlockPos = (5, -60, 6);
+        let wall = registries.blocks.parse_state("minecraft:white_wall_banner[facing=south]").unwrap();
+        friend.apply(ToClient::BlockUpdates { changes: vec![([placed.0, placed.1, placed.2], u32::from(wall.0))] });
+        assert!(posed(&mut friend).is_empty(), "a plain banner stays in its section");
+        let tag = |patterns: &str| Nbt(minecraftoss_core::nbt::write(&banner(placed, patterns), ""));
+        friend.apply(ToClient::BlockEntity { pos: [placed.0, placed.1, placed.2], tag: tag(creeper) });
+        assert_eq!(posed(&mut friend), [(placed, 2 + 2, 1 + 2)], "the host's patterns arrived");
+        assert_eq!(apart(&mut friend), [(placed, true)]);
+        friend.apply(ToClient::BlockEntity { pos: [placed.0, placed.1, placed.2], tag: tag("[]") });
+        assert!(posed(&mut friend).is_empty(), "patterns taken off");
+        assert_eq!(apart(&mut friend), [(placed, false)]);
+        friend.apply(ToClient::BlockEntity { pos: [placed.0, placed.1, placed.2], tag: tag(creeper) });
+        assert_eq!(apart(&mut friend), [(placed, true)]);
+        friend.apply(ToClient::ChunkForget { pos: [0, 0] });
+        assert_eq!(friend.level.as_ref().map(|level| level.view.banners.len()), Some(0), "its chunk was forgotten");
+        assert_eq!(apart(&mut friend), [(placed, false)], "no cell is left apart");
     }
 
     #[test]

@@ -2252,6 +2252,95 @@ pub(crate) mod tests {
         assert_eq!(field("CustomName"), None);
     }
 
+    #[test]
+    fn a_placed_banner_is_drawn_apart_with_its_patterns_on_the_host() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.inventory.slots[0] = Some(ominous_banner());
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, [4.5, 201.0, 6.5]));
+        let _ = act(
+            &mut player,
+            &mut level,
+            &globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        let pos = (4, 201, 6);
+        let entities = level.entities.as_mut().expect("entities");
+        assert_eq!(entities.view.banners.layers(pos), None, "not before the server answers");
+        let mut inventory = Inventory::default();
+        let started = std::time::Instant::now();
+        while entities.view.banners.layers(pos).is_none() {
+            assert!(
+                started.elapsed().as_secs() < 300,
+                "the banner's patterns never reached the view"
+            );
+            let normal = if entities.ready_for_ticks() {
+                vec![true]
+            } else {
+                Vec::new()
+            };
+            let batch = crate::tick_rate::TickBatch {
+                normal,
+                overload: None,
+            };
+            let view = PlayerView {
+                feet: FEET,
+                alive: true,
+                attackable: true,
+                spectator: false,
+                picks_up: true,
+                health: 20.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                main_hand: None,
+                offhand: None,
+                sneaking: false,
+                hero: None,
+                sleeping: None,
+                sleep_timer: 0,
+                forward: 0.0,
+                strafe: 0.0,
+                jumping: false,
+                swirl: None,
+                omens: Default::default(),
+            };
+            let mut actors = [TickActor {
+                id: 0,
+                view,
+                inventory: &mut inventory,
+                selected: 0,
+            }];
+            let _ = entities.tick(
+                &mut actors,
+                0.05,
+                &batch,
+                crate::tick_rate::ClientTiming::default(),
+                minecraft_terrain::server::ClockTicks::default(),
+                true,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let banners = &mut entities.view.banners;
+        let layers = banners.layers(pos).unwrap_or_default();
+        assert_eq!(layers.len(), 8);
+        assert_eq!(layers[0], ("minecraft:rhombus".to_owned(), "cyan"));
+        assert_eq!(layers[7], ("minecraft:border".to_owned(), "black"));
+        let scene = &level.terrain.scene;
+        assert_eq!(banners.take_apart_changes(scene), [(pos, true)]);
+        let posed = banners.posed(scene, DVec3::from_array(FEET));
+        assert_eq!(posed.len(), 1);
+        assert_eq!(posed[0].cell, pos);
+        assert_eq!(posed[0].model.elements.len(), 3 + 8, "pole, bar, flag and eight layers");
+        assert_eq!(posed[0].tints.len(), 1 + 8);
+    }
+
     fn place_held(level: &mut Level, globals: &Globals, stack: ItemStack, at: [f64; 3]) {
         let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
         player.inventory.slots[0] = Some(stack);

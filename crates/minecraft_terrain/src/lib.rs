@@ -152,6 +152,7 @@ pub mod berries;
 pub mod campfire;
 pub mod containers;
 pub mod lids;
+pub mod banner_look;
 pub mod spawner_display;
 pub mod trial_spawner;
 pub mod vault;

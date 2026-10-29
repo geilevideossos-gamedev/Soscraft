@@ -54,6 +54,7 @@ pub struct EntityView {
     pub(crate) orbs: Vec<ServerOrb>,
     pub(crate) falling: minecraft_terrain::falling_render::FallingBlocks,
     pub lids: minecraft_terrain::lids::Lids,
+    pub banners: minecraft_terrain::banner_look::BannerLooks,
     pub(crate) spawners: minecraft_terrain::spawner_display::SpawnerDisplays,
     pub(crate) vaults: minecraft_terrain::vault_display::VaultDisplays,
     pub(crate) orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
@@ -106,6 +107,7 @@ impl EntityView {
             orbs: Vec::new(),
             falling: Default::default(),
             lids: Default::default(),
+            banners: Default::default(),
             spawners: minecraft_terrain::spawner_display::SpawnerDisplays::new(
                 (seed ^ 0x5b3d) as u64,
             ),
@@ -1348,6 +1350,9 @@ impl EntityView {
         let _ = self
             .items
             .append_open_lids(&mut out.items, &lids, scene, packs, atlas, light);
+        let _ = self
+            .banners
+            .append(&mut out.items, scene, atlas, light, camera);
         let frames: Vec<_> = self
             .frames
             .iter()

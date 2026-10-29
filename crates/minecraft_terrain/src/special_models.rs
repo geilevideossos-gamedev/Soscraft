@@ -308,16 +308,7 @@ pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
     } else if path == "shulker_box" || path.ends_with("_shulker_box") {
         elements = shulker_box_model(block, 0.0)?.elements;
     } else if banner_dye(block).is_some() {
-        let wall = path.ends_with("_wall_banner");
-        let degrees = if wall {
-            y_rot(property("facing").unwrap_or("north"))
-        } else {
-            segment_degrees(property("rotation"))
-        };
-        let pose = Mat4::from_translation(Vec3::new(0.5, 0.0, 0.5))
-            * Mat4::from_rotation_y((-degrees).to_radians())
-            * Mat4::from_scale(Vec3::new(BANNER_SCALE, -BANNER_SCALE, -BANNER_SCALE));
-        push_banner(&mut elements, !wall, pose, &[])?;
+        elements = placed_banner_elements(block, &[])?;
     } else if path == "conduit" {
         push_conduit(&mut elements, Mat4::from_translation(Vec3::splat(0.5)))?;
     } else if path == "decorated_pot" {
@@ -328,6 +319,33 @@ pub(crate) fn block_model(block: &Block) -> Result<Option<ResolvedModel>> {
         return Ok(None);
     }
     Ok(Some(ResolvedModel { elements }))
+}
+
+pub(crate) fn placed_banner_model(
+    block: &Block,
+    layers: &[(String, &str)],
+) -> Result<Option<ResolvedModel>> {
+    if banner_dye(block).is_none() {
+        return Ok(None);
+    }
+    let elements = placed_banner_elements(block, layers)?;
+    Ok(Some(ResolvedModel { elements }))
+}
+
+fn placed_banner_elements(block: &Block, layers: &[(String, &str)]) -> Result<Vec<Element>> {
+    let property = |key: &str| block.properties.get(key).map(String::as_str);
+    let wall = block.id.path.ends_with("_wall_banner");
+    let degrees = if wall {
+        y_rot(property("facing").unwrap_or("north"))
+    } else {
+        segment_degrees(property("rotation"))
+    };
+    let pose = Mat4::from_translation(Vec3::new(0.5, 0.0, 0.5))
+        * Mat4::from_rotation_y((-degrees).to_radians())
+        * Mat4::from_scale(Vec3::new(BANNER_SCALE, -BANNER_SCALE, -BANNER_SCALE));
+    let mut elements = Vec::new();
+    push_banner(&mut elements, !wall, pose, layers)?;
+    Ok(elements)
 }
 
 pub(crate) fn shulker_box_model(block: &Block, progress: f32) -> Result<ResolvedModel> {
@@ -1533,7 +1551,7 @@ mod tests {
         assert_eq!(sheets(&model)[3..], [("test:entity/banner/sun".to_owned(), Some(2))]);
         assert_eq!(special_tints(&definition, &odd), vec![[249, 255, 254], [176, 46, 38], [254, 216, 61]]);
         let placed = block_model(&Block::new("minecraft:white_banner").with("rotation", "4")).unwrap().unwrap();
-        assert_eq!(placed.elements.len(), 3, "a placed banner draws no layers yet");
+        assert_eq!(placed.elements.len(), 3, "a baked banner has no layers: patterned ones are drawn apart");
     }
 
     #[test]

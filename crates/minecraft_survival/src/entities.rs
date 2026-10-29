@@ -732,12 +732,14 @@ impl Entities {
     pub fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
         self.view.spawners.load_chunk(chunk);
         self.view.vaults.load_chunk(chunk);
+        self.view.banners.load_chunk(chunk);
         self.server.load_chunk(chunk);
     }
 
     pub fn unload_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
         self.view.spawners.unload_chunk(pos);
         self.view.vaults.unload_chunk(pos);
+        self.view.banners.unload_chunk(pos);
         self.server.unload_chunk(pos);
     }
 
@@ -1688,6 +1690,7 @@ impl Entities {
             changes.extend(output.changes);
             self.view.spawners.block_entities(&output.block_entities);
             self.view.vaults.block_entities(&output.block_entities);
+            self.view.banners.block_entities(&output.block_entities);
             if self.heard.listening() {
                 self.spawner_tags.extend(output.block_entities.iter().filter_map(|(pos, tag)| tag.as_ref().filter(|tag| minecraft_terrain::spawner_display::is_displayed_block_entity(tag) || minecraft_terrain::vault::is_vault(tag)).map(|tag| (*pos, tag.clone()))));
             }

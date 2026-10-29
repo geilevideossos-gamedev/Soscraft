@@ -1520,6 +1520,9 @@ fn update(
         for (pos, apart) in entities.view.lids.take_apart_changes() {
             terrain.stream.draw_apart(pos, apart);
         }
+        for (pos, apart) in entities.view.banners.take_apart_changes(&terrain.scene) {
+            terrain.stream.draw_apart(pos, apart);
+        }
         let raw = |mesh: &minecraft_terrain::mesh::ChunkMesh| {
             (bytemuck::cast_slice::<_, u8>(&mesh.vertices).to_vec(), mesh.indices.clone())
         };

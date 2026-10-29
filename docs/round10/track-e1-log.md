@@ -1011,6 +1011,85 @@ Commit: "Minecraft players and friends show loaded crossbows and patterned banne
 IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:firework_rocket"}]],minecraft:crossbow,minecraft:item_frame*8,minecraft:oak_planks*32,minecraft:pillager_spawn_egg*16,minecraft:diamond_sword,minecraft:cooked_beef*16
 ```
 
+### Placed banners show their patterns
+
+Commit: "Minecraft placed banners show their patterns", the one after `c70815b6`.
+
+- **Cause** (as in the brief, re-checked at `c70815b6`):
+  - A placed banner was baked into its section mesh from the block state alone: `special_models::block_model` built pole, bar and flag with no layers, and the flag took the block's colour through `TintKind::Dye`. The block entity's `patterns` never reached the mesher.
+  - Baking the layers into the section would not have worked either: `TintKind::tint` gives white for every tint index above 0, so each layer would have lost its colour.
+  - Since group `banner-roundtrip` the block entity holds the patterns on the host, and friends already receive it (with the chunk, and as `ToClient::BlockEntity`). Structure banners have them too: the 26.3 `end_city/tower_top` template gives its four banners `triangle_top` and `triangle_bottom` in black.
+- **Vanilla 26.3** (javap on the 26.3 jar):
+  - `BannerRenderer` draws a placed banner as a block entity: the pole (standing only) and bar from `entity/banner/banner_base`, then the flag and `submitPatterns` (the base sheet in the block's colour, then up to 16 layers in their own colours), under the pose the baked model already uses, lit with the packed light of the banner's block.
+  - `BannerRenderer` keeps `BlockEntityRenderer.getViewDistance()`, which returns 64, and `shouldRender` is `Vec3.atCenterOf(pos).closerThan(camera, 64)`. Vanilla doesn't draw a banner at all when its centre is 64 blocks or more from the camera.
+- **Changed:**
+  - New `crates/minecraft_terrain/src/banner_look.rs`, modelled on `spawner_display::SpawnerDisplays`:
+    - `layers(tag)` reads a `minecraft:banner` block entity's `patterns` as look layers through `ItemLook::of`. A pattern can be an id or an inline `{asset_id}`, at most 16 layers count, and a layer without a dye or a valid id is dropped. Other block entities give none.
+    - `BannerLooks` keeps the banners with at least one layer. Its feeds are `load_chunk` (loaded and pending block entities, as for spawners), `unload_chunk` and `block_entities(changes)`. A change to a plain banner, to another block entity or to none drops the entry.
+    - `take_apart_changes(scene)` gives `(pos, true)` for each stored banner whose block in the scene is a banner and is not drawn apart yet. It gives `(pos, false)` for each cell drawn apart that no longer qualifies: mined away, patterns gone or chunk unloaded. The callers pass these to `TerrainStream::draw_apart` (`lids::ApartCells`), as for open lids, so the section is rebuilt without the banner or with it again.
+    - `posed(scene, camera)` gives the banners on a banner block whose centre is within 64 blocks of the camera. Each has its model (`special_models::placed_banner_model`) and tints `[base colour of the block, layer colours...]`, cached until the block at the cell changes.
+    - `append(mesh, scene, atlas, light, camera)` draws them with `mesh::append_elements` at the cell, lit with the cell's sky and block light. These are the same vertices the section bakes for the pole, bar and flag, followed by the layers.
+  - `special_models.rs`: the placed banner pose moved out of `block_model` into `placed_banner_elements(block, layers)`, and `placed_banner_model(block, layers)` is new. `block_model` still bakes a banner with no layers.
+  - `lib.rs`: `pub mod banner_look` next to `lids`.
+  - `minecraft_survival` `entity_view.rs`: `EntityView.banners` next to `lids`. `meshes` draws them into `out.items` right after the open lids.
+  - Host feeds, `entities.rs`: `Entities::load_chunk`, `unload_chunk` and the server's `output.block_entities`, next to the spawners and vaults.
+  - Friend feeds, `remote.rs`: `ToClient::BlockEntity`, the chunk batch loads and forgets, `forget`, and `set_blocks` (a block that is no longer a banner drops its entry).
+  - `render_anim`: the draw-apart loops in `minecraft_levels.rs` (`tick_level`), `minecraft_world.rs` (`update`) and `minecraft_remote.rs` (`present_entities`) also pass the banners' changes to `draw_apart`.
+  - `docs/MINECRAFT-SURVIVAL.md`: the end city limit no longer names plain tower banners. The rendering limit says placed banners show their patterns, drawn within 64 blocks.
+- **Tests:**
+  - `minecraft_terrain` `banner_look::tests`:
+    - `a_banner_s_layers_come_from_its_patterns_in_either_form`: id and inline patterns are read. A layer with no colour or a bad dye is dropped, a bare `stripe_top` gets its namespace, and 20 layers keep the first 16. A plain banner, an empty list and a spawner with `patterns` give none.
+    - `a_placed_banner_poses_like_its_block_model_with_its_layers_on_the_flag`: a standing white banner (rotation 4) and a blue wall banner (facing east) with two layers start with exactly the baked elements and sheets. They are followed by `creeper` (tint 1) and `border` (tint 2) cubes shaped like the flag, with tints `[base, black, red]`. Stone poses nothing.
+    - `only_patterned_banners_on_banner_blocks_are_drawn_apart`: the steps are a standing and a wall banner with patterns and a plain one, then the wall banner mined, placed again facing the other way and posed anew, then patterns taken off one and the other removed, and finally patterns on a stone block. Each step checks the apart changes and the posed cells.
+    - `banners_follow_their_chunks_and_are_drawn_within_sixty_four_blocks`: a chunk's loaded tag wins over its pending one, a pending banner is read, and a plain one is skipped. A banner just under 64 blocks away is drawn and one 64 blocks away is not. Unloading the chunk gives its cells back to the section.
+    - `a_placed_banner_draws_the_baked_faces_then_its_layers_in_their_colours` (the small banner pack): drawn apart, a striped banner has the same 18 faces as `append_block` bakes for it (positions, UVs and light equal, colours within 1e-5). Then come 6 stripe faces on the flag's corners in red at the flag's shade and light.
+  - `minecraft_terrain` `terrain::tests::an_apart_banner_leaves_both_of_its_cells_empty_and_every_other_face_alone` (real data): in both the baked and the slow section build, a red banner between stone draws 18 faces, some above its own cell. Drawn apart it leaves both cells empty, and every other vertex is the same.
+  - `minecraft_survival` `actions::tests::a_placed_banner_is_drawn_apart_with_its_patterns_on_the_host` (real data): a player places the ominous banner with `act`. Once the server answers, the host's `EntityView` holds its eight layers (rhombus cyan to border black), asks for its cell to be drawn apart and poses 3 + 8 elements with 9 tints.
+  - `minecraft_survival` `remote::tests::a_banner_streamed_to_the_friend_shows_its_patterns_until_the_block_or_chunk_goes` (real data), in the friend's world:
+    - A magenta banner with the end city's two triangles comes with its chunk, poses 5 elements and is drawn apart. Mined away, it is gone and its cell is given back.
+    - A plain wall banner placed by the host stays in its section. Its patterned `BlockEntity` makes it pose 4 elements and be drawn apart, a tag with no patterns gives the cell back, and forgetting the chunk leaves no cell apart.
+  - All 1542 `minecraft_terrain` tests (3 ignored, as before), 790 `minecraft_survival` tests (plus `vanilla_world`) and 218 `render_anim` tests pass, and `check -p launcher` passes.
+- **Decisions:**
+  - Only patterned banners are drawn apart, and plain ones stay baked into their sections (the brief's decision). This keeps the many plain banners of villages and outposts as cheap as before.
+  - A patterned placed banner is drawn only within 64 blocks of the camera, as vanilla draws every banner. A plain banner is part of its section and shows at any distance, which vanilla doesn't do.
+  - The cells drawn apart are worked out from the store and the scene on every frame, not from the feeds alone. A banner mined on the host before the server reports its block entity gone, or a chunk unloaded, can't leave a cell empty in its section. Nothing is drawn apart where the scene holds no banner.
+  - Drawn apart, the layers sit in the items mesh and are cut out at alpha 0.1, like held, dropped and framed banners (group `banner-items`), so the gradient patterns get the same hard edge.
+  - When a banner gets its patterns, the posed banner shows at once and the baked one stays until its section is rebuilt: one or two frames with both drawn in the same place. When a banner is mined, both go at once. Lids wait for the rebuild; banners don't, because their faces match the baked ones.
+  - No wave: the flag hangs still. Vanilla's phase, `(floorMod(x*7 + y*9 + z*13 + gameTime, 100) + partial) / 100`, is kept here for later.
+- **Protocol:** no change. Friends already receive the banner block entity with its chunk and as `ToClient::BlockEntity`.
+- **Owner's test steps** (survival, a new world, by day on flat grass, the kit below). Groups `banner-roundtrip` and `player-looks` are in, so the drops, the held banners and friends' hands already show their patterns.
+  1. **Ground and wall.**
+     - Build a plank wall three wide and two high.
+     - Place the patterned white banner on the ground two blocks in front of it, and the patterned blue banner on the wall.
+     - The white banner shows the black creeper face in a red border, and the blue banner shows the white fade, the lime globe and the yellow bottom stripe.
+     - Walk round both: the pattern shows from the front and the back.
+     - Place a black banner beside the white one: it is plain black.
+     - **Screenshot E1.**
+  2. **Turned.** Place three more patterned white banners on the ground, standing at different places around each spot as you place it. Each faces the way you stood, and its pattern turns with its flag.
+  3. **Torchlight.** Wait for night (or run `/time set night`) and put a torch on the ground beside the banners. Their patterns are lit and darkened like the black banner next to them. **Screenshot E2.**
+  4. **Mining.**
+     - Break the blue wall banner with the axe. It is gone at once, with no pattern left floating, and it drops with its pattern.
+     - Place it again: the pattern shows again.
+     - Break the plank behind it: it falls and drops with its pattern.
+  5. **Distance.**
+     - Walk straight away from the banners. About 64 blocks out the patterned banners vanish, as in vanilla, while the plain black banner stays.
+     - Walk back: they show again.
+     - **Screenshot E3** from about 70 blocks away.
+  6. **Save and load.** Save and quit to the title, then load the world: the placed banners show their patterns at once.
+  7. **The ominous banner.** Use pillager eggs on open ground until one carries a banner (a captain), kill it with the sword, and place its "Ominous Banner": it shows the cyan diamond, the grey and black stripes and the black border. **Screenshot E4.**
+  8. **End city (optional, its own world).** As in release 1 step C23, put `IW4L_MINECRAFT_WORLD=e1banners` and `IW4L_MINECRAFT_DIMENSION=the_end` in the `.env`, start on the End platform, run `/locate structure minecraft:end_city`, `/gamemode creative` and `/tp <x> 120 <z>`. The banners on the tower tops show their black triangles on magenta. **Screenshot E5.**
+  9. **Friend (two windows, both on this build).**
+     - The friend stands by the host's banners: in the friend's window they show the same patterns, and the plain black banner stays plain.
+     - The host breaks the white banner: it vanishes in both windows at once.
+     - The friend gets the same kit (or `/kit @a` from the host) and places the patterned blue banner on the wall: the host sees its pattern.
+     - The friend walks more than 64 blocks away and back: the banners vanish and come back as in the host's window.
+     - **Screenshot E6**, both windows.
+- **Kit** (9 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*8,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*2,minecraft:oak_planks*32,minecraft:torch*8,minecraft:diamond_axe,minecraft:diamond_sword,minecraft:pillager_spawn_egg*16,minecraft:cooked_beef*16
+```
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components
