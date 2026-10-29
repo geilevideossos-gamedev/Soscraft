@@ -20,6 +20,7 @@ Root hooks this track added (M10, "Hooks this track adds").
 - `land/animal_goals.rs` (rabbits-live 2, M1's group module, `pub mod`): goal-framework `PanicGoal<E>`, `TemptGoal<E>` and `BreedGoal<E>` over a family's `GoalExtra` type `E: AnimalExtra` (which hands out its `AnimalGoals`), and `is_monster_class`. Later M1 families reuse them; `MoveToBlockGoal` joins with `rabbits-behaviour`.
 - `AvoidEntityGoal::matching(fn(&str) -> bool)` (rabbits-live 2, `monster_ai.rs`): beside `also`; a field set by `new`, so no literal changes.
 - `World::biome_in_tag(pos, tag)` (rabbits-live 3): `player/src/lib.rs` after `biome`, false by default; the server's `MobWorld` answers it after its `biome` (`server_mobs.rs`) through `Level::biome_in_tag_at`. M2's tadpoles use it under this name.
+- **"The registry's texture test checks the pests' textures first, not the whole list"** (rabbits-drawn, before commit 1): not a hook, but a root-file change in its own commit. D0's `families::tests::a_registered_mob_is_tracked_textured_and_shadowed_through_its_family` (terrain root `families/tests.rs`) compared `textures()` with exactly the silverfish and endermite textures, so the first family with a texture of its own (the rabbit) fails it. It now compares `textures()[..2]`: `pests` comes first in the root's order, so the test still proves their two textures and lets every later family add its own. Every other round 10 track with a drawn family needs the same one-line change; whichever merges second keeps the identical line.
 
 ## Protocol
 
@@ -136,3 +137,16 @@ After 39d9b5bc.
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:carrot*16,minecraft:dandelion*8,minecraft:golden_dandelion*4,minecraft:iron_sword,minecraft:zombie_spawn_egg*2
 ```
+
+### Group rabbits-drawn
+
+#### 0. The registry's texture test checks the pests' textures first, not the whole list
+
+After e862fc31.
+
+- **Why:** `rabbits-drawn` 1 gives the rabbit its 16 textures, and D0's root test `families::tests::a_registered_mob_is_tracked_textured_and_shadowed_through_its_family` asserted that `families::textures()` is exactly the silverfish and endermite textures. It now asserts the first two (`textures()[..2]`), since `pests` is the first group in the root's order. A root-file change, so it is its own commit (M10 rule 2) and listed under "Hooks".
+- **Changed:** `crates/minecraft_terrain/src/families/tests.rs`, one line.
+- **Tests added:** none (the D0 test keeps its checks).
+- **Runs:** `test -p minecraft_terrain --locked --lib families::` (15 passed).
+- **Test steps:** nothing to see in game.
+- **Kit:** none.
