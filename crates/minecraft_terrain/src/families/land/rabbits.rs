@@ -16,6 +16,7 @@ mod render;
 
 pub const SHADOW_RADIUS: f32 = 0.3;
 const HOPPING: u32 = 1;
+const TILTING: u32 = 2;
 
 fn int(tag: &Tag, key: &str) -> Option<i32> {
     tag.get(key).and_then(Tag::as_i64).map(|value| value as i32)
@@ -78,24 +79,25 @@ impl TerrainFamily for Rabbit {
     }
 
     fn show(mob: &FamilyMob<Self>) -> FamilyShow {
-        let jump = mob.state.jump();
+        let animations = &mob.state.animations;
+        let now = mob.core.tick_count;
         let mut show = FamilyShow::default();
-        if jump.duration > 0 {
+        if let Some(start) = animations.hop {
             show.flags |= HOPPING;
-            show.values[0] = jump.ticks;
+            show.values[0] = now - start;
+        }
+        if let Some(start) = animations.tilt {
+            show.flags |= TILTING;
+            show.values[1] = now - start;
         }
         show
     }
 
     fn show_on(mob: &mut FamilyMob<Self>, show: &FamilyShow) {
-        let jump = &mut mob.state.goals_mut().jump;
-        if show.flags & HOPPING != 0 {
-            jump.duration = rabbits::JUMP_DURATION;
-            jump.ticks = show.values[0];
-        } else {
-            jump.duration = 0;
-            jump.ticks = 0;
-        }
+        let now = mob.core.tick_count;
+        let animations = &mut mob.state.animations;
+        animations.hop = (show.flags & HOPPING != 0).then(|| now - show.values[0]);
+        animations.tilt = (show.flags & TILTING != 0).then(|| now - show.values[1]);
     }
 
     fn draw(
@@ -107,7 +109,8 @@ impl TerrainFamily for Rabbit {
         partial: f32,
     ) {
         let shown = mobs.iter().filter(|mob| !mob.core.removed);
-        render::append_rabbits(out.culled, shown, poses, atlas, light, partial);
+        let clips = [render::Clips::shared(false), render::Clips::shared(true)];
+        render::append_rabbits(out.culled, shown, poses, atlas, light, partial, &clips);
     }
 
     fn interact(
@@ -145,13 +148,17 @@ impl TerrainFamily for Rabbit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client_mobs::server_mobs;
+    use crate::keyframes::{Channel, Definition, Interpolation, Keyframe, Target};
+    use crate::mesh::ChunkMesh;
     use crate::mob_actions::interact;
     use crate::mob_tracking::{look, shows, spawn_tracked};
     use crate::server_mobs::{mob_tags, spawn_saved};
-    use glam::DVec3;
+    use glam::{DVec3, Vec3};
     use minecraftoss_entities::world::MobHit;
     use minecraftoss_player::inventory::{Inventory, ItemStack};
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn parse(text: &str) -> Tag {
         minecraftoss_core::snbt::parse_compound(text).unwrap()
@@ -300,25 +307,90 @@ mod tests {
         assert_eq!(mirror.core.body.height, 0.4);
         assert_eq!(crate::families::tracking_range(rabbits::KIND), Some(8));
         assert_eq!(shows(&host)[&id].family, Some(FamilyShow::default()));
-        let jump = &mut host
-            .family_mob_mut::<Rabbit>(id)
-            .unwrap()
-            .state
-            .goals_mut()
-            .jump;
-        jump.duration = rabbits::JUMP_DURATION;
-        jump.ticks = 4;
+    }
+
+    #[test]
+    fn a_friend_sees_a_rabbit_hop_and_tilt_at_the_same_ticks() {
+        let mut host = EntityWorld::default();
+        let tag = parse("{id:\"minecraft:rabbit\",Pos:[1.5d,64.0d,2.5d]}");
+        let id = spawn_saved(&mut host, &tag).unwrap();
+        let originals: HashMap<u64, Tag> = [(id, tag)].into_iter().collect();
+        let saved = mob_tags(&host, |_| true, &originals).remove(0).1;
+        let mut friend = EntityWorld::default();
+        assert!(spawn_tracked(&mut friend, id, &saved));
+        let mob = host.family_mob_mut::<Rabbit>(id).unwrap();
+        mob.core.tick_count = 300;
+        mob.state.animations.hop = Some(296);
+        mob.state.animations.tilt = Some(280);
         let show = shows(&host)[&id].family.unwrap();
-        assert_eq!((show.flags, show.values[0]), (HOPPING, 4));
-        let mirror = friend.family_mob_mut::<Rabbit>(id).unwrap();
-        Rabbit::show_on(mirror, &show);
         assert_eq!(
-            (mirror.state.jump().duration, mirror.state.jump().ticks),
-            (15, 4),
-            "the friend sees it hop"
+            (show.flags, show.values[0], show.values[1]),
+            (HOPPING | TILTING, 4, 20),
+            "ticks since each started"
         );
-        Rabbit::show_on(mirror, &FamilyShow::default());
-        assert_eq!(mirror.state.jump().duration, 0);
+        Rabbit::show_on(friend.family_mob_mut::<Rabbit>(id).unwrap(), &show);
+        let (shown, mirror) = (rabbit(&host, id), rabbit(&friend, id));
+        let clock = |mob: &FamilyMob<Rabbit>, partial: f32| {
+            let now = mob.core.tick_count;
+            let animations = &mob.state.animations;
+            (
+                render::elapsed(animations.hop, now, partial),
+                render::elapsed(animations.tilt, now, partial),
+            )
+        };
+        for partial in [0.0, 0.25, 0.75] {
+            assert_eq!(clock(shown, partial), clock(mirror, partial));
+        }
+        assert_eq!(clock(shown, 0.5), (Some(4.5), Some(20.5)));
+        let mut swing = Definition::new(0.75, true);
+        let keys = vec![
+            Keyframe::new(0.0, Vec3::ZERO, Interpolation::Linear),
+            Keyframe::new(0.75, Vec3::new(1.5, 0.0, 0.0), Interpolation::Linear),
+        ];
+        swing.add("backlegs", Channel::new(Target::Rotation, keys.clone()));
+        let mut nod = Definition::new(4.0, false);
+        nod.add(render::HEAD, Channel::new(Target::Rotation, keys));
+        let clips = [
+            render::Clips {
+                hop: Some(Arc::new(swing)),
+                tilt: Some(Arc::new(nod)),
+            },
+            render::Clips::default(),
+        ];
+        let atlas = {
+            let temp = crate::test_dir::tempdir().unwrap();
+            std::fs::write(
+                temp.path().join("pack.mcmeta"),
+                r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#,
+            )
+            .unwrap();
+            let packs = crate::pack::PackStack::open(vec![temp.path().into()]).unwrap();
+            crate::mesh::make_atlas(&packs, Vec::new()).unwrap()
+        };
+        let light =
+            SkyLight::from_levels((-8, 56, -8), (17, 17, 17), vec![15; 4913], vec![0; 4913]);
+        let drawn = |world: &EntityWorld| {
+            let mut poses = ClientMobs::default();
+            poses.spawn_missing(&server_mobs(world));
+            let mut mesh = ChunkMesh::default();
+            let mobs = world.family::<Rabbit>();
+            render::append_rabbits(&mut mesh, mobs, &poses, &atlas, &light, 0.5, &clips);
+            mesh.vertices.iter().map(|v| v.position).collect::<Vec<_>>()
+        };
+        let both = drawn(&host);
+        assert_eq!(both, drawn(&friend), "one pose in both windows");
+        Rabbit::show_on(
+            friend.family_mob_mut::<Rabbit>(id).unwrap(),
+            &FamilyShow::default(),
+        );
+        let animations = &rabbit(&friend, id).state.animations;
+        assert_eq!((animations.hop, animations.tilt), (None, None));
+        assert_ne!(both, drawn(&friend), "a stopped rabbit sits still");
+        let mob = host.family_mob_mut::<Rabbit>(id).unwrap();
+        mob.state.animations.hop = None;
+        mob.state.animations.tilt = None;
+        assert_eq!(drawn(&host), drawn(&friend));
+        assert_eq!(shows(&host)[&id].family, Some(FamilyShow::default()));
     }
 
     #[test]

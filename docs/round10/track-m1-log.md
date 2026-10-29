@@ -12,6 +12,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (rabbits-live 3): `player/src/lib.rs` (`World::biome_in_tag`).
 - Added: `entities/src/world/families/land/animal_goals.rs`, `entities/src/world/families/land/rabbits.rs`, `entities/src/world/families/land/rabbits/ai.rs`, `entities/src/world/families/land/rabbits/tests.rs` (test only) (rabbits-live 2).
 - Changed again, no new file (rabbits-drawn 1): `entities/src/world/families/land/rabbits.rs` (`named`, `toast`, `TOAST`, `KILLER_BUNNY`).
+- Changed again, no new file (rabbits-drawn 2): `entities/src/world/families/land/rabbits.rs` (`RabbitAnimations`), `entities/src/world/families/land/rabbits/tests.rs` (its test).
 
 ## Hooks
 
@@ -32,7 +33,7 @@ No commit of this track has changed a `ToClient`/`ToServer` message or the codec
 For the orchestrator to copy at the merge of segment m1a (rabbits live and drawn):
 
 - `docs/MINECRAFT-SURVIVAL.md:441`: drop "rabbit" from the eggs that spawn nothing: "Spawn eggs for unsimulated mobs (fox, goat, the wither and others; ...)".
-- `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs, drawn with vanilla's adult and baby models and their 16 textures (Toast and the killer bunny's among them) and seen by friends."
+- `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs, drawn with vanilla's adult and baby models and their 16 textures (Toast and the killer bunny's among them), hopping and tilting their heads with vanilla's keyframes, and seen by friends at the same moments."
 
 ## Left for later
 
@@ -191,4 +192,38 @@ After d7ae60a2.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:carrot*16,minecraft:lead*2,minecraft:iron_sword,minecraft:spawner
+```
+
+#### 2. Minecraft rabbits hop and tilt their heads with the vanilla animations, for friends too
+
+After 8afa0650.
+
+- **javap this round:**
+  - `Rabbit.<init>`: `idleAnimationTimeout = 180 + random.nextInt(40)`. `baseTick` calls `setupAnimationStates` on the client only: when `shouldPlayIdleAnimation` (the timeout at 0 or below, no leash holder, AI on) it draws a new `180 + nextInt(40)` and `start`s the tilt; else while `jumpTicks > 0` it `startIfStopped`s the hop and stops the tilt; else the timeout counts down and the hop stops. `setLeashData` stops the tilt.
+  - The client's jump clock comes from entity event 1 (`handleEntityEvent`: duration 15, ticks 0) and `aiStep` counts it up as on the server.
+  - `RabbitAnimation` and `BabyRabbitAnimation`: `HOP` 0.75 s, looping (rotation and position of `body`, `head`, `backlegs`, `frontlegs`, the four legs, both ears and `tail`); `IDLE_HEAD_TILT` 4 s, not looping (also a `body` scale channel). `RabbitModel.setupAnim` applies `HOP` and then `IDLE_HEAD_TILT` at `ageInTicks` (`KeyframeAnimation.apply`, speed 1), so a finished tilt holds its last keyframe until a hop stops it.
+- **Changed (vendored entities crate, `land/rabbits.rs`):** `RabbitAnimations` (the hop's and the tilt's start ticks, the idle timeout and its own `LegacyRandom`) as `Rabbit.animations`, with `tick` porting `setupAnimationStates` and the leash stop. `Rabbit::spawn` seeds its random from the spawn position and draws the first timeout. The rabbit's tick runs it right after `family_base_tick` (vanilla's `baseTick`), with the jump ticks the last step left and `leash_holder`.
+- **Changed (game code, `minecraft_terrain`):**
+  - `families/land/rabbits.rs`: `show` sends flag bit 0 while the hop runs and bit 1 while the tilt is started, with `values[0]` and `values[1]` the ticks since each started; `show_on` sets each start to the friend's own tick count minus that. The friend no longer gets the jump clock, which nothing it draws reads. `draw` reads the clips once per frame.
+  - `families/land/rabbits/render.rs`: `Clips` (`HOP` and `IDLE_HEAD_TILT` of `RabbitAnimation` for adults and `BabyRabbitAnimation` for babies, through `keyframes::shared()`), `elapsed` (ticks since the start plus the partial tick), and `append_rabbits` applies both clips by bone name (position, rotation and scale) and the look only while the tilt is not started.
+- **Tests added:**
+  - Entities: `world::families::land::rabbits::tests::the_tilt_waits_180_to_219_ticks_stops_on_a_hop_and_never_runs_on_a_lead` (first waits 180-219 from 400 spawn spots, both ends seen; the tilt starts the tick the wait runs out, draws a new wait and stays started past its 4 s; a real hop starts the hop clock and stops the tilt, the wait holds during the hop and runs again after it; a lead stops a running tilt and none starts on a lead or without AI; off the lead it tilts at once).
+  - Terrain: `families::land::rabbits::render::tests::a_rabbit_hops_with_the_hop_keyframes_and_tilts_its_head_when_idle` (gated on `MINECRAFTOSS_ROOT`: both classes' lengths and looping, every bone they move is a part of the model, the back legs at 125 degrees five ticks into the hop and again a loop later, the head tilts and a finished tilt keeps its last pose, the baby's own hop, and drawn: the hop and the tilt change the mesh, the look moves the head, and while the tilt runs the look does not), `families::land::rabbits::tests::a_friend_sees_a_rabbit_hop_and_tilt_at_the_same_ticks` (flags and ticks since each start, the same clocks on host and friend at every partial tick, the same mesh in both windows with test clips, a stopped rabbit drawn still).
+  - `a_friend_sees_a_rabbit_from_its_look_tag` keeps its look-tag checks and leaves the shown clocks to the new test.
+- **Decisions:**
+  - Decision 4 as recommended: the clock runs on the host on its own `LegacyRandom` (never `core.random`, whose draws stay vanilla's), and `FamilyShow` carries it, so host and friend see one pose; vanilla runs it on each client. Its seed comes from the spawn position, because `Family::spawn` does not know the mob's id yet.
+  - The clock runs for every rabbit with a tick, also a dying one, as `baseTick` does; a rabbit in a spawner cage or one not ticked sits still.
+  - When the jar's keyframes cannot be read (no shared library), rabbits are drawn still, and while a tilt is started the head keeps its own pose, as vanilla's model does with an empty animation.
+- **Protocol:** no message or codec change; the clocks use `FamilyShow`'s existing flags and values.
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (452 passed), `test -p minecraft_terrain --locked` (1440 passed, 3 ignored; the gated keyframe test ran against the 26.3 jar that `cargo-slot.ps1` points `MINECRAFTOSS_ROOT` at), `check -p launcher --locked` (green; only the old render_frame and skate warnings). No new file in this commit; the touched files still pass `rustfmt --check --edition 2021`.
+- **Test steps** (release build, survival, Normal, by day on flat grass; name each screenshot by its label):
+  1. Use the rabbit egg on grass 6 blocks away and watch it hop: each hop tucks the back legs and stretches the body forward with the ears swept back, and it sits up again as it lands. **m1-rabbits-anim-1**
+  2. Put the carrot away and stand still a few blocks from a rabbit. Once it has not hopped for about 9 to 11 seconds it tilts its head for 4 seconds; afterwards its head stops turning to you until its next hop. **m1-rabbits-anim-2**
+  3. Feed two rabbits a carrot each and watch the baby: it hops and tilts its head with its own, smaller animations. **m1-rabbits-anim-3**
+  4. Put a lead on a rabbit and tie it to a fence: it never tilts its head while it is tied. Right-click the fence knot to take the lead back after 15 seconds: the rabbit tilts its head at once.
+  5. Two windows (`scripts\mp-local.ps1`), side by side: the host's rabbits hop and tilt their heads at the same moments in the friend's window. **m1-rabbits-anim-4-host**, **m1-rabbits-anim-4-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:carrot*8,minecraft:lead*2,minecraft:oak_fence*4
 ```

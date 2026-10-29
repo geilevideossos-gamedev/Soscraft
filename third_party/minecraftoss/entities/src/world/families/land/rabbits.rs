@@ -33,6 +33,8 @@ pub const WHITE_RABBITS_TAG: &str = "minecraft:spawns_white_rabbits";
 pub const GOLD_RABBITS_TAG: &str = "minecraft:spawns_gold_rabbits";
 pub const PARENT_AGE: i32 = 6000;
 pub const TOAST: &str = "Toast";
+pub const IDLE_TILT_WAIT: i32 = 180;
+pub const IDLE_TILT_SPREAD: u32 = 40;
 pub const KILLER_BUNNY: &str = "entity.minecraft.killer_bunny";
 pub const BIOME_COLOUR_CHANCE: u32 = 20;
 pub const FOOD: [&str; 3] = [
@@ -84,6 +86,52 @@ impl RabbitVariant {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct RabbitAnimations {
+    pub hop: Option<i32>,
+    pub tilt: Option<i32>,
+    pub idle_timeout: i32,
+    pub random: LegacyRandom,
+}
+
+impl RabbitAnimations {
+    pub fn new(seed: u64) -> Self {
+        let mut random = LegacyRandom::new(seed);
+        let idle_timeout = IDLE_TILT_WAIT + random.next_int(IDLE_TILT_SPREAD) as i32;
+        Self {
+            hop: None,
+            tilt: None,
+            idle_timeout,
+            random,
+        }
+    }
+
+    pub fn tick(&mut self, tick_count: i32, jump_ticks: i32, leashed: bool, no_ai: bool) {
+        if leashed {
+            self.tilt = None;
+        }
+        if self.idle_timeout <= 0 && !leashed && !no_ai {
+            self.idle_timeout = IDLE_TILT_WAIT + self.random.next_int(IDLE_TILT_SPREAD) as i32;
+            self.tilt = Some(tick_count);
+        } else if jump_ticks > 0 {
+            self.hop.get_or_insert(tick_count);
+            self.tilt = None;
+        } else {
+            self.idle_timeout -= 1;
+            self.hop = None;
+        }
+    }
+}
+
+fn animation_seed(position: DVec3) -> u64 {
+    [position.x, position.y, position.z]
+        .into_iter()
+        .fold(0x9E37_79B9_7F4A_7C15, |seed, value| {
+            let mixed = (seed ^ value.to_bits()).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            mixed ^ (mixed >> 31)
+        })
+}
+
 #[derive(Clone)]
 pub struct Rabbit {
     pub variant: RabbitVariant,
@@ -92,6 +140,7 @@ pub struct Rabbit {
     pub last_damage: Option<(&'static str, i32)>,
     pub named: bool,
     pub toast: bool,
+    pub animations: RabbitAnimations,
     pub ai: Box<MonsterAi>,
 }
 
@@ -343,6 +392,7 @@ impl Family for Rabbit {
                 last_damage: None,
                 named: false,
                 toast: false,
+                animations: RabbitAnimations::new(animation_seed(position)),
                 ai: Box::new(ai),
             },
         })
@@ -358,6 +408,12 @@ impl Family for Rabbit {
         let Some(base) = world.family_base_tick::<Self, W>(id, level, players) else {
             return;
         };
+        let leashed = world.leash_holder(id).is_some();
+        if let Some(mob) = world.family_mob_mut::<Self>(id) {
+            let (tick_count, jump_ticks) = (mob.core.tick_count, mob.state.jump().ticks);
+            let animations = &mut mob.state.animations;
+            animations.tick(tick_count, jump_ticks, leashed, base.no_ai);
+        }
         if base.alive && !base.no_ai {
             let tempters = tempters(world, players);
             let mates = mates(world, id);

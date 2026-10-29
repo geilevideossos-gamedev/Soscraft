@@ -41,7 +41,7 @@ A MW2 bullet finds a mob through one number: the kind in the top byte, the entit
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 15 | Rabbit | taiga, snowy, desert, meadow, cherry (dormant today) | spawn row, rules and group variants | jump control, carrot raids, biome variants, killer bunny, keyframes | M | `rabbits` | 48 | drawn | 8ad4c103, 39d9b5bc, e862fc31, d7ae60a2, "Minecraft rabbits are saved, hatch from eggs and are drawn like vanilla" (M1 `rabbits-live`, `rabbits-drawn`) |
+| 15 | Rabbit | taiga, snowy, desert, meadow, cherry (dormant today) | spawn row, rules and group variants | jump control, carrot raids, biome variants, killer bunny, keyframes | M | `rabbits` | 48 | drawn | 8ad4c103, 39d9b5bc, e862fc31, d7ae60a2, 8afa0650, "Minecraft rabbits hop and tilt their heads with the vanilla animations, for friends too" (M1 `rabbits-live`, `rabbits-drawn`) |
 | 16 | Fox | taiga, snowy taiga, grove (dormant today) | spawn row and finalize; wolves hunt foxes | sleeping by day, pounce, trust, mouth item, berries, keyframes | L | `foxes` | 49 | left | |
 | 17 | Goat | peaks, snowy slopes (dormant today) | size row (rules missing, never spawns) | brain, ram, long jump, screaming, horns, milking | L | `goats` | 50 | left | |
 | 18 | Parrot | jungles (dormant today) | size row | flying (P3 from D0), imitation, dancing, cookies, shoulder | L | `parrots` | 51 | left | |

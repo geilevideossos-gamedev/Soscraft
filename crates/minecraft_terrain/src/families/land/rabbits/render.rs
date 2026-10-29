@@ -1,5 +1,5 @@
 use crate::client_mobs::{ClientMobs, MobPose};
-use crate::keyframes::{DEGREES, Moved};
+use crate::keyframes::{self, AnimationLibrary, AnimationState, DEGREES, Definition, Moved};
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh};
 use crate::pack::ResourceId;
@@ -7,9 +7,13 @@ use crate::posed_cube::{Cube, Skin, append, part_pose};
 use glam::{Mat4, Vec3};
 use minecraftoss_entities::world::families::FamilyMob;
 use minecraftoss_entities::world::families::land::rabbits::{Rabbit, RabbitVariant};
+use std::sync::Arc;
 
 pub const FLIP_DEGREES: f32 = 90.0;
 pub const HEAD: &str = "head";
+pub const ANIMATIONS: [&str; 2] = ["RabbitAnimation", "BabyRabbitAnimation"];
+pub const HOP: &str = "HOP";
+pub const IDLE_HEAD_TILT: &str = "IDLE_HEAD_TILT";
 
 pub const TEXTURES: [&str; 16] = [
     "minecraft:entity/rabbit/rabbit_brown",
@@ -245,6 +249,40 @@ pub const BABY: Model = Model {
     texture_size: [32.0, 32.0],
 };
 
+#[derive(Clone, Debug, Default)]
+pub struct Clips {
+    pub hop: Option<Arc<Definition>>,
+    pub tilt: Option<Arc<Definition>>,
+}
+
+impl Clips {
+    pub fn read(library: &AnimationLibrary, baby: bool) -> Clips {
+        let class = ANIMATIONS[usize::from(baby)];
+        Clips {
+            hop: library.definition(class, HOP),
+            tilt: library.definition(class, IDLE_HEAD_TILT),
+        }
+    }
+
+    pub fn shared(baby: bool) -> Clips {
+        Clips::read(keyframes::shared(), baby)
+    }
+
+    pub fn moved(&self, hop: Option<f32>, tilt: Option<f32>) -> Moved {
+        let mut moved = Moved::default();
+        for (clip, elapsed) in [(&self.hop, hop), (&self.tilt, tilt)] {
+            if let (Some(clip), Some(elapsed)) = (clip, elapsed) {
+                clip.apply_state(AnimationState::started(0), elapsed, 1.0, &mut moved);
+            }
+        }
+        moved
+    }
+}
+
+pub fn elapsed(start: Option<i32>, tick_count: i32, partial: f32) -> Option<f32> {
+    start.map(|start| (tick_count - start) as f32 + partial)
+}
+
 pub fn model(baby: bool) -> &'static Model {
     if baby { &BABY } else { &ADULT }
 }
@@ -322,6 +360,7 @@ pub fn append_rabbits<'a>(
     atlas: &Atlas,
     light: &SkyLight,
     partial: f32,
+    clips: &[Clips; 2],
 ) {
     let mut marks = Vec::new();
     for rabbit in rabbits {
@@ -333,7 +372,12 @@ pub fn append_rabbits<'a>(
         let model = model(baby);
         let texture = texture(rabbit.state.variant, rabbit.state.toast, baby);
         let skin = skin(atlas, texture, model.texture_size, light, &pose);
-        let parts = part_poses(model, Some(look(&pose)), &Moved::default());
+        let (animations, now) = (&rabbit.state.animations, rabbit.core.tick_count);
+        let tilt = elapsed(animations.tilt, now, partial);
+        let hop = elapsed(animations.hop, now, partial);
+        let moved = clips[usize::from(baby)].moved(hop, tilt);
+        let look = tilt.is_none().then(|| look(&pose));
+        let parts = part_poses(model, look, &moved);
         append_model(mesh, model_root(&pose), model, &parts, &skin);
     }
     crate::cow_render::apply_overlays(mesh, &marks);
@@ -604,6 +648,90 @@ mod tests {
         assert!(
             dying.vertices.iter().all(|v| v.color[3] < 0.0),
             "red while dying"
+        );
+    }
+
+    fn library() -> Option<AnimationLibrary> {
+        let root = std::env::var_os("MINECRAFTOSS_ROOT")?;
+        let jar = std::path::Path::new(&root).join("client.jar");
+        jar.is_file().then(|| AnimationLibrary::new(Some(jar)))
+    }
+
+    #[test]
+    fn a_rabbit_hops_with_the_hop_keyframes_and_tilts_its_head_when_idle() {
+        let Some(library) = library() else {
+            return;
+        };
+        for baby in [false, true] {
+            let clips = Clips::read(&library, baby);
+            let hop = clips.hop.as_ref().unwrap();
+            let tilt = clips.tilt.as_ref().unwrap();
+            assert_eq!((hop.length, hop.looping), (0.75, true), "{baby}");
+            assert_eq!((tilt.length, tilt.looping), (4.0, false), "{baby}");
+            let names: Vec<&str> = model(baby).parts.iter().map(|part| part.name).collect();
+            for (bone, _) in hop.bones.iter().chain(&tilt.bones) {
+                assert!(names.contains(&bone.as_str()), "{baby} {bone}");
+            }
+        }
+        let clips = Clips::read(&library, false);
+        let hop = |ticks: f32| clips.moved(Some(ticks), None);
+        let legs = |moved: &Moved| moved.get("backlegs").rotation.x / DEGREES;
+        assert_eq!(legs(&hop(0.0)), 0.0);
+        let tucked = legs(&hop(5.0));
+        assert!((tucked - 125.0).abs() < 1e-3, "{tucked}");
+        assert!(
+            (legs(&hop(20.0)) - 125.0).abs() < 1e-3,
+            "the hop loops every 15 ticks"
+        );
+        let hopping = part_poses(&ADULT, None, &hop(5.0));
+        let turned = hopping[8].transform_vector3(Vec3::Z);
+        let tucked = Vec3::new(0.0, -(125.0 * DEGREES).sin(), (125.0 * DEGREES).cos());
+        assert!(close(turned, tucked), "the back legs tuck in: {turned}");
+        let still = part_poses(&ADULT, None, &Moved::default());
+        let tilt = |ticks: f32| part_poses(&ADULT, None, &clips.moved(None, Some(ticks)));
+        assert!(
+            (1..80).any(|ticks| tilt(ticks as f32)[2] != still[2]),
+            "the head tilts"
+        );
+        let end = tilt(80.0);
+        for (held, last) in tilt(130.0).iter().zip(&end) {
+            assert!(
+                held.abs_diff_eq(*last, 1e-5),
+                "a finished tilt keeps its last pose"
+            );
+        }
+        let baby = Clips::read(&library, true);
+        let small = part_poses(&BABY, None, &baby.moved(Some(5.0), None));
+        let resting = part_poses(&BABY, None, &Moved::default());
+        assert_ne!(small, resting, "the baby hops with its own keyframes");
+        let atlas = atlas();
+        let clips = [Clips::read(&library, false), Clips::read(&library, true)];
+        let drawn = |pitch: f32, hop: Option<i32>, tilt: Option<i32>| {
+            let mut world = EntityWorld::default();
+            let id = world
+                .spawn_family_kind("minecraft:rabbit", DVec3::new(0.5, 64.0, 0.5))
+                .unwrap();
+            let mob = world.family_mob_mut::<Rabbit>(id).unwrap();
+            mob.core.look.pitch = pitch;
+            mob.core.tick_count = 40;
+            mob.state.animations.hop = hop;
+            mob.state.animations.tilt = tilt;
+            let mut poses = ClientMobs::default();
+            poses.spawn_missing(&server_mobs(&world));
+            let mut mesh = ChunkMesh::default();
+            let rabbits = world.family::<Rabbit>();
+            append_rabbits(&mut mesh, rabbits, &poses, &atlas, &light(), 0.0, &clips);
+            mesh.vertices.iter().map(|v| v.position).collect::<Vec<_>>()
+        };
+        let sitting = drawn(0.0, None, None);
+        assert_ne!(drawn(0.0, Some(35), None), sitting, "the drawn rabbit hops");
+        assert_ne!(drawn(30.0, None, None), sitting, "it looks up at a player");
+        let tilting = drawn(0.0, None, Some(10));
+        assert_ne!(tilting, sitting, "and tilts its head");
+        assert_eq!(
+            drawn(30.0, None, Some(10)),
+            tilting,
+            "while the tilt runs the head does not follow the look"
         );
     }
 }

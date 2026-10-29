@@ -6,7 +6,7 @@ use crate::cow::InteractionResult;
 use crate::monster_ai::Target;
 use crate::movement::Body;
 use crate::walk_path::WalkTarget;
-use crate::world::{DamageSourceKind, PlayerAttack};
+use crate::world::{DamageSourceKind, LeashHolder, PlayerAttack};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_player::{Block, Pos};
@@ -717,5 +717,125 @@ fn a_golden_dandelion_locks_a_baby_rabbit_s_age() {
         rabbit(&world, baby).state.age.ticks,
         Age::BABY_START + 1,
         "and grows again"
+    );
+}
+
+#[test]
+fn the_tilt_waits_180_to_219_ticks_stops_on_a_hop_and_never_runs_on_a_lead() {
+    let waits: Vec<i32> = (0..400)
+        .map(|x| {
+            let mob = Rabbit::spawn(KIND, at(f64::from(x) + 0.5, 0.5)).unwrap();
+            mob.state.animations.idle_timeout
+        })
+        .collect();
+    assert!(waits.iter().all(|wait| (180..=219).contains(wait)));
+    assert!(waits.contains(&180) && waits.contains(&219), "{waits:?}");
+    let mut world = EntityWorld::default();
+    let mut meadow = Meadow::default();
+    let id = rabbit_at(&mut world, at(0.5, 0.5));
+    let holder = rabbit_at(&mut world, at(0.5, 6.5));
+    let leashed = rabbit_at(&mut world, at(2.5, 6.5));
+    let still = rabbit_at(&mut world, at(0.5, -6.5));
+    for rabbit in [id, holder, leashed, still] {
+        rabbit_mut(&mut world, rabbit).state.ai.retain_goals(&[]);
+    }
+    rabbit_mut(&mut world, still).core.no_ai = true;
+    world.set_leash(leashed, LeashHolder::Mob(holder));
+    rabbit_mut(&mut world, leashed).state.animations.tilt = Some(0);
+    let animations = |world: &EntityWorld, id: u64| rabbit(world, id).state.animations.clone();
+    world.tick(&mut meadow);
+    assert_eq!(
+        animations(&world, leashed).tilt,
+        None,
+        "a lead stops a running tilt"
+    );
+    for _ in 1..30 {
+        world.tick(&mut meadow);
+    }
+    assert_eq!(rabbit(&world, id).state.jump().duration, 0);
+    let (wait, settled) = (
+        animations(&world, id).idle_timeout,
+        rabbit(&world, id).core.tick_count,
+    );
+    assert!(wait > 0);
+    for _ in 0..wait {
+        world.tick(&mut meadow);
+        assert_eq!(animations(&world, id).tilt, None);
+    }
+    world.tick(&mut meadow);
+    let started = rabbit(&world, id).core.tick_count;
+    assert_eq!(
+        started,
+        settled + wait + 1,
+        "the tilt starts once the wait runs out"
+    );
+    let tilt = animations(&world, id);
+    assert_eq!((tilt.tilt, tilt.hop), (Some(started), None));
+    assert!(
+        (180..=219).contains(&tilt.idle_timeout),
+        "and a new wait is drawn"
+    );
+    for _ in 0..120 {
+        world.tick(&mut meadow);
+    }
+    assert_eq!(
+        animations(&world, id).tilt,
+        Some(started),
+        "a finished tilt stays started until a hop"
+    );
+    let mob = rabbit_mut(&mut world, id);
+    let state = &mut mob.state.ai.state;
+    let walk = state.walk.clone();
+    navigate_walk_to(
+        &mob.core.body,
+        &mut state.navigation,
+        &meadow,
+        &walk,
+        state.fluid,
+        at(14.5, 0.5),
+        1.0,
+        1,
+    );
+    let mut hopped = false;
+    for _ in 0..40 {
+        world.tick(&mut meadow);
+        hopped = !jump_pitches(&mut world).is_empty();
+        if hopped {
+            break;
+        }
+    }
+    assert!(hopped, "it hops along its path");
+    assert_eq!(animations(&world, id).tilt, Some(started));
+    world.tick(&mut meadow);
+    let hop_start = rabbit(&world, id).core.tick_count;
+    let hop = animations(&world, id);
+    assert_eq!(
+        (hop.hop, hop.tilt),
+        (Some(hop_start), None),
+        "a hop stops the tilt"
+    );
+    let wait = hop.idle_timeout;
+    for _ in 1..15 {
+        world.tick(&mut meadow);
+        let hop = animations(&world, id);
+        assert_eq!((hop.hop, hop.idle_timeout), (Some(hop_start), wait));
+    }
+    world.tick(&mut meadow);
+    let landed = animations(&world, id);
+    assert_eq!(landed.hop, None, "the hop stops with the jump");
+    assert_eq!(landed.idle_timeout, wait - 1, "and the wait runs again");
+    assert!(world.leash_holder(leashed).is_some());
+    for rabbit in [leashed, still] {
+        let animations = animations(&world, rabbit);
+        assert_eq!(animations.tilt, None, "never on a lead or without AI");
+        assert!(animations.idle_timeout < 0, "{}", animations.idle_timeout);
+    }
+    world.drop_leash(leashed, false);
+    world.tick(&mut meadow);
+    let free = animations(&world, leashed);
+    assert_eq!(
+        free.tilt,
+        Some(rabbit(&world, leashed).core.tick_count),
+        "off the lead it tilts at once"
     );
 }
