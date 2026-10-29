@@ -23,12 +23,19 @@ const CLIENT_ANGER: usize = 2;
 
 type Flag = fn(&mut Memories) -> &mut Slot<()>;
 
-const FLAGS: [(&str, Flag); 7] = [
+const FLAGS: [(&str, Flag); 10] = [
     ("minecraft:dig_cooldown", |m| &mut m.dig_cooldown),
     ("minecraft:is_emerging", |m| &mut m.is_emerging),
     ("minecraft:is_sniffing", |m| &mut m.is_sniffing),
     ("minecraft:recent_projectile", |m| &mut m.recent_projectile),
+    ("minecraft:roar_sound_cooldown", |m| {
+        &mut m.roar_sound_cooldown
+    }),
+    ("minecraft:roar_sound_delay", |m| &mut m.roar_sound_delay),
     ("minecraft:sniff_cooldown", |m| &mut m.sniff_cooldown),
+    ("minecraft:sonic_boom_cooldown", |m| {
+        &mut m.sonic_boom_cooldown
+    }),
     ("minecraft:touch_cooldown", |m| &mut m.touch_cooldown),
     ("minecraft:vibration_cooldown", |m| {
         &mut m.vibration_cooldown
@@ -236,6 +243,21 @@ mod tests {
         let saved = saved_tag(&world, id, fresh);
         assert_eq!(saved.get(ANGER), Some(&Tag::Compound(BTreeMap::new())));
         assert_eq!(saved.get(BRAIN), Some(&parse("{memories:{}}")));
+    }
+
+    #[test]
+    fn a_warden_keeps_its_roar_and_boom_cooldowns_in_its_brain() {
+        let tag = parse(
+            "{id:\"minecraft:warden\",Pos:[1.5d,64.0d,2.5d],Brain:{memories:{\"minecraft:roar_sound_cooldown\":{value:{},ttl:40L},\"minecraft:roar_sound_delay\":{value:{},ttl:3L},\"minecraft:sonic_boom_cooldown\":{value:{},ttl:150L}}}}",
+        );
+        let mut world = EntityWorld::default();
+        let id = spawn_saved(&mut world, &tag).unwrap();
+        let memories = warden(&world, id).state.memories();
+        assert_eq!(memories.roar_sound_cooldown.ttl(), Some(40));
+        assert_eq!(memories.roar_sound_delay.ttl(), Some(3));
+        assert_eq!(memories.sonic_boom_cooldown.ttl(), Some(150));
+        let saved = saved_tag(&world, id, tag.clone());
+        assert_eq!(saved.get(BRAIN), tag.get(BRAIN));
     }
 
     #[test]

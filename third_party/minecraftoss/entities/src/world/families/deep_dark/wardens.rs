@@ -3,8 +3,8 @@ mod brain;
 
 pub use self::anger::{Anger, AngerLevel, Seen, Suspect};
 pub use self::brain::{
-    Activity, DIGGING_COOLDOWN, DIGGING_DURATION, EMERGE_DURATION, Memories, ROAR_DURATION,
-    SNIFFING_DURATION, WardenBrain,
+    Activity, DIGGING_COOLDOWN, DIGGING_DURATION, EMERGE_DURATION, MELEE_UNTIL_SONIC_BOOM,
+    Memories, ROAR_DURATION, SNIFFING_DURATION, WardenBrain, set_attack_target,
 };
 
 use crate::brain_behaviors::{Living, block_of, find};
@@ -19,7 +19,9 @@ use crate::walk_path::{WalkProfile, WalkTarget};
 use crate::world::emissions::{MovementSounds, play_movement};
 use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore};
 use crate::world::living::fall_damage;
-use crate::world::{DamageSourceKind, EntityWorld, PLAYER_TARGET, Rider, Voice, voice_pitch};
+use crate::world::{
+    DamageSourceKind, EntityWorld, PLAYER_TARGET, PlayerHitKind, Rider, Voice, voice_pitch,
+};
 use glam::DVec3;
 use minecraftoss_player::World;
 use minecraftoss_player::path_type::PathType;
@@ -41,6 +43,8 @@ pub const SOUND_VOLUME: f32 = 4.0;
 pub const STEP_SOUND: &str = "entity.warden.step";
 pub const STEP_VOLUME: f32 = 10.0;
 pub const STEP_AFTER: f32 = 0.55;
+pub const ATTACK_EVENT: u8 = 4;
+pub const DISABLE_SHIELD_SECONDS: f32 = 5.0;
 pub const TENDRIL_EVENT: u8 = 61;
 pub const TENDRIL_VOLUME: f32 = 5.0;
 pub const PROJECTILE_ANGER: i32 = 10;
@@ -102,6 +106,7 @@ pub struct Warden {
     pub speed: f32,
     pub forward: f32,
     pub sideways: f32,
+    pub hurts: Vec<(Target, bool)>,
 }
 
 impl Warden {
@@ -161,8 +166,19 @@ pub fn warden(position: DVec3) -> FamilyMob<Warden> {
             speed: 0.0,
             forward: 0.0,
             sideways: 0.0,
+            hurts: Vec::new(),
         },
     }
+}
+
+pub fn attack_throw(yaw: f32) -> DVec3 {
+    let power = ATTACK_KNOCKBACK * 0.5;
+    let angle = f64::from(yaw * 0.017_453_292);
+    let (sin, cos) = (
+        f64::from(minecraftoss_player::mth::sin(angle)),
+        f64::from(minecraftoss_player::mth::cos(angle)),
+    );
+    DVec3::new(-sin * power, power.min(0.4), cos * power)
 }
 
 fn fit(core: &mut MobCore, pose: Pose) {
@@ -414,6 +430,41 @@ fn touch(world: &mut EntityWorld, id: u64, players: &[PlayerCandidate]) {
     brain::set_disturbance(mob, &others, block_of(touched.position));
 }
 
+fn strike(world: &mut EntityWorld, id: u64, target: Target) {
+    let Some(mob) = world.warden_mut(id) else {
+        return;
+    };
+    let (position, yaw) = (mob.core.body.position, mob.core.yaw);
+    world.entity_events.push((id, ATTACK_EVENT));
+    let kind = PlayerHitKind::Melee {
+        attacker: position,
+        hunger_ticks: 0,
+        lift: 0.0,
+        throw: attack_throw(yaw),
+        disable_shield_seconds: DISABLE_SHIELD_SECONDS,
+    };
+    let hit = world.family_strike(id, target, ATTACK_DAMAGE, kind);
+    let victim = match target {
+        Target::Player(_) => None,
+        Target::Mob(victim) | Target::Villager(victim) => Some(victim),
+    };
+    if victim.is_some() && !hit.is_some_and(|hit| hit.applied) {
+        return;
+    }
+    if let Some(victim) = victim {
+        let angle = f64::from(yaw * 0.017_453_292);
+        let (sin, cos) = (
+            f64::from(minecraftoss_player::mth::sin(angle)),
+            f64::from(minecraftoss_player::mth::cos(angle)),
+        );
+        world.knock_back(victim, ATTACK_KNOCKBACK * 0.5, sin, -cos);
+    }
+    if let Some(mob) = world.warden_mut(id) {
+        let velocity = mob.core.body.velocity;
+        mob.core.body.velocity = DVec3::new(velocity.x * 0.6, velocity.y, velocity.z * 0.6);
+    }
+}
+
 impl Family for Warden {
     const KEY: u8 = KEY;
     const KINDS: &'static [&'static str] = &[KIND];
@@ -453,13 +504,20 @@ impl Family for Warden {
                 look_at: None,
                 jump: false,
                 unmount: false,
+                strike: None,
             };
             if let Some(mob) = world.family_mob_mut::<Self>(id) {
+                for (attacker, direct) in std::mem::take(&mut mob.state.hurts) {
+                    brain::hurt_by(mob, &ctx, attacker, direct);
+                }
                 step(mob, &*level, players, &mut ctx);
             }
             if ctx.unmount {
                 let yaw = world.family_core(id).map_or(0.0, |(_, core)| core.yaw);
                 world.stop_riding(Rider::Mob(id), yaw, &*level);
+            }
+            if let Some(target) = ctx.strike {
+                strike(world, id, target);
             }
         }
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);
@@ -478,7 +536,13 @@ impl Family for Warden {
                 full: false,
             };
         }
-        mob.core.hurt_plain(hurt.amount)
+        let buried = mob.state.pose.buried();
+        let result = mob.core.hurt_plain(hurt.amount);
+        if let Some(attacker) = hurt.attacker.filter(|_| !mob.core.no_ai && !buried) {
+            let direct = matches!(hurt.source, DamageSourceKind::MobAttack);
+            mob.state.hurts.push((attacker, direct));
+        }
+        result
     }
 
     fn despawn(_mob: &FamilyMob<Self>) -> Despawn {

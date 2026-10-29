@@ -1,7 +1,8 @@
 use super::anger::AngerLevel;
 use super::{Pose, Warden};
 use crate::brain_behaviors::{
-    Living, MoveSink, Pos, Track, WalkGoal, Walker, block_of, find, shuffled,
+    Living, MoveSink, Pos, Track, WalkGoal, Walker, block_of, find, shuffled, targetable_within,
+    within_melee_range,
 };
 use crate::monster_ai::Target;
 use crate::villager_brain::Slot;
@@ -34,6 +35,17 @@ pub const IDLE_MAX: i64 = 60;
 pub const SNIFF_ANGER_XZ: f64 = 6.0;
 pub const SNIFF_ANGER_Y: f64 = 20.0;
 pub const DEFAULT_ANGER: i32 = 35;
+pub const ROAR_SOUND_DELAY: i64 = 25;
+pub const ROAR_ANGER: i32 = 20;
+pub const ROAR_VOLUME: f32 = 3.0;
+pub const ON_HURT_ANGER_BOOST: i32 = 20;
+pub const HURT_TARGET_DISTANCE: f64 = 5.0;
+pub const FIGHT_SPEED: f32 = 1.2;
+pub const ATTACK_COOLDOWN: i64 = 18;
+pub const MELEE_UNTIL_SONIC_BOOM: i64 = 200;
+pub const SONIC_BOOM_COOLDOWN: i64 = 40;
+pub const VISIBLE_RANGE: f64 = 16.0;
+pub const ATTACK_VOLUME: f32 = 10.0;
 pub const LISTENING_VOLUME: f32 = 10.0;
 pub const BEHAVIOR_VOLUME: f32 = 5.0;
 pub const FLUID_JUMP_THRESHOLD: f64 = 0.4;
@@ -57,12 +69,17 @@ pub struct Memories {
     pub is_sniffing: Slot<()>,
     pub sniff_cooldown: Slot<()>,
     pub roar_target: Slot<Target>,
+    pub roar_sound_delay: Slot<()>,
+    pub roar_sound_cooldown: Slot<()>,
     pub attack_target: Slot<Target>,
+    pub attack_cooling_down: Slot<()>,
+    pub sonic_boom_cooldown: Slot<()>,
     pub disturbance_location: Slot<Pos>,
     pub recent_projectile: Slot<()>,
     pub vibration_cooldown: Slot<()>,
     pub touch_cooldown: Slot<()>,
     pub nearest_attackable: Slot<Target>,
+    pub nearest_visible: Slot<Vec<Target>>,
     pub walk_target: Slot<WalkGoal>,
     pub look_target: Slot<Track>,
     pub cant_reach_walk_target_since: Slot<i64>,
@@ -75,12 +92,17 @@ impl Memories {
         self.is_sniffing.tick();
         self.sniff_cooldown.tick();
         self.roar_target.tick();
+        self.roar_sound_delay.tick();
+        self.roar_sound_cooldown.tick();
         self.attack_target.tick();
+        self.attack_cooling_down.tick();
+        self.sonic_boom_cooldown.tick();
         self.disturbance_location.tick();
         self.recent_projectile.tick();
         self.vibration_cooldown.tick();
         self.touch_cooldown.tick();
         self.nearest_attackable.tick();
+        self.nearest_visible.tick();
         self.walk_target.tick();
         self.look_target.tick();
         self.cant_reach_walk_target_since.tick();
@@ -104,6 +126,7 @@ pub struct WardenBrain {
     pub emerging_until: Option<i64>,
     pub digging_until: Option<i64>,
     pub sniffing_until: Option<i64>,
+    pub roar_until: Option<i64>,
     pub idle_until: Option<i64>,
     pub walk: MoveSink,
 }
@@ -151,6 +174,7 @@ pub struct Ctx<'a> {
     pub look_at: Option<DVec3>,
     pub jump: bool,
     pub unmount: bool,
+    pub strike: Option<Target>,
 }
 
 impl Ctx<'_> {
@@ -246,6 +270,32 @@ pub fn set_disturbance(mob: &mut FamilyMob<Warden>, others: &[Living], pos: Pos)
     memories.walk_target.erase();
 }
 
+pub fn set_attack_target(mob: &mut FamilyMob<Warden>, target: Target) {
+    let memories = &mut mob.state.brain.memories;
+    memories.roar_target.erase();
+    memories.attack_target.set(target);
+    memories.cant_reach_walk_target_since.erase();
+    memories
+        .sonic_boom_cooldown
+        .set_for((), MELEE_UNTIL_SONIC_BOOM);
+}
+
+pub fn hurt_by(mob: &mut FamilyMob<Warden>, ctx: &Ctx, attacker: Target, direct: bool) {
+    let anger = AngerLevel::Angry.minimum() + ON_HURT_ANGER_BOOST;
+    let uuid = ctx.uuid_of(attacker);
+    increase_anger_at(mob, ctx.others, attacker, uuid, anger, false);
+    if mob.state.brain.memories.attack_target.present() {
+        return;
+    }
+    let Some(living) = find(ctx.others, attacker) else {
+        return;
+    };
+    let reach = HURT_TARGET_DISTANCE * HURT_TARGET_DISTANCE;
+    if direct || living.position.distance_squared(mob.core.body.position) < reach {
+        set_attack_target(mob, attacker);
+    }
+}
+
 fn in_swimmable_fluid(mob: &FamilyMob<Warden>) -> bool {
     let fluid = mob.state.fluid;
     fluid.in_water() && fluid.water_height > FLUID_JUMP_THRESHOLD || fluid.in_lava()
@@ -301,6 +351,13 @@ fn sense(mob: &mut FamilyMob<Warden>, ctx: &Ctx) {
     };
     let attackable = first(true).or_else(|| first(false));
     brain.memories.nearest_attackable.set_or_erase(attackable);
+    let eye = p + DVec3::Y * f64::from(mob.core.eye_height);
+    let visible = near
+        .iter()
+        .filter(|(other, _)| targetable_within(ctx.world, eye, p, other, false, VISIBLE_RANGE))
+        .map(|(other, _)| other.target)
+        .collect();
+    brain.memories.nearest_visible.set(visible);
 }
 
 fn start(mob: &mut FamilyMob<Warden>, ctx: &mut Ctx) {
@@ -356,13 +413,141 @@ fn start(mob: &mut FamilyMob<Warden>, ctx: &mut Ctx) {
     }
     match activity {
         Activity::Emerge => start_emerging(mob, time),
-        Activity::Investigate => go_to_disturbance(mob),
-        Activity::Sniff => start_sniffing(mob, time),
+        Activity::Roar => start_roar(mob, ctx),
+        Activity::Fight => fight(mob, ctx),
+        Activity::Investigate => {
+            set_roar_target(mob, ctx);
+            go_to_disturbance(mob);
+        }
+        Activity::Sniff => {
+            set_roar_target(mob, ctx);
+            start_sniffing(mob, time);
+        }
         Activity::Idle => {
+            set_roar_target(mob, ctx);
             try_to_sniff(mob);
             idle(mob, ctx);
         }
-        Activity::Dig | Activity::Roar | Activity::Fight => {}
+        Activity::Dig => {}
+    }
+}
+
+fn set_roar_target(mob: &mut FamilyMob<Warden>, ctx: &Ctx) {
+    let memories = &mob.state.brain.memories;
+    if memories.roar_target.present() || memories.attack_target.present() {
+        return;
+    }
+    let Some(target) = angry_at(&mob.state, ctx.others) else {
+        return;
+    };
+    let memories = &mut mob.state.brain.memories;
+    memories.roar_target.set(target);
+    memories.cant_reach_walk_target_since.erase();
+}
+
+fn start_roar(mob: &mut FamilyMob<Warden>, ctx: &Ctx) {
+    let brain = &mob.state.brain;
+    if brain.roar_until.is_some() || brain.memories.attack_target.present() {
+        return;
+    }
+    let Some(&target) = brain.memories.roar_target.get() else {
+        return;
+    };
+    mob.state.brain.roar_until = Some(ctx.time + ROAR_DURATION);
+    let memories = &mut mob.state.brain.memories;
+    memories.roar_sound_delay.set_for((), ROAR_SOUND_DELAY);
+    memories.walk_target.erase();
+    memories
+        .look_target
+        .set(Track::Entity { target, eyes: true });
+    set_pose(mob, Pose::Roaring);
+    let uuid = ctx.uuid_of(target);
+    increase_anger_at(mob, ctx.others, target, uuid, ROAR_ANGER, false);
+}
+
+fn tick_roar(mob: &mut FamilyMob<Warden>) {
+    let memories = &mut mob.state.brain.memories;
+    if memories.roar_sound_delay.present() || memories.roar_sound_cooldown.present() {
+        return;
+    }
+    memories
+        .roar_sound_cooldown
+        .set_for((), ROAR_DURATION - ROAR_SOUND_DELAY);
+    play(&mut mob.core, "entity.warden.roar", ROAR_VOLUME, 1.0);
+}
+
+fn stop_roar(mob: &mut FamilyMob<Warden>) {
+    if mob.state.pose == Pose::Roaring {
+        set_pose(mob, Pose::Standing);
+    }
+    if let Some(&target) = mob.state.brain.memories.roar_target.get() {
+        set_attack_target(mob, target);
+    }
+    mob.state.brain.memories.roar_target.erase();
+}
+
+fn fight(mob: &mut FamilyMob<Warden>, ctx: &mut Ctx) {
+    mob.state.brain.memories.set_dig_cooldown();
+    let Some(&target) = mob.state.brain.memories.attack_target.get() else {
+        return;
+    };
+    let living = find(ctx.others, target).copied().filter(can_target);
+    let Some(living) = living.filter(|_| anger_level(&mob.state).is_angry()) else {
+        if living.is_none() {
+            mob.state.anger.clear(target);
+        }
+        let memories = &mut mob.state.brain.memories;
+        memories.set_dig_cooldown();
+        memories.attack_target.erase();
+        return;
+    };
+    let position = mob.core.body.position;
+    let memories = &mut mob.state.brain.memories;
+    let seen = memories
+        .nearest_visible
+        .get()
+        .is_some_and(|visible| visible.contains(&target));
+    let follow = super::FOLLOW_RANGE * super::FOLLOW_RANGE;
+    if seen && living.position.distance_squared(position) <= follow {
+        memories
+            .look_target
+            .set(Track::Entity { target, eyes: true });
+    }
+    let reach = within_melee_range(&mob.core.body, &living);
+    if seen && reach {
+        memories.walk_target.erase();
+    } else {
+        memories
+            .look_target
+            .set(Track::Entity { target, eyes: true });
+        memories.walk_target.set(WalkGoal {
+            target: Track::Entity {
+                target,
+                eyes: false,
+            },
+            speed: FIGHT_SPEED,
+            close_enough: 0,
+        });
+    }
+    if memories.attack_cooling_down.present() || !memories.nearest_visible.present() {
+        return;
+    }
+    if seen && reach {
+        memories
+            .look_target
+            .set(Track::Entity { target, eyes: true });
+        memories.attack_cooling_down.set_for((), ATTACK_COOLDOWN);
+        memories
+            .sonic_boom_cooldown
+            .set_for((), SONIC_BOOM_COOLDOWN);
+        let pitch = voice_pitch(&mut mob.core.random, false);
+        play(
+            &mut mob.core,
+            "entity.warden.attack_impact",
+            ATTACK_VOLUME,
+            pitch,
+        );
+        ctx.strike = Some(target);
     }
 }
 
@@ -568,6 +753,14 @@ fn run(mob: &mut FamilyMob<Warden>, ctx: &mut Ctx) {
     {
         mob.state.brain.sniffing_until = None;
         stop_sniffing(mob, ctx);
+    }
+    if let Some(until) = mob.state.brain.roar_until {
+        if time > until {
+            mob.state.brain.roar_until = None;
+            stop_roar(mob);
+        } else {
+            tick_roar(mob);
+        }
     }
     if mob.state.brain.idle_until.is_some_and(|until| time > until) {
         mob.state.brain.idle_until = None;

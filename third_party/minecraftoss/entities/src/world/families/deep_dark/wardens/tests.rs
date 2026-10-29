@@ -1,6 +1,6 @@
 use super::*;
 use crate::cow::Cow;
-use crate::world::PlayerAttack;
+use crate::world::{PlayerAttack, ProjectileHit};
 use minecraftoss_player::{Block, Pos};
 
 struct Cave;
@@ -83,6 +83,15 @@ fn warden_of(world: &EntityWorld, id: u64) -> &FamilyMob<Warden> {
 
 fn sounds_of(world: &mut EntityWorld) -> Vec<String> {
     world.take_sounds().into_iter().map(|s| s.event).collect()
+}
+
+fn fighting(world: &mut EntityWorld, id: u64, target: Target) {
+    let mob = world.warden_mut(id).unwrap();
+    mob.state.anger.increase(target, 0, 100);
+    set_attack_target(mob, target);
+    mob.state.brain.update_activity();
+    mob.state.brain.started = true;
+    mob.state.brain.scan = 1;
 }
 
 #[test]
@@ -451,4 +460,213 @@ fn a_silverfish_and_a_warden_post_their_steps_and_swims() {
         assert!(events.contains(&"minecraft:step"), "{mob}: {events:?}");
         assert!(events.contains(&"minecraft:swim"), "{mob}: {events:?}");
     }
+}
+
+#[test]
+fn an_angry_warden_roars_eighty_four_ticks_then_attacks() {
+    let mut world = EntityWorld::default();
+    let id = calm_at(&mut world, at(0.5, 0.5));
+    let players = [player_at(1, at(8.5, 0.5))];
+    let mob = world.warden_mut(id).unwrap();
+    mob.state.anger.increase(Target::Player(1), 0, 90);
+    let mut roaring = Vec::new();
+    let mut roared = Vec::new();
+    let mut angered = None;
+    for tick in 0..120 {
+        world.tick_with_players(&mut Cave, &players);
+        let heard = world.take_sounds();
+        if let Some(roar) = heard.iter().find(|s| s.event == "entity.warden.roar") {
+            assert_eq!((roar.volume, roar.pitch), (3.0, 1.0));
+            roared.push(tick);
+        }
+        let state = &warden_of(&world, id).state;
+        if state.pose == Pose::Roaring {
+            if roaring.is_empty() {
+                angered = Some(state.anger.anger_of(Target::Player(1)));
+                assert_eq!(state.activity(), Activity::Roar);
+            }
+            roaring.push(tick);
+        }
+        if state.memories().attack_target.present() {
+            break;
+        }
+    }
+    assert_eq!(
+        roaring.len(),
+        85,
+        "the roar runs from its start through its 84th tick"
+    );
+    assert_eq!(angered, Some(110), "roaring adds 20 anger");
+    assert_eq!(
+        roared,
+        vec![roaring[0] + 26],
+        "one roar once its 25-tick delay is over"
+    );
+    let state = &warden_of(&world, id).state;
+    assert_eq!(state.pose, Pose::Standing);
+    assert_eq!(
+        state.memories().attack_target.get(),
+        Some(&Target::Player(1))
+    );
+    assert!(!state.memories().roar_target.present());
+    assert_eq!(
+        state.memories().sonic_boom_cooldown.ttl(),
+        Some(MELEE_UNTIL_SONIC_BOOM),
+        "it fights in melee for ten seconds before its first boom"
+    );
+    world.tick_with_players(&mut Cave, &players);
+    assert_eq!(warden_of(&world, id).state.activity(), Activity::Fight);
+}
+
+#[test]
+fn its_melee_hits_thirty_and_disables_a_shield_for_five_seconds() {
+    let mut world = EntityWorld::default();
+    let id = calm_at(&mut world, at(0.5, 0.5));
+    let players = [player_at(1, at(1.5, 0.5))];
+    fighting(&mut world, id, Target::Player(1));
+    world.tick_with_players(&mut Cave, &players);
+    let hits = world.take_player_hits();
+    assert_eq!(hits.len(), 1, "it swings at once");
+    let mob = warden_of(&world, id);
+    assert_eq!(
+        (hits[0].player_id, hits[0].damage, hits[0].source),
+        (1, 30.0, Some(id))
+    );
+    let PlayerHitKind::Melee {
+        attacker,
+        hunger_ticks,
+        lift,
+        throw,
+        disable_shield_seconds,
+    } = hits[0].kind
+    else {
+        panic!("{:?}", hits[0].kind);
+    };
+    assert!(attacker.distance(mob.core.body.position) < 0.1);
+    assert_eq!((hunger_ticks, lift, disable_shield_seconds), (0, 0.0, 5.0));
+    assert_eq!(throw, attack_throw(mob.core.yaw));
+    assert!((throw.length() - (0.75_f64 * 0.75 + 0.4 * 0.4).sqrt()).abs() < 1.0e-6);
+    assert_eq!(
+        mob.state.memories().sonic_boom_cooldown.ttl(),
+        Some(brain::SONIC_BOOM_COOLDOWN),
+        "a swing sets the boom's cooldown to 40 even with 199 ticks left"
+    );
+    assert_eq!(world.take_entity_events(), vec![(id, ATTACK_EVENT)]);
+    let sounds = world.take_sounds();
+    let impact = sounds
+        .iter()
+        .find(|s| s.event == "entity.warden.attack_impact")
+        .expect("the impact is heard");
+    assert_eq!(impact.volume, 10.0);
+    let mut next = None;
+    for tick in 1..40 {
+        world.tick_with_players(&mut Cave, &players);
+        if !world.take_player_hits().is_empty() {
+            next = Some(tick);
+            break;
+        }
+    }
+    assert_eq!(next, Some(19), "18 ticks of cooling down between swings");
+}
+
+#[test]
+fn a_hit_angers_it_by_a_hundred_and_only_a_close_or_direct_one_starts_the_fight() {
+    let mut world = EntityWorld::default();
+    let players = [
+        player_at(1, at(2.5, 0.5)),
+        player_at(2, at(12.5, 20.5)),
+        player_at(3, at(20.5, 40.5)),
+    ];
+    let sword_hit = calm_at(&mut world, at(0.5, 0.5));
+    assert!(world.player_attack(&sword(1, at(2.5, 0.5)), sword_hit).hurt);
+    let arrow_hit = calm_at(&mut world, at(0.5, 20.5));
+    let arrow = ProjectileHit {
+        amount: 6.0,
+        kind: "minecraft:arrow",
+        player: 2,
+        velocity: DVec3::new(-2.0, 0.0, 0.0),
+    };
+    assert!(
+        world
+            .player_projectile_hurt(arrow_hit, arrow)
+            .unwrap()
+            .applied
+    );
+    let bullet_hit = calm_at(&mut world, at(0.5, 40.5));
+    assert!(
+        world
+            .player_attack(&sword(3, at(20.5, 40.5)), bullet_hit)
+            .hurt
+    );
+    let bitten = calm_at(&mut world, at(0.5, 60.5));
+    let cow = world.spawn_cow(Cow::new(at(8.5, 60.5)), true);
+    let bite = Hurt::new(4.0, "minecraft:mob_attack", DamageSourceKind::MobAttack)
+        .by(Some(Target::Mob(cow)), Some("minecraft:cow"));
+    assert!(world.hurt_family(bitten, &bite).unwrap().applied);
+    world.tick_with_players(&mut Cave, &players);
+    for (id, by, fights) in [
+        (sword_hit, Target::Player(1), true),
+        (arrow_hit, Target::Player(2), false),
+        (bullet_hit, Target::Player(3), false),
+        (bitten, Target::Mob(cow), true),
+    ] {
+        let state = &warden_of(&world, id).state;
+        assert_eq!(state.anger.anger_of(by), 100, "{by:?}");
+        assert_eq!(state.anger_level(), AngerLevel::Angry, "{by:?}");
+        let target = state.memories().attack_target.get().copied();
+        assert_eq!(target, fights.then_some(by), "{by:?}");
+        assert_eq!(
+            state.memories().roar_target.get().copied(),
+            (!fights).then_some(by),
+            "{by:?}: a far shot makes it roar first"
+        );
+        if fights {
+            assert_eq!(
+                state.memories().sonic_boom_cooldown.ttl(),
+                Some(MELEE_UNTIL_SONIC_BOOM - 1),
+                "{by:?}"
+            );
+        }
+    }
+    let buried = world.spawn_emerging_warden(at(0.5, 80.5), 0.0);
+    world.tick_with_players(&mut Cave, &players);
+    let void = Hurt::new(1.0, "minecraft:out_of_world", DamageSourceKind::Generic)
+        .by(Some(Target::Player(1)), Some("minecraft:player"));
+    assert!(world.hurt_family(buried, &void).unwrap().applied);
+    world.tick_with_players(&mut Cave, &players);
+    assert_eq!(
+        warden_of(&world, buried)
+            .state
+            .anger
+            .anger_of(Target::Player(1)),
+        0,
+        "nothing angers it while it climbs out"
+    );
+}
+
+#[test]
+fn an_angry_warden_roars_at_a_cow_and_beats_it_to_death() {
+    let mut world = EntityWorld::default();
+    world.set_mob_drops(true);
+    let id = calm_at(&mut world, at(0.5, 0.5));
+    let cow = world.spawn_cow(Cow::new(at(4.5, 0.5)), true);
+    world
+        .warden_mut(id)
+        .unwrap()
+        .state
+        .anger
+        .increase(Target::Mob(cow), 0, 90);
+    let mut roared = false;
+    let mut died = None;
+    for tick in 0..400 {
+        world.tick_with_players(&mut Cave, &[]);
+        roared |= warden_of(&world, id).state.pose == Pose::Roaring;
+        if world.take_deaths().iter().any(|death| death.id == cow) {
+            died = Some(tick);
+            break;
+        }
+    }
+    assert!(roared, "it roars at the cow first");
+    let died = died.expect("one swing of 30 kills a cow");
+    assert!((86..150).contains(&died), "{died}");
 }
