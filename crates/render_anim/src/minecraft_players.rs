@@ -381,6 +381,9 @@ pub(crate) fn movement(
                     p == "snow" || p.ends_with("_carpet") || p == "moss_carpet"
                 });
                 let (pos, block) = inside.as_ref().map_or((*pos, block), |(p, b)| (*p, b));
+                if let Some(entities) = entities.as_mut().filter(|_| sounding) {
+                    entities.game_event(u64::from(client.0), minecraft_terrain::game_events::STEP, feet, Some(block.id.key()));
+                }
                 if sounding
                     && let (Some(sounds), Some(kind)) =
                         (sounds.as_mut(), terrain.scene.sound_type(block))
@@ -392,6 +395,14 @@ pub(crate) fn movement(
                         kind.volume * 0.15,
                         kind.pitch,
                     );
+                }
+            }
+        } else if water.wet() && horizontal < 2.0 && !skate.active {
+            steps.move_dist += horizontal;
+            if steps.move_dist > steps.next_step && under.is_some() {
+                steps.next_step = steps.move_dist as i32 as f32 + 1.0;
+                if let Some(entities) = entities.as_mut() {
+                    entities.game_event(u64::from(client.0), minecraft_terrain::game_events::SWIM, feet, None);
                 }
             }
         }
@@ -415,6 +426,9 @@ pub(crate) fn movement(
                 feet[1],
             );
             if let Some(peak) = steps.air_peak.take().filter(|_| !caught && !on_wall) {
+                if let Some(entities) = entities.as_mut().filter(|_| peak > feet[1]) {
+                    entities.game_event(u64::from(client.0), minecraft_terrain::game_events::HIT_GROUND, feet, under.as_ref().map(|(_, b)| b.id.key()));
+                }
                 let fall = survival.impulse_fall(peak - feet[1], feet[1]);
                 let landed_on = under.as_ref().map(|(_, b)| b.id.key());
                 let crouching = !skate.active

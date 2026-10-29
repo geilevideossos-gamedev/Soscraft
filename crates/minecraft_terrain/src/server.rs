@@ -1951,7 +1951,24 @@ impl ServerSim {
     }
 
     pub fn throw(&mut self, thrown: crate::thrown::Thrown) {
+        self.level.game_event_from(crate::game_events::PROJECTILE_SHOOT, thrown.position().to_array(), Some(Self::thrower(&thrown)), None);
         self.thrown.push(thrown);
+    }
+
+    fn thrower(thrown: &crate::thrown::Thrown) -> minecraftoss_world::level::game_event::EventSource {
+        use minecraftoss_world::level::game_event::EventSource;
+        thrown.shooter.map_or(EventSource::Player(thrown.owner), EventSource::Mob)
+    }
+
+    fn projectile_landed(&mut self, at: glam::DVec3, block: Option<BlockPos>, owner: minecraftoss_world::level::game_event::EventSource) {
+        match block {
+            Some((x, y, z)) => {
+                let pos = minecraftoss_core::BlockPos::new(x, y, z);
+                let state = self.level.block(pos);
+                self.level.projectile_game_event(crate::game_events::PROJECTILE_LAND, minecraftoss_world::level::game_event::centre(pos), Some(owner), Some(state));
+            }
+            None => self.level.projectile_game_event(crate::game_events::PROJECTILE_LAND, at.to_array(), Some(owner), None),
+        }
     }
 
     pub fn tick_clouds(&mut self, players: &[crate::thrown::PlayerBody]) {
@@ -2013,7 +2030,15 @@ impl ServerSim {
         }
         trident.id = self.next_trident;
         self.next_trident = self.next_trident.wrapping_add(1).max(TRIDENT_IDS);
+        if !trident.in_ground {
+            self.level.game_event_from(crate::game_events::PROJECTILE_SHOOT, trident.position.to_array(), Some(Self::trident_thrower(&trident)), None);
+        }
         self.tridents.push(trident);
+    }
+
+    fn trident_thrower(trident: &crate::trident::ThrownTrident) -> minecraftoss_world::level::game_event::EventSource {
+        use minecraftoss_world::level::game_event::EventSource;
+        trident.mob_owner.map_or(EventSource::Player(trident.owner), EventSource::Mob)
     }
 
     pub fn trident_views(&self) -> Vec<crate::trident::TridentView> {
@@ -2091,11 +2116,18 @@ impl ServerSim {
                 thrower.owner = true;
                 Some(crate::trident::TridentOwner { eye: (thrower.min + thrower.max) / 2.0, alive: true, spectator: false, bounds: (thrower.min, thrower.max) })
             });
+            let flying = !trident.in_ground;
             let events = {
                 let Self { level, states, mob_tables, .. } = self;
                 let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
                 trident.tick(&world, &targets, owner)
             };
+            if events.iter().any(|event| matches!(event, TridentEvent::Struck { .. })) {
+                self.projectile_landed(trident.position, None, Self::trident_thrower(trident));
+            } else if flying && trident.in_ground {
+                let ahead = trident.position + (trident.position - trident.previous).normalize_or_zero() * 0.1;
+                self.projectile_landed(trident.position, Some(crate::vibrations::block_of(ahead)), Self::trident_thrower(trident));
+            }
             for event in events {
                 match event {
                     TridentEvent::Struck { target, .. } if crate::item_frame::struck_frame(target).is_some() => {
@@ -2249,6 +2281,7 @@ impl ServerSim {
         let mut lingering = Vec::new();
         let mut bursts = Vec::new();
         let mut aged = Vec::new();
+        let mut landings = Vec::new();
         {
             let Self { level, states, mob_tables, thrown, pearl_landings, potion_breaks, thrown_hits, gateways, pearl_gateways, .. } = self;
             let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
@@ -2281,6 +2314,7 @@ impl ServerSim {
                     }
                 }
                 let Some(landed) = landed else { continue };
+                landings.push((landed.at, landed.block.filter(|_| landed.mob.is_none()), Self::thrower(t)));
                 let hurts = matches!(t.kind, Throwable::Snowball | Throwable::Egg | Throwable::EnderPearl);
                 let frame = landed.mob.and_then(crate::item_frame::struck_frame);
                 frame_hits.extend(frame.filter(|_| hurts || t.kind == Throwable::WindCharge));
@@ -2342,6 +2376,9 @@ impl ServerSim {
         }
         for (pos, age) in aged {
             crate::end_gateway::write_age(&mut self.level, pos, age);
+        }
+        for (at, block, owner) in landings {
+            self.projectile_landed(at, block, owner);
         }
         for id in frame_hits {
             self.frame_action(id, crate::item_frame::FrameAction::Shot { infinite: false });
@@ -2430,6 +2467,9 @@ impl ServerSim {
             .zip(broken.iter().map(|(_, how)| *how))
             .filter(|(_, how)| *how != HowBroken::Blasted)
             .collect();
+        for ((pos, old), _) in &destroyed {
+            self.level.block_game_event(crate::game_events::BLOCK_DESTROY, *pos, Some(*old));
+        }
         destroyed.sort_by_key(|((pos, _), _)| pos.y);
         for ((pos, old), how) in destroyed {
             self.level.ice_player_destroyed(pos, old, how == HowBroken::SilkTouched);
@@ -11715,6 +11755,58 @@ mod tests {
         sim.level.game_event(crate::game_events::EXPLODE, [walker[0], 200.5, walker[2]], None);
         run_ticks(&mut sim, &mut input, true, 13);
         assert_eq!(sensor_phase(&sim), "active", "an explosion is frequency 15, heard twelve blocks away");
+    }
+
+    fn last_frequency(sim: &ServerSim) -> Option<i64> {
+        sim.command_block_entity(SENSOR).and_then(|tag| tag.get(minecraftoss_world::level::sculk::LAST_FREQUENCY)).and_then(minecraftoss_core::nbt::Tag::as_i64)
+    }
+
+    #[test]
+    fn mining_beside_a_sensor_is_heard_but_a_blasted_block_is_no_destroy() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        place(&mut sim, &mut scene, (11, 200, 8), Block::new("minecraft:stone"));
+        place(&mut sim, &mut scene, (8, 200, 11), Block::new("minecraft:stone"));
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.acting(Some(0), |sim| sim.player_mines(&[((8, 200, 11), HowBroken::Blasted)]));
+        run_ticks(&mut sim, &mut input, true, 5);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        sim.acting(Some(0), |sim| sim.player_mines(&[((11, 200, 8), HowBroken::Mined)]));
+        run_ticks(&mut sim, &mut input, true, 4);
+        assert_eq!(sensor_phase(&sim), "active");
+        assert_eq!(last_frequency(&sim), Some(12));
+    }
+
+    fn snowball_down(eye: [f64; 3], seed: u64) -> crate::thrown::Thrown {
+        let throw = crate::thrown::Throw { owner: 0, item: "minecraft:snowball", components: None, eye: glam::DVec3::from_array(eye), yaw: 0.0, pitch: 90.0, motion: glam::DVec3::ZERO, on_ground: true };
+        crate::thrown::Thrown::launch(&throw, &mut minecraftoss_player::rng::LegacyRandom::new(seed)).expect("a snowball")
+    }
+
+    #[test]
+    fn a_crouched_throw_is_heard_only_where_it_lands() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([15.5, 200.0, 8.5]);
+        input.controls = vec![minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }];
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.throw(snowball_down([11.5, 203.0, 8.5], 3));
+        run_ticks(&mut sim, &mut input, true, 20);
+        assert_eq!(last_frequency(&sim), Some(2), "only the landing");
+        run_ticks(&mut sim, &mut input, true, 40);
+        assert_eq!(sensor_phase(&sim), "inactive");
+        input.controls.clear();
+        sim.throw(snowball_down([11.5, 203.0, 8.5], 4));
+        run_ticks(&mut sim, &mut input, true, 20);
+        assert_eq!(last_frequency(&sim), Some(3), "standing up, the throw itself is heard first");
+    }
+
+    #[test]
+    fn an_mw2_blast_near_a_sensor_is_an_explosion() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.weapon_blast([12.5, 200.5, 8.5], 1.0);
+        run_ticks(&mut sim, &mut input, true, 6);
+        assert_eq!(last_frequency(&sim), Some(15));
     }
 
     #[test]

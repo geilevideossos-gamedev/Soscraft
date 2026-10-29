@@ -3255,6 +3255,7 @@ impl EntityWorld {
     }
 
     fn spawn_arrow(&mut self, owner_id: u64, arrow: Arrow) -> u64 {
+        self.game_event("minecraft:projectile_shoot", arrow.position, Some(owner_id), None);
         self.next_id += 1;
         let id = self.next_id;
         self.arrows.push(ArrowEntity {
@@ -6745,6 +6746,7 @@ impl EntityWorld {
                     // `entity.arrow.hit`, from the arrow (`SoundSource.NEUTRAL`).
                     if let Some((event, (position, pitch))) = self.arrows.iter_mut().find(|entity| entity.id == id).and_then(|entity| Some((entity.hit_sound, entity.arrow.take_hit_sound()?))) {
                         self.sounds.push(MobSound { event: event.to_owned(), position, volume: 1.0, pitch, category: "friendly_volume" });
+                        self.arrow_landed(id, owner_id, position);
                     }
                     continue;
                 }
@@ -8692,6 +8694,37 @@ mod tests {
             (pos.1 < 1).then(|| minecraftoss_player::Block::new("minecraft:stone"))
         }
         fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    #[test]
+    fn a_mob_posts_its_landing_and_steps_and_an_arrow_its_shot_and_landing() {
+        let mut world = EntityWorld::default();
+        let zombie = world.spawn_zombie_active(Zombie::new(DVec3::new(0.5, 3.0, 0.5)), 0.0);
+        let player = candidate(7, DVec3::new(0.5, 1.0, 12.5));
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            world.tick_with_players(&mut Floor, &[player]);
+            events.extend(world.take_game_events());
+        }
+        let posted = |event: &str| events.iter().filter(|e| e.event == event && e.mob == Some(zombie)).count();
+        assert!(posted("minecraft:hit_ground") >= 1, "{events:?}");
+        assert!(posted("minecraft:step") >= 2, "{events:?}");
+        assert!(events.iter().filter(|e| e.event == "minecraft:step").all(|e| e.affected.as_deref() == Some("minecraft:stone")));
+        let archer = world.spawn_skeleton(Skeleton::new(DVec3::new(20.5, 1.0, 0.5)), true);
+        world.take_game_events();
+        world.spawn_owned_arrow(archer, Arrow::in_flight(DVec3::new(20.5, 3.0, 4.5), DVec3::new(0.0, -0.6, 0.0), LegacyRandom::new(0)));
+        let shot = world.take_game_events();
+        assert_eq!(shot.len(), 1);
+        assert_eq!((shot[0].event, shot[0].mob, shot[0].pos), ("minecraft:projectile_shoot", Some(archer), DVec3::new(20.5, 3.0, 4.5)));
+        let mut landed = Vec::new();
+        for _ in 0..20 {
+            world.tick(&mut Floor);
+            landed.extend(world.take_game_events().into_iter().filter(|e| e.event == "minecraft:projectile_land"));
+        }
+        assert_eq!(landed.len(), 1);
+        assert_eq!((landed[0].owner, landed[0].mob), (Some(archer), None));
+        assert_eq!(landed[0].pos, DVec3::new(20.5, 0.5, 4.5), "the centre of the block it struck");
+        assert_eq!(landed[0].affected.as_deref(), Some("minecraft:stone"));
     }
 
     fn zombified_piglin(x: f64) -> Zombie {

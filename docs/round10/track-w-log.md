@@ -157,6 +157,48 @@ After 21c929e1 ("Minecraft game events reach their listeners like vanilla").
 - **Vendored files:** added `world/src/level/sculk.rs`; patched `world/src/level/redstone.rs` and `world/src/level/entity.rs` (and `mod.rs` again, `entities/src/world/game_events.rs` again).
 - **Test steps:** with commit 3.
 
+### 3. Players, mobs, blocks and explosions make Minecraft vibrations
+
+After 6dcdeb25 ("Minecraft sculk sensors hear vibrations and power redstone").
+
+- **Vanilla (javap on the 26.3 jar):**
+  - `Entity.applyMovementEmissionAndPlaySound` and `vibrationAndSoundEffectsFromBlock`: a step that sounds from the block at the feet posts `step` with that block as the affected state when it is also the supporting block; otherwise the supporting block posts it (no sound); a move over the next step in water that made no step posts `swim`. `doWaterSplashEffect` posts `splash`. `checkFallDamage`: landing with a fall distance above 0 posts `hit_ground` at the position, the affected state the main supporting block.
+  - `BlockItem.place` posts `block_place` at the placed block (source the player, affected the placed state); `Block.playerWillDestroy` posts `block_destroy` (affected the old state); blocks an explosion removes post nothing of their own.
+  - `Projectile.tick`: on its first tick `projectile_shoot` at the projectile with the owner as source. `Projectile.onHit`: `projectile_land` from the projectile (its owner travels with it as the projectile owner) at the hit location for an entity, or at the centre of the struck block with that block's state for a block.
+  - `ServerExplosion.explode` posts `explode` at the centre from the explosion's source entity before anything else.
+- **Changed:**
+  - Players (host and friends; `render_anim/src/minecraft_players.rs` `movement`): a sounding step posts `step` at the feet with the block it sounds from (a carpet or snow layer on top is that block, so carpets dampen), a move over the next step in water that is no step posts `swim`, and a landing from above posts `hit_ground` with the block landed on. Sneaking comes from the MW2 crouch and prone flags through the tick's controls (commit 1).
+  - A placed block posts `block_place` where the survival side places it (`actions.rs`); `ServerSim::player_mines` posts `block_destroy` for each mined block (not for the ones an explosion took) with the acting player.
+  - Mobs (`entities/src/movement.rs`): the body keeps the step, swim, splash and landing events of its moves (`Body.game_events`), which `EntityWorld::take_game_events` hands over with the mob's id every tick.
+  - Projectiles: thrown items and tridents post `projectile_shoot` when thrown (by a player or a mob) and `projectile_land` where they hit; arrows of the entity world post `projectile_shoot` when spawned and `projectile_land` with their owner where they hit (`EntityWorld::arrow_landed`, `Arrow::impact_state`). A mob or player id behind an entity world event becomes a mob or a player source.
+  - Explosions: `Level::explode_from` posts `explode` from its source entity (TNT, creepers, beds, anchors, crystals, MW2 blasts through `weapon_blast`).
+- **Tests:**
+  - `server::tests::mining_beside_a_sensor_is_heard_but_a_blasted_block_is_no_destroy` (frequency 12), `a_crouched_throw_is_heard_only_where_it_lands` (2; standing, the throw first: 3), `an_mw2_blast_near_a_sensor_is_an_explosion` (15).
+  - `world::tests::a_mob_posts_its_landing_and_steps_and_an_arrow_its_shot_and_landing` (vendored entities: a zombie's fall and its steps on stone; a skeleton's arrow's shot and its landing at the centre of the stone it struck).
+- **Decisions:**
+  - A thrown item's or trident's `projectile_shoot` is posted when it is thrown, at the game time before the tick in which vanilla posts it on the projectile's first tick.
+  - A trident that sticks in the ground lands on the block just ahead of where it stopped (the fork's trident keeps no struck block); one that strikes a mob lands at its position.
+  - An arrow lands when it plays its hit sound: on a block, or on a mob or player that took the hit. A hit turned away (a creative player) posts no landing, unlike vanilla.
+  - Mobs post `hit_ground` too (vanilla does: every landing with a fall above 0), not only the step, swim and splash the brief named.
+  - `EMITS_SOUNDS` (D0, not merged into this branch yet): the step and swim game events are pushed by `Body::movement_emission` itself, not by the sounds `play_movement` makes from `Body.emission`, so a family whose movement sounds D0's `Family::emits_sounds` drops still posts them. To check at the D0 merge: every family's body is reached by `EntityWorld::body_mut`, which `take_game_events` drains (today every family with a body is).
+- **Vendored files:** patched `entities/src/movement.rs`, `entities/src/projectile.rs`, `entities/src/world.rs`, `entities/src/world/game_events.rs` and `world/src/level/explosion.rs`.
+- **Left for later (W3, "every other source"):** the other projectiles (witch potions of the entity world, fireballs, shulker bullets, llama spit, firework rockets), `entity_damage` from a mob hit, and every block, item and entity source of W3. The fork has no player bows, so the brief's "shoot an arrow" step throws a trident instead.
+- **Test steps (survival; build on stone, away from other noise; commits 1 to 3):** wait 2 s between actions: a sensor is busy 30 ticks and cools down 10 more, and hears nothing in that time.
+  1. Place a sculk sensor with a redstone lamp next to it. Walk around 4 blocks away: a ripple flies from your feet to the sensor, its tendrils click, the lamp lights for a second and a half, then the sensor rests for half a second. **w04_sensor_lamp**
+  2. Crouch and walk (MW2 crouch or prone): nothing. Crouch and place a block 3 blocks away: it triggers (placing is never quiet). Stand on the sensor: it fires again every 2 s, crouched too.
+  3. Put a comparator out of the sensor into a straight line of 15 redstone dust: the number of lit dust blocks is the frequency. Walking lights 1; jumping in place 4 blocks away lights 2 (the landing); mining a block nearby lights 12; placing one lights 13. **w05_sensor_comparator**
+  4. Build a closed shell of white wool around the sensor (all sides): walking outside does nothing. Open one side: it triggers again. Walk on white carpet next to it: nothing. Place or break wool next to it: nothing.
+  5. Stand 12 blocks from the sensor, crouch (so the throw itself is not heard) and throw a snowball so it lands 5 blocks from the sensor: it triggers and the line lights 2. Thrown standing up from 5 blocks away, the throw is heard first and the line lights 3. Crouch and throw the trident into the ground 4 blocks from it: it triggers (2).
+  6. Put TNT 7 blocks from the sensor with a cobblestone wall between them (stone does not block vibrations, only wool does), light it and step back: the blast 4 s later triggers it and the line lights 15 (lighting it is heard from W3 on). An MW2 grenade near it lights 15 too.
+  7. A cow from its egg wandering near the sensor triggers it with its steps (1); one that walks onto it fires it at 15.
+  8. Place a calibrated sculk sensor; the face that looked at you as you placed it is its back. Lay 15 redstone dust from a lever so the last dust ends against that back face (that dust carries strength 1) and flip the lever on: only steps (frequency 1) trigger it, walking 12 blocks away still reaches it (radius 16), and mining a block beside it does not (12).
+  9. Save and quit while a ripple is in flight, load: the sensor still receives it.
+  10. Friend window: the friend's steps trigger the sensor and the host's lamp lights; both see the same ripple. The friend crouching makes no ripple. **w06_friend_sensor**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*16,minecraft:calibrated_sculk_sensor*4,minecraft:redstone_lamp*8,minecraft:redstone*64,minecraft:comparator*4,minecraft:repeater*4,minecraft:lever*4,minecraft:white_wool*64,minecraft:white_carpet*32,minecraft:snowball*16,minecraft:trident,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:cow_spawn_egg*4,minecraft:stone*64,minecraft:cobblestone*64,minecraft:cooked_beef*16
+```
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -164,6 +206,8 @@ Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecr
 Group vibrations, commit 1: no message or codec change (`TickInput` and the commands stay on the host).
 
 Group vibrations, commit 2: `EntitySnapshot` (sent to friends inside `ToClient::Bursts` and the state frames) gains `vibrations: Vec<VibrationView>`. The snapshot is serde-encoded, so a friend on an older build cannot read the new one: `minecraft_net::PROTOCOL` must go up at the release (not bumped here).
+
+Group vibrations, commit 3: no message or codec change.
 
 ## State doc changes
 

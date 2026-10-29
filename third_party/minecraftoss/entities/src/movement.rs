@@ -76,6 +76,7 @@ pub struct Body {
     pub step_after: Option<f32>,
     pub levitation: Option<u8>,
     pub slow_falling: bool,
+    pub game_events: Vec<(&'static str, DVec3, Option<String>)>,
 }
 
 impl Body {
@@ -111,6 +112,7 @@ impl Body {
             step_after: None,
             levitation: None,
             slow_falling: false,
+            game_events: Vec::new(),
         }
     }
 
@@ -129,6 +131,7 @@ impl Body {
             self.fall_distance = 0.0;
             if !self.touching_water && !first_tick {
                 self.splash = Some((motion_speed(self.velocity) * 0.2).min(1.0));
+                self.game_events.push(("minecraft:splash", self.position, None));
             }
         }
         self.touching_water = frame.in_water();
@@ -179,6 +182,13 @@ impl Body {
         self.on_ground_no_blocks = found.is_none();
     }
 
+    fn hit_ground(&mut self, world: &impl World, fall: f64) {
+        if fall > 0.0 {
+            let block = self.supporting_block.and_then(|pos| world.block(pos)).map(|block| block.id);
+            self.game_events.push(("minecraft:hit_ground", self.position, block));
+        }
+    }
+
     /// `Entity.applyMovementEmissionAndPlaySound`: the walked distance grows
     /// by 0.6 of the move (horizontally, or all of it on a climbable block),
     /// and once it passes the next step over a block that isn't air, the
@@ -200,8 +210,13 @@ impl Body {
         // rides rails.
         let stands_on = |block: Option<&Block>| !is_air(block) && (self.on_ground || climbable(block)) && !self.swimming;
         let sounds = stands_on(effect.as_ref());
+        let vibrating = if supporting_pos == effect_pos { effect.as_ref().filter(|_| sounds) } else { supporting.as_ref().filter(|&block| stands_on(Some(block))) };
+        let vibrating = vibrating.map(|block| block.id.clone());
         if sounds || supporting_pos != effect_pos && stands_on(supporting.as_ref()) {
             self.next_step = self.next_step_from_here();
+            if let Some(block) = vibrating {
+                self.game_events.push(("minecraft:step", self.position, Some(block)));
+            }
             if !sounds {
                 return None;
             }
@@ -213,6 +228,7 @@ impl Body {
             return None;
         }
         self.next_step = self.next_step_from_here();
+        self.game_events.push(("minecraft:swim", self.position, None));
         // `waterSwimSound` for a mob nothing rides.
         Some(Emission::Swim((motion_speed(self.velocity) * 0.35).min(1.0)))
     }
@@ -415,6 +431,7 @@ impl Body {
             self.fall_distance -= displacement.y as f32 as f64;
         }
         if self.on_ground {
+            self.hit_ground(world, self.fall_distance);
             self.fall_distance = 0.0;
         }
         self.restitute(world, requested, displacement);
@@ -583,6 +600,7 @@ impl Body {
         }
         let landed = if self.on_ground {
             let distance = self.fall_distance;
+            self.hit_ground(world, distance);
             self.fall_distance = 0.0;
             Some(distance)
         } else {

@@ -1497,6 +1497,7 @@ pub fn act(
                         .retain(|(_, _, at)| now - at < RECENT_PLACE_SECONDS);
                     let written: Vec<_> = writes.iter().map(|(p, _)| *p).collect();
                     body.write_blocks(terrain, entities, writes);
+                    entities.game_event(player_id, minecraft_terrain::game_events::BLOCK_PLACE, [pos.0 as f64 + 0.5, pos.1 as f64 + 0.5, pos.2 as f64 + 0.5], Scene::block(&terrain.scene, pos).map(|block| block.id.key()));
                     if let Some(stack) = held
                         .as_ref()
                         .filter(|stack| minecraft_terrain::containers::is_shulker_box(&stack.id))

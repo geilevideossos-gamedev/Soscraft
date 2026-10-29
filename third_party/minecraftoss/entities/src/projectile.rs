@@ -264,6 +264,10 @@ impl Arrow {
         self.hit_sound.take()
     }
 
+    pub fn impact_state(&self) -> Option<&Block> {
+        self.impact_state.as_ref()
+    }
+
     fn should_fall(&self, world: &impl World) -> bool {
         let low = self.position - DVec3::splat(0.06);
         let high = self.position + DVec3::splat(0.06);

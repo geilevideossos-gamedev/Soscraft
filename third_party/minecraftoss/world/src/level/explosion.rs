@@ -149,6 +149,7 @@ impl Level<'_> {
     }
 
     fn explode_from(&mut self, ex: Explosion, shield: Option<BlockPos>, dangerous: bool) -> usize {
+        self.game_event_from("minecraft:explode", ex.center, ex.source.map(super::game_event::EventSource::Entity), None);
         let mut to_blow = self.exploded_positions(&ex, shield, dangerous, false);
         self.hurt_entities(&ex);
         if ex.interaction != BlockInteraction::Keep {
