@@ -1,7 +1,7 @@
 mod ai;
 
 pub use self::ai::{GOAL_NAMES, JUMP_DURATION, RabbitGoals, RabbitJump, TARGET_NAMES};
-use self::ai::{SPEC, rabbit_ai_step};
+use self::ai::{SPEC, count_jump, rabbit_ai_step};
 use crate::age::Age;
 use crate::animal::{self, AnimalEvent};
 use crate::cow::InteractionResult;
@@ -504,6 +504,11 @@ impl Family for Rabbit {
                 .and_then(|mob| mob.state.goals_mut().animal.breed_with.take());
             if let Some(partner) = partner {
                 breed(world, id, partner, &*level);
+            }
+        } else if let Some(mob) = world.family_mob_mut::<Self>(id) {
+            let ai = &mut *mob.state.ai;
+            if let Some(goals) = ai.state.extra.get_mut::<RabbitGoals>() {
+                count_jump(&mut goals.jump, &mut ai.jumping);
             }
         }
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);

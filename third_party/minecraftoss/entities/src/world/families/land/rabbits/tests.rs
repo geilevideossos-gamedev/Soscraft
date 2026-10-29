@@ -1284,3 +1284,46 @@ fn the_tilt_waits_180_to_219_ticks_stops_on_a_hop_and_never_runs_on_a_lead() {
         "off the lead it tilts at once"
     );
 }
+
+#[test]
+fn a_dying_or_still_rabbit_ends_its_hop_with_its_jump() {
+    let mut world = EntityWorld::default();
+    let mut meadow = Meadow::default();
+    let dying = rabbit_at(&mut world, at(0.5, 0.5));
+    let still = rabbit_at(&mut world, at(0.5, 6.5));
+    for id in [dying, still] {
+        rabbit_mut(&mut world, id).state.ai.retain_goals(&[]);
+    }
+    for _ in 0..30 {
+        world.tick(&mut meadow);
+    }
+    rabbit_mut(&mut world, still).core.no_ai = true;
+    for id in [dying, still] {
+        let mob = rabbit_mut(&mut world, id);
+        let jump = mob.state.jump();
+        mob.state.goals_mut().jump = RabbitJump {
+            ticks: 4,
+            duration: ai::JUMP_DURATION,
+            ..jump
+        };
+        mob.state.ai.jumping = true;
+    }
+    let blow = Hurt::new(10.0, "minecraft:mob_attack", DamageSourceKind::MobAttack);
+    assert!(world.hurt_family(dying, &blow).unwrap().died);
+    for tick in 1..=12 {
+        world.tick(&mut meadow);
+        for id in [dying, still] {
+            let mob = rabbit(&world, id);
+            assert!(mob.state.animations.hop.is_some(), "tick {tick}");
+            assert_eq!(mob.state.jump().ticks, (4 + tick) % 16, "tick {tick}");
+        }
+    }
+    world.tick(&mut meadow);
+    for id in [dying, still] {
+        let mob = rabbit(&world, id);
+        assert_eq!(mob.state.jump().duration, 0);
+        assert!(!mob.state.ai.jumping);
+        assert_eq!(mob.state.animations.hop, None, "the hop ends with the jump");
+    }
+    assert!(!rabbit(&world, dying).core.alive());
+}

@@ -688,16 +688,20 @@ pub(super) fn rabbit_ai_step<W: World>(
         previous_position,
         body.position,
     );
-    if jump.ticks != jump.duration {
-        jump.ticks += 1;
-    } else if jump.duration != 0 {
-        jump.ticks = 0;
-        jump.duration = 0;
-        ai.jumping = false;
-    }
+    count_jump(&mut jump, &mut ai.jumping);
     if let Some(goals) = ai.state.extra.get_mut::<RabbitGoals>() {
         goals.jump = jump;
         goals.more_carrot_ticks = carrots;
     }
     landed
+}
+
+pub(super) fn count_jump(jump: &mut RabbitJump, jumping: &mut bool) {
+    if jump.ticks != jump.duration {
+        jump.ticks += 1;
+    } else if jump.duration != 0 {
+        jump.ticks = 0;
+        jump.duration = 0;
+        *jumping = false;
+    }
 }

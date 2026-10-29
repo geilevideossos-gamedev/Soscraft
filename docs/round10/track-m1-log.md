@@ -21,6 +21,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched (polar-bears-live 3): `world/src/natural_spawner/families.rs` (`generation_rule`), `world/src/natural_spawner.rs` (its one call in `spawn_for_chunk_generation`), `world/src/natural_spawner/families/tests.rs` (its test).
 - Changed again (polar-bears-live 4): `world/src/natural_spawner/families/land.rs` (the polar bear row, `polar_bear_rule` and their tests).
 - polar-bears-drawn: no vendored file (game code only).
+- Changed again, no new file (review fix 1): `entities/src/world/families/land/rabbits.rs` (the jump clock while the step does not run), `entities/src/world/families/land/rabbits/ai.rs` (`count_jump`), `entities/src/world/families/land/rabbits/tests.rs` (its test).
 
 ## Hooks
 
@@ -529,4 +530,25 @@ Row 22 of `docs/round10/mobs.md` is now `done`. The owner can test the whole sec
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:polar_bear_spawn_egg*8,minecraft:fox_spawn_egg*4,minecraft:iron_sword,minecraft:flint_and_steel,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:cooked_beef*32,minecraft:spawner,minecraft:lead*4,minecraft:golden_dandelion*4,minecraft:grass_block*64,minecraft:ice*32,minecraft:snow_block*32,minecraft:torch*64
+```
+
+### Review fixes
+
+#### 1. Dying Minecraft rabbits stop hopping when their jump ends
+
+After 1c672729.
+
+- **Defect:** the rabbit's jump clock (`jumpTicks` and `jumpDuration`) only counted inside `rabbit_ai_step`, which the tick skips for a dying rabbit and for one without AI. A rabbit killed mid-hop (a fleeing rabbit almost always is) kept its clock at the tick it died, so `RabbitAnimations` kept the hop started and the hop keyframes looped through the whole death, for the host and every friend. In vanilla `Rabbit.aiStep` counts the clock after `LivingEntity.aiStep` on every tick, dead or without AI (`isImmobile` and `isEffectiveAi` only skip `serverAiStep`), so the hop ends with the jump, at most 15 ticks later.
+- **javap this round:** `Rabbit.aiStep` (`super.aiStep()`, then `jumpTicks != jumpDuration` counts up, else a non-zero duration resets both and `setJumping(false)`), `LivingEntity.aiStep` (`isImmobile` clears the inputs, otherwise `serverAiStep` only with effective AI).
+- **Changed (vendored entities crate):** `land/rabbits/ai.rs`: the jump clock's count is `count_jump(jump, jumping)`, which `rabbit_ai_step` calls where it counted before. `land/rabbits.rs`: when the tick runs no AI step (dead or `NoAI`), it counts the clock with `count_jump`, at the place of the step.
+- **Tests added:** `world::families::land::rabbits::tests::a_dying_or_still_rabbit_ends_its_hop_with_its_jump` (a rabbit killed four ticks into its jump and one with `NoAI` keep the hop for the 12 ticks left of the jump while the clock counts on, then the clock is reset, `jumping` is off and the hop has ended).
+- **Docs:** row 22 of `docs/round10/mobs.md` names `1c672729` in place of the polar bears' drawing subject.
+- **Runs:** `test -p minecraftoss-entities --locked --lib rabbits` (20 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The three rabbit files still pass `rustfmt --check --edition 2021`.
+- **Test steps** (release build, survival, Normal, by day on flat grass; name each screenshot by its label):
+  1. Use the rabbit egg 8 blocks away and walk at the rabbit so it flees in quick hops. Shoot it with the bow while it is in the air. As it flashes red and tips over sideways, its legs finish the hop and then stay still; they do not keep kicking for the whole second it lies dying. **m1-fix-rabbit-death-1**
+  2. Two windows (`scripts\mp-local.ps1`): the friend kills a fleeing rabbit with the M4A1; both windows show it stop hopping as it dies. **m1-fix-rabbit-death-2-host**, **m1-fix-rabbit-death-2-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:bow,minecraft:arrow*32,minecraft:iron_sword
 ```
