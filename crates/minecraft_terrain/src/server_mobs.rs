@@ -2058,6 +2058,12 @@ pub fn level_entity_tags(level: &Level<'static>, keep: impl Fn(DVec3) -> bool) -
             map.insert("Count".into(), Tag::Int(orb.count));
             map.insert("Age".into(), Tag::Short(orb.age as i16));
             map.insert("Health".into(), Tag::Short(orb.health as i16));
+        } else if let Some(ominous) = e.ominous_data() {
+            map.insert("id".into(), Tag::String(crate::trial_spawner::OMINOUS_ITEM_SPAWNER.into()));
+            if !ominous.stack.is_empty() {
+                map.insert("item".into(), crate::trial_spawner::stack_tag(&ominous.stack));
+            }
+            map.insert("spawn_item_after_ticks".into(), Tag::Long(ominous.spawn_after));
         } else {
             continue;
         }
@@ -2095,6 +2101,14 @@ pub fn load_level_entity(level: &mut Level<'static>, tag: &Tag) -> bool {
                 data.health = int(tag, "Health").unwrap_or(5);
             }
             level.add_entity(orb);
+            true
+        }
+        Some(crate::trial_spawner::OMINOUS_ITEM_SPAWNER) => {
+            let stack = tag.get("item").and_then(crate::trial_spawner::tag_stack).unwrap_or_else(minecraftoss_core::item::ItemStack::empty);
+            let after = tag.get("spawn_item_after_ticks").and_then(Tag::as_i64).unwrap_or(0);
+            let mut spawner = minecraftoss_world::level::entity::Entity::ominous_item_spawner(pos.to_array(), stack, after);
+            spawner.delta = motion;
+            level.add_entity(spawner);
             true
         }
         _ => false,

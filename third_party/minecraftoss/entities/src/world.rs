@@ -3269,6 +3269,14 @@ impl EntityWorld {
         self.spawn_arrow(owner_id, arrow)
     }
 
+    pub fn spawn_effect_arrow(&mut self, owner_id: u64, arrow: Arrow, effect: Option<(EffectKind, u32)>) -> u64 {
+        let id = self.spawn_arrow(owner_id, arrow);
+        if let Some(entity) = self.arrows.iter_mut().find(|e| e.id == id) {
+            entity.effect = effect;
+        }
+        id
+    }
+
     fn arrow_targets(&self, owner_id: u64, players: &[PlayerCandidate]) -> Vec<ArrowTarget> {
         // Players are pickable unless spectating (`canHitEntity`).
         let players = players.iter().filter(|p| self.players_pickable && p.alive && !p.spectator).map(|p| ArrowTarget {

@@ -11,6 +11,7 @@ use minecraftoss_core::nbt::Tag;
 pub type ChunkXz = (i32, i32);
 
 const ITEMS: &str = "minecraft:item";
+const OMINOUS_ITEMS: &str = "minecraft:ominous_item_spawner";
 const ORBS: &str = "minecraft:experience_orb";
 const TNT: &str = "minecraft:tnt";
 const FALLING: &str = "minecraft:falling_block";
@@ -172,6 +173,9 @@ pub fn near(
     eyes.shattered.retain(|pos| keeps(THROWN, block(*pos)));
     EntitySnapshot {
         items: filtered(&snapshot.items, |item| keeps(ITEMS, array(item.position))),
+        ominous_items: filtered(&snapshot.ominous_items, |item| {
+            keeps(OMINOUS_ITEMS, array(item.position))
+        }),
         tnt: filtered(&snapshot.tnt, |tnt| keeps(TNT, array(tnt.position))),
         falling: filtered(&snapshot.falling, |falling| {
             keeps(FALLING, array(falling.position))
@@ -454,6 +458,28 @@ mod tests {
             .expect("a frame");
         assert!(next.tick > first);
         assert!(next.entities.0.is_empty());
+    }
+
+    #[test]
+    fn ominous_items_reach_friends_eight_chunks_away_with_their_tint_and_age() {
+        let mut sender = MobSender::default();
+        let ominous = |id: i32, x: f64| minecraft_terrain::trial_spawner::OminousItemView {
+            id,
+            position: [x, 70.5, 0.5],
+            item: "minecraft:lingering_potion".to_owned(),
+            tint: Some(0x8889ba),
+            age: 42,
+        };
+        let snapshot = EntitySnapshot {
+            ominous_items: vec![ominous(1, 100.5), ominous(2, 140.5)],
+            ..EntitySnapshot::default()
+        };
+        let around = (DVec3::new(0.5, 64.0, 0.5), 12);
+        let frame = sender
+            .frame(0, Some(&[]), Some(&snapshot), around, |_| true)
+            .expect("a frame");
+        let near: EntitySnapshot = minecraft_net::decode(Lane::State, &frame.entities.0).unwrap();
+        assert_eq!(near.ominous_items, vec![ominous(1, 100.5)]);
     }
 
     #[test]

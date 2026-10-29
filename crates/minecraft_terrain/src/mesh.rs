@@ -1277,6 +1277,18 @@ impl ItemVisuals {
         Ok(())
     }
 
+    pub fn append_ominous_items(&mut self, mesh: &mut ChunkMesh, items: &[(Vec3, f32, String)], packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
+        for (pos, age, id) in items {
+            let Some((ground, tints)) = self.model(id, packs)?.map(|visual| (visual.ground, visual.tints.clone())) else {
+                continue;
+            };
+            let scale = crate::trial_spawner::ominous_item_scale(*age);
+            let pose = Mat4::from_translation(*pos) * Mat4::from_scale(Vec3::splat(scale)) * Mat4::from_rotation_y(crate::trial_spawner::ominous_item_spin(*age).to_radians()) * ground;
+            self.append_model(mesh, id, *pos, pose, 1.0, Some(&tints), false, packs, atlas, sky_light, Some((15.0, 15.0)))?;
+        }
+        Ok(())
+    }
+
     /// One item model placed with a pose, lit at `pos`, untinted.
     #[allow(clippy::too_many_arguments)]
     fn append_block_model(&mut self, mesh: &mut ChunkMesh, id: &str, pos: Vec3, pose: Mat4, brightness: f32, packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {

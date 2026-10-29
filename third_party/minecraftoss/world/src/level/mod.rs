@@ -151,6 +151,7 @@ pub struct Level<'a> {
     pub entities: Vec<entity::Entity>,
     /// Mobs spawned naturally (saved tags), for the entity world to take.
     pub spawned: Vec<minecraftoss_core::nbt::Tag>,
+    pub ominous_drops: Vec<([f64; 3], minecraftoss_core::item::ItemStack)>,
     /// Natural spawning around players, when the server runs it.
     pub natural_spawning: Option<spawning::NaturalSpawning>,
     /// `Entity.ENTITY_COUNTER`.
@@ -269,6 +270,7 @@ impl<'a> Level<'a> {
             sky: None,
             entities: Vec::new(),
             spawned: Vec::new(),
+            ominous_drops: Vec::new(),
             natural_spawning: None,
             next_entity_id: 1,
             entity_random: AnyRandom::new(true, 0),

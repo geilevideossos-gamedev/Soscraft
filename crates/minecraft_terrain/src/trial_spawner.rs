@@ -1,6 +1,7 @@
 use crate::item_nbt::json_tag;
 use crate::raids::{ints_of_uuid, uuid_of_ints};
 use minecraftoss_core::datapack::DataPack;
+use minecraftoss_core::item::ItemStack;
 use minecraftoss_core::loot::LootParams;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::pos::Direction;
@@ -39,6 +40,11 @@ pub const BECOME_OMINOUS: i32 = 3020;
 pub const SPAWN_ITEM: i32 = 3021;
 pub const SPAWN_MOB_SOUND: &str = "minecraft:block.trial_spawner.spawn_mob";
 pub const SPAWN_ITEM_SOUND: &str = "minecraft:block.trial_spawner.spawn_item";
+pub const SPAWN_ITEM_BEGIN_SOUND: &str = "minecraft:block.trial_spawner.spawn_item_begin";
+pub const OMINOUS_ITEM_SPAWNER: &str = "minecraft:ominous_item_spawner";
+const PLAYER_HEIGHT: f32 = 1.8;
+const ITEM_SPAWN_MIN_TICKS: i32 = 60;
+const ITEM_SPAWN_MAX_TICKS: i32 = 120;
 pub const DETECT_PLAYER_SOUND: &str = "minecraft:block.trial_spawner.detect_player";
 pub const OMINOUS_ACTIVATE_SOUND: &str = "minecraft:block.trial_spawner.ominous_activate";
 pub const EJECT_ITEM_SOUND: &str = "minecraft:block.trial_spawner.eject_item";
@@ -583,6 +589,7 @@ impl StateData {
 pub struct TrialPlayer {
     pub uuid: u128,
     pub block: BlockPos,
+    pub feet: [f64; 3],
     pub eye: [f64; 3],
     pub detectable: bool,
     pub bad_omen: bool,
@@ -611,7 +618,11 @@ pub trait TrialWorld {
     fn turn_bad_omen(&mut self, player: u128);
     fn sees(&self, from: [f64; 3], to: [f64; 3]) -> bool;
     fn mob_block(&self, uuid: u128) -> Option<BlockPos>;
+    fn mob_body(&self, uuid: u128) -> Option<([f64; 3], f32)>;
     fn discard_mob(&mut self, uuid: u128) -> Option<BlockPos>;
+    fn dispensing_items(&mut self, spawner: BlockPos, table: &str) -> Vec<(ItemStack, i32)>;
+    fn spot_above(&self, feet: [f64; 3], top: [f64; 3]) -> Option<[f64; 3]>;
+    fn spawn_ominous_item(&mut self, at: [f64; 3], stack: ItemStack);
     fn can_spawn(&self) -> bool;
     fn simulated(&self, kind: &str) -> bool;
     fn random(&mut self) -> &mut dyn RandomSource;
@@ -711,6 +722,9 @@ impl TrialSpawner {
                 let config = self.config.active(*ominous).clone();
                 let additional = self.data.additional_players();
                 self.try_detect_players(pos, state, ominous, world);
+                if *ominous {
+                    self.spawn_ominous_item(pos, world);
+                }
                 if self.data.total_mobs_spawned >= config.target_total_mobs(additional) {
                     if self.data.current_mobs.is_empty() {
                         self.data.cooldown_ends_at = now + cooldown;
@@ -893,6 +907,64 @@ impl TrialSpawner {
         self.data.cooldown_ends_at = now + TICKS_BETWEEN_ITEM_SPAWNERS;
     }
 
+    fn spawn_ominous_item(&mut self, pos: BlockPos, world: &mut impl TrialWorld) {
+        let table = self.config.ominous.items_to_drop_when_ominous.clone();
+        let items = world.dispensing_items(pos, &table);
+        let Some(stack) = pick(&items, world.random()).cloned() else {
+            return;
+        };
+        if world.now() < self.data.cooldown_ends_at {
+            return;
+        }
+        let Some(at) = self.item_spot(pos, world) else {
+            return;
+        };
+        world.spawn_ominous_item(at, stack);
+        self.data.cooldown_ends_at = world.now() + TICKS_BETWEEN_ITEM_SPAWNERS;
+    }
+
+    fn item_spot(&self, pos: BlockPos, world: &mut impl TrialWorld) -> Option<[f64; 3]> {
+        let range = self.config.required_player_range;
+        let reach = f64::from(range.saturating_mul(range));
+        let middle = center(pos);
+        let near = |feet: &[f64; 3]| {
+            let (x, y, z) = (
+                feet[0] - middle[0],
+                feet[1] - middle[1],
+                feet[2] - middle[2],
+            );
+            x * x + y * y + z * z <= reach
+        };
+        let players: Vec<([f64; 3], f32)> = self
+            .data
+            .detected_players
+            .iter()
+            .filter_map(|uuid| world.players().iter().find(|player| player.uuid == *uuid))
+            .filter(|player| player.detectable && near(&player.feet))
+            .map(|player| (player.feet, PLAYER_HEIGHT))
+            .collect();
+        if players.is_empty() {
+            return None;
+        }
+        let mobs: Vec<([f64; 3], f32)> = self
+            .data
+            .current_mobs
+            .iter()
+            .filter_map(|uuid| world.mob_body(*uuid))
+            .filter(|(feet, _)| near(feet))
+            .collect();
+        let random = world.random();
+        let targets = if random.next_bool() { mobs } else { players };
+        let (feet, height) = match targets.len() {
+            0 => return None,
+            1 => targets[0],
+            count => targets[random.next_i32_bound(count as i32) as usize],
+        };
+        let rise = height + 2.0 + random.next_i32_bound(4) as f32;
+        let top = [feet[0], feet[1] + f64::from(rise), feet[2]];
+        world.spot_above(feet, top)
+    }
+
     fn spawn_mob(
         &mut self,
         pos: BlockPos,
@@ -979,18 +1051,13 @@ pub fn equip(level: &mut Level, mob: &mut Tag, equipment: &Tag) {
         if equipped.contains(&slot) {
             continue;
         }
-        let mut item = BTreeMap::new();
-        item.insert("id".to_owned(), Tag::String(stack.id.clone()));
         let count = if slot == "mainhand" { stack.count } else { 1 };
-        item.insert("count".to_owned(), Tag::Int(count));
-        if let Some(components) = stack.components {
-            item.insert("components".to_owned(), components);
-        }
+        let item = stack_tag(&ItemStack { count, ..stack });
         if let Tag::Compound(slots) = map
             .entry("equipment".to_owned())
             .or_insert_with(|| Tag::Compound(BTreeMap::new()))
         {
-            slots.insert(slot.to_owned(), Tag::Compound(item));
+            slots.insert(slot.to_owned(), item);
         }
         if let Some(chance) = drop_chance(chances, slot) {
             if let Tag::Compound(slots) = map
@@ -1010,12 +1077,136 @@ pub struct TrialOutcome {
     pub discarded: Vec<u128>,
 }
 
+pub type Dispensing = HashMap<((i32, i32, i32), String), Vec<(ItemStack, i32)>>;
+
+pub fn stack_tag(stack: &ItemStack) -> Tag {
+    let mut map = BTreeMap::new();
+    map.insert("id".to_owned(), Tag::String(stack.id.clone()));
+    map.insert("count".to_owned(), Tag::Int(stack.count));
+    if let Some(components) = &stack.components {
+        map.insert("components".to_owned(), components.clone());
+    }
+    Tag::Compound(map)
+}
+
+pub fn tag_stack(tag: &Tag) -> Option<ItemStack> {
+    let mut stack = ItemStack::new(tag.get("id")?.as_str()?, int(tag, "count", 1));
+    stack.components = tag.get("components").cloned();
+    Some(stack)
+}
+
+pub fn dispensing_seed(world_seed: i64, spawner: BlockPos) -> i64 {
+    let low = |value: i32, size: f32| (value as f32 / size).floor() as i32;
+    let at = BlockPos::new(
+        low(spawner.x, 30.0),
+        low(spawner.y, 20.0),
+        low(spawner.z, 30.0),
+    );
+    world_seed.wrapping_add(at.pack())
+}
+
+pub fn dispensing_list(stacks: Vec<ItemStack>) -> Vec<(ItemStack, i32)> {
+    stacks
+        .into_iter()
+        .filter(|stack| !stack.is_empty())
+        .map(|stack| {
+            let weight = stack.count;
+            (ItemStack { count: 1, ..stack }, weight)
+        })
+        .collect()
+}
+
+pub fn dispense_config(item: &str) -> Option<(f32, f32)> {
+    match item {
+        "minecraft:arrow"
+        | "minecraft:tipped_arrow"
+        | "minecraft:spectral_arrow"
+        | "minecraft:snowball"
+        | "minecraft:egg"
+        | "minecraft:blue_egg"
+        | "minecraft:brown_egg" => Some((1.1, 6.0)),
+        "minecraft:fire_charge" | "minecraft:wind_charge" => Some((1.0, 6.666_666_5)),
+        "minecraft:splash_potion"
+        | "minecraft:lingering_potion"
+        | "minecraft:experience_bottle" => Some((1.1 * 1.25, 6.0 * 0.5)),
+        _ => None,
+    }
+}
+
+pub fn arrow_effect(
+    item: &str,
+    components: Option<&serde_json::Value>,
+) -> Option<(minecraftoss_player::survival::EffectKind, u32)> {
+    let scale = crate::potions::duration_scale(item, components);
+    crate::potions::PotionContents::from_components(components)
+        .scaled_effects(scale)
+        .iter()
+        .find_map(|effect| {
+            Some((
+                effect.player_effect()?,
+                u32::try_from(effect.duration).ok()?,
+            ))
+        })
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OminousItemView {
+    pub id: i32,
+    pub position: [f64; 3],
+    pub item: String,
+    pub tint: Option<u32>,
+    pub age: i32,
+}
+
+pub fn ominous_item_views(level: &Level) -> Vec<OminousItemView> {
+    level
+        .entities
+        .iter()
+        .filter(|entity| !entity.removed)
+        .filter_map(|entity| {
+            let data = entity.ominous_data()?;
+            let components = data
+                .stack
+                .components
+                .as_ref()
+                .map(crate::item_nbt::tag_json);
+            Some(OminousItemView {
+                id: entity.id,
+                position: entity.pos,
+                item: data.stack.id.clone(),
+                tint: crate::potions::stack_color(components.as_ref()),
+                age: entity.tick_count,
+            })
+        })
+        .collect()
+}
+
+pub fn ominous_item_scale(age: f32) -> f32 {
+    if age <= 50.0 {
+        age.min(50.0) / 50.0
+    } else {
+        1.0
+    }
+}
+
+pub fn ominous_item_spin(age: f32) -> f32 {
+    let degrees = (age * 40.0) % 360.0;
+    if degrees >= 180.0 {
+        degrees - 360.0
+    } else if degrees < -180.0 {
+        degrees + 360.0
+    } else {
+        degrees
+    }
+}
+
 pub struct LevelTrials<'a, 'l> {
     pub level: &'a mut Level<'l>,
     pub players: &'a mut [TrialPlayer],
-    pub mobs: &'a HashMap<u128, BlockPos>,
+    pub mobs: &'a HashMap<u128, ([f64; 3], f32)>,
     pub simulated: &'a dyn Fn(&str) -> bool,
     pub outcome: &'a mut TrialOutcome,
+    pub dispensing: &'a mut Dispensing,
 }
 
 impl TrialWorld for LevelTrials<'_, '_> {
@@ -1044,6 +1235,10 @@ impl TrialWorld for LevelTrials<'_, '_> {
     }
 
     fn mob_block(&self, uuid: u128) -> Option<BlockPos> {
+        self.mobs.get(&uuid).map(|(feet, _)| block_at(*feet))
+    }
+
+    fn mob_body(&self, uuid: u128) -> Option<([f64; 3], f32)> {
         self.mobs.get(&uuid).copied()
     }
 
@@ -1053,6 +1248,67 @@ impl TrialWorld for LevelTrials<'_, '_> {
             self.outcome.discarded.push(uuid);
         }
         Some(at)
+    }
+
+    fn dispensing_items(&mut self, spawner: BlockPos, table: &str) -> Vec<(ItemStack, i32)> {
+        let key = ((spawner.x, spawner.y, spawner.z), table.to_owned());
+        if let Some(items) = self.dispensing.get(&key) {
+            return items.clone();
+        }
+        let registries = self.level.lib.registries.clone();
+        let seed = dispensing_seed(self.level.random_sequences.world_seed, spawner);
+        let level = &mut *self.level;
+        let stacks = registries
+            .loot
+            .roll_seeded(
+                &registries,
+                table,
+                &LootParams::default(),
+                seed,
+                &mut level.random_sequences,
+                &mut level.random,
+            )
+            .unwrap_or_default();
+        let items = dispensing_list(stacks);
+        self.dispensing.insert(key, items.clone());
+        items
+    }
+
+    fn spot_above(&self, feet: [f64; 3], top: [f64; 3]) -> Option<[f64; 3]> {
+        let hit = self
+            .level
+            .clip_first_hit(feet, top, ClipBlocks::Visual, ClipFluids::None)
+            .unwrap_or_else(|| block_at(top));
+        let spot = [
+            f64::from(hit.x) + 0.5,
+            f64::from(hit.y) - 0.5,
+            f64::from(hit.z) + 0.5,
+        ];
+        let below = block_at(spot);
+        let state = self.level.block(below);
+        self.level
+            .block_collision_shape(state, below)
+            .is_none()
+            .then_some(spot)
+    }
+
+    fn spawn_ominous_item(&mut self, at: [f64; 3], stack: ItemStack) {
+        let spread = ITEM_SPAWN_MAX_TICKS - ITEM_SPAWN_MIN_TICKS + 1;
+        let after = self.level.random.next_i32_bound(spread) + ITEM_SPAWN_MIN_TICKS;
+        self.level.add_entity(
+            minecraftoss_world::level::entity::Entity::ominous_item_spawner(
+                at,
+                stack,
+                i64::from(after),
+            ),
+        );
+        let pitch = (self.level.random.next_f32() - self.level.random.next_f32()) * 0.2 + 1.0;
+        self.level.sounds.push(LevelSound {
+            event: SPAWN_ITEM_BEGIN_SOUND,
+            pos: center(block_at(at)),
+            volume: 1.0,
+            pitch,
+        });
     }
 
     fn can_spawn(&self) -> bool {
@@ -1155,8 +1411,9 @@ pub fn ticking_spawners(level: &Level) -> Vec<(i32, i32, i32)> {
 
 pub struct Trials<'a> {
     pub players: &'a mut [TrialPlayer],
-    pub mobs: &'a HashMap<u128, BlockPos>,
+    pub mobs: &'a HashMap<u128, ([f64; 3], f32)>,
     pub simulated: &'a dyn Fn(&str) -> bool,
+    pub dispensing: &'a mut Dispensing,
 }
 
 pub fn tick_spawners(
@@ -1220,6 +1477,7 @@ fn tick_at(
             mobs: trials.mobs,
             simulated: trials.simulated,
             outcome,
+            dispensing: trials.dispensing,
         },
     );
     if spawner.data != before {
@@ -1595,6 +1853,9 @@ mod tests {
         events: Vec<(i32, BlockPos, i32)>,
         turned: Vec<u128>,
         discarded: Vec<u128>,
+        dispensing: Vec<(ItemStack, i32)>,
+        dropped: Vec<([f64; 3], ItemStack)>,
+        roof: bool,
     }
 
     impl Mock {
@@ -1612,6 +1873,9 @@ mod tests {
                 events: Vec::new(),
                 turned: Vec::new(),
                 discarded: Vec::new(),
+                dispensing: Vec::new(),
+                dropped: Vec::new(),
+                roof: false,
             }
         }
     }
@@ -1641,10 +1905,41 @@ mod tests {
             self.mobs.get(&uuid).copied()
         }
 
+        fn mob_body(&self, uuid: u128) -> Option<([f64; 3], f32)> {
+            let at = self.mobs.get(&uuid)?;
+            let feet = [
+                f64::from(at.x) + 0.5,
+                f64::from(at.y),
+                f64::from(at.z) + 0.5,
+            ];
+            Some((feet, 1.95))
+        }
+
         fn discard_mob(&mut self, uuid: u128) -> Option<BlockPos> {
             let at = self.mobs.remove(&uuid)?;
             self.discarded.push(uuid);
             Some(at)
+        }
+
+        fn dispensing_items(&mut self, _spawner: BlockPos, _table: &str) -> Vec<(ItemStack, i32)> {
+            self.dispensing.clone()
+        }
+
+        fn spot_above(&self, feet: [f64; 3], top: [f64; 3]) -> Option<[f64; 3]> {
+            let top = if self.roof {
+                (feet[1] + 2.5).min(top[1])
+            } else {
+                top[1]
+            };
+            Some([
+                feet[0].floor() + 0.5,
+                top.floor() - 0.5,
+                feet[2].floor() + 0.5,
+            ])
+        }
+
+        fn spawn_ominous_item(&mut self, at: [f64; 3], stack: ItemStack) {
+            self.dropped.push((at, stack));
         }
 
         fn can_spawn(&self) -> bool {
@@ -1689,6 +1984,7 @@ mod tests {
         TrialPlayer {
             uuid,
             block: BlockPos::new(x, 64, 0),
+            feet: [f64::from(x) + 0.5, 64.0, 0.5],
             eye: [f64::from(x) + 0.5, 65.62, 0.5],
             detectable,
             bad_omen: false,
@@ -2121,6 +2417,143 @@ mod tests {
                 .iter()
                 .all(|table| table == key || table == consumables)
         );
+    }
+
+    #[test]
+    fn an_ominous_trial_drops_items_above_its_players_and_mobs_every_160_ticks_at_most() {
+        let wind = ItemStack::new("minecraft:wind_charge", 1);
+        let potion = ItemStack::new("minecraft:lingering_potion", 1);
+        let list = vec![(wind.clone(), 3), (potion.clone(), 1)];
+        let mut plain = Run::of("minecraft:zombie");
+        plain.world.dispensing = list.clone();
+        plain.world.players = vec![player(7, 3, true)];
+        for _ in 0..400 {
+            plain.step();
+        }
+        assert!(
+            plain.world.dropped.is_empty(),
+            "a plain trial drops nothing"
+        );
+        let mut run = Run::of("minecraft:zombie");
+        run.ominous = true;
+        run.world.dispensing = list;
+        run.world.players = vec![player(7, 9, true), player(8, -20, true)];
+        run.active();
+        let mut times = Vec::new();
+        for _ in 0..4000 {
+            let before = run.world.dropped.len();
+            run.step();
+            if run.world.dropped.len() > before {
+                times.push(run.world.now);
+            }
+        }
+        assert_eq!(run.state, TrialState::Active);
+        assert!(times.len() >= 15, "{times:?}");
+        assert!(times.windows(2).all(|pair| pair[1] - pair[0] >= 160));
+        let over_player = |at: &[f64; 3]| at[0] == 9.5 && at[2] == 0.5;
+        assert!(run.world.dropped.iter().any(|(at, _)| over_player(at)));
+        assert!(run.world.dropped.iter().any(|(at, _)| !over_player(at)));
+        for (at, stack) in &run.world.dropped {
+            assert!(*stack == wind || *stack == potion);
+            if over_player(at) {
+                assert!([66.5, 67.5, 68.5, 69.5].contains(&at[1]), "{at:?}");
+            }
+            assert!(at[0] > -5.0, "the far player is never a target");
+        }
+        assert!(run.world.dropped.iter().any(|(_, stack)| *stack == potion));
+        let mut low = Run::of("minecraft:zombie");
+        low.ominous = true;
+        low.world.dispensing = vec![(wind.clone(), 1)];
+        low.world.roof = true;
+        low.world.players = vec![player(7, 3, true)];
+        low.until(400, |run| !run.world.dropped.is_empty());
+        assert!(
+            low.world.dropped[0].0[1] <= 66.5,
+            "a low ceiling keeps it down"
+        );
+        let mut empty = Run::of("minecraft:zombie");
+        empty.ominous = true;
+        empty.world.players = vec![player(7, 3, true)];
+        for _ in 0..400 {
+            empty.step();
+        }
+        assert!(
+            empty.world.dropped.is_empty(),
+            "an empty list drops nothing"
+        );
+    }
+
+    #[test]
+    fn the_dispensing_list_weighs_each_item_by_its_count_and_is_seeded_by_the_spawner_area() {
+        let mut charges = ItemStack::new("minecraft:wind_charge", 3);
+        charges.components = Some(Tag::Compound(BTreeMap::new()));
+        let list = dispensing_list(vec![
+            ItemStack::new("minecraft:lingering_potion", 1),
+            ItemStack::empty(),
+            charges,
+        ]);
+        assert_eq!(list.len(), 2);
+        assert_eq!(
+            list[0],
+            (ItemStack::new("minecraft:lingering_potion", 1), 1)
+        );
+        assert_eq!((list[1].0.count, list[1].1), (1, 3));
+        assert!(list[1].0.components.is_some());
+        assert_eq!(
+            dispensing_seed(100, BlockPos::new(31, -21, -1)),
+            100 + BlockPos::new(1, -2, -1).pack()
+        );
+        assert_eq!(
+            dispensing_seed(7, BlockPos::new(0, 0, 29)),
+            dispensing_seed(7, BlockPos::new(29, 19, 0))
+        );
+    }
+
+    #[test]
+    fn ominous_items_fly_with_vanillas_dispense_power_and_carry_their_potion() {
+        assert_eq!(dispense_config("minecraft:arrow"), Some((1.1, 6.0)));
+        assert_eq!(dispense_config("minecraft:tipped_arrow"), Some((1.1, 6.0)));
+        assert_eq!(
+            dispense_config("minecraft:wind_charge"),
+            Some((1.0, 6.666_666_5))
+        );
+        assert_eq!(
+            dispense_config("minecraft:fire_charge"),
+            Some((1.0, 6.666_666_5))
+        );
+        assert_eq!(
+            dispense_config("minecraft:lingering_potion"),
+            Some((1.375, 3.0))
+        );
+        assert_eq!(dispense_config("minecraft:diamond"), None);
+        let poison =
+            serde_json::json!({"minecraft:potion_contents": {"potion": "minecraft:poison"}});
+        assert_eq!(
+            arrow_effect("minecraft:arrow", Some(&poison)),
+            Some((minecraftoss_player::survival::EffectKind::Poison, 900))
+        );
+        let slowness =
+            serde_json::json!({"minecraft:potion_contents": "minecraft:strong_slowness"});
+        assert_eq!(
+            arrow_effect("minecraft:tipped_arrow", Some(&slowness)),
+            Some((minecraftoss_player::survival::EffectKind::Slowness, 50))
+        );
+        assert_eq!(arrow_effect("minecraft:arrow", None), None);
+        assert_eq!(
+            (ominous_item_scale(0.0), ominous_item_scale(25.0)),
+            (0.0, 0.5)
+        );
+        assert_eq!(
+            (ominous_item_scale(50.0), ominous_item_scale(90.0)),
+            (1.0, 1.0)
+        );
+        assert_eq!(
+            (ominous_item_spin(1.0), ominous_item_spin(5.0)),
+            (40.0, -160.0)
+        );
+        let mut stack = ItemStack::new("minecraft:lingering_potion", 1);
+        stack.components = Some(Tag::String("x".to_owned()));
+        assert_eq!(tag_stack(&stack_tag(&stack)), Some(stack));
     }
 
     #[test]

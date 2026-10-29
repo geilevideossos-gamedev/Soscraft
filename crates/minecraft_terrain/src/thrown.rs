@@ -386,6 +386,29 @@ impl Thrown {
         })
     }
 
+    pub fn dispensed(
+        item: &str,
+        components: Option<serde_json::Value>,
+        from: DVec3,
+        direction: DVec3,
+        power: f32,
+        uncertainty: f32,
+        random: &mut LegacyRandom,
+    ) -> Option<Self> {
+        let kind = Throwable::of(item).filter(|kind| *kind != Throwable::EnderPearl)?;
+        let flight = ThrownPotion::shoot(Potion::Healing, MOB_THROWER, from, direction, power, uncertainty, random);
+        Some(Self {
+            item: item.to_owned(),
+            kind,
+            owner: MOB_THROWER,
+            components,
+            previous: from,
+            shooter: None,
+            flight,
+            random: LegacyRandom::new(random.next_long()),
+        })
+    }
+
     pub fn position(&self) -> DVec3 {
         self.flight.position
     }

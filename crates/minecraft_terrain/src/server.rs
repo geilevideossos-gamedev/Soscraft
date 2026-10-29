@@ -113,6 +113,7 @@ pub struct ServerSim {
     trackers: crate::mob_tracking::Trackers,
     custom_spawners: crate::custom_spawners::CustomSpawners,
     trial_configs: std::collections::HashMap<String, Option<crate::trial_spawner::TrialConfig>>,
+    trial_dispensing: crate::trial_spawner::Dispensing,
     raids: crate::raids::Raids,
     raids_rule: bool,
     bells: crate::bells::Bells,
@@ -330,6 +331,7 @@ pub struct ServerOrb {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct EntitySnapshot {
     pub items: Vec<ServerItem>,
+    pub ominous_items: Vec<crate::trial_spawner::OminousItemView>,
     pub tnt: Vec<ServerTnt>,
     pub falling: Vec<ServerFallingBlock>,
     pub orbs: Vec<ServerOrb>,
@@ -488,6 +490,7 @@ impl ServerSim {
             trackers: Default::default(),
             custom_spawners: crate::custom_spawners::CustomSpawners::for_dimension(dimension_type),
             trial_configs: std::collections::HashMap::new(),
+            trial_dispensing: std::collections::HashMap::new(),
             raids: crate::raids::Raids::default(),
             raids_rule: true,
             bells: crate::bells::Bells::default(),
@@ -958,7 +961,7 @@ impl ServerSim {
             self.sync_frame_outputs(false);
             self.mobs.remove_where(inside);
             self.dormant.retain(|(group, _)| !inside(glam::DVec3::from_array(group[0].pos)));
-            self.level.entities.retain(|e| !(inside(glam::DVec3::from_array(e.pos)) && (e.item_data().is_some() || e.orb_data().is_some())));
+            self.level.entities.retain(|e| !(inside(glam::DVec3::from_array(e.pos)) && (e.item_data().is_some() || e.orb_data().is_some() || e.ominous_data().is_some())));
             let alive: std::collections::HashSet<u64> = self.mobs.mob_ids().collect();
             self.mob_tags.retain(|id, _| alive.contains(id));
         }
@@ -2147,6 +2150,7 @@ impl ServerSim {
                 if let Some(mob) = landed.mob.filter(|&id| hurts && crate::thrown::struck_player(id).is_none() && frame.is_none()) {
                     match t.shooter {
                         Some(shooter) => shot_by_mobs.push((shooter, mob, landed.velocity)),
+                        None if t.owner == crate::thrown::MOB_THROWER => {}
                         None => struck.push((mob, landed.velocity, t.owner, t.random().next_long())),
                     }
                 }
@@ -2189,7 +2193,8 @@ impl ServerSim {
                                     Some(player) => players.iter().find(|p| p.id == player).map(|p| p.feet),
                                     None => crate::thrown::targets_by_id(&mob_targets, id),
                                 });
-                                lingering.push(crate::effect_cloud::EffectCloud::lingering(struck.unwrap_or(at), Some(t.owner), &contents, scale));
+                                let owner = (t.owner != crate::thrown::MOB_THROWER).then_some(t.owner);
+                                lingering.push(crate::effect_cloud::EffectCloud::lingering(struck.unwrap_or(at), owner, &contents, scale));
                             }
                             splashes.push((at, t.margin(), t.owner, contents.is_water(), douse, Vec::new(), scale, pitch));
                         } else {
@@ -2226,10 +2231,10 @@ impl ServerSim {
         for (mob, velocity, owner, seed, center) in bursts {
             match mob.map(|id| (id, crate::thrown::struck_player(id))) {
                 Some((_, Some(player))) => self.players_struck.push(crate::thrown::PlayerStruck { player, by: owner, damage: crate::wind::DAMAGE, kind: crate::wind::DAMAGE_TYPE, velocity }),
-                Some((id, None)) => {
+                Some((id, None)) if owner != crate::thrown::MOB_THROWER => {
                     crate::thrown::hurt_by(&mut self.mobs, id, crate::wind::DAMAGE, crate::wind::DAMAGE_TYPE, velocity, owner, &mut minecraftoss_player::rng::LegacyRandom::new(seed));
                 }
-                None => {}
+                _ => {}
             }
             self.wind_burst(center, players, crate::wind::Charge::Player);
         }
@@ -3159,6 +3164,7 @@ impl ServerSim {
 
     pub fn tick(&mut self) {
         self.level.tick();
+        self.drop_ominous_items();
         self.explode_tnt();
         self.hear_bells();
         self.level.tick_spawners();
@@ -3183,6 +3189,7 @@ impl ServerSim {
                     crate::trial_spawner::TrialPlayer {
                         uuid: self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player.id),
                         block: block(player.position),
+                        feet: player.position.to_array(),
                         eye: [player.position.x, player.position.y + f64::from(player.eye_height), player.position.z],
                         detectable: player.attackable,
                         bad_omen: omen_of(player.id).is_some_and(|omen| omen.bad_omen.is_some()),
@@ -3200,13 +3207,13 @@ impl ServerSim {
             }
             let uuid = self.mobs.uuid_of(id);
             if let Some(body) = self.mobs.body_mut(id) {
-                mobs.insert(uuid, block(body.position));
+                mobs.insert(uuid, (body.position.to_array(), body.height));
                 mob_ids.insert(uuid, id);
             }
         }
         let simulated = |kind: &str| crate::server_mobs::SIMULATED_KINDS.contains(&kind);
         let mut trial_players: Vec<crate::trial_spawner::TrialPlayer> = players.iter().map(|(_, player)| *player).collect();
-        let mut trials = crate::trial_spawner::Trials { players: &mut trial_players, mobs: &mobs, simulated: &simulated };
+        let mut trials = crate::trial_spawner::Trials { players: &mut trial_players, mobs: &mobs, simulated: &simulated, dispensing: &mut self.trial_dispensing };
         let outcome = crate::trial_spawner::tick_spawners(&mut self.level, &spawners, &mut trials, &mut self.trial_configs);
         let discarded: Vec<u64> = outcome.discarded.iter().filter_map(|uuid| mob_ids.get(uuid).copied()).collect();
         self.mobs.remove_mobs(&discarded);
@@ -3218,6 +3225,40 @@ impl ServerSim {
             omen.trial_omen = true;
         }
         turned
+    }
+
+    fn drop_ominous_items(&mut self) {
+        use minecraftoss_core::random::RandomSource;
+        for (at, stack) in std::mem::take(&mut self.level.ominous_drops) {
+            let Some((power, uncertainty)) = crate::trial_spawner::dispense_config(&stack.id) else {
+                let dx = self.level.random.next_f64() * 0.2 - 0.1;
+                let dz = self.level.random.next_f64() * 0.2 - 0.1;
+                self.level.spawn_item_with(at, stack, [dx, 0.2, dz], 0, 0);
+                continue;
+            };
+            let from = glam::DVec3::from_array(at);
+            let components = stack.components.as_ref().map(crate::item_nbt::tag_json);
+            let shoot = |random: &mut minecraftoss_player::rng::LegacyRandom| minecraftoss_entities::projectile::Arrow::shoot(from, glam::DVec3::NEG_Y, power, uncertainty, random);
+            match stack.id.as_str() {
+                "minecraft:arrow" | "minecraft:tipped_arrow" | "minecraft:spectral_arrow" => {
+                    let effect = crate::trial_spawner::arrow_effect(&stack.id, components.as_ref());
+                    let arrow = shoot(&mut self.sound_random);
+                    self.mobs.spawn_effect_arrow(0, arrow, effect);
+                }
+                "minecraft:fire_charge" => {
+                    use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+                    let mut fireball = Fireball::shoot(FireballKind::Small, Shooter::Mob(0), from, glam::DVec3::NEG_Y);
+                    fireball.owner = None;
+                    fireball.velocity = shoot(&mut self.sound_random).velocity;
+                    self.mobs.spawn_fireball(fireball);
+                }
+                item => {
+                    if let Some(thrown) = crate::thrown::Thrown::dispensed(item, components, from, glam::DVec3::NEG_Y, power, uncertainty, &mut self.sound_random) {
+                        self.thrown.push(thrown);
+                    }
+                }
+            }
+        }
     }
 
     pub fn set_game_time(&mut self, game_time: i64) {
@@ -4432,7 +4473,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), ominous_items: crate::trial_spawner::ominous_item_views(&sim.level), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -10496,9 +10537,26 @@ mod tests {
         assert!(events.contains(&(SPAWN_MOB, zombie, 0)), "the old zombie leaves in flames");
         assert!(server.mobs.zombies().is_empty(), "the old zombie is gone");
         spawned.clear();
-        for _ in 0..200 {
+        let turned_at = server.level.game_time;
+        let mut first_item = None;
+        for _ in 0..400 {
             assert!(step(&mut server, &mut omens, &mut spawned).is_empty(), "an ominous spawner asks no more");
+            if first_item.is_none() {
+                first_item = crate::trial_spawner::ominous_item_views(&server.level).first().map(|view| (server.level.game_time, view.clone()));
+            }
         }
+        let (appeared, item) = first_item.expect("an item appears above the trial");
+        assert!(appeared - turned_at >= 160, "{appeared} {turned_at}");
+        let list = server.trial_dispensing.values().next().cloned().expect("the dispensing list is rolled once");
+        assert_eq!(list.len(), 2, "{list:?}");
+        assert_eq!(list[0].0.id, "minecraft:lingering_potion");
+        assert!(list[0].0.components.is_some() && list[0].1 == 1);
+        assert!(matches!(list[1].0.id.as_str(), "minecraft:arrow" | "minecraft:fire_charge" | "minecraft:wind_charge") && (1..=3).contains(&list[1].1));
+        assert!(list.iter().any(|(stack, _)| stack.id == item.item));
+        assert!(item.position[1] > 201.0, "{:?}", item.position);
+        assert!(server.level.sounds.iter().any(|sound| sound.event == crate::trial_spawner::SPAWN_ITEM_BEGIN_SOUND));
+        let released = server.thrown_views().len() + server.mobs.arrows().len() + server.mobs.fireballs().len();
+        assert!(released >= 1, "the first item has dropped by now");
         assert!(!spawned.is_empty());
         for zombie in &spawned {
             let hand = zombie.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str);
@@ -10506,6 +10564,77 @@ mod tests {
             assert_eq!(zombie.get("drop_chances").and_then(|d| d.get("mainhand")).and_then(Tag::as_f64), Some(0.0));
         }
         assert!(server.mobs.zombies().iter().any(|e| e.zombie.main_hand.as_deref().is_some_and(|hand| hand.ends_with("_sword"))));
+    }
+
+    #[test]
+    fn an_ominous_item_spawner_warns_survives_a_save_and_drops_its_item_down() {
+        use crate::trial_spawner::{ominous_item_views, stack_tag, OMINOUS_ITEM_SPAWNER};
+        use minecraftoss_core::item::ItemStack;
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_world::level::entity::{Entity, ABOUT_TO_SPAWN_ITEM, SPAWN_ITEM_EVENT};
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let chunk = map.load_now(ChunkPos::new(0, 0));
+        let fresh = || {
+            let mut server = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+            server.load_chunk(&chunk);
+            server
+        };
+        let poison = minecraftoss_core::snbt::parse_compound("{\"minecraft:potion_contents\":{potion:\"minecraft:poison\"}}").unwrap();
+        let mut arrow = ItemStack::new("minecraft:arrow", 1);
+        arrow.components = Some(poison);
+        let drops = [
+            ([4.5, 230.5, 4.5], ItemStack::new("minecraft:wind_charge", 1)),
+            ([8.5, 230.5, 8.5], arrow),
+            ([12.5, 230.5, 12.5], ItemStack::new("minecraft:fire_charge", 1)),
+            ([4.5, 230.5, 12.5], ItemStack::new("minecraft:diamond", 1)),
+        ];
+        let mut first = fresh();
+        for (at, stack) in &drops {
+            first.level.add_entity(Entity::ominous_item_spawner(*at, stack.clone(), 70));
+        }
+        let saved = crate::server_mobs::level_entity_tags(&first.level, |_| true);
+        assert_eq!(saved.len(), 4);
+        assert_eq!(saved[0].get("id").and_then(Tag::as_str), Some(OMINOUS_ITEM_SPAWNER));
+        assert_eq!(saved[1].get("item"), Some(&stack_tag(&drops[1].1)));
+        assert_eq!(saved[0].get("spawn_item_after_ticks").and_then(Tag::as_i64), Some(70));
+        let mut server = fresh();
+        for tag in &saved {
+            assert!(crate::server_mobs::load_level_entity(&mut server.level, tag));
+        }
+        let views = ominous_item_views(&server.level);
+        assert_eq!(views.iter().map(|view| view.item.as_str()).collect::<Vec<_>>(), ["minecraft:wind_charge", "minecraft:arrow", "minecraft:fire_charge", "minecraft:diamond"]);
+        assert!(views[1].tint.is_some() && views[0].tint.is_none());
+        for tick in 1..=70 {
+            server.tick();
+            let warned = server.level.sounds.iter().filter(|sound| sound.event == ABOUT_TO_SPAWN_ITEM).count();
+            assert_eq!(warned, if tick < 34 { 0 } else { 4 }, "tick {tick}");
+            assert_eq!(ominous_item_views(&server.level).len(), if tick < 70 { 4 } else { 0 }, "tick {tick}");
+        }
+        for (at, _) in &drops {
+            let block = minecraftoss_core::BlockPos::new(at[0].floor() as i32, at[1].floor() as i32, at[2].floor() as i32);
+            assert!(server.level.level_events.contains(&(SPAWN_ITEM_EVENT, block, 1)));
+        }
+        let thrown = server.thrown_views();
+        assert_eq!(thrown.len(), 1);
+        assert_eq!((thrown[0].item.as_str(), thrown[0].position.to_array()), ("minecraft:wind_charge", drops[0].0));
+        let arrows = server.mobs.arrows();
+        assert_eq!(arrows.len(), 1);
+        assert!(arrows[0].arrow.velocity.y < -0.98 && arrows[0].arrow.velocity.y > -1.22, "{:?}", arrows[0].arrow.velocity);
+        assert_eq!(arrows[0].effect, Some((minecraftoss_player::survival::EffectKind::Poison, 900)));
+        let fireballs = server.mobs.fireballs();
+        assert_eq!(fireballs.len(), 1);
+        assert!(fireballs[0].fireball.owner.is_none() && fireballs[0].fireball.velocity.y < -0.85);
+        let diamond = server.level.entities.iter().find(|e| e.item_data().is_some_and(|item| item.stack.id == "minecraft:diamond")).expect("the diamond drops as an item");
+        assert_eq!(diamond.pos, drops[3].0);
+        assert!(diamond.delta[1] == 0.2 && diamond.delta[0].abs() <= 0.1);
+        server.tick_thrown(&[]);
+        let fell = server.thrown_views();
+        assert!(fell[0].position.y < 230.0 && fell[0].position.y > 229.0, "the wind charge flies down");
     }
 
     #[test]

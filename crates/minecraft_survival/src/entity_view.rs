@@ -49,6 +49,7 @@ pub struct EntityView {
     drawn_dragons: minecraft_terrain::client_dragon::ClientDragons,
     drawn_fireballs: minecraft_terrain::client_dragon::ClientFireballs,
     pub(crate) frames: Vec<minecraft_terrain::item_frame::FrameView>,
+    pub(crate) ominous_items: Vec<minecraft_terrain::trial_spawner::OminousItemView>,
     pub(crate) growls: HashMap<u64, i32>,
     pub(crate) orbs: Vec<ServerOrb>,
     pub(crate) falling: minecraft_terrain::falling_render::FallingBlocks,
@@ -98,6 +99,7 @@ impl EntityView {
             drawn_dragons: Default::default(),
             drawn_fireballs: Default::default(),
             frames: Vec::new(),
+            ominous_items: Vec::new(),
             growls: HashMap::new(),
             orbs: Vec::new(),
             falling: Default::default(),
@@ -349,6 +351,7 @@ impl EntityView {
             self.ambient.breath_trail(fireball.position);
         }
         self.frames = std::mem::take(&mut snapshot.frames);
+        self.ominous_items = std::mem::take(&mut snapshot.ominous_items);
         self.bursts(snapshot);
         self.orbs = snapshot.orbs.clone();
         self.falling.receive(
@@ -813,6 +816,11 @@ impl EntityView {
             let now = time - i64::from(ticks - 1 - tick);
             for sound in self.spawners.tick_trials(scene, now, &mut self.ambient) {
                 self.sounds.push((sound.event.to_owned(), DVec3::from_array(sound.at), sound.volume, sound.pitch));
+            }
+            if now % minecraft_terrain::ambient_particles::OMINOUS_SPAWNING_PERIOD == 0 {
+                for item in &self.ominous_items {
+                    self.ambient.ominous_spawning(DVec3::from_array(item.position));
+                }
             }
             self.ambient.tick(scene);
             for entity in self
@@ -1304,6 +1312,20 @@ impl EntityView {
         let _ = self
             .items
             .append_frames(&mut out.items, &frames, packs, atlas, light);
+        let ominous: Vec<(Vec3, f32, String)> = self
+            .ominous_items
+            .iter()
+            .map(|item| {
+                (
+                    DVec3::from_array(item.position).as_vec3(),
+                    item.age as f32 + partial,
+                    minecraft_terrain::item_tint::key(&item.item, item.tint),
+                )
+            })
+            .collect();
+        let _ = self
+            .items
+            .append_ominous_items(&mut out.items, &ominous, packs, atlas, light);
         let _ = self.items.append_primed_tnt(
             &mut out.items,
             &self.falling.primed_tnt(partial),
