@@ -585,7 +585,11 @@ impl ServerSim {
     fn mount(&mut self, player: u64, vehicle: u64) -> bool {
         let Self { level, states, mobs, mob_tables, .. } = self;
         let world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
-        mobs.start_riding(minecraftoss_entities::world::Rider::Player(player), vehicle, &world)
+        let mounted = mobs.start_riding(minecraftoss_entities::world::Rider::Player(player), vehicle, &world);
+        if let Some(at) = mobs.body_mut(vehicle).map(|body| body.position).filter(|_| mounted) {
+            mobs.game_event(crate::game_events::ENTITY_MOUNT, at, Some(crate::thrown::PLAYER_TARGET + player), None);
+        }
+        mounted
     }
 
     pub fn ride_tick(&mut self, controls: &[minecraftoss_entities::controls::PlayerControls]) -> Vec<(u64, u64, Option<[f64; 3]>)> {
@@ -1711,6 +1715,8 @@ impl ServerSim {
             return Err(format!("{kind} is not simulated"));
         }
         self.mob_tags.extend(spawned);
+        let (x, y, z) = crate::vibrations::block_of(glam::DVec3::from_array(position));
+        self.level.block_game_event(crate::game_events::ENTITY_PLACE, minecraftoss_core::BlockPos::new(x, y, z), None);
         Ok(())
     }
 
@@ -1728,6 +1734,7 @@ impl ServerSim {
             return Err(format!("no monster spawner at {pos:?}"));
         }
         minecraftoss_generator::feature::World::set_spawner_entity(&mut self.level, pos.0, pos.1, pos.2, kind);
+        self.level.block_game_event(crate::game_events::BLOCK_CHANGE, minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), None);
         Ok(())
     }
 
@@ -2621,6 +2628,7 @@ impl ServerSim {
         let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
         if self.level.grow_crop(at) {
             self.level.level_events.push((crate::level_events::BONE_MEAL_USE, at, crate::level_events::BONE_MEAL_PARTICLES));
+            self.used_by_hand();
             return true;
         }
         let Some(face) = minecraftoss_core::pos::Direction::from_name(face) else { return false };
@@ -2628,8 +2636,15 @@ impl ServerSim {
         let grown = self.level.registries().blocks.is_face_sturdy(state, face, minecraftoss_core::SupportType::Full) && self.level.grow_water_plant(at.relative(face, 1));
         if grown {
             self.level.level_events.push((crate::level_events::BONE_MEAL_USE, at.relative(face, 1), crate::level_events::BONE_MEAL_PARTICLES));
+            self.used_by_hand();
         }
         grown
+    }
+
+    fn used_by_hand(&mut self) {
+        if let Some(feet) = self.level.acting_player.and_then(|player| self.player_feet.get(&player)).copied() {
+            self.level.game_event(crate::game_events::ITEM_INTERACT_FINISH, feet, None);
+        }
     }
 
     pub fn attack_block(&mut self, pos: BlockPos) -> bool {
@@ -4357,10 +4372,10 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.command_summons.push((player, sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind)));
                 }
                 Command::HatchEgg { player, kind, position, y_rot } => {
-                    out.summoned.push((player, sim.hatch_egg(&kind, position, y_rot).map(|()| kind)));
+                    out.summoned.push((player, sim.acting(Some(player), |sim| sim.hatch_egg(&kind, position, y_rot)).map(|()| kind)));
                 }
                 Command::SpawnerEgg { player, pos, kind } => {
-                    out.summoned.push((player, sim.spawner_egg(pos, &kind).map(|()| kind)));
+                    out.summoned.push((player, sim.acting(Some(player), |sim| sim.spawner_egg(pos, &kind)).map(|()| kind)));
                 }
                 Command::MobAction { player, hit, attack, inventory, selected, infinite } => {
                     out.mob_results.push((player, sim.mob_action(player, hit, attack, *inventory, selected, infinite)));
@@ -11821,6 +11836,20 @@ mod tests {
         assert!(sim.acting(Some(0), |sim| sim.ring_bell(bell, Some("east"))));
         run_ticks(&mut sim, &mut input, true, 6);
         assert_eq!(last_frequency(&sim), Some(11));
+    }
+
+    #[test]
+    fn a_dead_cow_posts_entity_die_before_its_experience() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        run_ticks(&mut sim, &mut input, true, 1);
+        sim.summon("minecraft:cow", [12.5, 200.0, 8.5], None, 0.0).unwrap();
+        let cow = sim.mobs.cows()[0].id;
+        sim.mob_blast(minecraftoss_entities::world::MobHit::Cow(cow), 40.0, [12.5, 200.5, 6.5], 1.0, Some(0), 0);
+        assert!(!sim.orbs().is_empty(), "a player's kill leaves experience");
+        run_ticks(&mut sim, &mut input, true, 6);
+        assert_eq!(sensor_phase(&sim), "active");
+        assert_eq!(last_frequency(&sim), Some(15), "its death outweighs its hurt (7) at the same spot");
     }
 
     #[test]

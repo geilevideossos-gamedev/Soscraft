@@ -40,6 +40,7 @@ pub(crate) fn step(
     let glided = player
         .elytra
         .step(flight, seconds, &mut player.inventory, wears);
+    player.steps.glides += glided.glides;
     let Some(damage) = glided.wall_damage else {
         return;
     };

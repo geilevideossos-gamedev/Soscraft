@@ -470,6 +470,9 @@ pub fn act(
             };
             effects.push(sound(&chewed, None, volume, chew_pitch));
             if let Some((overflow, fed, heard)) = finished {
+                for event in minecraft_terrain::game_events::consumed(drinking) {
+                    entities.game_event(player_id, event, feet, None);
+                }
                 for event in heard {
                     effects.push(sound(event, None, 1.0, 1.0));
                 }

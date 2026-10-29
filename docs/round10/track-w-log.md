@@ -249,6 +249,52 @@ After c89a387d ("Players, mobs, blocks and explosions make Minecraft vibrations"
 IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*16,minecraft:comparator*4,minecraft:redstone*64,minecraft:oak_door*2,minecraft:oak_trapdoor*2,minecraft:oak_fence_gate*2,minecraft:lever*4,minecraft:oak_button*4,minecraft:oak_pressure_plate*4,minecraft:chest*2,minecraft:barrel*2,minecraft:bucket,minecraft:water_bucket,minecraft:bell,minecraft:note_block*2,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:candle*4,minecraft:piston*2,minecraft:cobblestone*64,minecraft:cooked_beef*16
 ```
 
+### 2. Minecraft players and mobs make vibrations when they eat, drink, equip, ride, glide, shear, teleport, get hurt and die
+
+After a8407b26 ("Minecraft blocks make vibrations when used").
+
+- **Vanilla (javap on the 26.3 jar):**
+  - `Consumable.onConsume`: `drink` or `eat` from the eater at its position; `LivingEntity.completeUsingItem` → `stopUsingItem` then posts `item_interact_finish` (3, in `#ignore_vibrations_sneaking`). Both come from the same spot in the same tick, so a sensor keeps the eating (8).
+  - `LivingEntity.onEquipItem`: not on the first tick, not for spectators, only when the item changed; `equip` when the new item is equippable, `unequip` otherwise; a player only for its armour slots (`Player.doesEmitEquipEvent`).
+  - `LivingEntity.actuallyHurt` (and `Player.actuallyHurt`): `entity_damage` from the hurt entity when what is left after absorption is not 0. `LivingEntity.die` and `ServerPlayer.die`: `entity_die` first, then the loot and the experience.
+  - `LivingEntity.updateFallFlying`: `elytra_glide` every 10 ticks of gliding (`(fallFlyTicks + 1) % 10 == 0`; every second one also wears the elytra).
+  - `Entity.startRiding(vehicle, force, true)`: `entity_mount` from the rider at the vehicle's position; `Entity.removeVehicle`: `entity_dismount` from the rider at the vehicle's position.
+  - `Sheep`, `MushroomCow` and `SnowGolem` shearing: `shear` from the player at the mob. `Entity.dropAllLeashConnections(player)` also posts `shear`.
+  - `SpawnEggItem.spawnMob`: `entity_place` from the user at the spawn block's centre; an egg used on a spawner: `block_change`. `Chicken.aiStep` laying an egg: `entity_place` from the chicken.
+  - `Entity.processFlappingMovement` (from `applyMovementEmissionAndPlaySound` when the block under the feet is air): `flap` when `isFlapping`; `Chicken.isFlapping` is `flyDist > nextFlap` and `onFlap` sets `nextFlap = flyDist + flapSpeed / 2` (`flyDist` grows by 0.6 of every move, `nextFlap` starts at 1).
+  - `Enderman.teleport(x, y, z)` and `Shulker.teleportSomewhere`: `teleport` from the mob at the spot it left. `TeleportRandomlyConsumeEffect` (chorus fruit) does the same at the eater's old spot.
+  - `LivingEntity.checkTotemDeathProtection` and `BoneMealItem.useOn`: `item_interact_finish` from the player at its position.
+- **Changed:**
+  - Survival side: `actions.rs` posts `game_events::consumed` (`eat` or `drink`, then `item_interact_finish`) when a bite finishes. `Steps::heard(hurts, inventory)` (`player.rs`) returns `entity_damage` when the survival's hurt count grew, `equip`/`unequip` for each armour slot whose item changed (nothing on the first call), and one `elytra_glide` per glide the elytra counted (`Glided.glides`, every 10 gliding ticks); `render_anim/src/minecraft_players.rs` `movement` posts them for the host and each friend. `drop_on_death` takes the player's id and posts `entity_die` at the death spot for every death, kept inventory or not. A popped totem posts `item_interact_finish`.
+  - Vendored entities: `DamageState.damaged` (set when a hit takes health) becomes `entity_damage` at the mob in `EntityWorld::take_game_events`; `take_deaths` posts `entity_die` for each death before it hands the deaths (with their experience) back, also with `mob_drops` off; `stop_riding` posts `entity_dismount` from the rider at its vehicle (`rider_id`: a player as `PLAYER_TARGET` plus its id); `Body` gains `fly_dist`, `next_flap` and `flap_speed` (only chickens set it, from their own flap speed after each `ai_step`), and `movement_emission` posts `flap` in the air; a chicken laying an egg posts `entity_place`; endermen (`enderman::fits`) and shulkers post `teleport` at the spot they leave.
+  - Terrain: `ServerSim::mount` posts `entity_mount` from the player at the vehicle; shearing a sheep, a mooshroom or a snow golem posts `shear` from the player (`mob_actions.rs`); a hatched spawn egg posts `entity_place` at the spawn block, an egg on a spawner `block_change` (both commands now run with the acting player); bone meal that grows something posts `item_interact_finish` at the acting player's feet.
+- **Tests:**
+  - `vibrations::tests::eating_eight_blocks_away_powers_a_sensor_to_one` (the eat and the finish from the same spot: the eat wins, power `max(1, 15 - floor(15 / 8 × 8))` = 1).
+  - `server::tests::a_dead_cow_posts_entity_die_before_its_experience` (a player's blast kill near a sensor: the orbs are there and the sensor reads 15).
+  - `world::tests::a_hurt_cow_posts_entity_damage_its_death_entity_die_and_a_falling_chicken_flaps` (vendored entities: one `entity_damage` per hit that takes health, none for a weaker hit inside the cooldown; `entity_die` at the cow's spot queued by `take_deaths`; a chicken dropped from 5 blocks flaps, only in the air).
+  - `player::tests::a_helmet_put_on_is_heard_as_equip_and_taken_off_as_unequip` (also the hurt count and the glides), `elytra::tests::gliding_is_heard_every_ten_ticks_also_in_creative`.
+- **Decisions:**
+  - A player's hurt is read from the survival's hurt count (`Survival::hurts`, which MW2 damage through `observe` also raises), once per movement update, so several hurts between two updates are one `entity_damage`. A hurt whose damage absorption took entirely still counts when it came through MW2 (`observe` counts it); vanilla posts nothing then.
+  - Equipment is compared by item id per armour slot: a durability change is no `equip`. Mob equipment changes post nothing yet.
+  - `entity_die` of a player comes from `drop_on_death`, which every death passes through (the drop itself is still skipped with kept inventory).
+  - A mob's killing blow can lose its `entity_damage` when the dead mob is gone before the tick's events are taken; the `entity_die` from the same spot (15) outweighs it (7) for every listener anyway.
+  - Mounting is posted for players only (the one way the fork mounts at runtime); dismounting is posted for every rider that `stop_riding` takes off. A rider dropped because its vehicle died posts nothing.
+  - `EMITS_SOUNDS` (D0): `flap`, `entity_place` of an egg and `teleport` go through `Body.game_events` too, so D0's `Family::emits_sounds` does not drop them. To check at the D0 merge, with steps and swims.
+- **Not in the fork, so not posted:** chorus fruit (the fork does not teleport the eater), bats', parrots' and bees' flaps, `bounce` on slime blocks and beds, item entities hurt (`ItemEntity.hurtServer`), `entity_interact`/`entity_action`, and armour stands. **Left for later:** `shear` when shears cut a lead (E2 owns leads this round), mob equipment changes.
+- **Vendored files:** patched `entities/src/health.rs`, `movement.rs`, `chicken.rs`, `enderman.rs`, `world.rs`, `world/riding.rs`, `world/shulkers.rs` (and `world/game_events.rs` again).
+- **Test steps (survival; the same sensor and comparator line, 5 blocks away; 2 s between actions):**
+  1. Eat an apple: the line shows 8. Drink the milk bucket: 8. Crouched, eating is still heard (8).
+  2. Put the diamond helmet on from the inventory screen: 5; take it off: 4.
+  3. Hatch a chicken from its egg 4 blocks above the sensor's level on a pillar, so it drops off: its flaps light 1 while it falls (place the egg on top of a 4-high cobblestone pillar next to the edge; it walks off). Hatching it lights 14.
+  4. Shear a sheep from its egg near the sensor: 6.
+  5. Hatch a horse from its egg near the sensor and get on it with an empty hand: 6; crouch to get off (or let it throw you): 5.
+  6. Take fall damage (jump from a 5-block pillar next to the sensor): 7. Then build the pillar to 25 blocks and jump: the death next to the sensor lights 15.
+  7. Friend window: the friend eats next to the host's sensor: the host's line shows 8. **w08_friend_eats**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*8,minecraft:comparator*2,minecraft:redstone*32,minecraft:apple*16,minecraft:milk_bucket,minecraft:diamond_helmet,minecraft:chicken_spawn_egg*4,minecraft:sheep_spawn_egg*2,minecraft:shears,minecraft:horse_spawn_egg*2,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cooked_beef*16
+```
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -260,6 +306,8 @@ Group vibrations, commit 2: `EntitySnapshot` (sent to friends inside `ToClient::
 Group vibrations, commit 3: no message or codec change.
 
 Group vibrations-more, commit 1: no message or codec change.
+
+Group vibrations-more, commit 2: no message or codec change (`Body` and `DamageState` stay on the host).
 
 ## State doc changes
 

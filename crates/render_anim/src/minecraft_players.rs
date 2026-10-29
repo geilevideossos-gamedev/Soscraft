@@ -330,6 +330,11 @@ pub(crate) fn movement(
     if water.wet() {
         steps.air_peak = None;
     }
+    for event in steps.heard(survival.hurts(), inventory) {
+        if let Some(entities) = entities.as_mut() {
+            entities.game_event(u64::from(client.0), event, feet, None);
+        }
+    }
     let counts =
         crate::minecraft_riding::counts_steps(alive, player_mode.noclip(), riding.is_some());
     if let Some(last) = steps.last.filter(|_| counts) {
@@ -1198,6 +1203,12 @@ pub(crate) fn pop_totem(
 ) {
     let key = minecraft_survival::level::opener_key(uuid);
     entities.totem_pop(key, feet, PLAYER_WIDTH, height);
+    entities.game_event(
+        u64::from(client),
+        minecraft_terrain::game_events::ITEM_INTERACT_FINISH,
+        feet,
+        None,
+    );
     let event = minecraft_survival::heard::TOTEM_EVENT;
     let heard = minecraft_survival::heard::Heard::Player {
         client,
@@ -1246,14 +1257,24 @@ fn place(
 }
 
 pub(crate) fn drop_on_death(
+    client: u64,
     death_watch: &mut minecraft_survival::death::DeathWatch,
     inventory: &mut minecraftoss_player::inventory::Inventory,
     hand: &mut minecraft_survival::player::Hand,
     entities: &mut Entities,
 ) {
-    let Some(death) = death_watch.take().filter(|death| !death.keep_inventory) else {
+    let Some(death) = death_watch.take() else {
         return;
     };
+    entities.game_event(
+        client,
+        minecraft_terrain::game_events::ENTITY_DIE,
+        death.spot.feet,
+        None,
+    );
+    if death.keep_inventory {
+        return;
+    }
     let eye = glam::DVec3::from_array(death.spot.eye);
     for stack in minecraft_survival::death::dropped_on_death(&death, inventory) {
         entities.view.world_items.drop_on_death(stack, eye);
@@ -1751,7 +1772,7 @@ pub(crate) fn step_friend(
             hand,
             ..
         } = player;
-        drop_on_death(death_watch, inventory, hand, entities);
+        drop_on_death(u64::from(client.0), death_watch, inventory, hand, entities);
     }
     let (effects, (table, block, bench), bed, open_book) = friend_hand(
         player,

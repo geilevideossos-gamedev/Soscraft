@@ -1419,7 +1419,7 @@ fn update(
             yaw: mc_yaw,
             pitch: ps.viewangles[0],
         };
-        crate::minecraft_players::drop_on_death(death_watch, inventory, hand, entities);
+        crate::minecraft_players::drop_on_death(host_id, death_watch, inventory, hand, entities);
         crate::minecraft_inventory::throw(&mut entities.view.world_items, thrown, &thrower);
         ui.weapon_request = inventory_ui.weapon_request(inventory, arsenal.guns(), selected, ps.weapon).filter(|_| player_mode.interacts());
         let refused = ui.weapon_request.filter(|&weapon| sky_bits(&terrain.environment) != 0 && sim::voxel::needs_sky(authority.0.weapon_script_name(weapon)));

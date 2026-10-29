@@ -77,6 +77,9 @@ pub struct Body {
     pub levitation: Option<u8>,
     pub slow_falling: bool,
     pub game_events: Vec<(&'static str, DVec3, Option<String>)>,
+    pub fly_dist: f32,
+    pub next_flap: f32,
+    pub flap_speed: Option<f32>,
 }
 
 impl Body {
@@ -113,6 +116,9 @@ impl Body {
             levitation: None,
             slow_falling: false,
             game_events: Vec::new(),
+            fly_dist: 0.0,
+            next_flap: 1.0,
+            flap_speed: None,
         }
     }
 
@@ -201,6 +207,11 @@ impl Body {
         let supporting_pos = self.on_pos(world, 1.0e-5);
         let supporting = world.block(supporting_pos);
         self.move_dist += if climbable(supporting.as_ref()) { moved } else { horizontal };
+        self.fly_dist += moved;
+        if let Some(speed) = self.flap_speed.filter(|_| is_air(supporting.as_ref()) && self.fly_dist > self.next_flap) {
+            self.next_flap = self.fly_dist + speed / 2.0;
+            self.game_events.push(("minecraft:flap", self.position, None));
+        }
         if !(self.move_dist > self.next_step) || is_air(supporting.as_ref()) {
             return None;
         }

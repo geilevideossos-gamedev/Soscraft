@@ -206,6 +206,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             let Some(result) = entity.sheep.use_shears(loot) else { return outcome };
             if let ShearsResult::Sheared { drops, tool_damage } = result {
                 outcome.sound("entity.sheep.shear", position, 1.0, "friendly_volume");
+                world.game_event(crate::game_events::SHEAR, position, Some(crate::thrown::PLAYER_TARGET + actor.player), None);
                 for stack in drops {
                     for _ in 0..stack.count {
                         outcome.drops.push((ItemStack { count: 1, ..stack.clone() }, position + DVec3::Y));
@@ -290,6 +291,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             use minecraftoss_entities::snow_golem::{SHEAR_LOOT, SHEAR_SOUND};
             let Some((position, eye)) = world.shear_snow_golem(id) else { return outcome };
             outcome.sound(SHEAR_SOUND, position, 1.0, "players_volume");
+            world.game_event(crate::game_events::SHEAR, position, Some(crate::thrown::PLAYER_TARGET + actor.player), None);
             let at = position + DVec3::new(0.0, f64::from(eye), 0.0);
             let drops = actor.shearing_loot.as_deref_mut().and_then(|loot| loot.roll_items(SHEAR_LOOT));
             outcome.drops.extend(drops.into_iter().flatten().map(|stack| (stack, at)));
@@ -301,6 +303,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             let Some(position) = world.mooshroom_mut(id).map(|entity| entity.cow.body.position) else { return outcome };
             let Some(shearing) = world.shear_mooshroom(id) else { return outcome };
             outcome.sound("entity.mooshroom.shear", position, 1.0, "players_volume");
+            world.game_event(crate::game_events::SHEAR, position, Some(crate::thrown::PLAYER_TARGET + actor.player), None);
             for _ in 0..shearing.drop_count {
                 outcome.drops.push((ItemStack::new(shearing.drop_item, 1), position + DVec3::Y));
             }

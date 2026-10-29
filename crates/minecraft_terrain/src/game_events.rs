@@ -23,6 +23,15 @@ pub const FLUID_PLACE: &str = "minecraft:fluid_place";
 pub const FLUID_PICKUP: &str = "minecraft:fluid_pickup";
 pub const ENTITY_PLACE: &str = "minecraft:entity_place";
 pub const ENTITY_DIE: &str = "minecraft:entity_die";
+pub const ENTITY_DAMAGE: &str = "minecraft:entity_damage";
+pub const ENTITY_MOUNT: &str = "minecraft:entity_mount";
+pub const EAT: &str = "minecraft:eat";
+pub const DRINK: &str = "minecraft:drink";
+pub const EQUIP: &str = "minecraft:equip";
+pub const UNEQUIP: &str = "minecraft:unequip";
+pub const ELYTRA_GLIDE: &str = "minecraft:elytra_glide";
+pub const SHEAR: &str = "minecraft:shear";
+pub const ITEM_INTERACT_FINISH: &str = "minecraft:item_interact_finish";
 pub const DEFAULT_RADIUS: i32 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +131,11 @@ pub fn frequency(id: &str) -> i32 {
 
 pub fn radius(id: &str) -> i32 {
     find(id).map_or(DEFAULT_RADIUS, |event| event.radius)
+}
+
+pub fn consumed(drinking: bool) -> [&'static str; 2] {
+    let event = if drinking { DRINK } else { EAT };
+    [event, ITEM_INTERACT_FINISH]
 }
 
 pub fn item_use_event(held: &str, block: &str) -> &'static str {

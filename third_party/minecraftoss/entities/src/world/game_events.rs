@@ -29,15 +29,29 @@ impl EntityWorld {
     pub fn take_game_events(&mut self) -> Vec<MobGameEvent> {
         let ids: Vec<u64> = self.mob_ids().collect();
         for id in ids {
+            let damaged = self
+                .damage_state_mut(id)
+                .is_some_and(|damage| std::mem::take(&mut damage.damaged));
             let Some(body) = self.body_mut(id) else {
                 continue;
             };
             let moved: Vec<_> = body.game_events.drain(..).collect();
+            let at = body.position;
+            if damaged {
+                self.game_event("minecraft:entity_damage", at, Some(id), None);
+            }
             for (event, pos, affected) in moved {
                 self.game_event(event, pos, Some(id), affected);
             }
         }
         std::mem::take(&mut self.game_events)
+    }
+
+    pub(super) fn rider_id(rider: Rider) -> u64 {
+        match rider {
+            Rider::Mob(id) => id,
+            Rider::Player(player) => PLAYER_TARGET + player,
+        }
     }
 
     pub(super) fn arrow_landed(&mut self, id: u64, owner: u64, at: DVec3) {

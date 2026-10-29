@@ -4802,6 +4802,9 @@ impl EntityWorld {
             deaths.push((order, death));
         }
         deaths.sort_by_key(|&(order, _)| order);
+        for (_, death) in &deaths {
+            self.game_event("minecraft:entity_die", death.position, Some(death.id), None);
+        }
         if !mob_drops {
             return Vec::new();
         }
@@ -8725,6 +8728,34 @@ mod tests {
         assert_eq!((landed[0].owner, landed[0].mob), (Some(archer), None));
         assert_eq!(landed[0].pos, DVec3::new(20.5, 0.5, 4.5), "the centre of the block it struck");
         assert_eq!(landed[0].affected.as_deref(), Some("minecraft:stone"));
+    }
+
+    #[test]
+    fn a_hurt_cow_posts_entity_damage_its_death_entity_die_and_a_falling_chicken_flaps() {
+        let mut world = EntityWorld::default();
+        let cow = world.spawn_cow(Cow::new(DVec3::new(0.5, 1.0, 0.5)), true);
+        let blast = DVec3::new(0.5, 1.0, -1.5);
+        world.player_blast(Some(7), cow, 2.0, blast, 0.0);
+        let posted = |events: &[MobGameEvent], event: &str| events.iter().filter(|e| e.event == event && e.mob == Some(cow)).count();
+        assert_eq!(posted(&world.take_game_events(), "minecraft:entity_damage"), 1);
+        world.player_blast(Some(7), cow, 1.0, blast, 0.0);
+        assert_eq!(posted(&world.take_game_events(), "minecraft:entity_damage"), 0, "a weaker hit inside the cooldown takes nothing");
+        let at = world.cows()[0].cow.body.position;
+        world.player_blast(Some(7), cow, 40.0, blast, 0.0);
+        let deaths = world.take_deaths();
+        let events = world.take_game_events();
+        assert_eq!(posted(&events, "minecraft:entity_die"), 1, "{events:?}");
+        assert!(events.iter().filter(|e| e.event == "minecraft:entity_die").all(|e| e.pos == at));
+        assert_eq!(deaths.iter().map(|death| death.id).collect::<Vec<_>>(), vec![cow], "the death and its experience come with the event");
+        let chicken = world.spawn_chicken(Chicken::new(DVec3::new(4.5, 6.0, 0.5)), false);
+        let player = candidate(7, DVec3::new(4.5, 1.0, 12.5));
+        let mut flaps = Vec::new();
+        for _ in 0..80 {
+            world.tick_with_players(&mut Floor, &[player]);
+            flaps.extend(world.take_game_events().into_iter().filter(|e| e.event == "minecraft:flap" && e.mob == Some(chicken)));
+        }
+        assert!(!flaps.is_empty(), "it flaps as it falls");
+        assert!(flaps.iter().all(|e| e.pos.y > 1.0), "only in the air: {flaps:?}");
     }
 
     fn zombified_piglin(x: f64) -> Zombie {

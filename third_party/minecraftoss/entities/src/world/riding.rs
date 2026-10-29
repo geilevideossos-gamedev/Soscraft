@@ -461,6 +461,9 @@ impl EntityWorld {
             }
         };
         self.unlink(rider);
+        if let Some(at) = self.body_mut(vehicle).map(|body| body.position) {
+            self.game_event("minecraft:entity_dismount", at, Some(Self::rider_id(rider)), None);
+        }
         if let Rider::Mob(id) = rider {
             if let Some(body) = self.body_mut(id) {
                 body.position = spot;

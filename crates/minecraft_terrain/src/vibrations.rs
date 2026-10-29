@@ -703,6 +703,29 @@ mod tests {
     }
 
     #[test]
+    fn eating_eight_blocks_away_powers_a_sensor_to_one() {
+        let mut vibrations = sensor();
+        let mut heard = Heard::default();
+        let tags = EventTags::of(
+            &["minecraft:eat", game_events::ITEM_INTERACT_FINISH],
+            &[game_events::ITEM_INTERACT_FINISH],
+            &[],
+        );
+        let feet = DVec3::new(16.5, 64.0, 8.5);
+        for event in game_events::consumed(false) {
+            vibrations.post(
+                &tags,
+                &Posted::new(event, feet, 10).by(walker(false)),
+                &mut heard,
+            );
+        }
+        run(&mut vibrations, &mut heard, 11, 30);
+        assert_eq!(heard.received.len(), 1);
+        let (at, event, power, _) = heard.received[0];
+        assert_eq!((at, event, power), (SENSOR_AT, "minecraft:eat", 1));
+    }
+
+    #[test]
     fn a_wool_shell_occludes_and_one_open_side_does_not() {
         let mut shell = HashSet::new();
         for dx in -1..=1 {
