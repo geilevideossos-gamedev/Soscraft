@@ -1,4 +1,5 @@
 use super::*;
+use super::emissions::HorseStep;
 use crate::cow::InteractionResult;
 use crate::horse::{Feeding, HorseKind, HorseState};
 use crate::llama_ai::{Caravaner, Foe, LlamaContext, Seen};
@@ -74,8 +75,42 @@ pub(super) fn horse_movement_sounds(horse: &HorseState, baby: bool) -> MovementS
         "entity.horse.step"
     };
     MovementSounds {
-        horse_step: Some((step, "entity.horse.step_wood")),
+        horse_step: Some(HorseStep::Walk {
+            step,
+            wood: "entity.horse.step_wood",
+        }),
         ..MovementSounds::creature(None)
+    }
+}
+
+pub(super) fn horse_step_sounds(
+    horse: &mut HorseState,
+    body: &Body,
+    baby: bool,
+    carrying: bool,
+) -> MovementSounds {
+    let sounds = horse_movement_sounds(horse, baby);
+    if !carrying
+        || !horse.kind.can_gallop()
+        || !matches!(body.emission, Some(crate::movement::Emission::Step(..)))
+    {
+        return sounds;
+    }
+    horse.gallop_counter += 1;
+    let step = match horse.gallop_counter {
+        n if n > 5 && n % 3 == 0 => HorseStep::Gallop {
+            breathe: (horse.kind == HorseKind::Horse).then_some(if baby {
+                "entity.baby_horse.breathe"
+            } else {
+                "entity.horse.breathe"
+            }),
+        },
+        n if n <= 5 => HorseStep::Wood,
+        _ => HorseStep::Silent,
+    };
+    MovementSounds {
+        horse_step: Some(step),
+        ..sounds
     }
 }
 
@@ -203,6 +238,9 @@ impl CowEntity {
             self.look_control.pitch = controls.pitch * 0.5;
             self.body_rotation.body_yaw = yaw;
             let input = horse.ridden_input(cow.body.on_ground, controls.strafe, controls.forward);
+            if input.z <= 0.0 {
+                horse.gallop_counter = 0;
+            }
             if cow.body.on_ground {
                 if horse.jump_pending > 0.0 {
                     let scale = horse.jump_pending;
@@ -243,7 +281,7 @@ impl CowEntity {
                     &mut self.voices,
                 );
             }
-            let sounds = horse_movement_sounds(horse, cow.age.baby());
+            let sounds = horse_step_sounds(horse, &cow.body, cow.age.baby(), true);
             play_movement(
                 &mut cow.body,
                 self.tick_count,
@@ -1716,6 +1754,221 @@ mod tests {
             1,
             "and hands it to its rider"
         );
+    }
+
+    struct Sounding(&'static str);
+    impl World for Sounding {
+        fn block(&self, (_, y, _): Pos) -> Option<Block> {
+            (y < 64).then(|| Block::new("minecraft:grass_block"))
+        }
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+        fn step_sound(&self, pos: Pos) -> Option<(String, f32, f32)> {
+            self.block(pos).map(|_| (self.0.to_owned(), 1.0, 1.0))
+        }
+    }
+
+    fn gallop_counter(world: &mut EntityWorld, id: u64) -> i32 {
+        world
+            .cow_mut(id)
+            .unwrap()
+            .horse
+            .as_ref()
+            .unwrap()
+            .gallop_counter
+    }
+
+    fn ride_steps(
+        world: &mut EntityWorld,
+        id: u64,
+        ground: &mut Sounding,
+        ticks: usize,
+    ) -> Vec<(i32, Vec<String>)> {
+        let players = [player(0, DVec3::new(0.5, 65.0, 0.5))];
+        let mut steps = Vec::new();
+        for _ in 0..ticks {
+            let before = gallop_counter(world, id);
+            world.tick_with_players(ground, &players);
+            let heard: Vec<String> = world
+                .take_sounds()
+                .into_iter()
+                .map(|s| s.event)
+                .filter(|e| {
+                    [".step", ".step_wood", ".gallop", ".breathe"]
+                        .iter()
+                        .any(|end| e.ends_with(end))
+                })
+                .collect();
+            let after = gallop_counter(world, id);
+            if after != before || !heard.is_empty() {
+                steps.push((after, heard));
+            }
+        }
+        steps
+    }
+
+    fn ridden_hoofbeat(counter: i32, heard: &[String]) -> bool {
+        match counter {
+            1..=5 => heard == ["entity.horse.step_wood"],
+            c if c % 3 == 0 => {
+                heard.first().map(String::as_str) == Some("entity.horse.gallop")
+                    && heard[1..].iter().all(|e| e == "entity.horse.breathe")
+                    && heard.len() <= 2
+            }
+            _ => heard.is_empty(),
+        }
+    }
+
+    #[test]
+    fn a_ridden_horse_clops_five_times_then_gallops_every_third_step() {
+        for ground in ["block.grass.step", "block.wood.step"] {
+            let mut world = EntityWorld::default();
+            let id = ridden(&mut world, HorseKind::Horse, true, true);
+            steer(&mut world, 0.0, 1.0, false);
+            let steps = ride_steps(&mut world, id, &mut Sounding(ground), 200);
+            assert!(steps.len() >= 12, "{ground}: {steps:?}");
+            for (n, (counter, heard)) in steps.iter().enumerate() {
+                assert_eq!(*counter, n as i32 + 1, "{ground}: {steps:?}");
+                assert!(ridden_hoofbeat(*counter, heard), "{ground}: {steps:?}");
+            }
+            let gallops = steps
+                .iter()
+                .filter(|(_, heard)| heard.first().is_some_and(|e| e == "entity.horse.gallop"))
+                .count();
+            assert_eq!(gallops, steps.len() / 3 - 1, "{ground}: {steps:?}");
+        }
+    }
+
+    #[test]
+    fn stopping_resets_the_gallop() {
+        let mut world = EntityWorld::default();
+        let id = ridden(&mut world, HorseKind::Horse, true, true);
+        let mut ground = Sounding("block.grass.step");
+        steer(&mut world, 0.0, 1.0, false);
+        ride_steps(&mut world, id, &mut ground, 80);
+        assert!(gallop_counter(&mut world, id) > 5);
+        steer(&mut world, 0.0, 0.0, false);
+        ride_steps(&mut world, id, &mut ground, 30);
+        assert_eq!(gallop_counter(&mut world, id), 0, "letting go of W");
+        steer(&mut world, 0.0, 1.0, false);
+        let steps = ride_steps(&mut world, id, &mut ground, 80);
+        assert!(steps.len() >= 6, "{steps:?}");
+        for (n, (counter, heard)) in steps.iter().enumerate() {
+            assert_eq!(*counter, n as i32 + 1, "{steps:?}");
+            assert!(ridden_hoofbeat(*counter, heard), "{steps:?}");
+        }
+        steer(&mut world, 0.0, -1.0, false);
+        let steps = ride_steps(&mut world, id, &mut ground, 200);
+        let backing: Vec<_> = steps.iter().filter(|(_, heard)| !heard.is_empty()).collect();
+        assert!(backing.len() >= 3, "{steps:?}");
+        assert!(
+            backing
+                .iter()
+                .all(|(counter, heard)| *counter == 1 && heard == &["entity.horse.step_wood"]),
+            "backing up clops every step and never gallops: {steps:?}"
+        );
+    }
+
+    #[test]
+    fn a_ridden_donkey_and_an_unridden_horse_only_step() {
+        assert!(HorseKind::Horse.can_gallop());
+        for kind in [
+            HorseKind::Donkey,
+            HorseKind::Mule,
+            HorseKind::Llama,
+            HorseKind::TraderLlama,
+        ] {
+            assert!(!kind.can_gallop(), "{kind:?}");
+        }
+        for (ground, step) in [
+            ("block.grass.step", "entity.horse.step"),
+            ("block.wood.step", "entity.horse.step_wood"),
+        ] {
+            let mut world = EntityWorld::default();
+            let id = ridden(&mut world, HorseKind::Donkey, true, true);
+            steer(&mut world, 0.0, 1.0, false);
+            let steps = ride_steps(&mut world, id, &mut Sounding(ground), 200);
+            assert!(steps.len() >= 8, "{ground}: {steps:?}");
+            assert!(
+                steps
+                    .iter()
+                    .all(|(counter, heard)| *counter == 0 && heard == &[step]),
+                "{ground}: {steps:?}"
+            );
+        }
+        let mut body = crate::cow::Cow::new(DVec3::new(0.5, 64.0, 0.5)).body;
+        for (baby, step) in [(false, "entity.horse.step"), (true, "entity.baby_horse.step")] {
+            let mut horse = HorseState::new(HorseKind::Horse);
+            horse.gallop_counter = 8;
+            for (ground, heard) in [
+                ("block.grass.step", step),
+                ("block.cherry_wood.step", "entity.horse.step_wood"),
+            ] {
+                body.emission = Some(crate::movement::Emission::Step(
+                    Some((ground.to_owned(), 0.15, 0.8)),
+                    false,
+                ));
+                let sounds = horse_step_sounds(&mut horse, &body, baby, false);
+                assert_eq!(horse.gallop_counter, 8, "an unridden horse never counts");
+                let mut voices = Vec::new();
+                play_movement(&mut body, 0, &mut LegacyRandom::new(1), &mut voices, sounds);
+                let voices: Vec<_> = voices.into_iter().map(|(voice, _)| voice).collect();
+                assert_eq!(voices, [Voice::Event(heard, 0.15, 0.8)], "{baby} {ground}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_gallop_sometimes_breathes() {
+        let mut body = crate::cow::Cow::new(DVec3::new(0.5, 64.0, 0.5)).body;
+        let step = |body: &mut Body| {
+            body.emission = Some(crate::movement::Emission::Step(
+                Some(("block.grass.step".to_owned(), 0.15 * 0.8, 1.2)),
+                false,
+            ));
+        };
+        for (baby, breath) in [
+            (false, "entity.horse.breathe"),
+            (true, "entity.baby_horse.breathe"),
+        ] {
+            let mut horse = HorseState::new(HorseKind::Horse);
+            horse.gallop_counter = 5;
+            step(&mut body);
+            let sounds = horse_step_sounds(&mut horse, &body, baby, true);
+            assert_eq!(horse.gallop_counter, 6);
+            assert_eq!(
+                sounds.horse_step,
+                Some(HorseStep::Gallop {
+                    breathe: Some(breath)
+                })
+            );
+            let mut random = LegacyRandom::new(42);
+            let mut rolls = LegacyRandom::new(42);
+            let mut breaths = 0;
+            for _ in 0..200 {
+                step(&mut body);
+                let mut voices = Vec::new();
+                play_movement(&mut body, 0, &mut random, &mut voices, sounds);
+                let voices: Vec<_> = voices.into_iter().map(|(voice, _)| voice).collect();
+                assert_eq!(
+                    voices[0],
+                    Voice::Event("entity.horse.gallop", 0.15 * 0.8, 1.2)
+                );
+                if rolls.next_int(10) == 0 {
+                    breaths += 1;
+                    assert_eq!(voices.len(), 2, "{voices:?}");
+                    let Voice::Event(event, volume, pitch) = &voices[1] else {
+                        panic!("{voices:?}");
+                    };
+                    assert!(
+                        *event == breath && (volume - 0.48).abs() < 1.0e-6 && *pitch == 1.2,
+                        "{voices:?}"
+                    );
+                } else {
+                    assert_eq!(voices.len(), 1, "{voices:?}");
+                }
+            }
+            assert!((5..40).contains(&breaths), "{breaths}");
+        }
     }
 
     #[test]

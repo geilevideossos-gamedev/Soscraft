@@ -496,3 +496,44 @@ Commit: "Friends see their mount's hearts", the one after `ac0b573a`.
 ```
 IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:golden_carrot*16,minecraft:cooked_beef*16
 ```
+
+### Ridden horses gallop and breathe
+
+Commit: "Minecraft ridden horses gallop and breathe", the one after `0a6ad1ec`.
+
+- **Cause** (as in the brief, re-checked at `0a6ad1ec`): `equines.rs` `horse_movement_sounds` only ever picked `entity.horse.step` (a foal: `entity.baby_horse.step`), or `entity.horse.step_wood` on a wooden block, and `HorseState` had no gallop counter, so a ridden horse sounded like a walking one.
+- **Vanilla 26.3** (javap):
+  - `AbstractHorse.playStepSound`: while it carries anyone (`isVehicle`) and `canGallop`, `gallopSoundCounter++`. Above 5 and divisible by 3 it calls `playGallopSound`; at 5 or less it plays `entity.horse.step_wood` at the block's volume × 0.15 and pitch, even on grass; otherwise nothing. Carrying no one, wooden sound types play `step_wood` and others `step` (a foal: `entity.baby_horse.step`).
+  - `AbstractHorse.playGallopSound`: `entity.horse.gallop` at volume × 0.15 and the block's pitch. `Horse.playGallopSound` adds `random.nextInt(10) == 0` → `entity.horse.breathe` (a foal: `entity.baby_horse.breathe`) at volume × 0.6.
+  - `canGallop` is true in `AbstractHorse` and set false in `AbstractChestedHorse`'s constructor, so donkeys, mules and llamas never gallop. `Donkey` and `Mule` do not override `playStepSound`.
+  - `AbstractHorse.tickRidden`: `gallopSoundCounter = 0` whenever the ridden input's `z <= 0` (no forward key, backing up, or rearing).
+- **Changed:**
+  - `third_party/minecraftoss/entities/src/horse.rs`: `HorseKind::can_gallop()` (horses only), next to `wears_armor`; `HorseState.gallop_counter`, next to the other counters, 0 at first and never saved (vanilla does not save it either).
+  - `world/emissions.rs`: `MovementSounds.horse_step` is now a `HorseStep`: `Walk { step, wood }` (the old pair), `Wood`, `Gallop { breathe }` and `Silent`. `play_movement` plays `Wood` as `entity.horse.step_wood` and `Gallop` as `entity.horse.gallop`, both at the block's step volume (already × 0.15) and pitch; a gallop with a breath draws `random.next_int(10)` and on 0 plays it at that volume ÷ 0.15 × 0.6.
+  - `world/equines.rs`: `horse_step_sounds(horse, body, baby, carrying)` beside `horse_movement_sounds`. On a step emission of a carrying horse that can gallop it counts and picks `Wood`, `Gallop` or `Silent`; otherwise it gives the walking sounds unchanged. `ride_tick` resets the counter when the ridden input's `z <= 0` and calls it with `carrying` true.
+  - `world.rs`: the two cow-tick sound lines (the grazing or rearing horse and the horse on its own AI) take `entity.horse.as_mut()` and call `horse_step_sounds` with `ride.carrying`.
+- **Tests** (`minecraftoss-entities` `world::equines::tests`, on a flat test ground with a chosen step sound at volume and pitch 1):
+  - `a_ridden_horse_clops_five_times_then_gallops_every_third_step`: holding W for 200 ticks over grass and over wood, the counter goes up by one each step; steps 1-5 are `entity.horse.step_wood` only, steps 6, 9, 12, ... are `entity.horse.gallop` (at most one `entity.horse.breathe` after it), and the steps between are silent.
+  - `stopping_resets_the_gallop`: after a gallop, letting go of W leaves the counter at 0; pressing W again starts with five wooden clops; backing up (S) makes every step a wooden clop at counter 1 and never a gallop.
+  - `a_ridden_donkey_and_an_unridden_horse_only_step`: only horses can gallop; a ridden donkey steps `entity.horse.step` on grass and `entity.horse.step_wood` on wood and never counts; an unridden horse (and a foal, `entity.baby_horse.step`) never counts and steps as before, wooden on cherry wood.
+  - `a_gallop_sometimes_breathes`: a gallop names `entity.horse.breathe` (a foal `entity.baby_horse.breathe`); over 200 gallops with a seeded random, the breath comes exactly when `next_int(10)` gives 0, at 0.48 for a block of volume 0.8 and at the block's pitch, and the gallop at 0.12.
+  - All 415 `minecraftoss-entities` tests pass; `check -p launcher` passes.
+- **Decisions:**
+  - The counting is a new `horse_step_sounds` beside `horse_movement_sounds` instead of a new signature for it: `CowEntity::movement_sounds` (`world.rs`, the fluid splash, which takes `&self`) keeps calling the old one, so that line is untouched.
+  - Whether the horse carries anyone is passed in (`ride.carrying` in the cow tick, `true` in `ride_tick`) rather than read from `HorseState.ridden`, which is set at the end of each tick and so is one tick late on mounting and dismounting; vanilla's `isVehicle` is the current state.
+  - `Gallop { breathe: Option<..> }`: only `Horse.playGallopSound` breathes, so the skeleton and zombie horses of track M can gallop with `None` (and get `can_gallop` true).
+  - The counter counts every step emission, also one where the world knows no step sound (vanilla only skips a liquid block, which never makes a step here); such a step plays nothing.
+  - A wild horse bucking its rider counts too (it is a vehicle), and its counter is only reset by a rider's steering, which needs a saddle, as in vanilla.
+- **Owner's test steps** (survival, a new world, by day on flat grass, the kit below; these are sounds, so no screenshots: note what you hear for each step):
+  1. **The gallop.** Run `/summon minecraft:horse ~ ~ ~2 {Tame:1b}`, right-click it with a saddle and ride it. Hold W across the grass. The first five hoofbeats are hollow wooden clops, then you hear a gallop every third step with quiet steps between, and now and then a snort.
+  2. **Stopping.** Let go of W until the horse stands still, then hold W again: the five wooden clops come back before the gallop starts again.
+  3. **Backing up.** Hold S: the horse backs up slowly with a wooden clop on every step and never gallops.
+  4. **Planks.** Run `/fill ~ ~-1 ~ ~2 ~-1 ~30 oak_planks` while riding (a plank strip in front of you, facing +Z; or lay the kit's planks by hand) and ride along it holding W: the same pattern, five clops, then a gallop every third step.
+  5. **On its own.** Dismount (crouch) and step back a few blocks. When the horse wanders by itself you hear its ordinary hoof steps on grass and wooden clops on the planks, never a gallop.
+  6. **A donkey.** Run `/summon minecraft:donkey ~ ~ ~2 {Tame:1b}`, saddle it and ride it holding W: ordinary hoof steps only (wooden clops on the planks), no gallop and no snort.
+  7. **Two windows** (host H, friend F, `scripts\mp-local.ps1` or over the relay, both on this build): F summons, saddles and rides a tame horse past H, holding W. H hears F's horse clop five times and then gallop.
+- **Kit** (3 backpack slots; saddles do not stack):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:saddle,minecraft:saddle,minecraft:oak_planks*64
+```
