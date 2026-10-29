@@ -1,4 +1,6 @@
-use crate::brain_behaviors::{Living, MoveSink, Track, WalkGoal, Walker, block_of, find, shuffled};
+use crate::brain_behaviors::{
+    Living, MoveSink, Pos, Track, WalkGoal, Walker, block_of, find, shuffled,
+};
 use crate::fluid::FluidFrame;
 use crate::monster_ai::Target;
 use crate::movement::Body;
@@ -35,8 +37,23 @@ pub const GIVE_UP_REACHING: i64 = 200;
 pub const HURT_MEMORY_TICKS: i32 = 40;
 pub const SWIM_CHANCE: f32 = 0.8;
 pub const SIGHT_RANGE: f64 = 50.0;
+pub const SHOOT_AFTER_JUMP_TICKS: i64 = 100;
+pub const JUMP_DURATION: i64 = 200;
+pub const INHALING_TICKS: i64 = 10;
+pub const JUMP_COOLDOWN_TICKS: i64 = 10;
+pub const JUMP_COOLDOWN_WHEN_HURT_TICKS: i64 = 2;
+pub const AIR_ABOVE: i32 = 4;
+pub const FOLLOW_RANGE: f64 = 24.0;
+pub const JUMP_ANGLES: [i32; 5] = [40, 55, 60, 75, 80];
+pub const MAX_JUMP_VELOCITY: f32 = 0.058_333_334 * FOLLOW_RANGE as f32;
+pub const GRAVITY: f64 = 0.08;
+pub const TOO_CLOSE_TO_JUMP: f32 = 4.0;
 pub const INHALE_SOUND: &str = "entity.breeze.inhale";
 pub const SHOOT_SOUND: &str = "entity.breeze.shoot";
+pub const SLIDE_SOUND: &str = "entity.breeze.slide";
+pub const CHARGE_SOUND: &str = "entity.breeze.charge";
+pub const JUMP_SOUND: &str = "entity.breeze.jump";
+pub const LAND_SOUND: &str = "entity.breeze.land";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Pose {
@@ -69,6 +86,8 @@ pub struct Actions {
     pub shot: Option<Shot>,
     pub jump: bool,
     pub sounds: Vec<(&'static str, f32, f32)>,
+    pub leap: Option<DVec3>,
+    pub discard_friction: Option<bool>,
 }
 
 pub struct Ctx<'a> {
@@ -111,6 +130,13 @@ impl Ctx<'_> {
         }
     }
 
+    fn head_yaw_of(&self, target: Target) -> f32 {
+        self.head_yaws
+            .iter()
+            .find(|(id, _)| *id == target)
+            .map_or(0.0, |(_, yaw)| *yaw)
+    }
+
     fn deep_in_water(&self) -> bool {
         self.fluid.in_water() && self.fluid.water_height > f64::from(self.eye_height)
     }
@@ -138,6 +164,87 @@ pub fn within_inner_circle(position: DVec3, at: DVec3) -> bool {
     );
     let (dx, dz) = (at.x - centre.x, at.z - centre.z);
     dx * dx + dz * dz < INNER_CIRCLE * INNER_CIRCLE && (at.y - centre.y).abs() < INNER_CIRCLE_HEIGHT
+}
+
+fn centre_of(pos: Pos) -> DVec3 {
+    DVec3::new(
+        f64::from(pos.0) + 0.5,
+        f64::from(pos.1) + 0.5,
+        f64::from(pos.2) + 0.5,
+    )
+}
+
+fn passable(world: &dyn World, pos: Pos) -> bool {
+    match world.block(pos) {
+        None => true,
+        Some(block) => {
+            matches!(
+                block.id.as_str(),
+                "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air" | "minecraft:water"
+            ) || block.property("waterlogged") == Some("true")
+        }
+    }
+}
+
+pub fn can_jump_from(world: &dyn World, feet: Pos) -> bool {
+    if world
+        .block(feet)
+        .is_some_and(|block| block.id == "minecraft:honey_block")
+    {
+        return false;
+    }
+    (1..=AIR_ABOVE).all(|up| passable(world, (feet.0, feet.1 + up, feet.2)))
+}
+
+pub fn snap_to_surface(world: &dyn World, at: DVec3) -> Option<Pos> {
+    for reach in [-10.0, 10.0] {
+        if let Some((_, hit)) = crate::sight::clip(world, at, at + DVec3::Y * reach) {
+            let (x, y, z) = block_of(hit);
+            return Some((x, y + 1, z));
+        }
+    }
+    None
+}
+
+pub fn dangerous(world: &dyn World, pos: Pos) -> bool {
+    world.block(pos).is_some_and(|block| {
+        let lit = block.property("lit") == Some("true");
+        match block.id.as_str() {
+            "minecraft:fire"
+            | "minecraft:soul_fire"
+            | "minecraft:lava"
+            | "minecraft:magma_block"
+            | "minecraft:lava_cauldron"
+            | "minecraft:wither_rose"
+            | "minecraft:sweet_berry_bush"
+            | "minecraft:cactus"
+            | "minecraft:powder_snow" => true,
+            "minecraft:campfire" | "minecraft:soul_campfire" => lit,
+            _ => false,
+        }
+    })
+}
+
+pub fn jump_vector(from: DVec3, target: DVec3, max: f32, angle: i32) -> Option<DVec3> {
+    let towards = crate::enderman::normalize(DVec3::new(target.x - from.x, 0.0, target.z - from.z));
+    let diff = target - towards * 0.5 - from;
+    let rad = angle as f32 * std::f32::consts::PI / 180.0;
+    let heading = diff.z.atan2(diff.x);
+    let horizontal_sq = DVec3::new(diff.x, 0.0, diff.z).length_squared();
+    let horizontal = horizontal_sq.sqrt();
+    let sin_double = f64::from(2.0 * rad).sin();
+    let cos_sq = f64::from(rad).cos().powf(2.0);
+    let speed_sq = horizontal_sq * GRAVITY / (horizontal * sin_double - 2.0 * diff.y * cos_sq);
+    if speed_sq < 0.0 {
+        return None;
+    }
+    let speed = speed_sq.sqrt();
+    if speed > f64::from(max) {
+        return None;
+    }
+    let along = speed * f64::from(rad).cos();
+    let up = speed * f64::from(rad).sin();
+    Some(DVec3::new(along * heading.cos(), up, along * heading.sin()) * f64::from(0.95_f32))
 }
 
 pub fn has_line_of_sight(world: &dyn World, from: DVec3, to: DVec3) -> bool {
@@ -179,8 +286,13 @@ pub struct Brain {
     pub shoot_cooldown: Slot<()>,
     pub shoot_charging: Slot<()>,
     pub shoot_recovering: Slot<()>,
+    pub jump_cooldown: Slot<()>,
+    pub jump_inhaling: Slot<()>,
+    pub jump_target: Option<Pos>,
+    pub leaving_water: bool,
     attackable_for: i32,
     shooting_until: Option<i64>,
+    jumping_until: Option<i64>,
     pub slide: MoveSink,
     idle_until: Option<i64>,
 }
@@ -210,6 +322,10 @@ impl Brain {
         self.shooting_until.is_some()
     }
 
+    pub fn jumping(&self) -> bool {
+        self.jumping_until.is_some()
+    }
+
     fn forget(&mut self) {
         self.walk_target.tick();
         self.cant_reach_walk_target_since.tick();
@@ -217,6 +333,8 @@ impl Brain {
         self.shoot_cooldown.tick();
         self.shoot_charging.tick();
         self.shoot_recovering.tick();
+        self.jump_cooldown.tick();
+        self.jump_inhaling.tick();
     }
 
     fn sense(&mut self, ctx: &mut Ctx) {
@@ -260,8 +378,9 @@ impl Brain {
             Activity::Fight => self.start_shoot(ctx, out),
             Activity::Idle => self.start_attacking(ctx, self.hurt_by.flatten()),
         }
-        if self.activity == Activity::Idle {
-            self.start_slide_to_target(ctx);
+        match self.activity {
+            Activity::Fight => self.start_long_jump(ctx, out),
+            Activity::Idle => self.start_slide_to_target(ctx, out),
         }
         match self.activity {
             Activity::Fight => self.shoot_when_stuck(ctx),
@@ -294,6 +413,13 @@ impl Brain {
                 self.stop_shoot();
             } else {
                 self.tick_shoot(ctx, out);
+            }
+        }
+        if let Some(end) = self.jumping_until {
+            if ctx.time > end || self.pose == Pose::Standing || self.jump_cooldown.present() {
+                self.stop_long_jump();
+            } else {
+                self.tick_long_jump(ctx, out);
             }
         }
         if self.idle_until.is_some_and(|end| ctx.time > end) {
@@ -353,6 +479,7 @@ impl Brain {
             || self.shoot_recovering.present()
             || !self.shoot.present()
             || self.walk_target.present()
+            || self.jump_target.is_some()
             || self.pose != Pose::Standing
         {
             return;
@@ -411,7 +538,12 @@ impl Brain {
     }
 
     fn shoot_when_stuck(&mut self, ctx: &mut Ctx) {
-        if self.attack_target.is_none() || self.walk_target.present() || self.shoot.present() {
+        if self.attack_target.is_none()
+            || self.walk_target.present()
+            || self.shoot.present()
+            || self.jump_inhaling.present()
+            || self.jump_target.is_some()
+        {
             return;
         }
         if ctx.passenger || ctx.fluid.in_water() || ctx.levitating {
@@ -419,9 +551,135 @@ impl Brain {
         }
     }
 
+    fn can_long_jump(&mut self, ctx: &mut Ctx) -> bool {
+        if (!ctx.body.on_ground && !ctx.fluid.in_water())
+            || ctx.deep_in_water()
+            || ctx.fluid.in_lava()
+        {
+            return false;
+        }
+        if self.jump_target.is_some() {
+            return true;
+        }
+        let Some(target) = self
+            .attack_target
+            .and_then(|target| find(ctx.others, target))
+            .copied()
+        else {
+            return false;
+        };
+        let position = ctx.position();
+        if target.position.distance_squared(position) >= FOLLOW_RANGE * FOLLOW_RANGE {
+            self.attack_target = None;
+            return false;
+        }
+        if target.position.distance(position) as f32 - TOO_CLOSE_TO_JUMP <= 0.0 {
+            return false;
+        }
+        if !can_jump_from(ctx.world, block_of(position)) {
+            return false;
+        }
+        let behind = point_behind(target.position, ctx.head_yaw_of(target.target), ctx.random);
+        let Some(spot) = snap_to_surface(ctx.world, behind) else {
+            return false;
+        };
+        if dangerous(ctx.world, (spot.0, spot.1 - 1, spot.2)) {
+            return false;
+        }
+        let centre = centre_of(spot);
+        let above = centre_of((spot.0, spot.1 + AIR_ABOVE, spot.2));
+        if !has_line_of_sight(ctx.world, position, centre)
+            && !has_line_of_sight(ctx.world, position, above)
+        {
+            return false;
+        }
+        self.jump_target = Some(spot);
+        true
+    }
+
+    fn start_long_jump(&mut self, ctx: &mut Ctx, out: &mut Actions) {
+        if self.jumping_until.is_some()
+            || self.attack_target.is_none()
+            || self.jump_cooldown.present()
+            || self.shoot.present()
+            || self.walk_target.present()
+        {
+            return;
+        }
+        if !self.can_long_jump(ctx) {
+            return;
+        }
+        self.jumping_until = Some(ctx.time + JUMP_DURATION);
+        if !self.jump_inhaling.present() {
+            self.jump_inhaling.set_for((), INHALING_TICKS);
+        }
+        self.pose = Pose::Inhaling;
+        out.sounds.push((CHARGE_SOUND, 1.0, 1.0));
+        if let Some(spot) = self.jump_target {
+            out.face = Some(centre_of(spot));
+        }
+    }
+
+    fn tick_long_jump(&mut self, ctx: &mut Ctx, out: &mut Actions) {
+        let in_water = ctx.fluid.in_water();
+        if !in_water && self.leaving_water {
+            self.leaving_water = false;
+        }
+        if !self.jump_inhaling.present() && self.pose == Pose::Inhaling {
+            let position = ctx.position();
+            let leap = self.jump_target.and_then(|spot| {
+                let target = DVec3::new(
+                    f64::from(spot.0) + 0.5,
+                    f64::from(spot.1),
+                    f64::from(spot.2) + 0.5,
+                );
+                let mut angles = JUMP_ANGLES;
+                crate::raid::shuffle(&mut angles, ctx.random);
+                angles
+                    .into_iter()
+                    .find_map(|angle| jump_vector(position, target, MAX_JUMP_VELOCITY, angle))
+            });
+            let Some(leap) = leap else {
+                self.pose = Pose::Standing;
+                return;
+            };
+            if in_water {
+                self.leaving_water = true;
+            }
+            out.sounds.push((JUMP_SOUND, 1.0, 1.0));
+            self.pose = Pose::LongJumping;
+            out.discard_friction = Some(true);
+            out.leap = Some(leap);
+        } else if self.pose == Pose::LongJumping
+            && (ctx.body.on_ground || (in_water && !self.leaving_water))
+        {
+            out.sounds.push((LAND_SOUND, 1.0, 1.0));
+            self.pose = Pose::Standing;
+            out.discard_friction = Some(false);
+            let cooldown = if self.hurt_by.is_some() {
+                JUMP_COOLDOWN_WHEN_HURT_TICKS
+            } else {
+                JUMP_COOLDOWN_TICKS
+            };
+            self.jump_cooldown.set_for((), cooldown);
+            self.shoot.set_for((), SHOOT_AFTER_JUMP_TICKS);
+        }
+    }
+
+    fn stop_long_jump(&mut self) {
+        self.jumping_until = None;
+        if matches!(self.pose, Pose::LongJumping | Pose::Inhaling) {
+            self.pose = Pose::Standing;
+        }
+        self.jump_target = None;
+        self.jump_inhaling.erase();
+        self.leaving_water = false;
+    }
+
     fn start_slide(&mut self, ctx: &mut Ctx) {
         if self.walk_target.present()
             || self.shoot.present()
+            || self.jump_cooldown.present()
             || !ctx.body.on_ground
             || ctx.fluid.in_water()
             || self.pose != Pose::Standing
@@ -455,11 +713,7 @@ impl Brain {
         }
         let spot = spot.unwrap_or_else(|| {
             if ctx.random.next_boolean() {
-                let yaw = ctx
-                    .head_yaws
-                    .iter()
-                    .find(|(id, _)| *id == target.target)
-                    .map_or(0.0, |(_, yaw)| *yaw);
+                let yaw = ctx.head_yaw_of(target.target);
                 point_behind(target.position, yaw, ctx.random)
             } else {
                 point_in_middle_circle(position, target.position, ctx.random)
@@ -472,7 +726,7 @@ impl Brain {
         });
     }
 
-    fn start_slide_to_target(&mut self, ctx: &mut Ctx) {
+    fn start_slide_to_target(&mut self, ctx: &mut Ctx, out: &mut Actions) {
         if self.slide.running() {
             return;
         }
@@ -485,6 +739,7 @@ impl Brain {
         );
         if self.slide.running() {
             self.pose = Pose::Sliding;
+            out.sounds.push((SLIDE_SOUND, 1.0, 1.0));
         }
     }
 
@@ -572,12 +827,16 @@ mod tests {
         }
 
         fn tick(&mut self, brain: &mut Brain, time: i64) -> Actions {
+            self.tick_in(brain, time, &Floor)
+        }
+
+        fn tick_in(&mut self, brain: &mut Brain, time: i64, world: &dyn World) -> Actions {
             let mut ctx = Ctx {
                 body: &self.body,
                 eye_height: 1.3452,
                 others: &self.others,
                 head_yaws: &[],
-                world: &Floor,
+                world,
                 time,
                 tick_count: time as i32,
                 difficulty: 2,
@@ -637,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn a_target_beyond_sixteen_blocks_cancels_the_shot() {
+    fn a_target_beyond_sixteen_blocks_cancels_the_shot_for_a_jump_or_a_slide() {
         let mut rig = Rig::new(DVec3::new(0.5, 64.0, 17.5));
         let mut brain = Brain {
             activity: Activity::Fight,
@@ -646,14 +905,20 @@ mod tests {
             ..Brain::default()
         };
         brain.shoot.set_for((), SHOOT_AFTER_SLIDE_TICKS);
+        let mut roofed = brain.clone();
         let out = rig.tick(&mut brain, 100);
-        assert!(out.sounds.is_empty() && !brain.shooting());
+        assert!(!brain.shooting() && !out.sounds.contains(&(INHALE_SOUND, 1.0, 1.0)));
         assert!(!brain.shoot.present(), "the shot is forgotten");
-        assert!(brain.walk_target.present(), "so it slides instead");
+        assert!(brain.jumping(), "so it jumps instead");
+        assert_eq!(out.sounds, vec![(CHARGE_SOUND, 1.0, 1.0)]);
+        let low = Room(vec![((0, 67, 0), Block::new("minecraft:stone"))]);
+        let out = rig.tick_in(&mut roofed, 100, &low);
+        assert!(!roofed.shooting() && !roofed.jumping() && out.sounds.is_empty());
+        assert!(roofed.walk_target.present(), "or under a roof it slides");
     }
 
     #[test]
-    fn a_breeze_near_its_target_slides_away_and_far_from_it_slides_in() {
+    fn a_breeze_near_its_target_slides_away_and_far_from_it_under_a_roof_slides_in() {
         let target = DVec3::new(0.5, 64.0, 2.5);
         let mut rig = Rig::new(target);
         let mut brain = Brain {
@@ -684,7 +949,8 @@ mod tests {
                 attackable_for: ATTACKABLE_MEMORY,
                 ..Brain::default()
             };
-            rig.tick(&mut brain, 100);
+            let low = Room(vec![((0, 67, 0), Block::new("minecraft:stone"))]);
+            rig.tick_in(&mut brain, 100, &low);
             let Some(Track::Block((x, _, z))) = brain.walk_target.get().map(|goal| goal.target)
             else {
                 panic!("it slides");
@@ -718,5 +984,83 @@ mod tests {
             behind > 80,
             "a target facing south has its back to the north: {behind}"
         );
+    }
+
+    #[test]
+    fn the_jump_vector_lands_short_of_its_target_within_the_speed_limit() {
+        let from = DVec3::new(0.5, 64.0, 0.5);
+        let target = DVec3::new(0.5, 65.0, 10.5);
+        for angle in JUMP_ANGLES {
+            let Some(mut velocity) = jump_vector(from, target, MAX_JUMP_VELOCITY, angle) else {
+                continue;
+            };
+            assert!(velocity.length() <= f64::from(MAX_JUMP_VELOCITY), "{angle}");
+            let mut at = from;
+            for _ in 0..200 {
+                at += velocity;
+                velocity.y -= GRAVITY;
+                if velocity.y < 0.0 && at.y <= target.y {
+                    break;
+                }
+            }
+            assert!(at.z > 7.0 && at.z < 10.5, "{angle}: {at}");
+        }
+        assert!(
+            JUMP_ANGLES
+                .iter()
+                .any(|&angle| jump_vector(from, target, MAX_JUMP_VELOCITY, angle).is_some())
+        );
+        let far = DVec3::new(0.5, 64.0, 40.5);
+        assert!(
+            JUMP_ANGLES
+                .iter()
+                .all(|&angle| jump_vector(from, far, MAX_JUMP_VELOCITY, angle).is_none())
+        );
+        assert!((MAX_JUMP_VELOCITY - 1.4).abs() < 1.0e-6);
+    }
+
+    struct Room(Vec<(Pos, Block)>);
+
+    impl World for Room {
+        fn block(&self, pos: Pos) -> Option<Block> {
+            if let Some((_, block)) = self.0.iter().find(|(at, _)| *at == pos) {
+                return Some(block.clone());
+            }
+            (pos.1 < 64).then(|| Block::new("minecraft:stone"))
+        }
+
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+    }
+
+    #[test]
+    fn a_breeze_needs_four_blocks_of_air_or_water_and_no_honey_to_jump() {
+        assert!(can_jump_from(&Floor, (0, 64, 0)));
+        let water = Room(vec![((0, 65, 0), Block::new("minecraft:water"))]);
+        assert!(can_jump_from(&water, (0, 64, 0)));
+        let low = Room(vec![((0, 68, 0), Block::new("minecraft:stone"))]);
+        assert!(!can_jump_from(&low, (0, 64, 0)));
+        let high = Room(vec![((0, 69, 0), Block::new("minecraft:stone"))]);
+        assert!(can_jump_from(&high, (0, 64, 0)));
+        let honey = Room(vec![((0, 64, 0), Block::new("minecraft:honey_block"))]);
+        assert!(!can_jump_from(&honey, (0, 64, 0)));
+    }
+
+    #[test]
+    fn a_jump_spot_sits_one_above_the_surface_and_hazards_refuse_it() {
+        assert_eq!(
+            snap_to_surface(&Floor, DVec3::new(3.5, 66.0, 3.5)),
+            Some((3, 65, 3))
+        );
+        let lit = Block::new("minecraft:campfire").with("lit", "true");
+        let out = Block::new("minecraft:campfire").with("lit", "false");
+        let room = Room(vec![
+            ((0, 64, 0), Block::new("minecraft:lava")),
+            ((1, 64, 0), lit),
+            ((2, 64, 0), out),
+            ((3, 64, 0), Block::new("minecraft:sweet_berry_bush")),
+        ]);
+        assert!(dangerous(&room, (0, 64, 0)) && dangerous(&room, (1, 64, 0)));
+        assert!(!dangerous(&room, (2, 64, 0)) && dangerous(&room, (3, 64, 0)));
+        assert!(!dangerous(&room, (4, 63, 0)));
     }
 }

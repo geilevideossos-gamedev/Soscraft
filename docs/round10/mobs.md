@@ -29,7 +29,7 @@ A MW2 bullet finds a mob through one number: the kind in the top byte, the entit
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 52 | Breeze | trial chambers | wind charge burst (`wind.rs`), wind charges trigger blocks (f142f9c1), `BreezeAnimation` readable | long jump, deflecting projectiles, its jump, slide, land and whirl sounds, `BreezeModel`, keyframes | L | `breezes` | 40 | live | "Minecraft breezes live in the entity world and shoot wind charges" |
+| 52 | Breeze | trial chambers | wind charge burst (`wind.rs`), wind charges trigger blocks (f142f9c1), `BreezeAnimation` readable | `BreezeModel`, keyframes, particles | L | `breezes` | 40 | live | ae5bcf0e, 0c83047f, "Minecraft breezes jump, slide and turn arrows back like vanilla" |
 
 ## W: the deep dark (group `deep_dark`)
 

@@ -30,6 +30,8 @@ pub const FOLLOW_RANGE: f64 = 24.0;
 pub const ATTACK_DAMAGE: f32 = 3.0;
 pub const EXPERIENCE: i32 = 10;
 pub const MAX_HEAD_Y_ROT: f32 = 30.0;
+pub const FALL_SOUND_DISTANCE: f64 = 3.0;
+pub const DEFLECT_SOUND: &str = "entity.breeze.deflect";
 pub const IDLE_GROUND_SOUND: &str = "entity.breeze.idle_ground";
 pub const IDLE_AIR_SOUND: &str = "entity.breeze.idle_air";
 
@@ -45,6 +47,7 @@ pub struct Breeze {
     pub no_jump_delay: i32,
     pub last_hurt: Option<(i32, Option<Target>)>,
     pub shots: Vec<Shot>,
+    pub discard_friction: bool,
 }
 
 pub fn walk_profile() -> WalkProfile {
@@ -182,6 +185,13 @@ fn step<W: World>(
         look_at(core, at);
     }
     state.shots.extend(actions.shot);
+    if let Some(discard) = actions.discard_friction {
+        state.discard_friction = discard;
+    }
+    if let Some(leap) = actions.leap {
+        core.yaw = state.body_rotation.body_yaw;
+        core.body.velocity = leap;
+    }
     for (event, volume, pitch) in actions.sounds {
         core.voices
             .push((Voice::Event(event, volume, pitch), core.body.position));
@@ -241,9 +251,26 @@ fn step<W: World>(
         core.body
             .travel_lava(level, input, core.yaw, fluid.lava_height);
     } else {
-        let _ = core
+        let friction = if core.body.on_ground {
+            crate::movement::ground_friction(level, core.body.on_pos(level, 0.500001))
+        } else {
+            1.0
+        };
+        let landed = core
             .body
             .travel_air_jumping(level, input, state.speed, core.yaw, jumping);
+        if state.discard_friction {
+            let drag = f64::from(friction * 0.91_f32);
+            core.body.velocity.x /= drag;
+            core.body.velocity.z /= drag;
+            core.body.velocity.y /= f64::from(0.98_f32);
+        }
+        if landed.is_some_and(|fallen| fallen > FALL_SOUND_DISTANCE) {
+            core.voices.push((
+                Voice::Event(brain::LAND_SOUND, 1.0, 1.0),
+                core.body.position,
+            ));
+        }
     }
     crate::world::emissions::play_movement(
         &mut core.body,
@@ -333,6 +360,17 @@ impl Family for Breeze {
 
     fn emits_sounds(_kind: &str) -> bool {
         false
+    }
+
+    fn deflect(mob: &mut FamilyMob<Self>, projectile: &str) -> bool {
+        if matches!(projectile, "minecraft:wind_charge" | CHARGE) {
+            return false;
+        }
+        let position = mob.core.body.position;
+        mob.core
+            .voices
+            .push((Voice::Event(DEFLECT_SOUND, 1.0, 1.0), position));
+        true
     }
 }
 
@@ -547,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn a_breeze_slides_then_shoots_its_charge_at_a_player_within_sixteen_blocks() {
+    fn a_breeze_slides_or_jumps_then_shoots_its_charge_at_a_player_within_sixteen_blocks() {
         let mut world = EntityWorld::default();
         let mut field = Field::default();
         let id = breeze_at(&mut world, 0.5, 0.5);
@@ -555,7 +593,10 @@ mod tests {
         let (mut sounds, mut slid, mut shot) = (Vec::new(), false, None);
         for _ in 0..400 {
             world.tick_with_players(&mut field, &players);
-            slid |= breeze(&world, id).state.brain.pose == Pose::Sliding;
+            slid |= matches!(
+                breeze(&world, id).state.brain.pose,
+                Pose::Sliding | Pose::LongJumping
+            );
             sounds.extend(
                 world
                     .take_sounds()
@@ -567,7 +608,7 @@ mod tests {
                 break;
             }
         }
-        assert!(slid, "it slides before it shoots");
+        assert!(slid, "it slides or jumps before it shoots");
         let (shooter, shot) = shot.expect("it shoots");
         assert_eq!(shooter, id);
         let core = &breeze(&world, id).core;
@@ -668,5 +709,134 @@ mod tests {
             }
         }
         assert!(forgot);
+    }
+
+    #[test]
+    fn a_breeze_long_jumps_behind_its_target_and_lands_without_hurting() {
+        let mut world = EntityWorld::default();
+        let mut field = Field::default();
+        let id = breeze_at(&mut world, 0.5, 0.5);
+        let players = [player_at(1, at(0.5, 10.5), true)];
+        breeze_mut(&mut world, id).state.brain.attack_target = Some(Target::Player(1));
+        let (mut poses, mut sounds, mut leap) = (Vec::new(), Vec::new(), None);
+        for _ in 0..120 {
+            world.tick_with_players(&mut field, &players);
+            let mob = breeze(&world, id);
+            if poses.last() != Some(&mob.state.brain.pose) {
+                poses.push(mob.state.brain.pose);
+            }
+            if leap.is_none() && mob.state.brain.pose == Pose::LongJumping {
+                leap = Some((mob.core.body.velocity, mob.state.discard_friction));
+            }
+            sounds.extend(world.take_sounds().into_iter().map(|s| s.event));
+            if poses.ends_with(&[Pose::LongJumping, Pose::Standing]) {
+                break;
+            }
+        }
+        assert!(
+            poses.ends_with(&[Pose::Inhaling, Pose::LongJumping, Pose::Standing]),
+            "{poses:?}"
+        );
+        let (velocity, discard) = leap.unwrap();
+        assert!(discard, "no friction in the air");
+        assert!(velocity.length() <= f64::from(brain::MAX_JUMP_VELOCITY) && velocity.z > 0.0);
+        let order: Vec<&str> = sounds
+            .iter()
+            .map(String::as_str)
+            .filter(|s| s.contains("charge") || s.contains("jump") || s.contains("land"))
+            .collect();
+        assert_eq!(
+            order[..3],
+            [
+                "entity.breeze.charge",
+                "entity.breeze.jump",
+                "entity.breeze.land"
+            ]
+        );
+        let mob = breeze(&world, id);
+        assert!(!mob.state.discard_friction);
+        assert_eq!(mob.core.health, MAX_HEALTH);
+        assert!(mob.state.brain.jump_cooldown.present() && mob.state.brain.shoot.present());
+        let landed = mob.core.body.position;
+        assert!(
+            landed.z > 2.0 && landed.distance(players[0].position) <= 9.0,
+            "{landed}"
+        );
+    }
+
+    #[test]
+    fn a_breeze_under_a_low_ceiling_slides_instead_of_jumping() {
+        let mut world = EntityWorld::default();
+        let mut field = Field::default();
+        field.set_block((0, 67, 0), Some(Block::new("minecraft:stone")));
+        let id = breeze_at(&mut world, 0.5, 0.5);
+        let players = [player_at(1, at(0.5, 10.5), true)];
+        breeze_mut(&mut world, id).state.brain.attack_target = Some(Target::Player(1));
+        for _ in 0..3 {
+            world.tick_with_players(&mut field, &players);
+            assert_ne!(breeze(&world, id).state.brain.pose, Pose::Inhaling);
+        }
+        assert!(breeze(&world, id).state.brain.walk_target.present());
+    }
+
+    #[test]
+    fn a_breeze_forgets_a_target_beyond_its_follow_range() {
+        let mut world = EntityWorld::default();
+        let mut field = Field::default();
+        let id = breeze_at(&mut world, 0.5, 0.5);
+        let near = [player_at(1, at(0.5, 8.5), true)];
+        for _ in 0..30 {
+            world.tick_with_players(&mut field, &near);
+        }
+        assert_eq!(
+            breeze(&world, id).state.brain.attack_target,
+            Some(Target::Player(1))
+        );
+        let far = [player_at(1, at(0.5, 40.5), true)];
+        let mut forgot = false;
+        for _ in 0..60 {
+            world.tick_with_players(&mut field, &far);
+            if breeze(&world, id).state.brain.attack_target.is_none() {
+                forgot = true;
+                break;
+            }
+        }
+        assert!(
+            forgot,
+            "sooner than the 100 ticks a target out of sight is kept"
+        );
+    }
+
+    #[test]
+    fn a_breeze_turns_arrows_back_with_its_sound_but_not_wind_charges() {
+        let mut world = EntityWorld::default();
+        let mut field = Field::default();
+        let id = breeze_at(&mut world, 0.5, 0.5);
+        breeze_mut(&mut world, id).core.no_ai = true;
+        assert!(!world.deflects_projectile(id, "minecraft:wind_charge"));
+        assert!(!world.deflects_projectile(id, CHARGE));
+        assert!(breeze(&world, id).core.voices.is_empty());
+        let arrow = crate::projectile::Arrow::in_flight(
+            DVec3::new(0.5, 65.0, -2.5),
+            DVec3::Z,
+            minecraftoss_player::rng::LegacyRandom::new(0),
+        );
+        let arrow = world.spawn_owned_arrow(0, arrow);
+        let mut sounds = Vec::new();
+        for _ in 0..6 {
+            world.tick_with_players(&mut field, &[]);
+            sounds.extend(world.take_sounds());
+        }
+        assert_eq!(breeze(&world, id).core.health, MAX_HEALTH);
+        let deflect = sounds
+            .iter()
+            .find(|s| s.event == DEFLECT_SOUND)
+            .expect("the deflect sound");
+        assert_eq!(
+            (deflect.volume, deflect.pitch, deflect.category),
+            (1.0, 1.0, "hostile_volume")
+        );
+        let turned = &world.arrows.iter().find(|e| e.id == arrow).unwrap().arrow;
+        assert!(turned.velocity.z < 0.0);
     }
 }

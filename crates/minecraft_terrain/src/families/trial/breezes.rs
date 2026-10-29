@@ -1,5 +1,5 @@
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, TerrainFamily};
+use crate::families::{ClientFx, FamilyDraw, TerrainFamily};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
 use minecraftoss_core::nbt::Tag;
@@ -7,6 +7,9 @@ use minecraftoss_entities::look::BodyRotation;
 use minecraftoss_entities::world::families::FamilyMob;
 pub use minecraftoss_entities::world::families::trial::breezes::Breeze;
 use minecraftoss_entities::world::families::trial::breezes::MAX_HEAD_Y_ROT;
+
+pub const WHIRL_SOUND: &str = "minecraft:entity.breeze.whirl";
+pub const WHIRL_MAX_TICKS: u32 = 80;
 
 impl TerrainFamily for Breeze {
     const TRACKING_RANGE: i32 = 10;
@@ -26,6 +29,26 @@ impl TerrainFamily for Breeze {
         _light: &SkyLight,
         _partial: f32,
     ) {
+    }
+
+    fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            let Some(shown) = poses.get(mob.core.id) else {
+                continue;
+            };
+            let tick = fx.seen.entry(mob.core.id).or_insert(0);
+            *tick = if *tick == 0 {
+                1 + fx.random.next_int(WHIRL_MAX_TICKS) as i32
+            } else {
+                *tick - 1
+            };
+            if *tick == 0 {
+                let pitch = 0.7 + 0.4 * fx.random.next_float();
+                let volume = 0.8 + 0.2 * fx.random.next_float();
+                fx.sounds
+                    .push((WHIRL_SOUND.to_owned(), shown.position, volume, pitch));
+            }
+        }
     }
 }
 
@@ -118,6 +141,54 @@ mod tests {
         assert_eq!(
             friend.family_core(id).unwrap().1.body.position,
             DVec3::new(4.0, 65.0, 1.5)
+        );
+    }
+
+    #[test]
+    fn a_breeze_whirls_now_and_then_for_every_viewer() {
+        use crate::ambient_particles::AmbientParticles;
+        use crate::poof_particles::PoofParticles;
+        use crate::portal_particles::PortalParticles;
+        use crate::spell_particles::SpellParticles;
+        use minecraftoss_player::rng::LegacyRandom;
+        let mut world = EntityWorld::default();
+        let tag = parse("{id:\"minecraft:breeze\",Pos:[0.5d,64.0d,0.5d],NoAI:1b}");
+        crate::server_mobs::spawn_saved(&mut world, &tag).unwrap();
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&world));
+        let mut ambient = AmbientParticles::new(1);
+        let mut spell = SpellParticles::new(1);
+        let mut portal = PortalParticles::default();
+        let mut poof = PoofParticles::default();
+        let mut sounds = Vec::new();
+        let mut random = LegacyRandom::new(1);
+        let mut seen = HashMap::new();
+        let mut plays = Vec::new();
+        for tick in 1..=600 {
+            let mut fx = ClientFx {
+                ambient: &mut ambient,
+                spell: &mut spell,
+                portal: &mut portal,
+                poof: &mut poof,
+                sounds: &mut sounds,
+                random: &mut random,
+                seen: &mut seen,
+            };
+            crate::families::client_effects(&world, &poses, &mut fx);
+            for (event, at, volume, pitch) in sounds.drain(..) {
+                assert_eq!(event, WHIRL_SOUND);
+                assert_eq!(at, DVec3::new(0.5, 64.0, 0.5));
+                assert!((0.8..=1.0).contains(&volume) && (0.7..=1.1).contains(&pitch));
+                plays.push(tick);
+            }
+        }
+        assert!(plays.len() > 5, "{plays:?}");
+        assert!(plays[0] >= 2 && plays[0] <= 81);
+        assert!(
+            plays
+                .windows(2)
+                .all(|pair| (2..=81).contains(&(pair[1] - pair[0]))),
+            "{plays:?}"
         );
     }
 }

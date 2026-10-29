@@ -724,7 +724,7 @@ fn jump_factor(world: &impl World, position: DVec3, below: Pos) -> f32 {
 
 /// `Block.getFriction` of the block under the feet that affects movement
 /// (`getBlockPosBelowThatAffectsMyMovement`).
-fn ground_friction(world: &impl World, pos: Pos) -> f32 {
+pub(crate) fn ground_friction(world: &impl World, pos: Pos) -> f32 {
     match world.block(pos).as_ref().map(|b| b.id.as_str()) {
         Some("minecraft:ice" | "minecraft:packed_ice" | "minecraft:frosted_ice") => 0.98,
         Some("minecraft:blue_ice") => 0.989,

@@ -10784,6 +10784,70 @@ mod tests {
     }
 
     #[test]
+    fn a_breeze_trial_spawner_runs_its_trial_one_breeze_at_a_time() {
+        use crate::trial_spawner::STATE;
+        use minecraftoss_core::nbt::Tag;
+        use minecraftoss_entities::world::families::trial::breezes::Breeze;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() || registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let spawner = (8, 200, 8);
+        let at = minecraftoss_core::BlockPos::new(spawner.0, spawner.1, spawner.2);
+        let mut server = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        for x in 2..=14 {
+            for z in 2..=14 {
+                server.player_edit_block((x, 199, z), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+                for y in 200..=203 {
+                    server.player_edit_block((x, y, z), Some(&Block::new("minecraft:air")), PlayerEdit::Place);
+                }
+            }
+        }
+        server.player_edit_block(spawner, Some(&Block::new("minecraft:trial_spawner")), PlayerEdit::Place);
+        server.level.set_block_entity_value(at, "normal_config", Tag::String("minecraft:trial_chamber/breeze/normal".to_owned()));
+        server.level.difficulty = 2;
+        server.set_game_time(1_000_000);
+        server.set_player_uuid(0, 0x5eed);
+        let feet = [8.5, 200.0, 12.5];
+        let player = candidate(0, feet);
+        let (mut spawned, mut seen) = (0, Vec::new());
+        for tick in 0..600 {
+            server.set_players(&[feet], 2);
+            server.set_simulation_area((0, 0), 2);
+            server.prepare_spawning(&[player]);
+            server.tick();
+            server.tick_trial_spawners(&[player], &mut []);
+            spawned += server.level.spawned.iter().filter(|tag| tag.get("id").and_then(Tag::as_str) == Some("minecraft:breeze")).count();
+            server.take_spawned();
+            let alive = server.mobs.family::<Breeze>().len();
+            assert!(alive <= 1, "one breeze at a time");
+            if tick == 200 {
+                assert_eq!(spawned, 1, "the second waits for the first");
+            }
+            if tick >= 200 {
+                let breezes: Vec<u64> = server.mobs.family::<Breeze>().iter().map(|mob| mob.core.id).collect();
+                server.mobs.remove_mobs(&breezes);
+            }
+            let state = server.level.registries().blocks.property(server.level.block(at), STATE).unwrap().to_owned();
+            if seen.last() != Some(&state) {
+                seen.push(state);
+            }
+        }
+        assert_eq!(spawned, 2, "two breezes for one player");
+        assert_eq!(seen, ["waiting_for_players", "active", "waiting_for_reward_ejection", "ejecting_reward", "cooldown"]);
+    }
+
+    #[test]
     fn a_trial_spawner_turns_ominous_for_a_bad_omen_and_arms_its_new_mobs() {
         use crate::trial_spawner::{BECOME_OMINOUS, OMINOUS, SPAWN_MOB};
         use minecraftoss_core::nbt::Tag;
