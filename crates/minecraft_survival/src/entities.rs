@@ -187,6 +187,7 @@ pub struct PlayerOutputs {
     pub raid_horns: Vec<DVec3>,
     pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
     pub wither_bars: Option<Vec<minecraft_terrain::wither_bar::WitherBar>>,
+    pub elden_bars: Option<Vec<minecraft_terrain::elden_bar::EldenBar>>,
     pub own_sounds: Vec<(String, f32, f32)>,
     pub told: Vec<minecraft_commands::Clientbound>,
 }
@@ -422,6 +423,11 @@ impl PlayerQueues {
         for (player, bars) in output.wither_bars.take().into_iter().flatten() {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.out.wither_bars = Some(bars);
+            }
+        }
+        for (player, bars) in output.elden_bars.take().into_iter().flatten() {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.elden_bars = Some(bars);
             }
         }
         for felled in std::mem::take(&mut output.elden_felled) {
@@ -3768,5 +3774,17 @@ mod tests {
         }
         assert!(!queues.0.contains_key(&99), "a player not in this level is not queued");
         assert!(crate::heard::actor_only(&chime.0), "heard by that player only");
+    }
+
+    #[test]
+    fn each_player_of_his_level_gets_margits_bar() {
+        let mut queues = two_queues();
+        let bar = minecraft_terrain::elden_bar::EldenBar { id: 7, name: "Margit, the Fell Omen", progress: 0.5 };
+        let mut output = minecraft_terrain::server::Output { elden_bars: Some(vec![(HOST, vec![bar]), (FRIEND, Vec::new()), (99, vec![bar])]), ..Default::default() };
+        let _ = queues.route(&mut output, 2, |_| None);
+        assert!(output.elden_bars.is_none());
+        assert_eq!(queues.queue(HOST).out.elden_bars, Some(vec![bar]));
+        assert_eq!(queues.queue(FRIEND).out.elden_bars, Some(Vec::new()), "an empty list takes a bar away");
+        assert!(!queues.0.contains_key(&99), "a player of another level is not queued");
     }
 }

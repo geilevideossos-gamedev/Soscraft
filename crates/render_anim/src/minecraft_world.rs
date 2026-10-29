@@ -1265,6 +1265,7 @@ fn update(
         let raid_language = ui.chat.language.clone();
         crate::minecraft_raids::show_raid_bars(&mut ui, &player.raid_bars, &raid_language, dt as f32);
         crate::minecraft_wither::show_wither_bars(&mut ui, &player.wither_bars, &raid_language, dt as f32);
+        crate::minecraft_elden::show_elden_bars(&mut ui, &player.elden_bars, dt as f32);
         let minecraft_survival::player::Player { name: player_name, survival, mode: player_mode, inventory, selected, hand, menus, drop_throttle, arsenal, tags, dimension: player_dimension, .. } = &mut *player;
         ui.vitals = alive.then(|| mc_vitals(survival.vitals()));
         ui.effects = if alive { mc_effects(&minecraft_survival::views::effect_views(&survival.status)) } else { Vec::new() };
@@ -1588,7 +1589,7 @@ fn update(
         sounds.play_without_falloff(&world.packs, "minecraft:weather.end_flash", Some(at(source)), 1.0, 1.0);
     }
     if sky_ticked.ticked {
-        let music_input = crate::minecraft_music::MusicInput { dimension: *dimension, credits_open: ui.credits.is_some(), boss_music: ui.boss_bars.iter().any(|bar| bar.music), finished: mc_music.finished.as_deref(), loading: ui.loading_world };
+        let music_input = crate::minecraft_music::MusicInput { dimension: *dimension, credits_open: ui.credits.is_some(), boss_music: ui.boss_bars.iter().chain(&ui.elden_bars).any(|bar| bar.music), finished: mc_music.finished.as_deref(), loading: ui.loading_world };
         if let Some(action) = music.update(music_input) {
             crate::minecraft_music::apply(action, sounds.as_mut(), &world.packs, &mut mc_music);
         }

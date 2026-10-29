@@ -99,6 +99,7 @@ pub mod vex_render;
 pub mod vex_save;
 pub mod ravager_save;
 pub mod ravager_render;
+pub mod elden_bar;
 pub mod elden_effects;
 pub mod elden_felled;
 pub mod elden_render;

@@ -180,6 +180,7 @@ pub struct Session {
     boss_bar: Option<f32>,
     raid_bars: BTreeMap<i32, minecraft_terrain::raids::RaidBar>,
     wither_bars: BTreeMap<u64, f32>,
+    elden_bars: BTreeMap<u64, f32>,
     credits: bool,
     sleepers: BTreeMap<u32, Lying>,
 }
@@ -209,6 +210,7 @@ impl Session {
             boss_bar: None,
             raid_bars: BTreeMap::new(),
             wither_bars: BTreeMap::new(),
+            elden_bars: BTreeMap::new(),
             credits: false,
             sleepers: BTreeMap::new(),
         }
@@ -296,6 +298,22 @@ impl Session {
             self.outbox.push(ToClient::BossBar(BossBarUpdate { id: wither_bar_id(id), operation }));
         }
         self.wither_bars = now;
+    }
+
+    pub fn send_elden_bars(&mut self, bars: &[minecraft_terrain::elden_bar::EldenBar]) {
+        let now: BTreeMap<u64, f32> = bars.iter().map(|bar| (bar.id, bar.progress)).collect();
+        for &id in self.elden_bars.keys().filter(|id| !now.contains_key(id)) {
+            self.outbox.push(ToClient::BossBar(BossBarUpdate { id: elden_bar_id(id), operation: BossBarOperation::Remove }));
+        }
+        for bar in bars {
+            let operation = match self.elden_bars.get(&bar.id) {
+                None => elden_bar(bar),
+                Some(&shown) if shown != bar.progress => BossBarOperation::Progress(bar.progress),
+                Some(_) => continue,
+            };
+            self.outbox.push(ToClient::BossBar(BossBarUpdate { id: elden_bar_id(bar.id), operation }));
+        }
+        self.elden_bars = now;
     }
 
     pub fn send_credits(&mut self, holding: bool) {
@@ -850,6 +868,7 @@ pub fn join_code_line(code: &str) -> Clientbound {
 
 pub const RAID_BARS: u64 = 0x100;
 pub const WITHER_BARS: u64 = 1 << 40;
+pub const ELDEN_BARS: u64 = 1 << 41;
 
 pub fn wither_bar_id(wither: u64) -> u64 {
     WITHER_BARS + wither
@@ -864,6 +883,24 @@ pub fn wither_bar(progress: f32) -> BossBarOperation {
         flags: BossBarFlags {
             darken_screen: true,
             play_music: false,
+            create_world_fog: false,
+        },
+    }
+}
+
+pub fn elden_bar_id(boss: u64) -> u64 {
+    ELDEN_BARS + boss
+}
+
+pub fn elden_bar(bar: &minecraft_terrain::elden_bar::EldenBar) -> BossBarOperation {
+    BossBarOperation::Add {
+        name: Text::literal(bar.name),
+        progress: bar.progress,
+        color: BossBarColor::Red,
+        overlay: BossBarOverlay::Progress,
+        flags: BossBarFlags {
+            darken_screen: false,
+            play_music: true,
             create_world_fog: false,
         },
     }
@@ -1330,6 +1367,13 @@ impl Sessions {
         for session in self.sessions.values_mut() {
             let bars = players.get(&session.uuid).map_or(&[][..], |player| player.wither_bars.as_slice());
             session.send_wither_bars(bars);
+        }
+    }
+
+    pub fn send_elden_bars(&mut self, players: &BTreeMap<PlayerUuid, Player>) {
+        for session in self.sessions.values_mut() {
+            let bars = players.get(&session.uuid).map_or(&[][..], |player| player.elden_bars.as_slice());
+            session.send_elden_bars(bars);
         }
     }
 
@@ -2088,6 +2132,49 @@ mod tests {
         let removed = sent(&mut session);
         assert_eq!((removed.len(), removed[0].id, removed[0].operation.clone()), (1, WITHER_BARS + 7, BossBarOperation::Remove));
         assert!(wither_bar_id(u64::from(u32::MAX)) > raid_bar_id(i32::MAX) && raid_bar_id(i32::MIN) > DRAGON_BAR);
+    }
+
+    #[test]
+    fn the_elden_bar_is_red_with_his_name_and_asks_for_music() {
+        use minecraft_terrain::elden_bar::EldenBar;
+        let mut session = Session::new(2, PlayerUuid("f".to_owned()), "Alex", 2);
+        let sent = |session: &mut Session| -> Vec<BossBarUpdate> {
+            std::mem::take(&mut session.outbox)
+                .into_iter()
+                .filter_map(|message| match message {
+                    ToClient::BossBar(update) => Some(update),
+                    _ => None,
+                })
+                .collect()
+        };
+        let margit = |progress| EldenBar { id: 7, name: "Margit, the Fell Omen", progress };
+        session.send_elden_bars(&[margit(1.0)]);
+        let added = sent(&mut session);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].id, ELDEN_BARS + 7);
+        let BossBarOperation::Add { name, progress, color, overlay, flags } = &added[0].operation else {
+            panic!("{added:?}");
+        };
+        assert_eq!((*progress, *color, *overlay), (1.0, BossBarColor::Red, BossBarOverlay::Progress));
+        assert!(flags.play_music && !flags.darken_screen && !flags.create_world_fog);
+        assert_eq!(*name, Text::literal("Margit, the Fell Omen"));
+        session.send_elden_bars(&[margit(1.0)]);
+        assert!(sent(&mut session).is_empty(), "nothing changed");
+        session.send_elden_bars(&[margit(0.5)]);
+        let changed = sent(&mut session);
+        assert_eq!((changed.len(), changed[0].operation.clone()), (1, BossBarOperation::Progress(0.5)));
+        session.send_elden_bars(&[]);
+        let removed = sent(&mut session);
+        assert_eq!((removed.len(), removed[0].id, removed[0].operation.clone()), (1, ELDEN_BARS + 7, BossBarOperation::Remove));
+    }
+
+    #[test]
+    fn margits_bar_ids_never_meet_wither_raid_or_dragon_ids() {
+        let entity = u64::from(u32::MAX);
+        assert_eq!(elden_bar_id(7), (1 << 41) + 7);
+        assert!(elden_bar_id(0) > wither_bar_id(entity), "any entity id below 2^40 keeps them apart");
+        assert!(wither_bar_id(0) > raid_bar_id(i32::MAX) && raid_bar_id(i32::MIN) > DRAGON_BAR);
+        assert!(elden_bar_id(0) > DRAGON_BAR && elden_bar_id(0) > raid_bar_id(i32::MAX));
     }
 
     #[test]

@@ -37,7 +37,7 @@ pub(crate) const END: Music = Music {
 pub(crate) fn situational(credits_open: bool, in_end: bool, boss_music: bool) -> Option<Music> {
     if credits_open {
         Some(CREDITS)
-    } else if in_end && boss_music {
+    } else if boss_music {
         Some(END_BOSS)
     } else if in_end {
         Some(END)
@@ -159,6 +159,9 @@ impl MusicManager {
         if self.credits_open && !input.credits_open && self.current == Some(CREDITS.event) {
             action = self.stop_playing(situation);
         }
+        if situation.is_none() && self.current == Some(END_BOSS.event) {
+            action = self.stop_playing(situation).or(action);
+        }
         self.credits_open = input.credits_open;
         if self
             .dimension
@@ -234,7 +237,95 @@ mod tests {
         assert_eq!(situational(true, true, true), Some(CREDITS));
         assert_eq!(situational(false, true, true), Some(END_BOSS));
         assert_eq!(situational(false, true, false), Some(END));
-        assert_eq!(situational(false, false, true), None);
+        assert_eq!(situational(false, false, true), Some(END_BOSS));
+        assert_eq!(situational(false, false, false), None);
+    }
+
+    #[test]
+    fn boss_music_plays_in_the_overworld_while_a_bar_asks_for_it_and_stops_after() {
+        let mut manager = MusicManager::new(8);
+        for _ in 0..200 {
+            assert_eq!(
+                manager.update(input(Dimension::Overworld, false, None)),
+                None
+            );
+        }
+        let fight = input(Dimension::Overworld, true, None);
+        assert_eq!(
+            manager.update(fight),
+            Some(MusicAction::Start(END_BOSS)),
+            "at once"
+        );
+        for _ in 0..500 {
+            assert_eq!(manager.update(fight), None, "it plays on");
+        }
+        let ended = input(Dimension::Overworld, true, Some(END_BOSS.event));
+        assert_eq!(
+            manager.update(ended),
+            Some(MusicAction::Start(END_BOSS)),
+            "it loops while the bar asks"
+        );
+        assert_eq!(
+            manager.update(input(Dimension::Overworld, false, None)),
+            Some(MusicAction::Stop),
+            "it stops when no bar asks any more"
+        );
+        for _ in 0..30000 {
+            assert_eq!(
+                manager.update(input(Dimension::Overworld, false, None)),
+                None
+            );
+        }
+        assert_eq!(
+            manager.update(fight),
+            Some(MusicAction::Start(END_BOSS)),
+            "the next fight starts it again"
+        );
+        let mut nether = MusicManager::new(9);
+        assert_eq!(
+            nether.update(input(Dimension::Nether, true, None)),
+            Some(MusicAction::Start(END_BOSS))
+        );
+        assert_eq!(
+            nether.update(input(Dimension::Nether, false, None)),
+            Some(MusicAction::Stop)
+        );
+    }
+
+    #[test]
+    fn the_end_music_rules_are_unchanged() {
+        for credits in [false, true] {
+            for boss in [false, true] {
+                let expected = if credits {
+                    CREDITS
+                } else if boss {
+                    END_BOSS
+                } else {
+                    END
+                };
+                assert_eq!(situational(credits, true, boss), Some(expected));
+            }
+        }
+        for seed in 0..40 {
+            let mut manager = MusicManager::new(seed);
+            let fight = input(Dimension::End, true, None);
+            assert_eq!(manager.update(fight), Some(MusicAction::Start(END_BOSS)));
+            let after = manager.update(input(Dimension::End, false, None));
+            assert!(
+                matches!(
+                    after,
+                    Some(MusicAction::Stop) | Some(MusicAction::Start(END))
+                ),
+                "the End's own music takes over: {after:?}"
+            );
+        }
+        let mut quiet = MusicManager::new(10);
+        for _ in 0..5000 {
+            assert_ne!(
+                quiet.update(input(Dimension::End, false, None)),
+                Some(MusicAction::Start(END_BOSS))
+            );
+        }
     }
 
     #[test]

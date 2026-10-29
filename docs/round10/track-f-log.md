@@ -34,9 +34,15 @@ Group er-guns (commit 22), 12 stacks:
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:frag_grenade*8,iw4l:barrett,iw4l:sniper_rounds*64,iw4l:rpg,iw4l:rocket*16,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
 
+Group er-bar-friend (commit 23 on), 10 stacks:
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:obsidian*14,minecraft:flint_and_steel
+```
+
 ## Protocol
 
-Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own. Commit 21 tells a friend "GREAT ENEMY FELLED" as an existing `ToClient::Chat` system line with the overlay flag and plays the chime as an existing `ToClient::Sound`, so it adds nothing to the wire either. Commit 22's `Command::EldenHurt` is a command to the host's own level thread, not a network message: friends' shots already reach the host as MW2 events with the friend's id.
+Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own. Commit 21 tells a friend "GREAT ENEMY FELLED" as an existing `ToClient::Chat` system line with the overlay flag and plays the chime as an existing `ToClient::Sound`, so it adds nothing to the wire either. Commit 22's `Command::EldenHurt` is a command to the host's own level thread, not a network message: friends' shots already reach the host as MW2 events with the friend's id. Commit 23's boss bar rides the existing `ToClient::BossBar` with a new id range (`1 << 41` plus his id), which friends already keep, so the wire format is unchanged.
 
 ## Vendored files
 
@@ -797,4 +803,48 @@ After 1103ebd2.
 
 ```
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:frag_grenade*8,iw4l:barrett,iw4l:sniper_rounds*64,iw4l:rpg,iw4l:rocket*16,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
+## Group er-bar-friend
+
+Brief F6, commits F6.1 and F6.2, with design doc sections 9 and 10. It starts on 9f730490 (group er-guns).
+
+### 23. Everyone near Margit sees his boss bar and hears the boss music
+
+After 9f730490.
+
+- **Changed (`minecraft_terrain`):**
+  - New `elden_bar.rs`, like `wither_bar.rs`: `EldenBar { id, name, progress }`, `bosses(world)` (every Elden Ring boss of the level that is awake: not asleep, not walking home after a reset, not dead), `bars_for(bosses, feet)` (each boss within his def's `arena.bar`, 48 blocks, of the feet, measured in all three directions from his body) and `progress` (health over his scaled maximum, so two fighters' 1280 is a full bar). `COLOR` red and `OVERLAY` progress. `lib.rs`: the module beside `elden_effects`.
+  - `server.rs`: `Output.elden_bars` beside `wither_bars`, filled beside it every tick by `elden_bars(sim, input)`: one list per player of the level, empty for a dead player.
+- **Changed (`minecraft_survival`):** `PlayerOutputs.elden_bars` and its route beside the wither bars (`entities.rs`), `Player.elden_bars` (`player.rs`). `session.rs`: `ELDEN_BARS = 1 << 41`, `elden_bar_id(id)`, `elden_bar(bar)` (`BossBarOperation::Add` with `Text::literal` of his name, `BossBarColor::Red`, `BossBarOverlay::Progress`, and `play_music` as the only flag), `Session::send_elden_bars` (add, progress and remove, as the wither's) and `Sessions::send_elden_bars`.
+- **Changed (`frame`, `hud`):** `MinecraftUi.elden_bars` beside `wither_bars`. `hud` `minecraft_boss.rs`: `shown_bars(ui)`, the dragon's, the raids', the withers' and then the Elden Ring bosses' bars in that order, which `draw_boss_bars` draws.
+- **Changed (`render_anim`):**
+  - New `minecraft_elden.rs` (like `minecraft_wither.rs`): `show_elden_bars` keeps `ui.elden_bars` in step with the host player's bars: red, progress overlay, asking for music, sliding to a new health like every bar. Called beside `show_wither_bars` in `minecraft_world.rs`.
+  - `minecraft_players.rs` `struck`: the player's `elden_bars` from the outputs, beside the wither bars. `minecraft_host.rs`: `send_elden_bars` beside `send_wither_bars`, so friends get `ToClient::BossBar` with the id `1 << 41` plus his id; a friend keeps every bar id already (`remote.rs`).
+  - `minecraft_music.rs`: `situational` plays `END_BOSS` (`music.dragon`) whenever a bar asks for music, in any dimension, and `update` stops `END_BOSS` when no bar asks any more and the situation has no music (outside the End). The host's music input counts `ui.elden_bars` too; the friend's already counts every bar.
+- **Tests:**
+  - Terrain: `elden_bar::tests::a_player_within_48_blocks_of_an_awake_margit_gets_his_bar` (47.5 blocks across or down gets it, 48.5 across or 34 across and 34 up does not; 200 of 800 health is a quarter bar), `an_asleep_margit_shows_no_bar` (asleep, walking home after a reset, and dead with his body still there), `a_player_in_another_level_gets_no_bar` (the same feet in another level's world get nothing). `server::tests::each_living_player_within_48_blocks_of_an_awake_margit_gets_his_bar_every_tick` (through `run_tick`: none asleep; 600 of 800 for the player 10 blocks away and none for the one 52 away; none while dead; none after a reset).
+  - Survival: `session::tests::the_elden_bar_is_red_with_his_name_and_asks_for_music` (add, nothing when unchanged, progress, remove), `session::tests::margits_bar_ids_never_meet_wither_raid_or_dragon_ids`, `entities::tests::each_player_of_his_level_gets_margits_bar` (an empty list takes a bar away; a player of another level is not queued).
+  - `hud`: `minecraft_boss::tests::the_host_shows_margits_bar_after_the_wither_bars` (with the red sprites). `render_anim`: `minecraft_elden::tests::the_host_sees_a_red_bar_named_margit_that_asks_for_music`, `minecraft_music::tests::boss_music_plays_in_the_overworld_while_a_bar_asks_for_it_and_stops_after` (at once, loops, stops, nothing else starts in 30000 ticks, starts again for the next fight; the Nether too), `minecraft_music::tests::the_end_music_rules_are_unchanged` (the End's situations; after the dragon's bar the End's own music takes over as before; with no bar no boss music). `the_situation_is_the_credits_then_the_boss_then_the_end` now expects the boss music outside the End when a bar asks.
+- **Runs:** `test -p minecraft_terrain -p minecraft_survival -p render_anim -p hud -p frame --locked --lib --tests`: 1581 passed and 3 ignored, 811 and `vanilla_world` 1, 220, 200 and 28. `check -p launcher --locked`: green. The new `elden_bar.rs` and `minecraft_elden.rs` pass `rustfmt --check` (editions 2021 and 2024) with empty output on their staged content, and no added line holds a comment.
+- **Decisions:**
+  - **Only living players get the bar,** as vanilla's dragon and raid bars (`EntitySelector.ENTITY_STILL_ALIVE`): a dead player's list is sent empty, so the bar goes on the death screen and comes back after the respawn while he is near and awake. A dead player still gets an entry each tick, so a bar never sticks.
+  - **48 blocks in all three directions from his body,** as the dragon's and the raids' bars measure (`distanceToSqr`), not from his anchor and not by chunk tracking like the wither's: the design doc says "within 48 blocks of him".
+  - **The range is his def's `arena.bar`,** already in `margit.rs` (design doc 10), so every number stays there.
+  - **The music stops at once** when no bar asks for it outside the End, and starts again at once for the next bar. In the End nothing changed: the dragon's bar is the only one there that asks, and the End's own music replaces the boss music as before. A wither's bar still asks for no music.
+  - **The name is plain text** (`Text::literal`), since there is no language key for him (design doc 10).
+- **Closes from release 3's known limits:** "There is no boss bar, no music" (the altar is group er-altar).
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld, with the music volume up in the options. Name each screenshot by its label, `f6-23-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~10`: as he rises, a full red bar named "Margit, the Fell Omen" shows at the top of the screen, and the Ender Dragon fight music starts at once. **Screenshot f6-23-1** with the bar.
+  2. Shoot him with the M4A1 and hit him with the sword: the bar slides down a little with each hit.
+  3. With him awake 5-10 blocks in front of you, type `/tp @s ~ ~ ~-55` (55 blocks straight back): the bar is gone and the music stops at once. Within 5 seconds type `/tp @s ~ ~ ~55`: the bar is back, as low as you left it, and the music starts again.
+  4. Run 45 blocks away from where you summoned him and wait 6 seconds: his fight resets, and the bar and the music go while he walks home. Walk back within 24 blocks of his spot: he wakes again with a full bar and the music.
+  5. `/summon iw4l:margit ~ ~ ~6 {Health:20f}` and hit him twice with the sword: the bar is nearly empty, and it goes with the music as he sinks into the golden mist.
+  6. Let a new Margit kill you (no armour, no totem): the bar goes on the death screen. Respawn and walk back to him: the bar returns while he is still awake.
+  7. Build a Nether portal from the obsidian, light it and go through. `/summon iw4l:margit ~ ~ ~10` in the Nether: the same red bar and the same music. **Screenshot f6-23-2** in the Nether.
+  8. Vanilla check: back in the Overworld, `/summon minecraft:wither ~ ~ ~10`: its purple bar comes, with no music. `/difficulty peaceful` removes it; then `/difficulty normal`.
+  9. Optional, two windows (`scripts\mp-local.ps1`): a friend within 48 blocks of an awake Margit has the same red bar and hears the music; a friend 60 blocks away has neither. **Screenshot f6-23-3**, both windows.
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:obsidian*14,minecraft:flint_and_steel
 ```

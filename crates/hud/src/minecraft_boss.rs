@@ -34,9 +34,13 @@ pub(crate) fn sprites(bar: &frame::minecraft_ui::McBossBar) -> [Option<String>; 
     ]
 }
 
+pub(crate) fn shown_bars(ui: &MinecraftUi) -> Vec<&frame::minecraft_ui::McBossBar> {
+    ui.boss_bars.iter().chain(ui.raid_bars.iter()).chain(ui.wither_bars.iter()).chain(ui.elden_bars.iter()).collect()
+}
+
 pub(crate) fn draw_boss_bars(p: &mut Painter<'_>, ui: &MinecraftUi) {
     let width = p.space.width;
-    let bars: Vec<&frame::minecraft_ui::McBossBar> = ui.boss_bars.iter().chain(ui.raid_bars.iter()).chain(ui.wither_bars.iter()).collect();
+    let bars = shown_bars(ui);
     let rows = rows(bars.len(), p.space.height);
     for (bar, y) in bars.into_iter().zip(rows) {
         let x = width / 2 - 91;
@@ -94,5 +98,18 @@ mod tests {
             ]
         );
         assert_eq!(sprites(&frame::minecraft_ui::McBossBar::default())[0].as_deref(), Some("boss_bar/pink_background"));
+    }
+
+    #[test]
+    fn the_host_shows_margits_bar_after_the_wither_bars() {
+        let bar = |name: &str| frame::minecraft_ui::McBossBar::new(name.to_owned(), 1.0, false, false);
+        let mut ui = MinecraftUi::default();
+        ui.elden_bars.push(bar("Margit, the Fell Omen").styled("red", "progress"));
+        ui.wither_bars.push(bar("Wither"));
+        ui.raid_bars.push(bar("Raid"));
+        ui.boss_bars.push(bar("Ender Dragon"));
+        let names: Vec<&str> = shown_bars(&ui).iter().map(|bar| bar.name.as_str()).collect();
+        assert_eq!(names, ["Ender Dragon", "Raid", "Wither", "Margit, the Fell Omen"]);
+        assert_eq!(sprites(shown_bars(&ui)[3])[1].as_deref(), Some("boss_bar/red_progress"));
     }
 }

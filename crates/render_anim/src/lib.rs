@@ -59,6 +59,7 @@ mod minecraft_players;
 mod minecraft_recipe_book;
 mod minecraft_raids;
 mod minecraft_wither;
+mod minecraft_elden;
 mod minecraft_portal;
 mod minecraft_remote;
 mod minecraft_respawn;

@@ -3916,6 +3916,7 @@ pub struct Output {
     pub raid_horns: Vec<(u64, [f64; 3])>,
     pub raid_bars: Option<Vec<(u64, Vec<crate::raids::RaidBar>)>>,
     pub wither_bars: Option<Vec<(u64, Vec<crate::wither_bar::WitherBar>)>>,
+    pub elden_bars: Option<Vec<(u64, Vec<crate::elden_bar::EldenBar>)>>,
 }
 
 /// The integrated server on its own thread, as vanilla runs it: the client
@@ -4560,6 +4561,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.bullet_puffs.extend(sim.mobs.take_bullet_puffs());
     out.mob_sounds.extend(sim.level.sounds.drain(..).map(|s| minecraftoss_entities::world::MobSound { event: s.event.to_owned(), position: glam::DVec3::from_array(s.pos), volume: s.volume, pitch: s.pitch, category: "ambient" }));
     out.wither_bars = Some(wither_bars(sim, input));
+    out.elden_bars = Some(elden_bars(sim, input));
     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
     for player in &mut input.players {
         let (id, feet) = (player.id, player.feet);
@@ -4597,6 +4599,18 @@ fn wither_bars(sim: &ServerSim, input: &TickInput) -> Vec<(u64, Vec<crate::withe
         .map(|player| {
             let view = input.watchers.iter().find(|watcher| watcher.id == player.id).map_or(input.view_distance, |watcher| watcher.view_distance);
             (player.id, crate::wither_bar::bars_for(&withers, player.position.to_array(), view))
+        })
+        .collect()
+}
+
+fn elden_bars(sim: &ServerSim, input: &TickInput) -> Vec<(u64, Vec<crate::elden_bar::EldenBar>)> {
+    let bosses = crate::elden_bar::bosses(&sim.mobs);
+    input
+        .mob_players
+        .iter()
+        .map(|player| {
+            let bars = if player.alive { crate::elden_bar::bars_for(&bosses, player.position.to_array()) } else { Vec::new() };
+            (player.id, bars)
         })
         .collect()
 }
@@ -12820,6 +12834,30 @@ mod tests {
         sim.mobs.remove_mobs(&[id]);
         let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
         assert!(shown[&0].is_empty() && shown[&1].is_empty(), "a removed wither takes its bar");
+    }
+
+    #[test]
+    fn each_living_player_within_48_blocks_of_an_awake_margit_gets_his_bar_every_tick() {
+        let Some((mut sim, _)) = frozen_sim() else { return };
+        let at = glam::DVec3::new(8.5, 120.0, 8.5);
+        let id = sim.mobs.spawn_elden_boss(&elden_boss::margit::MARGIT, at, 0.0, at, true);
+        let mut input = two_players([[8.5, 120.0, 18.5], [8.5, 120.0, 60.5]]);
+        let bars = |out: Output| out.elden_bars.expect("bars every tick").into_iter().collect::<std::collections::HashMap<_, _>>();
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        assert!(shown[&0].is_empty() && shown[&1].is_empty(), "asleep");
+        assert!(sim.mobs.elden_boss_mut(id).unwrap().state.brain.begin("dagger_throw"));
+        sim.mobs.elden_boss_mut(id).unwrap().state.brain.set_health(600.0);
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        let bar = crate::elden_bar::EldenBar { id, name: "Margit, the Fell Omen", progress: 0.75 };
+        assert_eq!(shown[&0], vec![bar]);
+        assert!(shown[&1].is_empty(), "52 blocks away");
+        input.mob_players[0].alive = false;
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        assert!(shown[&0].is_empty(), "not while dead");
+        input.mob_players[0].alive = true;
+        sim.mobs.elden_boss_mut(id).unwrap().state.brain.reset(0);
+        let shown = bars(run_ticks(&mut sim, &mut input, true, 1));
+        assert!(shown[&0].is_empty(), "a reset takes his bar");
     }
 
     fn held(player: &TickPlayer) -> Vec<(String, u8)> {
