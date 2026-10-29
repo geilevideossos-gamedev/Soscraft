@@ -747,3 +747,31 @@ After 2f658af5.
 ```
 IW4L_MINECRAFT_KIT=minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:dispenser*4,minecraft:lever*4,minecraft:zombie_spawn_egg*16,minecraft:cooked_beef*32
 ```
+
+### 3. A player's firework rocket blames the player
+
+After a737737d.
+
+- **Vanilla (26.3, checked with javap):** the burst hurts with `damageSources().fireworks(rocket, owner)`, so for a player's rocket the causing entity is that player. `ServerPlayer.hurtServer` returns false (no hurt, so no knockback either) when the causing entity is a player that `canHarmPlayer` refuses, and `canHarmPlayer` is false whenever the level forbids pvp, also for the player's own rocket. `minecraft:fireworks` scales with difficulty only `when_caused_by_living_non_player`, so a player's rocket is not scaled and a villager's is. `DamageSource.getLocalizedDeathMessage` with a causing entity gives `death.attack.fireworks` ("%1$s went off with a bang") with the player as the second argument, or `death.attack.fireworks.item` ("... due to a firework fired from %3$s by %2$s") when that player holds a custom-named item; the player is the kill credit.
+- **Changed:**
+  - Vendored `entities/src/world.rs`: `PlayerHitKind::Fireworks { at, by: Option<u64> }` and `FireworkOwner::player()` next to `mob()`. The `check_zombie_player_hits` bin ignores `by`.
+  - `minecraft_terrain/src/server.rs` `rocket_blast`: a rocket's `PlayerHit` carries `by` for a player owner, and `source` stays the mob owner only.
+  - `minecraft_survival/src/entities.rs`: `spared_by_blasts_without_pvp` drops a player's rocket hit on any player, the owner included, with no push; `mob_hit` turns `by` into `DamageCause::PlayerFireworks`.
+  - `minecraft_survival/src/death.rs`: `DamageCause::PlayerFireworks { client }`, with type `minecraft:fireworks` (an explosion, so blast protection counts) and message `fireworks`. It starts combat, is the kill credit (`hurt_by_player`), names the player in fall and escape lines, and its death line is `death.attack.fireworks` by the player, `.item` with a named weapon (`ITEM_FORMS`), or the plain line once the player has left.
+- **Tests:**
+  - `server::tests::a_player_s_rocket_names_its_player_in_every_hit_and_no_mob` (needs the 26.3 data): a rocket launched by player 4 under a roof hurts player 4 and player 5, both hits with `by` 4 and no mob source.
+  - `entities::tests::with_pvp_off_a_players_rocket_spares_every_player_and_pushes_no_one`: with pvp off a player's rocket spares both players, the owner too, and pushes no one; a rocket by someone who left, a villager's and a dispenser's still hurt.
+  - `entities::tests::with_pvp_on_a_players_rocket_names_the_player_and_does_not_scale_with_difficulty`: on Hard the host's rocket hits the friend for 7 as `PlayerFireworks { client: 0 }` from the burst, a villager's rocket hits for 10.5 and a dispenser's for 7.
+  - `death::tests::a_players_firework_makes_the_friend_go_off_with_a_bang_and_credits_the_player`: "Friend went off with a bang" with the kill credited to Host, the `.item` line with a named weapon, the plain line when Host left, and "tried to swim in lava to escape Host" after a rocket hit.
+- **Decisions:**
+  - As with TNT, a rocket of a player who left still hurts with pvp off, because the host no longer knows that it was a player's.
+  - A player's own rocket counts as a player's rocket: with pvp on its death line is "Host went off with a bang" with Host as the killer, as vanilla's own-source line is.
+- **Test steps** (host and friend, two windows with `scripts\mp-local.ps1`, `/kit @a`; survival, by day; build the 3x3 cobblestone roof 3 blocks up from FW-5):
+  1. **FW-10. Your own rocket hurts you.** `/gamerule pvp true` (the default). Stand under the roof and place the red rocket next to you. It bursts on the roof: you lose 2 to 3 hearts and are pushed away from it. **Screenshot FW-10.**
+  2. **FW-11. Rockets without pvp.** `/gamerule pvp false`. The friend stands under the roof next to a zombie. The host places the three-star rocket next to the friend. The friend takes no damage and is not pushed, nor is the host, while the zombie is hurt and pushed. **Screenshot FW-11.**
+  3. **FW-12. Rockets with pvp.** `/gamerule pvp true` and repeat FW-11 until the friend dies (each three-star burst on the roof deals the friend about 7, three and a half hearts, so three rockets on full health). The friend loses hearts and is pushed away from the burst. The death reads "Friend went off with a bang", and the kill feed names the host. **Screenshot FW-12.**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:zombie_spawn_egg*16,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```

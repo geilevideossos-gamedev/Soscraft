@@ -624,7 +624,7 @@ pub enum PlayerHitKind {
     Trident { velocity: DVec3 },
     Spit { velocity: DVec3 },
     Magic { at: DVec3 },
-    Fireworks { at: DVec3 },
+    Fireworks { at: DVec3, by: Option<u64> },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,
@@ -1126,6 +1126,13 @@ impl FireworkOwner {
         match self {
             FireworkOwner::Mob(id) => Some(id),
             FireworkOwner::Player(_) | FireworkOwner::Nobody => None,
+        }
+    }
+
+    pub fn player(self) -> Option<u64> {
+        match self {
+            FireworkOwner::Player(id) => Some(id),
+            FireworkOwner::Mob(_) | FireworkOwner::Nobody => None,
         }
     }
 }

@@ -1897,6 +1897,7 @@ fn spared_by_blasts_without_pvp(hits: &mut Vec<minecraftoss_entities::world::Pla
             pushed.push((hit.player_id, knockback));
             false
         }
+        PlayerHitKind::Fireworks { by: Some(by), .. } => !is_player(by),
         _ => true,
     });
 }
@@ -1928,14 +1929,14 @@ fn mob_hit(
 ) -> Option<Hit> {
     let from = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => Some(attacker.to_array()),
-        PlayerHitKind::Fireworks { at } => Some(at.to_array()),
+        PlayerHitKind::Fireworks { at, .. } => Some(at.to_array()),
         _ => None,
     };
     let toward = match hit.kind {
         PlayerHitKind::Melee { attacker, .. } => [attacker.x - feet[0], attacker.z - feet[2]],
         PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Fireball { velocity, .. } | PlayerHitKind::WitherSkull { velocity, .. } | PlayerHitKind::ShulkerBullet { velocity } | PlayerHitKind::Trident { velocity } | PlayerHitKind::Spit { velocity } => [-velocity.x, -velocity.z],
         PlayerHitKind::Explosion { knockback, .. } | PlayerHitKind::BadRespawnPoint { knockback } => [-knockback.x, -knockback.z],
-        PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at } => [at.x - feet[0], at.z - feet[2]],
+        PlayerHitKind::Magic { at } | PlayerHitKind::Fireworks { at, .. } => [at.x - feet[0], at.z - feet[2]],
     };
     let ownerless_skull = matches!(hit.kind, PlayerHitKind::WitherSkull { .. }) && hit.source.is_none();
     let toward = (!matches!(hit.kind, PlayerHitKind::Magic { .. }) && !ownerless_skull).then_some(toward);
@@ -1955,6 +1956,7 @@ fn mob_hit(
     let cause = match hit.kind {
         PlayerHitKind::BadRespawnPoint { .. } => crate::death::DamageCause::BadRespawnPoint,
         PlayerHitKind::Magic { .. } | PlayerHitKind::WitherSkull { .. } if hit.source.is_none() => crate::death::DamageCause::Magic,
+        PlayerHitKind::Fireworks { by: Some(by), .. } => crate::death::DamageCause::PlayerFireworks { client: u32::try_from(by).unwrap_or(u32::MAX) },
         PlayerHitKind::Fireworks { .. } if hit.source.is_none() || type_id.is_none() => crate::death::DamageCause::Fireworks,
         PlayerHitKind::Explosion { by: Some(by), .. } => crate::death::DamageCause::PlayerExplosion { client: u32::try_from(by).unwrap_or(u32::MAX) },
         _ => crate::death::DamageCause::mob(attack, hit.source, type_id),
@@ -3310,6 +3312,49 @@ mod tests {
             assert!(queue.out.hits.is_empty(), "no hearts lost");
             assert_eq!(queue.out.pushes.len(), 1, "pushed once");
         }
+    }
+
+    fn rocket_hit(player_id: u64, by: Option<u64>, source: Option<u64>) -> minecraftoss_entities::world::PlayerHit {
+        minecraftoss_entities::world::PlayerHit { player_id, damage: 7.0, kind: PlayerHitKind::Fireworks { at: DVec3::new(41.5, 64.0, 0.5), by }, source }
+    }
+
+    #[test]
+    fn with_pvp_off_a_players_rocket_spares_every_player_and_pushes_no_one() {
+        let queues = two_queues();
+        let all = vec![rocket_hit(HOST, Some(FRIEND), None), rocket_hit(FRIEND, Some(FRIEND), None), rocket_hit(FRIEND, Some(77), None), rocket_hit(HOST, None, Some(9)), rocket_hit(FRIEND, None, None)];
+        let is_player = |id: u64| queues.0.contains_key(&id);
+        let (mut kept, mut pushed) = (all.clone(), Vec::new());
+        spared_by_blasts_without_pvp(&mut kept, &mut pushed, true, is_player);
+        assert_eq!(kept.len(), 5, "pvp on");
+        spared_by_blasts_without_pvp(&mut kept, &mut pushed, false, is_player);
+        let left: Vec<_> = kept.iter().map(|hit| (hit.player_id, hit.source)).collect();
+        assert_eq!(left, [(FRIEND, None), (HOST, Some(9)), (FRIEND, None)], "a rocket by someone gone, a villager's and a dispenser's still hurt");
+        assert!(pushed.is_empty(), "a spared player is not pushed either");
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output { player_hits: all[..2].to_vec(), ..Default::default() };
+        let is_player = |id: u64| id == HOST || id == FRIEND;
+        spared_by_blasts_without_pvp(&mut output.player_hits, &mut output.players_pushed, false, is_player);
+        queues.route(&mut output, 2, |_| None);
+        for player in [HOST, FRIEND] {
+            let queue = queues.queue(player);
+            assert!(queue.out.hits.is_empty() && queue.out.pushes.is_empty(), "the owner included");
+        }
+    }
+
+    #[test]
+    fn with_pvp_on_a_players_rocket_names_the_player_and_does_not_scale_with_difficulty() {
+        let mut queues = two_queues();
+        let mut output = minecraft_terrain::server::Output::default();
+        output.player_hits = vec![rocket_hit(FRIEND, Some(HOST), None), rocket_hit(HOST, None, Some(9)), rocket_hit(HOST, None, None)];
+        let villager = |id: u64| (id == 9).then_some("minecraft:villager");
+        queues.route(&mut output, 3, villager);
+        let friend = std::mem::take(&mut queues.queue(FRIEND).out.hits);
+        assert_eq!(friend.len(), 1);
+        assert_eq!((friend[0].0, friend[0].3), (7.0, crate::death::DamageCause::PlayerFireworks { client: 0 }), "the host's rocket names the host");
+        assert_eq!(friend[0].1, Some([41.5, 64.0, 0.5]), "pushed away from the burst");
+        assert_eq!(friend[0].3.damage_type(), "minecraft:fireworks");
+        let host = std::mem::take(&mut queues.queue(HOST).out.hits);
+        assert_eq!(host.iter().map(|hit| (hit.0, hit.3)).collect::<Vec<_>>(), [(10.5, crate::death::DamageCause::mob(crate::death::MobAttack::Fireworks, Some(9), Some("minecraft:villager"))), (7.0, crate::death::DamageCause::Fireworks)], "only a mob's rocket scales on Hard");
     }
 
     #[test]

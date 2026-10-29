@@ -1451,7 +1451,7 @@ impl ServerSim {
         };
         for (id, damage) in damages {
             match crate::thrown::struck_player(id) {
-                Some(player) => self.rocket_hits.push(minecraftoss_entities::world::PlayerHit { player_id: player, damage, kind: minecraftoss_entities::world::PlayerHitKind::Fireworks { at: rocket.position }, source: rocket.owner.mob() }),
+                Some(player) => self.rocket_hits.push(minecraftoss_entities::world::PlayerHit { player_id: player, damage, kind: minecraftoss_entities::world::PlayerHitKind::Fireworks { at: rocket.position, by: rocket.owner.player() }, source: rocket.owner.mob() }),
                 None => {
                     self.mobs.firework_blast(rocket.owner, id, damage, rocket.position);
                 }
@@ -13005,6 +13005,28 @@ mod tests {
         let hits = server.take_rocket_hits();
         assert_eq!(hits.iter().map(|hit| (hit.player_id, hit.source)).collect::<Vec<_>>(), [(4, Some(villager))]);
         assert!(hits[0].damage > 6.5, "it bursts at the player's feet: {}", hits[0].damage);
+    }
+
+    #[test]
+    fn a_player_s_rocket_names_its_player_in_every_hit_and_no_mob() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place(&mut server, &mut scene, (8, 204, 8), Block::new("minecraft:stone"));
+        let fireworks = crate::firework::Fireworks { flight: 1, explosions: vec![crate::firework::Explosion::burst(11743532)] };
+        assert!(server.launch_rocket(4, crate::firework::RocketLaunch { at: glam::DVec3::new(8.5, 201.15, 8.5), fireworks }));
+        let owner = crate::thrown::PlayerBody { id: 4, feet: glam::DVec3::new(8.5, 200.0, 6.5), alive: true, spectator: false };
+        let friend = crate::thrown::PlayerBody { id: 5, feet: glam::DVec3::new(9.5, 200.0, 9.5), alive: true, spectator: false };
+        let mut ticks = 0;
+        while !server.rockets.is_empty() && ticks < 40 {
+            server.tick_rockets(&[owner, friend]);
+            ticks += 1;
+        }
+        assert!(ticks < 20, "it bursts under the roof: {ticks}");
+        let mut hits: Vec<_> = server.take_rocket_hits().into_iter().map(|hit| match hit.kind {
+            minecraftoss_entities::world::PlayerHitKind::Fireworks { by, .. } => (hit.player_id, by, hit.source),
+            other => panic!("{other:?}"),
+        }).collect();
+        hits.sort_unstable();
+        assert_eq!(hits, [(4, Some(4), None), (5, Some(4), None)], "the owner is hurt by its own rocket too");
     }
 
     #[test]
