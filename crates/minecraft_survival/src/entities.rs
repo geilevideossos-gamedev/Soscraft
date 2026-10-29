@@ -64,6 +64,7 @@ pub struct Entities {
     pub view: crate::entity_view::EntityView,
     server: ServerHandle,
     level_events: Vec<(i32, (i32, i32, i32), i32)>,
+    block_events: Vec<((i32, i32, i32), u8, i32)>,
     pub broken_items: Vec<String>,
     /// Client drops handed to the server: the command count that sent each.
     server_handed: HashMap<u32, (u64, ItemEntity)>,
@@ -484,6 +485,7 @@ impl Entities {
             server,
             view: crate::entity_view::EntityView::new(seed),
             level_events: Vec::new(),
+            block_events: Vec::new(),
             broken_items: Vec::new(),
             server_handed: HashMap::new(),
             players: PlayerQueues::default(),
@@ -1324,6 +1326,9 @@ impl Entities {
         for (id, pos, data) in std::mem::take(&mut self.level_events) {
             self.view.level_event(scene, id, pos, data);
         }
+        for (pos, id, param) in std::mem::take(&mut self.block_events) {
+            self.lid_event(scene, pos, id, u32::try_from(param).unwrap_or(0));
+        }
     }
 
     pub fn evaporation_smoke(&mut self, pos: (i32, i32, i32)) {
@@ -1714,6 +1719,7 @@ impl Entities {
                 self.heard.push(crate::heard::Said::all(crate::heard::Heard::Event { event, pos: [x, y, z], data }));
             }
             self.level_events.extend(output.level_events);
+            self.block_events.extend(output.block_events);
             for effect in &output.explosion_effects {
                 self.view.ambient.explosion(DVec3::from_array(effect.center), effect.radius, effect.blocks, effect.interacts);
                 let blocks = u32::try_from(effect.blocks).unwrap_or(u32::MAX);
@@ -3092,6 +3098,10 @@ mod tests {
     const SEED: i64 = 4986579828511054607;
 
     fn friend_world() -> Option<Entities> {
+        friend_world_and_scene().map(|(entities, _)| entities)
+    }
+
+    fn friend_world_and_scene() -> Option<(Entities, HandcraftedScene)> {
         let paths = minecraftoss_core::registries::DataPaths::discover().ok()?;
         let registries = minecraftoss_core::Registries::load(&paths).ok()?;
         let mut stream = TerrainStream::for_dimension(std::sync::Arc::new(registries), SEED, 2, minecraft_net::Dimension::Overworld, None).ok()?;
@@ -3110,7 +3120,7 @@ mod tests {
                 entities.placed(&scene, (x, 200, z));
             }
         }
-        Some(entities)
+        Some((entities, scene))
     }
 
     const HOST_FEET: [f64; 3] = [-12.5, 201.0, -12.5];
@@ -3419,6 +3429,38 @@ mod tests {
         assert_eq!(entities.heard.listen(false), vec![Said::all(chest)], "only the level's own sound is sent");
         entities.sound("minecraft:block.chest.close", DVec3::new(12.5, 201.5, 12.5), 0.5, 1.0);
         assert!(entities.heard.listen(true).is_empty(), "nothing is kept while no friend listens");
+    }
+
+    #[test]
+    fn a_bell_rung_on_the_host_swings_for_the_host_and_reaches_friends_as_a_block_event() {
+        use crate::heard::{Heard, Said};
+        let Some((mut entities, mut scene)) = friend_world_and_scene() else {
+            return;
+        };
+        let bell = (12, 201, 12);
+        scene.set(bell, Some(Block::new("minecraft:bell").with("attachment", "floor").with("facing", "north")));
+        entities.placed(&scene, bell);
+        assert!(entities.heard.listen(true).is_empty());
+        entities.ring_bell(bell, "south");
+        let (mut host, mut friend) = (Inventory::default(), Inventory::default());
+        let started = std::time::Instant::now();
+        let mut said = Vec::new();
+        while entities.view.lids.is_empty() {
+            assert!(started.elapsed().as_secs() < 300, "the ring never came back from the server");
+            tick_both(&mut entities, &mut host, &mut friend);
+            entities.present_level_events(&scene);
+            said.extend(entities.heard.listen(true));
+        }
+        let blocks: Vec<&Said> = said.iter().filter(|said| matches!(said.heard, Heard::Block { .. })).collect();
+        assert_eq!(blocks, [&Said::all(Heard::Block { pos: [12, 201, 12], kind: minecraft_terrain::lids::RING, param: 3 })], "friends near get block event one with the south side");
+        let lids = &mut entities.view.lids;
+        assert!(lids.lid_closed(bell));
+        assert_eq!(lids.take_apart_changes(), vec![(bell, true)], "the host draws it apart from its section");
+        lids.settle(&scene, |_| true);
+        lids.tick();
+        let posed = lids.posed(&scene, 0.0);
+        assert_eq!(posed.len(), 1);
+        assert!(posed[0].swing[0] > 0.0 && posed[0].swing[1] == 0.0, "a south ring swings it about x: {:?}", posed[0].swing);
     }
 
     #[test]

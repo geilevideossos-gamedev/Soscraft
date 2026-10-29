@@ -118,6 +118,7 @@ pub struct ServerSim {
     raids: crate::raids::Raids,
     raids_rule: bool,
     bells: crate::bells::Bells,
+    block_events: Vec<(BlockPos, u8, i32)>,
     rockets: Vec<crate::firework_rocket::Rocket>,
     firework_bursts: Vec<crate::firework_rocket::Burst>,
     mob_puffs: Vec<crate::mob_particles::MobPuff>,
@@ -502,6 +503,7 @@ impl ServerSim {
             raids: crate::raids::Raids::default(),
             raids_rule: true,
             bells: crate::bells::Bells::default(),
+            block_events: Vec::new(),
             rockets: Vec::new(),
             firework_bursts: Vec::new(),
             mob_puffs: Vec::new(),
@@ -1390,8 +1392,9 @@ impl ServerSim {
 
     fn hear_bells(&mut self) {
         let game_time = self.level.game_time;
-        for (pos, _) in std::mem::take(&mut self.level.bell_rings) {
+        for (pos, direction) in std::mem::take(&mut self.level.bell_rings) {
             self.bells.ring((pos.x, pos.y, pos.z), game_time, &mut self.mobs);
+            self.block_events.push(((pos.x, pos.y, pos.z), crate::lids::RING, direction.index() as i32));
         }
     }
 
@@ -3816,6 +3819,7 @@ pub struct Output {
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     pub explosion_effects: Vec<minecraftoss_world::level::explosion::ExplosionEffect>,
     pub level_events: Vec<(i32, (i32, i32, i32), i32)>,
+    pub block_events: Vec<((i32, i32, i32), u8, i32)>,
     /// Sounds mobs made this tick.
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
     pub bullet_puffs: Vec<minecraftoss_entities::world::BulletPuff>,
@@ -4483,6 +4487,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     sim.break_blasted_frames();
     out.explosion_effects.extend(sim.take_explosion_effects());
     out.level_events.extend(sim.level.level_events.drain(..).map(|(id, pos, data)| (id, (pos.x, pos.y, pos.z), data)));
+    out.block_events.append(&mut sim.block_events);
     out.mob_sounds.extend(sim.mobs.take_sounds());
     out.egg_teleports.extend(sim.mobs.take_shulker_teleports());
     out.bullet_puffs.extend(sim.mobs.take_bullet_puffs());
@@ -13616,6 +13621,26 @@ mod tests {
             server.tick_mobs(&[], true);
         }
         assert!(!server.mobs.glowing(near), "the glow lasts three seconds");
+    }
+
+    #[test]
+    fn a_rung_bell_sends_block_event_one_with_its_direction() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        let bell = (8, 200, 8);
+        place(&mut server, &mut scene, bell, Block::new("minecraft:bell").with("attachment", "floor").with("facing", "north"));
+        assert!(run_ticks(&mut server, &mut idle_input(), true, 1).block_events.is_empty());
+        assert!(server.ring_bell(bell, Some("east")));
+        let out = run_ticks(&mut server, &mut idle_input(), true, 1);
+        assert_eq!(out.block_events, [(bell, crate::lids::RING, 5)]);
+        assert!(server.ring_bell(bell, None));
+        assert!(server.ring_bell(bell, Some("south")));
+        assert!(!server.ring_bell((8, 199, 8), Some("north")), "stone is no bell");
+        let out = run_ticks(&mut server, &mut idle_input(), true, 2);
+        assert_eq!(out.block_events, [(bell, 1, 2), (bell, 1, 3)], "with no side it swings along its facing");
+        assert!(server.ring_bell(bell, Some("west")));
+        let frozen = run_ticks(&mut server, &mut idle_input(), false, 1);
+        assert!(frozen.block_events.is_empty(), "a frozen level runs no block events");
+        assert_eq!(run_ticks(&mut server, &mut idle_input(), true, 1).block_events, [(bell, 1, 4)]);
     }
 
     #[test]

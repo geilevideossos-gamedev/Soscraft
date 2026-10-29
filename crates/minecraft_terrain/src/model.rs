@@ -455,6 +455,22 @@ pub fn resolve_block_variants(
     resolve_variants(pack, block)
 }
 
+pub fn swung_bell_variants(
+    pack: &PackStack,
+    block: &Block,
+    swing: [f32; 2],
+) -> Result<Vec<(ResolvedModel, u32)>> {
+    let mut body = Vec::new();
+    crate::special_models::push_bell(&mut body, swing)?;
+    Ok(resolve_variants(pack, block)?
+        .into_iter()
+        .map(|(mut model, weight)| {
+            model.elements.extend(body.iter().cloned());
+            (model, weight)
+        })
+        .collect())
+}
+
 fn resolve_variants(pack: &PackStack, block: &Block) -> Result<Vec<(ResolvedModel, u32)>> {
     let state = pack
         .blockstate(&block.id)?

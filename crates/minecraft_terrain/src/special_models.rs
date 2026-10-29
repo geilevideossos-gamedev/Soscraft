@@ -369,7 +369,7 @@ pub(crate) fn shulker_box_model(block: &Block, progress: f32) -> Result<Resolved
 pub(crate) fn extra_elements(block: &Block) -> Result<Vec<Element>> {
     let mut elements = Vec::new();
     match block.id.path.as_str() {
-        "bell" => push_bell(&mut elements)?,
+        "bell" => push_bell(&mut elements, [0.0; 2])?,
         "enchanting_table" => {
             let pose = Mat4::from_translation(Vec3::new(0.5, 0.75 + 0.1, 0.5))
                 * Mat4::from_rotation_z(80.0f32.to_radians());
@@ -1126,9 +1126,9 @@ fn push_decorated_pot(elements: &mut Vec<Element>, pose: Mat4) -> Result<()> {
     Ok(())
 }
 
-fn push_bell(elements: &mut Vec<Element>) -> Result<()> {
+pub(crate) fn push_bell(elements: &mut Vec<Element>, [x_rot, z_rot]: [f32; 2]) -> Result<()> {
     let sheet = Sheet::new("minecraft:entity/bell/bell_body", [32.0, 32.0])?;
-    let body = part([8.0, 12.0, 8.0], [0.0; 3]);
+    let body = part([8.0, 12.0, 8.0], [x_rot, 0.0, z_rot]);
     let bell = Cube::new([0.0, 0.0], [-3.0, -6.0, -3.0], [6.0, 7.0, 6.0]);
     push_cube(elements, &sheet, bell, body, &ALL_FACES);
     let lip = Cube::new([0.0, 13.0], [4.0, 4.0, 4.0], [8.0, 2.0, 8.0]);

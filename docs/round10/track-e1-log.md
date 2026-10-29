@@ -1090,6 +1090,68 @@ Commit: "Minecraft placed banners show their patterns", the one after `c70815b6`
 IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*8,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*2,minecraft:oak_planks*32,minecraft:torch*8,minecraft:diamond_axe,minecraft:diamond_sword,minecraft:pillager_spawn_egg*16,minecraft:cooked_beef*16
 ```
 
+## E-bells. Bells swing when rung; the glow outline
+
+### Bells swing when rung
+
+Commit: "Minecraft bells swing when rung", the one after `995909d0`.
+
+- **Cause** (as in the brief, re-checked at `995909d0`):
+  - `special_models::push_bell` baked vanilla's `BellModel` body and lip into the section mesh with no rotation, through `extra_elements` in `resolve_block_variants`. Nothing ever posed it again.
+  - A ring (`Level::ring_bell`, vendored `redstone.rs:776`) queues block event 1 with the direction's 3D value. `piston.rs:386` turns it into `level.bell_rings`, and `ServerSim::hear_bells` handed it only to the server's `Bells` (listeners, resonance, glow). No block event left the level thread: `Output` had `level_events` but no block events.
+  - The client already animates chest and shulker lids from block event 1 (`Lids`, drawn apart from their section), but `LidKind::of` knew only shulker boxes and chests, so a bell's event would have been dropped there too.
+- **Vanilla 26.3** (javap on the 26.3 jar):
+  - `BellBlockEntity.triggerEvent(1, b)`: `clickDirection = Direction.from3DDataValue(b)`, `ticks = 0`, `shaking = true`, so a ring during a swing starts it again. `tick`: while shaking `ticks++`; at `ticks >= 50` it stops and `ticks = 0`.
+  - `BellRenderer.extractRenderState`: `ticks = be.ticks + partialTick`, `shakeDirection = shaking ? clickDirection : null`. `submit` poses `BellModel` with no facing rotation of its own.
+  - `BellModel.setupAnim`: `a = Mth.sin(ticks / 3.1415927f) / (4 + ticks / 3)`. The switch map gives NORTH `xRot = -a`, SOUTH `xRot = a`, EAST `zRot = -a`, WEST `zRot = a`; up and down leave it still. The body's pivot is (8, 12, 8) and the lip is its child.
+  - `ServerLevel.tick` runs `runBlockEvents` only while the tick rate runs normally, so a bell rung while `/tick freeze` holds rings and swings when the tick runs again.
+- **Changed:**
+  - `crates/minecraft_terrain/src/lids.rs`:
+    - `LidKind::Bell` (`minecraft:bell`) and `Lid::Bell(BellSwing)`. `BellSwing` keeps `shaking`, `ticks` and the struck side. `ring(param)` takes the side from the 3D value (`param % 6`) and starts at tick 0; `tick` counts to `bells::DURATION` (50) and stops; `swing(partial)` gives `[x_rot, z_rot]` from vanilla's formula at `ticks + partial` with the vendored `mth::sin` table, zero when still.
+    - `block_event` takes event `RING` (1) for bells and `SET_OPEN_COUNT` (1) for chests and shulker boxes. A bell is opening while it shakes and at rest when it stops; `lid_closed` is always true for a bell, and `lid_model` gives none for it.
+    - `Lids::tick` also ticks bells that are not drawn apart yet, so the swing keeps time with the ring's sound. `PosedLid` has a new field `swing`: the bell's angles once it is drawn apart, zero before.
+  - `special_models.rs`: `push_bell(elements, [x_rot, z_rot])` poses the body with `part([8, 12, 8], [x_rot, 0, z_rot])`; the lip stays its child. `extra_elements` passes `[0, 0]`, so baked bells are unchanged.
+  - `model.rs`: `swung_bell_variants(pack, block, swing)` is the bell's blockstate variants without the baked body (`resolve_variants`, whose blockstate rotation is in the elements) plus the swung body, unrotated as in vanilla.
+  - `mesh.rs` `append_open_lids`: a bell takes its variants from `swung_bell_variants`; chests and shulker boxes stay on `lid_model`. A bell whose model can't be resolved is skipped, so the other lids are still drawn.
+  - `server.rs`: `ServerSim.block_events`, filled by `hear_bells` with `(pos, RING, direction.index())` for every ring, and the new `Output.block_events: Vec<((i32, i32, i32), u8, i32)>` next to `level_events`, drained with them in `run_tick`. Only bells fill it for now; it has a generic name because vanilla sends every block event within 64 blocks.
+  - `minecraft_survival` `entities.rs`: `Entities.block_events` collects `output.block_events` beside the level events, and `present_level_events` hands each to `lid_event`. That feeds the host's `view.lids` and sends `Heard::Block` to friends within `BLOCK_EVENT_RANGE` (64). Friends need no change: `ToClient::BlockEvent` already reaches `lids.block_event` (`render_anim/src/minecraft_remote.rs`).
+  - Every ring source gets the swing, because they all go through `Level::ring_bell`: a hand use, redstone, villagers in a raid and wind charge bursts (and E2's projectile hits once they land).
+  - `docs/MINECRAFT-SURVIVAL.md`: the block entity paragraph says a rung bell swings, and "no bell swing" is gone from what never animates.
+  - `docs/round9/track-d-log.md` ("Left for later", bells): the swing and the resonance particles are taken off the list (see the decisions).
+- **Tests:**
+  - `minecraft_terrain` `lids::tests::a_rung_bell_swings_for_fifty_ticks_away_from_the_struck_side`: a bell is `LidKind::Bell` with no lid model. A north ring is still at tick 0, moves within the first tick, swings `-x` by vanilla's formula on every tick and peaks at tick 4 at about 0.179 rad (10°). It still shakes after 49 ticks and is at rest after 50. South gives `+x`, east `-z`, west `+z`, up and down nothing, and 8 reads as north. A second ring after 10 ticks starts again from 0 on its own side and lasts 50 more ticks.
+  - `minecraft_terrain` `lids::tests::a_bell_is_drawn_apart_while_it_swings_and_back_in_its_section_after`: only block event 1 rings it, and it never counts as an open lid. It is still while its section still draws it, and once drawn apart it shows the swing of the ticks since the ring (3.5 ticks on). It goes back to its section 50 ticks after the ring. Rung again before its section took it back, it is drawn apart again and swings the new way.
+  - `minecraft_terrain` `mesh::tests::a_still_bell_drawn_apart_matches_its_section_and_a_swung_one_keeps_its_pivot` (a small bell pack, floor bells facing north and east, the east one turned by the blockstate): drawn apart and still, the bell gives exactly the section's 16 faces. Swung, the stand is unchanged, every body and lip vertex is turned about (8, 12, 8)/16 by the swing, and the lip moves north for a south ring and west for an east ring.
+  - `minecraft_terrain` `server::tests::a_rung_bell_sends_block_event_one_with_its_direction` (real data): an east ring sends `(bell, 1, 5)`; a ring with no side sends the bell's facing (north, 2) and a south ring 3 in the same tick; a frozen tick sends nothing and the next one sends the held west ring (4).
+  - `minecraft_survival` `entities::tests::a_bell_rung_on_the_host_swings_for_the_host_and_reaches_friends_as_a_block_event` (real data): a bell placed in the shared world and rung from the south reaches friends as one `Heard::Block` (event 1, side 3). The host's view draws it apart and swings it about `+x`.
+  - All 1546 `minecraft_terrain` tests (3 ignored, as before) and 791 `minecraft_survival` tests (plus `vanilla_world`) pass, and `check -p launcher` passes.
+- **Decisions:**
+  - A bell's swing is a client animation, drawn apart from its section like a chest lid, from block event 1. Friends get it through the existing `ToClient::BlockEvent`.
+  - The swing's clock starts at the ring, not when the section has let the bell go: bell entries tick whatever their drawn state. Until the section is rebuilt without the bell, the posed bell is held still, exactly over the baked one, so no swinging bell shows inside a still one. Once apart it shows the swing at the point the ring has reached, a frame or two late at most.
+  - Vanilla's resonance particles (`ColorParticleOption.create(ENTITY_EFFECT, 16700985 + 5n)`, an ARGB int with alpha 0) are invisible in 26.3, so the fork draws none. They are off the round 9 "Left for later" list.
+  - The body swings about vanilla's pivot in world axes for every bell, as vanilla's renderer adds no facing rotation: a wall or ceiling bell swings the same way for the same struck side.
+  - At the end of the 50 ticks the swing snaps from about 0.01 rad to rest, as in vanilla.
+  - A swinging bell resolves its stand from the pack on every frame it is drawn (the pack's files are cached; only their JSON is read again). Only bells within their 2.5-second swing do this.
+- **Protocol:** no change. `ToClient::BlockEvent` exists, and `Output` stays on the host.
+- **Owner's test steps** (survival, Normal, by day on flat ground, the kit below):
+  1. **Floor bell.** Look straight ahead and place a bell on cobblestone in front of you: it faces the way you looked, and only its front and back ring.
+     - Right-click the side facing you, below the rim: it rings, and the bell body swings away from you, back and forth, dying out over 2.5 seconds. The posts and bar stay still. **Screenshot bell_01_swing** mid-swing.
+     - Right-click it again mid-swing: the swing starts over.
+     - Walk round and right-click the opposite side: it swings the other way.
+     - Right-click one of the two other sides, then the top: nothing happens (wrong side).
+  2. **Wall and ceiling bells.** Place a bell against a plank wall and one under a plank ceiling. Ring each from its allowed sides: each swings away from the side you hit. Put a lever next to one and pull it: the bell rings and swings. **Screenshot bell_02_wall_ceiling.**
+  3. **Villages.** Place a bell and two beds in the open, hatch four villagers there with the eggs, and wait until they have claimed the beds. Drink an ominous bottle (you get Raid Omen, then the raid starts). While the raid bar fills, a villager rings the bell now and then, and you see it swing.
+  4. **Friend (two windows, both on this build).**
+     - The friend stands near the bell while the host rings it: the friend's window shows the same swing at the same time.
+     - The friend rings it from the other side: both windows show it swinging the other way.
+     - The friend pulls the lever: both windows show the swing.
+     - **Screenshot bell_07_friend_swing**, both windows.
+- **Kit** (15 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:bell*4,minecraft:lever*2,minecraft:cobblestone*64,minecraft:oak_planks*64,minecraft:villager_spawn_egg*4,minecraft:ominous_bottle*2,minecraft:white_bed*2,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*16
+```
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components
