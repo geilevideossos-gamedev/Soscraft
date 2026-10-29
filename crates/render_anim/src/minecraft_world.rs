@@ -705,6 +705,7 @@ fn update(
     if std::mem::take(&mut globals.autosave_due) {
         minecraft_survival::server::autosave(globals, levels, players);
     }
+    minecraft_survival::maps::tick(&globals.maps, players, globals.game_time(), planned.len());
     let others = minecraft_survival::level::player_blocks(players.iter().filter(|(uuid, _)| *uuid != local_uuid).map(|(_, player)| player));
     let clients: Vec<u32> = players.values().filter(|player| &player.uuid != local_uuid).map(|player| player.id.0).chain([local.0.0]).collect();
     queues.drain(|client| clients.contains(&client));

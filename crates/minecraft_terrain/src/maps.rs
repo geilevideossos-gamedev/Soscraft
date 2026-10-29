@@ -2,12 +2,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use minecraft_net::PlayerUuid;
 use minecraftoss_core::ChunkPos;
 use minecraftoss_core::loot::Exploring;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_generator::zoom;
+use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_world::chunk_map::WorldGen;
 use minecraftoss_world::level_storage::LevelStorage;
+use serde_json::Value;
 
 use crate::locate::{self, Search};
 
@@ -25,6 +28,29 @@ pub const DIMENSIONS: [&str; 3] = [
 pub const PLAYER: &str = "minecraft:player";
 pub const PLAYER_OFF_MAP: &str = "minecraft:player_off_map";
 pub const PLAYER_OFF_LIMITS: &str = "minecraft:player_off_limits";
+pub const MAP_ID: &str = "minecraft:map_id";
+pub const MAP_DECORATIONS: &str = "minecraft:map_decorations";
+pub const MAP_INVISIBILITY_EQUIPMENT: &str = "minecraft:map_invisibility_equipment";
+pub const MAP_ITEMS: [&str; 17] = [
+    "minecraft:filled_map",
+    "minecraft:ocean_monument_map",
+    "minecraft:woodland_mansion_map",
+    "minecraft:buried_trial_chambers_map",
+    "minecraft:jungle_pyramid_map",
+    "minecraft:swamp_hut_map",
+    "minecraft:desert_village_map",
+    "minecraft:plains_village_map",
+    "minecraft:savanna_village_map",
+    "minecraft:snowy_village_map",
+    "minecraft:taiga_village_map",
+    "minecraft:buried_treasure_map",
+    "minecraft:buried_ancient_city_map",
+    "minecraft:buried_mineshaft_map",
+    "minecraft:desert_pyramid_map",
+    "minecraft:abandoned_camp_map",
+    "minecraft:warm_ocean_ruins_map",
+];
+const WORN_SLOTS: [usize; 6] = [36, 37, 38, 39, 41, 42];
 pub const SEARCH_TIME: Duration = Duration::from_secs(2);
 pub const WATER_ON_MAP_OUTLINES: &str = "minecraft:water_on_map_outlines";
 pub const COLOR_ORANGE: u8 = 15;
@@ -306,6 +332,170 @@ pub fn player_marker(fx: f32, fz: f32, unlimited: bool) -> Option<&'static str> 
     }
 }
 
+pub fn is_map_item(id: &str) -> bool {
+    MAP_ITEMS.contains(&id)
+}
+
+pub fn tracks_count(kind: &str) -> bool {
+    matches!(
+        kind,
+        PLAYER
+            | PLAYER_OFF_MAP
+            | PLAYER_OFF_LIMITS
+            | "minecraft:frame"
+            | "minecraft:red_marker"
+            | "minecraft:blue_marker"
+    ) || kind.starts_with("minecraft:banner_")
+}
+
+pub fn wears_map_invisibility(inventory: &Inventory) -> bool {
+    WORN_SLOTS
+        .iter()
+        .filter_map(|&slot| inventory.slots.get(slot)?.as_ref())
+        .any(|stack| {
+            inventory
+                .recipes
+                .item_in_tag(MAP_INVISIBILITY_EQUIPMENT, &stack.id)
+        })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mark {
+    pub kind: String,
+    pub x: f64,
+    pub z: f64,
+    pub rotation: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CarriedMap {
+    pub item: String,
+    pub id: i32,
+    pub marks: Vec<(String, Mark)>,
+}
+
+impl CarriedMap {
+    pub fn of(stack: &ItemStack) -> Option<Self> {
+        if !is_map_item(&stack.id) {
+            return None;
+        }
+        let components = stack.components.as_ref()?;
+        let id = i32::try_from(components.get(MAP_ID)?.as_i64()?).ok()?;
+        let marks = components
+            .get(MAP_DECORATIONS)
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter_map(|(key, entry)| {
+                let kind = entry.get("type")?.as_str()?;
+                let mark = Mark {
+                    kind: if kind.contains(':') {
+                        kind.to_owned()
+                    } else {
+                        format!("minecraft:{kind}")
+                    },
+                    x: entry.get("x")?.as_f64()?,
+                    z: entry.get("z")?.as_f64()?,
+                    rotation: entry.get("rotation")?.as_f64()? as f32,
+                };
+                Some((key.clone(), mark))
+            })
+            .collect();
+        Some(Self {
+            item: stack.id.clone(),
+            id,
+            marks,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Carrier {
+    pub uuid: PlayerUuid,
+    pub dimension: String,
+    pub x: f64,
+    pub z: f64,
+    pub yaw: f32,
+    pub maps: Vec<CarriedMap>,
+    pub hidden: bool,
+}
+
+impl Carrier {
+    pub fn carries(&self, item: &str, id: i32) -> bool {
+        self.maps.iter().any(|map| map.item == item && map.id == id)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Holding {
+    uuid: PlayerUuid,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Held {
+    decorations: Vec<(String, Decoration)>,
+    tracked: i32,
+    holders: Vec<Holding>,
+}
+
+impl Held {
+    pub fn decorations(&self) -> impl Iterator<Item = &Decoration> {
+        self.decorations.iter().map(|(_, decoration)| decoration)
+    }
+
+    pub fn decoration(&self, key: &str) -> Option<&Decoration> {
+        self.decorations
+            .iter()
+            .find(|(shown, _)| shown == key)
+            .map(|(_, decoration)| decoration)
+    }
+
+    pub fn tracked(&self) -> i32 {
+        self.tracked
+    }
+
+    pub fn holders(&self) -> impl Iterator<Item = &PlayerUuid> {
+        self.holders.iter().map(|holding| &holding.uuid)
+    }
+
+    fn add(
+        &mut self,
+        data: &MapData,
+        (kind, key): (&str, &str),
+        (x, z, rot): (f64, f64, f64),
+        game_time: i64,
+    ) {
+        let Some(decoration) = data.decoration(kind, x, z, rot, Some(game_time)) else {
+            self.remove(key);
+            return;
+        };
+        let old = match self.decorations.iter_mut().find(|(shown, _)| shown == key) {
+            Some((_, old)) => Some(std::mem::replace(old, decoration.clone())),
+            None => {
+                self.decorations.push((key.to_owned(), decoration.clone()));
+                None
+            }
+        };
+        if old.as_ref() != Some(&decoration) {
+            if old.is_some_and(|old| tracks_count(&old.kind)) {
+                self.tracked -= 1;
+            }
+            if tracks_count(&decoration.kind) {
+                self.tracked += 1;
+            }
+        }
+    }
+
+    fn remove(&mut self, key: &str) {
+        if let Some(index) = self.decorations.iter().position(|(shown, _)| shown == key) {
+            let (_, old) = self.decorations.remove(index);
+            if tracks_count(&old.kind) {
+                self.tracked -= 1;
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct MapStore {
     maps: BTreeMap<i32, MapData>,
@@ -314,6 +504,7 @@ pub struct MapStore {
     index_dirty: bool,
     claims: BTreeMap<String, Claims>,
     claims_dirty: BTreeSet<String>,
+    held: BTreeMap<i32, Held>,
 }
 
 impl Default for MapStore {
@@ -325,6 +516,7 @@ impl Default for MapStore {
             index_dirty: false,
             claims: BTreeMap::new(),
             claims_dirty: BTreeSet::new(),
+            held: BTreeMap::new(),
         }
     }
 }
@@ -558,6 +750,67 @@ impl MapStore {
             maps,
             last_id,
             claims,
+        }
+    }
+
+    pub fn held(&self, id: i32) -> Option<&Held> {
+        self.held.get(&id)
+    }
+
+    pub fn tick_carried(&mut self, carriers: &[Carrier], game_time: i64) {
+        for carrier in carriers {
+            for map in &carrier.maps {
+                self.tick_carried_by(carrier, map, carriers, game_time);
+            }
+        }
+    }
+
+    fn tick_carried_by(
+        &mut self,
+        carrier: &Carrier,
+        map: &CarriedMap,
+        carriers: &[Carrier],
+        game_time: i64,
+    ) {
+        let Some(data) = self.maps.get(&map.id) else {
+            return;
+        };
+        let held = self.held.entry(map.id).or_default();
+        if !held
+            .holders
+            .iter()
+            .any(|holding| holding.uuid == carrier.uuid)
+        {
+            held.holders.push(Holding {
+                uuid: carrier.uuid.clone(),
+            });
+        }
+        let mut index = 0;
+        while index < held.holders.len() {
+            let uuid = held.holders[index].uuid.clone();
+            let holder = carriers.iter().find(|other| other.uuid == uuid);
+            match holder {
+                Some(other) if other.carries(&map.item, map.id) => {
+                    if other.dimension == data.dimension && data.tracking_position {
+                        let at = (other.x, other.z, f64::from(other.yaw));
+                        held.add(data, (PLAYER, &uuid.0), at, game_time);
+                    }
+                }
+                _ => {
+                    held.holders.remove(index);
+                    held.remove(&uuid.0);
+                }
+            }
+            if holder.is_some_and(|other| other.uuid != carrier.uuid && other.hidden) {
+                held.remove(&uuid.0);
+            }
+            index += 1;
+        }
+        for (key, mark) in &map.marks {
+            if held.decoration(key).is_none() {
+                let at = (mark.x, mark.z, f64::from(mark.rotation));
+                held.add(data, (&mark.kind, key), at, game_time);
+            }
         }
     }
 }
@@ -1290,5 +1543,292 @@ mod tests {
             Some(1),
             "outside any wreck only the target is claimed"
         );
+    }
+
+    fn carried(item: &str, id: i32, marks: &[(&str, &str, f64, f64)]) -> CarriedMap {
+        CarriedMap {
+            item: item.to_owned(),
+            id,
+            marks: marks
+                .iter()
+                .map(|&(key, kind, x, z)| {
+                    let mark = Mark {
+                        kind: kind.to_owned(),
+                        x,
+                        z,
+                        rotation: 180.0,
+                    };
+                    (key.to_owned(), mark)
+                })
+                .collect(),
+        }
+    }
+
+    fn holder(uuid: &str, (x, z, yaw): (f64, f64, f32), maps: Vec<CarriedMap>) -> Carrier {
+        Carrier {
+            uuid: PlayerUuid(uuid.to_owned()),
+            dimension: "minecraft:overworld".to_owned(),
+            x,
+            z,
+            yaw,
+            maps,
+            hidden: false,
+        }
+    }
+
+    fn shown(store: &MapStore, id: i32) -> Vec<(&str, i8, i8, i8)> {
+        store.held(id).map_or_else(Vec::new, |held| {
+            held.decorations()
+                .map(|d| (d.kind.as_str(), d.x, d.y, d.rot))
+                .collect()
+        })
+    }
+
+    fn store_with(maps: &[(i32, MapData)]) -> MapStore {
+        let mut store = MapStore::default();
+        for (id, map) in maps {
+            store.insert(*id, map.clone());
+        }
+        store.take_writes();
+        store
+    }
+
+    #[test]
+    fn a_carried_map_marks_its_holder_and_its_target_like_vanilla() {
+        let small = MapData::create_fresh(0.0, 0.0, 0, "minecraft:overworld", true, false);
+        let mut store = store_with(&[(0, small.clone())]);
+        let treasure = carried(
+            "minecraft:buried_treasure_map",
+            0,
+            &[("+", "minecraft:red_x", 30.0, -50.0)],
+        );
+        let mut steve = holder("steve", (10.4, -20.0, 90.0), vec![treasure]);
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(
+            shown(&store, 0),
+            [(PLAYER, 21, -39, 4), ("minecraft:red_x", 60, -99, 8)],
+            "the holder first, then the stack's mark"
+        );
+        let held = store.held(0).unwrap();
+        assert_eq!(held.tracked(), 1, "players count, the red X does not");
+        assert_eq!(
+            held.holders().collect::<Vec<_>>(),
+            [&PlayerUuid("steve".to_owned())]
+        );
+        steve.x = 300.0;
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(shown(&store, 0)[0], (PLAYER_OFF_MAP, 127, -39, 4));
+        steve.x = 400.0;
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(
+            shown(&store, 0),
+            [("minecraft:red_x", 60, -99, 8)],
+            "far from a plain map the holder has no marker"
+        );
+        assert_eq!(store.held(0).unwrap().tracked(), 0);
+        let mut wide = small.clone();
+        wide.unlimited_tracking = true;
+        let mut store = store_with(&[(0, wide)]);
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(shown(&store, 0)[0], (PLAYER_OFF_LIMITS, 127, -39, 4));
+        steve.x = 10.4;
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        steve.dimension = "minecraft:the_nether".to_owned();
+        steve.x = -50.0;
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(
+            shown(&store, 0)[0],
+            (PLAYER, 21, -39, 4),
+            "in another dimension the marker stays where it was"
+        );
+        let mut untracked = small.clone();
+        untracked.tracking_position = false;
+        let mut store = store_with(&[(0, untracked)]);
+        steve.dimension = "minecraft:overworld".to_owned();
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(shown(&store, 0), [("minecraft:red_x", 60, -99, 8)]);
+        let nether = MapData::create_fresh(0.0, 0.0, 0, "minecraft:the_nether", true, false);
+        let mut store = store_with(&[(0, nether)]);
+        steve.dimension = "minecraft:the_nether".to_owned();
+        steve.x = 10.4;
+        store.tick_carried(std::slice::from_ref(&steve), 1234);
+        let spin = nether_rotation(1234);
+        assert_eq!(
+            shown(&store, 0),
+            [(PLAYER, 21, -39, spin), ("minecraft:red_x", 60, -99, spin)],
+            "every marker on a Nether map spins"
+        );
+        let mut store = store_with(&[]);
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert!(store.held(0).is_none(), "a map without data is not held");
+    }
+
+    #[test]
+    fn every_holder_is_marked_until_they_drop_the_map_or_leave() {
+        let map = MapData::create_fresh(0.0, 0.0, 0, "minecraft:overworld", true, false);
+        let mut store = store_with(&[(0, map)]);
+        let treasure = || {
+            carried(
+                "minecraft:filled_map",
+                0,
+                &[("+", "minecraft:red_x", 0.0, 0.0)],
+            )
+        };
+        let mut steve = holder("steve", (2.0, 2.0, 0.0), vec![treasure()]);
+        let mut alex = holder("alex", (-2.0, 4.0, 180.0), vec![treasure()]);
+        store.tick_carried(&[steve.clone(), alex.clone()], 0);
+        assert_eq!(
+            shown(&store, 0),
+            [
+                (PLAYER, 4, 4, 0),
+                ("minecraft:red_x", 0, 0, 8),
+                (PLAYER, -3, 8, 8)
+            ]
+        );
+        assert_eq!(store.held(0).unwrap().tracked(), 2);
+        alex.hidden = true;
+        store.tick_carried(&[alex.clone(), steve.clone()], 0);
+        assert_eq!(
+            shown(&store, 0),
+            [(PLAYER, 4, 4, 0), ("minecraft:red_x", 0, 0, 8)],
+            "another holder's tick hides a pumpkin wearer"
+        );
+        store.tick_carried(&[steve.clone(), alex.clone()], 0);
+        assert_eq!(
+            shown(&store, 0).last(),
+            Some(&(PLAYER, -3, 8, 8)),
+            "the wearer's own tick shows them again"
+        );
+        alex.hidden = false;
+        let other = carried("minecraft:buried_treasure_map", 0, &[]);
+        steve.maps = vec![other];
+        alex.x = 20.0;
+        store.tick_carried(std::slice::from_ref(&alex), 0);
+        assert_eq!(
+            shown(&store, 0),
+            [("minecraft:red_x", 0, 0, 8), (PLAYER, -3, 8, 8)],
+            "a holder who no longer carries this map loses their marker"
+        );
+        assert_eq!(
+            store.held(0).unwrap().holders().collect::<Vec<_>>(),
+            [&PlayerUuid("alex".to_owned())],
+            "a map of another kind with the same id is not this map"
+        );
+        assert_eq!(store.held(0).unwrap().tracked(), 1);
+        store.tick_carried(std::slice::from_ref(&alex), 0);
+        assert_eq!(
+            shown(&store, 0)[1],
+            (PLAYER, 40, 8, 8),
+            "the holder after a dropped one moves on the next tick, as vanilla's loop skips it"
+        );
+        steve.maps = vec![treasure()];
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(
+            shown(&store, 0),
+            [("minecraft:red_x", 0, 0, 8)],
+            "a holder who left the game loses their marker"
+        );
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(
+            shown(&store, 0),
+            [("minecraft:red_x", 0, 0, 8), (PLAYER, 4, 4, 0)]
+        );
+    }
+
+    #[test]
+    fn carried_maps_read_their_id_and_marks_from_map_items_only() {
+        let mut map = ItemStack::new("minecraft:filled_map", 1);
+        map.components = Some(serde_json::json!({
+            "minecraft:map_id": 3,
+            "minecraft:map_decorations": {
+                "+": {"type": "minecraft:red_x", "x": 1000.0, "z": -300, "rotation": 180.0},
+                "camp": {"type": "abandoned_camp", "x": 5.5, "z": 6.5, "rotation": 90.0},
+                "broken": {"type": "minecraft:red_x", "x": 1.0}
+            }
+        }));
+        let read = CarriedMap::of(&map).unwrap();
+        assert_eq!((read.item.as_str(), read.id), ("minecraft:filled_map", 3));
+        assert_eq!(
+            read.marks,
+            [
+                (
+                    "+".to_owned(),
+                    Mark {
+                        kind: "minecraft:red_x".to_owned(),
+                        x: 1000.0,
+                        z: -300.0,
+                        rotation: 180.0
+                    }
+                ),
+                (
+                    "camp".to_owned(),
+                    Mark {
+                        kind: "minecraft:abandoned_camp".to_owned(),
+                        x: 5.5,
+                        z: 6.5,
+                        rotation: 90.0
+                    }
+                )
+            ]
+        );
+        let mut explorer = map.clone();
+        explorer.id = "minecraft:woodland_mansion_map".to_owned();
+        assert!(CarriedMap::of(&explorer).is_some());
+        for id in ["minecraft:map", "minecraft:stone", "minecraft:compass"] {
+            let mut other = map.clone();
+            other.id = id.to_owned();
+            assert_eq!(CarriedMap::of(&other), None, "{id}");
+        }
+        assert_eq!(
+            CarriedMap::of(&ItemStack::new("minecraft:filled_map", 1)),
+            None
+        );
+        assert_eq!(MAP_ITEMS.len(), 17);
+        assert!(MAP_ITEMS.iter().all(|id| is_map_item(id)));
+        assert!(tracks_count("minecraft:banner_red") && tracks_count(PLAYER_OFF_LIMITS));
+        assert!(!tracks_count("minecraft:red_x") && !tracks_count("minecraft:mansion"));
+    }
+
+    #[test]
+    fn marks_of_carried_maps_are_never_saved() {
+        let map = MapData::create_fresh(0.0, 0.0, 0, "minecraft:overworld", true, false);
+        let mut store = store_with(&[(0, map.clone())]);
+        let steve = holder(
+            "steve",
+            (1.0, 1.0, 0.0),
+            vec![carried("minecraft:filled_map", 0, &[])],
+        );
+        store.tick_carried(std::slice::from_ref(&steve), 0);
+        assert_eq!(shown(&store, 0).len(), 1);
+        assert!(
+            store.take_writes().is_empty(),
+            "a marker leaves the map file alone"
+        );
+        assert_eq!(store.get(0), Some(&map));
+    }
+
+    #[test]
+    fn a_carved_pumpkin_on_the_head_hides_its_wearer_from_maps() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = minecraftoss_player::crafting::RecipeBook::from_jar(&jar).unwrap();
+        let mut inventory = Inventory::default().with_recipes(book);
+        assert!(!wears_map_invisibility(&inventory));
+        for slot in [0, 40] {
+            inventory.slots[slot] = Some(ItemStack::new("minecraft:carved_pumpkin", 1));
+        }
+        assert!(
+            !wears_map_invisibility(&inventory),
+            "a pumpkin in a hand hides nobody"
+        );
+        inventory.slots[39] = Some(ItemStack::new("minecraft:carved_pumpkin", 1));
+        assert!(wears_map_invisibility(&inventory));
+        inventory.slots[39] = Some(ItemStack::new("minecraft:diamond_helmet", 1));
+        assert!(!wears_map_invisibility(&inventory));
     }
 }

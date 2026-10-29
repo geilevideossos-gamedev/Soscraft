@@ -1119,3 +1119,36 @@ After 1247a5c0.
 ```
 IW4L_MINECRAFT_KIT=minecraft:bell*4,minecraft:cobblestone*64,minecraft:oak_planks*64,minecraft:skeleton_spawn_egg*2,minecraft:blaze_spawn_egg*2,minecraft:llama_spawn_egg*2,minecraft:witch_spawn_egg*2,minecraft:iron_sword,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:golden_apple*8,minecraft:cooked_beef*16,minecraft:water_bucket
 ```
+
+## Group maps-held
+
+### 1. Minecraft maps mark their holder and their target
+
+After a0285a18.
+
+- **Vanilla (26.3, checked with javap):**
+  - `MapItem.inventoryTick`: a map item with saved data calls `MapItemSavedData.tickCarriedBy(player, stack, null)` from every slot that ticks (`Inventory.tick` for the 36 main slots, `EntityEquipment.tick` for armour and the offhand); `update` (filling in) only for an unlocked map in a hand (group `maps-explore`).
+  - `tickCarriedBy`: the ticking player gets a `HoldingPlayer` if it has none. Then for every holder in `carriedBy`: a removed player, or one whose inventory holds no stack of the same item with the same `map_id` (`mapMatcher`), loses its holder and its marker; otherwise, when it stands in the map's dimension and the map has `trackingPosition`, `addDecoration(PLAYER, name, x, z, yRot)`. A holder other than the ticking player that wears `#map_invisibility_equipment` (a carved pumpkin) in an armour, body or saddle slot loses its marker. The loop removes a holder without stepping its index back, so the next holder is skipped that tick. Last, each entry of the stack's `minecraft:map_decorations` that the map does not show yet is added with `addDecoration(type, key, x, z, rotation)`.
+  - `addDecoration` runs `calculateDecorationLocationAndType` (ported in `maps-loot` as `MapData::decoration`): no location removes the marker; a changed one replaces it in place (a `LinkedHashMap`), and `trackCount` types (`player`, `frame`, `red_marker`, `blue_marker`, `player_off_map`, `player_off_limits`, the 16 banners) move `trackedDecorationCount`. `calculateRotation` spins every marker of a Nether map, targets too, since a level is always passed.
+  - The markers live only in the saved data object, not in its codec, so they are never saved.
+- **Changed:**
+  - `minecraft_terrain/src/maps.rs`:
+    - `MAP_ITEMS` (the 17 26.3 map items) and `is_map_item`, `tracks_count`, and `wears_map_invisibility(inventory)` (the jar's item tag through the inventory's recipe book).
+    - `CarriedMap::of(stack)`: the item, its `minecraft:map_id` and the marks of its `minecraft:map_decorations`; `Carrier`: a player's UUID, dimension, x, z, yaw, carried maps and whether they wear a pumpkin.
+    - `Held`: a map's markers in insertion order, its tracked count and its holders. `MapStore` keeps a `Held` per map beside the map data and runs `tick_carried(carriers, game_time)`, a port of `tickCarriedBy` without item frames.
+  - `minecraft_survival/src/maps.rs` (new): `carrier(player)` from `Player.place` and the inventory, and `tick(maps, players, game_time, ticks)`, which ticks every carried map once per server tick.
+  - `render_anim/src/minecraft_world.rs`: the host calls `minecraft_survival::maps::tick` once a frame right after the tick plan, for every player in every level.
+- **Tests:**
+  - `maps::tests::a_carried_map_marks_its_holder_and_its_target_like_vanilla`: the holder's marker first, then the stack's red X (rotation 8); `player_off_map` at 300 map units, no marker at 400 on a plain map, `player_off_limits` on an unlimited one; in another dimension the marker stays; no holder marker without `trackingPosition`; every marker of a Nether map spins; a map without data is not held; the tracked count.
+  - `maps::tests::every_holder_is_marked_until_they_drop_the_map_or_leave`: two holders in tick order; a pumpkin wearer is hidden by another holder's tick and shown again by their own; a holder carrying another map item with the same id loses their marker; the holder after a dropped one moves a tick later; a holder who left the game loses their marker.
+  - `maps::tests::carried_maps_read_their_id_and_marks_from_map_items_only`, `maps::tests::marks_of_carried_maps_are_never_saved` and `maps::tests::a_carved_pumpkin_on_the_head_hides_its_wearer_from_maps` (with the 26.3 jar).
+  - `minecraft_survival` `maps::tests::players_mark_the_maps_they_carry_where_they_stand`: from the offhand and the backpack, not from an empty map, and nothing for a player with no place.
+- **Decisions:**
+  - Holders and markers are keyed by the player's UUID; vanilla keys the marker by the player's name. No client sees the key.
+  - A player holds maps only while the host knows where they stand (`Player.place`: dimension, feet and yaw); a player with no place counts as gone. During a dimension change the place stays in the old dimension until the player arrives.
+  - Maps tick from every inventory slot, not from the cursor or the ender chest, as vanilla. Maps in item frames are left for later (brief).
+  - The maps tick once per server tick of the frame's batch, frozen ticks included, since vanilla players tick under `/tick freeze`; each tick spins Nether markers with its own game time.
+  - The markers are kept in `MapStore` beside `MapData`, so ticking them never marks a map file for saving.
+  - Vanilla's skip of the holder after a removed one is kept.
+- **Test steps:** none in game for this commit alone: nothing draws the markers until group `maps-view`, whose steps check them (the brief's E-maps steps 4 and 5).
+- **Kit:** none.
