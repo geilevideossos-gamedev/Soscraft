@@ -98,6 +98,7 @@ pub mod vex_render;
 pub mod vex_save;
 pub mod ravager_save;
 pub mod ravager_render;
+pub mod elden_save;
 pub mod wither_save;
 pub mod wither_bar;
 pub mod wither_render;

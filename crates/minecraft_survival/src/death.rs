@@ -675,7 +675,7 @@ impl CombatTracker {
         let death = self.death_key(present, killer);
         let mut args = vec![Text::literal(victim)];
         if let Some(type_id) = death.attacker {
-            args.push(Text::entity(type_id));
+            args.push(entity_text(type_id));
         } else if let Some(found) = &death.player {
             args.push(Text::literal(found.name.clone()));
             if let Some(weapon) = &found.weapon {
@@ -700,7 +700,17 @@ pub fn player_kill_text(victim: &str, attacker: &str, weapon: Option<&str>) -> T
     }
 }
 
+pub fn entity_text(type_id: &str) -> Text {
+    match minecraftoss_entities::world::families::display_name(type_id) {
+        Some(name) => Text::literal(name),
+        None => Text::entity(type_id),
+    }
+}
+
 fn entity_name(language: &HashMap<String, String>, type_id: &str) -> String {
+    if let Some(name) = minecraftoss_entities::world::families::display_name(type_id) {
+        return name.to_owned();
+    }
     let path = type_id.strip_prefix("minecraft:").unwrap_or(type_id);
     language
         .get(&format!("entity.minecraft.{path}"))
@@ -965,6 +975,22 @@ mod tests {
             assert_eq!(text, line(&tracker).message.replace(VICTIM, "Steve"));
             assert!(!text.contains('%'), "{text}");
         }
+    }
+
+    #[test]
+    fn a_death_by_margit_names_him() {
+        let language = language();
+        let lang = |key: &str| language.get(key).cloned();
+        let name = "Margit, the Fell Omen";
+        let blow = DamageCause::mob(MobAttack::Melee, Some(7), Some("iw4l:margit"));
+        let mut slain = CombatTracker::default();
+        slain.record(1, blow, 8.0, None, 0.0);
+        assert_eq!(line(&slain), says(&format!("%1$s was slain by {name}"), name));
+        let text = slain.death_text("Sos", |_| true, |_| None).resolve(&lang).text;
+        assert_eq!(text, format!("Sos was slain by {name}"));
+        assert_eq!(entity_text("iw4l:margit"), Text::literal(name));
+        assert_eq!(entity_text("minecraft:zombie"), Text::entity("minecraft:zombie"));
+        assert_eq!(entity_name(&language, "minecraft:zombie"), "Zombie");
     }
 
     #[test]

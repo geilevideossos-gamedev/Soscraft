@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 anyhow = "=1.0.98"
+elden_boss = { path = "../../../crates/elden_boss" }
 glam = "=0.29.3"
 minecraftoss-player = { path = "../player" }
 serde = { version = "=1.0.229", features = ["derive"] }

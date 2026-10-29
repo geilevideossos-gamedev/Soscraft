@@ -30,6 +30,7 @@ members = [
     "crates/d3d9_state",
     "crates/diag",
     "crates/dpvs_iw4",
+    "crates/elden_boss",
     "crates/entity_iw4",
     "crates/fastfile_iw4",
     "crates/fastfile_t5",

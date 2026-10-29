@@ -741,6 +741,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let saved = crate::wither_save::Saved { pos, yaw, health, persistent, no_ai, random };
             crate::wither_save::spawn(world, tag, saved)?
         }
+        "minecraft:marker" => crate::elden_save::spawn(world, tag, &crate::families::Common { pos, yaw, health, persistent, no_ai, random, fire, age })?,
         "minecraft:hoglin" | "minecraft:zoglin" => {
             use minecraftoss_entities::hoglin::{Hoglin, HoglinKind};
             let kind = HoglinKind::from_type(kind)?;

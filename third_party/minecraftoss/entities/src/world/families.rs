@@ -65,6 +65,20 @@ macro_rules! family_group {
                 false
             }
 
+            pub fn untargetable(kind: &str) -> bool {
+                $($(#[$attr])* if <$ty as $crate::world::families::Family>::KINDS.contains(&kind) {
+                    return !<$ty as $crate::world::families::Family>::targetable(kind);
+                })*
+                false
+            }
+
+            pub fn display_name(kind: &str) -> Option<&'static str> {
+                $($(#[$attr])* if <$ty as $crate::world::families::Family>::KINDS.contains(&kind) {
+                    return <$ty as $crate::world::families::Family>::display_name(kind);
+                })*
+                None
+            }
+
             pub fn is_vehicle(kind: &str) -> bool {
                 $($(#[$attr])* if <$ty as $crate::world::families::Family>::KINDS.contains(&kind) {
                     return <$ty as $crate::world::families::Family>::MOUNT;
@@ -583,6 +597,14 @@ pub trait Family: Clone + Send + Sized + 'static {
         false
     }
 
+    fn targetable(_kind: &str) -> bool {
+        true
+    }
+
+    fn display_name(_kind: &str) -> Option<&'static str> {
+        None
+    }
+
     fn leashable(_mob: &FamilyMob<Self>) -> bool {
         false
     }
@@ -993,6 +1015,14 @@ pub fn has_key(key: u8) -> bool {
 
 pub fn enemy(kind: &str) -> bool {
     any_static!(enemy(kind))
+}
+
+pub fn targetable(kind: &str) -> bool {
+    !any_static!(untargetable(kind))
+}
+
+pub fn display_name(kind: &str) -> Option<&'static str> {
+    first_static!(display_name(kind))
 }
 
 pub fn is_vehicle(kind: &str) -> bool {
