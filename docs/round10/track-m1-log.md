@@ -20,6 +20,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added (polar-bears-live 2): `entities/src/world/families/land/polar_bears.rs`, `entities/src/world/families/land/polar_bears/ai.rs`, `entities/src/world/families/land/polar_bears/tests.rs` (test only). Changed again: `entities/src/world/families/land.rs` (registration), `entities/src/world/families/land/animal_goals.rs` (`FollowParentGoal`, `panic_environmental_cause`, four `AnimalGoals` fields).
 - Patched (polar-bears-live 3): `world/src/natural_spawner/families.rs` (`generation_rule`), `world/src/natural_spawner.rs` (its one call in `spawn_for_chunk_generation`), `world/src/natural_spawner/families/tests.rs` (its test).
 - Changed again (polar-bears-live 4): `world/src/natural_spawner/families/land.rs` (the polar bear row, `polar_bear_rule` and their tests).
+- polar-bears-drawn: no vendored file (game code only).
 
 ## Hooks
 
@@ -45,7 +46,7 @@ For the orchestrator to copy at the merge of segment m1a (rabbits done):
 
 - `docs/MINECRAFT-SURVIVAL.md:441`: drop "rabbit" from the eggs that spawn nothing: "Spawn eggs for unsimulated mobs (fox, goat, the wither and others; ...)".
 - `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs, drawn with vanilla's adult and baby models and their 16 textures (Toast and the killer bunny's among them), hopping and tilting their heads with vanilla's keyframes, and seen by friends at the same moments. With `mob_griefing` they raid full-grown carrots, a stage a bite. The killer bunny (`RabbitType` 99) has armour 8, never flees, leaps at players and wolves within 4 blocks, bites for 8 before difficulty and calls the rabbits around it when hurt; its sounds are hostile. Wild cats hunt rabbits."
-- At the merge of segment m1a (polar bears live; drawn with `polar-bears-drawn`): under World simulation in `docs/MINECRAFT-SURVIVAL.md`: "Polar bears (round 10, track M1): wander, defend their cubs (a hit cub runs and calls the adults within 20 blocks; adults attack players within 10 blocks of a cub), rear up with a growl every two seconds and swipe for 6 before difficulty, hunt foxes, panic only from fire (cubs from any hit), stay angry 20 to 39 seconds (saved with `angry_at`), follow their mothers as cubs; spawn on grass in snowy plains and ice spikes and on sea ice in frozen oceans, an adult with cubs; saved, hatched from eggs and seen by friends." Family creature rows now decide chunk-generation spawns with their own rules (`generation_rule`).
+- At the merge of segment m1a (polar bears done): under World simulation in `docs/MINECRAFT-SURVIVAL.md`: "Polar bears (round 10, track M1): wander, defend their cubs (a hit cub runs and calls the adults within 20 blocks; adults attack players within 10 blocks of a cub), rear up with a growl every two seconds and swipe for 6 before difficulty, hunt foxes, panic only from fire (cubs from any hit), stay angry 20 to 39 seconds (saved with `angry_at`), follow their mothers as cubs; spawn on grass in snowy plains and ice spikes and on sea ice in frozen oceans, an adult with cubs; saved, hatched from eggs, drawn with vanilla's adult model (1.2 times its size) and the cub's own model, rearing onto their hind legs before each swipe, and seen by friends in the same pose." Family creature rows now decide chunk-generation spawns with their own rules (`generation_rule`).
 
 ## Left for later
 
@@ -479,4 +480,53 @@ After fa44b301.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:polar_bear_spawn_egg*2,minecraft:spawner,minecraft:grass_block*64,minecraft:ice*32,minecraft:torch*16
+```
+
+### Group polar-bears-drawn
+
+#### 1. Minecraft polar bears are drawn like vanilla
+
+After 84d52a57.
+
+- **javap this round** (`PolarBearModel`, `BabyPolarBearModel`, `QuadrupedModel`, `MeshTransformer`, `PartPose.scaled`, `MeshDefinition.transformed`, `LayerDefinitions`, `PolarBearRenderer`, `PolarBearRenderState`, `PolarBear.getStandingAnimationScale`, `LivingEntity.getAgeScale`):
+  - `PolarBearModel.createBodyLayer` (128 x 64): `head` at (0, 10, -16) with the head box (uv 0, 0; from -3.5, -3, -3; 7 x 7 x 7), `mouth` (uv 0, 44; -2.5, 1, -6; 5 x 3 x 3), `right_ear` (uv 26, 0; -4.5, -4, -1; 2 x 2 x 1) and `left_ear` (uv 26, 0, **mirrored**; 2.5, -4, -1); `body` at (-2, 9, 12) turned π/2 about x with two boxes (uv 0, 19; -5, -13, -7; 14 x 14 x 11 and uv 39, 0; -4, -25, -7; 12 x 12 x 10); hind legs (uv 50, 22; -2, 0, -2; 4 x 10 x 8) at (∓4.5, 14, 6) and front legs (uv 50, 40; 4 x 10 x 6) at (∓3.5, 14, -8), none mirrored. 6 parts, 10 cubes. Then `MeshTransformer.scaling(1.2)`: only the root's `PartPose` changes (`MeshDefinition.transformed` maps the root and keeps its children), to scale 1.2 and y -4.8032 (`24.016 × (1 - 1.2)`), so the model grows 1.2 times from the floor line at y 24.016.
+  - `BabyPolarBearModel.createBodyLayer` (64 x 64, no transform; `LayerDefinitions` puts both layers in as built): `body` at (0, 17.5, 0), not turned (uv 0, 9; -4, -3.5, -6; 8 x 7 x 12); `head` at (0, 18.625, -5.75) with the head (uv 0, 0; -3, -2.625, -4.25; 6 x 5 x 4), the nose (uv 20, 3; -2, 0.375, -6.25; 4 x 2 x 2) and two ears (uv 20, 0 and 26, 0; 2 x 2 x 1 at x -4 and 2, y -3.625, z -2.75, neither mirrored); four 3 x 3 x 3 legs (from -1.5, -0.5, -1.5) at (∓2.5, 21.5, ±4.5) with uv (0, 34), (12, 34), (0, 28) and (12, 28). 6 parts, 9 cubes. It extends `PolarBearModel`, so it shares its `setupAnim`.
+  - `QuadrupedModel.setupAnim`: after the pose reset the head's `xRot` and `yRot` are set to the look, and the legs swing `cos(pos × 0.6662 [+ π]) × 1.4 × speed` (the fork's `quadruped_legs`). `PolarBearModel.setupAnim` then, with `f = standScale²` and `a = ageScale`: `body.xRot -= f·π·0.35`, `body.y += f·a·2`; the right front leg `y -= f·a·20`, `z += f·a·4`, `xRot -= f·π·0.45`, and the left front leg takes the right one's `y` and `z` (the same values, as both legs start at the same height and depth) and the same `xRot` change; `head.y -= f·24`, `head.z += f·13`, `head.xRot += f·π·0.15` (the head's move does not use `ageScale`).
+  - `PolarBearRenderer`: `AgeableMobRenderer(adult, cub, 0.9)`, textures `entity/bear/polarbear` and `polarbear_baby` by `isBaby`; `extractRenderState` sets `standScale = getStandingAnimationScale(partial) = lerp(partial, O, now) / 6`; `ageScale` is `LivingEntity.getAgeScale` (0.5 for a baby, else 1). `QuadrupedModel`'s default render type is `RenderTypes.entityCutout` (back faces culled); `getFlipDegrees` stays 90. `PolarBear` has no `getLeashOffset` of its own.
+- **Changed (game code, `minecraft_terrain`):**
+  - New `families/land/polar_bears/render.rs`: both models as part tables (name, offset, turn, cubes) in `QuadrupedModel`'s order (head, body, right and left hind leg, right and left front leg); `Stance` (look, leg swings, stand scale, age scale); `part_poses` (vanilla's `setupAnim` on the offsets and turns, then `part_pose` per part); `stand_scale` (the bear's `stand_old` and `stand` lerped by the partial tick, over 6); `scaled_root` (copied from `cat_render.rs`, which keeps it private, as the brief says) and `model_root` (vanilla's flip of 90 degrees, `scale(-1, -1, 1)` and the 1.501 lift, then the model's own scale, 1.2 for the adult and 1 for the cub); `texture`, `age_scale` and `append_polar_bears` (the skin lit at the eye, the hurt overlay).
+  - `families/land/polar_bears.rs`: `mod render;`, `TEXTURES` now from `render`, `CAGE_MARGIN` 0.13, and `draw` puts the living bears into `out.culled`.
+- **Tests added** (`families::land::polar_bears::render::tests`):
+  - `the_adult_is_scaled_1_2_and_the_cub_has_its_own_model`: 10 and 9 cubes, texture sizes 128 x 64 and 64 x 64, scales 1.2 and 1, the part names, the mirrored left ear, the textures and shadow, the scaling's floor line kept at 24.016, the body lying along the bear. Drawn: 60 faces into `culled` only, the paws on the ground, the top 1.426 above them and 35 × 1.2 pixels from snout to rump, every uv inside the adult skin, the light. A cub drawn alone (a removed adult is not drawn) has 54 faces, its own skin, and its back on top at 0.626.
+  - `a_standing_bear_lifts_its_body_front_legs_and_head`: standing fully, the body's pivot and its turn of 0.15π, the front legs' pivots and turns, the head's pivot and nod, and the hind legs unchanged; half standing moves by the square; a standing cub with `ageScale` 0.5 and the head's full move; the look and the walk swing add to the standing turns. Drawn, a standing bear stays on its hind paws and is more than 1.4 blocks taller.
+  - `the_stand_clock_lerps_with_the_partial_tick`: `stand_scale` at partial 0, 0.5 and 1, going up and down; the drawn mesh is last tick's pose at partial 0, this tick's at partial 1 and neither in between; the clock is squared after the lerp; a friend given the host's `FamilyShow` draws the same mesh as the host at partial 0, 0.25, 0.5 and 1.
+- **Decisions:**
+  - Each screen lerps the stand clock from the two values the host sends (M1-2 decision 2, as `polar-bears-live` took it), so the host and every friend draw the same pose at every partial tick.
+  - The model tables follow vanilla's part names and `setupAnim` line by line. `pig_render.rs`'s private, index-based `part_pose` was not needed; only `cat_render.rs`'s `scaled_root` was copied.
+  - `CAGE_MARGIN` 0.13. At the cage's scale (0.53125 / 1.4) and its 30-degree tilt, the top edge of the bear's rump is 0.62 blocks from the cage's centre, so as the bear turns it pokes up to 0.124 out of the cell. Vanilla's spawner draws it the same way. D0's cage test (`every_registered_kind_is_shown_inside_its_cage`) failed with the default 0.05 in the first full run.
+  - The lead keeps the fork's default offset, because vanilla's `PolarBear` does not override `getLeashOffset`.
+  - The standing bear's taller box stays left for later (it is client-only in vanilla; see M1-2 "Left for later").
+- **Protocol:** no message or codec change. The pose uses `FamilyShow`'s existing flag and the two values from `polar-bears-live`.
+- **Runs:** `test -p minecraft_terrain --locked` (1446 passed, 3 ignored; the first run failed only the cage test, fixed by the margin above), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new file passes `rustfmt --check --edition 2021` on its staged content.
+- **Test steps** (release build, survival, **Normal**, by day on flat grass; name each screenshot by its label):
+  1. Use the polar bear egg 8 blocks away: a big white bear on all fours, about 2.6 blocks from snout to rump and 1.4 tall, with a snout and two small ears, and a wide round shadow. Its legs swing as it walks, and its head turns to look at you. **m1-polar-drawn-1**
+  2. `/summon minecraft:polar_bear ~2 ~ ~8 {Age:-24000}`: a cub with its own rounder model (big head, short snout, stubby legs, about half a block tall) and its own skin, not a shrunken adult. It follows the adult. **m1-polar-drawn-2**
+  3. Punch the adult and let it come at you. Just before each swipe it rears onto its hind legs within a third of a second: body tilted up, front paws reaching forward, head high, about 3 blocks tall. It drops back onto all fours as it swipes. Take the screenshot while it is standing. **m1-polar-drawn-3**
+  4. Step back to about 3 blocks from it while it is angry: it rears up and drops down again about once a second without hitting you.
+  5. Kill it with the iron sword: it flashes red on each hit and tips over sideways as it dies.
+  6. In creative, place the spawner and use a polar bear egg on it: a small bear turns slowly inside the cage, and at times its rump pokes a little out of the cage, as in vanilla. **m1-polar-drawn-4**
+  7. Save, quit and load: the same bears, the cub still a cub.
+  8. Two windows (`scripts\mp-local.ps1`), side by side: the friend sees the same bear and cub. The friend punches the bear: both windows show it rear up and drop down at the same moments. **m1-polar-drawn-5-host**, **m1-polar-drawn-5-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:polar_bear_spawn_egg*8,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*16,minecraft:spawner
+```
+
+#### Polar bears (M1-2) as a whole
+
+Row 22 of `docs/round10/mobs.md` is now `done`. The owner can test the whole section with M1-2's steps in `docs/round10/track-m1.md` and this kit. The fox egg spawns nothing until M1-4 lands.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:polar_bear_spawn_egg*8,minecraft:fox_spawn_egg*4,minecraft:iron_sword,minecraft:flint_and_steel,minecraft:bow,minecraft:arrow*64,minecraft:shield,minecraft:cooked_beef*32,minecraft:spawner,minecraft:lead*4,minecraft:golden_dandelion*4,minecraft:grass_block*64,minecraft:ice*32,minecraft:snow_block*32,minecraft:torch*64
 ```

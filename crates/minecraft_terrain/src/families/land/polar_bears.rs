@@ -13,11 +13,9 @@ use minecraftoss_entities::world::families::FamilyMob;
 use minecraftoss_entities::world::families::land::polar_bears;
 pub use minecraftoss_entities::world::families::land::polar_bears::PolarBear;
 
+mod render;
+
 pub const SHADOW_RADIUS: f32 = 0.9;
-pub const TEXTURES: [&str; 2] = [
-    "minecraft:entity/bear/polarbear",
-    "minecraft:entity/bear/polarbear_baby",
-];
 const STANDING: u32 = 1;
 
 fn int(tag: &Tag, key: &str) -> Option<i32> {
@@ -32,8 +30,9 @@ fn uuid(tag: &Tag, key: &str) -> Option<u128> {
 impl TerrainFamily for PolarBear {
     const TRACKING_RANGE: i32 = 10;
     const VOLATILE: &'static [&'static str] = &["angry_at", "ForcedAge"];
-    const TEXTURES: &'static [&'static str] = &TEXTURES;
+    const TEXTURES: &'static [&'static str] = &render::TEXTURES;
     const SHADOW_RADIUS: f32 = SHADOW_RADIUS;
+    const CAGE_MARGIN: f32 = 0.13;
 
     fn read(mob: &mut FamilyMob<Self>, tag: &Tag) {
         let yaw = mob.core.yaw;
@@ -91,13 +90,15 @@ impl TerrainFamily for PolarBear {
     }
 
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        let shown = mobs.iter().filter(|mob| !mob.core.removed);
+        render::append_polar_bears(out.culled, shown, poses, atlas, light, partial);
     }
 
     fn interact(
