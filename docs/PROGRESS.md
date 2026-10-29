@@ -43,12 +43,12 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 ## Release builds
 | # | When | Commit | State |
 |---|---|---|---|
-| 3 | F (f1, f2) and E2 (e2a) merged, silverfish trial spawners, protocol 8 | 3fefa3f0 | building 2026-10-29 |
+| 3 | F (f1, f2) and E2 (e2a) merged, silverfish trial spawners, protocol 8 | 3fefa3f0 | done 2026-10-29: release 9m 19s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, release 2 kept as `iw4l-survival-605ad21.exe`, relay copied in (hashes checked, relay unchanged); test steps `docs/round10/release-3-tests.md` |
 | 2 | d0a, e1a and d1 merged, protocol 7 | 605ad21e | done 2026-10-29: release 11m 22s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, release 1 kept as `iw4l-survival-6e0e057.exe`, relay copied in (hashes checked); test steps `docs/round10/release-2-tests.md` (78 screenshots, 9 kits, written and checked by two agents) |
 | 1 | track-d merged (d6, keyframes, withers, wind charges) | 6e0e0573 | done 2026-10-28: full suite green (24.9 min, 3863 tests); release 12m 57s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, old one kept as `iw4l-survival-f743218.exe`, relay copied (same hash); protocol 6; test steps `docs/round10/release-1-tests.md` |
 
 ## Log
-- 2026-10-29: e2a merged (7c017f0e, full suite green); PROTOCOL 8 (3fefa3f0); release 3 building.
+- 2026-10-29: e2a merged (7c017f0e, full suite green); PROTOCOL 8 (3fefa3f0); release 3 built and copied in.
 - 2026-10-29: trial spawners use the shared registry, so silverfish trial spawners run (674afcc0); f2 finished and f1 with f2 merged (693a9fea, full suite green); d2 (breezes) started in f2's place; e2a finished (merges after F) and e1b started in its place on C:.
 - 2026-10-29: d1 merged (1a893d11), the flaky culling test made to wait by time (274c6dd9), PROTOCOL 7 (605ad21e), release 2 building; f1 finished (merges with f2), f2 and m1a started; F's target moved to D:.
 - 2026-10-29: d0a merged (39654c55) and e1a merged (008a5c27), both pushed; w1 and f1 started in their places; test binaries deleted from both merged targets (D: 18 GB free). Release 2 follows the d1 and e2a merges.
