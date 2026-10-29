@@ -6,6 +6,10 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 
 Segment f1 (groups `er-core` and `er-rules`) builds the pure crate `crates/elden_boss` and touches no shared game file: only the workspace member list in the root `Cargo.toml` and `Cargo.lock`. Nothing of it is in the game yet, so these commits have no owner steps in game and no kit line.
 
+## Combined kit
+
+None for segment f1: no commit of it has owner steps in game, so no kit line is needed. Segment f2 adds the kit line with Margit's summon.
+
 ## Protocol
 
 Nothing on the wire changed yet.
@@ -202,3 +206,13 @@ After abe00dff.
 - **Changed:** `margit.rs`: the beacon (0.6, pitch 1.6) at both dagger forms, and the quiet low explosion at the cane slam's tick 29. No timing or random roll changed, so the whole fight's seeds play as before.
 - **Tests:** `margit::tests::every_golden_weapon_forms_with_chime_and_beacon_and_every_slam_booms`: at each conjure's first tick the chime and the beacon play, and each slam burst comes with the explosion and a smash. `test -p elden_boss --locked`: 53 green.
 - **Owner's steps:** none in game: the crate is not in the game yet. No kit line.
+
+## Final checks of segment f1
+
+After fac9df13.
+
+- Touched crates (`git diff --stat r10-f1-base..HEAD`): only `elden_boss`, plus its line in the root `Cargo.toml` and `Cargo.lock`.
+- `clippy -p elden_boss --locked --all-targets -- -A clippy::approx_constant`: clean.
+- `test -p elden_boss --locked`: 53 green.
+- Every new `.rs` file passes `rustfmt --check --edition 2024` on its committed content, and none has a comment.
+- **Owner's steps:** none in game. No kit line.
