@@ -12,6 +12,8 @@ use minecraftoss_entities::world::families::FamilyMob;
 pub use minecraftoss_entities::world::families::land::rabbits::Rabbit;
 use minecraftoss_entities::world::families::land::rabbits::{self, RabbitVariant};
 
+mod render;
+
 pub const SHADOW_RADIUS: f32 = 0.3;
 const HOPPING: u32 = 1;
 
@@ -19,10 +21,17 @@ fn int(tag: &Tag, key: &str) -> Option<i32> {
     tag.get(key).and_then(Tag::as_i64).map(|value| value as i32)
 }
 
+fn custom_name(tag: &Tag) -> Option<String> {
+    match tag.get("CustomName")? {
+        Tag::String(name) => Some(name.clone()),
+        name => name.get("text").and_then(Tag::as_str).map(str::to_owned),
+    }
+}
+
 impl TerrainFamily for Rabbit {
     const TRACKING_RANGE: i32 = 8;
     const VOLATILE: &'static [&'static str] = &["MoreCarrotTicks", "ForcedAge"];
-    const TEXTURES: &'static [&'static str] = &[];
+    const TEXTURES: &'static [&'static str] = &render::TEXTURES;
     const SHADOW_RADIUS: f32 = SHADOW_RADIUS;
 
     fn read(mob: &mut FamilyMob<Self>, tag: &Tag) {
@@ -43,6 +52,8 @@ impl TerrainFamily for Rabbit {
             ..Age::default()
         };
         mob.state.in_love = int(tag, "InLove").unwrap_or(0);
+        mob.state.named = tag.get("CustomName").is_some();
+        mob.state.toast = custom_name(tag).as_deref() == Some(rabbits::TOAST);
         let baby = mob.state.age.baby();
         rabbits::set_baby(mob, baby);
     }
@@ -50,14 +61,20 @@ impl TerrainFamily for Rabbit {
     fn fields(mob: &FamilyMob<Self>) -> Vec<(&'static str, Tag)> {
         let state = &mob.state;
         let carrots = state.goals().map_or(0, |goals| goals.more_carrot_ticks);
-        vec![
+        let mut fields = vec![
             ("RabbitType", Tag::Int(state.variant.id())),
             ("MoreCarrotTicks", Tag::Int(carrots)),
             ("Age", Tag::Int(state.age.ticks)),
             ("ForcedAge", Tag::Int(state.age.forced)),
             ("AgeLocked", Tag::Byte(i8::from(state.age.locked))),
             ("InLove", Tag::Int(state.in_love)),
-        ]
+        ];
+        if state.variant == RabbitVariant::Evil && !state.named {
+            let name = Tag::String(rabbits::KILLER_BUNNY.to_owned());
+            let name = [("translate".to_owned(), name)].into_iter().collect();
+            fields.push(("CustomName", Tag::Compound(name)));
+        }
+        fields
     }
 
     fn show(mob: &FamilyMob<Self>) -> FamilyShow {
@@ -82,13 +99,15 @@ impl TerrainFamily for Rabbit {
     }
 
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        let shown = mobs.iter().filter(|mob| !mob.core.removed);
+        render::append_rabbits(out.culled, shown, poses, atlas, light, partial);
     }
 
     fn interact(
@@ -166,6 +185,46 @@ mod tests {
             assert_eq!(rabbit(&world, id).state.variant, variant, "{saved}");
             let goals = rabbit(&world, id).state.goals().unwrap();
             assert_eq!(goals.evil, variant == RabbitVariant::Evil, "{saved}");
+            let originals: HashMap<u64, Tag> = [(id, tag)].into_iter().collect();
+            let saved = mob_tags(&world, |_| true, &originals).remove(0).1;
+            let name = saved.get("CustomName");
+            if variant == RabbitVariant::Evil {
+                let translate = name.and_then(|name| name.get("translate"));
+                assert_eq!(
+                    translate.and_then(Tag::as_str),
+                    Some("entity.minecraft.killer_bunny"),
+                    "an unnamed killer bunny is The Killer Bunny"
+                );
+                let mut again = EntityWorld::default();
+                let back = spawn_saved(&mut again, &saved).unwrap();
+                assert!(rabbit(&again, back).state.named);
+                let loaded: HashMap<u64, Tag> = [(back, saved.clone())].into_iter().collect();
+                let resaved = mob_tags(&again, |_| true, &loaded).remove(0).1;
+                assert_eq!(resaved.get("CustomName"), name);
+            } else {
+                assert_eq!(name, None, "{variant:?}");
+            }
+        }
+        for (name, toast) in [
+            ("\"Toast\"", true),
+            ("{text:\"Toast\"}", true),
+            ("\"toast\"", false),
+            ("\"Bob\"", false),
+        ] {
+            let mut world = EntityWorld::default();
+            let tag = parse(&format!(
+                "{{id:\"minecraft:rabbit\",Pos:[1.5d,64.0d,2.5d],RabbitType:99,CustomName:{name}}}"
+            ));
+            let id = spawn_saved(&mut world, &tag).unwrap();
+            let state = &rabbit(&world, id).state;
+            assert_eq!((state.named, state.toast), (true, toast), "{name}");
+            let originals: HashMap<u64, Tag> = [(id, tag.clone())].into_iter().collect();
+            let saved = mob_tags(&world, |_| true, &originals).remove(0).1;
+            assert_eq!(
+                saved.get("CustomName"),
+                tag.get("CustomName"),
+                "a name is kept"
+            );
         }
         let text = "{id:\"minecraft:rabbit\",Pos:[1.5d,64.0d,2.5d],Rotation:[90.0f,0.0f],RabbitType:3,MoreCarrotTicks:25,Age:-1200,ForcedAge:40,AgeLocked:1b,InLove:0,Health:2.0f,PersistenceRequired:1b}";
         let tag = parse(text);

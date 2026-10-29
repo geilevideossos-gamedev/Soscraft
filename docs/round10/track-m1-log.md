@@ -11,6 +11,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Patched: `entities/src/world/families.rs` (hook, rabbits-live 1), `entities/src/world/families/tests.rs` (its test, rabbits-live 1), `entities/src/world/families/land.rs` (registration, rabbits-live 2), `entities/src/monster_ai.rs` (`AvoidEntityGoal::matching`, rabbits-live 2), `world/src/natural_spawner/families/land.rs` (the rabbit spawn test, rabbits-live 2).
 - Patched (rabbits-live 3): `player/src/lib.rs` (`World::biome_in_tag`).
 - Added: `entities/src/world/families/land/animal_goals.rs`, `entities/src/world/families/land/rabbits.rs`, `entities/src/world/families/land/rabbits/ai.rs`, `entities/src/world/families/land/rabbits/tests.rs` (test only) (rabbits-live 2).
+- Changed again, no new file (rabbits-drawn 1): `entities/src/world/families/land/rabbits.rs` (`named`, `toast`, `TOAST`, `KILLER_BUNNY`).
 
 ## Hooks
 
@@ -31,7 +32,7 @@ No commit of this track has changed a `ToClient`/`ToServer` message or the codec
 For the orchestrator to copy at the merge of segment m1a (rabbits live and drawn):
 
 - `docs/MINECRAFT-SURVIVAL.md:441`: drop "rabbit" from the eggs that spawn nothing: "Spawn eggs for unsimulated mobs (fox, goat, the wither and others; ...)".
-- `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs and seen by friends."
+- `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs, drawn with vanilla's adult and baby models and their 16 textures (Toast and the killer bunny's among them) and seen by friends."
 
 ## Left for later
 
@@ -150,3 +151,44 @@ After e862fc31.
 - **Runs:** `test -p minecraft_terrain --locked --lib families::` (15 passed).
 - **Test steps:** nothing to see in game.
 - **Kit:** none.
+
+#### 1. Minecraft rabbits are saved, hatch from eggs and are drawn like vanilla
+
+After d7ae60a2.
+
+- **Already in from `rabbits-live` 3** (the brief's fallback, logged there): the `TerrainFamily` with saving, loading, hatching from eggs and `/summon`, the spawner cage, friends' look tags and feeding through `interact` (`#rabbit_food`, event 18). This commit adds the drawing, the textures, the lead row and the killer bunny's and Toast's names.
+- **javap this round:**
+  - `AdultRabbitModel.createBodyLayer` (64 x 64): `body` (0, 23, 4) turned -0.3927 about x with the 8 x 6 x 10 box at uv (0, 0); its children `tail`, `head` (turned +0.3927, so it sits level), the head's `left_ear` (uv 32, 0) and `right_ear` (uv 26, 0), and `frontlegs` with `right_front_leg` (uv 36, 18) and `left_front_leg` (uv 44, 18), both turned +0.3927; `backlegs` (0, 23, 4) with `right_hind_leg` and `left_hind_leg` and their `right_haunch` (uv 20, 24, turned +0.3927 about y) and `left_haunch` (uv 36, 24, -0.3927). 13 parts, 9 cubes, no mirrored or inflated cube.
+  - `BabyRabbitModel.createBodyLayer` (32 x 32): `body` (0, 23, 1.6) holding `body_r1` (turned -0.5236), `tail` and `tail_r1`, `head` (uv 0, 0) with `right_ear` (uv 18, 0) and `left_ear` (uv 24, 0), `frontlegs` with each front leg (turned +0.3927) and its `_r1` (turned -0.3927); `backlegs` (0, 23, 2) with each hind leg turned 3.1416 about y and its haunch (left uv 10, 17 at (1, 0, 0.5) turned -0.7854; right uv 0, 17 at (0.5, 0, -0.9) turned +0.7854). 17 parts, 9 cubes.
+  - `LayerDefinitions`: both layers go in as built, with no mesh transform; `AgeableMobRenderer.submit` only swaps the model by `isBaby`, and `LivingEntityRenderer` scales only by the `SCALE` attribute, so neither model is scaled. With its ears the adult stands about 17 pixels tall.
+  - `RabbitModel.setupAnim`: after the pose reset, the head's `yRot` and `xRot` are **set** (`putfield`) to the look while the idle tilt is not started, which replaces the adult head's +0.3927: a rabbit looking straight ahead holds its head at the body's tilt. Then `HOP` and `IDLE_HEAD_TILT` are applied (commit 2).
+  - `RabbitRenderer`: shadow 0.3; the 16 textures `entity/rabbit/rabbit_{brown,white,black,white_splotched,gold,salt,caerbannog}` and `rabbit_toast`, each with `_baby`; `isToast` wins over the variant, and `EVIL` maps to `caerbannog`. `MobRenderer.checkMagicName(entity, "Toast")` is `getCustomName().getString().equals("Toast")` (case-sensitive). The default render type is `entityCutout` (back faces culled), and `getFlipDegrees` keeps `LivingEntityRenderer`'s 90.
+  - `Rabbit.setVariant(EVIL)`: an unnamed rabbit gets `Component.translatable("entity.minecraft.killer_bunny")` as its custom name; `getLeashOffset` is (0, 0.6 x eye, 0.4 x width).
+- **Changed (vendored entities crate, `land/rabbits.rs`):** `Rabbit.named` (it has any `CustomName`) and `Rabbit.toast`, the constants `TOAST` and `KILLER_BUNNY`.
+- **Changed (game code, `minecraft_terrain`):**
+  - New `families/land/rabbits/render.rs`: both models as part tables (name, parent, offset, rotation, cube), `part_poses` (each part's offset and turn plus a keyframe `Moved` offset and its scale, under its parent; the look in place of the head's turn), `model_root` (vanilla's flip of 90 degrees, `scale(-1, -1, 1)` and the 1.501 lift), `texture` (variant, Toast, baby) and `append_rabbits` (the skin lit at the eye, the hurt overlay).
+  - `families/land/rabbits.rs`: `mod render;`, `TEXTURES` (the 16), `read` sets `named` and `toast` from `CustomName` (a string or a component's `text`), `fields` writes `CustomName: {translate: "entity.minecraft.killer_bunny"}` for an unnamed killer bunny, and `draw` puts the living rabbits into `out.culled`.
+  - `leash_render.rs`: `"rabbit" => (0.6, 0.4)` after the `"iron_golem"` row (M10's anchor), so the rope ties at the neck (the default was 1.0 x eye).
+- **Tests added:**
+  - `families::land::rabbits::render::tests`: `an_adult_rabbit_has_thirteen_parts_on_64_and_a_baby_seventeen_on_32` (part and cube counts, texture sizes, parents before children, every bone the keyframes name, the head's pivot at (0, 15, -1.48) and level, an ear's and a haunch's pivots, the baby's front leg and its backward hind legs, the look replacing the head's turn), `every_rabbit_type_picks_its_texture_and_toast_wins`, `a_rabbit_s_lead_ties_at_its_neck` (adult and baby), `a_rabbit_is_drawn_with_its_skin_back_faces_culled` (nine cubes into `culled` only, paws at the ground and ears above the head, the gold skin, the light, a Toast baby smaller with its own texture, a removed rabbit not drawn, red while dying).
+  - `families::land::rabbits::tests::a_rabbit_saves_and_loads_with_its_type_carrot_ticks_and_age` now also checks the killer bunny's name (written once, kept on the next save) and that a given name is kept and decides Toast (`"Toast"` and `{text:"Toast"}` yes, `"toast"` and `"Bob"` no).
+- **Decisions:**
+  - The unnamed killer bunny's `CustomName` is written by `fields` when it is saved instead of being set at load: the saved tag is the same as vanilla's, and the fork draws no mob names (M1-1, "Left for later"). `rabbits-behaviour` 2 needs no name work of its own.
+  - Toast is read from the loaded `CustomName` only; name tags are not in the fork yet (M1-1, "Left for later"), so `/summon .. {CustomName:"Toast"}` is the way to get one.
+  - The models are data tables with a general `part_poses`, so commit 2's keyframes apply by bone name, as `KeyframeAnimation` does.
+- **Runs:** `test -p minecraft_terrain --locked` (1438 passed, 3 ignored), `test -p minecraftoss-entities --locked --lib` (451 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new file passes `rustfmt --check --edition 2021` on its staged content.
+- **Test steps** (release build, survival, Normal, by day on flat grass; name each screenshot by its label). Rabbits do not play their hop or head-tilt animations yet (commit 2); they hop in a still pose.
+  1. Use the rabbit egg three times on grass 8 blocks away: three small rabbits sit up with long ears and a round tail, their front paws on the ground and the body sloping up to the head. They move only in hops. **m1-rabbits-drawn-1**
+  2. Walk around one: its head turns to follow you.
+  3. `/summon minecraft:rabbit ~ ~ ~3 {RabbitType:1}`, then the same with 2, 3, 4 and 5: white, black, white with black patches, gold, and salt-and-pepper. `/summon minecraft:rabbit ~ ~ ~3 {RabbitType:99}`: white with red eyes. `/summon minecraft:rabbit ~ ~ ~3 {CustomName:"Toast"}`: black and white, Toast's coat. **m1-rabbits-drawn-2**
+  4. Right-click two adults with a carrot each: a baby appears beside them, much smaller, with a big head, short ears and a parent's colour. **m1-rabbits-drawn-3**
+  5. Right-click a rabbit with a lead: the rope ties at its neck, low at the front. Walk away: it hops after you. **m1-rabbits-drawn-4**
+  6. Hit a rabbit with the sword: it flashes red, tips over sideways as it dies and drops raw rabbit.
+  7. In creative, place the spawner and use a rabbit egg on it: a small rabbit turns slowly inside the cage. **m1-rabbits-drawn-5**
+  8. Save, quit and load: the same rabbits with the same colours, the baby still small.
+  9. Two windows (`scripts\mp-local.ps1`): the friend sees the same rabbits in the same colours, the baby and Toast, and their heads turn. **m1-rabbits-drawn-6-host**, **m1-rabbits-drawn-6-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:carrot*16,minecraft:lead*2,minecraft:iron_sword,minecraft:spawner
+```

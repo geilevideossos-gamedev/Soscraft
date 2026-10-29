@@ -32,6 +32,8 @@ pub const FOOD_TAG: &str = "minecraft:rabbit_food";
 pub const WHITE_RABBITS_TAG: &str = "minecraft:spawns_white_rabbits";
 pub const GOLD_RABBITS_TAG: &str = "minecraft:spawns_gold_rabbits";
 pub const PARENT_AGE: i32 = 6000;
+pub const TOAST: &str = "Toast";
+pub const KILLER_BUNNY: &str = "entity.minecraft.killer_bunny";
 pub const BIOME_COLOUR_CHANCE: u32 = 20;
 pub const FOOD: [&str; 3] = [
     "minecraft:carrot",
@@ -88,6 +90,8 @@ pub struct Rabbit {
     pub age: Age,
     pub in_love: i32,
     pub last_damage: Option<(&'static str, i32)>,
+    pub named: bool,
+    pub toast: bool,
     pub ai: Box<MonsterAi>,
 }
 
@@ -337,6 +341,8 @@ impl Family for Rabbit {
                 age: Age::default(),
                 in_love: 0,
                 last_damage: None,
+                named: false,
+                toast: false,
                 ai: Box::new(ai),
             },
         })
