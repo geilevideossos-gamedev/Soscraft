@@ -480,3 +480,18 @@ After 1763ffd9.
 ```
 IW4L_MINECRAFT_KIT=minecraft:tnt*8,minecraft:flint_and_steel,minecraft:cooked_beef*32
 ```
+
+### 15. Margit walks all the way home to his anchor
+
+After 274f48e9.
+
+- **Defect:** after a reset he walks home on a path to his anchor's block and falls asleep within 1 block of the anchor (`elden_boss::brain::HOME`). Vanilla's path following counts a node as reached once a mob's feet are within half its width (0.7 for him) of the node's centre on both axes, so the path ended up to about 1.2 blocks from the centre of the anchor's block. An anchor that is not near the middle of its block (a summon at `~ ~ ~` keeps the player's exact position) was then often more than 1 block away. He stood there for 5 seconds and then faded home with the mirror sound, the fade meant for a blocked way home. Tried on a grid of 25 anchor positions within a block and 8 directions 8 blocks out, 18 of the 200 walks home ended in that fade; the existing reset test only used an anchor at a block's centre.
+- **Changed (vendored entities crate, `world/families/bosses/elden_bosses/arena.rs`):** when his path is done and the brain's walk point is still more than 0.5 blocks (`ARRIVE`) but at most 2 blocks (`LAST_STEP`) away at about his own height (less than 1 block up or down), he walks straight at it with the same ground travel and speed. Collisions still apply, so a point behind a wall stays out of reach, and the brain's no-progress fade home still covers that. This also brings him onto his stalking point between moves instead of stopping short of it.
+- **Decision:** the fix is on the entity side, not a larger `HOME` in the brain: the brain's numbers are the design doc's, and the gap came from how a 1.4-wide mob follows a vanilla path.
+- **Tests:** `world::families::bosses::elden_bosses::arena::tests::margit_walks_all_the_way_home_wherever_on_its_block_his_anchor_lies` (the same 200 walks home: none fades, and each ends asleep within 1 block of the anchor). `test -p minecraftoss-entities --locked --lib`: 460 passed. `check -p launcher --locked`: green.
+- **Owner's steps.** He is still a round shadow about 2 blocks wide until group `er-look`. Release build, survival, Normal, by day, flat open ground in the Overworld, F3 on. Name each screenshot by its label, `f2-15-1.png`.
+  1. Stand near the corner of a block, not its middle (F3's `XYZ` shows fractions near .1 or .9), note the coordinates and type `/summon iw4l:margit ~ ~ ~`: you hear him rise. Walk 10 blocks away: the shadow follows you.
+  2. Walk on to 45 blocks from the spot, wait 5 seconds, then come back to 30 blocks: the shadow walks back to where it appeared and goes quiet. There is no mirror sound and no jump of the shadow at the end. **Screenshot f2-15-1** with the shadow on its spot.
+  3. Repeat steps 1 and 2 twice from other block corners: each time he walks all the way home.
+
+Kit: none needed for these steps.

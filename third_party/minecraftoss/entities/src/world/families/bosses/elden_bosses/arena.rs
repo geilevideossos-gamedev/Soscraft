@@ -18,6 +18,8 @@ pub const WALK_REACH: i32 = 0;
 pub const MAX_FALL: i32 = 3;
 pub const GROUND_DEPTH: i32 = 8;
 pub const SPEED_MODIFIER: f64 = 1.0;
+pub const ARRIVE: f64 = 0.5;
+pub const LAST_STEP: f64 = 2.0;
 const SURFACE: f64 = 1.0e-4;
 const APART: f64 = 1.0e-6;
 
@@ -257,12 +259,22 @@ fn stride<W: World>(
     }
     let speed = def.speed as f32;
     let (can_update, surface) = ground_view(level, body, fluid, false);
-    let (wanted, modifier) =
+    let next =
         state
             .navigation
-            .tick_in(level, body.position, can_update, surface, body.width, speed)?;
+            .tick_in(level, body.position, can_update, surface, body.width, speed);
+    let (wanted, modifier) = match next {
+        Some(next) => next,
+        None => (last_step(body.position, to)?, SPEED_MODIFIER),
+    };
     let yaw = yaw_to(body.position, wanted)?;
     Some((yaw as f32, speed * modifier as f32))
+}
+
+fn last_step(at: DVec3, to: DVec3) -> Option<DVec3> {
+    let left = flat_distance(at, to);
+    let level = (to.y - at.y).abs() < 1.0;
+    (level && left > ARRIVE && left <= LAST_STEP).then_some(to)
 }
 
 fn halt(state: &mut EldenBoss) {
@@ -521,6 +533,34 @@ mod tests {
         assert!(!faded, "he walks home");
         assert_eq!(state(&world, id), State::Asleep);
         assert!(flat_distance(feet(&world, id), anchor) <= HOME);
+    }
+
+    #[test]
+    fn margit_walks_all_the_way_home_wherever_on_its_block_his_anchor_lies() {
+        let shares = [0.05, 0.3, 0.5, 0.7, 0.95];
+        for (fx, fz) in shares.iter().flat_map(|&x| shares.map(|z| (x, z))) {
+            for way in 0..8 {
+                let angle = f64::from(way) * std::f64::consts::FRAC_PI_4;
+                let anchor = at(fx, 64.0, fz);
+                let start = anchor + DVec3::new(angle.cos(), 0.0, angle.sin()) * 8.0;
+                let mut world = EntityWorld::default();
+                let mut scene = Scene::default();
+                let id = world.spawn_elden_boss(&MARGIT, start, 0.0, anchor, false);
+                world.elden_boss_mut(id).unwrap().state.brain.reset(0);
+                let mut faded = false;
+                for _ in 0..300 {
+                    world.tick_with_players(&mut scene, &[]);
+                    faded |= state(&world, id) == State::Fade;
+                    if state(&world, id) == State::Asleep {
+                        break;
+                    }
+                }
+                let case = format!("anchor {anchor}, from {start}");
+                assert!(!faded, "he walks home without a fade: {case}");
+                assert_eq!(state(&world, id), State::Asleep, "{case}");
+                assert!(flat_distance(feet(&world, id), anchor) <= HOME, "{case}");
+            }
+        }
     }
 
     #[test]
