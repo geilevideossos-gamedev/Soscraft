@@ -1,0 +1,28 @@
+{
+  "track": "m2",
+  "worktree": "C:\\Dev\\mc-wt\\track-m2",
+  "branch": "track-m2",
+  "target": "D:\\iw4l-wt\\track-m2",
+  "base": "r10-m2i-base",
+  "round": 10,
+  "briefs": "docs/round10/track-m2.md (read M20 and docs/round10/track-d0.md D0-2 and D0-3 first)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss) and the mob tracks M1 (land animals), M2 (this run: water mobs and buckets) and M3 (night, built mobs and horses), which all plug into D0's registry. Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. M2 edits only its own water group files (entities world/families/water*, world natural_spawner/families/water.rs, terrain families/water*) and the M2 section of docs/round10/mobs.md, plus the shared lines its brief names; every shared piece has one owner in the brief's M20 tables, so never build a copy of an M1, M3, E or W piece: if a group's M20 wait is not met in this branch, leave that group, note it in the log, and go on with the groups that do not need it. RESTARTS: if this run was started again after a stop (the PC crashed on 2026-10-28 at 20:27 with six tracks building), the worktree may hold the current group's half-done work as uncommitted or staged changes: read `git status` and `git diff` (and `git diff --cached`) first, keep what is correct, finish the group and commit it; discard only what is broken. If cargo reports invalid or corrupt metadata, a truncated .rlib/.rmeta or a link error on a file that should exist, run `& .\\scripts\\cargo-slot.ps1 +target=<this track's target> clean -p <crate>` for that crate and build again. LOAD: builds now run at -j 4 per slot to keep the laptop cool; never start a second cargo command, the game, or any other long CPU-heavy process.",
+  "groups": [
+    {
+      "key": "dolphins-grace",
+      "prompt": "Track M2 group dolphins-grace (segment m2i, after W's segment w1 is merged): build docs/round10/track-m2.md section M2-4, its grace part. Two commits: 'Minecraft players swim fast with dolphin's grace' (EffectKind::DolphinsGrace after ConduitPower with ALL at 21, the name rows, the mc_float DOLPHINS_GRACE bit and the 0.96 drag in movement_iw4) and 'Registered Minecraft mobs can give players effects' (PlayerEffect { player, effect, ticks, amplifier, display_limit, any_mode } queued on Families and moved into the W7 Output.player_effects in run_tick; EffectGrant gains any_mode). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "dolphins-escort",
+      "prompt": "Track M2 group dolphins-escort (segment m2i, after M1's 'Minecraft mobs can tell when a player sprints' is merged): build docs/round10/track-m2.md section M2-4. One commit: 'Minecraft dolphins swim with swimming players and give them dolphin's grace' (the tick lists in GoalExtra the players who sprint with water at their feet and eyes, the swim-with-player goal, grants through the queue with any_mode; no new PlayerView field). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "guardians-curse",
+      "prompt": "Track M2 group guardians-curse (segment m2i, after dolphins-grace): build docs/round10/track-m2.md section M2-5, its curse. Two commits: 'Minecraft elder guardians curse nearby players with mining fatigue like vanilla' (one PlayerEffect per player within 50 every 1200 ticks with display_limit 1200, through the dolphins-grace queue into the W7 output) and 'Minecraft players see the elder guardian's face and hear its curse, friends too' (cue on PlayerEffect and EffectGrant, sent only when the grant applies; Heard::Game and ToClient::GameEvent, noted under '## Protocol'; the ElderCurse face for host and friend). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "nautiluses-riding",
+      "prompt": "Track M2 group nautiluses-riding (segment m2i, after dolphins-grace): build docs/round10/track-m2.md section M2-9, its riding. Commits: 'Minecraft players keep their breath with breath of the nautilus' (EffectKind::BreathOfTheNautilus after SlowFalling with ALL at 22, water_breathing beside tick_air, conduit power too), 'Minecraft players ride saddled nautiluses and dash with the jump bar' (the D0 mount hooks: controller, ridden travel, the dash through rider_jump, dismount, breath grants every 40 ticks in any game mode, the drowned steering) and, optionally, 'Minecraft dolphins follow players riding nautiluses'. Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    }
+  ]
+}

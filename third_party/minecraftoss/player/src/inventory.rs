@@ -659,6 +659,9 @@ impl Inventory {
     pub fn take_pending_drops(&mut self) -> Vec<ItemStack> {
         std::mem::take(&mut self.pending_drops)
     }
+    pub fn queue_drop(&mut self, stack: ItemStack) {
+        self.pending_drops.push(stack);
+    }
     pub fn settle_workbench(&mut self) -> Vec<ItemStack> {
         let mut overflow = Vec::new();
         for index in 0..9 {

@@ -1,0 +1,20 @@
+{
+  "track": "f",
+  "worktree": "C:\\Dev\\mc-wt\\track-f",
+  "branch": "track-f",
+  "target": "C:\\iw4l-wt\\track-f",
+  "base": "r10-f1-base",
+  "round": 10,
+  "briefs": "docs/round10/track-f.md and docs/ELDEN-RING-BOSSES.md (the design doc)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss), later M1-M3 (remaining mobs). Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. RESTARTS: if this run was started again after a stop (the PC crashed on 2026-10-28 at 20:27 with six tracks building), the worktree may hold the current group's half-done work as uncommitted or staged changes: read `git status` and `git diff` (and `git diff --cached`) first, keep what is correct, finish the group and commit it; discard only what is broken. If cargo reports invalid or corrupt metadata, a truncated .rlib/.rmeta or a link error on a file that should exist, run `& .\\scripts\\cargo-slot.ps1 +target=<this track's target> clean -p <crate>` for that crate and build again. LOAD: builds now run at -j 4 per slot to keep the laptop cool; never start a second cargo command, the game, or any other long CPU-heavy process.",
+  "groups": [
+    {
+      "key": "er-core",
+      "prompt": "Build commits F1.1-F1.2 of section F1 of docs/round10/track-f.md (group er-core, segment f1), with the numbers of docs/ELDEN-RING-BOSSES.md sections 4 and 5. Create the pure crate crates/elden_boss (edition 2024 from the workspace, glam =0.29.3, [lints] workspace, a workspace member; Cargo.lock updated by one check without --locked, then --locked always). Touch no other shared file. Data types, Margit's table (DataSource::Estimate) and check(), then shape.rs and the brain (states, move choice, tracking, holds, root motion, strikes once per player, rings using each player's ground height from Sense, throws, branches, seeded SplitMix64), with the F1 data and brain tests, all without game files. Start docs/round10/track-f-log.md; its owner steps say nothing is in game yet."
+    },
+    {
+      "key": "er-rules",
+      "prompt": "Build commits F1.3-F1.4 of section F1 of docs/round10/track-f.md (group er-rules, segment f1), continuing crates/elden_boss from er-core, with docs/ELDEN-RING-BOSSES.md sections 6-9 and 13. hurt.rs (Brain::take, resistances per source, stance, kneel, the front critical, threat over 200 ticks, uses_hurt_cooldown only for Environment, the set of players who hurt him) and fight.rs (wake and scaling keeping the health share, leash, reset, Return, stuck fade or daggers, the phase shift), then the test-only headless whole fight (two scripted players, fixed seed, at most 6000 ticks: every move, both phases, a kneel and a critical, he dies on the same tick for the same seed). Touch no other shared file. Log each commit in docs/round10/track-f-log.md with no in-game steps."
+    }
+  ]
+}

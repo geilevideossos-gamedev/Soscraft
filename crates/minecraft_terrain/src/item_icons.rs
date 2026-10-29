@@ -289,4 +289,40 @@ mod tests {
             assert!(checked > 0, "{item} has a bare {layer0} pixel");
         }
     }
+
+    #[test]
+    fn a_red_leather_horse_armour_icon_is_red_on_layer_zero_and_plain_on_layer_one() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let sprite = |name: &str| {
+            let bytes = packs.texture(&ResourceId::parse(name).unwrap()).unwrap().unwrap();
+            image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 16, 16, FilterType::Nearest)
+        };
+        let (under, over) = (sprite("minecraft:item/leather_horse_armor"), sprite("minecraft:item/leather_horse_armor_overlay"));
+        let mut armour = minecraftoss_player::inventory::ItemStack::new("minecraft:leather_horse_armor", 1);
+        let plain = item_icon(&packs, &crate::item_tint::of_stack(&armour), 16).unwrap().unwrap();
+        armour.components = Some(serde_json::json!({"minecraft:dyed_color": 0xB02E26}));
+        let red = item_icon(&packs, &crate::item_tint::of_stack(&armour), 16).unwrap().unwrap();
+        assert!(plain != red);
+        let (mut dyed, mut kept) = (0, 0);
+        for (x, y, pixel) in under.enumerate_pixels() {
+            let top = over.get_pixel(x, y);
+            if top[3] == 255 {
+                assert_eq!(red.get_pixel(x, y), top, "overlay at {x},{y}");
+                assert_eq!(red.get_pixel(x, y), plain.get_pixel(x, y), "overlay at {x},{y}");
+                kept += 1;
+            } else if pixel[3] == 255 && top[3] == 0 {
+                let expected: Vec<u8> = [0xB0u16, 0x2E, 0x26].iter().enumerate().map(|(channel, tint)| (pixel[channel] as u16 * tint / 255) as u8).collect();
+                assert_eq!(&red.get_pixel(x, y).0[..3], expected.as_slice(), "armour at {x},{y}");
+                dyed += 1;
+            }
+        }
+        assert!(dyed > 0 && kept > 0, "{dyed} {kept}");
+    }
 }

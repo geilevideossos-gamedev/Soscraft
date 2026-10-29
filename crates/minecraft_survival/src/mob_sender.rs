@@ -202,6 +202,10 @@ pub fn near(
         firework_bursts: filtered(&snapshot.firework_bursts, |burst| {
             keeps(THROWN, burst.position)
         }),
+        mob_puffs: filtered(&snapshot.mob_puffs, |puff| {
+            has_chunk(chunk_of(puff.feet))
+                && tracks(puff.range, view_distance, feet.to_array(), puff.feet)
+        }),
     }
 }
 
@@ -211,6 +215,7 @@ pub fn take_bursts(snapshot: &mut EntitySnapshot) -> EntitySnapshot {
         dragon_breath: std::mem::take(&mut snapshot.dragon_breath),
         dragon_explosions: std::mem::take(&mut snapshot.dragon_explosions),
         firework_bursts: std::mem::take(&mut snapshot.firework_bursts),
+        mob_puffs: std::mem::take(&mut snapshot.mob_puffs),
         ..EntitySnapshot::default()
     };
     bursts.eyes.shattered = std::mem::take(&mut snapshot.eyes.shattered);
@@ -223,6 +228,7 @@ fn add_bursts(into: &mut EntitySnapshot, from: EntitySnapshot) {
     into.dragon_breath.extend(from.dragon_breath);
     into.dragon_explosions.extend(from.dragon_explosions);
     into.firework_bursts.extend(from.firework_bursts);
+    into.mob_puffs.extend(from.mob_puffs);
 }
 
 pub fn keep_bursts(older: &mut EntitySnapshot, newer: &mut EntitySnapshot) {
@@ -236,7 +242,8 @@ pub fn has_bursts(snapshot: &EntitySnapshot) -> bool {
         && snapshot.breath_bursts.is_empty()
         && snapshot.dragon_breath.is_empty()
         && snapshot.dragon_explosions.is_empty()
-        && snapshot.firework_bursts.is_empty())
+        && snapshot.firework_bursts.is_empty()
+        && snapshot.mob_puffs.is_empty())
 }
 
 pub fn bursts_message(
@@ -457,6 +464,22 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_mobs_show_crosses_the_state_lane() {
+        use minecraft_terrain::families::FamilyShow;
+        let mut shown = mob(7, 1.5, 0.5);
+        shown.show.family = Some(FamilyShow { flags: 0b101, values: [1, -2, 3, 0, 0, 0, 40, i32::MAX] });
+        shown.show.fire = true;
+        let plain = mob(9, 2.5, 0.5);
+        let bytes = minecraft_net::encode(Lane::State, &vec![shown, plain]).unwrap();
+        let back: Vec<ServerMob> = minecraft_net::decode(Lane::State, &bytes).unwrap();
+        assert_eq!(back.iter().map(|mob| (mob.id, mob.show)).collect::<Vec<_>>(), vec![(7, shown.show), (9, plain.show)]);
+        assert_eq!(back[1].show.family, None, "other mobs carry no family show");
+        let alone = minecraft_net::encode(Lane::State, &vec![plain]).unwrap();
+        let shows = minecraft_net::encode(Lane::State, &vec![shown]).unwrap();
+        assert!(shows.len() > alone.len(), "the family show travels with its mob");
+    }
+
+    #[test]
     fn effect_swirls_go_only_as_far_as_their_body_is_tracked() {
         let swirl = |x: f64, range: i32| minecraft_terrain::spell_particles::SwirlView {
             feet: DVec3::new(x, 64.0, 0.5),
@@ -529,5 +552,45 @@ mod tests {
         eye.eyes.shattered.push([0, 64, 0]);
         assert_eq!(bursts_message(&eye, far, |_| true), None);
         assert_eq!(bursts_message(&eye, here, |_| false), None, "not before its chunk");
+    }
+
+    #[test]
+    fn mob_puffs_go_on_the_reliable_stream_and_stay_with_their_range() {
+        use minecraft_terrain::mob_particles::{MobPuff, PuffKind};
+        let puff = |x: f64, range: i32| MobPuff {
+            kind: PuffKind::Heart,
+            count: 7,
+            feet: DVec3::new(x, 64.0, 0.5),
+            width: 0.6,
+            height: 0.85,
+            lift: 0.5,
+            range,
+        };
+        let mut older = EntitySnapshot {
+            mob_puffs: vec![puff(0.5, 10)],
+            ..EntitySnapshot::default()
+        };
+        let mut newer = EntitySnapshot {
+            mob_puffs: vec![puff(140.5, 8), puff(150.5, 10)],
+            ..EntitySnapshot::default()
+        };
+        keep_bursts(&mut older, &mut newer);
+        assert!(!has_bursts(&older));
+        assert_eq!(newer.mob_puffs.len(), 3, "an earlier tick's puffs are kept until sent");
+        let bursts = take_bursts(&mut newer);
+        assert!(!has_bursts(&newer), "the droppable state frame carries none");
+        let here = (DVec3::new(0.5, 64.0, 0.5), 32);
+        let Some(ToClient::Bursts { entities }) = bursts_message(&bursts, here, |_| true) else {
+            panic!("the puffs go on the reliable stream");
+        };
+        let sent: EntitySnapshot = minecraft_net::decode(Lane::Reliable, &entities.0).unwrap();
+        assert_eq!(
+            sent.mob_puffs,
+            vec![puff(0.5, 10), puff(150.5, 10)],
+            "a cat's puff goes 8 chunks, a wolf's 10"
+        );
+        let far = (DVec3::new(1000.5, 64.0, 0.5), 32);
+        assert_eq!(bursts_message(&bursts, far, |_| true), None, "none out of range");
+        assert_eq!(bursts_message(&bursts, here, |_| false), None, "not before its chunk");
     }
 }

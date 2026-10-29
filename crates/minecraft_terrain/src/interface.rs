@@ -64,12 +64,12 @@ pub(crate) fn item_model_tints(
                     .get("value")
                     .and_then(serde_json::Value::as_i64)
                     .map(|color| color as u32),
-                Some("minecraft:potion") => potion.or_else(|| {
+                Some("minecraft:potion" | "minecraft:dye") => potion.or_else(|| {
                     tint.get("default")
                         .and_then(serde_json::Value::as_i64)
                         .map(|color| color as u32)
                 }),
-                Some("minecraft:dye" | "minecraft:firework" | "minecraft:map_color" | "minecraft:team" | "minecraft:custom_model_data") => tint
+                Some("minecraft:firework" | "minecraft:map_color" | "minecraft:team" | "minecraft:custom_model_data") => tint
                     .get("default")
                     .and_then(serde_json::Value::as_i64)
                     .map(|color| color as u32),
@@ -154,7 +154,9 @@ mod tests {
         assert!(item_model_tints(&packs, &wolf, None).unwrap().is_empty());
         let stonecutter = json!({"type": "minecraft:model", "model": "minecraft:block/stonecutter"});
         assert!(item_model_tints(&packs, &stonecutter, None).unwrap().is_empty());
-        assert_eq!(item_model_tints(&packs, &horse, Some(0xF82423)).unwrap(), vec![[0xa0, 0x65, 0x40]]);
+        assert_eq!(item_model_tints(&packs, &horse, Some(0xF82423)).unwrap(), vec![[0xf8, 0x24, 0x23]]);
+        assert_eq!(item_model_tints(&packs, &leather, Some(0xB02E26)).unwrap(), vec![[0xb0, 0x2e, 0x26]]);
+        assert!(item_model_tints(&packs, &wolf, Some(0xB02E26)).unwrap().is_empty());
         assert_eq!(item_model_tints(&packs, &star, Some(0xF82423)).unwrap(), vec![[0xff; 3], [0x8a; 3]]);
     }
 

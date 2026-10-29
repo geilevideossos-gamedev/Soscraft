@@ -12,6 +12,7 @@ pub mod book;
 pub mod chunk_map;
 pub mod distance;
 pub mod game_rules;
+pub mod item_components;
 pub mod level;
 pub mod level_storage;
 pub mod natural_spawner;

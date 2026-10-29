@@ -1555,6 +1555,12 @@ pub fn act(
             hand.attack_ticks = 0;
         }
     }
+    effects.extend(
+        survival
+            .take_effect_sounds()
+            .into_iter()
+            .map(|event| sound(event, None, 1.0, 1.0)),
+    );
     Acted {
         open_table,
         open_block,
@@ -2393,6 +2399,22 @@ pub(crate) mod tests {
         let stopped = step(&mut player, Hands::default());
         assert!(heard(&stopped, crate::spyglass::STOP_SOUND));
         assert_eq!(player.hand.scoping, None, "letting go stops scoping");
+    }
+
+    #[test]
+    fn an_omen_given_since_the_last_frame_is_heard_once_from_the_player() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = holding("minecraft:cobblestone", 1);
+        let kind = minecraftoss_player::survival::EffectKind::TrialOmen;
+        assert!(player.survival.give_effect(kind, 1200, 0));
+        let omen = sound("minecraft:event.mob_effect.trial_omen", None, 1.0, 1.0);
+        let heard = |acted: &Acted| acted.effects.iter().filter(|effect| **effect == omen).count();
+        let first = use_once(&mut level, &globals, &mut player, Hands::default());
+        assert_eq!(heard(&first), 1);
+        let second = use_once(&mut level, &globals, &mut player, Hands::default());
+        assert_eq!(heard(&second), 0, "the sound is played once");
     }
 
     fn written_book() -> ItemStack {

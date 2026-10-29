@@ -822,6 +822,37 @@ fn merchant_op(action: &MenuAction) -> Option<MerchantOp> {
             right: *right,
             shift: *shift,
         },
+        MenuAction::Swap {
+            slot: slot @ (MenuSlot::Container(0..=2) | MenuSlot::Output),
+            hotbar,
+        } => MerchantOp::Swap {
+            slot: slot_index(*slot)?,
+            hotbar: usize::from(*hotbar),
+        },
+        MenuAction::Throw {
+            slot: slot @ (MenuSlot::Container(0..=2) | MenuSlot::Output),
+            whole,
+        } => MerchantOp::Throw {
+            slot: slot_index(*slot)?,
+            whole: *whole,
+        },
+        MenuAction::Spread { slots, right }
+            if slots
+                .iter()
+                .any(|slot| matches!(slot, MenuSlot::Container(0 | 1))) =>
+        {
+            MerchantOp::Spread {
+                players: slots.iter().fold(0, |mask, slot| match slot {
+                    MenuSlot::Inventory(index) if *index < 64 => mask | (1 << *index),
+                    _ => mask,
+                }),
+                payments: slots.iter().fold(0, |mask, slot| match slot {
+                    MenuSlot::Container(index @ (0 | 1)) => mask | (1 << *index),
+                    _ => mask,
+                }),
+                right: *right,
+            }
+        }
         MenuAction::Slot {
             slot: MenuSlot::Container(2) | MenuSlot::Output,
             shift,
@@ -901,7 +932,7 @@ fn merchant_action(
             screen.selected = usize::try_from(index).ok();
         }
         ops.push(op);
-    } else if merchant_local(action) {
+    } else if merchant_local(action) && !matches!(action, MenuAction::Gather { .. }) {
         grid_action(action, inventory, Grid::Inventory, None, thrown);
     }
 }
@@ -2643,6 +2674,7 @@ mod tests {
             view,
             slots: Vec::new(),
             cursor: None,
+            thrown: Vec::new(),
             closing: false,
         })
     }
@@ -2687,6 +2719,59 @@ mod tests {
                     shift: false,
                 },
             ),
+            (
+                MenuAction::Swap {
+                    slot: MenuSlot::Container(1),
+                    hotbar: 3,
+                },
+                MerchantOp::Swap { slot: 1, hotbar: 3 },
+            ),
+            (
+                MenuAction::Swap {
+                    slot: MenuSlot::Output,
+                    hotbar: 40,
+                },
+                MerchantOp::Swap {
+                    slot: 2,
+                    hotbar: 40,
+                },
+            ),
+            (
+                MenuAction::Throw {
+                    slot: MenuSlot::Container(0),
+                    whole: false,
+                },
+                MerchantOp::Throw {
+                    slot: 0,
+                    whole: false,
+                },
+            ),
+            (
+                MenuAction::Throw {
+                    slot: MenuSlot::Output,
+                    whole: true,
+                },
+                MerchantOp::Throw {
+                    slot: 2,
+                    whole: true,
+                },
+            ),
+            (
+                MenuAction::Spread {
+                    slots: vec![
+                        MenuSlot::Container(0),
+                        MenuSlot::Inventory(12),
+                        MenuSlot::Container(1),
+                        MenuSlot::Inventory(40),
+                    ],
+                    right: true,
+                },
+                MerchantOp::Spread {
+                    players: (1 << 12) | (1 << 40),
+                    payments: 0b11,
+                    right: true,
+                },
+            ),
             (cell(2), MerchantOp::Result { shift: false }),
             (take_all, MerchantOp::Result { shift: true }),
             (slot(14, true), MerchantOp::QuickMove(14)),
@@ -2712,11 +2797,58 @@ mod tests {
             steve.inventory.cursor.as_ref().map(|stack| stack.count),
             Some(5)
         );
+        steve.inventory.slots[3] = Some(ItemStack::new("minecraft:wheat", 7));
+        let gather = MenuAction::Gather {
+            slot: MenuSlot::Inventory(2),
+            right: false,
+        };
+        let _ = apply(&mut steve, &mut containers, books(&book), &gather, 0.5);
+        assert!(sent(&mut steve).is_empty(), "a double click never gathers here");
+        assert_eq!(
+            steve.inventory.cursor.as_ref().map(|stack| stack.count),
+            Some(5)
+        );
+        assert_eq!(
+            steve.inventory.slots[3].as_ref().map(|stack| stack.count),
+            Some(7)
+        );
         let _ = apply(&mut steve, &mut containers, books(&book), &slot(2, false), 0.5);
         assert!(steve.inventory.cursor.is_none());
         assert!(close(&mut steve).is_empty());
         assert!(steve.menus.open.is_none());
         assert_eq!(sent(&mut steve), [MerchantOp::Close]);
+    }
+
+    #[test]
+    fn stacks_thrown_from_the_trading_screen_are_tossed_by_the_host_and_by_a_friend() {
+        let mut chat = CommandServer::new(crate::commands::HOST);
+        let mut steve = trading(&mut chat);
+        let mut alex = player(&mut chat, 1, "Alex");
+        let shown = merchant_news(&mut alex, vec![MerchantNews::Opened(trade_view(9))], true, false);
+        assert!(shown.opened);
+        let book = StationBook::default();
+        let mut containers = Containers::default();
+        let throw = MenuAction::Throw {
+            slot: MenuSlot::Output,
+            whole: true,
+        };
+        for trader in [&mut steve, &mut alex] {
+            let _ = apply(trader, &mut containers, books(&book), &throw, 0.5);
+            assert_eq!(
+                sent(trader),
+                [MerchantOp::Throw {
+                    slot: 2,
+                    whole: true
+                }]
+            );
+            trader
+                .inventory
+                .queue_drop(ItemStack::new("minecraft:emerald", 2));
+            let _ = merchant_news(trader, vec![answer(Some(trade_view(9)))], true, false);
+            let thrown = pump_merchant(trader, |_, _, _| {});
+            assert_eq!(thrown, [ItemStack::new("minecraft:emerald", 2)]);
+            assert!(pump_merchant(trader, |_, _, _| {}).is_empty(), "thrown once");
+        }
     }
 
     #[test]

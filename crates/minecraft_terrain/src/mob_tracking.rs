@@ -87,6 +87,7 @@ pub struct MobShow {
     pub ravager: [i32; 3],
     pub glowing: bool,
     pub wither: WitherShow,
+    pub family: Option<crate::families::FamilyShow>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -283,6 +284,9 @@ impl Trackers {
 }
 
 pub fn tracking_range(kind: &str) -> i32 {
+    if let Some(range) = crate::families::tracking_range(kind) {
+        return range;
+    }
     match kind.strip_prefix("minecraft:").unwrap_or(kind) {
         "player" => 32,
         "end_crystal" => 16,
@@ -322,6 +326,14 @@ pub fn look(tag: &Tag) -> Tag {
         .is_some_and(|age| age < 0);
     for key in VOLATILE {
         map.remove(key);
+    }
+    let family = map
+        .get("id")
+        .and_then(Tag::as_str)
+        .and_then(crate::families::volatile)
+        .unwrap_or(&[]);
+    for key in family {
+        map.remove(*key);
     }
     map.insert("Baby".to_owned(), Tag::Byte(i8::from(baby)));
     Tag::Compound(map)
@@ -517,6 +529,7 @@ pub fn shows(world: &EntityWorld) -> HashMap<u64, MobShow> {
             },
         );
     }
+    crate::families::shows(world, &mut put);
     for raider in world.raiders() {
         if world.glowing(raider.id) {
             out.entry(raider.id).or_default().glowing = true;
@@ -582,7 +595,7 @@ pub fn is_projectile(world: &EntityWorld, id: u64) -> bool {
         || world.evoker_fangs().iter().any(|e| e.id == id)
 }
 
-fn place(previous: &mut DVec3, body: &mut Body, mob: &ServerMob) {
+pub(crate) fn place(previous: &mut DVec3, body: &mut Body, mob: &ServerMob) {
     *previous = body.position;
     body.position = mob.position;
     body.on_ground = mob.on_ground;
@@ -774,6 +787,7 @@ pub fn show_on(world: &mut EntityWorld, mob: &ServerMob) {
         e.spit.yaw = mob.y_rot;
         e.spit.pitch = mob.x_rot;
     }
+    crate::families::show_on(world, mob);
     if show.glowing != world.glowing(id) {
         use minecraftoss_entities::effects::{EffectInstance, MobEffect};
         if show.glowing {
@@ -1587,6 +1601,71 @@ mod tests {
         assert!(seen.charging, "the charging texture shows");
         assert_eq!(seen.body.position.y, 67.5);
         assert_eq!(seen.main_hand().map(|s| s.id.as_str()), Some("minecraft:iron_sword"));
+    }
+
+    #[test]
+    fn a_friend_sees_a_silverfish_and_an_endermite_from_their_look_tags() {
+        use crate::families::FamilyShow;
+        use minecraftoss_entities::world::families::pests::endermites::Endermite;
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(800);
+        let (fish, fish_tag) = spawn(&mut host, "{id:\"minecraft:silverfish\",Pos:[3.5d,64.0d,0.5d],Rotation:[45.0f,0.0f],NoAI:1b}");
+        let (mite, mite_tag) = spawn(&mut host, "{id:\"minecraft:endermite\",Pos:[5.5d,64.0d,0.5d],NoAI:1b,Lifetime:100}");
+        assert_eq!((tracking_range("minecraft:silverfish"), tracking_range("minecraft:endermite"), tracking_range("endermite")), (8, 8, 8));
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(fish, fish_tag), (mite, mite_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        let mut added = Vec::new();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+            added.push(*id);
+        }
+        added.sort_unstable();
+        assert_eq!(added, vec![fish, mite]);
+        assert_eq!((friend.entity_type(fish), friend.entity_type(mite)), (Some("minecraft:silverfish"), Some("minecraft:endermite")));
+        assert_eq!(friend.family::<Endermite>()[0].state.life, 100);
+        assert_eq!(friend.family_core(fish).unwrap().1.yaw, 45.0);
+        let mut moved: Vec<u64> = tracked.moves_of(3).unwrap().iter().map(|mob| mob.id).collect();
+        moved.sort_unstable();
+        assert_eq!(moved, vec![fish, mite], "both move every tick");
+        let seen = shows(&host);
+        assert_eq!((seen[&fish].family, seen[&mite].family), (Some(FamilyShow::default()), Some(FamilyShow::default())));
+        host.family_mob_mut::<Endermite>(mite).unwrap().state.life = 160;
+        {
+            let core = host.family_core_mut(fish).unwrap().1;
+            core.body.position = DVec3::new(4.0, 65.0, 1.5);
+            core.body.fire_ticks = 20;
+            core.swings = 3;
+        }
+        for _ in 0..LOOK_TICKS {
+            trackers.tick();
+        }
+        let later = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        assert!(later.events_of(3).next().is_none(), "a lifetime counting up is no new look: {:?}", later.events);
+        let moves = later.moves_of(3).unwrap();
+        let sent = moves.iter().find(|mob| mob.id == fish).unwrap();
+        assert_eq!((sent.swings, sent.show.fire, sent.show.family), (3, true, Some(FamilyShow::default())));
+        for mob in moves {
+            show_on(&mut friend, mob);
+        }
+        let shown = friend.family_core(fish).unwrap().1;
+        assert_eq!((shown.body.position, shown.body.fire_ticks), (DVec3::new(4.0, 65.0, 1.5), 1));
+        assert_eq!(shown.previous_position, DVec3::new(3.5, 64.0, 0.5));
+    }
+
+    #[test]
+    fn a_registered_look_tag_drops_only_its_own_volatile_keys() {
+        let mite = look(&saved("{id:\"minecraft:endermite\",Lifetime:100,Size:2,Health:8.0f}"));
+        assert_eq!((mite.get("Lifetime"), mite.get("Size"), mite.get("Health")), (None, Some(&Tag::Int(2)), None));
+        let fish = look(&saved("{id:\"minecraft:silverfish\",Lifetime:100}"));
+        assert_eq!(fish.get("Lifetime"), Some(&Tag::Int(100)), "the silverfish lists no volatile keys");
+        let slime = look(&saved("{id:\"minecraft:slime\",Size:2,Lifetime:100}"));
+        assert_eq!((slime.get("Size"), slime.get("Lifetime")), (Some(&Tag::Int(2)), Some(&Tag::Int(100))), "an old family keeps every key of its look");
+        assert_eq!(crate::families::volatile("minecraft:endermite"), Some(&["Lifetime"][..]));
+        assert_eq!((crate::families::volatile("minecraft:silverfish"), crate::families::volatile("minecraft:slime")), (Some(&[][..]), None));
     }
 
     #[test]

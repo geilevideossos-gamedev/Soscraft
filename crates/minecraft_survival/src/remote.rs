@@ -1340,6 +1340,44 @@ mod tests {
     }
 
     #[test]
+    fn a_friend_sees_the_hosts_taming_hearts() {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraft_terrain::mob_particles::{MobPuff, PuffKind};
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut friend = RemoteWorld::new(registries);
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        let feet = glam::DVec3::new(10.5, 64.0, 10.5);
+        let bursts = EntitySnapshot {
+            mob_puffs: vec![MobPuff {
+                kind: PuffKind::Heart,
+                count: 7,
+                feet,
+                width: 0.6,
+                height: 0.85,
+                lift: 0.5,
+                range: 10,
+            }],
+            ..EntitySnapshot::default()
+        };
+        let entities = minecraft_net::encode(Lane::Reliable, &bursts).unwrap();
+        friend.apply(ToClient::Bursts {
+            entities: minecraft_net::messages::Blob(entities),
+        });
+        let level = friend.level.as_ref().unwrap();
+        let hearts: Vec<glam::DVec3> = level
+            .view
+            .ambient
+            .kinds_at()
+            .filter(|(kind, _)| *kind == Kind::Heart)
+            .map(|(_, at)| at)
+            .collect();
+        assert_eq!(hearts.len(), 7);
+        assert!(hearts.iter().all(|at| at.distance(feet) < 2.0));
+    }
+
+    #[test]
     fn the_friend_s_dragon_glides_on_its_own_ticks_when_frames_come_late() {
         use minecraft_terrain::ender_dragon::{DragonView, HISTORY_SENT, Sample, part_box};
         let Some(registries) = registries() else {

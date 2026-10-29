@@ -489,13 +489,25 @@ pub const SIMULATED_KINDS: &[&str] = &[
 const VEHICLES: &[&str] = &["minecraft:strider", "minecraft:horse", "minecraft:donkey", "minecraft:mule", "minecraft:llama", "minecraft:trader_llama", "minecraft:ravager"];
 
 fn carries(tag: &Tag) -> bool {
-    text(tag, "id").is_some_and(|id| VEHICLES.contains(&id))
+    text(tag, "id").is_some_and(|id| VEHICLES.contains(&id) || minecraftoss_entities::world::families::is_vehicle(id))
         && tag.get("Passengers").and_then(Tag::as_list).is_some_and(|riders| {
             riders.iter().all(|rider| {
                 let kind = text(rider, "id").unwrap_or("");
-                SIMULATED_KINDS.contains(&kind) && !matches!(kind, "minecraft:end_crystal" | "minecraft:ender_dragon") && (rider.get("Passengers").is_none() || carries(rider))
+                is_simulated(kind) && !matches!(kind, "minecraft:end_crystal" | "minecraft:ender_dragon") && (rider.get("Passengers").is_none() || carries(rider))
             })
         })
+}
+
+pub fn is_simulated(kind: &str) -> bool {
+    SIMULATED_KINDS.contains(&kind) || crate::families::kinds().contains(&kind)
+}
+
+pub fn simulated_kinds() -> Vec<&'static str> {
+    let mut kinds = SIMULATED_KINDS.to_vec();
+    kinds.extend(crate::families::kinds());
+    kinds.sort_unstable();
+    kinds.dedup();
+    kinds
 }
 
 pub fn spawn_saved_all(world: &mut EntityWorld, tag: &Tag) -> Vec<(u64, Tag)> {
@@ -1318,7 +1330,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
-        _ => return None,
+        _ => crate::families::spawn_saved(world, kind, tag, &crate::families::Common { pos, yaw, health, persistent, no_ai, random, fire, age })?,
     };
     // `Entity.load`: the UUID gossip about it is kept by.
     if let Some(ints) = tag.get("UUID").and_then(Tag::as_ints).filter(|i| i.len() == 4) {
@@ -1828,6 +1840,7 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
         fields.push(("EggLayTime", Tag::Int(chicken.egg_time)));
         add(e.id, "minecraft:chicken", &chicken.body, chicken.yaw, chicken.health, chicken.persistence_required, fields);
     }
+    crate::families::save(world, &mut add);
     // `AbstractVillager.addAdditionalSaveData`: the offers once made, and
     // `Villager`'s restock clock.
     for (id, tag) in &mut out {
@@ -2956,6 +2969,74 @@ mod tests {
         let wild = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:vex\",Pos:[2.5d,66.0d,2.5d]}").unwrap();
         let id = spawn_saved(&mut fresh, &wild).unwrap();
         assert_eq!(fresh.vex_mut(id).unwrap().vex.life_ticks, None, "a vex from an egg lives on");
+    }
+
+    #[test]
+    fn a_silverfish_and_an_endermite_save_and_load_with_its_lifetime() {
+        use minecraftoss_entities::world::families::pests::endermites::Endermite;
+        use minecraftoss_entities::world::families::pests::silverfish::Silverfish;
+        let parse = |text: &str| minecraftoss_core::snbt::parse_compound(text).unwrap();
+        let fish_tag = parse("{id:\"minecraft:silverfish\",Pos:[1.5d,64.0d,2.5d],UUID:[I;4,5,6,20],Rotation:[90.0f,0.0f],Health:5.0f,PersistenceRequired:1b,Fire:40s,Motion:[0.0d,0.25d,0.0d],OnGround:1b,CustomName:\"Nibbles\"}");
+        let mite_tag = parse("{id:\"minecraft:endermite\",Pos:[3.5d,64.0d,2.5d],UUID:[I;4,5,6,21],Health:30.0f,NoAI:1b,Lifetime:1234}");
+        let mut world = EntityWorld::default();
+        let fish = spawn_saved(&mut world, &fish_tag).expect("silverfish load");
+        let mite = spawn_saved(&mut world, &mite_tag).expect("endermites load");
+        assert_eq!((world.entity_type(fish), world.entity_type(mite)), (Some("minecraft:silverfish"), Some("minecraft:endermite")));
+        {
+            let (key, core) = world.family_core(fish).unwrap();
+            assert_eq!((key, core.body.position, core.yaw, core.look.head_yaw, core.health), (36, DVec3::new(1.5, 64.0, 2.5), 90.0, 90.0, 5.0));
+            assert!(core.persistent && !core.no_ai && !core.baby && core.body.on_ground);
+            assert_eq!((core.body.fire_ticks, core.body.velocity), (40, DVec3::new(0.0, 0.25, 0.0)));
+            assert_eq!(world.family::<Silverfish>()[0].state.ai.state.look_control.head_yaw, 90.0, "its goals start from the saved head turn");
+            let mite = &world.family::<Endermite>()[0];
+            assert_eq!((mite.core.health, mite.state.life), (8.0, 1234), "the saved health is capped at its maximum");
+            assert!(mite.core.no_ai && !mite.core.persistent);
+        }
+        assert_eq!(world.uuid_of(mite), minecraftoss_entities::gossip::uuid_from_ints([4, 5, 6, 21]));
+        world.family_mob_mut::<Endermite>(mite).unwrap().state.life = 2000;
+        world.family_core_mut(fish).unwrap().1.health = 3.0;
+        let originals: std::collections::HashMap<u64, Tag> = [(fish, fish_tag.clone()), (mite, mite_tag.clone())].into_iter().collect();
+        let saved = mob_tags(&world, |_| true, &originals);
+        let saved_of = |id: u64| saved.iter().find(|(saved_id, _)| *saved_id == id).map(|(_, tag)| tag.clone()).expect("it is saved");
+        let (fish_saved, mite_saved) = (saved_of(fish), saved_of(mite));
+        assert_eq!((fish_saved.get("Health"), fish_saved.get("PersistenceRequired")), (Some(&Tag::Float(3.0)), Some(&Tag::Byte(1))));
+        assert_eq!(text(&fish_saved, "CustomName"), Some("Nibbles"), "what it does not simulate stays as loaded");
+        assert_eq!(fish_saved.get("Lifetime"), None, "a silverfish has no lifetime");
+        assert_eq!((mite_saved.get("Lifetime"), int(&mite_saved, "NoAI")), (Some(&Tag::Int(2000)), Some(1)));
+        let mut again = EntityWorld::default();
+        let fish_back = spawn_saved(&mut again, &fish_saved).expect("a saved silverfish loads");
+        let mite_back = spawn_saved(&mut again, &mite_saved).expect("a saved endermite loads");
+        assert_eq!((again.family_core(fish_back).unwrap().1.health, again.family::<Endermite>()[0].state.life), (3.0, 2000));
+        assert_eq!((again.uuid_of(fish_back), again.uuid_of(mite_back)), (world.uuid_of(fish), world.uuid_of(mite)));
+        world.family_core_mut(mite).unwrap().1.removed = true;
+        assert!(mob_tags(&world, |_| true, &originals).iter().all(|(id, _)| *id != mite), "a mite that left is not saved");
+        let ridden = parse("{id:\"minecraft:silverfish\",Pos:[1.5d,64.0d,2.5d],Passengers:[{id:\"minecraft:zombie\"}]}");
+        assert!(spawn_saved_all(&mut again, &ridden).is_empty(), "a silverfish carries nobody, so one saved with a rider stays as it was saved");
+    }
+
+    #[test]
+    fn every_registered_kind_is_simulated_and_summonable() {
+        let mut registered = crate::families::kinds();
+        registered.sort_unstable();
+        let mut entities = minecraftoss_entities::world::families::kinds();
+        entities.sort_unstable();
+        assert_eq!(registered, entities, "every registered family loads and saves");
+        assert!(registered.contains(&"minecraft:silverfish") && registered.contains(&"minecraft:endermite"));
+        let kinds = simulated_kinds();
+        assert!(kinds.windows(2).all(|pair| pair[0] < pair[1]), "sorted, each once");
+        assert!(SIMULATED_KINDS.iter().all(|kind| kinds.contains(kind) && is_simulated(kind)));
+        assert!(!is_simulated("minecraft:phantom") && !kinds.contains(&"minecraft:phantom"));
+        let mut world = EntityWorld::default();
+        for kind in registered {
+            assert!(is_simulated(kind) && kinds.contains(&kind), "{kind}");
+            let tag = minecraftoss_core::snbt::parse_compound(&format!("{{id:\"{kind}\",Pos:[1.5d,64.0d,2.5d]}}")).unwrap();
+            let id = spawn_saved(&mut world, &tag).unwrap_or_else(|| panic!("{kind} loads"));
+            assert_eq!(world.entity_type(id), Some(kind));
+            let jockey = minecraftoss_core::snbt::parse_compound(&format!("{{id:\"minecraft:ravager\",Pos:[5.5d,64.0d,2.5d],Passengers:[{{id:\"{kind}\"}}]}}")).unwrap();
+            let spawned = spawn_saved_all(&mut world, &jockey);
+            assert_eq!(spawned.len(), 2, "{kind} rides a ravager");
+            assert_eq!((world.entity_type(spawned[1].0), world.vehicle_of(Rider::Mob(spawned[1].0))), (Some(kind), Some(spawned[0].0)));
+        }
     }
 
     #[test]

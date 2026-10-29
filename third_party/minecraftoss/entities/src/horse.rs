@@ -62,6 +62,10 @@ impl HorseKind {
         self == HorseKind::Horse
     }
 
+    pub fn can_gallop(self) -> bool {
+        self == HorseKind::Horse
+    }
+
     pub fn passenger_attachment(self) -> (f32, f32) {
         match self {
             HorseKind::Horse => (1.44375, 0.0),
@@ -181,6 +185,7 @@ pub struct HorseState {
     pub stand_counter: i32,
     pub tail_counter: i32,
     pub sprint_counter: i32,
+    pub gallop_counter: i32,
     pub temper: i32,
     pub eat_anim: f32,
     pub eat_anim_o: f32,
@@ -204,6 +209,7 @@ pub struct HorseState {
     pub saddled: bool,
     pub owner: Option<u128>,
     pub jump_pending: f32,
+    pub pending_fall: Option<(f64, f32)>,
     pub ridden: bool,
 }
 
@@ -318,6 +324,7 @@ impl HorseState {
             stand_counter: 0,
             tail_counter: 0,
             sprint_counter: 0,
+            gallop_counter: 0,
             temper: 0,
             eat_anim: 0.0,
             eat_anim_o: 0.0,
@@ -341,6 +348,7 @@ impl HorseState {
             saddled: false,
             owner: None,
             jump_pending: 0.0,
+            pending_fall: None,
             ridden: false,
         }
     }

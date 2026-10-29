@@ -243,9 +243,10 @@ impl EntityWorld {
                     .find(|e| e.id == id)
                     .map(|e| &e.shulker.body)
             })
+            .or_else(|| self.families.core(id).map(|(_, core)| &core.body))
     }
 
-    fn leash_yaw(&self, id: u64) -> f32 {
+    pub(super) fn leash_yaw(&self, id: u64) -> f32 {
         None.or_else(|| self.cows.iter().find(|e| e.id == id).map(|e| e.cow.yaw))
             .or_else(|| self.sheep.iter().find(|e| e.id == id).map(|e| e.yaw))
             .or_else(|| self.pigs.iter().find(|e| e.id == id).map(|e| e.pig.yaw))
@@ -280,6 +281,7 @@ impl EntityWorld {
                     .find(|e| e.id == id)
                     .map(|e| e.hoglin.yaw)
             })
+            .or_else(|| self.families.core(id).map(|(_, core)| core.yaw))
             .unwrap_or(0.0)
     }
 
@@ -295,6 +297,7 @@ impl EntityWorld {
             || self.hoglins.iter().any(|e| e.id == id && e.no_ai)
             || self.wandering_traders.iter().any(|e| e.id == id && e.no_ai)
             || self.snow_golems.iter().any(|e| e.id == id && e.no_ai)
+            || self.families.core(id).is_some_and(|(_, core)| core.no_ai)
     }
 
     fn leash_panicking(&self, id: u64) -> bool {
@@ -303,6 +306,7 @@ impl EntityWorld {
             || self.pigs.iter().any(|e| e.id == id && e.panic.running)
             || self.chickens.iter().any(|e| e.id == id && e.panic.running)
             || self.striders.iter().any(|e| e.id == id && e.panic.running)
+            || self.families.traits(id).is_some_and(|t| t.panicking)
     }
 
     pub fn mob_baby(&self, id: u64) -> bool {
@@ -327,6 +331,7 @@ impl EntityWorld {
                 .villagers
                 .iter()
                 .any(|e| e.id == id && e.villager.age.baby())
+            || self.families.core(id).is_some_and(|(_, core)| core.baby)
     }
 
     fn mob_alive(&self, id: u64) -> bool {
@@ -348,6 +353,7 @@ impl EntityWorld {
                 .wolves
                 .iter()
                 .any(|e| e.id == id && !e.angry(game_time))
+            || self.families.traits(id).is_some_and(|t| t.leashable)
     }
 
     pub fn leashes(&self) -> impl Iterator<Item = (u64, &Leash)> + '_ {
@@ -923,6 +929,8 @@ impl EntityWorld {
                 speed,
                 1,
             );
+        } else {
+            self.families.leash_walk(mob, world, target, speed);
         }
     }
 }

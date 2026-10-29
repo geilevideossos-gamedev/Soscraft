@@ -10,7 +10,7 @@ use crate::gpu_list::{HudTessPass, TessJob};
 use crate::images::HudImages;
 use crate::minecraft_chat::MODIFIERS;
 use crate::minecraft_clicks::{Clicks, Menu, Target};
-use crate::minecraft_gui::{ANIMATED_ICON_MATERIAL, DARK_GREEN, GLINT_MATERIAL, GRAY, GUI_MATERIAL, GuiSpace, ICON_MATERIAL, Painter, TextLine, WHITE, YELLOW};
+use crate::minecraft_gui::{ANIMATED_ICON_MATERIAL, BLUE, DARK_GREEN, GLINT_MATERIAL, GRAY, GUI_MATERIAL, GuiSpace, ICON_MATERIAL, Painter, RED, TextLine, WHITE, YELLOW};
 use crate::minecraft_screens::{
     Cycler, Layout, PUPPET_BOX, RECIPE_COLUMNS, RECIPE_ROWS, Screen, SlotSpec, Station, drag_offset, enchant_row_at, hidden_rows,
     over_scroller, recipe_at, smithing_icons, smithing_templates, start_index,
@@ -124,6 +124,10 @@ impl Menu for MenuView<'_> {
 
     fn capacity(&self, slot: McSlot) -> Option<u8> {
         self.ui.droppable.iter().find(|(s, _)| *s == slot).map(|&(_, capacity)| capacity)
+    }
+
+    fn picks_all(&self) -> bool {
+        self.layout.screen != McScreen::Merchant
     }
 }
 
@@ -644,6 +648,10 @@ pub(crate) fn update_minecraft_hud(
         .filter(|_| !covered);
         let hole = puppet_box.map(|[x0, y0, x1, y1]| [origin[0] + x0, origin[1] + y0, origin[0] + x1, origin[1] + y1]);
         painter.gradient([0, 0, space.width, space.height], hole, 0xC010_1010, 0xD010_1010);
+        let effect_list = crate::minecraft_effects::list_spot(&ui, gui_size).and_then(|spot| crate::minecraft_effects::listed(&gui, &ui.effects, spot, space.width));
+        if let Some(list) = effect_list.as_deref() {
+            crate::minecraft_effects::draw_listed(&mut painter, list);
+        }
         let look = crate::minecraft_recipe_book::Look { ui: &ui, weapons, origin, gui: gui_size, mouse: pointer.filter(|_| !pad_pointer).map(|_| pointer_gui), now };
         if matches!(ui.screen, McScreen::Creative(_)) {
             crate::minecraft_creative::draw_background(&mut painter, &ui, weapons, origin, &input.creative, now);
@@ -699,7 +707,7 @@ pub(crate) fn update_minecraft_hud(
             }
             crate::minecraft_recipe_book::Tip::Text(text) => (vec![TextLine::new(text, WHITE)], false),
         });
-        let tooltip = item_tooltip.or(book_tooltip).or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen)).or_else(creative_tooltip).or_else(|| crate::minecraft_screens::grenade_slot_tooltip(&ui, hovered));
+        let tooltip = item_tooltip.or(book_tooltip).or(recipe_tooltip).or_else(|| crate::minecraft_screens::station_tooltip(&painter, &screen)).or_else(creative_tooltip).or_else(|| crate::minecraft_screens::grenade_slot_tooltip(&ui, hovered)).or_else(|| effect_list.as_deref().and_then(|list| crate::minecraft_effects::listed_tooltip(list, pointer_gui)).map(|lines| (lines, true)));
         if let (Some((lines, gap)), Some(_)) = (tooltip, pointer) {
             painter.tooltip(&lines, pointer_gui, gap);
         }
@@ -884,6 +892,7 @@ fn tooltip_lines(
 ) -> Vec<TextLine> {
     let name = stack_name(stack, ui, weapons, strings, gaps);
     let mut lines = vec![TextLine { italic: stack.named, ..TextLine::new(name, crate::minecraft_hotbar::name_color(Some(stack))) }];
+    lines.extend(stack.effects.iter().map(|(line, kindly)| TextLine::new(line.clone(), if *kindly { BLUE } else { RED })));
     lines.extend(stack.contents.iter().map(|line| TextLine::new(line.clone(), WHITE)));
     lines.extend(stack.more.iter().map(|line| TextLine { italic: true, ..TextLine::new(line.clone(), WHITE) }));
     lines.extend(stack.lore.iter().map(|line| TextLine::new(line.clone(), GRAY)));
@@ -1099,6 +1108,7 @@ mod tests {
             icon: "minecraft:shulker_box".to_owned(),
             lore: Vec::new(),
             clip: None,
+            ..Default::default()
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool)> = lines.iter().map(|line| (line.text.as_str(), line.italic)).collect();
@@ -1136,10 +1146,30 @@ mod tests {
             icon: "minecraft:written_book".to_owned(),
             lore: vec!["by Alex".to_owned(), "Original".to_owned()],
             clip: None,
+            ..Default::default()
         };
         let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
         let shown: Vec<(&str, bool, u32)> = lines.iter().map(|line| (line.text.as_str(), line.italic, line.color)).collect();
         assert_eq!(shown[1..], [("by Alex", false, GRAY), ("Original", false, GRAY)]);
         assert_eq!((shown[0].0, shown[0].1), ("Diary", false));
+    }
+
+    #[test]
+    fn an_ominous_bottle_tooltip_shows_its_omen_in_blue_under_the_name() {
+        let stack = McStack {
+            id: "minecraft:ominous_bottle".to_owned(),
+            count: 1,
+            max: 64,
+            name: Some("Ominous Bottle".to_owned()),
+            icon: "minecraft:ominous_bottle".to_owned(),
+            effects: vec![("Bad Omen V (01:40:00)".to_owned(), true)],
+            ..Default::default()
+        };
+        let lines = tooltip_lines(&stack, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
+        let shown: Vec<(&str, u32)> = lines.iter().map(|line| (line.text.as_str(), line.color)).collect();
+        assert_eq!(shown, [("Ominous Bottle", WHITE), ("Bad Omen V (01:40:00)", BLUE)]);
+        let harmful = McStack { effects: vec![("Poison (00:45)".to_owned(), false)], ..stack };
+        let lines = tooltip_lines(&harmful, &MinecraftUi::default(), None, None, &mut HudPresentationGaps::default());
+        assert_eq!((lines[1].text.as_str(), lines[1].color), ("Poison (00:45)", RED));
     }
 }

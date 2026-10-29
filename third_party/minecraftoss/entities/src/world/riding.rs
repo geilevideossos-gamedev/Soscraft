@@ -221,7 +221,7 @@ impl EntityWorld {
     }
 
     pub fn carries_riders(&self, vehicle: u64) -> bool {
-        self.vehicle_strider(vehicle).is_some() || self.vehicle_horse(vehicle).is_some() || self.vehicle_ravager(vehicle).is_some()
+        self.vehicle_strider(vehicle).is_some() || self.vehicle_horse(vehicle).is_some() || self.vehicle_ravager(vehicle).is_some() || self.families.traits(vehicle).is_some_and(|t| t.seats > 0)
     }
 
     pub fn passenger_point(&self, vehicle: u64) -> Option<DVec3> {
@@ -236,6 +236,9 @@ impl EntityWorld {
         }
         if let Some(entity) = self.vehicle_ravager(vehicle) {
             return Some(crate::ravager::passenger_point(entity.ravager.yaw));
+        }
+        if let Some(point) = self.families.passenger_point(vehicle, 0) {
+            return Some(point);
         }
         let entity = self.vehicle_horse(vehicle)?;
         let horse = entity.horse.as_ref()?;
@@ -270,6 +273,12 @@ impl EntityWorld {
                 _ => None,
             };
         }
+        if self.families.key_of(vehicle).is_some() {
+            return match self.families.controller(vehicle, self.passengers_of(vehicle))? {
+                Rider::Mob(id) => Some(id),
+                Rider::Player(_) => None,
+            };
+        }
         let entity = self.vehicle_strider(vehicle)?;
         if entity.no_ai {
             return None;
@@ -293,6 +302,12 @@ impl EntityWorld {
                 return None;
             };
             return Some(player);
+        }
+        if self.families.key_of(vehicle).is_some() {
+            return match self.families.controller(vehicle, self.passengers_of(vehicle))? {
+                Rider::Player(player) => Some(player),
+                Rider::Mob(_) => None,
+            };
         }
         let entity = self.vehicle_strider(vehicle)?;
         if !entity.strider.saddled {
@@ -338,7 +353,7 @@ impl EntityWorld {
             Some("minecraft:pillager" | "minecraft:vindicator" | "minecraft:evoker" | "minecraft:illusioner") => f64::from(0.6_f32),
             Some("minecraft:vex") => -f64::from(0.04_f32),
             Some("minecraft:ghast") => -f64::from(0.5_f32),
-            _ => 0.0,
+            _ => self.families.traits(id).map_or(0.0, |t| t.vehicle_attachment),
         };
         let baby = self.zombies.iter().any(|e| e.id == id && e.zombie.baby);
         if baby { offset * 0.5 } else { offset }
@@ -346,7 +361,8 @@ impl EntityWorld {
 
     fn seat_point(&self, rider: Rider) -> Option<(u64, DVec3)> {
         let vehicle = self.vehicle_of(rider)?;
-        let point = self.passenger_point(vehicle)?;
+        let seat = self.passengers_of(vehicle).iter().position(|r| *r == rider).unwrap_or(0);
+        let point = self.families.passenger_point(vehicle, seat).or_else(|| self.passenger_point(vehicle))?;
         let lift = match rider {
             Rider::Mob(id) => self.mob_vehicle_attachment(id),
             Rider::Player(_) => PLAYER_VEHICLE_ATTACHMENT,
@@ -362,6 +378,9 @@ impl EntityWorld {
     fn vehicle_body(&self, vehicle: u64) -> Option<&Body> {
         if let Some(entity) = self.vehicle_ravager(vehicle) {
             return Some(&entity.ravager.body);
+        }
+        if let Some((_, core)) = self.families.core(vehicle) {
+            return Some(&core.body);
         }
         match self.vehicle_strider(vehicle) {
             Some(entity) => Some(&entity.strider.body),
@@ -410,6 +429,9 @@ impl EntityWorld {
         if self.vehicle_horse(vehicle).is_some() || self.vehicle_ravager(vehicle).is_some() {
             return self.passengers_of(vehicle).is_empty() && self.force_riding(rider, vehicle);
         }
+        if let Some(traits) = self.families.traits(vehicle) {
+            return self.passengers_of(vehicle).len() < traits.seats && self.force_riding(rider, vehicle);
+        }
         let Some(entity) = self.vehicle_strider(vehicle) else {
             return false;
         };
@@ -450,11 +472,13 @@ impl EntityWorld {
             let body = &entity.ravager.body;
             body.position + DVec3::new(0.0, f64::from(body.height), 0.0)
         });
+        let family_spot = self.families.dismount(vehicle, world, width, &heights);
         let spot = match self.vehicle_horse(vehicle) {
             Some(entity) => {
                 horse_dismount_spot(world, &entity.cow.body, entity.cow.yaw, width, &heights)
             }
             None if ravager_top.is_some() => ravager_top?,
+            None if family_spot.is_some() => family_spot?,
             None => {
                 let strider = self.vehicle_strider(vehicle)?.strider.clone();
                 dismount_spot(world, &strider, width, &heights, yaw)
@@ -599,6 +623,14 @@ impl EntityWorld {
             }
             return;
         }
+        if self.families.key_of(vehicle).is_some() {
+            for order in orders {
+                if let StriderGoalEffect::Navigate { target, speed } | StriderGoalEffect::NavigateToEntity { target, speed } = *order {
+                    self.families.rider_order(vehicle, target, speed);
+                }
+            }
+            return;
+        }
         let Some(entity) = self.striders.iter_mut().find(|e| e.id == vehicle) else {
             return;
         };
@@ -645,6 +677,27 @@ impl EntityWorld {
         std::mem::take(&mut self.player_dismounts)
     }
 
+    pub fn take_rider_falls(&mut self) -> Vec<(u64, f64, f32)> {
+        let falls: Vec<(u64, (f64, f32))> = self
+            .cows
+            .iter_mut()
+            .filter_map(|e| Some((e.id, e.horse.as_mut()?.pending_fall.take()?)))
+            .collect();
+        let world = &*self;
+        falls
+            .into_iter()
+            .flat_map(|(vehicle, (distance, multiplier))| {
+                world
+                    .passengers_of(vehicle)
+                    .iter()
+                    .filter_map(move |rider| match rider {
+                        Rider::Player(player) => Some((*player, distance, multiplier)),
+                        Rider::Mob(_) => None,
+                    })
+            })
+            .collect()
+    }
+
     pub fn eject_passengers(&mut self, vehicle: u64, world: &impl World) {
         for rider in self.passengers_of(vehicle).to_vec() {
             let spot = self.stop_riding(rider, 0.0, world);
@@ -660,7 +713,19 @@ impl EntityWorld {
             .then(|| self.ride_jumps.get(&player).map_or(0.0, |jump| jump.scale))
     }
 
+    pub fn vehicle_health(&self, player: u64) -> Option<(f32, f32)> {
+        let vehicle = self.vehicle_of(Rider::Player(player))?;
+        if let Some(entity) = self.vehicle_horse(vehicle) {
+            return Some((entity.cow.health, entity.cow.max_health));
+        }
+        let entity = self.vehicle_strider(vehicle)?;
+        Some((entity.strider.health, strider::MAX_HEALTH))
+    }
+
     fn jumpable_by(&self, vehicle: u64) -> Option<u64> {
+        if self.families.traits(vehicle).is_some_and(|t| t.rider_jumps) {
+            return self.controlling_player(vehicle);
+        }
         self.vehicle_horse(vehicle)?;
         self.controlling_player(vehicle)
     }
@@ -684,6 +749,9 @@ impl EntityWorld {
             let (Some(power), Some(vehicle)) = (released, vehicle) else {
                 continue;
             };
+            if self.families.rider_jump(vehicle, power) {
+                continue;
+            }
             let Some(entity) = self.cows.iter_mut().find(|e| e.id == vehicle) else {
                 continue;
             };
@@ -788,6 +856,7 @@ impl EntityWorld {
         self.llama_spits.retain(|e| !gone(e.id));
         self.evoker_fangs.retain(|e| !gone(e.id));
         self.potions.retain(|e| !gone(e.id));
+        self.families.retain_mut(&mut |_, core, _| !gone(core.id));
         self.order.retain(|key| !gone(key.id()));
         self.sections.retain_mobs(|id| !gone(id));
         self.passengers.retain(|vehicle, riders| {
@@ -1254,6 +1323,38 @@ mod tests {
         assert_eq!(entities.player_carriers(), expected);
         assert!(entities.dismount_player(0, 0.0, &world).is_some());
         assert_eq!(entities.player_carriers(), vec![other]);
+    }
+
+    #[test]
+    fn vehicle_health_names_horse_and_strider_health_and_none_on_foot() {
+        let world = floor("minecraft:netherrack", 8);
+        let mut entities = EntityWorld::default();
+        let mut cow = crate::cow::Cow::new(DVec3::new(4.5, 64.0, 4.5));
+        let mut horse = crate::horse::HorseState::new(crate::horse::HorseKind::Horse);
+        horse.max_health = 26.0;
+        cow.health = 22.0;
+        let horse = entities.spawn_horse(cow, horse, false);
+        let mut cow = crate::cow::Cow::new(DVec3::new(-4.5, 64.0, 4.5));
+        let mut llama = crate::horse::HorseState::new(crate::horse::HorseKind::Llama);
+        llama.max_health = 15.0;
+        cow.health = 15.0;
+        let llama = entities.spawn_horse(cow, llama, false);
+        let strider = strider_at(&mut entities, DVec3::new(0.5, 64.0, -4.5));
+        let piglin = zombified_piglin(&mut entities, DVec3::new(-4.5, 64.0, -4.5));
+        assert_eq!(entities.vehicle_health(0), None, "on foot");
+        assert!(entities.start_riding(Rider::Player(0), horse, &world));
+        assert_eq!(entities.vehicle_health(0), Some((22.0, 26.0)));
+        assert_eq!(entities.vehicle_health(1), None, "only the rider");
+        assert!(entities.start_riding(Rider::Player(1), llama, &world));
+        assert_eq!(entities.vehicle_health(1), Some((15.0, 15.0)));
+        assert!(entities.dismount_player(0, 0.0, &world).is_some());
+        assert_eq!(entities.vehicle_health(0), None);
+        assert!(entities.start_riding(Rider::Player(0), strider, &world));
+        entities.strider_mut(strider).unwrap().strider.health = 13.5;
+        assert_eq!(entities.vehicle_health(0), Some((13.5, strider::MAX_HEALTH)));
+        assert!(entities.dismount_player(0, 0.0, &world).is_some());
+        assert!(entities.start_riding(Rider::Mob(piglin), strider, &world));
+        assert_eq!(entities.vehicle_health(0), None, "a mob rider is no player");
     }
 
     #[test]

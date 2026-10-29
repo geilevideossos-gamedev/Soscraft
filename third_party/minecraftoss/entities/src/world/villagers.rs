@@ -250,7 +250,7 @@ impl EntityWorld {
 
     /// Every living entity but `except` as brains see it, with the
     /// players.
-    fn seen_all(&self, except: u64, players: &[PlayerCandidate]) -> Vec<Seen> {
+    pub(super) fn seen_all(&self, except: u64, players: &[PlayerCandidate]) -> Vec<Seen> {
         let mut out = Vec::new();
         for e in &self.villagers {
             if e.id != except {
@@ -343,6 +343,10 @@ impl EntityWorld {
         for e in &self.withers {
             out.push(seen_of(crate::wither::TYPE_ID, "monster", &e.wither.body, crate::wither::EYE_HEIGHT, e.wither.health > 0.0, false, e.id));
         }
+        self.families.for_each(&mut |key, core| {
+            let category = families::category(key, core.kind).unwrap_or("monster");
+            out.push(seen_of(core.kind, category, &core.body, core.eye_height, core.health > 0.0, core.baby, core.id));
+        });
         for p in players {
             out.push(Seen {
                 id: PLAYER_TARGET + p.id,

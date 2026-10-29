@@ -226,6 +226,9 @@ impl EntityWorld {
         if let Some(e) = self.shulkers.iter().find(|e| e.id == id) {
             return Some((e.shulker.body.clone(), e.shulker.health));
         }
+        if let Some((_, core)) = self.families.core(id) {
+            return Some((core.body.clone(), core.health));
+        }
         None
     }
 
@@ -233,6 +236,10 @@ impl EntityWorld {
     pub(super) fn knock_back(&mut self, id: u64, power: f64, xd: f64, zd: f64) {
         let power = if self.hoglins.iter().any(|e| e.id == id) { power * (1.0 - crate::hoglin::KNOCKBACK_RESISTANCE) } else { power };
         let power = if self.ravagers.iter().any(|e| e.id == id) { power * (1.0 - crate::ravager::KNOCKBACK_RESISTANCE) } else { power };
+        let power = match self.families.traits(id) {
+            Some(traits) => power * (1.0 - traits.knockback_resistance),
+            None => power,
+        };
         let (body, random) = if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
             (&mut e.witch.body, &mut e.random)
         } else if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
@@ -288,6 +295,8 @@ impl EntityWorld {
             (&mut e.hoglin.body, &mut e.random)
         } else if let Some(e) = self.piglins.iter_mut().find(|e| e.id == id) {
             (&mut e.piglin.body, &mut e.random)
+        } else if let Some((_, core)) = self.families.core_mut(id) {
+            (&mut core.body, &mut core.random)
         } else {
             return;
         };
@@ -435,6 +444,9 @@ impl EntityWorld {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
             }
             hit
+        } else if let Some(key) = self.families.key_of(id) {
+            let hurt = families::Hurt::new(amount, "minecraft:player_attack", source).by(Some(crate::monster_ai::Target::Player(player)), Some("minecraft:player"));
+            self.families.hurt(key, id, &hurt)?
         } else {
             let e = self.blazes.iter_mut().find(|e| e.id == id)?;
             let hit = e.hurt(amount);

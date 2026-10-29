@@ -189,6 +189,38 @@ pub(crate) fn drumsticks(v: &frame::McVitals) -> [Drumstick; 10] {
     })
 }
 
+pub(crate) fn vehicle_max_hearts(max: f32) -> i32 {
+    ((max + 0.5) as i32 / 2).min(30)
+}
+
+pub(crate) fn vehicle_rows(hearts: i32) -> i32 {
+    (f64::from(hearts) / 10.0).ceil() as i32
+}
+
+pub(crate) fn vehicle_hearts(health: f32, max: f32) -> Vec<(usize, usize, &'static str)> {
+    let health = health.ceil() as i32;
+    let mut left = vehicle_max_hearts(max);
+    let mut row = 0;
+    let mut out = Vec::new();
+    while left > 0 {
+        let count = left.min(10);
+        left -= count;
+        for i in 0..count {
+            let column = i as usize;
+            out.push((column, row, "gui:hud/heart/vehicle_container"));
+            let point = i * 2 + 1 + row as i32 * 20;
+            if point < health {
+                out.push((column, row, "gui:hud/heart/vehicle_full"));
+            }
+            if point == health {
+                out.push((column, row, "gui:hud/heart/vehicle_half"));
+            }
+        }
+        row += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +364,65 @@ mod tests {
                 .iter()
                 .all(|d| d.empty == "gui:hud/food_empty_hunger")
         );
+    }
+
+    fn vehicle_layers(health: f32, max: f32, layer: &str) -> Vec<(usize, usize)> {
+        vehicle_hearts(health, max)
+            .into_iter()
+            .filter(|(_, _, sprite)| *sprite == layer)
+            .map(|(column, row, _)| (column, row))
+            .collect()
+    }
+
+    #[test]
+    fn a_thirty_health_horse_shows_fifteen_vehicle_hearts_in_two_rows() {
+        let containers = vehicle_layers(30.0, 30.0, "gui:hud/heart/vehicle_container");
+        assert_eq!(containers.len(), 15);
+        assert_eq!(containers.iter().filter(|(_, row)| *row == 0).count(), 10);
+        assert_eq!(
+            containers.iter().filter(|(_, row)| *row == 1).copied().collect::<Vec<_>>(),
+            [(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]
+        );
+        assert_eq!(vehicle_layers(30.0, 30.0, "gui:hud/heart/vehicle_full"), containers);
+        assert!(vehicle_layers(30.0, 30.0, "gui:hud/heart/vehicle_half").is_empty());
+        let hurt = vehicle_layers(23.0, 30.0, "gui:hud/heart/vehicle_full");
+        assert_eq!(hurt.len(), 11);
+        assert_eq!(hurt.last(), Some(&(0, 1)));
+        assert_eq!(vehicle_layers(23.0, 30.0, "gui:hud/heart/vehicle_half"), [(1, 1)]);
+        assert_eq!(vehicle_rows(vehicle_max_hearts(30.0)), 2);
+        assert_eq!(vehicle_max_hearts(22.0), 11);
+        assert_eq!(vehicle_rows(vehicle_max_hearts(22.0)), 2);
+        assert_eq!(vehicle_max_hearts(21.0), 10, "21 health is still one row");
+        assert_eq!(vehicle_rows(vehicle_max_hearts(21.0)), 1);
+        assert_eq!(vehicle_max_hearts(20.0), 10, "a strider");
+        assert_eq!(vehicle_max_hearts(100.0), 30, "at most three rows");
+        assert_eq!(vehicle_rows(0), 0);
+        assert!(vehicle_hearts(1.0, 1.0).is_empty(), "under a heart shows none");
+    }
+
+    #[test]
+    fn a_fifteen_health_horse_shows_seven() {
+        let containers = vehicle_layers(15.0, 15.0, "gui:hud/heart/vehicle_container");
+        assert_eq!(containers, (0..7).map(|column| (column, 0)).collect::<Vec<_>>());
+        assert_eq!(vehicle_layers(15.0, 15.0, "gui:hud/heart/vehicle_full"), containers);
+        assert!(vehicle_layers(15.0, 15.0, "gui:hud/heart/vehicle_half").is_empty());
+        assert_eq!(vehicle_max_hearts(15.4), 7);
+        assert_eq!(vehicle_max_hearts(15.5), 8);
+    }
+
+    #[test]
+    fn a_half_heart_shows_vehicle_half() {
+        let layers: Vec<&str> = vehicle_hearts(12.5, 20.0)
+            .into_iter()
+            .filter(|(column, _, _)| *column == 6)
+            .map(|(_, _, sprite)| sprite)
+            .collect();
+        assert_eq!(layers, ["gui:hud/heart/vehicle_container", "gui:hud/heart/vehicle_half"]);
+        assert_eq!(vehicle_layers(12.5, 20.0, "gui:hud/heart/vehicle_full").len(), 6);
+        assert_eq!(vehicle_layers(13.0, 20.0, "gui:hud/heart/vehicle_half"), [(6, 0)]);
+        assert!(vehicle_layers(14.0, 20.0, "gui:hud/heart/vehicle_half").is_empty());
+        assert!(vehicle_layers(0.0, 20.0, "gui:hud/heart/vehicle_full").is_empty());
+        assert_eq!(vehicle_layers(0.0, 20.0, "gui:hud/heart/vehicle_container").len(), 10);
     }
 
     #[test]

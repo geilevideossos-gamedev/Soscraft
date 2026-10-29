@@ -126,7 +126,7 @@ impl Shown {
         let kind = entity.get("id").and_then(Tag::as_str)?;
         let cave = kind == CAVE_SPIDER;
         let kind = if cave { SPIDER } else { kind }.to_owned();
-        if !DRAWN_KINDS.contains(&kind.as_str()) {
+        if !DRAWN_KINDS.contains(&kind.as_str()) && !crate::families::knows(&kind) {
             return None;
         }
         let mut tag = entity.clone();
@@ -431,6 +431,14 @@ impl Shown {
             "minecraft:shulker" => shulker_render::append_shulkers(
                 models,
                 w.shulkers().iter(),
+                poses,
+                atlas,
+                light,
+                partial,
+            ),
+            kind if crate::families::knows(kind) => crate::families::draw(
+                &mut crate::families::FamilyDraw { models, culled, translucent, held: &mut Vec::new() },
+                w,
                 poses,
                 atlas,
                 light,
@@ -958,6 +966,41 @@ mod tests {
             }
             assert_ne!(seen[0], seen[1], "{mob}");
             assert_ne!(seen[1], seen[2], "{mob}");
+        }
+    }
+
+    #[test]
+    fn every_registered_kind_is_shown_inside_its_cage() {
+        let kinds = crate::families::kinds();
+        assert!(kinds.contains(&"minecraft:silverfish") && kinds.contains(&"minecraft:endermite"));
+        for mob in kinds {
+            let margin = crate::families::cage_margin(mob).unwrap();
+            let pos = (10, 70, -3);
+            let mut displays = one(pos, Some(mob), 20);
+            let scene = spawners(&[pos]);
+            let light = light_at(pos, 15, 0);
+            let cell = Vec3::new(10.0, 70.0, -3.0);
+            let mut seen = Vec::new();
+            for spin in [0.0, 90.0, 200.0] {
+                set_spin(&mut displays, spin);
+                let mesh = draw(&mut displays, &scene, &light, center(pos));
+                let Some(Some(shown)) = &displays.displays[&pos].shown else {
+                    panic!("{mob} has no display");
+                };
+                assert_eq!((shown.kind.as_str(), shown.world.entity_type(shown.id)), (mob, Some(mob)));
+                assert!(
+                    mesh.vertices.iter().all(|v| {
+                        let at = Vec3::from_array(v.position);
+                        at.cmpge(cell - margin).all() && at.cmple(cell + 1.0 + margin).all()
+                    }),
+                    "{mob} at {spin}"
+                );
+                seen.push(mesh.vertices.iter().map(|v| v.position).collect::<Vec<_>>());
+            }
+            assert!(seen[0].is_empty() || (seen[0] != seen[1] && seen[1] != seen[2]), "{mob} turns");
+            if ["minecraft:silverfish", "minecraft:endermite"].contains(&mob) {
+                assert!(!seen[0].is_empty(), "{mob} is drawn in its cage");
+            }
         }
     }
 

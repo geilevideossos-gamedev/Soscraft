@@ -1,0 +1,32 @@
+{
+  "track": "m2",
+  "worktree": "C:\\Dev\\mc-wt\\track-m2",
+  "branch": "track-m2",
+  "target": "D:\\iw4l-wt\\track-m2",
+  "base": "r10-m2h-base",
+  "round": 10,
+  "briefs": "docs/round10/track-m2.md (read M20 and docs/round10/track-d0.md D0-2 and D0-3 first)",
+  "notes": "Round 10 runs several tracks at once, each in its own worktree: D0 (shared mob registry), D (trial spawners, vaults, lodestones, breezes), W (darkness, vibrations, sculk, warden), E1 and E2 (known limits), F (Elden Ring boss) and the mob tracks M1 (land animals), M2 (this run: water mobs and buckets) and M3 (night, built mobs and horses), which all plug into D0's registry. Never bump minecraft_net::PROTOCOL, even where a brief says to: the release step bumps it once when messages changed; if a commit changes a ToClient/ToServer message or the codec, add a line under '## Protocol' in the track log. Insert new enum variants, match arms and list entries next to related ones, not at the end of lists, to keep merges small. Record decisions in the track log. M2 edits only its own water group files (entities world/families/water*, world natural_spawner/families/water.rs, terrain families/water*) and the M2 section of docs/round10/mobs.md, plus the shared lines its brief names; every shared piece has one owner in the brief's M20 tables, so never build a copy of an M1, M3, E or W piece: if a group's M20 wait is not met in this branch, leave that group, note it in the log, and go on with the groups that do not need it. RESTARTS: if this run was started again after a stop (the PC crashed on 2026-10-28 at 20:27 with six tracks building), the worktree may hold the current group's half-done work as uncommitted or staged changes: read `git status` and `git diff` (and `git diff --cached`) first, keep what is correct, finish the group and commit it; discard only what is broken. If cargo reports invalid or corrupt metadata, a truncated .rlib/.rmeta or a link error on a file that should exist, run `& .\\scripts\\cargo-slot.ps1 +target=<this track's target> clean -p <crate>` for that crate and build again. LOAD: builds now run at -j 4 per slot to keep the laptop cool; never start a second cargo command, the game, or any other long CPU-heavy process.",
+  "groups": [
+    {
+      "key": "frogs-leap-eat",
+      "prompt": "Track M2 group frogs-leap-eat (segment m2h, after M1's long_jump.rs is merged): build docs/round10/track-m2.md section M2-8. Two commits: 'Minecraft frogs long-jump to lily pads and big dripleaves' (on the M1 long_jump.rs with the frog landing rule) and 'Minecraft frogs catch small slimes and magma cubes with their tongues' (the sensor, ShootTongue, the pull and bite, death_ticks 18; the froglight loot is the next group's). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "frogs-froglights",
+      "prompt": "Track M2 group frogs-froglights (segment m2h, after the M1 turtles commit 'Minecraft loot tables know what killed a mob' is merged; if it is not, this group moves to the next segment): build docs/round10/track-m2.md section M2-8. One commit: 'Minecraft magma cubes drop magma cream again, and froglights when a frog eats them' (attacker_variant in Death and EntityLootContext, written on the tongue kill, and the frog/variant components branch in damage_source_properties, on top of the M1 loot change). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "nautiluses-live",
+      "prompt": "Track M2 group nautiluses-live (segment m2h): build docs/round10/track-m2.md section M2-9. Two commits: 'Minecraft nautiluses and zombie nautiluses swim, dry out on land and charge in the entity world' (family nautiluses, key 71, MOUNT; brains on the M1 animal_brain.rs; ChargeAttack; Breath::Own dry-out; the zombie's burning) and 'Minecraft nautiluses spawn in oceans and drowned ride zombie nautiluses' (rows, nautilus_rule, zombie_nautilus_variants after the wolf lines, the jockey at spawning.rs:1583 calling a pub(crate) zombie_nautilus_jockey). Between the two, only if the world root natural_spawner/families.rs still declares a private mod water, add the one-word commit 'Water mob spawn rows can be reached from the rest of the natural spawner' (pub(super) mod water), logged as a hook. Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "nautiluses-drawn",
+      "prompt": "Track M2 group nautiluses-drawn (segment m2h): build docs/round10/track-m2.md section M2-9. Two commits: 'Minecraft nautiluses are saved, hatch from eggs and are drawn like vanilla' (the models, armour and saddle layers, the coral variant, NautilusAnimation through keyframes::shared()) and 'Minecraft nautiluses trail bubbles as they swim, for friends too' (Kind::Bubble from the guardians). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    },
+    {
+      "key": "nautiluses-taming",
+      "prompt": "Track M2 group nautiluses-taming (segment m2h, after E1's segment e1b is merged, which its screen commit needs): build docs/round10/track-m2.md section M2-9. Three commits: 'Minecraft nautiluses are tamed with pufferfish, fed fish and bred', 'Minecraft nautiluses wear saddles and armour' (equip by click with the sounds, armour defence, death drops, in the family files only) and 'Minecraft nautiluses open their own saddle and armour screen' (new lines only in mount_inventory.rs, apply after still_valid, server.rs:4134 calling apply with the arguments the E1 horse-dye commit gave it, nautilus beside each llama of the screen; note MenuExtras::Mount.nautilus under '## Protocol'). Tests, owner's steps and kit as listed; update docs/round10/track-m2-log.md and the M2 rows of docs/round10/mobs.md"
+    }
+  ]
+}

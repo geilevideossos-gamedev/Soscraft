@@ -15,6 +15,7 @@ pub(crate) const WHITE: u32 = 0xFFFF_FFFF;
 pub(crate) const GRAY: u32 = 0xFFAA_AAAA;
 pub(crate) const DARK_GREEN: u32 = 0xFF00_AA00;
 pub(crate) const RED: u32 = 0xFFFF_5555;
+pub(crate) const BLUE: u32 = 0xFF55_55FF;
 pub(crate) const YELLOW: u32 = 0xFFFF_FF55;
 pub(crate) const AQUA: u32 = 0xFF55_FFFF;
 pub(crate) const LABEL: u32 = 0xFF40_4040;
@@ -1120,6 +1121,7 @@ mod tests {
             icon: "minecraft:dirt".into(),
             lore: Vec::new(),
             clip: None,
+            ..Default::default()
         };
         let mut ui = MinecraftUi::default();
         painter.decorations(&ui, &stack, [0, 0], Some(("ab".into(), YELLOW)));
@@ -1182,6 +1184,7 @@ mod tests {
             icon: id.into(),
             lore: Vec::new(),
             clip: None,
+            ..Default::default()
         }
     }
 

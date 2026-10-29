@@ -751,6 +751,7 @@ mod tests {
             icon: "minecraft:stone".to_owned(),
             lore: Vec::new(),
             clip: None,
+            ..Default::default()
         }
     }
 

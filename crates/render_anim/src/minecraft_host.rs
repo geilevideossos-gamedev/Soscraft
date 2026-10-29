@@ -440,7 +440,7 @@ pub(crate) fn host(
             .iter()
             .map(|(dimension, origin)| (*dimension, *origin))
             .collect();
-        let kit = std::env::var("IW4L_MINECRAFT_KIT").ok();
+        let kit = minecraft_commands::kit::kit_line(minecraft_survival::commands::env_file().as_deref());
         let context = JoinContext {
             registry,
             origins: &origins,

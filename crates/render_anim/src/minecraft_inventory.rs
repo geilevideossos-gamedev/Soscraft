@@ -486,6 +486,7 @@ impl InventoryUi {
                     icon,
                     lore: book_lines(lang, s),
                     clip: fork.clip_bar(s, weapon),
+                    effects: effect_lines(lang, s),
                 };
                 shown.enchantments.splice(0..0, fork.lines(s, weapon, lang));
                 shown
@@ -916,6 +917,31 @@ fn more_line(language: &HashMap<String, String>, stack: &ItemStack) -> Option<St
     Some(translated(language, ["item.container.more_items", "container.shulkerBox.more"], "and %s more...", &[rest.to_string()]))
 }
 
+fn effect_lines(language: &HashMap<String, String>, stack: &ItemStack) -> Vec<(String, bool)> {
+    if stack.id != minecraft_terrain::bottle::OMINOUS_BOTTLE {
+        return Vec::new();
+    }
+    let amplifier = minecraft_terrain::bottle::ominous_amplifier(stack.components.as_ref());
+    vec![(effect_line(language, "minecraft:bad_omen", amplifier, minecraft_terrain::bottle::BAD_OMEN_TICKS), true)]
+}
+
+fn effect_line(language: &HashMap<String, String>, effect: &str, amplifier: u8, ticks: u32) -> String {
+    let (namespace, id) = effect.split_once(':').unwrap_or(("minecraft", effect));
+    let key = format!("effect.{namespace}.{id}");
+    let mut line = language.get(&key).cloned().unwrap_or(key);
+    if amplifier > 0 {
+        let potency = language.get(&format!("potion.potency.{amplifier}")).cloned().unwrap_or_else(|| minecraft_terrain::stations::roman(i32::from(amplifier) + 1).to_owned());
+        line = translated(language, ["potion.withAmplifier"; 2], "%s %s", &[line, potency]);
+    }
+    if ticks > 20 {
+        let seconds = ticks / 20;
+        let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+        let time = if hours > 0 { format!("{hours:02}:{minutes:02}:{seconds:02}") } else { format!("{minutes:02}:{seconds:02}") };
+        line = translated(language, ["potion.withDuration"; 2], "%s (%s)", &[line, time]);
+    }
+    line
+}
+
 fn main_hand_attack(recipes: &minecraftoss_player::crafting::RecipeBook, stack: &ItemStack) -> Option<[f32; 2]> {
     let attack = |m: &minecraftoss_player::item_catalog::AttributeModifier| {
         m.in_main_hand() && matches!(m.attribute.as_str(), "minecraft:attack_damage" | "minecraft:attack_speed")
@@ -1114,6 +1140,18 @@ mod tests {
     }
 
     #[test]
+    fn a_dyed_leather_icon_keeps_its_colour_and_shares_its_name() {
+        let mut red = ItemStack::new("minecraft:leather_horse_armor", 1);
+        red.components = Some(serde_json::json!({"minecraft:dyed_color": 0xB02E26}));
+        let plain = ItemStack::new("minecraft:leather_horse_armor", 1);
+        let (red_icon, plain_icon) = (minecraft_terrain::item_tint::of_stack(&red), minecraft_terrain::item_tint::of_stack(&plain));
+        assert_ne!(red_icon, plain_icon);
+        let dials = minecraft_terrain::dials::Dials::default();
+        assert_eq!(icon_source(&dials, &red_icon), ("minecraft:leather_horse_armor", "minecraft:leather_horse_armor~b02e26".to_owned()));
+        assert_eq!(icon_source(&dials, &plain_icon), ("minecraft:leather_horse_armor", "minecraft:leather_horse_armor".to_owned()));
+    }
+
+    #[test]
     fn a_shulker_box_tooltip_names_five_stacks_in_slot_order_and_counts_the_rest() {
         let mut language = HashMap::new();
         language.insert("container.shulkerBox.itemCount".to_owned(), "%s x %s".to_owned());
@@ -1131,6 +1169,32 @@ mod tests {
         let empty = ItemStack::new("minecraft:shulker_box", 1);
         assert!(contents_lines(&language, &empty).is_empty());
         assert_eq!(more_line(&language, &empty), None);
+    }
+
+    #[test]
+    fn an_ominous_bottle_shows_its_bad_omen_with_its_level_and_time() {
+        let language: HashMap<String, String> = [
+            ("effect.minecraft.bad_omen", "Bad Omen"),
+            ("potion.withAmplifier", "%s %s"),
+            ("potion.withDuration", "%s (%s)"),
+            ("potion.potency.4", "V"),
+        ]
+        .into_iter()
+        .map(|(key, text)| (key.to_owned(), text.to_owned()))
+        .collect();
+        let bottle = |amplifier: Option<i64>| {
+            let mut stack = ItemStack::new(minecraft_terrain::bottle::OMINOUS_BOTTLE, 1);
+            stack.components = amplifier.map(|a| serde_json::json!({minecraft_terrain::bottle::OMINOUS_AMPLIFIER: a}));
+            stack
+        };
+        assert_eq!(effect_lines(&language, &bottle(None)), [("Bad Omen (01:40:00)".to_owned(), true)]);
+        assert_eq!(effect_lines(&language, &bottle(Some(0))), [("Bad Omen (01:40:00)".to_owned(), true)]);
+        assert_eq!(effect_lines(&language, &bottle(Some(4))), [("Bad Omen V (01:40:00)".to_owned(), true)]);
+        assert_eq!(effect_lines(&language, &bottle(Some(1))), [("Bad Omen II (01:40:00)".to_owned(), true)], "a missing potency text falls back to the numeral");
+        assert!(effect_lines(&language, &ItemStack::new("minecraft:potion", 1)).is_empty());
+        assert_eq!(effect_line(&language, "minecraft:bad_omen", 0, 300), "Bad Omen (00:15)");
+        assert_eq!(effect_line(&language, "minecraft:bad_omen", 0, 20), "Bad Omen", "an effect ending within a second shows no time");
+        assert_eq!(effect_line(&HashMap::new(), "minecraft:bad_omen", 0, 1200), "effect.minecraft.bad_omen (01:00)");
     }
 
     #[test]

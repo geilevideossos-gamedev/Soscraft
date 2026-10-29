@@ -373,6 +373,10 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 minecraftoss_entities::animal::consume_one(actor.inventory, selected);
             }
         }
+        MobHit::Family(key, id) => {
+            outcome.handled = crate::families::interact(world, key, id, actor, &mut outcome);
+            return outcome;
+        }
         _ => return outcome,
     }
     outcome.handled = true;

@@ -33,6 +33,12 @@ pub fn read_env_file(path: &Path, key: &str) -> Option<String> {
     env_value(&std::fs::read_to_string(path).ok()?, key)
 }
 
+pub fn kit_line(env_file: Option<&Path>) -> Option<String> {
+    env_file
+        .and_then(|path| read_env_file(path, KIT_KEY))
+        .or_else(|| std::env::var(KIT_KEY).ok())
+}
+
 pub fn kit_entries(spec: &str) -> Vec<(ItemArg, u32)> {
     minecraftoss_world::book::split_entries(spec)
         .into_iter()
@@ -140,6 +146,36 @@ mod tests {
         assert_eq!(read_env_file(&path, KIT_KEY).as_deref(), Some("stone"));
         std::fs::write(&path, "IW4L_MINECRAFT_KIT=torch*8").unwrap();
         assert_eq!(read_env_file(&path, KIT_KEY).as_deref(), Some("torch*8"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_kit_line_keeps_the_quotes_inside_its_components() {
+        let dir = std::env::temp_dir().join(format!(
+            "minecraft_commands-kit-line-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        let line = r#"minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"}]]*4,minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]]"#;
+        std::fs::write(
+            &path,
+            format!("IW4L_GAMES=C:\\Games\r\nIW4L_MINECRAFT_KIT={line}\r\n"),
+        )
+        .unwrap();
+        assert_eq!(kit_line(Some(&path)).as_deref(), Some(line));
+        let entries = kit_entries(&kit_line(Some(&path)).unwrap());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].1, 4);
+        assert_eq!(
+            entries[0].0.components,
+            Some(serde_json::json!({"minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}]}))
+        );
+        assert_eq!(
+            entries[1].0.components,
+            Some(serde_json::json!({"minecraft:charged_projectiles": [{"id": "minecraft:arrow"}]}))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

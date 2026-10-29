@@ -64,6 +64,7 @@ pub struct EntityView {
     ravager_roars: HashSet<u64>,
     fireworks: minecraft_terrain::firework_particles::FireworkParticles,
     firework_camera: DVec3,
+    family_seen: HashMap<u64, i32>,
 }
 
 impl EntityView {
@@ -115,6 +116,7 @@ impl EntityView {
             ravager_roars: HashSet::new(),
             fireworks: minecraft_terrain::firework_particles::FireworkParticles::new((seed ^ 0xf14e) as u64),
             firework_camera: DVec3::ZERO,
+            family_seen: HashMap::new(),
         }
     }
 
@@ -149,6 +151,7 @@ impl EntityView {
             self.fang_crits();
             self.ravager_effects();
             self.wither_effects();
+            minecraft_terrain::families::client_effects(&self.world, &self.client, &mut minecraft_terrain::families::ClientFx { ambient: &mut self.ambient, spell: &mut self.spell, portal: &mut self.portal, poof: &mut self.poof, sounds: &mut self.sounds, random: &mut self.random, seen: &mut self.family_seen });
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);
             self.drawn_fireballs.tick();
@@ -301,7 +304,31 @@ impl EntityView {
         }
     }
 
+    fn mob_puffs(&mut self, puffs: &[minecraft_terrain::mob_particles::MobPuff]) {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraft_terrain::mob_particles::PuffKind;
+        for puff in puffs {
+            let kind = match puff.kind {
+                PuffKind::Heart => Kind::Heart,
+                PuffKind::Smoke => Kind::Smoke,
+                PuffKind::HappyVillager => Kind::HappyVillager,
+                PuffKind::AngryVillager => Kind::AngryVillager,
+                PuffKind::Splash => Kind::Splash,
+            };
+            let (width, height) = (f64::from(puff.width), f64::from(puff.height));
+            for _ in 0..puff.count {
+                let random = &mut self.random;
+                let motion = DVec3::new(random.next_gaussian() * 0.02, random.next_gaussian() * 0.02, random.next_gaussian() * 0.02);
+                let x = puff.feet.x + width * (2.0 * random.next_double() - 1.0);
+                let y = puff.feet.y + height * random.next_double() + puff.lift;
+                let z = puff.feet.z + width * (2.0 * random.next_double() - 1.0);
+                self.ambient.add(kind, DVec3::new(x, y, z), motion);
+            }
+        }
+    }
+
     pub fn bursts(&mut self, snapshot: &mut EntitySnapshot) {
+        self.mob_puffs(&std::mem::take(&mut snapshot.mob_puffs));
         let shattered = std::mem::take(&mut snapshot.eyes.shattered);
         self.eyes.shatter(shattered, &mut self.portal, &mut self.item_crumbs);
         for at in std::mem::take(&mut snapshot.breath_bursts) {
@@ -735,6 +762,9 @@ impl EntityView {
         for e in w.piglins().iter().filter(|e| e.piglin.health > 0.0) {
             add(MobHit::Piglin(e.id), &e.piglin.body);
         }
+        for (key, core) in w.family_cores().into_iter().filter(|(_, core)| core.alive() && !core.removed) {
+            add(MobHit::Family(key, core.id), &core.body);
+        }
         for e in w.shulkers().iter().filter(|e| e.shulker.health > 0.0) {
             let (low, high) = e.shulker.bounding_box();
             out.push((
@@ -1120,6 +1150,7 @@ impl EntityView {
             let _ = witch_render::append_witches(&mut mob, std::iter::once(e), poses, atlas, light, partial);
             minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, &mob);
         }
+        minecraft_terrain::families::draw_glowing(w, poses, atlas, light, partial, &|id| w.glowing(id), &mut |_, mob| minecraft_terrain::glow_render::append_glowing(&mut out.glow, &mut out.glow_cover, mob));
         shulker_render::append_shulkers(
             &mut out.models,
             w.shulkers().iter(),
@@ -1185,6 +1216,8 @@ impl EntityView {
             light,
             partial,
         );
+        let mut family_items = Vec::new();
+        families::draw(&mut families::FamilyDraw { models: &mut out.models, culled: &mut out.culled, translucent: &mut out.translucent, held: &mut family_items }, w, poses, atlas, light, partial);
         leash_render::append_knots(&mut out.models, &w.knots(), atlas, light);
         leash_render::append_ropes(
             &mut out.models,
@@ -1356,6 +1389,7 @@ impl EntityView {
             .chain(piglin_items)
             .chain(illager_items)
             .chain(vex_items)
+            .chain(family_items)
             .chain(placed_items.iter().cloned())
             .collect();
         let _ = self
@@ -1436,6 +1470,88 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_mob_is_shot_by_its_family_hit_box() {
+        let mut view = EntityView::new(3);
+        let fish = view.world.spawn_family_kind("minecraft:silverfish", DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        let mite = view.world.spawn_family_kind("minecraft:endermite", DVec3::new(3.5, 64.0, 0.5)).unwrap();
+        let boxes = view.boxes();
+        assert_eq!(boxes.len(), 2);
+        let (key, bounds) = boxes[0];
+        assert_eq!((key, key >> 56), (encode(MobHit::Family(36, fish)), 36));
+        let expected = [0.3, 64.0, 0.3, 0.7, 64.0 + f64::from(0.3_f32), 0.7];
+        assert!(bounds.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6), "{bounds:?}");
+        assert_eq!(decode(boxes[1].0), Some(MobHit::Family(37, mite)));
+        assert_eq!(view.shot_boxes(Some(mite)).len(), 1, "the mob a player rides is never shot");
+        let hit = decode(key).unwrap();
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        let mut actor = minecraft_terrain::mob_actions::Actor { player: 0, inventory: &mut inventory, selected: 0, infinite: false, entity_loot: None, shearing_loot: None };
+        let shot = minecraftoss_entities::world::PlayerAttack { player_id: 0, position: DVec3::new(0.5, 64.0, -3.0), yaw: 0.0, attack_damage: 3.0, strength: 1.0, sprinting: false, can_critical: false, can_sweep: false };
+        assert!(minecraft_terrain::mob_actions::attack(&mut view.world, hit, &mut actor, &shot).handled);
+        let core = view.world.family_core(fish).unwrap().1;
+        assert!(core.health < 8.0 && core.damage.hurts > 0, "the bullet hurts it: {}", core.health);
+        view.world.family_core_mut(fish).unwrap().1.health = 0.0;
+        assert_eq!(view.boxes().iter().map(|(key, _)| decode(*key)).collect::<Vec<_>>(), [Some(MobHit::Family(37, mite))], "a dead mob is not shot");
+        view.world.family_core_mut(mite).unwrap().1.removed = true;
+        assert!(view.boxes().is_empty(), "nor one that left");
+    }
+
+    #[test]
+    fn a_glowing_registered_mob_is_outlined() {
+        use minecraftoss_entities::effects::{EffectInstance, MobEffect};
+        let mut view = EntityView::new(5);
+        let lit = view.world.spawn_family_kind("minecraft:silverfish", DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        let dark = view.world.spawn_family_kind("minecraft:endermite", DVec3::new(3.5, 64.0, 0.5)).unwrap();
+        view.world.add_mob_effect(lit, EffectInstance::new(MobEffect::Glowing, 60, 0));
+        assert!(view.world.glowing(lit) && !view.world.glowing(dark));
+        view.show_mobs(server_mobs(&view.world));
+        let packs = PackStack::open(Vec::new()).unwrap();
+        let atlas = minecraft_terrain::mesh::make_atlas(&packs, Vec::new()).unwrap();
+        let light = SkyLight::from_levels((0, 0, 0), (1, 1, 1), vec![15], vec![0]);
+        let meshes = view.meshes(&HandcraftedScene::default(), &packs, &atlas, &light, Vec3::Z, DVec3::new(0.5, 65.0, -4.0), 0, &|_| true, &[]);
+        let mut outlined = Vec::new();
+        let (mut glow, mut cover) = (minecraft_terrain::mesh::ChunkMesh::default(), minecraft_terrain::mesh::ChunkMesh::default());
+        let world = &view.world;
+        minecraft_terrain::families::draw_glowing(world, &view.client, &atlas, &light, view.partial(), &|id| world.glowing(id), &mut |id, mob| {
+            outlined.push(id);
+            minecraft_terrain::glow_render::append_glowing(&mut glow, &mut cover, mob);
+        });
+        assert_eq!(outlined, [lit], "only the glowing one is outlined");
+        let positions = |mesh: &minecraft_terrain::mesh::ChunkMesh| mesh.vertices.iter().map(|v| v.position).collect::<Vec<_>>();
+        assert_eq!((positions(&meshes.glow), positions(&meshes.glow_cover)), (positions(&glow), positions(&cover)));
+        assert!(!glow.vertices.is_empty(), "the silverfish's model is outlined");
+    }
+
+    #[test]
+    fn an_endermite_gives_off_portal_particles_for_every_viewer() {
+        use minecraft_terrain::mob_tracking::{MobEvent, Trackers, Watcher, spawn_tracked};
+        let mut host = EntityView::new(7);
+        let mite = host.world.spawn_family_kind("minecraft:endermite", DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        host.world.spawn_family_kind("minecraft:silverfish", DVec3::new(2.5, 64.0, 0.5)).unwrap();
+        host.show_mobs(server_mobs(&host.world));
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let watcher = Watcher { id: 3, feet: [1.5, 64.0, 0.5], view_distance: 8 };
+        let tracked = trackers.update(&host.world, &HashMap::new(), &[watcher]);
+        let mut friend = EntityView::new(9);
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, tag) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend.world, *id, tag));
+        }
+        assert_eq!(friend.world.entity_type(mite), Some("minecraft:endermite"));
+        friend.show_mobs(tracked.moves_of(3).unwrap().to_vec());
+        for view in [&mut host, &mut friend] {
+            for _ in 0..5 {
+                view.advance(0.05, crate::tick_rate::ClientTiming::default(), &[], DVec3::ZERO);
+            }
+            assert_eq!(view.portal.len(), 10, "two sparks a tick from the endermite and none from the silverfish");
+        }
+        host.world.family_core_mut(mite).unwrap().1.removed = true;
+        host.portal.clear();
+        host.advance(0.05, crate::tick_rate::ClientTiming::default(), &[], DVec3::ZERO);
+        assert!(host.portal.is_empty(), "an endermite that left gives off none");
+    }
+
+    #[test]
     fn a_wither_smokes_from_its_three_heads_and_glows_while_it_charges_or_is_powered() {
         let mut view = EntityView::new(7);
         let id = view.world.spawn_wither(minecraftoss_entities::wither::Wither::new(DVec3::new(0.5, 64.0, 0.5)), true);
@@ -1494,6 +1610,44 @@ mod tests {
         let mut near = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
         view.bursts(&mut near);
         assert_eq!(view.sounds.last().map(|(event, ..)| event.as_str()), Some(BLAST_SOUND));
+    }
+
+    #[test]
+    fn a_heart_puff_draws_seven_hearts_on_the_mob() {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraft_terrain::mob_particles::{MobPuff, PuffKind};
+        let mut view = EntityView::new(11);
+        let feet = DVec3::new(4.5, 64.0, -3.5);
+        let puff = |kind| MobPuff { kind, count: 7, feet, width: 0.6, height: 0.85, lift: 0.5, range: 10 };
+        let mut snapshot = EntitySnapshot { mob_puffs: vec![puff(PuffKind::Heart), puff(PuffKind::Smoke)], ..EntitySnapshot::default() };
+        view.bursts(&mut snapshot);
+        assert!(snapshot.mob_puffs.is_empty());
+        let drawn: Vec<(Kind, DVec3)> = view.ambient.kinds_at().collect();
+        let count = |kind| drawn.iter().filter(|(drawn, _)| *drawn == kind).count();
+        assert_eq!((count(Kind::Heart), count(Kind::Smoke), drawn.len()), (7, 7, 14));
+        for (_, at) in drawn {
+            assert!((at.x - feet.x).abs() <= 0.6 && (at.z - feet.z).abs() <= 0.6, "{at}");
+            assert!(at.y >= feet.y + 0.5 && at.y <= feet.y + 0.85 + 0.5, "{at}");
+        }
+    }
+
+    #[test]
+    fn a_villager_s_puffs_draw_five_of_their_kind_a_block_up() {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraft_terrain::mob_particles::{MobPuff, PuffKind};
+        let mut view = EntityView::new(13);
+        let feet = DVec3::new(0.5, 64.0, 0.5);
+        let puff = |kind| MobPuff { kind, count: 5, feet, width: 0.6, height: 1.95, lift: 1.0, range: 10 };
+        let kinds = [(PuffKind::Heart, Kind::Heart), (PuffKind::AngryVillager, Kind::AngryVillager), (PuffKind::HappyVillager, Kind::HappyVillager), (PuffKind::Splash, Kind::Splash)];
+        let mut snapshot = EntitySnapshot { mob_puffs: kinds.iter().map(|&(kind, _)| puff(kind)).collect(), ..EntitySnapshot::default() };
+        view.bursts(&mut snapshot);
+        let drawn: Vec<(Kind, DVec3)> = view.ambient.kinds_at().collect();
+        for (_, kind) in kinds {
+            let lowest = if kind == Kind::AngryVillager { 1.5 } else { 1.0 };
+            let of_kind: Vec<DVec3> = drawn.iter().filter(|(drawn, _)| *drawn == kind).map(|&(_, at)| at).collect();
+            assert_eq!(of_kind.len(), 5, "{kind:?}");
+            assert!(of_kind.iter().all(|at| at.y >= feet.y + lowest && at.y <= feet.y + 1.95 + lowest), "{kind:?} {of_kind:?}");
+        }
     }
 
     #[test]

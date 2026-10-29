@@ -81,6 +81,7 @@ pub use slimes::SlimeEntity;
 pub use hazards::fire_immune;
 pub use combat::{AttackResult, PlayerAttack};
 pub use merchants::{max_xp_for_level, min_xp_for_level, VillagerUse};
+pub mod families;
 use crate::eat_block::{
     edible_for_sheep, registered_sheep_goals, SheepGoalContext, SheepGoalEffect,
     GOAL_NAMES as SHEEP_GOAL_NAMES,
@@ -625,6 +626,7 @@ pub enum PlayerHitKind {
     Spit { velocity: DVec3 },
     Magic { at: DVec3 },
     Fireworks { at: DVec3 },
+    Typed { damage_type: &'static str, message: &'static str, from: DVec3, push: DVec3, bypasses_armor: bool, bypasses_shield: bool, disable_shield_seconds: f32, effect: Option<(EffectKind, u32, u8)> },
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,
@@ -2090,6 +2092,7 @@ enum EntityKey {
     Vex(u64),
     Ravager(u64),
     Wither(u64),
+    Family(u8, u64),
 }
 
 impl EntityKey {
@@ -2128,7 +2131,8 @@ impl EntityKey {
             | Self::EvokerFangs(id)
             | Self::Vex(id)
             | Self::Ravager(id)
-            | Self::Wither(id) => id,
+            | Self::Wither(id)
+            | Self::Family(_, id) => id,
         }
     }
 }
@@ -2164,13 +2168,14 @@ pub enum MobHit {
     Vex(u64),
     Ravager(u64),
     Wither(u64),
+    Family(u8, u64),
 }
 
 impl MobHit {
     /// The hit mob's entity ID.
     pub fn id(self) -> u64 {
         match self {
-            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) | Self::Feline(id) | Self::WanderingTrader(id) | Self::SnowGolem(id) | Self::Illager(id) | Self::Vex(id) | Self::Ravager(id) | Self::Wither(id) => id,
+            Self::Bat(id) | Self::Zombie(id) | Self::Skeleton(id) | Self::Creeper(id) | Self::Spider(id) | Self::Slime(id) | Self::Enderman(id) | Self::Witch(id) | Self::IronGolem(id) | Self::Wolf(id) | Self::Villager(id) | Self::Cow(id) | Self::Mooshroom(id) | Self::Sheep(id) | Self::Pig(id) | Self::Chicken(id) | Self::Ghast(id) | Self::Blaze(id) | Self::Strider(id) | Self::Hoglin(id) | Self::Piglin(id) | Self::Shulker(id) | Self::Feline(id) | Self::WanderingTrader(id) | Self::SnowGolem(id) | Self::Illager(id) | Self::Vex(id) | Self::Ravager(id) | Self::Wither(id) | Self::Family(_, id) => id,
         }
     }
 }
@@ -2628,6 +2633,7 @@ pub struct EntityWorld {
     knots: std::collections::BTreeMap<minecraftoss_player::Pos, i32>,
     leash_players: Vec<LeashPlayer>,
     lead_drops: Vec<DVec3>,
+    families: families::Families,
 }
 
 impl Default for EntityWorld {
@@ -2740,6 +2746,7 @@ impl Default for EntityWorld {
             knots: std::collections::BTreeMap::new(),
             leash_players: Vec::new(),
             lead_drops: Vec::new(),
+            families: Default::default(),
         }
     }
 }
@@ -2982,6 +2989,10 @@ impl EntityWorld {
                 let e = self.shulkers.iter().find(|e| e.id == id)?;
                 (e.shulker.body.clone(), e.shulker.eye_height())
             }
+            EntityKey::Family(key, id) => {
+                let core = self.families.core_in(key, id)?;
+                (core.body.clone(), core.eye_height)
+            }
             EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => return None,
         })
     }
@@ -3022,6 +3033,16 @@ impl EntityWorld {
             EntityKey::Hoglin(id) => self.hoglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.hoglin.body)),
             EntityKey::Piglin(id) => self.piglins.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.piglin.body)),
             EntityKey::Shulker(id) => self.shulkers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt_armored(damage), &mut e.shulker.body)),
+            EntityKey::Family(family, id) => {
+                let attacker_kind = match blaster {
+                    Blaster::Mob(mob) => self.entity_type(mob),
+                    Blaster::Player(_) => Some("minecraft:player"),
+                    Blaster::Nobody => None,
+                };
+                let hurt = families::Hurt::new(damage, blaster.damage_type(), source).by(blaster.wolf_attacker(), attacker_kind);
+                let result = self.families.hurt(family, id, &hurt);
+                result.and_then(|result| self.families.core_in_mut(family, id).map(|core| (result, &mut core.body)))
+            }
             EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => None,
         }?;
         if !matches!(key, EntityKey::Shulker(_)) {
@@ -3139,6 +3160,11 @@ impl EntityWorld {
             EntityKey::Shulker(id) => {
                 if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
                     e.ai.state.hurt_by = Some((target, e.tick_count));
+                }
+            }
+            EntityKey::Family(key, id) => {
+                if let Some(core) = self.families.core_in_mut(key, id) {
+                    core.hurt_by = Some((target, core.tick_count));
                 }
             }
             _ => {}
@@ -3395,6 +3421,10 @@ impl EntityWorld {
                         }
                         let (min, max) = entity.shulker.bounding_box();
                         return Some(ArrowTarget { id, min, max });
+                    }
+                    EntityKey::Family(key, id) => {
+                        let core = self.families.core_in(key, id)?;
+                        (id, &core.body, core.health)
                     }
                     EntityKey::Arrow(_) | EntityKey::Potion(_) | EntityKey::Fireball(_) | EntityKey::ShulkerBullet(_) | EntityKey::LlamaSpit(_) | EntityKey::EvokerFangs(_) => return None,
                 };
@@ -3672,6 +3702,12 @@ impl EntityWorld {
             if result.applied {
                 entity.ai.state.hurt_by = Some((crate::monster_ai::Target::Mob(owner), entity.tick_count));
             }
+        } else if let Some(key) = self.families.key_of(id) {
+            let by = if owner >= PLAYER_TARGET { crate::monster_ai::Target::Player(owner - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(owner) };
+            let by_kind = if owner >= PLAYER_TARGET { Some("minecraft:player") } else { self.entity_type(owner) };
+            let hurt = families::Hurt::new(hit.damage, "minecraft:arrow", source).by(Some(by), by_kind);
+            outcome = self.families.hurt(key, id, &hurt);
+            resisted_knockback = outcome.is_some_and(|r| r.applied);
         }
         if resisted_knockback {
             self.knock_back(id, f64::from(0.4_f32), -hit.velocity.x, -hit.velocity.z);
@@ -4166,6 +4202,7 @@ impl EntityWorld {
         for e in &self.shulkers {
             add(e.id, "minecraft:shulker", &e.shulker.body, e.shulker.eye_height(), e.shulker.health > 0.0, false);
         }
+        self.families.for_each(&mut |_, core| add(core.id, core.kind, &core.body, core.eye_height, core.health > 0.0, core.baby));
         out
     }
 
@@ -4309,6 +4346,10 @@ impl EntityWorld {
                 e.ai.state.hurt_by = Some((by, e.tick_count));
             }
             (hit, true)
+        } else if let Some(key) = self.families.key_of(victim) {
+            let resistance = self.families.traits(victim).map_or(0.0, |t| t.knockback_resistance);
+            let hurt = families::Hurt::new(damage, "minecraft:mob_attack", DamageSourceKind::MobAttack).by(Some(by), Some(attacker_kind));
+            (self.families.hurt(key, victim, &hurt)?, resistance >= 1.0)
         } else {
             let e = self.blazes.iter_mut().find(|e| e.id == victim)?;
             let hit = e.hurt(damage);
@@ -4329,6 +4370,7 @@ impl EntityWorld {
         }
         if result.applied && lift > 0.0 && !resists {
             let lift = if self.hoglins.iter().any(|e| e.id == victim) { lift * (1.0 - crate::hoglin::KNOCKBACK_RESISTANCE) } else { lift };
+            let lift = lift * (1.0 - self.families.traits(victim).map_or(0.0, |t| t.knockback_resistance));
             if let Some(body) = self.body_mut(victim) {
                 body.velocity.y += lift;
             }
@@ -4796,6 +4838,7 @@ impl EntityWorld {
             }
             deaths.push((order, death));
         }
+        self.families.take_deaths(&mut deaths, mob_drops);
         deaths.sort_by_key(|&(order, _)| order);
         if !mob_drops {
             return Vec::new();
@@ -4910,6 +4953,9 @@ impl EntityWorld {
         if self.evoker_fangs.iter().any(|e| e.id == id) {
             return Some(crate::evoker_fangs::TYPE_ID);
         }
+        if let Some((_, core)) = self.families.core(id) {
+            return Some(core.kind);
+        }
         None
     }
 
@@ -4943,6 +4989,7 @@ impl EntityWorld {
             .chain(self.hoglins.iter_mut().map(|e| &mut e.hoglin.body))
             .chain(self.piglins.iter_mut().map(|e| &mut e.piglin.body))
             .chain(self.shulkers.iter_mut().map(|e| &mut e.shulker.body))
+            .chain(self.families.bodies_mut())
     }
 
     /// A mob's body, by ID (a loaded entity's motion and ground contact).
@@ -5003,6 +5050,8 @@ impl EntityWorld {
             Some(&mut e.piglin.body)
         } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.shulker.body)
+        } else if let Some((_, core)) = self.families.core_mut(id) {
+            Some(&mut core.body)
         } else {
             None
         }
@@ -5038,6 +5087,7 @@ impl EntityWorld {
             .or_else(|| self.hoglins.iter().find(|e| e.id == id).map(|e| &e.hoglin.damage))
             .or_else(|| self.piglins.iter().find(|e| e.id == id).map(|e| &e.piglin.damage))
             .or_else(|| self.shulkers.iter().find(|e| e.id == id).map(|e| &e.shulker.damage))
+            .or_else(|| self.families.core(id).map(|(_, core)| &core.damage))
     }
 
     /// A mob's damage state, by ID.
@@ -5098,6 +5148,8 @@ impl EntityWorld {
             Some(&mut e.piglin.damage)
         } else if let Some(e) = self.shulkers.iter_mut().find(|e| e.id == id) {
             Some(&mut e.shulker.damage)
+        } else if let Some((_, core)) = self.families.core_mut(id) {
+            Some(&mut core.damage)
         } else {
             None
         }
@@ -5226,6 +5278,7 @@ impl EntityWorld {
         for e in &mut self.bats {
             resolve_voices(&mut out, &mut e.voices, "bat", 0.1, "ambient_volume");
         }
+        self.families.take_sounds(&mut out);
         out
     }
 
@@ -5552,6 +5605,7 @@ impl EntityWorld {
             .chain(self.shulker_bullets.iter().map(|e| (e.id, e.bullet.position)))
             .chain(self.llama_spits.iter().map(|e| (e.id, e.spit.position)))
             .chain(self.evoker_fangs.iter().map(|e| (e.id, e.fangs.position)))
+            .chain(self.families.positions())
     }
 
     /// The burning mobs (`displayFireAnimation`), for their flames: where
@@ -5598,6 +5652,11 @@ impl EntityWorld {
             let size = e.fireball.kind.size() as f32;
             out.push((e.previous_position, e.fireball.position, size, size));
         }
+        self.families.for_each(&mut |_, core| {
+            if core.body.fire_ticks > 0 {
+                out.push((core.previous_position, core.body.position, core.body.width, core.body.height));
+            }
+        });
         out
     }
 
@@ -5638,6 +5697,7 @@ impl EntityWorld {
         let shulker_bullets: Vec<ShulkerBulletEntity> = self.shulker_bullets.iter().filter(|e| keep(e.bullet.position)).cloned().collect();
         let llama_spits: Vec<LlamaSpitEntity> = self.llama_spits.iter().filter(|e| keep(e.spit.position)).cloned().collect();
         let evoker_fangs: Vec<EvokerFangsEntity> = self.evoker_fangs.iter().filter(|e| keep(e.fangs.position)).cloned().collect();
+        let families = self.families.clone_where(&keep);
         let mut copy = Self {
             bats,
             zombies,
@@ -5746,6 +5806,7 @@ impl EntityWorld {
             knots: self.knots.clone(),
             leash_players: self.leash_players.clone(),
             lead_drops: Vec::new(),
+            families,
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
         copy.order = self.order.iter().copied().filter(|key| kept.contains(&key.id())).collect();
@@ -5815,6 +5876,7 @@ impl EntityWorld {
         out.extend(self.hoglins.iter().map(|e| entry(e.id, e.hoglin.kind.type_id(), &e.hoglin.body, e.hoglin.persistence_required)));
         out.extend(self.piglins.iter().map(|e| entry(e.id, e.piglin.kind.type_id(), &e.piglin.body, e.piglin.persistence_required)));
         out.extend(self.shulkers.iter().map(|e| entry(e.id, "minecraft:shulker", &e.shulker.body, e.shulker.persistence_required)));
+        self.families.census(&mut |core, rule| out.push(entry(core.id, core.kind, &core.body, core.persistent || rule.kept)));
         out
     }
 
@@ -5912,6 +5974,7 @@ impl EntityWorld {
         self.piglins.retain_mut(|e| !check(e.id, e.piglin.body.position, e.piglin.persistence_required, MONSTER, &mut e.no_action_time, &mut e.random));
         self.shulkers.retain_mut(|e| !check(e.id, e.shulker.body.position, e.shulker.persistence_required, VILLAGER, &mut e.no_action_time, &mut e.random));
         self.shulker_bullets.retain(|e| !(peaceful && listed(e.bullet.position)));
+        self.families.retain_mut(&mut |_, core, rule| !check(core.id, core.body.position, core.persistent || rule.kept, (rule.distance, rule.removable, rule.peaceful_ok), &mut core.no_action_time, &mut core.random));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
         self.prune_riding();
@@ -5956,6 +6019,7 @@ impl EntityWorld {
         self.shulker_bullets.retain(|e| !remove(e.bullet.position));
         self.llama_spits.retain(|e| !remove(e.spit.position));
         self.evoker_fangs.retain(|e| !remove(e.fangs.position));
+        self.families.retain_mut(&mut |_, core, _| !remove(core.body.position));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
         self.prune_riding();
@@ -7632,6 +7696,10 @@ impl EntityWorld {
                     entity.sync_dimensions();
                     continue;
                 }
+                EntityKey::Family(family, id) => {
+                    families::Families::tick(self, family, id, world, players, ticks);
+                    continue;
+                }
             };
             let current_mooshroom = self.cows[index].mooshroom.is_some();
             let current_horse = self.cows[index].horse.as_ref().map(|h| h.kind);
@@ -7745,10 +7813,10 @@ impl EntityWorld {
                 } else if entity.fluid.in_lava() {
                     cow.body.travel_lava(world, input, cow.yaw, entity.fluid.lava_height);
                 } else if let Some(fallen) = cow.body.travel_air(world, input, cow.speed, cow.yaw) {
-                    fall = fall_damage(&cow.body, &*world, fallen, false, &mut entity.voices);
+                    fall = equines::cow_fall(entity.horse.as_mut(), &cow.body, &*world, fallen, cow.age.baby(), &mut entity.voices);
                 }
-                let sounds = if let Some(horse) = &entity.horse {
-                    equines::horse_movement_sounds(horse, cow.age.baby())
+                let sounds = if let Some(horse) = entity.horse.as_mut() {
+                    equines::horse_step_sounds(horse, &cow.body, cow.age.baby(), ride.carrying)
                 } else {
                     cow_sounds(false, cow.sound_variant)
                 };
@@ -7930,10 +7998,10 @@ impl EntityWorld {
                     cow.body
                         .travel_lava(world, input, cow.yaw, entity.fluid.lava_height);
                 } else if let Some(fallen) = cow.body.travel_air(world, input, cow.speed, cow.yaw) {
-                    fall = fall_damage(&cow.body, &*world, fallen, false, &mut entity.voices);
+                    fall = equines::cow_fall(entity.horse.as_mut(), &cow.body, &*world, fallen, cow.age.baby(), &mut entity.voices);
                 }
-                let sounds = if let Some(horse) = &entity.horse {
-                    equines::horse_movement_sounds(horse, cow.age.baby())
+                let sounds = if let Some(horse) = entity.horse.as_mut() {
+                    equines::horse_step_sounds(horse, &cow.body, cow.age.baby(), ride.carrying)
                 } else {
                     cow_sounds(entity.mooshroom.is_some(), cow.sound_variant)
                 };
@@ -8095,6 +8163,7 @@ impl EntityWorld {
         self.shulker_bullets.retain(|entity| entity.bullet.alive);
         self.llama_spits.retain(|entity| entity.spit.alive);
         self.evoker_fangs.retain(|entity| entity.fangs.alive);
+        self.families.retain_mut(&mut |_, core, _| core.damage.death_ticks < 20 && !core.removed);
         let alive_ids: HashSet<_> = self
             .bats
             .iter()
@@ -8132,6 +8201,7 @@ impl EntityWorld {
             .chain(self.shulker_bullets.iter().map(|entity| entity.id))
             .chain(self.llama_spits.iter().map(|entity| entity.id))
             .chain(self.evoker_fangs.iter().map(|entity| entity.id))
+            .chain(self.families.ids())
             .collect();
         self.sections.retain_mobs(|id| alive_ids.contains(&id));
         self.order.retain(|key| match key {
@@ -8168,7 +8238,8 @@ impl EntityWorld {
             | EntityKey::EvokerFangs(id)
             | EntityKey::Vex(id)
             | EntityKey::Ravager(id)
-            | EntityKey::Wither(id) => alive_ids.contains(id),
+            | EntityKey::Wither(id)
+            | EntityKey::Family(_, id) => alive_ids.contains(id),
         });
         self.prune_riding();
     }
@@ -8471,6 +8542,15 @@ impl EntityWorld {
                         continue;
                     }
                     (MobHit::Chicken(id), &entity.chicken.body)
+                }
+                EntityKey::Family(family, id) => {
+                    let Some(core) = self.families.core_in(family, id) else {
+                        continue;
+                    };
+                    if core.health <= 0.0 {
+                        continue;
+                    }
+                    (MobHit::Family(family, id), &core.body)
                 }
             };
             let half = f64::from(body.width) / 2.0;

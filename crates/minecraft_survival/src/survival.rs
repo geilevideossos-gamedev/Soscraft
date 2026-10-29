@@ -35,6 +35,8 @@ const SPRINT_FOOD: u8 = 6;
 const SAFE_FALL: f64 = 3.0;
 const MAX_STRIDE: f64 = 2.0;
 const BAD_OMEN_SOUND: &str = "minecraft:event.mob_effect.bad_omen";
+const TRIAL_OMEN_SOUND: &str = "minecraft:event.mob_effect.trial_omen";
+const RAID_OMEN_SOUND: &str = "minecraft:event.mob_effect.raid_omen";
 pub(crate) const DAMAGE_BLINK: u64 = 20;
 pub(crate) const SETTLE_DISPLAY: u64 = 20;
 
@@ -168,6 +170,7 @@ pub struct Survival {
     totem_grace_until: Option<u64>,
     pub raid_omen_position: Option<(i32, i32, i32)>,
     pub raid_omens_fired: Vec<(i32, (i32, i32, i32))>,
+    effect_sounds: Vec<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -205,6 +208,15 @@ fn scale(max_health: i32) -> f32 {
     max_health.max(1) as f32 / 20.0
 }
 
+fn added_sound(kind: EffectKind) -> Option<&'static str> {
+    match kind {
+        EffectKind::BadOmen => Some(BAD_OMEN_SOUND),
+        EffectKind::TrialOmen => Some(TRIAL_OMEN_SOUND),
+        EffectKind::RaidOmen => Some(RAID_OMEN_SOUND),
+        _ => None,
+    }
+}
+
 impl Survival {
     pub fn fire_raid_omen(&mut self) {
         let Some(omen) = self.status.effect(EffectKind::RaidOmen).filter(|omen| omen.duration == 1) else {
@@ -237,6 +249,23 @@ impl Survival {
     pub fn become_hero(&mut self, amplifier: i32) {
         let amplifier = amplifier.clamp(0, i32::from(u8::MAX)) as u8;
         self.status.add_effect(EffectKind::HeroOfTheVillage, minecraft_terrain::raids::HERO_TICKS, amplifier);
+    }
+
+    pub fn give_effect(&mut self, kind: EffectKind, ticks: u32, amplifier: u8) -> bool {
+        let before = self.status.effect(kind);
+        self.status.add_effect(kind, ticks, amplifier);
+        let after = self.status.effect(kind);
+        if before.is_none()
+            && after.is_some()
+            && let Some(sound) = added_sound(kind)
+        {
+            self.effect_sounds.push(sound);
+        }
+        after != before
+    }
+
+    pub fn take_effect_sounds(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.effect_sounds)
     }
 
     pub fn respawn(&mut self) {
@@ -481,8 +510,16 @@ impl Survival {
     }
 
     pub fn fall(&mut self, distance: f64, landed_on: Option<&str>, crouching: bool) -> i32 {
+        self.hurt_by_fall(landing_damage(distance, landed_on, crouching), distance)
+    }
+
+    pub fn rider_fall(&mut self, distance: f64, multiplier: f32) -> i32 {
+        self.hurt_by_fall(fall_damage(distance, multiplier), 0.0)
+    }
+
+    fn hurt_by_fall(&mut self, damage: i32, distance: f64) -> i32 {
         let damage = if self.rules.fall_damage && !self.invulnerable && !self.protection.immune(DamageCause::Fall.damage_type()) {
-            landing_damage(distance, landed_on, crouching)
+            damage
         } else {
             0
         };
@@ -1035,16 +1072,13 @@ impl Survival {
     }
 
     pub fn drink_ominous_bottle(&mut self, components: Option<&serde_json::Value>) -> Vec<&'static str> {
-        let fresh = self.status.effect(EffectKind::BadOmen).is_none();
-        self.status.add_effect(
+        let queued = self.effect_sounds.len();
+        self.give_effect(
             EffectKind::BadOmen,
             minecraft_terrain::bottle::BAD_OMEN_TICKS,
             minecraft_terrain::bottle::ominous_amplifier(components),
         );
-        let mut heard = Vec::new();
-        if fresh && self.status.effect(EffectKind::BadOmen).is_some() {
-            heard.push(BAD_OMEN_SOUND);
-        }
+        let mut heard = self.effect_sounds.split_off(queued);
         heard.push(minecraft_terrain::bottle::OMINOUS_DISPOSE_SOUND);
         heard
     }
@@ -2237,6 +2271,7 @@ mod tests {
             }
         );
         assert_eq!(survival.status.effect(EffectKind::BadOmen).map(|e| (e.duration, e.amplifier)), Some((120000, 3)));
+        assert!(survival.take_effect_sounds().is_empty(), "the drink's omen sound is heard once");
         assert_eq!(inventory.slots[4].as_ref().map(|s| (s.id.as_str(), s.count)), Some((OMINOUS_BOTTLE, 1)), "one bottle used, no glass bottle back");
         let Bite::Done { heard, .. } = drink(&mut survival, &mut inventory) else { panic!("drunk") };
         assert_eq!(heard, vec![OMINOUS_DISPOSE_SOUND], "an omen already there plays no omen sound");
@@ -3122,6 +3157,7 @@ mod tests {
                 "%1$s didn't want to live in the same world as %2$s",
             ),
             ("death.fell.accident.ladder", "%1$s fell off a ladder"),
+            ("death.attack.fall", "%1$s hit the ground too hard"),
             ("entity.minecraft.zombie", "Zombie"),
             ("block.minecraft.lava", "Lava"),
         ]
@@ -3203,6 +3239,43 @@ mod tests {
         assert_eq!(
             death(&survival),
             said("%1$s fell off a ladder", "fell off a ladder")
+        );
+    }
+
+    #[test]
+    fn a_rider_takes_the_horse_s_fall_and_hits_the_ground_too_hard() {
+        let mut survival = fresh();
+        assert_eq!(survival.rider_fall(10.0, 1.0), 7);
+        assert!((survival.status.health - 13.0).abs() < 1e-6);
+        let mut thrown = fresh();
+        thrown.status.health = 5.0;
+        assert_eq!(thrown.rider_fall(20.0, 0.2), 3);
+        assert_eq!(thrown.rider_fall(30.0, 1.0), 27);
+        assert_eq!(thrown.status.health, 0.0);
+        assert_eq!(
+            death(&thrown),
+            said("%1$s hit the ground too hard", "hit the ground too hard"),
+            "the rider's own fall is none"
+        );
+        for (distance, multiplier) in [(3.0, 1.0), (7.9, 0.2), (30.0, 0.0)] {
+            assert_eq!(
+                fresh().rider_fall(distance, multiplier),
+                0,
+                "{distance} {multiplier}"
+            );
+        }
+        assert_eq!(creative().rider_fall(30.0, 1.0), 0);
+        let mut ruled = fresh();
+        ruled.rules.fall_damage = false;
+        assert_eq!(ruled.rider_fall(30.0, 1.0), 0);
+        assert_eq!(ruled.status.health, 20.0);
+        let mut cushioned = fresh();
+        cushioned.wear(wearing("minecraft:feather_falling", 4));
+        assert_eq!(cushioned.rider_fall(10.0, 1.0), 7);
+        assert!(
+            (cushioned.status.health - (20.0 - 7.0 * (1.0 - 12.0 / 25.0))).abs() < 1e-5,
+            "{}",
+            cushioned.status.health
         );
     }
 

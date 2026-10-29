@@ -9,6 +9,9 @@ pub(crate) trait Menu {
     fn stack(&self, slot: McSlot) -> Option<&McStack>;
     fn carried(&self) -> Option<&McStack>;
     fn capacity(&self, slot: McSlot) -> Option<u8>;
+    fn picks_all(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,7 +184,9 @@ impl Clicks {
         let mut out = Vec::new();
         let hovered = target.slot();
         if let Some(slot) =
-            hovered.filter(|&slot| self.double_click && button == 0 && takes_all(menu, slot))
+            hovered.filter(|&slot| {
+                self.double_click && button == 0 && menu.picks_all() && takes_all(menu, slot)
+            })
         {
             if shift {
                 if let Some(moved) = self.last_quick_moved.clone() {
@@ -281,6 +286,7 @@ mod tests {
         stacks: Vec<(McSlot, McStack)>,
         carried: Option<McStack>,
         refuse: Vec<McSlot>,
+        picks_all: bool,
     }
 
     impl Menu for TestMenu {
@@ -303,6 +309,9 @@ mod tests {
                 });
             accepted.then_some(64)
         }
+        fn picks_all(&self) -> bool {
+            self.picks_all
+        }
     }
 
     fn stack(id: &str, count: u8) -> McStack {
@@ -322,6 +331,7 @@ mod tests {
             icon: id.into(),
             lore: Vec::new(),
             clip: None,
+            ..Default::default()
         }
     }
 
@@ -344,6 +354,7 @@ mod tests {
             stacks: Vec::new(),
             carried: None,
             refuse: Vec::new(),
+            picks_all: true,
         }
     }
 
@@ -493,6 +504,41 @@ mod tests {
                 right: false,
                 shift: false
             }]
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_a_menu_that_never_picks_all_puts_the_stack_back() {
+        let mut clicks = Clicks::default();
+        let mut menu = menu();
+        menu.picks_all = false;
+        menu.stacks.push((A, stack("minecraft:dirt", 10)));
+        menu.stacks.push((C, stack("minecraft:dirt", 3)));
+        clicks.press(&menu, Target::Slot(A), 0, false, 1.0);
+        menu.stacks.retain(|(slot, _)| *slot != A);
+        menu.carried = Some(stack("minecraft:dirt", 10));
+        assert!(clicks.release(&menu, Target::Slot(A), 0, false).is_empty());
+        assert!(
+            clicks
+                .press(&menu, Target::Slot(A), 0, false, 1.2)
+                .is_empty()
+        );
+        assert_eq!(
+            clicks.release(&menu, Target::Slot(A), 0, false),
+            vec![McClick::Slot {
+                slot: A,
+                right: false,
+                shift: false
+            }]
+        );
+        menu.carried = None;
+        menu.stacks.push((A, stack("minecraft:dirt", 10)));
+        clicks.press(&menu, Target::Slot(A), 0, true, 3.0);
+        assert!(clicks.release(&menu, Target::Slot(A), 0, true).is_empty());
+        clicks.press(&menu, Target::Slot(A), 0, true, 3.1);
+        assert!(
+            clicks.release(&menu, Target::Slot(A), 0, true).is_empty(),
+            "no shift double-click either"
         );
     }
 

@@ -1,4 +1,5 @@
 use super::*;
+use super::emissions::HorseStep;
 use crate::cow::InteractionResult;
 use crate::horse::{Feeding, HorseKind, HorseState};
 use crate::llama_ai::{Caravaner, Foe, LlamaContext, Seen};
@@ -74,8 +75,89 @@ pub(super) fn horse_movement_sounds(horse: &HorseState, baby: bool) -> MovementS
         "entity.horse.step"
     };
     MovementSounds {
-        horse_step: Some((step, "entity.horse.step_wood")),
+        horse_step: Some(HorseStep::Walk {
+            step,
+            wood: "entity.horse.step_wood",
+        }),
         ..MovementSounds::creature(None)
+    }
+}
+
+pub(super) fn horse_step_sounds(
+    horse: &mut HorseState,
+    body: &Body,
+    baby: bool,
+    carrying: bool,
+) -> MovementSounds {
+    let sounds = horse_movement_sounds(horse, baby);
+    if !carrying
+        || !horse.kind.can_gallop()
+        || !matches!(body.emission, Some(crate::movement::Emission::Step(..)))
+    {
+        return sounds;
+    }
+    horse.gallop_counter += 1;
+    let step = match horse.gallop_counter {
+        n if n > 5 && n % 3 == 0 => HorseStep::Gallop {
+            breathe: (horse.kind == HorseKind::Horse).then_some(if baby {
+                "entity.baby_horse.breathe"
+            } else {
+                "entity.horse.breathe"
+            }),
+        },
+        n if n <= 5 => HorseStep::Wood,
+        _ => HorseStep::Silent,
+    };
+    MovementSounds {
+        horse_step: Some(step),
+        ..sounds
+    }
+}
+
+pub(super) fn horse_fall(
+    horse: &mut HorseState,
+    body: &Body,
+    world: &impl World,
+    fallen: f64,
+    baby: bool,
+    voices: &mut Vec<(Voice, DVec3)>,
+) -> Option<f32> {
+    if fallen <= 0.0 {
+        return None;
+    }
+    let (reduction, multiplier) = super::living::landed_block(body, world);
+    let fallen = fallen * reduction;
+    if fallen > 1.0 && !horse.kind.is_llama() {
+        let event = if baby {
+            "entity.baby_horse.land"
+        } else {
+            "entity.horse.land"
+        };
+        voices.push((Voice::Event(event, 0.4, 1.0), body.position));
+    }
+    let damage = ((fallen + 1.0e-6 - crate::horse::SAFE_FALL_DISTANCE)
+        * f64::from(multiplier)
+        * crate::horse::FALL_DAMAGE_MULTIPLIER)
+        .floor() as i32;
+    if damage <= 0 {
+        return None;
+    }
+    horse.pending_fall = Some((fallen, multiplier));
+    voices.extend(super::living::block_fall_sound(body, world));
+    Some(damage as f32)
+}
+
+pub(super) fn cow_fall(
+    horse: Option<&mut HorseState>,
+    body: &Body,
+    world: &impl World,
+    fallen: f64,
+    baby: bool,
+    voices: &mut Vec<(Voice, DVec3)>,
+) -> Option<f32> {
+    match horse {
+        Some(horse) => horse_fall(horse, body, world, fallen, baby, voices),
+        None => fall_damage(body, world, fallen, false, voices),
     }
 }
 
@@ -156,6 +238,9 @@ impl CowEntity {
             self.look_control.pitch = controls.pitch * 0.5;
             self.body_rotation.body_yaw = yaw;
             let input = horse.ridden_input(cow.body.on_ground, controls.strafe, controls.forward);
+            if input.z <= 0.0 {
+                horse.gallop_counter = 0;
+            }
             if cow.body.on_ground {
                 if horse.jump_pending > 0.0 {
                     let scale = horse.jump_pending;
@@ -187,9 +272,16 @@ impl CowEntity {
                 cow.body
                     .travel_air_flying(world, input, speed, yaw, false, speed * 0.1)
             {
-                fall = fall_damage(&cow.body, world, fallen, false, &mut self.voices);
+                fall = horse_fall(
+                    horse,
+                    &cow.body,
+                    world,
+                    fallen,
+                    cow.age.baby(),
+                    &mut self.voices,
+                );
             }
-            let sounds = horse_movement_sounds(horse, cow.age.baby());
+            let sounds = horse_step_sounds(horse, &cow.body, cow.age.baby(), true);
             play_movement(
                 &mut cow.body,
                 self.tick_count,
@@ -1447,6 +1539,436 @@ mod tests {
                 && (point.z + f64::from(0.3_f32)).abs() < 1.0e-6,
             "{point}"
         );
+    }
+
+    struct Ground(&'static str);
+    impl World for Ground {
+        fn block(&self, (_, y, _): Pos) -> Option<Block> {
+            match y {
+                63 => Some(Block::new(self.0)),
+                y if y < 63 => Some(Block::new("minecraft:stone")),
+                _ => None,
+            }
+        }
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+        fn step_sound(&self, pos: Pos) -> Option<(String, f32, f32)> {
+            self.block(pos)
+                .map(|_| ("block.stone.step".to_owned(), 1.0, 1.0))
+        }
+    }
+
+    fn fall_ridden(
+        kind: HorseKind,
+        height: f64,
+        ground: &'static str,
+    ) -> (EntityWorld, u64, Vec<MobSound>) {
+        let mut world = EntityWorld::default();
+        let mut ground = Ground(ground);
+        let id = equine(&mut world, kind, DVec3::new(0.5, 64.0 + height, 0.5));
+        let horse = world.cow_mut(id).unwrap().horse.as_mut().unwrap();
+        horse.tame = true;
+        horse.saddled = !kind.is_llama();
+        assert!(world.start_riding(Rider::Player(0), id, &ground));
+        steer(&mut world, 0.0, 0.0, false);
+        let players = [player(0, DVec3::new(0.5, 65.0 + height, 0.5))];
+        let mut sounds = Vec::new();
+        for _ in 0..60 {
+            world.tick_with_players(&mut ground, &players);
+            sounds.extend(world.take_sounds());
+        }
+        (world, id, sounds)
+    }
+
+    fn heard(sounds: &[MobSound], event: &str) -> Vec<(f32, f32)> {
+        sounds
+            .iter()
+            .filter(|s| s.event == event)
+            .map(|s| (s.volume, s.pitch))
+            .collect()
+    }
+
+    fn health_and_fall(world: &mut EntityWorld, id: u64) -> (f32, Option<(f64, f32)>) {
+        let entity = world.cow_mut(id).unwrap();
+        (
+            entity.cow.health,
+            entity.horse.as_ref().unwrap().pending_fall,
+        )
+    }
+
+    #[test]
+    fn a_ridden_horse_falling_ten_blocks_takes_two_and_hands_its_rider_the_fall() {
+        for (height, ground, health, distance) in [
+            (8.0, "minecraft:stone", 19.0, 8.0),
+            (10.0, "minecraft:stone", 18.0, 10.0),
+            (20.0, "minecraft:stone", 13.0, 20.0),
+            (20.0, "minecraft:red_bed", 18.0, 10.0),
+        ] {
+            let (mut world, id, _) = fall_ridden(HorseKind::Horse, height, ground);
+            let (left, fall) = health_and_fall(&mut world, id);
+            assert_eq!(left, health, "{height} onto {ground}");
+            assert!(fall.is_some(), "the fall waits for its riders");
+            let falls = world.take_rider_falls();
+            assert_eq!(falls.len(), 1, "{height} onto {ground}: {falls:?}");
+            let (rider, fallen, multiplier) = falls[0];
+            assert!(
+                rider == 0 && (fallen - distance).abs() < 1.0e-5 && multiplier == 1.0,
+                "{height} onto {ground}: {falls:?}"
+            );
+            assert!(world.take_rider_falls().is_empty(), "handed on once");
+            assert_eq!(health_and_fall(&mut world, id), (health, None));
+        }
+        let mut world = EntityWorld::default();
+        let mut ground = Ground("minecraft:stone");
+        let id = equine(&mut world, HorseKind::Horse, DVec3::new(0.5, 74.0, 0.5));
+        let players = [player(0, DVec3::new(30.5, 64.0, 30.5))];
+        for _ in 0..60 {
+            world.tick_with_players(&mut ground, &players);
+        }
+        assert_eq!(health_and_fall(&mut world, id).0, 18.0);
+        assert!(
+            world.take_rider_falls().is_empty(),
+            "a horse with no rider hands nothing on"
+        );
+        assert_eq!(health_and_fall(&mut world, id).1, None);
+    }
+
+    #[test]
+    fn a_horse_landing_from_seven_blocks_takes_nothing_and_hands_nothing_on() {
+        for height in [4.0, 7.0] {
+            let (mut world, id, sounds) = fall_ridden(HorseKind::Horse, height, "minecraft:stone");
+            assert_eq!(health_and_fall(&mut world, id), (20.0, None), "{height}");
+            assert!(world.take_rider_falls().is_empty(), "{height}");
+            assert_eq!(
+                heard(&sounds, "entity.horse.land"),
+                [(0.4, 1.0)],
+                "{height}"
+            );
+            assert!(
+                heard(&sounds, "block.stone.fall").is_empty(),
+                "no block fall sound without damage"
+            );
+        }
+    }
+
+    #[test]
+    fn a_horse_landing_on_hay_spares_itself_and_its_rider() {
+        for ground in ["minecraft:hay_block", "minecraft:slime_block"] {
+            let (mut world, id, _) = fall_ridden(HorseKind::Horse, 10.0, ground);
+            assert_eq!(health_and_fall(&mut world, id), (20.0, None), "{ground}");
+            assert!(world.take_rider_falls().is_empty(), "{ground}");
+        }
+        let (mut world, id, _) = fall_ridden(HorseKind::Horse, 20.0, "minecraft:hay_block");
+        assert_eq!(
+            health_and_fall(&mut world, id).0,
+            19.0,
+            "twenty blocks onto hay still hurt a little"
+        );
+        let falls = world.take_rider_falls();
+        assert!(
+            falls.len() == 1 && falls[0].2 == 0.2,
+            "the rider lands on the hay too: {falls:?}"
+        );
+    }
+
+    #[test]
+    fn a_full_jump_on_flat_ground_never_hurts_a_strong_horse() {
+        let mut world = EntityWorld::default();
+        let id = ridden(&mut world, HorseKind::Horse, true, true);
+        world
+            .cow_mut(id)
+            .unwrap()
+            .horse
+            .as_mut()
+            .unwrap()
+            .jump_strength = 1.0;
+        let players = [player(0, DVec3::new(0.5, 65.0, 0.5))];
+        let mut peak = 0.0_f64;
+        for _ in 0..3 {
+            steer(&mut world, 0.0, 0.0, false);
+            for _ in 0..25 {
+                world.tick_with_players(&mut Floor, &players);
+            }
+            steer(&mut world, 0.0, 0.0, true);
+            for _ in 0..11 {
+                world.tick_with_players(&mut Floor, &players);
+            }
+            steer(&mut world, 0.0, 0.0, false);
+            for _ in 0..40 {
+                world.tick_with_players(&mut Floor, &players);
+                peak = peak.max(world.cow_mut(id).unwrap().cow.body.position.y - 64.0);
+            }
+        }
+        assert!(peak > 5.0, "{peak}");
+        assert_eq!(health_and_fall(&mut world, id), (20.0, None));
+        assert!(world.take_rider_falls().is_empty());
+    }
+
+    #[test]
+    fn a_horse_landing_plays_the_horse_land_sound_but_no_generic_fall() {
+        let (_, _, sounds) = fall_ridden(HorseKind::Horse, 10.0, "minecraft:stone");
+        assert_eq!(heard(&sounds, "entity.horse.land"), [(0.4, 1.0)]);
+        assert_eq!(heard(&sounds, "block.stone.fall"), [(0.5, 0.75)]);
+        assert!(
+            sounds.iter().all(|s| !s.event.ends_with("_fall")),
+            "{sounds:?}"
+        );
+        let mut world = EntityWorld::default();
+        let mut ground = Ground("minecraft:stone");
+        let foal = equine(&mut world, HorseKind::Horse, DVec3::new(0.5, 74.0, 0.5));
+        world.cow_mut(foal).unwrap().cow.age.ticks = -24000;
+        let cow = world.spawn_cow(crate::cow::Cow::new(DVec3::new(8.5, 74.0, 0.5)), false);
+        let players = [player(0, DVec3::new(30.5, 64.0, 30.5))];
+        let mut sounds = Vec::new();
+        for _ in 0..60 {
+            world.tick_with_players(&mut ground, &players);
+            sounds.extend(world.take_sounds());
+        }
+        assert_eq!(heard(&sounds, "entity.baby_horse.land"), [(0.4, 1.0)]);
+        assert!(heard(&sounds, "entity.horse.land").is_empty());
+        assert_eq!(
+            world.cow_mut(foal).unwrap().cow.health,
+            18.0,
+            "an unridden horse falls the same"
+        );
+        assert_eq!(
+            world.cow_mut(cow).unwrap().cow.health,
+            3.0,
+            "a cow keeps the plain fall"
+        );
+        assert_eq!(heard(&sounds, "entity.generic.big_fall"), [(1.0, 1.0)]);
+    }
+
+    #[test]
+    fn a_llama_landing_makes_no_land_sound() {
+        let (mut world, id, sounds) = fall_ridden(HorseKind::Llama, 10.0, "minecraft:stone");
+        assert!(
+            sounds.iter().all(|s| !s.event.ends_with(".land")),
+            "{sounds:?}"
+        );
+        assert_eq!(heard(&sounds, "block.stone.fall"), [(0.5, 0.75)]);
+        let (health, fall) = health_and_fall(&mut world, id);
+        assert_eq!(health, 18.0, "a llama takes a horse's fall");
+        assert!(fall.is_some());
+        assert_eq!(
+            world.take_rider_falls().len(),
+            1,
+            "and hands it to its rider"
+        );
+    }
+
+    struct Sounding(&'static str);
+    impl World for Sounding {
+        fn block(&self, (_, y, _): Pos) -> Option<Block> {
+            (y < 64).then(|| Block::new("minecraft:grass_block"))
+        }
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+        fn step_sound(&self, pos: Pos) -> Option<(String, f32, f32)> {
+            self.block(pos).map(|_| (self.0.to_owned(), 1.0, 1.0))
+        }
+    }
+
+    fn gallop_counter(world: &mut EntityWorld, id: u64) -> i32 {
+        world
+            .cow_mut(id)
+            .unwrap()
+            .horse
+            .as_ref()
+            .unwrap()
+            .gallop_counter
+    }
+
+    fn ride_steps(
+        world: &mut EntityWorld,
+        id: u64,
+        ground: &mut Sounding,
+        ticks: usize,
+    ) -> Vec<(i32, Vec<String>)> {
+        let players = [player(0, DVec3::new(0.5, 65.0, 0.5))];
+        let mut steps = Vec::new();
+        for _ in 0..ticks {
+            let before = gallop_counter(world, id);
+            world.tick_with_players(ground, &players);
+            let heard: Vec<String> = world
+                .take_sounds()
+                .into_iter()
+                .map(|s| s.event)
+                .filter(|e| {
+                    [".step", ".step_wood", ".gallop", ".breathe"]
+                        .iter()
+                        .any(|end| e.ends_with(end))
+                })
+                .collect();
+            let after = gallop_counter(world, id);
+            if after != before || !heard.is_empty() {
+                steps.push((after, heard));
+            }
+        }
+        steps
+    }
+
+    fn ridden_hoofbeat(counter: i32, heard: &[String]) -> bool {
+        match counter {
+            1..=5 => heard == ["entity.horse.step_wood"],
+            c if c % 3 == 0 => {
+                heard.first().map(String::as_str) == Some("entity.horse.gallop")
+                    && heard[1..].iter().all(|e| e == "entity.horse.breathe")
+                    && heard.len() <= 2
+            }
+            _ => heard.is_empty(),
+        }
+    }
+
+    #[test]
+    fn a_ridden_horse_clops_five_times_then_gallops_every_third_step() {
+        for ground in ["block.grass.step", "block.wood.step"] {
+            let mut world = EntityWorld::default();
+            let id = ridden(&mut world, HorseKind::Horse, true, true);
+            steer(&mut world, 0.0, 1.0, false);
+            let steps = ride_steps(&mut world, id, &mut Sounding(ground), 200);
+            assert!(steps.len() >= 12, "{ground}: {steps:?}");
+            for (n, (counter, heard)) in steps.iter().enumerate() {
+                assert_eq!(*counter, n as i32 + 1, "{ground}: {steps:?}");
+                assert!(ridden_hoofbeat(*counter, heard), "{ground}: {steps:?}");
+            }
+            let gallops = steps
+                .iter()
+                .filter(|(_, heard)| heard.first().is_some_and(|e| e == "entity.horse.gallop"))
+                .count();
+            assert_eq!(gallops, steps.len() / 3 - 1, "{ground}: {steps:?}");
+        }
+    }
+
+    #[test]
+    fn stopping_resets_the_gallop() {
+        let mut world = EntityWorld::default();
+        let id = ridden(&mut world, HorseKind::Horse, true, true);
+        let mut ground = Sounding("block.grass.step");
+        steer(&mut world, 0.0, 1.0, false);
+        ride_steps(&mut world, id, &mut ground, 80);
+        assert!(gallop_counter(&mut world, id) > 5);
+        steer(&mut world, 0.0, 0.0, false);
+        ride_steps(&mut world, id, &mut ground, 30);
+        assert_eq!(gallop_counter(&mut world, id), 0, "letting go of W");
+        steer(&mut world, 0.0, 1.0, false);
+        let steps = ride_steps(&mut world, id, &mut ground, 80);
+        assert!(steps.len() >= 6, "{steps:?}");
+        for (n, (counter, heard)) in steps.iter().enumerate() {
+            assert_eq!(*counter, n as i32 + 1, "{steps:?}");
+            assert!(ridden_hoofbeat(*counter, heard), "{steps:?}");
+        }
+        steer(&mut world, 0.0, -1.0, false);
+        let steps = ride_steps(&mut world, id, &mut ground, 200);
+        let backing: Vec<_> = steps.iter().filter(|(_, heard)| !heard.is_empty()).collect();
+        assert!(backing.len() >= 3, "{steps:?}");
+        assert!(
+            backing
+                .iter()
+                .all(|(counter, heard)| *counter == 1 && heard == &["entity.horse.step_wood"]),
+            "backing up clops every step and never gallops: {steps:?}"
+        );
+    }
+
+    #[test]
+    fn a_ridden_donkey_and_an_unridden_horse_only_step() {
+        assert!(HorseKind::Horse.can_gallop());
+        for kind in [
+            HorseKind::Donkey,
+            HorseKind::Mule,
+            HorseKind::Llama,
+            HorseKind::TraderLlama,
+        ] {
+            assert!(!kind.can_gallop(), "{kind:?}");
+        }
+        for (ground, step) in [
+            ("block.grass.step", "entity.horse.step"),
+            ("block.wood.step", "entity.horse.step_wood"),
+        ] {
+            let mut world = EntityWorld::default();
+            let id = ridden(&mut world, HorseKind::Donkey, true, true);
+            steer(&mut world, 0.0, 1.0, false);
+            let steps = ride_steps(&mut world, id, &mut Sounding(ground), 200);
+            assert!(steps.len() >= 8, "{ground}: {steps:?}");
+            assert!(
+                steps
+                    .iter()
+                    .all(|(counter, heard)| *counter == 0 && heard == &[step]),
+                "{ground}: {steps:?}"
+            );
+        }
+        let mut body = crate::cow::Cow::new(DVec3::new(0.5, 64.0, 0.5)).body;
+        for (baby, step) in [(false, "entity.horse.step"), (true, "entity.baby_horse.step")] {
+            let mut horse = HorseState::new(HorseKind::Horse);
+            horse.gallop_counter = 8;
+            for (ground, heard) in [
+                ("block.grass.step", step),
+                ("block.cherry_wood.step", "entity.horse.step_wood"),
+            ] {
+                body.emission = Some(crate::movement::Emission::Step(
+                    Some((ground.to_owned(), 0.15, 0.8)),
+                    false,
+                ));
+                let sounds = horse_step_sounds(&mut horse, &body, baby, false);
+                assert_eq!(horse.gallop_counter, 8, "an unridden horse never counts");
+                let mut voices = Vec::new();
+                play_movement(&mut body, 0, &mut LegacyRandom::new(1), &mut voices, sounds);
+                let voices: Vec<_> = voices.into_iter().map(|(voice, _)| voice).collect();
+                assert_eq!(voices, [Voice::Event(heard, 0.15, 0.8)], "{baby} {ground}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_gallop_sometimes_breathes() {
+        let mut body = crate::cow::Cow::new(DVec3::new(0.5, 64.0, 0.5)).body;
+        let step = |body: &mut Body| {
+            body.emission = Some(crate::movement::Emission::Step(
+                Some(("block.grass.step".to_owned(), 0.15 * 0.8, 1.2)),
+                false,
+            ));
+        };
+        for (baby, breath) in [
+            (false, "entity.horse.breathe"),
+            (true, "entity.baby_horse.breathe"),
+        ] {
+            let mut horse = HorseState::new(HorseKind::Horse);
+            horse.gallop_counter = 5;
+            step(&mut body);
+            let sounds = horse_step_sounds(&mut horse, &body, baby, true);
+            assert_eq!(horse.gallop_counter, 6);
+            assert_eq!(
+                sounds.horse_step,
+                Some(HorseStep::Gallop {
+                    breathe: Some(breath)
+                })
+            );
+            let mut random = LegacyRandom::new(42);
+            let mut rolls = LegacyRandom::new(42);
+            let mut breaths = 0;
+            for _ in 0..200 {
+                step(&mut body);
+                let mut voices = Vec::new();
+                play_movement(&mut body, 0, &mut random, &mut voices, sounds);
+                let voices: Vec<_> = voices.into_iter().map(|(voice, _)| voice).collect();
+                assert_eq!(
+                    voices[0],
+                    Voice::Event("entity.horse.gallop", 0.15 * 0.8, 1.2)
+                );
+                if rolls.next_int(10) == 0 {
+                    breaths += 1;
+                    assert_eq!(voices.len(), 2, "{voices:?}");
+                    let Voice::Event(event, volume, pitch) = &voices[1] else {
+                        panic!("{voices:?}");
+                    };
+                    assert!(
+                        *event == breath && (volume - 0.48).abs() < 1.0e-6 && *pitch == 1.2,
+                        "{voices:?}"
+                    );
+                } else {
+                    assert_eq!(voices.len(), 1, "{voices:?}");
+                }
+            }
+            assert!((5..40).contains(&breaths), "{breaths}");
+        }
     }
 
     #[test]

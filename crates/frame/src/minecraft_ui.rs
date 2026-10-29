@@ -29,7 +29,7 @@ pub fn glint_uv(shift: [f32; 2], point: [f32; 2], scale: f32) -> [f32; 2] {
 }
 
 /// One stack as the HUD shows it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct McStack {
     /// The item's id (`minecraft:dirt`), or `iw4:weapon/<index>` for a gun.
     pub id: String,
@@ -48,6 +48,7 @@ pub struct McStack {
     pub icon: String,
     pub lore: Vec<String>,
     pub clip: Option<(u32, u32)>,
+    pub effects: Vec<(String, bool)>,
 }
 
 /// A slot of the inventory screen.
@@ -276,6 +277,7 @@ pub struct MinecraftUi {
     pub book_edit: Option<McBookEdit>,
     pub ui_sounds: Vec<&'static str>,
     pub jump_bar: Option<f32>,
+    pub vehicle_health: Option<(f32, f32)>,
     pub inventory_key_opened: bool,
     pub pumpkin_blur: Option<Handle<Image>>,
     pub camera_overlay: bool,
