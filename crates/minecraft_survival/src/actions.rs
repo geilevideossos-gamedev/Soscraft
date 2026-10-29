@@ -878,8 +878,11 @@ pub fn act(
                             })
                     };
                     let blocked = match opened.station {
-                        minecraft_terrain::containers::Station::Chest
-                        | minecraft_terrain::containers::Station::Ender => {
+                        minecraft_terrain::containers::Station::Chest => opened
+                            .cells
+                            .iter()
+                            .any(|&pos| conductor(pos) || entities.cat_on_chest(pos)),
+                        minecraft_terrain::containers::Station::Ender => {
                             opened.cells.iter().any(|&pos| conductor(pos))
                         }
                         minecraft_terrain::containers::Station::Shulker => {
@@ -2505,6 +2508,123 @@ pub(crate) mod tests {
         player.hand.swing = None;
         right_click(&mut player, &mut level);
         assert_eq!(damage(&player), Some(1), "creative shears do not wear");
+        assert_eq!(player.hand.swing, Some(0.0));
+    }
+
+    const CAT_CHEST: BlockPos = (6, 201, 4);
+
+    fn chest_half(id: &str, kind: &str) -> Block {
+        Block::new(id)
+            .with("facing", "west")
+            .with("type", kind)
+            .with("waterlogged", "false")
+    }
+
+    fn set_block(level: &mut Level, pos: BlockPos, block: Block) {
+        level.terrain.scene.set(pos, Some(block));
+        let entities = level.entities.as_mut().expect("entities");
+        entities.placed(&level.terrain.scene, pos);
+    }
+
+    fn sitting_cat_on(level: &mut Level, pos: BlockPos) -> u64 {
+        use minecraftoss_entities::feline::{Feline, FelineKind};
+        let top = DVec3::new(
+            f64::from(pos.0) + 0.5,
+            f64::from(pos.1) + 0.875,
+            f64::from(pos.2) + 0.5,
+        );
+        let mut cat = Feline::new(FelineKind::Cat, top);
+        cat.sitting = true;
+        let entities = level.entities.as_mut().expect("entities");
+        entities.view.world.spawn_feline(cat, true)
+    }
+
+    fn right_click_chest(level: &mut Level, globals: &Globals) -> (Player, Acted) {
+        let mut player = holding("minecraft:cobblestone", 32);
+        let looking = actor(-90.0, pitch_to(actor(0.0, 0.0).eye, [6.0625, 201.5, 4.5]));
+        let acted = act(
+            &mut player,
+            level,
+            globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        (player, acted)
+    }
+
+    #[test]
+    fn a_chest_with_a_sitting_cat_on_it_stays_shut_but_the_arm_swings() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        for id in [
+            "minecraft:chest",
+            "minecraft:trapped_chest",
+            "minecraft:copper_chest",
+        ] {
+            set_block(&mut level, CAT_CHEST, chest_half(id, "single"));
+            let cat = sitting_cat_on(&mut level, CAT_CHEST);
+            let (player, acted) = right_click_chest(&mut level, &globals);
+            assert!(acted.open_block.is_none(), "{id} stays shut");
+            assert_eq!(player.hand.swing, Some(0.0), "the arm swings at {id}");
+            assert_eq!(count(&player), Some(32), "nothing is built against {id}");
+            let entities = level.entities.as_mut().expect("entities");
+            let feline = &mut entities.view.world.feline_mut(cat).unwrap().feline;
+            feline.sitting = false;
+            let (_, acted) = right_click_chest(&mut level, &globals);
+            assert_eq!(
+                acted.open_block.map(|opened| opened.cells),
+                Some(vec![CAT_CHEST]),
+                "{id} opens once the cat stands"
+            );
+        }
+    }
+
+    #[test]
+    fn either_half_of_a_double_chest_with_a_cat_on_it_keeps_both_shut() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let other = (6, 201, 5);
+        set_block(&mut level, CAT_CHEST, chest_half("minecraft:chest", "right"));
+        set_block(&mut level, other, chest_half("minecraft:chest", "left"));
+        let cat = sitting_cat_on(&mut level, other);
+        let (player, acted) = right_click_chest(&mut level, &globals);
+        assert!(acted.open_block.is_none(), "a cat on the other half");
+        assert_eq!(player.hand.swing, Some(0.0));
+        let entities = level.entities.as_mut().expect("entities");
+        let feline = &mut entities.view.world.feline_mut(cat).unwrap().feline;
+        feline.body.position = DVec3::new(6.5, 201.875, 4.5);
+        let (_, acted) = right_click_chest(&mut level, &globals);
+        assert!(acted.open_block.is_none(), "a cat on the clicked half");
+        let entities = level.entities.as_mut().expect("entities");
+        entities.view.world.feline_mut(cat).unwrap().feline.sitting = false;
+        let (_, acted) = right_click_chest(&mut level, &globals);
+        assert_eq!(
+            acted.open_block.map(|opened| opened.cells),
+            Some(vec![CAT_CHEST, other])
+        );
+    }
+
+    #[test]
+    fn an_ender_chest_ignores_cats() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let ender = Block::new("minecraft:ender_chest")
+            .with("facing", "west")
+            .with("waterlogged", "false");
+        set_block(&mut level, CAT_CHEST, ender);
+        sitting_cat_on(&mut level, CAT_CHEST);
+        let (player, acted) = right_click_chest(&mut level, &globals);
+        assert_eq!(
+            acted.open_block.map(|opened| opened.station),
+            Some(minecraft_terrain::containers::Station::Ender)
+        );
         assert_eq!(player.hand.swing, Some(0.0));
     }
 

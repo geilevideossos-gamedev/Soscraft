@@ -350,6 +350,24 @@ impl EntityWorld {
         self.felines.iter_mut().find(|entity| entity.id == id)
     }
 
+    pub fn cat_sits_on(&self, (x, y, z): (i32, i32, i32)) -> bool {
+        let low = DVec3::new(f64::from(x), f64::from(y + 1), f64::from(z));
+        let high = low + DVec3::ONE;
+        self.felines.iter().any(|entity| {
+            let body = &entity.feline.body;
+            let half = f64::from(body.width / 2.0);
+            let p = body.position;
+            entity.feline.is_cat()
+                && entity.feline.sitting
+                && p.x - half < high.x
+                && p.x + half > low.x
+                && p.y < high.y
+                && p.y + f64::from(body.height) > low.y
+                && p.z - half < high.z
+                && p.z + half > low.z
+        })
+    }
+
     fn feline_people(&self, players: &[PlayerCandidate], kind: FelineKind) -> Vec<FelinePlayer> {
         let tag = match kind {
             FelineKind::Cat => feline::FOOD_TAG,
@@ -1262,6 +1280,51 @@ mod tests {
             cat.body.position.distance(DVec3::new(3.5, 62.0, 0.5)) < 1.5,
             "{}",
             cat.body.position
+        );
+    }
+
+    fn feline_at(world: &mut EntityWorld, kind: FelineKind, at: DVec3, sitting: bool) -> u64 {
+        let mut feline = Feline::new(kind, at);
+        feline.sitting = sitting;
+        world.spawn_feline(feline, true)
+    }
+
+    const CHEST: Pos = (3, 64, 0);
+    const CHEST_TOP: DVec3 = DVec3::new(3.5, 64.875, 0.5);
+
+    #[test]
+    fn a_sitting_cat_on_a_chest_is_found_but_not_a_standing_or_lying_cat_nor_an_ocelot() {
+        let mut world = EntityWorld::default();
+        let cat = feline_at(&mut world, FelineKind::Cat, CHEST_TOP, false);
+        assert!(!world.cat_sits_on(CHEST), "a standing cat");
+        world.feline_mut(cat).unwrap().feline.lying = true;
+        assert!(!world.cat_sits_on(CHEST), "a lying cat");
+        let mut ocelots = EntityWorld::default();
+        feline_at(&mut ocelots, FelineKind::Ocelot, CHEST_TOP, true);
+        assert!(!ocelots.cat_sits_on(CHEST), "an ocelot");
+        let feline = &mut world.feline_mut(cat).unwrap().feline;
+        feline.lying = false;
+        feline.sitting = true;
+        assert!(world.cat_sits_on(CHEST));
+        assert!(!world.cat_sits_on((4, 64, 0)), "not the chest beside");
+        assert!(!world.cat_sits_on((3, 65, 0)), "not a block above");
+        let mut kittens = EntityWorld::default();
+        let kitten = feline_at(&mut kittens, FelineKind::Cat, CHEST_TOP, true);
+        kittens.feline_mut(kitten).unwrap().feline.set_age(-24000);
+        assert!(kittens.cat_sits_on(CHEST), "a sitting kitten");
+    }
+
+    #[test]
+    fn a_cat_sitting_on_the_floor_beside_a_chest_does_not_count() {
+        let mut world = EntityWorld::default();
+        feline_at(&mut world, FelineKind::Cat, DVec3::new(4.2, 64.0, 0.5), true);
+        assert!(!world.cat_sits_on(CHEST), "on the floor, its body reaching over the chest");
+        feline_at(&mut world, FelineKind::Cat, DVec3::new(3.5, 66.0, 0.5), true);
+        assert!(!world.cat_sits_on(CHEST), "its feet at the top of the space above");
+        feline_at(&mut world, FelineKind::Cat, DVec3::new(4.2, 65.0, 0.5), true);
+        assert!(
+            world.cat_sits_on(CHEST),
+            "on the block beside, its body reaching over the chest"
         );
     }
 

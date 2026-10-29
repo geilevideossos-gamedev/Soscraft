@@ -552,3 +552,34 @@ After b64f8651.
 ```
 IW4L_MINECRAFT_KIT=minecraft:lead*16,minecraft:cow_spawn_egg*4,minecraft:oak_fence*16,minecraft:nether_brick_fence*8,minecraft:shears,minecraft:shears,minecraft:iron_sword,minecraft:wheat*16,minecraft:cooked_beef*16
 ```
+
+## Group cat-chests
+
+### 1. Minecraft cats sitting on a chest keep it shut
+
+After 2085bded.
+
+- **Vanilla (26.3, checked with javap):** `ChestBlock.isChestBlockedAt` is `isBlockedChestByBlock` (a redstone conductor above) or `isCatSittingOnChest`: `getEntitiesOfClass(Cat.class, new AABB(x, y + 1, z, x + 1, y + 2, z + 1))` and any of them `isInSittingPose()`. `AABB.intersects` is strict, so a box that only touches the space above does not count. Only the `Cat` class counts (kittens too, never ocelots), and lying is not sitting. The combiner tests the clicked half and, for a double chest, the other half; either blocked means no menu, while the use still succeeds (the arm swings, with no screen, sound or stat). Trapped and copper chests are `ChestBlock`s and block the same way. `EnderChestBlock` checks only the block above.
+- **Changed:**
+  - Vendored `entities/src/world/felines.rs`: new `EntityWorld::cat_sits_on(pos)`: any cat (`is_cat()`) with `sitting` whose body box (its position ± half its width, its feet to its height) strictly overlaps the block space above `pos`.
+  - `minecraft_survival/src/entities.rs`: new `cat_on_chest(pos)`, which asks the view's mob world (the server's, copied each tick).
+  - `minecraft_survival/src/actions.rs`: in the open check, `Station::Chest` (plain, trapped and copper chests) is now apart from `Station::Ender`. A chest stays shut when any of its cells has a conductor above it or a sitting cat on it; the ender chest keeps the conductor check only. The arm still swings.
+  - Friends' clicks run through the same `act` on the host, so the cat keeps the chest shut for them too. No protocol change.
+- **Tests:**
+  - Vendored `world::felines::tests::a_sitting_cat_on_a_chest_is_found_but_not_a_standing_or_lying_cat_nor_an_ocelot` (also: not the chest beside it, not a block above it, and a sitting kitten counts) and `a_cat_sitting_on_the_floor_beside_a_chest_does_not_count` (and not one whose feet are at the top of the space above; a cat on the block beside whose body reaches over the chest does count, as in vanilla).
+  - `actions::tests` (gated on game data): `a_chest_with_a_sitting_cat_on_it_stays_shut_but_the_arm_swings` (a plain, a trapped and a copper chest: shut with a swing and nothing built against it, then open once the cat stands), `either_half_of_a_double_chest_with_a_cat_on_it_keeps_both_shut` (the cat on the other half, then on the clicked half, then standing: both halves open), `an_ender_chest_ignores_cats`.
+- **Decisions:**
+  - Cats block chest menus only. Hoppers and comparators ignore them, as vanilla's `getContainer(..., true)` does.
+  - The check reads the host's view of the mob world, which is at most one tick behind the server, as the knot punch and the fence tie do.
+- **Test steps (survival, by day, flat grass):**
+  1. Use the cat egg and tame the cat with cod until it sits with a collar. Right-click it with an empty hand so it stands.
+  2. Place two chests side by side (a double chest) 2 blocks from the cat. Within about 10 seconds it walks onto one half and sits.
+  3. Right-click the other half: the arm swings, the chest stays shut and makes no sound. Right-click the half under the cat: the same (**cc-1_cat_on_chest**).
+  4. Right-click the cat twice (sit, then stand) and walk 15 blocks away so it follows you off the chest. Go back and open the chest: it opens.
+  5. Cats only sit on plain chests by themselves (`#cats_can_sit_on`), so put one on the others by command. Place a trapped chest, jump onto it and run `/summon minecraft:cat ~ ~ ~ {Sitting:1b}` (it loads sitting), then step off: the trapped chest stays shut. Do the same on a copper chest: it stays shut. Do the same on an ender chest: it still opens (vanilla checks only the block above an ender chest).
+  6. **Friend window:** the cat sits on the host's chest and the friend right-clicks it: it stays shut for the friend too, and the friend's arm swings (**cc-2_friend_cat_chest**, the friend's view).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:cat_spawn_egg*4,minecraft:cod*64,minecraft:chest*4,minecraft:trapped_chest*2,minecraft:copper_chest*2,minecraft:ender_chest,minecraft:cooked_beef*16
+```

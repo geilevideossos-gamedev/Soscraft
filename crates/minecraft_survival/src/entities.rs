@@ -1360,6 +1360,10 @@ impl Entities {
         self.server.chest_openers(pos, count);
     }
 
+    pub fn cat_on_chest(&self, pos: (i32, i32, i32)) -> bool {
+        self.view.world.cat_sits_on(pos)
+    }
+
     pub fn campfire_douse(&mut self, pos: (i32, i32, i32), signal: bool) {
         self.view.ambient.douse(pos, signal);
     }
