@@ -1,1 +1,5 @@
-terrain_group!(land {});
+mod rabbits;
+
+terrain_group!(land {
+    rabbits::Rabbit,
+});

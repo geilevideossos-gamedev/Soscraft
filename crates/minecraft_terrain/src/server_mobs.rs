@@ -239,6 +239,10 @@ impl PlayerWorld for MobWorld<'_> {
         Some(level.lib.registries.biomes.get(biome).name.as_str().to_owned())
     }
 
+    fn biome_in_tag(&self, (x, y, z): (i32, i32, i32), tag: &str) -> bool {
+        self.level.borrow().biome_in_tag_at(minecraftoss_core::BlockPos::new(x, y, z), tag)
+    }
+
     fn block(&self, pos: (i32, i32, i32)) -> Option<PlayerBlock> {
         self.tables.names.get(usize::from(self.state(pos).0)).cloned().flatten()
     }

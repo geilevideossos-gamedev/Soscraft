@@ -1,10 +1,13 @@
 use super::ai::{self, RabbitJump};
 use super::*;
+use crate::animal::AnimalEvent;
 use crate::controls::PlayerControls;
+use crate::cow::InteractionResult;
 use crate::monster_ai::Target;
 use crate::movement::Body;
 use crate::walk_path::WalkTarget;
 use crate::world::{DamageSourceKind, PlayerAttack};
+use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_player::{Block, Pos};
 
@@ -518,5 +521,201 @@ fn a_wild_wolf_hunts_a_rabbit() {
             .family_core(id)
             .is_none_or(|(_, core)| core.health < MAX_HEALTH),
         "and bites it"
+    );
+}
+
+struct Snowfield;
+
+impl World for Snowfield {
+    fn block(&self, pos: Pos) -> Option<Block> {
+        (pos.1 < 64).then(|| Block::new("minecraft:snow_block"))
+    }
+
+    fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+
+    fn biome_in_tag(&self, _pos: Pos, tag: &str) -> bool {
+        tag == WHITE_RABBITS_TAG
+    }
+}
+
+fn holding(item: &str, count: u8) -> Inventory {
+    let mut inventory = Inventory::default();
+    inventory.slots[0] = Some(ItemStack::new(item, count));
+    inventory
+}
+
+#[test]
+fn two_fed_rabbits_have_a_baby_that_grows_up() {
+    for mob_drops in [true, false] {
+        let mut world = EntityWorld::default();
+        world.set_mob_drops(mob_drops);
+        let mut meadow = Meadow::default();
+        let first = rabbit_at(&mut world, at(0.5, 0.5));
+        let second = rabbit_at(&mut world, at(2.5, 0.5));
+        for id in [first, second] {
+            rabbit_mut(&mut world, id)
+                .state
+                .set_variant(RabbitVariant::Black);
+        }
+        let mut carrots = holding("minecraft:carrot", 4);
+        for id in [first, second] {
+            let (result, events, _) = feed(&mut world, id, &mut carrots, 0, false).unwrap();
+            assert_eq!(result, InteractionResult::SuccessServer);
+            assert_eq!(events, vec![AnimalEvent::Hearts]);
+            assert_eq!(rabbit(&world, id).state.in_love, 600);
+        }
+        assert_eq!(carrots.slots[0].as_ref().map(|s| s.count), Some(2));
+        assert_eq!(world.take_entity_events(), vec![(first, 18), (second, 18)]);
+        let mut baby = None;
+        for _ in 0..400 {
+            world.tick(&mut meadow);
+            baby = world
+                .family::<Rabbit>()
+                .iter()
+                .map(|mob| mob.core.id)
+                .find(|id| ![first, second].contains(id));
+            if baby.is_some() {
+                break;
+            }
+        }
+        let baby = baby.expect("the two make a baby");
+        let events = world.take_entity_events();
+        assert!(
+            events
+                .iter()
+                .any(|&(id, event)| [first, second].contains(&id) && event == 18),
+            "{events:?}"
+        );
+        for id in [first, second] {
+            let parent = &rabbit(&world, id).state;
+            assert!((5999..=6000).contains(&parent.age.ticks), "{id}");
+            assert_eq!(parent.in_love, 0, "{id}");
+        }
+        let orbs = world.take_trade_experience();
+        assert_eq!(orbs.len(), usize::from(mob_drops), "{mob_drops}");
+        assert!(orbs.iter().all(|(_, xp)| (1..=7).contains(xp)));
+        let child = rabbit(&world, baby);
+        assert!(child.core.baby && child.state.age.ticks < -23990);
+        assert_eq!(
+            (child.core.body.width, child.core.body.height),
+            (BABY_WIDTH, BABY_HEIGHT)
+        );
+        let plains = [
+            RabbitVariant::Brown,
+            RabbitVariant::Salt,
+            RabbitVariant::Black,
+        ];
+        assert!(
+            plains.contains(&child.state.variant),
+            "black like its parents, or the plains' colour: {:?}",
+            child.state.variant
+        );
+        let before = child.state.age.ticks;
+        let mut dandelions = holding("minecraft:dandelion", 1);
+        let (result, _, _) = feed(&mut world, baby, &mut dandelions, 0, false).unwrap();
+        assert_eq!(result, InteractionResult::SuccessPredicted);
+        assert!(dandelions.slots[0].is_none(), "it ate the dandelion");
+        let grown = rabbit(&world, baby).state.age.ticks - before;
+        assert_eq!(grown, (-before / 20) / 10 * 20, "a tenth of the time left");
+        rabbit_mut(&mut world, baby).state.age.ticks = -1;
+        world.tick(&mut meadow);
+        let adult = rabbit(&world, baby);
+        assert!(!adult.core.baby && adult.state.age.ticks == 0, "it grew up");
+        assert_eq!(
+            (
+                adult.core.body.width,
+                adult.core.body.height,
+                adult.core.eye_height
+            ),
+            (WIDTH, HEIGHT, EYE_HEIGHT)
+        );
+    }
+}
+
+#[test]
+fn a_baby_takes_a_parent_s_colour_or_one_time_in_twenty_its_biome_s() {
+    assert_eq!(biome_variant(79, true, false), RabbitVariant::White);
+    assert_eq!(
+        biome_variant(80, true, false),
+        RabbitVariant::WhiteSplotched
+    );
+    assert_eq!(biome_variant(10, false, true), RabbitVariant::Gold);
+    assert_eq!(biome_variant(49, false, false), RabbitVariant::Brown);
+    assert_eq!(biome_variant(50, false, false), RabbitVariant::Salt);
+    assert_eq!(biome_variant(90, false, false), RabbitVariant::Black);
+    let snow = Snowfield;
+    let mut counts = std::collections::HashMap::new();
+    for seed in 0..600 {
+        let mut world = EntityWorld::default();
+        let mother = rabbit_at(&mut world, at(0.5, 0.5));
+        let father = rabbit_at(&mut world, at(1.5, 0.5));
+        rabbit_mut(&mut world, mother)
+            .state
+            .set_variant(RabbitVariant::Gold);
+        rabbit_mut(&mut world, father)
+            .state
+            .set_variant(RabbitVariant::Black);
+        rabbit_mut(&mut world, mother).core.random = LegacyRandom::new(seed);
+        breed(&mut world, mother, father, &snow);
+        let child = world
+            .family::<Rabbit>()
+            .iter()
+            .find(|m| ![mother, father].contains(&m.core.id))
+            .unwrap();
+        assert!(child.core.baby);
+        *counts.entry(child.state.variant).or_insert(0) += 1;
+    }
+    let count = |variant| counts.get(&variant).copied().unwrap_or(0);
+    let biome = count(RabbitVariant::White) + count(RabbitVariant::WhiteSplotched);
+    assert!(
+        (10..=55).contains(&biome),
+        "about one in twenty: {counts:?}"
+    );
+    assert!(
+        count(RabbitVariant::Gold) > 200 && count(RabbitVariant::Black) > 200,
+        "{counts:?}"
+    );
+    assert_eq!(
+        biome + count(RabbitVariant::Gold) + count(RabbitVariant::Black),
+        600
+    );
+}
+
+#[test]
+fn a_golden_dandelion_locks_a_baby_rabbit_s_age() {
+    let mut world = EntityWorld::default();
+    let mut meadow = Meadow::default();
+    let baby = baby_at(&mut world, at(0.5, 0.5));
+    rabbit_mut(&mut world, baby).state.age.ticks = -100;
+    let mut dandelion = holding("minecraft:golden_dandelion", 2);
+    let (result, events, _) = feed(&mut world, baby, &mut dandelion, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::SuccessPredicted);
+    assert_eq!(events, vec![AnimalEvent::AgeLock]);
+    let mob = rabbit(&world, baby);
+    assert!(mob.state.age.locked && mob.core.persistent);
+    assert_eq!(mob.state.age.ticks, Age::BABY_START);
+    for _ in 0..200 {
+        world.tick(&mut meadow);
+    }
+    assert_eq!(
+        rabbit(&world, baby).state.age.ticks,
+        Age::BABY_START,
+        "it stays a baby"
+    );
+    let mut carrot = holding("minecraft:carrot", 1);
+    let (result, _, _) = feed(&mut world, baby, &mut carrot, 0, false).unwrap();
+    assert_eq!(
+        result,
+        InteractionResult::Pass,
+        "a locked baby eats nothing"
+    );
+    let (result, events, _) = feed(&mut world, baby, &mut dandelion, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::SuccessPredicted);
+    assert_eq!(events, vec![AnimalEvent::AgeUnlock]);
+    world.tick(&mut meadow);
+    assert_eq!(
+        rabbit(&world, baby).state.age.ticks,
+        Age::BABY_START + 1,
+        "and grows again"
     );
 }

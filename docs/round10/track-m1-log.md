@@ -9,6 +9,7 @@ A commit can't name its own hash, so each entry names the commit before it. Its 
 Files under `third_party/minecraftoss` this track patched or added.
 
 - Patched: `entities/src/world/families.rs` (hook, rabbits-live 1), `entities/src/world/families/tests.rs` (its test, rabbits-live 1), `entities/src/world/families/land.rs` (registration, rabbits-live 2), `entities/src/monster_ai.rs` (`AvoidEntityGoal::matching`, rabbits-live 2), `world/src/natural_spawner/families/land.rs` (the rabbit spawn test, rabbits-live 2).
+- Patched (rabbits-live 3): `player/src/lib.rs` (`World::biome_in_tag`).
 - Added: `entities/src/world/families/land/animal_goals.rs`, `entities/src/world/families/land/rabbits.rs`, `entities/src/world/families/land/rabbits/ai.rs`, `entities/src/world/families/land/rabbits/tests.rs` (test only) (rabbits-live 2).
 
 ## Hooks
@@ -18,6 +19,7 @@ Root hooks this track added (M10, "Hooks this track adds").
 - **"Registered Minecraft mobs can run their own AI step"** (rabbits-live 1): `EntityWorld::family_goal_step_with::<S, W>(id, level, players, movement_speed, ai, run)` in `entities/src/world/families.rs`, with the type `AiStep<W>` (`monster_ai_step`'s signature, returning the landed fall distance). `family_goal_step` is now that call with `monster_ai_step`.
 - `land/animal_goals.rs` (rabbits-live 2, M1's group module, `pub mod`): goal-framework `PanicGoal<E>`, `TemptGoal<E>` and `BreedGoal<E>` over a family's `GoalExtra` type `E: AnimalExtra` (which hands out its `AnimalGoals`), and `is_monster_class`. Later M1 families reuse them; `MoveToBlockGoal` joins with `rabbits-behaviour`.
 - `AvoidEntityGoal::matching(fn(&str) -> bool)` (rabbits-live 2, `monster_ai.rs`): beside `also`; a field set by `new`, so no literal changes.
+- `World::biome_in_tag(pos, tag)` (rabbits-live 3): `player/src/lib.rs` after `biome`, false by default; the server's `MobWorld` answers it after its `biome` (`server_mobs.rs`) through `Level::biome_in_tag_at`. M2's tadpoles use it under this name.
 
 ## Protocol
 
@@ -25,7 +27,10 @@ No commit of this track has changed a `ToClient`/`ToServer` message or the codec
 
 ## State doc changes
 
-None yet.
+For the orchestrator to copy at the merge of segment m1a (rabbits live and drawn):
+
+- `docs/MINECRAFT-SURVIVAL.md:441`: drop "rabbit" from the eggs that spawn nothing: "Spawn eggs for unsimulated mobs (fox, goat, the wither and others; ...)".
+- `docs/MINECRAFT-SURVIVAL.md:451`: "The others (foxes, goats and the rest) stay dormant: ...", and under World simulation add: "Rabbits (round 10, track M1): hops with vanilla's jump control, fleeing players, wolves and monsters, panic, carrot temptation, breeding with the biome's colour one time in twenty, growth and the golden dandelion lock; saved, hatched from eggs and seen by friends."
 
 ## Left for later
 
@@ -90,3 +95,44 @@ After 8ad4c103.
 - **Runs:** `test -p minecraftoss-entities --locked --lib` (448 passed), `test -p minecraftoss-world --locked --lib` (114 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new files pass `rustfmt --check --edition 2021` on their staged content.
 - **Test steps:** nothing new in-game yet (the terrain registers rabbits in the next commit); the steps are those of commit 3.
 - **Kit:** none.
+
+#### 3. Minecraft rabbits breed and their babies grow up
+
+After 39d9b5bc.
+
+- **javap this round:** `Rabbit.getBreedOffspring` (the biome's colour from `getRandomRabbitVariant` first, a level-random roll of 100 and the `#spawns_white_rabbits` / `#spawns_gold_rabbits` tests; then `nextInt(20) == 0` keeps it, else `nextBoolean` picks the partner's colour or its own), `Animal.spawnChildFromBreeding` and `finalizeSpawnChildFromBreeding` (the baby at the parent's feet with no turn; both parents age 6000 and lose their love; event 18 on the parent; an orb of `nextInt(7) + 1` from the parent's random only with `mob_drops`), `Animal.mobInteract` (food at age 0 out of love: love 600 and event 18; food for a baby: a tenth of its time left; `playEatingSound` does nothing for an `Animal`), `Animal.aiStep` (love ends at any age but 0; it counts down with six random draws every tenth tick), `#cannot_be_age_locked` (zombie horses, skeleton horses, villagers: not rabbits).
+- **Changed (vendored player crate):** `World::biome_in_tag(pos, tag)` after `World::biome`, false by default (M10: M1 owns it; M2's tadpoles use it under this name).
+- **Changed (vendored entities crate, `land/rabbits.rs`):**
+  - `feed(world, id, inventory, hand, infinite)`: `animal::interact` with `#rabbit_food` (the world's recipe book, or the three items), so food makes an adult fall in love (event 18 for E1's hearts) and a baby grow by a tenth, and the golden dandelion locks or unlocks a baby's age; the size follows the age.
+  - `breed`: the breed goal's partner is taken after the step; the baby is born as above, with a seed from `born_seeds` or the seed uniquifier (as kittens are).
+  - `biome_variant(roll, white, gold)`: `getRandomRabbitVariant` (white 80 / splotched 20, gold, else brown 50 / salt 40 / black 10).
+  - The tick grows the rabbit after its move (babies become 0.49 x 0.6 at age 0) and counts its love down with vanilla's random draws.
+- **Changed (game code, `minecraft_terrain`):**
+  - `server_mobs.rs` `MobWorld::biome_in_tag` after `biome`: `Level::biome_in_tag_at` (the level's biome and its biome tags).
+  - New `families/land/rabbits.rs`: `impl TerrainFamily for Rabbit`, with tracking range 8, `VOLATILE` `MoreCarrotTicks` and `ForcedAge`, shadow 0.3, no textures yet and an empty `draw` (the models come with `rabbits-drawn`); `read` (`RabbitType`, unknown ids brown, `EVIL` 99 sets the never-flee gate; `MoreCarrotTicks`; `Age`, `ForcedAge`, `AgeLocked`, `InLove`; a friend's look tag's `Baby`; the saved yaw for its body and head), `fields` (the same keys), `show`/`show_on` (flag bit 0 while a hop runs, `values[0]` its ticks since the hop started; the head tilt joins in `rabbits-drawn`), and `interact` (`feed`, the inventory changed, the golden dandelion's use or unuse sound).
+  - `families/land.rs`: `mod rabbits;` and `rabbits::Rabbit` in `terrain_group!`.
+- **Check first, as it went:** the terrain registration lands here, in the live group, because D0's `every_registered_kind_is_simulated_and_summonable` compares the two registries (commit 2). From this commit rabbits are live in the game: saved and worldgen rabbits hop, eggs and `/summon` hatch them, spawners show them, friends get them. They are not drawn until `rabbits-drawn` 1, which keeps the models, the 16 textures and the lead line; segment m1a merges only with both groups in.
+- **Tests added:**
+  - `world::families::land::rabbits::tests`: `two_fed_rabbits_have_a_baby_that_grows_up` (love 600 and event 18 from a carrot each, the baby within 400 ticks, parents aged 6000 out of love, event 18, an orb only with `mob_drops`, the baby's size and colour, a dandelion grows it by a tenth, at age 0 it is an adult), `a_baby_takes_a_parent_s_colour_or_one_time_in_twenty_its_biome_s` (the variant table; 600 litters of a gold and a black parent in a white-rabbit biome: about one in twenty white), `a_golden_dandelion_locks_a_baby_rabbit_s_age` (locked at the baby start, persistent, no growth or feeding, unlocked again).
+  - `families::land::rabbits::tests` (terrain): `a_rabbit_saves_and_loads_with_its_type_carrot_ticks_and_age` (types 0-5 and 99, an unknown type brown; the saved keys round trip), `a_friend_sees_a_rabbit_from_its_look_tag` (no volatile keys in the look; the friend's rabbit is a gold baby; the hop reaches the friend through `FamilyShow`), `a_rabbit_eats_a_carrot_from_the_hand_and_falls_in_love` (the first real-family test of D0's `interact` arm: one carrot used, love 600, event 18; not again while in love; wheat does nothing).
+- **Decisions:**
+  - Decision 2 as recommended: `World::biome_in_tag` keeps vanilla's one-in-twenty biome colour.
+  - The family posts its own event 18 on feeding and breeding: E1's generic family call (`track-e.md:284-289`) is not in `minecraft-survival` yet. Whichever lands second keeps exactly one.
+  - The terrain `interact` uses the entity world's recipe book (which the server sets) for `#rabbit_food`, as the tempt goal does, not the actor's inventory book, so one book decides.
+  - The age lock is saved as `AgeLocked` (a byte, `putBoolean`) like vanilla; the older stores still do not save it (left for later in M1-1).
+  - The terrain tests for saving, the look tag and feeding come here with the `TerrainFamily`; `rabbits-drawn` 1 keeps the render, texture and lead tests.
+  - A friend is sent the mob's full saved tag (`MobEvent::Add`), and the look tag (without `VOLATILE` and the base volatile keys, with `Baby`) only decides when to send it again, so the friend's rabbit gets its `Age` from the host; `read` still takes `Baby` when no `Age` is there.
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (451 passed), `test -p minecraftoss-player --locked --tests` with `full-suite.ps1`'s two stand-in CSV files (198 passed; the files are removed again), `test -p minecraft_terrain --locked` (1432 passed, 2 failed: the first friend test, fixed and rerun, and `sections::tests::background_full_update_matches_the_synchronous_one`, a timing test with 1 ms waits that passed when rerun alone with the rabbit, registry, egg-survey and cage tests, 7 passed; it waits on a background thread, so the laptop's load at -j 4 low priority starved it), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The new files pass `rustfmt --check --edition 2021` on their staged content.
+- **Test steps** (rabbits are live but not drawn yet, so each one shows as its shadow). Release build, survival, Normal, by day on flat grass. Name each screenshot by its label.
+  1. Use the rabbit egg three times on grass 8 blocks away. No rabbit is drawn yet, but three small round shadows appear and move only in short hops, never sliding along the ground, with a soft jump sound for each hop. **m1-rabbits-live-1**
+  2. Walk at them: within about 8 blocks the shadows hop away fast. Stand still holding a carrot: they hop up to about 2 blocks from you and stay.
+  3. Aim at a shadow from close and right-click with a carrot: one carrot is used. Do the same to a second shadow. Within a few seconds the two meet and a fourth, smaller shadow appears beside them. **m1-rabbits-live-2**
+  4. Right-click the small shadow with dandelions a few times: each one is used. Right-click it with the golden dandelion: it is used with its sound; again: used again with the other sound.
+  5. Use the zombie egg 3 blocks from a shadow: that shadow hops away.
+  6. Hit a shadow with the sword: it dies with the rabbit's death sound and drops raw rabbit, sometimes a hide.
+  7. Save, quit and load: the shadows are still there and hop.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:carrot*16,minecraft:dandelion*8,minecraft:golden_dandelion*4,minecraft:iron_sword,minecraft:zombie_spawn_egg*2
+```

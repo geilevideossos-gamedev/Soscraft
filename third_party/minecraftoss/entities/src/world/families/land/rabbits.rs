@@ -3,6 +3,8 @@ mod ai;
 pub use self::ai::{GOAL_NAMES, JUMP_DURATION, RabbitGoals, RabbitJump, TARGET_NAMES};
 use self::ai::{SPEC, rabbit_ai_step};
 use crate::age::Age;
+use crate::animal::{self, AnimalEvent};
+use crate::cow::InteractionResult;
 use crate::health::DamageResult;
 use crate::monster_ai::{MonsterAi, MonsterKind};
 use crate::navigation::navigate_walk_to;
@@ -12,6 +14,8 @@ use crate::world::families::land::animal_goals::{LAST_DAMAGE_TICKS, Mate, Tempte
 use crate::world::families::{Family, FamilyMob, Hurt, MobCore, MonsterSpec};
 use glam::DVec3;
 use minecraftoss_player::World;
+use minecraftoss_player::inventory::Inventory;
+use minecraftoss_player::rng::LegacyRandom;
 
 pub const KIND: &str = "minecraft:rabbit";
 pub const WIDTH: f32 = 0.49;
@@ -25,13 +29,17 @@ pub const SPEED: f64 = 0.30000001192092896;
 pub const FOLLOW_RANGE: f64 = 16.0;
 pub const AMBIENT_INTERVAL: i32 = 120;
 pub const FOOD_TAG: &str = "minecraft:rabbit_food";
+pub const WHITE_RABBITS_TAG: &str = "minecraft:spawns_white_rabbits";
+pub const GOLD_RABBITS_TAG: &str = "minecraft:spawns_gold_rabbits";
+pub const PARENT_AGE: i32 = 6000;
+pub const BIOME_COLOUR_CHANCE: u32 = 20;
 pub const FOOD: [&str; 3] = [
     "minecraft:carrot",
     "minecraft:golden_carrot",
     "minecraft:dandelion",
 ];
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum RabbitVariant {
     #[default]
     Brown,
@@ -143,6 +151,143 @@ pub fn is_food(world: &EntityWorld, item: &str) -> bool {
     }
 }
 
+pub fn biome_variant(roll: i32, white: bool, gold: bool) -> RabbitVariant {
+    if white {
+        if roll < 80 {
+            RabbitVariant::White
+        } else {
+            RabbitVariant::WhiteSplotched
+        }
+    } else if gold {
+        RabbitVariant::Gold
+    } else if roll < 50 {
+        RabbitVariant::Brown
+    } else if roll < 90 {
+        RabbitVariant::Salt
+    } else {
+        RabbitVariant::Black
+    }
+}
+
+pub fn feed(
+    world: &mut EntityWorld,
+    id: u64,
+    inventory: &mut Inventory,
+    hand: usize,
+    infinite: bool,
+) -> Option<(InteractionResult, Vec<AnimalEvent>, DVec3)> {
+    let recipes = world.recipes.clone();
+    let food = |item: &str| match &recipes {
+        Some(recipes) => recipes.item_in_tag(FOOD_TAG, item),
+        None => FOOD.contains(&item),
+    };
+    let mob = world.family_mob_mut::<Rabbit>(id)?;
+    let position = mob.core.body.position;
+    if !mob.core.alive() {
+        return Some((InteractionResult::Pass, Vec::new(), position));
+    }
+    let state = &mut mob.state;
+    let persistent = &mut mob.core.persistent;
+    let (result, events) = animal::interact(
+        &mut state.age,
+        &mut state.in_love,
+        persistent,
+        inventory,
+        hand,
+        infinite,
+        food,
+        false,
+    );
+    let baby = mob.state.age.baby();
+    if baby != mob.core.baby {
+        set_baby(mob, baby);
+    }
+    if events.contains(&AnimalEvent::Hearts) {
+        world.entity_events.push((id, 18));
+    }
+    Some((result, events, position))
+}
+
+fn breed<W: World>(world: &mut EntityWorld, id: u64, partner: u64, level: &W) {
+    let mate = world
+        .family::<Rabbit>()
+        .iter()
+        .find(|mob| mob.core.id == partner && mob.core.alive());
+    let Some(partner_variant) = mate.map(|mob| mob.state.variant) else {
+        return;
+    };
+    let Some(position) = world.family_core(id).map(|(_, core)| core.body.position) else {
+        return;
+    };
+    let block = (
+        position.x.floor() as i32,
+        position.y.floor() as i32,
+        position.z.floor() as i32,
+    );
+    let roll = world.level_random.next_int(100) as i32;
+    let white = level.biome_in_tag(block, WHITE_RABBITS_TAG);
+    let gold = !white && level.biome_in_tag(block, GOLD_RABBITS_TAG);
+    let biome = biome_variant(roll, white, gold);
+    let mob_drops = world.mob_drops;
+    let Some(mob) = world.family_mob_mut::<Rabbit>(id) else {
+        return;
+    };
+    let random = &mut mob.core.random;
+    let variant = if random.next_int(BIOME_COLOUR_CHANCE) == 0 {
+        biome
+    } else if random.next_boolean() {
+        partner_variant
+    } else {
+        mob.state.variant
+    };
+    mob.state.age.set(PARENT_AGE);
+    mob.state.in_love = 0;
+    let orb = mob_drops.then(|| 1 + mob.core.random.next_int(7) as i32);
+    if let Some(other) = world.family_mob_mut::<Rabbit>(partner) {
+        other.state.age.set(PARENT_AGE);
+        other.state.in_love = 0;
+    }
+    world.entity_events.push((id, 18));
+    if let Some(orb) = orb {
+        world.trade_experience.push((position, orb));
+    }
+    let seed = world.born_seeds.pop_front().unwrap_or_else(|| {
+        world.seed_uniquifier = world
+            .seed_uniquifier
+            .wrapping_mul(1_181_783_497_276_652_981);
+        world.seed_uniquifier
+    });
+    let Some(mut child) = Rabbit::spawn(KIND, position) else {
+        return;
+    };
+    child.state.age.set(Age::BABY_START);
+    set_baby(&mut child, true);
+    child.state.set_variant(variant);
+    child.core.random = LegacyRandom::new(seed);
+    world.spawn_family(child);
+}
+
+fn grow(mob: &mut FamilyMob<Rabbit>) {
+    let was_baby = mob.state.age.baby();
+    let _ = mob.state.age.tick(mob.core.alive());
+    if was_baby != mob.state.age.baby() {
+        set_baby(mob, !was_baby);
+    }
+    if mob.state.age.ticks != 0 {
+        mob.state.in_love = 0;
+    } else if mob.state.in_love > 0 {
+        mob.state.in_love -= 1;
+        if mob.state.in_love % 10 == 0 {
+            for _ in 0..3 {
+                let _ = mob.core.random.next_gaussian();
+            }
+            for _ in 0..3 {
+                let _ = mob.core.random.next_double();
+            }
+        }
+    }
+}
+
 fn tempters(world: &EntityWorld, players: &[PlayerCandidate]) -> Vec<Tempter> {
     players
         .iter()
@@ -233,8 +378,17 @@ impl Family for Rabbit {
                 |rabbit| &mut *rabbit.ai,
                 rabbit_ai_step::<W>,
             );
+            let partner = world
+                .family_mob_mut::<Self>(id)
+                .and_then(|mob| mob.state.goals_mut().animal.breed_with.take());
+            if let Some(partner) = partner {
+                breed(world, id, partner, &*level);
+            }
         }
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);
+        if let Some(mob) = world.family_mob_mut::<Self>(id) {
+            grow(mob);
+        }
     }
 
     fn category(_kind: &str) -> &'static str {
