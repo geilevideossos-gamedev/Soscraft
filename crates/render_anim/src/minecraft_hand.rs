@@ -192,7 +192,7 @@ pub(crate) fn held_hand_mesh(held: &Held<'_>, view: &mut minecraft_survival::ent
         };
         let swung = if raised || eat.is_some() || held.swing_offhand != (slot == offhand) { 0.0 } else { held.swing };
         let glint = minecraft_terrain::glint::has_glint(stack);
-        let key = minecraft_terrain::item_tint::key(dials.key(&stack.id), minecraft_terrain::potions::stack_color(stack.components.as_ref()));
+        let key = minecraft_terrain::item_tint::of_stack_at(dials.key(&stack.id), stack);
         posed.push((eat.unwrap_or(Mat4::IDENTITY) * item_pose(display, swung, 0.0, arm), key, glint));
     }
     let mut mesh = view.held_item_mesh(&posed, light_at, packs, atlas, light);

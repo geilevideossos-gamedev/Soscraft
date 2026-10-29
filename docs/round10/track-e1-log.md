@@ -537,3 +537,29 @@ Commit: "Minecraft ridden horses gallop and breathe", the one after `0a6ad1ec`.
 ```
 IW4L_MINECRAFT_KIT=minecraft:saddle,minecraft:saddle,minecraft:oak_planks*64
 ```
+
+### Dyed items show their colour in icons, hands and on the ground
+
+Commit: "Minecraft dyed items show their colour in icons, hands and on the ground", the one after `ece5ea8f`.
+
+- **Cause** (as in the brief, re-checked at `ece5ea8f`): the drawn-item key (`item_tint`, `id~rrggbb`) carried only a potion colour, and `interface.rs` `item_model_tints` always gave a `minecraft:dye` tint its default, so every dyed leather item was brown (#A06540) in inventories, in the first-person hand, in third person and on the ground.
+- **Vanilla 26.3** (data): `items/leather_horse_armor.json` and the four leather armour pieces tint layer 0 with `{type: minecraft:dye, default: -6265536}` and leave layer 1 (the overlay) plain. The dye tint reads `minecraft:dyed_color` (an int, or `{rgb}`), which `body_gear::dyed_color` already reads in both forms.
+- **Changed:**
+  - `crates/minecraft_terrain/src/item_tint.rs`: new `of_stack_at(base, stack)`, where `base` is the id or a dial key; it keys the potion colour or, when there is none, `body_gear::dyed_color`. `of_stack(stack)` is `of_stack_at(&stack.id, stack)`.
+  - `interface.rs` `item_model_tints`: `minecraft:dye` takes the keyed colour or else its default, like `minecraft:potion` (moved out of the default-only arm with firework, map colour, team and custom model data).
+  - `crates/render_anim/src/minecraft_hand.rs`: the first-person key is `of_stack_at(dials.key(&stack.id), stack)`, so a held compass, recovery compass or clock keeps its dial.
+  - `body_render.rs` `held_items`: a held item in third person (the host's and the friends' bodies, `anim/minecraft_gear.rs`) keys `item.potion.or(item.dye)`. `GearItem.dye` is already on the wire, so friends see it with no wire change.
+  - Dropped items (`mesh.rs` `of_stack`) and inventory icons (`minecraft_inventory.rs` `convert` and the hotbar list, both `of_stack`) need no change: they key through `of_stack`, and `icon_source` splits the colour off the icon key and keys it again around the dial key, so the dye passes through it.
+- **Tests:**
+  - `minecraft_terrain` `item_tint::tests::a_dyed_stack_keys_its_dye_and_a_dial_base_keeps_its_model`: red leather horse armour keys `~b02e26`, the `{rgb}` form splits back to 0x3C44AA, an undyed one keys the plain id, a compass keyed on a dial base comes back through `item_tint::split` and then `dials::split` to `minecraft:item/compass_16`, and a potion with a stray `dyed_color` keeps its potion colour.
+  - `interface::tests::dyed_and_firework_tints_use_their_default_colour_through_selects`: the assertion that pinned the old limit (a keyed colour on the leather horse armour's dye tint gave #A06540) now expects the keyed colour; added the leather helmet select with 0xB02E26 and the dyed wolf armour, which still resolves to its undyed model (no tints).
+  - `item_icons::tests::a_red_leather_horse_armour_icon_is_red_on_layer_zero_and_plain_on_layer_one` (real pack, skipped without it): every bare layer-0 pixel of the red icon is the sprite times #B02E26, every opaque overlay pixel is the overlay sprite and equals the plain icon there. (The brief listed this test under `horse-dye`; it belongs here because this commit makes the icon red.)
+  - `body_render::tests::a_held_dyed_leather_piece_keys_its_dye`.
+  - `render_anim` `minecraft_inventory::tests::a_dyed_leather_icon_keeps_its_colour_and_shares_its_name`: the red and the plain icon differ, both name `minecraft:leather_horse_armor`, and `icon_source` keeps `~b02e26`.
+  - `minecraft_terrain` passes (1412; `sections::tests::background_full_update_matches_the_synchronous_one` failed once in the full run, a timing test that waits at most 1000 × 1 ms for a background thread while other tracks were building, and passed when run again alone), `render_anim` passes (214), and `check -p launcher` passes.
+- **Decisions:**
+  - The key holds one colour, so a stack with both components keys the potion colour (the brief's order). No vanilla item has both; a leather piece from a release-2 kit (`leather_*@red`, which got a stray `potion_contents` because of the missing tag fixed in the next commit) now shows the default potion blue on its dye layer instead of brown. Take a new one from the kit after the next commit.
+  - `icon_source` keeps its body: it gets the icon key, not the stack, and already re-keys whatever colour the key holds. Only the hand builds its key from the stack, so only the hand calls `of_stack_at` with a dial base.
+  - Third-person held items take the dye too (`body_render.rs`), as vanilla's item renderer does for every display context; the brief named only the first-person hand.
+  - Left as before: item frames (`FrameView` carries only the potion colour; E-banners' `player-looks` gives frames the item look) and dyed wolf armour (its item model is a `has_component` condition, and the walker always takes `on_false`, the undyed model).
+- **Owner's test steps:** this commit alone has no way to get a dyed item in game except a leatherworker's level 4 trade (the kit's `@red` needs the next commit), so its steps are with the next commit.

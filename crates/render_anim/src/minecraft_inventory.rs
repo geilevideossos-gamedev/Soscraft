@@ -1140,6 +1140,18 @@ mod tests {
     }
 
     #[test]
+    fn a_dyed_leather_icon_keeps_its_colour_and_shares_its_name() {
+        let mut red = ItemStack::new("minecraft:leather_horse_armor", 1);
+        red.components = Some(serde_json::json!({"minecraft:dyed_color": 0xB02E26}));
+        let plain = ItemStack::new("minecraft:leather_horse_armor", 1);
+        let (red_icon, plain_icon) = (minecraft_terrain::item_tint::of_stack(&red), minecraft_terrain::item_tint::of_stack(&plain));
+        assert_ne!(red_icon, plain_icon);
+        let dials = minecraft_terrain::dials::Dials::default();
+        assert_eq!(icon_source(&dials, &red_icon), ("minecraft:leather_horse_armor", "minecraft:leather_horse_armor~b02e26".to_owned()));
+        assert_eq!(icon_source(&dials, &plain_icon), ("minecraft:leather_horse_armor", "minecraft:leather_horse_armor".to_owned()));
+    }
+
+    #[test]
     fn a_shulker_box_tooltip_names_five_stacks_in_slot_order_and_counts_the_rest() {
         let mut language = HashMap::new();
         language.insert("container.shulkerBox.itemCount".to_owned(), "%s x %s".to_owned());
