@@ -43,7 +43,7 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 ## Release builds
 | # | When | Commit | State |
 |---|---|---|---|
-| 2 | d0a, e1a and d1 merged, protocol 7 | 605ad21e | building 2026-10-29 from 06:50 (`-p launcher -p iw4l-master`); test steps `docs/round10/release-2-tests.md` being written |
+| 2 | d0a, e1a and d1 merged, protocol 7 | 605ad21e | done 2026-10-29: release 11m 22s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, release 1 kept as `iw4l-survival-6e0e057.exe`, relay copied in (hashes checked); test steps `docs/round10/release-2-tests.md` (78 screenshots, 9 kits, written and checked by two agents) |
 | 1 | track-d merged (d6, keyframes, withers, wind charges) | 6e0e0573 | done 2026-10-28: full suite green (24.9 min, 3863 tests); release 12m 57s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, old one kept as `iw4l-survival-f743218.exe`, relay copied (same hash); protocol 6; test steps `docs/round10/release-1-tests.md` |
 
 ## Log
