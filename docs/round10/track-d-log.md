@@ -627,6 +627,11 @@ After 07d23491. Log only.
 
 - **Tests** on the code of 07d23491, `test -p <crate> --locked` for each touched crate, all passed: `minecraft_terrain` 1470 (3 ignored; the known flaky `sections::tests::background_full_update_matches_the_synchronous_one` failed once in the full run and passed when run again, and the doc-tests ran on their own), `minecraft_survival` 766 + 1, `render_anim` 215, `minecraftoss-entities` 399 (every `check_*` bin builds), `minecraftoss-world` 103, `minecraft_net` 25, `hud` 186, `frame` 28.
 - **Owner's test steps:** none new; the steps of each commit above stand, with the combined kit below.
+- **Combined kit of the first segment** (moved here from "Combined kit" by the second segment's final verification; release 2 handed this segment over with its own kit, `docs/round10/release-2-tests.md` section T): 27 stacks. It holds everything the steps of the groups trial-spawners to review need (97db956b to e9ea905e: trial spawners and their eggs, the mob spawner steps, glass for the sight step, ominous trials with both bottles, vaults with both keys, lodestones with the Nether portal, the friend's clock and recovery compass), with enchanted diamond armour. Left out: the bow and arrows (the sword does), golden apples, milk (`/effect clear @s` does), the totem, the skeleton egg (egg step 2: use the husk egg), the ladder and the water bucket. The steps of group d5-review (bad8dd84 and 0ff5716c: wind charges, the wither and its skull) use their own kit lines above.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:cobblestone*64,minecraft:glass*32,minecraft:trial_spawner*3,minecraft:zombie_spawn_egg*4,minecraft:husk_spawn_egg*2,minecraft:slime_spawn_egg*2,minecraft:spawner*2,minecraft:ominous_bottle[ominous_bottle_amplifier=1]*2,minecraft:ominous_bottle*4,minecraft:trial_key*6,minecraft:ominous_trial_key*3,minecraft:vault*2,minecraft:lodestone*4,minecraft:compass*8,minecraft:clock,minecraft:recovery_compass,minecraft:obsidian*14,minecraft:flint_and_steel
+```
 
 ## Group breezes
 
@@ -905,12 +910,19 @@ After c3ee9d67.
 - **Tests:** none new; the same behaviour. `check -p launcher` passes.
 - **Test steps and kit:** none (no change in game).
 
+### 2. Track D log records the second segment's test run and its combined kit
+
+After 517a350b. Log only.
+
+- **Tests** on the code of 517a350b, `test -p <crate> --locked` for each touched crate, all passed on the first run: `minecraftoss-entities` 461 (every `check_*` bin builds), `minecraftoss-world` 114, `minecraft_terrain` 1527 (3 ignored, with the 26.3 data, so the jar-gated breeze keyframe test and the gated server tests ran), `minecraft_survival` 785 + 1, `render_anim` 217. Neither known flaky test failed.
+- **Owner's test steps:** none new; the steps of each commit of groups breezes, breeze-render and breeze-review stand, with the combined kit below. Commits 0c83047f and fbf3b5cc (registry hooks) and 517a350b (clippy) have no steps of their own.
+
 ## Combined kit
 
-27 stacks. It holds everything the steps of the groups trial-spawners to review need (97db956b to e9ea905e: trial spawners and their eggs, the mob spawner steps, glass for the sight step, ominous trials with both bottles, vaults with both keys, lodestones with the Nether portal, the friend's clock and recovery compass), with enchanted diamond armour. Left out: the bow and arrows (the sword does), golden apples, milk (`/effect clear @s` does), the totem, the skeleton egg (egg step 2: use the husk egg), the ladder and the water bucket. The steps of group d5-review (bad8dd84 and 0ff5716c: wind charges, the wither and its skull) use their own kit lines above.
+The second segment (ae5bcf0e to 517a350b: groups breezes, breeze-render and breeze-review). 21 stacks: breeze eggs for every step, the iron golem, skeleton and blaze eggs, a trial spawner and a mob spawner for the cages and the default breeze trial, the tridents (their step works only after the merge with `minecraft-survival`, which brings E2's hit boxes), the oak doors and cobblestone for the door, wall and dark-room steps, torches and a pickaxe for the trial chamber's breeze room, with plain diamond armour as the commits' own kits. Use `/gamerule mob_griefing true` and `false` where the steps say. The first segment's combined kit is under "Final verification", entry 2.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:cobblestone*64,minecraft:glass*32,minecraft:trial_spawner*3,minecraft:zombie_spawn_egg*4,minecraft:husk_spawn_egg*2,minecraft:slime_spawn_egg*2,minecraft:spawner*2,minecraft:ominous_bottle[ominous_bottle_amplifier=1]*2,minecraft:ominous_bottle*4,minecraft:trial_key*6,minecraft:ominous_trial_key*3,minecraft:vault*2,minecraft:lodestone*4,minecraft:compass*8,minecraft:clock,minecraft:recovery_compass,minecraft:obsidian*14,minecraft:flint_and_steel
+IW4L_MINECRAFT_KIT=minecraft:breeze_spawn_egg*16,minecraft:iron_golem_spawn_egg*2,minecraft:skeleton_spawn_egg*2,minecraft:blaze_spawn_egg*2,minecraft:trial_spawner,minecraft:spawner,minecraft:trident*2,minecraft:trident+loyalty=3,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots+feather_falling=4,minecraft:diamond_pickaxe+efficiency=5,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:cobblestone*64,minecraft:oak_door*2,minecraft:torch*32
 ```
 
 ## Protocol
