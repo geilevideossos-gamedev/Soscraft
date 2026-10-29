@@ -1734,6 +1734,71 @@ mod tests {
     }
 
     #[test]
+    fn a_friend_keys_a_pillager_s_and_a_piglin_s_crossbow_like_the_host() {
+        use minecraftoss_entities::illager::{IllagerArmPose, MAINHAND};
+        let mut host = EntityWorld::default();
+        let (pillager, pillager_tag) = spawn(&mut host, "{id:\"minecraft:pillager\",Pos:[2.5d,64.0d,0.5d],equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}");
+        let (piglin, piglin_tag) = spawn(&mut host, "{id:\"minecraft:piglin\",Pos:[3.5d,64.0d,0.5d],LeftHanded:1b,equipment:{mainhand:{id:\"minecraft:crossbow\",count:1}}}");
+        let originals: HashMap<u64, Tag> = [(pillager, pillager_tag), (piglin, piglin_tag)].into_iter().collect();
+        let mut trackers = Trackers::default();
+        let mut friend = EntityWorld::default();
+        let mut sync = |host: &EntityWorld, friend: &mut EntityWorld| {
+            for _ in 0..LOOK_TICKS {
+                trackers.tick();
+                let tracked = trackers.update(host, &originals, &[watcher(3, 0.5)]);
+                for event in tracked.events_of(3) {
+                    if let MobEvent::Add(id, sent) | MobEvent::Look(id, sent) = event {
+                        assert!(spawn_tracked(friend, *id, sent));
+                    }
+                }
+                for mob in tracked.moves_of(3).unwrap_or_default() {
+                    show_on(friend, mob);
+                }
+            }
+        };
+        let keys = |world: &EntityWorld| {
+            let shown_illager = world.illagers().iter().find(|e| e.id == pillager).unwrap();
+            let shown_piglin = world.piglins().iter().find(|e| e.id == piglin).unwrap();
+            (crate::illager_render::hand_key(shown_illager, MAINHAND), crate::piglin_render::hand_key(shown_piglin, true))
+        };
+        sync(&host, &mut friend);
+        let plain = Some("minecraft:crossbow".to_owned());
+        assert_eq!(keys(&friend), (plain.clone(), plain.clone()));
+        {
+            let e = host.illager_mut(pillager).unwrap();
+            e.illager.charging_crossbow = true;
+            e.arm_pose = IllagerArmPose::CrossbowCharge;
+            e.using_item = Some(15);
+            let p = host.piglin_mut(piglin).unwrap();
+            p.piglin.charging_crossbow = true;
+            p.arm_pose = ArmPose::CrossbowCharge;
+            p.using_item = Some(20);
+        }
+        sync(&host, &mut friend);
+        let pulling = (Some("minecraft:crossbow|use=15".to_owned()), Some("minecraft:crossbow|use=20".to_owned()));
+        assert_eq!((keys(&host), keys(&friend)), (pulling.clone(), pulling));
+        {
+            let e = host.illager_mut(pillager).unwrap();
+            e.illager.charging_crossbow = false;
+            e.arm_pose = IllagerArmPose::CrossbowHold;
+            e.using_item = None;
+            e.illager.set_crossbow_charged(true);
+            let p = host.piglin_mut(piglin).unwrap();
+            p.piglin.charging_crossbow = false;
+            p.arm_pose = ArmPose::CrossbowHold;
+            p.using_item = None;
+            p.piglin.set_crossbow_charged(true);
+        }
+        sync(&host, &mut friend);
+        let loaded = (Some("minecraft:crossbow|charge=arrow".to_owned()), Some("minecraft:crossbow|charge=arrow".to_owned()));
+        assert_eq!((keys(&host), keys(&friend)), (loaded.clone(), loaded));
+        host.illager_mut(pillager).unwrap().illager.set_crossbow_charged(false);
+        host.piglin_mut(piglin).unwrap().piglin.set_crossbow_charged(false);
+        sync(&host, &mut friend);
+        assert_eq!(keys(&friend), (plain.clone(), plain), "the shot empties the friend's crossbows too");
+    }
+
+    #[test]
     fn a_friend_sees_a_snow_golem_from_its_look_tag_and_loses_its_pumpkin_to_shears() {
         let mut host = EntityWorld::default();
         let (golem, golem_tag) = spawn(&mut host, "{id:\"minecraft:snow_golem\",Pos:[2.5d,64.0d,0.5d],NoAI:1b,Pumpkin:1b}");

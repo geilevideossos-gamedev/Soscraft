@@ -694,6 +694,40 @@ Commit: "Minecraft item models pick crossbow and bow states like vanilla", the o
 IW4L_MINECRAFT_KIT=minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:firework_rocket"}]],minecraft:crossbow,minecraft:item_frame*2,minecraft:cooked_beef*16
 ```
 
+### Pillagers and piglins show their crossbow's pull and loaded arrow
+
+Commit: "Minecraft pillagers and piglins show their crossbow's pull and loaded arrow", the one after `ed3792f7`.
+
+- **Cause** (as in the brief, re-checked at `ed3792f7`): `illager_render.rs` (`append_illagers`, the head item and both hands) and `piglin_render.rs` (`append_piglins`, both hands) keyed each held item by `stack.id` alone, so a pillager's or piglin's crossbow was always drawn as the plain `item/crossbow`, although the stack held its `charged_projectiles` (set by `Illager::set_crossbow_charged` and `Piglin::set_crossbow_charged`) and the entity its use ticks (`using_item`).
+- **Vanilla 26.3:** `IsUsingItem` and `UseDuration` count only for the stack in the using hand (`getUseItem() == stack`). Pillagers and piglins start using the hand from `ProjectileUtil.getWeaponHoldingHand(mob, CROSSBOW)`: the main hand when it holds a crossbow, else the off hand.
+- **Changed:**
+  - `item_look::held_key(stack, use_ticks)`: the id with the stack's look and the use ticks (whole ticks, as `using_item` holds them).
+  - `illager_render.rs`: `hand_key(entity, slot)` keys the stack in an equipment slot; the use ticks go only on `Illager::crossbow_hand()` and only while `using_item` is `Some`. `append_illagers` walks the two hand slots (right and left by `left_handed`, as before) through it, and keys the head item (the captain's banner) with `held_key` and no use ticks.
+  - `piglin_render.rs`: `hand_key(entity, main)` does the same for a piglin, whose using hand is the main hand when it holds a crossbow (`Piglin::holds_crossbow`), else the off hand. `append_piglins` walks the main and off hand through it.
+  - Friends: the friend's copy of the mob already gets the crossbow's components through the look tag (a load or a shot changes the saved equipment, so a new look is sent) and `using_item` through `MobShow`, so it keys the same with no other change.
+  - `docs/MINECRAFT-SURVIVAL.md`: the piglin fighting paragraph says the string pulls and the arrow shows; the "drawn uncharged" limit is gone.
+- **Tests:**
+  - `minecraft_terrain` `illager_render::tests::a_pillager_s_crossbow_pulls_in_its_using_hand_and_shows_its_arrow_when_loaded`: drawn through `append_illagers`, a pillager's crossbow keys plain, then `|use=0`, `|use=15` and `|use=25` while charging, `|charge=arrow` when loaded; left-handed with a rocket in the off hand, only the crossbow (now in the left hand) pulls; with the crossbow moved to the off hand, the off hand pulls; a patterned banner on the head keys its look.
+  - `piglin_render::tests::a_piglin_s_crossbow_pulls_in_its_using_hand_and_shows_its_arrow_when_loaded`: the same for a piglin with a gold ingot in the off hand, left-handed when loaded, and an off-hand crossbow pulling when the main hand holds a sword.
+  - `mob_tracking::tests::a_friend_keys_a_pillager_s_and_a_piglin_s_crossbow_like_the_host`: through the trackers' add, look and move events, a friend's pillager and piglin key their crossbows like the host's: plain, pulling at 15 and 20 ticks, loaded with an arrow, and plain again after the shot.
+  - All 1520 `minecraft_terrain` tests pass (3 ignored, as before); `check -p launcher` passes.
+- **Decisions:**
+  - Whole use ticks, as vanilla's `UseDuration`: a crossbow loads in 25 ticks, so each mob kind adds at most 26 pulling keys to the item model cache.
+  - The captain's banner is keyed with its look already; its patterns show from group `banner-items` on.
+  - Vindicators, evokers, skeletons and other mobs go through the same keys (illagers) or keep their plain ids (the others); a skeleton's bow pull belongs to the mob tracks (the brief's decision).
+- **Protocol:** no change.
+- **Owner's test steps** (survival, Normal, by day, flat open ground, the kit below):
+  1. **A pillager loads.** Use a pillager spawn egg about 12 blocks away and stand still with the shield raised. When it loads, the string of its crossbow pulls back in three steps (about a second in all). **Screenshot C3** while it pulls.
+  2. **The arrow.** When loaded, an arrow lies in its crossbow while it aims, for 1 to 2 seconds; after the shot the crossbow is empty again and the next load starts. **Screenshot C4** with the arrow.
+  3. **A left-handed one.** Use more pillager eggs: about one in twenty is left-handed and holds the crossbow in its left hand; its crossbow pulls and shows the arrow the same way.
+  4. **A piglin.** Run `/summon minecraft:piglin ~ ~ ~10 {IsImmuneToZombification:1b,equipment:{mainhand:{id:"minecraft:crossbow",count:1}}}` (if it holds no crossbow, summon another). Without gold armour it attacks: it steps back, its crossbow string pulls back in three steps, and the arrow shows until it shoots. **Screenshot C5.**
+  5. **Friend (two windows, both on this build).** The friend stands next to the host: in the friend's window the pillager's and the piglin's crossbows pull and show the arrow at the same moments. **Screenshot C6**, both windows.
+- **Kit** (4 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:pillager_spawn_egg*16,minecraft:shield,minecraft:iron_sword,minecraft:cooked_beef*16
+```
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components
@@ -733,7 +767,7 @@ Commit: "Track E1 code passes clippy", the one after `70df989a`.
 
 ## Combined kit
 
-One line for a quick look at the whole track in one world (27 backpack slots). Each section above has its full kit. The banner, shield and crossbow entries of E-kit are left out, since nothing draws their patterns or the loaded arrow yet; E-kit's `/give` steps still check them.
+One line for a quick look at the whole track in one world (27 backpack slots). Each section above has its full kit. The banner, shield and crossbow entries of E-kit are left out, since nothing draws their patterns yet and the loaded crossbows are in the E-banners kits; E-kit's `/give` steps still check them.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two"]}],minecraft:firework_rocket[fireworks={flight_duration:3}]*16,minecraft:firework_rocket*16,minecraft:elytra,minecraft:horse_spawn_egg*4,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:strider_spawn_egg*2,minecraft:wheat*64,minecraft:potato*64,minecraft:carrot*64,minecraft:beetroot*64,minecraft:bone*32,minecraft:cod*64,minecraft:golden_carrot*16,minecraft:composter,minecraft:ominous_bottle*2,minecraft:ominous_bottle[ominous_bottle_amplifier=4],minecraft:potion@long_night_vision,minecraft:golden_apple*8,minecraft:milk_bucket,minecraft:saddle,minecraft:saddle,minecraft:hay_block*16,minecraft:leather_horse_armor@red,minecraft:leather_chestplate@red

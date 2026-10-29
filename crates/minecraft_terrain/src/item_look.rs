@@ -1,4 +1,5 @@
 use glam::Mat4;
+use minecraftoss_player::inventory::ItemStack;
 use serde_json::Value;
 
 use crate::pack::ResourceId;
@@ -165,6 +166,14 @@ pub fn keyed(base: &str, look: &ItemLook) -> String {
     format!("{base}{}", look.suffix())
 }
 
+pub fn held_key(stack: &ItemStack, use_ticks: Option<i32>) -> String {
+    let use_ticks = use_ticks.and_then(|ticks| u32::try_from(ticks).ok());
+    keyed(
+        &stack.id,
+        &ItemLook::of(stack.components.as_ref(), use_ticks),
+    )
+}
+
 pub fn split(key: &str) -> (&str, &str) {
     key.find(KEY_MARK).map_or((key, ""), |at| key.split_at(at))
 }
@@ -193,7 +202,6 @@ fn layer(layer: &Value) -> Option<(String, &'static str)> {
 mod tests {
     use super::*;
     use crate::{dials, item_tint};
-    use minecraftoss_player::inventory::ItemStack;
     use serde_json::json;
 
     fn stack(id: &str, components: Value) -> ItemStack {
