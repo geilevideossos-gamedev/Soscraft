@@ -42,7 +42,7 @@ A boss is a mob of the level he stands in, like the wither. The host's level thr
 
 ### 2.2 MW2 guns
 - **Bullets.** MW2's trace finds his box (`EntityView::boxes`, the same boxes aim assist reads) and sends a mob shot with the shooter's id. MW2's own hit-location multiplier applies first, so a hit on the top of the box is a headshot.
-- **His resistances.** The shot reaches him by a typed route (`Bullet` or `Blast`) instead of the generic mob attack, so his own resistance and stance rules apply (section 7).
+- **His resistances.** The shot reaches him by a typed route (`Bullet` or `Blast`, through `ServerHandle::elden_hurt` beside the dragon's `end_hit`) instead of the generic mob attack, so his own resistance and stance rules apply (section 7).
 - **One box.** The proof of concept gives him one box of 1.4 x 3.0 blocks. Several boxes on his bones (head, body, weapon) come with real hurtbox data later.
 - **The MW2 knife** does not hurt any Minecraft mob today: its trace only reaches blocks and players (`crates/sim/src/combat.rs`). So it does not hurt him either. Making the knife hit mobs is its own later change (section 17).
 - **Killstreaks** hit him as blasts.

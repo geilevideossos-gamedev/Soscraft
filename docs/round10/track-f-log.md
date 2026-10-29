@@ -28,9 +28,15 @@ Group er-fight (commits 20 and 21), 9 stacks:
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```
 
+Group er-guns (commit 22), 12 stacks:
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:frag_grenade*8,iw4l:barrett,iw4l:sniper_rounds*64,iw4l:rpg,iw4l:rocket*16,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
 ## Protocol
 
-Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own. Commit 21 tells a friend "GREAT ENEMY FELLED" as an existing `ToClient::Chat` system line with the overlay flag and plays the chime as an existing `ToClient::Sound`, so it adds nothing to the wire either.
+Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own. Commit 21 tells a friend "GREAT ENEMY FELLED" as an existing `ToClient::Chat` system line with the overlay flag and plays the chime as an existing `ToClient::Sound`, so it adds nothing to the wire either. Commit 22's `Command::EldenHurt` is a command to the host's own level thread, not a network message: friends' shots already reach the host as MW2 events with the friend's id.
 
 ## Vendored files
 
@@ -742,4 +748,53 @@ After 55daa528.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cooked_beef*32
+```
+
+## Group er-guns
+
+Brief F5, commit F5.1, with design doc sections 2.2 and 7.1. It starts on 1103ebd2 (group er-fight).
+
+### 22. MW2 guns and explosives hurt Margit through his own resistances
+
+After 1103ebd2.
+
+- **Changed (vendored entities crate, `elden_bosses.rs`):** `EntityWorld::elden_hurt(id, source, player)`: an `elden_boss::Source` straight into his `take` (commit 9: his resistances and stance, no hurt cooldown for anything but `Environment`, the red flash, his hurt voice at most every 10 ticks, and the fighters kept on a killing hit). A hit he takes from a player then gets the same blame and credit as D0's arms give a player's hit: `hurt_by` names the player, and `credit` with `minecraft:player` remembers the hit for the kill (`killed_by_player`, so his experience drops). `PLAYER` is that attacker name.
+- **Changed (`minecraft_terrain`, `server.rs`):** `Command::EldenHurt { id, source, player }` beside `Command::EndHit`, sent by `ServerHandle::elden_hurt` beside `ServerHandle::end_hit` and run beside it in the command loop by `ServerSim::elden_hurt`, which applies the hit and then drops the remains of a death (`drop_death_loot`, as `mob_blast` does), so his gold and orbs fall at once.
+- **Changed (`minecraft_survival`):**
+  - `Cargo.toml`: `elden_boss = { path = "../elden_boss" }`. `Cargo.lock` gained the edge from one `check` without `--locked`.
+  - `entities.rs`: `elden_boss_of(key)` beside `end_target_of`: a hit key whose byte is the Elden Ring bosses' family key (96, `elden_bosses::KEY`, D0's allocation in `docs/round10/mobs.md`) names a boss. In `Entities::shoot` such a key goes to `elden_hurt` with `Source::Bullet { mw2 }` and the shooter's id, and in `Entities::blast` with `Source::Blast { mw2 }` and the blast's player, in both cases right after the dragon's `end_hit` arm and instead of `mob_action` and `mob_blast`. `mw2` is the raw MW2 damage `sim::combat` sends, already scaled by distance and hit location (a head hit is x1.4), before any mob scale: his own `Bullet` (x0.2 x0.5, stance /60) and `Blast` (x0.8 x0.25, stance /15) rules apply instead of the generic melee hit at x0.2 and level blast at x0.8.
+- **Already there (D0's registry):** his hit key encodes and decodes through D0's generic arm (`MobHit::Family(96, id)`), and his 1.4 x 3.0 box reaches MW2 through `EntityView::boxes`, which `shot_boxes` hands to MW2's trace and aim assist (`sim::voxel::set_mob_boxes`). A friend's boxes come from the friend's mirrored copy with the host's ids, and friends' shots reach the host's `shoot` and `blast` with the friend's id (`render_anim` `minecraft_world.rs` and `minecraft_levels.rs`), so threat, the kill and the reward go to the friend with nothing new.
+- **Outside the registry:** `entities.rs` `shoot` and `blast` (survival) are not in D0's never-edit list (that names `encode`, `decode`, the key constants, `resting_monsters` and `mob_hit`, none of which changed); the brief (F5) names these two sites. Each gained one arm beside the dragon's, and the new `elden_boss_of` asks `decode` rather than a key constant of its own.
+- **Design doc kept in step:** 2.2 names the route (`ServerHandle::elden_hurt` beside the dragon's `end_hit`). No number changed.
+- **Tests:**
+  - Entities, `world::families::bosses::elden_bosses::tests`:
+    - `a_kneeling_margit_takes_half_again_from_bullets` (two fighters, 1280 health: 160 bullets of 30 points take 480 health and his 80 stance, he kneels, and the next bullet takes 4.5 and no stance; a bullet is never a critical)
+    - `a_friends_bullet_credits_the_friend` (player 1 stands nearer and is his target; player 2's bullets, one every 10 ticks, turn him on player 2 after his move; `hurt_by` and the core's blame name player 2; player 2's killing bullet is a player's kill with two fighters' 150 experience, and both fighters are felled)
+  - Survival, `entities::tests`:
+    - `a_margit_hit_key_encodes_and_decodes` (byte 96 round-trips and names a boss; a wither, a silverfish and the free byte 97 do not; no End, fireball, bullet or frame key)
+    - `an_m4_bullet_on_margit_takes_3_health_and_half_a_stance_point` (through `Entities::shoot` with 30 from the friend: 797 health, 79.5 stance, hurt by the friend; the host stands 41 blocks from his anchor, so he is no fighter and Margit keeps 800)
+    - `a_frag_on_margit_takes_30` (through `Entities::blast` with 150 by the host: 770 health, 70 stance, hurt by the host)
+    - `a_friends_killing_bullet_gives_the_friend_margits_reward` (a Margit summoned at 2 health at the same spot walks up to the friend and dies to one bullet from the friend: the friend gets "GREAT ENEMY FELLED" on the action bar and all 100 points of his orbs; the host, no fighter, gets neither)
+  - Survival, `entity_view::tests::margits_gun_box_is_1_4_by_3` (one shot box with his family key, 1.4 wide and 3 tall from his feet, the same box MW2's trace and aim assist read).
+- **Runs:** `test -p minecraftoss-entities --locked --lib`: 508 passed. `test -p minecraft_terrain --locked --lib`: 1577 passed and 3 ignored. `test -p minecraft_survival --locked`: 808 passed, `vanilla_world` 1 passed; its 7 Margit tests passed three runs in a row. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. `elden_bosses.rs` passes `rustfmt --check --edition 2021` with empty output on its content with LF line ends, and no added line holds a comment. `elden_boss` is not touched.
+- **Decisions:**
+  - **The brief's `Hurt::Bullet` is `Source::Bullet`:** group er-rules named the enum of hit kinds `Source`, and `elden_boss::Hurt` is a source with the player and the tick. The command carries the source and the player; the tick is his own (`tick_of`), which only the level knows.
+  - **No player attack sound for a bullet on Margit.** `mob_action` played the sword's swoosh (`entity.player.attack.strong`) at the shooter for every bullet on a mob; a bullet is not a swing, and the dragon's `end_hit` plays none either. His hurt voice and the red flash stay.
+  - **Blasts neither push nor slow him:** `mob_blast` pushed by the impact and gave a stun's slowness, but nothing moves him but his own legs (commit 8) and no effect lasts on him (commit 8), so `elden_hurt` takes neither. A stun or flash with no damage takes nothing and is refused like any 0 hit.
+  - **A blast with no player** (`by_player` is `None`) still hurts him as a `Blast` with no credit, like a level explosion by nobody.
+  - **A player's MW2 hit is credited as direct** (`credit(.., true)`), as `mob_action` and `player_blast` credited it before.
+  - **The survival tests' spot:** he is summoned on the corner of the friend's stone platform, 41 blocks from the host, so only the friend is a fighter at the wake. For the kill he first walks up to the friend: orbs dropped on the corner rolled off the platform (a first run got 80 of the 100 points).
+- **Closes from release 3's known limits:** "MW2 bullets and blasts count as melee hits and level blasts until group er-guns. So a bullet breaks his stance at 1.5 times, and a close shot from the front at a kneeling Margit is a critical."
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. The class's M4A1 (or the kit's) with Red Dot Sight. His boss bar comes with group er-bar-friend, so these steps count hits. Name each screenshot by its label, `f5-22-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~10 {Health:20f}`: he rises. From where you stand, about 10 blocks, shoot his chest with single M4A1 shots and count the hit markers: he dies on the 7th body hit (each takes 3 of his 20 health; release 3 took 4). Each hit shows the hit marker and his red flash, his deep hurt voice comes at most every half second, and you no longer hear a sword swoosh with each hit. **Screenshot f5-22-1** as he sinks into the golden mist.
+  2. The same with head shots (the top of his hood): 5 hits.
+  3. `/summon iw4l:margit ~ ~ ~10 {Health:20f}` and the Barrett: two or three body hits kill him.
+  4. `/summon iw4l:margit ~ ~ ~10 {Health:40f}`: cook a frag so it bursts right at his feet. He lives (it takes about 30; release 3 took about 60). A few M4A1 body hits finish him.
+  5. `/summon iw4l:margit ~ ~ ~10`: hold the trigger on his body from about 10 blocks, reloading quickly, and eat a golden apple when you need one. After about 135 body hits (half his health) he raises his left hand and the golden hammer forms. Keep shooting: after about 160 hits in all (five or six magazines) he drops to one knee in sparks with the stunned sound. If you stop shooting for 6 seconds his stance refills, and the count for the kneel starts again. **Screenshot f5-22-2** as he kneels.
+  6. While he kneels, walk up and shoot him from the front at close range: no critical sound, and he stays down for the full 4 seconds (a bullet is never a critical; release 3 made it one).
+  7. `/summon iw4l:margit ~ ~ ~10 {Health:40f}` and fire an RPG rocket at his feet: it takes at least as much as the frag, and he dies by the second rocket at the latest.
+  8. Optional, two windows (`scripts\mp-local.ps1`, with `/op Friend`): the host stands more than 40 blocks away. The friend runs `/summon iw4l:margit ~ ~ ~10 {Health:20f}` and kills him with 7 M4A1 body hits: only the friend sees "GREAT ENEMY FELLED" and hears the fanfare, and the friend picks up the 100 points of orbs. **Screenshot f5-22-3**, the friend's window.
+
+```
+IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:frag_grenade*8,iw4l:barrett,iw4l:sniper_rounds*64,iw4l:rpg,iw4l:rocket*16,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```

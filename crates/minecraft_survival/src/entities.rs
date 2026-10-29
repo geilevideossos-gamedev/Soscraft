@@ -1483,6 +1483,10 @@ impl Entities {
             self.server.end_hit(target, EndDamage::attack(damage * HEALTH_SCALE, player).from_position(DVec3::from_array(from)));
             return;
         }
+        if let Some(id) = elden_boss_of(key) {
+            self.server.elden_hurt(id, elden_boss::Source::Bullet { mw2: damage }, Some(player));
+            return;
+        }
         if let Some(id) = shulker_bullet_of(key) {
             self.server.hurt_shulker_bullet(id);
             return;
@@ -1520,6 +1524,10 @@ impl Entities {
         }
         if let Some(target) = end_target_of(key) {
             self.server.end_hit(target, EndDamage::explosion(damage * BLAST_HEALTH_SCALE, by_player));
+            return;
+        }
+        if let Some(id) = elden_boss_of(key) {
+            self.server.elden_hurt(id, elden_boss::Source::Blast { mw2: damage }, by_player);
             return;
         }
         if let Some(id) = shulker_bullet_of(key) {
@@ -2206,6 +2214,13 @@ fn end_target_of(key: u64) -> Option<EndTarget> {
     })
 }
 
+fn elden_boss_of(key: u64) -> Option<u64> {
+    match decode(key)? {
+        MobHit::Family(minecraftoss_entities::world::families::bosses::elden_bosses::KEY, id) => Some(id),
+        _ => None,
+    }
+}
+
 fn crystal_of(key: u64) -> Option<u64> {
     (key >> 56 == CRYSTAL_KEY >> 56).then_some(key & ((1 << 56) - 1))
 }
@@ -2601,6 +2616,18 @@ mod tests {
         let key = encode(MobHit::Wither(93));
         assert_eq!(key >> 56, 35);
         assert_eq!(decode(key), Some(MobHit::Wither(93)));
+    }
+
+    #[test]
+    fn a_margit_hit_key_encodes_and_decodes() {
+        let key = encode(MobHit::Family(96, 93));
+        assert_eq!(key >> 56, 96);
+        assert_eq!(decode(key), Some(MobHit::Family(96, 93)));
+        assert_eq!(elden_boss_of(key), Some(93));
+        assert_eq!((crystal_of(key), fireball_of(key), shulker_bullet_of(key), frame_of(key), end_target_of(key)), (None, None, None, None, None));
+        assert_eq!(elden_boss_of(encode(MobHit::Wither(93))), None);
+        assert_eq!(elden_boss_of(encode(MobHit::Family(36, 93))), None, "a silverfish");
+        assert_eq!(elden_boss_of((97 << 56) | 93), None, "a free byte of the bosses group");
     }
 
     #[test]
@@ -3311,6 +3338,105 @@ mod tests {
         assert!((1..=3).contains(&friend_experience), "a cow leaves 1 to 3 points: {friend_experience}");
         assert_eq!(host_experience, 0, "the host stood far away");
         assert!(!entities.boxes().iter().any(|(key, _)| *key == cow), "the cow died");
+    }
+
+    const MARGIT_FEET: [f64; 3] = [16.5, 201.0, 16.5];
+
+    fn margit_by_the_friend(nbt: &str) -> Option<(Entities, Inventory, Inventory, u64)> {
+        let mut entities = friend_world()?;
+        entities.spawn_mobs = false;
+        let players = [(HOST, minecraft_net::PlayerUuid("00000000-0000-0000-0000-000000000001".to_owned())), (FRIEND, minecraft_net::PlayerUuid("00000000-0000-0000-0000-000000000005".to_owned()))];
+        entities.set_players(&players);
+        let (mut host, mut friend) = (Inventory::default(), Inventory::default());
+        let tag = minecraftoss_core::snbt::parse_compound(nbt).expect("the tag");
+        entities.summon(minecraft_commands::PlayerId(0), "iw4l:margit".to_owned(), MARGIT_FEET, Some(tag));
+        let started = std::time::Instant::now();
+        loop {
+            assert!(started.elapsed().as_secs() < 300, "Margit never woke");
+            tick_both(&mut entities, &mut host, &mut friend);
+            let key = entities.boxes().into_iter().map(|(key, _)| key).find(|&key| elden_boss_of(key).is_some());
+            if let Some(key) = key.filter(|_| entities.view.world.elden_bosses()[0].state.brain.awake()) {
+                return Some((entities, host, friend, key));
+            }
+        }
+    }
+
+    fn hurt_margit(entities: &mut Entities, host: &mut Inventory, friend: &mut Inventory) -> elden_boss::Brain {
+        let started = std::time::Instant::now();
+        loop {
+            assert!(started.elapsed().as_secs() < 300, "Margit was never hurt");
+            tick_both(entities, host, friend);
+            let brain = &entities.view.world.elden_bosses()[0].state.brain;
+            if brain.health() < brain.max_health() {
+                return brain.clone();
+            }
+        }
+    }
+
+    #[test]
+    fn an_m4_bullet_on_margit_takes_3_health_and_half_a_stance_point() {
+        let Some((mut entities, mut host, mut friend, key)) = margit_by_the_friend("{}") else {
+            return;
+        };
+        assert_eq!(entities.view.world.elden_bosses()[0].state.brain.max_health(), 800.0, "the host stood more than 40 blocks away at the wake");
+        entities.shoot(FRIEND, key, 30.0, FRIEND_FEET, 0.0, false);
+        let brain = hurt_margit(&mut entities, &mut host, &mut friend);
+        assert_eq!((brain.health(), brain.stance()), (797.0, 79.5), "a bullet, not a melee hit at the mob scale");
+        assert_eq!(brain.hurt_by(), &[FRIEND], "the friend's bullet is the friend's");
+    }
+
+    #[test]
+    fn a_frag_on_margit_takes_30() {
+        let Some((mut entities, mut host, mut friend, key)) = margit_by_the_friend("{}") else {
+            return;
+        };
+        entities.blast(key, 150.0, MARGIT_FEET, 2.0, Some(HOST), 0, false);
+        let brain = hurt_margit(&mut entities, &mut host, &mut friend);
+        assert_eq!((brain.health(), brain.stance()), (770.0, 70.0), "a blast, not a level explosion");
+        assert_eq!(brain.hurt_by(), &[HOST]);
+    }
+
+    #[test]
+    fn a_friends_killing_bullet_gives_the_friend_margits_reward() {
+        let Some((mut entities, mut host, mut friend, key)) = margit_by_the_friend("{Health:2.0f}") else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        loop {
+            assert!(started.elapsed().as_secs() < 300, "Margit never came to the friend");
+            let feet = entities.view.world.elden_bosses()[0].core.body.position;
+            if feet.y >= FRIEND_FEET[1] && (feet.x - FRIEND_FEET[0]).hypot(feet.z - FRIEND_FEET[2]) < 3.5 {
+                break;
+            }
+            tick_both(&mut entities, &mut host, &mut friend);
+        }
+        let _ = entities.take_player_outputs(FRIEND);
+        entities.shoot(FRIEND, key, 30.0, FRIEND_FEET, 0.0, false);
+        let (mut host_experience, mut friend_experience) = (0, 0);
+        let (mut host_told, mut friend_told) = (Vec::new(), Vec::new());
+        let mut after = 0;
+        while after < 20 {
+            assert!(started.elapsed().as_secs() < 300, "the friend never got Margit's experience: {friend_experience}");
+            tick_both(&mut entities, &mut host, &mut friend);
+            host_experience += entities.take_experience(HOST);
+            friend_experience += entities.take_experience(FRIEND);
+            host_told.extend(entities.take_player_outputs(HOST).told);
+            friend_told.extend(entities.take_player_outputs(FRIEND).told);
+            if friend_experience >= 100 && entities.view.world.elden_bosses().is_empty() {
+                after += 1;
+            }
+        }
+        assert_eq!((friend_experience, host_experience), (100, 0), "a player's kill with one fighter");
+        let felled = |told: &[minecraft_commands::Clientbound]| -> Vec<String> {
+            told.iter()
+                .filter_map(|line| match line {
+                    minecraft_commands::Clientbound::System { text, overlay: true } => Some(text.resolve(&|_| None).text),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(felled(&friend_told), ["GREAT ENEMY FELLED"]);
+        assert!(felled(&host_told).is_empty(), "the host never fought him");
     }
 
     #[test]

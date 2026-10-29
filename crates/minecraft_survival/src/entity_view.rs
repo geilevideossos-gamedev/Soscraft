@@ -1545,6 +1545,19 @@ mod tests {
     }
 
     #[test]
+    fn margits_gun_box_is_1_4_by_3() {
+        let mut view = EntityView::new(3);
+        let margit = view.world.spawn_family_kind("iw4l:margit", DVec3::new(0.5, 64.0, 0.5)).unwrap();
+        let boxes = view.shot_boxes(None);
+        assert_eq!(boxes.len(), 1);
+        let (key, bounds) = boxes[0];
+        assert_eq!(decode(key), Some(MobHit::Family(96, margit)));
+        let expected = [-0.2, 64.0, -0.2, 1.2, 67.0, 1.2];
+        assert!(bounds.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6), "{bounds:?}");
+        assert_eq!(view.boxes(), boxes, "MW2's trace and aim assist read the same box");
+    }
+
+    #[test]
     fn a_glowing_registered_mob_is_outlined() {
         use minecraftoss_entities::effects::{EffectInstance, MobEffect};
         let mut view = EntityView::new(5);

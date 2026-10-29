@@ -22,6 +22,7 @@ pub const LOOK_TURN: f32 = 30.0;
 pub const LOOK_PITCH: f32 = 40.0;
 pub const HURT_VOICE_GAP: i32 = 10;
 pub const FALL: &str = "minecraft:fall";
+pub const PLAYER: &str = "minecraft:player";
 pub const STACK: u32 = 64;
 
 const UNSEEN: DVec3 = DVec3::splat(f64::INFINITY);
@@ -414,6 +415,21 @@ impl EntityWorld {
         self.family_mob_mut::<EldenBoss>(id)
     }
 
+    pub fn elden_hurt(
+        &mut self,
+        id: u64,
+        source: Source,
+        player: Option<u64>,
+    ) -> Option<DamageResult> {
+        let mob = self.elden_boss_mut(id)?;
+        let result = take(mob, source, player);
+        if let (true, Some(player)) = (result.applied, player) {
+            mob.core.hurt_by = Some((Target::Player(player), mob.core.tick_count));
+            self.credit(id, result, PLAYER, true);
+        }
+        Some(result)
+    }
+
     pub fn take_elden_felled(&mut self) -> Vec<(&'static BossDef, u64)> {
         let store = <EldenBoss as Registered>::store_mut(self);
         let mut felled = Vec::new();
@@ -774,6 +790,89 @@ mod tests {
             sounds.contains(&"entity.player.attack.crit".to_owned()),
             "{sounds:?}"
         );
+    }
+
+    fn idle(world: &mut EntityWorld, id: u64, players: &[PlayerCandidate]) {
+        for _ in 0..600 {
+            world.tick_with_players(&mut Field, players);
+            if margit(world, id).state.brain.state() == State::Idle {
+                return;
+            }
+        }
+        panic!("he never stands idle between moves");
+    }
+
+    #[test]
+    fn a_kneeling_margit_takes_half_again_from_bullets() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let front = DVec3::new(0.5, 64.0, 3.0);
+        let players = [
+            player_at(1, front),
+            player_at(2, DVec3::new(6.5, 64.0, 0.5)),
+        ];
+        idle(&mut world, id, &players);
+        assert_eq!(health(&world, id), 1280.0, "two fighters at the wake");
+        let bullet = Source::Bullet { mw2: 30.0 };
+        for shot in 0..160 {
+            assert_eq!(margit(&world, id).state.brain.state(), State::Idle);
+            let hit = world.elden_hurt(id, bullet, Some(1)).unwrap();
+            assert!(hit.applied && hit.full, "every bullet counts: {shot}");
+        }
+        let brain = &margit(&world, id).state.brain;
+        assert_eq!(brain.state(), State::Kneel, "160 bullets break his stance");
+        assert_eq!((brain.health(), brain.stance()), (800.0, 0.0));
+        let hit = world.elden_hurt(id, bullet, Some(1)).unwrap();
+        assert!(hit.applied && hit.full);
+        let brain = &margit(&world, id).state.brain;
+        assert_eq!(800.0 - brain.health(), 4.5, "3 health and half again");
+        assert_eq!(brain.stance(), 0.0);
+        assert_eq!(brain.clip().criticals, 0, "a bullet is never a critical");
+        assert_eq!(brain.state(), State::Kneel);
+    }
+
+    #[test]
+    fn a_friends_bullet_credits_the_friend() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let players = [
+            player_at(1, DVec3::new(0.5, 64.0, 3.0)),
+            player_at(2, DVec3::new(0.5, 64.0, -12.0)),
+        ];
+        idle(&mut world, id, &players);
+        let brain = &margit(&world, id).state.brain;
+        assert_eq!(brain.target(), Some(1), "the nearer player first");
+        let bullet = Source::Bullet { mw2: 30.0 };
+        let mut turned = false;
+        for tick in 0..400 {
+            if tick % 10 == 0 {
+                assert!(world.elden_hurt(id, bullet, Some(2)).unwrap().applied);
+            }
+            world.tick_with_players(&mut Field, &players);
+            if margit(&world, id).state.brain.target() == Some(2) {
+                turned = true;
+                break;
+            }
+        }
+        assert!(turned, "the friend's threat turns him on the friend");
+        let mob = margit(&world, id);
+        assert_eq!(mob.state.brain.hurt_by(), &[2]);
+        let blamed = mob.core.hurt_by.map(|(target, _)| target);
+        assert_eq!(blamed, Some(Target::Player(2)));
+        let brain = &mut world.elden_boss_mut(id).unwrap().state.brain;
+        brain.set_health(2.0);
+        assert!(world.elden_hurt(id, bullet, Some(2)).unwrap().died);
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        assert!(deaths[0].context.killed_by_player, "the friend's kill");
+        assert_eq!(deaths[0].experience, 150, "two fighters' reward");
+        let mut felled: Vec<u64> = world
+            .take_elden_felled()
+            .into_iter()
+            .map(|(_, player)| player)
+            .collect();
+        felled.sort_unstable();
+        assert_eq!(felled, [1, 2]);
     }
 
     #[test]

@@ -3026,6 +3026,11 @@ impl ServerSim {
         }
     }
 
+    pub fn elden_hurt(&mut self, id: u64, source: elden_boss::Source, player: Option<u64>) {
+        self.mobs.elden_hurt(id, source, player);
+        self.drop_death_loot();
+    }
+
     fn crystal_destroyed(&mut self, destroyed: crate::end_crystal::Destroyed) {
         if destroyed.explodes {
             let blast = Blast { center: destroyed.position.to_array(), power: crate::end_crystal::EXPLOSION_POWER, fire: false };
@@ -3675,6 +3680,7 @@ pub enum Command {
     Reattach { player: u64, root: Box<minecraftoss_core::nbt::Tag> },
     Job(Job),
     EndHit { target: crate::end_crystal::EndTarget, damage: crate::end_crystal::EndDamage },
+    EldenHurt { id: u64, source: elden_boss::Source, player: Option<u64> },
     FrameAction { player: u64, id: u64, action: crate::item_frame::FrameAction },
     ChestOpeners { pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
@@ -4202,6 +4208,10 @@ impl ServerHandle {
         self.send(Command::EndHit { target, damage });
     }
 
+    pub fn elden_hurt(&mut self, id: u64, source: elden_boss::Source, player: Option<u64>) {
+        self.send(Command::EldenHurt { id, source, player });
+    }
+
     pub fn frame_action(&mut self, player: u64, id: u64, action: crate::item_frame::FrameAction) {
         self.send(Command::FrameAction { player, id, action });
     }
@@ -4385,6 +4395,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::GameTime(game_time) => sim.set_game_time(game_time),
                 Command::Job(job) => out.jobs.push(job(&mut sim)),
                 Command::EndHit { target, damage } => sim.end_hit(target, damage),
+                Command::EldenHurt { id, source, player } => sim.elden_hurt(id, source, player),
                 Command::FrameAction { player, id, action } => {
                     let answers = matches!(action, crate::item_frame::FrameAction::Use { held: Some(_), .. });
                     let outcome = sim.frame_action(id, action);

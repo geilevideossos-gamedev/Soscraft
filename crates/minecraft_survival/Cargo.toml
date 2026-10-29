@@ -10,6 +10,7 @@ diag.workspace = true
 minecraft_commands.workspace = true
 minecraft_net.workspace = true
 playerstate_iw4.workspace = true
+elden_boss = { path = "../elden_boss" }
 minecraft_terrain = { path = "../minecraft_terrain" }
 minecraftoss-core = { path = "../../third_party/minecraftoss/core" }
 minecraftoss-entities = { path = "../../third_party/minecraftoss/entities" }
