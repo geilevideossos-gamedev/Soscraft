@@ -47,7 +47,7 @@ fn a_registered_mob_is_tracked_textured_and_shadowed_through_its_family() {
     );
     world.family_core_mut(mite).unwrap().1.baby = true;
     assert_eq!(
-        textures(),
+        textures()[..2],
         [
             "minecraft:entity/silverfish/silverfish",
             "minecraft:entity/endermite/endermite"

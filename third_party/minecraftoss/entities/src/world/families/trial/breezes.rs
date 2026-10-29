@@ -48,6 +48,69 @@ pub struct Breeze {
     pub last_hurt: Option<(i32, Option<Target>)>,
     pub shots: Vec<Shot>,
     pub discard_friction: bool,
+    pub animations: Animations,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Animations {
+    pub pose: Pose,
+    pub idle: Option<i32>,
+    pub shoot: Option<i32>,
+    pub slide: Option<i32>,
+    pub slide_back: Option<i32>,
+    pub inhale: Option<i32>,
+    pub long_jump: Option<i32>,
+}
+
+impl Animations {
+    pub fn tick(&mut self, pose: Pose, tick_count: i32) {
+        if pose != self.pose {
+            let changed = tick_count - 1;
+            self.shoot = None;
+            self.idle = None;
+            self.inhale = None;
+            self.long_jump = None;
+            match pose {
+                Pose::Shooting => self.shoot = Some(changed),
+                Pose::Inhaling => self.inhale = Some(changed),
+                Pose::Sliding => {
+                    self.slide.get_or_insert(changed);
+                }
+                Pose::Standing | Pose::LongJumping => {}
+            }
+            self.pose = pose;
+        }
+        if pose == Pose::LongJumping {
+            self.long_jump.get_or_insert(tick_count);
+        }
+        self.idle.get_or_insert(tick_count);
+        if pose != Pose::Sliding && self.slide.is_some() {
+            self.slide_back = Some(tick_count);
+            self.slide = None;
+        }
+    }
+
+    pub fn starts(&self) -> [Option<i32>; 6] {
+        [
+            self.idle,
+            self.shoot,
+            self.slide,
+            self.slide_back,
+            self.inhale,
+            self.long_jump,
+        ]
+    }
+
+    pub fn set_starts(&mut self, starts: [Option<i32>; 6]) {
+        [
+            self.idle,
+            self.shoot,
+            self.slide,
+            self.slide_back,
+            self.inhale,
+            self.long_jump,
+        ] = starts;
+    }
 }
 
 pub fn walk_profile() -> WalkProfile {
@@ -327,6 +390,8 @@ impl Family for Breeze {
         };
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
             idle_voices(&mut mob.core);
+            let pose = mob.state.brain.pose;
+            mob.state.animations.tick(pose, mob.core.tick_count);
         }
         if base.alive && !base.no_ai {
             step(world, id, level, players, base.game_time);
@@ -838,5 +903,85 @@ mod tests {
         );
         let turned = &world.arrows.iter().find(|e| e.id == arrow).unwrap().arrow;
         assert!(turned.velocity.z < 0.0);
+    }
+
+    #[test]
+    fn the_animations_follow_the_pose_like_vanillas_client() {
+        let mut animations = Animations::default();
+        animations.tick(Pose::Standing, 1);
+        animations.tick(Pose::Standing, 2);
+        assert_eq!(animations.starts(), [Some(1), None, None, None, None, None]);
+        animations.tick(Pose::Sliding, 10);
+        assert_eq!(
+            animations.starts(),
+            [Some(10), None, Some(9), None, None, None]
+        );
+        animations.tick(Pose::Standing, 30);
+        assert_eq!(
+            animations.starts(),
+            [Some(30), None, None, Some(30), None, None]
+        );
+        animations.tick(Pose::Shooting, 40);
+        assert_eq!(
+            animations.starts(),
+            [Some(40), Some(39), None, Some(30), None, None]
+        );
+        animations.tick(Pose::Inhaling, 60);
+        assert_eq!(
+            animations.starts(),
+            [Some(60), None, None, Some(30), Some(59), None]
+        );
+        animations.tick(Pose::LongJumping, 70);
+        animations.tick(Pose::LongJumping, 71);
+        assert_eq!(
+            animations.starts(),
+            [Some(70), None, None, Some(30), None, Some(70)]
+        );
+        animations.tick(Pose::Standing, 90);
+        assert_eq!(
+            animations.starts(),
+            [Some(90), None, None, Some(30), None, None]
+        );
+        assert_eq!(animations.pose, Pose::Standing);
+        let mut copy = Animations::default();
+        copy.set_starts(animations.starts());
+        assert_eq!(copy.starts(), animations.starts());
+    }
+
+    #[test]
+    fn a_breeze_animates_each_pose_a_tick_after_it_takes_it() {
+        let mut world = EntityWorld::default();
+        let mut field = Field::default();
+        let id = breeze_at(&mut world, 0.5, 0.5);
+        let players = [player_at(1, at(0.5, 10.5), true)];
+        let (mut poses, mut seen) = (vec![Pose::Standing], Vec::new());
+        for _ in 0..400 {
+            world.tick_with_players(&mut field, &players);
+            take_shots(&mut world);
+            let mob = breeze(&world, id);
+            let (now, animations) = (mob.core.tick_count, mob.state.animations);
+            let shown = poses[poses.len() - 1];
+            assert_eq!(animations.pose, shown);
+            if poses.len() >= 2 && poses[poses.len() - 2] != shown {
+                let started = match shown {
+                    Pose::Shooting => animations.shoot,
+                    Pose::Inhaling => animations.inhale,
+                    Pose::Sliding => animations.slide,
+                    Pose::LongJumping => animations.long_jump.map(|start| start - 1),
+                    Pose::Standing => Some(now - 1),
+                };
+                assert_eq!((started, animations.idle), (Some(now - 1), Some(now)));
+                if poses[poses.len() - 2] == Pose::Sliding {
+                    assert_eq!((animations.slide, animations.slide_back), (None, Some(now)));
+                }
+                seen.push(shown);
+            }
+            poses.push(mob.state.brain.pose);
+        }
+        assert!(seen.contains(&Pose::Shooting), "{seen:?}");
+        assert!(
+            seen.contains(&Pose::Sliding) || seen.contains(&Pose::LongJumping),
+            "{seen:?}"
+        );
     }
 }

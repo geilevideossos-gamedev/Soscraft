@@ -1,34 +1,120 @@
+use crate::block_particles::BlockDust;
 use crate::client_mobs::ClientMobs;
-use crate::families::{ClientFx, FamilyDraw, TerrainFamily};
+use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
+use glam::DVec3;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::look::BodyRotation;
 use minecraftoss_entities::world::families::FamilyMob;
 pub use minecraftoss_entities::world::families::trial::breezes::Breeze;
-use minecraftoss_entities::world::families::trial::breezes::MAX_HEAD_Y_ROT;
+use minecraftoss_entities::world::families::trial::breezes::{MAX_HEAD_Y_ROT, Pose};
+
+mod render;
 
 pub const WHIRL_SOUND: &str = "minecraft:entity.breeze.whirl";
 pub const WHIRL_MAX_TICKS: u32 = 80;
+pub const GROUND_DUST: u32 = 1;
+pub const SLIDE_DUST: u32 = 20;
+pub const JUMP_TRAIL_DUST: u32 = 3;
+pub const JUMP_TRAIL_TICKS: i32 = 5;
+pub const JUMP_TRAIL_LIFT: f32 = 0.1;
+const POSE: usize = 6;
+const POSES: [Pose; 5] = [
+    Pose::Standing,
+    Pose::Shooting,
+    Pose::Inhaling,
+    Pose::Sliding,
+    Pose::LongJumping,
+];
+
+fn pose_id(pose: Pose) -> i32 {
+    POSES.iter().position(|known| *known == pose).unwrap_or(0) as i32
+}
+
+fn pose_of(id: i32) -> Pose {
+    usize::try_from(id)
+        .ok()
+        .and_then(|id| POSES.get(id))
+        .copied()
+        .unwrap_or_default()
+}
 
 impl TerrainFamily for Breeze {
     const TRACKING_RANGE: i32 = 10;
-    const TEXTURES: &'static [&'static str] = &[];
-    const SHADOW_RADIUS: f32 = 0.5;
+    const TEXTURES: &'static [&'static str] = &render::TEXTURES;
+    const SHADOW_RADIUS: f32 = render::SHADOW_RADIUS;
     const MAX_HEAD_Y_ROT: f32 = MAX_HEAD_Y_ROT;
 
     fn read(mob: &mut FamilyMob<Self>, _tag: &Tag) {
         mob.state.body_rotation = BodyRotation::new(mob.core.yaw);
     }
 
+    fn show(mob: &FamilyMob<Self>) -> FamilyShow {
+        let now = mob.core.tick_count;
+        let mut show = FamilyShow::default();
+        for (index, start) in mob.state.animations.starts().into_iter().enumerate() {
+            if let Some(start) = start {
+                show.flags |= 1 << index;
+                show.values[index] = now - start;
+            }
+        }
+        show.values[POSE] = pose_id(mob.state.animations.pose);
+        show
+    }
+
+    fn show_on(mob: &mut FamilyMob<Self>, show: &FamilyShow) {
+        let now = mob.core.tick_count;
+        let starts = std::array::from_fn(|index| {
+            (show.flags & (1 << index) != 0).then(|| now - show.values[index])
+        });
+        let pose = pose_of(show.values[POSE]);
+        let animations = &mut mob.state.animations;
+        animations.set_starts(starts);
+        animations.pose = pose;
+        mob.state.brain.pose = pose;
+    }
+
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        let shown = mobs.iter().filter(|mob| !mob.core.removed);
+        let clips = render::Clips::shared();
+        render::append_breezes(out, shown, poses, atlas, light, partial, &clips);
+    }
+
+    fn block_dust(mobs: &[FamilyMob<Self>], poses: &ClientMobs, out: &mut Vec<BlockDust>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            let id = mob.core.id;
+            let Some(shown) = poses.get(id) else {
+                continue;
+            };
+            let feet = shown.position;
+            let riding = poses.pose(id, 0.0).is_some_and(|pose| pose.riding);
+            let animations = &mob.state.animations;
+            match animations.pose {
+                Pose::Standing | Pose::Shooting | Pose::Inhaling if !riding => {
+                    out.push(BlockDust::of(feet, feet, GROUND_DUST));
+                }
+                Pose::Sliding if !riding => out.push(BlockDust::of(feet, feet, SLIDE_DUST)),
+                Pose::LongJumping => {
+                    let jumped = animations
+                        .long_jump
+                        .map(|start| mob.core.tick_count - start);
+                    if jumped.is_some_and(|ticks| (0..JUMP_TRAIL_TICKS).contains(&ticks)) {
+                        let motion = shown.position - shown.old_position;
+                        let at = feet + motion + DVec3::Y * f64::from(JUMP_TRAIL_LIFT);
+                        out.push(BlockDust::of(feet, at, JUMP_TRAIL_DUST));
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
@@ -190,5 +276,86 @@ mod tests {
                 .all(|pair| (2..=81).contains(&(pair[1] - pair[0]))),
             "{plays:?}"
         );
+    }
+
+    #[test]
+    fn a_friend_sees_a_breeze_animate_from_the_same_ticks_in_its_pose() {
+        let mut host = EntityWorld::default();
+        let id = host
+            .spawn_family_kind("minecraft:breeze", DVec3::new(0.5, 64.0, 0.5))
+            .unwrap();
+        let mob = host.family_mob_mut::<Breeze>(id).unwrap();
+        mob.core.tick_count = 40;
+        mob.state.animations.tick(Pose::Sliding, 35);
+        mob.state.animations.tick(Pose::Standing, 38);
+        mob.state.animations.tick(Pose::Shooting, 40);
+        mob.state.brain.pose = Pose::Shooting;
+        let sent = <Breeze as TerrainFamily>::show(mob);
+        assert_eq!(sent.flags, 0b1011);
+        assert_eq!(sent.values, [0, 1, 0, 2, 0, 0, 1, 0]);
+        let mut friend = EntityWorld::default();
+        let mirror = friend
+            .spawn_family_kind("minecraft:breeze", DVec3::new(0.5, 64.0, 0.5))
+            .unwrap();
+        let shown = friend.family_mob_mut::<Breeze>(mirror).unwrap();
+        shown.core.tick_count = 7;
+        <Breeze as TerrainFamily>::show_on(shown, &sent);
+        let host_mob = &host.family::<Breeze>()[0];
+        let elapsed = |mob: &FamilyMob<Breeze>| {
+            let now = mob.core.tick_count;
+            mob.state
+                .animations
+                .starts()
+                .map(|start| start.map(|start| now - start))
+        };
+        assert_eq!(elapsed(shown), elapsed(host_mob));
+        assert_eq!(
+            (shown.state.animations.pose, shown.state.brain.pose),
+            (Pose::Shooting, Pose::Shooting)
+        );
+        for (pose, id) in POSES.iter().zip(0..) {
+            assert_eq!((pose_id(*pose), pose_of(id)), (id, *pose));
+        }
+        assert_eq!(pose_of(-1), Pose::Standing);
+        assert_eq!(pose_of(99), Pose::Standing);
+    }
+
+    #[test]
+    fn a_breeze_raises_dust_where_it_stands_slides_and_leaps() {
+        let mut world = EntityWorld::default();
+        let feet = DVec3::new(2.5, 64.0, -1.5);
+        let id = world.spawn_family_kind("minecraft:breeze", feet).unwrap();
+        world.family_core_mut(id).unwrap().1.tick_count = 20;
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&world));
+        let mut dust = |pose: Pose, jumped: Option<i32>| {
+            let mob = world.family_mob_mut::<Breeze>(id).unwrap();
+            mob.state.animations.pose = pose;
+            mob.state.animations.long_jump = jumped.map(|ticks| 20 - ticks);
+            let mut out = Vec::new();
+            crate::families::block_dust(&world, &poses, &mut out);
+            out
+        };
+        let standing = dust(Pose::Standing, None);
+        assert_eq!(standing, [BlockDust::of(feet, feet, GROUND_DUST)]);
+        assert_eq!(
+            (standing[0].inside, standing[0].below),
+            ((2, 64, -2), (2, 63, -2))
+        );
+        assert_eq!(dust(Pose::Shooting, None), standing);
+        assert_eq!(dust(Pose::Inhaling, None), standing);
+        assert_eq!(
+            dust(Pose::Sliding, None),
+            [BlockDust::of(feet, feet, SLIDE_DUST)]
+        );
+        let trail = BlockDust::of(feet, feet + DVec3::Y * f64::from(0.1_f32), JUMP_TRAIL_DUST);
+        for ticks in 0..JUMP_TRAIL_TICKS {
+            assert_eq!(dust(Pose::LongJumping, Some(ticks)), [trail], "{ticks}");
+        }
+        assert!(dust(Pose::LongJumping, Some(JUMP_TRAIL_TICKS)).is_empty());
+        assert!(dust(Pose::LongJumping, None).is_empty());
+        let mut none = Vec::new();
+        crate::families::block_dust(&world, &ClientMobs::default(), &mut none);
+        assert!(none.is_empty(), "a breeze the viewer has not seen");
     }
 }
