@@ -144,7 +144,7 @@ pub fn registries(packs: &minecraft_terrain::pack::PackStack) -> CommandRegistri
     effects.sort();
     CommandRegistries {
         items,
-        entities: minecraft_terrain::server_mobs::SIMULATED_KINDS
+        entities: minecraft_terrain::server_mobs::simulated_kinds()
             .iter()
             .map(|kind| (*kind).to_owned())
             .collect(),
@@ -2156,6 +2156,16 @@ pub(crate) mod tests {
 
     fn iw4l_state(stack: &ItemStack) -> serde_json::Value {
         stack.components.as_ref().unwrap()["minecraft:custom_data"]["iw4l"].clone()
+    }
+
+    #[test]
+    fn summon_knows_the_registered_mobs() {
+        let packs = minecraft_terrain::pack::PackStack::open(Vec::new()).unwrap();
+        let entities = registries(&packs).entities;
+        for kind in ["minecraft:silverfish", "minecraft:endermite", "minecraft:zombie", "minecraft:wither"] {
+            assert!(entities.iter().any(|known| known == kind), "{kind}");
+        }
+        assert!(entities.windows(2).all(|pair| pair[0] < pair[1]), "sorted, each once");
     }
 
     #[test]

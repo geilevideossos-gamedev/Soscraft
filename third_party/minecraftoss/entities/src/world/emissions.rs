@@ -19,22 +19,27 @@ pub(crate) struct MovementSounds {
     /// `AbstractHorse.playStepSound`: its own step (or its wood step on a
     /// wooden block) at the block's step volume and pitch.
     pub horse_step: Option<(&'static str, &'static str)>,
+    pub emits_sounds: bool,
 }
 
 impl MovementSounds {
     /// A `Monster`: the hostile swim and splash.
     pub(crate) const fn monster(step: Option<&'static str>) -> Self {
-        Self { step, step_volume: 0.15, swim: "entity.hostile.swim", splash: "entity.hostile.splash", horse_step: None }
+        Self { step, step_volume: 0.15, swim: "entity.hostile.swim", splash: "entity.hostile.splash", horse_step: None, emits_sounds: true }
     }
 
     /// `Entity`'s generic swim and splash.
     pub(crate) const fn creature(step: Option<&'static str>) -> Self {
-        Self { step, step_volume: 0.15, swim: "entity.generic.swim", splash: "entity.generic.splash", horse_step: None }
+        Self { step, step_volume: 0.15, swim: "entity.generic.swim", splash: "entity.generic.splash", horse_step: None, emits_sounds: true }
     }
 
     /// The own step at another volume.
     pub(crate) const fn with_step_volume(self, volume: f32) -> Self {
         Self { step_volume: volume, ..self }
+    }
+
+    pub(crate) const fn without_sounds(self) -> Self {
+        Self { emits_sounds: false, ..self }
     }
 }
 
@@ -51,7 +56,7 @@ pub(crate) fn base_tick_fluid(body: &mut Body, world: &impl World, first_tick: b
 pub(crate) fn play_movement(body: &mut Body, tick_count: i32, random: &mut LegacyRandom, voices: &mut Vec<(Voice, DVec3)>, sounds: MovementSounds) {
     splash(body, random, voices, sounds);
     let at = body.position;
-    match body.emission.take() {
+    match body.emission.take().filter(|_| sounds.emits_sounds) {
         Some(Emission::Step(block, crystal)) => {
             match (sounds.step, block) {
                 (_, block) if sounds.horse_step.is_some() => {

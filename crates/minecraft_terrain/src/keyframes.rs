@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result, anyhow, bail};
 use glam::Vec3;
@@ -794,6 +794,19 @@ impl AnimationLibrary {
     }
 }
 
+static SHARED: OnceLock<AnimationLibrary> = OnceLock::new();
+static EMPTY: OnceLock<AnimationLibrary> = OnceLock::new();
+
+pub fn install(jar: Option<PathBuf>) -> bool {
+    SHARED.set(AnimationLibrary::new(jar)).is_ok()
+}
+
+pub fn shared() -> &'static AnimationLibrary {
+    SHARED
+        .get()
+        .unwrap_or_else(|| EMPTY.get_or_init(|| AnimationLibrary::new(None)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1243,6 +1256,26 @@ mod tests {
             "net/minecraft/client/animation/definitions/WardenAnimation"
         );
         assert_eq!(class_path("a/B"), "a/B");
+    }
+
+    #[test]
+    fn the_shared_library_reads_after_install_and_says_why_before() {
+        let before = shared().class("WardenAnimation").unwrap_err();
+        assert!(format!("{before}").contains("no client jar"), "{before}");
+        assert!(shared().definition("BatAnimation", "BAT_FLYING").is_none());
+        let jar = jar();
+        assert!(install(jar.clone()), "the first install takes");
+        assert!(!install(None), "the first call wins");
+        let library = shared();
+        assert!(std::ptr::eq(library, shared()));
+        if jar.is_some() {
+            let warden = library.class("WardenAnimation").unwrap();
+            assert!(Arc::ptr_eq(&warden, &shared().class("WardenAnimation").unwrap()));
+            assert!(library.definition("BatAnimation", "BAT_FLYING").is_some());
+        } else {
+            let error = library.class("WardenAnimation").unwrap_err();
+            assert!(format!("{error}").contains("no client jar"), "{error}");
+        }
     }
 
     fn jar() -> Option<PathBuf> {

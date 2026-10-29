@@ -40,6 +40,13 @@ fn walk_target_value(world: &dyn World, profile: &WalkProfile, (x, y, z): BlockP
                 0.0
             }
         }
+        WalkTarget::MonsterOver(blocks) => {
+            if world.block((x, y - 1, z)).is_some_and(|b| blocks.contains(&b.id.as_str())) {
+                10.0
+            } else {
+                f64::from(-world.light_path_cost((x, y, z)))
+            }
+        }
     }
 }
 

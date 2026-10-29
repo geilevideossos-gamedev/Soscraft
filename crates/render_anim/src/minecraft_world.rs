@@ -331,6 +331,7 @@ fn load() -> Result<(Loaded, minecraft_survival::server::Server), String> {
 }
 
 pub(crate) fn load_look(mut packs: PackStack) -> Result<Loaded, String> {
+    minecraft_terrain::keyframes::install(data_jar());
     minecraft_terrain::fork_look::reserve(&mut packs);
     let build = minecraft_terrain::mesh::build(&HandcraftedScene::default(), &packs)
         .map_err(|e| e.to_string())?;

@@ -63,6 +63,7 @@ pub enum MonsterKind {
     Vex,
     Ravager,
     Wither,
+    Registered(&'static str),
 }
 
 impl MonsterKind {
@@ -93,6 +94,7 @@ impl MonsterKind {
             Self::Vex => &crate::vex_ai::GOAL_NAMES,
             Self::Ravager => &crate::ravager_ai::GOAL_NAMES,
             Self::Wither => &crate::wither_ai::GOAL_NAMES,
+            Self::Registered(kind) => crate::world::families::monster_spec(kind).map_or(&[], |spec| spec.goal_names),
         }
     }
 
@@ -122,6 +124,7 @@ impl MonsterKind {
             Self::Vex => &crate::vex_ai::TARGET_NAMES,
             Self::Ravager => &crate::ravager_ai::TARGET_NAMES,
             Self::Wither => &crate::wither_ai::TARGET_NAMES,
+            Self::Registered(kind) => crate::world::families::monster_spec(kind).map_or(&[], |spec| spec.target_names),
         }
     }
 }
@@ -394,7 +397,7 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:vex"
             | "minecraft:ravager"
             | "minecraft:wither"
-    )
+    ) || crate::world::families::enemy(kind)
 }
 
 /// A target as the goals see it.
@@ -433,6 +436,7 @@ pub(crate) enum Prey {
     Monster,
     Living,
     HealableRaider,
+    Kinds(&'static [&'static str]),
 }
 
 /// `MeleeAttackGoal`'s state (and `ZombieAttackGoal`'s raised arms).
@@ -569,6 +573,7 @@ pub struct MonsterGoalContext {
     pub ghast: GhastState,
     pub blaze: BlazeState,
     pub shulker: ShulkerState,
+    pub extra: crate::world::families::GoalExtra,
 }
 
 impl MonsterGoalContext {
@@ -778,7 +783,7 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex | MonsterKind::Ravager | MonsterKind::Wither, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::ZombifiedPiglin | MonsterKind::WitherSkeleton | MonsterKind::Ghast | MonsterKind::Blaze | MonsterKind::Shulker | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::SnowGolem | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex | MonsterKind::Ravager | MonsterKind::Wither | MonsterKind::Registered(_), true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
@@ -845,6 +850,10 @@ impl MonsterAi {
         }
         // `FloatGoal` lets the navigation float.
         walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Cat | MonsterKind::Ocelot | MonsterKind::WanderingTrader | MonsterKind::Pillager | MonsterKind::Vindicator | MonsterKind::Evoker | MonsterKind::Vex | MonsterKind::Ravager);
+        let spec = match kind {
+            MonsterKind::Registered(name) => crate::world::families::monster_spec(name),
+            _ => None,
+        };
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::WitherSkeleton => FOLLOW_RANGE,
             MonsterKind::Zombie | MonsterKind::ZombifiedPiglin => ZOMBIE_FOLLOW_RANGE,
@@ -862,6 +871,7 @@ impl MonsterAi {
             MonsterKind::Vex => crate::vex::FOLLOW_RANGE,
             MonsterKind::Ravager => crate::ravager::FOLLOW_RANGE,
             MonsterKind::Wither => crate::wither::FOLLOW_RANGE,
+            MonsterKind::Registered(_) => spec.map_or(FOLLOW_RANGE, |spec| spec.follow_range),
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
@@ -906,6 +916,10 @@ impl MonsterAi {
             walk.max_up_step = crate::iron_golem::STEP_HEIGHT;
             walk.walk_target = WalkTarget::Zero;
         }
+        if let Some(spec) = spec {
+            walk.can_float = spec.goal_names.contains(&"FloatGoal");
+            (spec.walk)(&mut walk);
+        }
         let (goals, targets, eye_height) = match kind {
             MonsterKind::Creeper => (creeper_goals(), creeper_targets(), body.height * 0.85),
             MonsterKind::Zombie => (zombie_goals(), zombie_targets(), 1.74),
@@ -931,6 +945,10 @@ impl MonsterAi {
             MonsterKind::Witch => (witch_goals(), witch_targets(), crate::witch::EYE_HEIGHT),
             MonsterKind::IronGolem => (crate::golem_ai::golem_goals(), crate::golem_ai::golem_targets(), crate::iron_golem::EYE_HEIGHT),
             MonsterKind::Wolf => (crate::wolf_ai::wolf_goals(), crate::wolf_ai::wolf_targets(), crate::wolf::EYE_HEIGHT),
+            MonsterKind::Registered(_) => match spec {
+                Some(spec) => ((spec.goals)(), (spec.targets)(), spec.eye_height),
+                None => (GoalSelector::default(), GoalSelector::default(), body.height * 0.85),
+            },
         };
         let mut navigation = GroundNavigation::default();
         navigation.wall_climber = kind == MonsterKind::Spider;
@@ -998,6 +1016,7 @@ impl MonsterAi {
                 ghast: GhastState::default(),
                 blaze: BlazeState::default(),
                 shulker: ShulkerState::default(),
+                extra: Default::default(),
             },
             move_control: MoveControl::default(),
             body_rotation: BodyRotation::new(yaw),
@@ -2641,7 +2660,7 @@ pub fn enderman_targets() -> GoalSelector<MonsterGoalContext> {
     let mut selector = GoalSelector::default();
     selector.add(1, LookForPlayerGoal::default());
     selector.add(2, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: false });
-    selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Absent, must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
+    selector.add(3, NearestTargetGoal { interval: 5, prey: Prey::Kinds(&["minecraft:endermite"]), must_see: true, max_dy: None, dark_only: false, candidate: None, unseen_ticks: 0, wild_only: false });
     selector.add(4, NeverGoal { controls: &[] });
     selector
 }
@@ -2971,6 +2990,7 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
                 .chain(ctx.villagers.iter().filter(|v| ctx.mobs.iter().all(|m| m.id != v.id)).map(|v| Target::Villager(v.id)))
                 .chain(ctx.mobs.iter().filter(|m| m.id != ctx.illager.id).map(|m| Target::Mob(m.id)))
                 .collect(),
+            Prey::Kinds(kinds) => ctx.mobs.iter().filter(|m| kinds.contains(&m.kind)).map(|m| Target::Mob(m.id)).collect(),
         };
         let mut best: Option<(f64, Target)> = None;
         for target in candidates {

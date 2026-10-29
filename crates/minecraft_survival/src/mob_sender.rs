@@ -457,6 +457,22 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_mobs_show_crosses_the_state_lane() {
+        use minecraft_terrain::families::FamilyShow;
+        let mut shown = mob(7, 1.5, 0.5);
+        shown.show.family = Some(FamilyShow { flags: 0b101, values: [1, -2, 3, 0, 0, 0, 40, i32::MAX] });
+        shown.show.fire = true;
+        let plain = mob(9, 2.5, 0.5);
+        let bytes = minecraft_net::encode(Lane::State, &vec![shown, plain]).unwrap();
+        let back: Vec<ServerMob> = minecraft_net::decode(Lane::State, &bytes).unwrap();
+        assert_eq!(back.iter().map(|mob| (mob.id, mob.show)).collect::<Vec<_>>(), vec![(7, shown.show), (9, plain.show)]);
+        assert_eq!(back[1].show.family, None, "other mobs carry no family show");
+        let alone = minecraft_net::encode(Lane::State, &vec![plain]).unwrap();
+        let shows = minecraft_net::encode(Lane::State, &vec![shown]).unwrap();
+        assert!(shows.len() > alone.len(), "the family show travels with its mob");
+    }
+
+    #[test]
     fn effect_swirls_go_only_as_far_as_their_body_is_tracked() {
         let swirl = |x: f64, range: i32| minecraft_terrain::spell_particles::SwirlView {
             feet: DVec3::new(x, 64.0, 0.5),

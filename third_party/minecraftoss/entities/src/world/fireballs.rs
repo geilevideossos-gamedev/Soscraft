@@ -370,7 +370,7 @@ impl EntityWorld {
     ) -> Option<DamageResult> {
         let kind = self.entity_type(victim)?;
         let reflected = kind == "minecraft:ghast" && matches!(owner, Some(Shooter::Player(_)));
-        if fire_immune(kind) && !reflected {
+        if (fire_immune(kind) || self.families.traits(victim).is_some_and(|t| t.fire_immune)) && !reflected {
             return None;
         }
         let damage = if reflected {
