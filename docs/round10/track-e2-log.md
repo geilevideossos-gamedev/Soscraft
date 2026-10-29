@@ -363,7 +363,7 @@ After 701ee0df.
   - `Globals.maps` is a `Mutex`, because the host and the friends open chests with a shared `&Globals` (`menus::open_station`, `FriendWorld.globals`). It is only locked on the main thread and for the save snapshot.
   - All map files are read when the world opens, so later groups can draw and tick maps without reading files in a frame. The next id is past the highest map file even when `last_id.dat` says less, so a lost index never overwrites a map. Vanilla trusts the index.
   - The map decorations of a held map (`maps-held`) are not saved, as in vanilla; only banners and frames are, and those stay as they were read.
-- **Test steps:** none in game for this commit alone; the next commit makes the first maps. The check is step 6 of commit 2.
+- **Test steps:** none in game for this commit alone; the next commit makes the first maps. The check is step 4 of commit 2.
 - **Kit:** none.
 
 ### 2. Minecraft shipwreck, ocean ruin and camp chests roll explorer maps
@@ -810,3 +810,19 @@ After c23cef6d.
   - `minecraft_survival/src/entities.rs` tests: the pvp-on rocket test puts its hits in the `Output` initializer (`field_reassign_with_default`).
 - **Tests:** none added (no behaviour change). The final test run is the next entry.
 - **Test steps and kit:** none (no change in game).
+
+### 2. Test run
+
+After b1386b68 (the clippy fix). Log only.
+
+- **Tests:** on the code of `b1386b68`, `test -p <crate> --locked` for every crate the track touched: `minecraftoss-core` 37, `minecraftoss-world` 102, `minecraftoss-player` 199 (with the stand-in scenario files), `minecraftoss-entities` 434, `minecraft_terrain` 1433 with 3 ignored (the known flaky `sections::tests::background_full_update_matches_the_synchronous_one` failed once in the full run while other tracks built and passed when run again), `minecraft_survival` 770 + 1, `render_anim` 212. All passed. `check -p launcher --locked` is clean.
+- **Log fix:** maps-loot commit 1 sent the owner to "step 6 of commit 2" for the map files; that check is step 4.
+- **Owner's test steps:** the steps of each commit above stand, with the combined kit below.
+
+## Combined kit
+
+One kit for the whole track (27 stacks). It needs E1's kit parser for the two starred rockets; without it, use the plain rockets and the `fw-launch` kits after E1 has merged. Anything else a step needs comes from that step's own kit line or `/give`: the other spawn eggs (llama, vindicator, evoker, ravager, hoglin, piglin, ghast, spider, zoglin, snow golem, pig, sheep, iron golem), the copper and iron doors, the ominous bottle, the raid armour, the water breathing and fire resistance potions, the poison and water splashes, the two-star rocket, the elytra, the bow and arrows, the trapped, copper and ender chests, the nether brick fence, stone, a sword, a pickaxe, a shovel, torches, glass, golden apples and food.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:trident+loyalty=3,minecraft:snowball*16,minecraft:egg*16,minecraft:wind_charge*16,minecraft:splash_potion@harming,minecraft:splash_potion@healing,minecraft:blaze_spawn_egg*2,minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:zombie_spawn_egg*16,minecraft:pillager_spawn_egg*4,minecraft:villager_spawn_egg*4,minecraft:oak_door*8,minecraft:oak_planks*64,minecraft:oak_fence*16,minecraft:lead*16,minecraft:cow_spawn_egg*8,minecraft:shears,minecraft:cat_spawn_egg*4,minecraft:cod*64,minecraft:chest*4,minecraft:firework_rocket*64,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*64,minecraft:firework_rocket[fireworks={flight_duration:0,explosions:[{shape:burst,colors:[I;15790320,11743532]},{shape:small_ball,colors:[I;2437522]},{shape:large_ball,colors:[I;14602026]}]}]*64,minecraft:dispenser*4,minecraft:lever*4,minecraft:cobblestone*64
+```
