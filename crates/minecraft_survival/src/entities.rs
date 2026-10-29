@@ -910,6 +910,29 @@ impl Entities {
     }
 
     pub fn mob_distance(&self, player: u64, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
+        let knot = self.knot_on_ray(eye, look, reach).map(|(_, distance)| distance);
+        self.target_distance(player, eye, look, reach).into_iter().chain(knot).min_by(f64::total_cmp)
+    }
+
+    pub fn knot_target(&self, player: u64, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>) -> Option<(i32, i32, i32)> {
+        let (pos, distance) = self.knot_on_ray(eye, look, reach)?;
+        let nearer = |other: Option<f64>| other.is_none_or(|other| distance < other);
+        (nearer(block) && nearer(self.target_distance(player, eye, look, reach))).then_some(pos)
+    }
+
+    pub fn punch_knot(&mut self, player: u64, eye: DVec3, look: DVec3, reach: f64, block: Option<f64>) -> bool {
+        let Some(pos) = self.knot_target(player, eye, look, reach, block) else {
+            return false;
+        };
+        self.server.knot_action(player, pos, minecraft_terrain::leash_render::KnotAction::Punch);
+        true
+    }
+
+    fn knot_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<((i32, i32, i32), f64)> {
+        minecraft_terrain::leash_render::knot_on_ray(&self.view.world.knots(), eye, look, reach)
+    }
+
+    fn target_distance(&self, player: u64, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         let frame = minecraft_terrain::item_frame::on_ray(&self.view.frames, eye, look, reach).map(|(_, distance)| distance);
         let other = crate::pvp::player_on_ray(&self.player_boxes, player, eye, look, reach).map(|(_, distance)| distance);
         self.entity_distance(player, eye, look, reach).into_iter().chain(frame).chain(other).min_by(f64::total_cmp)

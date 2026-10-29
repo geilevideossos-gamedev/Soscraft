@@ -1481,6 +1481,14 @@ impl ServerSim {
         tied
     }
 
+    pub fn knot_action(&mut self, pos: BlockPos, action: crate::leash_render::KnotAction) -> bool {
+        let done = match action {
+            crate::leash_render::KnotAction::Punch => self.mobs.break_knot(pos),
+        };
+        self.drop_leads();
+        done
+    }
+
     fn throw_barters(&mut self) {
         for throw in self.mobs.take_barter_throws() {
             let Some(stacks) = self.entity_loot.as_mut().and_then(|loot| loot.roll_barter()) else { continue };
@@ -3463,6 +3471,7 @@ pub enum Command {
     ChestOpeners { pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
     LeashFence { player: u64, pos: BlockPos, sneaking: bool },
+    Knot { player: u64, pos: BlockPos, action: crate::leash_render::KnotAction },
     ShieldBlock { attacker: u64, player: u64, feet: [f64; 3] },
 }
 
@@ -3986,6 +3995,10 @@ impl ServerHandle {
         self.send(Command::LeashFence { player, pos, sneaking });
     }
 
+    pub fn knot_action(&mut self, player: u64, pos: BlockPos, action: crate::leash_render::KnotAction) {
+        self.send(Command::Knot { player, pos, action });
+    }
+
     pub fn save(&mut self) {
         self.send(Command::Save);
     }
@@ -4158,6 +4171,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::LeashFence { player, pos, sneaking } => {
                     sim.leash_fence(player, pos, sneaking);
+                }
+                Command::Knot { pos, action, .. } => {
+                    sim.knot_action(pos, action);
                 }
                 Command::Save => {
                     sim.ticks_since_save = 0;
@@ -12488,6 +12504,47 @@ mod tests {
         assert_eq!(server.mobs.leash_holder(cow), None, "beyond twelve blocks the lead snaps");
         assert!(item_ids(&server).contains(&"minecraft:lead".to_owned()));
         assert!(server.mobs.take_sounds().iter().any(|s| s.event == "item.lead.break"));
+    }
+
+    #[test]
+    fn punching_a_knot_drops_a_lead_for_each_tied_cow_and_leaves_the_fence() {
+        use crate::leash_render::KnotAction;
+        use minecraftoss_entities::world::LeashHolder;
+        let Some((mut server, _)) = door_world() else { return };
+        for x in 0..=16 {
+            for z in 0..=16 {
+                server.player_edit_block((x, 200, z), Some(&Block::new("minecraft:oak_planks")), PlayerEdit::Place);
+            }
+        }
+        server.player_edit_block((8, 201, 10), Some(&Block::new("minecraft:oak_fence")), PlayerEdit::Place);
+        server.take_changes();
+        server.set_players(&[[8.5, 201.0, 8.5]], 2);
+        server.set_simulation_area((0, 0), 4);
+        let mut cows = Vec::new();
+        for z in [6.5, 7.5] {
+            server.summon("minecraft:cow", [6.5, 201.0, z], None, 0.0).unwrap();
+            cows.push(server.mobs.cows().last().expect("a cow").id);
+        }
+        let me = candidate(0, [8.5, 201.0, 8.5]);
+        server.tick_mobs(&[me], true);
+        for &cow in &cows {
+            server.mobs.set_leash(cow, LeashHolder::Player(0));
+        }
+        assert!(server.leash_fence(0, (8, 201, 10), false));
+        assert_eq!(server.mobs.mobs_leashed_to(LeashHolder::Knot((8, 201, 10))), cows);
+        server.mobs.take_sounds();
+        assert!(server.knot_action((8, 201, 10), KnotAction::Punch));
+        assert_eq!(block_name(&server, (8, 201, 10)), "minecraft:oak_fence", "the fence stays");
+        assert!(server.mobs.knots().is_empty());
+        assert!(cows.iter().all(|&cow| server.mobs.leash_holder(cow).is_none()));
+        assert_eq!(item_ids(&server), ["minecraft:lead", "minecraft:lead"]);
+        let saved = crate::server_mobs::mob_tags_where(&server.mobs, |id, _| cows.contains(&id), &server.mob_tags, false);
+        assert_eq!(saved.len(), 2);
+        assert!(saved.iter().all(|(_, tag)| tag.get("leash").is_none()), "the save has no leash");
+        let sounds = server.mobs.take_sounds();
+        assert_eq!(sounds.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(), ["item.lead.untied"]);
+        assert!(!server.knot_action((8, 201, 10), KnotAction::Punch), "nothing is left to punch");
+        assert_eq!(item_ids(&server).len(), 2);
     }
 
     #[test]

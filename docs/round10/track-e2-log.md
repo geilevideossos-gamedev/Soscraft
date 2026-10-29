@@ -481,3 +481,43 @@ After 94171133. This commit is not in the brief: it is what the knot punch needs
 ```
 IW4L_MINECRAFT_KIT=minecraft:oak_fence*16,minecraft:stone*16,minecraft:iron_pickaxe
 ```
+
+### 2. Minecraft lead knots can be punched off
+
+After 3188f4f8.
+
+- **Vanilla (26.3, checked with javap):**
+  - `LeashFenceKnotEntity` is a `BlockAttachedEntity` with a 0.375 x 0.5 box at (x + 0.5, y + 0.375, z + 0.5), so from (x + 0.3125, y + 0.375, z + 0.3125) to (x + 0.6875, y + 0.875, z + 0.6875). It sticks out 1/16 past each side of the post; from straight above the post's top is met first.
+  - A left click is `Player.attack` → `cannotAttack` → `skipAttackInteraction` → `hurtOrSimulate(playerAttack, 0)`. `BlockAttachedEntity.hurtServer` kills the knot, and `LeashFenceKnotEntity.dropItem` only plays `item.lead.untied` (volume 1, pitch 1). Because `cannotAttack` returns early, the player gets no exhaustion and the weapon no wear; the client still resets the attack strength.
+  - The mobs let go on their next tick (`Leashable.tickLeash` with a holder that can no longer interact): `dropLeash()`, one lead at each mob. Creative players punch knots the same way, and the leads still drop.
+- **Changed:**
+  - Vendored `entities/src/world/leashes.rs`: new `break_knot(pos)`: removes the knot, plays the untied sound at the knot, drops the leash (with a lead) of every mob tied to it and of every mob whose leash is still only saved to it, and returns whether there was anything. `tick_knots` calls it when the fence is gone, as before. Two private helpers, `saved_to_knot` and `drop_saved_leash`.
+  - Vendored `entities/src/world.rs`: `KNOT_HEIGHT` and `KNOT_WIDTH` are re-exported with the other leash names.
+  - `minecraft_terrain/src/leash_render.rs`: `KnotAction { Punch }`, `knot_box(pos)` (the vanilla knot box) and `knot_on_ray(knots, eye, look, reach)`, the nearest knot box on a ray, through `end_crystal::ray_box`.
+  - `minecraft_terrain/src/server.rs`: `Command::Knot { player, pos, action }` next to `LeashFence`, `ServerHandle::knot_action` and `ServerSim::knot_action`, which breaks the knot and spawns the leads (`drop_leads`).
+  - `minecraft_survival/src/entities.rs`: `knot_target` (the nearest knot on the ray when it is nearer than the block outline and than every mob, frame, player, End target, fireball and shulker bullet), `punch_knot`, which sends `KnotAction::Punch` for it, and `mob_distance` now counts knots, so neither creative breaking nor survival digging reaches the fence behind a knot. The old body of `mob_distance` is the private `target_distance`.
+  - `minecraft_survival/src/actions.rs`: the attack press tries `punch_knot` first. A hit resets the attack strength and swings, with no exhaustion and no weapon wear; the player punch and the mob punch are skipped.
+  - Friends' clicks run through the same `act` on the host, and the knot leaves their view with the mobs' `leash` look tag, so the protocol does not change.
+- **Tests:**
+  - Vendored `world::leashes::tests::punching_a_knot_frees_its_mobs_with_a_lead_each_and_the_untied_sound` (two cows on one knot, a third on another: the first knot goes, both its cows are free with a lead each at their feet, one untied sound at (3.5, 64.375, 0.5) in `friendly_volume`, the other knot stays, and a second punch or a punch at a bare fence does nothing) and `a_knot_known_only_from_a_save_can_be_punched_off_too`. `a_knot_lets_its_mobs_go_at_its_check_once_its_fence_is_gone` passes unchanged after the refactor.
+  - `leash_render::tests::a_knot_is_hit_from_the_side_before_its_fence_post_but_not_from_above`: the knot box, a side ray meeting the knot at 2.3125 before the post (from the player crate's fence outline), a ray from above meeting the post's top first, a ray below the knot missing it, and a knot out of reach.
+  - `server::tests::punching_a_knot_drops_a_lead_for_each_tied_cow_and_leaves_the_fence`: two cows tied to an oak fence; the punch leaves the fence, frees both cows, spawns two leads, saves no `leash` tag and plays only the untied sound; a second punch does nothing.
+  - `actions::tests::a_left_click_at_a_knot_breaks_the_knot_and_not_the_fence` (gated on game data: swing, attack strength reset, no digging, no dig effect, no exhaustion) and `a_left_click_at_the_post_below_the_knot_still_digs_the_fence`.
+- **Decisions:**
+  - A knot stays a fence position, not an entity. The punch is a ray against the vanilla knot box, nearer than the block outline and every entity, within the entity reach.
+  - The mobs let go at once instead of on their next tick, as `tick_knots` already did.
+  - `KnotAction` lives in `leash_render.rs`, next to the knot box, as `FrameAction` lives in `item_frame.rs`.
+  - No game events (`ENTITY_DIE`): track W wires game events. `Command::Knot` carries the player for that.
+- **Left for later:** arrows, tridents and thrown items breaking knots; explosions breaking knots; MW2 bullets passing through knots; the `entity_drops` and `mob_griefing` rules on knots.
+- **Test steps (survival, by day, flat grass):**
+  1. Use the cow egg twice. Put a lead on each cow and right-click an oak fence post: a knot appears on the post with two ropes.
+  2. Stand 2 blocks from the fence, aim at the knot from the side (the upper half of the post) and left-click once with the sword. The knot vanishes with the untie sound, a lead drops by each cow and both cows are free. The fence is still there and the hunger bar has not moved (**lk-2_knot_punched**: the fence without a knot and two leads on the ground).
+  3. Tie a cow to the fence again. Left-click the bottom third of the post, below the knot: the fence is dug as before, and the cow goes free within 5 seconds.
+  4. `/gamemode creative`. Tie a cow to a fence, left-click the knot: the knot goes, the fence stays and a lead drops. `/gamemode survival`.
+  5. Tie a cow, punch the knot off, save and quit, load: the cow is loose and there is no knot.
+  6. **Friend window:** the host ties a cow to a fence and the friend punches the knot. Both see the knot vanish within half a second and the lead drop (**lk-3_friend_punch**, the friend's view).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lead*16,minecraft:cow_spawn_egg*4,minecraft:oak_fence*16,minecraft:iron_sword,minecraft:wheat*16,minecraft:cooked_beef*16
+```

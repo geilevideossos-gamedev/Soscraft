@@ -396,10 +396,19 @@ pub fn act(
                     .map(|hit| hit.distance),
                 creative: !game_mode.consumes_items(),
             };
-            let pvp = entities.punch_player(
-                player_id, inventory, *selected, eye_block, look, mc_yaw, damage, strength, &blow,
-            );
-            if let Some(hurt) = pvp {
+            let knot = entities.punch_knot(player_id, eye_block, look, blow.reach, blow.block);
+            let pvp = if knot {
+                None
+            } else {
+                entities.punch_player(
+                    player_id, inventory, *selected, eye_block, look, mc_yaw, damage, strength,
+                    &blow,
+                )
+            };
+            if knot {
+                punched = true;
+                hand.attack_ticks = 0;
+            } else if let Some(hurt) = pvp {
                 punched = true;
                 hand.attack_ticks = 0;
                 if hurt {
@@ -2339,6 +2348,90 @@ pub(crate) mod tests {
         step(&mut player, &actor(0.0, -60.0), attack);
         assert_eq!(player.hand.swing, Some(0.0));
         assert!(player.hand.swing_predicted, "the friend swung on its own press");
+    }
+
+    const KNOT_FENCE: BlockPos = (6, 201, 4);
+
+    fn knotted_fence(level: &mut Level) -> Vec<u64> {
+        let fence = ["north", "east", "south", "west", "waterlogged"]
+            .into_iter()
+            .fold(Block::new("minecraft:oak_fence"), |fence, side| {
+                fence.with(side, "false")
+            });
+        level.terrain.scene.set(KNOT_FENCE, Some(fence));
+        let entities = level.entities.as_mut().expect("entities");
+        entities.placed(&level.terrain.scene, KNOT_FENCE);
+        let world = &mut entities.view.world;
+        [7.5, 8.5]
+            .into_iter()
+            .map(|z| {
+                let cow = minecraftoss_entities::cow::Cow::new(DVec3::new(4.5, 201.0, z));
+                let cow = world.spawn_cow(cow, true);
+                world.set_leash(cow, minecraftoss_entities::world::LeashHolder::Knot(KNOT_FENCE));
+                cow
+            })
+            .collect()
+    }
+
+    fn left_click_at(level: &mut Level, globals: &Globals, at: [f64; 3]) -> (Player, Acted) {
+        let mut player = holding("minecraft:iron_sword", 1);
+        player.hand.attack_ticks = 20;
+        let looking = actor(-90.0, pitch_to(actor(0.0, 0.0).eye, at));
+        let attack = Hands {
+            attack_pressed: true,
+            attack_held: true,
+            ..Hands::default()
+        };
+        let acted = act(
+            &mut player,
+            level,
+            globals,
+            &mut Flat,
+            &looking,
+            attack,
+            &moved(),
+            None,
+            0.0,
+        );
+        (player, acted)
+    }
+
+    #[test]
+    fn a_left_click_at_a_knot_breaks_the_knot_and_not_the_fence() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        knotted_fence(&mut level);
+        let (player, acted) = left_click_at(&mut level, &globals, [6.3125, 201.6, 4.5]);
+        assert_eq!(player.hand.swing, Some(0.0));
+        assert_eq!(player.hand.attack_ticks, 0, "the attack strength resets");
+        assert!(player.hand.dig.destroying.is_none(), "the fence is not dug");
+        assert!(!player.hand.dig.pressed);
+        assert!(
+            !acted
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Dig { .. })),
+            "{:?}",
+            acted.effects
+        );
+        assert!(acted.hand_mined.is_empty() && acted.creative_broken.is_empty());
+        assert_eq!(player.survival.status.food.exhaustion, 0.0, "no hunger");
+    }
+
+    #[test]
+    fn a_left_click_at_the_post_below_the_knot_still_digs_the_fence() {
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        knotted_fence(&mut level);
+        let (player, _) = left_click_at(&mut level, &globals, [6.375, 201.2, 4.5]);
+        assert_eq!(
+            player.hand.dig.destroying.as_ref().map(|(pos, ..)| *pos),
+            Some(KNOT_FENCE)
+        );
+        let entities = level.entities.as_ref().expect("entities");
+        assert!(entities.has_knot(KNOT_FENCE), "the knot stays");
     }
 
     #[test]

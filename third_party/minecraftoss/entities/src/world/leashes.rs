@@ -727,12 +727,40 @@ impl EntityWorld {
             if !check || world.block(pos).is_some_and(|block| is_fence(&block.id)) {
                 continue;
             }
-            self.knots.remove(&pos);
-            self.leash_sound(UNTIED_SOUND, knot_position(pos), "friendly_volume");
-            for mob in self.mobs_leashed_to(LeashHolder::Knot(pos)) {
-                self.drop_leash(mob, true);
-            }
+            self.break_knot(pos);
         }
+    }
+
+    fn saved_to_knot(&self, pos: Pos) -> Vec<u64> {
+        self.leashes
+            .iter()
+            .filter(|(_, leash)| {
+                leash.holder.is_none() && leash.saved == Some(SavedLeash::Knot(pos))
+            })
+            .map(|(&id, _)| id)
+            .collect()
+    }
+
+    fn drop_saved_leash(&mut self, mob: u64) {
+        self.leashes.remove(&mob);
+        if let Some(body) = self.body_of(mob) {
+            self.lead_drops.push(body.position);
+        }
+    }
+
+    pub fn break_knot(&mut self, pos: Pos) -> bool {
+        let saved = self.saved_to_knot(pos);
+        if self.knots.remove(&pos).is_none() && saved.is_empty() {
+            return false;
+        }
+        self.leash_sound(UNTIED_SOUND, knot_position(pos), "friendly_volume");
+        for mob in self.mobs_leashed_to(LeashHolder::Knot(pos)) {
+            self.drop_leash(mob, true);
+        }
+        for mob in saved {
+            self.drop_saved_leash(mob);
+        }
+        true
     }
 
     pub(super) fn tick_leashes(
@@ -1177,6 +1205,54 @@ mod tests {
         assert_eq!(entities.leash_holder(cow), None);
         assert!(entities.knots().is_empty());
         assert_eq!(entities.take_lead_drops().len(), 1);
+    }
+
+    #[test]
+    fn punching_a_knot_frees_its_mobs_with_a_lead_each_and_the_untied_sound() {
+        let mut entities = EntityWorld::default();
+        let cow = cow_at(&mut entities, DVec3::new(0.5, 64.0, 0.5));
+        let other = cow_at(&mut entities, DVec3::new(0.5, 64.0, 2.5));
+        let mine = cow_at(&mut entities, DVec3::new(4.5, 64.0, 0.5));
+        entities.set_leash(cow, LeashHolder::Knot((3, 64, 0)));
+        entities.set_leash(other, LeashHolder::Knot((3, 64, 0)));
+        entities.set_leash(mine, LeashHolder::Knot((3, 64, 5)));
+        assert!(entities.break_knot((3, 64, 0)));
+        assert_eq!(entities.knots(), [(3, 64, 5)]);
+        assert_eq!(entities.leash_holder(cow), None);
+        assert_eq!(entities.leash_holder(other), None);
+        assert_eq!(
+            entities.leash_holder(mine),
+            Some(LeashHolder::Knot((3, 64, 5)))
+        );
+        assert_eq!(
+            entities.take_lead_drops(),
+            [DVec3::new(0.5, 64.0, 0.5), DVec3::new(0.5, 64.0, 2.5)]
+        );
+        let untied = entities.take_sounds();
+        assert_eq!(untied.len(), 1);
+        assert_eq!(untied[0].event, UNTIED_SOUND);
+        assert_eq!(untied[0].position, DVec3::new(3.5, 64.375, 0.5));
+        assert_eq!(untied[0].category, "friendly_volume");
+        assert!(!entities.break_knot((3, 64, 0)), "it is gone");
+        assert!(!entities.break_knot((7, 64, 7)), "there never was one");
+        assert!(entities.take_lead_drops().is_empty());
+        assert!(entities.take_sounds().is_empty());
+    }
+
+    #[test]
+    fn a_knot_known_only_from_a_save_can_be_punched_off_too() {
+        let mut entities = EntityWorld::default();
+        let cow = cow_at(&mut entities, DVec3::new(0.5, 64.0, 0.5));
+        let elsewhere = cow_at(&mut entities, DVec3::new(2.5, 64.0, 0.5));
+        entities.load_leash(cow, SavedLeash::Knot((3, 64, 0)));
+        entities.load_leash(elsewhere, SavedLeash::Knot((9, 64, 9)));
+        assert!(!entities.has_knot((3, 64, 0)));
+        assert!(entities.knots().contains(&(3, 64, 0)));
+        assert!(entities.break_knot((3, 64, 0)));
+        assert!(entities.leash_of(cow).is_none());
+        assert_eq!(entities.knots(), [(9, 64, 9)]);
+        assert_eq!(entities.take_lead_drops(), [DVec3::new(0.5, 64.0, 0.5)]);
+        assert_eq!(sounds(&mut entities), [UNTIED_SOUND]);
     }
 
     #[test]

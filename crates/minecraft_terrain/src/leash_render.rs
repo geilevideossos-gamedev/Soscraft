@@ -5,7 +5,9 @@ use crate::pack::ResourceId;
 use crate::posed_cube::{Cube, Skin, append};
 use crate::scene::Block;
 use glam::{DVec3, Mat4, Vec3};
-use minecraftoss_entities::world::{EntityWorld, LeashHolder, SavedLeash, knot_position};
+use minecraftoss_entities::world::{
+    EntityWorld, KNOT_HEIGHT, KNOT_WIDTH, LeashHolder, SavedLeash, knot_position,
+};
 use std::collections::HashMap;
 
 pub const KNOT_TEXTURE: &str = "minecraft:entity/lead_knot/lead_knot";
@@ -22,6 +24,11 @@ pub enum RopeEnd {
     Mob(u64),
     Player(u128),
     Knot(BlockPos),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KnotAction {
+    Punch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -94,6 +101,30 @@ pub fn player_hold(holder: &RopeHolder) -> DVec3 {
 
 pub fn knot_hold(pos: BlockPos) -> DVec3 {
     knot_position(pos) + DVec3::new(0.0, KNOT_HOLD, 0.0)
+}
+
+pub fn knot_box(pos: BlockPos) -> (DVec3, DVec3) {
+    let half = f64::from(KNOT_WIDTH) / 2.0;
+    let at = knot_position(pos);
+    (
+        at - DVec3::new(half, 0.0, half),
+        at + DVec3::new(half, f64::from(KNOT_HEIGHT), half),
+    )
+}
+
+pub fn knot_on_ray(
+    knots: &[BlockPos],
+    eye: DVec3,
+    look: DVec3,
+    reach: f64,
+) -> Option<(BlockPos, f64)> {
+    knots
+        .iter()
+        .filter_map(|&pos| {
+            crate::end_crystal::ray_box(eye, look, reach, knot_box(pos))
+                .map(|distance| (pos, distance))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 pub fn rope_strips(start: DVec3, end: DVec3) -> Vec<Vec<RopeVertex>> {
@@ -372,6 +403,37 @@ mod tests {
             (high - Vec3::new(3.6875, 64.875, 0.6875)).length() < 1e-5,
             "{high}"
         );
+    }
+
+    #[test]
+    fn a_knot_is_hit_from_the_side_before_its_fence_post_but_not_from_above() {
+        let fence = (3, 64, 0);
+        let (low, high) = knot_box(fence);
+        assert!((low - DVec3::new(3.3125, 64.375, 0.3125)).length() < 1e-9, "{low}");
+        assert!((high - DVec3::new(3.6875, 64.875, 0.6875)).length() < 1e-9, "{high}");
+        let post = minecraftoss_player::outline_bounds(&minecraftoss_player::Block::new(
+            "minecraft:oak_fence",
+        ))
+        .expect("a fence post");
+        let post = (
+            DVec3::new(3.0 + post[0], 64.0 + post[1], post[2]),
+            DVec3::new(3.0 + post[3], 64.0 + post[4], post[5]),
+        );
+        let ray = crate::end_crystal::ray_box;
+        let side = DVec3::new(1.0, 64.6, 0.5);
+        let (pos, knot) = knot_on_ray(&[(9, 64, 9), fence], side, DVec3::X, 3.0).expect("a knot");
+        assert_eq!(pos, fence);
+        assert!((knot - 2.3125).abs() < 1e-9, "{knot}");
+        assert!(knot < ray(side, DVec3::X, 3.0, post).expect("the post"));
+        let above = DVec3::new(3.5, 66.0, 0.5);
+        let (_, knot) = knot_on_ray(&[fence], above, DVec3::NEG_Y, 3.0).expect("a knot");
+        let top = ray(above, DVec3::NEG_Y, 3.0, post).expect("the post");
+        assert!((top - 1.0).abs() < 1e-9 && top < knot, "{top} {knot}");
+        let below = DVec3::new(1.0, 64.2, 0.5);
+        assert_eq!(knot_on_ray(&[fence], below, DVec3::X, 3.0), None);
+        assert!(ray(below, DVec3::X, 3.0, post).is_some());
+        let far = DVec3::new(0.0, 64.6, 0.5);
+        assert_eq!(knot_on_ray(&[fence], far, DVec3::X, 3.0), None, "beyond reach");
     }
 
     #[test]

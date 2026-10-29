@@ -61,7 +61,7 @@ pub use piglins::{BarterThrow, PICKUP_DELAY as BARTER_PICKUP_DELAY, PiglinConver
 mod riding;
 pub use riding::Rider;
 mod leashes;
-pub use leashes::{is_fence, knot_position, Leash, LeashHolder, LeashPlayer, LeashUse, SavedLeash, LEAD, SNAP_DISTANCE};
+pub use leashes::{is_fence, knot_position, Leash, LeashHolder, LeashPlayer, LeashUse, SavedLeash, KNOT_HEIGHT, KNOT_WIDTH, LEAD, SNAP_DISTANCE};
 mod shulkers;
 mod shulker_bullets;
 mod equines;
