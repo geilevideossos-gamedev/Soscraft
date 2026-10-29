@@ -1149,6 +1149,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let kind = if kind == "minecraft:wither_skull" { crate::wither_save::skull_kind(tag) } else if kind == "minecraft:small_fireball" { minecraftoss_entities::fireball::FireballKind::Small } else { minecraftoss_entities::fireball::FireballKind::Large { explosion_power: int(tag, "ExplosionPower").unwrap_or(1) } };
             let mut fireball = minecraftoss_entities::fireball::Fireball::shoot(kind, minecraftoss_entities::fireball::Shooter::Mob(0), pos, motion);
             fireball.owner = None;
+            fireball.owner_uuid = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
             fireball.velocity = motion;
             fireball.acceleration_power = tag.get("acceleration_power").and_then(Tag::as_f64).unwrap_or(minecraftoss_entities::fireball::ACCELERATION_POWER);
             fireball.left_owner = int(tag, "LeftOwner").unwrap_or(1) != 0;
@@ -1921,6 +1922,13 @@ pub fn mob_tags_where(world: &EntityWorld, keep: impl Fn(u64, DVec3) -> bool, or
             map.insert("dangerous".to_owned(), Tag::Byte(i8::from(dangerous)));
         }
         map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(fireball.left_owner)));
+        let shooter = |owner| match owner {
+            minecraftoss_entities::fireball::Shooter::Mob(id) => world.uuid_of(id),
+            minecraftoss_entities::fireball::Shooter::Player(id) => world.uuid_of(crate::thrown::PLAYER_TARGET + id),
+        };
+        if let Some(owner) = fireball.owner.map(shooter).or(fireball.owner_uuid) {
+            map.insert("Owner".to_owned(), Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec()));
+        }
         if let minecraftoss_entities::fireball::FireballKind::Large { explosion_power } = fireball.kind {
             map.insert("ExplosionPower".to_owned(), Tag::Byte(explosion_power.clamp(-128, 127) as i8));
         }
@@ -2063,6 +2071,12 @@ pub fn level_entity_tags(level: &Level<'static>, keep: impl Fn(DVec3) -> bool) -
             map.insert("Count".into(), Tag::Int(orb.count));
             map.insert("Age".into(), Tag::Short(orb.age as i16));
             map.insert("Health".into(), Tag::Short(orb.health as i16));
+        } else if let Some(ominous) = e.ominous_data() {
+            map.insert("id".into(), Tag::String(crate::trial_spawner::OMINOUS_ITEM_SPAWNER.into()));
+            if !ominous.stack.is_empty() {
+                map.insert("item".into(), crate::trial_spawner::stack_tag(&ominous.stack));
+            }
+            map.insert("spawn_item_after_ticks".into(), Tag::Long(ominous.spawn_after));
         } else {
             continue;
         }
@@ -2100,6 +2114,14 @@ pub fn load_level_entity(level: &mut Level<'static>, tag: &Tag) -> bool {
                 data.health = int(tag, "Health").unwrap_or(5);
             }
             level.add_entity(orb);
+            true
+        }
+        Some(crate::trial_spawner::OMINOUS_ITEM_SPAWNER) => {
+            let stack = tag.get("item").and_then(crate::trial_spawner::tag_stack).unwrap_or_else(minecraftoss_core::item::ItemStack::empty);
+            let after = tag.get("spawn_item_after_ticks").and_then(Tag::as_i64).unwrap_or(0);
+            let mut spawner = minecraftoss_world::level::entity::Entity::ominous_item_spawner(pos.to_array(), stack, after);
+            spawner.delta = motion;
+            level.add_entity(spawner);
             true
         }
         _ => false,
@@ -2861,6 +2883,113 @@ mod tests {
         let mut fresh = EntityWorld::default();
         spawn_saved(&mut fresh, &plain).unwrap();
         assert_eq!(fresh.fireballs()[0].fireball.kind, minecraftoss_entities::fireball::FireballKind::WitherSkull { dangerous: false });
+    }
+
+    struct Air;
+
+    impl PlayerWorld for Air {
+        fn block(&self, _pos: (i32, i32, i32)) -> Option<PlayerBlock> {
+            None
+        }
+        fn set_block(&mut self, _pos: (i32, i32, i32), _block: Option<PlayerBlock>) {}
+    }
+
+    fn standing_player(id: u64, feet: DVec3) -> minecraftoss_entities::tempt::PlayerCandidate {
+        minecraftoss_entities::tempt::PlayerCandidate {
+            id,
+            position: feet,
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        }
+    }
+
+    fn reloaded_shot(shooter: &str, kind: minecraftoss_entities::fireball::FireballKind, shooter_loads: bool) -> (Vec<minecraftoss_entities::world::PlayerHit>, Option<u64>) {
+        use minecraftoss_entities::fireball::{Fireball, Shooter};
+        let mut world = EntityWorld::default();
+        let owner = spawn_saved(&mut world, &minecraftoss_core::snbt::parse_compound(shooter).unwrap()).unwrap();
+        let shot = world.spawn_fireball(Fireball::shoot(kind, Shooter::Mob(owner), DVec3::new(0.5, 65.0, 0.5), DVec3::Z));
+        let saved = mob_tags_where(&world, |_, _| true, &Default::default(), true);
+        let tag = |id: u64| saved.iter().find(|(saved_id, _)| *saved_id == id).map(|(_, tag)| tag.clone()).unwrap();
+        assert_eq!(tag(shot).get("Owner").and_then(Tag::as_ints), tag(owner).get("UUID").and_then(Tag::as_ints), "saved with its shooter's UUID");
+        let mut fresh = EntityWorld::default();
+        fresh.set_players_pickable(true);
+        fresh.set_difficulty(2);
+        let back = spawn_saved(&mut fresh, &tag(shot)).expect("the shot loads first");
+        let loaded = &fresh.fireball_mut(back).unwrap().fireball;
+        assert_eq!(loaded.owner, None, "not resolved at load");
+        let owner_uuid = tag(owner).get("UUID").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+        assert_eq!(loaded.owner_uuid, owner_uuid);
+        let owner = shooter_loads.then(|| spawn_saved(&mut fresh, &tag(owner)).expect("its shooter loads after it"));
+        let players = [standing_player(1, DVec3::new(0.5, 64.0, 4.5))];
+        let mut hits = Vec::new();
+        for _ in 0..20 {
+            fresh.tick_with_players(&mut Air, &players);
+            hits.extend(fresh.take_player_hits());
+        }
+        (hits, owner)
+    }
+
+    #[test]
+    fn a_wither_skull_saved_in_flight_still_belongs_to_its_wither() {
+        use minecraftoss_entities::world::PlayerHitKind;
+        let wither = "{id:\"minecraft:wither\",Pos:[0.5d,70.0d,-12.5d],UUID:[I;4,5,6,30],NoAI:1b}";
+        let skull = minecraftoss_entities::fireball::FireballKind::WitherSkull { dangerous: false };
+        let struck = |hits: Vec<minecraftoss_entities::world::PlayerHit>| hits.into_iter().filter(|h| matches!(h.kind, PlayerHitKind::WitherSkull { wither_ticks: 200, .. })).map(|h| (h.damage, h.source)).collect::<Vec<_>>();
+        let (hits, owner) = reloaded_shot(wither, skull, true);
+        assert!(owner.is_some());
+        assert_eq!(struck(hits), [(minecraftoss_entities::fireball::WITHER_SKULL_DAMAGE, owner)], "the wither's skull hits for 8");
+        let (hits, _) = reloaded_shot(wither, skull, false);
+        assert_eq!(struck(hits), [(minecraftoss_entities::fireball::OWNERLESS_SKULL_DAMAGE, None)], "without its wither, magic for 5");
+    }
+
+    #[test]
+    fn a_ghast_fireball_saved_in_flight_still_belongs_to_its_ghast() {
+        use minecraftoss_entities::world::PlayerHitKind;
+        let ghast = "{id:\"minecraft:ghast\",Pos:[0.5d,80.0d,-20.5d],UUID:[I;4,5,6,31],NoAI:1b}";
+        let large = minecraftoss_entities::fireball::FireballKind::Large { explosion_power: 1 };
+        let struck = |hits: Vec<minecraftoss_entities::world::PlayerHit>| hits.into_iter().filter(|h| matches!(h.kind, PlayerHitKind::Fireball { .. })).map(|h| (h.damage, h.source)).collect::<Vec<_>>();
+        let (hits, owner) = reloaded_shot(ghast, large, true);
+        assert!(owner.is_some());
+        assert_eq!(struck(hits), [(minecraftoss_entities::fireball::LARGE_DAMAGE, owner)]);
+        let (hits, _) = reloaded_shot(ghast, large, false);
+        assert_eq!(struck(hits), [(minecraftoss_entities::fireball::LARGE_DAMAGE, None)]);
+    }
+
+    #[test]
+    fn a_fireball_a_player_batted_back_keeps_that_player_through_a_save() {
+        use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+        let mut world = EntityWorld::default();
+        world.set_player_uuid(1, 0xB0B);
+        let id = world.spawn_fireball(Fireball::shoot(FireballKind::Large { explosion_power: 1 }, Shooter::Mob(77), DVec3::new(0.5, 65.0, 0.5), DVec3::Z));
+        assert!(world.deflect_fireball(id, DVec3::new(0.0, 0.0, -0.1), 1, true));
+        let saved: Vec<_> = mob_tags_where(&world, |_, _| true, &Default::default(), true).into_iter().filter(|(saved_id, _)| *saved_id == id).collect();
+        let tag = &saved[0].1;
+        assert_eq!(tag.get("Owner"), Some(&Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(0xB0B).to_vec())));
+        let mut fresh = EntityWorld::default();
+        let back = spawn_saved(&mut fresh, tag).unwrap();
+        fresh.tick_with_players(&mut Air, &[]);
+        let waiting = &fresh.fireball_mut(back).unwrap().fireball;
+        assert_eq!((waiting.owner, waiting.owner_uuid), (None, Some(0xB0B)), "the player is not in this level yet");
+        fresh.set_player_uuid(1, 0xB0B);
+        fresh.tick_with_players(&mut Air, &[standing_player(1, DVec3::new(30.5, 64.0, 0.5))]);
+        let found = &fresh.fireball_mut(back).unwrap().fireball;
+        assert_eq!((found.owner, found.owner_uuid), (Some(Shooter::Player(1)), None));
+        let again: Vec<_> = mob_tags_where(&fresh, |_, _| true, &Default::default(), true).into_iter().filter(|(saved_id, _)| *saved_id == back).collect();
+        assert_eq!(again[0].1.get("Owner"), tag.get("Owner"), "saved again with the same player");
     }
 
     #[test]

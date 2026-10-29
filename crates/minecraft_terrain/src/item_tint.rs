@@ -22,7 +22,7 @@ pub fn split(key: &str) -> (&str, Option<u32>) {
 }
 
 pub fn of_stack(stack: &ItemStack) -> String {
-    of_stack_at(&stack.id, stack)
+    of_stack_at(&crate::dials::stack_key(stack), stack)
 }
 
 pub fn of_stack_at(base: &str, stack: &ItemStack) -> String {
@@ -64,6 +64,25 @@ mod tests {
         assert_eq!(
             crate::dials::split(rest),
             ("minecraft:clock", Some("minecraft:item/clock_03"))
+        );
+    }
+
+    #[test]
+    fn a_lodestone_compass_keys_its_target_and_still_splits_to_the_compass() {
+        let compass = ItemStack::new("minecraft:compass", 1);
+        assert_eq!(of_stack(&compass), "minecraft:compass");
+        let target = crate::lodestone::Target::new(crate::terrain::Dimension::End, (-4, 70, 12));
+        let tracked = of_stack(&crate::lodestone::with_tracker(&compass, target));
+        assert_eq!(
+            tracked,
+            "minecraft:compass@lodestone:minecraft:the_end:-4,70,12"
+        );
+        assert_eq!(split(&tracked), (tracked.as_str(), None));
+        assert_eq!(crate::dials::split(&tracked), ("minecraft:compass", None));
+        let dial = crate::dials::keyed("minecraft:compass", "minecraft:item/compass_07");
+        assert_eq!(
+            crate::dials::split(&dial),
+            ("minecraft:compass", Some("minecraft:item/compass_07"))
         );
     }
 

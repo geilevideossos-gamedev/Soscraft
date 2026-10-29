@@ -110,6 +110,14 @@ impl Level<'_> {
         }
     }
 
+    pub fn set_block_entity_tag(&mut self, pos: BlockPos, tag: Tag) {
+        let Some(old) = self.block_entity_mut(pos) else { return };
+        if *old != tag {
+            *old = tag;
+            self.changed_block_entities.insert((pos.x, pos.y, pos.z));
+        }
+    }
+
     /// `ChestBlock.isChestBlockedAt` (cats are not simulated).
     fn chest_blocked(&self, pos: BlockPos) -> bool {
         let above = self.block(pos.above());

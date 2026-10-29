@@ -299,6 +299,7 @@ pub fn tracking_range(kind: &str) -> i32 {
         | "cave_spider" | "enderman" | "witch" | "blaze" | "magma_cube" | "hoglin" | "zoglin"
         | "piglin" | "piglin_brute" | "shulker_bullet" | "cat" | "mule" | "snow_golem"
         | "pillager" | "vindicator" | "evoker" | "vex" => 8,
+        "ominous_item_spawner" => 8,
         "evoker_fangs" => 6,
         "item" | "experience_orb" => 6,
         "arrow" | "spectral_arrow" | "snowball" | "egg" | "ender_pearl" | "eye_of_ender"

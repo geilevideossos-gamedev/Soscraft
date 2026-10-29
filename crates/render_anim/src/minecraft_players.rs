@@ -920,9 +920,7 @@ pub(crate) fn struck(
             );
         }
     }
-    let pushed = alive
-        && player_mode.mode != minecraftoss_player::GameMode::Spectator
-        && ps.pm_flags & playerstate_iw4::pm_flags::MC_FLYING == 0;
+    let pushed = takes_pushes(alive, player_mode.mode, ps.pm_flags);
     for push in outputs.pushes.into_iter().chain(landed).filter(|_| pushed) {
         let launch = minecraft_survival::impulse::launch_velocity(
             push,
@@ -946,6 +944,13 @@ pub(crate) fn struck(
             sounds.play(packs, RAID_OMEN_SOUND, Some(at(feet)), 1.0, 1.0);
         }
     }
+    if outputs.trial_omen
+        && alive
+        && survival.turn_bad_omen_into_trial()
+        && let Some(sounds) = sounds.as_mut()
+    {
+        sounds.play(packs, TRIAL_OMEN_SOUND, Some(at(feet)), 1.0, 1.0);
+    }
     for amplifier in outputs.raid_heroes {
         survival.become_hero(amplifier);
     }
@@ -964,7 +969,14 @@ pub(crate) fn struck(
     outputs.told
 }
 
+fn takes_pushes(alive: bool, mode: minecraftoss_player::GameMode, pm_flags: u32) -> bool {
+    alive
+        && mode != minecraftoss_player::GameMode::Spectator
+        && pm_flags & playerstate_iw4::pm_flags::MC_FLYING == 0
+}
+
 const RAID_OMEN_SOUND: &str = "minecraft:event.mob_effect.raid_omen";
+const TRIAL_OMEN_SOUND: &str = "minecraft:event.mob_effect.trial_omen";
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn settle(
@@ -2441,5 +2453,32 @@ mod tests {
             gun,
         );
         assert!(told.is_empty(), "death messages are off");
+    }
+
+    #[test]
+    fn a_wind_charge_does_not_push_a_player_flying_in_creative() {
+        use minecraft_terrain::wind::{Charge, push};
+        use minecraftoss_player::GameMode;
+        use playerstate_iw4::pm_flags::{MC_FLYING, MC_GLIDING, MC_MAY_FLY};
+        let center = glam::DVec3::new(0.5, 64.0, 0.5);
+        let feet = glam::DVec3::new(1.5, 64.0, 0.5);
+        let eye = feet + glam::DVec3::Y * minecraft_terrain::trident::EYE_HEIGHT;
+        let burst = push(Charge::Player, center, feet, eye, 1.0);
+        assert!(burst.is_some_and(|p| p.x > 0.0 && p.y > 0.0), "{burst:?}");
+        assert!(takes_pushes(true, GameMode::Survival, 0), "walking");
+        assert!(
+            takes_pushes(true, GameMode::Creative, MC_MAY_FLY),
+            "creative on the ground"
+        );
+        assert!(
+            takes_pushes(true, GameMode::Survival, MC_GLIDING),
+            "gliding with an elytra"
+        );
+        assert!(
+            !takes_pushes(true, GameMode::Creative, MC_MAY_FLY | MC_FLYING),
+            "flying in creative"
+        );
+        assert!(!takes_pushes(true, GameMode::Spectator, MC_MAY_FLY | MC_FLYING));
+        assert!(!takes_pushes(false, GameMode::Survival, 0), "dead");
     }
 }

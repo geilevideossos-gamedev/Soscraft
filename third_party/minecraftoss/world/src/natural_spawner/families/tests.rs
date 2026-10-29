@@ -1,4 +1,6 @@
-use super::super::spawning::{DifficultyInstance, MobCategory, SpawnContext, Unlimited};
+use super::super::spawning::{
+    DifficultyInstance, MobCategory, SpawnContext, SpawnerReason, Unlimited,
+};
 use super::super::{
     CreatureSpawns, Creatures, Group, Placement, Rules, SpawnLevel, SpawnerData, StructureHere,
     TypeInfo, Walk, set, type_info, type_width,
@@ -401,25 +403,55 @@ fn silverfish_spawn_by_any_light_from_spawners_and_never_near_a_player() {
     level.floor = floor;
     let near = [[0.5, 64.0, 1.5]];
     level.sky = 0;
-    assert!(spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, [0.5, 64.0, 0.5]));
+    assert!(spawns.spawner_may_spawn(
+        &mut level,
+        &context(&near, 2),
+        kind,
+        [0.5, 64.0, 0.5],
+        SpawnerReason::Spawner
+    ));
     assert!(
-        !spawns.spawner_may_spawn(&mut level, &context(&near, 0), kind, [0.5, 64.0, 0.5]),
+        !spawns.spawner_may_spawn(
+            &mut level,
+            &context(&near, 0),
+            kind,
+            [0.5, 64.0, 0.5],
+            SpawnerReason::Spawner
+        ),
         "peaceful"
     );
     level.sky = 15;
     let at = [0.5, 64.0, 0.5];
     assert!(
-        spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, at),
+        spawns.spawner_may_spawn(
+            &mut level,
+            &context(&near, 2),
+            kind,
+            at,
+            SpawnerReason::Spawner
+        ),
         "stone below is worth 10 to a silverfish in any light"
     );
     assert!(
-        !spawns.spawner_may_spawn(&mut level, &context(&near, 2), "minecraft:endermite", at),
+        !spawns.spawner_may_spawn(
+            &mut level,
+            &context(&near, 2),
+            "minecraft:endermite",
+            at,
+            SpawnerReason::Spawner
+        ),
         "an endermite has a monster's walk target, which refuses full light"
     );
     for host in super::pests::HOSTS {
         level.floor = spawns.registries.blocks.parse_state(host).unwrap();
         assert!(
-            spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, at),
+            spawns.spawner_may_spawn(
+                &mut level,
+                &context(&near, 2),
+                kind,
+                at,
+                SpawnerReason::Spawner
+            ),
             "{host}"
         );
     }
@@ -429,11 +461,23 @@ fn silverfish_spawn_by_any_light_from_spawners_and_never_near_a_player() {
         .parse_state("minecraft:andesite")
         .unwrap();
     assert!(
-        !spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, at),
+        !spawns.spawner_may_spawn(
+            &mut level,
+            &context(&near, 2),
+            kind,
+            at,
+            SpawnerReason::Spawner
+        ),
         "away from its host blocks a silverfish needs the dark"
     );
     level.sky = 0;
-    assert!(spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, at));
+    assert!(spawns.spawner_may_spawn(
+        &mut level,
+        &context(&near, 2),
+        kind,
+        at,
+        SpawnerReason::Spawner
+    ));
     level.floor = floor;
     let biome = level.biome;
     only(&mut spawns, biome, MobCategory::Monster, kind);

@@ -1174,6 +1174,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_lodestone_compass_survives_save_and_load_with_its_pos_as_ints_or_a_list() {
+        use minecraft_terrain::lodestone::{self, Target, Tracker, TRACKER};
+        let target = Target::new(Dimension::Nether, (12, 40, -7));
+        let mut slots = vec![None; SLOTS];
+        slots[2] = Some(lodestone::with_tracker(&stack(lodestone::COMPASS, 1), target.clone()));
+        let data = PlayerData { inventory: Some(slots), ..PlayerData::default() };
+        let read = PlayerData::read(&data.merged(None), &RecipeBook::default());
+        let back = read.inventory.unwrap()[2].clone().unwrap();
+        assert_eq!(back.components, data.inventory.unwrap()[2].as_ref().unwrap().components);
+        assert_eq!(lodestone::tracker(&back), Some(Tracker { target: Some(target.clone()), tracked: true }));
+        let vanilla = |pos: Tag| {
+            compound(vec![
+                ("id", Tag::String(lodestone::COMPASS.to_owned())),
+                ("count", Tag::Int(1)),
+                (
+                    "components",
+                    compound(vec![(TRACKER, compound(vec![("target", compound(vec![("dimension", Tag::String("minecraft:the_nether".to_owned())), ("pos", pos)]))]))]),
+                ),
+            ])
+        };
+        for pos in [Tag::IntArray(vec![12, 40, -7]), Tag::List(vec![Tag::Int(12), Tag::Int(40), Tag::Int(-7)])] {
+            let read = stack_of(&vanilla(pos), &RecipeBook::default()).unwrap();
+            assert_eq!(lodestone::tracker(&read).and_then(|tracker| tracker.target), Some(target.clone()));
+            assert_eq!(read.components, back.components, "the same stack as a compass locked here");
+        }
+        let lost = compound(vec![
+            ("id", Tag::String(lodestone::COMPASS.to_owned())),
+            ("components", compound(vec![(TRACKER, compound(Vec::new()))])),
+        ]);
+        let read = stack_of(&lost, &RecipeBook::default()).unwrap();
+        assert_eq!(lodestone::tracker(&read), Some(Tracker { target: None, tracked: true }));
+        assert_eq!(stack_tag(&read).unwrap().get("components"), Some(&compound(vec![(TRACKER, compound(Vec::new()))])));
+    }
+
     fn hurt_and_fed() -> Stats {
         let mut status = SurvivalStatus::default();
         status.health = 13.5;

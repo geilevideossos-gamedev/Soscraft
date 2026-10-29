@@ -56,6 +56,12 @@ pub struct Globals {
 }
 
 impl Globals {
+    pub fn game_time(&self) -> i64 {
+        self.save.as_ref().map_or(self.day.ticks.floor() as i64, |save| {
+            save.game_time(Some(self.day.ticks))
+        })
+    }
+
     pub fn clock_ticks(&self) -> ClockTicks {
         ClockTicks {
             overworld: self.day.ticks.floor() as i64,
@@ -332,6 +338,7 @@ pub fn start_level(globals: &mut Globals, level: &mut Level) {
         forced_weather.as_deref(),
     );
     entities.set_game_rules(&globals.game_rules);
+    entities.set_game_time(globals.game_time());
     let (waiting, others) = std::mem::take(&mut globals.waiting_locates)
         .into_iter()
         .partition(|(dimension, _, _)| *dimension == level.dimension);

@@ -3295,6 +3295,14 @@ impl EntityWorld {
         self.spawn_arrow(owner_id, arrow)
     }
 
+    pub fn spawn_effect_arrow(&mut self, owner_id: u64, arrow: Arrow, effect: Option<(EffectKind, u32)>) -> u64 {
+        let id = self.spawn_arrow(owner_id, arrow);
+        if let Some(entity) = self.arrows.iter_mut().find(|e| e.id == id) {
+            entity.effect = effect;
+        }
+        id
+    }
+
     fn arrow_targets(&self, owner_id: u64, players: &[PlayerCandidate]) -> Vec<ArrowTarget> {
         // Players are pickable unless spectating (`canHitEntity`).
         let players = players.iter().filter(|p| self.players_pickable && p.alive && !p.spectator).map(|p| ArrowTarget {
@@ -6780,7 +6788,7 @@ impl EntityWorld {
                                     player_id: hit.target_id - PLAYER_TARGET,
                                     damage: hit.damage,
                                     kind: PlayerHitKind::Arrow { velocity: hit.velocity, effect },
-                                    source: Some(owner_id),
+                                    source: (owner_id != 0).then_some(owner_id),
                                 });
                             }
                             accepted
@@ -8767,6 +8775,29 @@ mod tests {
             (pos.1 < 1).then(|| minecraftoss_player::Block::new("minecraft:stone"))
         }
         fn set_block(&mut self, _: minecraftoss_player::Pos, _: Option<minecraftoss_player::Block>) {}
+    }
+
+    #[test]
+    fn an_arrow_without_an_owner_hits_a_player_with_no_source() {
+        let mut world = EntityWorld::default();
+        world.set_players_pickable(true);
+        let archer = world.spawn_skeleton(Skeleton::new(DVec3::new(30.5, 1.0, 30.5)), true);
+        let poison = Some((EffectKind::Poison, 900));
+        world.spawn_effect_arrow(0, Arrow::in_flight(DVec3::new(0.5, 2.0, 1.5), DVec3::Z, LegacyRandom::new(0)), poison);
+        world.spawn_owned_arrow(archer, Arrow::in_flight(DVec3::new(0.5, 2.0, 1.5), DVec3::Z, LegacyRandom::new(1)));
+        let player = candidate(7, DVec3::new(0.5, 1.0, 3.5));
+        let mut hits = Vec::new();
+        for _ in 0..6 {
+            world.tick_with_players(&mut Floor, &[player]);
+            hits.extend(world.take_player_hits());
+        }
+        let arrows: Vec<_> = hits.iter().filter_map(|hit| match hit.kind {
+            PlayerHitKind::Arrow { effect, .. } => Some((hit.player_id, hit.source, effect)),
+            _ => None,
+        }).collect();
+        assert_eq!(arrows.len(), 2, "{hits:?}");
+        assert!(arrows.contains(&(7, None, poison)), "an arrow from above names no shooter: {arrows:?}");
+        assert!(arrows.contains(&(7, Some(archer), None)), "a skeleton's arrow still names it: {arrows:?}");
     }
 
     fn zombified_piglin(x: f64) -> Zombie {

@@ -86,12 +86,23 @@ pub struct LightningData {
 }
 
 #[derive(Clone, Debug)]
+pub struct OminousData {
+    pub stack: Stack,
+    pub spawn_after: i64,
+}
+
+pub const ABOUT_TO_SPAWN_ITEM: &str = "minecraft:block.trial_spawner.about_to_spawn_item";
+pub const SPAWN_ITEM_EVENT: i32 = 3021;
+const ABOUT_TO_SPAWN_TICKS: i64 = 36;
+
+#[derive(Clone, Debug)]
 pub enum EntityKind {
     Item(ItemData),
     LightningBolt(LightningData),
     PrimedTnt(TntData),
     FallingBlock(FallingData),
     ExperienceOrb(OrbData),
+    OminousItemSpawner(OminousData),
 }
 
 /// A simulated entity.
@@ -203,6 +214,19 @@ impl Entity {
         }
     }
 
+    pub fn ominous_item_spawner(pos: [f64; 3], stack: Stack, spawn_after: i64) -> Self {
+        let mut entity = Self::new(0, EntityKind::OminousItemSpawner(OminousData { stack, spawn_after }), pos, 0.25, 0.25);
+        entity.no_physics = true;
+        entity
+    }
+
+    pub fn ominous_data(&self) -> Option<&OminousData> {
+        match &self.kind {
+            EntityKind::OminousItemSpawner(data) => Some(data),
+            _ => None,
+        }
+    }
+
     pub fn orb_data_mut(&mut self) -> Option<&mut OrbData> {
         match &mut self.kind {
             EntityKind::ExperienceOrb(data) => Some(data),
@@ -225,6 +249,7 @@ impl Entity {
             EntityKind::FallingBlock(_) => 0.98 * 0.85,
             EntityKind::LightningBolt(_) => 0.0,
             EntityKind::ExperienceOrb(_) => 0.5 * 0.85,
+            EntityKind::OminousItemSpawner(_) => 0.25 * 0.85,
         }
     }
 
@@ -261,7 +286,7 @@ impl Entity {
         match self.kind {
             EntityKind::Item(_) | EntityKind::PrimedTnt(_) | EntityKind::FallingBlock(_) => 0.04,
             EntityKind::ExperienceOrb(_) => 0.03,
-            EntityKind::LightningBolt(_) => 0.0,
+            EntityKind::LightningBolt(_) | EntityKind::OminousItemSpawner(_) => 0.0,
         }
     }
 
@@ -600,7 +625,27 @@ impl Level<'_> {
             EntityKind::PrimedTnt(_) => self.tick_tnt(e),
             EntityKind::FallingBlock(_) => self.tick_falling_block(e),
             EntityKind::ExperienceOrb(_) => self.tick_orb(e),
+            EntityKind::OminousItemSpawner(_) => self.tick_ominous_item_spawner(e),
         }
+    }
+
+    fn tick_ominous_item_spawner(&mut self, e: &mut Entity) {
+        let EntityKind::OminousItemSpawner(data) = &mut e.kind else { return };
+        let age = i64::from(e.tick_count);
+        let block = BlockPos::new(floor(e.pos[0]), floor(e.pos[1]), floor(e.pos[2]));
+        if age == data.spawn_after - ABOUT_TO_SPAWN_TICKS {
+            let pos = [f64::from(block.x) + 0.5, f64::from(block.y) + 0.5, f64::from(block.z) + 0.5];
+            self.sounds.push(super::burning::LevelSound { event: ABOUT_TO_SPAWN_ITEM, pos, volume: 1.0, pitch: 1.0 });
+        }
+        if age < data.spawn_after {
+            return;
+        }
+        let stack = std::mem::replace(&mut data.stack, Stack::empty());
+        if !stack.is_empty() {
+            self.ominous_drops.push((e.pos, stack));
+            self.level_events.push((SPAWN_ITEM_EVENT, block, 1));
+        }
+        e.removed = true;
     }
 
     /// `summon minecraft:lightning_bolt`: `LightningBolt(type, level)`
@@ -1294,7 +1339,7 @@ impl Level<'_> {
         let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
         let touch = Aabb::new(x + 0.0625, y, z + 0.0625, x + 0.9375, y + 0.25, z + 0.9375);
         let name = self.name(state).to_owned();
-        let count = self.entities_in(&touch).filter(|e| !mobs_only(&name) || is_living(e)).count() as i32;
+        let count = self.entities_in(&touch).filter(|e| e.ominous_data().is_none() && (!mobs_only(&name) || is_living(e))).count() as i32;
         let weight = match name.as_str() {
             "minecraft:light_weighted_pressure_plate" => Some(15),
             "minecraft:heavy_weighted_pressure_plate" => Some(150),
@@ -1686,7 +1731,7 @@ fn mobs_only(name: &str) -> bool {
 
 fn is_living(e: &Entity) -> bool {
     match e.kind {
-        EntityKind::Item(_) | EntityKind::LightningBolt(_) | EntityKind::PrimedTnt(_) | EntityKind::FallingBlock(_) | EntityKind::ExperienceOrb(_) => false,
+        EntityKind::Item(_) | EntityKind::LightningBolt(_) | EntityKind::PrimedTnt(_) | EntityKind::FallingBlock(_) | EntityKind::ExperienceOrb(_) | EntityKind::OminousItemSpawner(_) => false,
     }
 }
 

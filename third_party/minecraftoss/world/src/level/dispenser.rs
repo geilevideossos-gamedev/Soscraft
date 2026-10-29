@@ -125,13 +125,19 @@ impl Level<'_> {
     /// `DefaultDispenseItemBehavior.spawnItem` with accuracy 6.
     fn spawn_item(&mut self, pos: BlockPos, direction: Direction, stack: Stack) {
         let (dx, dy, dz) = direction.offset();
-        let (x, mut y, z) = (pos.x as f64 + 0.5 + 0.7 * dx as f64, pos.y as f64 + 0.5 + 0.7 * dy as f64, pos.z as f64 + 0.5 + 0.7 * dz as f64);
+        let at = [pos.x as f64 + 0.5 + 0.7 * dx as f64, pos.y as f64 + 0.5 + 0.7 * dy as f64, pos.z as f64 + 0.5 + 0.7 * dz as f64];
+        self.spawn_dispensed_item(at, direction, 6, stack);
+    }
+
+    pub fn spawn_dispensed_item(&mut self, at: [f64; 3], direction: Direction, accuracy: i32, stack: Stack) -> i32 {
+        let (dx, _, dz) = direction.offset();
+        let (x, mut y, z) = (at[0], at[1], at[2]);
         y -= if direction.axis() == minecraftoss_core::pos::Axis::Y { 0.125 } else { 0.15625 };
         let power = self.random.next_f64() * 0.1 + 0.2;
-        let spread = 0.0172275 * 6.0;
+        let spread = 0.0172275 * f64::from(accuracy);
         let triangle = |level: &mut Self, mean: f64| mean + spread * (level.random.next_f64() - level.random.next_f64());
         let motion = [triangle(self, dx as f64 * power), triangle(self, 0.2), triangle(self, dz as f64 * power)];
-        self.spawn_item_entity([x, y, z], stack, motion);
+        self.spawn_item_entity([x, y, z], stack, motion)
     }
 
     /// `DefaultDispenseItemBehavior.consumeWithRemainder`.

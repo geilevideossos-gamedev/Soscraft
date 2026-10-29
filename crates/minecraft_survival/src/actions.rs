@@ -755,6 +755,15 @@ pub fn act(
                         })
                     }
                 });
+            let vault = player
+                .target(&minecraft_terrain::doors::Outlined(&terrain.scene), 5.0)
+                .map(|hit| hit.pos)
+                .filter(|_| !(player.crouching && has_item))
+                .and_then(|pos| {
+                    Scene::block(&terrain.scene, pos).and_then(|block| {
+                        minecraft_terrain::vault::key_use(pos, block, held.as_ref())
+                    })
+                });
             let placeable = held.as_ref().is_some_and(|stack| {
                 let id = if stack.id == "minecraft:redstone" {
                     "minecraft:redstone_wire"
@@ -900,6 +909,23 @@ pub fn act(
                     entities.lectern(player_id, pos, place, Some(sent));
                     hand.swing = Some(0.0);
                 }
+                HandUse::Consumed
+            } else if let Some(outcome) = vault
+                && let Some(stack) = held.as_ref()
+                && let minecraft_terrain::bucket::Change::Vault(pos) = outcome.change
+            {
+                if !entities.awaits_item_use(player_id) {
+                    let sent = SentItemUse {
+                        slot,
+                        held: stack.id.clone(),
+                        eye: eye_block,
+                        yaw: mc_yaw,
+                        pitch,
+                        outcome,
+                    };
+                    entities.vault_key(player_id, pos, stack, sent);
+                }
+                hand.swing = Some(0.0);
                 HandUse::Consumed
             } else if let Some(pos) = campfire
                 && let Some(stack) = held.as_ref()
@@ -1123,6 +1149,7 @@ pub fn act(
                         )
                     })
                     .or_else(|| minecraft_terrain::ender_eye::frame_use(&player, &outlined, stack))
+                    .or_else(|| minecraft_terrain::lodestone::lock_use(&player, &outlined, stack))
                     .or_else(|| {
                         minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack)
                     })
@@ -1188,8 +1215,17 @@ pub fn act(
                         if player.crouching { 1.5 } else { 1.8 },
                         sent,
                     ),
+                    minecraft_terrain::bucket::Change::Lodestone(pos) => {
+                        let target = minecraft_terrain::lodestone::Target::new(*dimension, pos);
+                        let infinite = !game_mode.consumes_items();
+                        if let Some(rest) = minecraft_terrain::lodestone::lock(inventory, (slot, *selected), target, infinite) {
+                            entities.view.world_items.toss(rest, eye_block, mc_yaw, pitch);
+                        }
+                        finish_item_use(entities, inventory, sent, game_mode.consumes_items(), &mut effects);
+                    }
                     minecraft_terrain::bucket::Change::Frame(_)
-                    | minecraft_terrain::bucket::Change::Lectern(_) => {}
+                    | minecraft_terrain::bucket::Change::Lectern(_)
+                    | minecraft_terrain::bucket::Change::Vault(_) => {}
                 }
                 HandUse::Consumed
             } else if let Some(stack) = held.as_ref()

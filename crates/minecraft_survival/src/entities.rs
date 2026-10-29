@@ -102,6 +102,7 @@ pub struct Entities {
     mount_viewers: HashMap<u64, u64>,
     player_boxes: Vec<crate::pvp::PlayerBox>,
     held_names: HashMap<u64, String>,
+    dimension: minecraft_net::Dimension,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -181,6 +182,7 @@ pub struct PlayerOutputs {
     pub rider_falls: Vec<(f64, f32)>,
     pub item_uses_done: Vec<SentItemUse>,
     pub raid_omens: Vec<(i32, (i32, i32, i32))>,
+    pub trial_omen: bool,
     pub raid_heroes: Vec<i32>,
     pub raid_horns: Vec<DVec3>,
     pub raid_bars: Option<Vec<minecraft_terrain::raids::RaidBar>>,
@@ -210,6 +212,7 @@ pub(crate) struct PlayerQueue {
     merchant: Vec<MerchantNews>,
     merchant_waiting: usize,
     raid_omens_waiting: Vec<(i32, (i32, i32, i32))>,
+    lodestones_gone: Vec<(i32, i32, i32)>,
     pub(crate) out: PlayerOutputs,
 }
 
@@ -390,6 +393,16 @@ impl PlayerQueues {
                 queue.out.raid_omens.push((amplifier, at));
             }
         }
+        for player in std::mem::take(&mut output.trial_omens) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.out.trial_omen = true;
+            }
+        }
+        for (player, pos) in std::mem::take(&mut output.lodestones_gone) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.lodestones_gone.push(pos);
+            }
+        }
         for (player, amplifier) in std::mem::take(&mut output.raid_heroes) {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.out.raid_heroes.push(amplifier);
@@ -456,6 +469,9 @@ impl Entities {
                 diag::warn!(World, "Minecraft weather `{weather}` unknown: IW4L_MINECRAFT_WEATHER takes clear, rain or thunder");
             }
         }
+        if let Some(book) = &data.enchantments {
+            sim.set_enchantments(book.clone());
+        }
         let weather_data = sim.weather_data();
         let mut server = ServerHandle::spawn(sim);
         // Mob and block loot and the recipes (stack sizes), from the game's
@@ -505,6 +521,7 @@ impl Entities {
             mount_viewers: HashMap::new(),
             player_boxes: Vec::new(),
             held_names: HashMap::new(),
+            dimension,
         }
     }
 
@@ -513,6 +530,15 @@ impl Entities {
         self.block_drops = rules.bool("block_drops");
         self.pvp = rules.bool("pvp");
         self.server.set_game_rules(rules.clone());
+    }
+
+    pub fn set_game_time(&mut self, game_time: i64) {
+        self.server.set_game_time(game_time);
+        self.view.world.set_game_time(game_time);
+    }
+
+    pub fn game_time(&self) -> i64 {
+        self.view.world.game_time()
     }
 
     pub fn set_weather(&mut self, weather: &'static str, duration: i32) {
@@ -705,11 +731,13 @@ impl Entities {
 
     pub fn load_chunk(&mut self, chunk: &std::sync::Arc<minecraftoss_core::Chunk>) {
         self.view.spawners.load_chunk(chunk);
+        self.view.vaults.load_chunk(chunk);
         self.server.load_chunk(chunk);
     }
 
     pub fn unload_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
         self.view.spawners.unload_chunk(pos);
+        self.view.vaults.unload_chunk(pos);
         self.server.unload_chunk(pos);
     }
 
@@ -1327,6 +1355,11 @@ impl Entities {
         }
     }
 
+    pub fn vault_key(&mut self, player: u64, pos: (i32, i32, i32), stack: &ItemStack, sent: SentItemUse) {
+        self.server.vault_key(player, pos, stack);
+        self.players.queue(player).item_use_waiting = Some(sent);
+    }
+
     pub fn book_stack(&self, book: &minecraft_terrain::lectern::BookStack) -> ItemStack {
         let mut stack = self.recipes.stack(&book.id, 1);
         stack.components = book.components.as_deref().and_then(|text| serde_json::from_str(text).ok());
@@ -1547,9 +1580,10 @@ impl Entities {
                     .iter()
                     .map(|actor| {
                         let raid_omens = std::mem::take(&mut self.players.queue(actor.id).raid_omens_waiting);
-                        (actor.id, minecraft_terrain::server::PlayerOmens { bad_omen: actor.view.omens.bad_omen, raid_omens })
+                        (actor.id, minecraft_terrain::server::PlayerOmens { bad_omen: actor.view.omens.bad_omen, trial_omen: actor.view.omens.trial_omen, raid_omens })
                     })
                     .collect(),
+                lodestones: actors.iter().map(|actor| (actor.id, minecraft_terrain::lodestone::tracked_targets(actor.inventory, self.dimension))).filter(|(_, targets)| !targets.is_empty()).collect(),
                 view_distance: self.view_distance,
             }, batch.normal.clone());
         }
@@ -1647,8 +1681,9 @@ impl Entities {
             self.command_jobs.extend(output.jobs);
             changes.extend(output.changes);
             self.view.spawners.block_entities(&output.block_entities);
+            self.view.vaults.block_entities(&output.block_entities);
             if self.heard.listening() {
-                self.spawner_tags.extend(output.block_entities.iter().filter_map(|(pos, tag)| tag.as_ref().filter(|tag| minecraft_terrain::spawner_display::is_spawner(tag)).map(|tag| (*pos, tag.clone()))));
+                self.spawner_tags.extend(output.block_entities.iter().filter_map(|(pos, tag)| tag.as_ref().filter(|tag| minecraft_terrain::spawner_display::is_displayed_block_entity(tag) || minecraft_terrain::vault::is_vault(tag)).map(|tag| (*pos, tag.clone()))));
             }
             self.block_entity_changes.extend(output.block_entities);
             self.destroyed.extend(output.destroyed);
@@ -1699,6 +1734,9 @@ impl Entities {
                 }
             }
             settle_merchant_news(queue, actor.inventory);
+            for pos in std::mem::take(&mut queue.lodestones_gone) {
+                minecraft_terrain::lodestone::forget(actor.inventory, self.dimension, pos);
+            }
             let broken = std::mem::take(&mut queue.broken);
             if presenter == Some(actor.id) {
                 self.broken_items.extend(broken);
@@ -1904,7 +1942,7 @@ fn melee_push(kind: &PlayerHitKind) -> crate::impulse::MeleePush {
     }
 }
 
-fn mob_hit(
+pub(crate) fn mob_hit(
     hit: &minecraftoss_entities::world::PlayerHit,
     feet: [f64; 3],
     difficulty: i32,
@@ -2729,6 +2767,23 @@ mod tests {
     }
 
     #[test]
+    fn an_arrow_dropped_by_an_ominous_trial_hurts_the_same_on_every_difficulty() {
+        let hit = minecraftoss_entities::world::PlayerHit {
+            player_id: HOST,
+            damage: 3.0,
+            kind: PlayerHitKind::Arrow { velocity: DVec3::new(0.0, -1.1, 0.0), effect: Some((EffectKind::Poison, 900)) },
+            source: None,
+        };
+        let damage = |difficulty| mob_hit(&hit, [0.0; 3], difficulty, None).map(|h| h.0);
+        assert_eq!((damage(0), damage(1), damage(2), damage(3)), (Some(3.0), Some(3.0), Some(3.0), Some(3.0)));
+        let (_, _, _, cause, _, effect) = mob_hit(&hit, [0.0; 3], 3, None).unwrap();
+        assert_eq!(cause, crate::death::DamageCause::Mob { id: 0, type_id: "minecraft:arrow", attack: crate::death::MobAttack::Arrow });
+        assert_eq!(effect, Some((EffectKind::Poison, 900, 0)));
+        let shot = minecraftoss_entities::world::PlayerHit { source: Some(9), ..hit };
+        assert_eq!(mob_hit(&shot, [0.0; 3], 3, Some("minecraft:skeleton")).map(|h| h.0), Some(4.5), "a skeleton's arrow still scales");
+    }
+
+    #[test]
     fn blasts_hurt_mobs_four_times_as_hard_as_bullets() {
         assert_eq!(HEALTH_SCALE, 0.2);
         assert_eq!(BLAST_HEALTH_SCALE, 0.8);
@@ -3136,6 +3191,31 @@ mod tests {
         assert_eq!(entities.view.swirls, vec![poisoned.clone()], "a spectator gives off no swirl");
         let sent = entities.take_friend_snapshot().expect("the friend's snapshot");
         assert_eq!(sent.swirls, vec![poisoned]);
+    }
+
+    #[test]
+    fn each_players_compass_forgets_a_lodestone_that_is_not_there_in_a_loaded_chunk() {
+        use minecraft_terrain::lodestone::{self, Target};
+        let Some(mut entities) = friend_world() else {
+            return;
+        };
+        entities.spawn_mobs = false;
+        let compass = ItemStack::new(lodestone::COMPASS, 1);
+        let overworld = |pos| lodestone::with_tracker(&compass, Target::new(minecraft_net::Dimension::Overworld, pos));
+        let (mut host, mut friend) = (Inventory::default(), Inventory::default());
+        host.slots[0] = Some(overworld((10, 200, 10)));
+        host.slots[1] = Some(overworld((500, 64, 500)));
+        host.slots[2] = Some(lodestone::with_tracker(&compass, Target::new(minecraft_net::Dimension::Nether, (10, 200, 10))));
+        friend.slots[4] = Some(overworld((12, 200, 12)));
+        let target = |inventory: &Inventory, slot: usize| lodestone::tracker(inventory.slots[slot].as_ref().unwrap()).unwrap().target;
+        let started = std::time::Instant::now();
+        while target(&host, 0).is_some() || target(&friend, 4).is_some() {
+            assert!(started.elapsed().as_secs() < 300, "the stone was never reported");
+            tick_both(&mut entities, &mut host, &mut friend);
+        }
+        assert_eq!(target(&host, 1), Some(Target::new(minecraft_net::Dimension::Overworld, (500, 64, 500))), "an unloaded chunk's lodestone is kept");
+        assert_eq!(target(&host, 2), Some(Target::new(minecraft_net::Dimension::Nether, (10, 200, 10))), "another dimension's lodestone is never checked");
+        assert!(lodestone::tracker(host.slots[0].as_ref().unwrap()).unwrap().tracked, "the needle spins but it stays a lodestone compass");
     }
 
     fn count(inventory: &Inventory, id: &str) -> u32 {

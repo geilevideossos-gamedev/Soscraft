@@ -131,7 +131,7 @@ pub fn splash(
                     mob.amplifier,
                     scale,
                     at,
-                    Some(PLAYER_TARGET + owner),
+                    PLAYER_TARGET.checked_add(owner),
                 );
                 if result.is_some_and(|r| r.applied) {
                     blame_player(world, target.id, owner);

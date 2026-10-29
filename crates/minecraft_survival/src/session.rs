@@ -174,6 +174,7 @@ pub struct Session {
     gear: BTreeMap<u32, GearView>,
     command_level: Option<u8>,
     view: Option<PlayerView>,
+    spawn: Option<(Dimension, [i32; 3])>,
     cracks: BTreeMap<(u32, BlockPos), u8>,
     boss_bar: Option<f32>,
     raid_bars: BTreeMap<i32, minecraft_terrain::raids::RaidBar>,
@@ -202,6 +203,7 @@ impl Session {
             gear: BTreeMap::new(),
             command_level: None,
             view: None,
+            spawn: None,
             cracks: BTreeMap::new(),
             boss_bar: None,
             raid_bars: BTreeMap::new(),
@@ -354,6 +356,16 @@ impl Session {
         }
         self.view = Some(key);
         self.outbox.push(ToClient::Player(Box::new(view)));
+    }
+
+    pub fn send_spawn(&mut self, spawn: &minecraft_terrain::level_storage::RespawnData) {
+        let dimension = crate::save::spawn_dimension(spawn);
+        let (x, y, z) = spawn.pos;
+        let now = (dimension, [x, y, z]);
+        if self.spawn != Some(now) {
+            self.spawn = Some(now);
+            self.outbox.push(ToClient::SpawnPosition { dimension, pos: now.1 });
+        }
     }
 
     pub fn send_recipe_book(&mut self, player: &Player) {
@@ -787,7 +799,7 @@ pub fn rules_of(rules: &GameRules) -> Rules {
 pub fn time_of(globals: &Globals) -> ToClient {
     let advancing = globals.game_rules.bool("advance_time");
     ToClient::Time {
-        game_time: globals.day.ticks.floor() as i64,
+        game_time: globals.game_time(),
         clocks: vec![
             (
                 OVERWORLD_CLOCK.to_owned(),
@@ -1105,13 +1117,17 @@ impl Sessions {
     pub fn send_time(&mut self, globals: &Globals, levels: &BTreeMap<Dimension, Level>) {
         let time = time_of(globals);
         for session in self.sessions.values_mut() {
-            session.outbox.push(time.clone());
-            let weather = session
+            let entities = session
                 .chunks
                 .level
                 .and_then(|dimension| levels.get(&dimension))
-                .and_then(|level| level.entities.as_ref())
-                .map(|entities| entities.weather);
+                .and_then(|level| level.entities.as_ref());
+            let mut time = time.clone();
+            if let (ToClient::Time { game_time, .. }, Some(entities)) = (&mut time, entities) {
+                *game_time = entities.game_time();
+            }
+            session.outbox.push(time);
+            let weather = entities.map(|entities| entities.weather);
             if let Some(weather) = weather {
                 session.outbox.push(ToClient::Weather {
                     rain: weather.rain_level,
@@ -1241,6 +1257,12 @@ impl Sessions {
                 session.send_view(player);
                 session.send_recipe_book(player);
             }
+        }
+    }
+
+    pub fn send_spawns(&mut self, globals: &Globals) {
+        for session in self.sessions.values_mut() {
+            session.send_spawn(&globals.spawn);
         }
     }
 
@@ -2264,6 +2286,35 @@ mod tests {
     }
 
     #[test]
+    fn each_friend_gets_the_world_spawn_after_its_login_and_again_when_it_moves() {
+        let Some((_dir, mut server)) = host_server("session-spawn") else {
+            return;
+        };
+        let origins = [(Dimension::Overworld, [0.5, 64.0, 0.5])];
+        let mut sessions = Sessions::default();
+        let now = Instant::now();
+        sessions.hello(&mut server, 1, "Alex", HELLO, &context(&origins), now);
+        server.globals.spawn = crate::save::world_spawn(Dimension::Overworld, (12, 70, -4));
+        sessions.send_spawns(&server.globals);
+        let spawns = |sessions: &mut Sessions| -> Vec<(u32, ToClient)> {
+            sessions.take_outgoing().into_iter().filter(|(_, message)| matches!(message, ToClient::SpawnPosition { .. })).collect()
+        };
+        let sent = spawns(&mut sessions);
+        assert_eq!(sent, [(1, ToClient::SpawnPosition { dimension: Dimension::Overworld, pos: [12, 70, -4] })]);
+        sessions.send_spawns(&server.globals);
+        assert!(spawns(&mut sessions).is_empty(), "sent once");
+        sessions.hello(&mut server, 2, "Bob", HELLO, &context(&origins), now);
+        let out = sessions.take_outgoing();
+        assert!(matches!(out.iter().find(|(client, _)| *client == 2), Some((_, ToClient::Login(_)))), "the login comes first");
+        sessions.send_spawns(&server.globals);
+        assert_eq!(spawns(&mut sessions), [(2, ToClient::SpawnPosition { dimension: Dimension::Overworld, pos: [12, 70, -4] })]);
+        server.globals.spawn = crate::save::world_spawn(Dimension::Overworld, (0, 64, 0));
+        sessions.send_spawns(&server.globals);
+        let moved = ToClient::SpawnPosition { dimension: Dimension::Overworld, pos: [0, 64, 0] };
+        assert_eq!(spawns(&mut sessions), [(1, moved.clone()), (2, moved)], "/setworldspawn reaches everyone");
+    }
+
+    #[test]
     fn a_second_hello_with_a_name_in_the_world_is_refused_and_retired() {
         let Some((_dir, mut server)) = host_server("session-twice") else {
             return;
@@ -2699,7 +2750,7 @@ mod tests {
         sessions.take_outgoing();
         sessions.send_time(&server.globals, &server.levels);
         let time = ToClient::Time {
-            game_time: 6000,
+            game_time: server.globals.game_time(),
             clocks: vec![
                 (OVERWORLD_CLOCK.to_owned(), 6000.0, false),
                 (THE_END_CLOCK.to_owned(), 1234.0, false),

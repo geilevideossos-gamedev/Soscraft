@@ -49,11 +49,13 @@ pub struct EntityView {
     drawn_dragons: minecraft_terrain::client_dragon::ClientDragons,
     drawn_fireballs: minecraft_terrain::client_dragon::ClientFireballs,
     pub(crate) frames: Vec<minecraft_terrain::item_frame::FrameView>,
+    pub(crate) ominous_items: Vec<minecraft_terrain::trial_spawner::OminousItemView>,
     pub(crate) growls: HashMap<u64, i32>,
     pub(crate) orbs: Vec<ServerOrb>,
     pub(crate) falling: minecraft_terrain::falling_render::FallingBlocks,
     pub lids: minecraft_terrain::lids::Lids,
     pub(crate) spawners: minecraft_terrain::spawner_display::SpawnerDisplays,
+    pub(crate) vaults: minecraft_terrain::vault_display::VaultDisplays,
     pub(crate) orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
     pub potion_crumbs: Vec<DVec3>,
@@ -99,6 +101,7 @@ impl EntityView {
             drawn_dragons: Default::default(),
             drawn_fireballs: Default::default(),
             frames: Vec::new(),
+            ominous_items: Vec::new(),
             growls: HashMap::new(),
             orbs: Vec::new(),
             falling: Default::default(),
@@ -106,6 +109,7 @@ impl EntityView {
             spawners: minecraft_terrain::spawner_display::SpawnerDisplays::new(
                 (seed ^ 0x5b3d) as u64,
             ),
+            vaults: minecraft_terrain::vault_display::VaultDisplays::new((seed ^ 0x7a17) as u64),
             orb_pickups: Vec::new(),
             item_crumbs: Vec::new(),
             potion_crumbs: Vec::new(),
@@ -376,6 +380,7 @@ impl EntityView {
             self.ambient.breath_trail(fireball.position);
         }
         self.frames = std::mem::take(&mut snapshot.frames);
+        self.ominous_items = std::mem::take(&mut snapshot.ominous_items);
         self.bursts(snapshot);
         self.orbs = snapshot.orbs.clone();
         self.falling.receive(
@@ -480,6 +485,11 @@ impl EntityView {
             self.potion_crumbs
                 .push(minecraft_terrain::spell_particles::break_center(at));
             return;
+        }
+        if id == minecraft_terrain::vault::ACTIVATE {
+            let holders = &self.rope_holders;
+            let players = |uuid: u128| holders.get(&uuid).map(|holder| (holder.feet, holder.height));
+            self.vaults.activation(pos, scene, &players, &mut self.ambient);
         }
         let is_a = minecraft_terrain::level_events::class_test(scene);
         let effects = minecraft_terrain::level_events::level_event(
@@ -831,7 +841,8 @@ impl EntityView {
     }
 
     pub fn tick_scene(&mut self, scene: &HandcraftedScene, ticks: u32) {
-        for _ in 0..ticks {
+        let time = self.world.game_time();
+        for tick in 0..ticks {
             for rocket in self.thrown.iter().filter(|view| minecraft_terrain::firework_rocket::is_rocket(view)) {
                 self.fireworks.trail(rocket.position, rocket.position.y - rocket.previous.y);
             }
@@ -839,6 +850,20 @@ impl EntityView {
             self.poof.tick(scene);
             let bodies = &self.bodies;
             self.ambient.tick_emitters(|key| bodies.get(&key).copied());
+            let now = time - i64::from(ticks - 1 - tick);
+            for sound in self.spawners.tick_trials(scene, now, &mut self.ambient) {
+                self.sounds.push((sound.event.to_owned(), DVec3::from_array(sound.at), sound.volume, sound.pitch));
+            }
+            let holders = &self.rope_holders;
+            let players = |uuid: u128| holders.get(&uuid).map(|holder| (holder.feet, holder.height));
+            for sound in self.vaults.tick(scene, now, &players, &mut self.ambient) {
+                self.sounds.push((sound.event.to_owned(), DVec3::from_array(sound.at), sound.volume, sound.pitch));
+            }
+            if now % minecraft_terrain::ambient_particles::OMINOUS_SPAWNING_PERIOD == 0 {
+                for item in &self.ominous_items {
+                    self.ambient.ominous_spawning(DVec3::from_array(item.position));
+                }
+            }
             self.ambient.tick(scene);
             for entity in self
                 .world
@@ -1332,6 +1357,24 @@ impl EntityView {
         let _ = self
             .items
             .append_frames(&mut out.items, &frames, packs, atlas, light);
+        let ominous: Vec<(Vec3, f32, String)> = self
+            .ominous_items
+            .iter()
+            .map(|item| {
+                (
+                    DVec3::from_array(item.position).as_vec3(),
+                    item.age as f32 + partial,
+                    minecraft_terrain::item_tint::key(&item.item, item.tint),
+                )
+            })
+            .collect();
+        let _ = self
+            .items
+            .append_ominous_items(&mut out.items, &ominous, packs, atlas, light);
+        let vaults = self.vaults.items(camera, partial);
+        let _ = self
+            .items
+            .append_vault_items(&mut out.items, &vaults, packs, atlas, light);
         let _ = self.items.append_primed_tnt(
             &mut out.items,
             &self.falling.primed_tnt(partial),

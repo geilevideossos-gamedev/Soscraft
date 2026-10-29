@@ -1,8 +1,10 @@
 use crate::ambient_particles::{AmbientParticles, Kind};
 use crate::client_mobs::{ClientMobs, server_mobs};
+use crate::display_ticks::AmbientSound;
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh};
-use crate::scene::{BlockPos, Scene};
+use crate::scene::{Block, BlockPos, Scene};
+use crate::trial_spawner::{Emission, TrialState};
 use glam::{DVec3, Quat, Vec3};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::world::EntityWorld;
@@ -11,6 +13,9 @@ use std::collections::BTreeMap;
 
 pub const VIEW_DISTANCE: f64 = 64.0;
 const SPAWNER: &str = "minecraft:mob_spawner";
+const TRIAL_SPAWNER: &str = "minecraft:trial_spawner";
+const TRIAL_AMBIENT: &str = "minecraft:block.trial_spawner.ambient";
+const TRIAL_AMBIENT_OMINOUS: &str = "minecraft:block.trial_spawner.ambient_ominous";
 const CAVE_SPIDER: &str = "minecraft:cave_spider";
 const SPIDER: &str = "minecraft:spider";
 const SPIDER_SKIN: &str = "minecraft:entity/spider/spider";
@@ -102,14 +107,102 @@ fn short(tag: &Tag, key: &str, default: i32) -> i32 {
         .map_or(default, |v| v as i32)
 }
 
-pub fn is_spawner(tag: &Tag) -> bool {
-    tag.get("id").and_then(Tag::as_str) == Some(SPAWNER)
+fn next_mob_spawns_at(tag: &Tag) -> i64 {
+    tag.get("next_mob_spawns_at")
+        .and_then(Tag::as_i64)
+        .unwrap_or(0)
+}
+
+pub fn is_displayed_block_entity(tag: &Tag) -> bool {
+    matches!(
+        tag.get("id").and_then(Tag::as_str),
+        Some(SPAWNER | TRIAL_SPAWNER)
+    )
+}
+
+pub fn is_displayed_block(block: &Block) -> bool {
+    block.id.namespace == "minecraft" && matches!(block.id.path.as_str(), "spawner" | "trial_spawner")
+}
+
+fn is_trial(tag: &Tag) -> bool {
+    tag.get("id").and_then(Tag::as_str) == Some(TRIAL_SPAWNER)
+}
+
+pub fn trial_block_state(block: &Block) -> Option<(TrialState, bool)> {
+    if block.id.namespace != "minecraft" || block.id.path != "trial_spawner" {
+        return None;
+    }
+    let state = block
+        .properties
+        .get(crate::trial_spawner::STATE)
+        .and_then(|name| TrialState::from_name(name))
+        .unwrap_or(TrialState::Inactive);
+    let ominous = block
+        .properties
+        .get(crate::trial_spawner::OMINOUS)
+        .is_some_and(|value| value == "true");
+    Some((state, ominous))
+}
+
+fn shows_mob(block: &Block, trial: bool) -> bool {
+    if trial {
+        trial_block_state(block).is_some_and(|(state, _)| state.has_spinning_mob())
+    } else {
+        block.id.namespace == "minecraft" && block.id.path == "spawner"
+    }
 }
 
 fn entity_of(tag: &Tag) -> Option<Tag> {
-    tag.get("SpawnData")
+    let key = if is_trial(tag) { "spawn_data" } else { "SpawnData" };
+    tag.get(key)
         .and_then(|data| data.get("entity"))
         .cloned()
+}
+
+fn offset_random(center: DVec3, random: &mut LegacyRandom, spread: f32) -> DVec3 {
+    let mut offset = || f64::from((random.next_float() - 0.5) * spread);
+    let x = offset();
+    let y = offset();
+    let z = offset();
+    center + DVec3::new(x, y, z)
+}
+
+fn emit(
+    emission: Emission,
+    ominous: bool,
+    pos: BlockPos,
+    game_time: i64,
+    random: &mut LegacyRandom,
+    particles: &mut AmbientParticles,
+) {
+    let flame = if ominous { Kind::SoulFireFlame } else { Kind::Flame };
+    let small = if ominous { Kind::SoulFireFlame } else { Kind::SmallFlame };
+    match emission {
+        Emission::None => {}
+        Emission::SmallFlames => {
+            if random.next_int(2) == 0 {
+                let at = offset_random(center(pos), random, 0.9);
+                particles.add(small, at, DVec3::ZERO);
+            }
+        }
+        Emission::FlamesAndSmoke => {
+            let at = offset_random(center(pos), random, 1.0);
+            particles.add(Kind::Smoke, at, DVec3::ZERO);
+            particles.add(flame, at, DVec3::ZERO);
+        }
+        Emission::SmokeInsideAndTopFace => {
+            let at = offset_random(center(pos), random, 0.9);
+            if random.next_int(3) == 0 {
+                particles.add(Kind::Smoke, at, DVec3::ZERO);
+            }
+            if game_time % 20 == 0 {
+                let top = center(pos) + DVec3::new(0.0, 0.5, 0.0);
+                for _ in 0..random.next_int(4) + 20 {
+                    particles.add(Kind::Smoke, top, DVec3::ZERO);
+                }
+            }
+        }
+    }
 }
 
 struct Shown {
@@ -457,6 +550,8 @@ struct SpawnerDisplay {
     spin: f64,
     o_spin: f64,
     shown: Option<Option<Shown>>,
+    trial: bool,
+    next_mob_spawns_at: i64,
 }
 
 impl SpawnerDisplay {
@@ -469,7 +564,22 @@ impl SpawnerDisplay {
             spin: 0.0,
             o_spin: 0.0,
             shown: None,
+            trial: is_trial(tag),
+            next_mob_spawns_at: next_mob_spawns_at(tag),
         }
+    }
+
+    fn trial_spin(&mut self, state: TrialState, game_time: i64) {
+        if !state.has_spinning_mob() {
+            return;
+        }
+        let waiting = if state == TrialState::Active {
+            (self.next_mob_spawns_at - game_time).max(0)
+        } else {
+            0
+        };
+        self.o_spin = self.spin;
+        self.spin = (self.spin + state.spin_speed() / (waiting as f64 + 200.0)) % 360.0;
     }
 
     fn has_mob(&self) -> bool {
@@ -517,7 +627,7 @@ impl SpawnerDisplays {
                 .iter()
                 .filter(|(pos, _)| !store.entities.contains_key(pos)),
         ) {
-            if is_spawner(tag) {
+            if is_displayed_block_entity(tag) {
                 self.displays.insert(*pos, SpawnerDisplay::read(tag));
             }
         }
@@ -530,14 +640,27 @@ impl SpawnerDisplays {
 
     pub fn block_entities(&mut self, changes: &[(BlockPos, Option<Tag>)]) {
         for (pos, tag) in changes {
-            let Some(tag) = tag.as_ref().filter(|tag| is_spawner(tag)) else {
+            let Some(tag) = tag.as_ref().filter(|tag| is_displayed_block_entity(tag)) else {
                 self.displays.remove(pos);
                 continue;
             };
-            let Some(display) = self.displays.get_mut(pos) else {
+            let Some(display) = self
+                .displays
+                .get_mut(pos)
+                .filter(|display| display.trial == is_trial(tag))
+            else {
                 self.displays.insert(*pos, SpawnerDisplay::read(tag));
                 continue;
             };
+            if display.trial {
+                display.next_mob_spawns_at = next_mob_spawns_at(tag);
+                let entity = entity_of(tag);
+                if entity != display.entity {
+                    display.entity = entity;
+                    display.shown = None;
+                }
+                continue;
+            }
             display.min_delay = short(tag, "MinSpawnDelay", 200);
             display.range = f64::from(short(tag, "RequiredPlayerRange", 16));
             let entity = entity_of(tag);
@@ -553,6 +676,9 @@ impl SpawnerDisplays {
 
     pub fn tick(&mut self, players: &[DVec3], particles: &mut AmbientParticles) {
         for (&pos, display) in &mut self.displays {
+            if display.trial {
+                continue;
+            }
             if !display.near(pos, players) {
                 display.o_spin = display.spin;
                 continue;
@@ -576,6 +702,38 @@ impl SpawnerDisplays {
         }
     }
 
+    pub fn tick_trials<S: Scene + ?Sized>(
+        &mut self,
+        scene: &S,
+        game_time: i64,
+        particles: &mut AmbientParticles,
+    ) -> Vec<AmbientSound> {
+        let mut sounds = Vec::new();
+        for (&pos, display) in &mut self.displays {
+            if !display.trial {
+                continue;
+            }
+            let Some((state, ominous)) = scene.block(pos).and_then(trial_block_state) else {
+                continue;
+            };
+            let random = &mut self.random;
+            emit(state.emission(), ominous, pos, game_time, random, particles);
+            display.trial_spin(state, game_time);
+            if state.can_spawn() && random.next_float() <= 0.02 {
+                let event = if ominous { TRIAL_AMBIENT_OMINOUS } else { TRIAL_AMBIENT };
+                let volume = random.next_float() * 0.25 + 0.75;
+                let pitch = random.next_float() + 0.5;
+                sounds.push(AmbientSound {
+                    event,
+                    at: center(pos).to_array(),
+                    volume,
+                    pitch,
+                });
+            }
+        }
+        sounds
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn append<S: Scene + ?Sized>(
         &mut self,
@@ -593,9 +751,10 @@ impl SpawnerDisplays {
             if center(pos).distance_squared(camera) >= VIEW_DISTANCE * VIEW_DISTANCE {
                 continue;
             }
-            if !scene.block(pos).is_some_and(|block| {
-                block.id.namespace == "minecraft" && block.id.path == "spawner"
-            }) {
+            if !scene
+                .block(pos)
+                .is_some_and(|block| shows_mob(block, display.trial))
+            {
                 continue;
             }
             let Some(entity) = &display.entity else {
@@ -1144,5 +1303,244 @@ mod tests {
                 .vertices
                 .is_empty()
         );
+    }
+
+    fn trial_tag(mob: Option<&str>, next: i64) -> Tag {
+        let mut map = BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String(TRIAL_SPAWNER.to_owned()));
+        map.insert("next_mob_spawns_at".to_owned(), Tag::Long(next));
+        map.insert(
+            "normal_config".to_owned(),
+            Tag::String("minecraft:trial_chamber/melee/zombie/normal".to_owned()),
+        );
+        if let Some(mob) = mob {
+            let mut entity = BTreeMap::new();
+            entity.insert("id".to_owned(), Tag::String(mob.to_owned()));
+            let mut data = BTreeMap::new();
+            data.insert("entity".to_owned(), Tag::Compound(entity));
+            map.insert("spawn_data".to_owned(), Tag::Compound(data));
+        }
+        Tag::Compound(map)
+    }
+
+    fn trial_scene(pos: BlockPos, state: TrialState, ominous: bool) -> Blocks {
+        let ominous = if ominous { "true" } else { "false" };
+        let block = Block::new("minecraft:trial_spawner")
+            .with(crate::trial_spawner::STATE, state.name())
+            .with(crate::trial_spawner::OMINOUS, ominous);
+        Blocks(HashMap::from([(pos, block)]))
+    }
+
+    fn one_trial(pos: BlockPos, mob: Option<&str>, next: i64) -> SpawnerDisplays {
+        let mut displays = SpawnerDisplays::new(1);
+        displays.block_entities(&[(pos, Some(trial_tag(mob, next)))]);
+        displays
+    }
+
+    #[test]
+    fn a_waiting_trial_spawner_shows_its_mob_and_spins_slower_than_an_active_one() {
+        let pos = (4, -30, 9);
+        let mut displays = one_trial(pos, Some("minecraft:zombie"), 0);
+        assert!(displays.displays[&pos].trial);
+        let mut particles = AmbientParticles::new(2);
+        let waiting = trial_scene(pos, TrialState::WaitingForPlayers, false);
+        let active = trial_scene(pos, TrialState::Active, false);
+        displays.tick_trials(&waiting, 1000, &mut particles);
+        let display = &displays.displays[&pos];
+        assert_eq!((display.o_spin, display.spin), (0.0, 1.0));
+        displays.tick_trials(&active, 1001, &mut particles);
+        assert_eq!(displays.displays[&pos].spin, 6.0);
+        displays.block_entities(&[(pos, Some(trial_tag(Some("minecraft:zombie"), 1042)))]);
+        displays.tick_trials(&active, 1002, &mut particles);
+        let slowed = 6.0 + 1000.0 / 240.0;
+        assert_eq!(displays.displays[&pos].spin, slowed);
+        displays.tick_trials(&waiting, 1003, &mut particles);
+        assert_eq!(
+            displays.displays[&pos].spin,
+            slowed + 1.0,
+            "the next spawn only counts while active"
+        );
+        let light = light_at(pos, 15, 0);
+        for (state, drawn) in [
+            (TrialState::WaitingForPlayers, true),
+            (TrialState::Active, true),
+            (TrialState::Inactive, false),
+            (TrialState::WaitingForRewardEjection, false),
+            (TrialState::EjectingReward, false),
+            (TrialState::Cooldown, false),
+        ] {
+            let mesh = draw(
+                &mut displays,
+                &trial_scene(pos, state, false),
+                &light,
+                center(pos),
+            );
+            assert_eq!(!mesh.vertices.is_empty(), drawn, "{state:?}");
+        }
+        let spin = displays.displays[&pos].spin;
+        let cooldown = trial_scene(pos, TrialState::Cooldown, false);
+        displays.tick_trials(&cooldown, 1004, &mut particles);
+        assert_eq!(displays.displays[&pos].spin, spin);
+        assert!(
+            draw(&mut displays, &spawners(&[pos]), &light, center(pos))
+                .vertices
+                .is_empty(),
+            "a mob spawner block under a trial display shows nothing"
+        );
+        let mut empty = one_trial(pos, None, 0);
+        assert!(draw(&mut empty, &waiting, &light, center(pos))
+            .vertices
+            .is_empty());
+    }
+
+    #[test]
+    fn trial_flames_follow_the_state_and_burn_soul_blue_when_ominous() {
+        let pos = (0, -20, 0);
+        let top = center(pos) + DVec3::new(0.0, 0.5, 0.0);
+        let mut displays = one_trial(pos, Some("minecraft:husk"), 0);
+        let mut run = |state: TrialState, ominous: bool, ticks: i64| {
+            let mut particles = AmbientParticles::new(5);
+            let scene = trial_scene(pos, state, ominous);
+            for time in 1..=ticks {
+                displays.tick_trials(&scene, time, &mut particles);
+            }
+            particles.kinds_at().collect::<Vec<_>>()
+        };
+        let inside = |added: &[(Kind, DVec3)]| {
+            added.iter().all(|(_, at)| {
+                let local = *at - DVec3::new(0.0, -20.0, 0.0);
+                local.min_element() >= -0.051 && local.max_element() <= 1.051
+            })
+        };
+        let waiting = run(TrialState::WaitingForPlayers, false, 400);
+        assert!(waiting.iter().all(|(kind, _)| *kind == Kind::SmallFlame));
+        assert!((150..250).contains(&waiting.len()), "{}", waiting.len());
+        assert!(inside(&waiting));
+        let ominous = run(TrialState::WaitingForPlayers, true, 400);
+        assert!(!ominous.is_empty());
+        assert!(ominous.iter().all(|(kind, _)| *kind == Kind::SoulFireFlame));
+        let ejecting = run(TrialState::EjectingReward, false, 100);
+        assert!(!ejecting.is_empty());
+        assert!(ejecting.iter().all(|(kind, _)| *kind == Kind::SmallFlame));
+        assert!(run(TrialState::Inactive, false, 100).is_empty());
+        for (ominous, flame) in [(false, Kind::Flame), (true, Kind::SoulFireFlame)] {
+            let active = run(TrialState::Active, ominous, 10);
+            let kinds: Vec<_> = active.iter().map(|(kind, _)| *kind).collect();
+            assert_eq!(kinds, [Kind::Smoke, flame].repeat(10));
+            assert!(inside(&active));
+        }
+        let cooldown = run(TrialState::Cooldown, false, 40);
+        assert!(cooldown.iter().all(|(kind, _)| *kind == Kind::Smoke));
+        let bursts = cooldown.iter().filter(|(_, at)| *at == top).count();
+        assert!((40..=46).contains(&bursts), "two bursts of 20 to 23: {bursts}");
+        assert!(cooldown.len() > bursts, "smoke inside one tick in three");
+        let mut particles = AmbientParticles::new(5);
+        displays.tick(&[center(pos)], &mut particles);
+        assert!(particles.is_empty(), "the mob spawner tick leaves trials alone");
+    }
+
+    #[test]
+    fn a_trial_spawner_hums_two_ticks_in_a_hundred_while_it_can_spawn() {
+        let pos = (8, 0, 8);
+        let mut displays = one_trial(pos, Some("minecraft:zombie"), 0);
+        let mut hums = |state: TrialState, ominous: bool| {
+            let scene = trial_scene(pos, state, ominous);
+            let mut particles = AmbientParticles::new(1);
+            (1..=5000)
+                .flat_map(|time| displays.tick_trials(&scene, time, &mut particles))
+                .collect::<Vec<_>>()
+        };
+        let waiting = hums(TrialState::WaitingForPlayers, false);
+        assert!((60..140).contains(&waiting.len()), "{}", waiting.len());
+        for sound in &waiting {
+            assert_eq!(sound.event, TRIAL_AMBIENT);
+            assert_eq!(sound.at, center(pos).to_array());
+            assert!((0.75..=1.0).contains(&sound.volume));
+            assert!((0.5..=1.5).contains(&sound.pitch));
+        }
+        let active = hums(TrialState::Active, true);
+        assert!(!active.is_empty());
+        assert!(active.iter().all(|sound| sound.event == TRIAL_AMBIENT_OMINOUS));
+        for state in [
+            TrialState::Inactive,
+            TrialState::WaitingForRewardEjection,
+            TrialState::EjectingReward,
+            TrialState::Cooldown,
+        ] {
+            assert!(hums(state, false).is_empty(), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn trial_spawners_load_with_chunks_and_follow_their_block_entity() {
+        let mut chunk = minecraftoss_core::Chunk::new(
+            minecraftoss_core::ChunkPos::new(0, 0),
+            -64,
+            384,
+            minecraftoss_core::BiomeId(0),
+        );
+        chunk
+            .block_entities
+            .entities
+            .insert((3, -30, 3), trial_tag(Some("minecraft:skeleton"), 0));
+        chunk
+            .block_entities
+            .pending
+            .insert((5, -30, 3), trial_tag(None, 0));
+        let mut displays = SpawnerDisplays::new(1);
+        displays.load_chunk(&chunk);
+        assert_eq!(displays.len(), 2);
+        assert!(displays.displays[&(3, -30, 3)].has_mob());
+        assert!(!displays.displays[&(5, -30, 3)].has_mob());
+        let pos = (3, -30, 3);
+        let scene = trial_scene(pos, TrialState::WaitingForPlayers, false);
+        let light = light_at(pos, 15, 0);
+        draw(&mut displays, &scene, &light, center(pos));
+        assert!(
+            matches!(&displays.displays[&pos].shown, Some(Some(shown)) if shown.kind == "minecraft:skeleton")
+        );
+        displays.displays.get_mut(&pos).unwrap().spin = 33.0;
+        displays.block_entities(&[(pos, Some(trial_tag(Some("minecraft:skeleton"), 90)))]);
+        let display = &displays.displays[&pos];
+        assert!(display.shown.is_some(), "the same mob is kept");
+        assert_eq!((display.next_mob_spawns_at, display.spin), (90, 33.0));
+        displays.block_entities(&[(pos, Some(trial_tag(Some("minecraft:stray"), 90)))]);
+        assert!(displays.displays[&pos].shown.is_none());
+        draw(&mut displays, &scene, &light, center(pos));
+        assert!(
+            matches!(&displays.displays[&pos].shown, Some(Some(shown)) if shown.kind == "minecraft:stray")
+        );
+        displays.block_entities(&[(pos, Some(spawner_tag(Some("minecraft:zombie"), 20)))]);
+        let display = &displays.displays[&pos];
+        assert!(!display.trial);
+        assert_eq!(display.delay, 20);
+        displays.block_entities(&[(pos, Some(trial_tag(Some("minecraft:husk"), 0)))]);
+        assert!(displays.displays[&pos].trial);
+        displays.block_entities(&[(pos, None)]);
+        assert_eq!(displays.len(), 1);
+    }
+
+    #[test]
+    fn spawners_and_trial_spawners_are_the_displayed_block_entities() {
+        assert!(is_displayed_block_entity(&spawner_tag(None, 0)));
+        assert!(is_displayed_block_entity(&trial_tag(None, 0)));
+        let mut vault = BTreeMap::new();
+        vault.insert("id".to_owned(), Tag::String("minecraft:vault".to_owned()));
+        assert!(!is_displayed_block_entity(&Tag::Compound(vault)));
+        assert!(is_displayed_block(&Block::new("minecraft:spawner")));
+        assert!(is_displayed_block(&Block::new("minecraft:trial_spawner")));
+        assert!(!is_displayed_block(&Block::new("minecraft:stone")));
+        let ominous = Block::new("minecraft:trial_spawner")
+            .with(crate::trial_spawner::STATE, "cooldown")
+            .with(crate::trial_spawner::OMINOUS, "true");
+        assert_eq!(
+            trial_block_state(&ominous),
+            Some((TrialState::Cooldown, true))
+        );
+        assert_eq!(
+            trial_block_state(&Block::new("minecraft:trial_spawner")),
+            Some((TrialState::Inactive, false))
+        );
+        assert_eq!(trial_block_state(&Block::new("minecraft:spawner")), None);
     }
 }

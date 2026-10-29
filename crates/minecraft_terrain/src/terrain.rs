@@ -2804,6 +2804,47 @@ mod tests {
     }
 
     #[test]
+    fn trial_chambers_generate_with_trial_spawners_and_vaults() {
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let mut stream = TerrainStream::for_dimension_at(registries.clone(), 77, 2, Dimension::Overworld, None, Some((0, 64, 0))).unwrap();
+        let gen = stream.world_gen();
+        let deadline = Instant::now() + std::time::Duration::from_secs(300);
+        let at = match crate::locate::nearest_structure(&gen, &["minecraft:trial_chambers".to_owned()], [0, -30, 0], crate::locate::STRUCTURE_RADIUS, deadline) {
+            crate::locate::Search::Found(at, _) => at,
+            other => panic!("no trial chambers near the origin of seed 77: {other:?}"),
+        };
+        let chambers = gen.structures.id("minecraft:trial_chambers").expect("the trial chambers structure");
+        let chunk = minecraftoss_core::ChunkPos::new(at[0] >> 4, at[2] >> 4);
+        let start = gen.structures.starts_in(&gen.library, &gen.terrain, chunk).iter().find(|start| start.structure == chambers).cloned().expect("the located chunk starts trial chambers");
+        let pieces: Vec<_> = start.pieces.lock().unwrap().iter().map(|piece| piece.base().bbox).collect();
+        let in_chambers = |(x, y, z): (i32, i32, i32)| pieces.iter().any(|bbox| bbox.is_inside(minecraftoss_core::BlockPos::new(x, y, z)));
+        let mut columns: Vec<(i32, i32)> = pieces.iter().flat_map(|bbox| ((bbox.min_x >> 4)..=(bbox.max_x >> 4)).flat_map(move |cx| ((bbox.min_z >> 4)..=(bbox.max_z >> 4)).map(move |cz| (cx, cz)))).collect();
+        columns.sort_unstable();
+        columns.dedup();
+        let chunks: Vec<_> = columns.into_iter().map(|(cx, cz)| stream.load_chunk_now(minecraftoss_core::ChunkPos::new(cx, cz))).collect();
+        let tags: Vec<((i32, i32, i32), Tag)> = block_entity_tags(&chunks).into_iter().filter(|(pos, _)| in_chambers(*pos)).collect();
+        let spawners: Vec<&((i32, i32, i32), Tag)> = tags.iter().filter(|(_, tag)| crate::trial_spawner::is_trial_spawner(tag)).collect();
+        assert!(spawners.len() >= 4, "the chambers hold trial spawners: {}", spawners.len());
+        for (pos, tag) in &spawners {
+            assert_eq!(block_name(&registries, &chunks, *pos), "minecraft:trial_spawner");
+            for key in ["normal_config", "ominous_config"] {
+                let id = tag.get(key).and_then(Tag::as_str).unwrap_or_else(|| panic!("{key} at {pos:?} is a registry id: {tag:?}"));
+                let config = crate::trial_spawner::registry_config(&registries.datapack, id).unwrap_or_else(|| panic!("{id} resolves"));
+                assert!(!config.spawn_potentials.is_empty(), "{id}");
+            }
+        }
+        let keys: Vec<&str> = tags.iter().filter(|(_, tag)| tag.get("id").and_then(Tag::as_str) == Some("minecraft:vault")).filter_map(|(_, tag)| tag.get("config")?.get("key_item")?.get("id")?.as_str()).collect();
+        assert!(!keys.is_empty(), "the chambers hold vaults");
+        assert!(keys.iter().all(|key| matches!(*key, "minecraft:trial_key" | "minecraft:ominous_trial_key")), "{keys:?}");
+    }
+
+    #[test]
     fn woodland_mansions_hold_vindicators_with_iron_axes_and_evokers() {
         use minecraftoss_core::nbt::Tag;
         let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };

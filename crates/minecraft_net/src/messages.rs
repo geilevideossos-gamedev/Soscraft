@@ -332,6 +332,10 @@ pub enum ToClient {
     SkateRefused {
         tick: u32,
     },
+    SpawnPosition {
+        dimension: Dimension,
+        pos: [i32; 3],
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -500,6 +504,7 @@ pub struct PlayerView {
     pub using: Option<UsingView>,
     pub jump_bar: Option<f32>,
     pub vehicle_health: Option<[f32; 2]>,
+    pub last_death: Option<(Dimension, [i32; 3])>,
 }
 
 impl Default for PlayerView {
@@ -526,6 +531,7 @@ impl Default for PlayerView {
             using: None,
             jump_bar: None,
             vehicle_health: None,
+            last_death: None,
         }
     }
 }

@@ -164,20 +164,48 @@ impl EntityWorld {
         }
     }
 
+    fn shooter_of_uuid(&self, uuid: u128) -> Option<Shooter> {
+        let id = self
+            .uuids
+            .iter()
+            .find(|&(&id, &known)| {
+                known == uuid && (id >= PLAYER_TARGET || self.entity_type(id).is_some())
+            })
+            .map(|(&id, _)| id)
+            .or_else(|| {
+                self.order
+                    .iter()
+                    .map(|key| key.id())
+                    .find(|&id| self.uuid_of(id) == uuid)
+            })?;
+        Some(if id >= PLAYER_TARGET {
+            Shooter::Player(id - PLAYER_TARGET)
+        } else {
+            Shooter::Mob(id)
+        })
+    }
+
     pub(super) fn tick_fireball(
         &mut self,
         id: u64,
         world: &impl World,
         players: &[PlayerCandidate],
     ) {
-        let Some(owner) = self
+        let Some((owner, owner_uuid)) = self
             .fireballs
             .iter()
             .find(|e| e.id == id)
-            .map(|e| e.fireball.owner)
+            .map(|e| (e.fireball.owner, e.fireball.owner_uuid))
         else {
             return;
         };
+        let owner = owner.or_else(|| owner_uuid.and_then(|uuid| self.shooter_of_uuid(uuid)));
+        if owner.is_some() && owner_uuid.is_some() {
+            if let Some(entity) = self.fireballs.iter_mut().find(|e| e.id == id) {
+                entity.fireball.owner = owner;
+                entity.fireball.owner_uuid = None;
+            }
+        }
         if let Some(Shooter::Mob(shooter)) = owner {
             if self.entity_type(shooter).is_none() {
                 if let Some(entity) = self.fireballs.iter_mut().find(|e| e.id == id) {

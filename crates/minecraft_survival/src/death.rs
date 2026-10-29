@@ -1148,6 +1148,65 @@ mod tests {
     }
 
     #[test]
+    fn a_reloaded_skull_kill_reads_shot_by_a_skull_from_wither() {
+        use minecraft_terrain::server_mobs::{mob_tags_where, spawn_saved};
+        use minecraftoss_entities::fireball::{Fireball, FireballKind, Shooter};
+        use minecraftoss_entities::world::{EntityWorld, PlayerHitKind};
+        struct Air;
+        impl minecraftoss_player::World for Air {
+            fn block(&self, _pos: (i32, i32, i32)) -> Option<minecraftoss_player::Block> {
+                None
+            }
+            fn set_block(&mut self, _pos: (i32, i32, i32), _block: Option<minecraftoss_player::Block>) {}
+        }
+        let mut world = EntityWorld::default();
+        let wither_tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:wither\",Pos:[0.5d,70.0d,-12.5d],UUID:[I;4,5,6,30],NoAI:1b}").unwrap();
+        let wither = spawn_saved(&mut world, &wither_tag).unwrap();
+        let skull = world.spawn_fireball(Fireball::shoot(FireballKind::WitherSkull { dangerous: false }, Shooter::Mob(wither), glam::DVec3::new(0.5, 65.0, 0.5), glam::DVec3::Z));
+        let saved = mob_tags_where(&world, |_, _| true, &Default::default(), true);
+        let mut fresh = EntityWorld::default();
+        fresh.set_players_pickable(true);
+        fresh.set_difficulty(2);
+        for id in [skull, wither] {
+            let (_, tag) = saved.iter().find(|(saved_id, _)| *saved_id == id).unwrap();
+            spawn_saved(&mut fresh, tag).unwrap();
+        }
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 1,
+            position: glam::DVec3::new(0.5, 64.0, 4.5),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: true,
+        };
+        let mut hits = Vec::new();
+        for _ in 0..20 {
+            fresh.tick_with_players(&mut Air, &[player]);
+            hits.extend(fresh.take_player_hits().into_iter().filter(|h| matches!(h.kind, PlayerHitKind::WitherSkull { .. })));
+        }
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let type_id = hits[0].source.and_then(|id| fresh.entity_type(id));
+        assert_eq!(type_id, Some("minecraft:wither"));
+        let (damage, _, _, cause, _, effect) = crate::entities::mob_hit(&hits[0], [0.5, 64.0, 4.5], 2, type_id).unwrap();
+        assert_eq!((damage, effect), (8.0, Some((minecraftoss_player::survival::EffectKind::Wither, 200, 1))));
+        let mut tracker = CombatTracker::default();
+        tracker.record(1, cause, damage, None, 0.0);
+        assert_eq!(line(&tracker), says("%1$s was shot by a skull from Wither", "Wither"));
+    }
+
+    #[test]
     fn a_drowned_s_trident_impales_the_player() {
         let mut tracker = CombatTracker::default();
         let trident = DamageCause::mob(MobAttack::Trident, Some(6), Some("minecraft:drowned"));
