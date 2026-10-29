@@ -728,6 +728,103 @@ Commit: "Minecraft pillagers and piglins show their crossbow's pull and loaded a
 IW4L_MINECRAFT_KIT=minecraft:pillager_spawn_egg*16,minecraft:shield,minecraft:iron_sword,minecraft:cooked_beef*16
 ```
 
+### Banners and shields show their patterns in hand, on heads, on the ground and as icons
+
+Commit: "Minecraft banners and shields show their patterns in hand, on heads, on the ground and as icons", the one after `98cff7bf`.
+
+- **Cause** (as in the brief, re-checked at `98cff7bf`):
+  - `special_models.rs` `item_model(special)` built `minecraft:banner` and `minecraft:shield` without the stack. `push_banner` drew one flag tinted with the base colour, and `push_shield` always used `entity/shield/shield_base_nopattern`.
+  - `special_tints` gave only a banner's base colour. `Sheet.tinted` was a bool that always meant tint index 0, so a model could hold only one tint.
+  - The atlas held `entity/banner/banner_base`, `entity/banner/base` and `entity/shield/shield_base_nopattern`, but none of the 43 pattern sheets.
+  - The item key already carried the look's base colour and layers (group `item-states`), but nothing read them.
+- **Vanilla 26.3** (javap on the 26.3 jar, sheets checked in the 26.3 pack):
+  - `BannerRenderer.submitPatterns(.., model, state, banner, baseColor, patterns)` draws `Sheets.BANNER_PATTERN_BASE` (`entity/banner/base`) or, for a shield, `SHIELD_PATTERN_BASE` (`entity/shield/base`), tinted with `DyeColor.getTextureDiffuseColor` of the base colour.
+  - It then draws layers 0 to 15 (`i < 16 && i < size`), each with `Sheets.getBannerSprite` or `getShieldSprite` (`entity/banner/<asset path>` or `entity/shield/<asset path>`) and tinted with its own colour. Every layer goes through the same model, ordered after the base (`order(i + 2)`).
+  - `ShieldSpecialRenderer.submit`: a shield is patterned when `banner_patterns` is not empty or `base_color` is set.
+    - A patterned shield is drawn with `SHIELD_BASE` (`entity/shield/shield_base`), and then `submitPatterns` runs with the base colour, or `WHITE` when none is set.
+    - Otherwise the shield is drawn with `SHIELD_BASE_NO_PATTERN`.
+    - In 26.3 the patterns go over the whole `ShieldModel`. In the 26.3 pack, `entity/shield/base` and every shield pattern sheet are clear over the handle's part of the sheet, so drawing them on the plate alone looks the same.
+  - A banner item's base colour is the item model's `color` (`items/white_banner.json`). Its `base_color` component is not drawn.
+  - The pattern sheets mix alphas. `banner/creeper` and `banner/border` use 191 and 255, and `banner/gradient` runs from 255 at the top of the flag to 0 at the bottom.
+- **Changed:**
+  - `special_models.rs`:
+    - `Sheet.tint: Option<usize>` (`tinted(index)`) replaces the bool. `push_cube` gives the faces that tint index.
+    - `push_banner(.., layers)` adds one flag cube per layer after the flag, with the same cube, pose and UVs. Each layer uses `<namespace>:entity/banner/<path>` of its asset at tint index `i + 1`, for at most 16 layers. An asset that is not an id is skipped and keeps its tint slot. A placed banner passes no layers yet, so it is drawn as before.
+    - `push_shield(look)` draws the plate and handle with `shield_base`, then a plate cube of `entity/shield/base` at tint 0 and one plate cube per layer, when the look has a base colour or patterns. Otherwise it keeps `shield_base_nopattern`.
+    - `item_model(special, look)`.
+    - `special_tints(model, look)`: a banner gives `[base from the model's colour, layer colours...]`, and a patterned shield `[base colour or white, layer colours...]`. A plain shield gives none, as before.
+    - `pattern_textures(packs)` lists every sheet in the pack's `textures/entity/banner/` and `textures/entity/shield/`.
+  - `mesh.rs`:
+    - The world atlas adds `pattern_textures`, which is 89 sheets with the 26.3 pack.
+    - `ItemVisuals::model` parses the look once. It builds the model with `model::resolve_item_model_with(.., look)` and the tints with `interface::item_look_tints(.., look)`. This covers dropped items, the first-person hand, mobs' held and head items (the raid captain's banner) and every other posed item.
+  - `model.rs`: `resolve_item_model_with(pack, item, context, look)` is new, and `resolve_item_model_in` calls it with no look. `item_geometry` passes the look to the special models.
+  - `interface.rs`: `item_look_tints(.., look)` is new, and `item_model_tints` calls it with no look.
+  - `item_icons.rs`: `item_icon_at` builds a special item's geometry and tints with the look.
+  - `item_icon.rs`:
+    - `model_icon` blends a texel with partial alpha over what the earlier faces drew. It reads a copy taken before each face, so the two triangles of a face never blend twice.
+    - Before this, such a texel replaced the pixel and left a see-through hole. A gradient layer would have made the flag's base colour vanish from the icon.
+    - Block icons keep their old raster.
+  - `docs/MINECRAFT-SURVIVAL.md`: the limit "There are no banner or shield patterns" now says where patterns show, and where they don't yet.
+- **Tests** (`minecraft_terrain`):
+  - `special_models::tests::a_patterned_banner_item_lays_one_tinted_flag_per_pattern_over_its_base`:
+    - A white banner with creeper (black), a bad id and border (red) gets pole, bar, flag (`entity/banner/base`, tint 0), creeper (tint 1) and border (tint 2).
+    - Each layer has the flag's corners and UVs, and the tints are white, black and red.
+    - A wall banner has no pole.
+    - With 20 layers the model keeps 16, ending at `p15` with tint 16, and the tints are 17.
+    - A layer that isn't an id is skipped, while `test:sun` keeps tint slot 2.
+    - A placed banner is unchanged.
+  - `special_models::tests::the_ominous_banner_lays_its_eight_patterns_on_white`: the stack from `ominous_banner()` keys a look that splits back. It lists the eight vanilla layers in order, draws 3 + 8 elements with `entity/banner/<pattern>` sheets, and tints white, then cyan, through black.
+  - `special_models::tests::a_shield_takes_the_patterned_base_only_with_a_base_colour_or_patterns`:
+    - A plain shield uses `shield_base_nopattern` with no tints.
+    - A red base colour gives `shield_base` and a tinted `entity/shield/base` plate with the plate's corners and UVs (tints `[red]`).
+    - A yellow cross alone gives a white base under the cross (`[white, yellow]`).
+    - A base colour with two patterns gives five elements with tints red, yellow and black.
+  - `special_models::tests::every_vanilla_pattern_is_in_the_atlas_and_patterned_icons_differ_from_plain_ones` (with the real 26.3 pack and datapack, skipped without them):
+    - Each of the 43 `banner_pattern` registry entries has its banner and shield sheet in the world atlas, and so do `banner_base`, `shield_base` and `shield_base_nopattern`.
+    - The ominous banner's icon differs from the plain white banner's, and a red shield with a yellow gradient differs from the plain shield. Both keep the plain icon's outline alpha for alpha.
+  - `item_icons::tests::banner_icons_blend_their_pattern_layers_and_skip_unknown_patterns` (a small test pack): a half-clear red stripe changes the icon but keeps every pixel's alpha, so it blends and leaves no holes. Each changed pixel is redder. A pattern with no sheet, before or after the stripe, leaves the icon unchanged.
+  - `item_icons::tests::a_dropped_banner_draws_its_pattern_layers_in_their_colours`: a dropped plain banner has 18 faces and a striped one 24. The flag's vertices carry white and the stripe's red.
+  - All 1526 `minecraft_terrain` tests pass (3 ignored, as before), and `check -p launcher` passes.
+- **Decisions:**
+  - In the world, in the hand and on mobs, the layers are cut out at alpha 0.1, like every entity sheet here (`render_gpu .../minecraft_world.rs`, the `opaque` fragment for vertex alpha below 0.75). Vanilla blends them (`RenderTypes.bannerPattern`), so here:
+    - A gradient's fade becomes a hard edge near the bottom of the flag. The white gradient on the kit's blue banner covers about nine tenths of the flag.
+    - The creeper face and the border, which use alphas 191 and 255, are drawn in one solid colour.
+  - Icons blend like vanilla, because a cut-out icon needs the same hard edge and a replaced pixel left holes. Coplanar layers resolve to the later one, through `GreaterEqual` in the world and the blend in icons.
+  - The shield's layers are drawn on the plate only, because every 26.3 shield sheet is clear over the handle.
+  - A pattern whose sheet is not in the pack draws nothing and keeps its tint slot. Vanilla would refuse such a component. The atlas lists only the `minecraft` folders, so patterns from other namespaces are skipped the same way.
+  - Plain banners and shields are built exactly as before, with the same elements and tints, and placed banners are not changed (group `placed-banners`).
+- **Protocol:** no change. Keys and models are built on each client from the stacks it has.
+- **Not yet:**
+  - Placed banners still show their base colour only (group `placed-banners`).
+  - A player's banner or shield in third person, as a friend sees it, or in an item frame shows no pattern (group `player-looks`).
+  - Placed banners still drop nothing when broken (group `banner-roundtrip`).
+  - The shield recipe is E2's (`fw-craft`).
+- **Owner's test steps** (survival, a new world, by day, the kit below):
+  1. **Icons.** Open the inventory.
+     - The white banner shows a black creeper face inside a red border.
+     - The blue banner shows a white fade from the top, a lime globe and a yellow bottom stripe.
+     - The black banner is plain black.
+     - The first shield is red with a yellow cross, the second plain black, and the third the plain wooden shield.
+     - **Screenshot B1.**
+  2. **Hand.** Hold the white banner, then the blue banner, in first person: their patterns show on the flag. On the blue banner the fade has a hard edge near the bottom of the flag, and the flag above it is white (the cut-out decision). **Screenshot B2.**
+  3. **Raised shield.** Put the red shield in the offhand (F) and hold right-click to raise it: the yellow cross shows on the red plate. Swap in the black shield: it is plain black. **Screenshot B3.**
+  4. **On the ground.** Press Q with each banner and shield. On the ground they show the same patterns and colours as in the inventory. Pick them up again.
+  5. **The captain.**
+     - On open ground, use pillager eggs until one carries a banner on its head (a captain, about one in seventeen).
+     - Its banner shows the ominous pattern: a cyan diamond with grey and black stripes on white, in a black border. **Screenshot B4.**
+     - Kill it with the sword. The dropped "Ominous Banner" shows the pattern on the ground, as an icon and in your hand. **Screenshot B5.**
+  6. **Not yet.**
+     - Placing a patterned banner shows only its base colour.
+     - Breaking it drops nothing.
+     - In third person (F5), in an item frame and in a friend's window, a player's banner or shield shows no pattern.
+     - Later E1 groups fix these.
+  7. **Friend (two windows, both on this build).** The friend gets the same kit (or `/kit @a` from the host). The friend's own icons, hand and dropped banners show the patterns in the friend's window, and the captain's banner shows the ominous pattern in both windows. **Screenshot B6**, both windows.
+- **Kit** (9 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*4,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:shield[base_color=black],minecraft:shield,minecraft:pillager_spawn_egg*16,minecraft:diamond_sword,minecraft:cooked_beef*16
+```
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components
@@ -767,7 +864,7 @@ Commit: "Track E1 code passes clippy", the one after `70df989a`.
 
 ## Combined kit
 
-One line for a quick look at the whole track in one world (27 backpack slots). Each section above has its full kit. The banner, shield and crossbow entries of E-kit are left out, since nothing draws their patterns yet and the loaded crossbows are in the E-banners kits; E-kit's `/give` steps still check them.
+One line for a quick look at the whole track in one world (27 backpack slots). Each section above has its full kit. The banner, shield and crossbow entries of E-kit are left out to stay within 27 slots; the E-banners kits carry the patterned banners and shields and the loaded crossbows, and E-kit's `/give` steps still check them.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two"]}],minecraft:firework_rocket[fireworks={flight_duration:3}]*16,minecraft:firework_rocket*16,minecraft:elytra,minecraft:horse_spawn_egg*4,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:strider_spawn_egg*2,minecraft:wheat*64,minecraft:potato*64,minecraft:carrot*64,minecraft:beetroot*64,minecraft:bone*32,minecraft:cod*64,minecraft:golden_carrot*16,minecraft:composter,minecraft:ominous_bottle*2,minecraft:ominous_bottle[ominous_bottle_amplifier=4],minecraft:potion@long_night_vision,minecraft:golden_apple*8,minecraft:milk_bucket,minecraft:saddle,minecraft:saddle,minecraft:hay_block*16,minecraft:leather_horse_armor@red,minecraft:leather_chestplate@red

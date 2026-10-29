@@ -483,6 +483,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     for id in crate::special_models::textures()? {
         textures.insert(id, ());
     }
+    for id in crate::special_models::pattern_textures(packs)? {
+        textures.insert(id, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/bat/bat")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/zombie/zombie")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/player/wide/steve")?, ());
@@ -931,13 +934,14 @@ impl ItemVisuals {
         if !self.models.contains_key(id) {
             let (base, potion) = crate::item_tint::split(id);
             let (base, look) = crate::item_look::split(base);
+            let look = crate::item_look::ItemLook::parse(look);
             let (key, dial) = crate::dials::split(base);
             let resource = ResourceId::parse(key)?;
             let definition = packs.item_definition(&resource)?;
-            let chosen = definition.as_ref().and_then(|value| crate::item_look::ItemLook::parse(look).leaf(&value["model"], None));
+            let chosen = definition.as_ref().and_then(|value| look.leaf(&value["model"], None));
             let resolved = match dial.or(chosen) {
                 Some(leaf) => Some(crate::model::resolve_item_leaf(packs, &resource, leaf)?),
-                None => crate::model::resolve_item_model(packs, &resource)?,
+                None => crate::model::resolve_item_model_with(packs, &resource, None, &look)?,
             };
             let Some(model) = resolved else {
                 return Ok(None);
@@ -958,7 +962,7 @@ impl ItemVisuals {
             let head = crate::model::item_display_transform(packs, &resource, "head")?;
             let tints = definition
                 .as_ref()
-                .map(|value| crate::interface::item_model_tints(packs, &value["model"], potion))
+                .map(|value| crate::interface::item_look_tints(packs, &value["model"], potion, &look))
                 .transpose()?
                 .unwrap_or_default()
                 .into_iter()

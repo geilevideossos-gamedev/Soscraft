@@ -139,11 +139,14 @@ pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<
     resolve_item_model_in(pack, item, None)
 }
 pub fn resolve_item_model_in(pack: &PackStack, item: &ResourceId, context: Option<&str>) -> Result<Option<ResolvedModel>> {
+    resolve_item_model_with(pack, item, context, &crate::item_look::ItemLook::default())
+}
+pub(crate) fn resolve_item_model_with(pack: &PackStack, item: &ResourceId, context: Option<&str>, look: &crate::item_look::ItemLook) -> Result<Option<ResolvedModel>> {
     let Some(definition) = pack.item_definition(item)? else {
         return Ok(None);
     };
     if crate::special_models::uses_item_geometry_in(&definition["model"], context) {
-        return item_geometry(pack, item, &definition["model"], context).map(Some);
+        return item_geometry(pack, item, &definition["model"], context, look).map(Some);
     }
     let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
         return Ok(None);
@@ -160,11 +163,11 @@ pub fn resolve_item_leaf(pack: &PackStack, item: &ResourceId, reference: &str) -
     let block = Block::new(&item.key());
     resolve_choices(pack, &block, &[&choice])
 }
-fn item_geometry(pack: &PackStack, item: &ResourceId, model: &Value, context: Option<&str>) -> Result<ResolvedModel> {
+fn item_geometry(pack: &PackStack, item: &ResourceId, model: &Value, context: Option<&str>, look: &crate::item_look::ItemLook) -> Result<ResolvedModel> {
     let mut elements = Vec::new();
     for leaf in crate::special_models::item_leaves_in(model, false, context) {
         let part = match leaf.special {
-            Some(special) => match crate::special_models::item_model(special)? {
+            Some(special) => match crate::special_models::item_model(special, look)? {
                 Some(part) => part,
                 None => continue,
             },
