@@ -193,3 +193,12 @@ After a5983466.
 - **Changed:** the kneel clip's last Kneel key is at 60 (`kneel.length - critical.recovery`), so the rise takes the last 20 ticks of every kneel, and a critical lands where it starts.
 - **Tests:** `margit::tests::a_critical_lands_where_his_twenty_tick_rise_starts`. `test -p elden_boss --locked`: 52 green.
 - **Owner's steps:** none in game: the crate is not in the game yet. No kit line.
+
+### 6. Margit's daggers form and his cane slam lands with the sounds of his design
+
+After abe00dff.
+
+- **Defect:** design doc 14.1 gives every golden weapon that forms `block.amethyst_block.chime` and `block.beacon.activate`, and every slam `entity.generic.explode` quiet and low beside the smash. The golden dagger formed with the chime only (`dagger_throw` at 2, `backstep_daggers` at 14), and the cane slam had no explosion under its smash, though the leap slam has one.
+- **Changed:** `margit.rs`: the beacon (0.6, pitch 1.6) at both dagger forms, and the quiet low explosion at the cane slam's tick 29. No timing or random roll changed, so the whole fight's seeds play as before.
+- **Tests:** `margit::tests::every_golden_weapon_forms_with_chime_and_beacon_and_every_slam_booms`: at each conjure's first tick the chime and the beacon play, and each slam burst comes with the explosion and a smash. `test -p elden_boss --locked`: 53 green.
+- **Owner's steps:** none in game: the crate is not in the game yet. No kit line.

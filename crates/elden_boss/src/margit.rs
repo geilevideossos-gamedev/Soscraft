@@ -204,7 +204,12 @@ static MOVES: [MoveDef; 8] = [
             shield_off: 0,
             weapon: None,
         }],
-        cues: &[cue(27, SWING), cue(29, SMASH), burst(29, Burst::Slam)],
+        cues: &[
+            cue(27, SWING),
+            cue(29, SMASH),
+            cue(29, BOOM),
+            burst(29, Burst::Slam),
+        ],
         poses: &[
             pose(0, Pose::Ready),
             pose(12, Pose::CaneHigh),
@@ -241,7 +246,7 @@ static MOVES: [MoveDef; 8] = [
             from: 2,
             to: 22,
         }],
-        cues: &[cue(2, CHIME), burst(2, Burst::Sparks)],
+        cues: &[cue(2, CHIME), cue(2, BEACON), burst(2, Burst::Sparks)],
         poses: &[
             pose(0, Pose::Ready),
             pose(4, Pose::Draw),
@@ -295,7 +300,7 @@ static MOVES: [MoveDef; 8] = [
             from: 14,
             to: 38,
         }],
-        cues: &[cue(14, CHIME), burst(14, Burst::Sparks)],
+        cues: &[cue(14, CHIME), cue(14, BEACON), burst(14, Burst::Sparks)],
         poses: &[
             pose(0, Pose::Ready),
             pose(2, Pose::Crouch),
@@ -966,6 +971,39 @@ mod tests {
             &keys[keys.len() - 2..],
             [(rise, Pose::Kneel), (kneel.length, Pose::Rise)]
         );
+    }
+
+    #[test]
+    fn every_golden_weapon_forms_with_chime_and_beacon_and_every_slam_booms() {
+        for mv in MARGIT.moves {
+            let at = |tick: u16| -> Vec<Cue> {
+                mv.cues
+                    .iter()
+                    .filter(|key| key.at == tick)
+                    .map(|key| key.cue)
+                    .collect()
+            };
+            for conjure in mv.conjure {
+                let cues = at(conjure.from);
+                assert!(cues.contains(&CHIME), "{}", mv.key);
+                assert!(cues.contains(&BEACON), "{}", mv.key);
+            }
+            let slams: Vec<u16> = mv
+                .cues
+                .iter()
+                .filter(|key| key.cue == Cue::Burst(Burst::Slam))
+                .map(|key| key.at)
+                .collect();
+            for tick in slams {
+                let cues = at(tick);
+                assert!(cues.contains(&BOOM), "{}", mv.key);
+                assert!(
+                    cues.contains(&SMASH) || cues.contains(&SMASH_HEAVY),
+                    "{}",
+                    mv.key
+                );
+            }
+        }
     }
 
     #[test]
