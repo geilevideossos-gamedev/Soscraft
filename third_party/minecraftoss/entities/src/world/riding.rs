@@ -681,6 +681,15 @@ impl EntityWorld {
             .then(|| self.ride_jumps.get(&player).map_or(0.0, |jump| jump.scale))
     }
 
+    pub fn vehicle_health(&self, player: u64) -> Option<(f32, f32)> {
+        let vehicle = self.vehicle_of(Rider::Player(player))?;
+        if let Some(entity) = self.vehicle_horse(vehicle) {
+            return Some((entity.cow.health, entity.cow.max_health));
+        }
+        let entity = self.vehicle_strider(vehicle)?;
+        Some((entity.strider.health, strider::MAX_HEALTH))
+    }
+
     fn jumpable_by(&self, vehicle: u64) -> Option<u64> {
         self.vehicle_horse(vehicle)?;
         self.controlling_player(vehicle)
@@ -1275,6 +1284,38 @@ mod tests {
         assert_eq!(entities.player_carriers(), expected);
         assert!(entities.dismount_player(0, 0.0, &world).is_some());
         assert_eq!(entities.player_carriers(), vec![other]);
+    }
+
+    #[test]
+    fn vehicle_health_names_horse_and_strider_health_and_none_on_foot() {
+        let world = floor("minecraft:netherrack", 8);
+        let mut entities = EntityWorld::default();
+        let mut cow = crate::cow::Cow::new(DVec3::new(4.5, 64.0, 4.5));
+        let mut horse = crate::horse::HorseState::new(crate::horse::HorseKind::Horse);
+        horse.max_health = 26.0;
+        cow.health = 22.0;
+        let horse = entities.spawn_horse(cow, horse, false);
+        let mut cow = crate::cow::Cow::new(DVec3::new(-4.5, 64.0, 4.5));
+        let mut llama = crate::horse::HorseState::new(crate::horse::HorseKind::Llama);
+        llama.max_health = 15.0;
+        cow.health = 15.0;
+        let llama = entities.spawn_horse(cow, llama, false);
+        let strider = strider_at(&mut entities, DVec3::new(0.5, 64.0, -4.5));
+        let piglin = zombified_piglin(&mut entities, DVec3::new(-4.5, 64.0, -4.5));
+        assert_eq!(entities.vehicle_health(0), None, "on foot");
+        assert!(entities.start_riding(Rider::Player(0), horse, &world));
+        assert_eq!(entities.vehicle_health(0), Some((22.0, 26.0)));
+        assert_eq!(entities.vehicle_health(1), None, "only the rider");
+        assert!(entities.start_riding(Rider::Player(1), llama, &world));
+        assert_eq!(entities.vehicle_health(1), Some((15.0, 15.0)));
+        assert!(entities.dismount_player(0, 0.0, &world).is_some());
+        assert_eq!(entities.vehicle_health(0), None);
+        assert!(entities.start_riding(Rider::Player(0), strider, &world));
+        entities.strider_mut(strider).unwrap().strider.health = 13.5;
+        assert_eq!(entities.vehicle_health(0), Some((13.5, strider::MAX_HEALTH)));
+        assert!(entities.dismount_player(0, 0.0, &world).is_some());
+        assert!(entities.start_riding(Rider::Mob(piglin), strider, &world));
+        assert_eq!(entities.vehicle_health(0), None, "a mob rider is no player");
     }
 
     #[test]

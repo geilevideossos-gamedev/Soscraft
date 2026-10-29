@@ -1258,6 +1258,7 @@ fn update(
             relayed.delivered.push(minecraft_commands::Outgoing { to: minecraft_commands::Recipient::All, message: told });
         }
         ui.jump_bar = player.jump_bar.filter(|_| alive);
+        ui.vehicle_health = player.vehicle_health.filter(|_| alive);
         let raid_language = ui.chat.language.clone();
         crate::minecraft_raids::show_raid_bars(&mut ui, &player.raid_bars, &raid_language, dt as f32);
         crate::minecraft_wither::show_wither_bars(&mut ui, &player.wither_bars, &raid_language, dt as f32);

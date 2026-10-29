@@ -693,6 +693,7 @@ mod tests {
         assert_eq!(gui.text("multiplayer.stopSleeping"), "Leave Bed");
         assert!(gui.sprites.contains_key("container/slot/shield"));
         assert!(gui.sprites.contains_key("hud/heart/full"));
+        assert!(["vehicle_container", "vehicle_full", "vehicle_half"].iter().all(|heart| gui.sprites.contains_key(&format!("hud/heart/{heart}"))));
         assert_eq!(gui.font.advance('A'), 6.0);
         assert_eq!(gui.font.advance('i'), 2.0);
         assert_eq!(gui.font.advance(' '), 4.0);

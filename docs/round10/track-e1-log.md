@@ -426,3 +426,44 @@ Commit: "Minecraft riders share their horse's fall", the one after `704004c8`.
 ```
 IW4L_MINECRAFT_KIT=minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:hay_block*16,minecraft:cooked_beef*16
 ```
+
+### Riders see their mount's hearts
+
+Commit: "Minecraft riders see their mount's hearts in place of the food bar", the one after `530d931f`.
+
+- **Cause** (as in the brief, re-checked at `530d931f`): the HUD (`crates/hud/src/minecraft_hotbar.rs`) drew hearts, drumsticks and bubbles from `ui.vitals` only. Nothing carried the mount's health: `frame::MinecraftUi` had `jump_bar` but no vehicle field, and neither did `minecraft_survival::player::Player`.
+- **Vanilla 26.3** (javap, `net.minecraft.client.gui.Hud`):
+  - `getPlayerVehicleWithHealth`: the camera player's vehicle when it is a `LivingEntity`. `Entity.showVehicleHealth` is `this instanceof LivingEntity`, and no vehicle class overrides it (checked: `AbstractHorse`, `Strider`, `Pig`, `Camel`, `HappyGhast`, the nautiluses).
+  - `getVehicleMaxHearts`: `(int)(getMaxHealth() + 0.5f) / 2`, at most 30. `getVisibleVehicleHeartRows(n)`: `ceil(n / 10.0)`.
+  - `extractVehicleHealth`: `health = ceil(getHealth())`. Rows of up to 10 hearts start at `guiHeight - 39` and go up by 10; heart `i` of a row sits at `x = guiWidth / 2 + 91 - i * 8 - 9`. Each heart draws `hud/heart/vehicle_container`, then `vehicle_full` when `2i + 1 + rowOffset < health` and `vehicle_half` when it equals `health`; `rowOffset` grows by 20 a row. It is called after, and outside, the `canHurtPlayer` check, so a creative rider sees it.
+  - `extractPlayerHealth`: when `getVehicleMaxHearts` is not 0 the food bar is not drawn. The air row starts at `guiHeight - 49`, 10 more up when the food bar is drawn, and `getAirBubbleYLine` moves it by `-(rows - 1) * 10`; with no vehicle that is `+10`. So the bubbles stay at `guiHeight - 49` on foot and with one row of mount hearts, and sit just above the top row with two or three.
+- **Changed:**
+  - `third_party/minecraftoss/entities/src/world/riding.rs`: `EntityWorld::vehicle_health(player) -> Option<(health, max)>`, next to `ride_jump_scale`: the cow body's `health` and `max_health` for the horse family (horses, donkeys, mules, llamas), the strider's `health` and `strider::MAX_HEALTH` for striders, `None` on foot.
+  - `crates/minecraft_survival/src/player.rs`: `Player.vehicle_health`, next to `jump_bar`.
+  - `crates/render_anim/src/minecraft_players.rs` `struck()`: sets it right after the jump bar, from the player's own level, for the host and every friend.
+  - `crates/frame/src/minecraft_ui.rs`: `MinecraftUi.vehicle_health`, next to `jump_bar`; the host's HUD fills it in `render_anim/src/minecraft_world.rs` (none while dead, like the jump bar).
+  - `crates/hud/src/minecraft_vitals.rs`: `vehicle_max_hearts`, `vehicle_rows` and `vehicle_hearts(health, max) -> Vec<(column, row, sprite)>` by the rules above.
+  - `minecraft_hotbar.rs` `draw_hud`: the mount hearts are drawn after the vitals block, outside its survival-only filter; the drumsticks are skipped while the mount has hearts, and the bubbles move up by `(rows - 1) * 10`.
+- **Tests:**
+  - `minecraftoss-entities` `world::riding::tests::vehicle_health_names_horse_and_strider_health_and_none_on_foot`: on foot none; a horse of 22 of 26 gives `(22, 26)` and nothing for another player; a llama `(15, 15)`; a strider at 13.5 gives `(13.5, 20)`; a mob rider on a strider gives the player nothing.
+  - `hud` `minecraft_vitals::tests`: `a_thirty_health_horse_shows_fifteen_vehicle_hearts_in_two_rows` (10 and 5 hearts, a hurt one at 23 has 11 full and a half at the second heart of the top row; 22 health makes 11 hearts in two rows, 21 still 10 in one, 20 for a strider, 100 capped at 30, under a heart none), `a_fifteen_health_horse_shows_seven` (7 full hearts and no half; 15.4 still 7, 15.5 makes 8), `a_half_heart_shows_vehicle_half` (12.5 and 13 end on a half at the seventh heart, 14 does not, 0 shows ten empty containers).
+  - `hud` `minecraft_hotbar::tests::vehicle_hearts_hide_the_drumsticks_and_lift_the_bubbles_a_row_per_extra_row`: on foot 10 drumsticks at y 213 and the bubbles at 203; on a strider (20) no drumsticks, ten full mount hearts at 213 starting at x 322, the bubbles still at 203; on a horse of 25 of 30 two rows (213 and 203), 12 full and one half, the bubbles at 193; in creative the 15 hearts and no food or bubbles; a mount with less than one heart leaves the food bar.
+  - `render_anim` `minecraft_gui::tests::the_real_gui_textures_and_fonts_load_into_one_atlas` also checks that the three vehicle heart sprites load.
+  - `minecraftoss-entities` (411), `hud` (199), `minecraft_survival` (766), `render_anim` (213) and `frame` pass; `check -p launcher` passes.
+- **Decisions:**
+  - Players ride only the horse family and striders in the fork, so `vehicle_health` names those two. Any other living vehicle a player could ride later should be added there; vanilla shows the hearts for every living vehicle.
+  - The mount hearts are drawn in creative and adventure too (vanilla draws them outside `canHurtPlayer`), but not in spectator, where our hotbar is not drawn at all and nobody rides.
+  - A friend's mount hearts are worked out on the host from the friend's own level in `struck()` (next commit sends them).
+- **Owner's test steps** (survival, a new world, by day on flat grass, the kit below; mount hearts are the row of hearts on the right, where the food bar was):
+  1. **Thirty health, two rows.** Run `/summon minecraft:horse ~ ~ ~2 {Tame:1b,attributes:[{id:"minecraft:max_health",base:30.0d}]}`. Right-click it with a saddle, then ride it. The food bar is gone and 15 full mount hearts show on the right: a row of 10 on the hotbar's level and a row of 5 above it, both lined up at the right end. Your own hearts stay on the left. **Screenshot 1.**
+  2. **A hurt horse.** Crouch to dismount and punch the horse once with an empty hand (1 damage), then ride it again: the leftmost heart of the top row is now a half heart. Dismount, right-click the horse with a golden carrot (it heals 4) and ride it again: all 15 hearts are full again. Dismount: the food bar comes back. **Screenshot 2**, while riding the hurt horse.
+  3. **Twenty-one and twenty-two.** Run `/summon minecraft:horse ~ ~ ~2 {Tame:1b,attributes:[{id:"minecraft:max_health",base:21.0d}]}`, saddle and ride it: one full row of 10 hearts. Then do the same with `base:22.0d`: 10 hearts and one more above the right end.
+  4. **A horse from the egg.** Use a horse egg, right-click it with an empty hand until it stops bucking, saddle and ride it: between 7 and 15 hearts, depending on the horse.
+  5. **Creative.** While riding, run `/gamemode creative`: your own hearts go, the mount hearts stay. Run `/gamemode survival`.
+  6. **A strider.** Use a strider egg, saddle the strider and ride it holding the warped fungus on a stick: 10 mount hearts. **Screenshot 3.**
+  7. **Optional, the bubbles.** Dig a pool 3 deep next to a saddled tame horse, dive until most bubbles are gone, then climb out and ride the 30-health horse at once: for the few seconds while the bubbles refill, they show just above the top row of mount hearts.
+- **Kit** (9 backpack slots; saddles do not stack):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:warped_fungus_on_a_stick,minecraft:golden_carrot*16,minecraft:cooked_beef*16
+```

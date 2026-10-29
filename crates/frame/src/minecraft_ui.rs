@@ -277,6 +277,7 @@ pub struct MinecraftUi {
     pub book_edit: Option<McBookEdit>,
     pub ui_sounds: Vec<&'static str>,
     pub jump_bar: Option<f32>,
+    pub vehicle_health: Option<(f32, f32)>,
     pub inventory_key_opened: bool,
     pub pumpkin_blur: Option<Handle<Image>>,
     pub camera_overlay: bool,

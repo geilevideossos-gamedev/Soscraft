@@ -2,7 +2,7 @@ use assets::PreparedWeapons;
 use frame::{McStack, MinecraftUi};
 
 use crate::minecraft_gui::{AQUA, Painter, WHITE};
-use crate::minecraft_vitals::{bubbles, drumsticks, heart_rows, hearts};
+use crate::minecraft_vitals::{bubbles, drumsticks, heart_rows, hearts, vehicle_hearts, vehicle_max_hearts, vehicle_rows};
 
 const XP_TEXT: u32 = 0xFF80_FF20;
 const OUTLINE: u32 = 0xFF00_0000;
@@ -157,7 +157,8 @@ pub(crate) fn draw_hud(
                 p.sprite(sprite_name(layer), x, y, 9, 9);
             }
         }
-        for (j, drumstick) in drumsticks(vitals).iter().enumerate() {
+        let vehicle = ui.vehicle_health.map_or(0, |(_, max)| vehicle_max_hearts(max));
+        for (j, drumstick) in drumsticks(vitals).iter().enumerate().filter(|_| vehicle == 0) {
             let x = right - j as i32 * 8 - 9;
             let y = line + drumstick.shake as i32;
             p.sprite(sprite_name(drumstick.empty), x, y, 9, 9);
@@ -171,7 +172,7 @@ pub(crate) fn draw_hud(
                     p.sprite(
                         sprite_name(sprite),
                         right - i as i32 * 8 - 9,
-                        line - 10,
+                        line - 10 - (vehicle_rows(vehicle) - 1).max(0) * 10,
                         9,
                         9,
                     );
@@ -209,6 +210,11 @@ pub(crate) fn draw_hud(
                 p.text(&text, x + dx, y + dy, OUTLINE, false);
             }
             p.text(&text, x, y, XP_TEXT, false);
+        }
+    }
+    if let Some((health, max)) = ui.vehicle_health {
+        for (column, row, sprite) in vehicle_hearts(health, max) {
+            p.sprite(sprite_name(sprite), cx + 91 - column as i32 * 8 - 9, h - 39 - row as i32 * 10, 9, 9);
         }
     }
     if let Some((name, alpha)) = name {
@@ -302,6 +308,112 @@ mod tests {
         assert_eq!(xp_fill(0.5), 91);
         assert_eq!(xp_fill(1.0), 183);
         assert_eq!(sprite_name("gui:hud/air"), "hud/air");
+    }
+
+    const DRAWN: [&str; 6] = [
+        "hud/food_empty",
+        "hud/food_full",
+        "hud/air",
+        "hud/heart/vehicle_container",
+        "hud/heart/vehicle_full",
+        "hud/heart/vehicle_half",
+    ];
+
+    fn drawn(ui: &MinecraftUi) -> Vec<(&'static str, i32, i32)> {
+        let mut gui = frame::McGui {
+            size: [256, 16],
+            ..Default::default()
+        };
+        for (i, name) in DRAWN.iter().enumerate() {
+            gui.sprites.insert(
+                (*name).into(),
+                frame::minecraft_gui::McSprite {
+                    rect: [i as u32 * 16, 0, 9, 9],
+                    scaling: frame::minecraft_gui::McScaling::Stretch,
+                },
+            );
+        }
+        let space = crate::minecraft_gui::GuiSpace::new([480, 252], [480.0, 252.0], [480.0, 252.0]);
+        let mut painter = Painter::new(&gui, space);
+        draw_hud(&mut painter, ui, None, None);
+        painter
+            .quads
+            .iter()
+            .map(|q| {
+                (
+                    DRAWN[(q.st[0][0] * 16.0).round() as usize],
+                    (q.xy[0][0] - 0.5) as i32,
+                    (q.xy[0][1] - 0.5) as i32,
+                )
+            })
+            .collect()
+    }
+
+    fn count(drawn: &[(&str, i32, i32)], name: &str) -> usize {
+        drawn.iter().filter(|(sprite, _, _)| *sprite == name).count()
+    }
+
+    fn lines(drawn: &[(&str, i32, i32)], name: &str) -> Vec<i32> {
+        let mut ys: Vec<i32> = drawn
+            .iter()
+            .filter(|(sprite, _, _)| *sprite == name)
+            .map(|(_, _, y)| *y)
+            .collect();
+        ys.sort_unstable();
+        ys.dedup();
+        ys
+    }
+
+    #[test]
+    fn vehicle_hearts_hide_the_drumsticks_and_lift_the_bubbles_a_row_per_extra_row() {
+        let mut ui = MinecraftUi {
+            vitals: Some(frame::McVitals {
+                health: 20.0,
+                max_health: 20.0,
+                food: 20,
+                saturation: 5.0,
+                air: 150,
+                max_air: 300,
+                eye_in_water: true,
+                display_health: 20,
+                regen_index: -1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let on_foot = drawn(&ui);
+        assert_eq!(count(&on_foot, "hud/food_empty"), 10);
+        assert_eq!(lines(&on_foot, "hud/food_empty"), [213]);
+        assert_eq!(lines(&on_foot, "hud/air"), [203]);
+        assert_eq!(count(&on_foot, "hud/heart/vehicle_container"), 0);
+        ui.vehicle_health = Some((20.0, 20.0));
+        let strider = drawn(&ui);
+        assert_eq!(count(&strider, "hud/food_empty") + count(&strider, "hud/food_full"), 0);
+        assert_eq!(count(&strider, "hud/heart/vehicle_full"), 10);
+        assert_eq!(lines(&strider, "hud/heart/vehicle_container"), [213]);
+        assert_eq!(lines(&strider, "hud/air"), [203], "one row keeps the bubbles where they were");
+        let first = strider
+            .iter()
+            .find(|(sprite, _, _)| *sprite == "hud/heart/vehicle_container")
+            .unwrap();
+        assert_eq!((first.1, first.2), (240 + 91 - 9, 213), "the first heart sits at the right end");
+        ui.vehicle_health = Some((25.0, 30.0));
+        let horse = drawn(&ui);
+        assert_eq!(count(&horse, "hud/heart/vehicle_container"), 15);
+        assert_eq!(lines(&horse, "hud/heart/vehicle_container"), [203, 213]);
+        assert_eq!(count(&horse, "hud/heart/vehicle_full"), 12);
+        assert_eq!(count(&horse, "hud/heart/vehicle_half"), 1);
+        assert_eq!(lines(&horse, "hud/air"), [193], "two rows lift the bubbles one row");
+        assert_eq!(count(&horse, "hud/food_empty"), 0);
+        ui.game_mode = frame::minecraft_ui::McGameMode::Creative;
+        let creative = drawn(&ui);
+        assert_eq!(count(&creative, "hud/heart/vehicle_container"), 15, "creative riders see them too");
+        assert_eq!(count(&creative, "hud/air") + count(&creative, "hud/food_empty"), 0);
+        ui.game_mode = frame::minecraft_ui::McGameMode::Survival;
+        ui.vehicle_health = Some((1.0, 1.0));
+        let tiny = drawn(&ui);
+        assert_eq!(count(&tiny, "hud/food_empty"), 10, "a mount of no hearts leaves the food bar");
+        assert_eq!(count(&tiny, "hud/heart/vehicle_container"), 0);
     }
 
     #[test]

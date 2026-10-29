@@ -752,6 +752,7 @@ pub(crate) fn struck(
         riding,
         reattach,
         jump_bar,
+        vehicle_health,
         raid_bars,
         wither_bars,
         ..
@@ -885,6 +886,7 @@ pub(crate) fn struck(
         riding, reattach, steps, entities, authority, rider, origin, present,
     );
     *jump_bar = riding.and_then(|_| entities.view.world.ride_jump_scale(player_id));
+    *vehicle_health = riding.and_then(|_| entities.view.world.vehicle_health(player_id));
     for to in teleports
         .iter()
         .filter(|(uuid, _)| alive && uuid == local_uuid)
