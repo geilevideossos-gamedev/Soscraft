@@ -934,6 +934,9 @@ fn display_name(language: &HashMap<String, String>, stack: &ItemStack) -> Option
     if let Some(title) = title.map(|title| title.get("raw").unwrap_or(title)).and_then(serde_json::Value::as_str).filter(|title| !title.trim().is_empty()) {
         return Some(title.to_owned());
     }
+    if let Some(name) = minecraft_terrain::lodestone::name_key(stack).and_then(|key| language.get(key)) {
+        return Some(name.clone());
+    }
     let potion = minecraft_terrain::stations::potion_of(stack)?;
     let effect = potion.rsplit(':').next()?.trim_start_matches("long_").trim_start_matches("strong_");
     let item = stack.id.rsplit(':').next()?;
@@ -1094,6 +1097,24 @@ mod tests {
         quill.components = Some(serde_json::json!({"minecraft:writable_book_content": {"pages": [{"raw": "x"}]}}));
         assert_eq!(display_name(&language, &quill), None);
         assert!(book_lines(&language, &quill).is_empty());
+    }
+
+    #[test]
+    fn a_lodestone_compass_is_named_and_glints_and_a_custom_name_comes_first() {
+        use minecraft_terrain::lodestone::{self, Target, COMPASS, NAME_KEY};
+        let language: HashMap<String, String> = [(NAME_KEY.to_owned(), "Lodestone Compass".to_owned())].into_iter().collect();
+        let plain = ItemStack::new(COMPASS, 1);
+        assert_eq!(display_name(&language, &plain), None);
+        let mut tracked = lodestone::with_tracker(&plain, Target::new(minecraft_net::Dimension::Overworld, (1, 2, 3)));
+        assert_eq!(display_name(&language, &tracked).as_deref(), Some("Lodestone Compass"));
+        assert!(minecraft_terrain::glint::has_glint(&tracked));
+        let mut inventory = minecraftoss_player::inventory::Inventory::default();
+        inventory.slots[0] = Some(tracked.clone());
+        lodestone::forget(&mut inventory, minecraft_net::Dimension::Overworld, (1, 2, 3));
+        let lost = inventory.slots[0].clone().unwrap();
+        assert_eq!(display_name(&language, &lost).as_deref(), Some("Lodestone Compass"), "a broken lodestone keeps the name");
+        tracked.components.as_mut().unwrap()["minecraft:custom_name"] = serde_json::json!("Home");
+        assert_eq!(display_name(&language, &tracked).as_deref(), Some("Home"));
     }
 
     #[test]

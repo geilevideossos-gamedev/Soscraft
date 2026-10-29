@@ -1149,6 +1149,7 @@ pub fn act(
                         )
                     })
                     .or_else(|| minecraft_terrain::ender_eye::frame_use(&player, &outlined, stack))
+                    .or_else(|| minecraft_terrain::lodestone::lock_use(&player, &outlined, stack))
                     .or_else(|| {
                         minecraft_terrain::end_crystal::crystal_use(&player, &outlined, stack)
                     })
@@ -1214,6 +1215,14 @@ pub fn act(
                         if player.crouching { 1.5 } else { 1.8 },
                         sent,
                     ),
+                    minecraft_terrain::bucket::Change::Lodestone(pos) => {
+                        let target = minecraft_terrain::lodestone::Target::new(*dimension, pos);
+                        let infinite = !game_mode.consumes_items();
+                        if let Some(rest) = minecraft_terrain::lodestone::lock(inventory, (slot, *selected), target, infinite) {
+                            entities.view.world_items.toss(rest, eye_block, mc_yaw, pitch);
+                        }
+                        finish_item_use(entities, inventory, sent, game_mode.consumes_items(), &mut effects);
+                    }
                     minecraft_terrain::bucket::Change::Frame(_)
                     | minecraft_terrain::bucket::Change::Lectern(_)
                     | minecraft_terrain::bucket::Change::Vault(_) => {}

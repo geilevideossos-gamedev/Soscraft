@@ -3253,6 +3253,17 @@ impl ServerSim {
         self.vaults.enchanting = Some(crate::containers::loot_enchanting(book));
     }
 
+    pub fn lodestones_gone(&self, checks: &[(u64, Vec<BlockPos>)]) -> Vec<(u64, BlockPos)> {
+        let blocks = &self.level.registries().blocks;
+        let lodestone = blocks.block_by_name(crate::lodestone::LODESTONE);
+        let (min_y, max_y) = (self.level.min_y(), self.level.max_y());
+        let gone = |pos: BlockPos| {
+            let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+            !crate::lodestone::in_world_bounds(pos, min_y, max_y) || (self.level.chunk(at.chunk()).is_some() && Some(blocks.block_of(self.level.block(at))) != lodestone)
+        };
+        checks.iter().flat_map(|(player, targets)| targets.iter().filter(|pos| gone(**pos)).map(|pos| (*player, *pos))).collect()
+    }
+
     fn drop_ominous_items(&mut self) {
         use minecraftoss_core::random::RandomSource;
         for (at, stack) in std::mem::take(&mut self.level.ominous_drops) {
@@ -3703,6 +3714,7 @@ pub struct TickInput {
     pub spawn_mobs: bool,
     pub controls: Vec<minecraftoss_entities::controls::PlayerControls>,
     pub omens: Vec<(u64, PlayerOmens)>,
+    pub lodestones: Vec<(u64, Vec<(i32, i32, i32)>)>,
     pub view_distance: i32,
 }
 
@@ -3732,6 +3744,7 @@ impl TickInput {
         self.player_hurts.retain(|(id, _, _)| *id != player);
         self.controls.retain(|controls| controls.id != player);
         self.omens.retain(|(id, _)| *id != player);
+        self.lodestones.retain(|(id, _)| *id != player);
     }
 }
 
@@ -3811,6 +3824,7 @@ pub struct Output {
     pub tracked: crate::mob_tracking::Tracked,
     pub raid_omens: Vec<(u64, i32, (i32, i32, i32))>,
     pub trial_omens: Vec<u64>,
+    pub lodestones_gone: Vec<(u64, (i32, i32, i32))>,
     pub raid_heroes: Vec<(u64, i32)>,
     pub raid_horns: Vec<(u64, [f64; 3])>,
     pub raid_bars: Option<Vec<(u64, Vec<crate::raids::RaidBar>)>>,
@@ -4360,6 +4374,8 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.raid_heroes.extend(raid.heroes);
     out.raid_horns.extend(raid.horns);
     out.raid_bars = Some(raid.bars);
+    let lodestones = std::mem::take(&mut input.lodestones);
+    out.lodestones_gone.extend(sim.lodestones_gone(&lodestones));
     if normal {
         sim.prepare_spawning(&input.mob_players);
         sim.blast_players.clone_from(&input.mob_players);
@@ -10750,6 +10766,33 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_lodestone_is_reported_only_when_its_chunk_is_loaded() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let (lodestone, far, above, below) = ((8, 200, 8), (100, 64, 100), (8, 320, 8), (8, -65, 8));
+        server.player_edit_block(lodestone, Some(&Block::new(crate::lodestone::LODESTONE)), PlayerEdit::Place);
+        let input = || TickInput { lodestones: vec![(0, vec![lodestone, far, above, below]), (3, vec![lodestone])], ..idle_input() };
+        let gone = |out: Output| out.lodestones_gone;
+        assert_eq!(gone(run_ticks(&mut server, &mut input(), true, 1)), [(0, above), (0, below)], "a lodestone in place and one in an unloaded chunk are kept");
+        server.player_edit_block(lodestone, Some(&Block::new("minecraft:air")), PlayerEdit::Place);
+        assert_eq!(gone(run_ticks(&mut server, &mut input(), false, 3)), [(0, lodestone), (0, above), (0, below), (3, lodestone)], "once per input, under /tick freeze too");
+        let mut left = input();
+        left.remove_player(0);
+        assert_eq!(gone(run_ticks(&mut server, &mut left, true, 1)), [(3, lodestone)]);
+        assert!(gone(run_ticks(&mut server, &mut idle_input(), true, 1)).is_empty());
+    }
+
+    #[test]
     fn the_visual_clip_passes_glass_and_iron_bars_and_stops_at_stone_and_a_fence_outline() {
         use minecraftoss_world::level::physics::{ClipBlocks, ClipFluids};
         let Ok(paths) = DataPaths::discover() else { return };
@@ -11854,6 +11897,7 @@ mod tests {
             spawn_mobs: false,
             controls: Vec::new(),
             omens: Vec::new(),
+            lodestones: Vec::new(),
             view_distance: 8,
         }
     }

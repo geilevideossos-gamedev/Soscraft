@@ -102,6 +102,7 @@ pub struct Entities {
     mount_viewers: HashMap<u64, u64>,
     player_boxes: Vec<crate::pvp::PlayerBox>,
     held_names: HashMap<u64, String>,
+    dimension: minecraft_net::Dimension,
 }
 
 /// What bullets and blasts count as for block loot: vanilla drops nothing
@@ -210,6 +211,7 @@ pub(crate) struct PlayerQueue {
     merchant: Vec<MerchantNews>,
     merchant_waiting: usize,
     raid_omens_waiting: Vec<(i32, (i32, i32, i32))>,
+    lodestones_gone: Vec<(i32, i32, i32)>,
     pub(crate) out: PlayerOutputs,
 }
 
@@ -387,6 +389,11 @@ impl PlayerQueues {
                 queue.out.trial_omen = true;
             }
         }
+        for (player, pos) in std::mem::take(&mut output.lodestones_gone) {
+            if let Some(queue) = self.0.get_mut(&player) {
+                queue.lodestones_gone.push(pos);
+            }
+        }
         for (player, amplifier) in std::mem::take(&mut output.raid_heroes) {
             if let Some(queue) = self.0.get_mut(&player) {
                 queue.out.raid_heroes.push(amplifier);
@@ -505,6 +512,7 @@ impl Entities {
             mount_viewers: HashMap::new(),
             player_boxes: Vec::new(),
             held_names: HashMap::new(),
+            dimension,
         }
     }
 
@@ -1566,6 +1574,7 @@ impl Entities {
                         (actor.id, minecraft_terrain::server::PlayerOmens { bad_omen: actor.view.omens.bad_omen, trial_omen: actor.view.omens.trial_omen, raid_omens })
                     })
                     .collect(),
+                lodestones: actors.iter().map(|actor| (actor.id, minecraft_terrain::lodestone::tracked_targets(actor.inventory, self.dimension))).filter(|(_, targets)| !targets.is_empty()).collect(),
                 view_distance: self.view_distance,
             }, batch.normal.clone());
         }
@@ -1716,6 +1725,9 @@ impl Entities {
                 }
             }
             settle_merchant_news(queue, actor.inventory);
+            for pos in std::mem::take(&mut queue.lodestones_gone) {
+                minecraft_terrain::lodestone::forget(actor.inventory, self.dimension, pos);
+            }
             let broken = std::mem::take(&mut queue.broken);
             if presenter == Some(actor.id) {
                 self.broken_items.extend(broken);
@@ -3029,6 +3041,31 @@ mod tests {
         assert_eq!(entities.view.swirls, vec![poisoned.clone()], "a spectator gives off no swirl");
         let sent = entities.take_friend_snapshot().expect("the friend's snapshot");
         assert_eq!(sent.swirls, vec![poisoned]);
+    }
+
+    #[test]
+    fn each_players_compass_forgets_a_lodestone_that_is_not_there_in_a_loaded_chunk() {
+        use minecraft_terrain::lodestone::{self, Target};
+        let Some(mut entities) = friend_world() else {
+            return;
+        };
+        entities.spawn_mobs = false;
+        let compass = ItemStack::new(lodestone::COMPASS, 1);
+        let overworld = |pos| lodestone::with_tracker(&compass, Target::new(minecraft_net::Dimension::Overworld, pos));
+        let (mut host, mut friend) = (Inventory::default(), Inventory::default());
+        host.slots[0] = Some(overworld((10, 200, 10)));
+        host.slots[1] = Some(overworld((500, 64, 500)));
+        host.slots[2] = Some(lodestone::with_tracker(&compass, Target::new(minecraft_net::Dimension::Nether, (10, 200, 10))));
+        friend.slots[4] = Some(overworld((12, 200, 12)));
+        let target = |inventory: &Inventory, slot: usize| lodestone::tracker(inventory.slots[slot].as_ref().unwrap()).unwrap().target;
+        let started = std::time::Instant::now();
+        while target(&host, 0).is_some() || target(&friend, 4).is_some() {
+            assert!(started.elapsed().as_secs() < 300, "the stone was never reported");
+            tick_both(&mut entities, &mut host, &mut friend);
+        }
+        assert_eq!(target(&host, 1), Some(Target::new(minecraft_net::Dimension::Overworld, (500, 64, 500))), "an unloaded chunk's lodestone is kept");
+        assert_eq!(target(&host, 2), Some(Target::new(minecraft_net::Dimension::Nether, (10, 200, 10))), "another dimension's lodestone is never checked");
+        assert!(lodestone::tracker(host.slots[0].as_ref().unwrap()).unwrap().tracked, "the needle spins but it stays a lodestone compass");
     }
 
     fn count(inventory: &Inventory, id: &str) -> u32 {

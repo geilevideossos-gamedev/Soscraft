@@ -149,6 +149,7 @@ pub enum Change {
     Breath,
     Frame(u64),
     Lectern(Pos),
+    Lodestone(Pos),
     Vault(Pos),
 }
 
@@ -547,6 +548,7 @@ mod tests {
             | Change::Breath
             | Change::Frame(..)
             | Change::Lectern(..)
+            | Change::Lodestone(..)
             | Change::Vault(..) => None,
         }
     }
