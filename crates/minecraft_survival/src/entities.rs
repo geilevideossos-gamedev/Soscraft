@@ -1823,6 +1823,21 @@ fn resting_monsters(w: &EntityWorld, sleeper: u64) -> Vec<(&'static str, bool, [
     for e in w.piglins().iter().filter(|e| e.piglin.health > 0.0) {
         out.push((e.piglin.kind.type_id(), false, bounds(&e.piglin.body)));
     }
+    for e in w.illagers().iter().filter(|e| e.illager.health > 0.0) {
+        out.push((e.illager.kind.type_id(), false, bounds(&e.illager.body)));
+    }
+    for e in w.vexes().iter().filter(|e| e.vex.health > 0.0) {
+        out.push(("minecraft:vex", false, bounds(&e.vex.body)));
+    }
+    for e in w.ravagers().iter().filter(|e| e.ravager.health > 0.0) {
+        out.push(("minecraft:ravager", false, bounds(&e.ravager.body)));
+    }
+    for e in w.withers().iter().filter(|e| e.wither.health > 0.0) {
+        out.push(("minecraft:wither", false, bounds(&e.wither.body)));
+    }
+    for (_, core) in w.family_cores().into_iter().filter(|(_, core)| core.alive() && !core.removed) {
+        out.push((core.kind, false, bounds(&core.body)));
+    }
     out
 }
 
@@ -2259,6 +2274,49 @@ mod tests {
         let mut world = EntityWorld::default();
         world.spawn_piglin(minecraftoss_entities::piglin::Piglin::new(minecraftoss_entities::piglin::PiglinKind::Brute, DVec3::new(-2.5, 60.0, 0.5)), true);
         assert!(monsters_in(&world, area, 7));
+    }
+
+    #[test]
+    fn a_player_cannot_sleep_beside_a_pillager_vex_ravager_or_wither() {
+        use minecraftoss_entities::illager::{Illager, IllagerKind};
+        let area = crate::sleep::monster_box((0, 64, 0));
+        let at = DVec3::new(2.5, 64.0, 0.5);
+        let mut worlds = Vec::new();
+        for kind in [IllagerKind::Pillager, IllagerKind::Vindicator, IllagerKind::Evoker] {
+            let mut world = EntityWorld::default();
+            world.spawn_illager(Illager::new(kind, at), true);
+            worlds.push((kind.type_id(), world));
+        }
+        let mut world = EntityWorld::default();
+        world.spawn_vex(minecraftoss_entities::vex::Vex::new(at), true);
+        worlds.push(("minecraft:vex", world));
+        let mut world = EntityWorld::default();
+        world.spawn_ravager(minecraftoss_entities::ravager::Ravager::new(at), true);
+        worlds.push(("minecraft:ravager", world));
+        let mut world = EntityWorld::default();
+        world.spawn_wither(minecraftoss_entities::wither::Wither::new(at), true);
+        worlds.push(("minecraft:wither", world));
+        for kind in ["minecraft:silverfish", "minecraft:endermite"] {
+            let mut world = EntityWorld::default();
+            world.spawn_family_kind(kind, at).unwrap();
+            worlds.push((kind, world));
+        }
+        for (kind, world) in &worlds {
+            assert!(monsters_in(world, area, 7), "{kind} keeps the player awake");
+        }
+        let mut far = EntityWorld::default();
+        far.spawn_ravager(minecraftoss_entities::ravager::Ravager::new(DVec3::new(12.5, 64.0, 0.5)), true);
+        assert!(!monsters_in(&far, area, 7), "a ravager 12 blocks off");
+        let mut dead = EntityWorld::default();
+        let wither = dead.spawn_wither(minecraftoss_entities::wither::Wither::new(at), true);
+        dead.wither_mut(wither).unwrap().wither.health = 0.0;
+        let vex = dead.spawn_vex(minecraftoss_entities::vex::Vex::new(at), true);
+        dead.vex_mut(vex).unwrap().vex.health = 0.0;
+        let fish = dead.spawn_family_kind("minecraft:silverfish", at).unwrap();
+        dead.family_core_mut(fish).unwrap().1.health = 0.0;
+        let mite = dead.spawn_family_kind("minecraft:endermite", at).unwrap();
+        dead.family_core_mut(mite).unwrap().1.removed = true;
+        assert!(!monsters_in(&dead, area, 7), "dead ones and one that left");
     }
 
     fn monsters_in(world: &EntityWorld, area: [f64; 6], sleeper: u64) -> bool {

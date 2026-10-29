@@ -409,3 +409,26 @@ After 2a325d3c.
 ```
 IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*4,minecraft:endermite_spawn_egg*4,minecraft:pillager_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:wheat*8,minecraft:lead*2,minecraft:bow,minecraft:spectral_arrow*16,minecraft:iron_sword,minecraft:cooked_beef*32
 ```
+
+### 2. Minecraft players cannot sleep beside pillagers, vexes, ravagers or withers
+
+After 126b07a1.
+
+- **Changed (`minecraft_survival`, D0-5.4):** `entities::resting_monsters` (the mobs the bed check looks at) also lists the living illagers (pillager, vindicator, evoker by their kind), vexes, ravagers and withers, after the piglins. One generic loop after them lists every living registered mob that has not left, by its kind. The bed check still keeps only the kinds on `sleep::MONSTERS`, which already names all of them, the silverfish, the endermite and the round 10 monsters.
+- **Before this:** the stores added since round 8 were missing from the list, so a player could sleep with a pillager, vex, ravager or wither next to the bed. Silverfish and endermites, live since group registry-client, were missing as well.
+- **Tests added:** `entities::tests::a_player_cannot_sleep_beside_a_pillager_vex_ravager_or_wither`. Each of these, 2 blocks from the bed, keeps the player awake: a pillager, a vindicator, an evoker, a vex, a ravager, a wither, a silverfish and an endermite. A ravager 12 blocks off does not, and neither do a dead wither, a dead vex, a dead silverfish or an endermite that left.
+- **javap this round:** `Monster.isPreventingPlayerRest` returns true. `WitherBoss` and `Vex` extend `Monster`, `Ravager` extends `Raider` (a `Monster`), and `Pillager` extends `AbstractIllager`.
+- **Decisions:**
+  - Dead mobs are skipped, like every other store in the list. Registered mobs that left (`removed`) are skipped too.
+  - No mob in the new stores answers "angry": only the zombified piglin's rule depends on anger (`sleep::prevents_rest`).
+- **Protocol:** no message or codec change.
+- **Runs:** `test -p minecraft_survival --locked` (765 + 1 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). `clippy -p minecraft_terrain -p minecraft_survival --locked --lib --tests -A clippy::approx_constant` shows no warning on a line of this commit.
+- **Test steps.** Release build, survival, Normal, in the Overworld. Place a bed on open ground and stand beside it. Name each screenshot by its label, `D0-11-1.png`.
+  1. `/time set night`. `/summon minecraft:pillager ~3 ~ ~ {NoAI:1b}` and right-click the bed: the message "You may not rest now; there are monsters nearby" shows and you stay up. **Screenshot D0-11-1.** `/kill @e[type=minecraft:pillager]`.
+  2. Do the same with `minecraft:vex`, `minecraft:ravager` and `minecraft:silverfish`, one at a time, each with `{NoAI:1b}`: each one keeps you awake. Kill each before the next.
+  3. `/summon minecraft:wither ~6 ~ ~ {NoAI:1b}` and right-click the bed: you stay up. `/kill @e[type=minecraft:wither]`.
+  4. With no monster near, right-click the bed: you lie down and the night passes. **Screenshot D0-11-4** while lying down.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_bed*2,minecraft:silverfish_spawn_egg*2,minecraft:iron_sword,minecraft:cooked_beef*32
+```
