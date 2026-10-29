@@ -239,6 +239,7 @@ pub struct PlayerEvent {
     pub event: &'static str,
     pub pos: [f64; 3],
     pub affected: Option<String>,
+    pub projectile: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

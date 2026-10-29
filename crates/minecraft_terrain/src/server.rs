@@ -965,7 +965,8 @@ impl ServerSim {
             let source = self.player_source(event.player, &players);
             let dampened = self.named_block_dampens(event.affected.as_deref());
             let uuid = Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + event.player));
-            let posted_event = crate::game_events::Posted { source_uuid: uuid, dampened, ..crate::game_events::Posted::new(event.event, glam::DVec3::from_array(event.pos), before).by(source) };
+            let fresh = crate::game_events::Posted { dampened, ..crate::game_events::Posted::new(event.event, glam::DVec3::from_array(event.pos), before) };
+            let posted_event = if event.projectile { crate::game_events::Posted { owner: Some(source), owner_uuid: uuid, ..fresh } } else { crate::game_events::Posted { source_uuid: uuid, ..fresh.by(source) } };
             posted.push((posted_event, None));
         }
         for event in self.level.take_game_events() {
@@ -11577,7 +11578,7 @@ mod tests {
     }
 
     fn step_of(player: u64, feet: [f64; 3]) -> crate::game_events::PlayerEvent {
-        crate::game_events::PlayerEvent { player, event: crate::game_events::STEP, pos: feet, affected: Some("minecraft:stone".to_owned()) }
+        crate::game_events::PlayerEvent { player, event: crate::game_events::STEP, pos: feet, affected: Some("minecraft:stone".to_owned()), projectile: false }
     }
 
     fn travelling(sim: &ServerSim) -> Option<&'static str> {
@@ -11861,7 +11862,7 @@ mod tests {
         let eater = [2.5, 200.0, 5.5];
         let mut input = walker_input(eater);
         run_ticks(&mut sim, &mut input, true, 1);
-        input.game_events.push(crate::game_events::PlayerEvent { player: 0, event: crate::game_events::EAT, pos: eater, affected: None });
+        input.game_events.push(crate::game_events::PlayerEvent { player: 0, event: crate::game_events::EAT, pos: eater, affected: None, projectile: false });
         run_ticks(&mut sim, &mut input, true, 8);
         assert_eq!(last_frequency(&sim), Some(8), "the near sensor hears the eating");
         let heard = |sim: &ServerSim| sim.command_block_entity(calibrated).and_then(|tag| tag.get(minecraftoss_world::level::sculk::LAST_FREQUENCY)).and_then(minecraftoss_core::nbt::Tag::as_i64);
@@ -11869,6 +11870,29 @@ mod tests {
         run_ticks(&mut sim, &mut input, true, 14);
         assert_eq!(heard(&sim), Some(8), "the amethyst resonates frequency 8 to it");
         assert_eq!(block_property(&sim, calibrated, "sculk_sensor_phase").as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn a_crouched_gun_shot_is_heard_only_where_it_lands() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([14.5, 200.0, 8.5]);
+        input.controls = vec![minecraftoss_entities::controls::PlayerControls { id: 0, sneaking: true, ..Default::default() }];
+        run_ticks(&mut sim, &mut input, true, 1);
+        let shoot = |input: &mut TickInput| {
+            input.game_events.push(crate::game_events::PlayerEvent { player: 0, event: crate::game_events::PROJECTILE_SHOOT, pos: [14.5, 201.6, 8.5], affected: None, projectile: false });
+            input.game_events.push(crate::game_events::PlayerEvent { player: 0, event: crate::game_events::PROJECTILE_LAND, pos: [8.5, 199.5, 1.5], affected: Some("minecraft:stone".to_owned()), projectile: true });
+        };
+        shoot(&mut input);
+        run_ticks(&mut sim, &mut input, true, 1);
+        let travelling = sim.listeners().listener(SENSOR).and_then(|listener| listener.current.as_ref()).map(|info| (info.event, info.source, info.owner.and_then(|owner| owner.player())));
+        assert_eq!(travelling, Some((crate::game_events::PROJECTILE_LAND, None, Some(0))), "the bullet lands with its shooter as owner");
+        run_ticks(&mut sim, &mut input, true, 9);
+        assert_eq!(last_frequency(&sim), Some(2), "crouched, only the landing");
+        run_ticks(&mut sim, &mut input, true, 40);
+        input.controls.clear();
+        shoot(&mut input);
+        run_ticks(&mut sim, &mut input, true, 10);
+        assert_eq!(last_frequency(&sim), Some(3), "standing, the nearer shot itself");
     }
 
     #[test]

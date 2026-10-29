@@ -977,7 +977,11 @@ impl Entities {
     }
 
     pub fn game_event(&mut self, player: u64, event: &'static str, pos: [f64; 3], affected: Option<String>) {
-        self.players.queue(player).game_events.push(minecraft_terrain::game_events::PlayerEvent { player, event, pos, affected });
+        self.players.queue(player).game_events.push(minecraft_terrain::game_events::PlayerEvent { player, event, pos, affected, projectile: false });
+    }
+
+    pub fn projectile_landed(&mut self, player: u64, pos: [f64; 3], affected: Option<String>) {
+        self.players.queue(player).game_events.push(minecraft_terrain::game_events::PlayerEvent { player, event: minecraft_terrain::game_events::PROJECTILE_LAND, pos, affected, projectile: true });
     }
 
     pub fn keep_dropped_contents(&mut self, pos: (i32, i32, i32), id: &str, components: &serde_json::Value) {

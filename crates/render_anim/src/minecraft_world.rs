@@ -968,6 +968,7 @@ fn update(
 
     // Shots and explosions from the authoritative game: bullets that met a
     // mob hurt it, the rest mine.
+    let guns = gun_vibrations(&all_events, credit);
     let (mob_shots, events): (Vec<_>, Vec<_>) = all_events
         .into_iter()
         .partition(|event| matches!(event, sim::voxel::VoxelEvent::MobShot { .. } | sim::voxel::VoxelEvent::MobBlast { .. }));
@@ -994,6 +995,7 @@ fn update(
         })
         .collect();
     if let Some(entities) = entities.as_mut() {
+        post_gun_vibrations(entities, &terrain.scene, guns);
         for shot in mob_shots {
             match shot {
                 sim::voxel::VoxelEvent::MobShot { key, damage, from, attacker, .. } => {
@@ -2160,6 +2162,65 @@ pub(crate) fn event_level(event: &sim::voxel::VoxelEvent) -> u8 {
     }
 }
 
+pub(crate) struct GunVibration {
+    pub(crate) player: u64,
+    pub(crate) landed: bool,
+    pub(crate) pos: [f64; 3],
+    pub(crate) block: Option<(i32, i32, i32)>,
+}
+
+pub(crate) fn gun_vibrations(events: &[sim::voxel::VoxelEvent], credit: impl Fn(Option<u32>) -> Option<u64>) -> Vec<GunVibration> {
+    use sim::voxel::VoxelEvent;
+    let mut shots = Vec::new();
+    let mut mob_shots = Vec::new();
+    let mut rays = Vec::new();
+    for event in events {
+        match *event {
+            VoxelEvent::Shot { block, attacker, .. } => shots.extend(credit(attacker).map(|player| (player, block))),
+            VoxelEvent::MobShot { from, attacker, .. } => mob_shots.extend(credit(attacker).map(|player| (player, from))),
+            VoxelEvent::Ray { from, to, attacker, .. } => rays.extend(credit(attacker).map(|player| (player, from, to))),
+            _ => {}
+        }
+    }
+    let mut heard = Vec::new();
+    for (index, &(player, from, _)) in rays.iter().enumerate() {
+        if rays[..index].iter().all(|ray| ray.0 != player) {
+            heard.push(GunVibration { player, landed: false, pos: from, block: None });
+        }
+    }
+    let mut open = Vec::new();
+    for &(player, from, to) in &rays {
+        let (start, end) = (glam::DVec3::from_array(from), glam::DVec3::from_array(to));
+        let ahead = (end + (end - start).normalize_or_zero() * 0.05).floor();
+        let block = [ahead.x as i32, ahead.y as i32, ahead.z as i32];
+        if shots.contains(&(player, block)) {
+            let centre = block.map(|axis| f64::from(axis) + 0.5);
+            heard.push(GunVibration { player, landed: true, pos: centre, block: Some((block[0], block[1], block[2])) });
+        } else {
+            open.push((start.distance(end), player, from, to));
+        }
+    }
+    open.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, player, from, to) in open {
+        if let Some(index) = mob_shots.iter().position(|&shot| shot == (player, from)) {
+            mob_shots.swap_remove(index);
+            heard.push(GunVibration { player, landed: true, pos: to, block: None });
+        }
+    }
+    heard
+}
+
+pub(crate) fn post_gun_vibrations(entities: &mut minecraft_survival::entities::Entities, scene: &HandcraftedScene, guns: Vec<GunVibration>) {
+    for gun in guns {
+        if gun.landed {
+            let affected = gun.block.and_then(|pos| minecraft_terrain::scene::Scene::block(scene, pos)).map(|block| block.id.key());
+            entities.projectile_landed(gun.player, gun.pos, affected);
+        } else {
+            entities.game_event(gun.player, minecraft_terrain::game_events::PROJECTILE_SHOOT, gun.pos, None);
+        }
+    }
+}
+
 fn in_remote_killstreak(presented: &net::PresentedSnapshot, local: sim::ClientId) -> bool {
     let missile = presented.snapshot().and_then(|snapshot| snapshot.meta.for_client(local)).is_some_and(|meta| meta.remote_missile.is_some());
     missile || presented.player(local).is_some_and(|ps| remote_view(ps.pm_type, ps.other_flags))
@@ -2723,5 +2784,34 @@ mod band_tests {
         let shot = VoxelEvent::Shot { level: 1, block: [0; 3], damage: 1.0, attacker: None };
         let blast = VoxelEvent::MobBlast { level: 2, key: 0, damage: 1.0, center: [0.0; 3], impact: 0.0, attacker: None, slow_ticks: 0 };
         assert_eq!((event_level(&shot), event_level(&blast)), (bands::level(Dimension::Nether), bands::level(Dimension::End)));
+    }
+}
+
+#[cfg(test)]
+mod gun_tests {
+    use super::gun_vibrations;
+    use sim::voxel::VoxelEvent;
+
+    const MUZZLE: [f64; 3] = [0.5, 65.6, 0.5];
+
+    fn ray(to: [f64; 3]) -> VoxelEvent {
+        VoxelEvent::Ray { level: 0, from: MUZZLE, to, damage: 10.0, attacker: Some(3) }
+    }
+
+    fn heard(events: &[VoxelEvent]) -> Vec<(bool, [f64; 3], Option<(i32, i32, i32)>)> {
+        gun_vibrations(events, |attacker| attacker.map(u64::from)).into_iter().map(|gun| (gun.landed, gun.pos, gun.block)).collect()
+    }
+
+    #[test]
+    fn an_mw2_bullet_posts_its_shot_and_landing_and_a_ray_into_the_air_lands_nowhere() {
+        let wall = VoxelEvent::Shot { level: 0, block: [10, 65, 0], damage: 10.0, attacker: Some(3) };
+        assert_eq!(heard(&[ray([10.0, 65.6, 0.5]), wall]), vec![(false, MUZZLE, None), (true, [10.5, 65.5, 0.5], Some((10, 65, 0)))]);
+        assert_eq!(heard(&[ray([0.5, 265.6, 0.5])]), vec![(false, MUZZLE, None)], "a ray into the air lands nowhere");
+        let other = VoxelEvent::Shot { level: 0, block: [10, 65, 0], damage: 10.0, attacker: Some(4) };
+        assert_eq!(heard(&[ray([10.0, 65.6, 0.5]), other]).len(), 1, "another shooter's block is not this bullet's");
+        let mob = VoxelEvent::MobShot { level: 0, key: 1, damage: 10.0, from: MUZZLE, attacker: Some(3) };
+        let pellets = [ray([0.5, 65.6, 200.5]), ray([0.5, 65.6, 5.5]), ray([0.5, 65.6, 180.5]), mob];
+        assert_eq!(heard(&pellets), vec![(false, MUZZLE, None), (true, [0.5, 65.6, 5.5], None)], "one shot for the whole shell; the pellet that met the mob lands on it");
+        assert!(heard(&[VoxelEvent::Ray { level: 0, from: MUZZLE, to: [10.0, 65.6, 0.5], damage: 10.0, attacker: None }]).is_empty(), "no player behind it");
     }
 }

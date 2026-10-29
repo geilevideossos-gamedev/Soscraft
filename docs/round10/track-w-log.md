@@ -289,7 +289,7 @@ After a8407b26 ("Minecraft blocks make vibrations when used").
   4. Shear a sheep from its egg near the sensor: 6.
   5. Hatch a horse from its egg near the sensor and get on it with an empty hand: 6; crouch to get off (or let it throw you): 5.
   6. Take fall damage (jump from a 5-block pillar next to the sensor): 7. Then build the pillar to 25 blocks and jump: the death next to the sensor lights 15.
-  7. Friend window: the friend eats next to the host's sensor: the host's line shows 8. **w08_friend_eats**
+  7. Friend window: the friend eats next to the host's sensor: the host's line shows 8 (shown in **w10_friend_vibrations**, commit 4).
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*8,minecraft:comparator*2,minecraft:redstone*32,minecraft:apple*16,minecraft:milk_bucket,minecraft:diamond_helmet,minecraft:chicken_spawn_egg*4,minecraft:sheep_spawn_egg*2,minecraft:shears,minecraft:horse_spawn_egg*2,minecraft:cobblestone*64,minecraft:cobblestone*64,minecraft:cooked_beef*16
@@ -318,6 +318,37 @@ After the commit above (its subject: "Minecraft players and mobs make vibrations
 IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*4,minecraft:calibrated_sculk_sensor*2,minecraft:amethyst_block*4,minecraft:comparator*2,minecraft:redstone*64,minecraft:lever*2,minecraft:apple*16,minecraft:stone*64,minecraft:cooked_beef*16
 ```
 
+### 4. MW2 guns make Minecraft vibrations
+
+After the commit above (its subject: "Minecraft amethyst resonates sculk vibrations to calibrated sensors").
+
+- **Vanilla (javap on the 26.3 jar), for the projectile a bullet stands for:** `Projectile.tick` posts `projectile_shoot` on the projectile's first tick with the owner as source (in `#ignore_vibrations_sneaking`, so a crouched shooter's shot is not heard); `Projectile.onHit` posts `projectile_land` from the projectile, whose owner listeners see as the projectile owner, at the centre of the struck block with its state, or where it struck an entity (not in the sneaking tag). A projectile that hits nothing lands nowhere.
+- **Changed:**
+  - `render_anim/src/minecraft_world.rs`: `gun_vibrations(events, credit)` reads a tick's voxel events before the build filter (a player who may not build still makes noise): one `projectile_shoot` per shooter at the muzzle of its first ray (a shotgun's pellets are one shot); a ray whose end, nudged 0.05 along it, is a block that the same shooter's `Shot` struck lands at that block's centre with the block; of the other rays from a muzzle, as many as that shooter has `MobShot`s from there land where they stopped, shortest first (a ray stops where it meets the mob, while one that met nothing runs to the end of the trace); every other ray lands nowhere. `post_gun_vibrations` hands them to `Entities` with the block's id as the affected state. The host's level and each friend's level (`minecraft_levels.rs`) do this for the shots in them.
+  - `game_events::PlayerEvent.projectile` and `Entities::projectile_landed`: a landing comes from the player as projectile owner, not as source (W4's warden reads the owner); the server builds it with no source, so the sneaking check does not apply to it.
+  - A mob a bullet hits posts its own `entity_damage` through the entity world (commit 2); grenades, rockets and other MW2 blasts post `explode` through `weapon_blast` (group vibrations).
+- **Tests:**
+  - `minecraft_world::gun_tests::an_mw2_bullet_posts_its_shot_and_landing_and_a_ray_into_the_air_lands_nowhere` (a block hit lands at its centre with the block; a ray into the air only shoots; another shooter's block is not this bullet's; a shotgun shell is one shot, and of three pellets with one `MobShot` only the short one lands; a ray with no player behind it posts nothing).
+  - `server::tests::a_crouched_gun_shot_is_heard_only_where_it_lands` (through `run_tick`: crouched, the sensor reads 2; standing, the nearer shot reads 3; the landing has the player as owner and no source).
+- **Decisions:**
+  - The brief's `minecraft_world::tests::an_mw2_bullet_posts_its_shot_and_landing_and_a_crouched_shot_only_its_landing` is split: the conversion is tested in `minecraft_world::gun_tests`, the crouch in `server::tests::a_crouched_gun_shot_is_heard_only_where_it_lands`, because the crouch is read where the server hears the event.
+  - Bullets are projectiles, as the brief decided: crouched or prone shooting is not heard, the impact always is, and the impact's vibration comes from the bullet with its shooter as owner.
+  - A bullet that hits a player (MW2's own hit) posts no landing: there is no block or mob event for it; the hurt player posts its own `entity_damage` (commit 2).
+  - A bullet into wool is dampened like an arrow (the affected state is the wool).
+- **Test steps (survival; the sensor and comparator line):**
+  1. Stand 20 blocks from the sensor and shoot the ground beside it: the line shows 2. **w09_mw2_vibrations**
+  2. Stand 6 blocks from it and shoot a wall 30 blocks away on the other side: the shot itself triggers it (3).
+  3. Go prone (or crouch) and shoot that wall again: nothing. Shoot the ground beside the sensor: 2.
+  4. Shoot into the open sky 4 blocks from it, crouched: nothing (the bullet lands nowhere).
+  5. Throw a grenade near it: 15.
+  6. Friend window: the friend opens the oak door near the host's sensor (10), eats an apple next to it (8) and, standing 20 blocks away, shoots the ground beside it (2): the host's line shows the same numbers. **w10_friend_vibrations**
+
+Combined kit for the group's main steps (w07 to w10; 27 stacks; the MW2 weapons come from the MW2 loadout). Commit 1's bell, TNT, candle and piston steps keep its own kit:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*16,minecraft:calibrated_sculk_sensor*4,minecraft:redstone_lamp*8,minecraft:redstone*64,minecraft:comparator*4,minecraft:repeater*4,minecraft:amethyst_block*8,minecraft:oak_door*2,minecraft:oak_trapdoor*2,minecraft:oak_fence_gate*2,minecraft:chest*2,minecraft:barrel*2,minecraft:lever*4,minecraft:oak_button*4,minecraft:oak_pressure_plate*4,minecraft:note_block*2,minecraft:water_bucket,minecraft:bucket,minecraft:apple*16,minecraft:milk_bucket,minecraft:diamond_helmet,minecraft:chicken_spawn_egg*4,minecraft:horse_spawn_egg*2,minecraft:sheep_spawn_egg*2,minecraft:shears,minecraft:white_wool*32,minecraft:cobblestone*64
+```
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -334,6 +365,10 @@ Group vibrations-more, commit 2: no message or codec change (`Body` and `DamageS
 
 Group vibrations-more, commit 3: no message or codec change.
 
+Group vibrations-more, commit 4: no message or codec change (`PlayerEvent` and `TickInput` stay on the host).
+
 ## State doc changes
 
 - `docs/MULTIPLAYER.md`: a friend's `PlayerView` is also sent again when an effect is given again with a longer duration (`views::lengthened`), and the friend restarts its effect count-down for every view it receives, also one equal to the last (`RemoteWorld.player_views`).
+- `docs/MINECRAFT-SURVIVAL.md` (group vibrations-more): sculk sensors and calibrated sensors hear vanilla's game events from blocks used (doors, trapdoors, gates, levers, buttons, plates, note blocks, bells, containers, buckets, TNT, fire, pistons, dispensers, lecterns, item frames, wind charges), from players and mobs (eating, drinking, armour, riding, gliding, shearing, teleports, hurts, deaths, chicken flaps and eggs, spawn eggs) and from MW2 guns (the shot, unless crouched or prone, and where the bullet lands); an amethyst block beside a sensor resonates its frequency. Not yet: composters, cakes, jukeboxes, tripwires, beehives, bounces, bats' flaps, mob equipment, players and mobs on pressure plates.
+- `docs/round10/decisions.md` (group vibrations-more): MW2 bullets are projectiles for vibrations: crouched or prone shots are not heard, the impact on a block or a mob always is (from the bullet, with the shooter as projectile owner), and a bullet that hits nothing lands nowhere.

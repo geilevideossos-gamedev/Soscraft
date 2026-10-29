@@ -255,6 +255,7 @@ fn tick_level(
                 .any(|friend| friend.id == id && friend.infinite)
         })
     };
+    let guns = crate::minecraft_world::gun_vibrations(&events, credit);
     let (mob_shots, events): (Vec<_>, Vec<_>) = events.into_iter().partition(|event| {
         matches!(
             event,
@@ -272,6 +273,7 @@ fn tick_level(
         .collect();
     if let Some(entities) = level.entities.as_mut() {
         let scene = &level.terrain.scene;
+        crate::minecraft_world::post_gun_vibrations(entities, scene, guns);
         events.retain(|event| match *event {
             VoxelEvent::Shot { block, attacker, .. } => {
                 let pos = (block[0], block[1], block[2]);
