@@ -218,6 +218,25 @@ impl Goal<MonsterGoalContext> for BreakDoorGoal {
     }
 }
 
+impl crate::world::EntityWorld {
+    pub fn door_cracks(&self) -> Vec<(u64, Pos, u8)> {
+        let zombies = self
+            .zombies()
+            .iter()
+            .filter(|e| e.zombie.health > 0.0)
+            .filter_map(|e| Some((e.id, e.ai.as_deref()?.state.door.crack?)));
+        let illagers = self
+            .illagers()
+            .iter()
+            .filter(|e| e.illager.health > 0.0)
+            .filter_map(|e| Some((e.id, e.ai.state.door.crack?)));
+        zombies
+            .chain(illagers)
+            .map(|(id, (pos, stage))| (id, pos, stage))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +457,34 @@ mod tests {
         assert!(door.passed());
         ctx.navigation.stop();
         assert!(!door.can_use(&ctx, &world), "no path, no door");
+    }
+
+    #[test]
+    fn door_cracks_list_the_living_zombies_and_illagers_at_a_door() {
+        use crate::illager::{Illager, IllagerKind};
+        use crate::world::EntityWorld;
+        use crate::zombie::Zombie;
+        let mut world = EntityWorld::default();
+        let at = DVec3::new(0.5, 1.0, 0.5);
+        let zombie = world.spawn_zombie_active(Zombie::new(at), 0.0);
+        let idle = world.spawn_zombie_active(Zombie::new(at), 0.0);
+        let dead = world.spawn_zombie_active(Zombie::new(at), 0.0);
+        let vindicator = world.spawn_illager(Illager::new(IllagerKind::Vindicator, at), false);
+        let crack = |world: &mut EntityWorld, id: u64, stage: u8| {
+            if let Some(entity) = world.zombie_mut(id) {
+                entity.ai.as_deref_mut().unwrap().state.door.crack = Some((UPPER, stage));
+            } else {
+                world.illager_mut(id).unwrap().ai.state.door.crack = Some(((5, 2, 1), stage));
+            }
+        };
+        crack(&mut world, zombie, 4);
+        crack(&mut world, dead, 7);
+        crack(&mut world, vindicator, 1);
+        world.zombie_mut(dead).unwrap().zombie.health = 0.0;
+        assert_eq!(
+            world.door_cracks(),
+            vec![(zombie, UPPER, 4), (vindicator, (5, 2, 1), 1)]
+        );
+        assert!(world.door_cracks().iter().all(|&(id, ..)| id != idle));
     }
 }

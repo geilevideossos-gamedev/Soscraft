@@ -255,3 +255,33 @@ After 9647acfb.
 ```
 IW4L_MINECRAFT_KIT=minecraft:villager_spawn_egg*4,minecraft:oak_door*8,minecraft:copper_door*4,minecraft:iron_door*2,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:oak_fence*16,minecraft:torch*16
 ```
+
+### 2. Minecraft door cracks from mobs show for the host and friends
+
+After bc57c07f.
+
+- **Vanilla (26.3):** `BreakDoorGoal` sends `destroyBlockProgress(mob.getId(), doorPos, stage)` on each stage change and -1 in `stop`; `ServerLevel` sends it to every player within 32 blocks, and the client's `LevelRenderer.destroyBlockProgress` draws stages 0 to 9 and drops the crack for anything else (the tenth stage at 240).
+- **Changed:**
+  - Vendored `entities/src/door_goals.rs`: `EntityWorld::door_cracks() -> Vec<(u64, Pos, u8)>`, the cracks of the living zombies and illagers whose door goal shows one (`ai.state.door.crack`). It uses only the stores' public lists, so `world.rs` is not touched.
+  - `minecraft_survival/src/session.rs`: `MOB_BREAKER` (`0x4000_0000`) and `mob_breaker(id)`, a breaker key that can't meet `BULLETS` or a player id. `level_cracks` adds each mob crack from the level's mob snapshot (`entities.view.world`); `send_cracks` already sends a stage on each change and -1 when a crack is gone, within `CRACK_RANGE`.
+  - `render_anim/src/minecraft_world.rs`: the host's crack list takes the same mob cracks from its snapshot.
+  - The friend side needs no change: `ToClient::Crack` already draws, and -1 clears.
+  - `docs/MINECRAFT-SURVIVAL.md`: the door breaking line names the cracks.
+  - Vendored `world.rs`: puts back the space after `let throw =` that bc57c07f dropped by mistake, so that line is unchanged from before the group again.
+- **Tests:**
+  - Vendored `door_goals::tests::door_cracks_list_the_living_zombies_and_illagers_at_a_door`: a cracking zombie and vindicator are listed with their stage; a dead zombie and one without a crack are not.
+  - `session::tests::a_friend_sees_a_zombies_door_crack_grow_and_clear`: a zombie's crack in a real level reaches a friend's session as stage 0, is not sent again unchanged, then stage 5, then -1, all under `mob_breaker(id)`.
+  - Entities 416 pass; `minecraft_survival` 758 pass; `check -p launcher` passes.
+- **Decisions:**
+  - A mob's crack lasts only as long as the mob and its goal: it is keyed per mob in its own breaker range and vanishes as soon as the mob dies or stops breaking. Vanilla clients keep an orphaned crack for up to 400 ticks.
+  - The host and the friends read the cracks from the same mob snapshot, so they show the same stage in the same tick.
+- **Test steps (setup as in commit 1: creative, Hard, at night, the plank room with the penned villager, the door open, standing outside with your back to it):**
+  1. Do steps 1 and 2 of commit 1. While the zombie knocks, cracks spread over the upper half of the door and grow over the 12 seconds until it breaks (**doors-3_cracks**, about half way).
+  2. Put in a new oak door and repeat. Once the cracks show, run `/difficulty normal`: the cracks vanish at once. Run `/difficulty hard`.
+  3. Repeat, and once the cracks show, hit the zombie with the diamond sword until it dies: the cracks vanish with it.
+  4. **Two windows:** put the friend in creative too (`/gamemode creative <friend's name>`) and have them stand outside the house within 30 blocks of the door. Repeat step 1. The friend sees the zombie swing, the cracks grow on the door and the wood bits when it breaks, and hears the knocks and the break. The friend can pick up the dropped door (**doors-4_friend**, both windows).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:villager_spawn_egg*4,minecraft:oak_door*8,minecraft:copper_door*4,minecraft:iron_door*2,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:oak_fence*16,minecraft:torch*16,minecraft:diamond_sword
+```

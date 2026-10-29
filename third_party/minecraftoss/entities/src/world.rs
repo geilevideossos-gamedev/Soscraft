@@ -6240,7 +6240,7 @@ impl EntityWorld {
                         (entity.pending_attack_villager.take(), entity.pending_attack_player.take(), conversion_due, !removed)
                     };
                     self.apply_door_work(id, world, game_time);
-                    let throw =self.zombie_mut(id).and_then(|e| Some((e.drowned.as_mut()?.throw.take()?, e.zombie.main_hand.clone())));
+                    let throw = self.zombie_mut(id).and_then(|e| Some((e.drowned.as_mut()?.throw.take()?, e.zombie.main_hand.clone())));
                     if let Some(((position, velocity), item)) = throw {
                         let item = item.unwrap_or_else(|| "minecraft:trident".to_owned());
                         self.trident_throws.push(crate::drowned_ai::TridentThrow { owner: id, position, velocity, item });
