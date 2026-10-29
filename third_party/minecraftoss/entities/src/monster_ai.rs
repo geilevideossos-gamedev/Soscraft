@@ -137,7 +137,7 @@ pub const CREEPER_GOAL_NAMES: [&str; 8] = [
     "RandomLookAroundGoal",
 ];
 pub const CREEPER_TARGET_NAMES: [&str; 2] = ["NearestAttackableTargetGoal", "HurtByTargetGoal"];
-pub const ZOMBIE_GOAL_NAMES: [&str; 7] = [
+pub const ZOMBIE_GOAL_NAMES: [&str; 8] = [
     "ZombieAttackTurtleEggGoal",
     "LookAtPlayerGoal",
     "RandomLookAroundGoal",
@@ -145,6 +145,7 @@ pub const ZOMBIE_GOAL_NAMES: [&str; 7] = [
     "ZombieAttackGoal",
     "MoveThroughVillageGoal",
     "WaterAvoidingRandomStrollGoal",
+    "BreakDoorGoal",
 ];
 pub const ZOMBIE_TARGET_NAMES: [&str; 5] = [
     "HurtByTargetGoal",
@@ -153,8 +154,8 @@ pub const ZOMBIE_TARGET_NAMES: [&str; 5] = [
     "NearestAttackableTargetGoal",
     "NearestAttackableTargetGoal",
 ];
-pub const ZOMBIFIED_PIGLIN_GOAL_NAMES: [&str; 6] =
-    ["ZombieAttackTurtleEggGoal", "LookAtPlayerGoal", "RandomLookAroundGoal", "SpearUseGoal", "ZombieAttackGoal", "WaterAvoidingRandomStrollGoal"];
+pub const ZOMBIFIED_PIGLIN_GOAL_NAMES: [&str; 7] =
+    ["ZombieAttackTurtleEggGoal", "LookAtPlayerGoal", "RandomLookAroundGoal", "SpearUseGoal", "ZombieAttackGoal", "WaterAvoidingRandomStrollGoal", "BreakDoorGoal"];
 pub const ZOMBIFIED_PIGLIN_TARGET_NAMES: [&str; 3] = ["HurtByTargetGoal", "NearestAttackableTargetGoal", "ResetUniversalAngerTargetGoal"];
 
 pub const SKELETON_GOAL_NAMES: [&str; 7] = [
@@ -566,6 +567,7 @@ pub struct MonsterGoalContext {
     /// `Zombie.canBreakDoors`: the doors `MoveThroughVillageGoal` may path
     /// through.
     pub can_break_doors: bool,
+    pub door: crate::door_goals::DoorWork,
     pub ghast: GhastState,
     pub blaze: BlazeState,
     pub shulker: ShulkerState,
@@ -995,6 +997,7 @@ impl MonsterAi {
                 pois: None,
                 level_random: None,
                 can_break_doors: false,
+                door: Default::default(),
                 ghast: GhastState::default(),
                 blaze: BlazeState::default(),
                 shulker: ShulkerState::default(),
@@ -1953,6 +1956,7 @@ pub fn zombie_goals() -> GoalSelector<MonsterGoalContext> {
     selector.add(3, MeleeAttackGoal { hits: true, raises_arms: true, follow_unseen: false, gives_up_in_light: false, speed: 1.0 });
     selector.add(6, VillageGoal::default());
     selector.add(7, StrollGoal { speed: 1.0, probability: 0.001 });
+    selector.add(1, crate::door_goals::BreakDoorGoal::zombie());
     selector
 }
 
@@ -1974,6 +1978,7 @@ pub fn zombified_piglin_goals() -> GoalSelector<MonsterGoalContext> {
     selector.add(1, NeverGoal { controls: &[Control::Move, Control::Look] });
     selector.add(2, MeleeAttackGoal { hits: true, raises_arms: true, follow_unseen: false, gives_up_in_light: false, speed: 1.0 });
     selector.add(7, StrollGoal { speed: 1.0, probability: 0.001 });
+    selector.add(1, crate::door_goals::BreakDoorGoal::zombie());
     selector
 }
 

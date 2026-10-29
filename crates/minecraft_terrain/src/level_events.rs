@@ -12,6 +12,10 @@ pub const ZOMBIE_INFECT: i32 = 1026;
 pub const ZOMBIE_INFECT_SOUND: &str = "minecraft:entity.zombie.infect";
 pub const ZOMBIE_VILLAGER_CONVERTED: i32 = 1027;
 pub const ZOMBIE_VILLAGER_CONVERTED_SOUND: &str = "minecraft:entity.zombie_villager.converted";
+pub const ZOMBIE_ATTACK_WOODEN_DOOR: i32 = minecraftoss_entities::door_goals::ATTACK_WOODEN_DOOR;
+pub const ZOMBIE_ATTACK_WOODEN_DOOR_SOUND: &str = "minecraft:entity.zombie.attack_wooden_door";
+pub const ZOMBIE_BREAK_WOODEN_DOOR: i32 = minecraftoss_entities::door_goals::BREAK_WOODEN_DOOR;
+pub const ZOMBIE_BREAK_WOODEN_DOOR_SOUND: &str = "minecraft:entity.zombie.break_wooden_door";
 pub const LAVA_EXTINGUISH: &str = "minecraft:block.lava.extinguish";
 const FIZZ_SMOKE: usize = 8;
 const EVAPORATION_SMOKE: usize = 8;
@@ -120,6 +124,14 @@ pub fn level_event<S: Scene + ?Sized>(
         ZOMBIE_INFECT | ZOMBIE_VILLAGER_CONVERTED => {
             out.sounds.push(AmbientSound {
                 event: if id == ZOMBIE_INFECT { ZOMBIE_INFECT_SOUND } else { ZOMBIE_VILLAGER_CONVERTED_SOUND },
+                at: (base + DVec3::splat(0.5)).to_array(),
+                volume: 2.0,
+                pitch: (random.next_float() - random.next_float()) * 0.2 + 1.0,
+            });
+        }
+        ZOMBIE_ATTACK_WOODEN_DOOR | ZOMBIE_BREAK_WOODEN_DOOR => {
+            out.sounds.push(AmbientSound {
+                event: if id == ZOMBIE_ATTACK_WOODEN_DOOR { ZOMBIE_ATTACK_WOODEN_DOOR_SOUND } else { ZOMBIE_BREAK_WOODEN_DOOR_SOUND },
                 at: (base + DVec3::splat(0.5)).to_array(),
                 volume: 2.0,
                 pitch: (random.next_float() - random.next_float()) * 0.2 + 1.0,
@@ -395,6 +407,29 @@ mod tests {
         assert_eq!(sound.at, [-2.5, 70.5, 5.5]);
         let pitch = (mirror.next_float() - mirror.next_float()) * 0.2 + 1.0;
         assert_eq!((sound.volume, sound.pitch), (2.0, pitch));
+    }
+
+    #[test]
+    fn door_knocks_and_breaks_play_the_zombie_door_sounds() {
+        let sounds = [
+            (1019, "minecraft:entity.zombie.attack_wooden_door"),
+            (1021, "minecraft:entity.zombie.break_wooden_door"),
+        ];
+        for (id, sound) in sounds {
+            let mut random = LegacyRandom::new(13);
+            let mut mirror = LegacyRandom::new(13);
+            let event = level_event(id, (6, 65, -4), 0, &no_scene(), &classes, &mut random);
+            assert_eq!(event.sounds.len(), 1);
+            let played = &event.sounds[0];
+            assert_eq!(
+                (played.event, played.at, played.volume),
+                (sound, [6.5, 65.5, -3.5], 2.0)
+            );
+            let pitch = (mirror.next_float() - mirror.next_float()) * 0.2 + 1.0;
+            assert_eq!(played.pitch, pitch);
+            assert!((0.8..=1.2).contains(&played.pitch));
+            assert!(event.particles.is_empty());
+        }
     }
 
     #[test]

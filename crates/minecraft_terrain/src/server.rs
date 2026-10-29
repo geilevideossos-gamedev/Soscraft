@@ -1115,6 +1115,7 @@ impl ServerSim {
         }
         self.carry_zombie_conversions();
         self.infect_villagers();
+        self.level.level_events.extend(self.mobs.take_level_events().into_iter().map(|(event, (x, y, z), data)| (event, minecraftoss_core::BlockPos::new(x, y, z), data)));
         self.cure_zombie_villagers(players);
         self.throw_mob_tridents();
         self.throw_mob_snowballs();
@@ -6122,6 +6123,82 @@ mod tests {
         server.player_edit(&scene, (8, 201, 8), PlayerEdit::Break);
         let broken: std::collections::HashMap<_, _> = server.take_changes().into_iter().collect();
         assert_eq!(broken.get(&(8, 200, 8)), Some(&None));
+    }
+
+    fn door_breaker(server: &mut ServerSim, scene: &mut HandcraftedScene) -> u64 {
+        use minecraftoss_core::nbt::Tag;
+        for z in 6..=10 {
+            place(server, scene, (8, 199, z), Block::new("minecraft:stone"));
+        }
+        server.take_changes();
+        let mut tag = std::collections::BTreeMap::new();
+        tag.insert("id".to_owned(), Tag::String("minecraft:zombie".to_owned()));
+        tag.insert("Pos".to_owned(), Tag::List(vec![Tag::Double(8.5), Tag::Double(200.0), Tag::Double(6.5)]));
+        tag.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(0.0), Tag::Float(0.0)]));
+        tag.insert("UUID".to_owned(), Tag::IntArray(vec![5, 6, 7, 8]));
+        tag.insert("CanBreakDoors".to_owned(), Tag::Byte(1));
+        tag.insert("PersistenceRequired".to_owned(), Tag::Byte(1));
+        let id = crate::server_mobs::spawn_saved(&mut server.mobs, &Tag::Compound(tag)).expect("zombies are simulated");
+        let zombie = server.mobs.zombie_mut(id).unwrap();
+        assert!(zombie.zombie.can_break_doors, "the tag is loaded");
+        let ai = zombie.ai.as_deref_mut().unwrap();
+        ai.retain_goals(&["BreakDoorGoal"]);
+        ai.state.navigation.follow(vec![(8, 200, 6), (8, 200, 7), (8, 200, 8), (8, 200, 9), (8, 200, 10)], 1.0, glam::DVec3::new(8.5, 200.0, 6.5));
+        server.set_time(18000);
+        id
+    }
+
+    fn knocked_on_hard(server: &mut ServerSim, ticks: usize) -> (Vec<(i32, BlockPos)>, std::collections::HashMap<BlockPos, Option<Block>>) {
+        let player = candidate(0, [8.5, 200.0, 20.5]);
+        let (mut events, mut changes) = (Vec::new(), std::collections::HashMap::new());
+        for _ in 0..ticks {
+            server.set_players(&[player.position.to_array()], 3);
+            server.set_simulation_area((0, 0), 4);
+            server.tick();
+            server.tick_mobs(&[player], false);
+            let door_events = std::mem::take(&mut server.level.level_events).into_iter().filter(|(id, ..)| matches!(*id, 1019 | 1021));
+            events.extend(door_events.map(|(id, pos, _)| (id, (pos.x, pos.y, pos.z))));
+            changes.extend(server.take_changes());
+        }
+        (events, changes)
+    }
+
+    #[test]
+    fn a_zombie_breaks_a_door_and_the_door_drops() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:oak_door");
+        door_breaker(&mut server, &mut scene);
+        server.take_destroyed();
+        let (events, changes) = knocked_on_hard(&mut server, 400);
+        assert_eq!(changes.get(&(8, 201, 8)), Some(&None), "the upper half is broken");
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None), "and the lower half goes with it");
+        let destroyed: Vec<_> = server.take_destroyed().into_iter().map(|(pos, block)| (pos, block.id.key())).collect();
+        assert_eq!(destroyed, vec![((8, 200, 8), "minecraft:oak_door".to_owned())], "with its particles and break sound");
+        let doors: i32 = server.items().iter().filter(|item| item.item == "minecraft:oak_door").map(|item| i32::from(item.count)).sum();
+        assert_eq!(doors, 1, "one door drops");
+        assert!(events.iter().all(|&(_, pos)| pos == (8, 201, 8)), "{events:?}");
+        assert_eq!(events.iter().filter(|e| e.0 == 1021).count(), 1, "{events:?}");
+        assert!(events.iter().any(|e| e.0 == 1019), "it knocks first");
+    }
+
+    #[test]
+    fn a_copper_door_breaks_and_an_iron_door_holds() {
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:copper_door");
+        door_breaker(&mut server, &mut scene);
+        let (events, changes) = knocked_on_hard(&mut server, 400);
+        assert_eq!(changes.get(&(8, 200, 8)), Some(&None), "the copper door is broken");
+        assert!(events.iter().any(|e| e.0 == 1021));
+        assert!(server.items().iter().any(|item| item.item == "minecraft:copper_door"));
+        let Some((mut server, mut scene)) = door_world() else { return };
+        place_door(&mut server, &mut scene, "minecraft:iron_door");
+        let id = door_breaker(&mut server, &mut scene);
+        let (events, changes) = knocked_on_hard(&mut server, 400);
+        assert!(events.is_empty(), "no knocks at an iron door: {events:?}");
+        assert!(!changes.contains_key(&(8, 200, 8)) && !changes.contains_key(&(8, 201, 8)), "{changes:?}");
+        let zombie = server.mobs.zombies().iter().find(|e| e.id == id).expect("it waits outside");
+        assert_eq!(zombie.ai.as_deref().unwrap().state.door.crack, None);
+        assert!(zombie.zombie.body.position.z < 8.6, "it is held at the door: {}", zombie.zombie.body.position);
     }
 
     fn place(server: &mut ServerSim, scene: &mut HandcraftedScene, pos: BlockPos, block: Block) {

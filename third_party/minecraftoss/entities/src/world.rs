@@ -2564,6 +2564,7 @@ pub struct EntityWorld {
     piglin_conversions: Vec<piglins::PiglinConversion>,
     zombie_conversions: Vec<(u64, u64)>,
     villager_infections: Vec<(u64, u64)>,
+    level_events: Vec<(i32, minecraftoss_player::Pos, i32)>,
     zombie_cures: Vec<u64>,
     trident_throws: Vec<crate::drowned_ai::TridentThrow>,
     sea_level: i32,
@@ -2702,6 +2703,7 @@ impl Default for EntityWorld {
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
             villager_infections: Vec::new(),
+            level_events: Vec::new(),
             zombie_cures: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: 63,
@@ -3795,6 +3797,10 @@ impl EntityWorld {
 
     pub fn take_villager_infections(&mut self) -> Vec<(u64, u64)> {
         std::mem::take(&mut self.villager_infections)
+    }
+
+    pub fn take_level_events(&mut self) -> Vec<(i32, minecraftoss_player::Pos, i32)> {
+        std::mem::take(&mut self.level_events)
     }
 
     pub fn take_zombie_cures(&mut self) -> Vec<u64> {
@@ -5681,6 +5687,7 @@ impl EntityWorld {
             piglin_conversions: Vec::new(),
             zombie_conversions: Vec::new(),
             villager_infections: Vec::new(),
+            level_events: Vec::new(),
             zombie_cures: Vec::new(),
             trident_throws: Vec::new(),
             sea_level: self.sea_level,
@@ -6149,6 +6156,7 @@ impl EntityWorld {
                                 ai.state.mobs = mobs;
                                 ai.state.pois = lent_pois.take();
                                 ai.state.can_break_doors = entity.zombie.can_break_doors;
+                                ai.state.walk.can_open_doors |= entity.zombie.can_break_doors;
                                 // The goals hit before the zombie moves.
                                 let position = entity.zombie.body.position;
                                 let landed = monster_ai_step(ai, &mut entity.zombie.body, entity.zombie.health, &mut entity.random, &mut entity.voices, &mut entity.no_action_time, entity.previous_position, entity.tick_count, entity.id, world, &step);
@@ -6231,7 +6239,8 @@ impl EntityWorld {
                             entity.zombie.tick_drowning(eye_in_water, entity.no_ai);
                         (entity.pending_attack_villager.take(), entity.pending_attack_player.take(), conversion_due, !removed)
                     };
-                    let throw = self.zombie_mut(id).and_then(|e| Some((e.drowned.as_mut()?.throw.take()?, e.zombie.main_hand.clone())));
+                    self.apply_door_work(id, world, game_time);
+                    let throw =self.zombie_mut(id).and_then(|e| Some((e.drowned.as_mut()?.throw.take()?, e.zombie.main_hand.clone())));
                     if let Some(((position, velocity), item)) = throw {
                         let item = item.unwrap_or_else(|| "minecraft:trident".to_owned());
                         self.trident_throws.push(crate::drowned_ai::TridentThrow { owner: id, position, velocity, item });
@@ -9153,6 +9162,110 @@ mod tests {
         let villager = world.spawn_villager(Villager::new(DVec3::new(0.0, 1.0, 1.0)), true);
         assert!(world.mob_shot_mob(skeleton, villager, 100.0, DVec3::Z));
         assert!(world.take_villager_infections().is_empty(), "only zombies infect");
+    }
+
+    struct WalledYard {
+        removed: Vec<minecraftoss_player::Pos>,
+    }
+
+    impl World for WalledYard {
+        fn block(&self, (x, y, z): minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            if y < 1 {
+                return Some(minecraftoss_player::Block::new("minecraft:stone"));
+            }
+            if z != 3 || !(-3..=3).contains(&x) || y > 3 || (x, y) == (1, 2) || self.removed.contains(&(x, y, z)) {
+                return None;
+            }
+            if x != 0 || y == 3 {
+                return Some(minecraftoss_player::Block::new("minecraft:stone"));
+            }
+            let half = if y == 1 { "lower" } else { "upper" };
+            Some(minecraftoss_player::Block::new("minecraft:oak_door").with("facing", "north").with("half", half).with("hinge", "left").with("open", "false").with("powered", "false"))
+        }
+        fn set_block(&mut self, pos: minecraftoss_player::Pos, block: Option<minecraftoss_player::Block>) {
+            if block.is_none() {
+                self.removed.push(pos);
+            }
+        }
+    }
+
+    #[test]
+    fn a_zombie_that_can_break_doors_paths_through_a_wooden_door_and_one_that_cannot_goes_around() {
+        let walk = |breaks: bool| {
+            let mut world = EntityWorld::default();
+            world.set_difficulty(3);
+            world.spawn_villager(Villager::new(DVec3::new(2.5, 1.0, 6.5)), true);
+            let mut zombie = Zombie::new(DVec3::new(0.5, 1.0, 0.5));
+            zombie.can_break_doors = breaks;
+            let id = world.spawn_zombie_active(zombie, 0.0);
+            world.zombie_mut(id).unwrap().set_random_seed(3);
+            let mut yard = WalledYard { removed: Vec::new() };
+            let (mut through, mut around) = (false, false);
+            for _ in 0..600 {
+                world.tick(&mut yard);
+                let Some(zombie) = world.zombies().iter().find(|e| e.id == id) else { break };
+                through |= zombie.navigation.nodes.contains(&(0, 1, 3));
+                around |= zombie.navigation.nodes.iter().any(|node| node.0.abs() >= 4);
+                if !yard.removed.is_empty() {
+                    break;
+                }
+            }
+            (through, around, yard.removed, world.take_level_events())
+        };
+        let (through, around, removed, events) = walk(false);
+        assert!(!through && around, "a zombie that cannot break doors goes round the wall");
+        assert!(removed.is_empty() && events.is_empty());
+        let (through, _, removed, events) = walk(true);
+        assert!(through, "a door breaker paths through the closed door");
+        assert_eq!(removed, vec![(0, 2, 3)], "and breaks its upper half");
+        assert!(events.iter().all(|&(_, pos, data)| pos == (0, 2, 3) && data == 0));
+        assert_eq!(events.last().map(|e| e.0), Some(crate::door_goals::BREAK_WOODEN_DOOR));
+        assert!(events.iter().any(|e| e.0 == crate::door_goals::ATTACK_WOODEN_DOOR), "it knocks before it breaks");
+    }
+
+    struct DoorMap(HashMap<minecraftoss_player::Pos, minecraftoss_player::Block>);
+
+    impl World for DoorMap {
+        fn block(&self, pos: minecraftoss_player::Pos) -> Option<minecraftoss_player::Block> {
+            self.0.get(&pos).cloned()
+        }
+        fn set_block(&mut self, pos: minecraftoss_player::Pos, block: Option<minecraftoss_player::Block>) {
+            match block {
+                Some(block) => self.0.insert(pos, block),
+                None => self.0.remove(&pos),
+            };
+        }
+    }
+
+    #[test]
+    fn door_work_opens_a_door_with_its_sound_queues_the_events_and_breaks_the_upper_half() {
+        let half = |half: &str| minecraftoss_player::Block::new("minecraft:spruce_door").with("facing", "north").with("half", half).with("hinge", "left").with("open", "false").with("powered", "false");
+        let mut map = DoorMap(HashMap::from([((0, 1, 1), half("lower")), ((0, 2, 1), half("upper"))]));
+        fn door(world: &mut EntityWorld, id: u64) -> &mut crate::door_goals::DoorWork {
+            &mut world.zombie_mut(id).unwrap().ai.as_deref_mut().unwrap().state.door
+        }
+        let mut world = EntityWorld::default();
+        let id = world.spawn_zombie_active(Zombie::new(DVec3::new(0.5, 1.0, 0.5)), 0.0);
+        door(&mut world, id).toggles.push(((0, 2, 1), true));
+        door(&mut world, id).events.push((crate::door_goals::ATTACK_WOODEN_DOOR, (0, 2, 1)));
+        world.apply_door_work(id, &mut map, 0);
+        for pos in [(0, 1, 1), (0, 2, 1)] {
+            assert_eq!(map.0[&pos].property("open"), Some("true"), "both halves open");
+        }
+        let voices = std::mem::take(&mut world.zombie_mut(id).unwrap().voices);
+        assert_eq!(voices.len(), 1);
+        let Voice::Event(sound, volume, pitch) = voices[0].0.clone() else { panic!("{voices:?}") };
+        assert_eq!((sound, volume, voices[0].1), ("block.wooden_door.open", 1.0, DVec3::new(0.5, 2.5, 1.5)));
+        assert!((0.9..1.0).contains(&pitch), "{pitch}");
+        assert_eq!(world.take_level_events(), vec![(crate::door_goals::ATTACK_WOODEN_DOOR, (0, 2, 1), 0)]);
+        assert_eq!(door(&mut world, id).toggles, Vec::new(), "the requests are used up");
+        door(&mut world, id).toggles.push(((0, 2, 1), true));
+        world.apply_door_work(id, &mut map, 0);
+        assert!(world.zombie_mut(id).unwrap().voices.is_empty(), "an open door makes no sound again");
+        door(&mut world, id).broken = Some((0, 2, 1));
+        world.apply_door_work(id, &mut map, 0);
+        assert!(!map.0.contains_key(&(0, 2, 1)), "the upper half is broken");
+        assert_eq!(door(&mut world, id).broken, None);
     }
 
     #[test]

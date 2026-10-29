@@ -204,3 +204,54 @@ After f64ce4a1.
 ```
 IW4L_MINECRAFT_KIT=minecraft:strider_spawn_egg*2,minecraft:saddle,minecraft:snowball*16,minecraft:trident+loyalty=3,minecraft:cobblestone*64
 ```
+
+## Group doors-zombies
+
+### 1. Minecraft zombies break wooden doors on Hard like vanilla
+
+After 9647acfb.
+
+- **Vanilla (26.3, checked with javap):**
+  - `Zombie.setCanBreakDoors(true)` turns on `navigation.setCanOpenDoors(true)` and adds `BreakDoorGoal(this, difficulty == HARD)` at priority 1, after the other goals. No zombie kind overrides it, so zombies, husks, zombie villagers, drowned and zombified piglins on ground navigation can all break doors.
+  - `DoorInteractGoal.canUse`: a horizontal collision and a path not done; for each node up to `nextNodeIndex + 2`, the block above it is the door when the mob's feet are within 1.5 of the node's corner and it is a wooden door (`DoorBlock.isWoodenDoor`: any door but iron, so copper doors too); else the block above its feet.
+  - `BreakDoorGoal`: `canUse` adds `mob_griefing`, the difficulty and a closed door; `canContinueToUse` is `breakTime <= 240`, the door still closed, the mob within 2 of the door's centre and the difficulty (not `mob_griefing`). Each tick: on the mob's `nextInt(20) == 0` level event 1019 and a swing when not swinging; `breakTime++`; the stage `(int)(breakTime / 240 * 10)` on a change (`destroyBlockProgress`, -1 in `stop`); at 240 `removeBlock(doorPos)`, 1021 and a 2001 that shows nothing (the block is air by then). `lastBreakProgress` is never reset.
+  - The client plays 1019 `entity.zombie.attack_wooden_door` and 1021 `entity.zombie.break_wooden_door` at the block, volume 2.0, pitch `(r - r) * 0.2 + 1.0`.
+- **Changed:**
+  - Vendored `entities/src/door_goals.rs` (new, `pub mod door_goals` in `lib.rs`):
+    - `DoorWork`: what a mob's door goals ask of the world this tick (`toggles`, `events`, `broken`), the crack it shows (`crack`) and its swing clock (`swing_until`). `take_requests` hands the requests over; `door_open` reads this tick's toggles before the world.
+    - `is_wooden_door`, the `DoorInteract` core (`can_use`, `is_open`, `start`, `tick` with the passed test) and `BreakDoorGoal::zombie()` (Hard only, `mob_griefing` on start only, inert without `can_break_doors`, every tick, the 1019 knock, its own 6-tick swing clock adding to `melee.swings`, the crack stages, `broken` and 1021 at 240).
+  - Vendored `monster_ai.rs`: `MonsterGoalContext.door`; `zombie_goals()` and `zombified_piglin_goals()` add `BreakDoorGoal` last at priority 1, and `"BreakDoorGoal"` closes `ZOMBIE_GOAL_NAMES` (8) and `ZOMBIFIED_PIGLIN_GOAL_NAMES` (7), so goal ids stay stable.
+  - Vendored `world.rs`: a zombie with `can_break_doors` also gets `walk.can_open_doors` (`setCanOpenDoors(true)`), so its paths go through wooden and copper doors. After its AI step the store calls `apply_door_work`. New `level_events` queue with `take_level_events()`, next to `take_villager_infections`.
+  - Vendored `world/villagers.rs`: `EntityWorld::apply_door_work(id, world, time)`: toggles go through `set_door_open` (its sound at the block's centre, the pitch from the level random, drawn only when the door changes), `broken` is `world.set_block(pos, None)` (the real level then drops the lower half with its particles and sound), events go to the queue, and every changed half recomputes nearby villagers' paths (`recompute_for_block`).
+  - `minecraft_terrain/src/server.rs`: the queue is drained into `level.level_events` right after `infect_villagers`, so the host and friends get the events through the existing pipeline (64 blocks).
+  - `minecraft_terrain/src/level_events.rs`: `ZOMBIE_ATTACK_WOODEN_DOOR` (1019) and `ZOMBIE_BREAK_WOODEN_DOOR` (1021) with their sounds, played like `ZOMBIE_INFECT`.
+  - `docs/MINECRAFT-SURVIVAL.md`: door breaking under World simulation; drowned under the mob limitations.
+- **Tests:**
+  - Vendored `door_goals::tests` (new): `a_door_breaking_zombie_knocks_cracks_and_breaks_a_wooden_door_after_240_ticks_on_hard` (stages 0 to 9 in order, then none; every knock is 1019 at the upper half; swings rise but never above the knocks; `broken` and 1021 exactly at tick 240), `no_door_breaking_on_normal_without_mob_griefing_at_an_iron_door_or_without_can_break_doors` (and none without a collision; copper, spruce and waxed oxidized copper doors start), `switching_to_normal_stops_the_break_and_clears_the_crack`, `opening_the_door_stops_a_break` (a toggle pending in the same tick, then a door open in the world), `a_mob_walking_through_the_doorway_has_passed_it`.
+  - Vendored `world::tests`: `a_zombie_that_can_break_doors_paths_through_a_wooden_door_and_one_that_cannot_goes_around` (a full zombie on Hard sees a villager through a window beside the door: without the tag its paths go round the wall and nothing breaks; with it the path goes through the door, it knocks, the upper half is removed and 1021 ends the events), `door_work_opens_a_door_with_its_sound_queues_the_events_and_breaks_the_upper_half`.
+  - `server::tests::a_zombie_breaks_a_door_and_the_door_drops` (both halves gone, the lower half in `take_destroyed`, one `minecraft:oak_door` item, one 1021 and at least one 1019, all at the upper half) and `a_copper_door_breaks_and_an_iron_door_holds`: a saved zombie with `CanBreakDoors` keeping only `BreakDoorGoal`, walked into the door along a set path.
+  - `level_events::tests::door_knocks_and_breaks_play_the_zombie_door_sounds`.
+  - Entities 415 pass; `minecraft_terrain` 1405 pass (3 ignored). `sections::tests::background_full_update_matches_the_synchronous_one` failed once in the full run while other tracks built and passed alone, as in group ti1.
+- **Decisions:**
+  - Door changes are applied after the mob's AI step; `door_open` reads the pending toggles, so later goals in the same tick see the door as vanilla would.
+  - `apply_door_work` lives in vendored `world/villagers.rs`, not in `door_goals.rs`: `set_door_open` and `recompute_for_block` are private to the `world` module, and this keeps them private.
+  - The goal is in every zombie's list but stays inert without `CanBreakDoors`, in place of vanilla's add and remove at slot 1 (it has no controls, so the slot changes nothing). It draws nothing from the random until it runs, so zombies without the tag tick exactly as before.
+  - The swing clock is the world's game time (`swing_until`, 6 ticks), standing in for `isSwinging`; it does not see the melee goal's swings.
+  - `lastBreakProgress` carries over between break attempts as in vanilla.
+  - The last 2001 event is not sent: the particles and the break sound come from the lower half's destroy.
+  - Drowned don't break doors yet: in the fork they run their own controller, not `zombie_goals`.
+  - A zombie needs sight to pick a target (`TargetingConditions.forCombat`), keeps a villager target out of sight, and drops a player after 3 seconds unseen. The owner's steps therefore use a villager seen through the open door before the door is shut.
+- **Test steps (creative, Hard, at night, flat grass; in creative the zombie leaves you alone and goes for the villager):**
+  - Setup: `/gamemode creative`, `/difficulty hard`, `/time set night`. Build a closed room of oak planks, 5 by 5 inside and 3 high with a roof, with one oak door in the middle of one wall. Inside, put 8 oak fences in a ring round the middle block and use a villager spawn egg on the middle block (the fences keep it in). Open the door. Stand just outside the door with your back to it, looking straight away from the house.
+  1. Run `/summon minecraft:zombie ^ ^ ^12 {CanBreakDoors:1b,PersistenceRequired:1b}` (12 blocks ahead of you). The zombie sees the villager through the doorway and walks towards the house. Turn round and close the door before the zombie gets there (if it walks in first, kill it, open the door and try again).
+  2. The zombie walks into the closed door and presses against it. Now and then a loud wooden knock plays and it swings its arms. About 12 seconds after it starts, the door breaks with a loud crunch, wood bits fly, an oak door item drops and the zombie walks in to the villager (**doors-1_zombie_breaks**).
+  3. Repeat steps 1 and 2 with a copper door: it breaks the same way and drops a copper door. Repeat them with an iron door: no knocks, and the zombie waits outside (**doors-2_iron_holds**).
+  4. Put in an oak door and repeat step 1. Once it knocks, run `/difficulty normal`: the knocking stops and the zombie only presses against the door. Run `/difficulty hard`: after a moment it knocks again, and the door breaks about 12 seconds later.
+  5. `/gamerule mob_griefing false` and repeat step 1: the zombie presses against the door and never knocks. `/gamerule mob_griefing true`.
+  6. Repeat step 1 with a zombie without the tag (`/summon minecraft:zombie ^ ^ ^12`): it stays outside the shut door and never knocks. Most zombies from eggs and the night are like this.
+  7. Summon a door breaker as in step 1 and close the door, then save and quit before it breaks the door and load the world again. Open the door for a moment so it sees the villager, then close it: it knocks and breaks the door again (the tag is saved, the target is not, as in vanilla).
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:villager_spawn_egg*4,minecraft:oak_door*8,minecraft:copper_door*4,minecraft:iron_door*2,minecraft:oak_planks*64,minecraft:oak_planks*64,minecraft:oak_fence*16,minecraft:torch*16
+```

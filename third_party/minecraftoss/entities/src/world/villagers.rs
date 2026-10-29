@@ -1120,3 +1120,32 @@ fn recompute_others<W: World>(villagers: &mut [VillagerEntity], except: u64, wor
         }
     }
 }
+
+impl EntityWorld {
+    pub(super) fn apply_door_work(&mut self, id: u64, world: &mut impl World, time: i64) {
+        let Some(work) = self.zombies.iter_mut().find(|e| e.id == id).and_then(|e| e.ai.as_deref_mut()).map(|ai| ai.state.door.take_requests()) else { return };
+        let mut changed = Vec::new();
+        let mut voices = Vec::new();
+        for (pos, open) in work.toggles {
+            let halves = crate::villager_brain::door_halves(&*world, pos, open);
+            if let Some(event) = set_door_open(world, pos, open) {
+                let pitch = self.level_random.next_float() * 0.1 + 0.9;
+                let center = DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5);
+                voices.push((Voice::Event(event, 1.0, pitch), center));
+                changed.extend(halves.into_iter().map(|(half, _)| half));
+            }
+        }
+        if let Some(pos) = work.broken {
+            changed.push(pos);
+            changed.extend(crate::villager_brain::door_halves(&*world, pos, false).into_iter().skip(1).map(|(half, _)| half));
+            world.set_block(pos, None);
+        }
+        self.level_events.extend(work.events.into_iter().map(|(event, pos)| (event, pos, 0)));
+        for pos in changed {
+            recompute_for_block(&mut self.villagers, pos, &*world, time);
+        }
+        if let Some(entity) = self.zombies.iter_mut().find(|e| e.id == id) {
+            entity.voices.extend(voices);
+        }
+    }
+}
