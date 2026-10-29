@@ -563,3 +563,29 @@ Commit: "Minecraft dyed items show their colour in icons, hands and on the groun
   - Third-person held items take the dye too (`body_render.rs`), as vanilla's item renderer does for every display context; the brief named only the first-person hand.
   - Left as before: item frames (`FrameView` carries only the potion colour; E-banners' `player-looks` gives frames the item look) and dyed wolf armour (its item model is a `has_component` condition, and the walker always takes `on_false`, the undyed model).
 - **Owner's test steps:** this commit alone has no way to get a dyed item in game except a leatherworker's level 4 trade (the kit's `@red` needs the next commit), so its steps are with the next commit.
+
+### Kits dye leather with the 26.3 dye tag
+
+Commit: "Minecraft kits dye leather with the 26.3 dye tag", the one after `8c9db2c1`.
+
+- **Cause:** `crafting.rs` `kit_potion_stack` gave an `@<dye>` entry `minecraft:dyed_color` only for items in `#minecraft:dyeable`. That tag is gone in 26.3 (not in the datapack's `tags/item/` and not in `client.jar`), so in a real kit `leather_horse_armor@red`, and every leather armour piece with a dye, got `potion_contents` `{potion: "minecraft:red"}` instead of a dye. The test passed only because its stand-in jar defined a `dyeable` tag. Round 7's `@dye` (track B log) was written against the older tag.
+- **Vanilla 26.3** (data): `#minecraft:cauldron_can_remove_dye` lists the four leather armour pieces, `leather_horse_armor` and `wolf_armor`, which are exactly the items that take `minecraft:dyed_color`.
+- **Changed:** `crafting.rs` `kit_potion_stack` checks `#minecraft:cauldron_can_remove_dye`; the stand-in tag in the test jar (`tags()`) has the new name and also lists `leather_horse_armor`. This covers the `.env` kit and `/kit` (`minecraft_survival` `commands.rs`, which calls the same function).
+- **Tests:**
+  - `minecraft_terrain` `crafting::tests::kit_dyes_leather_horse_armour_with_the_26_3_tag`: with the stand-in jar, `leather_horse_armor@red` gets `minecraft:dyed_color` 0xB02E26 and nothing else, and a plain one gets no components. With the real `client.jar` (skipped without it): `#minecraft:dyeable` holds nothing, the four leather pieces, the leather horse armour and the wolf armour with `@red` all get `dyed_color` 0xB02E26 and no `potion_contents`, and `potion@red` still gets `potion_contents`.
+  - `kit_dyes_dyeable_items_with_a_dye_name` passes unchanged on the renamed stand-in tag.
+  - All 1413 `minecraft_terrain` tests pass (the real-data branch ran); `check -p launcher` passes.
+- **Decisions:** none beyond the brief.
+- **Owner's test steps** (the whole `dye-icons` group; survival or creative, a new world, by day on flat grass, the kit below):
+  1. **Icons.** Open the inventory (the kit fills the backpack). The red, blue and lime leather horse armour icons are red, blue and lime with their untinted buckles and trim on top, the plain one is brown, and the red leather chestplate and blue boots are red and blue. Hover each: all four horse armours are named "Leather Horse Armor". **Screenshot D1.**
+  2. **First-person hand.** Move the red horse armour to the hotbar and hold it: it is red in your hand. Hold the blue boots: blue. **Screenshot D2.**
+  3. **Third person.** Press F5 while holding the red horse armour: it is red in your character's hand. Press F5 twice more to go back.
+  4. **On the ground.** Press Q to drop the lime horse armour and the red chestplate: both lie on the ground in their colour. Pick them up again: still lime and red. **Screenshot D3.**
+  5. **A compass still turns.** Hold the compass from the kit and turn around: the needle still swings in your hand and in the hotbar, as before this commit. Hold the clock: it still shows the sun or moon.
+  6. **Friend (two windows, `scripts\mp-local.ps1` or over the relay, both on this build).** The friend gets the same kit (or `/kit @a` from the host). In the friend's window the icons, the held armour and the dropped armour are coloured; when the friend holds the red horse armour, the host sees it red in the friend's hand. **Screenshot D4**, both windows.
+  - The armour on a horse is still brown; that is the next group (`horse-dye`).
+- **Kit** (9 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:leather_horse_armor@red,minecraft:leather_horse_armor@blue,minecraft:leather_horse_armor@lime,minecraft:leather_horse_armor,minecraft:leather_chestplate@red,minecraft:leather_boots@blue,minecraft:compass,minecraft:clock,minecraft:cooked_beef*16
+```

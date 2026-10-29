@@ -470,7 +470,7 @@ pub fn kit_potion_stack(recipes: &RecipeBook, id: &str, size: u8, enchantments: 
             Some(serde_json::Value::Object(components)) => components,
             _ => serde_json::Map::new(),
         };
-        let dye = crate::special_models::dye_rgb(potion.strip_prefix("minecraft:").unwrap_or(potion)).filter(|_| recipes.item_in_tag("minecraft:dyeable", id));
+        let dye = crate::special_models::dye_rgb(potion.strip_prefix("minecraft:").unwrap_or(potion)).filter(|_| recipes.item_in_tag("minecraft:cauldron_can_remove_dye", id));
         match dye {
             Some(rgb) => components.insert("minecraft:dyed_color".to_owned(), serde_json::json!(rgb)),
             None => components.insert("minecraft:potion_contents".to_owned(), serde_json::json!({ "potion": potion })),
@@ -723,6 +723,29 @@ mod tests {
     }
 
     #[test]
+    fn kit_dyes_leather_horse_armour_with_the_26_3_tag() {
+        let mut inventory = inventory();
+        assert_eq!(give_kit(&mut inventory, "leather_horse_armor@red,leather_horse_armor"), 2);
+        assert_eq!(inventory.slots[HOTBAR].as_ref().unwrap().components, Some(json!({"minecraft:dyed_color": 0xB02E26})));
+        assert_eq!(inventory.slots[HOTBAR + 1].as_ref().unwrap().components, None);
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        assert!(!book.item_in_tag("minecraft:dyeable", "minecraft:leather_chestplate"));
+        for id in ["minecraft:leather_helmet", "minecraft:leather_chestplate", "minecraft:leather_leggings", "minecraft:leather_boots", "minecraft:leather_horse_armor", "minecraft:wolf_armor"] {
+            let stack = kit_potion_stack(&book, id, 1, &[], Some("minecraft:red"));
+            assert_eq!(stack.components, Some(json!({"minecraft:dyed_color": 0xB02E26})), "{id}");
+        }
+        let potion = kit_potion_stack(&book, "minecraft:potion", 1, &[], Some("minecraft:red"));
+        assert_eq!(potion.components, Some(json!({"minecraft:potion_contents": {"potion": "minecraft:red"}})));
+    }
+
+    #[test]
     fn give_kit_puts_book_pages_on_the_stack() {
         let spec = r#"written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two + three @ four","*5"]}]*2,writable_book[writable_book_content={pages:["draft"]}],ice*3"#;
         assert_eq!(kit(spec).iter().map(|(_, count)| *count).collect::<Vec<_>>(), [2, 1, 3]);
@@ -928,7 +951,7 @@ mod tests {
                 json!({"values": ["minecraft:oak_log", "#minecraft:birch_logs"]}),
             ),
             ("birch_logs", json!({"values": ["minecraft:birch_log"]})),
-            ("dyeable", json!({"values": ["minecraft:leather_chestplate", "minecraft:leather_boots"]})),
+            ("cauldron_can_remove_dye", json!({"values": ["minecraft:leather_chestplate", "minecraft:leather_boots", "minecraft:leather_horse_armor"]})),
             (
                 "planks",
                 json!({"values": ["minecraft:oak_planks", "minecraft:birch_planks"]}),
