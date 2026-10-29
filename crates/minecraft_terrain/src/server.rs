@@ -3275,6 +3275,9 @@ impl ServerSim {
             };
             let from = glam::DVec3::from_array(at);
             let components = stack.components.as_ref().map(crate::item_nbt::tag_json);
+            if let Some(sound) = crate::trial_spawner::dispense_sound(&stack.id, at, || self.sound_random.next_float()) {
+                self.end_sounds.push(sound);
+            }
             let shoot = |random: &mut minecraftoss_player::rng::LegacyRandom| minecraftoss_entities::projectile::Arrow::shoot(from, glam::DVec3::NEG_Y, power, uncertainty, random);
             match stack.id.as_str() {
                 "minecraft:arrow" | "minecraft:tipped_arrow" | "minecraft:spectral_arrow" => {
@@ -10682,6 +10685,12 @@ mod tests {
         let diamond = server.level.entities.iter().find(|e| e.item_data().is_some_and(|item| item.stack.id == "minecraft:diamond")).expect("the diamond drops as an item");
         assert_eq!(diamond.pos, drops[3].0);
         assert!(diamond.delta[1] == 0.2 && diamond.delta[0].abs() <= 0.1);
+        let shots: Vec<_> = server.take_end_sounds().into_iter().map(|sound| (sound.event, sound.position.to_array(), sound.volume, sound.pitch, sound.category)).collect();
+        assert_eq!(shots.len(), 2, "only the wind charge and the fire charge make a dispense sound: {shots:?}");
+        assert_eq!((shots[0].0.as_str(), shots[0].1, shots[0].2, shots[0].4), (crate::trial_spawner::WIND_CHARGE_SOUND, drops[0].0, 0.5, "blocks"));
+        assert!((0.4 / 1.2..=0.5).contains(&shots[0].3), "{shots:?}");
+        assert_eq!((shots[1].0.as_str(), shots[1].1, shots[1].2, shots[1].4), (crate::trial_spawner::FIRE_CHARGE_SOUND, drops[2].0, 2.0, "hostile"));
+        assert!((0.8..=1.2).contains(&shots[1].3), "{shots:?}");
         server.tick_thrown(&[]);
         let fell = server.thrown_views();
         assert!(fell[0].position.y < 230.0 && fell[0].position.y > 229.0, "the wind charge flies down");

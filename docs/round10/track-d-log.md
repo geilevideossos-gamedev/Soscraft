@@ -588,6 +588,24 @@ After aba7374c.
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket*2,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:golden_apple*16,minecraft:totem_of_undying,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:cobblestone*64,minecraft:ladder*32,minecraft:water_bucket
 ```
 
+### 2. Ominous Minecraft trial spawners play the fire and wind charge sounds when they drop them
+
+After 50782150.
+
+- **Defect:** a fire charge or a wind charge that an ominous item spawner drops (group trial-ominous, commit 2) came down silently.
+- **Vanilla (javap, 26.3):** `OminousItemSpawner.spawnProjectile` sends the item's `DispenseConfig.overrideDispenseEvent` as a level event at its block (data 0) before it shoots: `FireChargeItem` has 1018, `WindChargeItem` 1051; no other item of the table has one. `LevelEventHandler`: 1018 plays `entity.blaze.shoot` (hostile) at volume 2 and pitch `(r1 − r2) × 0.2 + 1`, 1051 plays `entity.wind_charge.throw` (blocks) at volume 0.5 and pitch `0.4 / (r × 0.4 + 0.8)`, both at the block centre.
+- **Changed:** `trial_spawner.rs`: `dispense_sound(item, at, draw)` with the two sounds above (`FIRE_CHARGE_SOUND`, `WIND_CHARGE_SOUND`). `server.rs` `ServerSim::drop_ominous_items` plays it from the server with the item's drop (`end_sounds`, which go out in `Output.mob_sounds` to the host and the friends near it).
+- **Tests:** `server::tests::an_ominous_item_spawner_warns_survives_a_save_and_drops_its_item_down` now also checks that exactly two sounds play when the four items drop: the wind charge's throw at its block centre (volume 0.5, blocks, pitch 0.33 to 0.5) and the fire charge's blaze shot at its block centre (volume 2, hostile, pitch 0.8 to 1.2); the arrow and the diamond make none.
+- **Decisions:** the sound goes out as a server sound with its category, as the fork's other block and mob sounds, instead of a level event the client turns into a sound (the fork's level events do not have 1018 and 1051).
+- **Test steps (world `trial10`, survival, Normal, full kit armour, in the chamber; a fresh zombie spawner):**
+  1. Drink a plain ominous bottle and walk into sight of the spawner: it turns blue. Wait under the floating items: when a fire charge drops you hear a blaze's shot, when a wind charge drops the whoosh of a thrown wind charge (**329_ominous_charge_sounds**). Potions and arrows drop with only the spawner's own puff.
+  2. Friend window, standing next to the host: the friend hears the same shots.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*4,minecraft:milk_bucket*2,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:golden_apple*16,minecraft:totem_of_undying,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:cobblestone*64,minecraft:ladder*32,minecraft:water_bucket
+```
+
 ## Protocol
 
 `minecraft_net::PROTOCOL` stays 6 (the release step bumps it).

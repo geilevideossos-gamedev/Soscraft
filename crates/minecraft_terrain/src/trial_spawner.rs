@@ -7,6 +7,7 @@ use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::pos::Direction;
 use minecraftoss_core::random::RandomSource;
 use minecraftoss_core::{BlockPos, Chunk, Identifier};
+use minecraftoss_entities::world::MobSound;
 use minecraftoss_world::level::Level;
 use minecraftoss_world::level::burning::LevelSound;
 use minecraftoss_world::level::physics::{ClipBlocks, ClipFluids};
@@ -41,6 +42,8 @@ pub const SPAWN_ITEM: i32 = 3021;
 pub const SPAWN_MOB_SOUND: &str = "minecraft:block.trial_spawner.spawn_mob";
 pub const SPAWN_ITEM_SOUND: &str = "minecraft:block.trial_spawner.spawn_item";
 pub const SPAWN_ITEM_BEGIN_SOUND: &str = "minecraft:block.trial_spawner.spawn_item_begin";
+pub const FIRE_CHARGE_SOUND: &str = "minecraft:entity.blaze.shoot";
+pub const WIND_CHARGE_SOUND: &str = "minecraft:entity.wind_charge.throw";
 pub const OMINOUS_ITEM_SPAWNER: &str = "minecraft:ominous_item_spawner";
 const PLAYER_HEIGHT: f32 = 1.8;
 const ITEM_SPAWN_MIN_TICKS: i32 = 60;
@@ -1131,6 +1134,26 @@ pub fn dispense_config(item: &str) -> Option<(f32, f32)> {
         | "minecraft:experience_bottle" => Some((1.1 * 1.25, 6.0 * 0.5)),
         _ => None,
     }
+}
+
+pub fn dispense_sound(item: &str, at: [f64; 3], mut draw: impl FnMut() -> f32) -> Option<MobSound> {
+    let (event, volume, pitch, category) = match item {
+        "minecraft:fire_charge" => (
+            FIRE_CHARGE_SOUND,
+            2.0,
+            (draw() - draw()) * 0.2 + 1.0,
+            "hostile",
+        ),
+        "minecraft:wind_charge" => (WIND_CHARGE_SOUND, 0.5, 0.4 / (draw() * 0.4 + 0.8), "blocks"),
+        _ => return None,
+    };
+    Some(MobSound {
+        event: event.to_owned(),
+        position: glam::DVec3::from_array(center(block_at(at))),
+        volume,
+        pitch,
+        category,
+    })
 }
 
 pub fn arrow_effect(
