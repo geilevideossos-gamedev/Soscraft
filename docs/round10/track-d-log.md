@@ -557,6 +557,14 @@ After 64549426.
 IW4L_MINECRAFT_KIT=minecraft:lodestone*4,minecraft:compass*8,minecraft:clock,minecraft:recovery_compass,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword,minecraft:cooked_beef*32,minecraft:cobblestone*64
 ```
 
+### 4. Minecraft lodestone checks keep their positions as block positions
+
+After 9ff87228.
+
+- **Changed:** `TickInput.lodestones` is `Vec<(u64, Vec<BlockPos>)>` (the same type through the crate's `BlockPos` alias), which clears the one clippy warning (`type_complexity`) the group added. Clippy on `minecraft_terrain`, `minecraft_survival` and `minecraft_net` finds nothing else new in the group's code (`minecraft_terrain` needs `-A clippy::approx_constant` for older files).
+- **Tests:** none new; the lodestone tests and `check -p launcher` pass.
+- **Test steps and kit:** none (no change in game).
+
 ## Protocol
 
 `minecraft_net::PROTOCOL` stays 6 (the release step bumps it).

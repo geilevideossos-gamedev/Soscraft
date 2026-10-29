@@ -3714,7 +3714,7 @@ pub struct TickInput {
     pub spawn_mobs: bool,
     pub controls: Vec<minecraftoss_entities::controls::PlayerControls>,
     pub omens: Vec<(u64, PlayerOmens)>,
-    pub lodestones: Vec<(u64, Vec<(i32, i32, i32)>)>,
+    pub lodestones: Vec<(u64, Vec<BlockPos>)>,
     pub view_distance: i32,
 }
 
