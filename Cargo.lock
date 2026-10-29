@@ -3981,6 +3981,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "elden_boss",
  "glam 0.29.3",
  "image",
  "minecraft_net",
@@ -4011,6 +4012,7 @@ name = "minecraftoss-entities"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "elden_boss",
  "glam 0.29.3",
  "minecraftoss-player",
  "serde",

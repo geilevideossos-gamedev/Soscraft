@@ -15,8 +15,16 @@ A MW2 bullet finds a mob through one number: the kind in the top byte, the entit
 | 48-63 | M1, group `land` |
 | 64-79 | M2, group `water` |
 | 80-95 | M3, group `night` (camels, camel husks and the undead horses use the cow store's byte 11) |
-| 96-99 | F, group `bosses` |
+| 96-99 | F, group `bosses`: 96 Elden Ring bosses |
 | 100-255 | free |
+
+## F: Elden Ring bosses (group `bosses`)
+
+Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-RING-BOSSES.md`). His fight logic is the pure crate `crates/elden_boss`; he is saved as a vanilla `minecraft:marker` carrying `data.iw4l`.
+
+| # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
+|---|---|---|---|---|---|---|---|---|---|
+| F1 | Margit, the Fell Omen | `/summon iw4l:margit`, and later the altar | the brain, moves, phases and arena rules (`elden_boss`, segment f1) | hurt routing, walking, model, strikes, reward, MW2 resistances, bar, friends' show, altar | XL | `elden_bosses` | 96 | live | "Margit, an Elden Ring boss, lives in Minecraft worlds and is saved like vanilla" |
 
 ## D0: the registry's proof (group `pests`)
 

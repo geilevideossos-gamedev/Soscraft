@@ -18,8 +18,9 @@ Nothing on the wire changed yet.
 
 Files under `third_party/minecraftoss` this track patched or added. Files that track D0 added count as patched here.
 
-- Patched (4): `entities/src/world.rs`, `entities/src/world/families.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only).
-- Added (0).
+- Patched (6): `entities/Cargo.toml`, `entities/src/world.rs`, `entities/src/world/families.rs`, `entities/src/world/families/bosses.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only).
+- Added (1): `entities/src/world/families/bosses/elden_bosses.rs`.
+- `entities/Cargo.toml` depends on `elden_boss` (a path dependency on `crates/elden_boss`): the first vendored crate that depends on a fork crate. The root `Cargo.lock` covers it, as the minecraftoss crates have no workspace of their own.
 
 ## Group er-core
 
@@ -244,4 +245,68 @@ After cea44a86.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*4,minecraft:iron_golem_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:bone*16,minecraft:skeleton_spawn_egg*2,minecraft:enderman_spawn_egg*2,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
+```
+
+### 8. Margit, an Elden Ring boss, lives in Minecraft worlds and is saved like vanilla
+
+After 522362cb.
+
+- **Changed (vendored entities crate):**
+  - `Cargo.toml`: `elden_boss = { path = "../../../crates/elden_boss" }` (see "Vendored files"). `Cargo.lock` gained the edge from one `check` without `--locked`.
+  - New `world/families/bosses/elden_bosses.rs`, registered in `world/families/bosses.rs` (`elden_bosses: elden_bosses::EldenBoss`, key 96, kinds `elden_boss::IDS`, so `iw4l:margit`):
+    - `EldenBoss`, the state beside D0's `MobCore`: his `BossDef`, his `Brain`, his anchor, his rest yaw and the brain's last walk target. `boss(def, position)` builds him: 1.4 x 3.0 with step height 1.0 (the def's numbers), eye height 0.85 of his height (2.55, the vanilla default), the def's health, persistent, and a brain seeded from his position.
+    - `EntityWorld::spawn_elden_boss(def, position, yaw, anchor, no_ai)`, `elden_bosses()` and `elden_boss_mut(id)`.
+    - Hooks: category `monster` (the default, so Peaceful and the census treat him as the wither), despawn kept and not allowed in Peaceful, `targetable` false (commit 7), knockback resistance 1, experience 0 (group `er-fight` gives his reward), and a `hurt` that refuses every hit until the next commit.
+    - His tick: first `steady` (potion effects cleared, horizontal velocity and fall distance dropped), then D0's `family_base_tick` (fluids, burning, suffocation, drowning, the death clock). With AI, the brain steps on a `Sense` of the eligible players (alive, not spectators, attackable). His yaw and head look come from the `Act`, the walk target is kept for group `er-arena`, and each `Cue::Sound` of the `Act` becomes a `Voice::Event`. Alive, he only falls (no walk yet, no fall damage). Every voice is turned into a `Voice::Event` from his def (an ambient roll only while he is awake), his core health and maximum follow the brain's, and D0's `family_after_move` ends the tick.
+- **Changed (`minecraft_terrain`):**
+  - `Cargo.toml`: `elden_boss = { path = "../elden_boss" }`.
+  - New `elden_save.rs`, the carrier of design doc 12.1:
+    - `claims(tag)`: a `minecraft:marker` whose `data.iw4l.boss` names a known boss.
+    - `spawn(world, tag, common)`: the boss at his saved position, facing his saved `Rotation`, with the UUID's random, his fire and `NoAI`; then `read`.
+    - `read(mob, tag)`: the anchor from `data.iw4l.anchor` (his position if it is missing), the rest yaw from `data.iw4l.yaw` (his facing if missing), then `Brain::reset`: `Return`, full base health, phase 1. It never reads `Health`.
+    - `fields(mob)`: `id` `minecraft:marker` and `data: {iw4l: {boss, anchor: [x, y, z], yaw}}`, which replace the `id` that `mob_tags_where`'s `add` writes.
+    - `summon(world, def, position, y_rot, nbt, uuid)`: a fresh, asleep boss with his anchor and rest yaw where and as he is summoned, the given UUID, the NBT's `NoAI`, and the NBT's `Health` if there is one (`Brain::set_health`, so the wake keeps its share). It returns his id and his carrier tag (`Pos`, `Rotation`, `UUID` and `fields`).
+  - New `families/bosses/elden_bosses.rs` (`mod elden_bosses;` and the type in `families/bosses.rs`): `TerrainFamily` with tracking range 10 (F6's number), no textures and nothing drawn yet (group `er-look`), a shadow of radius 1.0 (design doc 14.1, so he shows where he stands until then), and `read` and `fields` through `elden_save`.
+- **Outside the registry** (D0's checklist does not cover these; brief F2, commit 1):
+  - `crates/minecraft_terrain/src/lib.rs`: `pub mod elden_save;` beside `wither_save`.
+  - `crates/minecraft_terrain/src/server_mobs.rs` `spawn_saved`: a `minecraft:marker` arm beside the wither's asks `elden_save::spawn`. Every other marker gives `None` there and stays dormant, saved as it came. A friend's copy comes through the same call (`spawn_tracked`), so the friend gets the anchor from the same tag.
+  - `crates/minecraft_terrain/src/server.rs` `ServerSim::summon`: a boss id goes to `elden_save::summon` before `level.summon_mob` (which knows no `iw4l:` id), with a fresh UUID from the level (`SpawnLevel::next_uuid`), and his tag goes into `mob_tags` like every summon's, so saving and `MobAdd` see him. On Peaceful it refuses with vanilla's message ("You can not summon a monster in peaceful mode", which the command shows as "Monsters cannot be summoned in Peaceful difficulty").
+  - `/summon` already accepts and suggests `iw4l:margit`: D0 made the command's list `simulated_kinds()`, which holds every registered kind.
+- **Moved from group `er-arena` (brief F2, commit 3, its first bullet):** the summon. D0's registry makes every registered kind summonable, and the gated terrain test `command_summons_do_not_reach_the_egg_results` summons each of them, so Margit's kind fails it without the summon. Group `er-arena` keeps the death names, the rest of that commit's tests and his walking.
+- **`docs/round10/mobs.md`:** a section for track F (group `bosses`) with Margit's row, between the hit-key table and D0's section, so no other track's rows are next to it; the hit-key row names byte 96.
+- **Tests:**
+  - `world::families::bosses::elden_bosses::tests` (entities):
+    - `margit_is_a_persistent_boss_of_his_size_and_kind` (kind, key, size, step, eye, 800 health, persistent, the traits, the census, not targetable, not an enemy, not among `mob_candidates`)
+    - `peaceful_removes_margit`
+    - `margit_never_despawns_far_from_players` (500 blocks away and idle for 10000 ticks, persistent or not)
+    - `margit_sleeps_until_a_player_comes_within_24_blocks_and_then_watches_him` (asleep and silent with the player at 30 blocks, awake at 10, his target and head look on the player's eyes, standing on the ground)
+    - `margit_speaks_in_named_events_and_ignores_potions` (the golden mist sound of his rise and the evoker's ambient as events, no `margit` event name, all in `hostile_volume`; poison is cleared)
+  - `elden_save::tests` (terrain):
+    - `margits_saved_tag_is_a_vanilla_marker` (`id` is `minecraft:marker`, `data.iw4l` holds the boss, the anchor and the rest yaw, every `id` in the tag is a `minecraft:` one, the look tag keeps `data`)
+    - `a_hurt_margit_loads_at_full_health_and_walks_home` (awake, at 300 health and 8 blocks from his anchor, saved with `mob_tags_where` and loaded into a fresh world: where he was, 800 health, phase 1, `Return`, the same anchor, and his brain walks him home; saved again, the same carrier)
+    - `a_plain_marker_stays_dormant` (a bare marker, one with other data, one with an unknown boss, and an armour stand with the carrier's data)
+    - `a_saved_health_is_never_read` (a marker with `Health:5f` and no anchor loads at 800 with his anchor where he stands and his facing as the rest yaw; a tag with his own id loads through D0's generic arm and the same `read`)
+    - `a_summoned_margit_sleeps_with_his_anchor_there_and_a_given_health` (asleep, anchor and rest yaw at the summon, 800 health, the carrier tag with his UUID; `{Health:401.0f,NoAI:1b}` gives 401 and no AI)
+  - `server::tests` (terrain, with the 26.3 data): `summon_makes_one_asleep_margit_with_his_anchor_there` (one asleep Margit, nothing dormant, his anchor and facing, his marker in `mob_tags` with his UUID; a second summon with `Health:401.0f` has 401), `summoning_margit_on_peaceful_is_refused`.
+- **Decisions:**
+  - **Brain ticks** are his `tick_count`, so a hurt between two ticks has the tick of the last step.
+  - **`data.iw4l.yaw` is his rest yaw**, the facing he was summoned with, fixed for his life. D0's family `VOLATILE` keys are looked up by the tag's `id`, which is the marker's, so a field of `data` that changed while he lives would resend his look tag every 10 ticks. His current facing is in `Rotation`.
+  - **The carrier's `data` is written whole:** other keys a vanilla command put in a marker's `data` are not kept. The entity crate cannot hold an NBT tag, and only our summons make these markers.
+  - **He moves only by his own will:** knockback (resistance 1), blasts and pushes never move him, because `steady` drops his horizontal velocity at the start of each tick. Group `er-arena` moves him with collision moves (brief F2, commit 4), not by velocity.
+  - **Ambient voices only while he is awake:** an asleep boss is silent.
+  - **Every `Cue::Sound` of the `Act` plays already** (the kneel's stunned sound, the critical, his rise's mist and each move's sounds). Brief F3, commit 3 lists this; group `er-look` only adds the bursts and the steps.
+  - **Until group `er-arena`:** every eligible player is reachable, the ground under a player is the player's feet, and no fade spot is found (`Seen.room` is `None`).
+  - **A tag with his own id** (`iw4l:margit`, never written by the game) still loads through D0's generic arm, with the same `read`.
+  - **His death's loot table** is `iw4l:margit` (D0's rule for monsters), which does not exist, so `EntityLootBook::roll` gives nothing. Group `er-fight` gives the drops.
+- **Runs:** `test -p minecraftoss-entities --locked --lib`: 443 passed. `test -p minecraft_terrain --locked --lib`: 1437 passed and 3 ignored; the known flaky `sections::tests::background_full_update_matches_the_synchronous_one` failed once under load and passed when run alone. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The three new files pass `rustfmt --check --edition 2021` with empty output on their staged content.
+- **Left for later:** `sleep::MONSTERS` (survival) does not list `iw4l:margit`, so a player may sleep beside him. Vanilla's `Monster.isPreventingPlayerRest` is true for every monster.
+- **Owner's steps.** He is not drawn until group `er-look` and does not walk until group `er-arena`: until then he is a round shadow about 2 blocks wide, and you hear him. In this commit nothing hurts him yet (the next commit). Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `f2-8-1.png`.
+  1. Stand still and type `/summon iw4l:margit ~ ~ ~30`: the chat confirms the summon, and a round shadow about 2 blocks wide lies on the ground 30 blocks away. He sleeps: no sound. **Screenshot f2-8-1** with the shadow in view.
+  2. Walk toward the shadow: once you are within about 24 blocks you hear a deep illusioner mirror sound (golden mist) as he rises, and then every few seconds a deep evoker mutter.
+  3. Save and quit, and load: the shadow is where it was. Walk off 40 blocks and come back: it is still there.
+  4. `/difficulty peaceful`: the shadow goes. `/summon iw4l:margit ~ ~ ~5`: the chat says "Monsters cannot be summoned in Peaceful difficulty". `/difficulty normal`.
+  5. Use a silverfish egg and a zombie egg (under a roof), save and quit, load: both are there and come at you, as before.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*4,minecraft:zombie_spawn_egg*4,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
 ```

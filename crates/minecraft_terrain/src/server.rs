@@ -1561,6 +1561,15 @@ impl ServerSim {
     /// `/summon` for a mob: the level makes its tag (`SummonCommand`), and
     /// it joins the entity world as a loaded mob would.
     pub fn summon(&mut self, kind: &str, position: [f64; 3], nbt: Option<&minecraftoss_core::nbt::Tag>, y_rot: f32) -> Result<(), String> {
+        if let Some(def) = elden_boss::def(kind) {
+            if self.level.difficulty == 0 {
+                return Err(crate::elden_save::PEACEFUL.to_owned());
+            }
+            let uuid = minecraftoss_world::natural_spawner::SpawnLevel::next_uuid(&mut self.level);
+            let (id, tag) = crate::elden_save::summon(&mut self.mobs, def, glam::DVec3::from_array(position), y_rot, nbt, uuid);
+            self.mob_tags.insert(id, tag);
+            return Ok(());
+        }
         let tag = self.level.summon_mob(kind, position, nbt, y_rot)?;
         // A new brain reads the schedule for the time it is.
         self.mobs.set_day_time(self.level.overworld_clock());
@@ -6513,6 +6522,39 @@ mod tests {
         place(&mut server, &mut scene, (9, 202, 8), Block::new("minecraft:wither_skeleton_skull"));
         server.take_spawned();
         assert_eq!(server.mobs.withers().len(), 1);
+    }
+
+    #[test]
+    fn summon_makes_one_asleep_margit_with_his_anchor_there() {
+        let Some((mut server, _)) = door_world() else { return };
+        let dormant = server.dormant.len();
+        let fresh = minecraftoss_core::snbt::parse_compound("{}").unwrap();
+        server.summon("iw4l:margit", [8.5, 200.0, 8.5], Some(&fresh), 90.0).expect("Margit is summoned");
+        assert_eq!(server.dormant.len(), dormant);
+        let bosses = server.mobs.elden_bosses();
+        assert_eq!(bosses.len(), 1);
+        let mob = &bosses[0];
+        assert_eq!(mob.state.brain.state(), elden_boss::State::Asleep);
+        assert_eq!((mob.state.anchor, mob.core.yaw, mob.core.health), (glam::DVec3::new(8.5, 200.0, 8.5), 90.0, 800.0));
+        let tag = &server.mob_tags[&mob.core.id];
+        assert!(crate::elden_save::claims(tag), "saved as his marker: {tag:?}");
+        let uuid = tag.get("UUID").and_then(minecraftoss_core::nbt::Tag::as_ints).unwrap();
+        assert_eq!(minecraftoss_entities::gossip::uuid_to_ints(server.mobs.uuid_of(mob.core.id)).to_vec(), uuid);
+        let half = minecraftoss_core::snbt::parse_compound("{Health:401.0f}").unwrap();
+        server.summon("iw4l:margit", [20.5, 200.0, 8.5], Some(&half), 0.0).expect("a second Margit");
+        let healths: Vec<f32> = server.mobs.elden_bosses().iter().map(|mob| mob.core.health).collect();
+        assert_eq!(healths, [800.0, 401.0], "a summoned Health is used");
+    }
+
+    #[test]
+    fn summoning_margit_on_peaceful_is_refused() {
+        let Some((mut server, _)) = door_world() else { return };
+        server.level.difficulty = 0;
+        assert_eq!(server.summon("iw4l:margit", [8.5, 200.0, 8.5], None, 0.0), Err(crate::elden_save::PEACEFUL.to_owned()));
+        assert!(server.mobs.elden_bosses().is_empty());
+        server.level.difficulty = 2;
+        assert_eq!(server.summon("iw4l:margit", [8.5, 200.0, 8.5], None, 0.0), Ok(()));
+        assert_eq!(server.mobs.elden_bosses().len(), 1);
     }
 
     #[test]
