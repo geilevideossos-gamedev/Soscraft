@@ -204,6 +204,7 @@ pub struct HorseState {
     pub saddled: bool,
     pub owner: Option<u128>,
     pub jump_pending: f32,
+    pub pending_fall: Option<(f64, f32)>,
     pub ridden: bool,
 }
 
@@ -341,6 +342,7 @@ impl HorseState {
             saddled: false,
             owner: None,
             jump_pending: 0.0,
+            pending_fall: None,
             ridden: false,
         }
     }

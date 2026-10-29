@@ -351,3 +351,42 @@ Commit: "Minecraft ominous bottles show their Bad Omen line", the one after `f3b
 ```
 IW4L_MINECRAFT_KIT=minecraft:ominous_bottle*2,minecraft:ominous_bottle[ominous_bottle_amplifier=4]
 ```
+
+## E-horses. Horse falls, the gallop, vehicle hearts and dyed leather horse armour
+
+### Horses fall like vanilla horses
+
+Commit: "Minecraft horses fall like vanilla horses", the one after `7c253993`.
+
+- **Cause** (as in the brief, re-checked at `7c253993`): the ridden horse (`equines.rs` `ride_tick`), the grazing or rearing horse and the horse on its own AI (`world.rs`, the two `travel_air` landings of the cow tick) all called the generic `living::fall_damage`: safe distance 3, multiplier 1 and the generic `small_fall`/`big_fall` sound. `horse::SAFE_FALL_DISTANCE` (6) and `FALL_DAMAGE_MULTIPLIER` (0.5) were never used, so a horse was hurt by a 4-block drop and by a strong horse's full jump on flat ground.
+- **Vanilla 26.3** (javap): `AbstractHorse.causeFallDamage(d, mult, src)` plays `entity.horse.land` (a baby of any horse kind: `entity.baby_horse.land`) at volume 0.4 and pitch 1 when `d > 1`, then `calculateFallDamage`; at 0 or less it stops there, otherwise `hurt`, `propagateFallToPassengers(d, mult, src)` and `playBlockFallSound`. No generic fall sound. `LivingEntity.calculateFallDamage` is `floor((d + 1e-6 - SAFE_FALL_DISTANCE) * mult * FALL_DAMAGE_MULTIPLIER)`. `Llama.causeFallDamage` has no land sound and hurts and propagates only at `d >= 6`. `d` is the distance after the block's reduction (a bed halves it) and `mult` the block's multiplier (hay 0.2, slime 0).
+- **Changed:**
+  - `third_party/minecraftoss/entities/src/world/living.rs`: `landed_block(body, world)` gives the landed block's `(fall_reduction, fall_multiplier)` and `block_fall_sound(body, world)` the block's fall sound at half volume and three quarters pitch. `fall_damage` uses both, unchanged in what it does.
+  - `world/equines.rs`: `horse_fall(horse, body, world, fallen, baby, voices)` follows `AbstractHorse.causeFallDamage` (no land sound for llamas) and records `pending_fall = Some((distance, multiplier))` when the horse is hurt, for its riders (next commit). `cow_fall(Option<&mut HorseState>, ...)` uses it for horses and the plain `fall_damage` for cows. `ride_tick` calls `horse_fall`.
+  - `world.rs`: the two cow-tick landings call `equines::cow_fall` (one line each).
+  - `horse.rs`: `HorseState.pending_fall: Option<(f64, f32)>`, `None` by default and never saved.
+- **Tests** (`minecraftoss-entities` `world::equines::tests`, on a test ground with a chosen block at y 63 and a stone fall sound):
+  - `a_ridden_horse_falling_ten_blocks_takes_two_and_hands_its_rider_the_fall`: 8, 10 and 20 blocks onto stone take 1, 2 and 7 and leave `pending_fall` at that distance with multiplier 1; 20 blocks onto a bed count as 10 and take 2.
+  - `a_horse_landing_from_seven_blocks_takes_nothing_and_hands_nothing_on`: 4 and 7 blocks take nothing and leave no pending fall, but play `entity.horse.land` once at 0.4 and no block fall sound.
+  - `a_horse_landing_on_hay_spares_itself_and_its_rider`: 10 blocks onto hay or slime take nothing; 20 onto hay take 1 with multiplier 0.2.
+  - `a_full_jump_on_flat_ground_never_hurts_a_strong_horse`: three full jumps at jump strength 1.0 (peaks above 5 blocks) leave it at full health.
+  - `a_horse_landing_plays_the_horse_land_sound_but_no_generic_fall`: `entity.horse.land` (0.4, 1) and `block.stone.fall` (0.5, 0.75), no `*_fall` event; an unridden foal plays `entity.baby_horse.land` and takes 2 from 10 blocks; a cow still takes 7 with `entity.generic.big_fall`.
+  - `a_llama_landing_makes_no_land_sound`: no `.land` event, the block fall sound, and 2 damage from 10 blocks.
+  - All 410 `minecraftoss-entities` tests pass.
+- **Decisions:**
+  - The brief's one helper is two (`landed_block` and `block_fall_sound`), so the block's fall sound is looked up only when a horse is hurt; `fall_damage` uses the same two instead of its own copy.
+  - `horse_fall` returns at once for a fall of 0, as vanilla calls `fallOn` only when `fallDistance > 0` (our bodies report a landing every tick on the ground).
+  - Llamas skip vanilla's extra `d >= 6` check: damage above 0 already needs `d >= 8` (multipliers are at most 1), so it can never matter.
+  - A dying horse still takes the generic fall sound through `dying_travel` (its hurt fails anyway); only the three living landings changed, as the brief planned.
+  - The rider takes no share yet: the next commit hands `pending_fall` to the riders.
+- **Owner's test steps** (survival, a new world, by day on flat ground, the kit below; the rider's own damage comes with the next commit, and the mount's hearts with group `vehicle-hearts`, so here the horse's hurt shows as a red flash and its hurt sound):
+  1. **A ten-block drop.** Run `/fill ~3 ~ ~-3 ~9 ~9 ~3 stone` (a stone block 10 high), then `/tp @s ~6 ~10 ~` and `/summon minecraft:horse ~ ~ ~2 {Tame:1b}`. Saddle the horse and ride straight off the edge. On landing you hear a heavy hoof thud and the stone's fall sound, and the horse flashes red with its hurt sound. You hear no "oof" of the generic fall. **Screenshot 1**, just after landing.
+  2. **A seven-block drop.** At a fresh spot run `/fill ~3 ~ ~-3 ~9 ~6 ~3 stone` (7 high), `/tp @s ~6 ~7 ~` and summon and saddle a new tame horse the same way. Ride off the edge: the thud plays, but the horse does not flash red.
+  3. **Hay.** At the foot of the 10-high block, where you landed in step 1, run `/fill ~-1 ~-1 ~-1 ~1 ~-1 ~1 hay_block`. Go back up as in step 1 and ride off at the same place onto the hay: the thud plays, no red flash.
+  4. **Jumps.** On flat grass, hold Space until the jump bar is full and let go, ten times: the horse never flashes red (before this commit a strong horse hurt itself).
+  5. **Dropped from the air.** On flat grass, run `/summon minecraft:horse ~3 ~10 ~`: it falls 10 blocks, thuds and flashes red. Run `/summon minecraft:llama ~-3 ~10 ~`: it falls 10 blocks and flashes red, with no hoof thud. Run `/summon minecraft:cow ~ ~10 ~3`: the cow still lands with the generic big "oof" fall sound.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:saddle,minecraft:saddle,minecraft:saddle,minecraft:hay_block*16,minecraft:cooked_beef*16
+```
