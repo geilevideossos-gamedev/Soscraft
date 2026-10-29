@@ -8,11 +8,12 @@ use crate::world::emissions::{MovementSounds, play_movement};
 use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore};
 use crate::world::{DamageSourceKind, EntityWorld, Voice, voice_pitch};
 use elden_boss::data::{Cue, Sound};
-use elden_boss::{Act, BossDef, Brain, Clip, Dagger, Hit, Sense, Source};
+use elden_boss::{Act, BossDef, Brain, Clip, Dagger, Flight, Hit, Sense, Source};
 use glam::DVec3;
 use minecraftoss_player::World;
 
 pub mod arena;
+pub mod blows;
 
 pub const KEY: u8 = 96;
 pub const EYE_SHARE: f64 = 0.85;
@@ -49,6 +50,7 @@ pub struct EldenBoss {
     pub dropped: bool,
     pub hits: Vec<Hit>,
     pub throws: Vec<Dagger>,
+    pub daggers: Vec<Flight>,
 }
 
 impl EldenBoss {
@@ -89,6 +91,7 @@ pub fn boss(def: &'static BossDef, position: DVec3) -> FamilyMob<EldenBoss> {
             dropped: false,
             hits: Vec::new(),
             throws: Vec::new(),
+            daggers: Vec::new(),
         },
     }
 }
@@ -110,8 +113,9 @@ fn think<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, players: &[PlayerC
     arena::survey(mob, level, players);
     let FamilyMob { core, state } = mob;
     state.seen = players.iter().map(|p| (p.id, p.position)).collect();
-    let seen = arena::seen(level, players, &state.ways);
     let position = core.body.position;
+    let eyes = position + DVec3::Y * f64::from(core.eye_height);
+    let seen = arena::seen(level, players, &state.ways, eyes);
     let sense = Sense {
         tick: tick_of(core),
         position,
@@ -306,7 +310,9 @@ impl Family for EldenBoss {
         let Some(base) = world.family_base_tick::<Self, W>(id, level, players) else {
             return;
         };
+        let mut struck = Vec::new();
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
+            let mut thrown = Vec::new();
             if !base.no_ai {
                 let act = think(mob, &*level, players);
                 if base.alive {
@@ -314,10 +320,13 @@ impl Family for EldenBoss {
                     arena::carry_out(mob, &*level, &act);
                     step(mob);
                 }
+                (struck, thrown) = (act.hits, act.throws);
             }
+            struck.extend(blows::fly(mob, &*level, players, &thrown));
             speak(mob);
             settle(mob);
         }
+        blows::deal(world, id, players, &struck);
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);
     }
 

@@ -7,7 +7,7 @@ use crate::mesh::{Atlas, ChunkMesh};
 use crate::pack::ResourceId;
 use crate::posed_cube::{Cube, Skin, append, part_pose};
 use elden_boss::data::{BossDef, BranchTo, Conjure, Pose, PoseKey, Weapon};
-use elden_boss::{Clip, State};
+use elden_boss::{Clip, Flight, State};
 use glam::{Mat4, Quat, Vec3};
 use minecraftoss_entities::world::families::FamilyMob;
 use minecraftoss_entities::world::families::bosses::elden_bosses::EldenBoss;
@@ -25,6 +25,8 @@ pub const TELL: u16 = 8;
 pub const EYE_GROWTH: f32 = 1.0;
 pub const HIDDEN_AROUND_SWAP: u16 = 2;
 pub const RECOVERY: u16 = 10;
+pub const DAGGER_MIDDLE: f32 = 3.0;
+pub const PLAIN: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bone {
@@ -861,6 +863,25 @@ pub fn root_at(feet: Vec3, turn: Quat, facing: f32) -> Mat4 {
     crate::wither_render::model_root(Mat4::from_translation(feet) * Mat4::from_quat(turn), SCALE)
 }
 
+pub fn dagger_root(flight: &Flight, ticks: f64) -> Mat4 {
+    let heading = flight.velocity.as_vec3().try_normalize().unwrap_or(Vec3::Y);
+    Mat4::from_translation(flight.at(ticks).as_vec3())
+        * Mat4::from_quat(Quat::from_rotation_arc(Vec3::Y, heading))
+        * Mat4::from_scale(Vec3::splat(SCALE))
+        * Mat4::from_translation(Vec3::new(0.0, -DAGGER_MIDDLE / 16.0, 0.0))
+}
+
+pub fn append_daggers(mesh: &mut ChunkMesh, daggers: &[Flight], skin: &Skin, partial: f32) {
+    let glowing = bright(skin);
+    for flight in daggers {
+        let ticks = (f64::from(flight.age) - 1.0 + f64::from(partial)).max(0.0);
+        let root = dagger_root(flight, ticks);
+        for cube in &DAGGER {
+            append(mesh, root, &glowing, cube);
+        }
+    }
+}
+
 pub fn append_bosses(
     mesh: &mut ChunkMesh,
     mobs: &[FamilyMob<EldenBoss>],
@@ -894,6 +915,8 @@ pub fn append_bosses(
         };
         let root = root_at(pose.feet.as_vec3(), pose.turn, facing);
         append_model(mesh, root, &skin, &look);
+        marks.push((mesh.vertices.len(), PLAIN));
+        append_daggers(mesh, &mob.state.daggers, &skin, shown);
     }
     crate::cow_render::apply_overlays(mesh, &marks);
 }
@@ -1405,5 +1428,35 @@ mod tests {
         assert!((at(0) - moved_by(&start, Bone::RightArm)).length() < 1e-4);
         assert!(at(7).length() < at(0).length() && at(7).length() > 0.0);
         assert!(at(14).length() < 1e-5, "ready after its 14 ticks");
+    }
+
+    #[test]
+    fn a_flying_dagger_is_drawn_along_its_flight() {
+        let flight = Flight {
+            start: glam::DVec3::new(0.0, 66.0, 0.0),
+            velocity: glam::DVec3::new(0.0, 0.0, 1.5),
+            age: 3,
+        };
+        let mut mesh = ChunkMesh::default();
+        append_daggers(&mut mesh, &[flight], &skin(), 0.5);
+        assert_eq!(mesh.faces, 6 * DAGGER.len());
+        let (back, tip) = span(&mesh, 2, |_| true);
+        let half = 4.0 / 16.0 * SCALE;
+        assert!((back - (3.75 - half)).abs() < 1e-4, "{back}");
+        assert!((tip - (3.75 + half)).abs() < 1e-4, "{tip}");
+        let (low, high) = span(&mesh, 1, |_| true);
+        assert!(low > 65.9 && high < 66.1, "{low} {high}");
+        let (left, right) = span(&mesh, 0, |_| true);
+        assert!(left > -0.15 && right < 0.15, "{left} {right}");
+        let guard = span(&mesh, 2, |p| p[0].abs() > 0.1);
+        assert!(guard.1 < 3.75, "the guard trails and the blade leads");
+        assert!(mesh.vertices.iter().all(|vertex| {
+            (vertex.sky_light, vertex.block_light) == (FULL_BRIGHT, FULL_BRIGHT)
+        }));
+        let mut thrown = ChunkMesh::default();
+        let launched = Flight { age: 0, ..flight };
+        append_daggers(&mut thrown, &[launched], &skin(), 0.9);
+        let (back, _) = span(&thrown, 2, |_| true);
+        assert!((back + half).abs() < 1e-4, "still in his hand: {back}");
     }
 }

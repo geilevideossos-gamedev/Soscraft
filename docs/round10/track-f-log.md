@@ -22,6 +22,12 @@ Group er-look (commits 17 to 19), 7 stacks:
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cobblestone*256,minecraft:iron_pickaxe,minecraft:cooked_beef*32
 ```
 
+Group er-fight (commit 20 so far), 9 stacks:
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
+```
+
 ## Protocol
 
 Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's `FamilyShow`, already on the wire) with his clip, and commit 19 adds his critical count as its fifth value; the message format is the same, so it needs no bump of its own.
@@ -31,7 +37,7 @@ Nothing on the wire changed yet. Commit 18 fills Margit's `MobShow.family` (D0's
 Files under `third_party/minecraftoss` this track patched or added. Files that track D0 added count as patched here.
 
 - Patched (6): `entities/Cargo.toml`, `entities/src/world.rs`, `entities/src/world/families.rs`, `entities/src/world/families/bosses.rs`, `entities/src/world/families/pests/probe.rs` (test only), `entities/src/world/families/tests.rs` (test only).
-- Added (2): `entities/src/world/families/bosses/elden_bosses.rs`, `entities/src/world/families/bosses/elden_bosses/arena.rs`.
+- Added (3): `entities/src/world/families/bosses/elden_bosses.rs`, `entities/src/world/families/bosses/elden_bosses/arena.rs`, `entities/src/world/families/bosses/elden_bosses/blows.rs`.
 - `entities/Cargo.toml` depends on `elden_boss` (a path dependency on `crates/elden_boss`): the first vendored crate that depends on a fork crate. The root `Cargo.lock` covers it, as the minecraftoss crates have no workspace of their own.
 
 ## Group er-core
@@ -639,4 +645,61 @@ After 837f9572.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cobblestone*256,minecraft:iron_pickaxe,minecraft:cooked_beef*32
+```
+
+## Group er-fight
+
+Brief F4, commits F4.1 and F4.2, with design doc sections 5, 7.4 and 13. It starts on 2815efff (group er-look).
+
+### 20. Margit's cane, golden weapons and daggers hurt players
+
+After 2815efff.
+
+- **Changed (`elden_boss`):**
+  - `data.rs`: `Push` (throw and lift) and `Reactions` (one `Push` per reaction, `push(reaction)`), and `BossDef.reactions`. `margit.rs`: flinch none, stagger a throw of 0.8, knockdown a throw of 1.2 and a lift of 0.5 (design doc 7.4), so every number stays in `margit.rs`.
+  - New `flight.rs`: `Flight` (start, velocity, age; group er-bar-friend sends the same three), `Flight::launch` from the brain's `Dagger`, `at(ticks)` and `path()`, and `fly(def, wall, players) -> Flown`. On each tick the dagger's path is its velocity (1.5 blocks). The first player whose box the path crosses before the wall (`shape::segment`) is struck with the def's dagger hit (4 holy, flinch, the dagger weapon, strike `THROWN`, coming from 1 block behind where it struck); a wall stops it where the path meets it; otherwise it moves on and is spent after 40 moves. `share_of` turns a block hit point into a share of the path.
+  - `brain.rs`: `Seen.sight`, whether he sees the player (eye to eye, no block between). A strike skips a player he cannot see on that tick, and may still land later in its window. Throws are unchanged.
+- **Changed (vendored entities crate):**
+  - New `world/families/bosses/elden_bosses/blows.rs`:
+    - `kind(def, hit, feet, facing)`: a physical hit is `PlayerHitKind::Melee` from where it came (his feet for an arc, the centre of a circle or ring), with the reaction's throw away from there (or along his facing when the player stands on that point), its lift, and `disable_shield_seconds` from the strike's shield ticks (100 ticks, 5 s, on both hammer strikes). A holy hit is D0's `PlayerHitKind::Typed` with vanilla's `minecraft:indirect_magic` and its message `indirectMagic`, `bypasses_armor` and `bypasses_shield`, from where it came, with the reaction's throw and lift as its push.
+    - `fly(mob, level, players, thrown)`: moves every dagger in flight one tick against the level's blocks (`sight::clip` on collision shapes, so grass and flowers do not stop it) and the eligible players' boxes, plays `item.trident.hit` (the def's `dagger_hit` cue) where one stops or strikes, drops the spent ones, then adds the daggers his brain threw this tick, so a dagger first moves on the tick after the throw.
+    - `deal(world, id, players, struck)`: each hit becomes a `PlayerHit` through D0's `family_strike`, with his id as the source.
+  - `elden_bosses.rs`: `EldenBoss.daggers`. His tick takes the `Act`'s hits and throws only on a tick his brain stepped (a Margit without AI swings and throws nothing; daggers already in flight fly on), flies the daggers, and deals the hits after his move. `think` passes his eyes (feet + 2.55) to the sense.
+  - `arena.rs` `seen`: each eligible player's `sight` from `sight::line_of_sight` (vanilla's `hasLineOfSight`, eye to eye).
+- **Changed (`minecraft_terrain`, `elden_render.rs`):** `dagger_root` and `append_daggers`: each dagger in flight is F3's dagger part (three gold cubes) at full light, scaled like Margit, centred on its position with the blade along its flight, and drawn one tick behind like every mob's position (`age - 1 + partial`, never before his hand). `append_bosses` draws them after his model under their own overlay mark, so his red hurt flash does not tint them, and also while a fade hides him.
+- **Tests:**
+  - `elden_boss`: `flight::tests::a_flight_stops_where_the_wall_or_the_nearer_player_is`, `brain::tests::a_player_he_cannot_see_is_not_struck`.
+  - Entities, `world::families::bosses::elden_bosses::blows::tests`:
+    - `a_cane_hit_becomes_a_melee_player_hit_from_margit` (4 damage from his id, from his feet, no extra throw or lift, the shield left up)
+    - `the_hammer_disables_a_shield_for_5_seconds` (the hammer's arc is melee with 5 s; its shockwave is a holy 4 through shields and armour)
+    - `a_knockdown_lifts_and_throws_the_player` (lift 0.5 and a throw of 1.2 away from him; a stagger's 0.8 away, and along his facing when the player stands on the point)
+    - `a_dagger_stops_at_a_wall` (a 4-high wall 7.5 blocks out: no hit, one `item.trident.hit` on the wall's face)
+    - `a_dagger_hits_the_first_player_on_its_path` (a player stepping into its path after the throw takes it; the target behind does not)
+    - `a_dagger_is_gone_after_40_ticks` (in flight for 40 ticks, then gone with no hit and no sound)
+    - and `arena::tests::a_player_behind_a_wall_is_out_of_his_sight` (he still sees into a 2-deep hole beside him).
+  - Terrain: `elden_render::tests::a_flying_dagger_is_drawn_along_its_flight`.
+  - Survival, `death::tests`: `a_holy_hit_is_magic_and_ignores_a_raised_shield` (his sword sweep through `mob_hit`: `indirect_magic`, past armour, no shield direction so a raised shield blocks nothing, knockback from where it came and a stagger of 0.8; his cane slam is `mob_attack`, and a raised shield facing him blocks it), `a_player_killed_by_a_dagger_is_told_killed_using_magic` ("Sos was killed by Margit, the Fell Omen using magic"; the test language gains vanilla's `death.attack.indirectMagic`).
+- **Runs:** `test -p elden_boss --locked`: 56 passed. `test -p minecraftoss-entities --locked --lib`: 505 passed. `test -p minecraft_terrain --locked --lib elden`: 26 passed. `test -p minecraft_survival --locked --lib death::tests`: 51 passed. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The new files (`flight.rs`, `blows.rs`) and the track's own files touched here pass `rustfmt --check` (edition 2024 in `elden_boss`, 2021 in the entities crate and `minecraft_terrain`) with empty output on their content with LF line ends.
+- **Decisions:**
+  - **Holy hits are `Typed`, not `Magic`.** The brief names `PlayerHitKind::Magic { at }`, but the survival side gives `Magic` no knockback source and no push. `Typed` with `minecraft:indirect_magic` and `indirectMagic` gives the same damage type, death line, armour and shield bypass and difficulty scaling, plus vanilla's knockback (indirect magic is not in 26.3's `#no_knockback`, checked in the jar) and the sword sweep's stagger.
+  - **Strikes need sight.** Vanilla's `MeleeAttackGoal` only attacks a target it sees, eye to eye, so the brain gets the answer in `Seen.sight` and skips unseen players. Because the brain decides, its stuck rule ("none of his hits landed") counts only hits that really land, so a player behind a wall he cannot reach still gets the fade. He sees into a 2-deep hole beside him, so commit 12's hole rule holds.
+  - **A dagger that strikes or meets a block is gone at once.** It does not stick in the wall. The hit sound plays where it stopped.
+  - **Daggers fly on while he dies** and are gone with his body. A Margit without AI never throws one.
+  - **Reactions push away from where the hit came from**, not from his feet: a leap's landing circle or a hammer's shockwave throws a player away from its centre.
+- **Closes from release 3's known limits:** "His strikes and daggers hurt nobody, and no dagger flies", and "His strikes ignore walls".
+- **Left for later:** a friend is hit by daggers but does not see them fly until group er-bar-friend sends them in `MobShow`. The host sees them.
+- **Owner's steps.** Release build, survival, Normal, by day, flat open ground in the Overworld. Wear the diamond armour except where a step says otherwise, and keep a golden apple ready. Name each screenshot by its label, `f4-20-1.png`.
+  1. Take the armour off. `/summon iw4l:margit ~ ~ ~6` and stand 2-3 blocks in front of him. The cane combo: each of the first two swings takes about 2 hearts and pushes you back a little; the third (after the raised cane and the flaring eyes) takes 3 hearts and throws you back further. **Screenshot f4-20-1** of your health right after a swing.
+  2. Put the armour on and hold the shield up facing him: his cane swings and the cane slam are blocked with the shield sound and take nothing.
+  3. Keep the shield up for the golden sword: the sweep goes through the shield and the armour, takes about 3.5 hearts and throws you back a block or so. **Screenshot f4-20-2** right after it.
+  4. Step back to 15-20 blocks and stand still: the golden dagger leaves his hand as a small glowing gold blade and flies at your chest. It hits through the raised shield and the armour for 2 hearts with the trident's hit sound. Next time, strafe sideways as he throws: it flies past. **Screenshot f4-20-3** with a dagger in the air.
+  5. Build a cobblestone wall 3 high and 5 wide between you and him at about 15 blocks and stand right behind it: a dagger thrown at you clinks into the wall with the trident's hit sound and does nothing.
+  6. Stay behind that wall with him close on the other side: his swings do not reach through it, and he walks around it to get at you.
+  7. At 10-14 blocks in the open, wait for the leap: he lands in front of you, takes 4 hearts and tosses you up and back.
+  8. `/summon iw4l:margit ~ ~ ~6 {Health:401f}` and hit him once: the hammer forms. Stand 2-3 blocks in front with the shield raised for the hammer slam: the shield blocks the hammer but goes down with the break sound and stays unusable for 5 seconds, you are thrown back, and the shockwave ring then takes 2 hearts through the shield. Without the shield the hammer tosses you up and back. For the next hammer slam, jump as the ring spreads under you: the ring does nothing.
+  9. Take the armour off, drop any totem, and let the cane kill you: "Sos was slain by Margit, the Fell Omen". Respawn, summon another, and let a dagger or the sword finish you: "Sos was killed by Margit, the Fell Omen using magic". **Screenshot f4-20-4** of the death screen.
+  10. Optional, two windows (`scripts\mp-local.ps1`): a friend standing in a dagger's path is hurt by it, though the friend does not see it fly yet.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet,minecraft:diamond_chestplate,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:cobblestone*64,minecraft:golden_apple*16,minecraft:cooked_beef*32
 ```

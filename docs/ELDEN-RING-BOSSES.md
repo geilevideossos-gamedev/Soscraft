@@ -117,6 +117,7 @@ Who he is, briefly: a hunched old man in a dark hooded cloak who walks with a ca
 | `random` | The brain's own seeded random (SplitMix64) |
 | `hurt` | Damage into the boss: resistances, stance, kneeling, criticals, threat |
 | `fight` | The arena: waking, scaling, leash, reset, being stuck |
+| `flight` | A dagger in flight: where it is, and whether a block or a player stops it this tick |
 | tests | Unit tests per module, and a headless whole fight |
 
 The rest of the game reads one thing: a `&'static BossDef`. The hand-written tables are `static`. A baked table (section 14.2) is loaded once at start and leaked into a `'static` table, so the game keeps one type.
@@ -137,6 +138,7 @@ The rest of the game reads one thing: a `&'static BossDef`. The hand-written tab
 | `phases` | Each phase: where it starts, cooldown factor, idle gap, the shift move | section 6 |
 | `moves` | The move table | section 5 |
 | `daggers` | Speed, flight ticks, damage | 1.5 blocks a tick, 40 ticks, 4 holy |
+| `reactions` | How far each reaction throws and lifts a player (section 7.4) | flinch none, stagger 0.8, knockdown 1.2 and lift 0.5 |
 | `experience`, `drops` | Base experience, per-fighter experience, items | 100 (+50 a fighter); section 13 |
 | `voices`, `cues` | Ambient, hurt and death sounds; shared cue names | section 14.1 |
 
@@ -181,7 +183,7 @@ One `Brain` per boss, stepped once per server tick with a `Sense` and returning 
 | `Return` | After a reset or a load: walks back to his anchor at full health and takes no damage; fades home if he gets no closer to it for 100 ticks | `Asleep`, or `Wake` if a player comes within the wake radius |
 | `Dead` | 20 ticks: collapses into golden mist | removed |
 
-`Sense` holds: the tick, his position, facing and anchor, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them, and a spot beside them with room for his box, if the game found one, for the stuck fade). The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, whether it is held, phase, awake, and the move clock a recovery started from). His health is kept by the brain, which takes every hit (`Brain::take`).
+`Sense` holds: the tick, his position, facing and anchor, whether he stands on the ground, and the eligible players (id, feet, eye height, the height of the ground under their feet for the ring test, whether a path reaches them, a spot beside them with room for his box, if the game found one, for the stuck fade, and whether he sees them, eye to eye with no block between, as vanilla's melee mobs must before they strike). A strike never lands on a player he cannot see. The game fills the ground height from the level's blocks: `PlayerCandidate` has no on-ground flag. `Act` holds: where to walk, where to face, the root motion this tick, the hits that landed (player, damage, physical or holy, reaction, shield disable, where it came from), the daggers to launch, the cues to play, a fade target, and the clip shown (state, move, the move's own clock, whether it is held, phase, awake, and the move clock a recovery started from). His health is kept by the brain, which takes every hit (`Brain::take`).
 
 **Choosing a move:** the moves of his phase that are off cooldown, whose distance band holds his target and whose angle band holds the angle to it. One is rolled by weight. If none fits, he walks closer, or turns. Follow-ups ignore cooldowns.
 
@@ -303,9 +305,10 @@ So **player-made hits skip the cooldown on Margit**: bullets, blasts, melee, arr
 
 ### 7.4 Damage out (his hits on players)
 - **Physical** hits are vanilla mob attacks (`PlayerHitKind::Melee`, damage type `mob_attack`): armour, Protection and a raised shield count. Hammer hits disable a shield for 5 s, like an axe.
-- **Holy** hits are magic from a mob (`PlayerHitKind::Magic`, damage type `indirect_magic`): they ignore armour and shields, because vanilla 26.3 lists `indirect_magic` in `#bypasses_armor` and so in `#bypasses_shield` (checked in the 26.3 data). This is our mapping of Elden Ring's holy damage, not game data.
+- **Holy** hits are magic from a mob (damage type `indirect_magic`, death message `indirectMagic`): they ignore armour and shields, because vanilla 26.3 lists `indirect_magic` in `#bypasses_armor` and so in `#bypasses_shield` (checked in the 26.3 data). They travel as D0's `PlayerHitKind::Typed` with that damage type rather than `PlayerHitKind::Magic`, because `Magic` carries neither where the hit came from nor a push: vanilla knocks a player back from indirect magic (it is not in `#no_knockback`), and the sword's stagger needs its throw. This is our mapping of Elden Ring's holy damage, not game data.
 - **Difficulty** scales them like every mob hit with a source (`difficulty_scaled`): Easy halves them and adds 1, Hard x1.5. On Peaceful he does not exist.
-- **Reactions:** a flinch is the vanilla knockback; a stagger throws the player 0.8 back; a knockdown lifts 0.5 and throws 1.2 back, like an iron golem's toss. There is no movement lock: that would be new MW2 movement code.
+- **Reactions:** a flinch is the vanilla knockback; a stagger throws the player 0.8 back; a knockdown lifts 0.5 and throws 1.2 back, like an iron golem's toss. "Back" is away from where the hit came from (his feet for an arc, the centre of a circle or ring, behind a dagger along its flight), or along his facing when the player stands right there. The numbers are `reactions` in `margit.rs`. There is no movement lock: that would be new MW2 movement code.
+- **Walls:** a strike lands only on a player he sees, eye to eye with no block between (vanilla's `MeleeAttackGoal` asks the same), so his swings and shockwaves do not reach through a wall. Daggers fly through the world instead: each stops at the first block on its path (`item.trident.hit`) or hits the first player whose box its path crosses.
 - **Death messages:** "Sos was slain by Margit, the Fell Omen" for physical hits, "Sos was killed by Margit, the Fell Omen using magic" for holy ones.
 
 ### 7.5 How long a fight takes (estimates)

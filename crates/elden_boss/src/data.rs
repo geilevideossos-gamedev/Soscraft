@@ -196,6 +196,29 @@ pub enum Reaction {
     Knockdown,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Push {
+    pub throw: f64,
+    pub lift: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reactions {
+    pub flinch: Push,
+    pub stagger: Push,
+    pub knockdown: Push,
+}
+
+impl Reactions {
+    pub fn push(&self, reaction: Reaction) -> Push {
+        match reaction {
+            Reaction::Flinch => self.flinch,
+            Reaction::Stagger => self.stagger,
+            Reaction::Knockdown => self.knockdown,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Weapon {
     Dagger,
@@ -475,6 +498,7 @@ pub struct BossDef {
     pub moves: &'static [MoveDef],
     pub clips: Clips,
     pub daggers: Daggers,
+    pub reactions: Reactions,
     pub experience: Experience,
     pub drops: &'static [Loot],
     pub voices: Voices,

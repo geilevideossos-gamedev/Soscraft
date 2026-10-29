@@ -3,8 +3,8 @@ use glam::DVec3;
 use crate::data::{
     Arena, BossDef, Branch, BranchTo, Burst, ClipDef, Clips, Conjure, Critical, Cue, CueKey, Cues,
     Daggers, DataSource, Experience, Factor, Gap, Harm, Hold, Loot, Motion, MoveDef, PhaseDef,
-    Pick, Pose, PoseKey, Reaction, Resist, Scaling, Shape, Sound, Stalk, Stance, Strike, Throw,
-    Voices, Weapon, When, Window,
+    Pick, Pose, PoseKey, Push, Reaction, Reactions, Resist, Scaling, Shape, Sound, Stalk, Stance,
+    Strike, Throw, Voices, Weapon, When, Window,
 };
 
 pub const ID: &str = "iw4l:margit";
@@ -769,6 +769,20 @@ pub static MARGIT: BossDef = BossDef {
         harm: Harm::Holy,
         reaction: Reaction::Flinch,
         hand: DVec3::new(0.5, 2.2, 0.4),
+    },
+    reactions: Reactions {
+        flinch: Push {
+            throw: 0.0,
+            lift: 0.0,
+        },
+        stagger: Push {
+            throw: 0.8,
+            lift: 0.0,
+        },
+        knockdown: Push {
+            throw: 1.2,
+            lift: 0.5,
+        },
     },
     experience: Experience {
         base: 100,

@@ -60,6 +60,7 @@ pub struct Seen {
     pub ground: f64,
     pub reachable: bool,
     pub room: Option<DVec3>,
+    pub sight: bool,
 }
 
 impl Seen {
@@ -559,7 +560,7 @@ impl Brain {
             let tick = clock - strike.from;
             let ticks = strike.to - strike.from + 1;
             for player in sense.players {
-                if playing.struck.contains(&(index, player.id)) {
+                if !player.sight || playing.struck.contains(&(index, player.id)) {
                     continue;
                 }
                 if shape::struck(
@@ -824,6 +825,7 @@ pub(crate) mod tests {
             ground: 0.0,
             reachable: true,
             room: None,
+            sight: true,
         }
     }
 
@@ -1014,6 +1016,39 @@ pub(crate) mod tests {
             assert_eq!((hit.damage, hit.harm), (7.0, Harm::Physical));
             assert_eq!(hit.reaction, Reaction::Stagger);
         }
+    }
+
+    #[test]
+    fn a_player_he_cannot_see_is_not_struck() {
+        let hidden = Seen {
+            sight: false,
+            ..player(1, -0.4, 2.0)
+        };
+        let players = [hidden, player(2, 0.4, 2.0)];
+        for seed in 0..20 {
+            let mut field = Field::new(seed);
+            field.brain.begin("cane_slam");
+            let hits: Vec<PlayerId> = field
+                .play_out(&players)
+                .iter()
+                .flat_map(|act| act.hits.iter().map(|hit| hit.player))
+                .collect();
+            assert_eq!(hits, [2], "seed {seed}");
+        }
+        let mut field = Field::new(3);
+        field.brain.begin("cane_slam");
+        let mut struck = Vec::new();
+        loop {
+            let act = field.step(&[Seen {
+                sight: field.brain.playing.as_ref().is_some_and(|p| p.clock >= 29),
+                ..player(1, 0.0, 2.0)
+            }]);
+            if act.clip.state != State::Move {
+                break;
+            }
+            struck.extend(act.hits.iter().map(|hit| hit.player));
+        }
+        assert_eq!(struck, [1], "seen again inside the window");
     }
 
     #[test]
