@@ -7,11 +7,14 @@ use crate::goals::Goal;
 use crate::monster_ai::Target;
 use crate::movement::Body;
 use crate::walk_path::WalkTarget;
-use crate::world::{DamageSourceKind, LeashHolder, PlayerAttack};
+use crate::world::{DamageSourceKind, LeashHolder, PlayerAttack, PlayerHitKind};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::path_type::{PathType, path_type_of_block};
 use minecraftoss_player::rng::LegacyRandom;
-use minecraftoss_player::{Block, Pos, authored_block_in_tag, authored_collision_boxes};
+use minecraftoss_player::survival::Armor;
+use minecraftoss_player::{
+    Block, Difficulty, HitFrom, IncomingHit, Pos, authored_block_in_tag, authored_collision_boxes,
+};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -153,7 +156,7 @@ fn a_rabbit_is_small_with_three_health_and_its_kind() {
     assert_eq!(traits.voice, ("rabbit", 1.0, "neutral_volume"));
     let registered = MonsterKind::Registered(KIND);
     assert_eq!(registered.goal_names(), GOAL_NAMES);
-    assert!(registered.target_goal_names().is_empty());
+    assert_eq!(registered.target_goal_names(), TARGET_NAMES);
     let ai = &rabbit(&world, adult).state.ai;
     assert_eq!(ai.state.follow_range, FOLLOW_RANGE);
     assert_eq!(ai.state.eye_height, EYE_HEIGHT);
@@ -697,6 +700,206 @@ fn no_rabbit_touches_crops_without_mob_griefing() {
         world.tick(&mut garden);
     }
     assert_eq!(garden.age(crop), Some(6), "with the rule back it bites");
+}
+
+fn killer_at(world: &mut EntityWorld, position: DVec3) -> u64 {
+    let id = rabbit_at(world, position);
+    rabbit_mut(world, id).state.set_variant(RabbitVariant::Evil);
+    id
+}
+
+#[test]
+fn a_killer_bunny_has_eight_armour_and_bites_for_eight() {
+    let mut world = EntityWorld::default();
+    let plain = rabbit_at(&mut world, at(-6.5, 0.5));
+    let bunny = killer_at(&mut world, at(0.5, 0.5));
+    assert_eq!(rabbit(&world, plain).state.attack_damage(), 3.0);
+    assert_eq!(rabbit(&world, bunny).state.attack_damage(), 8.0);
+    let traits = world.family_traits(bunny).unwrap();
+    assert_eq!(traits.voice, ("rabbit", 1.0, "hostile_volume"));
+    assert_eq!(traits.category, "creature");
+    assert!(!traits.enemy);
+    let traits = world.family_traits(plain).unwrap();
+    assert_eq!(traits.voice, ("rabbit", 1.0, "neutral_volume"));
+    let bite = Hurt::new(2.0, "minecraft:mob_attack", DamageSourceKind::MobAttack);
+    for id in [plain, bunny] {
+        assert!(world.hurt_family(id, &bite).unwrap().applied);
+    }
+    let health = |world: &EntityWorld, id: u64| rabbit(world, id).core.health;
+    assert_eq!(health(&world, plain), 1.0);
+    let armoured = 3.0 - crate::health::damage_after_armor(2.0, 8.0, 0.0);
+    assert_eq!(health(&world, bunny), armoured);
+    assert!((armoured - 1.56).abs() < 1.0e-5, "{armoured}");
+
+    let mut world = EntityWorld::default();
+    let mut meadow = Meadow::default();
+    let bunny = killer_at(&mut world, at(0.5, 0.5));
+    let player = player_at(1, at(5.5, 0.5));
+    let (mut hits, mut sounds, mut fled, mut target) = (Vec::new(), Vec::new(), false, None);
+    for _ in 0..300 {
+        world.tick_with_players(&mut meadow, &[player]);
+        hits.extend(world.take_player_hits());
+        sounds.extend(world.take_sounds());
+        let mob = rabbit(&world, bunny);
+        fled |= mob.state.running_goals().contains(&"RabbitAvoidEntityGoal");
+        target = target.or(mob.state.ai.state.target);
+        if !hits.is_empty() {
+            break;
+        }
+    }
+    assert!(!fled, "it never runs from a player");
+    assert_eq!(target, Some(Target::Player(1)));
+    let hit = hits.first().expect("it bites the player");
+    assert_eq!(
+        (hit.player_id, hit.damage, hit.source),
+        (1, 8.0, Some(bunny))
+    );
+    let PlayerHitKind::Melee { attacker, .. } = hit.kind else {
+        panic!("a bite: {:?}", hit.kind);
+    };
+    let attack = sounds
+        .iter()
+        .find(|sound| sound.event == ATTACK_SOUND)
+        .expect("its attack sound");
+    assert_eq!(attack.category, "hostile_volume");
+    assert!((0.8..=1.2).contains(&attack.pitch), "{}", attack.pitch);
+    assert!(
+        sounds
+            .iter()
+            .filter(|sound| sound.event == ai::JUMP_SOUND)
+            .all(|sound| sound.category == "hostile_volume")
+    );
+    for (difficulty, taken) in [
+        (Difficulty::Easy, 5.0),
+        (Difficulty::Normal, 8.0),
+        (Difficulty::Hard, 12.0),
+    ] {
+        let mut body = minecraftoss_player::Player::new(player.position);
+        let incoming = IncomingHit {
+            damage: hit.damage,
+            from: HitFrom::Position(attacker),
+            scales_with_difficulty: true,
+            exhaustion: 0.1,
+        };
+        assert!(body.hurt_by(&incoming, difficulty, Armor::default(), 0.0));
+        let health = body.survival.health;
+        assert_eq!(health, 20.0 - taken, "{difficulty:?}");
+    }
+}
+
+#[test]
+fn a_killer_bunny_leaps_at_a_target_within_four_blocks() {
+    let mut mob = Rabbit::spawn(KIND, at(0.5, 0.5)).unwrap();
+    mob.state.set_variant(RabbitVariant::Evil);
+    let mut body = mob.core.body.clone();
+    body.on_ground = true;
+    let leap = |evil: bool, x: f64, delay: i32| {
+        let mut ai = (*mob.state.ai).clone();
+        ai.state.extra.get_mut::<RabbitGoals>().unwrap().evil = evil;
+        ai.state.difficulty = 2;
+        ai.state.players = vec![player_at(1, at(x, 0.5))];
+        ai.state.target = Some(Target::Player(1));
+        ai.move_control.operation = crate::control::MoveOperation::Wait;
+        ai.move_control.speed_modifier = ai::EVIL_ATTACK_SPEED;
+        let mut jump = RabbitJump {
+            was_on_ground: true,
+            delay,
+            ..RabbitJump::default()
+        };
+        let (mut random, mut voices, mut carrots) = (LegacyRandom::new(3), Vec::new(), 0);
+        ai::custom_step(
+            &mut ai,
+            &mut jump,
+            &mut carrots,
+            &body,
+            &mut random,
+            &mut voices,
+        );
+        (ai, jump, voices.len())
+    };
+    let (ai, jump, sounds) = leap(true, 3.5, 0);
+    assert_eq!(
+        ai.move_control.wanted,
+        at(3.5, 0.5),
+        "it aims at its target"
+    );
+    assert!(ai.move_control.has_wanted() && ai.jumping);
+    assert!((ai.yaw + 90.0).abs() < 1.0e-3, "it faces east: {}", ai.yaw);
+    assert_eq!(jump.next_speed, ai::EVIL_ATTACK_SPEED);
+    assert_eq!((jump.duration, jump.ticks), (ai::JUMP_DURATION, 0));
+    assert_eq!(
+        sounds, 2,
+        "the leap and the hop that follows it each play the jump sound"
+    );
+    let (ai, _, sounds) = leap(true, 4.6, 0);
+    assert!(!ai.move_control.has_wanted() && !ai.jumping, "too far");
+    assert_eq!(sounds, 0);
+    let (ai, jump, sounds) = leap(true, 3.5, 2);
+    assert!(!ai.jumping && sounds == 0, "it waits out its delay");
+    assert_eq!(jump.delay, 1);
+    let (ai, _, sounds) = leap(false, 3.5, 0);
+    assert!(!ai.jumping && sounds == 0, "a plain rabbit never leaps");
+}
+
+#[test]
+fn a_killer_bunny_attacks_a_wolf_and_its_kin_join_in() {
+    let mut world = EntityWorld::default();
+    let mut meadow = Meadow::default();
+    let wolf = world.spawn_wolf(crate::wolf::Wolf::new(at(3.5, 0.5)), true);
+    let bunny = killer_at(&mut world, at(0.5, 0.5));
+    let kin = killer_at(&mut world, at(-12.5, 12.5));
+    rabbit_mut(&mut world, kin)
+        .state
+        .ai
+        .retain_goals(&["MeleeAttackGoal"]);
+    let wolf_health = |world: &EntityWorld| {
+        world
+            .wolves()
+            .iter()
+            .find(|e| e.id == wolf)
+            .map_or(0.0, |e| e.wolf.health)
+    };
+    let full = wolf_health(&world);
+    let target = |world: &EntityWorld, id: u64| rabbit(world, id).state.ai.state.target;
+    for _ in 0..3 {
+        world.tick(&mut meadow);
+    }
+    assert_eq!(target(&world, kin), None, "the wolf is too far for it");
+    let bitten = Hurt::new(1.0, "minecraft:mob_attack", DamageSourceKind::MobAttack)
+        .by(Some(Target::Mob(wolf)), Some("minecraft:wolf"));
+    assert!(world.hurt_family(bunny, &bitten).unwrap().applied);
+    let mut joined = false;
+    for _ in 0..4 {
+        world.tick(&mut meadow);
+        joined |= target(&world, kin) == Some(Target::Mob(wolf));
+    }
+    assert_eq!(target(&world, bunny), Some(Target::Mob(wolf)));
+    assert!(joined, "the bitten bunny calls its kin");
+    let mut sounds = Vec::new();
+    for _ in 0..300 {
+        world.tick(&mut meadow);
+        sounds.extend(world.take_sounds());
+        if wolf_health(&world) < full {
+            break;
+        }
+    }
+    assert!(wolf_health(&world) <= full - 8.0, "a bite of eight");
+    assert!(
+        sounds
+            .iter()
+            .any(|sound| sound.event == ATTACK_SOUND && sound.category == "hostile_volume")
+    );
+    let plain = rabbit_at(&mut world, at(-4.5, 0.5));
+    for _ in 0..40 {
+        world.tick(&mut meadow);
+    }
+    assert!(
+        !rabbit(&world, plain)
+            .state
+            .running_goals()
+            .contains(&"MeleeAttackGoal"),
+        "a plain rabbit never attacks"
+    );
 }
 
 #[test]

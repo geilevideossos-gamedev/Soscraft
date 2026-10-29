@@ -5,13 +5,13 @@ use self::ai::{SPEC, rabbit_ai_step};
 use crate::age::Age;
 use crate::animal::{self, AnimalEvent};
 use crate::cow::InteractionResult;
-use crate::health::DamageResult;
-use crate::monster_ai::{MonsterAi, MonsterKind};
+use crate::health::{DamageResult, damage_after_armor};
+use crate::monster_ai::{MonsterAi, MonsterKind, Target};
 use crate::navigation::navigate_walk_to;
 use crate::tempt::PlayerCandidate;
-use crate::world::EntityWorld;
 use crate::world::families::land::animal_goals::{LAST_DAMAGE_TICKS, Mate, Tempter};
 use crate::world::families::{Family, FamilyMob, Hurt, MobCore, MonsterSpec};
+use crate::world::{EntityWorld, PlayerHitKind, Voice};
 use glam::DVec3;
 use minecraftoss_player::World;
 use minecraftoss_player::inventory::Inventory;
@@ -37,6 +37,10 @@ pub const IDLE_TILT_WAIT: i32 = 180;
 pub const IDLE_TILT_SPREAD: u32 = 40;
 pub const KILLER_BUNNY: &str = "entity.minecraft.killer_bunny";
 pub const BIOME_COLOUR_CHANCE: u32 = 20;
+pub const ATTACK_DAMAGE: f32 = 3.0;
+pub const EVIL_ATTACK_BONUS: f32 = 5.0;
+pub const EVIL_ARMOR: f32 = 8.0;
+pub const ATTACK_SOUND: &str = "entity.rabbit.attack";
 pub const FOOD: [&str; 3] = [
     "minecraft:carrot",
     "minecraft:golden_carrot",
@@ -177,6 +181,18 @@ impl Rabbit {
     pub fn set_variant(&mut self, variant: RabbitVariant) {
         self.variant = variant;
         self.goals_mut().evil = variant == RabbitVariant::Evil;
+    }
+
+    pub fn evil(&self) -> bool {
+        self.variant == RabbitVariant::Evil
+    }
+
+    pub fn attack_damage(&self) -> f32 {
+        if self.evil() {
+            ATTACK_DAMAGE + EVIL_ATTACK_BONUS
+        } else {
+            ATTACK_DAMAGE
+        }
     }
 }
 
@@ -341,6 +357,34 @@ fn grow(mob: &mut FamilyMob<Rabbit>) {
     }
 }
 
+fn bite(world: &mut EntityWorld, id: u64, target: Target) {
+    let Some(mob) = world.family_mob_mut::<Rabbit>(id) else {
+        return;
+    };
+    let (attacker, damage, evil) = (
+        mob.core.body.position,
+        mob.state.attack_damage(),
+        mob.state.evil(),
+    );
+    let kind = PlayerHitKind::Melee {
+        attacker,
+        hunger_ticks: 0,
+        lift: 0.0,
+        throw: DVec3::ZERO,
+        disable_shield_seconds: 0.0,
+    };
+    let hit = world.family_strike(id, target, damage, kind);
+    if !evil || hit.is_some_and(|hit| !hit.applied) {
+        return;
+    }
+    if let Some(mob) = world.family_mob_mut::<Rabbit>(id) {
+        let random = &mut mob.core.random;
+        let pitch = (random.next_float() - random.next_float()) * 0.2 + 1.0;
+        let voice = Voice::Event(ATTACK_SOUND, 1.0, pitch);
+        mob.core.voices.push((voice, attacker));
+    }
+}
+
 fn tempters(world: &EntityWorld, players: &[PlayerCandidate]) -> Vec<Tempter> {
     players
         .iter()
@@ -432,7 +476,7 @@ impl Family for Rabbit {
                 goals.animal.mates = mates;
                 goals.animal.in_love = in_love;
             }
-            world.family_goal_step_with::<Self, W>(
+            let strike = world.family_goal_step_with::<Self, W>(
                 id,
                 level,
                 players,
@@ -440,6 +484,15 @@ impl Family for Rabbit {
                 |rabbit| &mut *rabbit.ai,
                 rabbit_ai_step::<W>,
             );
+            let alert = world
+                .family_mob_mut::<Self>(id)
+                .and_then(|mob| mob.state.ai.state.alert.take());
+            if let Some(target) = strike {
+                bite(world, id, target);
+            }
+            if let Some(attacker) = alert {
+                world.family_alert::<Self>(id, attacker, |rabbit| &mut *rabbit.ai);
+            }
             let nibble = world
                 .family_mob_mut::<Self>(id)
                 .and_then(|mob| mob.state.goals_mut().nibble.take());
@@ -463,8 +516,18 @@ impl Family for Rabbit {
         "creature"
     }
 
+    fn armor(mob: &FamilyMob<Self>) -> f32 {
+        if mob.state.evil() { EVIL_ARMOR } else { 0.0 }
+    }
+
     fn hurt(mob: &mut FamilyMob<Self>, hurt: &Hurt) -> DamageResult {
-        let result = mob.core.hurt_plain(hurt.amount);
+        let armor = Self::armor(mob);
+        let amount = if hurt.bypasses_armor || armor <= 0.0 {
+            hurt.amount
+        } else {
+            damage_after_armor(hurt.amount, armor, 0.0)
+        };
+        let result = mob.core.hurt_plain(amount);
         if result.applied {
             mob.state.in_love = 0;
             mob.state.last_damage = Some((hurt.damage_type, mob.core.tick_count));
@@ -474,6 +537,15 @@ impl Family for Rabbit {
 
     fn leashable(_mob: &FamilyMob<Self>) -> bool {
         true
+    }
+
+    fn voice(mob: &FamilyMob<Self>) -> (&'static str, f32, &'static str) {
+        let category = if mob.state.evil() {
+            "hostile_volume"
+        } else {
+            "neutral_volume"
+        };
+        ("rabbit", 1.0, category)
     }
 
     fn panicking(mob: &FamilyMob<Self>) -> bool {

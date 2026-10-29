@@ -3,7 +3,8 @@ use crate::crops;
 use crate::fluid::FluidFrame;
 use crate::goals::{Control, Controls, Goal, GoalSelector};
 use crate::monster_ai::{
-    AvoidEntityGoal, FloatGoal, LookAtPlayerGoal, MonsterAi, MonsterGoalContext, StrollGoal,
+    AvoidEntityGoal, FloatGoal, HurtByTargetGoal, LookAtPlayerGoal, MeleeAttackGoal, MonsterAi,
+    MonsterGoalContext, NearestTargetGoal, Prey, StrollGoal,
 };
 use crate::movement::Body;
 use crate::navigation::{GroundNavigation, ground_view};
@@ -48,8 +49,11 @@ pub const RAID_NEXT_START: i32 = 10;
 pub const MORE_CARROT_TICKS: i32 = 40;
 pub const SUPPORTS_CROPS: &str = "minecraft:supports_crops";
 pub const CARROTS: &str = "minecraft:carrots";
+pub const EVIL_ATTACK_SPEED: f64 = 1.4;
+pub const LEAP_DISTANCE: f64 = 4.0;
+pub const WOLF: &str = "minecraft:wolf";
 
-pub const GOAL_NAMES: [&str; 11] = [
+pub const GOAL_NAMES: [&str; 12] = [
     "FloatGoal",
     "ClimbOnTopOfPowderSnowGoal",
     "RabbitPanicGoal",
@@ -61,8 +65,13 @@ pub const GOAL_NAMES: [&str; 11] = [
     "RaidGardenGoal",
     "WaterAvoidingRandomStrollGoal",
     "LookAtPlayerGoal",
+    "MeleeAttackGoal",
 ];
-pub const TARGET_NAMES: [&str; 0] = [];
+pub const TARGET_NAMES: [&str; 3] = [
+    "HurtByTargetGoal",
+    "NearestAttackableTargetGoal",
+    "NearestAttackableTargetGoal",
+];
 
 pub(super) static SPEC: MonsterSpec = MonsterSpec {
     goal_names: &GOAL_NAMES,
@@ -129,11 +138,87 @@ fn goals() -> GoalSelector<MonsterGoalContext> {
     selector.add(5, RaidGardenGoal::new());
     selector.add(6, StrollGoal::new(STROLL_SPEED, STROLL_PROBABILITY));
     selector.add(11, LookAtPlayerGoal { range: LOOK_RANGE });
+    selector.add(
+        4,
+        Evil(MeleeAttackGoal {
+            hits: true,
+            raises_arms: false,
+            follow_unseen: true,
+            gives_up_in_light: false,
+            speed: EVIL_ATTACK_SPEED,
+        }),
+    );
     selector
 }
 
 fn targets() -> GoalSelector<MonsterGoalContext> {
-    GoalSelector::default()
+    let mut selector = GoalSelector::default();
+    selector.add(
+        1,
+        Evil(HurtByTargetGoal {
+            timestamp: 0,
+            unseen_ticks: 0,
+            target_mob: None,
+            alert_others: true,
+        }),
+    );
+    selector.add(2, Evil(NearestTargetGoal::every(Prey::Player, true, 5)));
+    selector.add(
+        2,
+        Evil(NearestTargetGoal::every(Prey::Kinds(&[WOLF]), true, 5)),
+    );
+    selector
+}
+
+pub fn evil(ctx: &MonsterGoalContext) -> bool {
+    ctx.extra
+        .get::<RabbitGoals>()
+        .is_some_and(|goals| goals.evil)
+}
+
+#[derive(Clone)]
+struct Evil<G>(G);
+
+impl<G: Goal<MonsterGoalContext> + Clone + 'static> Goal<MonsterGoalContext> for Evil<G> {
+    fn controls(&self) -> Controls {
+        self.0.controls()
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        evil(ctx) && self.0.can_start(ctx, world)
+    }
+
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        self.0.can_continue(ctx, world)
+    }
+
+    fn interruptible(&self) -> bool {
+        self.0.interruptible()
+    }
+
+    fn every_tick(&self) -> bool {
+        self.0.every_tick()
+    }
+
+    fn start(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.start(ctx);
+    }
+
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.stop(ctx);
+    }
+
+    fn tick(&mut self, ctx: &mut MonsterGoalContext) {
+        self.0.tick(ctx);
+    }
+
+    fn start_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        self.0.start_world(ctx, world);
+    }
+
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        self.0.tick_world(ctx, world);
+    }
 }
 
 fn walk(walk: &mut WalkProfile) {
@@ -182,11 +267,7 @@ impl Goal<MonsterGoalContext> for RabbitAvoidEntityGoal {
     }
 
     fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
-        let evil = ctx
-            .extra
-            .get::<RabbitGoals>()
-            .is_some_and(|goals| goals.evil);
-        !evil && self.0.can_start(ctx, world)
+        !evil(ctx) && self.0.can_start(ctx, world)
     }
 
     fn can_continue(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
@@ -384,6 +465,24 @@ pub(super) fn custom_step(
             } else {
                 PANIC_JUMP_DELAY
             };
+        }
+        let target = ai.state.target().map(|target| target.position);
+        let leap = target.filter(|&target| {
+            evil(&ai.state)
+                && jump.delay == 0
+                && body.position.distance_squared(target) < LEAP_DISTANCE * LEAP_DISTANCE
+        });
+        if let Some(target) = leap {
+            ai.yaw = face_point(body.position, target);
+            let speed = ai.move_control.speed_modifier;
+            set_wanted(
+                &mut ai.move_control,
+                jump,
+                target,
+                speed,
+                body.touching_water,
+            );
+            start_jumping(ai, jump, random, voices, body.position);
         }
         if !ai.state.jump && ai.move_control.has_wanted() && jump.delay == 0 {
             let wanted = ai.move_control.wanted;

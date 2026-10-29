@@ -14,6 +14,7 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Changed again, no new file (rabbits-drawn 1): `entities/src/world/families/land/rabbits.rs` (`named`, `toast`, `TOAST`, `KILLER_BUNNY`).
 - Changed again, no new file (rabbits-drawn 2): `entities/src/world/families/land/rabbits.rs` (`RabbitAnimations`), `entities/src/world/families/land/rabbits/tests.rs` (its test).
 - Changed again, no new file (rabbits-behaviour 1): `entities/src/world/families/land/animal_goals.rs` (`MoveToBlockGoal`), `entities/src/world/families/land/rabbits/ai.rs` (`RaidGardenGoal`), `entities/src/world/families/land/rabbits.rs` (the bite), `entities/src/world/families/land/rabbits/tests.rs`.
+- Changed again, no new file (rabbits-behaviour 2): `entities/src/world/families/land/rabbits.rs` (armour, voice, the strike), `entities/src/world/families/land/rabbits/ai.rs` (the evil goals and the leap), `entities/src/world/families/land/rabbits/tests.rs`.
 
 ## Hooks
 
@@ -272,4 +273,45 @@ After d008fa7e.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:carrot*32,minecraft:bone_meal*64,minecraft:iron_hoe,minecraft:water_bucket,minecraft:oak_fence*64
+```
+
+#### 2. The killer bunny bites players and wolves
+
+After ed19a463.
+
+- **javap this round:**
+  - `Rabbit.setVariant(EVIL)`: armour base 8; goal 4 `MeleeAttackGoal(1.4, true)`; targets 1 `HurtByTargetGoal().setAlertOthers()`, 2 `NearestAttackableTargetGoal(Player, true)` and 2 `NearestAttackableTargetGoal(Wolf, true)` (each `randomInterval` 10, so one roll in five after `reducedTickDelay`); the attack modifier `minecraft:evil` +5 (`ADD_VALUE`) on the base 3; `CustomName` = `entity.minecraft.killer_bunny` when it has none. Another variant only drops the modifier: the goals stay once added.
+  - `Rabbit.customServerAiStep` on the ground, after the landing check: `EVIL`, no jump delay and a target with `distanceToSqr < 16`: `facePoint(target)`, `moveControl.setWantedPosition(target, moveControl.getSpeedModifier())` (the rabbit's own, so 1.5 in water) and `startJumping`. The hop check after it does not look at the jump control's `startJumping` flag, sees the wanted position just set and starts another hop (a second jump sound) facing the path's next point, or the target.
+  - `Mob.doHurtTarget`: the attack damage on the target; when `hurtServer` is true, the knockback (the rabbit has no attack knockback), `setLastHurtMob` and `playAttackSound`. `Rabbit.playAttackSound`: `EVIL` only, `entity.rabbit.attack` at volume 1 and pitch `(r1 - r2) * 0.2 + 1`. `getSoundSource`: `HOSTILE` for `EVIL`, else `NEUTRAL`.
+  - `PanicGoal.shouldPanic` (`getLastDamageSource` in `#panic_causes`) has no variant check, so a hurt killer bunny also panics for a moment; `RabbitAvoidEntityGoal` refuses for `EVIL` (in since `rabbits-live`).
+  - `Rabbit` is an `Animal`, not an `Enemy`: iron golems leave the killer bunny alone, and it gives a rabbit's experience and loot.
+- **Changed (vendored entities crate):**
+  - `land/rabbits/ai.rs`: `Evil<G>`, a wrapper whose `can_start` asks `evil` before the goal's own (everything else is the goal's), around `MeleeAttackGoal` (1.4, following an unseen target) added last to the goals at priority 4, and around `HurtByTargetGoal` (alerting others) at 1 and `NearestTargetGoal` for players and for `Prey::Kinds(&["minecraft:wolf"])` at 2 (must see, one roll in five), the rabbit's first target goals. `GOAL_NAMES` gains `MeleeAttackGoal` and `TARGET_NAMES` the three. `evil(ctx)` is shared with the avoid goals. `custom_step` leaps: evil, no delay, a target within 4 blocks → face it, aim the move control at it with its speed and hop. Constants `EVIL_ATTACK_SPEED` 1.4, `LEAP_DISTANCE` 4, `WOLF`.
+  - `land/rabbits.rs`: `Family::armor` 8 for the killer bunny and the rabbit's `hurt` takes it off unless the hurt bypasses armour; `Family::voice` in `hostile_volume` for the killer bunny; `Rabbit::evil` and `attack_damage` (3, or 8); the tick strikes what the melee goal hit through `family_strike` (`PlayerHitKind::Melee`, no lift or throw) with the attack sound when it lands, and passes the hurt-by alert to `family_alert`. Constants `ATTACK_DAMAGE` 3, `EVIL_ATTACK_BONUS` 5, `EVIL_ARMOR` 8, `ATTACK_SOUND`.
+- **Tests added** (`world::families::land::rabbits::tests`):
+  - `a_killer_bunny_has_eight_armour_and_bites_for_eight`: the attack damage of a plain rabbit and of the killer bunny, its hostile voice, still a creature and no enemy; a bite of 2 takes 1.44 through armour 8 and the full 2 from a plain rabbit; next to a player it never flees, targets the player and bites for 8 with its own id, the attack sound in `hostile_volume` at pitch 0.8-1.2 and its jump sounds hostile too; the player crate's `Player::hurt_by` takes 5, 8 and 12 from that bite on Easy, Normal and Hard.
+  - `a_killer_bunny_leaps_at_a_target_within_four_blocks`: 3 blocks off it aims the move control at the target, faces it, hops with 1.4 kept as its next speed and plays the jump sound twice; 4.6 blocks off, with a jump delay left, or as a plain rabbit it does not leap.
+  - `a_killer_bunny_attacks_a_wolf_and_its_kin_join_in`: a killer bunny bitten by a wolf targets it and the other killer bunny, 20 blocks from the wolf but inside the alert box, takes the wolf as its target; the wolf loses 8 to a bite with the hostile attack sound; a plain rabbit beside them never runs the melee goal.
+  - `a_rabbit_is_small_with_three_health_and_its_kind` now checks the three target goal names.
+- **Decisions:**
+  - Decision 5 as recommended: one spec, with the melee goal and the three target goals registered last in their selectors and gated on `evil`, as vanilla's later `setVariant` adds them. The gate is asked on starting, so a rabbit that stopped being evil would stop attacking and lose its armour, where vanilla keeps both; nothing in the fork changes a living rabbit's variant.
+  - The killer bunny keeps vanilla's panic when hurt: after a hit it runs off for a moment before it comes back. It never flees players, wolves or monsters.
+  - The leap plays the jump sound twice, as vanilla does.
+  - The attack sound plays when a bite on a mob lands and on every bite on a player, since the player side decides later whether the bite hurt (the iron golem does the same).
+  - The alert sets the attacker on every rabbit in the box that has no target, killer or not, as vanilla's `alertOthers` asks for the class `Rabbit`; a plain rabbit does nothing with a target.
+  - The bite is 8 on the entity side; the player side's difficulty scaling makes it 5, 8 or 12 (the test checks it through the player crate).
+  - The killer bunny's `CustomName` was already written by `fields` in `rabbits-drawn` 1, with its test (written only when unnamed, kept on the next save); nothing new here.
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (458 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). `rabbits.rs`, `rabbits/ai.rs` and `rabbits/tests.rs` still pass `rustfmt --check --edition 2021`.
+- **Test steps** (release build, survival, Normal, by day on flat grass; name each screenshot by its label):
+  1. Stand 8 blocks from where you summon: `/summon minecraft:rabbit ~ ~ ~8 {RabbitType:99}`. A white rabbit with red eyes hops straight at you, never away, and within about 4 blocks leaps at you. Each bite takes 4 hearts (2.5 on Easy, 6 on Hard, less in the iron armour). **m1-killer-1**
+  2. Take the armour off and let it bite once on Normal: exactly 4 hearts go. Its hops, hurt and bite sounds follow the Hostile Creatures slider in the sound options, not the Friendly Creatures one.
+  3. Punch it without jumping, about a second apart: it needs five punches, where a plain rabbit dies on the third. After each punch it runs off for a moment, then comes back. **m1-killer-2**
+  4. Summon another killer bunny 8 blocks away and use the wolf egg 3 blocks from it: the bunny goes for the wolf, and its first bite kills the wild wolf. **m1-killer-3**
+  5. Summon a killer bunny and a plain rabbit side by side, walk 20 blocks away and shoot the killer bunny with the bow: it comes for you; the plain rabbit never attacks.
+  6. Save, quit and load with a killer bunny alive: it is still white with red eyes and still attacks.
+  7. Two windows (`scripts\mp-local.ps1`): the host summons a killer bunny next to the friend; it goes for the friend, and the friend hears it. **m1-killer-4-host**, **m1-killer-4-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:wolf_spawn_egg*2,minecraft:bow,minecraft:arrow*32,minecraft:iron_sword,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:cooked_beef*16
 ```
