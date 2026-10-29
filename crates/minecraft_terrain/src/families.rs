@@ -218,6 +218,10 @@ pub trait TerrainFamily: Registered {
 
     fn show_on(_mob: &mut FamilyMob<Self>, _show: &FamilyShow) {}
 
+    fn show_more(_mob: &FamilyMob<Self>, _show: &mut MobShow) {}
+
+    fn show_more_on(_mob: &mut FamilyMob<Self>, _show: &MobShow) {}
+
     fn draw(
         out: &mut FamilyDraw<'_>,
         mobs: &[FamilyMob<Self>],
@@ -467,10 +471,11 @@ fn save_one<S: TerrainFamily>(world: &EntityWorld, add: &mut Add<'_>) {
 
 fn shows_of<S: TerrainFamily>(world: &EntityWorld, put: &mut dyn FnMut(u64, MobShow)) {
     for mob in world.family::<S>() {
-        let show = MobShow {
+        let mut show = MobShow {
             family: Some(S::show(mob)),
             ..MobShow::default()
         };
+        S::show_more(mob, &mut show);
         put(mob.core.id, show);
     }
 }
@@ -484,6 +489,7 @@ fn show_on_one<S: TerrainFamily>(world: &mut EntityWorld, mob: &ServerMob) -> bo
     if let Some(show) = &mob.show.family {
         S::show_on(shown, show);
     }
+    S::show_more_on(shown, &mob.show);
     true
 }
 

@@ -189,6 +189,25 @@ fn a_click_on_a_registered_mob_passes_unless_its_family_takes_it() {
 }
 
 #[test]
+fn a_registered_mob_sends_friends_only_its_family_show_unless_its_family_adds_more() {
+    let mut world = EntityWorld::default();
+    let fish = spawn(&mut world, FISH, 0.5);
+    let mut sent = Vec::new();
+    shows(&world, &mut |id, show| sent.push((id, show)));
+    let only_family = MobShow {
+        family: Some(FamilyShow::default()),
+        ..MobShow::default()
+    };
+    assert_eq!(sent, [(fish, only_family)]);
+    let mut moved = server_mobs(&world)[0];
+    assert_eq!(moved.show, only_family);
+    moved.position = DVec3::new(2.5, 64.0, 0.5);
+    assert!(show_on(&mut world, &moved));
+    let core = world.family_core(fish).unwrap().1;
+    assert_eq!(core.body.position, moved.position, "placed, and nothing more");
+}
+
+#[test]
 fn client_effects_forget_registered_mobs_that_are_gone() {
     let mut world = EntityWorld::default();
     let fish = spawn(&mut world, FISH, 0.5);

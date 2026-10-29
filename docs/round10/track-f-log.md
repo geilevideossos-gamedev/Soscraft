@@ -848,3 +848,13 @@ After 9f730490.
 ```
 IW4L_MINECRAFT_KIT=iw4l:m4,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,iw4l:rifle_ammo*64,minecraft:netherite_sword+sharpness=5,minecraft:shield,minecraft:golden_apple*16,minecraft:cooked_beef*32,minecraft:obsidian*14,minecraft:flint_and_steel
 ```
+
+### 24. Registered Minecraft mobs can show friends more than their family show
+
+After 3f7797e9.
+
+- **Why:** brief F6, commit 2 sends Margit's daggers in flight to friends in `MobShow.elden`. D0's `FamilyShow` (a `u32` of flags and eight `i32` values) carries his clip already but cannot hold three flights, and D0's checklist forbids family code in `mob_tracking.rs` `shows` and `show_on` and says a missing hook goes into the registry's root file in a commit of its own. This is that hook.
+- **Changed (`minecraft_terrain`, root `families.rs`):** `TerrainFamily::show_more(mob, &mut MobShow)` and `show_more_on(mob, &MobShow)` next to `show` and `show_on`, both doing nothing by default. `shows_of` lets the family add to the `MobShow` after D0's `family` value, and `show_on_one` hands the family the whole `MobShow` after D0's `show_on`. The macro and the group files are unchanged.
+- **Tests:** `families::tests::a_registered_mob_sends_friends_only_its_family_show_unless_its_family_adds_more` (a silverfish sends exactly its `FamilyShow` and nothing else, and a mirror applying it only places the mob). `test -p minecraft_terrain --locked --lib families`: 19 passed; `mob_tracking`: 30 passed. `check -p launcher --locked`: green.
+- **Decision:** the hook hands the family the whole `MobShow`, not a payload type of its own, so a later family with a field of its own (a wire change noted under "Protocol") needs no new hook. Nothing changes on the wire in this commit.
+- **Owner's steps:** nothing changes in game until the next commit uses the hook. No kit line.
