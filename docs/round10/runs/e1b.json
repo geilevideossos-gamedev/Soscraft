@@ -2,7 +2,7 @@
   "track": "e1",
   "worktree": "C:\\Dev\\mc-wt\\track-e1",
   "branch": "track-e1",
-  "target": "D:\\iw4l-wt\\track-e1",
+  "target": "C:\\iw4l-wt\\track-e1",
   "base": "r10-e1b-base",
   "round": 10,
   "briefs": "docs/round10/track-e.md (read the overview first, then the E1 sections; E2 runs in parallel in C:\\Dev\\mc-wt\\track-e2 and owns the files the overview assigns to it)",
