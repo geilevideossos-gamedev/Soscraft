@@ -1295,7 +1295,7 @@ fn show_player(
     let eye_in_lava = sim::voxel::eye_in_lava(ps.origin, ps.view_height_current);
     let vitals = hud.vitals(view, dt, eye_in_water, eye_in_lava);
     ui.vitals = Some(crate::minecraft_world::mc_vitals(vitals));
-    ui.effects = crate::minecraft_world::mc_effects(&hud.effects(view));
+    ui.effects = crate::minecraft_world::mc_effects(&hud.effects(view, remote.player_views));
     ui.jump_bar = view.jump_bar;
     ui.fire_frames = fire_frames.clone();
     let mut guns = [None; minecraft_survival::guns::HOTBAR];

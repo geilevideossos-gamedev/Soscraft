@@ -174,6 +174,7 @@ pub struct Session {
     gear: BTreeMap<u32, GearView>,
     command_level: Option<u8>,
     view: Option<PlayerView>,
+    effects: Vec<minecraft_net::messages::EffectView>,
     cracks: BTreeMap<(u32, BlockPos), u8>,
     boss_bar: Option<f32>,
     raid_bars: BTreeMap<i32, minecraft_terrain::raids::RaidBar>,
@@ -202,6 +203,7 @@ impl Session {
             gear: BTreeMap::new(),
             command_level: None,
             view: None,
+            effects: Vec::new(),
             cracks: BTreeMap::new(),
             boss_bar: None,
             raid_bars: BTreeMap::new(),
@@ -349,7 +351,9 @@ impl Session {
     pub fn send_view(&mut self, player: &Player) {
         let view = crate::views::player_view(player);
         let key = crate::views::sent_key(&view);
-        if self.view.as_ref() == Some(&key) {
+        let lengthened = crate::views::lengthened(&self.effects, &view.effects);
+        self.effects.clone_from(&view.effects);
+        if self.view.as_ref() == Some(&key) && !lengthened {
             return;
         }
         self.view = Some(key);
@@ -1947,6 +1951,51 @@ mod tests {
         assert!(
             views(&mut session).is_empty(),
             "a running effect is not sent again"
+        );
+    }
+
+    #[test]
+    fn an_effect_given_again_is_sent_again_with_its_new_length() {
+        let mut player = alex();
+        let mut session = Session::new(1, player.uuid.clone(), "Alex", 2);
+        let darkness = minecraftoss_player::survival::EffectKind::Darkness;
+        let durations = |session: &mut Session| {
+            std::mem::take(&mut session.outbox)
+                .into_iter()
+                .filter_map(|message| match message {
+                    ToClient::Player(view) => Some(
+                        view.effects
+                            .iter()
+                            .map(|effect| effect.duration)
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        player.survival.status.add_effect(darkness, 260, 0);
+        session.send_view(&player);
+        assert_eq!(durations(&mut session), [vec![260]]);
+        for _ in 0..61 {
+            player.survival.status.tick_effects();
+            session.send_view(&player);
+        }
+        assert!(
+            durations(&mut session).is_empty(),
+            "a running effect is not sent again"
+        );
+        player.survival.status.add_effect(darkness, 260, 0);
+        session.send_view(&player);
+        assert_eq!(
+            durations(&mut session),
+            [vec![260]],
+            "a warden's next pulse reaches the friend"
+        );
+        player.survival.status.add_effect(darkness, 100, 0);
+        session.send_view(&player);
+        assert!(
+            durations(&mut session).is_empty(),
+            "a shorter one does not replace it"
         );
     }
 
