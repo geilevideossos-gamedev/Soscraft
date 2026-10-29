@@ -729,6 +729,12 @@ pub fn structure_loot_in(
 #[derive(Debug)]
 struct LootEnchanting(Arc<minecraftoss_entities::enchant::Enchantments>);
 
+pub fn loot_enchanting(
+    book: Arc<minecraftoss_entities::enchant::Enchantments>,
+) -> Arc<dyn minecraftoss_core::loot::Enchanting> {
+    Arc::new(LootEnchanting(book))
+}
+
 struct LootRandomOf<'a>(&'a mut dyn minecraftoss_core::random::RandomSource);
 
 impl minecraftoss_player::rng::LootRandom for LootRandomOf<'_> {

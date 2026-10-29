@@ -483,7 +483,7 @@ fn uuid_of_tag(tag: &Tag) -> Option<u128> {
     }
 }
 
-fn uuids(tag: &Tag, key: &str) -> Vec<u128> {
+pub(crate) fn uuids(tag: &Tag, key: &str) -> Vec<u128> {
     let mut out = Vec::new();
     for uuid in tag
         .get(key)
@@ -499,7 +499,7 @@ fn uuids(tag: &Tag, key: &str) -> Vec<u128> {
     out
 }
 
-fn uuid_list(uuids: &[u128]) -> Tag {
+pub(crate) fn uuid_list(uuids: &[u128]) -> Tag {
     Tag::List(
         uuids
             .iter()

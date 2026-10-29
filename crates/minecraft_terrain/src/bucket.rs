@@ -149,6 +149,7 @@ pub enum Change {
     Breath,
     Frame(u64),
     Lectern(Pos),
+    Vault(Pos),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -545,7 +546,8 @@ mod tests {
             | Change::Rocket(..)
             | Change::Breath
             | Change::Frame(..)
-            | Change::Lectern(..) => None,
+            | Change::Lectern(..)
+            | Change::Vault(..) => None,
         }
     }
 

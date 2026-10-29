@@ -114,6 +114,7 @@ pub struct ServerSim {
     custom_spawners: crate::custom_spawners::CustomSpawners,
     trial_configs: std::collections::HashMap<String, Option<crate::trial_spawner::TrialConfig>>,
     trial_dispensing: crate::trial_spawner::Dispensing,
+    vaults: crate::vault::Vaults,
     raids: crate::raids::Raids,
     raids_rule: bool,
     bells: crate::bells::Bells,
@@ -491,6 +492,7 @@ impl ServerSim {
             custom_spawners: crate::custom_spawners::CustomSpawners::for_dimension(dimension_type),
             trial_configs: std::collections::HashMap::new(),
             trial_dispensing: std::collections::HashMap::new(),
+            vaults: crate::vault::Vaults::default(),
             raids: crate::raids::Raids::default(),
             raids_rule: true,
             bells: crate::bells::Bells::default(),
@@ -3227,6 +3229,30 @@ impl ServerSim {
         turned
     }
 
+    fn vault_players(&self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) -> Vec<crate::vault::VaultPlayer> {
+        players
+            .iter()
+            .filter(|player| !player.spectator)
+            .map(|player| crate::vault::VaultPlayer { uuid: self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player.id), block: minecraftoss_core::BlockPos::new(player.position.x.floor() as i32, player.position.y.floor() as i32, player.position.z.floor() as i32) })
+            .collect()
+    }
+
+    pub fn tick_vaults(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        let players = self.vault_players(players);
+        crate::vault::tick_vaults(&mut self.level, &players, &mut self.vaults);
+    }
+
+    pub fn vault_key(&mut self, player: u64, pos: BlockPos, stack: &minecraftoss_player::inventory::ItemStack) -> bool {
+        let Some(key) = crate::item_nbt::stack_tag(stack).as_ref().and_then(crate::trial_spawner::tag_stack) else { return false };
+        let players = self.vault_players(&self.blast_players);
+        let uuid = self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player);
+        crate::vault::insert_key(&mut self.level, minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), uuid, &key, &players, &mut self.vaults)
+    }
+
+    pub fn set_enchantments(&mut self, book: Arc<minecraftoss_entities::enchant::Enchantments>) {
+        self.vaults.enchanting = Some(crate::containers::loot_enchanting(book));
+    }
+
     fn drop_ominous_items(&mut self) {
         use minecraftoss_core::random::RandomSource;
         for (at, stack) in std::mem::take(&mut self.level.ominous_drops) {
@@ -3563,6 +3589,7 @@ pub enum Command {
     FrameAction { player: u64, id: u64, action: crate::item_frame::FrameAction },
     ChestOpeners { pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
+    VaultKey { player: u64, pos: BlockPos, stack: Box<minecraftoss_player::inventory::ItemStack> },
     LeashFence { player: u64, pos: BlockPos, sneaking: bool },
     ShieldBlock { attacker: u64, player: u64, feet: [f64; 3] },
 }
@@ -4088,6 +4115,10 @@ impl ServerHandle {
         self.send(Command::Lectern { player, pos, action });
     }
 
+    pub fn vault_key(&mut self, player: u64, pos: BlockPos, stack: &minecraftoss_player::inventory::ItemStack) {
+        self.send(Command::VaultKey { player, pos, stack: Box::new(stack.clone()) });
+    }
+
     pub fn leash_fence(&mut self, player: u64, pos: BlockPos, sneaking: bool) {
         self.send(Command::LeashFence { player, pos, sneaking });
     }
@@ -4263,6 +4294,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         out.item_uses.push((player, placed));
                     }
                 }
+                Command::VaultKey { player, pos, stack } => out.item_uses.push((player, sim.vault_key(player, pos, &stack))),
                 Command::LeashFence { player, pos, sneaking } => {
                     sim.leash_fence(player, pos, sneaking);
                 }
@@ -4333,6 +4365,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.blast_players.clone_from(&input.mob_players);
         sim.tick();
         out.trial_omens.extend(sim.tick_trial_spawners(&input.mob_players, &mut input.omens));
+        sim.tick_vaults(&input.mob_players);
         sim.tick_patrol_spawner(&input.mob_players, input.bright_outside);
         sim.tick_custom_spawners(&input.mob_players);
         sim.tick_trader_spawner(&input.mob_players);
@@ -4377,6 +4410,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     out.mob_sounds.extend(sim.take_end_sounds());
     out.mob_sounds.extend(sim.take_frame_sounds());
     out.mob_sounds.extend(sim.take_wind_sounds());
+    out.mob_sounds.append(&mut sim.vaults.sounds);
     out.dragons_killed.extend(sim.take_dragons_killed());
     out.fight_reports.extend(sim.take_fight_reports());
     out.pearl_teleports.extend(sim.take_pearl_teleports());
@@ -10635,6 +10669,84 @@ mod tests {
         server.tick_thrown(&[]);
         let fell = server.thrown_views();
         assert!(fell[0].position.y < 230.0 && fell[0].position.y > 229.0, "the wind charge flies down");
+    }
+
+    #[test]
+    fn a_vault_spends_a_key_only_when_it_opens() {
+        use crate::vault::{ACTIVATE, CLOSE_SHUTTER_SOUND, DEACTIVATE, EJECT_ITEM_SOUND, EJECT_PARTICLES, INSERT_ITEM_FAIL_SOUND, INSERT_ITEM_SOUND, OPEN_SHUTTER_SOUND, STATE};
+        use minecraftoss_core::nbt::Tag;
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        for x in 2..=14 {
+            for z in 2..=14 {
+                server.player_edit_block((x, 199, z), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+                for y in 200..=203 {
+                    server.player_edit_block((x, y, z), Some(&Block::new("minecraft:air")), PlayerEdit::Place);
+                }
+            }
+        }
+        let vault = (8, 200, 8);
+        let at = minecraftoss_core::BlockPos::new(vault.0, vault.1, vault.2);
+        server.player_edit_block(vault, Some(&Block::new("minecraft:vault")), PlayerEdit::Place);
+        server.set_game_time(1_000_000);
+        server.set_player_uuid(0, 0xa11ce);
+        let input = || TickInput { mob_players: vec![minecraftoss_entities::tempt::PlayerCandidate { attackable: false, ..candidate(0, [8.5, 200.0, 10.5]) }], ..idle_input() };
+        let state = move |sim: &ServerSim| sim.level.registries().blocks.property(sim.level.block(at), STATE).unwrap().to_owned();
+        let out = run_ticks(&mut server, &mut input(), true, 2);
+        assert_eq!(state(&server), "active", "a creative player two blocks away lights it");
+        assert!(out.level_events.contains(&(ACTIVATE, vault, 0)));
+        let tag = server.level.chunk(at.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&vault)).cloned().unwrap();
+        assert!(tag.get("shared_data").and_then(|shared| shared.get("display_item")).is_some(), "it shows an item of its reward table");
+        let key = minecraftoss_player::inventory::ItemStack::new("minecraft:trial_key", 1);
+        let wrong = minecraftoss_player::inventory::ItemStack::new("minecraft:ominous_trial_key", 1);
+        let mut handle = ServerHandle::spawn(server);
+        handle.vault_key(0, vault, &wrong);
+        handle.vault_key(0, vault, &key);
+        handle.vault_key(0, vault, &key);
+        handle.tick(input(), vec![true; 200]);
+        handle.wait_idle();
+        let outputs = handle.poll();
+        let uses: Vec<(u64, bool)> = outputs.iter().flat_map(|out| out.item_uses.iter().copied()).collect();
+        assert_eq!(uses, [(0, false), (0, true), (0, false)], "only the trial key that opened it is spent");
+        let sounds: Vec<(String, f32, &str)> = outputs.iter().flat_map(|out| out.mob_sounds.iter()).filter(|sound| sound.event.contains("block.vault")).map(|sound| (sound.event.clone(), sound.pitch, sound.category)).collect();
+        assert!(sounds.iter().all(|sound| sound.2 == "blocks"), "{sounds:?}");
+        let names: Vec<&str> = sounds.iter().map(|sound| sound.0.as_str()).filter(|name| *name != EJECT_ITEM_SOUND).collect();
+        assert_eq!(names, [INSERT_ITEM_FAIL_SOUND, INSERT_ITEM_SOUND, OPEN_SHUTTER_SOUND, CLOSE_SHUTTER_SOUND]);
+        let pitches: Vec<f32> = sounds.iter().filter(|sound| sound.0 == EJECT_ITEM_SOUND).map(|sound| sound.1).collect();
+        assert!(!pitches.is_empty() && pitches.windows(2).all(|pair| pair[0] < pair[1]) && (pitches[pitches.len() - 1] - 1.2).abs() < 1e-6, "{pitches:?}");
+        let events: Vec<(i32, (i32, i32, i32), i32)> = outputs.iter().flat_map(|out| out.level_events.iter().copied()).collect();
+        assert_eq!(events.iter().filter(|event| **event == (EJECT_PARTICLES, vault, 0)).count(), pitches.len());
+        assert!(events.contains(&(DEACTIVATE, vault, 0)), "it goes dim for its only, rewarded player");
+        handle.vault_key(0, vault, &key);
+        handle.tick(input(), vec![true; 2]);
+        handle.run_job(Box::new(move |sim: &mut ServerSim| -> Box<dyn std::any::Any + Send> {
+            let tag = sim.level.chunk(at.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&vault)).cloned().unwrap();
+            let rewards = sim.level.entities.iter().filter(|e| e.item_data().is_some() && (e.pos[0] - 8.5).abs() < 2.0 && (e.pos[2] - 8.5).abs() < 2.0 && e.pos[1] > 200.5).count();
+            Box::new((state(sim), tag, rewards))
+        }));
+        handle.wait_idle();
+        let outputs = handle.poll();
+        let uses: Vec<(u64, bool)> = outputs.iter().flat_map(|out| out.item_uses.iter().copied()).collect();
+        assert_eq!(uses, [(0, false)], "a dim vault keeps the key");
+        assert!(outputs.iter().flat_map(|out| out.mob_sounds.iter()).all(|sound| !sound.event.contains("block.vault")), "and plays nothing");
+        let (now, tag, rewards) = *outputs.into_iter().flat_map(|out| out.jobs).next().unwrap().downcast::<(String, Tag, usize)>().unwrap();
+        assert_eq!(now, "inactive");
+        assert!(rewards >= 1 && rewards <= pitches.len(), "the ejected items land on the vault: {rewards}");
+        let rewarded = tag.get("server_data").and_then(|data| data.get("rewarded_players")).and_then(Tag::as_list).unwrap().to_vec();
+        assert_eq!(rewarded, [Tag::IntArray(crate::raids::ints_of_uuid(0xa11ce).to_vec())]);
     }
 
     #[test]

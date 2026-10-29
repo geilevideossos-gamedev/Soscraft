@@ -453,6 +453,9 @@ impl Entities {
                 diag::warn!(World, "Minecraft weather `{weather}` unknown: IW4L_MINECRAFT_WEATHER takes clear, rain or thunder");
             }
         }
+        if let Some(book) = &data.enchantments {
+            sim.set_enchantments(book.clone());
+        }
         let weather_data = sim.weather_data();
         let mut server = ServerHandle::spawn(sim);
         // Mob and block loot and the recipes (stack sizes), from the game's
@@ -1331,6 +1334,11 @@ impl Entities {
         if sent.is_some() {
             self.players.queue(player).item_use_waiting = sent;
         }
+    }
+
+    pub fn vault_key(&mut self, player: u64, pos: (i32, i32, i32), stack: &ItemStack, sent: SentItemUse) {
+        self.server.vault_key(player, pos, stack);
+        self.players.queue(player).item_use_waiting = Some(sent);
     }
 
     pub fn book_stack(&self, book: &minecraft_terrain::lectern::BookStack) -> ItemStack {
