@@ -527,11 +527,43 @@ After 62c9ba69.
 IW4L_MINECRAFT_KIT=minecraft:lodestone*4,minecraft:compass*8,minecraft:clock,minecraft:recovery_compass,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword,minecraft:cooked_beef*32,minecraft:cobblestone*64
 ```
 
+### 3. Friends' compasses and clocks turn like the host's
+
+After 64549426.
+
+- **Vanilla (javap, 26.3):** the client's compass, recovery compass and clock read the local level: the world spawn from `ClientboundSetDefaultSpawnPositionPacket` (`LevelData.RespawnData`, sent when the player joins and whenever the world spawn changes), the last death from `CommonPlayerSpawnInfo.lastDeathLocation` (in the login and respawn packets), and the time from the client level. Every client turns its own needles.
+- **Changed:**
+  - `minecraft_net`: `ToClient::SpawnPosition { dimension, pos }` and `PlayerView.last_death: Option<(Dimension, [i32; 3])>`, both appended after the existing variants and fields (the codec's variant index is its place in the enum), so earlier indices stay as they are.
+  - `minecraft_survival/src/session.rs`: each session remembers the world spawn it was sent; `Sessions::send_spawns` (called by the host right after `send_views`) sends it after the login and again whenever `/setworldspawn` or anything else moves it. `views.rs`: the player view carries the player's last death.
+  - `minecraft_survival/src/remote.rs`: the friend keeps the world spawn it got; `RemoteWorld::dial_context(feet, yaw)` builds the dials' context from the friend's level (dimension, sun angle from its own sky clock), the world spawn and its own last death.
+  - `render_anim/src/minecraft_remote.rs`: the friend steps its dials with that context, its own feet and yaw before publishing its inventory, so its compasses (the plain, recovery and lodestone ones) and clocks turn in the icons and the first-person hand, which reads the same dials.
+- **Tests:**
+  - `minecraft_net` `codec::tests::the_world_spawn_and_the_last_death_reach_the_friend_for_its_compasses` (index 35, round trips with and without a last death), and the new message in `every_message_to_the_client_round_trips`; `player_view()` carries a last death.
+  - `minecraft_survival` `session::tests::each_friend_gets_the_world_spawn_after_its_login_and_again_when_it_moves` (gated: once per friend after its login, nothing when unchanged, a moved spawn reaches every friend).
+  - `minecraft_survival` `remote::tests::the_friends_dials_know_the_world_spawn_and_its_own_last_death` (gated: no context without a level, no spawn until it is sent, the friend's dimension, feet and yaw, its last death, a new spawn).
+- **Decisions:**
+  - The world spawn is compared every host frame and sent only when it differs from the last one sent to that friend, which covers the join and `/setworldspawn` in one place.
+  - Before the friend has a world spawn its compass spins (as a compass with no target).
+  - The friend's publish path needs the whole friend setup (assets, the stream, a player state), so it has no `render_anim` test of its own: the context test and the dials tests cover both halves.
+- **Protocol:** both changes change what friends decode (see "Protocol" below).
+- **Test steps (both windows, survival, Overworld, by day, near the world spawn; the kit of commit 1 for both players):**
+  1. Friend window: hold a plain compass and walk around the spawn: its needle points at the world spawn (it did not move before); hold the clock: it shows the sun and turns with the day (**326_friend_compass**, friend window).
+  2. Host: `/setworldspawn ~ ~ ~` about 50 blocks away from the friend: the friend's plain compass swings round to point there.
+  3. Friend: lock a compass to a lodestone and walk away: it points at the lodestone, in the hotbar and in the hand (**327_friend_lodestone_compass**, friend window).
+  4. Host: `/kill <friend's name>`; the friend respawns and holds the recovery compass: it points to where they died. In the Nether the friend's clock and plain compass spin.
+- **Kit (the same line as commit 1):**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:lodestone*4,minecraft:compass*8,minecraft:clock,minecraft:recovery_compass,minecraft:obsidian*14,minecraft:flint_and_steel,minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword,minecraft:cooked_beef*32,minecraft:cobblestone*64
+```
+
 ## Protocol
 
 `minecraft_net::PROTOCOL` stays 6 (the release step bumps it).
 
 - Group trial-ominous, commit 2: `EntitySnapshot` (sent to friends in `StateFrame.entities`) gains `ominous_items` (`trial_spawner::OminousItemView`: id, position, item, tint, age) after `items`. A friend on an older build cannot decode the new snapshot, so this needs the protocol bump at the release.
+
+- Group lodestones, commit 3: `ToClient::SpawnPosition { dimension, pos }` (index 35, appended) and `PlayerView.last_death` (appended after `jump_bar`). A friend on an older build cannot decode the player view or the new message, so this rides in the release's protocol bump.
 
 - Group trial-spawners-run, commit 3: `ToClient::Time.game_time` keeps its type but now carries the level's game time (the world's `Time`) instead of the day clock. The friend only uses it as its entity world's clock, so no bump is needed.
 
@@ -546,8 +578,9 @@ IW4L_MINECRAFT_KIT=minecraft:lodestone*4,minecraft:compass*8,minecraft:clock,min
 - `docs/MINECRAFT-SURVIVAL.md` (vaults, group vaults, commit 2): a lit vault shows the item it will give turning inside it, with vanilla's smoke and small flames (soul flames when ominous), its hum, the sparks that fly from each connected player into it, and the activation, deactivation and ejection effects, for the host and friends.
 - `docs/MINECRAFT-SURVIVAL.md` and CLAUDE.md's "Finish survival" (lodestones, group lodestones, commit 1): a compass right-clicked on a lodestone becomes a glinting "Lodestone Compass" like vanilla (a single compass in place, otherwise one more from the stack; creative keeps its compasses; a full inventory drops it), with the lock sound for everyone near, saved in the vanilla format. When its lodestone is gone (in a loaded chunk) it keeps its name and glint and loses its target. Lodestones leave CLAUDE.md's "Finish survival" list with commit 2.
 - `docs/MINECRAFT-SURVIVAL.md` and CLAUDE.md's "Finish survival" (lodestones, group lodestones, commit 2): a lodestone compass's needle points at its lodestone in the inventory, the hotbar and the hand, and spins in another dimension or once the lodestone is gone; every lodestone compass has its own icon. CLAUDE.md roadmap 1.3 and 2: lodestones are done ("Only lodestones are left" goes). Not yet: a compass held by another player, in an item frame or on the ground keeps the plain compass's look.
+- `docs/MULTIPLAYER.md` and `docs/MINECRAFT-SURVIVAL.md` (group lodestones, commit 3): a friend's compasses (plain, recovery and lodestone) and clocks turn like the host's: the host sends the world spawn after the login and whenever it changes, and the friend's last death with its player view. Drop the limit that a friend's compass and clock never move.
 - Release 1's known limits (Withers) and the round 9 log (group wither-fight, commit 1): drop "A skull loaded from a save has no owner and hurts as magic for 5". `docs/MINECRAFT-SURVIVAL.md`: fireballs, small fireballs and wither skulls keep their shooter through a save (`Owner`), found again when the shooter loads (group d5-review, commit 2).
 
 ## Vendored files
 
-Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2), and `world/src/level/container.rs` (group trial-spawners, commit 2: `Level::set_block_entity_tag`). All three were already patched by the fork (the first two are in round 9's list, `docs/round9/track-d-log.md`, Vendored files; `container.rs` since c5efeed0), so the fork's counts do not change. Group trial-spawners-run, commit 1: `world/src/natural_spawner/spawning.rs` and `world/src/level/spawning.rs` (both patched by the fork before). Commit 2: `world/src/level/physics.rs`, patched by the fork for the first time (one more patched file). Commit 3: `world/src/level/spawning.rs` again and `world/src/level/dispenser.rs` (patched by the fork before, c987075b). Group trial-ominous, commit 1: `world/src/level/spawning.rs` again (`summon_trial_mob` no longer adds the mob itself). Commit 2: `world/src/level/entity.rs`, `world/src/level/mod.rs` and `entities/src/world.rs`, all patched by the fork before. Group vaults patches and adds no vendored file. Group lodestones, commits 1 and 2: none.
+Patched in round 10 (none added): `entities/src/fireball.rs` and `entities/src/world/fireballs.rs` (group d5-review, commit 2), and `world/src/level/container.rs` (group trial-spawners, commit 2: `Level::set_block_entity_tag`). All three were already patched by the fork (the first two are in round 9's list, `docs/round9/track-d-log.md`, Vendored files; `container.rs` since c5efeed0), so the fork's counts do not change. Group trial-spawners-run, commit 1: `world/src/natural_spawner/spawning.rs` and `world/src/level/spawning.rs` (both patched by the fork before). Commit 2: `world/src/level/physics.rs`, patched by the fork for the first time (one more patched file). Commit 3: `world/src/level/spawning.rs` again and `world/src/level/dispenser.rs` (patched by the fork before, c987075b). Group trial-ominous, commit 1: `world/src/level/spawning.rs` again (`summon_trial_mob` no longer adds the mob itself). Commit 2: `world/src/level/entity.rs`, `world/src/level/mod.rs` and `entities/src/world.rs`, all patched by the fork before. Group vaults patches and adds no vendored file. Group lodestones patches and adds no vendored file.

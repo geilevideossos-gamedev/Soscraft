@@ -90,6 +90,10 @@ pub fn player_view(player: &Player) -> PlayerView {
             .collect(),
         using: using(player),
         jump_bar: player.jump_bar,
+        last_death: player.last_death.map(|death| {
+            let (x, y, z) = death.pos;
+            (death.dimension, [x, y, z])
+        }),
     }
 }
 

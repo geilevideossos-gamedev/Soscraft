@@ -643,6 +643,7 @@ pub(crate) fn host(
     host.sessions.send_raid_bars(&server.players);
     host.sessions.send_wither_bars(&server.players);
     host.sessions.send_views(&server.players);
+    host.sessions.send_spawns(&server.globals);
     let gears: Vec<_> = server
         .players
         .values()

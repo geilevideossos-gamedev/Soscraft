@@ -332,6 +332,10 @@ pub enum ToClient {
     SkateRefused {
         tick: u32,
     },
+    SpawnPosition {
+        dimension: Dimension,
+        pos: [i32; 3],
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -499,6 +503,7 @@ pub struct PlayerView {
     pub cooldowns: Vec<CooldownView>,
     pub using: Option<UsingView>,
     pub jump_bar: Option<f32>,
+    pub last_death: Option<(Dimension, [i32; 3])>,
 }
 
 impl Default for PlayerView {
@@ -524,6 +529,7 @@ impl Default for PlayerView {
             cooldowns: Vec::new(),
             using: None,
             jump_bar: None,
+            last_death: None,
         }
     }
 }

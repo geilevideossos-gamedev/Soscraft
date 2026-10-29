@@ -1327,6 +1327,10 @@ fn show_player(
     let mut containers = Containers::default();
     containers.set_book(prepared.stations.clone());
     let level = u32::try_from(view.xp_level).unwrap_or(0);
+    let feet = remote.level.as_ref().map(|level| sim::voxel::to_block(level.origin, ps.origin));
+    if let Some(context) = feet.and_then(|feet| remote.dial_context(feet, crate::minecraft_world::minecraft_yaw(ps.viewangles[1]))) {
+        inventory_ui.dials.step(dt, packs, &context);
+    }
     inventory_ui.publish(
         ui,
         &inventory,

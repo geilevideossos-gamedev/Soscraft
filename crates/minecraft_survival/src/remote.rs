@@ -169,6 +169,7 @@ pub struct RemoteWorld {
     pub game_time: i64,
     pub clocks: Clocks,
     pub weather: [f32; 2],
+    pub spawn: Option<(Dimension, [i32; 3])>,
     pub boss_bars: BTreeMap<u64, BossBar>,
     pub lecterns: Vec<Option<BookView>>,
     pub open_books: Vec<u8>,
@@ -205,6 +206,7 @@ impl RemoteWorld {
             game_time: 0,
             clocks: Clocks::default(),
             weather: [0.0; 2],
+            spawn: None,
             boss_bars: BTreeMap::new(),
             lecterns: Vec::new(),
             open_books: Vec::new(),
@@ -233,6 +235,19 @@ impl RemoteWorld {
 
     pub fn take_shown(&mut self) -> Shown {
         std::mem::take(&mut self.shown)
+    }
+
+    pub fn dial_context(&self, feet: [f64; 3], yaw: f32) -> Option<minecraft_terrain::dials::DialContext> {
+        let level = self.level.as_ref()?;
+        let point = |(dimension, [x, y, z]): (Dimension, [i32; 3])| (dimension, (x, y, z));
+        Some(minecraft_terrain::dials::DialContext {
+            dimension: level.dimension,
+            feet,
+            yaw,
+            spawn: self.spawn.map(point),
+            last_death: self.player.as_ref().and_then(|view| view.last_death).map(point),
+            sun_angle: level.terrain.environment.sun_angle_degrees(1.0),
+        })
     }
 
     pub fn take_acks(&mut self) -> Vec<u32> {
@@ -486,6 +501,7 @@ impl RemoteWorld {
                 }
             }
             ToClient::Weather { rain, thunder } => self.weather = [rain, thunder],
+            ToClient::SpawnPosition { dimension, pos } => self.spawn = Some((dimension, pos)),
             ToClient::Dimension {
                 epoch,
                 dimension,
@@ -839,6 +855,40 @@ mod tests {
         assert_eq!(shown.loaded.len(), 1);
         assert_eq!(shown.blocks, vec![((3, -64, 3), BlockStateId::AIR)]);
         assert_eq!(friend.held_bytes(), 0);
+    }
+
+    #[test]
+    fn the_friends_dials_know_the_world_spawn_and_its_own_last_death() {
+        let Some(registries) = registries() else {
+            return;
+        };
+        let mut friend = RemoteWorld::new(registries);
+        assert_eq!(friend.dial_context([0.0; 3], 0.0), None, "no level yet");
+        friend.apply(ToClient::Login(login(Dimension::Nether)));
+        let context = friend.dial_context([1.5, 64.0, 2.5], 90.0).expect("a level");
+        assert_eq!(context.spawn, None, "no world spawn yet: the needle spins");
+        friend.apply(ToClient::SpawnPosition {
+            dimension: Dimension::Overworld,
+            pos: [8, 70, -8],
+        });
+        let context = friend.dial_context([1.5, 64.0, 2.5], 90.0).unwrap();
+        assert_eq!(
+            (context.dimension, context.feet, context.yaw),
+            (Dimension::Nether, [1.5, 64.0, 2.5], 90.0)
+        );
+        assert_eq!(context.spawn, Some((Dimension::Overworld, (8, 70, -8))));
+        assert_eq!(context.last_death, None);
+        friend.apply(ToClient::Player(Box::new(PlayerView {
+            last_death: Some((Dimension::Nether, [-3, 40, 9])),
+            ..PlayerView::default()
+        })));
+        friend.apply(ToClient::SpawnPosition {
+            dimension: Dimension::Overworld,
+            pos: [100, 64, 100],
+        });
+        let context = friend.dial_context([1.5, 64.0, 2.5], 90.0).unwrap();
+        assert_eq!(context.last_death, Some((Dimension::Nether, (-3, 40, 9))));
+        assert_eq!(context.spawn, Some((Dimension::Overworld, (100, 64, 100))), "a new world spawn");
     }
 
     #[test]

@@ -260,6 +260,7 @@ mod tests {
             ToClient::RecipeBook(_) => 32,
             ToClient::Animate { .. } => 33,
             ToClient::SkateRefused { .. } => 34,
+            ToClient::SpawnPosition { .. } => 35,
         }
     }
 
@@ -420,6 +421,7 @@ mod tests {
                 kind: UseKind::Eat { duration: 16 },
             }),
             jump_bar: Some(0.75),
+            last_death: Some((Dimension::End, [100, 49, -3])),
             ..PlayerView::default()
         };
         view.slots[0] = Some(Nbt(vec![10, 0, 0, 8, 0, 2, b'i', b'd', 0]));
@@ -726,6 +728,10 @@ mod tests {
                 offhand: true,
             },
             ToClient::SkateRefused { tick: 41 },
+            ToClient::SpawnPosition {
+                dimension: Dimension::Nether,
+                pos: [-120, 70, 33],
+            },
         ]
     }
 
@@ -759,7 +765,7 @@ mod tests {
     #[test]
     fn every_message_to_the_client_round_trips() {
         let messages = to_client();
-        let mut seen = [false; 35];
+        let mut seen = [false; 36];
         for message in &messages {
             seen[client_index(message)] = true;
             round_trip(Lane::Reliable, message);
@@ -1021,6 +1027,30 @@ mod tests {
         assert_eq!(client_index(&refused), 34);
         assert_eq!(encode(Lane::Reliable, &refused).unwrap(), vec![34, 0xac, 2]);
         round_trip(Lane::Reliable, &refused);
+    }
+
+    #[test]
+    fn the_world_spawn_and_the_last_death_reach_the_friend_for_its_compasses() {
+        let spawn = ToClient::SpawnPosition {
+            dimension: Dimension::Overworld,
+            pos: [8, 64, -8],
+        };
+        assert_eq!(client_index(&spawn), 35);
+        assert_eq!(encode(Lane::Reliable, &spawn).unwrap()[0], 35);
+        round_trip(Lane::Reliable, &spawn);
+        for last_death in [None, Some((Dimension::Nether, [-1, 0, i32::MAX]))] {
+            let view = PlayerView {
+                last_death,
+                ..player_view()
+            };
+            let bytes = encode(Lane::Reliable, &ToClient::Player(Box::new(view))).unwrap();
+            let ToClient::Player(back) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
+                panic!("not a player view");
+            };
+            assert_eq!(back.last_death, last_death);
+            assert_eq!(back.jump_bar, Some(0.75));
+        }
+        assert_eq!(PlayerView::default().last_death, None);
     }
 
     #[test]
