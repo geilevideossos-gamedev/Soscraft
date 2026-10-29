@@ -1237,6 +1237,7 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         .chain(world.illagers().iter().map(|e| (e.id, e.ai.state.melee.swings)))
         .chain(world.vexes().iter().map(|e| (e.id, e.ai.state.melee.swings)))
         .chain(world.ravagers().iter().map(|e| (e.id, e.ai.state.melee.swings)))
+        .chain(world.family_cores().into_iter().map(|(_, core)| (core.id, core.swings)))
         .collect();
     for e in world.zombies() {
         push(e.id, e.yaw, &e.look_control, &e.zombie.body, e.zombie.baby, e.zombie.eye_height());
@@ -1312,7 +1313,10 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.shulkers() {
         push(e.id, 0.0, &e.ai.state.look_control, &e.shulker.body, false, e.shulker.eye_height());
     }
-    let shulkers: std::collections::HashSet<u64> = world.shulkers().iter().map(|e| e.id).collect();
+    for (_, core) in world.family_cores().into_iter().filter(|(_, core)| !core.removed) {
+        push(core.id, core.yaw, &core.look, &core.body, core.baby, core.eye_height);
+    }
+    let shulkers:std::collections::HashSet<u64> = world.shulkers().iter().map(|e| e.id).collect();
     let ravagers: std::collections::HashSet<u64> = world.ravagers().iter().map(|e| e.id).collect();
     let shows = crate::mob_tracking::shows(world);
     for mob in &mut out {

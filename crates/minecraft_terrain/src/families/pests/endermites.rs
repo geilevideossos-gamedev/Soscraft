@@ -4,6 +4,9 @@ use minecraftoss_entities::world::families::FamilyMob;
 pub use minecraftoss_entities::world::families::pests::endermites::Endermite;
 
 impl TerrainFamily for Endermite {
+    const TRACKING_RANGE: i32 = 8;
+    const VOLATILE: &'static [&'static str] = &["Lifetime"];
+
     fn read(mob: &mut FamilyMob<Self>, tag: &Tag) {
         mob.state.ai.state.look_control.head_yaw = mob.core.yaw;
         mob.state.life = tag

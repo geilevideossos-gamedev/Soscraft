@@ -13,7 +13,11 @@ Files under `third_party/minecraftoss` this track patched or added (round 8 coun
 
 ## Protocol
 
-No commit of this track has changed a `ToClient`/`ToServer` message or the codec yet. `minecraft_net::PROTOCOL` stays 6 (`docs/round10/decisions.md`).
+- **"Friends see registered Minecraft mobs"** (group registry-client, commit 2, after 757bfed8) adds `pub family: Option<FamilyShow>` at the end of `MobShow` (`crates/minecraft_terrain/src/mob_tracking.rs`). `FamilyShow` is `{ flags: u32, values: [i32; 8] }` (`crates/minecraft_terrain/src/families.rs`).
+  - `MobShow` is part of every `ServerMob` that the state lane carries (`StateFrame.mobs`, postcard). A host and a friend on builds from before and after this commit misread each other's mob states.
+  - Postcard writes one byte for `None`, so every other mob costs one byte more per tick.
+  - No `ToClient`/`ToServer` variant and no codec function changed.
+- `minecraft_net::PROTOCOL` stays 6 on this track (`docs/round10/decisions.md`, "PROTOCOL is bumped only at release time"). The next release build bumps it once, because of this commit.
 
 ## Group registry-core
 
@@ -276,4 +280,50 @@ After bdbc8852.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*4,minecraft:endermite_spawn_egg*4,minecraft:zombie_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:iron_sword,minecraft:cooked_beef*32
+```
+
+### 2. Friends see registered Minecraft mobs
+
+After 757bfed8.
+
+- **Changed (`minecraft_terrain`, D0-5.2):**
+  - Root `families.rs`: `FamilyShow { flags: u32, values: [i32; 8] }` (Copy, Default, serde). `TerrainFamily` gains `TRACKING_RANGE` (no default), `VOLATILE` (default empty), `show` (default `FamilyShow::default()`) and `show_on` (default nothing). `terrain_group!` and the root gain `tracking_range`, `volatile`, `shows` and `show_on`. A kind is found with or without `minecraft:`.
+  - `mob_tracking`:
+    - `tracking_range` asks the registry first.
+    - `look` also drops the `VOLATILE` keys of the family whose `KINDS` holds the tag's `id`, and only those.
+    - `MobShow.family: Option<FamilyShow>`, at the end of the struct.
+    - `shows` makes one `crate::families::shows(world, &mut put)` call after the last family (the piglins), before the raiders' glowing pass. It puts `MobShow { family: Some(S::show(mob)), .. }`.
+    - `show_on` makes one `crate::families::show_on(world, mob)` call after the last entity (the llama spit), before the glowing check. It places the core's body with the existing `place`, which is now `pub(crate)`, and calls `S::show_on` when the mob's show has a family part.
+  - `client_mobs::server_mobs`: one loop after the shulkers pushes every registered core that has not left (`core.yaw`, `core.look`, `core.body`, `core.baby`, `core.eye_height`), and the swings chain gains `core.swings` after the ravagers. Without this the tracker never sees a registered mob (it walks `server_mobs`), so no friend is ever sent one. The brief listed it under D0-5.3, so group registry-draw only adds the head-turn tweak (`max_head_y_rot`) from that bullet.
+  - Glue: silverfish and endermites track at 8 chunks (`clientTrackingRange(8)`). The endermite's `Lifetime` is `VOLATILE`, so its count does not resend its look tag every 10 ticks.
+- **Protocol:** `MobShow` is serialised in every `ServerMob` of the state lane, so this commit changes the wire format; see "## Protocol" above. `PROTOCOL` stays 6.
+- **What changes in the game:** a friend now gets every registered mob near them: added from its look tag with the generic `spawn_saved`, moved and placed every tick, its bites counted. Nothing is drawn for them yet, on the host or for a friend (group silverfish-drawn).
+- **Tests added:**
+  - `mob_tracking::tests::a_friend_sees_a_silverfish_and_an_endermite_from_their_look_tags`:
+    - tracking range 8 with or without `minecraft:`;
+    - both are added to a watcher and spawn on the friend with their ids, the yaw and the endermite's `Lifetime`, and both move every tick;
+    - `shows` gives each its family part;
+    - a `Lifetime` counting up sends no new look;
+    - a moved, burning, biting silverfish reaches the friend through `show_on`: position, previous position, fire and swings.
+  - `mob_tracking::tests::a_registered_look_tag_drops_only_its_own_volatile_keys`: the endermite's look loses `Lifetime` but keeps an unrelated `Size`. A silverfish tag and a slime tag keep a `Lifetime` key, because neither lists it.
+  - `mob_sender::tests::a_registered_mobs_show_crosses_the_state_lane` (survival): a `ServerMob` with `family: Some(FamilyShow { .. })` and one without round-trip through `minecraft_net::encode`/`decode` on the state lane, and the family part travels with its mob.
+- **Decisions:**
+  - The `server_mobs` push loop and the swings line move from D0-5.3 into this commit (see above). Both are one generic line each at the end of their lists, as D0-5.3 describes them.
+  - `show_on` sets the body only (position, ground, fire) like every other family's arm; the turn comes from the `ServerMob` through `ClientMobs`, as for the rest.
+  - Dying registered mobs are pushed like every other mob, so the friend sees the death. Mobs that left (`removed`) are not pushed; they leave `order` at the end of the tick anyway.
+  - The `look` lookup uses `.unwrap_or(&[])`, because the workspace's `clippy.toml` forbids `unwrap_or_default`.
+- **Left for later (D0-9.4):** `show_on` with family values, `families::interact`, `is_vehicle` in `carries` and the mount inventory get no real-family test in D0, because silverfish and endermites use none of them. The first track whose family uses one adds that test in its own files.
+- **Runs:**
+  - `test -p minecraft_terrain --locked --lib`: 1397 passed, 3 ignored. The known flaky `sections::tests::background_full_update_matches_the_synchronous_one` failed once under load and passed when run alone. `mob_tracking::` passed again after the clippy fix.
+  - `test -p minecraft_survival -p minecraft_net --locked`: survival 761 + 1 passed; net 24 passed, with the codec asserts still at protocol 6.
+  - `clippy -p minecraft_terrain -p minecraft_survival --locked --lib --tests -A clippy::approx_constant`: no warning on a line of this group; the remaining warnings are on older lines.
+  - `check -p launcher --locked`: green, with only the old render_frame and skate warnings.
+  - The changed new files pass `rustfmt --check --edition 2021` with empty output on their staged content.
+- **Test steps** (two windows with `scripts\mp-local.ps1`, both on this build. A friend on an older build gets mob states it cannot read, until the release bumps `PROTOCOL`). Survival, Normal, at night, flat open ground in the Overworld, the friend 5 blocks from the host. Name the screenshots `D0-9-<step>-host.png` and `D0-9-<step>-friend.png`.
+  1. The host uses a zombie egg and a creeper egg next to the friend. In both windows they walk to the friend, the zombie swings its arms as it hits, and the creeper swells and flashes white before it blows up. **Screenshots D0-9-1-host and D0-9-1-friend** while the creeper is swelling.
+  2. The host uses a silverfish egg and an endermite egg next to the friend. Nothing is drawn for them yet, in either window (group silverfish-drawn draws them), but the friend's game keeps running smoothly and shows no error line in the chat while they bite the friend (half a heart from the silverfish, a full heart from the endermite). The host walks to the friend, looks at the friend's feet and swings the sword until the bites stop (a friend's own hits on registered mobs reach the host with group registry-draw, which decodes their hit keys).
+  3. The host uses a cow egg and a villager egg, then saves and quits, loads and opens the world to the friend again. The friend joins and sees the cow and the villager where the host left them. **Screenshot D0-9-3-friend.**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:zombie_spawn_egg*2,minecraft:creeper_spawn_egg*2,minecraft:silverfish_spawn_egg*4,minecraft:endermite_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:villager_spawn_egg*2,minecraft:iron_sword,minecraft:cooked_beef*32
 ```

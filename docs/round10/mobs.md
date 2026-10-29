@@ -22,8 +22,8 @@ A MW2 bullet finds a mob through one number: the kind in the top byte, the entit
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 42 | Silverfish | strongholds, infested blocks | stronghold spawner shows one; strongholds place infested stone bricks; sleep list; the `infested` potion is listed | infested blocks, waking friends, merging into stone, `SilverfishModel` | M | `silverfish` | 36 | left | |
-| 43 | Endermite | ender pearls | sleep list; the enderman's endermite target slot rolls with no prey | 5% pearl roll, endermen hunt it, 2400-tick life, `EndermiteModel`, portal particles | S | `endermites` | 37 | left | |
+| 42 | Silverfish | strongholds, infested blocks | stronghold spawner shows one; strongholds place infested stone bricks; sleep list; the `infested` potion is listed | infested blocks, waking friends, merging into stone, `SilverfishModel` | M | `silverfish` | 36 | live | bdbc8852, 757bfed8, "Friends see registered Minecraft mobs" |
+| 43 | Endermite | ender pearls | sleep list; the enderman's endermite target slot rolls with no prey | 5% pearl roll, `EndermiteModel`, portal particles | S | `endermites` | 37 | live | bdbc8852, 757bfed8, "Friends see registered Minecraft mobs" |
 
 ## D: trial chambers (group `trial`)
 
