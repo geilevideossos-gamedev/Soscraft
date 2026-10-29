@@ -226,8 +226,7 @@ impl Listener {
                 .map_or(0, |delay| delay.clamp(0, i64::from(i32::MAX)) as i32),
             selector: tag
                 .get("selector")
-                .map(Selector::from_tag)
-                .unwrap_or_default(),
+                .map_or_else(Selector::default, Selector::from_tag),
         }
     }
 

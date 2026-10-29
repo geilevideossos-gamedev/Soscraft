@@ -4701,8 +4701,8 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     }
     sim.hear_game_events(input, before, normal);
     out.mob_sounds.extend(sim.respond_shriekers(&input.mob_players));
-    out.warden_trackers.extend(sim.warden_updates.drain(..));
-    out.player_effects.extend(sim.player_effects.drain(..));
+    out.warden_trackers.append(&mut sim.warden_updates);
+    out.player_effects.append(&mut sim.player_effects);
     out.dismounts.extend(sim.take_vehicle_losses());
     out.player_hits.extend(sim.take_end_hits());
     out.player_hits.extend(sim.take_rocket_hits());
@@ -11875,7 +11875,7 @@ mod tests {
     }
 
     fn tracker_of(input: &TickInput, player: u64) -> crate::warden_tracker::WardenSpawnTracker {
-        input.warden_trackers.iter().find(|(id, _)| *id == player).map(|(_, tracker)| *tracker).unwrap_or_default()
+        input.warden_trackers.iter().find(|(id, _)| *id == player).map_or_else(crate::warden_tracker::WardenSpawnTracker::default, |(_, tracker)| *tracker)
     }
 
     fn shrieker_input(players: &[(u64, [f64; 3])]) -> TickInput {
@@ -12016,7 +12016,7 @@ mod tests {
         assert_eq!(sim.level.sounds.iter().map(|sound| sound.event).collect::<Vec<_>>(), vec!["minecraft:block.sculk_catalyst.bloom"]);
         let mut out = run_ticks(&mut sim, &mut input, true, 1);
         finish_batch(&mut sim, &input, &mut out);
-        let souls = out.entities.map(|snapshot| snapshot.sculk_souls).unwrap_or_default();
+        let souls = out.entities.map_or_else(Vec::new, |snapshot| snapshot.sculk_souls);
         assert_eq!(souls, vec![glam::DVec3::new(8.5, 201.15, 8.5)], "the soul burst rises over it for every viewer");
         run_ticks(&mut sim, &mut input, true, 6);
         assert!(blooming(&sim, CATALYST));
@@ -12098,7 +12098,7 @@ mod tests {
     }
 
     fn sensor_phase(sim: &ServerSim) -> String {
-        block_property(sim, SENSOR, "sculk_sensor_phase").unwrap_or_default()
+        block_property(sim, SENSOR, "sculk_sensor_phase").unwrap_or_else(|| "no sensor".to_owned())
     }
 
     #[test]

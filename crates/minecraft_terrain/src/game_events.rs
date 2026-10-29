@@ -358,7 +358,7 @@ fn collect(
     {
         let entry = match value {
             Value::String(entry) => entry.as_str(),
-            Value::Object(map) => map.get("id").and_then(Value::as_str).unwrap_or_default(),
+            Value::Object(map) => map.get("id").and_then(Value::as_str).unwrap_or(""),
             _ => continue,
         };
         match entry.strip_prefix('#') {

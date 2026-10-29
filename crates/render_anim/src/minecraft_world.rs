@@ -2795,11 +2795,13 @@ mod gun_tests {
 
     const MUZZLE: [f64; 3] = [0.5, 65.6, 0.5];
 
+    type Heard = (bool, [f64; 3], Option<(i32, i32, i32)>);
+
     fn ray(to: [f64; 3]) -> VoxelEvent {
         VoxelEvent::Ray { level: 0, from: MUZZLE, to, damage: 10.0, attacker: Some(3) }
     }
 
-    fn heard(events: &[VoxelEvent]) -> Vec<(bool, [f64; 3], Option<(i32, i32, i32)>)> {
+    fn heard(events: &[VoxelEvent]) -> Vec<Heard> {
         gun_vibrations(events, |attacker| attacker.map(u64::from)).into_iter().map(|gun| (gun.landed, gun.pos, gun.block)).collect()
     }
 

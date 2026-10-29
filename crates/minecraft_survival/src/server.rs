@@ -871,7 +871,9 @@ pub fn join_from(
     player.reattach = saved.root_vehicle.filter(|_| !dead);
     player.sleep_timer = saved.sleep_timer.unwrap_or(0);
     player.time_since_rest = saved.time_since_rest.unwrap_or(0);
-    player.warden_tracker = saved.warden_spawn_tracker.unwrap_or_default();
+    if let Some(tracker) = saved.warden_spawn_tracker {
+        player.warden_tracker = tracker;
+    }
     player.saved_in_bed = saved.sleeping_pos;
     player.survival.raid_omen_position = saved.raid_omen_position;
     player.tags = saved.tags.into_iter().flatten().collect();

@@ -133,7 +133,11 @@ pub fn try_warn(
     if !warned.contains(&trigger) {
         warned.push(trigger);
     }
-    let tracker = |id: &u64| trackers.get(id).copied().unwrap_or_default();
+    let tracker = |id: &u64| {
+        trackers
+            .get(id)
+            .map_or_else(WardenSpawnTracker::default, |tracker| *tracker)
+    };
     if warned.iter().any(|id| tracker(id).on_cooldown()) {
         return None;
     }

@@ -504,6 +504,25 @@ After e6ddd950 ("Track W's new sculk files pass rustfmt").
 IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*4,minecraft:comparator*2,minecraft:redstone*32,minecraft:chest*2,minecraft:stone*64,minecraft:cooked_beef*16
 ```
 
+## Final verification of segment w1
+
+### 1. Track W's code passes clippy
+
+After f509b23f ("A player who leaves a level with a container open is heard closing it at once").
+
+- **Cause:** clippy on the touched crates (`minecraft_survival`, `minecraft_terrain`, `render_anim`, `render_gpu`, `minecraftoss-entities`, `minecraftoss-generator`, `minecraftoss-world`, `--all-targets`) warned on 11 lines the track added: `unwrap_or_default` (disallowed by the repo's `clippy.toml`) in `game_events.rs` (tag entries), `vibrations.rs` (`Listener::from_tag`'s selector), `warden_tracker.rs` (`try_warn`), `minecraft_survival/src/server.rs` (the saved tracker on join) and three `server::tests` helpers; `extend_with_drain` for the warden trackers and player effects in `run_tick`; `type_complexity` for `mob_actions::death_remains` (its experience gained the reward) and the `gun_tests::heard` helper.
+- **Changed:** the fallbacks are written out (`unwrap_or("")`, `map_or_else(<Type>::default, ...)`, an `if let` for the saved tracker, `"no sensor"` in the test helper), `append` replaces `extend(drain(..))`, and the two return types get aliases (`DeathRemains`, `Heard`). No behaviour changed. The warnings left on these crates are older than the track (for example `draw_body_gear`'s nine arguments and the loot `unwrap_or_default` in `death_remains`).
+- **Tests:** none added. `minecraft_terrain` 1459 (3 ignored), `minecraft_survival` 767 + 1, `render_anim` 215 pass; `check -p launcher` is green. The track's new files still pass `rustfmt --check`, and its added lines hold no comments.
+- **Test steps:** none (no behaviour changed).
+
+## Combined kit
+
+One kit for the track's main steps (27 stacks): darkness (w01, w03; step 2 needs a cave or torches), sensors (w04 to w06), block, player and gun vibrations (w07 to w10), amethyst (w08), shriekers (w23, w26; the summoning shrieker comes from `/setblock`), catalysts (w25) and the friend leaving with a chest open (w27). The steps that need other items (lava and powder snow in darkness step 5, the trident, trapdoors, gates, plates, the bell, candles, pistons, sheep, shears, horses, the totem) use their commit's own kit line above.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*16,minecraft:calibrated_sculk_sensor*4,minecraft:sculk_shrieker*8,minecraft:sculk_catalyst*4,minecraft:amethyst_block*4,minecraft:comparator*4,minecraft:redstone*64,minecraft:redstone_lamp*4,minecraft:lever*4,minecraft:white_wool*64,minecraft:white_carpet*16,minecraft:oak_door*2,minecraft:oak_button*4,minecraft:chest*2,minecraft:water_bucket,minecraft:note_block*2,minecraft:snowball*16,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:cow_spawn_egg*16,minecraft:chicken_spawn_egg*4,minecraft:apple*16,minecraft:milk_bucket,minecraft:diamond_helmet,minecraft:diamond_sword+sharpness=5,minecraft:experience_bottle*16,minecraft:cobblestone*64
+```
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -529,6 +548,8 @@ Group shriekers-catalysts, commit 2: `EntitySnapshot` (inside `ToClient::Bursts`
 Group shriekers-catalysts, commit 3: no message or codec change (the 3006 events travel as `ToClient::LevelEvent`, the cursors in the catalyst's block entity).
 
 Review of segment w1: no message or codec change.
+
+Final verification of segment w1: no message or codec change.
 
 ## State doc changes
 

@@ -57,11 +57,12 @@ pub struct Actor<'a> {
     pub shearing_loot: Option<&'a mut ShearingLootBook>,
 }
 
+type DeathRemains = (Vec<(ItemStack, DVec3)>, Vec<(DVec3, i32, i32)>);
 
 /// What the mobs that died since the last call leave where each died: their
 /// drops ([`EntityLootBook::death_drops`]; without loot tables nothing
 /// drops) and their experience.
-pub fn death_remains(world: &mut EntityWorld, loot: Option<&mut EntityLootBook>) -> (Vec<(ItemStack, DVec3)>, Vec<(DVec3, i32, i32)>) {
+pub fn death_remains(world: &mut EntityWorld, loot: Option<&mut EntityLootBook>) -> DeathRemains {
     let deaths = world.take_deaths();
     let experience = deaths.iter().map(|d| (d.position, d.experience, d.reward)).collect();
     (loot.map(|book| book.death_drops(deaths)).unwrap_or_default(), experience)
