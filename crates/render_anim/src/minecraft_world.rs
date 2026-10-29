@@ -2522,7 +2522,7 @@ mod skate_tests {
     use playerstate_iw4::pm_flags::{CROUCH, MC_FLYING, MC_GLIDING, MC_RIDING, SPRINTING};
 
     fn item(id: &str) -> Option<GearItem> {
-        Some(GearItem { id: id.to_owned(), glint: false, dye: None, potion: None })
+        Some(GearItem { id: id.to_owned(), glint: false, dye: None, potion: None, look: String::new() })
     }
 
     #[test]

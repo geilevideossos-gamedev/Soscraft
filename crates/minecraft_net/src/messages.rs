@@ -625,6 +625,7 @@ pub struct GearItem {
     pub glint: bool,
     pub dye: Option<u32>,
     pub potion: Option<u32>,
+    pub look: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

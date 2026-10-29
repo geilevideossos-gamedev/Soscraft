@@ -152,6 +152,7 @@ pub struct FrameView {
     pub position: DVec3,
     pub item: Option<String>,
     pub potion: Option<u32>,
+    pub look: String,
     pub glint: bool,
     pub rotation: i32,
     pub invisible: bool,
@@ -364,6 +365,11 @@ impl ItemFrame {
                 .item
                 .as_ref()
                 .and_then(|stack| crate::potions::stack_color(stack.components.as_ref())),
+            look: self
+                .item
+                .as_ref()
+                .map(|stack| crate::item_look::ItemLook::of(stack.components.as_ref(), None).suffix())
+                .unwrap_or_default(),
             glint: self.item.as_ref().is_some_and(crate::glint::has_glint),
             rotation: self.rotation,
             invisible: self.invisible,
@@ -1096,6 +1102,46 @@ mod tests {
         frame.item = Some(ItemStack::new("minecraft:potion", 1));
         assert_eq!(frame.view().potion, None);
         assert_eq!(view_of(Direction::North, 0, false, false).potion, None);
+    }
+
+    #[test]
+    fn a_framed_ominous_banner_or_loaded_crossbow_view_carries_its_look() {
+        let mut frame = ItemFrame::from_tag(&frame_tag(false, (4, 70, -9), Direction::North), 1).unwrap();
+        assert_eq!(frame.view().look, "");
+        let banner = stack_of_tag(&minecraftoss_world::natural_spawner::spawning::ominous_banner()).unwrap();
+        frame.item = Some(banner.clone());
+        let view = frame.view();
+        assert_eq!(view.item.as_deref(), Some("minecraft:white_banner"));
+        let look = crate::item_look::ItemLook::parse(&view.look);
+        assert_eq!(look, crate::item_look::ItemLook::of(banner.components.as_ref(), None));
+        assert_eq!(look.layers.len(), 8);
+        assert_eq!(format!("{}{}", view.item.unwrap(), view.look), crate::item_tint::of_stack(&banner));
+        let mut crossbow = ItemStack::new("minecraft:crossbow", 1);
+        crossbow.components = Some(serde_json::json!({"minecraft:charged_projectiles": [{"id": "minecraft:arrow"}]}));
+        frame.item = Some(crossbow);
+        assert_eq!(frame.view().look, "|charge=arrow");
+        assert_eq!(view_of(Direction::North, 0, false, false).look, "");
+    }
+
+    #[test]
+    fn a_framed_banner_draws_its_pattern_layers() {
+        let (_temp, packs) = crate::item_icons::tests::banner_pack();
+        let textures = ["banner_base", "base", "stripe"].map(|name| crate::pack::ResourceId::parse(&format!("minecraft:entity/banner/{name}")).unwrap());
+        let atlas = crate::mesh::make_atlas(&packs, textures.to_vec()).unwrap();
+        let light = crate::lighting::SkyLight::build(&crate::scene::HandcraftedScene::new());
+        let mut frame = ItemFrame::from_tag(&frame_tag(false, (0, 1, 0), Direction::North), 1).unwrap();
+        frame.invisible = true;
+        let mut visuals = crate::mesh::ItemVisuals::default();
+        let mut faces = |stack: ItemStack| {
+            frame.item = Some(stack);
+            let mut mesh = crate::mesh::ChunkMesh::default();
+            visuals.append_frames(&mut mesh, &[frame.view()], &packs, &atlas, &light).unwrap();
+            mesh.faces
+        };
+        let mut banner = ItemStack::new("minecraft:white_banner", 1);
+        assert_eq!(faces(banner.clone()), 18, "pole, bar and flag");
+        banner.components = Some(serde_json::json!({"minecraft:banner_patterns": [{"pattern": "minecraft:stripe", "color": "red"}]}));
+        assert_eq!(faces(banner), 24, "and one layer on the flag");
     }
 
     #[test]

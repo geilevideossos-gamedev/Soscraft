@@ -236,7 +236,7 @@ fn model_texture(packs: &PackStack, model: &str) -> Result<Option<ResourceId>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -352,7 +352,7 @@ mod tests {
         assert!(dyed > 0 && kept > 0, "{dyed} {kept}");
     }
 
-    fn banner_pack() -> (crate::test_dir::TestDir, PackStack) {
+    pub(crate) fn banner_pack() -> (crate::test_dir::TestDir, PackStack) {
         let temp = crate::test_dir::tempdir().unwrap();
         let root = temp.path();
         std::fs::write(root.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();

@@ -254,7 +254,7 @@ pub struct StateFrame { pub tick: u32, pub epoch: u32, pub mobs: Blob, pub entit
 
 **`RenameItem`** is vanilla's `ServerboundRenameItemPacket`: the anvil's name field (`Bench`'s name, `minecraft_terrain/src/stations.rs:472`), at most 50 characters, accepted only while an anvil menu is open.
 
-**`GearView`** mirrors `minecraft_terrain::body_gear::BodyGear`: `main`, `off`, `armor[4]` and `hides_gun`, with each `GearItem { id, glint, dye }`.
+**`GearView`** mirrors `minecraft_terrain::body_gear::BodyGear`: `main`, `off`, `armor[4]` and `hides_gun`, with each `GearItem { id, glint, dye, potion, look }`. `look` is the stack's `item_look` key part (a crossbow's loaded arrow or rocket, a banner's or shield's base colour and pattern layers), so friends see a loaded crossbow and patterned banners and shields in a player's hands.
 
 **`MobLook`** is the render state of a mob that is not in `ServerMob` and changes rarely: equipment item ids, villager type, profession and level, colours, saddle, custom name and baby. Section 9.2 says how it is sent.
 

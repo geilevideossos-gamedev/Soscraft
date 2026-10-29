@@ -17,6 +17,7 @@ fn item_view(item: &minecraft_terrain::body_gear::GearItem) -> GearItem {
         glint: item.glint,
         dye: item.dye,
         potion: item.potion,
+        look: item.look.clone(),
     }
 }
 
@@ -26,6 +27,7 @@ fn item_of(view: &GearItem) -> minecraft_terrain::body_gear::GearItem {
         glint: view.glint,
         dye: view.dye,
         potion: view.potion,
+        look: view.look.clone(),
     }
 }
 
@@ -150,5 +152,42 @@ mod tests {
         let back = gear_of(&view);
         assert_eq!(back.main.as_ref().unwrap().potion, Some(0xF82423));
         assert_eq!(back, gear);
+    }
+
+    #[test]
+    fn a_loaded_crossbow_and_a_patterned_banner_keep_their_look_both_ways() {
+        let mut inventory = kitted();
+        let mut crossbow = ItemStack::new("minecraft:crossbow", 1);
+        crossbow.components = Some(serde_json::json!({
+            "minecraft:charged_projectiles": [{"id": "minecraft:arrow"}]
+        }));
+        let mut banner = ItemStack::new("minecraft:white_banner", 1);
+        banner.components = Some(serde_json::json!({
+            "minecraft:banner_patterns": [
+                {"pattern": "minecraft:creeper", "color": "black"},
+                {"pattern": "minecraft:border", "color": "red"}
+            ]
+        }));
+        inventory.slots[2] = Some(crossbow);
+        inventory.slots[39] = Some(banner.clone());
+        inventory.slots[40] = Some(banner);
+        let gear = body_gear(&inventory, 2, &PlayerMode::new(GameMode::Survival)).unwrap();
+        let view = gear_view(&gear);
+        let patterned = "|layer=black,minecraft:creeper|layer=red,minecraft:border";
+        assert_eq!(view.main.as_ref().unwrap().look, "|charge=arrow");
+        assert_eq!(view.off.as_ref().unwrap().look, patterned);
+        assert_eq!(view.armor[0].as_ref().unwrap().look, patterned);
+        let back = gear_of(&view);
+        assert_eq!(back, gear);
+        assert_eq!(
+            back.main.as_ref().unwrap().key(),
+            "minecraft:crossbow|charge=arrow"
+        );
+        assert_eq!(
+            back.off.as_ref().unwrap().key(),
+            format!("minecraft:white_banner{patterned}")
+        );
+        let plain = body_gear(&kitted(), 1, &PlayerMode::new(GameMode::Survival)).unwrap();
+        assert_eq!(gear_view(&plain).main.unwrap().look, "");
     }
 }

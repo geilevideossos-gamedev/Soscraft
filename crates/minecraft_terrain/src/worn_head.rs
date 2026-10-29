@@ -55,7 +55,7 @@ pub fn append_worn_head(
     let held = HeldItem {
         pose: item_pose(head),
         light,
-        id: item.id.clone(),
+        id: item.key(),
         display: HeldDisplay::Head,
         first_tint: None,
     };
@@ -135,6 +135,7 @@ pub(crate) mod tests {
             glint,
             dye: None,
             potion: None,
+            look: String::new(),
         }
     }
 

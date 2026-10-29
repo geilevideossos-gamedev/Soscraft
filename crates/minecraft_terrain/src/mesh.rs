@@ -1273,7 +1273,7 @@ impl ItemVisuals {
             let Some(id) = view.item.as_deref() else {
                 continue;
             };
-            let id = &crate::item_tint::key(id, view.potion);
+            let id = &crate::item_tint::key(&format!("{id}{}", view.look), view.potion);
             let Some((fixed, tints)) = self.model(id, packs)?.map(|visual| (visual.fixed, visual.tints.clone())) else {
                 continue;
             };
@@ -3874,6 +3874,7 @@ mod tests {
             position: glam::DVec3::new(0.5, 1.5, 0.96875),
             item: Some("minecraft:potion".to_owned()),
             potion,
+            look: String::new(),
             glint: false,
             rotation: 0,
             invisible: true,

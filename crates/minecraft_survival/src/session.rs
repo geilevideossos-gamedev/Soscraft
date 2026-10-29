@@ -1987,6 +1987,7 @@ mod tests {
                 glint: false,
                 dye: None,
                 potion: None,
+                look: String::new(),
             }),
             hides_gun: true,
             ..GearView::default()

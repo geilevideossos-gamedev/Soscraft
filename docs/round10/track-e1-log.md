@@ -8,6 +8,7 @@ A commit can't name its own hash, so each entry is written with its commit and n
 
 - "Minecraft taming shows hearts, and a failed try or a bucking horse shows smoke" (after `280f5fe9`): `EntitySnapshot` has a new field `mob_puffs`. The snapshot rides in the state frame's `entities` blob and in `ToClient::Bursts`, so host and friend must run the same build. No message or codec tag changed.
 - "Friends see their mount's hearts" (after `ac0b573a`): `minecraft_net::PlayerView` (sent as `ToClient::Player`) has a new last field `vehicle_health: Option<[f32; 2]>`. An old friend build can't read the new view, so the release step must bump `PROTOCOL`. No message index or codec tag changed.
+- "Minecraft players and friends show loaded crossbows and patterned banners in their hands" (after `6e3ee0c0`): `minecraft_net::GearItem` (sent in `ToClient::Equipment`) has a new last field `look: String`, and `minecraft_terrain::item_frame::FrameView` (in `EntitySnapshot.frames`, which friends get with the snapshot) has a new field `look: String` after `potion`. An old friend build can't read either, so the release step must bump `PROTOCOL`. No message index or codec tag changed.
 
 ## E-kit. Kits and /give take banner patterns, loaded crossbows and firework stars
 
@@ -958,6 +959,56 @@ Commit: "Minecraft banners drop with their patterns and name", the one after `3b
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*8,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*2,minecraft:pillager_spawn_egg*16,minecraft:oak_planks*32,minecraft:diamond_axe,minecraft:diamond_sword,minecraft:tnt*2,minecraft:flint_and_steel,minecraft:shulker_box,minecraft:stone*4
+```
+
+### Players and friends show loaded crossbows and patterned banners in their hands
+
+Commit: "Minecraft players and friends show loaded crossbows and patterned banners in their hands", the one after `6e3ee0c0`.
+
+- **Cause** (as in the brief, re-checked at `6e3ee0c0`):
+  - A player's held and worn items reach the third-person body as `body_gear::GearItem { id, glint, dye, potion }`, built by `GearItem::of` from the stack. Friends get the same through the wire copy `minecraft_net::messages::GearItem` in `ToClient::Equipment` (`minecraft_survival/src/gear.rs` `gear_view`/`gear_of`).
+  - Neither held the stack's components, so `body_render::held_items` keyed the item by its id and colour alone, and `worn_head` by its id alone. In F5, and in every friend's window, a loaded crossbow was the plain crossbow and a patterned banner or shield was plain.
+  - Item frames have the same gap: `item_frame::FrameView` carried the item's id and potion colour only, so `mesh.rs` `append_frames` drew a framed banner plain and a framed loaded crossbow empty.
+  - The first-person hand (`render_anim` `minecraft_hand.rs`) keys with `item_tint::of_stack_at`, which carries the look since group `item-states`, so it needed no change.
+- **Changed:**
+  - `crates/minecraft_terrain/src/body_gear.rs`: `GearItem.look` (after `potion`) is the stack's `item_look` key part, `ItemLook::of(components, None).suffix()`, filled in `GearItem::of`. `GearItem::key()` builds the drawn key as `item_tint::of_stack_at` does: the id, the look, then the potion colour or the dye.
+  - `body_render.rs` `held_items` and `worn_head.rs` `append_worn_head` key with `GearItem::key()`.
+  - `item_frame.rs`: `FrameView.look` (after `potion`), filled in `ItemFrame::view`. `mesh.rs` `append_frames` keys the framed item with it.
+  - `crates/minecraft_net/src/messages.rs`: the wire `GearItem` has `look: String` after `potion`. `minecraft_survival/src/gear.rs` `item_view` and `item_of` copy it both ways, so `ToClient::Equipment` brings it to friends, and a crossbow being loaded or a banner swapped for another counts as a gear change.
+  - Struct literals in tests (`armor_render`, `body_render`, `body_gear`, `worn_head`, `mesh`, `codec`, `session`, `remote`, and `render_anim` `minecraft_gear.rs`, `minecraft_world.rs`, `minecraft_skaters.rs`) take an empty look.
+  - `item_icons.rs`: the test module and its `banner_pack` are `pub(crate)`, so the body and frame tests draw with the same small banner pack.
+  - `docs/MULTIPLAYER.md`: the `GearView` line names `potion` and `look`.
+  - `docs/MINECRAFT-SURVIVAL.md`: patterns now show in the hand in first and third person, to friends and in item frames; only placed banners still show their base colour alone.
+- **Tests:**
+  - `minecraft_terrain`:
+    - `body_gear::tests::a_loaded_crossbow_and_the_ominous_banner_carry_their_look`: a loaded crossbow in the main hand looks `|charge=arrow` and keys `minecraft:crossbow|charge=arrow`. The ominous banner (from `ominous_banner()`) in the offhand and on the head carries its eight layers (rhombus cyan first, border black last), as `ItemLook::of` reads them. An unloaded crossbow has no look.
+    - `body_gear::tests::a_worn_or_held_item_keys_like_the_stack_itself`: for a rocket-loaded crossbow, the ominous banner, a red shield with a yellow cross, a healing potion with a pattern, red leather horse armour with a base colour and plain stone, `GearItem::of(stack).key()` equals `item_tint::of_stack(stack)`.
+    - `body_render::tests::a_held_loaded_crossbow_and_a_patterned_banner_key_their_look`: the held keys are `minecraft:crossbow|charge=rocket` and `minecraft:white_banner|layer=red,minecraft:stripe`.
+    - `body_render::tests::a_patterned_banner_shows_its_layers_in_either_hand_and_on_the_head`: through `append_body_gear` with the small banner pack, a plain banner draws 18 faces and a striped one 24 in the right hand, the left hand and on the head.
+    - `item_frame::tests::a_framed_ominous_banner_or_loaded_crossbow_view_carries_its_look`: an empty frame and a plain item have no look; the framed ominous banner's view holds its eight layers and keys like the stack; a framed loaded crossbow looks `|charge=arrow`.
+    - `item_frame::tests::a_framed_banner_draws_its_pattern_layers`: through `ItemFrame::view` and `append_frames`, a framed plain banner draws 18 faces and a striped one 24.
+  - `minecraft_net` `codec::tests::a_held_crossbow_s_and_banner_s_look_round_trips`: a `GearItem` with a look, and `ToClient::Equipment` with a loaded crossbow in the hand and a patterned banner in the offhand and on the head, come back the same.
+  - `minecraft_survival` `gear::tests::a_loaded_crossbow_and_a_patterned_banner_keep_their_look_both_ways`: `gear_view` sends `|charge=arrow` and the banner's two layers, `gear_of` gives back the same `BodyGear`, and the keys are those of the stacks. A plain held item sends an empty look.
+  - All 1536 `minecraft_terrain` tests (3 ignored, as before), 27 `minecraft_net` tests and 788 `minecraft_survival` tests (plus `vanilla_world`) pass, and so do the `render_anim` tests; `check -p launcher` passes.
+- **Decisions:**
+  - The look travels as the key part string that `item_look` already writes, not as the stack's components: it holds exactly what the models read (charge, base colour, up to 16 layers), and the friend's game keys it the same way the host does.
+  - The worn head now keys with the whole key (look and colour) like the hands, as vanilla draws any head item with its components. In survival a player can't put a banner on the head (vanilla allows it only by command, and the fork has no `/item`), so this shows only for items that already go there.
+  - Players have no crossbow use in the fork, so `GearItem` carries no use ticks: a player's crossbow shows standby, arrow or rocket and never the pull (the brief's decision).
+  - A framed item still shows a potion colour but no dye (`FrameView` has no dye field); dyed leather in a frame is left as it was.
+- **Protocol:** see the `## Protocol` entry for this commit.
+- **Owner's test steps** (survival, a new world, by day, the kit below):
+  1. **Third person.** Hold the arrow crossbow and press F5 for the third-person view: the arrow lies in the crossbow in your right hand. Do the same with the firework crossbow (a rocket) and the plain crossbow (no arrow). **Screenshot P1.**
+  2. **Banners and the shield in third person.** Still in F5, hold the white banner: it shows the black creeper face in a red border. Hold the blue banner: the white fade, the lime globe and the yellow bottom stripe. Put the red shield in the offhand (F): it shows the yellow cross on red in your left hand. **Screenshot P2.**
+  3. **Item frames.** Build a plank wall, hang four item frames and put in the arrow crossbow, the firework crossbow, the white banner and the red shield. Each shows its arrow, rocket or pattern in the frame. Right-click to turn them: the look stays. **Screenshot P3.**
+  4. **The captain's banner in a frame.** Use pillager eggs until one carries a banner (a captain), kill it with the sword, pick up the "Ominous Banner" and put it in a frame: the frame shows the ominous pattern.
+  5. **Friend (two windows, both on this build).** The friend gets the same kit (or `/kit @a` from the host).
+     - The host holds the arrow crossbow, then the white banner, with the red shield in the offhand. In the friend's window the host's body shows the arrow, then the pattern, and the cross on the shield. **Screenshot P4**, both windows.
+     - The friend does the same: the host sees the friend's loaded crossbow and patterned banner and shield.
+     - The friend sees the host's item frames with the same looks as in the host's window. **Screenshot P5.**
+- **Kit** (11 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:firework_rocket"}]],minecraft:crossbow,minecraft:item_frame*8,minecraft:oak_planks*32,minecraft:pillager_spawn_egg*16,minecraft:diamond_sword,minecraft:cooked_beef*16
 ```
 
 ## Review fixes

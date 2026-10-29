@@ -1308,6 +1308,7 @@ mod tests {
                     glint: false,
                     dye: None,
                     potion: None,
+                    look: String::new(),
                 }),
                 None,
                 None,

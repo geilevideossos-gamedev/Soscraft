@@ -30,7 +30,7 @@ pub fn held_items(rig: &BodyRig, gear: &BodyGear) -> Vec<(HeldItem, bool)> {
             let held = HeldItem {
                 pose,
                 light: rig.light,
-                id: crate::item_tint::key(&item.id, item.potion.or(item.dye)),
+                id: item.key(),
                 display,
                 first_tint: None,
             };
@@ -98,6 +98,7 @@ mod tests {
             glint,
             dye: None,
             potion: None,
+            look: String::new(),
         })
     }
 
@@ -392,6 +393,7 @@ mod tests {
                 glint: false,
                 dye: None,
                 potion: Some(0x87A363),
+                look: String::new(),
             }),
             off: item("minecraft:potion", false),
             ..BodyGear::default()
@@ -414,6 +416,7 @@ mod tests {
                 glint: false,
                 dye: Some(0xB02E26),
                 potion: None,
+                look: String::new(),
             }),
             off: item("minecraft:leather_horse_armor", false),
             ..BodyGear::default()
@@ -421,6 +424,89 @@ mod tests {
         let held = held_items(&rig, &gear);
         assert_eq!(held[0].0.id, "minecraft:leather_horse_armor~b02e26");
         assert_eq!(held[1].0.id, "minecraft:leather_horse_armor");
+    }
+
+    fn with(id: &str, components: serde_json::Value) -> minecraftoss_player::inventory::ItemStack {
+        let mut stack = minecraftoss_player::inventory::ItemStack::new(id, 1);
+        stack.components = Some(components);
+        stack
+    }
+
+    fn striped_banner() -> minecraftoss_player::inventory::ItemStack {
+        with(
+            "minecraft:white_banner",
+            serde_json::json!({"minecraft:banner_patterns": [{"pattern": "minecraft:stripe", "color": "red"}]}),
+        )
+    }
+
+    #[test]
+    fn a_held_loaded_crossbow_and_a_patterned_banner_key_their_look() {
+        let rig = BodyRig {
+            hands: [Some(Mat4::IDENTITY), Some(Mat4::IDENTITY)],
+            ..BodyRig::default()
+        };
+        let crossbow = with(
+            "minecraft:crossbow",
+            serde_json::json!({"minecraft:charged_projectiles": [{"id": "minecraft:firework_rocket"}]}),
+        );
+        let gear = BodyGear {
+            main: Some(GearItem::of(&crossbow)),
+            off: Some(GearItem::of(&striped_banner())),
+            ..BodyGear::default()
+        };
+        let held = held_items(&rig, &gear);
+        assert_eq!(held[0].0.id, "minecraft:crossbow|charge=rocket");
+        assert_eq!(
+            held[1].0.id,
+            "minecraft:white_banner|layer=red,minecraft:stripe"
+        );
+        assert_eq!(held[0].0.id, crate::item_tint::of_stack(&crossbow));
+    }
+
+    #[test]
+    fn a_patterned_banner_shows_its_layers_in_either_hand_and_on_the_head() {
+        let (_temp, packs) = crate::item_icons::tests::banner_pack();
+        let textures = ["banner_base", "base", "stripe"]
+            .map(|name| ResourceId::parse(&format!("minecraft:entity/banner/{name}")).unwrap());
+        let atlas = crate::mesh::make_atlas(&packs, textures.to_vec()).unwrap();
+        let light = SkyLight::build(&HandcraftedScene::new());
+        let rig = BodyRig {
+            hands: [Some(Mat4::IDENTITY), Some(Mat4::IDENTITY)],
+            armor: crate::armor_render::ArmorRig {
+                head: Some(Mat4::IDENTITY),
+                ..Default::default()
+            },
+            ..BodyRig::default()
+        };
+        let mut items = ItemVisuals::default();
+        let mut faces = |gear: BodyGear| {
+            let mut mesh = ChunkMesh::default();
+            append_body_gear(&mut mesh, &mut items, &rig, &gear, &packs, &atlas, &light).unwrap();
+            mesh.faces
+        };
+        let plain = GearItem::of(&minecraftoss_player::inventory::ItemStack::new(
+            "minecraft:white_banner",
+            1,
+        ));
+        let striped = GearItem::of(&striped_banner());
+        for item in [plain, striped] {
+            let expected = if item.look.is_empty() { 18 } else { 24 };
+            let main = BodyGear {
+                main: Some(item.clone()),
+                ..BodyGear::default()
+            };
+            let off = BodyGear {
+                off: Some(item.clone()),
+                ..BodyGear::default()
+            };
+            let head = BodyGear {
+                armor: [Some(item.clone()), None, None, None],
+                ..BodyGear::default()
+            };
+            assert_eq!(faces(main), expected, "{}", item.look);
+            assert_eq!(faces(off), expected, "{}", item.look);
+            assert_eq!(faces(head), expected, "{}", item.look);
+        }
     }
 
     #[test]
