@@ -127,6 +127,35 @@ Commit: "Minecraft villagers show hearts, anger, happiness and raid sweat", the 
 IW4L_MINECRAFT_KIT=minecraft:horse_spawn_egg*2,minecraft:llama_spawn_egg*2,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*4,minecraft:ocelot_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:wheat*64,minecraft:potato*64,minecraft:carrot*64,minecraft:beetroot*64,minecraft:golden_carrot*16,minecraft:bone*32,minecraft:cod*64,minecraft:bread*32,minecraft:white_bed,minecraft:white_bed,minecraft:white_bed,minecraft:composter,minecraft:emerald*64,minecraft:ominous_bottle*2,minecraft:iron_sword,minecraft:cooked_beef*32
 ```
 
+### Llama spit leaves a puff
+
+Commit: "Minecraft llama spit leaves a puff", the one after `8f39a9ae`.
+
+- **Cause** (as in the brief, re-checked at `8f39a9ae`): vanilla puffs on the client when a spit appears (`LlamaSpit.recreateFromPacket`). The fork's view holds the spit with its velocity (the host copies the server's mob world in, a friend hatches it from its look tag with `Motion`) and draws its model, but drew no particles, and `ambient_particles` had no spit kind.
+- **Vanilla 26.3** (javap):
+  - `LlamaSpit.recreateFromPacket`: 7 `SPIT` particles at the spit's position. Particle `i` (0 to 6) gets the motion `(mx * (0.4 + 0.1 * i), my, mz * (0.4 + 0.1 * i))`, where `m` is the packet's movement; y is not scaled.
+  - `SpitParticle`: an `ExplodeParticle` whose constructor only sets `gravity = 0.5`; no tick or size of its own. `spit.json` lists `generic_7` to `generic_0`.
+- **Changed:**
+  - `ambient_particles.rs`: `Kind::Spit`, appended. `Particle::spit` is the poof with the spit's kind and gravity 0.5. It ticks in the default `tick` arm: it falls by 0.04 x 0.5 a tick, slows by 0.9, collides with blocks and slows sideways on the ground. Its sprites run `generic_7` to `generic_0` with age like the poof's, at its own size, opaque.
+  - `minecraft_survival` `entity_view.rs`: a `spit_puffs` id set beside `fang_crits`, and `spit_puffs()`, called in `advance` right after `fang_crits()`. Every alive spit in the view's world whose id is new puffs 7 specks at its position with vanilla's motion; the set keeps only the ids of spits still there.
+  - `docs/round9/track-d-log.md` (Left for later): the spit particles are marked as landed.
+- **Tests:**
+  - `minecraft_terrain` `ambient_particles::tests::a_spit_speck_is_a_poof_that_falls_at_0_5`: a spit speck takes exactly a poof's draws (motion, colour, size, lifetime) with gravity 0.5 and friction 0.9, starts on `generic_7` and ends on `generic_0`, is opaque, loses 0.02 of y speed in its first tick and is below its start after 11 ticks.
+  - `minecraft_survival` `entity_view::tests::a_new_spit_puffs_seven_specks_once_that_fall`: a new spit puffs 7 specks at its position, the next view tick none, after 10 ticks they have flown along its path and dropped; a dead spit puffs nothing more, and a second new spit puffs 7 of its own.
+- **Decisions:**
+  - The puff comes from the first view tick that holds a new spit, with the spit's position and velocity at that moment. On the host that is the spit after its first server tick, because the host's view gets the mob world after each tick; a friend sees the spit as hatched from its look tag. Both are within a tick of vanilla's add packet, and each viewer draws the specks with its own random, as with the other puffs.
+  - A spit that leaves a friend's tracking range and comes back puffs again, as vanilla's `recreateFromPacket` runs on every add.
+- **Protocol:** no change.
+- **Owner's test steps** (survival, Normal, by day, flat ground, the kit below):
+  1. **A llama spits.** Use a llama egg and hit the llama once with the iron sword. It turns and spits at you: a small white puff of 7 specks flies from its mouth towards you and drops within about a second, while the spit ball flies on. **Screenshot spit_01_puff**, just after a spit.
+  2. **Again.** Step back about 8 blocks and hit a second llama: each spit puffs once, where it leaves the llama's mouth, not along its flight.
+  3. **Two windows** (host H, friend F, both on this build): F hits a llama while H stands 10 blocks away. In both windows the puff flies from the llama's mouth towards F. **Screenshot spit_02_friend**, F's window.
+- **Kit** (5 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:llama_spawn_egg*4,minecraft:iron_sword,minecraft:shield,minecraft:oak_fence*32,minecraft:cooked_beef*16
+```
+
 ## E-trading. Trading screen: number keys, F, Q, drags and double-click
 
 ### Number keys and F on the payment and result slots

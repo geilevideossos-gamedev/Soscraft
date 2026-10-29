@@ -64,6 +64,7 @@ pub struct EntityView {
     pub(crate) random: minecraftoss_player::rng::LegacyRandom,
     shown: HashSet<u64>,
     fang_crits: HashSet<u64>,
+    spit_puffs: HashSet<u64>,
     ravager_roars: HashSet<u64>,
     fireworks: minecraft_terrain::firework_particles::FireworkParticles,
     firework_camera: DVec3,
@@ -119,6 +120,7 @@ impl EntityView {
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             shown: HashSet::new(),
             fang_crits: HashSet::new(),
+            spit_puffs: HashSet::new(),
             ravager_roars: HashSet::new(),
             fireworks: minecraft_terrain::firework_particles::FireworkParticles::new((seed ^ 0xf14e) as u64),
             firework_camera: DVec3::ZERO,
@@ -155,6 +157,7 @@ impl EntityView {
             self.client.tick();
             self.spell_casts();
             self.fang_crits();
+            self.spit_puffs();
             self.ravager_effects();
             self.wither_effects();
             minecraft_terrain::families::client_effects(&self.world, &self.client, &mut minecraft_terrain::families::ClientFx { ambient: &mut self.ambient, spell: &mut self.spell, portal: &mut self.portal, poof: &mut self.poof, sounds: &mut self.sounds, random: &mut self.random, seen: &mut self.family_seen });
@@ -259,6 +262,21 @@ impl EntityView {
                     (self.random.next_double() * 2.0 - 1.0) * 0.3,
                 );
                 self.ambient.add(minecraft_terrain::ambient_particles::Kind::Crit, DVec3::new(x, y + 1.0, z), motion);
+            }
+        }
+    }
+
+    fn spit_puffs(&mut self) {
+        let spits: Vec<(u64, DVec3, DVec3)> = self.world.llama_spits().iter().filter(|e| e.spit.alive).map(|e| (e.id, e.spit.position, e.spit.velocity)).collect();
+        self.spit_puffs.retain(|id| spits.iter().any(|(spit, ..)| spit == id));
+        for (id, at, velocity) in spits {
+            if !self.spit_puffs.insert(id) {
+                continue;
+            }
+            for i in 0..7_u8 {
+                let spread = 0.4 + 0.1 * f64::from(i);
+                let motion = DVec3::new(velocity.x * spread, velocity.y, velocity.z * spread);
+                self.ambient.add(minecraft_terrain::ambient_particles::Kind::Spit, at, motion);
             }
         }
     }
@@ -1696,6 +1714,29 @@ mod tests {
             assert_eq!(of_kind.len(), 5, "{kind:?}");
             assert!(of_kind.iter().all(|at| at.y >= feet.y + lowest && at.y <= feet.y + 1.95 + lowest), "{kind:?} {of_kind:?}");
         }
+    }
+
+    #[test]
+    fn a_new_spit_puffs_seven_specks_once_that_fall() {
+        use minecraft_terrain::ambient_particles::Kind;
+        use minecraftoss_entities::llama_spit::LlamaSpit;
+        let spit = |position, velocity| LlamaSpit { position, velocity, yaw: 0.0, pitch: 0.0, yaw_o: 0.0, pitch_o: 0.0, owner: None, owner_uuid: None, left_owner: false, tick_count: 0, alive: true };
+        let specks = |view: &EntityView| view.ambient.kinds_at().filter(|(kind, _)| *kind == Kind::Spit).map(|(_, at)| at).collect::<Vec<DVec3>>();
+        let mut view = EntityView::new(17);
+        let at = DVec3::new(0.5, 66.0, 0.5);
+        let first = view.world.spawn_llama_spit(spit(at, DVec3::new(0.3, 0.0, 1.2)));
+        view.advance(0.05, crate::tick_rate::ClientTiming::default(), &[], DVec3::ZERO);
+        assert_eq!(specks(&view), vec![at; 7], "seven specks where the spit appears");
+        view.advance(0.05, crate::tick_rate::ClientTiming::default(), &[], DVec3::ZERO);
+        assert_eq!(specks(&view).len(), 7, "the spit puffs only once");
+        view.tick_scene(&HandcraftedScene::default(), 10);
+        let flown = specks(&view);
+        assert_eq!(flown.len(), 7);
+        assert!(flown.iter().all(|speck| speck.y < at.y && speck.z > at.z + 0.4), "they fly along and drop: {flown:?}");
+        view.world.llama_spit_mut(first).unwrap().spit.alive = false;
+        view.world.spawn_llama_spit(spit(at, DVec3::new(0.0, 0.0, -1.2)));
+        view.advance(0.05, crate::tick_rate::ClientTiming::default(), &[], DVec3::ZERO);
+        assert_eq!(specks(&view).len(), 14, "a second spit puffs too");
     }
 
     #[test]
