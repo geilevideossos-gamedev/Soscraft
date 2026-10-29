@@ -552,3 +552,24 @@ After 1c672729.
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:bow,minecraft:arrow*32,minecraft:iron_sword
 ```
+
+### Final verification
+
+After e80f5930, on the whole of segment m1a (`r10-m1a-base..HEAD`).
+
+- **Crates touched:** `minecraft_terrain`, `minecraftoss-entities`, `minecraftoss-player`, `minecraftoss-world`.
+- **Clippy** (`clippy -p minecraft_terrain -p minecraftoss-entities -p minecraftoss-player -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant`, with `full-suite.ps1`'s two empty stand-in scenario files): green. `minecraft_terrain` has 36 old warnings, none on a line this track added (the four in `server_mobs.rs` are on lines from before `r10-m1a-base`); the three vendored crates have none.
+- **Tests:**
+  - `test -p minecraftoss-entities --locked`: 469 passed.
+  - `test -p minecraftoss-player --locked`: 198 passed.
+  - `test -p minecraftoss-world --locked`: 117 passed.
+  - `test -p minecraft_terrain --locked`: 1446 passed, 3 ignored. The first run failed only the known flaky `sections::tests::background_full_update_matches_the_synchronous_one`; the re-run passed.
+- **Fixes:** none needed.
+
+### The whole track's kit
+
+One line for every step above (rabbits, polar bears and the review fix), 27 stacks. It leaves out the golden carrots (carrots and dandelions tempt and breed rabbits too), the lava bucket (flint and steel sets the fire), the snow blocks (no step uses them) and the fox egg (it spawns nothing until M1-4 lands). The friend's `.env` needs the same line.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*16,minecraft:polar_bear_spawn_egg*8,minecraft:carrot*64,minecraft:dandelion*16,minecraft:golden_dandelion*4,minecraft:iron_hoe,minecraft:bone_meal*64,minecraft:water_bucket,minecraft:oak_fence*64,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:lead*4,minecraft:iron_sword,minecraft:shield,minecraft:iron_helmet,minecraft:iron_chestplate,minecraft:iron_leggings,minecraft:iron_boots,minecraft:spawner,minecraft:cooked_beef*32,minecraft:bow,minecraft:arrow*64,minecraft:grass_block*64,minecraft:flint_and_steel,minecraft:ice*32,minecraft:torch*16
+```
