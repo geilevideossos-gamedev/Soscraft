@@ -310,6 +310,10 @@ impl Family for EldenBoss {
         false
     }
 
+    fn display_name(kind: &str) -> Option<&'static str> {
+        elden_boss::def(kind).map(|def| def.name)
+    }
+
     fn knockback_resistance(_mob: &FamilyMob<Self>) -> f64 {
         1.0
     }
@@ -348,7 +352,7 @@ mod tests {
     use crate::creeper::CreeperExplosion;
     use crate::effects::{EffectInstance, MobEffect};
     use crate::projectile::ArrowImpact;
-    use crate::world::families::targetable;
+    use crate::world::families::{display_name, targetable};
     use crate::world::{PLAYER_TARGET, PlayerAttack};
     use elden_boss::State;
     use elden_boss::margit::MARGIT;
@@ -459,6 +463,7 @@ mod tests {
                 .any(|entry| entry.kind == "iw4l:margit" && entry.persistent)
         );
         assert!(!targetable("iw4l:margit"));
+        assert_eq!(display_name("iw4l:margit"), Some("Margit, the Fell Omen"));
         assert!(!crate::monster_ai::is_enemy("iw4l:margit"));
         assert!(
             world.mob_candidates().iter().all(|mob| mob.id != id),

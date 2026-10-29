@@ -371,3 +371,30 @@ After 439e2172.
 - **Tests:** `world::families::tests::a_registered_mob_may_carry_its_own_name` (the shy probe has its name; the other probe kinds, a vanilla kind and an unknown kind have none). `test -p minecraftoss-entities --locked --lib families::tests`: 18 passed.
 - **Decision:** a static hook per kind, like `enemy` and `targetable`: a death line or a summon line knows only the kind, not the mob.
 - **Owner's steps:** nothing changes in game until the next commit uses the hook. No kit line.
+
+### 11. Minecraft deaths by Margit name him, and /summon knows him
+
+After bcb20591. Brief F2, commit 3 (its summon part landed in commit 8).
+
+- **Changed:**
+  - Vendored entities crate, `world/families/bosses/elden_bosses.rs`: his `display_name` (commit 10's hook) is his def's name, "Margit, the Fell Omen".
+  - `crates/minecraft_survival/src/death.rs`: `entity_name` (the death line and the death screen's killer) takes a registered mob's own name before the `entity.minecraft.<kind>` key, and the new `entity_text(kind)` gives the chat text: the name as a literal for a mob that has one, else vanilla's entity name text (resolved from each viewer's language). `death_text` (what friends receive) uses it.
+  - `crates/minecraft_survival/src/commands.rs` `summon_answers`: the summon line uses `entity_text`, so it reads "Summoned new Margit, the Fell Omen" instead of the bare id.
+  - Neither line names a family: both ask the registry (D0's rule for `death.rs`).
+- **Already there:** `/summon` accepts and suggests `iw4l:margit` (D0's `simulated_kinds()`), Peaceful refuses him, a summon's `Health` is used and his tag goes into `mob_tags` (commit 8). This commit adds the tests the brief lists for them.
+- **Tests:**
+  - `death::tests::a_death_by_margit_names_him` (survival): his blow gives "%1$s was slain by Margit, the Fell Omen" with him as the killer, the friend's text resolves to "Sos was slain by Margit, the Fell Omen", and a zombie keeps its language key.
+  - `commands::tests::the_summon_command_knows_iw4l_margit` (survival): the registry lists him, `/summon iw4l:m` suggests `iw4l:margit`, and `/summon iw4l:margit 0 30000000 0` gets past the registry to the position check, where `/summon iw4l:nothing` stops at the registry.
+  - `server::tests::a_summoned_health_is_used_and_a_saved_one_is_not` (terrain, with the 26.3 data): `{Health:401.0f}` gives 401; saved with `mob_tags_where`, his marker carries `Health:401` (vanilla's marker ignores it), and loaded into a fresh world he has 800 and the same anchor.
+  - `margit_is_a_persistent_boss_of_his_size_and_kind` (entities) also checks his name.
+  - `peaceful_removes_margit` and `margit_never_despawns_far_from_players` (the brief's server list) are commit 8's entity tests.
+- **Runs:** `test -p minecraft_survival --locked --lib margit`: 2 passed. `test -p minecraft_terrain --locked --lib` with `margit` and `summoned_health`: 6 passed. `test -p minecraftoss-entities --locked --lib elden`: 11 passed. `check -p launcher --locked`: green.
+- **Decisions:**
+  - **The summon line names him too:** vanilla's "Summoned new %s" shows the entity's name, and his id has no language key. One generic call, as in `death.rs`.
+  - **Holy hits** will die as "%1$s was killed by %2$s using magic" (`indirectMagic`) through the same name once group `er-fight` lands his hits.
+- **Owner's steps.** He is still a round shadow and cannot hurt you until groups `er-look` and `er-fight`, so a death by him can't be tested yet. Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `f2-11-1.png`.
+  1. Type `/summon iw4l:` and press Tab: `iw4l:margit` is offered.
+  2. Run `/summon iw4l:margit ~ ~ ~30`: the chat says "Summoned new Margit, the Fell Omen". **Screenshot f2-11-1** of the chat.
+  3. `/summon minecraft:zombie ~ ~ ~5` under a roof: the chat says "Summoned new Zombie", as before.
+
+Kit: none needed for these steps.

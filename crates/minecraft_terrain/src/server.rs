@@ -6558,6 +6558,25 @@ mod tests {
     }
 
     #[test]
+    fn a_summoned_health_is_used_and_a_saved_one_is_not() {
+        let Some((mut server, _)) = door_world() else { return };
+        let half = minecraftoss_core::snbt::parse_compound("{Health:401.0f}").unwrap();
+        server.summon("iw4l:margit", [8.5, 200.0, 8.5], Some(&half), 0.0).expect("Margit is summoned");
+        let mob = &server.mobs.elden_bosses()[0];
+        let id = mob.core.id;
+        assert_eq!((mob.core.health, mob.state.brain.health()), (401.0, 401.0));
+        let saved = crate::server_mobs::mob_tags_where(&server.mobs, |mob, _| mob == id, &server.mob_tags, false);
+        let [(_, tag)] = saved.as_slice() else { panic!("one saved Margit: {saved:?}") };
+        assert!(crate::elden_save::claims(tag), "{tag:?}");
+        assert_eq!(tag.get("Health").and_then(minecraftoss_core::nbt::Tag::as_f64), Some(401.0), "vanilla's marker carries it and ignores it");
+        let mut fresh = minecraftoss_entities::world::EntityWorld::default();
+        let back = crate::server_mobs::spawn_saved(&mut fresh, tag).expect("Margit loads");
+        let mob = fresh.elden_bosses().iter().find(|mob| mob.core.id == back).unwrap();
+        assert_eq!((mob.core.health, mob.state.brain.health()), (800.0, 800.0), "a saved Health is never read");
+        assert_eq!(mob.state.anchor, glam::DVec3::new(8.5, 200.0, 8.5));
+    }
+
+    #[test]
     fn a_carved_pumpkin_on_an_incomplete_t_stays_a_pumpkin() {
         let Some((mut server, mut scene)) = door_world() else { return };
         place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:iron_block"));
