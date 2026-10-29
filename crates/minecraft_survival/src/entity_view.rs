@@ -55,6 +55,7 @@ pub struct EntityView {
     pub(crate) falling: minecraft_terrain::falling_render::FallingBlocks,
     pub lids: minecraft_terrain::lids::Lids,
     pub(crate) spawners: minecraft_terrain::spawner_display::SpawnerDisplays,
+    pub(crate) vaults: minecraft_terrain::vault_display::VaultDisplays,
     pub(crate) orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
     pub potion_crumbs: Vec<DVec3>,
@@ -107,6 +108,7 @@ impl EntityView {
             spawners: minecraft_terrain::spawner_display::SpawnerDisplays::new(
                 (seed ^ 0x5b3d) as u64,
             ),
+            vaults: minecraft_terrain::vault_display::VaultDisplays::new((seed ^ 0x7a17) as u64),
             orb_pickups: Vec::new(),
             item_crumbs: Vec::new(),
             potion_crumbs: Vec::new(),
@@ -456,6 +458,11 @@ impl EntityView {
             self.potion_crumbs
                 .push(minecraft_terrain::spell_particles::break_center(at));
             return;
+        }
+        if id == minecraft_terrain::vault::ACTIVATE {
+            let holders = &self.rope_holders;
+            let players = |uuid: u128| holders.get(&uuid).map(|holder| (holder.feet, holder.height));
+            self.vaults.activation(pos, scene, &players, &mut self.ambient);
         }
         let is_a = minecraft_terrain::level_events::class_test(scene);
         let effects = minecraft_terrain::level_events::level_event(
@@ -815,6 +822,11 @@ impl EntityView {
             self.ambient.tick_emitters(|key| bodies.get(&key).copied());
             let now = time - i64::from(ticks - 1 - tick);
             for sound in self.spawners.tick_trials(scene, now, &mut self.ambient) {
+                self.sounds.push((sound.event.to_owned(), DVec3::from_array(sound.at), sound.volume, sound.pitch));
+            }
+            let holders = &self.rope_holders;
+            let players = |uuid: u128| holders.get(&uuid).map(|holder| (holder.feet, holder.height));
+            for sound in self.vaults.tick(scene, now, &players, &mut self.ambient) {
                 self.sounds.push((sound.event.to_owned(), DVec3::from_array(sound.at), sound.volume, sound.pitch));
             }
             if now % minecraft_terrain::ambient_particles::OMINOUS_SPAWNING_PERIOD == 0 {
@@ -1326,6 +1338,10 @@ impl EntityView {
         let _ = self
             .items
             .append_ominous_items(&mut out.items, &ominous, packs, atlas, light);
+        let vaults = self.vaults.items(camera, partial);
+        let _ = self
+            .items
+            .append_vault_items(&mut out.items, &vaults, packs, atlas, light);
         let _ = self.items.append_primed_tnt(
             &mut out.items,
             &self.falling.primed_tnt(partial),

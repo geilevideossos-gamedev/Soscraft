@@ -33,6 +33,9 @@ const TRIAL_DETECTION_SCALE: f32 = 1.5;
 const OMINOUS_SPAWNING_START: [f32; 3] = [69.0 / 255.0, 174.0 / 255.0, 254.0 / 255.0];
 const OMINOUS_SPAWNING_SPREAD: f64 = 0.4;
 pub const OMINOUS_SPAWNING_PERIOD: i64 = 5;
+const VAULT_CONNECTION_SCALE: f32 = 1.5;
+const VAULT_CONNECTION_DROP: f32 = 1.2;
+const VAULT_CONNECTION_ALPHA: f32 = 0.6;
 const WAITING_CLOUD_PUFFS: usize = 2;
 const WAITING_CLOUD_RADIUS: f32 = 0.2;
 const BURST_PARTICLES: usize = 200;
@@ -62,6 +65,7 @@ pub enum Kind {
     TrialSpawnerDetectionOminous,
     TrialOmen,
     OminousSpawning,
+    VaultConnection,
     Snowflake,
     EndRod,
     Crit,
@@ -194,6 +198,34 @@ impl Particle {
         particle.quad_size *= random.next_float() * 2.0 + 3.0;
         particle.color = OMINOUS_SPAWNING_START;
         particle
+    }
+
+    fn vault_connection(at: DVec3, offset: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::base(Kind::VaultConnection, at, DVec3::ZERO, random);
+        particle.position = at + offset;
+        particle.previous = particle.position;
+        particle.velocity = offset;
+        particle.quad_size = 0.1 * (random.next_float() * 0.5 + 0.2) * VAULT_CONNECTION_SCALE;
+        let blue = random.next_float() * 0.6 + 0.4;
+        particle.color = [0.9 * blue, 0.9 * blue, blue];
+        particle.lifetime = (random.next_float() * 10.0) as i32 + 30;
+        particle.alpha = 0.0;
+        particle
+    }
+
+    fn fly_to_keyhole(&mut self) -> bool {
+        self.previous = self.position;
+        let prior = self.age;
+        self.age += 1;
+        if prior >= self.lifetime {
+            return false;
+        }
+        let done = self.age as f32 / self.lifetime as f32;
+        let left = 1.0 - done;
+        let drop = done * done * done * done * VAULT_CONNECTION_DROP;
+        self.position = self.home + self.velocity * f64::from(left) - DVec3::new(0.0, f64::from(drop), 0.0);
+        self.alpha = ((done - 0.25) / 0.75).clamp(0.0, 1.0) * VAULT_CONNECTION_ALPHA;
+        true
     }
 
     fn fly_home(&mut self) -> bool {
@@ -519,7 +551,7 @@ impl Particle {
     fn translucent(&self) -> bool {
         matches!(
             self.kind,
-            Kind::CosySmoke | Kind::SignalSmoke | Kind::EndRod | Kind::Totem | Kind::TrialOmen
+            Kind::CosySmoke | Kind::SignalSmoke | Kind::EndRod | Kind::Totem | Kind::TrialOmen | Kind::VaultConnection
         )
     }
 
@@ -554,6 +586,7 @@ impl Particle {
             }
             Kind::TrialOmen => "trial_omen".to_owned(),
             Kind::OminousSpawning => "ominous_spawning".to_owned(),
+            Kind::VaultConnection => "vault_connection".to_owned(),
             Kind::EndRod | Kind::Totem => {
                 let step = self.age * (GLITTER_SPRITES - 1) / self.lifetime.max(1);
                 format!(
@@ -594,7 +627,8 @@ impl Particle {
             | Kind::EndRod
             | Kind::Totem
             | Kind::TrialOmen
-            | Kind::OminousSpawning => self.quad_size,
+            | Kind::OminousSpawning
+            | Kind::VaultConnection => self.quad_size,
         }
     }
 
@@ -779,7 +813,7 @@ pub fn textures() -> Vec<ResourceId> {
             format!("trial_spawner_detection_ominous_{index}"),
         ]
     });
-    ["lava", "glint", "flame", "soul_fire_flame", "critical_hit", "trial_omen", "ominous_spawning"]
+    ["lava", "glint", "flame", "soul_fire_flame", "critical_hit", "trial_omen", "ominous_spawning", "vault_connection"]
         .into_iter()
         .map(str::to_owned)
         .chain(detection)
@@ -1180,6 +1214,7 @@ impl AmbientParticles {
             }
             Kind::TrialOmen => Particle::spell(kind, at, motion, random),
             Kind::OminousSpawning => Particle::ominous_spawning(at, motion, random),
+            Kind::VaultConnection => Particle::vault_connection(at, motion, random),
             Kind::Snowflake => Particle::snowflake(at, motion, random),
             Kind::EndRod => Particle::end_rod(at, motion, random),
             Kind::Crit => Particle::crit(at, motion, random),
@@ -1232,6 +1267,7 @@ impl AmbientParticles {
             Kind::CosySmoke | Kind::SignalSmoke => particle.drift(scene, &mut cache, random),
             Kind::EndRod | Kind::Crit | Kind::TrialOmen => particle.coast(),
             Kind::OminousSpawning => particle.fly_home(),
+            Kind::VaultConnection => particle.fly_to_keyhole(),
             Kind::DragonBreath => particle.breathe(),
             Kind::Totem => {
                 let alive = particle.tick(scene, &mut cache);
@@ -1284,7 +1320,7 @@ impl AmbientParticles {
             );
             let (sky, block) = match particle.kind {
                 Kind::Explosion | Kind::EndRod | Kind::Totem => (FULL_BRIGHT, FULL_BRIGHT),
-                Kind::Lava | Kind::TrialSpawnerDetection | Kind::TrialSpawnerDetectionOminous | Kind::OminousSpawning => (f32::from(light.get(cell)), FULL_BRIGHT),
+                Kind::Lava | Kind::TrialSpawnerDetection | Kind::TrialSpawnerDetectionOminous | Kind::OminousSpawning | Kind::VaultConnection => (f32::from(light.get(cell)), FULL_BRIGHT),
                 Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
                 _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
             };
@@ -2331,5 +2367,31 @@ mod tests {
         assert_eq!(particle.sprite().unwrap().key(), "minecraft:particle/ominous_spawning");
         assert_eq!(particle.color, OMINOUS_SPAWNING_START);
         assert!(textures().contains(&ResourceId::parse("minecraft:particle/ominous_spawning").unwrap()));
+    }
+
+    #[test]
+    fn vault_connection_particles_fly_from_their_player_into_the_vault_and_fade_in() {
+        let keyhole = DVec3::new(4.5, 65.75, 5.0);
+        let toward = DVec3::new(2.0, -1.0, 3.0);
+        for seed in 0..20 {
+            let mut particles = AmbientParticles::new(seed);
+            particles.add(Kind::VaultConnection, keyhole, toward);
+            let particle = particles.particles[0].clone();
+            assert_eq!(particle.position, keyhole + toward, "it starts at the player");
+            assert!((30..=39).contains(&particle.lifetime), "{}", particle.lifetime);
+            assert!(particle.translucent() && particle.alpha == 0.0);
+            assert!(particle.quad_size >= 0.1 * 0.2 * 1.5 && particle.quad_size <= 0.1 * 0.7 * 1.5);
+            assert!(particle.color[2] >= 0.4 && particle.color[0] == particle.color[2] * 0.9);
+            let mut last = particle.clone();
+            while !particles.is_empty() {
+                last = particles.particles[0].clone();
+                particles.tick(&open());
+            }
+            assert!((last.position - (keyhole - DVec3::new(0.0, 1.2, 0.0))).length() < 1.0e-5, "it dips into the vault: {:?}", last.position);
+            assert!((last.alpha - 0.6).abs() < 1.0e-6);
+        }
+        let particle = Particle::vault_connection(DVec3::ZERO, DVec3::X, &mut LegacyRandom::new(1));
+        assert_eq!(particle.sprite().unwrap().key(), "minecraft:particle/vault_connection");
+        assert!(textures().contains(&ResourceId::parse("minecraft:particle/vault_connection").unwrap()));
     }
 }

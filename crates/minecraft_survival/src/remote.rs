@@ -414,6 +414,7 @@ impl RemoteWorld {
                 if let Some(level) = self.level.as_mut() {
                     let at = (pos[0], pos[1], pos[2]);
                     if let Ok(parsed) = minecraftoss_core::nbt::parse(&tag.0) {
+                        level.view.vaults.block_entities(&[(at, Some(parsed.clone()))]);
                         level.view.spawners.block_entities(&[(at, Some(parsed))]);
                     }
                     level.block_entities.insert(at, tag);
@@ -650,9 +651,11 @@ impl RemoteWorld {
         terrain.scene.take_changed();
         for chunk in &loaded {
             level.view.spawners.load_chunk(chunk);
+            level.view.vaults.load_chunk(chunk);
         }
         for pos in &forgotten {
             level.view.spawners.unload_chunk(*pos);
+            level.view.vaults.unload_chunk(*pos);
         }
         self.shown.loaded.extend(loaded);
         self.shown.forgotten.extend(forgotten);
@@ -675,6 +678,7 @@ impl RemoteWorld {
             .retain(|&(x, _, z), _| (x >> 4, z >> 4) != (pos.x, pos.z));
         for pos in &forgotten {
             level.view.spawners.unload_chunk(*pos);
+            level.view.vaults.unload_chunk(*pos);
         }
         self.shown.forgotten.extend(forgotten);
     }
@@ -707,6 +711,9 @@ impl RemoteWorld {
             let block = states.block(state).cloned();
             if !block.as_ref().is_some_and(minecraft_terrain::spawner_display::is_displayed_block) {
                 level.view.spawners.block_entities(&[(at, None)]);
+            }
+            if !block.as_ref().is_some_and(minecraft_terrain::vault::is_vault_block) {
+                level.view.vaults.block_entities(&[(at, None)]);
             }
             level.terrain.scene.set(at, block);
             positions.push(at);
@@ -922,6 +929,60 @@ mod tests {
         assert_eq!(cages(&friend), 1, "a spawner's data from the host");
         friend.apply(ToClient::ChunkForget { pos: [0, 0] });
         assert_eq!(cages(&friend), 0, "its chunk was forgotten");
+    }
+
+    #[test]
+    fn a_vault_streamed_to_the_friend_shows_its_reward_item_until_the_block_or_chunk_goes() {
+        use minecraft_terrain::vault::SharedData;
+        use minecraftoss_core::nbt::Tag;
+        let Some(registries) = registries() else {
+            return;
+        };
+        let vault = |(x, y, z): BlockPos, item: Option<&str>| {
+            let shared = SharedData {
+                display_item: item.map(|id| minecraftoss_core::item::ItemStack::new(id, 1)),
+                ..SharedData::default()
+            };
+            Tag::Compound(BTreeMap::from([
+                ("id".to_owned(), Tag::String(minecraft_terrain::vault::ID.to_owned())),
+                ("x".to_owned(), Tag::Int(x)),
+                ("y".to_owned(), Tag::Int(y)),
+                ("z".to_owned(), Tag::Int(z)),
+                ("shared_data".to_owned(), shared.to_tag()),
+            ]))
+        };
+        let shown = |friend: &RemoteWorld| {
+            friend.level.as_ref().map_or_else(Vec::new, |level| {
+                level.view.vaults.items(glam::DVec3::new(4.0, -59.0, 8.0), 0.0).into_iter().map(|view| view.item).collect::<Vec<_>>()
+            })
+        };
+        let at: BlockPos = (3, -60, 4);
+        let Ok(mut chunk) = Arc::try_unwrap(stone_chunk(&registries, 0, 0, -64, 384)) else {
+            panic!("a fresh chunk has one owner");
+        };
+        let dim = registries.blocks.parse_state("minecraft:vault").unwrap();
+        let lit = registries.blocks.parse_state("minecraft:vault[vault_state=active]").unwrap();
+        chunk.set_block_raw(3, at.1, 4, dim, &registries);
+        chunk.block_entities.entities.insert(at, vault(at, Some("minecraft:emerald")));
+        let mut friend = RemoteWorld::new(registries.clone());
+        friend.apply(ToClient::Login(login(Dimension::Overworld)));
+        friend.apply(ToClient::ChunkBatch { seq: 1 });
+        friend.receive_batch(blob(&registries, 1, &[Arc::new(chunk)]));
+        friend.decode_now();
+        assert_eq!(shown(&friend), ["minecraft:emerald"], "the vault came with its chunk");
+        friend.apply(ToClient::BlockUpdates { changes: vec![([at.0, at.1, at.2], u32::from(lit.0))] });
+        assert_eq!(shown(&friend), ["minecraft:emerald"], "it lit up and is still a vault");
+        let tag = |item: Option<&str>| Nbt(minecraftoss_core::nbt::write(&vault(at, item), ""));
+        friend.apply(ToClient::BlockEntity { pos: [at.0, at.1, at.2], tag: tag(Some("minecraft:diamond")) });
+        assert_eq!(shown(&friend), ["minecraft:diamond"], "the host turned its item");
+        friend.apply(ToClient::BlockEntity { pos: [at.0, at.1, at.2], tag: tag(None) });
+        assert!(shown(&friend).is_empty(), "dim again: nothing shown");
+        friend.apply(ToClient::BlockUpdates { changes: vec![([at.0, at.1, at.2], 0)] });
+        assert_eq!(friend.level.as_ref().map(|level| level.view.vaults.len()), Some(0), "mined away");
+        friend.apply(ToClient::BlockEntity { pos: [at.0, at.1, at.2], tag: tag(Some("minecraft:bow")) });
+        assert_eq!(friend.level.as_ref().map(|level| level.view.vaults.len()), Some(1));
+        friend.apply(ToClient::ChunkForget { pos: [0, 0] });
+        assert_eq!(friend.level.as_ref().map(|level| level.view.vaults.len()), Some(0), "its chunk was forgotten");
     }
 
     #[test]

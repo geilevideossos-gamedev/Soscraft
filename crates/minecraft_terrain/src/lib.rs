@@ -151,6 +151,7 @@ pub mod lids;
 pub mod spawner_display;
 pub mod trial_spawner;
 pub mod vault;
+pub mod vault_display;
 pub mod openers;
 pub mod stations;
 pub mod experience;

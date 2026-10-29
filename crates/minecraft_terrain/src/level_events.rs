@@ -6,6 +6,8 @@ use crate::trial_spawner::{
     EJECT_ITEM_SOUND, OMINOUS_ACTIVATE_SOUND, SPAWN_ITEM, SPAWN_ITEM_SOUND, SPAWN_MOB,
     SPAWN_MOB_SOUND, SPAWN_PARTICLES,
 };
+use crate::vault::{ACTIVATE, ACTIVATE_SOUND, DEACTIVATE, DEACTIVATE_SOUND, EJECT_PARTICLES};
+use crate::vault_display::{center_of_cage, flame, inside_cage, ACTIVATION_PARTICLES};
 use glam::DVec3;
 use minecraftoss_player::rng::LegacyRandom;
 
@@ -167,8 +169,32 @@ pub fn level_event<S: Scene + ?Sized>(
                 out.particles.push((Kind::SoulFireFlame, at, motion));
             }
         }
-        EJECT_ITEM => {
-            out.sounds.push(trial_sound(EJECT_ITEM_SOUND, base, 1.0, random));
+        ACTIVATE => {
+            let kind = flame(data != 0);
+            for _ in 0..ACTIVATION_PARTICLES {
+                let at = inside_cage(pos, random);
+                out.particles.push((Kind::Smoke, at, DVec3::ZERO));
+                out.particles.push((kind, at, DVec3::ZERO));
+            }
+            out.sounds.push(trial_sound(ACTIVATE_SOUND, base, 1.0, random));
+        }
+        DEACTIVATE => {
+            let kind = flame(data != 0);
+            for _ in 0..ACTIVATION_PARTICLES {
+                let at = center_of_cage(pos, random);
+                let motion = DVec3::new(
+                    random.next_gaussian() * 0.02,
+                    random.next_gaussian() * 0.02,
+                    random.next_gaussian() * 0.02,
+                );
+                out.particles.push((kind, at, motion));
+            }
+            out.sounds.push(trial_sound(DEACTIVATE_SOUND, base, 1.0, random));
+        }
+        EJECT_ITEM | EJECT_PARTICLES => {
+            if id == EJECT_ITEM {
+                out.sounds.push(trial_sound(EJECT_ITEM_SOUND, base, 1.0, random));
+            }
             for _ in 0..TRIAL_PARTICLES {
                 let x = base.x + 0.4 + random.next_double() * 0.2;
                 let y = base.y + 0.4 + random.next_double() * 0.2;
@@ -662,5 +688,40 @@ mod tests {
             assert!((flame_at - DVec3::new(10.5, 20.5, 30.5)).abs().max_element() <= 0.1);
             assert_eq!((flame.x, flame.y, flame.z), (smoke.x, smoke.y, smoke.z * 0.25));
         }
+    }
+
+    #[test]
+    fn vault_events_play_vanillas_sounds_and_particles() {
+        let mut random = LegacyRandom::new(9);
+        let mut event = |id: i32, data: i32| {
+            level_event(id, (10, 20, 30), data, &no_scene(), &classes, &mut random)
+        };
+        let count = |tick: &DisplayTick, kind: Kind| {
+            tick.particles.iter().filter(|(made, _, _)| *made == kind).count()
+        };
+        let lit = event(ACTIVATE, 0);
+        assert_eq!(lit.sounds.len(), 1);
+        let sound = &lit.sounds[0];
+        assert_eq!((sound.event, sound.at, sound.volume), (ACTIVATE_SOUND, [10.5, 20.5, 30.5], 1.0));
+        assert!((0.8..=1.2).contains(&sound.pitch));
+        assert_eq!((count(&lit, Kind::Smoke), count(&lit, Kind::SmallFlame)), (20, 20));
+        for pair in lit.particles.chunks(2) {
+            assert_eq!(pair[0].1, pair[1].1, "a smoke and a flame at one point");
+            assert_eq!((pair[0].2, pair[1].2), (DVec3::ZERO, DVec3::ZERO));
+            let inside = pair[0].1 - DVec3::new(10.0, 20.0, 30.0);
+            assert!((0.1..=0.9).contains(&inside.x) && (0.25..=0.75).contains(&inside.y) && (0.1..=0.9).contains(&inside.z));
+        }
+        assert_eq!(count(&event(ACTIVATE, 1), Kind::SoulFireFlame), 20, "soul flames when ominous");
+        let dim = event(DEACTIVATE, 1);
+        assert_eq!(dim.sounds.iter().map(|sound| sound.event).collect::<Vec<_>>(), [DEACTIVATE_SOUND]);
+        assert_eq!((count(&dim, Kind::SoulFireFlame), dim.particles.len()), (20, 20));
+        for (_, at, motion) in &dim.particles {
+            assert!((*at - DVec3::new(10.5, 20.5, 30.5)).abs().max_element() <= 0.1);
+            assert!(motion.abs().max_element() < 0.2);
+        }
+        assert_eq!(count(&event(DEACTIVATE, 0), Kind::SmallFlame), 20);
+        let ejected = event(EJECT_PARTICLES, 0);
+        assert!(ejected.sounds.is_empty(), "the vault plays its own eject sound");
+        assert_eq!((count(&ejected, Kind::SmallFlame), count(&ejected, Kind::Smoke)), (20, 20));
     }
 }
