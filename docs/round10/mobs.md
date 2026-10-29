@@ -43,7 +43,7 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| 14 | Warden | deep dark, shriekers | dormant, sleep and fire lists; darkness effect; `WardenAnimation` readable; ancient cities generate with shriekers and loot | everything | XL | `wardens` | 44 | left | |
+| 14 | Warden | deep dark, shriekers | dormant, sleep and fire lists; darkness effect; `WardenAnimation` readable; ancient cities generate with shriekers and loot; `wardens` family: attributes, anger, its vibration listener at its eyes (kept in `minecraft_terrain`), brain (emerge, dig, investigate, sniff, idle), touches, digging away | saving its anger and listener, the shrieker's summon, roar, fight, sonic boom, darkness pulses, model, keyframes, heartbeat | XL | `wardens` | 44 | left | "Minecraft wardens live in the entity world" (W `warden-live`) |
 
 ## M1: land animals (group `land`, bytes 48-63)
 

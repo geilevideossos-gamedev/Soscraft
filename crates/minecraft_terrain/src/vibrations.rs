@@ -22,6 +22,7 @@ pub enum Kind {
     CalibratedSensor,
     Shrieker,
     Catalyst,
+    Warden,
 }
 
 impl Kind {
@@ -37,7 +38,7 @@ impl Kind {
 
     pub fn radius(self) -> i32 {
         match self {
-            Self::CalibratedSensor => 16,
+            Self::CalibratedSensor | Self::Warden => 16,
             Self::Sensor | Self::Shrieker | Self::Catalyst => 8,
         }
     }
@@ -45,8 +46,13 @@ impl Kind {
     pub fn listenable(self) -> Listenable {
         match self {
             Self::Shrieker => Listenable::ShriekerCanListen,
+            Self::Warden => Listenable::WardenCanListen,
             Self::Sensor | Self::CalibratedSensor | Self::Catalyst => Listenable::Vibrations,
         }
+    }
+
+    fn needs_neighbours(self) -> bool {
+        self != Self::Warden
     }
 
     pub fn is_sensor(self) -> bool {
@@ -196,6 +202,8 @@ pub struct Listener {
     pub travel: i32,
     pub selector: Selector,
     pub reload_particle: bool,
+    pub entity: Option<u64>,
+    pub eye: Option<DVec3>,
 }
 
 impl Listener {
@@ -207,6 +215,8 @@ impl Listener {
             travel: 0,
             selector: Selector::default(),
             reload_particle: false,
+            entity: None,
+            eye: None,
         }
     }
 
@@ -227,6 +237,8 @@ impl Listener {
             selector: tag
                 .get("selector")
                 .map_or_else(Selector::default, Selector::from_tag),
+            entity: None,
+            eye: None,
         }
     }
 
@@ -241,7 +253,7 @@ impl Listener {
     }
 
     pub fn position(&self) -> DVec3 {
-        centre(self.pos)
+        self.eye.unwrap_or_else(|| centre(self.pos))
     }
 
     fn schedule(&mut self, posted: &Posted) {
@@ -273,6 +285,7 @@ pub trait User {
 pub struct Vibrations {
     listeners: BTreeMap<Pos, Listener>,
     sections: HashMap<Pos, Vec<Pos>>,
+    entities: BTreeMap<u64, Listener>,
 }
 
 impl Vibrations {
@@ -326,8 +339,26 @@ impl Vibrations {
         self.listeners.values()
     }
 
+    pub fn track(&mut self, id: u64, kind: Kind, eye: DVec3, saved: Option<&Tag>) {
+        let pos = block_of(eye);
+        let listener = self.entities.entry(id).or_insert_with(|| Listener {
+            entity: Some(id),
+            ..Listener::from_tag(pos, kind, saved)
+        });
+        listener.pos = pos;
+        listener.eye = Some(eye);
+    }
+
+    pub fn keep_tracked(&mut self, keep: impl Fn(u64) -> bool) {
+        self.entities.retain(|&id, _| keep(id));
+    }
+
+    pub fn tracked(&self, id: u64) -> Option<&Listener> {
+        self.entities.get(&id)
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.listeners.is_empty()
+        self.listeners.is_empty() && self.entities.is_empty()
     }
 
     pub fn post(&mut self, tags: &EventTags, posted: &Posted, user: &mut impl User) {
@@ -343,7 +374,7 @@ impl Vibrations {
                         continue;
                     };
                     for &pos in positions {
-                        let Some(listener) = self.listeners.get(&pos) else {
+                        let Some(listener) = self.listeners.get_mut(&pos) else {
                             continue;
                         };
                         let reach = i64::from(listener.kind.radius());
@@ -354,10 +385,21 @@ impl Vibrations {
                             let distance = posted.pos.distance_squared(listener.position());
                             by_distance.push((distance, pos));
                         } else {
-                            handle(&mut self.listeners, pos, tags, posted, user);
+                            handle(listener, tags, posted, user);
                         }
                     }
                 }
+            }
+        }
+        let scanned = |v: i32, a: i32| (low(a)..=high(a)).contains(&(v >> 4));
+        for listener in self.entities.values_mut() {
+            let (x, y, z) = listener.pos;
+            if !(scanned(x, at.0) && scanned(y, at.1) && scanned(z, at.2)) {
+                continue;
+            }
+            let reach = i64::from(listener.kind.radius());
+            if distance_squared(listener.pos, at) <= reach * reach {
+                handle(listener, tags, posted, user);
             }
         }
         by_distance.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -419,7 +461,11 @@ impl Vibrations {
     }
 
     pub fn tick(&mut self, now: i64, user: &mut impl User) {
-        for listener in self.listeners.values_mut() {
+        for listener in self
+            .listeners
+            .values_mut()
+            .chain(self.entities.values_mut())
+        {
             if !listener.kind.vibrates() || !user.ticks(listener.pos) {
                 continue;
             }
@@ -449,7 +495,9 @@ impl Vibrations {
                 listener.reload_particle = false;
             }
             listener.travel = (listener.travel - 1).max(0);
-            if listener.travel <= 0 && user.neighbours_tick(listener.pos) {
+            if listener.travel <= 0
+                && (!listener.kind.needs_neighbours() || user.neighbours_tick(listener.pos))
+            {
                 let at = block_of(info.pos);
                 let distance = (distance_squared(at, listener.pos) as f64).sqrt() as f32;
                 user.receive(listener, &info, at, distance);
@@ -464,15 +512,11 @@ impl Vibrations {
 }
 
 fn handle(
-    listeners: &mut BTreeMap<Pos, Listener>,
-    pos: Pos,
+    listener: &mut Listener,
     tags: &EventTags,
     posted: &Posted,
     user: &mut impl User,
 ) -> bool {
-    let Some(listener) = listeners.get_mut(&pos) else {
-        return false;
-    };
     if listener.current.is_some() {
         return false;
     }
@@ -1022,5 +1066,35 @@ mod tests {
         );
         run(&mut vibrations, &mut heard, 1, 20);
         assert!(heard.received.is_empty());
+    }
+
+    #[test]
+    fn a_warden_listens_at_its_eye_sixteen_blocks_out_and_moves_its_ear() {
+        let mut vibrations = Vibrations::default();
+        let eye = DVec3::new(8.5, 66.465, 8.5);
+        vibrations.track(7, Kind::Warden, eye, None);
+        let ear = vibrations.tracked(7).unwrap();
+        assert_eq!(
+            (ear.pos, ear.position(), ear.entity),
+            ((8, 66, 8), eye, Some(7))
+        );
+        let mut heard = Heard::default();
+        let far = Posted::new(STEP, DVec3::new(25.5, 64.0, 8.5), 0).by(walker(false));
+        vibrations.post(&tags(), &far, &mut heard);
+        run(&mut vibrations, &mut heard, 1, 30);
+        assert!(heard.received.is_empty(), "seventeen blocks out of its eye");
+        let near = Posted::new(STEP, DVec3::new(23.5, 64.0, 8.5), 40).by(walker(false));
+        vibrations.post(&tags(), &near, &mut heard);
+        run(&mut vibrations, &mut heard, 41, 41);
+        let travel = near.pos.distance(eye).floor() as i32;
+        assert_eq!(heard.particles.last(), Some(&(near.pos, eye, travel)));
+        run(&mut vibrations, &mut heard, 42, 41 + i64::from(travel));
+        assert_eq!(heard.received.len(), 1);
+        assert_eq!(heard.changed, vec![(8, 66, 8), (8, 66, 8)]);
+        let moved = DVec3::new(30.5, 66.465, 8.5);
+        vibrations.track(7, Kind::Warden, moved, None);
+        assert_eq!(vibrations.tracked(7).unwrap().pos, (30, 66, 8));
+        vibrations.keep_tracked(|id| id != 7);
+        assert!(vibrations.is_empty());
     }
 }

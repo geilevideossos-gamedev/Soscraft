@@ -39,6 +39,7 @@ pub struct WalkProfile {
     /// The node budget when `setRequiredPathLength` recounted it
     /// (`floor(max(FOLLOW_RANGE, required) * 16)`).
     pub max_visited: Option<i32>,
+    pub distance_xz: bool,
 }
 
 /// `PathfinderMob.getWalkTargetValue` families.
@@ -79,6 +80,7 @@ impl WalkProfile {
             max_path_length: None,
             walk_target: WalkTarget::Animal,
             max_visited: None,
+            distance_xz: false,
         };
         profile.set_malus(PathType::FireInNeighbor, 16.0);
         profile.set_malus(PathType::Fire, -1.0);
@@ -155,6 +157,12 @@ fn distance(a: NodePos, b: NodePos) -> f32 {
     let y = (b.1 - a.1) as f32;
     let z = (b.2 - a.2) as f32;
     (x * x + y * y + z * z).sqrt()
+}
+
+fn distance_xz(a: NodePos, b: NodePos) -> f32 {
+    let x = (b.0 - a.0) as f32;
+    let z = (b.2 - a.2) as f32;
+    (x * x + z * z).sqrt()
 }
 
 fn distance_manhattan(a: NodePos, b: NodePos) -> f32 {
@@ -861,7 +869,7 @@ pub fn find_walk_path_to_any<W: World + ?Sized>(world: &W, profile: &WalkProfile
             continue;
         }
         for neighbor in evaluator.neighbors(current) {
-            let step = distance(evaluator.nodes[current].pos, evaluator.nodes[neighbor].pos);
+            let step = if profile.distance_xz { distance_xz(evaluator.nodes[current].pos, evaluator.nodes[neighbor].pos) } else { distance(evaluator.nodes[current].pos, evaluator.nodes[neighbor].pos) };
             evaluator.nodes[neighbor].walked = evaluator.nodes[current].walked + step;
             let g = evaluator.nodes[current].g + step + evaluator.nodes[neighbor].cost_malus;
             if evaluator.nodes[neighbor].walked < max_path_length && (evaluator.nodes[neighbor].heap_index < 0 || g < evaluator.nodes[neighbor].g) {

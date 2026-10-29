@@ -162,6 +162,7 @@ pub enum Source {
     },
     Mob {
         id: u64,
+        dampens: bool,
     },
     Item {
         id: i32,
@@ -195,7 +196,10 @@ impl Source {
     }
 
     fn dampens(&self) -> bool {
-        matches!(self, Self::Item { dampens: true, .. })
+        matches!(
+            self,
+            Self::Item { dampens: true, .. } | Self::Mob { dampens: true, .. }
+        )
     }
 }
 
@@ -570,7 +574,14 @@ mod tests {
             id: 1,
             dampens: true
         })));
-        assert!(valid(Posted::new(STEP, at, 0).by(Source::Mob { id: 9 })));
+        assert!(valid(Posted::new(STEP, at, 0).by(Source::Mob {
+            id: 9,
+            dampens: false
+        })));
+        assert!(!valid(Posted::new(STEP, at, 0).by(Source::Mob {
+            id: 9,
+            dampens: true
+        })));
         assert!(!valid(Posted {
             dampened: true,
             ..Posted::new(BLOCK_PLACE, at, 0)

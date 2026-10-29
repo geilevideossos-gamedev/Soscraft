@@ -987,6 +987,7 @@ impl ServerSim {
     }
 
     fn hear_game_events(&mut self, input: &mut TickInput, before: i64, normal: bool) {
+        self.track_wardens();
         if self.vibrations.is_empty() {
             input.game_events.clear();
             self.level.game_events.clear();
@@ -1024,10 +1025,10 @@ impl ServerSim {
             let uuid = Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player.id));
             posted.push((crate::game_events::Posted { source_uuid: uuid, ..crate::game_events::Posted::new(crate::game_events::STEP, glam::DVec3::from_array(player.feet), before).by(source) }, Some(on)));
         }
-        for &(id, feet) in &grounded {
+        for &(id, feet) in grounded.iter().filter(|&&(id, _)| self.mobs.entity_type(id) != Some(crate::warden_tracker::WARDEN)) {
             if let Some(on) = self.sensor_under(feet.to_array()) {
                 let uuid = Some(self.mobs.uuid_of(id));
-                posted.push((crate::game_events::Posted { source_uuid: uuid, ..crate::game_events::Posted::new(crate::game_events::STEP, feet, now).by(crate::game_events::Source::Mob { id }) }, Some(on)));
+                posted.push((crate::game_events::Posted { source_uuid: uuid, ..crate::game_events::Posted::new(crate::game_events::STEP, feet, now).by(crate::game_events::Source::Mob { id, dampens: false }) }, Some(on)));
             }
         }
         for event in self.mobs.take_game_events() {
@@ -1044,8 +1045,8 @@ impl ServerSim {
             posted.push((posted_event, None));
         }
         let tags = self.event_tags.clone();
-        let Self { vibrations, level, vibration_bursts, mobs, .. } = self;
-        let mut hearing = Hearing { level, tags: &tags, bursts: vibration_bursts, mobs, shrieks: Vec::new() };
+        let Self { vibrations, level, vibration_bursts, mobs, mob_tags, .. } = self;
+        let mut hearing = Hearing { level, tags: &tags, bursts: vibration_bursts, mobs, players: &input.mob_players, mob_tags, shrieks: Vec::new() };
         for (event, forced) in &posted {
             match forced {
                 Some(pos) => {
@@ -1101,6 +1102,16 @@ impl ServerSim {
         })
     }
 
+    fn track_wardens(&mut self) {
+        use minecraftoss_entities::world::families::deep_dark::wardens::{Warden, EYE_HEIGHT};
+        let wardens: Vec<(u64, glam::DVec3)> = self.mobs.family::<Warden>().iter().filter(|mob| !mob.core.removed).map(|mob| (mob.core.id, mob.core.body.position + glam::DVec3::Y * f64::from(EYE_HEIGHT))).collect();
+        self.vibrations.keep_tracked(|id| wardens.iter().any(|&(kept, _)| kept == id));
+        for (id, eye) in wardens {
+            let saved = self.mob_tags.get(&id).and_then(|tag| tag.get(crate::vibrations::LISTENER));
+            self.vibrations.track(id, crate::vibrations::Kind::Warden, eye, saved);
+        }
+    }
+
     fn take_warden_trackers(&mut self, from: &[(u64, crate::warden_tracker::WardenSpawnTracker)]) {
         self.warned.retain(|_, (tracker, hold)| {
             tracker.tick();
@@ -1154,7 +1165,7 @@ impl ServerSim {
         use minecraftoss_world::level::game_event::EventSource;
         match source {
             EventSource::Player(id) => (self.player_source(id, players), Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + id))),
-            EventSource::Mob(id) => (crate::game_events::Source::Mob { id }, Some(self.mobs.uuid_of(id))),
+            EventSource::Mob(id) => (crate::game_events::Source::Mob { id, dampens: self.mobs.entity_type(id) == Some(crate::warden_tracker::WARDEN) }, Some(self.mobs.uuid_of(id))),
             EventSource::Entity(id) => {
                 let item = self.level.entities.iter().find(|e| e.id == id).and_then(|e| e.item_data());
                 let source = match item {
@@ -3928,7 +3939,9 @@ struct Hearing<'a, 'l> {
     level: &'a mut Level<'l>,
     tags: &'a crate::game_events::EventTags,
     bursts: &'a mut Vec<crate::vibration_particles::VibrationView>,
-    mobs: &'a minecraftoss_entities::world::EntityWorld,
+    mobs: &'a mut minecraftoss_entities::world::EntityWorld,
+    players: &'a [minecraftoss_entities::tempt::PlayerCandidate],
+    mob_tags: &'a mut std::collections::HashMap<u64, minecraftoss_core::nbt::Tag>,
     shrieks: Vec<(BlockPos, u64)>,
 }
 
@@ -3937,7 +3950,7 @@ fn level_source(source: crate::game_events::Source) -> minecraftoss_world::level
     use minecraftoss_world::level::game_event::EventSource;
     match source {
         Source::Player { id, .. } => EventSource::Player(id),
-        Source::Mob { id } => EventSource::Mob(id),
+        Source::Mob { id, .. } => EventSource::Mob(id),
         Source::Item { id, .. } | Source::Entity { id } => EventSource::Entity(id),
     }
 }
@@ -3952,10 +3965,25 @@ impl Hearing<'_, '_> {
         use crate::game_events::Source;
         let player = |source: Source| match source {
             Source::Player { id, .. } => Some(id),
-            Source::Mob { id } => self.mobs.controlling_player(id),
+            Source::Mob { id, .. } => self.mobs.controlling_player(id),
             Source::Item { .. } | Source::Entity { .. } => None,
         };
         owner.and_then(player).or_else(|| source.and_then(player))
+    }
+
+    fn living(&self, source: Option<crate::game_events::Source>, uuid: Option<u128>) -> Option<minecraftoss_entities::monster_ai::Target> {
+        use crate::game_events::Source;
+        use minecraftoss_entities::monster_ai::Target;
+        match source {
+            Some(Source::Player { id, .. }) => Some(Target::Player(id)),
+            Some(Source::Mob { id, .. }) => Some(Target::Mob(id)),
+            Some(Source::Item { .. } | Source::Entity { .. }) => None,
+            None => {
+                let uuid = uuid?;
+                let player = self.players.iter().find(|p| self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + p.id) == uuid);
+                player.map(|p| Target::Player(p.id)).or_else(|| self.mobs.mob_with_uuid(uuid).map(Target::Mob))
+            }
+        }
     }
 }
 
@@ -3964,6 +3992,10 @@ impl crate::vibrations::User for Hearing<'_, '_> {
         if listener.kind == crate::vibrations::Kind::Shrieker {
             let (x, y, z) = listener.pos;
             return !self.level.shrieker_shrieking(minecraftoss_core::BlockPos::new(x, y, z)) && self.player_behind(posted.source, posted.owner).is_some();
+        }
+        if let Some(id) = listener.entity {
+            let source = posted.source.and_then(|source| self.living(Some(source), None));
+            return self.mobs.warden_can_hear(id, source, self.players);
         }
         if !listener.kind.is_sensor() {
             return false;
@@ -3994,7 +4026,13 @@ impl crate::vibrations::User for Hearing<'_, '_> {
         (-1..=1).all(|dx| (-1..=1).all(|dz| self.ticking((x >> 4) + dx, (z >> 4) + dz)))
     }
 
-    fn receive(&mut self, listener: &crate::vibrations::Listener, info: &crate::vibrations::Info, _: BlockPos, distance: f32) {
+    fn receive(&mut self, listener: &crate::vibrations::Listener, info: &crate::vibrations::Info, at: BlockPos, distance: f32) {
+        if let Some(id) = listener.entity {
+            let source = self.living(info.source, info.source_uuid);
+            let owner = self.living(info.owner, info.owner_uuid);
+            self.mobs.warden_hears(id, at, source, owner, self.players);
+            return;
+        }
         if listener.kind == crate::vibrations::Kind::Shrieker {
             if let Some(player) = self.player_behind(info.source, info.owner) {
                 self.shrieks.push((listener.pos, player));
@@ -4014,6 +4052,13 @@ impl crate::vibrations::User for Hearing<'_, '_> {
     }
 
     fn changed(&mut self, listener: &crate::vibrations::Listener) {
+        if let Some(id) = listener.entity {
+            let tag = self.mob_tags.entry(id).or_insert_with(|| minecraftoss_core::nbt::Tag::Compound(std::collections::BTreeMap::new()));
+            if let minecraftoss_core::nbt::Tag::Compound(map) = tag {
+                map.insert(crate::vibrations::LISTENER.to_owned(), listener.to_tag());
+            }
+            return;
+        }
         let (x, y, z) = listener.pos;
         self.level.set_block_entity_value(minecraftoss_core::BlockPos::new(x, y, z), crate::vibrations::LISTENER, listener.to_tag());
     }
@@ -13334,6 +13379,72 @@ mod tests {
 
     fn sensor_phase(sim: &ServerSim) -> String {
         block_property(sim, SENSOR, "sculk_sensor_phase").unwrap_or_else(|| "no sensor".to_owned())
+    }
+
+    fn calm_warden(sim: &mut ServerSim, at: [f64; 3]) -> u64 {
+        let id = sim.mobs.spawn_warden(glam::DVec3::from_array(at), 0.0);
+        let memories = sim.mobs.warden_mut(id).unwrap().state.memories_mut();
+        memories.dig_cooldown.set_for((), minecraftoss_entities::world::families::deep_dark::wardens::DIGGING_COOLDOWN);
+        id
+    }
+
+    #[test]
+    fn a_warden_hears_a_player_s_step_and_keeps_its_listener_in_its_tag() {
+        use minecraftoss_entities::monster_ai::Target;
+        let Some((mut sim, _)) = sensor_world("minecraft:stone") else { return };
+        let warden = calm_warden(&mut sim, [4.5, 200.0, 2.5]);
+        sim.mobs.warden_mut(warden).unwrap().state.brain.idle_until = Some(i64::MAX);
+        let feet = [16.5, 200.0, 2.5];
+        let mut input = walker_input(feet);
+        run_ticks(&mut sim, &mut input, true, 1);
+        let ear = sim.listeners().tracked(warden).expect("the warden listens");
+        assert_eq!(ear.kind, crate::vibrations::Kind::Warden);
+        assert!((ear.position().y - 202.465).abs() < 1.0e-5, "at its eyes");
+        input.game_events.push(step_of(0, feet));
+        run_ticks(&mut sim, &mut input, true, 1);
+        let ripple = sim.vibration_bursts.last().copied().expect("a ripple flies to it");
+        assert_eq!((ripple.from, ripple.ticks), (glam::DVec3::from_array(feet), 12));
+        assert!(sim.mob_tags[&warden].get(crate::vibrations::LISTENER).and_then(|listener| listener.get("event")).is_some(), "the travelling vibration is kept in its tag");
+        run_ticks(&mut sim, &mut input, true, 10);
+        assert_eq!(sim.mobs.wardens()[0].state.anger.anger_of(Target::Player(0)), 0, "on its way");
+        run_ticks(&mut sim, &mut input, true, 1);
+        let state = &sim.mobs.wardens().iter().find(|mob| mob.core.id == warden).unwrap().state;
+        assert_eq!(state.anger.anger_of(Target::Player(0)), 35);
+        assert_eq!(state.memories().disturbance_location.get(), Some(&(16, 200, 2)));
+        assert!(sim.mob_tags[&warden].get(crate::vibrations::LISTENER).and_then(|listener| listener.get("event")).is_none());
+        sim.mobs.warden_mut(warden).unwrap().core.removed = true;
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert!(sim.listeners().tracked(warden).is_none(), "a warden that left stops listening");
+    }
+
+    #[test]
+    fn a_cow_walking_by_a_sensor_sets_it_off_but_a_warden_never_does() {
+        let Some((mut sim, _)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let warden = calm_warden(&mut sim, [3.5, 200.0, 11.5]);
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        for _ in 0..40 {
+            sim.mobs.family_core_mut(warden).unwrap().1.body.velocity.x = 0.2;
+            run_ticks(&mut sim, &mut input, true, 1);
+            assert_eq!(sensor_phase(&sim), "inactive", "its steps are dampened");
+        }
+        let moved = sim.mobs.family_core(warden).unwrap().1.body.position.x;
+        assert!(moved > 8.0, "it walked past the sensor: {moved}");
+        sim.mobs.family_core_mut(warden).unwrap().1.body.position = glam::DVec3::new(8.5, 200.5, 8.5);
+        run_ticks(&mut sim, &mut input, true, 3);
+        assert_eq!(sensor_phase(&sim), "inactive", "standing on it does nothing");
+        sim.mobs.family_core_mut(warden).unwrap().1.removed = true;
+        run_ticks(&mut sim, &mut input, true, 2);
+        sim.summon("minecraft:cow", [3.5, 200.0, 11.5], None, 0.0).unwrap();
+        let cow = sim.mobs.cows().last().unwrap().id;
+        let mut went_off = false;
+        for _ in 0..40 {
+            if let Some(body) = sim.mobs.body_mut(cow) {
+                body.velocity.x = 0.2;
+            }
+            run_ticks(&mut sim, &mut input, true, 1);
+            went_off |= sensor_phase(&sim) == "active";
+        }
+        assert!(went_off, "a cow's steps set it off");
     }
 
     #[test]
