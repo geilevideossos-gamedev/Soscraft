@@ -462,3 +462,22 @@ After 0416f340.
   - The same file: `packed` brackets its shift, `(colour << 2) | brightness`, as vanilla's `getPackedId` reads; the value is unchanged.
 - **Tests:** the 12 `maps::tests` pass. The full `minecraft_terrain` run has 1416 passed with 3 ignored; `sections::tests::background_full_update_matches_the_synchronous_one` failed once while other tracks built and passed alone, as in the earlier groups. Full `minecraft_survival` (759), `minecraftoss-core` (37) and `render_anim` (212) pass, and `check -p launcher` passes.
 - **Test steps and kit:** none (no change in game).
+
+## Group lead-knots
+
+### 1. Minecraft fences are aimed at by their post and arms like vanilla
+
+After 94171133. This commit is not in the brief: it is what the knot punch needs. The hand ray took every fence as a full block, so from any side the fence was met before the knot, which sits inside that block.
+
+- **Vanilla (26.3, checked with javap):** `FenceBlock` is `CrossCollisionBlock(4, 16, 4, 16, 24)`, and its outline is `makeShapes(4, 16, 4, 0, 16)`: the post `Block.column(4, 0, 16)` (6/16 to 10/16 across, a full block tall) and, for each connected side, the arm `Block.boxZ(4, 0, 16, 0, 8)` turned to that side (4/16 wide, a full block tall, from the edge to the middle).
+- **Changed:** vendored `player/src/lib.rs`: new `fence_outline`, and `outline_shapes` uses it for every `*_fence` (13 woods and the nether brick fence; fence gates keep their own shape). The hand ray (`Player::target`) and `outline_bounds` now see the post and its arms; collision is unchanged.
+- **Tests:** vendored `player::tests::a_fence_is_outlined_by_its_post_and_arms_and_the_ray_passes_beside_them`: a lone post, the north and east arms of a nether brick fence, the south and west arms of a pale oak fence, the bounds of an east-west fence, a ray beside a lone post that reaches the stone behind it, and a ray that stops on the post's south face.
+- **Decision:** the selection box and the crack overlay (`outline_bounds`) now hug the post and arms. Walls, panes and iron bars still count as full blocks (left for later).
+- **Test steps (survival, by day, flat grass):**
+  1. Place a single oak fence post with a stone block right behind it. Aim just past the side of the post at the stone: the stone gets the outline and is mined, not the fence (**lk-1_beside_post**).
+  2. Place a row of three fences. The middle one's outline is the post with an arm to each side, not a full block.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:oak_fence*16,minecraft:stone*16,minecraft:iron_pickaxe
+```

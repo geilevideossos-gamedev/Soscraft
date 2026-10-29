@@ -698,6 +698,19 @@ fn fire_outline(block: &Block) -> Vec<Box3> {
         sides
     }
 }
+fn fence_outline(block: &Block) -> Vec<Box3> {
+    let (low, high) = (6.0 / 16.0, 10.0 / 16.0);
+    let post = Box3::new(DVec3::new(low, 0.0, low), DVec3::new(high, 1.0, high));
+    let arms = [
+        ("north", DVec3::new(low, 0.0, 0.0), DVec3::new(high, 1.0, 0.5)),
+        ("east", DVec3::new(0.5, 0.0, low), DVec3::new(1.0, 1.0, high)),
+        ("south", DVec3::new(low, 0.0, 0.5), DVec3::new(high, 1.0, 1.0)),
+        ("west", DVec3::new(0.0, 0.0, low), DVec3::new(0.5, 1.0, high)),
+    ];
+    std::iter::once(post)
+        .chain(arms.into_iter().filter(|(side, _, _)| block.property(side) == Some("true")).map(|(_, min, max)| Box3::new(min, max)))
+        .collect()
+}
 fn outline_shapes(block: &Block) -> Vec<Box3> {
     let id = block.id.rsplit(':').next().unwrap_or(&block.id);
     if let Some(head) = head_shape(block, id, true) {
@@ -722,6 +735,7 @@ fn outline_shapes(block: &Block) -> Vec<Box3> {
         },
         _ if noncolliding_mount(id) => outline_column(8.0, 16.0),
         "fire" | "soul_fire" => return fire_outline(block),
+        _ if id.ends_with("_fence") => return fence_outline(block),
         "vine" if ["up", "north", "east", "south", "west"].iter().any(|side| block.property(side) == Some("true")) => return fire_outline(block),
         "tall_grass" | "cobweb" | "vine" => outline_column(16.0, 16.0),
         "cave_vines" | "cave_vines_plant" => outline_column(14.0, 16.0),
@@ -3386,6 +3400,33 @@ mod tests {
         player.yaw = (-at.x).atan2(at.z).to_degrees();
         player.pitch = (-at.y).atan2(at.x.hypot(at.z)).to_degrees();
         assert_eq!(player.target(&world, 5.0).map(|hit| hit.pos), Some((0, 2, 0)), "the torch itself is hit");
+    }
+    #[test]
+    fn a_fence_is_outlined_by_its_post_and_arms_and_the_ray_passes_beside_them() {
+        let bounds = |block: Block| -> Vec<[f64; 6]> {
+            outline_shapes(&block).iter().map(|b| [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].map(|v| v * 16.0)).collect()
+        };
+        let fence = |kind: &str| Block::new(kind).with("north", "false").with("east", "false").with("south", "false").with("west", "false");
+        let post = [6.0, 0.0, 6.0, 10.0, 16.0, 10.0];
+        assert_eq!(bounds(fence("minecraft:oak_fence")), vec![post]);
+        assert_eq!(bounds(fence("minecraft:nether_brick_fence").with("north", "true").with("east", "true")), vec![post, [6.0, 0.0, 0.0, 10.0, 16.0, 8.0], [8.0, 0.0, 6.0, 16.0, 16.0, 10.0]]);
+        assert_eq!(bounds(fence("minecraft:pale_oak_fence").with("south", "true").with("west", "true")), vec![post, [6.0, 0.0, 8.0, 10.0, 16.0, 16.0], [0.0, 0.0, 6.0, 8.0, 16.0, 10.0]]);
+        assert_eq!(outline_bounds(&fence("minecraft:oak_fence").with("east", "true").with("west", "true")).map(|b| b.map(|v| v * 16.0)), Some([0.0, 0.0, 6.0, 16.0, 16.0, 10.0]));
+        let mut world = floor();
+        world.set_block((0, 2, -3), Some(Block::new("minecraft:stone")));
+        world.set_block((0, 2, -2), Some(fence("minecraft:oak_fence")));
+        let mut player = Player::new(DVec3::new(0.5, 1.0, 0.5));
+        let eye = player.eye();
+        let beside = DVec3::new(0.2, 2.5, -1.5) - eye;
+        player.yaw = (-beside.x).atan2(beside.z).to_degrees();
+        player.pitch = (-beside.y).atan2(beside.x.hypot(beside.z)).to_degrees();
+        assert_eq!(player.target(&world, 5.0).map(|hit| (hit.pos, hit.face)), Some(((0, 2, -3), Face::South)), "beside the post the stone behind is hit");
+        let at = DVec3::new(0.5, 2.5, -1.375) - eye;
+        player.yaw = (-at.x).atan2(at.z).to_degrees();
+        player.pitch = (-at.y).atan2(at.x.hypot(at.z)).to_degrees();
+        let hit = player.target(&world, 5.0).expect("the post is hit");
+        assert_eq!((hit.pos, hit.face), ((0, 2, -2), Face::South));
+        assert!((hit.point.z + 1.375).abs() < 1e-9, "{}", hit.point);
     }
     #[test]
     fn outline_bounds_cover_every_box_of_the_outline() {
