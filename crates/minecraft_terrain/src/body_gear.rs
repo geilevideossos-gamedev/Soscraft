@@ -66,7 +66,11 @@ pub fn camera_overlay(slots: &[Option<ItemStack>]) -> bool {
 }
 
 pub fn dyed_color(stack: &ItemStack) -> Option<u32> {
-    let value = stack.components.as_ref()?.get(DYED_COLOR)?;
+    dye_in(stack.components.as_ref())
+}
+
+pub fn dye_in(components: Option<&Value>) -> Option<u32> {
+    let value = components?.get(DYED_COLOR)?;
     let rgb = match value {
         Value::Object(fields) => fields.get("rgb")?,
         number => number,

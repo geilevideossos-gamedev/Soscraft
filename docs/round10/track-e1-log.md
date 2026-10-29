@@ -617,6 +617,35 @@ Commit: "Minecraft horses keep the dye of their leather armour", the one after `
 - **Protocol:** no message or codec change. `Command::MountInventory` is the host's in-process server command, and a friend's horse still comes as its save tag (now with the body's `components`, which an older build ignores).
 - **Owner's test steps:** the armour on the horse itself stays brown until the next commit, so the steps for the whole group are with it.
 
+### Dyed leather horse armour shows its colour on the horse
+
+Commit: "Minecraft dyed leather horse armour shows its colour on the horse", the one after `6c83db8b`.
+
+- **Cause** (as in the brief, re-checked at `6c83db8b`): `horse_render.rs` gave leather horse armour the fixed tint #A06540 and drew one layer only, so a dyed armour was brown on the horse and the untinted `leather_overlay` (buckles, straps and trim) was missing on every leather armour.
+- **Vanilla 26.3** (data, `assets/minecraft/equipment/leather.json` in `client.jar`): the `horse_body` layers are `minecraft:leather` with `dyeable.color_when_undyed = -6265536` (#A06540), then `minecraft:leather_overlay` with no tint. Both textures are in `textures/entity/equipment/horse_body/`. The other horse armour assets have no `dyeable` layer.
+- **Changed:**
+  - `crates/minecraft_terrain/src/body_gear.rs`: `dye_in(components)` reads `minecraft:dyed_color` (an int or `{rgb}`) from a component map; `dyed_color(stack)` calls it.
+  - `horse_render.rs`: `armor_layers(horse)` gives the worn armour's texture, its tint and, for leather, the overlay texture. Leather's tint is the dye (`dye_in` on `HorseState.body_components`, through `armor_render::dye_tint`) or else #A06540; every other armour stays untinted and has no overlay. `append_horses` draws the armour layer as before and the overlay over it, untinted, on the same cubes in the translucent pass, as the markings are drawn over the coat, so the two layers never fight for the same depth. `all_textures` adds `horse_body/leather_overlay`, which puts it in the entity atlas.
+  - Friends draw their copy of the horse with the same code, and it has the components since the previous commit.
+- **Tests:** `minecraft_terrain` `horse_render::tests::dyed_leather_tints_the_armour_and_draws_the_plain_overlay`: `armor_layers` gives nothing for a bare horse, #A06540 and the overlay for plain leather, the red for 0xB02E26, the blue for `{rgb: 0x3C44AA}`, and white with no overlay for iron armour with a stray dye; `all_textures` holds the overlay. Drawn from a saved horse in red leather on stand-in textures: after the coat, every armour vertex samples the leather texture with the red tint (times the face shade), and the translucent pass holds exactly as many overlay vertices, untinted. The horse_render, body_gear, item_tint, item_icons, llama_render, mob_tracking and mount_inventory tests pass (64); `check -p launcher` passes.
+- **Decisions:**
+  - Only leather takes a dye on the horse: a `dyed_color` on iron, gold, diamond, netherite or copper horse armour is ignored, as vanilla's only `dyeable` horse layer is leather's.
+  - The overlay goes in the translucent pass (the brief's plan), not in the opaque mesh after the dyed layer.
+- **Left out** (the brief's E-horses list): dyeing leather in the crafting grid (`minecraft:crafting_dye`, recipe `leather_horse_armor_dyed`) is not supported for any leather item; dyed armour comes from the kit and the leatherworker's level 4 trade. Wolves can't wear wolf armour yet, so a dyed wolf armour shows its colour only as an item.
+- **Owner's test steps** (the whole `horse-dye` group; survival, a new world, by day on flat grass, the kit below):
+  1. **Red on a horse.** Run `/summon minecraft:horse ~ ~ ~2 {Tame:1b}`. Move the red leather horse armour from the backpack to the hotbar, hold it and right-click the horse: you hear the armour sound, and the horse wears red armour with the plain brown buckles, straps and trim on top. Walk around it: the red and the trim do not flicker. **Screenshot A1.**
+  2. **Plain leather and iron.** Summon two more tame horses beside it. Put the plain leather horse armour on one: brown with the same trim. Put the iron horse armour on the other: iron, as before. **Screenshot A2**, all three horses.
+  3. **The screen.** Crouch and right-click the red horse. The armour slot shows the red icon. Take it out: it is red on the cursor and in your inventory. Shift-click the lime armour in your inventory: it goes into the armour slot with the armour sound. Close the screen: the horse wears lime with the trim. **Screenshot A3.**
+  4. **Save and load.** Save and quit to the title, then load the world. The horse still wears lime, and crouch-right-click shows the lime icon in its armour slot.
+  5. **The drop.** Kill the lime horse with the iron sword (`/kill` takes only players in the fork). The armour lies on the ground lime, and it is lime when you pick it up (hover: "Leather Horse Armor"). **Screenshot A4.**
+  6. **Riding.** Saddle the horse in plain leather and ride it: the armour, its trim, the saddle and the reins move with the horse.
+  7. **Friend (two windows, `scripts\mp-local.ps1` or over the relay, both on this build).** The friend gets the same kit (or `/kit @a` from the host). The host puts the blue armour on a horse and the friend puts the red one on another: each window shows the blue horse blue and the red horse red, both with the trim. Then the host opens the blue horse's screen and swaps the blue for the lime: in the friend's window the horse turns lime within a second. **Screenshot A5**, both windows.
+- **Kit** (8 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:leather_horse_armor@red,minecraft:leather_horse_armor@blue,minecraft:leather_horse_armor@lime,minecraft:leather_horse_armor,minecraft:iron_horse_armor,minecraft:saddle,minecraft:iron_sword,minecraft:cooked_beef*16
+```
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components

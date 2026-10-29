@@ -61,6 +61,18 @@ pub fn armor_texture(item: &str) -> Option<(ResourceId, [f32; 3])> {
     Some((ResourceId::parse(&format!("minecraft:entity/equipment/horse_body/{material}")).ok()?, tint))
 }
 
+const LEATHER_OVERLAY: &str = "minecraft:entity/equipment/horse_body/leather_overlay";
+
+pub fn armor_layers(horse: &HorseState) -> Option<(ResourceId, [f32; 3], Option<ResourceId>)> {
+    let item = horse.body_item.as_deref()?;
+    let (armor, undyed) = armor_texture(item)?;
+    if item != "minecraft:leather_horse_armor" {
+        return Some((armor, undyed, None));
+    }
+    let tint = crate::body_gear::dye_in(horse.body_components.as_ref()).map_or(undyed, crate::armor_render::dye_tint);
+    Some((armor, tint, ResourceId::parse(LEATHER_OVERLAY).ok()))
+}
+
 pub fn llama_texture(variant: i32, baby: bool) -> String {
     const COATS: [&str; 4] = ["creamy", "white", "brown", "gray"];
     let coat = COATS[variant.clamp(0, 3) as usize];
@@ -82,6 +94,7 @@ pub fn all_textures() -> Vec<ResourceId> {
     for material in ["copper", "iron", "golden", "diamond", "netherite", "leather"] {
         out.extend(armor_texture(&format!("minecraft:{material}_horse_armor")).map(|(id, _)| id));
     }
+    out.extend(ResourceId::parse(LEATHER_OVERLAY).ok());
     out
 }
 
@@ -384,8 +397,12 @@ pub fn append_horses<'a>(
         if let Some(markings) = markings {
             emit(translucent, &markings, &cubes, [1.0; 3]);
         }
-        if let Some((armor, tint)) = horse.body_item.as_deref().filter(|_| !baby && horse.kind.wears_armor()).and_then(armor_texture) {
-            emit(mesh, &armor, &model_layer(horse.kind, false, false, &anim, 0.1, None), tint);
+        if let Some((armor, tint, overlay)) = Some(horse).filter(|_| !baby && horse.kind.wears_armor()).and_then(armor_layers) {
+            let worn = model_layer(horse.kind, false, false, &anim, 0.1, None);
+            emit(mesh, &armor, &worn, tint);
+            if let Some(overlay) = overlay {
+                emit(translucent, &overlay, &worn, [1.0; 3]);
+            }
         }
         if let Some(saddle) = saddle_texture(horse.kind).filter(|_| horse.saddled && !baby) {
             emit(mesh, &saddle, &model_layer(horse.kind, false, false, &anim, 0.0, Some(horse.ridden)), [1.0; 3]);
@@ -472,5 +489,54 @@ mod tests {
         assert_eq!(mule.len(), donkey.len());
         assert_eq!(model(HorseKind::Mule, true, false, &still()).len(), model(HorseKind::Donkey, true, false, &still()).len());
         assert!(all_textures().contains(&ResourceId::parse("minecraft:entity/horse/mule_baby").unwrap()));
+    }
+
+    #[test]
+    fn dyed_leather_tints_the_armour_and_draws_the_plain_overlay() {
+        let leather = ResourceId::parse("minecraft:entity/equipment/horse_body/leather").unwrap();
+        let overlay = ResourceId::parse(LEATHER_OVERLAY).unwrap();
+        let red = crate::armor_render::dye_tint(0xB02E26);
+        let mut horse = HorseState::new(HorseKind::Horse);
+        assert_eq!(armor_layers(&horse), None);
+        horse.body_item = Some("minecraft:leather_horse_armor".to_owned());
+        assert_eq!(armor_layers(&horse), Some((leather.clone(), [160.0 / 255.0, 101.0 / 255.0, 64.0 / 255.0], Some(overlay.clone()))), "undyed leather is #A06540");
+        horse.body_components = Some(serde_json::json!({"minecraft:dyed_color": 0xB02E26}));
+        assert_eq!(armor_layers(&horse), Some((leather.clone(), red, Some(overlay.clone()))));
+        horse.body_components = Some(serde_json::json!({"minecraft:dyed_color": {"rgb": 0x3C44AA}}));
+        assert_eq!(armor_layers(&horse).map(|(_, tint, _)| tint), Some(crate::armor_render::dye_tint(0x3C44AA)));
+        horse.body_item = Some("minecraft:iron_horse_armor".to_owned());
+        assert_eq!(armor_layers(&horse).map(|(_, tint, overlay)| (tint, overlay)), Some(([1.0; 3], None)), "only leather takes a dye");
+        assert!(all_textures().contains(&overlay));
+
+        let temp = crate::test_dir::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("pack.mcmeta"), r#"{"pack":{"min_format":[97,1],"max_format":[97,1]}}"#).unwrap();
+        let ids = all_textures();
+        for id in &ids {
+            let path = root.join(format!("assets/minecraft/textures/{}.png", id.path));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            image::RgbaImage::from_pixel(64, 64, image::Rgba([200, 200, 200, 255])).save(path).unwrap();
+        }
+        let packs = crate::pack::PackStack::open(vec![root.into()]).unwrap();
+        let atlas = crate::mesh::make_atlas(&packs, ids).unwrap();
+        let mut world = minecraftoss_entities::world::EntityWorld::default();
+        let tag = minecraftoss_core::snbt::parse_compound("{id:\"minecraft:horse\",Pos:[0.5d,64.0d,0.5d],Variant:0,Tame:1b,equipment:{body:{id:\"minecraft:leather_horse_armor\",count:1,components:{\"minecraft:dyed_color\":11546150}}}}").unwrap();
+        crate::server_mobs::spawn_saved(&mut world, &tag).expect("the horse loads");
+        let mut poses = ClientMobs::default();
+        poses.spawn_missing(&crate::client_mobs::server_mobs(&world));
+        let light = SkyLight::from_levels((-2, 62, -2), (5, 5, 5), vec![15; 125], vec![0; 125]);
+        let (mut mesh, mut translucent) = (ChunkMesh::default(), ChunkMesh::default());
+        append_horses(&mut mesh, &mut translucent, world.cows().iter(), &poses, &atlas, &light, 0.0);
+        let inside = |uv: [f32; 2], region: [f32; 4]| uv[0] >= region[0] - 1e-6 && uv[0] <= region[2] + 1e-6 && uv[1] >= region[1] - 1e-6 && uv[1] <= region[3] + 1e-6;
+        let coat = model(HorseKind::Horse, false, false, &still()).len() * 24;
+        let worn = &mesh.vertices[coat..];
+        assert_eq!(worn.len(), model_layer(HorseKind::Horse, false, false, &still(), 0.1, None).len() * 24, "the coat, then the armour");
+        assert!(worn.iter().all(|v| inside(v.uv, atlas.entity_region(&leather))));
+        for v in worn {
+            let shade = v.color[0] / red[0];
+            assert!((v.color[1] - shade * red[1]).abs() < 1e-5 && (v.color[2] - shade * red[2]).abs() < 1e-5, "{:?}", v.color);
+        }
+        assert_eq!(translucent.vertices.len(), worn.len(), "the overlay covers the same cubes");
+        assert!(translucent.vertices.iter().all(|v| inside(v.uv, atlas.entity_region(&overlay)) && v.color[0] == v.color[1] && v.color[1] == v.color[2]), "the overlay is not tinted");
     }
 }
