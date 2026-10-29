@@ -12,7 +12,7 @@ use minecraftoss_player::World;
 use minecraftoss_player::rng::LegacyRandom;
 
 pub const SCAN_RATE: u32 = 20;
-pub const TARGETING_RANGE: f64 = 16.0;
+pub const TARGETING_RANGE: f64 = FOLLOW_RANGE;
 pub const SHOOT_RANGE_SQUARED: f64 = 256.0;
 pub const SHOOT_CHARGING_TICKS: i64 = 15;
 pub const SHOOT_RECOVERING_TICKS: i64 = 4;
@@ -149,10 +149,10 @@ pub fn can_attack(other: &Living) -> bool {
         && (other.is_player() || other.kind == "minecraft:iron_golem")
 }
 
-fn attackable(ctx: &Ctx, other: &Living, sight: bool) -> bool {
+fn attackable(ctx: &Ctx, other: &Living) -> bool {
     can_attack(other)
         && ctx.position().distance_squared(other.position) <= TARGETING_RANGE * TARGETING_RANGE
-        && (!sight || crate::sight::line_of_sight(ctx.world, ctx.eye(), other.eye()))
+        && crate::sight::line_of_sight(ctx.world, ctx.eye(), other.eye())
 }
 
 pub fn within_inner_circle(position: DVec3, at: DVec3) -> bool {
@@ -358,7 +358,7 @@ impl Brain {
             });
             self.nearest_attackable = found
                 .into_iter()
-                .find(|other| attackable(ctx, other, self.attack_target != Some(other.target)))
+                .find(|other| attackable(ctx, other))
                 .map(|other| other.target);
         }
         if fired[1] {
@@ -458,7 +458,7 @@ impl Brain {
                 true
             }
             Some(other) => {
-                if attackable(ctx, other, false) {
+                if attackable(ctx, other) {
                     self.attackable_for = ATTACKABLE_MEMORY;
                     false
                 } else {
@@ -831,7 +831,11 @@ mod tests {
         }
 
         fn tick_in(&mut self, brain: &mut Brain, time: i64, world: &dyn World) -> Actions {
-            let mut ctx = Ctx {
+            brain.tick(&mut self.ctx(world, time))
+        }
+
+        fn ctx<'a>(&'a mut self, world: &'a dyn World, time: i64) -> Ctx<'a> {
+            Ctx {
                 body: &self.body,
                 eye_height: 1.3452,
                 others: &self.others,
@@ -847,9 +851,46 @@ mod tests {
                 passenger: false,
                 levitating: false,
                 last_hurt: None,
-            };
-            brain.tick(&mut ctx)
+            }
         }
+    }
+
+    #[test]
+    fn a_breeze_sees_players_within_its_follow_range_and_gives_up_one_out_of_sight() {
+        for (z, seen) in [(20.5, true), (25.5, false)] {
+            let mut rig = Rig::new(DVec3::new(0.5, 64.0, z));
+            let mut brain = Brain::default();
+            for time in 0..=i64::from(SCAN_RATE) {
+                rig.tick(&mut brain, time);
+            }
+            assert_eq!(brain.attack_target.is_some(), seen, "{z}");
+        }
+        let wall = Room(
+            (-3..=3)
+                .flat_map(|x| (64..=68).map(move |y| ((x, y, 4), Block::new("minecraft:stone"))))
+                .collect(),
+        );
+        let mut rig = Rig::new(DVec3::new(0.5, 64.0, 8.5));
+        let mut brain = Brain {
+            activity: Activity::Fight,
+            attack_target: Some(Target::Player(1)),
+            ..Brain::default()
+        };
+        brain.stop_attacking_if_invalid(&mut rig.ctx(&Floor, 100));
+        assert_eq!(brain.attack_target, Some(Target::Player(1)), "in sight");
+        for time in 101..=200 {
+            brain.stop_attacking_if_invalid(&mut rig.ctx(&wall, time));
+            assert!(brain.attack_target.is_some(), "kept for 100 ticks: {time}");
+        }
+        brain.stop_attacking_if_invalid(&mut rig.ctx(&wall, 201));
+        assert_eq!(brain.attack_target, None, "out of sight for longer");
+        brain.attack_target = Some(Target::Player(1));
+        brain.sensors = [1, 1];
+        brain.sense(&mut rig.ctx(&wall, 202));
+        assert_eq!(
+            brain.nearest_attackable, None,
+            "not even its own target behind a wall"
+        );
     }
 
     #[test]

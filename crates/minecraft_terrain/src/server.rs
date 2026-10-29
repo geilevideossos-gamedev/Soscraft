@@ -7793,7 +7793,8 @@ mod tests {
             server.take_changes();
             server.mobs.set_mob_griefing(griefing);
             breeze_aiming_at(&mut server, [8.5, 200.0, 2.5]);
-            let (views, _) = run_breeze(&mut server, [8.5, 200.0, 12.5], 40);
+            server.player_edit_block((8, 200, 12), Some(&Block::new("minecraft:stone")), PlayerEdit::Place);
+            let (views, _) = run_breeze(&mut server, [8.5, 201.0, 12.5], 40);
             assert!(views.iter().any(|view| view.item == crate::breeze_charge::ENTITY), "it shoots");
             assert!(server.thrown_views().is_empty(), "the charge burst on the door");
             assert!(server.level.sounds.iter().any(|s| s.event == crate::wind::BREEZE_BURST_SOUND));
