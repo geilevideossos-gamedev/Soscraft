@@ -2210,6 +2210,7 @@ pub(crate) mod tests {
                 jumping: false,
                 swirl: None,
                 omens: Default::default(),
+                warden: Default::default(),
             };
             let mut actors = [TickActor {
                 id: 0,

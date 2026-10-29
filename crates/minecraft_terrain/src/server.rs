@@ -121,6 +121,10 @@ pub struct ServerSim {
     vibrations: crate::vibrations::Vibrations,
     event_tags: Arc<crate::game_events::EventTags>,
     vibration_bursts: Vec<crate::vibration_particles::VibrationView>,
+    warden_trackers: std::collections::HashMap<u64, crate::warden_tracker::WardenSpawnTracker>,
+    warned: std::collections::HashMap<u64, (crate::warden_tracker::WardenSpawnTracker, i32)>,
+    warden_updates: Vec<(u64, crate::warden_tracker::WardenSpawnTracker)>,
+    player_effects: Vec<(u64, crate::warden_tracker::EffectGrant)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -502,6 +506,10 @@ impl ServerSim {
             vibrations: crate::vibrations::Vibrations::default(),
             event_tags: Arc::new(event_tags),
             vibration_bursts: Vec::new(),
+            warden_trackers: std::collections::HashMap::new(),
+            warned: std::collections::HashMap::new(),
+            warden_updates: Vec::new(),
+            player_effects: Vec::new(),
         }
     }
 
@@ -744,6 +752,8 @@ impl ServerSim {
         let feet = self.player_feet.remove(&player);
         self.take_xp_delay.remove(&player);
         self.merchant_closing.remove(&player);
+        self.warden_trackers.remove(&player);
+        self.warned.remove(&player);
         let mut inventory = minecraftoss_player::inventory::Inventory::default();
         let overflow = self.mobs.merchant_close(player, &mut inventory, 0);
         let stacks: Vec<_> = inventory.slots.into_iter().flatten().chain(inventory.cursor).chain(overflow).collect();
@@ -978,13 +988,19 @@ impl ServerSim {
             posted.push((posted_event, forced));
         }
         let now = self.level.game_time;
+        let nearby: Vec<(u64, glam::DVec3)> = input.mob_players.iter().filter(|p| p.alive && !p.spectator).map(|p| (p.id, p.position)).collect();
+        let grounded = self.mobs.grounded();
+        let stepping: Vec<(BlockPos, u64)> = input.players.iter().filter(|player| player.alive && !players.iter().any(|p| p.0 == player.id && p.2)).filter_map(|player| Some((self.shrieker_under(player.feet)?, player.id))).chain(grounded.iter().filter_map(|&(id, feet)| Some((self.shrieker_under(feet.to_array())?, self.mobs.controlling_player(id)?)))).collect();
+        for (pos, player) in stepping {
+            self.try_shriek(pos, player, &nearby);
+        }
         for player in input.players.iter().filter(|player| player.alive) {
             let source = self.player_source(player.id, &players);
             let Some(on) = self.sensor_under(player.feet).filter(|_| !matches!(source, crate::game_events::Source::Player { spectator: true, .. })) else { continue };
             let uuid = Some(self.mobs.uuid_of(crate::thrown::PLAYER_TARGET + player.id));
             posted.push((crate::game_events::Posted { source_uuid: uuid, ..crate::game_events::Posted::new(crate::game_events::STEP, glam::DVec3::from_array(player.feet), before).by(source) }, Some(on)));
         }
-        for (id, feet) in self.mobs.grounded() {
+        for &(id, feet) in &grounded {
             if let Some(on) = self.sensor_under(feet.to_array()) {
                 let uuid = Some(self.mobs.uuid_of(id));
                 posted.push((crate::game_events::Posted { source_uuid: uuid, ..crate::game_events::Posted::new(crate::game_events::STEP, feet, now).by(crate::game_events::Source::Mob { id }) }, Some(on)));
@@ -1004,8 +1020,8 @@ impl ServerSim {
             posted.push((posted_event, None));
         }
         let tags = self.event_tags.clone();
-        let Self { vibrations, level, vibration_bursts, .. } = self;
-        let mut hearing = Hearing { level, tags: &tags, bursts: vibration_bursts };
+        let Self { vibrations, level, vibration_bursts, mobs, .. } = self;
+        let mut hearing = Hearing { level, tags: &tags, bursts: vibration_bursts, mobs, shrieks: Vec::new() };
         for (event, forced) in &posted {
             match forced {
                 Some(pos) => {
@@ -1017,6 +1033,76 @@ impl ServerSim {
         if normal {
             vibrations.tick(now, &mut hearing);
         }
+        for (pos, player) in std::mem::take(&mut hearing.shrieks) {
+            self.try_shriek(pos, player, &nearby);
+        }
+    }
+
+    fn shrieker_under(&self, feet: [f64; 3]) -> Option<BlockPos> {
+        let on = (feet[0].floor() as i32, (feet[1] - 0.2).floor() as i32, feet[2].floor() as i32);
+        let listener = self.vibrations.listener(on).filter(|listener| listener.kind == crate::vibrations::Kind::Shrieker)?;
+        ((feet[1] - f64::from(on.1) - SENSOR_TOP).abs() <= STANDING_REACH).then_some(listener.pos)
+    }
+
+    fn try_shriek(&mut self, (x, y, z): BlockPos, player: u64, nearby: &[(u64, glam::DVec3)]) {
+        let at = minecraftoss_core::BlockPos::new(x, y, z);
+        if !self.level.is_sculk_shrieker(self.level.block(at)) || self.level.shrieker_shrieking(at) {
+            return;
+        }
+        self.level.set_shrieker_warning_level(at, 0);
+        if self.level.shrieker_can_respond(at) {
+            let centre = crate::vibrations::centre((x, y, z));
+            let warden_nearby = self.warden_within(centre);
+            let Some(warning) = crate::warden_tracker::try_warn(centre, player, nearby, warden_nearby, &mut self.warden_trackers) else { return };
+            for id in &warning.players {
+                if let Some(tracker) = self.warden_trackers.get(id).copied() {
+                    self.warned.insert(*id, (tracker, WARNED_HOLD));
+                    self.warden_updates.push((*id, tracker));
+                }
+            }
+            self.level.set_shrieker_warning_level(at, warning.level);
+        }
+        self.level.sculk_shriek(at, Some(minecraftoss_world::level::game_event::EventSource::Player(player)));
+    }
+
+    fn warden_within(&mut self, centre: glam::DVec3) -> bool {
+        let (low, high) = crate::warden_tracker::warning_box(centre);
+        let wardens: Vec<u64> = self.mobs.mob_ids().filter(|&id| self.mobs.entity_type(id) == Some(crate::warden_tracker::WARDEN)).collect();
+        wardens.into_iter().any(|id| {
+            self.mobs.body_mut(id).is_some_and(|body| {
+                let half = f64::from(body.width) / 2.0;
+                let (min, max) = (body.position - glam::DVec3::new(half, 0.0, half), body.position + glam::DVec3::new(half, f64::from(body.height), half));
+                min.x < high.x && max.x > low.x && min.y < high.y && max.y > low.y && min.z < high.z && max.z > low.z
+            })
+        })
+    }
+
+    fn take_warden_trackers(&mut self, from: &[(u64, crate::warden_tracker::WardenSpawnTracker)]) {
+        self.warned.retain(|_, (tracker, hold)| {
+            tracker.tick();
+            *hold -= 1;
+            *hold > 0
+        });
+        self.warden_trackers = from.iter().map(|&(id, tracker)| (id, self.warned.get(&id).map_or(tracker, |held| held.0))).collect();
+    }
+
+    fn respond_shriekers(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) -> Vec<minecraftoss_entities::world::MobSound> {
+        use crate::warden_tracker::{players_around, reply_sound, DARKNESS_RADIUS, REPLY_SPREAD, REPLY_VOLUME, SHRIEK_DARKNESS};
+        use minecraftoss_core::random::RandomSource;
+        let around: Vec<(u64, glam::DVec3)> = players.iter().filter(|p| p.alive).map(|p| (p.id, p.position)).collect();
+        let mut sounds = Vec::new();
+        for (pos, warning) in std::mem::take(&mut self.level.shrieker_responses) {
+            if let Some(event) = reply_sound(warning) {
+                let random = &mut self.level.random;
+                let mut offset = || random.next_i32_bound(2 * REPLY_SPREAD + 1) - REPLY_SPREAD;
+                let position = glam::DVec3::new(f64::from(pos.x + offset()), f64::from(pos.y + offset()), f64::from(pos.z + offset()));
+                sounds.push(minecraftoss_entities::world::MobSound { event: event.to_owned(), position, volume: REPLY_VOLUME, pitch: 1.0, category: "hostile" });
+            }
+            for id in players_around(crate::vibrations::centre((pos.x, pos.y, pos.z)), DARKNESS_RADIUS, &around) {
+                self.player_effects.push((id, SHRIEK_DARKNESS));
+            }
+        }
+        sounds
     }
 
     fn sensor_under(&self, feet: [f64; 3]) -> Option<BlockPos> {
@@ -3331,6 +3417,7 @@ impl ServerSim {
         level.lava_source_conversion = rules.bool("lava_source_conversion");
         level.tnt_explodes = rules.bool("tnt_explodes");
         level.tnt_explosion_drop_decay = rules.bool("tnt_explosion_drop_decay");
+        level.spawn_wardens = rules.bool("spawn_wardens");
         self.block_explosion_drop_decay = rules.bool("block_explosion_drop_decay");
         level.set_advance_weather(rules.bool("advance_weather"));
         self.mobs.set_mob_griefing(rules.bool("mob_griefing"));
@@ -3583,11 +3670,14 @@ fn tag_uuid_at(tag: &minecraftoss_core::nbt::Tag, key: &str) -> Option<u128> {
 
 const SENSOR_TOP: f64 = 0.5;
 const STANDING_REACH: f64 = 0.05;
+const WARNED_HOLD: i32 = 20;
 
 struct Hearing<'a, 'l> {
     level: &'a mut Level<'l>,
     tags: &'a crate::game_events::EventTags,
     bursts: &'a mut Vec<crate::vibration_particles::VibrationView>,
+    mobs: &'a minecraftoss_entities::world::EntityWorld,
+    shrieks: Vec<(BlockPos, u64)>,
 }
 
 fn level_source(source: crate::game_events::Source) -> minecraftoss_world::level::game_event::EventSource {
@@ -3605,10 +3695,24 @@ impl Hearing<'_, '_> {
         let chunk = ChunkPos::new(x, z);
         self.level.chunk(chunk).is_some() && self.level.ticking_chunks.as_ref().is_none_or(|ticking| ticking.contains(&chunk))
     }
+
+    fn player_behind(&self, source: Option<crate::game_events::Source>, owner: Option<crate::game_events::Source>) -> Option<u64> {
+        use crate::game_events::Source;
+        let player = |source: Source| match source {
+            Source::Player { id, .. } => Some(id),
+            Source::Mob { id } => self.mobs.controlling_player(id),
+            Source::Item { .. } | Source::Entity { .. } => None,
+        };
+        owner.and_then(player).or_else(|| source.and_then(player))
+    }
 }
 
 impl crate::vibrations::User for Hearing<'_, '_> {
     fn can_receive(&self, listener: &crate::vibrations::Listener, at: BlockPos, posted: &crate::game_events::Posted) -> bool {
+        if listener.kind == crate::vibrations::Kind::Shrieker {
+            let (x, y, z) = listener.pos;
+            return !self.level.shrieker_shrieking(minecraftoss_core::BlockPos::new(x, y, z)) && self.player_behind(posted.source, posted.owner).is_some();
+        }
         if !listener.kind.is_sensor() {
             return false;
         }
@@ -3639,12 +3743,18 @@ impl crate::vibrations::User for Hearing<'_, '_> {
     }
 
     fn receive(&mut self, listener: &crate::vibrations::Listener, info: &crate::vibrations::Info, _: BlockPos, distance: f32) {
+        if listener.kind == crate::vibrations::Kind::Shrieker {
+            if let Some(player) = self.player_behind(info.source, info.owner) {
+                self.shrieks.push((listener.pos, player));
+            }
+            return;
+        }
         if !listener.kind.is_sensor() {
             return;
         }
         let (x, y, z) = listener.pos;
         let power = crate::vibrations::redstone_strength(distance, listener.kind.radius());
-        self.level.sculk_receive(minecraftoss_core::BlockPos::new(x, y, z), crate::game_events::frequency(info.event), power, info.source.map(level_source));
+        self.level.sculk_receive(minecraftoss_core::BlockPos::new(x, y, z), crate::game_events::frequency(info.event), power, info.source.or(info.owner).map(level_source));
     }
 
     fn particle(&mut self, from: glam::DVec3, to: glam::DVec3, ticks: i32) {
@@ -3851,6 +3961,7 @@ pub struct TickInput {
     pub spawn_mobs: bool,
     pub controls: Vec<minecraftoss_entities::controls::PlayerControls>,
     pub omens: Vec<(u64, PlayerOmens)>,
+    pub warden_trackers: Vec<(u64, crate::warden_tracker::WardenSpawnTracker)>,
     pub view_distance: i32,
     pub game_events: Vec<crate::game_events::PlayerEvent>,
 }
@@ -3886,6 +3997,7 @@ impl TickInput {
         self.player_hurts.retain(|(id, _, _)| *id != player);
         self.controls.retain(|controls| controls.id != player);
         self.omens.retain(|(id, _)| *id != player);
+        self.warden_trackers.retain(|(id, _)| *id != player);
         self.game_events.retain(|event| event.player != player);
     }
 }
@@ -3965,6 +4077,8 @@ pub struct Output {
     pub lecterns: Vec<crate::lectern::LecternView>,
     pub tracked: crate::mob_tracking::Tracked,
     pub raid_omens: Vec<(u64, i32, (i32, i32, i32))>,
+    pub warden_trackers: Vec<(u64, crate::warden_tracker::WardenSpawnTracker)>,
+    pub player_effects: Vec<(u64, crate::warden_tracker::EffectGrant)>,
     pub raid_heroes: Vec<(u64, i32)>,
     pub raid_horns: Vec<(u64, [f64; 3])>,
     pub raid_bars: Option<Vec<(u64, Vec<crate::raids::RaidBar>)>>,
@@ -4499,6 +4613,7 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
     if let Some(natural) = &mut sim.level.natural_spawning {
         natural.spawn_mobs = input.spawn_mobs;
     }
+    sim.take_warden_trackers(&input.warden_trackers);
     let omens = std::mem::take(&mut input.omens);
     let raid = sim.tick_raids(&input.mob_players, &omens, normal);
     input.omens = omens.into_iter().map(|(id, omen)| (id, PlayerOmens { bad_omen: omen.bad_omen, raid_omens: Vec::new() })).collect();
@@ -4548,6 +4663,9 @@ fn run_tick(sim: &mut ServerSim, input: &mut TickInput, normal: bool, out: &mut 
         sim.tick_ridden_mobs(&input.mob_players, input.bright_outside);
     }
     sim.hear_game_events(input, before, normal);
+    out.mob_sounds.extend(sim.respond_shriekers(&input.mob_players));
+    out.warden_trackers.extend(sim.warden_updates.drain(..));
+    out.player_effects.extend(sim.player_effects.drain(..));
     out.dismounts.extend(sim.take_vehicle_losses());
     out.player_hits.extend(sim.take_end_hits());
     out.player_hits.extend(sim.take_rocket_hits());
@@ -11460,6 +11578,7 @@ mod tests {
             spawn_mobs: false,
             controls: Vec::new(),
             omens: Vec::new(),
+            warden_trackers: Vec::new(),
             view_distance: 8,
             game_events: Vec::new(),
         }
@@ -11657,6 +11776,169 @@ mod tests {
         assert_eq!(sim.listeners().listener(SENSOR).map(|listener| listener.kind), Some(crate::vibrations::Kind::Shrieker));
         sim.unload_chunk(ChunkPos::new(0, 0));
         assert!(sim.listeners().is_empty());
+    }
+
+    const SHRIEKER: BlockPos = (8, 200, 8);
+    const ON_SHRIEKER: [f64; 3] = [8.5, 200.5, 8.5];
+    const OFF_SHRIEKER: [f64; 3] = [11.5, 200.0, 8.5];
+
+    fn shrieker_world(shrieker: Block) -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut sim, mut scene) = frozen_sim()?;
+        for x in -4..21 {
+            for z in -4..21 {
+                place(&mut sim, &mut scene, (x, 199, z), Block::new("minecraft:stone"));
+            }
+        }
+        place(&mut sim, &mut scene, SHRIEKER, shrieker);
+        Some((sim, scene))
+    }
+
+    fn summoning() -> Block {
+        Block::new("minecraft:sculk_shrieker").with("can_summon", "true")
+    }
+
+    #[derive(Default)]
+    struct Shrieked {
+        sounds: Vec<minecraftoss_entities::world::MobSound>,
+        effects: Vec<(u64, crate::warden_tracker::EffectGrant)>,
+        trackers: Vec<(u64, crate::warden_tracker::WardenSpawnTracker)>,
+        events: Vec<(i32, (i32, i32, i32), i32)>,
+    }
+
+    fn client_ticks(sim: &mut ServerSim, input: &mut TickInput, count: usize, heard: &mut Shrieked) {
+        for _ in 0..count {
+            for (_, tracker) in &mut input.warden_trackers {
+                tracker.tick();
+            }
+            let mut out = Output::default();
+            run_tick(sim, input, true, &mut out);
+            for &(player, tracker) in &out.warden_trackers {
+                if let Some(kept) = input.warden_trackers.iter_mut().find(|(id, _)| *id == player) {
+                    kept.1 = tracker;
+                }
+            }
+            heard.sounds.extend(out.mob_sounds.into_iter().filter(|sound| sound.category == "hostile"));
+            heard.effects.extend(out.player_effects);
+            heard.trackers.extend(out.warden_trackers);
+            heard.events.extend(out.level_events);
+        }
+    }
+
+    fn stand(input: &mut TickInput, player: u64, feet: [f64; 3]) {
+        for p in input.players.iter_mut().filter(|p| p.id == player) {
+            p.feet = feet;
+        }
+        for p in input.mob_players.iter_mut().filter(|p| p.id == player) {
+            p.position = glam::DVec3::from_array(feet);
+        }
+    }
+
+    fn shrieking(sim: &ServerSim) -> bool {
+        block_property(sim, SHRIEKER, "shrieking").as_deref() == Some("true")
+    }
+
+    fn tracker_of(input: &TickInput, player: u64) -> crate::warden_tracker::WardenSpawnTracker {
+        input.warden_trackers.iter().find(|(id, _)| *id == player).map(|(_, tracker)| *tracker).unwrap_or_default()
+    }
+
+    fn shrieker_input(players: &[(u64, [f64; 3])]) -> TickInput {
+        TickInput {
+            players: players.iter().map(|&(id, feet)| standing(id, feet, false)).collect(),
+            mob_players: players.iter().map(|&(id, feet)| candidate(id, feet)).collect(),
+            warden_trackers: players.iter().map(|&(id, _)| (id, crate::warden_tracker::WardenSpawnTracker::default())).collect(),
+            ..idle_input()
+        }
+    }
+
+    fn warn_once(sim: &mut ServerSim, input: &mut TickInput, heard: &mut Shrieked) {
+        stand(input, 0, ON_SHRIEKER);
+        client_ticks(sim, input, 1, heard);
+        stand(input, 0, OFF_SHRIEKER);
+        client_ticks(sim, input, minecraftoss_world::level::sculk::SHRIEK_TICKS as usize, heard);
+    }
+
+    #[test]
+    fn warnings_one_to_three_play_the_nearby_sounds_and_darken_within_forty() {
+        let Some((mut sim, _)) = shrieker_world(summoning()) else { return };
+        let (friend, far) = ([8.5, 200.0, 38.0], [8.5, 200.0, 50.0]);
+        let mut input = shrieker_input(&[(0, OFF_SHRIEKER), (1, friend), (2, far)]);
+        let mut heard = Shrieked::default();
+        client_ticks(&mut sim, &mut input, 2, &mut heard);
+        assert_eq!(sim.listeners().listener(SHRIEKER).map(|listener| listener.kind), Some(crate::vibrations::Kind::Shrieker));
+        stand(&mut input, 0, ON_SHRIEKER);
+        client_ticks(&mut sim, &mut input, 1, &mut heard);
+        assert!(shrieking(&sim), "standing on it shrieks it");
+        assert_eq!(heard.events, vec![(crate::level_events::SCULK_SHRIEK, SHRIEKER, 0)]);
+        let first = crate::warden_tracker::WardenSpawnTracker { ticks_since_last_warning: 0, warning_level: 1, cooldown_ticks: 200 };
+        assert_eq!(heard.trackers, vec![(0, first)], "only the player within sixteen blocks is warned");
+        assert_eq!(sim.level.shrieker_warning_level(minecraftoss_core::BlockPos::new(8, 200, 8)), 1);
+        stand(&mut input, 0, OFF_SHRIEKER);
+        client_ticks(&mut sim, &mut input, 89, &mut heard);
+        assert!(shrieking(&sim));
+        assert!(heard.sounds.is_empty() && heard.effects.is_empty());
+        client_ticks(&mut sim, &mut input, 1, &mut heard);
+        assert!(!shrieking(&sim), "ninety ticks later it is quiet");
+        assert_eq!(heard.sounds.len(), 1);
+        let reply = &heard.sounds[0];
+        assert_eq!((reply.event.as_str(), reply.volume, reply.pitch), ("minecraft:entity.warden.nearby_close", 5.0, 1.0));
+        let offset = reply.position - glam::DVec3::new(8.0, 200.0, 8.0);
+        assert!(offset.abs().max_element() <= 10.0 && offset.round() == offset, "{offset}");
+        let darkness = crate::warden_tracker::SHRIEK_DARKNESS;
+        assert_eq!(heard.effects, vec![(0, darkness), (1, darkness)], "darkness within forty blocks");
+        stand(&mut input, 0, ON_SHRIEKER);
+        client_ticks(&mut sim, &mut input, 1, &mut heard);
+        assert!(!shrieking(&sim), "silent while the warning cools down");
+        assert_eq!(tracker_of(&input, 0).warning_level, 1);
+        stand(&mut input, 0, OFF_SHRIEKER);
+        client_ticks(&mut sim, &mut input, 110, &mut heard);
+        assert!(!tracker_of(&input, 0).on_cooldown());
+        heard = Shrieked::default();
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(tracker_of(&input, 0).warning_level, 2);
+        assert_eq!(heard.sounds.iter().map(|sound| sound.event.as_str()).collect::<Vec<_>>(), vec!["minecraft:entity.warden.nearby_closer"]);
+        client_ticks(&mut sim, &mut input, 110, &mut heard);
+        heard = Shrieked::default();
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(tracker_of(&input, 0).warning_level, 3);
+        assert_eq!(heard.sounds.iter().map(|sound| sound.event.as_str()).collect::<Vec<_>>(), vec!["minecraft:entity.warden.nearby_closest"]);
+        assert_eq!((tracker_of(&input, 1).warning_level, tracker_of(&input, 1).cooldown_ticks), (0, 0), "the friend at thirty blocks is never warned");
+    }
+
+    #[test]
+    fn the_fourth_warning_plays_the_angry_sound_while_no_warden_can_come() {
+        let Some((mut sim, _)) = shrieker_world(summoning()) else { return };
+        let mut input = shrieker_input(&[(0, OFF_SHRIEKER), (1, [10.5, 200.0, 12.5])]);
+        input.warden_trackers[0].1.set_warning_level(3);
+        let mut heard = Shrieked::default();
+        client_ticks(&mut sim, &mut input, 2, &mut heard);
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(tracker_of(&input, 0).warning_level, 4);
+        assert_eq!(tracker_of(&input, 1), tracker_of(&input, 0), "a player nearby rises with them");
+        assert_eq!(heard.sounds.iter().map(|sound| sound.event.as_str()).collect::<Vec<_>>(), vec!["minecraft:entity.warden.listening_angry"]);
+        assert_eq!(heard.effects.len(), 2);
+        client_ticks(&mut sim, &mut input, 110, &mut heard);
+        heard = Shrieked::default();
+        sim.level.spawn_wardens = false;
+        warn_once(&mut sim, &mut input, &mut heard);
+        assert_eq!(heard.events, vec![(crate::level_events::SCULK_SHRIEK, SHRIEKER, 0)], "it shrieks");
+        assert!(heard.trackers.is_empty() && heard.sounds.is_empty() && heard.effects.is_empty(), "but nothing answers");
+    }
+
+    #[test]
+    fn a_sensor_s_click_makes_a_shrieker_nearby_shriek() {
+        let Some((mut sim, mut scene)) = shrieker_world(Block::new("minecraft:sculk_shrieker")) else { return };
+        place(&mut sim, &mut scene, (10, 200, 8), Block::new("minecraft:sculk_sensor"));
+        let feet = [14.5, 200.0, 8.5];
+        let mut input = shrieker_input(&[(0, feet)]);
+        let mut heard = Shrieked::default();
+        client_ticks(&mut sim, &mut input, 2, &mut heard);
+        input.game_events.push(step_of(0, feet));
+        client_ticks(&mut sim, &mut input, 12, &mut heard);
+        assert!(shrieking(&sim), "the tendrils' click carries the player on to the shrieker");
+        assert_eq!(heard.events, vec![(crate::level_events::SCULK_SHRIEK, SHRIEKER, 0)]);
+        client_ticks(&mut sim, &mut input, 90, &mut heard);
+        assert!(!shrieking(&sim));
+        assert!(heard.trackers.is_empty() && heard.sounds.is_empty() && heard.effects.is_empty(), "a shrieker that cannot summon never warns");
     }
 
     fn block_property(sim: &ServerSim, pos: BlockPos, name: &str) -> Option<String> {

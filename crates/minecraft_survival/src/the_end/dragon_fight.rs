@@ -1159,6 +1159,7 @@ mod tests {
                             jumping: false,
                             swirl: None,
                             omens: Default::default(),
+                            warden: Default::default(),
                         },
                         inventory: &mut minecraftoss_player::inventory::Inventory::default(),
                         selected: 0,

@@ -209,6 +209,8 @@ pub struct Level<'a> {
     pub level_events: Vec<(i32, BlockPos, i32)>,
     pub game_events: Vec<game_event::GameEvent>,
     pub acting_player: Option<u64>,
+    pub spawn_wardens: bool,
+    pub shrieker_responses: Vec<(BlockPos, i32)>,
     pub bell_rings: Vec<(BlockPos, Direction)>,
     /// Entity-ticking chunks in vanilla's iteration order, when known.
     pub ticking_chunks: Option<Vec<ChunkPos>>,
@@ -307,6 +309,8 @@ impl<'a> Level<'a> {
             level_events: Vec::new(),
             game_events: Vec::new(),
             acting_player: None,
+            spawn_wardens: true,
+            shrieker_responses: Vec::new(),
             bell_rings: Vec::new(),
             ticking_chunks: None,
             random_counts: Default::default(),
@@ -855,6 +859,8 @@ impl<'a> Level<'a> {
             self.speleothem_tick(state, pos);
         } else if self.is_a(state, "FrostedIceBlock") {
             self.frosted_ice_tick(state, pos);
+        } else if self.is_a(state, "SculkShriekerBlock") {
+            self.sculk_block_tick(state, pos);
         } else if SUPPORTED_BY_TICK.iter().any(|class| self.is_a(state, class)) {
             if !self.can_survive_state(state, pos) {
                 self.destroy_block_drops(pos, true, update::LIMIT);

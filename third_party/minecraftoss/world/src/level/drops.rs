@@ -121,6 +121,7 @@ impl Level<'_> {
     /// The items `BlockEntity.preRemoveSideEffects` drops: a container's
     /// contents (`Containers.dropContents`). Shulker boxes keep theirs.
     pub(super) fn pre_remove_side_effects(&mut self, pos: BlockPos, old: BlockStateId) -> Vec<Stack> {
+        self.sculk_pre_remove(pos, old);
         match self.store_of(old) {
             Some(super::container::Store::ShulkerBox) => Vec::new(),
             // Every slot, empty ones included: each draws a position.

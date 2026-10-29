@@ -239,6 +239,18 @@ impl Survival {
         self.status.add_effect(EffectKind::HeroOfTheVillage, minecraft_terrain::raids::HERO_TICKS, amplifier);
     }
 
+    pub fn take_effect(&mut self, survival_like: bool, grant: &minecraft_terrain::warden_tracker::EffectGrant) -> bool {
+        let Some(kind) = crate::commands::effect_kind(grant.effect) else {
+            return false;
+        };
+        let held = self.status.effect(kind).map(|effect| (effect.duration, effect.amplifier));
+        if !grant.takes(survival_like, held) {
+            return false;
+        }
+        self.status.add_effect(kind, grant.ticks, grant.amplifier);
+        true
+    }
+
     pub fn respawn(&mut self) {
         *self = Self {
             blocked_sprint: self.blocked_sprint,
@@ -1350,6 +1362,29 @@ mod tests {
         assert!(survival.omens().raid_omens.is_empty(), "a raid omen from /effect has no place to raid");
         survival.become_hero(3);
         assert_eq!(survival.status.effect(EffectKind::HeroOfTheVillage).map(|e| (e.duration, e.amplifier)), Some((48000, 3)));
+    }
+
+    #[test]
+    fn a_shrieker_s_darkness_is_taken_like_vanilla() {
+        let grant = minecraft_terrain::warden_tracker::SHRIEK_DARKNESS;
+        let darkness = |survival: &Survival| survival.status.effect(EffectKind::Darkness).map(|e| e.duration);
+        let mut creative = fresh();
+        assert!(!creative.take_effect(false, &grant));
+        assert_eq!(darkness(&creative), None);
+        let mut survival = fresh();
+        assert!(survival.take_effect(true, &grant));
+        assert_eq!(darkness(&survival), Some(260));
+        let motion = Motion { on_ground: true, ..Motion::default() };
+        for _ in 0..40 {
+            survival.tick(&motion);
+        }
+        assert!(!survival.take_effect(true, &grant), "220 ticks left: kept");
+        assert_eq!(darkness(&survival), Some(220));
+        for _ in 0..21 {
+            survival.tick(&motion);
+        }
+        assert!(survival.take_effect(true, &grant), "199 ticks left: given again");
+        assert_eq!(darkness(&survival), Some(260));
     }
 
     #[test]

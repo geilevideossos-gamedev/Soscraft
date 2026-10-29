@@ -65,6 +65,7 @@ pub struct EntityView {
     fireworks: minecraft_terrain::firework_particles::FireworkParticles,
     firework_camera: DVec3,
     vibrations: minecraft_terrain::vibration_particles::VibrationSignals,
+    shrieks: minecraft_terrain::shriek_particles::ShriekRings,
 }
 
 impl EntityView {
@@ -117,6 +118,7 @@ impl EntityView {
             fireworks: minecraft_terrain::firework_particles::FireworkParticles::new((seed ^ 0xf14e) as u64),
             firework_camera: DVec3::ZERO,
             vibrations: Default::default(),
+            shrieks: Default::default(),
         }
     }
 
@@ -458,6 +460,9 @@ impl EntityView {
             self.potion_crumbs
                 .push(minecraft_terrain::spell_particles::break_center(at));
             return;
+        }
+        if id == minecraft_terrain::level_events::SCULK_SHRIEK {
+            self.shrieks.shriek(pos);
         }
         let is_a = minecraft_terrain::level_events::class_test(scene);
         let effects = minecraft_terrain::level_events::level_event(
@@ -812,6 +817,7 @@ impl EntityView {
             }
             self.fireworks.tick(|cell| !minecraftoss_player::World::collision_boxes(scene, cell).is_empty());
             self.vibrations.tick();
+            self.shrieks.tick();
             self.poof.tick(scene);
             let bodies = &self.bodies;
             self.ambient.tick_emitters(|key| bodies.get(&key).copied());
@@ -1354,6 +1360,8 @@ impl EntityView {
         self.fireworks
             .append_mesh(&mut out.translucent, atlas, forward, partial, light);
         self.vibrations
+            .append_mesh(&mut out.translucent, atlas, partial, light);
+        self.shrieks
             .append_mesh(&mut out.translucent, atlas, partial, light);
         let held: Vec<_> = skeleton_items
             .into_iter()

@@ -693,6 +693,7 @@ mod tests {
             spawn_mobs: false,
             controls: Vec::new(),
             omens: Vec::new(),
+            warden_trackers: Vec::new(),
             view_distance: 8,
             game_events: Vec::new(),
         }

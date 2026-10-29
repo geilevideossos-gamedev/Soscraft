@@ -10,6 +10,12 @@ pub const SENSOR_ACTIVE_TICKS: i32 = 30;
 pub const CALIBRATED_ACTIVE_TICKS: i32 = 10;
 pub const COOLDOWN_TICKS: i32 = 10;
 pub const LAST_FREQUENCY: &str = "last_vibration_frequency";
+pub const WARNING_LEVEL: &str = "warning_level";
+pub const SHRIEK_TICKS: i32 = 90;
+pub const SHRIEK_EVENT: i32 = 3007;
+const SHRIEKING: &str = "shrieking";
+const CAN_SUMMON: &str = "can_summon";
+const SHRIEK: &str = "minecraft:shriek";
 const PHASE: &str = "sculk_sensor_phase";
 const TENDRILS_CLICKING: &str = "minecraft:sculk_sensor_tendrils_clicking";
 const CLICKING: &str = "minecraft:block.sculk_sensor.clicking";
@@ -228,6 +234,69 @@ impl Level<'_> {
             .and_then(|tag| tag.get(LAST_FREQUENCY))
             .and_then(Tag::as_i64);
         frequency.unwrap_or(0) as i32
+    }
+
+    pub fn is_sculk_shrieker(&self, state: BlockStateId) -> bool {
+        self.is_a(state, "SculkShriekerBlock")
+    }
+
+    pub fn shrieker_shrieking(&self, pos: BlockPos) -> bool {
+        let state = self.block(pos);
+        self.is_sculk_shrieker(state) && self.sensor_property(state, SHRIEKING) == Some("true")
+    }
+
+    fn shrieker_can_respond_as(&self, state: BlockStateId) -> bool {
+        self.sensor_property(state, CAN_SUMMON) == Some("true") && self.difficulty != 0 && self.spawn_wardens
+    }
+
+    pub fn shrieker_can_respond(&self, pos: BlockPos) -> bool {
+        let state = self.block(pos);
+        self.is_sculk_shrieker(state) && self.shrieker_can_respond_as(state)
+    }
+
+    pub fn shrieker_warning_level(&self, pos: BlockPos) -> i32 {
+        let level = self
+            .block_entity(pos)
+            .and_then(|tag| tag.get(WARNING_LEVEL))
+            .and_then(Tag::as_i64);
+        level.unwrap_or(0) as i32
+    }
+
+    pub fn set_shrieker_warning_level(&mut self, pos: BlockPos, level: i32) {
+        self.set_block_entity_value(pos, WARNING_LEVEL, Tag::Int(level));
+    }
+
+    pub fn sculk_shriek(&mut self, pos: BlockPos, source: Option<EventSource>) {
+        let state = self.block(pos);
+        if !self.is_sculk_shrieker(state) {
+            return;
+        }
+        let shrieking = self.sensor_with(state, SHRIEKING, "true");
+        self.set_block(pos, shrieking, super::update::CLIENTS, super::update::LIMIT);
+        self.schedule_block_tick(pos, shrieking, SHRIEK_TICKS);
+        self.level_events.push((SHRIEK_EVENT, pos, 0));
+        self.game_event_from(SHRIEK, centre(pos), source, None);
+    }
+
+    fn shrieker_respond(&mut self, pos: BlockPos, state: BlockStateId) {
+        let level = self.shrieker_warning_level(pos);
+        if self.shrieker_can_respond_as(state) && level > 0 {
+            self.shrieker_responses.push((pos, level));
+        }
+    }
+
+    pub(super) fn sculk_block_tick(&mut self, state: BlockStateId, pos: BlockPos) {
+        if self.is_sculk_shrieker(state) && self.sensor_property(state, SHRIEKING) == Some("true") {
+            let quiet = self.sensor_with(state, SHRIEKING, "false");
+            self.set_block_and_update(pos, quiet);
+            self.shrieker_respond(pos, quiet);
+        }
+    }
+
+    pub(super) fn sculk_pre_remove(&mut self, pos: BlockPos, old: BlockStateId) {
+        if self.is_sculk_shrieker(old) && self.sensor_property(old, SHRIEKING) == Some("true") {
+            self.shrieker_respond(pos, old);
+        }
     }
 }
 
@@ -475,5 +544,98 @@ mod tests {
         assert_eq!(RESONATE_EVENTS[14], "minecraft:resonate_15");
         let highest = 2f64.powf(f64::from(RESONANCE_NOTES[15] - 12) / 12.0) as f32;
         assert_eq!(highest, 2.0);
+    }
+
+    const SHRIEKER: BlockPos = BlockPos { x: 4, y: 65, z: 4 };
+
+    fn shrieker(level: &mut Level<'_>, state: &str, warning: i32) {
+        place(level, SHRIEKER, state);
+        level.set_shrieker_warning_level(SHRIEKER, warning);
+        level.take_game_events();
+        level.level_events.clear();
+    }
+
+    #[test]
+    fn a_shriek_lasts_ninety_ticks_and_responds_at_its_end() {
+        let Some(lib) = library() else { return };
+        let mut level = level(&lib);
+        shrieker(&mut level, "minecraft:sculk_shrieker[can_summon=true]", 2);
+        assert!(level.shrieker_can_respond(SHRIEKER));
+        assert!(!level.shrieker_shrieking(SHRIEKER));
+        level.sculk_shriek(SHRIEKER, Some(EventSource::Player(4)));
+        assert!(level.shrieker_shrieking(SHRIEKER));
+        assert_eq!(level.level_events, vec![(SHRIEK_EVENT, SHRIEKER, 0)]);
+        let posted = level.take_game_events();
+        assert_eq!(
+            posted
+                .iter()
+                .map(|event| (event.event, event.pos, event.source))
+                .collect::<Vec<_>>(),
+            vec![(SHRIEK, centre(SHRIEKER), Some(EventSource::Player(4)))]
+        );
+        ticks(&mut level, SHRIEK_TICKS - 1);
+        assert!(level.shrieker_shrieking(SHRIEKER));
+        assert!(level.shrieker_responses.is_empty());
+        ticks(&mut level, 1);
+        assert!(!level.shrieker_shrieking(SHRIEKER));
+        assert_eq!(level.shrieker_responses, vec![(SHRIEKER, 2)]);
+        level.shrieker_responses.clear();
+        level.set_shrieker_warning_level(SHRIEKER, 0);
+        level.sculk_shriek(SHRIEKER, None);
+        ticks(&mut level, SHRIEK_TICKS);
+        assert!(
+            level.shrieker_responses.is_empty(),
+            "no warning, no response"
+        );
+    }
+
+    #[test]
+    fn a_shrieker_without_can_summon_shrieks_but_never_warns() {
+        let Some(lib) = library() else { return };
+        let mut level = level(&lib);
+        shrieker(&mut level, "minecraft:sculk_shrieker", 3);
+        assert!(!level.shrieker_can_respond(SHRIEKER));
+        level.sculk_shriek(SHRIEKER, Some(EventSource::Player(4)));
+        assert!(level.shrieker_shrieking(SHRIEKER));
+        assert_eq!(level.level_events, vec![(SHRIEK_EVENT, SHRIEKER, 0)]);
+        ticks(&mut level, SHRIEK_TICKS);
+        assert!(!level.shrieker_shrieking(SHRIEKER));
+        assert!(level.shrieker_responses.is_empty());
+    }
+
+    #[test]
+    fn peaceful_or_spawn_wardens_off_means_no_response() {
+        let Some(lib) = library() else { return };
+        let mut level = level(&lib);
+        shrieker(&mut level, "minecraft:sculk_shrieker[can_summon=true]", 1);
+        level.difficulty = 0;
+        assert!(!level.shrieker_can_respond(SHRIEKER));
+        level.sculk_shriek(SHRIEKER, None);
+        ticks(&mut level, SHRIEK_TICKS);
+        assert!(level.shrieker_responses.is_empty(), "peaceful");
+        level.difficulty = 2;
+        level.spawn_wardens = false;
+        assert!(!level.shrieker_can_respond(SHRIEKER));
+        level.sculk_shriek(SHRIEKER, None);
+        ticks(&mut level, SHRIEK_TICKS);
+        assert!(level.shrieker_responses.is_empty(), "spawn_wardens off");
+        level.spawn_wardens = true;
+        assert!(level.shrieker_can_respond(SHRIEKER));
+    }
+
+    #[test]
+    fn a_shrieking_shrieker_broken_still_responds() {
+        let Some(lib) = library() else { return };
+        let mut level = level(&lib);
+        shrieker(&mut level, "minecraft:sculk_shrieker[can_summon=true]", 1);
+        level.set_block(SHRIEKER, BlockStateId::AIR, update::ALL, update::LIMIT);
+        assert!(level.shrieker_responses.is_empty(), "a quiet one says nothing");
+        shrieker(&mut level, "minecraft:sculk_shrieker[can_summon=true]", 1);
+        level.sculk_shriek(SHRIEKER, None);
+        ticks(&mut level, 10);
+        level.set_block(SHRIEKER, BlockStateId::AIR, update::ALL, update::LIMIT);
+        assert_eq!(level.shrieker_responses, vec![(SHRIEKER, 1)]);
+        ticks(&mut level, SHRIEK_TICKS);
+        assert_eq!(level.shrieker_responses.len(), 1, "its tick finds no shrieker");
     }
 }

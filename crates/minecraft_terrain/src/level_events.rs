@@ -13,6 +13,8 @@ pub const ZOMBIE_INFECT_SOUND: &str = "minecraft:entity.zombie.infect";
 pub const ZOMBIE_VILLAGER_CONVERTED: i32 = 1027;
 pub const ZOMBIE_VILLAGER_CONVERTED_SOUND: &str = "minecraft:entity.zombie_villager.converted";
 pub const LAVA_EXTINGUISH: &str = "minecraft:block.lava.extinguish";
+pub const SCULK_SHRIEK: i32 = 3007;
+pub const SHRIEK_SOUND: &str = "minecraft:block.sculk_shrieker.shriek";
 const FIZZ_SMOKE: usize = 8;
 const EVAPORATION_SMOKE: usize = 8;
 const SPREAD_FACTOR: i32 = 3;
@@ -124,6 +126,19 @@ pub fn level_event<S: Scene + ?Sized>(
                 volume: 2.0,
                 pitch: (random.next_float() - random.next_float()) * 0.2 + 1.0,
             });
+        }
+        SCULK_SHRIEK => {
+            let waterlogged = scene
+                .block(pos)
+                .is_some_and(|block| block.properties.get("waterlogged").is_some_and(|value| value == "true"));
+            if !waterlogged {
+                out.sounds.push(AmbientSound {
+                    event: SHRIEK_SOUND,
+                    at: crate::shriek_particles::shriek_at(pos).to_array(),
+                    volume: 2.0,
+                    pitch: 0.6 + random.next_float() * 0.4,
+                });
+            }
         }
         BONE_MEAL_USE => {
             growth_particles(scene, pos, data, is_a, random, &mut out);
@@ -395,6 +410,24 @@ mod tests {
         assert_eq!(sound.at, [-2.5, 70.5, 5.5]);
         let pitch = (mirror.next_float() - mirror.next_float()) * 0.2 + 1.0;
         assert_eq!((sound.volume, sound.pitch), (2.0, pitch));
+    }
+
+    #[test]
+    fn a_shriek_screams_over_the_shrieker_unless_it_is_under_water() {
+        let mut random = LegacyRandom::new(6);
+        let mut mirror = LegacyRandom::new(6);
+        let dry = Blocks(HashMap::from([((1, 64, 1), Block::new("minecraft:sculk_shrieker"))]));
+        let event = level_event(SCULK_SHRIEK, (1, 64, 1), 0, &dry, &classes, &mut random);
+        assert_eq!(event.sounds.len(), 1);
+        let sound = &event.sounds[0];
+        assert_eq!((sound.event, sound.at, sound.volume), (SHRIEK_SOUND, [1.5, 64.5, 1.5], 2.0));
+        assert_eq!(sound.pitch, 0.6 + mirror.next_float() * 0.4);
+        let wet = Blocks(HashMap::from([(
+            (1, 64, 1),
+            Block::new("minecraft:sculk_shrieker").with("waterlogged", "true"),
+        )]));
+        let event = level_event(SCULK_SHRIEK, (1, 64, 1), 0, &wet, &classes, &mut random);
+        assert!(event.sounds.is_empty());
     }
 
     #[test]

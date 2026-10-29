@@ -52,6 +52,7 @@ pub struct Player {
     pub sleeping: Option<crate::sleep::Sleeping>,
     pub sleep_timer: i32,
     pub time_since_rest: i32,
+    pub warden_tracker: minecraft_terrain::warden_tracker::WardenSpawnTracker,
     pub saved_in_bed: Option<(i32, i32, i32)>,
     pub jump_bar: Option<f32>,
     pub raid_bars: Vec<minecraft_terrain::raids::RaidBar>,
@@ -165,6 +166,7 @@ impl Player {
             sleeping: None,
             sleep_timer: 0,
             time_since_rest: 0,
+            warden_tracker: Default::default(),
             saved_in_bed: None,
             jump_bar: None,
             raid_bars: Vec::new(),
@@ -320,6 +322,7 @@ impl Player {
                 .map(|sleeping| sleeping.head)
                 .or(self.saved_in_bed),
             raid_omen_position: self.survival.raid_omen_position,
+            warden_spawn_tracker: Some(self.warden_tracker),
             time_since_rest: Some(self.time_since_rest),
             tags: Some(self.tags.clone()),
             recipe_book: Some(self.recipe_book.saved(&self.inventory)),

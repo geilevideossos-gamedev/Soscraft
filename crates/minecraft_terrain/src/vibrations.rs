@@ -415,9 +415,7 @@ impl Vibrations {
                 listener.reload_particle = false;
             }
             listener.travel = (listener.travel - 1).max(0);
-            if listener.travel <= 0
-                && (!listener.kind.is_sensor() || user.neighbours_tick(listener.pos))
-            {
+            if listener.travel <= 0 && user.neighbours_tick(listener.pos) {
                 let at = block_of(info.pos);
                 let distance = (distance_squared(at, listener.pos) as f64).sqrt() as f32;
                 user.receive(listener, &info, at, distance);

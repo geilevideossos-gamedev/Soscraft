@@ -14,6 +14,8 @@ pub mod darkness;
 pub mod game_events;
 pub mod vibrations;
 pub mod vibration_particles;
+pub mod warden_tracker;
+pub mod shriek_particles;
 pub mod lectern;
 pub mod block_particles;
 #[cfg(test)]

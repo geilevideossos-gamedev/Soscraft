@@ -316,6 +316,7 @@ pub(crate) fn movement(
         riding,
         drop_throttle,
         arsenal,
+        warden_tracker,
         ..
     } = player;
     let feet = sim::voxel::to_block(origin, ps.origin);
@@ -504,6 +505,7 @@ pub(crate) fn movement(
     hand.clock -= f64::from(hand_ticks) * TICK_SECONDS;
     hand.cooldowns.tick(hand_ticks);
     drop_throttle.tick(hand_ticks);
+    warden_tracker.tick_by(hand_ticks);
     let cooldowns = hand.cooldowns.shown((hand.clock / TICK_SECONDS) as f32);
     hand.miss_time = hand.miss_time.saturating_sub(hand_ticks);
     hand.attack_ticks = hand.attack_ticks.saturating_add(hand_ticks);
@@ -776,6 +778,7 @@ pub(crate) fn struck(
         jump_bar,
         raid_bars,
         wither_bars,
+        warden_tracker,
         ..
     } = player;
     let local_uuid = &*uuid;
@@ -950,6 +953,16 @@ pub(crate) fn struck(
     }
     for amplifier in outputs.raid_heroes {
         survival.become_hero(amplifier);
+    }
+    if let Some(tracker) = outputs.warden_tracker {
+        *warden_tracker = tracker;
+    }
+    let survival_like = matches!(
+        player_mode.mode,
+        minecraftoss_player::GameMode::Survival | minecraftoss_player::GameMode::Adventure
+    );
+    for grant in outputs.effects.iter().filter(|_| alive) {
+        survival.take_effect(survival_like, grant);
     }
     for horn in outputs.raid_horns {
         if let Some(sounds) = sounds.as_mut() {
@@ -1349,6 +1362,7 @@ pub(crate) fn tick_actor<'a>(
                 != 0,
         ),
         omens: player.survival.omens(),
+        warden: player.warden_tracker,
     };
     let actor = TickActor {
         id: u64::from(player.id.0),

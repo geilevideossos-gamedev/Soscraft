@@ -148,7 +148,7 @@ pub const EQUIPMENT: [(usize, &str); 7] = [
 ];
 pub const GRENADES: &str = "iw4l_grenades";
 pub const GRENADE_SLOTS: [usize; 2] = [crate::guns::LETHAL_SLOT, crate::guns::TACTICAL_SLOT];
-const OWNED: [&str; 27] = [
+const OWNED: [&str; 28] = [
     "playerGameType",
     "previousPlayerGameType",
     "abilities",
@@ -176,6 +176,7 @@ const OWNED: [&str; 27] = [
     "sleeping_pos",
     GRENADES,
     "raid_omen_position",
+    minecraft_terrain::warden_tracker::TRACKER,
 ];
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -203,6 +204,7 @@ pub struct PlayerData {
     pub sleep_timer: Option<i32>,
     pub sleeping_pos: Option<(i32, i32, i32)>,
     pub raid_omen_position: Option<(i32, i32, i32)>,
+    pub warden_spawn_tracker: Option<minecraft_terrain::warden_tracker::WardenSpawnTracker>,
     pub time_since_rest: Option<i32>,
     pub tags: Option<Vec<String>>,
     pub recipe_book: Option<SavedBook>,
@@ -281,6 +283,9 @@ impl PlayerData {
                     [x, y, z] => Some((x, y, z)),
                     _ => None,
                 }),
+            warden_spawn_tracker: tag
+                .get(minecraft_terrain::warden_tracker::TRACKER)
+                .map(minecraft_terrain::warden_tracker::WardenSpawnTracker::from_tag),
             time_since_rest: None,
             tags: tag.get("Tags").and_then(Tag::as_list).map(|list| {
                 list.iter()
@@ -371,6 +376,9 @@ impl PlayerData {
         }
         if let Some((x, y, z)) = self.raid_omen_position {
             entries.insert("raid_omen_position".to_owned(), Tag::IntArray(vec![x, y, z]));
+        }
+        if let Some(tracker) = &self.warden_spawn_tracker {
+            entries.insert(minecraft_terrain::warden_tracker::TRACKER.to_owned(), tracker.to_tag());
         }
         if let Some(tags) = self.tags.as_ref().filter(|tags| !tags.is_empty()) {
             let list = tags.iter().map(|tag| Tag::String(tag.clone())).collect();
@@ -1367,6 +1375,25 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    #[test]
+    fn the_warden_spawn_tracker_is_saved_per_player() {
+        use minecraft_terrain::warden_tracker::WardenSpawnTracker;
+        let tracker = WardenSpawnTracker { ticks_since_last_warning: 40, warning_level: 3, cooldown_ticks: 160 };
+        let data = PlayerData { warden_spawn_tracker: Some(tracker), ..PlayerData::default() };
+        let previous = compound(vec![("warden_spawn_tracker", compound(vec![("warning_level", Tag::Int(1))]))]);
+        let merged = data.merged(Some(previous));
+        let saved = merged.get("warden_spawn_tracker").expect("the tracker");
+        assert_eq!(saved.get("warning_level"), Some(&Tag::Int(3)));
+        assert_eq!(saved.get("cooldown_ticks"), Some(&Tag::Int(160)));
+        assert_eq!(saved.get("ticks_since_last_warning"), Some(&Tag::Int(40)));
+        let read = PlayerData::read(&merged, &RecipeBook::default());
+        assert_eq!(read.warden_spawn_tracker, Some(tracker));
+        let other = PlayerData { warden_spawn_tracker: Some(WardenSpawnTracker::default()), ..PlayerData::default() };
+        let read = PlayerData::read(&other.merged(Some(merged)), &RecipeBook::default());
+        assert_eq!(read.warden_spawn_tracker, Some(WardenSpawnTracker::default()), "each player keeps their own");
+        assert_eq!(PlayerData::read(&compound(Vec::new()), &RecipeBook::default()).warden_spawn_tracker, None);
     }
 
     #[test]
