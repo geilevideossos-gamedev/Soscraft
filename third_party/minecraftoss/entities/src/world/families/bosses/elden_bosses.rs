@@ -1,11 +1,12 @@
 use crate::effects::MobEffects;
-use crate::health::DamageResult;
+use crate::health::{DamageResult, DamageState};
 use crate::look::LookControl;
+use crate::monster_ai::Target;
 use crate::tempt::PlayerCandidate;
 use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore};
-use crate::world::{EntityWorld, Voice};
+use crate::world::{DamageSourceKind, EntityWorld, Voice, voice_pitch};
 use elden_boss::data::{Cue, Sound};
-use elden_boss::{BossDef, Brain, Seen, Sense};
+use elden_boss::{BossDef, Brain, Seen, Sense, Source};
 use glam::DVec3;
 use minecraftoss_player::World;
 
@@ -13,6 +14,10 @@ pub const KEY: u8 = 96;
 pub const EYE_SHARE: f64 = 0.85;
 pub const LOOK_TURN: f32 = 30.0;
 pub const LOOK_PITCH: f32 = 40.0;
+pub const HURT_VOICE_GAP: i32 = 10;
+pub const FALL: &str = "minecraft:fall";
+
+const UNSEEN: DVec3 = DVec3::splat(f64::INFINITY);
 
 const REFUSED: DamageResult = DamageResult {
     applied: false,
@@ -28,6 +33,15 @@ pub struct EldenBoss {
     pub anchor: DVec3,
     pub rest_yaw: f32,
     pub walk: Option<DVec3>,
+    pub seen: Vec<(u64, DVec3)>,
+    pub voiced: i32,
+}
+
+impl EldenBoss {
+    pub fn seen_at(&self, player: u64) -> Option<DVec3> {
+        let seen = self.seen.iter().find(|(id, _)| *id == player);
+        seen.map(|(_, at)| *at)
+    }
 }
 
 pub fn boss(def: &'static BossDef, position: DVec3) -> FamilyMob<EldenBoss> {
@@ -48,6 +62,8 @@ pub fn boss(def: &'static BossDef, position: DVec3) -> FamilyMob<EldenBoss> {
             anchor: position,
             rest_yaw: 0.0,
             walk: None,
+            seen: Vec::new(),
+            voiced: -HURT_VOICE_GAP,
         },
     }
 }
@@ -80,6 +96,7 @@ fn sense_of(players: &[PlayerCandidate]) -> Vec<Seen> {
 
 fn think(mob: &mut FamilyMob<EldenBoss>, players: &[PlayerCandidate]) {
     let FamilyMob { core, state } = mob;
+    state.seen = players.iter().map(|p| (p.id, p.position)).collect();
     let seen = sense_of(players);
     let position = core.body.position;
     let sense = Sense {
@@ -129,6 +146,102 @@ fn speak(mob: &mut FamilyMob<EldenBoss>) {
         .collect();
 }
 
+fn source_of(mob: &FamilyMob<EldenBoss>, hurt: &Hurt) -> Option<Source> {
+    let damage = hurt.amount;
+    match hurt.source {
+        DamageSourceKind::PlayerAttack => {
+            let from = match hurt.attacker {
+                Some(Target::Player(player)) => mob.state.seen_at(player),
+                _ => None,
+            };
+            let from = from.unwrap_or(UNSEEN);
+            Some(Source::Melee { damage, from })
+        }
+        DamageSourceKind::MobAttack => Some(Source::Melee {
+            damage,
+            from: UNSEEN,
+        }),
+        DamageSourceKind::Projectile => Some(Source::Projectile { damage }),
+        DamageSourceKind::Explosion => Some(Source::Explosion { damage }),
+        DamageSourceKind::Magic => None,
+        DamageSourceKind::Generic | DamageSourceKind::Hazard => {
+            (hurt.damage_type != FALL).then_some(Source::Environment { damage })
+        }
+    }
+}
+
+fn gate(damage: &mut DamageState, amount: f32) -> Option<(f32, bool)> {
+    let mut probe = *damage;
+    let mut health = f32::MAX;
+    let passed = probe.hurt_absorbed(&mut health, f32::MAX, amount, |dealt| dealt);
+    if !passed.applied {
+        return None;
+    }
+    damage.cooldown_ticks = probe.cooldown_ticks;
+    damage.last_hurt = probe.last_hurt;
+    Some((passed.dealt, passed.full))
+}
+
+fn record(core: &mut MobCore, loss: f32, full: bool) -> DamageResult {
+    let kept = core.damage;
+    core.damage.cooldown_ticks = 0;
+    let max = core.max_health;
+    let result = core
+        .damage
+        .hurt_absorbed(&mut core.health, max, loss, |dealt| dealt);
+    core.damage.cooldown_ticks = kept.cooldown_ticks;
+    core.damage.last_hurt = kept.last_hurt;
+    if !full {
+        core.damage.hurt_ticks = kept.hurt_ticks;
+        core.damage.hurts = kept.hurts;
+    }
+    DamageResult { full, ..result }
+}
+
+pub fn take(mob: &mut FamilyMob<EldenBoss>, source: Source, player: Option<u64>) -> DamageResult {
+    let FamilyMob { core, state } = mob;
+    if core.damage.dead || core.health <= 0.0 {
+        return REFUSED;
+    }
+    let mut source = source;
+    let mut full = true;
+    if let Source::Environment { damage } = &mut source {
+        let Some((passed, whole)) = gate(&mut core.damage, *damage) else {
+            return REFUSED;
+        };
+        (*damage, full) = (passed, whole);
+    }
+    let tick = tick_of(core);
+    let taken = state.brain.take(&elden_boss::Hurt {
+        source,
+        player,
+        tick,
+    });
+    if taken.health <= 0.0 && !taken.died {
+        return REFUSED;
+    }
+    core.max_health = state.brain.max_health();
+    let loss = if taken.died {
+        core.health
+    } else {
+        taken.health
+    };
+    let result = record(core, loss, full);
+    core.health = state.brain.health();
+    let position = core.body.position;
+    let burning = core.body.fire_ticks > 0;
+    core.damage.place_death(result, position, burning);
+    core.no_action_time = 0;
+    if full && !result.died && core.tick_count >= state.voiced + HURT_VOICE_GAP {
+        state.voiced = core.tick_count;
+        core.ambient_sound_time = -core.ambient_interval;
+        let pitch = voice_pitch(&mut core.random, false);
+        core.voices
+            .push((spoken(state.def.voices.hurt, pitch), position));
+    }
+    result
+}
+
 fn settle(mob: &mut FamilyMob<EldenBoss>) {
     mob.core.max_health = mob.state.brain.max_health();
     mob.core.health = mob.state.brain.health();
@@ -171,8 +284,15 @@ impl Family for EldenBoss {
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);
     }
 
-    fn hurt(_mob: &mut FamilyMob<Self>, _hurt: &Hurt) -> DamageResult {
-        REFUSED
+    fn hurt(mob: &mut FamilyMob<Self>, hurt: &Hurt) -> DamageResult {
+        let player = match hurt.attacker {
+            Some(Target::Player(player)) => Some(player),
+            _ => None,
+        };
+        match source_of(mob, hurt) {
+            Some(source) => take(mob, source, player),
+            None => REFUSED,
+        }
     }
 
     fn experience(_mob: &mut FamilyMob<Self>) -> i32 {
@@ -225,10 +345,14 @@ impl EntityWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::creeper::CreeperExplosion;
     use crate::effects::{EffectInstance, MobEffect};
+    use crate::projectile::ArrowImpact;
     use crate::world::families::targetable;
+    use crate::world::{PLAYER_TARGET, PlayerAttack};
     use elden_boss::State;
     use elden_boss::margit::MARGIT;
+    use elden_boss::shape::wrap;
     use minecraftoss_player::{Block, Pos};
 
     struct Field;
@@ -272,6 +396,43 @@ mod tests {
     fn margit(world: &EntityWorld, id: u64) -> &FamilyMob<EldenBoss> {
         let bosses = world.elden_bosses();
         bosses.iter().find(|mob| mob.core.id == id).unwrap()
+    }
+
+    fn health(world: &EntityWorld, id: u64) -> f32 {
+        margit(world, id).state.brain.health()
+    }
+
+    fn sword(player_id: u64, position: DVec3) -> PlayerAttack {
+        PlayerAttack {
+            player_id,
+            position,
+            yaw: 0.0,
+            attack_damage: 11.0,
+            strength: 1.0,
+            sprinting: false,
+            can_critical: false,
+            can_sweep: false,
+        }
+    }
+
+    fn woken(world: &mut EntityWorld, id: u64, players: &[PlayerCandidate]) {
+        for _ in 0..5 {
+            world.tick_with_players(&mut Field, players);
+        }
+        assert!(margit(world, id).state.brain.awake());
+    }
+
+    struct Burning;
+
+    impl World for Burning {
+        fn block(&self, pos: Pos) -> Option<Block> {
+            if pos == (0, 64, 0) {
+                return Some(Block::new("minecraft:fire"));
+            }
+            (pos.1 < 64).then(|| Block::new("minecraft:stone"))
+        }
+
+        fn set_block(&mut self, _: Pos, _: Option<Block>) {}
     }
 
     #[test]
@@ -381,5 +542,193 @@ mod tests {
         assert!(events.contains(&"entity.evoker.ambient"), "{events:?}");
         assert!(events.iter().all(|event| !event.contains("margit")));
         assert!(sounds.iter().all(|s| s.category == "hostile_volume"));
+    }
+
+    #[test]
+    fn an_asleep_margit_takes_no_hits() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        world.tick_with_players(&mut Field, &[]);
+        let hit = world.player_attack(&sword(1, DVec3::new(0.5, 64.0, 2.5)), id);
+        assert!(!hit.hurt);
+        assert_eq!(health(&world, id), 800.0);
+        assert_eq!(margit(&world, id).core.damage.hurts, 0, "no red flash");
+    }
+
+    #[test]
+    fn an_arrow_and_tnt_hurt_margit() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 8.5))];
+        woken(&mut world, id, &players);
+        let before = health(&world, id);
+        let impact = ArrowImpact {
+            target_id: id,
+            damage: 6.0,
+            velocity: DVec3::new(0.0, 0.0, -2.0),
+        };
+        let hit = world.apply_arrow_hit(impact, PLAYER_TARGET + 1).unwrap();
+        assert!(hit.applied && hit.full);
+        let mob = margit(&world, id);
+        assert_eq!(
+            (health(&world, id), mob.core.health),
+            (before - 6.0, before - 6.0)
+        );
+        assert_eq!(mob.state.brain.hurt_by(), &[1]);
+        let velocity = mob.core.body.velocity;
+        assert_eq!((velocity.x, velocity.z), (0.0, 0.0), "no knockback");
+        let (before, stance) = (health(&world, id), mob.state.brain.stance());
+        let at = mob.core.body.position;
+        let blast = CreeperExplosion {
+            position: DVec3::new(0.5, 64.0, 3.5),
+            radius: 4.0,
+            powered: false,
+        };
+        world.blast_by_player(&Field, blast, &players, 1);
+        let lost = before - health(&world, id);
+        let broken = stance - margit(&world, id).state.brain.stance();
+        assert!(lost > 5.0, "{lost}");
+        assert!(
+            (lost * 2.0 - broken).abs() < 1e-3,
+            "half of {broken}: {lost}"
+        );
+        world.tick_with_players(&mut Field, &players);
+        let now = margit(&world, id).core.body.position;
+        assert_eq!((now.x, now.z), (at.x, at.z), "the blast does not move him");
+    }
+
+    #[test]
+    fn standing_in_fire_hurts_him_once_per_10_ticks() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 8.5))];
+        let mut last = health(&world, id);
+        let mut drops = Vec::new();
+        for _ in 0..40 {
+            world.tick_with_players(&mut Burning, &players);
+            let now = health(&world, id);
+            if now < last {
+                drops.push(last - now);
+            }
+            last = now;
+        }
+        assert_eq!(drops, [1.0; 4]);
+        assert!(margit(&world, id).core.body.fire_ticks > 0);
+        assert!(margit(&world, id).core.damage.cooldown_ticks > 10);
+        let hit = world.player_attack(&sword(1, DVec3::new(0.5, 64.0, 2.5)), id);
+        assert!(hit.hurt && hit.full_hit);
+        assert_eq!(
+            health(&world, id),
+            last - 11.0,
+            "the sword ignores the fire's cooldown"
+        );
+        assert_eq!(margit(&world, id).state.brain.stance(), 80.0 - 16.5);
+    }
+
+    #[test]
+    fn a_sword_hit_from_the_front_on_a_kneeling_margit_is_a_critical() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let front = DVec3::new(0.5, 64.0, 3.0);
+        let behind = DVec3::new(0.5, 64.0, -3.5);
+        let players = [player_at(1, front), player_at(2, behind)];
+        let mut ready = false;
+        for _ in 0..600 {
+            world.tick_with_players(&mut Field, &players);
+            let mob = margit(&world, id);
+            let facing = wrap(f64::from(mob.core.yaw)).abs() < 10.0;
+            if mob.state.brain.state() == State::Idle && facing {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "he faces the player in front between moves");
+        for _ in 0..5 {
+            assert!(world.player_attack(&sword(1, front), id).hurt);
+        }
+        assert_eq!(margit(&world, id).state.brain.state(), State::Kneel);
+        world.tick_with_players(&mut Field, &players);
+        let mut sounds: Vec<String> = world.take_sounds().into_iter().map(|s| s.event).collect();
+        let before = health(&world, id);
+        assert!(world.player_attack(&sword(2, behind), id).hurt);
+        let from_behind = before - health(&world, id);
+        assert!((from_behind - 16.5).abs() < 1e-3, "{from_behind}");
+        let before = health(&world, id);
+        assert!(world.player_attack(&sword(1, front), id).hurt);
+        let critical = before - health(&world, id);
+        assert!((critical - 33.0).abs() < 1e-3, "{critical}");
+        world.tick_with_players(&mut Field, &players);
+        sounds.extend(world.take_sounds().into_iter().map(|s| s.event));
+        assert!(
+            sounds.contains(&"entity.ravager.stunned".to_owned()),
+            "{sounds:?}"
+        );
+        assert!(
+            sounds.contains(&"entity.player.attack.crit".to_owned()),
+            "{sounds:?}"
+        );
+    }
+
+    #[test]
+    fn a_killing_blow_credits_the_player_and_joins_the_death_list() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let front = DVec3::new(0.5, 64.0, 3.0);
+        let players = [player_at(1, front)];
+        woken(&mut world, id, &players);
+        world
+            .elden_boss_mut(id)
+            .unwrap()
+            .state
+            .brain
+            .set_health(5.0);
+        let hit = world.player_attack(&sword(1, front), id);
+        assert!(hit.hurt && hit.died);
+        let mob = margit(&world, id);
+        assert_eq!(mob.core.health, 0.0);
+        assert!(mob.core.damage.dead);
+        assert_eq!(mob.state.brain.state(), State::Dead);
+        let deaths = world.take_deaths();
+        assert_eq!(deaths.len(), 1);
+        let death = &deaths[0];
+        assert_eq!((death.id, death.table), (id, Some("iw4l:margit")));
+        assert!(death.context.killed_by_player);
+        assert_eq!(death.experience, 0, "no reward yet");
+        assert!(death.equipment.is_empty());
+        let mut sounds = Vec::new();
+        for _ in 0..25 {
+            world.tick_with_players(&mut Field, &players);
+            sounds.extend(world.take_sounds().into_iter().map(|s| s.event));
+        }
+        assert!(
+            sounds.contains(&"entity.evoker.death".to_owned()),
+            "{sounds:?}"
+        );
+        assert!(world.mob_ids().all(|mob| mob != id), "gone after his death");
+    }
+
+    #[test]
+    fn falls_and_potions_do_not_hurt_margit() {
+        let mut world = EntityWorld::default();
+        let anchor = DVec3::new(0.5, 64.0, 0.5);
+        let high = DVec3::new(0.5, 84.0, 0.5);
+        let id = world.spawn_elden_boss(&MARGIT, high, 0.0, anchor, false);
+        let players = [player_at(1, DVec3::new(0.5, 64.0, 8.5))];
+        for _ in 0..60 {
+            world.tick_with_players(&mut Field, &players);
+        }
+        let mob = margit(&world, id);
+        assert!(mob.core.body.on_ground && mob.core.body.position.y == 64.0);
+        assert!(mob.state.brain.awake());
+        assert_eq!(health(&world, id), 800.0, "no fall damage");
+        let fall = Hurt::new(5.0, FALL, DamageSourceKind::Generic);
+        assert!(!world.hurt_family(id, &fall).unwrap().applied);
+        let magic = Hurt::new(5.0, "minecraft:magic", DamageSourceKind::Magic);
+        assert!(!world.hurt_family(id, &magic).unwrap().applied);
+        world.splash_instant(id, MobEffect::InstantDamage, 1, 1.0, anchor, None);
+        assert_eq!(health(&world, id), 800.0, "harming does nothing");
+        let lava = Hurt::new(4.0, "minecraft:lava", DamageSourceKind::Hazard);
+        assert!(world.hurt_family(id, &lava).unwrap().applied);
+        assert_eq!(health(&world, id), 796.0, "lava does");
     }
 }

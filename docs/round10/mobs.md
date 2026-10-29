@@ -24,7 +24,7 @@ Not a vanilla mob: the boss of track F (`docs/round10/track-f.md`, `docs/ELDEN-R
 
 | # | Mob | Where the player meets it | Exists beyond the default | Left | Size | Family | Hit key | Status | Commits |
 |---|---|---|---|---|---|---|---|---|---|
-| F1 | Margit, the Fell Omen | `/summon iw4l:margit`, and later the altar | the brain, moves, phases and arena rules (`elden_boss`, segment f1) | hurt routing, walking, model, strikes, reward, MW2 resistances, bar, friends' show, altar | XL | `elden_bosses` | 96 | live | "Margit, an Elden Ring boss, lives in Minecraft worlds and is saved like vanilla" |
+| F1 | Margit, the Fell Omen | `/summon iw4l:margit`, and later the altar | the brain, moves, phases and arena rules (`elden_boss`, segment f1) | walking, model, strikes, reward, MW2 resistances, bar, friends' show, altar | XL | `elden_bosses` | 96 | live | 03534171, "Minecraft weapons hurt Margit with no hurt cooldown, and his stance breaks" |
 
 ## D0: the registry's proof (group `pests`)
 

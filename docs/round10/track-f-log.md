@@ -310,3 +310,48 @@ After 522362cb.
 ```
 IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*4,minecraft:zombie_spawn_egg*4,minecraft:iron_sword,minecraft:shield,minecraft:cooked_beef*32
 ```
+
+### 9. Minecraft weapons hurt Margit with no hurt cooldown, and his stance breaks
+
+After 03534171.
+
+- **Changed (vendored entities crate, `world/families/bosses/elden_bosses.rs`):** his `hurt` hook turns each hit that D0's generic arms hand him into an `elden_boss::Source` and calls `take`:
+  - `player_attack` (D0's arm in `hurt_by_player`, after vanilla charge, crit, sweep and enchantments): `Melee`, from where that player stood at his last tick (`EldenBoss.seen`, kept from the level's player candidates), for the critical's front check;
+  - a mob's blow (`mob_attack`): `Melee` from nowhere near, so never a critical;
+  - arrows and other projectiles (D0's `apply_arrow_hit` arm, and E2's thrown things once merged): `Projectile`;
+  - level explosions (TNT, creepers, crystals, beds, anchors, through D0's `hurt_by_blast` arm): `Explosion`;
+  - fire, lava, cactus, drowning, suffocation and the other generic and hazard types: `Environment`;
+  - falls and magic (harming, wither and poison damage): refused, as design doc 7.1 has no fall damage and no potion effects on him.
+  - The player id is the attacker's when the hit names a player (melee, a player's arrow, a player's blast), so threat, `hurt_by` and the reward follow it.
+- **`take(mob, source, player)`** (public, for group `er-guns`'s bullets and blasts):
+  - Only `Environment` passes the vanilla hurt cooldown first: `DamageState::hurt_absorbed` on a copy decides what passes (all of it, or the increase over the last hit), and only the cooldown fields are kept. Every other hit skips it.
+  - `Brain::take` deals the damage. A hit he does not take (asleep, returning, fading home or dead) is refused: no red flash, no credit.
+  - The damage state then records the hit with the cooldown held open and put back after, so player hits never touch the cooldown that fire uses. This keeps vanilla's red flash (`hurt_ticks`, `hurts`), the death record (`killed_by_player`, the place, burning) and the kill credit that the callers give (`credit`).
+  - His core health and maximum are the brain's after every hit. A killing hit takes all his core health, so the death is recorded exactly when the brain says he died.
+  - The hurt voice (`entity.illusioner.hurt`, pitched down, design doc 14.1) plays at most once every 10 ticks, as a `Voice::Event`.
+- **His death** joins the death list through D0's `take_deaths` with no drops and no experience yet (group `er-fight`). The death clip's cue (`entity.evoker.death`) and the kneel's and the critical's sounds (`entity.ravager.stunned`, `entity.player.attack.crit`) play through the `Act`'s cues (commit 8). Group `er-look` adds their particles.
+- **Tests:**
+  - `world::families::bosses::elden_bosses::tests` (entities):
+    - `an_asleep_margit_takes_no_hits` (no hurt, no red flash)
+    - `an_arrow_and_tnt_hurt_margit` (a player's arrow takes its 6 and credits player 1, with no knockback; a player's TNT-sized blast takes half its damage in health and all of it in stance, and does not move him)
+    - `standing_in_fire_hurts_him_once_per_10_ticks` (4 hits of 1 in 40 ticks of fire; a sword hit right after still takes 11 and 16.5 stance)
+    - `a_sword_hit_from_the_front_on_a_kneeling_margit_is_a_critical` (5 full sword hits break his stance; from behind x1.5 is 16.5, then from the front a critical of 33; the stunned and crit sounds play)
+    - `a_killing_blow_credits_the_player_and_joins_the_death_list` (killed by player 1, table `iw4l:margit`, no experience or drops, the death sound, gone after 20 ticks)
+    - `falls_and_potions_do_not_hurt_margit` (a 20-block fall, a fall hit, magic and a harming splash take nothing; lava takes 4)
+  - `families::bosses::elden_bosses::tests` (terrain): `two_players_sword_hits_in_one_tick_both_count` (through `mob_actions::attack`, as `ServerSim::mob_action` runs it: two fighters give 1280 health, both hits take 11 in the same tick, both players are on his hurt list, and one hurt voice plays for both).
+- **Runs:** `test -p minecraftoss-entities --locked --lib`: 449 passed. `test -p minecraft_terrain --locked --lib`: 1439 passed and 3 ignored. `test -p minecraft_survival --locked`: 776 + 1 passed (survival is not touched; its hit keys, boxes and `/summon` list read the registry). `check -p launcher --locked`: green, with only the old render_frame and skate warnings. Both changed new files pass `rustfmt --check --edition 2021` with empty output on their staged content.
+- **Decisions:**
+  - **The melee front check uses where the player stood at his last tick:** D0's `Hurt` carries the attacker but not where it stands, and his own state can keep the players' positions, so no shared struct changes. A tick is at most 0.3 blocks of running against the 4-block, 60-degree check.
+  - **A mob's blow counts as melee from nowhere**, so it breaks stance at x1.5 but is never a critical. Mobs do not target him (commit 7), so only a stray hit can do this.
+  - **Magic is refused** (design doc 7.1, "Potion effects: none apply to him"): harming splashes, the wither effect and poison. His potion effects are also cleared every tick (commit 8).
+  - **The red flash** shows on every hit he takes (bullets included, which reach him as melee until group `er-guns`), but his hurt voice plays at most once every 10 ticks, as vanilla's cooldown would allow.
+  - **Until group `er-guns`**, MW2 bullets and blasts reach him through the survival crate's generic mob path, as player melee hits at the mob scale (x 0.2 for bullets) and level blasts (x 0.8). So a bullet breaks stance at x 1.5, and a close shot from the front at a kneeling Margit is a critical. Group `er-guns` routes them to `Bullet` and `Blast`.
+- **Owner's steps.** He is still a round shadow about 2 blocks wide until group `er-look`, and he does not walk until group `er-arena`, so you hear the hits. Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `f2-9-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~6`: you hear him rise. Stand 2-3 blocks from the shadow and hit the space above it with the netherite sword at full charge: each hit lands, with a deep illusioner hurt sound at most every half second. **Screenshot f2-9-1** while hitting.
+  2. Keep hitting at full charge without a pause: after the fifth hit a ravager's stunned sound plays (his stance broke, he kneels for 4 seconds). Hit him once more from where you stand (he faces you, his target): a critical sound.
+  3. Step back 10 blocks and shoot him with the bow: the hurt sound. Put a TNT 3 blocks from the shadow and light it: the hurt sound, and the shadow does not move.
+  4. `/summon iw4l:margit ~ ~ ~6 {Health:20f}`, walk to it and hit it twice: a deep evoker death sound, and the shadow is gone a second later. Nothing drops yet.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:bow+power=5,minecraft:arrow*64,minecraft:tnt*8,minecraft:flint_and_steel,minecraft:shield,minecraft:cooked_beef*32
+```
