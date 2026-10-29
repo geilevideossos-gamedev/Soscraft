@@ -566,6 +566,92 @@ fn a_hurt_registered_monster_turns_on_its_attacker() {
     );
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct OwnStep {
+    hurt_by: Option<(Target, i32)>,
+    position: DVec3,
+    health: f32,
+    max_health: f32,
+    eye_height: f32,
+    movement_speed: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn own_step<W: World>(
+    ai: &mut MonsterAi,
+    body: &mut Body,
+    health: f32,
+    _random: &mut LegacyRandom,
+    _voices: &mut Vec<(Voice, DVec3)>,
+    _no_action_time: &mut i32,
+    _previous_position: DVec3,
+    _tick_count: i32,
+    _id: u64,
+    _level: &W,
+    step: &MonsterStep,
+) -> Option<f64> {
+    ai.state.extra.set(OwnStep {
+        hurt_by: ai.state.hurt_by,
+        position: body.position,
+        health,
+        max_health: ai.state.max_health,
+        eye_height: ai.state.eye_height,
+        movement_speed: step.movement_speed,
+    });
+    ai.yaw = 135.0;
+    ai.state.look_control.head_yaw = 60.0;
+    ai.state.hurt_by = Some((Target::Player(2), 40));
+    body.on_ground = true;
+    Some(8.0)
+}
+
+#[test]
+fn a_registered_mob_runs_its_own_ai_step_with_its_core_in_sync() {
+    let mut world = EntityWorld::default();
+    let field = Field::default();
+    let id = probe_at(&mut world, KIND, at(0.5));
+    probe_mut(&mut world, id).core.hurt_by = Some((Target::Player(1), 3));
+    probe_mut(&mut world, id).core.health = 9.0;
+    let players = [player_at(1, at(4.5))];
+    let strike = world.family_goal_step_with::<Probe, Field>(
+        id,
+        &field,
+        &players,
+        probe::SPEED,
+        |probe| &mut *probe.ai,
+        own_step::<Field>,
+    );
+    assert_eq!(strike, None);
+    let mob = probe(&world, id);
+    let seen = mob.state.ai.state.extra.get::<OwnStep>().cloned();
+    assert_eq!(
+        seen,
+        Some(OwnStep {
+            hurt_by: Some((Target::Player(1), 3)),
+            position: at(0.5),
+            health: 9.0,
+            max_health: probe::MAX_HEALTH,
+            eye_height: probe::EYE_HEIGHT,
+            movement_speed: probe::SPEED,
+        }),
+        "the step sees the core"
+    );
+    assert_eq!(mob.core.yaw, 135.0);
+    assert_eq!(mob.core.look.head_yaw, 60.0);
+    assert_eq!(mob.core.hurt_by, Some((Target::Player(2), 40)));
+    assert_eq!(
+        mob.core.health, 4.0,
+        "the eight blocks it fell hurt for five"
+    );
+    assert!(
+        world
+            .take_sounds()
+            .iter()
+            .any(|sound| sound.event == "entity.hostile.big_fall"),
+        "and sound like a monster's fall"
+    );
+}
+
 #[test]
 fn an_iron_golem_hunts_an_enemy_registered_mob() {
     for (kind, hunted) in [(KIND, true), (ANIMAL, false)] {
