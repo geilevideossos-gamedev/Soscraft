@@ -126,7 +126,11 @@ impl Level<'_> {
         }
         let fire = self.fire_with_age(pos, 0);
         let survives = if self.name(fire) == "minecraft:fire" { self.fire_survives(pos) } else { self.lib.registries.block_in_tag(self.block(pos.below()), self.lib.update_rules.soul_fire_base) };
-        (survives || self.is_portal(pos)) && self.set_block(pos, fire, 11, update::LIMIT)
+        let placed = (survives || self.is_portal(pos)) && self.set_block(pos, fire, 11, update::LIMIT);
+        if placed {
+            self.block_game_event("minecraft:block_place", pos, None);
+        }
+        placed
     }
 
     /// `BaseFireBlock.onPlace` (and `FireBlock.onPlace`'s first tick).

@@ -2058,6 +2058,7 @@ impl ServerSim {
     }
 
     fn wind_burst(&mut self, center: glam::DVec3, players: &[crate::thrown::PlayerBody], charge: crate::wind::Charge) {
+        self.level.game_event_from(crate::game_events::EXPLODE, center.to_array(), None, None);
         let blocks = self.level.wind_charge_blocks(center.to_array(), charge.radius());
         let pushes = {
             let Self { level, states, mob_tables, mobs, .. } = self;
@@ -3373,6 +3374,7 @@ impl ServerSim {
 
     fn frame_sound(&mut self, frame: &crate::item_frame::ItemFrame, sound: crate::item_frame::FrameSound) {
         self.frame_sounds.push(minecraftoss_entities::world::MobSound { event: sound.event(frame.glow).to_owned(), position: frame.position(), volume: 1.0, pitch: 1.0, category: "neutral" });
+        self.level.game_event(sound.game_event(), frame.position().to_array(), None);
     }
 
     fn frame_broken(&mut self, frame: &crate::item_frame::ItemFrame, infinite: bool) {
@@ -4410,14 +4412,14 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::EndHit { target, damage } => sim.end_hit(target, damage),
                 Command::FrameAction { player, id, action } => {
                     let answers = matches!(action, crate::item_frame::FrameAction::Use { held: Some(_), .. });
-                    let outcome = sim.frame_action(id, action);
+                    let outcome = sim.acting(Some(player), |sim| sim.frame_action(id, action));
                     if answers {
                         out.item_uses.push((player, outcome.consumed));
                     }
                 }
                 Command::ChestOpeners { player, pos, count } => sim.acting(player, |sim| sim.set_chest_openers(pos, count)),
                 Command::Lectern { player, pos, action } => {
-                    if let Some(placed) = sim.lectern(player, pos, action) {
+                    if let Some(placed) = sim.acting(Some(player), |sim| sim.lectern(player, pos, action)) {
                         out.item_uses.push((player, placed));
                     }
                 }
@@ -11807,6 +11809,34 @@ mod tests {
         sim.weapon_blast([12.5, 200.5, 8.5], 1.0);
         run_ticks(&mut sim, &mut input, true, 6);
         assert_eq!(last_frequency(&sim), Some(15));
+    }
+
+    #[test]
+    fn a_bell_ring_is_frequency_eleven() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        let bell = (12, 200, 8);
+        place(&mut sim, &mut scene, bell, Block::new("minecraft:bell"));
+        run_ticks(&mut sim, &mut input, true, 1);
+        assert!(sim.acting(Some(0), |sim| sim.ring_bell(bell, Some("east"))));
+        run_ticks(&mut sim, &mut input, true, 6);
+        assert_eq!(last_frequency(&sim), Some(11));
+    }
+
+    #[test]
+    fn a_lever_beside_a_sensor_is_ten_on_and_nine_off() {
+        let Some((mut sim, mut scene)) = sensor_world("minecraft:sculk_sensor") else { return };
+        let mut input = walker_input([20.5, 200.0, 20.5]);
+        let lever = (13, 200, 8);
+        place(&mut sim, &mut scene, lever, Block::new("minecraft:lever").with("face", "floor"));
+        run_ticks(&mut sim, &mut input, true, 1);
+        for heard in [10, 9] {
+            assert!(sim.acting(Some(0), |sim| sim.use_block(lever, "north")));
+            run_ticks(&mut sim, &mut input, true, 7);
+            assert_eq!(sensor_phase(&sim), "active");
+            assert_eq!(last_frequency(&sim), Some(heard));
+            run_ticks(&mut sim, &mut input, true, 40);
+        }
     }
 
     #[test]

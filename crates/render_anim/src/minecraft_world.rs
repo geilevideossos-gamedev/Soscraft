@@ -2462,6 +2462,9 @@ fn leave_level(
             let outcome = minecraft_survival::level::opener_outcome(&level.terrain.scene, &event);
             let (cell, id, count) = outcome.block_event;
             entities.view.lids.block_event(&level.terrain.scene, cell, id, count);
+            if let Some(heard) = event.game_event() {
+                entities.game_event(u64::from(player.id.0), heard, minecraft_terrain::bucket::centre(event.pos), None);
+            }
             if let Some((pos, viewers)) = outcome.trapped {
                 entities.chest_openers(Some(u64::from(player.id.0)), pos, viewers);
             }

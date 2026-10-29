@@ -70,6 +70,7 @@ impl Level<'_> {
         let tnt = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], owner);
         self.add_entity(tnt);
         // The priming sound's seed comes from the sound seed generator.
+        self.block_game_event_from("minecraft:prime_fuse", pos, owner.map(super::game_event::EventSource::Player), None);
         true
     }
 

@@ -407,6 +407,9 @@ pub fn leave(level: &mut Level, player: &PlayerUuid, leaver: Option<u64>) {
         if let Some(entities) = level.entities.as_mut() {
             let (cell, id, count) = outcome.block_event;
             entities.lid_event(&level.terrain.scene, cell, id, count);
+            if let (Some(leaver), Some(heard)) = (leaver, event.game_event()) {
+                entities.game_event(leaver, heard, minecraft_terrain::bucket::centre(event.pos), None);
+            }
             if let Some((pos, viewers)) = outcome.trapped {
                 entities.chest_openers(leaver, pos, viewers);
             }

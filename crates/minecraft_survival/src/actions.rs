@@ -1156,6 +1156,7 @@ pub fn act(
                 match change {
                     minecraft_terrain::bucket::Change::Set(pos, block) => {
                         body.write_blocks(terrain, entities, vec![(pos, scene_block(&block))]);
+                        entities.game_event(player_id, minecraft_terrain::game_events::item_use_event(&sent.held, &block.id), minecraft_terrain::bucket::centre(pos), Some(block.id.clone()));
                         finish_item_use(
                             entities,
                             inventory,

@@ -729,6 +729,7 @@ impl Level<'_> {
                 if source != self.block_id(state) && signal != self.flag(state, "powered") {
                     if signal != self.flag(state, "open") {
                         self.random.next_f32();
+                        self.block_game_event_from(super::game_event::opened(signal), pos, None, None);
                     }
                     let next = self.with_bool(self.with_bool(state, "powered", signal), "open", signal);
                     self.set_block(pos, next, update::CLIENTS, update::LIMIT);
@@ -741,6 +742,7 @@ impl Level<'_> {
                     if self.flag(state, "open") != signal {
                         next = self.with_bool(next, "open", signal);
                         self.random.next_f32();
+                        self.block_game_event_from(super::game_event::opened(signal), pos, None, None);
                     }
                     let next = self.with_bool(next, "powered", signal);
                     self.set_block(pos, next, update::CLIENTS, update::LIMIT);
@@ -756,6 +758,7 @@ impl Level<'_> {
                     self.set_block(pos, next, update::CLIENTS, update::LIMIT);
                     if self.flag(state, "open") != signal {
                         self.random.next_f32();
+                        self.block_game_event_from(super::game_event::opened(signal), pos, None, None);
                     }
                 }
             }
@@ -763,7 +766,7 @@ impl Level<'_> {
                 let signal = self.has_neighbor_signal(pos);
                 if signal != self.flag(state, "powered") {
                     if signal {
-                        self.play_note(state, pos);
+                        self.play_note(state, pos, None);
                     }
                     let next = self.with_bool(state, "powered", signal);
                     self.set_block_and_update(pos, next);
@@ -788,11 +791,13 @@ impl Level<'_> {
         if self.redstone_kind(state) != Some(Kind::Bell) {
             return false;
         }
+        let source = self.acting_source().filter(|_| direction.is_some());
         let direction = direction.unwrap_or_else(|| self.facing(state));
         let block = self.block_id(state);
         self.block_event(pos, block, 1, direction.index() as i32);
         let center = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
         self.sounds.push(super::burning::LevelSound { event: "minecraft:block.bell.use", pos: center, volume: 2.0, pitch: 1.0 });
+        self.block_game_event_from("minecraft:block_change", pos, source, None);
         true
     }
 
@@ -828,7 +833,7 @@ impl Level<'_> {
             Kind::PressurePlate => {
                 let signal = self.plate_signal(state);
                 if signal > 0 {
-                    self.plate_check_pressed(pos, state, signal);
+                    self.plate_check_pressed(pos, state, signal, None);
                 }
             }
             Kind::Dispenser { dropper } => self.dispense_from(pos, dropper),
@@ -861,6 +866,7 @@ impl Level<'_> {
                 if self.flag(state, "powered") {
                     self.set_block_and_update(pos, self.with_bool(state, "powered", false));
                     self.attached_update_neighbours(pos, state);
+                    self.block_game_event_from("minecraft:block_deactivate", pos, None, None);
                 }
             }
             Kind::Observer => {
@@ -916,6 +922,7 @@ impl Level<'_> {
         let next = self.with_bool(state, "powered", !self.flag(state, "powered"));
         self.set_block_and_update(pos, next);
         self.attached_update_neighbours(pos, next);
+        self.block_game_event(super::game_event::activated(self.flag(next, "powered")), pos, None);
     }
 
     /// `ButtonBlock.press`.
@@ -927,6 +934,7 @@ impl Level<'_> {
         }
         self.set_block_and_update(pos, self.with_bool(state, "powered", true));
         self.attached_update_neighbours(pos, state);
+        self.block_game_event("minecraft:block_activate", pos, None);
         let block = self.block_id(state);
         self.schedule_block_tick_priority(pos, block, ticks, priority::NORMAL);
     }
@@ -939,6 +947,7 @@ impl Level<'_> {
             Some(Kind::Door) if !iron && !powered && self.prop(state, "half") == Some("lower") => {
                 let next = self.with_bool(state, "open", !self.flag(state, "open"));
                 self.set_block(pos, next, update::CLIENTS | 8, update::LIMIT);
+                self.block_game_event_from(super::game_event::opened(self.flag(next, "open")), pos, None, None);
                 Some((state, self.random.next_f32()))
             }
             Some(Kind::TrapDoor) if !iron && !powered => {
@@ -947,11 +956,13 @@ impl Level<'_> {
                 if self.flag(next, "waterlogged") {
                     self.schedule_water_tick(pos);
                 }
+                self.block_game_event_from(super::game_event::opened(self.flag(next, "open")), pos, None, None);
                 Some((state, self.random.next_f32()))
             }
             Some(Kind::FenceGate) if !powered => {
                 let next = self.with_bool(state, "open", !self.flag(state, "open"));
                 self.set_block_and_update(pos, next);
+                self.block_game_event_from(super::game_event::opened(self.flag(next, "open")), pos, None, Some(next));
                 Some((state, self.random.next_f32()))
             }
             Some(Kind::Button(_)) if !powered => {
@@ -968,6 +979,7 @@ impl Level<'_> {
             }
             _ if self.is_a(state, "AbstractCandleBlock") && self.flag(state, "lit") => {
                 self.set_block(pos, self.with_bool(state, "lit", false), update::ALL | 8, update::LIMIT);
+                self.block_game_event_from("minecraft:block_change", pos, None, None);
                 Some((state, 0.0))
             }
             _ => None,
@@ -1006,6 +1018,7 @@ impl Level<'_> {
                 let next = self.with_bool(state, "open", !self.flag(state, "open"));
                 self.set_block(pos, next, update::CLIENTS | 8, update::LIMIT);
                 self.random.next_f32();
+                self.block_game_event(super::game_event::opened(self.flag(next, "open")), pos, None);
             }
             Some(Kind::TrapDoor) if !iron => {
                 let next = self.with_bool(state, "open", !self.flag(state, "open"));
@@ -1014,6 +1027,7 @@ impl Level<'_> {
                     self.schedule_water_tick(pos);
                 }
                 self.random.next_f32();
+                self.block_game_event(super::game_event::opened(self.flag(next, "open")), pos, None);
             }
             Some(Kind::FenceGate) => {
                 let next = if self.flag(state, "open") {
@@ -1028,12 +1042,13 @@ impl Level<'_> {
                 };
                 self.set_block(pos, next, update::CLIENTS | 8, update::LIMIT);
                 self.random.next_f32();
+                self.block_game_event(super::game_event::opened(self.flag(next, "open")), pos, None);
             }
             Some(Kind::NoteBlock) => {
                 let note = (self.int_prop(state, "note") + 1) % 25;
                 let next = self.with(state, "note", &note.to_string());
                 self.set_block_and_update(pos, next);
-                self.play_note(next, pos);
+                self.play_note(next, pos, self.acting_source());
             }
             Some(Kind::Lever) => self.pull_lever(pos),
             Some(Kind::Button(_)) => self.press_button(pos),
@@ -1089,18 +1104,19 @@ impl Level<'_> {
         if self.redstone_kind(state) != Some(Kind::NoteBlock) {
             return false;
         }
-        self.play_note(state, pos);
+        self.play_note(state, pos, self.acting_source());
         true
     }
 
     /// `NoteBlock.playNote`: heads play anywhere, other instruments need
     /// air above.
-    fn play_note(&mut self, state: BlockStateId, pos: BlockPos) {
+    fn play_note(&mut self, state: BlockStateId, pos: BlockPos, source: Option<super::game_event::EventSource>) {
         let instrument = self.registries().blocks.state(state).instrument;
         let head = instrument >= minecraftoss_core::block::FIRST_HEAD_INSTRUMENT;
         if head || self.registries().blocks.is_air(self.block(pos.above())) {
             let block = self.block_id(state);
             self.block_event(pos, block, 0, 0);
+            self.block_game_event_from("minecraft:note_block_play", pos, source, None);
         }
     }
 

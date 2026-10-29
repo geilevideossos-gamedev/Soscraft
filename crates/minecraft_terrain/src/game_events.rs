@@ -16,6 +16,13 @@ pub const PROJECTILE_SHOOT: &str = "minecraft:projectile_shoot";
 pub const PROJECTILE_LAND: &str = "minecraft:projectile_land";
 pub const EXPLODE: &str = "minecraft:explode";
 pub const TENDRILS_CLICKING: &str = "minecraft:sculk_sensor_tendrils_clicking";
+pub const BLOCK_CHANGE: &str = "minecraft:block_change";
+pub const CONTAINER_OPEN: &str = "minecraft:container_open";
+pub const CONTAINER_CLOSE: &str = "minecraft:container_close";
+pub const FLUID_PLACE: &str = "minecraft:fluid_place";
+pub const FLUID_PICKUP: &str = "minecraft:fluid_pickup";
+pub const ENTITY_PLACE: &str = "minecraft:entity_place";
+pub const ENTITY_DIE: &str = "minecraft:entity_die";
 pub const DEFAULT_RADIUS: i32 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +122,21 @@ pub fn frequency(id: &str) -> i32 {
 
 pub fn radius(id: &str) -> i32 {
     find(id).map_or(DEFAULT_RADIUS, |event| event.radius)
+}
+
+pub fn item_use_event(held: &str, block: &str) -> &'static str {
+    if block.ends_with("cauldron") {
+        return if held == "minecraft:bucket" {
+            FLUID_PICKUP
+        } else {
+            FLUID_PLACE
+        };
+    }
+    if held == "minecraft:powder_snow_bucket" {
+        BLOCK_PLACE
+    } else {
+        BLOCK_CHANGE
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -425,6 +447,38 @@ mod tests {
                 .all(|event| event.radius == 16)
         );
         assert_eq!(frequency("minecraft:not_an_event"), 0);
+    }
+
+    #[test]
+    fn an_item_used_on_a_block_changes_it_and_a_bucket_on_a_cauldron_moves_fluid() {
+        let cases = [
+            (
+                "minecraft:flint_and_steel",
+                "minecraft:candle",
+                BLOCK_CHANGE,
+            ),
+            ("minecraft:iron_axe", "minecraft:oak_log", BLOCK_CHANGE),
+            ("minecraft:iron_shovel", "minecraft:dirt_path", BLOCK_CHANGE),
+            (
+                "minecraft:powder_snow_bucket",
+                "minecraft:powder_snow",
+                BLOCK_PLACE,
+            ),
+            (
+                "minecraft:water_bucket",
+                "minecraft:water_cauldron",
+                FLUID_PLACE,
+            ),
+            (
+                "minecraft:lava_bucket",
+                "minecraft:lava_cauldron",
+                FLUID_PLACE,
+            ),
+            ("minecraft:bucket", "minecraft:cauldron", FLUID_PICKUP),
+        ];
+        for (held, block, event) in cases {
+            assert_eq!(item_use_event(held, block), event, "{held} on {block}");
+        }
     }
 
     #[test]

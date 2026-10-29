@@ -64,7 +64,13 @@ impl Level<'_> {
             return;
         }
         let me = ContainerRef::Single(pos, Store::Dispenser);
-        let Some(slot) = self.random_slot(me) else { return };
+        let Some(slot) = self.random_slot(me) else {
+            if !dropper {
+                let state = self.block(pos);
+                self.block_game_event_from("minecraft:block_activate", pos, None, Some(state));
+            }
+            return;
+        };
         let stack = self.container_item(me, slot);
         if dropper {
             if stack.is_empty() {
@@ -224,6 +230,7 @@ impl Level<'_> {
                 }
                 self.schedule_water_tick(pos);
             }
+            self.block_game_event("minecraft:fluid_place", pos, None);
             return true;
         }
         let liquid = blocks.is(state, flags::LIQUID);
@@ -232,7 +239,11 @@ impl Level<'_> {
         }
         let source = self.registries().blocks.parse_state(if water { "minecraft:water" } else { "minecraft:lava" }).expect("vanilla fluid");
         let was_source = self.fluid_state(state).is_some_and(|f| f.source);
-        self.set_block(pos, source, 11, update::LIMIT) || was_source
+        let placed = self.set_block(pos, source, 11, update::LIMIT) || was_source;
+        if placed {
+            self.block_game_event("minecraft:fluid_place", pos, None);
+        }
+        placed
     }
 
     /// The empty-bucket behaviour: `BucketPickup.pickupBlock` in front.
@@ -280,6 +291,9 @@ impl Level<'_> {
         } else {
             None
         };
+        if picked.is_some() {
+            self.block_game_event("minecraft:fluid_pickup", target, None);
+        }
         picked
     }
 

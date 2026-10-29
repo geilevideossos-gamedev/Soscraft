@@ -199,6 +199,56 @@ After 6dcdeb25 ("Minecraft sculk sensors hear vibrations and power redstone").
 IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*16,minecraft:calibrated_sculk_sensor*4,minecraft:redstone_lamp*8,minecraft:redstone*64,minecraft:comparator*4,minecraft:repeater*4,minecraft:lever*4,minecraft:white_wool*64,minecraft:white_carpet*32,minecraft:snowball*16,minecraft:trident,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:cow_spawn_egg*4,minecraft:stone*64,minecraft:cobblestone*64,minecraft:cooked_beef*16
 ```
 
+## Group vibrations-more
+
+### 1. Minecraft blocks make vibrations when used
+
+After c89a387d ("Players, mobs, blocks and explosions make Minecraft vibrations").
+
+- **Vanilla (javap on the 26.3 jar):**
+  - `Level.gameEvent(entity, event, BlockPos)` posts at the block centre with no affected state; `gameEvent(event, pos, Context.of(state))` and `Context.of(entity, state)` carry one.
+  - Doors: `useWithoutItem` and `setOpen` post `block_open`/`block_close` from the player (or the mob); `neighborChanged` posts them with no source when redstone flips the door, before the new state is set; `onExplosionHit` calls `setOpen(null, ...)`. `TrapDoorBlock.playSound(player, ...)` posts them (use: the player; redstone and explosions: none). `FenceGateBlock`: use from the player, redstone with no source, `onExplosionHit` with `Context.of(state)`.
+  - `LeverBlock.pull(state, level, pos, player)`: `block_activate` or `block_deactivate` by the new power, from the player (none from an explosion). `ButtonBlock.press(..., player)`: `block_activate`; `tick` → `checkPressed`: `block_deactivate` with the arrow as source (none without arrows). `BasePressurePlateBlock.checkPressed(entity, ...)`: `block_activate` when the signal goes from 0 to more, `block_deactivate` back to 0, from the entity inside (none from the tick).
+  - `NoteBlock.playNote(entity, ...)`: `note_block_play` only when it plays (a head instrument or air above), from the player for use and attack, none from redstone.
+  - `BellBlock.attemptToRing(entity, ...)`: `block_change`; the three-argument `attemptToRing(level, pos, direction)` (redstone, `onExplosionHit`) passes no entity.
+  - `DaylightDetectorBlock.useWithoutItem`: `block_change` with `Context.of(player, state)`. `LecternBlock.resetBookState(entity, ...)`: `block_change`; placing a book passes the player, `LecternBlockEntity` taking it passes none. `SweetBerryBushBlock` and `CaveVines` harvests: `block_change` from the player. `AbstractCandleBlock.extinguish(player, ...)`: `block_change` (none from a wind charge).
+  - `ContainerOpenersCounter.incrementOpeners`/`decrementOpeners` (chests, trapped chests, barrels, ender chests) and `ShulkerBoxBlockEntity.startOpen`/`stopOpen`: `container_open` when the first opener comes, `container_close` when the last one goes, from that player; `recheckOpeners` posts with no source.
+  - `BucketItem.use` → `fluid_pickup` from the player at the fluid; `playEmptySound` → `fluid_place` (not when the water evaporates); the dispenser's bucket behaviours post the same with no source. `TntBlock.prime(level, pos, entity, stack)`: `prime_fuse` from the igniter (none from redstone or fire). `FlintAndSteelItem` and `FireChargeItem.useOn`: `block_place` for the fire, `block_change` for a lit candle or campfire. Cauldron interactions (`CauldronInteraction.fillBucket`/`emptyBucket`): `fluid_pickup`/`fluid_place` with no source. Axes, hoes, shovels and honeycomb: `block_change` with `Context.of(player, state)`.
+  - `PistonBaseBlock.triggerEvent`: `block_activate` (extend) and `block_deactivate` (retract) with `Context.of(state)`, no source; `moveBlocks` posts `block_destroy` for each block it breaks. `DispenserBlock.dispenseFrom`: `block_activate` with `Context.of(state)` only when it is empty (droppers post nothing). `LightningBolt.tick`: `lightning_strike` from the bolt at its position.
+  - Wind charges: `ServerExplosion.explode` posts `explode` from the charge, and `onExplosionHit` triggers doors, trapdoors, gates, buttons, levers, bells and candles as above.
+  - Item frames: `ItemFrame.interact` (add, rotate), `hurtServer` and `dropItem` (remove) post `block_change`; `HangingEntityItem.useOn` posts `entity_place`; breaking one kills it (`Entity.kill` → `entity_die`).
+- **Changed:**
+  - Vendored `world/src/level/game_event.rs`: `opened`, `activated`, `Level::block_game_event_from` (a block event with a given source) and `Level::acting_source`.
+  - Vendored `redstone.rs`: doors, trapdoors and gates on use (the acting player), on redstone and from wind charges (no source); levers, buttons (and their release, no source), note blocks (`play_note` takes its source: the acting player for use and attack, none for redstone), bells (the acting player when hit on a face, none for redstone and wind), candles put out by wind; `entity.rs`: pressure plates (`plate_check_pressed` takes the entity inside, none from the tick) and lightning; `time.rs` daylight detectors; `lectern.rs` books placed (the acting player) and taken (none); `plants.rs` berry harvests; `dispenser.rs` empty dispensers and both buckets; `explosion.rs` primed TNT (its owner); `fire.rs` fire placed; `piston.rs` extend, retract and blocks a piston breaks.
+  - `server.rs`: a wind burst posts `explode` (no source); lecterns and item frame actions run with the acting player; `frame_sound` posts the frame's event (`FrameSound::game_event`).
+  - Containers: `OpenerEvent::game_event` (`openers.rs`), posted by the player who opened or closed (`menus.rs` `lid_effects`, `level.rs` `leave`, the closing inventory screen in `render_anim/src/minecraft_world.rs`). This covers chests, trapped chests, barrels, ender chests and shulker boxes, whose counts live on the survival side; the level's `set_chest_openers` (trapped chests only) posts nothing, so nothing is posted twice.
+  - Item uses that set a block on the survival side (`actions.rs`, `Change::Set`): `game_events::item_use_event` (a bucket on a cauldron: `fluid_pickup`/`fluid_place`; the powder snow bucket: `block_place`; flint and steel on a candle or campfire, shovels, axes, hoes, honeycomb: `block_change`).
+- **Tests:**
+  - `level::game_event::tests::doors_gates_trapdoors_levers_buttons_and_note_blocks_post_their_events` (vendored world, gated on the 26.3 data: each id, the acting player as source, `block_close` on closing, the button's release with no source, a note block used and hit, and a door opened by redstone during a player's action with no source).
+  - `openers::tests::opening_a_chest_posts_container_open_once_and_closing_the_last_viewer_posts_close` (and a leaving player closes it).
+  - `game_events::tests::an_item_used_on_a_block_changes_it_and_a_bucket_on_a_cauldron_moves_fluid`.
+  - `server::tests::a_bell_ring_is_frequency_eleven`, `a_lever_beside_a_sensor_is_ten_on_and_nine_off` (through `run_tick`).
+  - The full minecraft_terrain run had one failure, `sections::tests::background_full_update_matches_the_synchronous_one` (render sections, untouched here); it passes on its own and failed only while other tracks loaded the PC.
+- **Decisions:**
+  - The brief's `level::redstone::tests::...` test lives in `level::game_event::tests`, next to the helpers, so the upstream `redstone.rs` keeps a small diff; the brief's `server::tests::opening_a_chest...` lives in `openers::tests`, because the fork counts container openers on the survival side.
+  - Container events are posted where the survival side counts openers, not in `Level::set_chest_openers` (which only hears trapped chests). A recheck that closes a container (`recheck_lids`, no player) posts nothing; vanilla's `recheckOpeners` posts it without a source.
+  - Events that vanilla posts with no source from a neighbour update (doors, trapdoors, gates, note blocks and bells powered by redstone) pass `None` explicitly, because the fork runs those updates inside the player's command, where `Level.acting_player` is still set.
+  - A wind burst's `explode` carries no source or projectile owner (vanilla's source is the charge, whose owner listeners see as the projectile owner): the burst does not know its thrower, and only W4's warden would read it.
+  - A bucket on a cauldron posts from the player (vanilla: no source); the survival side has only a player queue for game events.
+  - Not in the fork, so not posted: composters, cakes, candles put out by hand, decorated pots, chiseled bookshelves, jukeboxes, tripwire hooks, beehives, and players or mobs on pressure plates (only level entities such as items press plates in the fork).
+- **Vendored files:** patched `world/src/level/redstone.rs`, `entity.rs`, `time.rs`, `lectern.rs`, `plants.rs`, `dispenser.rs`, `explosion.rs`, `fire.rs`, `piston.rs` (and `game_event.rs` again).
+- **Test steps (survival; a sensor with a comparator out of it into a straight line of 15 redstone dust, so the number of lit dust is the frequency; build 5 blocks from the sensor):** wait 2 s between actions (the sensor is busy 30 ticks and cools down 10 more).
+  1. Open an oak door: the line shows 10; close it: 9. The same with an oak trapdoor and an oak fence gate. Flip a lever on (10) and off (9); press an oak button (10), and when it springs back (9). **w07_block_frequencies**
+  2. Open a chest and a barrel: 10; close: 9. A second player opening the open chest adds nothing.
+  3. Fill the bucket from a water source: 12; empty it on the ground: 13. Ring a bell: 11. Click a note block: 10.
+  4. Drop an item (Q) onto an oak pressure plate: 10; pick it up again and the plate springs back: 9.
+  5. Put TNT 7 blocks away and light it with flint and steel: 10 (prime fuse), then 15 when it blows. Light a candle with flint and steel: 11.
+  6. Put a lever next to a piston and flip it: 10 when it pushes out, 9 when it pulls back.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*16,minecraft:comparator*4,minecraft:redstone*64,minecraft:oak_door*2,minecraft:oak_trapdoor*2,minecraft:oak_fence_gate*2,minecraft:lever*4,minecraft:oak_button*4,minecraft:oak_pressure_plate*4,minecraft:chest*2,minecraft:barrel*2,minecraft:bucket,minecraft:water_bucket,minecraft:bell,minecraft:note_block*2,minecraft:tnt*4,minecraft:flint_and_steel,minecraft:candle*4,minecraft:piston*2,minecraft:cobblestone*64,minecraft:cooked_beef*16
+```
+
 ## Protocol
 
 Group darkness changes no `ToClient` or `ToServer` message and no codec: `minecraft_net::PROTOCOL` stays 6.
@@ -208,6 +258,8 @@ Group vibrations, commit 1: no message or codec change (`TickInput` and the comm
 Group vibrations, commit 2: `EntitySnapshot` (sent to friends inside `ToClient::Bursts` and the state frames) gains `vibrations: Vec<VibrationView>`. The snapshot is serde-encoded, so a friend on an older build cannot read the new one: `minecraft_net::PROTOCOL` must go up at the release (not bumped here).
 
 Group vibrations, commit 3: no message or codec change.
+
+Group vibrations-more, commit 1: no message or codec change.
 
 ## State doc changes
 
