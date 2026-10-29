@@ -22,6 +22,7 @@ pub mod wither_build;
 pub mod grow;
 pub mod ice;
 pub mod lectern;
+pub mod components;
 pub mod plants;
 pub mod bonemeal;
 pub mod fluid;

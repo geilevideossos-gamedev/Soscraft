@@ -1766,6 +1766,13 @@ impl ServerSim {
         std::mem::take(&mut self.lecterns)
     }
 
+    pub fn block_entity_components(&mut self, pos: BlockPos, components: &serde_json::Value) -> bool {
+        let Some(components) = crate::item_nbt::components_tag(components) else {
+            return false;
+        };
+        self.level.apply_block_entity_components(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), &components)
+    }
+
     pub fn set_chest_openers(&mut self, pos: BlockPos, count: u32) {
         let (x, y, z) = pos;
         self.level.set_chest_openers(minecraftoss_core::BlockPos::new(x, y, z), count.min(i32::MAX as u32) as i32);
@@ -3617,6 +3624,7 @@ pub enum Command {
     FrameAction { player: u64, id: u64, action: crate::item_frame::FrameAction },
     ChestOpeners { pos: BlockPos, count: u32 },
     Lectern { player: u64, pos: BlockPos, action: crate::lectern::LecternAction },
+    BlockEntityComponents { pos: BlockPos, components: Box<serde_json::Value> },
     VaultKey { player: u64, pos: BlockPos, stack: Box<minecraftoss_player::inventory::ItemStack> },
     LeashFence { player: u64, pos: BlockPos, sneaking: bool },
     ShieldBlock { attacker: u64, player: u64, feet: [f64; 3] },
@@ -4147,6 +4155,10 @@ impl ServerHandle {
         self.send(Command::Lectern { player, pos, action });
     }
 
+    pub fn block_entity_components(&mut self, pos: BlockPos, components: &serde_json::Value) {
+        self.send(Command::BlockEntityComponents { pos, components: Box::new(components.clone()) });
+    }
+
     pub fn vault_key(&mut self, player: u64, pos: BlockPos, stack: &minecraftoss_player::inventory::ItemStack) {
         self.send(Command::VaultKey { player, pos, stack: Box::new(stack.clone()) });
     }
@@ -4325,6 +4337,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     if let Some(placed) = sim.lectern(player, pos, action) {
                         out.item_uses.push((player, placed));
                     }
+                }
+                Command::BlockEntityComponents { pos, components } => {
+                    sim.block_entity_components(pos, &components);
                 }
                 Command::VaultKey { player, pos, stack } => out.item_uses.push((player, sim.vault_key(player, pos, &stack))),
                 Command::LeashFence { player, pos, sneaking } => {
@@ -13157,6 +13172,66 @@ mod tests {
         assert_eq!(pickup, Some(10));
         server.tick();
         assert_eq!(server.take_lecterns().iter().map(|view| (view.player, view.closed)).collect::<Vec<_>>(), [(0, true)]);
+    }
+
+    fn ominous_components() -> serde_json::Value {
+        crate::item_frame::stack_of_tag(&minecraftoss_world::natural_spawner::spawning::ominous_banner()).and_then(|stack| stack.components).expect("the ominous banner's components")
+    }
+
+    fn changed_banner(changes: &[(BlockPos, Option<minecraftoss_core::nbt::Tag>)], pos: BlockPos) -> minecraftoss_core::nbt::Tag {
+        changes.iter().rev().find(|(at, _)| *at == pos).and_then(|(_, tag)| tag.clone()).expect("the banner's block entity is reported")
+    }
+
+    fn banner_world() -> Option<(ServerSim, HandcraftedScene)> {
+        let (mut server, mut scene) = door_world()?;
+        place(&mut server, &mut scene, (8, 200, 8), Block::new("minecraft:white_banner").with("rotation", "4"));
+        place(&mut server, &mut scene, (11, 200, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (12, 200, 8), Block::new("minecraft:blue_wall_banner").with("facing", "east"));
+        server.tick();
+        server.take_changes();
+        server.take_block_entity_changes();
+        Some((server, scene))
+    }
+
+    #[test]
+    fn a_placed_banner_takes_the_patterns_name_and_components_of_its_item() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut server, _)) = banner_world() else { return };
+        let ominous = ominous_components();
+        assert!(server.block_entity_components((8, 200, 8), &ominous));
+        let named = serde_json::json!({"minecraft:custom_name": "Flag", "minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}]});
+        assert!(server.block_entity_components((12, 200, 8), &named));
+        assert!(!server.block_entity_components((11, 200, 8), &named), "stone holds no block entity");
+        assert!(!server.block_entity_components((8, 200, 8), &serde_json::json!({})), "nothing to apply");
+        let changes = server.take_block_entity_changes();
+        let standing = changed_banner(&changes, (8, 200, 8));
+        assert_eq!(standing.get("id").and_then(Tag::as_str), Some("minecraft:banner"));
+        let patterns: Vec<(&str, &str)> = standing.get("patterns").and_then(Tag::as_list).unwrap_or_default().iter().filter_map(|layer| Some((layer.get("pattern")?.as_str()?, layer.get("color")?.as_str()?))).collect();
+        assert_eq!(patterns.len(), 8, "{standing:?}");
+        assert_eq!((patterns[0], patterns[7]), (("minecraft:rhombus", "cyan"), ("minecraft:border", "black")));
+        let stored = standing.get("components").and_then(Tag::as_compound).expect("the other components");
+        assert_eq!(stored.keys().map(String::as_str).collect::<Vec<_>>(), ["minecraft:item_name", "minecraft:rarity", "minecraft:tooltip_display"]);
+        assert_eq!(stored.get("minecraft:rarity"), Some(&Tag::String("uncommon".to_owned())));
+        assert_eq!(stored.get("minecraft:item_name").and_then(|name| name.get("translate")).and_then(Tag::as_str), Some("block.minecraft.ominous_banner"));
+        assert_eq!(standing.get("CustomName"), None);
+        let wall = changed_banner(&changes, (12, 200, 8));
+        assert_eq!(wall.get("CustomName"), Some(&Tag::String("Flag".to_owned())));
+        assert_eq!(wall.get("patterns").and_then(Tag::as_list).map(<[Tag]>::len), Some(1));
+        assert_eq!(wall.get("components"), Some(&Tag::Compound(Default::default())));
+        let at = minecraftoss_core::BlockPos::new(8, 200, 8);
+        assert_eq!(server.level.chunk(at.chunk()).and_then(|chunk| chunk.block_entities.entities.get(&(8, 200, 8))), Some(&standing), "the level keeps it");
+    }
+
+    #[test]
+    fn a_banner_s_components_reach_the_server_thread_and_come_back_as_its_block_entity() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((server, _)) = banner_world() else { return };
+        let mut handle = ServerHandle::spawn(server);
+        handle.block_entity_components((8, 200, 8), &ominous_components());
+        handle.wait_idle();
+        let changes: Vec<_> = handle.poll().into_iter().flat_map(|out| out.block_entities).collect();
+        let tag = changed_banner(&changes, (8, 200, 8));
+        assert_eq!(tag.get("patterns").and_then(Tag::as_list).map(<[Tag]>::len), Some(8));
     }
 
     #[test]

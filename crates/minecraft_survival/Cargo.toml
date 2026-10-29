@@ -14,12 +14,12 @@ minecraft_terrain = { path = "../minecraft_terrain" }
 minecraftoss-core = { path = "../../third_party/minecraftoss/core" }
 minecraftoss-entities = { path = "../../third_party/minecraftoss/entities" }
 minecraftoss-player = { path = "../../third_party/minecraftoss/player" }
+minecraftoss-world = { path = "../../third_party/minecraftoss/world" }
 glam = "0.29"
 serde_json = { workspace = true }
 
 [dev-dependencies]
 minecraftoss-generator = { path = "../../third_party/minecraftoss/generator" }
-minecraftoss-world = { path = "../../third_party/minecraftoss/world" }
 
 [lints]
 workspace = true

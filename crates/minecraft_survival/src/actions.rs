@@ -1542,6 +1542,16 @@ pub fn act(
                     {
                         containers.place_shulker(pos, stack, &entities.recipes);
                     }
+                    if let Some(components) = held
+                        .as_ref()
+                        .filter(|stack| minecraftoss_world::level::components::is_banner(&stack.id))
+                        .and_then(|stack| stack.components.as_ref())
+                        && Scene::block(&terrain.scene, pos).is_some_and(|block| {
+                            minecraftoss_world::level::components::is_banner(&block.id.key())
+                        })
+                    {
+                        entities.block_entity_components(pos, components);
+                    }
                     if !game_mode.consumes_items() {
                         inventory.slots[slot].clone_from(&held);
                     }
@@ -2165,6 +2175,74 @@ pub(crate) mod tests {
         );
         assert!(again.effects.is_empty(), "a press acts once");
         assert_eq!(count(&player), Some(31));
+    }
+
+    pub(crate) fn ominous_banner() -> ItemStack {
+        minecraft_terrain::item_frame::stack_of_tag(
+            &minecraftoss_world::natural_spawner::spawning::ominous_banner(),
+        )
+        .expect("the ominous banner")
+    }
+
+    #[test]
+    fn a_placed_banner_keeps_its_patterns_for_the_save_and_for_friends() {
+        use minecraftoss_core::nbt::Tag;
+        let Some((mut level, globals)) = level_and_globals() else {
+            return;
+        };
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.inventory.slots[0] = Some(ominous_banner());
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, [4.5, 201.0, 6.5]));
+        let _ = act(
+            &mut player,
+            &mut level,
+            &globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        let pos = (4, 201, 6);
+        let placed = Scene::block(&level.terrain.scene, pos).map(|b| b.id.key());
+        assert_eq!(placed.as_deref(), Some("minecraft:white_banner"));
+        level.terrain.friend_changes = Some(Vec::new());
+        let entities = level.entities.as_mut().expect("entities");
+        crate::level::save_server_block_entities(entities, &mut level.terrain, true);
+        let told = level.terrain.friend_changes.clone().unwrap_or_default();
+        assert!(
+            told.contains(&pos) && told.iter().all(|at| *at == pos),
+            "friends hear of the banner's block entity: {told:?}"
+        );
+        let updates = crate::session::block_updates(&mut level.terrain, &[pos]);
+        let sent = updates
+            .entities
+            .iter()
+            .find(|(at, _)| *at == [4, 201, 6])
+            .map(|(_, nbt)| minecraftoss_core::nbt::read(&nbt.0).expect("the sent tag"));
+        let field = |name: &str| sent.as_ref().and_then(|tag| tag.get(name)).cloned();
+        let patterns = field("patterns");
+        assert_eq!(
+            patterns.as_ref().and_then(Tag::as_list).map(<[Tag]>::len),
+            Some(8),
+            "{sent:?}"
+        );
+        let stored = field("components");
+        let names: Vec<&str> = stored
+            .as_ref()
+            .and_then(Tag::as_compound)
+            .map(|map| map.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            names,
+            [
+                "minecraft:item_name",
+                "minecraft:rarity",
+                "minecraft:tooltip_display"
+            ]
+        );
+        assert_eq!(field("CustomName"), None);
     }
 
     #[test]

@@ -1016,6 +1016,10 @@ impl Entities {
         self.server.keep_dropped_contents(pos, id, &components.to_string());
     }
 
+    pub fn block_entity_components(&mut self, pos: (i32, i32, i32), components: &serde_json::Value) {
+        self.server.block_entity_components(pos, components);
+    }
+
     pub fn use_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), facing: &'static str) -> bool {
         self.server.use_block(scene, pos, facing)
     }

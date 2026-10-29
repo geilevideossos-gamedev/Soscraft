@@ -825,6 +825,45 @@ Commit: "Minecraft banners and shields show their patterns in hand, on heads, on
 IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*4,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*4,minecraft:shield[base_color=red,banner_patterns=[{pattern:"minecraft:cross",color:"yellow"}]],minecraft:shield[base_color=black],minecraft:shield,minecraft:pillager_spawn_egg*16,minecraft:diamond_sword,minecraft:cooked_beef*16
 ```
 
+### Banners keep their patterns and name when placed
+
+Commit: "Minecraft banners keep their patterns and name when placed", the one after `ace496b4`.
+
+- **Cause** (as in the brief, re-checked at `ace496b4`): placing a banner item wrote only the block state (`actions.rs`, `body.write_blocks`). The server level made the default banner block entity, so `banner_patterns`, `custom_name` and every other component of the stack were lost, and the saved banner had none. Only shulker boxes took their components (`containers.place_shulker`).
+- **Vanilla 26.3** (javap on `BlockEntity` and `BannerBlockEntity`):
+  - `BlockItem.place` calls `BlockEntity.applyComponentsFromItemStack(stack)`, which runs `applyComponents(prototype, patch)`.
+  - `BannerBlockEntity.applyImplicitComponents` reads `BANNER_PATTERNS` (default empty) and `CUSTOM_NAME` (may be null). `saveAdditional` writes `patterns` only when they are not empty, and `CustomName` only when there is a name.
+  - `BlockEntity.applyComponents` then keeps the rest of the stack's patch in `components`: `patch.forget(implicit).split().added()`. The implicit set holds the components the block entity read, plus `block_entity_data` and `block_state`, and removals (`!minecraft:...`) are not kept. `saveWithoutMetadata` always writes `components`.
+- **Changed:**
+  - New vendored `third_party/minecraftoss/world/src/level/components.rs` (declared next to `lectern` in `level/mod.rs`):
+    - `implicit(kind)` lists the components a block entity kind reads itself. For `minecraft:banner` these are `banner_patterns` → `patterns` and `custom_name` → `CustomName`; other kinds have none.
+    - `applied(entity, components)` gives the block entity tag after vanilla's `applyComponents`. An implicit component replaces its field (an empty pattern list or a missing name clears it), and every other component except `block_entity_data`, `block_state` and removals goes into `components`, which replaces the old one.
+    - `Level::apply_block_entity_components(pos, components)` makes the block entity when it is missing (`ensure_block_entity`), writes the new tag with `set_block_entity_tag` and returns false where the block has no block entity. It is generic, so track D can use it for placed spawners and vaults.
+    - `is_banner(id)` and `kind(tag)` are small helpers for the callers.
+  - `crates/minecraft_terrain/src/server.rs`: `ServerSim::block_entity_components(pos, components)` turns the stack's JSON components into NBT (`item_nbt::components_tag`) and calls the level. `Command::BlockEntityComponents` sits next to `Command::Lectern`, with `ServerHandle::block_entity_components` next to `lectern`.
+  - `crates/minecraft_survival/src/actions.rs`: after `write_blocks`, beside `place_shulker`, a placed banner whose held stack has components sends them through the new `Entities::block_entity_components`. The command follows the placing edit on the same channel, so the level already holds the banner.
+  - The server reports the changed block entity as before (`collect_block_entity_changes`), so it reaches the stream and the chunk save.
+  - `crates/minecraft_survival/src/level.rs` `save_server_block_entities`: a banner block entity the server changed also goes into `friend_changes`, so `session::block_updates` sends friends its new tag.
+    - Before this, friends got a server block entity only with a block change (the banner's default tag, a tick before the patterns arrive) or as a spawner or vault (`spawner_tags`).
+  - `crates/minecraft_survival/Cargo.toml`: `minecraftoss-world` moves from the dev-dependencies to the dependencies (`Cargo.lock` already lists it).
+  - `docs/MINECRAFT-SURVIVAL.md`: placed banners keep `patterns`, `CustomName` and `components`, and the save limits name banners next to shulker boxes.
+- **Tests:**
+  - `minecraftoss-world` `level::components::tests`:
+    - `a_banner_takes_its_patterns_and_name_and_stores_the_other_components`: the ominous components give `patterns` and a `components` of `item_name`, `rarity` and `tooltip_display`. A custom name gives `CustomName`, and `block_state`, `block_entity_data` and a removal are not stored.
+    - `placing_again_replaces_the_patterns_the_name_and_the_components`: the old patterns, name and components go, and an empty pattern list writes no `patterns`.
+    - `other_block_entities_store_every_component`: a spawner keeps a custom name in `components`. A tag that is not a compound gives nothing. `is_banner` takes standing and wall banners but not shields or other namespaces.
+  - `minecraft_terrain` `server::tests` (real data, skipped without it):
+    - `a_placed_banner_takes_the_patterns_name_and_components_of_its_item`: a placed white banner given the components of `ominous_banner()` reports a block entity with the eight layers in order (rhombus cyan to border black), `components` with `item_name` (`block.minecraft.ominous_banner`), `rarity` (`uncommon`) and `tooltip_display`, and no `CustomName`, and the level keeps the same tag. A blue wall banner given a name and one layer gets `CustomName`, one layer and empty `components`. Stone takes nothing, and empty components change nothing.
+    - `a_banner_s_components_reach_the_server_thread_and_come_back_as_its_block_entity`: through `ServerHandle`, the command comes back in `Output.block_entities` with the eight layers.
+  - `minecraft_survival` `actions::tests::a_placed_banner_keeps_its_patterns_for_the_save_and_for_friends`: a player places the ominous banner with `act`. The server's block entity reaches the stream and `friend_changes` (only the banner's position), and `session::block_updates` sends friends the tag with eight layers and the three stored components.
+- **Decisions:**
+  - The level function lives in its own vendored file `level/components.rs`, declared next to `lectern`, not inside `lectern.rs`. It is generic and has nothing to do with lecterns.
+  - Like vanilla, the block entity keeps every other component of the stack, not only the three of the ominous banner, and a later placement replaces all of them.
+  - Only banners send their components for now (the brief's scope). Shulker boxes keep their own path through `Containers`, and other blocks still drop a placed item's name (the save limit in `MINECRAFT-SURVIVAL.md`).
+  - Friends learn of a banner's new block entity through `friend_changes` in `level.rs`. The line in `entities.rs` that fills `spawner_tags` stays as it is, because track W may add its sculk tags there.
+- **Protocol:** no message or codec change. Friends already receive `ToClient::BlockEntity`, and they now get it once more for a banner whose block entity the server changed.
+- **Owner's test steps:** a placed banner still shows only its base colour (group `placed-banners`), so nothing changes on screen yet. The steps for both commits of the group are with the next commit.
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components
