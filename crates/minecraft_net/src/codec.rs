@@ -916,7 +916,7 @@ mod tests {
             panic!("not a player view");
         };
         assert_eq!(back.vehicle_health, Some([22.0, 26.0]));
-        let on_foot = ToClient::Player(Box::new(PlayerView::default()));
+        let on_foot = ToClient::Player(Box::default());
         let bytes = encode(Lane::Reliable, &on_foot).unwrap();
         let ToClient::Player(back) = decode::<ToClient>(Lane::Reliable, &bytes).unwrap() else {
             panic!("not a player view");

@@ -611,3 +611,26 @@ Commit: "Minecraft starting kits keep the quotes inside their components", the o
 ```
 IW4L_MINECRAFT_KIT=written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two"]}]
 ```
+
+## Final verification
+
+### Clippy on the touched crates
+
+Commit: "Track E1 code passes clippy", the one after `70df989a`.
+
+- **Clippy** on `frame`, `hud`, `minecraft_commands`, `minecraft_net`, `minecraft_survival`, `minecraft_terrain`, `render_anim`, `minecraftoss-entities`, `minecraftoss-player` and `minecraftoss-world` (`--all-targets`, `-A clippy::approx_constant`, the `third_party/scenarios` stand-in files of `full-suite.ps1` made for the run and removed after) found two warnings from this track; every other warning in these crates is older:
+  - `minecraft_net` `codec.rs`, the test `a_player_view_carries_the_mount_s_health`: `Box::new(PlayerView::default())` (`box_default`) is now `Box::default()`.
+  - `hud` `minecraft_recipe_book.rs` `Tip`: `McStack.effects` (E-omen) made `Tip::Item` 217 bytes larger than `Tip::Text`, past `large_enum_variant`'s 200. `Tip::Item` now boxes its stack; `minecraft_inventory.rs` reads it unchanged through the box.
+- **Left alone:** `hud` `minecraft_screens.rs` `SlotDraw` and `minecraft_survival` `menus.rs` `Open` (`large_enum_variant`) were over the limit before this track.
+- **Tests:** none new; `hud` and `minecraft_net` pass.
+- **Owner's test steps** (survival, a new world, the combined kit below):
+  1. **Recipe book tooltips.** Open the inventory and click the recipe book button. Hover a recipe button: its item's tooltip shows as before, with "Right Click for More" under it when the button holds more than one recipe. **Screenshot V1.**
+  2. **A ghost recipe.** If the filter button shows "Showing Craftable", click it so all recipes show. Click a recipe with a red background (one you can't pay for): grey ghost items fill the crafting grid. Hover a ghost item: its tooltip shows.
+
+## Combined kit
+
+One line for a quick look at the whole track in one world (27 backpack slots). Each section above has its full kit. The banner, shield and crossbow entries of E-kit are left out, since nothing draws their patterns or the loaded arrow yet; E-kit's `/give` steps still check them.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:written_book[written_book_content={title:"Kit",author:"Owner",pages:["One, two"]}],minecraft:firework_rocket[fireworks={flight_duration:3}]*16,minecraft:firework_rocket*16,minecraft:elytra,minecraft:horse_spawn_egg*4,minecraft:wolf_spawn_egg*2,minecraft:cat_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:strider_spawn_egg*2,minecraft:wheat*64,minecraft:potato*64,minecraft:carrot*64,minecraft:beetroot*64,minecraft:bone*32,minecraft:cod*64,minecraft:golden_carrot*16,minecraft:composter,minecraft:ominous_bottle*2,minecraft:ominous_bottle[ominous_bottle_amplifier=4],minecraft:potion@long_night_vision,minecraft:golden_apple*8,minecraft:milk_bucket,minecraft:saddle,minecraft:saddle,minecraft:hay_block*16,minecraft:leather_horse_armor@red,minecraft:leather_chestplate@red
+```
