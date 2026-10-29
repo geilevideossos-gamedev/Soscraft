@@ -621,6 +621,21 @@ After e9ea905e.
 - **Tests:** none new; the same behaviour. `check -p launcher` passes.
 - **Test steps and kit:** none (no change in game).
 
+### 2. Track D log records the final test run and the combined kit
+
+After 07d23491. Log only.
+
+- **Tests** on the code of 07d23491, `test -p <crate> --locked` for each touched crate, all passed: `minecraft_terrain` 1470 (3 ignored; the known flaky `sections::tests::background_full_update_matches_the_synchronous_one` failed once in the full run and passed when run again, and the doc-tests ran on their own), `minecraft_survival` 766 + 1, `render_anim` 215, `minecraftoss-entities` 399 (every `check_*` bin builds), `minecraftoss-world` 103, `minecraft_net` 25, `hud` 186, `frame` 28.
+- **Owner's test steps:** none new; the steps of each commit above stand, with the combined kit below.
+
+## Combined kit
+
+27 stacks. It holds everything the steps of the groups trial-spawners to review need (97db956b to e9ea905e: trial spawners and their eggs, the mob spawner steps, glass for the sight step, ominous trials with both bottles, vaults with both keys, lodestones with the Nether portal, the friend's clock and recovery compass), with enchanted diamond armour. Left out: the bow and arrows (the sword does), golden apples, milk (`/effect clear @s` does), the totem, the skeleton egg (egg step 2: use the husk egg), the ladder and the water bucket. The steps of group d5-review (bad8dd84 and 0ff5716c: wind charges, the wither and its skull) use their own kit lines above.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:diamond_helmet+protection=4,minecraft:diamond_chestplate+protection=4,minecraft:diamond_leggings+protection=4,minecraft:diamond_boots+feather_falling=4,minecraft:cooked_beef*32,minecraft:torch*64,minecraft:cobblestone*64,minecraft:glass*32,minecraft:trial_spawner*3,minecraft:zombie_spawn_egg*4,minecraft:husk_spawn_egg*2,minecraft:slime_spawn_egg*2,minecraft:spawner*2,minecraft:ominous_bottle[ominous_bottle_amplifier=1]*2,minecraft:ominous_bottle*4,minecraft:trial_key*6,minecraft:ominous_trial_key*3,minecraft:vault*2,minecraft:lodestone*4,minecraft:compass*8,minecraft:clock,minecraft:recovery_compass,minecraft:obsidian*14,minecraft:flint_and_steel
+```
+
 ## Protocol
 
 `minecraft_net::PROTOCOL` stays 6 (the release step bumps it).
