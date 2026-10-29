@@ -759,6 +759,29 @@ IW4L_MINECRAFT_KIT=minecraft:breeze_spawn_egg*8,minecraft:skeleton_spawn_egg*2,m
 - A player's thrown things (wind charges, snowballs, eggs, pearls, potions) and tridents pass through breezes until E2's `hit_boxes` carries the registry's arm (D0-0); the deflection in `tick_thrown` is ready for them.
 - The breeze is not drawn yet (group breeze-render: model, wind and eyes layers, keyframes, particles, its pose for friends).
 
+## Group breeze-render
+
+Brief D16, group breeze-render: the breeze's model, its wind and eyes layers, its keyframes and its particles, for the host and every friend.
+
+### 1. Registered Minecraft mobs can raise block dust
+
+After a1ddd5ae.
+
+A hook commit (D0-3: a missing registry hook goes in the root file in its own commit, named for it). The breeze's ground and jump-trail particles are vanilla `BLOCK` particles of the block it stands in or on, and nothing a family's `client_effects` reaches (`ClientFx`: ambient, spell, portal and poof particles) draws block textures. The warden's digging particles (track W) are the same kind.
+
+- **Vanilla (javap, 26.3):** `Level.addParticle(new BlockParticleOption(BLOCK, state), x, y, z, 0, 0, 0)` makes a `TerrainParticle` through the 7-argument `Particle` constructor: a random direction of up to 0.4 per axis, a speed of `(r1 + r2 + 1) × 0.15 × 0.4` along it plus 0.1 up, half the usual size, tinted like the block's break particles. The provider makes none for air, a moving piston or a block whose render shape is invisible (liquids). `Entity.getInBlockState` is the block at the entity's block position; `getBlockStateOn` the block at `getOnPos` (`BlockPos.containing(x, y − 1.0E-5, z)` when nothing supports it).
+- **Changed:**
+  - `minecraft_terrain/src/block_particles.rs`: `BlockDust` (where the dust starts, the block the mob is in, the block below its feet, how many), `BlockDust::of(feet, at, count)` and `BlockDust::block` (the block it is in unless that is air, else the one below), and `BlockParticles::spawn_dust`, which spawns that many terrain particles at the point with no push, as the break particles' fragments already do (`spawn_fragment`, the 4096 cap).
+  - `minecraft_terrain/src/families.rs` (D0's root file): the trait hook `TerrainFamily::block_dust(mobs, poses, out)` (default: none), the group macro's `block_dust` and the root `families::block_dust(world, poses, out)`, next to `client_effects`. A new hook instead of a new `ClientFx` field: a field would break every `ClientFx { .. }` literal in the other tracks' tests.
+  - `minecraft_survival/src/entity_view.rs`: `EntityView.block_dust`, filled once per client tick right after the families' `client_effects`, for the host and every friend.
+  - `render_anim`: `present_crumbs` (host and friend) takes the level's scene and hands each dust to `Mining::dust`, which spawns it with the break particles.
+- **Tests added:** `block_particles::tests::block_dust_comes_from_the_block_it_is_in_or_else_the_block_below` (stone below the feet; a snow layer it stands in wins; cave air does not; nothing in the air; the cells for negative coordinates), `block_particles::tests::dust_starts_where_it_is_raised_and_flies_off_slowly` (20 fragments at the point, the 0.6 tint, at most 0.18 from a 0.1 lift; the 4096 cap).
+- **Decisions:** the particles setting (all, decreased, minimal) is not applied, like the fork's other mob particles.
+- **Protocol:** none (each viewer raises its own dust from its mirror of the mob).
+- **Vendored files:** none.
+- **Runs:** `test -p minecraft_terrain --locked --lib block_particles` (14 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings).
+- **Test steps:** none on their own (no family raises dust before commit 2); the steps of commit 2 cover it.
+
 ## Combined kit
 
 27 stacks. It holds everything the steps of the groups trial-spawners to review need (97db956b to e9ea905e: trial spawners and their eggs, the mob spawner steps, glass for the sight step, ominous trials with both bottles, vaults with both keys, lodestones with the Nether portal, the friend's clock and recovery compass), with enchanted diamond armour. Left out: the bow and arrows (the sword does), golden apples, milk (`/effect clear @s` does), the totem, the skeleton egg (egg step 2: use the husk egg), the ladder and the water bucket. The steps of group d5-review (bad8dd84 and 0ff5716c: wind charges, the wither and its skull) use their own kit lines above.
@@ -792,6 +815,7 @@ IW4L_MINECRAFT_KIT=minecraft:diamond_pickaxe+efficiency=5,minecraft:diamond_swor
 - Release 1's known limits (Withers) and the round 9 log (group wither-fight, commit 1): drop "A skull loaded from a save has no owner and hurts as magic for 5". `docs/MINECRAFT-SURVIVAL.md`: fireballs, small fireballs and wither skulls keep their shooter through a save (`Owner`), found again when the shooter loads (group d5-review, commit 2).
 - `docs/MINECRAFT-SURVIVAL.md` and the mob list (breezes, group breezes, commit 1): breezes live in the entity world: they come from eggs, `/summon` and trial spawners, target survival players and iron golems within 16 blocks, slide about and shoot wind charges (1 damage from the breeze, a radius 3 burst that opens doors and presses buttons only with `mob_griefing`), shrug off what other breezes do, take no fall damage, drop breeze rods, are saved with their charges in flight and are seen by friends. Not yet: the long jump, turning projectiles back, their other sounds (commit 2) and their model (group breeze-render). Thrown things and tridents pass through them until E2's hit boxes land.
 - `docs/MINECRAFT-SURVIVAL.md` and the mob list (breezes, group breezes, commits 2 and 3): breezes long-jump over to land behind their target (a charge, a whoosh and a thud), slide about with a swish, whirl now and then for every viewer, forget a target 24 blocks away, and turn back arrows, fireballs, wither skulls and shulker bullets (not wind charges) with their deflect sound; a chamber's breeze trial spawner sends one breeze at a time, two for one player. Registered mobs can turn projectiles back (a registry hook). Not yet: their model (group breeze-render); tridents and a player's thrown things wait for E2's hit boxes.
+- Registered mobs can raise block dust (group breeze-render, commit 1: a registry hook, `TerrainFamily::block_dust`).
 
 ## Vendored files
 

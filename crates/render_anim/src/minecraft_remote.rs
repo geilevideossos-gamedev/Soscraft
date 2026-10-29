@@ -1983,7 +1983,7 @@ fn present_entities(
         level.terrain.stream.draw_apart(pos, apart);
     }
     let (packs, atlas) = (&prepared.look.packs, &prepared.look.atlas);
-    crate::minecraft_world::present_crumbs(entities, mining, packs, atlas);
+    crate::minecraft_world::present_crumbs(entities, mining, packs, &level.terrain.scene, atlas);
     let heard = std::mem::take(&mut entities.sounds);
     if let Some(sounds) = sounds {
         let camera = glam::DVec3::from_array(eye);

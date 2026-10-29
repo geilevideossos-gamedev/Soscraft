@@ -1231,7 +1231,7 @@ fn update(
             terrain.stream.record_edits(&terrain.scene, &positions);
             terrain.stream.mark_edited(&terrain.scene, &positions);
         }
-        present_crumbs(&mut entities.view, &mut *mining, &world.packs, &world.atlas);
+        present_crumbs(&mut entities.view, &mut *mining, &world.packs, &terrain.scene, &world.atlas);
         for (pos, block) in std::mem::take(&mut entities.destroyed) {
             mining.burst(&world.packs, &terrain.scene, &world.atlas, pos, &block);
             if let Some(state) = terrain.stream.states.state_of(&block) {
@@ -1610,7 +1610,10 @@ pub(crate) struct SkyInputs {
     pub(crate) credits: bool,
 }
 
-pub(crate) fn present_crumbs(view: &mut minecraft_survival::entity_view::EntityView, mining: &mut crate::minecraft_mining::Mining, packs: &PackStack, atlas: &Atlas) {
+pub(crate) fn present_crumbs(view: &mut minecraft_survival::entity_view::EntityView, mining: &mut crate::minecraft_mining::Mining, packs: &PackStack, scene: &HandcraftedScene, atlas: &Atlas) {
+    for dust in std::mem::take(&mut view.block_dust) {
+        mining.dust(packs, scene, atlas, &dust);
+    }
     for (item, at, velocities) in std::mem::take(&mut view.item_crumbs) {
         if let Some(texture) = minecraft_terrain::pack::ResourceId::parse(&item)
             .ok()

@@ -59,6 +59,7 @@ pub struct EntityView {
     pub(crate) orb_pickups: Vec<minecraft_terrain::orb_render::OrbPickup>,
     pub item_crumbs: Vec<(String, DVec3, Vec<Vec3>)>,
     pub potion_crumbs: Vec<DVec3>,
+    pub block_dust: Vec<minecraft_terrain::block_particles::BlockDust>,
     pub sounds: Vec<(String, DVec3, f32, f32)>,
     pub(crate) random: minecraftoss_player::rng::LegacyRandom,
     shown: HashSet<u64>,
@@ -113,6 +114,7 @@ impl EntityView {
             orb_pickups: Vec::new(),
             item_crumbs: Vec::new(),
             potion_crumbs: Vec::new(),
+            block_dust: Vec::new(),
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
             shown: HashSet::new(),
@@ -156,6 +158,7 @@ impl EntityView {
             self.ravager_effects();
             self.wither_effects();
             minecraft_terrain::families::client_effects(&self.world, &self.client, &mut minecraft_terrain::families::ClientFx { ambient: &mut self.ambient, spell: &mut self.spell, portal: &mut self.portal, poof: &mut self.poof, sounds: &mut self.sounds, random: &mut self.random, seen: &mut self.family_seen });
+            minecraft_terrain::families::block_dust(&self.world, &self.client, &mut self.block_dust);
             let flaps = self.drawn_dragons.tick();
             self.dragon_voices(&flaps);
             self.drawn_fireballs.tick();
