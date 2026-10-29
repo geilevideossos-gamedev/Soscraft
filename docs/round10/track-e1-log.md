@@ -646,6 +646,54 @@ Commit: "Minecraft dyed leather horse armour shows its colour on the horse", the
 IW4L_MINECRAFT_KIT=minecraft:leather_horse_armor@red,minecraft:leather_horse_armor@blue,minecraft:leather_horse_armor@lime,minecraft:leather_horse_armor,minecraft:iron_horse_armor,minecraft:saddle,minecraft:iron_sword,minecraft:cooked_beef*16
 ```
 
+## E-banners. Banner patterns and crossbow states
+
+### Item models pick crossbow and bow states
+
+Commit: "Minecraft item models pick crossbow and bow states like vanilla", the one after `502b206b`.
+
+- **Cause** (as in the brief, re-checked at `502b206b`): the item model walker (`special_models.rs` `collect_leaves`) read only `minecraft:using_item` from a bool and `minecraft:display_context`; every other `select` and `range_dispatch` took its fallback. So `items/crossbow.json` always gave `item/crossbow` (no arrow, no rocket, no pull) and `items/bow.json` always `item/bow`. A drawn item's key (`item_tint`) held only the id, a dial model and a colour, so nothing about the stack's charge could reach the model.
+- **Vanilla 26.3** (javap and the 26.3 `items/` data):
+  - `Charge.get`: no `charged_projectiles` or an empty list is `none`; a list holding a `firework_rocket` is `rocket`; any other list is `arrow`. The case names are `none`, `arrow` and `rocket`.
+  - `CrossbowPull.get`: 0 when the crossbow is charged (or has no living holder), else `UseDuration.useDuration` (whole ticks used) over `CrossbowItem.getChargeDuration` as floats.
+  - `UseDuration.get`: 0 unless the holder is using this very stack, then the whole ticks used (or the ticks left with `remaining: true`).
+  - `crossbow.json`: select `charge_type` (`arrow` → `crossbow_arrow`, `rocket` → `crossbow_firework`), fallback condition `using_item`, on_true range_dispatch `crossbow/pull` (fallback `crossbow_pulling_0`, 0.58 `pulling_1`, 1.0 `pulling_2`). `bow.json`: condition `using_item`, on_true range_dispatch `use_duration` scale 0.05 (fallback `bow_pulling_0`, 0.65 `pulling_1`, 0.9 `pulling_2`). All six crossbow models and the three pulling bows take their `display` from `item/crossbow` and `item/bow`.
+- **Changed:**
+  - New `crates/minecraft_terrain/src/item_look.rs`:
+    - `ItemLook { charge, use_ticks, base, layers }` and `ItemLook::of(components, use_ticks)`: the charge as `Charge::of` reads it, the use ticks of the using hand, `minecraft:base_color` and up to 16 `minecraft:banner_patterns` layers (a pattern id or inline `asset_id`, and a dye).
+    - The key part: `suffix()` gives `|charge=arrow`, `|use=15`, `|base=red` and `|layer=<dye>,<asset>` parts (empty for a plain stack); `parse` reads them back; `keyed(base, look)` appends it; `split(key)` cuts it off again.
+    - `ItemState { using, charge, use_ticks, charge_duration }` (25 ticks) and `ItemLook::leaf(model, context)`: the one plain model leaf the look's state picks, or nothing when the look holds no state.
+  - `item_tint::of_stack_at` puts the look between its base (the id, a lodestone key or a dial key) and the `~rrggbb` colour, so `of_stack`, the first-person hand and the inventory icons all carry it, and `item_tint::split` and `dials::split` still give the id.
+  - `special_models.rs`: `collect_leaves` takes an `ItemState`. `select` `minecraft:charge_type` takes the case named by the charge; `range_dispatch` `minecraft:crossbow/pull` and `minecraft:use_duration` (times `scale`) take the last entry whose threshold is at most the value, as `dials.rs` does; the condition `minecraft:using_item` reads the state's flag. The chosen branch comes first, then the fallback, then the other entries, as before. `item_leaves_with(model, state, context)` is new; `item_leaves` and `item_leaves_in` keep their bool for the current callers.
+  - `mesh.rs` `ItemVisuals::model` (dropped items, items in the hand and on mobs) and `item_icons.rs` `item_icon_at` split the look off after the colour and resolve the leaf it picks with `model::resolve_item_leaf`; with no state they resolve as before.
+  - `render_anim` `minecraft_inventory.rs` `icon_source` splits the look off before the dial lookup and puts it back, so names stay keyed by the plain id.
+  - `dials.rs` is not touched.
+- **Tests:**
+  - `minecraft_terrain` `item_look::tests`: `a_look_reads_the_charge_the_patterns_and_the_base_colour` (empty, arrow, bare-string, rocket and un-namespaced rocket lists; id and inline patterns, a bad dye, a bad id and a missing pattern skipped; 20 layers keep the first 16; the suffix and `parse` round trip; junk parts ignored), `a_look_sits_after_the_dial_and_before_the_colour_and_splits_back` (a loaded crossbow, a potion with patterns and a colour, dyed leather with a base colour, and a dial-keyed compass all split back to the same id, dial model, look and colour), `a_look_picks_a_plain_leaf_only_when_it_holds_a_state`.
+  - `special_models::tests::crossbows_and_bows_pick_their_charge_and_pull_like_vanilla`: the real crossbow and bow trees. No state → `crossbow`; using for 0, 14, 15, 24, 25 and 40 ticks → `pulling_0`, `pulling_0`, `pulling_1`, `pulling_1`, `pulling_2`, `pulling_2`; an arrow → `crossbow_arrow` even while used; a rocket → `crossbow_firework`; a 15-tick charge at 15 ticks → `pulling_2`; the bow at 0, 12, 13, 17 and 18 ticks → `pulling_0`, `pulling_0`, `pulling_1`, `pulling_1`, `pulling_2`; a `remaining` use duration takes its fallback.
+  - `item_icons::tests::loaded_crossbow_icons_show_their_arrow_or_rocket` (real pack, skipped without it): the plain, arrow and rocket crossbow icons are the `crossbow_standby`, `crossbow_arrow` and `crossbow_firework` sprites, and a 25-tick look is `crossbow_pulling_2`.
+  - `render_anim` `minecraft_inventory::tests::a_loaded_crossbow_icon_keeps_its_look_and_shares_its_name`.
+  - All 1517 `minecraft_terrain` tests (3 ignored, as before) and all 218 `render_anim` tests pass; `check -p launcher` passes.
+- **Decisions:**
+  - The look sits after the dial or lodestone part and before the colour, behind its own mark `|`, which no id, model, lodestone key or colour holds. Code that wants the model splits the colour, then the look, then the dial; `dials::split` on a key with a look still gives the right id.
+  - The look already holds the base colour and the pattern layers, so a patterned banner or shield gets its own key and icon now; it draws as before until group `banner-items`. A pattern's asset is its id (true of all 43 vanilla patterns), or the inline `asset_id`. The first 16 layers count, as `BannerRenderer` draws indices 0 to 15; a malformed layer among them is dropped.
+  - Every stack with these components gets a look, whatever the item, since vanilla's properties read any stack; only models that ask for them change.
+  - A look replaces the default model only when its state picks exactly one plain model leaf; a stack with no charge and no use ticks resolves exactly as before. A `use_duration` with `remaining: true` is not read (no 26.3 item has one) and takes its fallback.
+  - The charge duration is the 25 ticks the AI uses; Quick Charge does not shorten the pull (the brief's decision).
+  - Players have no crossbow or bow use in the fork, so a player's crossbow shows standby, arrow or rocket and never the pull, and a player's bow never pulls.
+- **Protocol:** no change. Item keys are built on each client from the stacks it has.
+- **Owner's test steps** (survival, a new world, by day, the kit below):
+  1. **Icons.** Open the inventory. The first crossbow's icon has an arrow lying in it, the second a firework rocket, the third is the plain unloaded crossbow. Hover each: all three are named "Crossbow". **Screenshot C1.**
+  2. **Hotbar and hand.** Move the three crossbows to the hotbar: the hotbar icons are the same. Hold each in first person: the arrow, the rocket and the plain string show in your hand. **Screenshot C2.**
+  3. **On the ground.** Press Q with each crossbow: on the ground the first shows its arrow, the second its rocket, the third is plain. Pick them up again: the icons are unchanged.
+  4. **Not yet:** in third person (F5) and in an item frame the loaded crossbows still look plain (group `player-looks`), and pillagers and piglins still hold a plain crossbow (the next commit).
+  5. **Friend (two windows, both on this build).** The friend gets the same kit (or `/kit @a` from the host): the friend's own icons, hand and dropped crossbows show the arrow and the rocket in the friend's window.
+- **Kit** (5 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:crossbow[charged_projectiles=[{id:"minecraft:arrow"}]],minecraft:crossbow[charged_projectiles=[{id:"minecraft:firework_rocket"}]],minecraft:crossbow,minecraft:item_frame*2,minecraft:cooked_beef*16
+```
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components

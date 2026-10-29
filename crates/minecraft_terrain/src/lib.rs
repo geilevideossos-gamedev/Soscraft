@@ -126,6 +126,7 @@ pub mod hoglin_render;
 pub mod display_ticks;
 pub mod item_icon;
 pub mod item_icons;
+pub mod item_look;
 pub mod item_tint;
 pub mod crafting;
 pub mod placing;

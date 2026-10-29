@@ -19,13 +19,15 @@ pub fn item_icon_at(
     clock: &crate::item_icon::SpriteClock,
 ) -> Result<Option<RgbaImage>> {
     let (key, potion) = crate::item_tint::split(key);
+    let (key, look) = crate::item_look::split(key);
     let (key, dial) = crate::dials::split(key);
     if dial.is_some() {
         clock.mark_animated();
     }
     let id = ResourceId::parse(key)?;
     let definition = packs.item_definition(&id)?;
-    let model = dial.or_else(|| definition.as_ref().and_then(|value| item_gui_model_reference(&value["model"])));
+    let chosen = definition.as_ref().and_then(|value| crate::item_look::ItemLook::parse(look).leaf(&value["model"], Some("gui")));
+    let model = dial.or(chosen).or_else(|| definition.as_ref().and_then(|value| item_gui_model_reference(&value["model"])));
     let tints = definition
         .as_ref()
         .map(|value| item_model_tints(packs, &value["model"], potion))
@@ -252,6 +254,29 @@ mod tests {
             let expected = image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 32, 32, FilterType::Nearest);
             assert!(icon == expected, "{item} is drawn from {sprite}");
         }
+    }
+
+    #[test]
+    fn loaded_crossbow_icons_show_their_arrow_or_rocket() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let pack = std::path::Path::new(&root).join("resourcepacks/local/minecraft-26.3");
+        if !pack.is_dir() {
+            return;
+        }
+        let packs = PackStack::open(vec![pack]).unwrap();
+        let mut crossbow = minecraftoss_player::inventory::ItemStack::new("minecraft:crossbow", 1);
+        for (projectile, sprite) in [(None, "minecraft:item/crossbow_standby"), (Some("minecraft:arrow"), "minecraft:item/crossbow_arrow"), (Some("minecraft:firework_rocket"), "minecraft:item/crossbow_firework")] {
+            crossbow.components = projectile.map(|id| serde_json::json!({"minecraft:charged_projectiles": [{"id": id}]}));
+            let icon = item_icon(&packs, &crate::item_tint::of_stack(&crossbow), 32).unwrap().unwrap();
+            let bytes = packs.texture(&ResourceId::parse(sprite).unwrap()).unwrap().unwrap();
+            let expected = image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 32, 32, FilterType::Nearest);
+            assert!(icon == expected, "{projectile:?} is drawn from {sprite}");
+        }
+        let pulled = item_icon(&packs, &crate::item_look::keyed("minecraft:crossbow", &crate::item_look::ItemLook::of(None, Some(25))), 32).unwrap().unwrap();
+        let bytes = packs.texture(&ResourceId::parse("minecraft:item/crossbow_pulling_2").unwrap()).unwrap().unwrap();
+        assert!(pulled == image::imageops::resize(&image::load_from_memory(&bytes).unwrap().to_rgba8(), 32, 32, FilterType::Nearest));
     }
 
     #[test]

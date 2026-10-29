@@ -930,9 +930,12 @@ impl ItemVisuals {
     fn model<'a>(&'a mut self, id: &str, packs: &PackStack) -> Result<Option<&'a ItemVisual>> {
         if !self.models.contains_key(id) {
             let (base, potion) = crate::item_tint::split(id);
+            let (base, look) = crate::item_look::split(base);
             let (key, dial) = crate::dials::split(base);
             let resource = ResourceId::parse(key)?;
-            let resolved = match dial {
+            let definition = packs.item_definition(&resource)?;
+            let chosen = definition.as_ref().and_then(|value| crate::item_look::ItemLook::parse(look).leaf(&value["model"], None));
+            let resolved = match dial.or(chosen) {
                 Some(leaf) => Some(crate::model::resolve_item_leaf(packs, &resource, leaf)?),
                 None => crate::model::resolve_item_model(packs, &resource)?,
             };
@@ -942,7 +945,6 @@ impl ItemVisuals {
             if model.elements.is_empty() {
                 return Ok(None);
             }
-            let definition = packs.item_definition(&resource)?;
             let hand = match definition.as_ref().map(|value| &value["model"]) {
                 Some(value) if crate::special_models::uses_item_geometry_in(value, Some("thirdperson_righthand")) && !crate::special_models::uses_item_geometry(value) => {
                     crate::model::resolve_item_model_in(packs, &resource, Some("thirdperson_righthand"))?.filter(|hand| !hand.elements.is_empty())

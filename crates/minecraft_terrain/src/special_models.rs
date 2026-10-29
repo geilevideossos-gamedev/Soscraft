@@ -1,3 +1,4 @@
+use crate::item_look::{Charge, ItemState};
 use crate::model::{Element, ElementRotation, Face, ResolvedModel};
 use crate::pack::ResourceId;
 use crate::scene::Block;
@@ -460,8 +461,16 @@ pub(crate) fn item_leaves_in<'a>(
     using_item: bool,
     context: Option<&str>,
 ) -> Vec<ItemLeaf<'a>> {
+    item_leaves_with(model, &ItemState::plain(using_item), context)
+}
+
+pub(crate) fn item_leaves_with<'a>(
+    model: &'a Value,
+    state: &ItemState,
+    context: Option<&str>,
+) -> Vec<ItemLeaf<'a>> {
     let mut leaves = Vec::new();
-    collect_leaves(model, using_item, context, Mat4::IDENTITY, &mut leaves);
+    collect_leaves(model, state, context, Mat4::IDENTITY, &mut leaves);
     leaves
 }
 
@@ -473,9 +482,48 @@ fn when_matches(when: Option<&Value>, context: &str) -> bool {
     }
 }
 
+fn chosen_by_state<'a>(
+    value: &'a Value,
+    entries: &[&'a Value],
+    state: &ItemState,
+) -> Option<&'a Value> {
+    let reading = match value.get("property").and_then(Value::as_str)? {
+        "minecraft:charge_type" => {
+            return entries
+                .iter()
+                .find(|entry| when_matches(entry.get("when"), state.charge.name()))
+                .and_then(|entry| entry.get("model"));
+        }
+        "minecraft:crossbow/pull" if state.charge == Charge::None => {
+            state.use_ticks as f32 / state.charge_duration.max(1) as f32
+        }
+        "minecraft:crossbow/pull" => 0.0,
+        "minecraft:use_duration" if value["remaining"] != true => {
+            if state.using {
+                state.use_ticks as f32
+            } else {
+                0.0
+            }
+        }
+        _ => return None,
+    };
+    let scale = value.get("scale").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+    let reading = reading * scale;
+    entries
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry
+                .get("threshold")
+                .and_then(Value::as_f64)
+                .is_some_and(|threshold| threshold as f32 <= reading)
+        })
+        .and_then(|entry| entry.get("model"))
+}
+
 fn collect_leaves<'a>(
     value: &'a Value,
-    using_item: bool,
+    state: &ItemState,
     context: Option<&str>,
     parent: Mat4,
     out: &mut Vec<ItemLeaf<'a>>,
@@ -484,7 +532,7 @@ fn collect_leaves<'a>(
     let first_yielding = |out: &mut Vec<ItemLeaf<'a>>, options: Vec<&'a Value>| {
         for option in options {
             let mut found = Vec::new();
-            collect_leaves(option, using_item, context, transform, &mut found);
+            collect_leaves(option, state, context, transform, &mut found);
             if !found.is_empty() {
                 out.extend(found);
                 return;
@@ -524,13 +572,13 @@ fn collect_leaves<'a>(
                 .into_iter()
                 .flatten()
             {
-                collect_leaves(model, using_item, context, transform, out);
+                collect_leaves(model, state, context, transform, out);
             }
         }
         "minecraft:condition" => {
             let on_true = value.get("on_true");
             let on_false = value.get("on_false");
-            let using = using_item
+            let using = state.using
                 && value.get("property").and_then(Value::as_str) == Some("minecraft:using_item");
             let order = if using {
                 [on_true, on_false]
@@ -557,6 +605,7 @@ fn collect_leaves<'a>(
                         .filter_map(|entry| entry.get("model")),
                 );
             }
+            options.extend(chosen_by_state(value, &entries, state));
             options.extend(value.get("fallback"));
             options.extend(entries.iter().filter_map(|entry| entry.get("model")));
             first_yielding(out, options);
@@ -1530,6 +1579,69 @@ mod tests {
         });
         assert_eq!(item_leaves_in(&spyglass, false, Some("ground"))[0].model, "minecraft:item/spyglass");
         assert_eq!(item_leaves_in(&spyglass, false, Some("firstperson_righthand"))[0].model, "minecraft:item/spyglass_in_hand");
+    }
+
+    #[test]
+    fn crossbows_and_bows_pick_their_charge_and_pull_like_vanilla() {
+        let model = |name: &str| serde_json::json!({"type": "minecraft:model", "model": format!("minecraft:item/{name}")});
+        let crossbow = serde_json::json!({
+            "type": "minecraft:select",
+            "property": "minecraft:charge_type",
+            "cases": [{"when": "arrow", "model": model("crossbow_arrow")}, {"when": "rocket", "model": model("crossbow_firework")}],
+            "fallback": {
+                "type": "minecraft:condition",
+                "property": "minecraft:using_item",
+                "on_false": model("crossbow"),
+                "on_true": {
+                    "type": "minecraft:range_dispatch",
+                    "property": "minecraft:crossbow/pull",
+                    "entries": [{"threshold": 0.58, "model": model("crossbow_pulling_1")}, {"threshold": 1.0, "model": model("crossbow_pulling_2")}],
+                    "fallback": model("crossbow_pulling_0")
+                }
+            }
+        });
+        let bow = serde_json::json!({
+            "type": "minecraft:condition",
+            "property": "minecraft:using_item",
+            "on_false": model("bow"),
+            "on_true": {
+                "type": "minecraft:range_dispatch",
+                "property": "minecraft:use_duration",
+                "scale": 0.05,
+                "entries": [{"threshold": 0.65, "model": model("bow_pulling_1")}, {"threshold": 0.9, "model": model("bow_pulling_2")}],
+                "fallback": model("bow_pulling_0")
+            }
+        });
+        let state = |charge: Charge, using: Option<u32>| ItemState { using: using.is_some(), charge, use_ticks: using.unwrap_or(0), charge_duration: 25 };
+        let leaf = |tree: &Value, state: ItemState| {
+            let leaves = item_leaves_with(tree, &state, None);
+            assert_eq!(leaves.len(), 1);
+            leaves[0].model.strip_prefix("minecraft:item/").unwrap().to_owned()
+        };
+        assert_eq!(item_leaves(&crossbow, false)[0].model, "minecraft:item/crossbow");
+        assert_eq!(item_leaves(&crossbow, true)[0].model, "minecraft:item/crossbow_pulling_0");
+        assert_eq!(leaf(&crossbow, ItemState::plain(false)), "crossbow");
+        for (ticks, expected) in [(0, "crossbow_pulling_0"), (14, "crossbow_pulling_0"), (15, "crossbow_pulling_1"), (24, "crossbow_pulling_1"), (25, "crossbow_pulling_2"), (40, "crossbow_pulling_2")] {
+            assert_eq!(leaf(&crossbow, state(Charge::None, Some(ticks))), expected, "{ticks} ticks");
+        }
+        assert_eq!(leaf(&crossbow, state(Charge::Arrow, None)), "crossbow_arrow");
+        assert_eq!(leaf(&crossbow, state(Charge::Arrow, Some(20))), "crossbow_arrow", "an arrow shows even while the crossbow is used");
+        assert_eq!(leaf(&crossbow, state(Charge::Rocket, None)), "crossbow_firework");
+        let quick = ItemState { charge_duration: 15, ..state(Charge::None, Some(15)) };
+        assert_eq!(leaf(&crossbow, quick), "crossbow_pulling_2");
+        assert_eq!(leaf(&bow, ItemState::plain(false)), "bow");
+        for (ticks, expected) in [(0, "bow_pulling_0"), (12, "bow_pulling_0"), (13, "bow_pulling_1"), (17, "bow_pulling_1"), (18, "bow_pulling_2")] {
+            assert_eq!(leaf(&bow, state(Charge::None, Some(ticks))), expected, "{ticks} ticks");
+        }
+        assert_eq!(leaf(&bow, state(Charge::Arrow, None)), "bow");
+        let counting_down = serde_json::json!({
+            "type": "minecraft:range_dispatch",
+            "property": "minecraft:use_duration",
+            "remaining": true,
+            "entries": [{"threshold": 1.0, "model": model("late")}],
+            "fallback": model("early")
+        });
+        assert_eq!(leaf(&counting_down, state(Charge::None, Some(30))), "early");
     }
 
     #[test]
