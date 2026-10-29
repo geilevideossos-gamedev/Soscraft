@@ -3609,7 +3609,7 @@ pub enum Command {
     WakeVillagerIn(BlockPos),
     AngerPiglins { player: u64, feet: [f64; 3], sight: bool },
     Boost { player: u64 },
-    MountInventory { vehicle: u64, saddled: bool, body: Option<String>, items: Vec<Option<minecraftoss_player::inventory::ItemStack>> },
+    MountInventory { vehicle: u64, saddled: bool, body: Option<minecraftoss_player::inventory::ItemStack>, items: Vec<Option<minecraftoss_player::inventory::ItemStack>> },
     RootVehicle { player: u64, remove: bool },
     Reattach { player: u64, root: Box<minecraftoss_core::nbt::Tag> },
     Job(Job),
@@ -4046,7 +4046,7 @@ impl ServerHandle {
     }
 
     pub fn mount_inventory(&mut self, inventory: &crate::mount_inventory::MountInventory) {
-        self.send(Command::MountInventory { vehicle: inventory.vehicle, saddled: inventory.saddled(), body: inventory.body(), items: inventory.items() });
+        self.send(Command::MountInventory { vehicle: inventory.vehicle, saddled: inventory.saddled(), body: inventory.body_stack(), items: inventory.items() });
     }
 
     pub fn root_vehicle(&mut self, player: u64, remove: bool) {

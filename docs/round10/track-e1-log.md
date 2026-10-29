@@ -590,6 +590,33 @@ Commit: "Minecraft kits dye leather with the 26.3 dye tag", the one after `8c9db
 IW4L_MINECRAFT_KIT=minecraft:leather_horse_armor@red,minecraft:leather_horse_armor@blue,minecraft:leather_horse_armor@lime,minecraft:leather_horse_armor,minecraft:leather_chestplate@red,minecraft:leather_boots@blue,minecraft:compass,minecraft:clock,minecraft:cooked_beef*16
 ```
 
+### Horses keep the dye of their leather armour
+
+Commit: "Minecraft horses keep the dye of their leather armour", the one after `674afcc0`.
+
+- **Cause** (as in the brief, re-checked at `674afcc0`): a horse kept only the id of what it wore (`HorseState.body_item`), so the dye was lost on every path: equipping by right-click (`equines.rs` `horse_interact`), the mount screen (`MountInventory::of` built the body stack with no components, and `body()` and `Command::MountInventory` passed only the id to `set_mount_inventory`), the death drop (`horse_death_equipment`), loading (`server_mobs.rs` read only `equipment.body.id`) and saving (`body_equipment` kept the old tag whenever the id matched, so a re-dyed armour under the same id came back with its old colour).
+- **Vanilla 26.3** (javap): `Equippable.equipOnTarget` puts `stack.split(1)` in the body slot, so the worn armour or carpet keeps all its components, and the slot saves and drops that stack. `LivingEntity.onEquipItem` plays the equip sound when the new stack is not `isSameItemSameComponents` with the old one.
+- **Changed:**
+  - `third_party/minecraftoss/entities/src/horse.rs`: `HorseState.body_components: Option<serde_json::Value>`, next to `body_item` (which stays the id, so every `body_item.as_deref()` site is unchanged); `None` at first.
+  - `world/equines.rs`: right-click equipping copies the held stack's components, for horse armour and llama carpets alike; `horse_death_equipment` drops the worn stack with its components; `set_mount_inventory` takes the body as `Option<ItemStack>` and counts a change of id or components as a new body (with the armour or carpet sound when one is put on).
+  - `crates/minecraft_terrain/src/mount_inventory.rs`: `MountInventory::of` builds the body cell with the worn components, and the new `body_stack()` beside `body()` gives the whole body stack.
+  - `server.rs`: `Command::MountInventory.body` is an `Option<ItemStack>`, filled from `body_stack()` (`minecraft_survival` `entities.rs` `set_mount_inventory` already passes the whole screen, so it is unchanged).
+  - `server_mobs.rs`: a horse loads `equipment.body.components` (`tag_json`), and `body_equipment` writes them (`json_tag`) and keeps the loaded body tag only when both the id and the components are unchanged.
+  - Friends: the horse's look is its save tag (`mob_tracking`), so a friend's copy gets the components through the same load with no other change, and a new dye is a new look.
+- **Tests:**
+  - `minecraftoss-entities` `world::equines::tests::equipping_and_dropping_dyed_leather_keeps_the_colour`: a red leather horse armour equipped by right-click keeps 0xB02E26 on the horse and in the dropped stack; through `set_mount_inventory` a lime one replaces it with the armour sound, the same lime stack again makes no sound, an undyed one clears the colour, an empty slot clears both; a llama's carpet with a custom name keeps it on the llama and in its drop.
+  - `minecraft_terrain` `mount_inventory::tests::the_body_slot_keeps_its_dye_both_ways`: the screen shows the worn red armour with its colour, picking it up puts the red stack on the cursor, a shift-clicked lime one fills the slot with its colour, and `set_mount_inventory` with `body_stack()` puts the lime on the horse, which the next screen shows again.
+  - `server_mobs::tests::a_horse_keeps_dyed_leather_armour_through_save_and_load`: a saved horse in red leather loads with 0xB02E26, saves back its untouched body tag, saves 0x80C71F after a re-dye under the same id, loads that again, saves no components once undyed, and an iron horse armour loads with none.
+  - `mob_tracking::tests::a_friend_sees_a_horse_s_dyed_armour_and_its_new_dye`: the friend's copy gets the red, and a re-dye on the host sends one new look with the lime.
+  - The donkey test's `set_mount_inventory` call passes an `ItemStack`.
+  - All 439 `minecraftoss-entities` tests and all 1511 `minecraft_terrain` tests pass (3 ignored, as before); `check -p launcher` passes.
+- **Decisions:**
+  - Llama carpets keep their components too (the brief had the carpet path clear them). Vanilla's `equipOnTarget` keeps the whole stack for every body item, so a named carpet comes back named; the llama renderer reads only the id, so nothing else changes.
+  - The loaded body tag is kept only when its components, read back through `tag_json`, equal the horse's. That is exactly what the load stored, so an untouched horse saves its exact NBT (bytes stay bytes), and any change writes the new stack.
+  - Components on a `body` slot with no id are not loaded (the horse wears nothing then).
+- **Protocol:** no message or codec change. `Command::MountInventory` is the host's in-process server command, and a friend's horse still comes as its save tag (now with the body's `components`, which an older build ignores).
+- **Owner's test steps:** the armour on the horse itself stays brown until the next commit, so the steps for the whole group are with it.
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components

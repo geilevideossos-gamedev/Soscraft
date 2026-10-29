@@ -1231,6 +1231,34 @@ mod tests {
     }
 
     #[test]
+    fn a_friend_sees_a_horse_s_dyed_armour_and_its_new_dye() {
+        let mut host = EntityWorld::default();
+        host.set_next_entity_id(850);
+        let (horse, horse_tag) = spawn(&mut host, "{id:\"minecraft:horse\",Pos:[2.5d,64.0d,0.5d],Tame:1b,equipment:{body:{id:\"minecraft:leather_horse_armor\",count:1,components:{\"minecraft:dyed_color\":11546150}}}}");
+        let mut trackers = Trackers::default();
+        trackers.tick();
+        let originals: HashMap<u64, Tag> = [(horse, horse_tag)].into_iter().collect();
+        let tracked = trackers.update(&host, &originals, &[watcher(3, 0.5)]);
+        let mut friend = EntityWorld::default();
+        for event in tracked.events_of(3) {
+            let MobEvent::Add(id, sent) = event else { panic!("{event:?}") };
+            assert!(spawn_tracked(&mut friend, *id, sent));
+        }
+        let worn = |world: &mut EntityWorld| world.cow_mut(horse).unwrap().horse.as_ref().unwrap().body_components.clone();
+        assert_eq!(worn(&mut friend), Some(serde_json::json!({"minecraft:dyed_color": 0xB02E26})));
+        host.cow_mut(horse).unwrap().horse.as_mut().unwrap().body_components = Some(serde_json::json!({"minecraft:dyed_color": 0x80C71F}));
+        let mut looks = Vec::new();
+        for _ in 0..LOOK_TICKS {
+            trackers.tick();
+            looks.extend(trackers.update(&host, &originals, &[watcher(3, 0.5)]).events);
+        }
+        assert_eq!(looks.len(), 1, "a new dye is a new look: {looks:?}");
+        let (_, MobEvent::Look(id, sent)) = &looks[0] else { panic!("{looks:?}") };
+        assert!(spawn_tracked(&mut friend, *id, sent));
+        assert_eq!(worn(&mut friend), Some(serde_json::json!({"minecraft:dyed_color": 0x80C71F})));
+    }
+
+    #[test]
     fn a_friend_sees_llama_spit_fly() {
         let mut host = EntityWorld::default();
         let (spit, _) = spawn(&mut host, "{id:\"minecraft:llama_spit\",Pos:[3.5d,66.0d,0.5d],Motion:[0.0d,0.0d,1.5d],Rotation:[0.0f,0.0f]}");
