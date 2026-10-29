@@ -465,3 +465,18 @@ After fe8467c4.
 ```
 IW4L_MINECRAFT_KIT=minecraft:netherite_sword+sharpness=5,minecraft:cooked_beef*32
 ```
+
+### 14. A blast at Margit's feet no longer lifts him
+
+After 1763ffd9.
+
+- **Defect:** commit 8 decided that blasts and pushes never move him, but `steady` dropped only the sideways part of what a blast adds. D0's blast arm adds the whole push (`body.velocity += push`), and its upward part stayed: a TNT 1 block in front of him at ground level threw him into the air, and one right under him threw him higher still. A MW2 frag or rocket at his feet does the same until group `er-guns` routes those blasts.
+- **Changed (vendored entities crate):** his stride is now the whole velocity his own travel left, upward part included, and `steady` puts all of it back while he is alive (`elden_bosses.rs`). In `arena::carry_out` a walking tick keeps the whole velocity and a root-motion tick keeps only its upward part, so his falls and leaps go on as before and a push from outside never lasts into his next tick.
+- **Tests:** `world::families::bosses::elden_bosses::tests::a_blast_at_his_feet_does_not_lift_him` (a player's TNT-sized blast 1 block in front of him gives him an upward push of more than 0.1 a tick, and he stays exactly where he stood for the next 20 ticks). `a_margit_killed_while_walking_stops_where_he_falls` (commit 13) now measures his stride sideways only, since a mob on the ground keeps a small downward speed. `test -p minecraftoss-entities --locked --lib elden_bosses`: 20 passed. `check -p launcher --locked`: green.
+- **Owner's steps.** He is still a round shadow about 2 blocks wide until group `er-look`. Release build, survival, Normal, by day, flat open ground in the Overworld. Name each screenshot by its label, `f2-14-1.png`.
+  1. `/summon iw4l:margit ~ ~ ~6`: you hear him rise.
+  2. Put a TNT on the ground right beside the shadow, light it and step back 8 blocks: the hurt sound, and the shadow stays as dark as before; it does not fade for a moment as it would if he were thrown up. **Screenshot f2-14-1** right after the blast.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:tnt*8,minecraft:flint_and_steel,minecraft:cooked_beef*32
+```

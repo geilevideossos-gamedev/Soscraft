@@ -97,8 +97,7 @@ fn steady(mob: &mut FamilyMob<EldenBoss>) {
     let FamilyMob { core, state } = mob;
     core.effects = MobEffects::default();
     if core.health > 0.0 {
-        core.body.velocity.x = state.stride.x;
-        core.body.velocity.z = state.stride.z;
+        core.body.velocity = state.stride;
     }
     core.body.fall_distance = 0.0;
 }
@@ -611,6 +610,28 @@ mod tests {
         world.tick_with_players(&mut Field, &players);
         let now = margit(&world, id).core.body.position;
         assert_eq!((now.x, now.z), (at.x, at.z), "the blast does not move him");
+    }
+
+    #[test]
+    fn a_blast_at_his_feet_does_not_lift_him() {
+        let mut world = EntityWorld::default();
+        let id = margit_at(&mut world, 0.5, 0.5);
+        let far = [player_at(1, DVec3::new(30.5, 64.0, 0.5))];
+        world.tick_with_players(&mut Field, &far);
+        let at = margit(&world, id).core.body.position;
+        let blast = CreeperExplosion {
+            position: DVec3::new(0.5, 64.0, 1.5),
+            radius: 4.0,
+            powered: false,
+        };
+        world.blast_by_player(&Field, blast, &far, 1);
+        let pushed = margit(&world, id).core.body.velocity.y;
+        assert!(pushed > 0.1, "the blast pushes him up: {pushed}");
+        for _ in 0..20 {
+            world.tick_with_players(&mut Field, &far);
+            let now = margit(&world, id).core.body.position;
+            assert_eq!(now, at, "he stays on the ground");
+        }
     }
 
     #[test]

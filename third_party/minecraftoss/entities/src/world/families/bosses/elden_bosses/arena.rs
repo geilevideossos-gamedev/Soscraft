@@ -299,7 +299,7 @@ pub fn carry_out<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, act: &Act)
         let _ = body.travel_air(level, DVec3::ZERO, 0.0, yaw);
         body.fall_distance = 0.0;
         state.dropped = state.dropped || (leap && body.horizontal_collision);
-        state.stride = DVec3::ZERO;
+        state.stride = DVec3::new(0.0, body.velocity.y, 0.0);
         return;
     }
     state.dropped = false;
@@ -319,7 +319,7 @@ pub fn carry_out<W: World>(mob: &mut FamilyMob<EldenBoss>, level: &W, act: &Act)
         None => body.travel_air(level, DVec3::ZERO, 0.0, yaw),
     };
     body.fall_distance = 0.0;
-    state.stride = DVec3::new(body.velocity.x, 0.0, body.velocity.z);
+    state.stride = body.velocity;
 }
 
 #[cfg(test)]
@@ -532,7 +532,8 @@ mod tests {
         let mut walking = false;
         for _ in 0..600 {
             world.tick_with_players(&mut scene, &players);
-            if margit(&world, id).state.stride.length() > 0.08 {
+            let stride = margit(&world, id).state.stride;
+            if stride.x.hypot(stride.z) > 0.08 {
                 walking = true;
                 break;
             }
