@@ -17,6 +17,9 @@ const CAMPFIRE_SLOT_OFFSET: f32 = 0.3125;
 const DOUSE_PUFFS: usize = 20;
 const SIDE_STEPS: [(i32, i32); 4] = [(0, 1), (-1, 0), (0, -1), (1, 0)];
 const EXPLOSION_SPRITES: i32 = 16;
+const SONIC_BOOM_SPRITES: i32 = 16;
+const SONIC_BOOM_LIFETIME: i32 = 16;
+const SONIC_BOOM_SIZE: f32 = 1.5;
 const EMITTER_TICKS: i32 = 8;
 const EMITTER_FLASHES: usize = 6;
 const MAX_BLAST_PARTICLES: usize = 512;
@@ -60,6 +63,7 @@ pub enum Kind {
     Poof,
     Explosion,
     ExplosionEmitter,
+    SonicBoom,
     HappyVillager,
     Rain,
     Flame,
@@ -315,6 +319,14 @@ impl Particle {
         let shade = random.next_float() * 0.6 + 0.4;
         particle.color = [shade; 3];
         particle.quad_size = 2.0 * (1.0 - size as f32 * 0.5);
+        particle
+    }
+
+    fn sonic_boom(at: DVec3, random: &mut LegacyRandom) -> Self {
+        let mut particle = Self::huge_explosion(at, 0.0, random);
+        particle.kind = Kind::SonicBoom;
+        particle.lifetime = SONIC_BOOM_LIFETIME;
+        particle.quad_size = SONIC_BOOM_SIZE;
         particle
     }
 
@@ -637,6 +649,10 @@ impl Particle {
                 format!("explosion_{}", step.clamp(0, EXPLOSION_SPRITES - 1))
             }
             Kind::ExplosionEmitter => return None,
+            Kind::SonicBoom => {
+                let step = self.age * (SONIC_BOOM_SPRITES - 1) / self.lifetime.max(1);
+                format!("sonic_boom_{}", step.clamp(0, SONIC_BOOM_SPRITES - 1))
+            }
             Kind::HappyVillager => "glint".to_owned(),
             Kind::Rain => format!("splash_{}", self.sprite),
             Kind::Flame | Kind::SmallFlame => "flame".to_owned(),
@@ -702,6 +718,7 @@ impl Particle {
             | Kind::Poof
             | Kind::Explosion
             | Kind::ExplosionEmitter
+            | Kind::SonicBoom
             | Kind::HappyVillager
             | Kind::Rain
             | Kind::Snowflake
@@ -893,6 +910,7 @@ fn clip(boxes: &Boxes, low: &[f64; 3], high: &[f64; 3], axis: usize, mut wanted:
 pub fn textures() -> Vec<ResourceId> {
     let big_smoke = (0..BIG_SMOKE_SPRITES).map(|index| format!("big_smoke_{index}"));
     let explosion = (0..EXPLOSION_SPRITES).map(|index| format!("explosion_{index}"));
+    let booms = (0..SONIC_BOOM_SPRITES).map(|index| format!("sonic_boom_{index}"));
     let glitter = (0..GLITTER_SPRITES).map(|index| format!("glitter_{index}"));
     let detection = (0..TRIAL_DETECTION_SPRITES).flat_map(|index| {
         [
@@ -909,6 +927,7 @@ pub fn textures() -> Vec<ResourceId> {
         .chain(detection)
         .chain(big_smoke)
         .chain(explosion)
+        .chain(booms)
         .chain(glitter)
         .chain(souls)
         .chain(charges)
@@ -1297,6 +1316,7 @@ impl AmbientParticles {
             Kind::Poof => Particle::poof(at, motion, random),
             Kind::Explosion => Particle::huge_explosion(at, motion.x, random),
             Kind::ExplosionEmitter => Particle::emitter(at, random),
+            Kind::SonicBoom => Particle::sonic_boom(at, random),
             Kind::HappyVillager => Particle::happy_villager(at, motion, random),
             Kind::Rain => Particle::rain(at, random),
             Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => {
@@ -1352,7 +1372,7 @@ impl AmbientParticles {
                 particle.age += 1;
                 particle.age != particle.lifetime
             }
-            Kind::Explosion => particle.hold(),
+            Kind::Explosion | Kind::SonicBoom => particle.hold(),
             Kind::HappyVillager => particle.linger(),
             Kind::Rain => particle.drip(scene, &mut cache, random),
             Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => particle.rise(),
@@ -1420,7 +1440,7 @@ impl AmbientParticles {
                 center.z.floor() as i32,
             );
             let (sky, block) = match particle.kind {
-                Kind::Explosion | Kind::EndRod | Kind::Totem => (FULL_BRIGHT, FULL_BRIGHT),
+                Kind::Explosion | Kind::SonicBoom | Kind::EndRod | Kind::Totem => (FULL_BRIGHT, FULL_BRIGHT),
                 Kind::Lava | Kind::TrialSpawnerDetection | Kind::TrialSpawnerDetectionOminous | Kind::OminousSpawning | Kind::VaultConnection | Kind::SculkSoul | Kind::SculkCharge | Kind::SculkChargePop => (f32::from(light.get(cell)), FULL_BRIGHT),
                 Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => (f32::from(light.get(cell)), particle.glow(f32::from(light.get_block(cell)), partial)),
                 _ => (f32::from(light.get(cell)), f32::from(light.get_block(cell))),
@@ -2186,6 +2206,28 @@ mod tests {
         particles.tick(&open);
         assert!(particles.is_empty());
         assert!(textures().iter().any(|id| id.path == "particle/sculk_soul_10"));
+    }
+
+    #[test]
+    fn a_sonic_boom_ring_hangs_glowing_for_sixteen_ticks_through_its_sixteen_frames() {
+        let mut particles = AmbientParticles::new(7);
+        let at = DVec3::new(4.5, 65.6, 8.5);
+        particles.add(Kind::SonicBoom, at, DVec3::ZERO);
+        let ring = particles.particles[0].clone();
+        assert_eq!((ring.position, ring.velocity), (at, DVec3::ZERO));
+        assert_eq!((ring.lifetime, ring.quad_size), (16, 1.5));
+        assert!(!ring.translucent());
+        assert!(ring.color.iter().all(|shade| (0.4..1.0).contains(shade)), "{:?}", ring.color);
+        assert_eq!(ring.sprite().map(|id| id.path).as_deref(), Some("particle/sonic_boom_0"));
+        let open = open();
+        for _ in 0..16 {
+            particles.tick(&open);
+        }
+        assert_eq!(particles.particles[0].position, at, "it hangs where it was made");
+        assert_eq!(particles.particles[0].sprite().map(|id| id.path).as_deref(), Some("particle/sonic_boom_15"));
+        particles.tick(&open);
+        assert!(particles.is_empty());
+        assert!(textures().iter().any(|id| id.path == "particle/sonic_boom_15"));
     }
 
     #[test]

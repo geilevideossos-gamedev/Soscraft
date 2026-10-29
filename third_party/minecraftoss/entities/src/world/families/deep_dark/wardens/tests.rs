@@ -26,6 +26,19 @@ impl World for Pool {
     fn set_block(&mut self, _: Pos, _: Option<Block>) {}
 }
 
+struct Boxed;
+
+impl World for Boxed {
+    fn block(&self, pos: Pos) -> Option<Block> {
+        let (x, y, z) = pos;
+        let inside = (-2..=3).contains(&x) && (-2..=3).contains(&z);
+        let wall = inside && (x == -2 || x == 3 || z == -2 || z == 3);
+        (y < 64 || (wall && y < 80)).then(|| Block::new("minecraft:deepslate"))
+    }
+
+    fn set_block(&mut self, _: Pos, _: Option<Block>) {}
+}
+
 fn at(x: f64, z: f64) -> DVec3 {
     DVec3::new(x, 64.0, z)
 }
@@ -669,4 +682,159 @@ fn an_angry_warden_roars_at_a_cow_and_beats_it_to_death() {
     assert!(roared, "it roars at the cow first");
     let died = died.expect("one swing of 30 kills a cow");
     assert!((86..150).contains(&died), "{died}");
+}
+
+#[test]
+fn the_first_boom_waits_ten_seconds_after_it_picks_its_target() {
+    let mut world = EntityWorld::default();
+    let id = calm_at(&mut world, at(0.5, 0.5));
+    let players = [player_at(1, at(9.5, 0.5))];
+    fighting(&mut world, id, Target::Player(1));
+    let mut charged = None;
+    for tick in 0..260 {
+        world.tick_with_players(&mut Boxed, &players);
+        if world.take_entity_events().contains(&(id, SONIC_BOOM_EVENT)) {
+            charged = Some(tick);
+            break;
+        }
+    }
+    assert_eq!(charged, Some(200), "set_attack_target holds the boom back");
+}
+
+#[test]
+fn a_sonic_boom_lands_35_ticks_into_its_charge_through_a_wall_and_pushes() {
+    let mut world = EntityWorld::default();
+    let id = calm_at(&mut world, at(0.5, 0.5));
+    let mut players = [player_at(1, at(9.5, 0.5))];
+    fighting(&mut world, id, Target::Player(1));
+    world
+        .warden_mut(id)
+        .unwrap()
+        .state
+        .memories_mut()
+        .sonic_boom_cooldown
+        .erase();
+    let mut charges = Vec::new();
+    let mut booms = Vec::new();
+    let mut rings = Vec::new();
+    for tick in 0..170 {
+        if tick == 103 {
+            players[0].position = at(30.5, 0.5);
+        }
+        world.tick_with_players(&mut Boxed, &players);
+        if world.take_entity_events().contains(&(id, SONIC_BOOM_EVENT)) {
+            charges.push(tick);
+        }
+        for sound in world.take_sounds() {
+            match sound.event.as_str() {
+                "entity.warden.sonic_charge" => {
+                    assert_eq!((sound.volume, sound.pitch), (3.0, 1.0));
+                    assert_eq!(charges.last(), Some(&tick), "charged with its event");
+                }
+                "entity.warden.sonic_boom" => {
+                    assert_eq!((sound.volume, sound.pitch), (3.0, 1.0));
+                    booms.push(tick);
+                }
+                _ => {}
+            }
+        }
+        for hit in world.take_player_hits() {
+            assert!(
+                !matches!(hit.kind, PlayerHitKind::Melee { .. }),
+                "no swing through the wall"
+            );
+            rings.push((tick, hit, world.take_sonic_booms()));
+        }
+        assert!(world.take_sonic_booms().is_empty(), "tick {tick}");
+    }
+    assert_eq!(charges, vec![0, 102], "60 ticks of booming, then 40 of cooling down");
+    assert_eq!(booms, vec![35], "the second finds its target out of reach");
+    assert_eq!(rings.len(), 1);
+    let (tick, hit, beam) = &rings[0];
+    assert_eq!(*tick, 35);
+    assert_eq!(
+        (hit.player_id, hit.damage, hit.source),
+        (1, SONIC_BOOM_DAMAGE, Some(id))
+    );
+    let PlayerHitKind::Typed {
+        damage_type,
+        message,
+        from,
+        push,
+        bypasses_armor,
+        bypasses_shield,
+        disable_shield_seconds,
+        effect,
+    } = hit.kind
+    else {
+        panic!("{:?}", hit.kind);
+    };
+    assert_eq!(
+        (damage_type, message),
+        ("minecraft:sonic_boom", "sonic_boom")
+    );
+    assert!(bypasses_armor && bypasses_shield);
+    assert_eq!((disable_shield_seconds, effect), (0.0, None));
+    let dir = beam[1] - beam[0];
+    let chest = beam[0] - dir;
+    assert!((dir.length() - 1.0).abs() < 1.0e-9);
+    assert!(
+        (chest - from - DVec3::Y * 1.6).length() < 1.0e-9,
+        "from its chest"
+    );
+    let eye = at(9.5, 0.5) + DVec3::Y * 1.62;
+    let length = (eye - chest).length();
+    assert!((chest + dir * length - eye).length() < 1.0e-9, "at the eyes");
+    assert_eq!(beam.len(), length.floor() as usize + 6, "one ring a block");
+    assert_eq!(push, sonic_boom_push(dir));
+    assert!(push.x > 2.4 && push.z.abs() < 0.5, "{push}");
+}
+
+#[test]
+fn a_sonic_boom_hurts_a_mob_through_a_wall() {
+    let mut world = EntityWorld::default();
+    world.set_mob_drops(true);
+    let id = calm_at(&mut world, at(0.5, 0.5));
+    let cow = world.spawn_cow(Cow::new(at(9.5, 0.5)), true);
+    fighting(&mut world, id, Target::Mob(cow));
+    world
+        .warden_mut(id)
+        .unwrap()
+        .state
+        .memories_mut()
+        .sonic_boom_cooldown
+        .erase();
+    let mut died = None;
+    for tick in 0..60 {
+        world.tick_with_players(&mut Boxed, &[]);
+        if world.take_deaths().iter().any(|death| death.id == cow) {
+            died = Some(tick);
+            break;
+        }
+    }
+    assert_eq!(died, Some(35), "ten is a cow's whole health");
+}
+
+#[test]
+fn a_warden_darkens_around_it_every_six_seconds() {
+    let mut world = EntityWorld::default();
+    let id = calm_at(&mut world, at(0.5, 0.5));
+    let still = calm_at(&mut world, at(0.5, 8.5));
+    world.warden_mut(still).unwrap().core.no_ai = true;
+    for mob in [id, still] {
+        world.warden_mut(mob).unwrap().state.brain.idle_until = Some(i64::MAX);
+    }
+    let mut pulses = Vec::new();
+    for tick in 0..240 {
+        world.tick_with_players(&mut Cave, &[]);
+        for at in world.take_warden_darkness() {
+            pulses.push((tick, at));
+        }
+    }
+    assert_eq!(pulses.len(), 2, "{pulses:?}");
+    assert_eq!(pulses[1].0 - pulses[0].0, 120);
+    assert!(
+        pulses.iter().all(|(_, pulse)| pulse.distance(at(0.5, 0.5)) < 1.0e-6),
+        "from where it stands; one without AI never darkens anything: {pulses:?}"
+    );
 }

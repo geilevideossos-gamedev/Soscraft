@@ -20,7 +20,8 @@ use crate::world::emissions::{MovementSounds, play_movement};
 use crate::world::families::{Despawn, Family, FamilyMob, Hurt, MobCore};
 use crate::world::living::fall_damage;
 use crate::world::{
-    DamageSourceKind, EntityWorld, PLAYER_TARGET, PlayerHitKind, Rider, Voice, voice_pitch,
+    DamageSourceKind, EntityWorld, PLAYER_TARGET, PlayerHit, PlayerHitKind, Rider, Voice,
+    voice_pitch,
 };
 use glam::DVec3;
 use minecraftoss_player::World;
@@ -46,6 +47,12 @@ pub const STEP_AFTER: f32 = 0.55;
 pub const ATTACK_EVENT: u8 = 4;
 pub const DISABLE_SHIELD_SECONDS: f32 = 5.0;
 pub const TENDRIL_EVENT: u8 = 61;
+pub const SONIC_BOOM_EVENT: u8 = 62;
+pub const SONIC_BOOM_DAMAGE: f32 = 10.0;
+pub const SONIC_BOOM_HORIZONTAL: f64 = 2.5;
+pub const SONIC_BOOM_VERTICAL: f64 = 0.5;
+pub const DARKNESS_INTERVAL: i64 = 120;
+pub const DARKNESS_RADIUS: f64 = 20.0;
 pub const TENDRIL_VOLUME: f32 = 5.0;
 pub const PROJECTILE_ANGER: i32 = 10;
 pub const PROJECTILE_ANGER_DISTANCE: f64 = 30.0;
@@ -107,6 +114,8 @@ pub struct Warden {
     pub forward: f32,
     pub sideways: f32,
     pub hurts: Vec<(Target, bool)>,
+    pub beam: Vec<DVec3>,
+    pub darkness: Option<DVec3>,
 }
 
 impl Warden {
@@ -167,8 +176,18 @@ pub fn warden(position: DVec3) -> FamilyMob<Warden> {
             forward: 0.0,
             sideways: 0.0,
             hurts: Vec::new(),
+            beam: Vec::new(),
+            darkness: None,
         },
     }
+}
+
+pub fn sonic_boom_push(dir: DVec3) -> DVec3 {
+    DVec3::new(
+        dir.x * SONIC_BOOM_HORIZONTAL,
+        dir.y * SONIC_BOOM_VERTICAL,
+        dir.z * SONIC_BOOM_HORIZONTAL,
+    )
 }
 
 pub fn attack_throw(yaw: f32) -> DVec3 {
@@ -278,6 +297,9 @@ fn step<W: World>(
         mob.state.move_control.set_wanted_position(wanted, modifier);
     }
     brain::think(mob, ctx);
+    if (i64::from(mob.core.tick_count) + mob.core.id as i64) % DARKNESS_INTERVAL == 0 {
+        mob.state.darkness = Some(mob.core.body.position);
+    }
     if mob.core.tick_count % ANGER_TICK_INTERVAL == 0 {
         let others = ctx.others;
         let uuids = ctx.uuids;
@@ -465,6 +487,57 @@ fn strike(world: &mut EntityWorld, id: u64, target: Target) {
     }
 }
 
+fn knockback_resistance(world: &EntityWorld, id: u64) -> f64 {
+    if world.iron_golems.iter().any(|e| e.id == id) || world.shulkers.iter().any(|e| e.id == id) {
+        1.0
+    } else if world.hoglins.iter().any(|e| e.id == id) {
+        crate::hoglin::KNOCKBACK_RESISTANCE
+    } else if world.ravagers.iter().any(|e| e.id == id) {
+        crate::ravager::KNOCKBACK_RESISTANCE
+    } else {
+        world
+            .families
+            .traits(id)
+            .map_or(0.0, |traits| traits.knockback_resistance)
+    }
+}
+
+fn boom(world: &mut EntityWorld, id: u64, target: Target, dir: DVec3) {
+    let Some(mob) = world.warden_mut(id) else {
+        return;
+    };
+    let position = mob.core.body.position;
+    let push = sonic_boom_push(dir);
+    match target {
+        Target::Player(player_id) => world.player_hits.push(PlayerHit {
+            player_id,
+            damage: SONIC_BOOM_DAMAGE,
+            kind: PlayerHitKind::Typed {
+                damage_type: "minecraft:sonic_boom",
+                message: "sonic_boom",
+                from: position,
+                push,
+                bypasses_armor: true,
+                bypasses_shield: true,
+                disable_shield_seconds: 0.0,
+                effect: None,
+            },
+            source: Some(id),
+        }),
+        Target::Mob(victim) | Target::Villager(victim) => {
+            let hit = world.mob_hits_mob(id, victim, SONIC_BOOM_DAMAGE, position, 0.0);
+            if !hit.is_some_and(|hit| hit.applied) {
+                return;
+            }
+            let share = 1.0 - knockback_resistance(world, victim);
+            if let Some(body) = world.body_mut(victim) {
+                body.velocity += push * share;
+                body.needs_sync = true;
+            }
+        }
+    }
+}
+
 impl Family for Warden {
     const KEY: u8 = KEY;
     const KINDS: &'static [&'static str] = &[KIND];
@@ -505,6 +578,8 @@ impl Family for Warden {
                 jump: false,
                 unmount: false,
                 strike: None,
+                charged: false,
+                boom: None,
             };
             if let Some(mob) = world.family_mob_mut::<Self>(id) {
                 for (attacker, direct) in std::mem::take(&mut mob.state.hurts) {
@@ -518,6 +593,12 @@ impl Family for Warden {
             }
             if let Some(target) = ctx.strike {
                 strike(world, id, target);
+            }
+            if ctx.charged {
+                world.entity_events.push((id, SONIC_BOOM_EVENT));
+            }
+            if let Some((target, dir)) = ctx.boom {
+                boom(world, id, target, dir);
             }
         }
         world.family_after_move::<Self, W>(id, level, base.game_time, ticks);
@@ -596,6 +677,34 @@ impl EntityWorld {
             emerge(mob);
         }
         id
+    }
+
+    pub fn take_sonic_booms(&mut self) -> Vec<DVec3> {
+        let ids: Vec<u64> = self
+            .wardens()
+            .iter()
+            .filter(|mob| !mob.state.beam.is_empty())
+            .map(|mob| mob.core.id)
+            .collect();
+        let mut rings = Vec::new();
+        for id in ids {
+            if let Some(mob) = self.warden_mut(id) {
+                rings.append(&mut mob.state.beam);
+            }
+        }
+        rings
+    }
+
+    pub fn take_warden_darkness(&mut self) -> Vec<DVec3> {
+        let ids: Vec<u64> = self
+            .wardens()
+            .iter()
+            .filter(|mob| mob.state.darkness.is_some())
+            .map(|mob| mob.core.id)
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.warden_mut(id)?.state.darkness.take())
+            .collect()
     }
 
     pub fn warden_can_hear(

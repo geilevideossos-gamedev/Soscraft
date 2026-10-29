@@ -23,7 +23,7 @@ const CLIENT_ANGER: usize = 2;
 
 type Flag = fn(&mut Memories) -> &mut Slot<()>;
 
-const FLAGS: [(&str, Flag); 10] = [
+const FLAGS: [(&str, Flag); 12] = [
     ("minecraft:dig_cooldown", |m| &mut m.dig_cooldown),
     ("minecraft:is_emerging", |m| &mut m.is_emerging),
     ("minecraft:is_sniffing", |m| &mut m.is_sniffing),
@@ -35,6 +35,12 @@ const FLAGS: [(&str, Flag); 10] = [
     ("minecraft:sniff_cooldown", |m| &mut m.sniff_cooldown),
     ("minecraft:sonic_boom_cooldown", |m| {
         &mut m.sonic_boom_cooldown
+    }),
+    ("minecraft:sonic_boom_sound_cooldown", |m| {
+        &mut m.sonic_boom_sound_cooldown
+    }),
+    ("minecraft:sonic_boom_sound_delay", |m| {
+        &mut m.sonic_boom_sound_delay
     }),
     ("minecraft:touch_cooldown", |m| &mut m.touch_cooldown),
     ("minecraft:vibration_cooldown", |m| {
@@ -248,7 +254,7 @@ mod tests {
     #[test]
     fn a_warden_keeps_its_roar_and_boom_cooldowns_in_its_brain() {
         let tag = parse(
-            "{id:\"minecraft:warden\",Pos:[1.5d,64.0d,2.5d],Brain:{memories:{\"minecraft:roar_sound_cooldown\":{value:{},ttl:40L},\"minecraft:roar_sound_delay\":{value:{},ttl:3L},\"minecraft:sonic_boom_cooldown\":{value:{},ttl:150L}}}}",
+            "{id:\"minecraft:warden\",Pos:[1.5d,64.0d,2.5d],Brain:{memories:{\"minecraft:roar_sound_cooldown\":{value:{},ttl:40L},\"minecraft:roar_sound_delay\":{value:{},ttl:3L},\"minecraft:sonic_boom_cooldown\":{value:{},ttl:150L},\"minecraft:sonic_boom_sound_cooldown\":{value:{},ttl:20L},\"minecraft:sonic_boom_sound_delay\":{value:{},ttl:7L}}}}",
         );
         let mut world = EntityWorld::default();
         let id = spawn_saved(&mut world, &tag).unwrap();
@@ -256,6 +262,8 @@ mod tests {
         assert_eq!(memories.roar_sound_cooldown.ttl(), Some(40));
         assert_eq!(memories.roar_sound_delay.ttl(), Some(3));
         assert_eq!(memories.sonic_boom_cooldown.ttl(), Some(150));
+        assert_eq!(memories.sonic_boom_sound_cooldown.ttl(), Some(20));
+        assert_eq!(memories.sonic_boom_sound_delay.ttl(), Some(7));
         let saved = saved_tag(&world, id, tag.clone());
         assert_eq!(saved.get(BRAIN), tag.get(BRAIN));
     }

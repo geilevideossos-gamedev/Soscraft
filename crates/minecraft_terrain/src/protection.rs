@@ -737,6 +737,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn no_protection_softens_a_warden_s_sonic_boom() {
+        let Ok(root) = std::env::var("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let book = ProtectionBook::from_jar(&jar).unwrap();
+        let all = worn(&[
+            ("minecraft:protection", 4),
+            ("minecraft:blast_protection", 4),
+            ("minecraft:projectile_protection", 4),
+        ]);
+        assert_eq!(book.protection(&all, "minecraft:sonic_boom"), 0.0);
+        assert_eq!(book.protection(&all, "minecraft:mob_attack"), 4.0);
+    }
+
     #[derive(Default)]
     struct Lake(HashMap<Pos, Block>);
 

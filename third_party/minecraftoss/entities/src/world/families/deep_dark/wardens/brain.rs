@@ -44,6 +44,13 @@ pub const FIGHT_SPEED: f32 = 1.2;
 pub const ATTACK_COOLDOWN: i64 = 18;
 pub const MELEE_UNTIL_SONIC_BOOM: i64 = 200;
 pub const SONIC_BOOM_COOLDOWN: i64 = 40;
+pub const SONIC_BOOM_DURATION: i64 = 60;
+pub const SONIC_BOOM_SOUND_DELAY: i64 = 34;
+pub const SONIC_BOOM_XZ: f64 = 15.0;
+pub const SONIC_BOOM_Y: f64 = 20.0;
+pub const SONIC_BOOM_VOLUME: f32 = 3.0;
+pub const CHEST_HEIGHT: f64 = 1.6;
+pub const BEAM_EXTRA_STEPS: i32 = 7;
 pub const VISIBLE_RANGE: f64 = 16.0;
 pub const ATTACK_VOLUME: f32 = 10.0;
 pub const LISTENING_VOLUME: f32 = 10.0;
@@ -74,6 +81,8 @@ pub struct Memories {
     pub attack_target: Slot<Target>,
     pub attack_cooling_down: Slot<()>,
     pub sonic_boom_cooldown: Slot<()>,
+    pub sonic_boom_sound_delay: Slot<()>,
+    pub sonic_boom_sound_cooldown: Slot<()>,
     pub disturbance_location: Slot<Pos>,
     pub recent_projectile: Slot<()>,
     pub vibration_cooldown: Slot<()>,
@@ -97,6 +106,8 @@ impl Memories {
         self.attack_target.tick();
         self.attack_cooling_down.tick();
         self.sonic_boom_cooldown.tick();
+        self.sonic_boom_sound_delay.tick();
+        self.sonic_boom_sound_cooldown.tick();
         self.disturbance_location.tick();
         self.recent_projectile.tick();
         self.vibration_cooldown.tick();
@@ -127,6 +138,7 @@ pub struct WardenBrain {
     pub digging_until: Option<i64>,
     pub sniffing_until: Option<i64>,
     pub roar_until: Option<i64>,
+    pub boom_until: Option<i64>,
     pub idle_until: Option<i64>,
     pub walk: MoveSink,
 }
@@ -175,6 +187,8 @@ pub struct Ctx<'a> {
     pub jump: bool,
     pub unmount: bool,
     pub strike: Option<Target>,
+    pub charged: bool,
+    pub boom: Option<(Target, DVec3)>,
 }
 
 impl Ctx<'_> {
@@ -486,6 +500,50 @@ fn stop_roar(mob: &mut FamilyMob<Warden>) {
     mob.state.brain.memories.roar_target.erase();
 }
 
+fn closer_than(from: DVec3, to: DVec3, xz: f64, y: f64) -> bool {
+    let offset = to - from;
+    offset.x * offset.x + offset.z * offset.z < xz * xz && offset.y * offset.y < y * y
+}
+
+fn tick_boom(mob: &mut FamilyMob<Warden>, ctx: &mut Ctx) {
+    let target = mob.state.brain.memories.attack_target.get().copied();
+    let living = target.and_then(|target| find(ctx.others, target)).copied();
+    if let Some(living) = living {
+        ctx.look_at = Some(living.position);
+    }
+    let memories = &mut mob.state.brain.memories;
+    if memories.sonic_boom_sound_delay.present() || memories.sonic_boom_sound_cooldown.present() {
+        return;
+    }
+    memories
+        .sonic_boom_sound_cooldown
+        .set_for((), SONIC_BOOM_DURATION - SONIC_BOOM_SOUND_DELAY);
+    let position = mob.core.body.position;
+    let Some(living) = living.filter(|other| {
+        can_target(other) && closer_than(position, other.position, SONIC_BOOM_XZ, SONIC_BOOM_Y)
+    }) else {
+        return;
+    };
+    let chest = position + DVec3::Y * CHEST_HEIGHT;
+    let offset = living.eye() - chest;
+    let length = offset.length();
+    let dir = if length < f64::from(1.0e-5_f32) {
+        DVec3::ZERO
+    } else {
+        offset / length
+    };
+    let steps = length.floor() as i32 + BEAM_EXTRA_STEPS;
+    let beam = (1..steps).map(|step| chest + dir * f64::from(step));
+    mob.state.beam.extend(beam);
+    play(
+        &mut mob.core,
+        "entity.warden.sonic_boom",
+        SONIC_BOOM_VOLUME,
+        1.0,
+    );
+    ctx.boom = Some((living.target, dir));
+}
+
 fn fight(mob: &mut FamilyMob<Warden>, ctx: &mut Ctx) {
     mob.state.brain.memories.set_dig_cooldown();
     let Some(&target) = mob.state.brain.memories.attack_target.get() else {
@@ -528,6 +586,24 @@ fn fight(mob: &mut FamilyMob<Warden>, ctx: &mut Ctx) {
             speed: FIGHT_SPEED,
             close_enough: 0,
         });
+    }
+    let booming = mob.state.brain.boom_until.is_some();
+    let close = closer_than(position, living.position, SONIC_BOOM_XZ, SONIC_BOOM_Y);
+    if close && !booming && !memories.sonic_boom_cooldown.present() {
+        mob.state.brain.boom_until = Some(ctx.time + SONIC_BOOM_DURATION);
+        memories
+            .attack_cooling_down
+            .set_for((), SONIC_BOOM_DURATION);
+        memories
+            .sonic_boom_sound_delay
+            .set_for((), SONIC_BOOM_SOUND_DELAY);
+        play(
+            &mut mob.core,
+            "entity.warden.sonic_charge",
+            SONIC_BOOM_VOLUME,
+            1.0,
+        );
+        ctx.charged = true;
     }
     if memories.attack_cooling_down.present() || !memories.nearest_visible.present() {
         return;
@@ -760,6 +836,18 @@ fn run(mob: &mut FamilyMob<Warden>, ctx: &mut Ctx) {
             stop_roar(mob);
         } else {
             tick_roar(mob);
+        }
+    }
+    if let Some(until) = mob.state.brain.boom_until {
+        if time > until {
+            mob.state.brain.boom_until = None;
+            mob.state
+                .brain
+                .memories
+                .sonic_boom_cooldown
+                .set_for((), SONIC_BOOM_COOLDOWN);
+        } else {
+            tick_boom(mob, ctx);
         }
     }
     if mob.state.brain.idle_until.is_some_and(|until| time > until) {

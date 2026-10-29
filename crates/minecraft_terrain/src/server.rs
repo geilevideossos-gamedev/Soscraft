@@ -125,6 +125,7 @@ pub struct ServerSim {
     vibrations: crate::vibrations::Vibrations,
     event_tags: Arc<crate::game_events::EventTags>,
     vibration_bursts: Vec<crate::vibration_particles::VibrationView>,
+    sonic_booms: Vec<glam::DVec3>,
     warden_trackers: std::collections::HashMap<u64, crate::warden_tracker::WardenSpawnTracker>,
     warned: std::collections::HashMap<u64, (crate::warden_tracker::WardenSpawnTracker, i32)>,
     warden_updates: Vec<(u64, crate::warden_tracker::WardenSpawnTracker)>,
@@ -358,6 +359,7 @@ pub struct EntitySnapshot {
     pub breath_bursts: Vec<glam::DVec3>,
     pub vibrations: Vec<crate::vibration_particles::VibrationView>,
     pub sculk_souls: Vec<glam::DVec3>,
+    pub sonic_booms: Vec<glam::DVec3>,
     pub gateways: Vec<crate::end_gateway::GatewayView>,
     pub frames: Vec<crate::item_frame::FrameView>,
     pub dragon_breath: Vec<crate::ender_dragon::DragonBreath>,
@@ -522,6 +524,7 @@ impl ServerSim {
             vibrations: crate::vibrations::Vibrations::default(),
             event_tags: Arc::new(event_tags),
             vibration_bursts: Vec::new(),
+            sonic_booms: Vec::new(),
             warden_trackers: std::collections::HashMap::new(),
             warned: std::collections::HashMap::new(),
             warden_updates: Vec::new(),
@@ -1141,6 +1144,18 @@ impl ServerSim {
         sounds
     }
 
+    fn warden_pulses(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
+        use crate::warden_tracker::{players_around, SHRIEK_DARKNESS};
+        use minecraftoss_entities::world::families::deep_dark::wardens::DARKNESS_RADIUS;
+        let around: Vec<(u64, glam::DVec3)> = players.iter().filter(|p| p.alive).map(|p| (p.id, p.position)).collect();
+        for at in self.mobs.take_warden_darkness() {
+            for id in players_around(at, DARKNESS_RADIUS, &around) {
+                self.player_effects.push((id, SHRIEK_DARKNESS));
+            }
+        }
+        self.sonic_booms.extend(self.mobs.take_sonic_booms());
+    }
+
     pub fn summon_warden(&mut self, pos: minecraftoss_core::BlockPos, sounds: &mut Vec<minecraftoss_entities::world::MobSound>) -> bool {
         use minecraftoss_core::random::RandomSource;
         use minecraftoss_entities::golem_spawn::{try_spawn_mob, SpawnSite, Strategy};
@@ -1413,6 +1428,7 @@ impl ServerSim {
         }
         let events = mobs.take_entity_events();
         self.mob_puffs.extend(crate::mob_particles::mob_puffs(mobs, &events));
+        self.warden_pulses(players);
         // A blast's victims drop their loot before its blocks break
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
@@ -5156,7 +5172,7 @@ fn finish_batch(sim: &mut ServerSim, input: &TickInput, out: &mut Output) {
     out.tracked.merge(tracked);
     out.weather = Some(sim.weather(input.players.first().filter(|p| p.alive).map(|p| p.feet)));
     out.weather_data = sim.weather_data();
-    out.entities = Some(EntitySnapshot { items: sim.items(), ominous_items: crate::trial_spawner::ominous_item_views(&sim.level), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), vibrations: std::mem::take(&mut sim.vibration_bursts), sculk_souls: std::mem::take(&mut sim.level.catalyst_blooms).into_iter().map(crate::vibrations::soul_burst).collect(), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
+    out.entities = Some(EntitySnapshot { items: sim.items(), ominous_items: crate::trial_spawner::ominous_item_views(&sim.level), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), thrown_views: sim.thrown_views().into_iter().chain(sim.rocket_views()).collect(), clouds: sim.cloud_views(), tridents: sim.trident_views(), eyes: sim.eye_snapshot(), crystals: sim.crystal_views(), dragons: sim.dragon_views(), dragon_fireballs: sim.dragon_fireballs.views(), breath_bursts: sim.dragon_fireballs.take_bursts(), vibrations: std::mem::take(&mut sim.vibration_bursts), sculk_souls: std::mem::take(&mut sim.level.catalyst_blooms).into_iter().map(crate::vibrations::soul_burst).collect(), sonic_booms: std::mem::take(&mut sim.sonic_booms), gateways: sim.gateway_views(), frames: sim.frame_views(), dragon_breath: std::mem::take(&mut sim.dragon_breath), dragon_explosions: std::mem::take(&mut sim.dragon_explosions), swirls: sim.swirl_views(), firework_bursts: std::mem::take(&mut sim.firework_bursts), mob_puffs: std::mem::take(&mut sim.mob_puffs) });
     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
     let total = out.tick_nanos.last().map_or(0.0, |&nanos| nanos as f64 / 1_000_000.0);
     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), total));
@@ -13598,6 +13614,57 @@ mod tests {
             went_off |= sensor_phase(&sim) == "active";
         }
         assert!(went_off, "a cow's steps set it off");
+    }
+
+    #[test]
+    fn a_warden_darkens_players_within_twenty_every_six_seconds() {
+        let Some((mut sim, _)) = sensor_world("minecraft:stone") else { return };
+        let warden = calm_warden(&mut sim, [4.5, 200.0, 2.5]);
+        sim.mobs.warden_mut(warden).unwrap().state.brain.idle_until = Some(i64::MAX);
+        let (near, far) = ([14.4, 200.0, 2.5], [4.5, 200.0, 23.6]);
+        let mut input = TickInput { players: vec![standing(0, near, false), standing(1, far, false)], mob_players: vec![candidate(0, near), candidate(1, far)], ..idle_input() };
+        let mut pulses = Vec::new();
+        for tick in 0..240 {
+            let out = run_ticks(&mut sim, &mut input, true, 1);
+            if !out.player_effects.is_empty() {
+                pulses.push((tick, out.player_effects));
+            }
+        }
+        assert_eq!(pulses.len(), 2, "{pulses:?}");
+        assert_eq!(pulses[1].0 - pulses[0].0, 120, "every six seconds");
+        for (_, effects) in pulses {
+            assert_eq!(effects, vec![(0, crate::warden_tracker::SHRIEK_DARKNESS)], "260 ticks of darkness within twenty blocks, none at 21");
+        }
+    }
+
+    #[test]
+    fn a_sonic_boom_hits_the_player_and_its_rings_go_out_with_the_entities() {
+        use minecraftoss_entities::monster_ai::Target;
+        use minecraftoss_entities::world::families::deep_dark::wardens;
+        let Some((mut sim, _)) = sensor_world("minecraft:stone") else { return };
+        let warden = calm_warden(&mut sim, [4.5, 200.0, 2.5]);
+        let mut input = walker_input([14.5, 200.0, 2.5]);
+        let mob = sim.mobs.warden_mut(warden).unwrap();
+        mob.state.anger.increase(Target::Player(0), 0, 100);
+        wardens::set_attack_target(mob, Target::Player(0));
+        mob.state.brain.update_activity();
+        mob.state.memories_mut().sonic_boom_cooldown.erase();
+        let mut hits = Vec::new();
+        let mut rings = Vec::new();
+        for _ in 0..40 {
+            let out = run_ticks(&mut sim, &mut input, true, 1);
+            hits.extend(out.player_hits);
+            rings.extend(out.entities.expect("a snapshot").sonic_booms);
+        }
+        assert_eq!(hits.len(), 1, "one boom and no swing while it charges");
+        let hit = &hits[0];
+        assert_eq!((hit.player_id, hit.damage, hit.source), (0, wardens::SONIC_BOOM_DAMAGE, Some(warden)));
+        assert!(matches!(hit.kind, minecraftoss_entities::world::PlayerHitKind::Typed { damage_type: "minecraft:sonic_boom", bypasses_armor: true, bypasses_shield: true, .. }), "{:?}", hit.kind);
+        assert!(rings.len() >= 7, "a ring for each block of the beam and six more: {}", rings.len());
+        let eye = glam::DVec3::new(14.5, 201.62, 2.5);
+        assert!(rings.windows(2).all(|pair| ((pair[1] - pair[0]).length() - 1.0).abs() < 1.0e-9), "a block apart");
+        let toward = (rings[1] - rings[0]).normalize();
+        assert!(((eye - rings[0]).normalize() - toward).length() < 1.0e-6, "aimed at the player's eyes");
     }
 
     #[test]

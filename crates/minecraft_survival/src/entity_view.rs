@@ -373,6 +373,9 @@ impl EntityView {
                 self.ambient.add(minecraft_terrain::ambient_particles::Kind::SculkSoul, at + offset, DVec3::ZERO);
             }
         }
+        for at in std::mem::take(&mut snapshot.sonic_booms) {
+            self.ambient.add(minecraft_terrain::ambient_particles::Kind::SonicBoom, at, DVec3::ZERO);
+        }
     }
 
     pub fn receive(
@@ -1682,6 +1685,18 @@ mod tests {
         let mut near = EntitySnapshot { firework_bursts: vec![burst], ..EntitySnapshot::default() };
         view.bursts(&mut near);
         assert_eq!(view.sounds.last().map(|(event, ..)| event.as_str()), Some(BLAST_SOUND));
+    }
+
+    #[test]
+    fn a_sonic_boom_draws_one_ring_at_each_step_of_its_beam() {
+        use minecraft_terrain::ambient_particles::Kind;
+        let mut view = EntityView::new(5);
+        let rings: Vec<DVec3> = (1..4).map(|step| DVec3::new(0.5 + f64::from(step), 65.6, 0.5)).collect();
+        let mut snapshot = EntitySnapshot { sonic_booms: rings.clone(), ..EntitySnapshot::default() };
+        view.bursts(&mut snapshot);
+        assert!(snapshot.sonic_booms.is_empty());
+        let drawn: Vec<(Kind, DVec3)> = view.ambient.kinds_at().collect();
+        assert_eq!(drawn, rings.into_iter().map(|at| (Kind::SonicBoom, at)).collect::<Vec<_>>());
     }
 
     #[test]
