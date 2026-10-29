@@ -102,6 +102,7 @@ pub(crate) struct Runtime {
     mining: crate::minecraft_mining::Mining,
     minimap: crate::minecraft_minimap::Minimap,
     map_cache: minecraft_terrain::maps::MapCache,
+    held_maps: crate::minecraft_held_map::HeldMaps,
     sounds: Option<crate::minecraft_sounds::Sounds>,
     inventory_ui: crate::minecraft_inventory::InventoryUi,
     /// Shape id of each block state already seen.
@@ -584,6 +585,7 @@ fn update(
                 runtime.mining = Default::default();
                 runtime.minimap = Default::default();
                 runtime.map_cache = Default::default();
+                runtime.held_maps = crate::minecraft_held_map::HeldMaps::load(&world.packs, data_jar().as_deref());
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
                 minecraft_survival::server::start_level(globals, level);
@@ -676,6 +678,7 @@ fn update(
         sounds,
         minimap,
         map_cache,
+        held_maps,
         fire_frames,
         atlas_animation,
         animation_clock,
@@ -1476,6 +1479,7 @@ fn update(
         sim::voxel::set_death_protected(local.0.0, alive && !survival.killed() && minecraft_survival::offhand::totem_slot(inventory, *selected).is_some());
         crate::minecraft_fork_items::mirror_gun_guard(local.0.0, survival, inventory);
         view.hand = Default::default();
+        ui.held_maps.clear();
         let swing = crate::minecraft_hand::swing_shown(hand.swing);
         ui.hand_swing = if hand.swing_offhand { 0.0 } else { swing };
         let main_stack = inventory.slots[*selected].clone().filter(|_| ui.holding_item);
@@ -1493,6 +1497,7 @@ fn update(
                 partial: (hand.clock / TICK_SECONDS) as f32,
                 activation,
             };
+            ui.held_maps = held_maps.show(&held, ps.viewangles[0], map_cache, &mut images);
             let eye_light_at = glam::Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32);
             let look = (&world.packs, &*world.atlas, &*light, &inventory_ui.dials);
             if let Some((vertices, indices, clip)) = crate::minecraft_hand::held_hand_mesh(&held, &mut entities.view, look, eye_light_at, aspect) {

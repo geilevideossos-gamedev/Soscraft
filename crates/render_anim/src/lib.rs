@@ -47,6 +47,7 @@ mod minecraft_fork_items;
 pub mod minecraft_end_look;
 mod minecraft_gui;
 mod minecraft_hand;
+mod minecraft_held_map;
 mod minecraft_host;
 mod minecraft_input;
 mod minecraft_inventory;

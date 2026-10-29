@@ -175,6 +175,7 @@ pub(crate) struct Friend {
     recipe_book: crate::minecraft_recipe_book::FriendBook,
     use_clock: crate::minecraft_hand::UseClock,
     swing: crate::minecraft_hand::FriendSwing,
+    held_maps: crate::minecraft_held_map::HeldMaps,
     portal: crate::minecraft_portal::FriendPortal,
     music: crate::minecraft_music::MusicManager,
     skate_report: crate::minecraft_skaters::Reporter,
@@ -488,6 +489,10 @@ pub(crate) fn friend(
                     &mut images,
                     crate::minecraft_portal::PUMPKIN_BLUR,
                 );
+                friend.held_maps = crate::minecraft_held_map::HeldMaps::load(
+                    &prepared.look.packs,
+                    crate::minecraft_world::data_jar().as_deref(),
+                );
                 friend
                     .inventory_ui
                     .set_station_data(prepared.stations.clone(), prepared.enchantments.clone());
@@ -679,7 +684,15 @@ pub(crate) fn friend(
         ui_shown: ui_draw.as_deref().is_none_or(|draw| draw.0),
         alive: player.is_some_and(|ps| ps.pm_type == 0),
     };
-    show_hand(friend, &mut view, &mut ui, player.as_ref(), gate, aspect);
+    show_hand(
+        friend,
+        &mut view,
+        &mut ui,
+        player.as_ref(),
+        gate,
+        aspect,
+        &mut images,
+    );
     ui.loading_world = friend.holding(now_ms);
     if sky_ticked {
         play_music(friend, &ui, &mut mc_music);
@@ -1845,8 +1858,10 @@ fn show_hand(
     ps: Option<&playerstate_iw4::PlayerState>,
     gate: HandGate,
     aspect: f32,
+    images: &mut Assets<Image>,
 ) {
     view.hand = Default::default();
+    ui.held_maps.clear();
     let Friend {
         prepared: Some(prepared),
         remote: Some(remote),
@@ -1857,6 +1872,7 @@ fn show_hand(
         activation_tick,
         use_clock,
         swing,
+        held_maps,
         ..
     } = friend
     else {
@@ -1903,6 +1919,8 @@ fn show_hand(
         partial,
         activation: pose,
     };
+    let pitch = ps.map_or(0.0, |ps| ps.viewangles[0]);
+    ui.held_maps = held_maps.show(&held, pitch, &remote.maps, images);
     let eye = match ps {
         Some(ps) => sim::voxel::to_block(
             level.origin,

@@ -265,6 +265,7 @@ pub struct MinecraftUi {
     pub portal_overlay: Option<McPortalOverlay>,
     pub freeze_outline: Option<Handle<Image>>,
     pub spyglass_scope: Option<Handle<Image>>,
+    pub held_maps: Vec<McHeldMap>,
     pub overlay_message: Option<McOverlayMessage>,
     pub sleep: Option<McSleep>,
     pub boss_bars: Vec<McBossBar>,
@@ -351,6 +352,21 @@ impl McBossBar {
 pub struct McPortalOverlay {
     pub alpha: f32,
     pub frame: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum McMapHands {
+    Both,
+    Right,
+    Left,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct McHeldMap {
+    pub picture: Handle<Image>,
+    pub hands: McMapHands,
+    pub pitch: f32,
+    pub swing: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
