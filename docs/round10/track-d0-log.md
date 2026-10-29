@@ -531,3 +531,31 @@ After f9f28c3c.
 ```
 IW4L_MINECRAFT_KIT=minecraft:silverfish_spawn_egg*8,minecraft:endermite_spawn_egg*4,minecraft:spawner*2,minecraft:bow,minecraft:spectral_arrow*16,minecraft:iron_sword,minecraft:cooked_beef*32
 ```
+
+## Review
+
+The adversarial review of the whole track (r10-d0a-base to f8f03659). Each fix is its own commit.
+
+### 1. Minecraft silverfish spawners work in light over stone like vanilla
+
+After f8f03659.
+
+- **Defect:** the silverfish's spawn row (4fdf76e1) used the monster walk value, so a silverfish spawner refused every spot in light. Vanilla `Silverfish.getWalkTargetValue` gives 10 when the block below is an infested host block, and `PathfinderMob.checkSpawnRules` (the spawner's and the natural spawner's walk check) only asks for at least 0. So in vanilla a lit stronghold portal room still spawns silverfish over its stone bricks, and torches cannot stop the spawner there. The track log of bdbc8852 had this under "Left for later"; its test (`silverfish_spawn_by_any_light_from_spawners_and_never_near_a_player`) asserted the wrong answer on its stone floor.
+- **Changed (vendored world crate):**
+  - `natural_spawner.rs`: `Walk::MonsterOver(&'static [&'static str])` at the end of `enum Walk`.
+  - `spawning.rs`: one `Walk::MonsterOver` arm at the end of each walk match (`spawner_may_spawn` and `valid_position_for_mob`).
+  - Root `natural_spawner/families.rs`: `walk_over` (10 above one of the blocks, else the monster's darkness value, the same rule as the entity crate's `WalkTarget::MonsterOver`).
+  - `natural_spawner/families/pests.rs`: `HOSTS` (the seven host blocks of `InfestedBlock`) and the silverfish row's `walk: Walk::MonsterOver(&HOSTS)`. The endermite keeps the monster walk value.
+- **Tests changed:** `a_family_row_comes_before_the_built_in_tables` expects the silverfish's host walk and the endermite's monster walk. `silverfish_spawn_by_any_light_from_spawners_and_never_near_a_player` now checks that a spawner spawns a silverfish in full light over each of the seven host blocks, refuses one over andesite in full light and allows it there in the dark, and refuses an endermite in full light over stone.
+- **javap (26.3):** `Silverfish.getWalkTargetValue` (`InfestedBlock.isCompatibleHostBlock` of the block below gives 10, else `Monster`'s), `PathfinderMob.checkSpawnRules` (walk value of the block position at least 0).
+- **Runs:** `test -p minecraftoss-world --locked` (107 passed, with the 26.3 data), `clippy -p minecraftoss-world --locked --lib --tests` (no warnings), `check -p launcher --locked` (green; only the old render_frame and skate warnings). The changed new files pass `rustfmt --check --edition 2024` with empty output on their staged content.
+- **Protocol:** no message or codec change.
+- **Test steps.** Release build, survival, Normal, **by day**, flat open ground in the Overworld. Name each screenshot by its label, `D0-13-1.png`.
+  1. Lay a 9 x 9 floor of stone bricks in full daylight, place a spawner in the middle and use a silverfish egg on it. Stand 6 blocks away: within half a minute silverfish crawl out onto the stone bricks in broad daylight. **Screenshot D0-13-1.**
+  2. Put torches all around the spawner on the stone bricks: silverfish keep coming. Break the spawner and kill the silverfish.
+  3. Do the same on a 9 x 9 floor of andesite in daylight: no silverfish come.
+  4. Place a spawner on the stone bricks again and use an endermite egg on it in daylight: no endermites come.
+
+```
+IW4L_MINECRAFT_KIT=minecraft:spawner*3,minecraft:silverfish_spawn_egg*2,minecraft:endermite_spawn_egg*2,minecraft:stone_bricks*64,minecraft:stone_bricks*64,minecraft:andesite*64,minecraft:andesite*64,minecraft:torch*32,minecraft:iron_sword,minecraft:cooked_beef*32
+```

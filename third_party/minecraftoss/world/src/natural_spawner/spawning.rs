@@ -730,6 +730,7 @@ impl CreatureSpawns {
             Walk::Animal => self.mob_check_spawn_rules(level, &info, pos),
             Walk::Monster => -self.pathfinding_cost_from_light(level, pos) >= 0.0,
             Walk::Neutral => true,
+            Walk::MonsterOver(hosts) => super::families::walk_over(self, level, hosts, pos),
         };
         walk && self.check_spawn_obstruction(level, &info, at[0], at[1], at[2]) && !context.obstacles.iter().any(|o| overlaps(&bb, o))
     }
@@ -878,6 +879,7 @@ impl CreatureSpawns {
             Walk::Animal => self.mob_check_spawn_rules(level, info, block),
             Walk::Monster => -self.pathfinding_cost_from_light(level, block) >= 0.0,
             Walk::Neutral => true,
+            Walk::MonsterOver(hosts) => super::families::walk_over(self, level, hosts, block),
         };
         if !walk_target_ok || !self.check_spawn_obstruction(level, info, at[0], at[1], at[2]) {
             return false;

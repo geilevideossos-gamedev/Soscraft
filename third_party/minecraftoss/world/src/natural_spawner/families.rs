@@ -78,6 +78,20 @@ pub(super) fn rule(
     }
 }
 
+pub(super) fn walk_over(
+    spawns: &CreatureSpawns,
+    level: &mut dyn SpawnLevel,
+    hosts: &[&str],
+    pos: BlockPos,
+) -> bool {
+    let blocks = &spawns.registries.blocks;
+    let below = blocks.block_of(level.block(pos.below()));
+    hosts
+        .iter()
+        .any(|host| blocks.block_by_name(host) == Some(below))
+        || -spawns.pathfinding_cost_from_light(level, pos) >= 0.0
+}
+
 pub(super) fn finalize_creature(
     spawns: &CreatureSpawns,
     level: &mut dyn SpawnLevel,

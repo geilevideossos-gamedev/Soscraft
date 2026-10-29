@@ -247,9 +247,14 @@ fn a_family_row_comes_before_the_built_in_tables() {
             info.heightmap,
             HeightmapKind::MotionBlockingNoLeaves
         ));
+        let walk = if kind == "minecraft:silverfish" {
+            Walk::MonsterOver(&super::pests::HOSTS)
+        } else {
+            Walk::Monster
+        };
         assert_eq!(
             (info.rules, info.walk, info.remove_far, info.cluster),
-            (Rules::Family { creature: false }, Walk::Monster, true, 4)
+            (Rules::Family { creature: false }, walk, true, 4)
         );
         assert!(!info.rules.creature());
         assert_eq!(
@@ -402,11 +407,34 @@ fn silverfish_spawn_by_any_light_from_spawners_and_never_near_a_player() {
         "peaceful"
     );
     level.sky = 15;
+    let at = [0.5, 64.0, 0.5];
     assert!(
-        !spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, [0.5, 64.0, 0.5]),
-        "a monster's walk target refuses full light"
+        spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, at),
+        "stone below is worth 10 to a silverfish in any light"
+    );
+    assert!(
+        !spawns.spawner_may_spawn(&mut level, &context(&near, 2), "minecraft:endermite", at),
+        "an endermite has a monster's walk target, which refuses full light"
+    );
+    for host in super::pests::HOSTS {
+        level.floor = spawns.registries.blocks.parse_state(host).unwrap();
+        assert!(
+            spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, at),
+            "{host}"
+        );
+    }
+    level.floor = spawns
+        .registries
+        .blocks
+        .parse_state("minecraft:andesite")
+        .unwrap();
+    assert!(
+        !spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, at),
+        "away from its host blocks a silverfish needs the dark"
     );
     level.sky = 0;
+    assert!(spawns.spawner_may_spawn(&mut level, &context(&near, 2), kind, at));
+    level.floor = floor;
     let biome = level.biome;
     only(&mut spawns, biome, MobCategory::Monster, kind);
     let spawned: Vec<Tag> = natural(&spawns, &mut level, MobCategory::Monster, 2).concat();

@@ -267,6 +267,7 @@ enum Walk {
     Monster,
     /// `PathfinderMob`'s 0 (cube mobs).
     Neutral,
+    MonsterOver(&'static [&'static str]),
 }
 
 /// The creature types spawn tables name.

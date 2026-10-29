@@ -16,10 +16,23 @@ const PEST: TypeInfo = TypeInfo {
     cluster: 4,
 };
 
+pub(super) const HOSTS: [&str; 7] = [
+    "minecraft:stone",
+    "minecraft:cobblestone",
+    "minecraft:stone_bricks",
+    "minecraft:mossy_stone_bricks",
+    "minecraft:cracked_stone_bricks",
+    "minecraft:chiseled_stone_bricks",
+    "minecraft:deepslate",
+];
+
 pub(super) const ROWS: &[FamilySpawn] = &[
     FamilySpawn {
         kind: "minecraft:silverfish",
-        info: PEST,
+        info: TypeInfo {
+            walk: Walk::MonsterOver(&HOSTS),
+            ..PEST
+        },
         category: MobCategory::Monster,
         follow_range: 16.0,
         baby_chance: None,
