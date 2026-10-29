@@ -3,13 +3,16 @@ use super::*;
 use crate::animal::AnimalEvent;
 use crate::controls::PlayerControls;
 use crate::cow::InteractionResult;
+use crate::goals::Goal;
 use crate::monster_ai::Target;
 use crate::movement::Body;
 use crate::walk_path::WalkTarget;
 use crate::world::{DamageSourceKind, LeashHolder, PlayerAttack};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
+use minecraftoss_player::path_type::{PathType, path_type_of_block};
 use minecraftoss_player::rng::LegacyRandom;
-use minecraftoss_player::{Block, Pos};
+use minecraftoss_player::{Block, Pos, authored_block_in_tag, authored_collision_boxes};
+use std::collections::HashMap;
 
 #[derive(Default)]
 struct Meadow {
@@ -490,6 +493,210 @@ fn a_rabbit_in_water_floats_up_and_hops_at_1_5() {
     );
     assert_eq!(mob.state.jump().next_speed, ai::WATER_SPEED);
     assert_eq!(mob.state.ai.move_control.speed_modifier, ai::WATER_SPEED);
+}
+
+#[derive(Default)]
+struct Garden {
+    blocks: HashMap<Pos, Block>,
+}
+
+fn carrots(age: i32) -> Block {
+    Block::new(ai::CARROTS).with("age", &age.to_string())
+}
+
+impl Garden {
+    fn with_carrot(crop: Pos, age: i32) -> Self {
+        let mut garden = Self::default();
+        let soil = (crop.0, crop.1 - 1, crop.2);
+        garden.blocks.insert(soil, Block::new("minecraft:farmland"));
+        garden.blocks.insert(crop, carrots(age));
+        garden
+    }
+
+    fn age(&self, crop: Pos) -> Option<i32> {
+        self.blocks
+            .get(&crop)
+            .filter(|block| block.id == ai::CARROTS)
+            .map(crate::crops::age)
+    }
+}
+
+impl World for Garden {
+    fn block(&self, pos: Pos) -> Option<Block> {
+        match self.blocks.get(&pos) {
+            Some(block) => Some(block.clone()),
+            None => (pos.1 < 64).then(|| Block::new("minecraft:grass_block")),
+        }
+    }
+
+    fn set_block(&mut self, pos: Pos, block: Option<Block>) {
+        match block {
+            Some(block) => {
+                self.blocks.insert(pos, block);
+            }
+            None => {
+                self.blocks.remove(&pos);
+            }
+        }
+    }
+
+    fn collision_boxes(&self, pos: Pos) -> Vec<[f64; 6]> {
+        match self.block(pos) {
+            Some(block) if block.id != ai::CARROTS => authored_collision_boxes(&block),
+            _ => Vec::new(),
+        }
+    }
+
+    fn path_type_from_state(&self, pos: Pos) -> PathType {
+        match self.block(pos) {
+            Some(block) if block.id == "minecraft:farmland" => PathType::Blocked,
+            Some(block) if block.id == ai::CARROTS => PathType::Open,
+            block => path_type_of_block(block.as_ref()),
+        }
+    }
+
+    fn pathfindable(&self, pos: Pos) -> bool {
+        self.block(pos).is_none_or(|block| block.id == ai::CARROTS)
+    }
+
+    fn solid(&self, pos: Pos) -> bool {
+        self.collision_boxes(pos) == [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
+    }
+
+    fn block_in_tag(&self, pos: Pos, tag: &str) -> bool {
+        let Some(block) = self.block(pos) else {
+            return false;
+        };
+        if tag == ai::SUPPORTS_CROPS {
+            return block.id == "minecraft:farmland";
+        }
+        authored_block_in_tag(&block, tag, &self.collision_boxes(pos))
+    }
+}
+
+fn raiding(world: &EntityWorld, id: u64) -> bool {
+    rabbit(world, id)
+        .state
+        .running_goals()
+        .contains(&"RaidGardenGoal")
+}
+
+fn raider_at(world: &mut EntityWorld, position: DVec3) -> u64 {
+    let id = rabbit_at(world, position);
+    rabbit_mut(world, id)
+        .state
+        .ai
+        .retain_goals(&["RaidGardenGoal"]);
+    id
+}
+
+#[test]
+fn a_rabbit_walks_to_a_ripe_carrot_and_bites_it_down_a_stage() {
+    let crop = (4, 64, 0);
+    let centre = DVec3::new(4.5, 64.0, 0.5);
+    let mut world = EntityWorld::default();
+    let mut garden = Garden::with_carrot(crop, 7);
+    let id = rabbit_at(&mut world, at(0.5, 0.5));
+    rabbit_mut(&mut world, id).state.ai.retain_goals(&[]);
+    for _ in 0..5 {
+        world.tick(&mut garden);
+    }
+    rabbit_mut(&mut world, id)
+        .state
+        .ai
+        .retain_goals(&["RaidGardenGoal"]);
+    let (mut runs, mut walking_on) = (Vec::new(), None);
+    for _ in 0..190 {
+        world.tick(&mut garden);
+        let running = raiding(&world, id);
+        if !running && runs.contains(&true) && walking_on.is_none() {
+            walking_on = Some(!rabbit(&world, id).state.ai.state.navigation.is_done());
+        }
+        runs.push(running);
+    }
+    let first = runs.iter().position(|&running| running);
+    assert!(
+        first.is_some_and(|tick| tick <= 1),
+        "once it stands on the grass it looks for a ripe carrot at once: {first:?}"
+    );
+    let first = first.unwrap_or_default();
+    let length = runs[first..].iter().take_while(|&&running| running).count();
+    assert!(
+        (1..=2).contains(&length),
+        "it stops at its next full update: {length}"
+    );
+    assert_eq!(walking_on, Some(true), "but its walk goes on");
+    let left = rabbit(&world, id).core.body.position.distance(centre);
+    assert!(left < 1.5, "it hopped up to the carrot: {left}");
+    assert_eq!(garden.age(crop), Some(7), "its first look only walks");
+
+    let crop = (5, 64, 0);
+    let mut world = EntityWorld::default();
+    let mut garden = Garden::with_carrot(crop, 7);
+    let id = raider_at(&mut world, DVec3::new(5.5, 64.0, 0.5));
+    let mut bites = Vec::new();
+    for tick in 0..3000 {
+        if tick == 1000 {
+            garden.set_block(crop, Some(carrots(7)));
+        }
+        let before = garden.age(crop);
+        world.tick(&mut garden);
+        if garden.age(crop) != before {
+            assert!(raiding(&world, id), "tick {tick}");
+            let goals = rabbit(&world, id).state.goals().unwrap();
+            let more = goals.more_carrot_ticks;
+            assert!((38..=40).contains(&more), "tick {tick}: {more}");
+            bites.push((tick, garden.age(crop)));
+        }
+    }
+    assert_eq!(bites.len(), 2, "{bites:?}");
+    assert_eq!(
+        bites[0],
+        (0, Some(6)),
+        "beside a ripe carrot it bites at once"
+    );
+    assert!(
+        bites[1].0 > 1000,
+        "an unripe carrot is left alone: {bites:?}"
+    );
+    assert_eq!(bites[1].1, Some(6), "until it is ripe again");
+
+    for age in 1..=7 {
+        assert_eq!(ai::nibbled(&carrots(age)), Some(carrots(age - 1)));
+    }
+    assert_eq!(ai::nibbled(&carrots(0)), None, "the last bite leaves air");
+    let mut garden = Garden::with_carrot(crop, 7);
+    let mob = Rabbit::spawn(KIND, DVec3::new(5.5, 64.0, 0.5)).unwrap();
+    let mut ctx = mob.state.ai.state.clone();
+    ctx.mob_griefing = true;
+    let mut goal = ai::RaidGardenGoal::new();
+    assert!(goal.can_start(&mut ctx, &garden));
+    garden.set_block(crop, Some(carrots(0)));
+    goal.start_world(&mut ctx, &garden);
+    goal.tick_world(&mut ctx, &garden);
+    let goals = ctx.extra.get::<RabbitGoals>().unwrap();
+    assert_eq!(goals.nibble, Some((crop, None)), "a seedling is eaten up");
+    assert_eq!(goals.more_carrot_ticks, ai::MORE_CARROT_TICKS);
+    assert!(!goal.can_continue(&mut ctx, &garden));
+}
+
+#[test]
+fn no_rabbit_touches_crops_without_mob_griefing() {
+    let crop = (5, 64, 0);
+    let mut world = EntityWorld::default();
+    world.set_mob_griefing(false);
+    let mut garden = Garden::with_carrot(crop, 7);
+    let id = raider_at(&mut world, DVec3::new(5.5, 64.0, 0.5));
+    for tick in 0..1200 {
+        world.tick(&mut garden);
+        assert!(!raiding(&world, id), "tick {tick}");
+    }
+    assert_eq!(garden.age(crop), Some(7));
+    world.set_mob_griefing(true);
+    for _ in 0..3 {
+        world.tick(&mut garden);
+    }
+    assert_eq!(garden.age(crop), Some(6), "with the rule back it bites");
 }
 
 #[test]

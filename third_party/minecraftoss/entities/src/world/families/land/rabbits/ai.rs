@@ -1,6 +1,7 @@
 use crate::control::{MoveControl, MoveOperation, minecraft_atan2, obstacle_top};
+use crate::crops;
 use crate::fluid::FluidFrame;
-use crate::goals::{Controls, Goal, GoalSelector};
+use crate::goals::{Control, Controls, Goal, GoalSelector};
 use crate::monster_ai::{
     AvoidEntityGoal, FloatGoal, LookAtPlayerGoal, MonsterAi, MonsterGoalContext, StrollGoal,
 };
@@ -11,14 +12,14 @@ use crate::world::emissions::play_movement;
 use crate::world::families::MonsterSpec;
 use crate::world::families::goals::ClimbOnTopOfPowderSnowGoal;
 use crate::world::families::land::animal_goals::{
-    AnimalExtra, AnimalGoals, BreedGoal, PanicGoal, TemptGoal, is_monster_class,
+    AnimalExtra, AnimalGoals, BreedGoal, MoveToBlockGoal, PanicGoal, TemptGoal, is_monster_class,
 };
 use crate::world::{MonsterStep, Voice};
 use glam::DVec3;
-use minecraftoss_player::World;
 use minecraftoss_player::minecraft_sin_cos;
 use minecraftoss_player::path_type::PathType;
 use minecraftoss_player::rng::LegacyRandom;
+use minecraftoss_player::{Block, Pos, World};
 
 pub const STROLL_SPEED: f64 = 0.6;
 pub const STROLL_PROBABILITY: f32 = 0.001;
@@ -39,8 +40,16 @@ pub const AVOID_PLAYER: f64 = 8.0;
 pub const AVOID_WOLF: f64 = 10.0;
 pub const AVOID_MONSTER: f64 = 4.0;
 pub const JUMP_SOUND: &str = "entity.rabbit.jump";
+pub const RAID_SPEED: f64 = 0.699999988079071;
+pub const RAID_RANGE: i32 = 16;
+pub const RAID_VERTICAL_RANGE: i32 = 1;
+pub const RAID_LOOK_Y: f32 = 10.0;
+pub const RAID_NEXT_START: i32 = 10;
+pub const MORE_CARROT_TICKS: i32 = 40;
+pub const SUPPORTS_CROPS: &str = "minecraft:supports_crops";
+pub const CARROTS: &str = "minecraft:carrots";
 
-pub const GOAL_NAMES: [&str; 10] = [
+pub const GOAL_NAMES: [&str; 11] = [
     "FloatGoal",
     "ClimbOnTopOfPowderSnowGoal",
     "RabbitPanicGoal",
@@ -49,6 +58,7 @@ pub const GOAL_NAMES: [&str; 10] = [
     "RabbitAvoidEntityGoal",
     "RabbitAvoidEntityGoal",
     "RabbitAvoidEntityGoal",
+    "RaidGardenGoal",
     "WaterAvoidingRandomStrollGoal",
     "LookAtPlayerGoal",
 ];
@@ -81,6 +91,7 @@ pub struct RabbitGoals {
     pub more_carrot_ticks: i32,
     pub speed_modifier: Option<f64>,
     pub jump: RabbitJump,
+    pub nibble: Option<(Pos, Option<Block>)>,
 }
 
 impl AnimalExtra for RabbitGoals {
@@ -115,6 +126,7 @@ fn goals() -> GoalSelector<MonsterGoalContext> {
         4,
         RabbitAvoidEntityGoal(flee("", AVOID_MONSTER).matching(is_monster_class)),
     );
+    selector.add(5, RaidGardenGoal::new());
     selector.add(6, StrollGoal::new(STROLL_SPEED, STROLL_PROBABILITY));
     selector.add(11, LookAtPlayerGoal { range: LOOK_RANGE });
     selector
@@ -191,6 +203,105 @@ impl Goal<MonsterGoalContext> for RabbitAvoidEntityGoal {
 
     fn tick(&mut self, ctx: &mut MonsterGoalContext) {
         self.0.tick(ctx);
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct RaidGardenGoal {
+    walk: MoveToBlockGoal,
+    wants_to_raid: bool,
+    can_raid: bool,
+}
+
+impl RaidGardenGoal {
+    pub(super) fn new() -> Self {
+        Self {
+            walk: MoveToBlockGoal::new(RAID_SPEED, RAID_RANGE, RAID_VERTICAL_RANGE),
+            wants_to_raid: false,
+            can_raid: false,
+        }
+    }
+}
+
+pub fn ripe_carrot(block: Option<&Block>) -> bool {
+    block.is_some_and(|block| block.id == CARROTS && crops::ripe(block))
+}
+
+pub fn is_garden_target(world: &dyn World, pos: Pos, wants_to_raid: bool, can_raid: bool) -> bool {
+    let above = (pos.0, pos.1 + 1, pos.2);
+    world.block_in_tag(pos, SUPPORTS_CROPS)
+        && wants_to_raid
+        && !can_raid
+        && ripe_carrot(world.block(above).as_ref())
+}
+
+pub fn nibbled(carrot: &Block) -> Option<Block> {
+    let age = crops::age(carrot);
+    (age > 0).then(|| carrot.clone().with("age", &(age - 1).to_string()))
+}
+
+impl Goal<MonsterGoalContext> for RaidGardenGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Jump])
+    }
+
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        if self.walk.next_start_tick <= 0 {
+            if !ctx.mob_griefing {
+                return false;
+            }
+            self.can_raid = false;
+            self.wants_to_raid = ctx
+                .extra
+                .get::<RabbitGoals>()
+                .is_some_and(|goals| goals.more_carrot_ticks <= 0);
+        }
+        let (wants, can) = (self.wants_to_raid, self.can_raid);
+        let found = self
+            .walk
+            .can_use(ctx, |pos| is_garden_target(world, pos, wants, can));
+        if found {
+            self.can_raid = true;
+        }
+        found
+    }
+
+    fn can_continue(&mut self, _ctx: &mut MonsterGoalContext, world: &dyn World) -> bool {
+        let valid = is_garden_target(world, self.walk.block, self.wants_to_raid, self.can_raid);
+        self.can_raid && self.walk.can_continue(valid)
+    }
+
+    fn every_tick(&self) -> bool {
+        true
+    }
+
+    fn start_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        self.walk.start(ctx, world);
+    }
+
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        self.walk.tick(ctx, world);
+        let above = self.walk.move_to_target();
+        let look = DVec3::new(
+            f64::from(above.0) + 0.5,
+            f64::from(above.1),
+            f64::from(above.2) + 0.5,
+        );
+        let x_max = ctx.max_head_x_rot();
+        ctx.look_control
+            .set_look_at_with_limits(look, RAID_LOOK_Y, x_max);
+        if !self.walk.reached {
+            return;
+        }
+        let crop = world.block(above).filter(|block| block.id == CARROTS);
+        if let Some(crop) = crop.filter(|_| self.can_raid) {
+            if let Some(goals) = ctx.extra.get_mut::<RabbitGoals>() {
+                goals.nibble = Some((above, nibbled(&crop)));
+                goals.more_carrot_ticks = MORE_CARROT_TICKS;
+            }
+        }
+        self.can_raid = false;
+        self.walk.next_start_tick = RAID_NEXT_START;
     }
 }
 

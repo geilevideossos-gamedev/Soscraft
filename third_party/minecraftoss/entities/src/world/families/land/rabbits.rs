@@ -440,6 +440,12 @@ impl Family for Rabbit {
                 |rabbit| &mut *rabbit.ai,
                 rabbit_ai_step::<W>,
             );
+            let nibble = world
+                .family_mob_mut::<Self>(id)
+                .and_then(|mob| mob.state.goals_mut().nibble.take());
+            if let Some((pos, crop)) = nibble {
+                level.set_block(pos, crop);
+            }
             let partner = world
                 .family_mob_mut::<Self>(id)
                 .and_then(|mob| mob.state.goals_mut().animal.breed_with.take());

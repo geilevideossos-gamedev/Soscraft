@@ -13,13 +13,15 @@ Files under `third_party/minecraftoss` this track patched or added.
 - Added: `entities/src/world/families/land/animal_goals.rs`, `entities/src/world/families/land/rabbits.rs`, `entities/src/world/families/land/rabbits/ai.rs`, `entities/src/world/families/land/rabbits/tests.rs` (test only) (rabbits-live 2).
 - Changed again, no new file (rabbits-drawn 1): `entities/src/world/families/land/rabbits.rs` (`named`, `toast`, `TOAST`, `KILLER_BUNNY`).
 - Changed again, no new file (rabbits-drawn 2): `entities/src/world/families/land/rabbits.rs` (`RabbitAnimations`), `entities/src/world/families/land/rabbits/tests.rs` (its test).
+- Changed again, no new file (rabbits-behaviour 1): `entities/src/world/families/land/animal_goals.rs` (`MoveToBlockGoal`), `entities/src/world/families/land/rabbits/ai.rs` (`RaidGardenGoal`), `entities/src/world/families/land/rabbits.rs` (the bite), `entities/src/world/families/land/rabbits/tests.rs`.
 
 ## Hooks
 
 Root hooks this track added (M10, "Hooks this track adds").
 
 - **"Registered Minecraft mobs can run their own AI step"** (rabbits-live 1): `EntityWorld::family_goal_step_with::<S, W>(id, level, players, movement_speed, ai, run)` in `entities/src/world/families.rs`, with the type `AiStep<W>` (`monster_ai_step`'s signature, returning the landed fall distance). `family_goal_step` is now that call with `monster_ai_step`.
-- `land/animal_goals.rs` (rabbits-live 2, M1's group module, `pub mod`): goal-framework `PanicGoal<E>`, `TemptGoal<E>` and `BreedGoal<E>` over a family's `GoalExtra` type `E: AnimalExtra` (which hands out its `AnimalGoals`), and `is_monster_class`. Later M1 families reuse them; `MoveToBlockGoal` joins with `rabbits-behaviour`.
+- `land/animal_goals.rs` (rabbits-live 2, M1's group module, `pub mod`): goal-framework `PanicGoal<E>`, `TemptGoal<E>` and `BreedGoal<E>` over a family's `GoalExtra` type `E: AnimalExtra` (which hands out its `AnimalGoals`), and `is_monster_class`. Later M1 families reuse them.
+- `MoveToBlockGoal` in `land/animal_goals.rs` (rabbits-behaviour 1): vanilla's `MoveToBlockGoal` as a helper that a goal holds. Its fields are public: speed, search range, vertical range and start, `next_start_tick`, `try_ticks`, `max_stay_ticks`, `block` and `reached`. `can_use(ctx, valid)` is the countdown, then `reducedTickDelay(200 + nextInt(200))` and `findNearestBlock` over `feline_ai::find_nearest_block`; then `can_continue(valid)`, `start`, `move_to_target` and `tick` (reached within 1.0 of the centre of the block above, a new walk every 40 ticks). The goal that holds it names its valid block and what it does on arrival, as the rabbit's `RaidGardenGoal` does; foxes' berries and turtles' goals use it the same way.
 - `AvoidEntityGoal::matching(fn(&str) -> bool)` (rabbits-live 2, `monster_ai.rs`): beside `also`; a field set by `new`, so no literal changes.
 - `World::biome_in_tag(pos, tag)` (rabbits-live 3): `player/src/lib.rs` after `biome`, false by default; the server's `MobWorld` answers it after its `biome` (`server_mobs.rs`) through `Level::biome_in_tag_at`. M2's tadpoles use it under this name.
 - **"The registry's texture test checks the pests' textures first, not the whole list"** (rabbits-drawn, before commit 1): not a hook, but a root-file change in its own commit. D0's `families::tests::a_registered_mob_is_tracked_textured_and_shadowed_through_its_family` (terrain root `families/tests.rs`) compared `textures()` with exactly the silverfish and endermite textures, so the first family with a texture of its own (the rabbit) fails it. It now compares `textures()[..2]`: `pests` comes first in the root's order, so the test still proves their two textures and lets every later family add its own. Every other round 10 track with a drawn family needs the same one-line change; whichever merges second keeps the identical line.
@@ -38,6 +40,7 @@ For the orchestrator to copy at the merge of segment m1a (rabbits live and drawn
 ## Left for later
 
 - The hop's dust (entity event 1, `spawnSprintParticle`): `ClientFx` has no block particles (M1-1).
+- A rabbit's bite on a carrot: level event 2001 (the crumbs and the break sound) waits for foxes' `World::destroy_effect` (M1-4). The `block_change` game event for W's vibrations is one line where the rabbit's tick applies the bite, added by whichever of W and M1 merges second (rabbits-behaviour 1).
 - The shared `FloatGoal` uses a fixed 0.4 water height; vanilla's `getFluidJumpThreshold` is 0 for an eye below 0.4 (a baby rabbit, a silverfish). The rabbit's own jump uses the right threshold.
 
 ## Segment m1a
@@ -226,4 +229,47 @@ After 8afa0650.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:carrot*8,minecraft:lead*2,minecraft:oak_fence*4
+```
+
+### Group rabbits-behaviour
+
+#### 1. Minecraft rabbits raid carrot crops
+
+After d008fa7e.
+
+- **javap this round:**
+  - `MoveToBlockGoal`: flags `MOVE` and `JUMP`. `canUse` counts `nextStartTick` down and returns false; at 0 it sets it to `reducedTickDelay(200 + nextInt(200))` and runs `findNearestBlock`. `canContinueToUse` is `tryTicks >= -maxStayTicks && tryTicks <= 1200 && isValidTarget`. `start` walks to the block's top (`moveTo(x + 0.5, y + 1, z + 0.5, speed)`, reach 1), sets `tryTicks` 0 and `maxStayTicks = nextInt(nextInt(1200) + 1200) + 1200`. `tick` runs every tick: within `acceptedDistance` 1.0 of the centre of the block above (`closerToCenterThan`) the block is reached and `tryTicks` falls by one, else it rises and every 40 a new walk starts. There is no `stop`. `findNearestBlock` searches the layers `k - 1` for `k` = 0, 1, -1, .. up to the vertical range, ring by ring outwards, and also asks `isWithinHome`.
+  - `Rabbit$RaidGardenGoal`: `MoveToBlockGoal(0.699999988079071, 16)`, vertical range 1. `canUse`: with `nextStartTick` at 0 or less, false without `mob_griefing`, then `canRaid = false` and `wantsToRaid = moreCarrotTicks <= 0`; then the parent's. `canContinueToUse` is `canRaid` and the parent's, whose `isValidTarget` refuses once `canRaid` is set. `isValidTarget`: `#supports_crops` below, `wantsToRaid`, not `canRaid`, and a `CarrotBlock` at its `isMaxAge` above; then `canRaid = true`. `tick`: the parent's, a look at the crop (`setLookAt(x + 0.5, y + 1, z + 0.5, 10, maxHeadXRot)`), and once reached, with `canRaid` and a carrot above: age 0 → `setBlock(air, 2)` then `destroyBlock` (nothing left to break), else age − 1 with `setBlock(.., 2)`, game event `block_change` and level event 2001 with the old state; `moreCarrotTicks = 40` in both cases. Then, reached, always `canRaid = false` and `nextStartTick = 10`.
+  - `Rabbit.registerGoals` puts it at priority 5, between the avoid goals and the stroll. `wantsMoreFood` is `moreCarrotTicks <= 0`; `customServerAiStep` takes `nextInt(3)` off `moreCarrotTicks` each tick while above 0 (in since `rabbits-live`).
+  - `PathNavigation.createPath` makes no path while the mob is off the ground (`canUpdatePath`), so the first look of a rabbit that has just spawned in the air only starts the goal.
+- **Changed (vendored entities crate):**
+  - `land/animal_goals.rs`: `MoveToBlockGoal` (see "Hooks") and its constants `MOVE_TO_BLOCK_INTERVAL` 200, `MOVE_TO_BLOCK_GIVE_UP_TICKS` 1200, `MOVE_TO_BLOCK_STAY_TICKS` 1200, `MOVE_TO_BLOCK_RECALCULATE` 40 and `MOVE_TO_BLOCK_ACCEPTED_DISTANCE` 1.0.
+  - `land/rabbits/ai.rs`: `RaidGardenGoal`, a `MoveToBlockGoal` at 0.7, range 16 and vertical range 1 with `wants_to_raid` and `can_raid` as vanilla keeps them, registered at priority 5 and named in `GOAL_NAMES`. Also `is_garden_target` (`#supports_crops` with a ripe carrot above), `ripe_carrot` and `nibbled` (the carrot one stage younger, or air from age 0), `RabbitGoals.nibble` (the bite the goal asks for) and the constants `RAID_SPEED`, `RAID_RANGE`, `RAID_VERTICAL_RANGE`, `RAID_LOOK_Y` 10, `RAID_NEXT_START` 10, `MORE_CARROT_TICKS` 40, `SUPPORTS_CROPS` and `CARROTS`.
+  - `land/rabbits.rs`: the tick takes the bite out of `RabbitGoals` right after the AI step and sets the block (`World::set_block`), as the sheep's grass eating does.
+- **Tests added:**
+  - `world::families::land::animal_goals::tests::move_to_block_searches_in_vanilla_order_and_stops_within_reach`:
+    - the search order: the layer below first, then the feet's layer, then two below; nearer rings first; `+z` before `-z` and `+x` before `-x`; nothing past the range;
+    - the 100-200 tick wait between looks (200 seeds) and its countdown;
+    - `start` (`try_ticks` 0, a stay of 1200-3599 ticks, a walk), `tick` (counting up, a new walk at 40, reached within a block of the centre above and counting down) and `can_continue`'s bounds.
+  - `world::families::land::rabbits::tests::a_rabbit_walks_to_a_ripe_carrot_and_bites_it_down_a_stage`:
+    - once on the grass it looks at once; the goal stops at its next full update while its walk goes on up to the carrot, and the first look bites nothing;
+    - a rabbit beside a ripe carrot bites it at once (7 → 6, 38-40 carrot ticks left after the tick), leaves the unripe carrot alone for 1000 ticks and bites it again once it is ripe;
+    - `nibbled` for ages 7 to 1, air from 0; and on the goal itself, a carrot at age 0 by the bite is eaten up (the crop and air in `nibble`, 40 carrot ticks, and the goal ends).
+  - `world::families::land::rabbits::tests::no_rabbit_touches_crops_without_mob_griefing`: 1200 ticks beside a ripe carrot without the goal starting; with `mob_griefing` back it bites within three ticks.
+- **Decisions:**
+  - Vanilla only aims at full-grown carrots (`isMaxAge`), so a carrot loses one stage each time it ripens. It becomes air only when it is at age 0 by the time the rabbit bites (it changed between the look and the bite). The brief's test name `a_rabbit_walks_to_a_ripe_carrot_and_nibbles_it_down_to_nothing` and its owner step 6 ("each bite shrinks it a stage until it is gone") do not match 26.3. The test is `a_rabbit_walks_to_a_ripe_carrot_and_bites_it_down_a_stage`, the age-0 branch is tested on the goal, and the owner's steps below say what vanilla does.
+  - The early stop is ported as is (M1-1): the goal ends at its next full update, the walk it started goes on, and a later look beside the crop bites at once.
+  - The bite is a request the goal leaves in `RabbitGoals.nibble`, since goals only see `&dyn World`. The rabbit's tick applies it right after the AI step, before anything else moves. The server's `set_block` updates the neighbours (flag 3) where vanilla uses flag 2, which changes nothing for a crop on farmland.
+  - `MoveToBlockGoal` is a helper that a goal holds, not a goal itself, so each user names its own valid block without boxing a closure. `isWithinHome` is not ported: no goal-framework mob in the fork has a home restriction.
+  - Level event 2001 and the `block_change` game event: "Left for later".
+- **Runs:** `test -p minecraftoss-entities --locked --lib` (455 passed), `check -p launcher --locked` (green; only the old render_frame and skate warnings). `animal_goals.rs`, `rabbits.rs`, `rabbits/ai.rs` and `rabbits/tests.rs` still pass `rustfmt --check --edition 2021`.
+- **Test steps** (release build, survival, Normal, by day on flat grass; `mob_griefing` is on by default; name each screenshot by its label):
+  1. Hoe a 5 x 5 patch of grass beside water (pour the water bucket into a hole next to it), plant a carrot on every block and bone-meal them until every carrot is full grown (the orange tops show). Fence the patch in, leaving one block of grass inside the fence on every side.
+  2. Use the rabbit egg three times inside the fence, then step out and stand more than 8 blocks away (rabbits flee a closer player). Within one to three minutes a rabbit hops onto a full-grown carrot, looks down at it, and that carrot drops to the stage before (the orange top disappears). **m1-rabbits-raid-1**
+  3. Keep watching: the rabbits bite other full-grown carrots, but never a carrot that is not full grown. A bitten carrot is bitten again only after it has grown back (bone-meal it to full and wait). **m1-rabbits-raid-2**
+  4. `/gamerule mob_griefing false`, bone-meal every carrot to full and wait three minutes: no carrot is bitten. `/gamerule mob_griefing true`: the bites start again.
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*8,minecraft:carrot*32,minecraft:bone_meal*64,minecraft:iron_hoe,minecraft:water_bucket,minecraft:oak_fence*64
 ```
