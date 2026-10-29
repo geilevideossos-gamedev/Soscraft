@@ -1,12 +1,20 @@
 use super::Level;
-use minecraftoss_core::BlockPos;
+use super::container::Stack;
 use minecraftoss_core::nbt::Tag;
+use minecraftoss_core::{BlockPos, BlockStateId};
 use std::collections::BTreeMap;
 
 pub const BANNER: &str = "minecraft:banner";
 pub const BANNER_PATTERNS: &str = "minecraft:banner_patterns";
 pub const CUSTOM_NAME: &str = "minecraft:custom_name";
 pub const NOT_STORED: [&str; 2] = ["minecraft:block_entity_data", "minecraft:block_state"];
+pub const BANNER_LOOT: [&str; 5] = [
+    CUSTOM_NAME,
+    "minecraft:item_name",
+    "minecraft:tooltip_display",
+    BANNER_PATTERNS,
+    "minecraft:rarity",
+];
 
 pub fn is_banner(id: &str) -> bool {
     id.strip_prefix("minecraft:")
@@ -49,6 +57,36 @@ pub fn applied(entity: &Tag, components: &Tag) -> Option<Tag> {
     Some(Tag::Compound(applied))
 }
 
+pub fn collected(entity: &Tag) -> BTreeMap<String, Tag> {
+    let mut collected = entity
+        .get("components")
+        .and_then(Tag::as_compound)
+        .cloned()
+        .unwrap_or_default();
+    for (component, field) in implicit(kind(entity)) {
+        if let Some(value) = entity.get(field) {
+            collected.insert((*component).to_owned(), value.clone());
+        }
+    }
+    collected
+}
+
+pub fn dropped_components(entity: &Tag) -> Option<Tag> {
+    let include: &[&str] = match kind(entity) {
+        BANNER => &BANNER_LOOT,
+        _ => return None,
+    };
+    let kept: BTreeMap<String, Tag> = collected(entity)
+        .into_iter()
+        .filter(|(name, _)| include.contains(&name.as_str()))
+        .collect();
+    (!kept.is_empty()).then_some(Tag::Compound(kept))
+}
+
+pub fn standing(id: &str) -> String {
+    id.replacen("_wall_", "_", 1)
+}
+
 impl Level<'_> {
     pub fn apply_block_entity_components(&mut self, pos: BlockPos, components: &Tag) -> bool {
         let state = self.block(pos);
@@ -63,6 +101,21 @@ impl Level<'_> {
         };
         self.set_block_entity_tag(pos, tag);
         true
+    }
+
+    pub(super) fn keep_block_entity_components(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        drops: &mut [Stack],
+    ) {
+        let Some(components) = self.block_entity(pos).and_then(dropped_components) else {
+            return;
+        };
+        let item = standing(self.name(state));
+        for stack in drops.iter_mut().filter(|stack| stack.id == item) {
+            stack.components = Some(components.clone());
+        }
     }
 }
 
@@ -145,5 +198,27 @@ mod tests {
         assert_eq!(applied(&Tag::Int(1), &given), None);
         assert!(is_banner("minecraft:white_banner") && is_banner("minecraft:red_wall_banner"));
         assert!(!is_banner("minecraft:shield") && !is_banner("other:white_banner"));
+    }
+
+    #[test]
+    fn a_broken_banner_gives_back_what_its_loot_table_copies() {
+        let given = parse(OMINOUS).unwrap();
+        let placed = applied(&banner(), &given).unwrap();
+        assert_eq!(dropped_components(&placed), Some(given));
+        let named = parse(r#"{"minecraft:custom_name":"Flag","minecraft:banner_patterns":[{color:"black",pattern:"minecraft:creeper"}],"minecraft:lore":["Old"],"minecraft:rarity":"rare"}"#).unwrap();
+        let placed = applied(&banner(), &named).unwrap();
+        let copied = parse(r#"{"minecraft:custom_name":"Flag","minecraft:banner_patterns":[{color:"black",pattern:"minecraft:creeper"}],"minecraft:rarity":"rare"}"#).unwrap();
+        assert_eq!(dropped_components(&placed), Some(copied));
+        assert_eq!(dropped_components(&banner()), None);
+        let spawner =
+            parse(r#"{id:"minecraft:mob_spawner",components:{"minecraft:rarity":"rare"}}"#)
+                .unwrap();
+        assert_eq!(dropped_components(&spawner), None);
+        assert_eq!(collected(&spawner).len(), 1);
+        assert_eq!(
+            standing("minecraft:red_wall_banner"),
+            "minecraft:red_banner"
+        );
+        assert_eq!(standing("minecraft:red_banner"), "minecraft:red_banner");
     }
 }

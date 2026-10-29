@@ -1293,6 +1293,10 @@ impl TerrainStream {
         self.server.as_mut()?.chunk(pos).cloned()
     }
 
+    pub fn stored_block_entity(&self, (x, y, z): BlockPos) -> Option<&minecraftoss_core::nbt::Tag> {
+        self.server.as_ref()?.stored_block_entity(minecraftoss_core::BlockPos::new(x, y, z))
+    }
+
     pub fn load_chunk_now(&mut self, pos: minecraftoss_core::ChunkPos) -> Arc<Chunk> {
         self.server.as_mut().expect(HOST_ONLY).load_now(pos)
     }
@@ -2733,6 +2737,34 @@ mod tests {
         }
         let heads = tags.iter().filter(|(pos, tag)| tag.get("id").and_then(Tag::as_str) == Some("minecraft:skull") && block_name(&registries, &chunks, *pos) == "minecraft:dragon_wall_head").count();
         assert_eq!(heads, 1, "the dragon head on the bow");
+    }
+
+    #[test]
+    fn a_broken_block_s_block_entity_stays_readable_until_the_break_is_written() {
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.block_entities.is_none() {
+            return;
+        }
+        let mut stream = TerrainStream::for_dimension_at(Arc::new(registries), 77, 2, Dimension::Overworld, None, Some((0, 64, 0))).unwrap();
+        let mut scene = HandcraftedScene::streamed(stream.states.clone());
+        let chunk = minecraftoss_core::ChunkPos::new(0, 0);
+        scene.insert_chunk(stream.load_chunk_now(chunk));
+        let pos = (3, 200, 4);
+        scene.set(pos, Some(Block::new("minecraft:white_banner").with("rotation", "0")));
+        stream.record_edits(&scene, &[pos]);
+        let tag = minecraftoss_core::snbt::parse(r#"{id:"minecraft:banner",x:3,y:200,z:4,patterns:[{pattern:"minecraft:creeper",color:"black"}],components:{}}"#).unwrap();
+        stream.record_block_entities(&[(pos, Some(tag.clone()))]);
+        assert_eq!(stream.stored_block_entity(pos), Some(&tag), "one waiting to be written");
+        let written = stream.loaded_chunk(chunk).and_then(|chunk| chunk.block_entities.entities.get(&pos).cloned());
+        assert_eq!(written.as_ref(), Some(&tag));
+        assert_eq!(stream.stored_block_entity(pos), Some(&tag), "a written one");
+        scene.set(pos, None);
+        stream.record_edits(&scene, &[pos]);
+        assert_eq!(stream.stored_block_entity(pos), Some(&tag), "the broken banner's, until the break is written");
+        assert!(stream.loaded_chunk(chunk).is_some_and(|chunk| !chunk.block_entities.entities.contains_key(&pos)));
+        assert_eq!(stream.stored_block_entity(pos), None);
+        assert_eq!(stream.stored_block_entity((40, 200, 40)), None, "a chunk not loaded");
     }
 
     #[test]

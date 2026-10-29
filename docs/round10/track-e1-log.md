@@ -864,6 +864,102 @@ Commit: "Minecraft banners keep their patterns and name when placed", the one af
 - **Protocol:** no message or codec change. Friends already receive `ToClient::BlockEntity`, and they now get it once more for a banner whose block entity the server changed.
 - **Owner's test steps:** a placed banner still shows only its base colour (group `placed-banners`), so nothing changes on screen yet. The steps for both commits of the group are with the next commit.
 
+### Banners drop with their patterns and name
+
+Commit: "Minecraft banners drop with their patterns and name", the one after `3bd5848d`.
+
+- **Cause** (as in the brief, re-checked at `3bd5848d`):
+  - `third_party/minecraftoss/player/src/loot.rs` `apply_modifiers` returned `None` for a `copy_components` from `block_entity` whose `include` names anything but `custom_name`. The `?` in `entry` then voided the whole roll. So a banner broken by hand or by an MW2 bullet or blast dropped nothing. The same was true of an empty, unnamed shulker box (a filled or named one dropped only through its `kept` stack), a player head and an unbroken decorated pot.
+  - `Entities::drop_blocks` gave `kept` components only to a drop whose id equals the block's, which a `*_wall_banner` never matches, and `harvest` built `kept` for shulker boxes only.
+  - The server level's own drops (TNT and other server explosions, a banner whose wall or floor goes, wither breaks: `drop_resources` and `on_explosion_hit`) roll `core/src/loot.rs`, whose `copy_components` passes without copying, so they dropped a plain banner.
+- **Vanilla 26.3** (the 26.3 data and javap):
+  - The 16 banner loot tables (`blocks/white_banner` and the others) hold one item under `survives_explosion`, with a `copy_components` from `block_entity` that includes `custom_name`, `item_name`, `tooltip_display`, `banner_patterns` and `rarity`. A wall banner drops like its standing banner.
+  - The `block_entity` source copies `BlockEntity.collectComponents()`: the stored `components` plus `collectImplicitComponents`, which for a banner sets `banner_patterns` and `custom_name`.
+  - `Block.dropResources` and `ServerExplosion` hand the block entity to the loot context, so explosions and a lost support drop the same components. `ServerExplosion.addOrAppendStack` merges only stacks with the same components.
+- **Changed:**
+  - `third_party/minecraftoss/player/src/loot.rs`: a `copy_components` from `block_entity` no longer voids the roll. It copies nothing itself, and the caller fills in the components. Other sources still void it. The stale comment about custom names went with the old check.
+  - `third_party/minecraftoss/world/src/level/components.rs`:
+    - `collected(entity)` is `collectComponents`: the stored `components` plus the kind's implicit fields.
+    - `dropped_components(entity)` gives what the banner loot table copies (`BANNER_LOOT`, the five ids above), or nothing for other kinds or when there is nothing to copy.
+    - `standing(id)` turns `*_wall_banner` into `*_banner`.
+    - `Level::keep_block_entity_components(pos, state, drops)` puts those components on the drops that are the block's own item.
+  - `level/drops.rs` `drop_resources` and `level/explosion.rs` `on_explosion_hit` call it after the roll, before the drops are popped or merged, while the block entity is still there.
+  - `third_party/minecraftoss/world/src/chunk_map.rs`: `ChunkMap::stored_block_entity(pos)` reads the block entity as last stored, from the waiting block entity edits or the chunk copy, without writing the waiting block edits. `TerrainStream::stored_block_entity` calls it.
+  - `crates/minecraft_survival/src/actions.rs` `harvest`: `kept` also holds, for each broken block, the `dropped_components` of its stored block entity, as JSON (`item_nbt::tag_json`). The break is already a waiting edit at that point, and the block entity is still readable.
+  - `crates/minecraft_survival/src/entities.rs` `drop_blocks`: kept components go to the drop that is the block's standing item, and the extra boxed stack is made for shulker boxes only.
+  - `docs/MINECRAFT-SURVIVAL.md`: a mining line on banner drops and on the other tables that now drop the plain item.
+- **Tests:**
+  - `minecraftoss-player` `loot::tests::components_copied_from_the_block_entity_leave_the_item_to_the_caller`: a wall banner rolls the standing banner's table with a `block_entity` copy and drops one plain banner, and another source still gives no answer. The jar test (skipped without the harness jar) now expects a yellow shulker box and a red banner from a red wall banner.
+  - `minecraftoss-world` `level::components::tests::a_broken_banner_gives_back_what_its_loot_table_copies`:
+    - A placed ominous banner gives back exactly its four components.
+    - A named banner with patterns, lore and a rarity gives back the name, the patterns and the rarity, but not the lore.
+    - A plain banner and a spawner give nothing, and `collected` reads a spawner's stored components.
+    - `standing` maps wall banners only.
+  - `minecraft_terrain` `server::tests::a_banner_blown_up_or_torn_from_its_wall_drops_with_its_components` (real data): a decaying explosion of power 1 on the placed ominous banner drops one white banner with the ominous components. Breaking the stone behind the named blue wall banner drops one blue banner with its name and pattern, and no wall banner item.
+  - `minecraft_terrain` `terrain::tests::a_broken_block_s_block_entity_stays_readable_until_the_break_is_written` (real data):
+    - A banner's block entity is read while its edit waits, and again after it is written.
+    - After the break is recorded, it is still read until the chunk is written, and then it is gone.
+    - A chunk that is not loaded gives nothing.
+  - `minecraft_survival` `actions::tests::a_broken_banner_drops_with_its_patterns_and_name` (real data and the 26.3 jar). Each banner is placed with `act` and broken through `harvest`:
+    - A standing ominous banner broken by hand drops one white banner with the ominous components.
+    - A named blue banner placed on a wall drops one blue banner with its components.
+    - An MW2 blast of power 1 keeps the ominous components.
+    - A plain red banner drops a plain red banner. In release 2 these all dropped nothing.
+    - A creative player's break drops nothing.
+  - With both commits, all tests of the touched crates pass:
+    - 1530 in `minecraft_terrain` (3 ignored, as before);
+    - 787 in `minecraft_survival`, plus `vanilla_world`;
+    - 199 in `minecraftoss-player`, with the `scenarios` stand-in files of `full-suite.ps1` made for the run and removed after;
+    - 118 in `minecraftoss-world`.
+
+    `check -p launcher` passes.
+- **Decisions:**
+  - **Server drops are handled in the server level, not at the two `render_anim` blast sites** (the brief's plan used `keep_dropped_contents` there). The level still holds the block entity when it rolls the loot, as vanilla does. That way:
+    - a patterned banner never merges with a plain one in a blast;
+    - a blast that keeps no drop (one in its power) adds none, whereas `keep_dropped_contents` spawns a banner when it finds none;
+    - a plain banner lying nearby can't take the components;
+    - a banner that falls with its wall or floor, and wither breaks, keep their patterns too.
+
+    `render_anim` is not touched.
+  - **`harvest` reads the stored block entity, not `loaded_chunk`** (the brief pointed at the read in `session.rs`). `loaded_chunk` writes the waiting edits first. The break is already one of them when `harvest` runs, so the banner's block entity would be gone. A banner broken within a tick or two of being placed, before the server's block entity reaches the stream, drops plain.
+  - The copied list is the 26.3 banner loot table's `include` list, written into `BANNER_LOOT` (all 16 tables are alike). Only banners get components this way. Shulker boxes keep their own `Containers` path.
+  - Every `copy_components` from `block_entity` now lets the roll through, as the brief says. So these blocks drop the plain item where they used to drop nothing:
+    - an empty, unnamed shulker box, as vanilla does;
+    - a player head, without the skin profile (heads use the default skin here, and a placed head doesn't keep one);
+    - an unbroken decorated pot, without its sherds (a cracked pot still rolls nothing, since the `dynamic` entry isn't ported).
+
+    Bee nests and beehives still roll nothing, because of their `copy_state`.
+- **Protocol:** no change.
+- **Owner's test steps** (both commits of the group `banner-roundtrip`; survival, a new world, by day on flat grass, the kit below). Placed banners still show their base colour only, until group `placed-banners`; the drops show the patterns.
+  1. **By hand.**
+     - Build a wall of planks two high.
+     - Place the patterned white banner on the ground, the patterned blue banner on the wall and a black banner on the ground.
+     - Break each with the axe. The white one drops a white banner whose icon shows the black creeper face in a red border. The blue one drops a blue banner (not a wall banner) with the white fade, the lime globe and the yellow stripe. The black one drops a plain black banner. In release 2 none of them dropped anything.
+     - **Screenshot D1**, the three drops on the ground.
+  2. **Save and load.** Place the patterned white banner, save and quit to the title, load the world and break it: it drops with its pattern.
+  3. **Its wall goes.** Hang the patterned blue banner on the plank wall and break the plank behind it. The banner falls and drops with its pattern.
+  4. **TNT.**
+     - Place three patterned white banners a few blocks apart around a TNT block and light it with flint and steel.
+     - A blast keeps each drop one time in four, so expect about one banner. Every banner that drops keeps its pattern.
+     - **Screenshot D2.**
+  5. **MW2.** Place a patterned white banner and shoot it until it breaks: it drops with its pattern. Throw a frag grenade at another one: when it drops (about one time in four), it has its pattern.
+  6. **The ominous banner.**
+     - Use pillager eggs on open ground until one carries a banner (a captain), and kill it.
+     - Pick up the "Ominous Banner", place it and break it. It drops as an "Ominous Banner" again (hover it in the inventory), with the pattern in its icon, and it stacks with no other banner.
+     - **Screenshot D3**, the inventory with the ominous banner hovered.
+  7. **Creative.** Run `/gamemode creative`, place a patterned banner and break it: nothing drops. Run `/gamemode survival`.
+  8. **The shulker box.** Place the empty shulker box and break it: it drops (in release 2 an empty box dropped nothing). Put a stone in it, break it again: it drops with the stone inside.
+  9. **Friend (two windows, both on this build).**
+     - The friend gets the same kit (or `/kit @a` from the host).
+     - The friend places the patterned white banner and the host breaks it: it drops with its pattern.
+     - The host places the patterned blue banner on a wall and the friend breaks it: it drops with its pattern.
+     - **Screenshot D4**, both windows.
+- **Kit** (11 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:white_banner[banner_patterns=[{pattern:"minecraft:creeper",color:"black"},{pattern:"minecraft:border",color:"red"}]]*8,minecraft:blue_banner[banner_patterns=[{pattern:"minecraft:gradient",color:"white"},{pattern:"minecraft:globe",color:"lime"},{pattern:"minecraft:stripe_bottom",color:"yellow"}]]*4,minecraft:black_banner*2,minecraft:pillager_spawn_egg*16,minecraft:oak_planks*32,minecraft:diamond_axe,minecraft:diamond_sword,minecraft:tnt*2,minecraft:flint_and_steel,minecraft:shulker_box,minecraft:stone*4
+```
+
 ## Review fixes
 
 ### The starting kit keeps the quotes inside its components

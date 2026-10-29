@@ -787,14 +787,16 @@ impl Entities {
                 if drop.components.is_none() {
                     drop.max = drop.max.min(self.recipes.max_stack(&drop.id));
                 }
-                if drop.id == block.id
+                if drop.id == minecraftoss_world::level::components::standing(&block.id)
                     && let Some(components) = kept.remove(pos)
                 {
                     drop.components = Some(components);
                 }
                 self.view.world_items.spawn_block_drop(drop, *pos);
             }
-            if let Some(components) = kept.remove(pos) {
+            if minecraft_terrain::containers::is_shulker_box(&block.id)
+                && let Some(components) = kept.remove(pos)
+            {
                 let mut boxed = ItemStack::new(block.id.clone(), 1);
                 boxed.max = boxed.max.min(self.recipes.max_stack(&boxed.id));
                 boxed.components = Some(components);

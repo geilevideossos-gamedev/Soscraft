@@ -13235,6 +13235,26 @@ mod tests {
     }
 
     #[test]
+    fn a_banner_blown_up_or_torn_from_its_wall_drops_with_its_components() {
+        use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+        let Some((mut server, mut scene)) = banner_world() else { return };
+        let ominous = ominous_components();
+        let named = serde_json::json!({"minecraft:custom_name": "Flag", "minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}]});
+        server.block_entity_components((8, 200, 8), &ominous);
+        server.block_entity_components((12, 200, 8), &named);
+        let dropped = |server: &ServerSim, id: &str| server.items().into_iter().filter(|item| item.item == id).map(|item| (item.count, item.components.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()))).collect::<Vec<_>>();
+        server.level.explode(Explosion { center: [8.5, 200.5, 8.5], radius: 1.0, fire: false, interaction: BlockInteraction::DestroyWithDecay, source: None, owner: None });
+        server.tick();
+        assert!(server.take_changes().contains(&((8, 200, 8), None)));
+        assert_eq!(dropped(&server, "minecraft:white_banner"), [(1, Some(ominous))], "a blast keeps the drop one time in its power, here always");
+        take(&mut server, &mut scene, (11, 200, 8));
+        server.tick();
+        assert!(server.take_changes().contains(&((12, 200, 8), None)), "the wall banner falls with its wall");
+        assert_eq!(dropped(&server, "minecraft:blue_banner"), [(1, Some(named))]);
+        assert!(dropped(&server, "minecraft:blue_wall_banner").is_empty());
+    }
+
+    #[test]
     fn a_snowball_pops_a_framed_item_and_a_trident_breaks_the_empty_frame() {
         use minecraftoss_core::pos::Direction;
         let Some((mut server, _)) = door_world() else { return };

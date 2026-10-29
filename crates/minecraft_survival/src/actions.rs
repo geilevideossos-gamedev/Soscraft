@@ -1716,6 +1716,13 @@ pub fn harvest(
                 .take_shulker(*pos)
                 .map(|components| (*pos, components))
         })
+        .chain(broken.iter().filter_map(|(pos, ..)| {
+            let components = terrain
+                .stream
+                .stored_block_entity(*pos)
+                .and_then(minecraftoss_world::level::components::dropped_components)?;
+            Some((*pos, minecraft_terrain::item_nbt::tag_json(&components)))
+        }))
         .collect();
     let dropping: Vec<_> = broken
         .iter()
@@ -2243,6 +2250,144 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(field("CustomName"), None);
+    }
+
+    fn place_held(level: &mut Level, globals: &Globals, stack: ItemStack, at: [f64; 3]) {
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.inventory.slots[0] = Some(stack);
+        let looking = actor(0.0, pitch_to(actor(0.0, 0.0).eye, at));
+        let _ = act(
+            &mut player,
+            level,
+            globals,
+            &mut Flat,
+            &looking,
+            press(),
+            &moved(),
+            None,
+            0.0,
+        );
+        let entities = level.entities.as_mut().expect("entities");
+        crate::level::save_server_block_entities(entities, &mut level.terrain, true);
+    }
+
+    fn break_and_collect(
+        level: &mut Level,
+        globals: &Globals,
+        mode: GameMode,
+        pos: BlockPos,
+        blast: Option<f32>,
+    ) -> Vec<(String, u8, Option<serde_json::Value>)> {
+        let mut player = crate::the_end::tests::player(minecraft_net::Dimension::Overworld);
+        player.mode = PlayerMode::new(mode);
+        let block = Scene::block(&level.terrain.scene, pos)
+            .cloned()
+            .expect("a block to break");
+        level.terrain.scene.set(pos, None);
+        level.terrain.stream.record_edits(&level.terrain.scene, &[pos]);
+        let hand_mined: Vec<BlockPos> = blast.is_none().then_some(pos).into_iter().collect();
+        let mined = vec![(pos, block, blast)];
+        let (broken, dug) = match blast {
+            Some(_) => (mined, Vec::new()),
+            None => (Vec::new(), mined),
+        };
+        let _ = harvest(&mut player, level, globals, (broken, dug), &hand_mined, FEET);
+        let entities = level.entities.as_mut().expect("entities");
+        std::mem::take(&mut entities.view.world_items.entities)
+            .into_iter()
+            .map(|item| (item.stack.id, item.stack.count, item.stack.components))
+            .collect()
+    }
+
+    #[test]
+    fn a_broken_banner_drops_with_its_patterns_and_name() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.is_file() {
+            return;
+        }
+        let Some((mut level, mut globals)) = level_and_globals() else {
+            return;
+        };
+        globals.data = crate::data::GameData::load(None, Some(jar));
+        let terrain = &mut level.terrain;
+        let mut entities = Entities::new(
+            &terrain.stream,
+            minecraft_net::Dimension::Overworld,
+            0,
+            &globals.data,
+            None,
+            None,
+        );
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let chunk = terrain
+                    .stream
+                    .load_chunk_now(minecraftoss_core::ChunkPos::new(x, z));
+                entities.load_chunk(&chunk);
+            }
+        }
+        terrain
+            .scene
+            .set((4, 202, 7), Some(Block::new("minecraft:stone")));
+        for x in 0..10 {
+            for z in 0..10 {
+                entities.placed(&terrain.scene, (x, 200, z));
+            }
+        }
+        entities.placed(&terrain.scene, (4, 202, 7));
+        level.entities = Some(entities);
+        let ominous = ominous_banner();
+        let standing = (4, 201, 6);
+        let floor = [4.5, 201.0, 6.5];
+        let survival = GameMode::Survival;
+        place_held(&mut level, &globals, ominous.clone(), floor);
+        assert_eq!(
+            break_and_collect(&mut level, &globals, survival, standing, None),
+            [(
+                "minecraft:white_banner".to_owned(),
+                1,
+                ominous.components.clone()
+            )],
+            "broken by hand"
+        );
+        let mut named = ItemStack::new("minecraft:blue_banner", 1);
+        named.components = Some(serde_json::json!({
+            "minecraft:custom_name": "Flag",
+            "minecraft:banner_patterns": [{"pattern": "minecraft:creeper", "color": "black"}]
+        }));
+        place_held(&mut level, &globals, named.clone(), [4.5, 202.5, 7.0]);
+        let wall = (4, 202, 6);
+        let hung = Scene::block(&level.terrain.scene, wall).map(|b| b.id.key());
+        assert_eq!(hung.as_deref(), Some("minecraft:blue_wall_banner"));
+        assert_eq!(
+            break_and_collect(&mut level, &globals, survival, wall, None),
+            [("minecraft:blue_banner".to_owned(), 1, named.components)],
+            "a wall banner drops the standing item"
+        );
+        place_held(&mut level, &globals, ominous.clone(), floor);
+        assert_eq!(
+            break_and_collect(&mut level, &globals, survival, standing, Some(1.0)),
+            [(
+                "minecraft:white_banner".to_owned(),
+                1,
+                ominous.components.clone()
+            )],
+            "an MW2 blast"
+        );
+        place_held(&mut level, &globals, ItemStack::new("minecraft:red_banner", 1), floor);
+        assert_eq!(
+            break_and_collect(&mut level, &globals, survival, standing, None),
+            [("minecraft:red_banner".to_owned(), 1, None)],
+            "a plain banner drops plain"
+        );
+        place_held(&mut level, &globals, ominous, floor);
+        assert!(
+            break_and_collect(&mut level, &globals, GameMode::Creative, standing, None).is_empty(),
+            "creative breaking drops nothing"
+        );
     }
 
     #[test]
