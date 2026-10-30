@@ -40,7 +40,7 @@ The Minecraft side for one player is done (round 7). **Multiplayer (1.4) was bui
     - It adds `-j 8`, refuses other job counts and `cargo fmt`, and sets `CARGO_TARGET_DIR` (default `D:\iw4l-target`, or `+target=D:\dir`).
     - It also puts cargo on the `Path` and sets `MINECRAFTOSS_ROOT` to the downloaded 26.3 data when it is not set, so the tests that need the real game data run.
     - It holds one of two machine-wide slots, so at most two cargo processes run at once. More have run the PC out of memory.
-    - Gentle mode while the owner plays on this PC: `%LOCALAPPDATA%\iw4l-cargo-slot.txt` with `slots=1`, `jobs=4` and `priority=low` runs one cargo at a time with `-j 4` below normal priority. Delete the file, or set `slots=2` and `jobs=8`, for full speed when the owner is away.
+    - Gentle mode while the owner plays on this PC: `%LOCALAPPDATA%\iw4l-cargo-slot.txt` with `slots=1`, `jobs=4` and `priority=low` runs one cargo at a time with `-j 4` below normal priority. For full speed when the owner is away, set `slots=2`, `jobs=4` and `priority=low`; never `jobs=8` with two slots and never delete the file (the PC crashed under two slots at `-j 8` on 2026-10-28).
     - `--release`, `--workspace`, `--profile` and `+exclusive` take both slots, so a release build or the full suite runs alone.
     - If its shell is killed, cargo and rustc die with it.
     - PowerShell drops a bare `--` when calling a script, so quote it: `& scripts\cargo-slot.ps1 clippy -p x --locked '--' -A clippy::approx_constant`.
@@ -63,13 +63,7 @@ The Minecraft side for one player is done (round 7). **Multiplayer (1.4) was bui
     2. Run `scripts\full-suite.ps1 +target=<the track's target dir>` there, so the merged code is built in a dir that has only seen this worktree.
     3. In `C:\Dev\mashup-crafting`: `git merge --ff-only <merge commit>`, then push to `origin`.
   - Release builds only when the owner asks for one.
-- **Release build:** `& scripts\cargo-slot.ps1 build --release --locked -p launcher` (ThinLTO, 16 codegen units: about 21 min clean, 13-14 min after an edit to a low crate such as `minecraft_net`).
-  - The old fat-LTO profile is `--profile fat` (output `D:\iw4l-target\fat\iw4l.exe`). Its link is one rustc thread at about 8 GB and took 26-50 min while the PC was in use.
-  - `cargo-slot.ps1` keeps cargo, rustc and the linker off Windows power throttling, which otherwise moves them to the E-cores while another window (a game) is in front.
-  - Output: `D:\iw4l-target\release\iw4l.exe`.
-  - Copy it to `C:\Games\Mashup\2010-Rust-Rewrite-Mashup\iw4l-survival.exe`, after keeping the old one as `iw4l-survival-<old commit>.exe`.
-  - When multiplayer is to be tested, add `-p iw4l-master` to the same build and copy `D:\iw4l-target\release\iw4l-master.exe` (the relay) next to the exe.
-  - A mid-round test build may use `--profile play` instead (the same code at opt-level 3 without fat LTO: about 10 min clean, seconds after an edit; output `D:\iw4l-target\play\iw4l.exe`). The last build of a round is always `--release`.
+- **Release build:** the `release-build` skill (`.claude/skills/release-build/SKILL.md`) has the command, its timings, the backup and copy into the game folder, the relay and the protocol bump.
 - **Test kit:** `IW4L_MINECRAFT_KIT=` in the `.env` next to the exe.
   - At most 27 stacks, because it only fills the 27 backpack slots.
   - Always give the kit line in its own code block so it isn't cut when copied.
