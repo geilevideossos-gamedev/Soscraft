@@ -2,7 +2,9 @@
 
 State of branch `minecraft-survival` after round 8 (2026-10-13). It is ahead of upstream `main` (f608f85) and 0 behind. Rules, goal and roadmap: [../CLAUDE.md](../CLAUDE.md).
 
-Round 7 finished the single-player Minecraft side: the crate split, saving everything vanilla saves, the dimension switch, the Nether and the End with the dragon fight. Round 8 fixed what the owner's test of round 7 found (end gateways, eyes of ender, vanilla mining speed, the mob in spawners, the server tick under overload and `/tick`), added piglins, brutes, bartering, hoglins, zoglins, striders and riding, sleeping, shulkers and levitation, End cities and item frames, the elytra on the MW2 body, skating in Minecraft worlds, the spyglass, cave spiders and the Shift+G tactical grenade, fixed the black MW2 body and guns, and added multiplayer for 2-4 players: see [Multiplayer today](#multiplayer-today). The round's plan and track logs are in [PROGRESS.md](PROGRESS.md) and `docs/round8/`.
+This doc covers the Minecraft side of Soscraft. The goal is Minecraft (everything except the player model) with MW2 guns, player models and movement, Elden Ring bosses, ARK: The Island creatures with ARK taming, Skate 3 skateboarding and later one Minecraft-style settings menu for every game, played by 4 to 5 players in one world hosted and saved on the host's Windows PC. Friends need only the exe, Minecraft Java and MW2; the host loads the Elden Ring, ARK and Skate 3 assets from its own installs and sends them to friends when they join. Next on the roadmap: finish round 10, then the internet test with 4 to 5 real friends.
+
+Round 7 finished the single-player Minecraft side: the crate split, saving everything vanilla saves, the dimension switch, the Nether and the End with the dragon fight. Round 8 fixed what the owner's test of round 7 found (end gateways, eyes of ender, vanilla mining speed, the mob in spawners, the server tick under overload and `/tick`), added piglins, brutes, bartering, hoglins, zoglins, striders and riding, sleeping, shulkers and levitation, End cities and item frames, the elytra on the MW2 body, skating in Minecraft worlds, the spyglass, cave spiders and the Shift+G tactical grenade, fixed the black MW2 body and guns, and added multiplayer: see [Multiplayer today](#multiplayer-today). The round's plan and track logs are in [PROGRESS.md](PROGRESS.md) and `docs/round8/`.
 
 ## Implemented
 
@@ -381,6 +383,7 @@ One list of what is open after round 8. Round 8 finished X6 and all of N6 but lo
   - A code that is still wrong after the clean-up starts a world of the friend's own, with `master launch disabled:` in the log (MW2 launch code older than track E).
   - When the host quits, a friend's game goes back to the menu without saying why (the design's "The host closed the world" line is not shown). There is no automatic reconnect, no host migration and no world without the host.
   - The trust model is friends only: anyone with the address, the password and the code can join, and the host's checks stop mistakes, not cheaters. Set `IW4L_MASTER_PASSWORD`.
+- **Not built yet for the goal:** a friend's player is saved when they leave and with every autosave (every 5 minutes at 20 ticks a second), but not when they join. The host does not send any Elden Ring, ARK or Skate 3 assets to friends yet.
 - **Limits:** every player sees the server's view distance (8 chunks); each open level keeps its own chunk generator pool; every tracked mob's move is sent every tick (no vanilla per-kind intervals or deltas); more than 2 players is untested. A player's enchanting seed is not saved (vanilla's `XpSeed`), so the table offers new enchantments after a restart.
 
 ### Dimensions

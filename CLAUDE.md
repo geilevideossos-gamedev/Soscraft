@@ -1,26 +1,41 @@
 # CLAUDE.md
 
-Fork of chasmlol/2010-rust-rewrite-mashup: a Rust/Bevy rewrite of MW2 (IW4) with a Minecraft 26.3 world. Detailed state, limitations and testing: [docs/MINECRAFT-SURVIVAL.md](docs/MINECRAFT-SURVIVAL.md).
+Soscraft, a fork of chasmlol/2010-rust-rewrite-mashup: a Rust/Bevy rewrite of MW2 (IW4) with a Minecraft 26.3 world. Detailed state, limitations and testing: [docs/MINECRAFT-SURVIVAL.md](docs/MINECRAFT-SURVIVAL.md).
 
 ## Goal
 
-Play online with 2-4 friends in one persistent Minecraft world, with MW2 weapons, movement and character models. Later, fight Elden Ring bosses. Skate 3 movement comes after that.
+Soscraft combines:
+
+- **Minecraft:** everything except the player model.
+- **MW2:** guns, player models and movement.
+- **Elden Ring:** bosses to fight in the Minecraft world.
+- **ARK: The Island:** creatures that spawn in fitting Minecraft biomes, with ARK taming: knock them out, keep their torpor up, feed them, saddle and ride them.
+- **Skate 3:** skateboarding.
+- **Later, one main settings menu** in Minecraft's style and UI, with the relevant settings of every game.
+
+**Multiplayer:** 4 to 5 players in one world, hosted and saved on the host's Windows PC.
+
+- Friends play on Windows with the exe and need only Minecraft Java and the original MW2 installed.
+- Elden Ring, ARK and Skate 3 assets are needed only on the host. The host loads them from its own installs and sends them to friends when they join.
+- Each friend's character is saved on the host on every connect and disconnect, and regularly in between.
+
+**How we build it:**
+
+- Rust first. Use another language or tool for a part only where it is clearly better, and say why in the docs.
+- Use the reference repos (see References) instead of inventing everything, and the Context7 MCP for current library docs.
 
 ## Roadmap
 
-The Minecraft side for one player is done (round 7). **Multiplayer (1.4) was built in round 8 and waits for the owner's two-window and internet tests** (`docs/round8/track-e-tests.md`).
+The Minecraft side is built for the host and friends: survival, saving in the vanilla 26.3 format, all three dimensions with the dragon fight, and multiplayer through our MW2 relay with a join code (rounds 7 to 10). Next, in this order:
 
-1. **Multiplayer, saving and dimensions**
-   1. Persistent world: **done.** Everything vanilla saves is saved in the vanilla 26.3 format: the world, all three dimensions, block entities and one player file per UUID.
-   2. Crate split: **done.** `minecraft_survival` holds `Server` (world-wide state), a `Level` per dimension and a `Player` per UUID; `minecraft_net` holds the shared ids.
-   3. Dimension switch and the Nether: **done.** Round 8 (track B) added most of N6: piglins, brutes, bartering, hoglins, zoglins and striders. Only lodestones are left for "Finish survival".
-   4. Multiplayer with 2-4 friends: **built, waiting for the owner's test.** The host owns the world and the friends join through our MW2 relay with a join code. Every player, every occupied level and the dragon fight run on the host, and each dimension has its own MW2 collision band. Design and what was left: `docs/MULTIPLAYER.md` (section 20). Owner's test: `docs/round8/track-e-tests.md`. Friend's install: `docs/round8/friend-install.md`.
-   5. The End: **done.** Round 8 finished X6: gateway travel to the outer islands (track A), shulkers, levitation, End cities and item frames (track C). It was built before multiplayer, with all state per player and per level.
-2. Finish survival: lodestones, trial spawners, the open limitations in the state doc and the multiplayer leftovers (`docs/MULTIPLAYER.md` section 20: skating for friends, trading screens, Minecraft melee between players, the friend's first-person hand). The open non-vanilla items are listed in `docs/PROGRESS.md` (Decisions), such as a ridden strider standing still under `/tick freeze`.
-3. One Elden Ring boss as a proof of concept
-4. Skate 3. Skating already works in Minecraft worlds for the host (round 8, track D), but not yet for friends.
+1. **Finish round 10:** w2, f3, e2b, the e1b review, d0b, M1, M3 and M2, and the known gaps from the release test files (`docs/round10/release-*-tests.md`). Hand-over: `docs/PROGRESS.md`.
+2. **The internet test with real friends,** for 4 to 5 players. It also checks that friends really need only the exe, Minecraft Java and MW2. Friend's install: `docs/round8/friend-install.md`; open tasks for it are in `docs/PROGRESS.md`.
+3. **Elden Ring bosses:** Margit first, then more. The host loads the assets and sends them to friends. Design: `docs/ELDEN-RING-BOSSES.md`.
+4. **ARK creatures** with ARK taming in fitting biomes, with assets from the host only.
+5. **Skate 3:** build it out, starting with skating for friends. Skating already works in Minecraft worlds for the host.
+6. **The Minecraft-style main settings menu** for all games.
 
-**Why the crate split came before the dimension switch:** both rewrote the same code, and travel needed the split's seam (keep the player, swap the level). Multiplayer needs several dimensions loaded at once, because friends can be in different dimensions.
+The open survival limits and multiplayer leftovers (`docs/MINECRAFT-SURVIVAL.md` Limitations, `docs/MULTIPLAYER.md` section 20) are picked up along the way.
 
 **All three dimensions:** everything built for saving and multiplayer must handle all three, with a server that can run several levels at once. The world folder uses the vanilla 26.3 layout. 26.3 no longer uses `DIM-1` and `DIM1` (checked with javap: `DimensionType.getStorageFolder`). Every dimension lives in `dimensions/minecraft/<overworld|the_nether|the_end>/` with `region`, `entities`, `poi` and `data`. `level.dat` and the global `data/` folder sit at the world root, and player files go in `players/data/<uuid>.dat`.
 

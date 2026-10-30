@@ -8,10 +8,10 @@ The plan:
 
 - **Minecraft survival** with MW2 guns, player models and movement.
 - **Elden Ring bosses** to fight in the Minecraft world.
-- **ARK: The Island creatures** and taming.
+- **ARK: The Island creatures** that spawn in fitting Minecraft biomes, with ARK taming: knock them out, keep their torpor up, feed them, saddle and ride them.
 - **Skate 3 skateboarding** anywhere in the world.
-- **One Minecraft-style settings menu** for all of it.
-- **Multiplayer for 4 to 5 players** on Windows.
+- **Later, one main settings menu** in Minecraft's style and UI, with the relevant settings of every game.
+- **Multiplayer for 4 to 5 players** in one world, hosted and saved on the host's Windows PC. Each friend's character is saved on the host.
 
 ## What works today
 
@@ -27,7 +27,7 @@ The plan:
 Soscraft runs on Windows.
 
 - **Every player:** the Soscraft exe, Minecraft Java Edition and the original Call of Duty: Modern Warfare 2 (2009, PC, with multiplayer; the Steam version works).
-- **Only the host:** Elden Ring, ARK (for The Island) and Skate 3 (the Xbox 360 version), for the bosses, creatures and skating.
+- **Only the host:** Elden Ring, ARK (for The Island) and Skate 3 (the Xbox 360 version), for the bosses, creatures and skating. The host loads their assets from its own installs and sends them to friends when they join. That sending is not built yet.
 
 No game files are in this repository. The game reads MW2 from your own install, and on its first start it downloads Minecraft 26.3's files (about 125 MB) from Mojang's own servers into `iw4l-artifacts\minecraft-26.3`.
 
@@ -55,6 +55,17 @@ The world is saved in `iw4l-artifacts\saves`, named by `IW4L_MINECRAFT_WORLD` in
 3. **To play:** the host starts `Host Minecraft World.bat` and sends the join code from the chat. Each friend starts `Join Minecraft World.bat` and pastes the code.
 
 Every step, and what to do when something fails: [docs/round8/friend-install.md](docs/round8/friend-install.md). Host and friends must run the same build.
+
+## Roadmap
+
+1. Finish the current round of Minecraft work (round 10).
+2. The internet test with 4 to 5 real friends.
+3. Elden Ring bosses: Margit first, then more.
+4. ARK creatures with ARK taming.
+5. Skate 3, starting with skating for friends.
+6. The Minecraft-style main settings menu for all games.
+
+The full roadmap and the rules are in [CLAUDE.md](CLAUDE.md).
 
 ## More
 
