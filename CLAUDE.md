@@ -28,7 +28,7 @@ The Minecraft side for one player is done (round 7). **Multiplayer (1.4) was bui
 
 - **Branch and remotes**
   - Work on `minecraft-survival`.
-  - Push only to `origin` (geilevideossos-gamedev/mashup-crafting). Never push to `upstream` (chasmlol).
+  - Push only to `origin` (geilevideossos-gamedev/Soscraft, public). Never push to `upstream` (chasmlol).
   - One commit per fix or feature. Subjects are plain English with no prefix, e.g. "Minecraft campfires cook food like vanilla".
 - **Code style**
   - No code comments of any kind: no `//`, `/* */`, `///` or `//!`.
@@ -86,7 +86,7 @@ Cloned into `C:\Dev\references\`, outside this repo:
 
 ## Where upstream docs are wrong for this fork
 
-AGENT.md, CONTEXT.md, README.md, CONTRIBUTING.md and docs/ come from upstream and stay unedited so upstream merges stay clean. For this fork:
+AGENT.md, CONTEXT.md, CONTRIBUTING.md and docs/ come from upstream and stay unedited so upstream merges stay clean. README.md is the fork's own Soscraft README and is kept current. For this fork:
 
 - **Workflow**
   - There is no `make`, no `make mr`, no `context/` folder and no `externals/`. References live in `C:\Dev\references\`.
@@ -96,8 +96,8 @@ AGENT.md, CONTEXT.md, README.md, CONTRIBUTING.md and docs/ come from upstream an
   - CONTRIBUTING.md's `cargo fmt --all` would reformat upstream files, so don't run it.
 - **Tests and comments:** "Tests live only in `crates/approved_tests`" (CONTEXT.md) does not apply. The fork's comment rule is stricter than CONTEXT.md's: no comments at all.
 - **README.md**
-  - The README was already edited by the fork up to ac0c791. It has no feature notes from round 4 onward, and none of the fork goal.
-  - Its "Minecraft World.bat" starts upstream's `iw4l.exe`, not `iw4l-survival.exe`.
+  - It is the Soscraft README: the goal, what works today, building, running, how friends join, the licences and the credits. Keep it short and true to the current state, and link docs/ for the details.
+  - Soscraft is GPLv3 (`LICENSE`). The upstream parts stay Apache-2.0 (`LICENSE-APACHE` with `NOTICE`), and the licences in `third_party/` stay as they are.
 - **Upstream's multiplayer docs are MW2 only:** `docs/DUO.md` and `docs/MASTER.md` cover MW2 matches only. The fork's Minecraft multiplayer, through the same relay, is `docs/MULTIPLAYER.md`, two games on one PC run with `scripts\mp-local.ps1`, and a friend's install is `docs/round8/friend-install.md`.
 - **Build docs:** `docs/BUILD.md` is Linux-first. This fork builds natively on Windows with MSVC.
 - **Vendored code:** `third_party/minecraftoss` is MinecraftOSS `4013a68`, and the fork has patched 73 of its files and added 37 (as of round 8). If upstream ever re-vendors a newer MinecraftOSS, diff our patches first.

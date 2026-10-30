@@ -5,7 +5,7 @@ Copyright 2026 vladtrc
 IW4L was originally developed by vladtrc.
 https://github.com/vladtrc/iw4L
 
-IW4L is licensed under the Apache License, Version 2.0; see LICENSE.
+IW4L is licensed under the Apache License, Version 2.0; see LICENSE-APACHE.
 
 2010 Rust Rewrite Mashup is a fork of IW4L by chasmlol that adds Skate 3's
 skating and a Minecraft world to it.
