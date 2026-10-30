@@ -6,7 +6,7 @@ How it works in one paragraph: the host's game runs the whole world. The host's 
 
 ## Part A: the host, once
 
-Do this on the owner's PC, in PowerShell in the repo (`C:\Dev\mashup-crafting`). The game folder is `C:\Games\Mashup\2010-Rust-Rewrite-Mashup`.
+Do this on the owner's PC, in PowerShell in the repo (`C:\Dev\Soscraft\mashup-crafting`). The game folder is `C:\Games\Mashup\2010-Rust-Rewrite-Mashup`.
 
 1. **The game build.** The friend must run exactly the same exe as the host. With release 2 that is `iw4l-survival.exe`. Every command below passes it with `-Exe iw4l-survival.exe`; without `-Exe` the script takes the newest `iw4l-mp-*.exe` in the game folder and stops if there is none.
 2. **The relay.** Build it once and copy it next to the game:

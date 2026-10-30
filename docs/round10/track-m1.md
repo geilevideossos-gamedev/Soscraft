@@ -33,7 +33,7 @@ Paths and line numbers are `minecraft-survival` at `d1a3d028`. Re-check every li
 
 ### Base, worktree and waiting
 
-- Branch `track-m1`, worktree `C:\Dev\mc-wt\track-m1`, target dir `D:\iw4l-wt\track-m1`, track log `docs/round10/track-m1-log.md`. One run spec per segment, `docs/round10/runs/m1a.json` to `m1i.json`, with bases `r10-m1a-base` to `r10-m1i-base`.
+- Branch `track-m1`, worktree `C:\Dev\Soscraft\mc-wt\track-m1`, target dir `D:\iw4l-wt\track-m1`, track log `docs/round10/track-m1-log.md`. One run spec per segment, `docs/round10/runs/m1a.json` to `m1i.json`, with bases `r10-m1a-base` to `r10-m1i-base`.
 - The track starts on `minecraft-survival` once D0's segment d0a (the registry with silverfish and endermites as its proof) is merged there.
 - **Before every segment the orchestrator merges `minecraft-survival` into `track-m1`**, so each segment sees what other tracks landed. Each segment merges back on its own (full suite in the track's worktree, then a fast-forward), so it can go into the next daily release.
 - What a segment waits for:
@@ -919,7 +919,7 @@ IW4L_MINECRAFT_KIT=minecraft:panda_spawn_egg*16,minecraft:bamboo*64,minecraft:bo
 
 This is row 16 of `docs/round10/mobs.md`. The fox is an `Animal` on the goal framework, like the wolf (`wolf_ai.rs`). It registers as `MonsterKind::Registered("minecraft:fox")` with a `MonsterSpec` (D0-2.4) and keeps its goal state in `GoalExtra`. It needs only D0's segment d0a, and builds on M1-1 (`animal_goals.rs` with `MoveToBlockGoal`, `family_goal_step_with`) and M1-3 (H1 holding still, H2 crumbs, H4 thunder).
 
-### What exists today (`C:\Dev\mashup-crafting`, `minecraft-survival`)
+### What exists today (`C:\Dev\Soscraft\mashup-crafting`, `minecraft-survival`)
 
 - **Spawning is already complete and matches 26.3** (checked against the javap below), so there is **no `families/land.rs` row** (D0-4: built-in rows keep working):
   - `natural_spawner.rs:284` size 0.6 × 0.7, `NoRestrictions`, `MotionBlockingNoLeaves`;
@@ -1301,7 +1301,7 @@ IW4L_MINECRAFT_KIT=minecraft:fox_spawn_egg*16,minecraft:chicken_spawn_egg*16,min
 
 Family `goats` in group `land`, kind `minecraft:goat` (mob list row 17). Its hit-key byte and `Family::KEY` are **50**. It is a brain family (D0-2.4): the brain lives in the state type, with no `MonsterSpec`. Vanilla facts are from javap on the 26.3 `client.jar` and its data this round, unless marked "javap during the work". Goats run before armadillos and sniffers because they create the shared `animal_brain.rs`, and they create `long_jump.rs` for M2's frogs.
 
-### What exists today (`C:\Dev\mashup-crafting`, `minecraft-survival`)
+### What exists today (`C:\Dev\Soscraft\mashup-crafting`, `minecraft-survival`)
 
 Paths under `entities/` are in `third_party/minecraftoss/entities/src/`.
 
@@ -1949,7 +1949,7 @@ IW4L_MINECRAFT_KIT=minecraft:armadillo_spawn_egg*16,minecraft:brush,minecraft:br
 
 Family `sniffers` in group `land`, kind `minecraft:sniffer` (mob list row 46). Its hit-key byte and `Family::KEY` are **56**. It is a brain family (D0-2.4): the brain lives in the state type, with no `MonsterSpec`. Sniffer eggs are a block with a scheduled tick in the vendored world crate (D0-3, "Behaviour that still needs a shared file"). Vanilla facts are from javap on the 26.3 `client.jar` and its data this round, unless marked "javap during the work". Sniffers build on M1-5's `animal_brain.rs`, M1-3's gift hook (H3) and M1-6's shadow hook.
 
-### What exists today (`C:\Dev\mashup-crafting`, `minecraft-survival`)
+### What exists today (`C:\Dev\Soscraft\mashup-crafting`, `minecraft-survival`)
 
 Paths under `entities/`, `world/`, `player/`, `core/` and `generator/` are in `third_party/minecraftoss/<crate>/src/`.
 
@@ -2642,7 +2642,7 @@ IW4L_MINECRAFT_KIT=minecraft:parrot_spawn_egg*16,minecraft:wheat_seeds*64,minecr
 
 ## M1-10. Bees, hives and honey (segment m1i, after d0b: groups `bees-live`, `bees-drawn`, `bees-hives`, `bees-homes`, `bees-pollination`, `bees-honey`)
 
-Family `bees`, group `land`, byte and `Family::KEY` **57**, kind `minecraft:bee` (row 44). Bees fly with D0's P3 (segment d0b). Their homes are bee nests and beehives, which are block entities. A hive ticks in the vendored level and hands its bees back to the entity world as saved tags. Lines refer to `C:\Dev\mashup-crafting` at `d1a3d028`; names follow `track-d0.md`. Re-check each line before editing. Bees run last: they reuse M1-9's flying wiring, M1-4's `spared_blocks` and M1-3's `World::raining` (H4).
+Family `bees`, group `land`, byte and `Family::KEY` **57**, kind `minecraft:bee` (row 44). Bees fly with D0's P3 (segment d0b). Their homes are bee nests and beehives, which are block entities. A hive ticks in the vendored level and hands its bees back to the entity world as saved tags. Lines refer to `C:\Dev\Soscraft\mashup-crafting` at `d1a3d028`; names follow `track-d0.md`. Re-check each line before editing. Bees run last: they reuse M1-9's flying wiring, M1-4's `spared_blocks` and M1-3's `World::raining` (H4).
 
 ### What exists today
 

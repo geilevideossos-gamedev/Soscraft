@@ -18,7 +18,7 @@ Every family plugs into D0's registry: its own files plus one registration line 
 
 ### Start, segments and waits
 
-- **Branch** `track-m2`, worktree `C:\Dev\mc-wt\track-m2`, target dir `D:\iw4l-wt\track-m2`. The branch starts from `minecraft-survival` once D0's segment **d0a** (registry-core ... silverfish-drawn) is merged. Each segment's base is tagged `r10-m2<letter>-base` before it starts, and its run spec is `docs/round10/runs/m2<letter>.json`.
+- **Branch** `track-m2`, worktree `C:\Dev\Soscraft\mc-wt\track-m2`, target dir `D:\iw4l-wt\track-m2`. The branch starts from `minecraft-survival` once D0's segment **d0a** (registry-core ... silverfish-drawn) is merged. Each segment's base is tagged `r10-m2<letter>-base` before it starts, and its run spec is `docs/round10/runs/m2<letter>.json`.
 - **d0b is not needed by any M2 group.** d0b's flying navigation builds on `path_search.rs` (D0-6.2); M2's evaluator split is in `walk_path.rs` (M2-1). If d0b chose `walk_path.rs` and merged before `water-paths` starts, `water-paths` plugs into that split and skips its first commit.
 - **Waits.** Before a segment that needs another track's work, the orchestrator merges that work into `minecraft-survival` and `minecraft-survival` into `track-m2`, as it does for D0. If one group's wait is not met when its segment starts, the orchestrator moves only that group to the next segment and the others run. No group builds a copy of another track's piece (the owners are below).
 

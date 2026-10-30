@@ -513,7 +513,7 @@ Margit's character id could not be checked without the game; look it up by name 
 ---
 
 ## 15. What the reference teaches (ideas only)
-The reference (`C:\Dev\references\ELDEN-RING-Combat-Rewrite`, Rust on Bevy 0.19) recreates the Elden Ring player character from the game's own files: timings, root motion, cancels, i-frames, weapon hit lines, guard, poise and hit-stop. Its only enemy is a sparring dummy that cycles four swings of two kinds (an overhead slam and a low sweep). It has no licence file, so we read it and never copy it. What we take, as ideas:
+The reference (`C:\Dev\Soscraft\references\ELDEN-RING-Combat-Rewrite`, Rust on Bevy 0.19) recreates the Elden Ring player character from the game's own files: timings, root motion, cancels, i-frames, weapon hit lines, guard, poise and hit-stop. Its only enemy is a sparring dummy that cycles four swings of two kinds (an overhead slam and a low sweep). It has no licence file, so we read it and never copy it. What we take, as ideas:
 
 1. **The same data shape, hand-written or extracted.** An action is a table of windows, cancels, turn locks, root motion and hit lines. We write Margit by hand in that shape; a baker fills the same shape later. Unlike the reference, a missing baked file never stops the build: the hand-written table is the fallback.
 2. **The simulation says which clip and which frame; the view only draws it.** Our host steps the boss; `MobShow` carries the clip and the clock; every viewer poses him locally.

@@ -53,7 +53,7 @@ The Minecraft side for one player is done (round 7). **Multiplayer (1.4) was bui
 - **Build workflow**
   - While implementing: `check -p` and `test -p` on only the crates that changed, and `check -p launcher` before a commit that touches game code.
   - Once per track: clippy on the touched crates, and the full suite `scripts\full-suite.ps1` (workspace tests without doc-tests, plus the five minecraftoss crates with their stand-in files) after the track is merged.
-  - Parallel tracks: one git worktree in `C:\Dev\mc-wt\<name>`, one branch and one target dir (`D:\iw4l-wt\<name>`) each, merged into `minecraft-survival` one at a time with the full suite after each merge.
+  - Parallel tracks: one git worktree in `C:\Dev\Soscraft\mc-wt\<name>`, one branch and one target dir (`D:\iw4l-wt\<name>`) each, merged into `minecraft-survival` one at a time with the full suite after each merge.
   - Tracks run with the saved workflow `.claude/workflows/track-runner.js` (the `track-runner` workflow). Args: `{track, worktree, branch, target, base, briefs, groups:[{key,prompt}], avoid?, notes?, skipReview?}`.
     - It runs one agent per commit group in order, each continuing from what is already committed, then an adversarial review that fixes real defects in new commits, then clippy and the tests of the touched crates.
     - Each track keeps a log `docs/round<N>/track-<name>-log.md` with its commits, decisions, the owner's test steps and one combined kit line.
@@ -61,7 +61,7 @@ The Minecraft side for one player is done (round 7). **Multiplayer (1.4) was bui
   - Merging a track, one at a time:
     1. In the track's worktree: `git checkout --detach minecraft-survival`, then `git merge --no-ff <track>`.
     2. Run `scripts\full-suite.ps1 +target=<the track's target dir>` there, so the merged code is built in a dir that has only seen this worktree.
-    3. In `C:\Dev\mashup-crafting`: `git merge --ff-only <merge commit>`, then push to `origin`.
+    3. In `C:\Dev\Soscraft\mashup-crafting`: `git merge --ff-only <merge commit>`, then push to `origin`.
   - Release builds only when the owner asks for one.
 - **Release build:** the `release-build` skill (`.claude/skills/release-build/SKILL.md`) has the command, its timings, the backup and copy into the game folder, the relay and the protocol bump.
 - **Test kit:** `IW4L_MINECRAFT_KIT=` in the `.env` next to the exe.
@@ -73,7 +73,7 @@ The Minecraft side for one player is done (round 7). **Multiplayer (1.4) was bui
 
 ## Reference repos (read-only, not integrated)
 
-Cloned into `C:\Dev\references\`, outside this repo:
+Cloned into `C:\Dev\Soscraft\references\`, outside this repo:
 
 - **[chasmlol/skycraft](https://github.com/chasmlol/skycraft):** Skyrim x Minecraft.
   - A Fabric mod and an SKSE plugin talk over shared memory.
@@ -89,7 +89,7 @@ Cloned into `C:\Dev\references\`, outside this repo:
 AGENT.md, CONTEXT.md, CONTRIBUTING.md and docs/ come from upstream and stay unedited so upstream merges stay clean. README.md is the fork's own Soscraft README and is kept current. For this fork:
 
 - **Workflow**
-  - There is no `make`, no `make mr`, no `context/` folder and no `externals/`. References live in `C:\Dev\references\`.
+  - There is no `make`, no `make mr`, no `context/` folder and no `externals/`. References live in `C:\Dev\Soscraft\references\`.
   - The branch is `minecraft-survival`, not `master`. Even upstream's default branch is `main`.
   - Ignore the "rustfmt the touched files", "squash onto master" and `make publish-check` landing and public-push recipes in CONTEXT.md and AGENT.md.
   - We keep small descriptive commits and push only to origin.
