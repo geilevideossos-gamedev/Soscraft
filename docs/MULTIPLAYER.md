@@ -849,7 +849,7 @@ The steps:
    IW4L_MASTER_SERVER_NAME=iw4l-prod
    IW4L_MASTER_CA_CERT=<game folder>\iw4l-artifacts\mp-local\certs\iw4l-ca.pem
    IW4L_MASTER_HOST_NAME=Local world
-   IW4L_MASTER_MAX_PLAYERS=4
+   IW4L_MASTER_MAX_PLAYERS=5
    IW4L_MASTER_STATUS_FILE=<host folder>\master.status
    IW4L_SETTINGS_PATH=<host folder>\settings.cfg
    IW4L_MINECRAFT_WORLD=<world>
@@ -916,7 +916,7 @@ The internet path is checked in M1 with plain MW2 (`-Map iw4:mp_rust`), because 
    - Allow it through the Windows firewall for UDP on private and public networks.
    - Forward **UDP 4433** on the router to the PC.
    - Alternatively run the master on a VPS (`docs/MASTER.md`), with the patched build.
-4. **Host:** the `.env` gets `IW4L_MASTER_PASSWORD=<room password>`. Start the world from `Host Minecraft World.bat` (`-Bats`). It sets `IW4L_MASTER_HOST_NAME`, `IW4L_MASTER_MAX_PLAYERS=4`, `IW4L_MASTER_ADDR=127.0.0.1:4433`, `IW4L_MASTER_SERVER_NAME=iw4l-prod`, `IW4L_MASTER_CA_CERT` and `IW4L_MASTER_STATUS_FILE=iw4l-artifacts\master.status` (its `room=` line is the join code) itself, and starts `iw4l-master.exe serve --bind 0.0.0.0:4433` minimised when no relay is running, so step 3 is done by the `.bat`. To host from the menu instead, put the three `IW4L_MASTER_ADDR`, `_SERVER_NAME` and `_CA_CERT` lines in `.env`.
+4. **Host:** the `.env` gets `IW4L_MASTER_PASSWORD=<room password>`. Start the world from `Host Minecraft World.bat` (`-Bats`). It sets `IW4L_MASTER_HOST_NAME`, `IW4L_MASTER_MAX_PLAYERS=5`, `IW4L_MASTER_ADDR=127.0.0.1:4433`, `IW4L_MASTER_SERVER_NAME=iw4l-prod`, `IW4L_MASTER_CA_CERT` and `IW4L_MASTER_STATUS_FILE=iw4l-artifacts\master.status` (its `room=` line is the join code) itself, and starts `iw4l-master.exe serve --bind 0.0.0.0:4433` minimised when no relay is running, so step 3 is done by the `.bat`. To host from the menu instead, put the three `IW4L_MASTER_ADDR`, `_SERVER_NAME` and `_CA_CERT` lines in `.env`.
 5. **Tell the friend** the public IP address, the room password and the join code from the chat.
 
 ### 18.2 The friend once
@@ -1334,7 +1334,7 @@ M4 also needs a creeper spawn egg; the friend gets it with `/give Friend creeper
   - bots in a Minecraft multiplayer world;
   - a vanilla player mesh instead of the MW2 soldier (the `bot_model` retarget path, `remote_body.rs:1236`);
   - skins;
-  - more than 4 players (nothing stops it, but it is untested).
+  - more than 5 players: the host `.bat` makes rooms for 5 (the relay allows up to 18), and more than 2 players at once is untested.
 - **Sessions:**
   - host migration;
   - the world surviving the host leaving;

@@ -17,7 +17,7 @@ The plan:
 
 - **Minecraft survival** in a real Minecraft 26.3 world: vanilla world generation, blocks, crafting, block screens, mobs, villagers, health and hunger, the Nether and the End with the dragon fight. Everything is saved in the vanilla 26.3 world format. Details and known limits: [docs/MINECRAFT-SURVIVAL.md](docs/MINECRAFT-SURVIVAL.md).
 - **MW2** guns, movement and the operator's body in Minecraft worlds. Bullets break blocks and hurt mobs, and Minecraft mobs fight back.
-- **Multiplayer:** the host runs the world, and friends join through the relay with a join code. A room holds up to 4 players today. Friends cannot skate, trade with villagers or hit other players with Minecraft weapons yet. Details: [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
+- **Multiplayer:** the host runs the world, and friends join through the relay with a join code. A room holds up to 5 players. Friends cannot skate, trade with villagers or hit other players with Minecraft weapons yet. Details: [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
 - **Skate 3 skating** for the host, with full block collision. Press **J**. See [docs/SKATE.md](docs/SKATE.md).
 - **Elden Ring:** the first boss, Margit, is being built and is not playable in a release yet. The plan is [docs/ELDEN-RING-BOSSES.md](docs/ELDEN-RING-BOSSES.md).
 - **ARK** creatures and the shared settings menu are not started.

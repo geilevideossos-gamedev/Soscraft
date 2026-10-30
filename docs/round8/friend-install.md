@@ -118,7 +118,7 @@ If the script cannot be used, put these files in one folder and zip it. They are
 ## Part C: joining
 
 1. **The host starts the world.** The host double-clicks `Host Minecraft World.bat` in the game folder.
-   - It starts the relay minimised (`iw4l-master.exe serve --bind 0.0.0.0:4433`) when none is running, then the game hosting a room for up to 4 players.
+   - It starts the relay minimised (`iw4l-master.exe serve --bind 0.0.0.0:4433`) when none is running, then the game hosting a room for up to 5 players.
    - It opens the world named by `IW4L_MINECRAFT_WORLD` in the host's `.env` (default `world`). To try things out in a separate world first, change that line.
    - As soon as the world shows, the host's Minecraft chat reads "Friends join with the code [<code>]", the 32-character code in green. Press T if the line has faded. The same code is the `room=` line of `iw4l-artifacts\master.status`.
    - The host sends the code to the friend. A new room (the host's game started again) has a new code.

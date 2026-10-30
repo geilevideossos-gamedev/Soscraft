@@ -137,7 +137,7 @@ function Host-Bat([string]$exeName) {
         "cd /d `"%~dp0`"",
         "set `"IW4L_MASTER_JOIN=`"",
         "set `"IW4L_MASTER_HOST_NAME=Minecraft world`"",
-        "set `"IW4L_MASTER_MAX_PLAYERS=4`"",
+        "set `"IW4L_MASTER_MAX_PLAYERS=5`"",
         "set `"IW4L_MASTER_ADDR=127.0.0.1:$Port`"",
         "set `"IW4L_MASTER_SERVER_NAME=$serverName`"",
         "set `"IW4L_MASTER_CA_CERT=%~dp0iw4l-artifacts\mp-local\certs\iw4l-ca.pem`"",
@@ -464,7 +464,7 @@ try {
         $link = Prepare-Role $hostDir $exePath $hostSettings
         $vars = Master-Vars $hostDir
         $vars["IW4L_MASTER_HOST_NAME"] = "Local world"
-        $vars["IW4L_MASTER_MAX_PLAYERS"] = "4"
+        $vars["IW4L_MASTER_MAX_PLAYERS"] = "5"
         $vars["IW4L_MINECRAFT_WORLD"] = $World
         Say "starting the host window: $(Split-Path -Leaf $exePath) map $Map, world $World"
         $hostRunner = Start-Hidden $link "map $Map" $hostDir (Join-Path $hostDir "game") $vars $true
