@@ -86,18 +86,27 @@ The open survival limits and multiplayer leftovers (`docs/MINECRAFT-SURVIVAL.md`
 - **Tests:** the fork's test policy is the owner's. Don't trim tests because of upstream's `approved_tests` rule.
 - **How the owner tests:** they play the release build and send numbered screenshots. Every change therefore ends with exact in-game test steps and the kit line they need.
 
-## Reference repos (read-only, not integrated)
+## References
 
-Cloned into `C:\Dev\Soscraft\references\`, outside this repo:
+Read-only, outside this repo, in `C:\Dev\Soscraft\references\`. Some were unzipped twice, so the code sits one folder deeper. Use them instead of inventing everything; for current library docs use the Context7 MCP.
 
-- **[chasmlol/skycraft](https://github.com/chasmlol/skycraft):** Skyrim x Minecraft.
-  - A Fabric mod and an SKSE plugin talk over shared memory.
-  - Multiplayer comes from vanilla Open to LAN plus the e4mc tunnel, and saving from vanilla autosave.
+- **ARKCraft** (`ARKCraft-Code-master\ARKCraft-Code-master`): the ARKCraft mod for Minecraft (Java, Forge 1.8 era) with ARK dinos, taming and breeding. Code is under `src\main\java\com\arkcraft\module\` (`creature`, `items`, ...).
+  - The main reference for the ARK part: creatures, torpor, kibble, saddles and breeding. Carry its rules over into our Rust code; never run or ship the mod.
   - Licence: MIT.
-- **[Funny-Bones/ELDEN-RING-Combat-Rewrite](https://github.com/Funny-Bones/ELDEN-RING-Combat-Rewrite):** Elden Ring player combat in Rust/Bevy 0.19.
+- **REA, Reverse Engineer Anything** (`rea-main\rea-main`, version 6.8.0): an MCP server for reverse engineering binaries, apps and runtime behaviour.
+  - Registered as the project MCP server `rea` in `.mcp.json`. It runs the official npm package pinned to the same version (`npx -y rea-agents@6.8.0 mcp`), not the unzipped source, which would need `npm ci` and a build.
+  - Use it whenever you need a game's file formats or behaviour (MW2, Elden Ring, ARK, Skate 3) instead of guessing. Only analyse the owner's own copies.
+  - Native binaries need Ghidra (with JDK 21), Hopper, IDA or Kuna; static PE, .NET and other inspections work without one. Setup: its `README.md`, `docs\installation.md`, and `AGENTS.md` for its rules.
+  - Licence: MIT.
+- **[Funny-Bones/ELDEN-RING-Combat-Rewrite](https://github.com/Funny-Bones/ELDEN-RING-Combat-Rewrite)** (`ELDEN-RING-Combat-Rewrite`): Elden Ring player combat in Rust/Bevy 0.19.
   - Loads animations, TAE timings and params from the user's own game install.
-  - It has player combat and a sparring dummy, no boss AI.
+  - It has player combat and a sparring dummy, no boss AI. The reference for the Elden Ring bosses (`docs/ELDEN-RING-BOSSES.md`).
   - **No licence file:** read it, don't copy code.
+- **Funny-Bones/ELDEN-RING-Playermodel-Rust:** not cloned yet. Clone it into `C:\Dev\Soscraft\references\` when the boss work needs it (models from the game's files), and add it here.
+- **[chasmlol/skycraft](https://github.com/chasmlol/skycraft)** (`skycraft`): Skyrim x Minecraft.
+  - A Fabric mod and an SKSE plugin talk over shared memory.
+  - Multiplayer comes from vanilla Open to LAN plus the e4mc tunnel, and saving from vanilla autosave. A reference for joining another game's content into a Minecraft world.
+  - Licence: MIT.
 
 ## Where upstream docs are wrong for this fork
 
