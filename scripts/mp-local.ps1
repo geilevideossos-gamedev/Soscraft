@@ -216,7 +216,7 @@ function Write-FriendKit {
     Write-Lines (Join-Path $staging "How to join.txt") $howTo
     $entries = New-Object System.Collections.Generic.List[object]
     $entries.Add(@($exePath, $exeName))
-    foreach ($name in @("LICENSE", "NOTICE", "COPYING-FreeFont.txt", "OFL-Oxanium.txt", "README.txt")) {
+    foreach ($name in @("LICENSE", "LICENSE-APACHE", "NOTICE", "COPYING-FreeFont.txt", "OFL-Oxanium.txt", "README.txt")) {
         $path = Join-Path $GameDir $name
         if (Test-Path -LiteralPath $path -PathType Leaf) { $entries.Add(@($path, $name)) } else { Say "warning: $name is missing from $GameDir" }
     }

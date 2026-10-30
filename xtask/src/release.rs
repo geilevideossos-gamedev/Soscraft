@@ -433,6 +433,7 @@ pub fn prepare(root: &Path, env: &Env, channel: Channel, profile: &str) -> Res<P
 /// without their licence texts.
 const LEGAL_FILES: &[(&str, &str)] = &[
     ("LICENSE", "LICENSE"),
+    ("LICENSE-APACHE", "LICENSE-APACHE"),
     ("NOTICE", "NOTICE"),
     ("crates/ui/assets/OFL-Oxanium.txt", "OFL-Oxanium.txt"),
     (

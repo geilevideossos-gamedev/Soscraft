@@ -61,7 +61,7 @@ If the script cannot be used, put these files in one folder and zip it. They are
 | File | From |
 |---|---|
 | `iw4l-survival.exe` | the game folder (the same build the host runs) |
-| `LICENSE`, `NOTICE`, `COPYING-FreeFont.txt`, `OFL-Oxanium.txt`, `README.txt` | the game folder |
+| `LICENSE`, `LICENSE-APACHE`, `NOTICE`, `COPYING-FreeFont.txt`, `OFL-Oxanium.txt`, `README.txt` | the game folder |
 | `iw4l-ca.pem` | `iw4l-artifacts\mp-local\certs\iw4l-ca.pem` |
 | `Join Minecraft World.bat` | the game folder, after step 6 |
 | `.env` | written by hand, with the six lines of part B step 3 |
