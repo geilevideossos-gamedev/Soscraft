@@ -22,7 +22,23 @@ Started 2026-10-28 on `minecraft-survival` at 532474d6. The owner's brief is the
 
 ## Where it stands
 
-**Stopped for the week on 2026-10-29 at about 17:30** (the owner's weekly usage ran out). No track run is going. Every worktree is committed, and every track branch and every `r10-*-base` tag is pushed to `origin`. `minecraft-survival` is at e7c9a1c8 and installed as release 5 (protocol 10); its test steps are `docs/round10/release-5-tests.md`.
+**Stopped for the week on 2026-10-29 at about 17:30** (the owner's weekly usage ran out). No track run is going. Every track branch and every `r10-*-base` tag is on `origin` (checked with `git ls-remote` on 2026-10-30). The installed game is still release 5 (e7c9a1c8, protocol 10); its test steps are `docs/round10/release-5-tests.md`. Since then `minecraft-survival` has only docs, scripts and licence commits, no game code.
+
+**Setup for Soscraft, done 2026-10-30** (no track run, no release build):
+- The project is called Soscraft. The repo is `C:\Dev\Soscraft\mashup-crafting`, origin is `geilevideossos-gamedev/Soscraft` (public), the references are in `C:\Dev\Soscraft\references` and worktrees go in `C:\Dev\Soscraft\mc-wt\<name>`. Target dirs did not move.
+- The old worktrees in `C:\Dev\mc-wt` are deleted and pruned (their `.git` files pointed at the old repo path). The four stopped segments have new worktrees on their branches at their WIP commits: `C:\Dev\Soscraft\mc-wt\track-w` (bc18d464), `track-f` (81da408f), `track-e2` (f26f20f6) and `track-e1` (4ace82f4). The others get one when their segment starts; track D gets none. The worktrees' parent `.cargo\config.toml` (`incremental = false`) was copied to `C:\Dev\Soscraft\mc-wt\.cargo`.
+- The first build in each new worktree rebuilds the workspace crates in its old target dir, because the source path changed.
+- Licence: Soscraft is GPL-3.0-only (`LICENSE`), with the upstream parts under Apache-2.0 (`LICENSE-APACHE`, `NOTICE`). The friend's zip and the xtask archives ship both.
+- Goal and roadmap: CLAUDE.md. Rooms hold 5 players (`IW4L_MASTER_MAX_PLAYERS=5`).
+- References and REA: CLAUDE.md "References". REA is the project MCP server `rea` (`.mcp.json`); it starts and lists 229 tools, and waits for the owner's approval in Claude Code.
+
+### Tasks for the internet test (roadmap step 2)
+
+- **Room size:** the host `.bat` makes rooms for 5. No code caps a room at 4: the relay and `master_protocol::MAX_SESSION_MEMBERS` allow up to 18 (`render_anim/src/minecraft_host.rs` has a 4 only in a test). More than 2 players at once was never played. By the design's estimate every friend costs the host 50-100 KiB/s of upload, so 4 friends need about 200-400 KiB/s.
+- **Saving friends:** a friend's player file is written when they leave and with every autosave (6000 ticks, 5 minutes at 20 ticks a second), but not when they join. The goal asks for a save on every connect too (`Server::join_friend` in `minecraft_survival/src/server.rs`).
+- **What friends need:** check on a friend's PC that the exe, Minecraft Java and MW2 are enough. Today the game downloads the Minecraft 26.3 files from Mojang itself and never checks for a Minecraft Java install.
+- **Assets from the host:** sending Elden Ring, ARK and Skate 3 assets to friends is not built; it comes with roadmap steps 3 to 5.
+- **Before making the friend's zip:** run `scripts\mp-local.ps1 -Bats` again so `Host Minecraft World.bat` makes rooms for 5, and copy `LICENSE` and `LICENSE-APACHE` from the repo into the game folder (the zip takes them from there).
 
 ### Per track
 
@@ -45,7 +61,7 @@ Disk: target dirs `D:\iw4l-wt\track-e2`, `track-f`, `track-m1`, `track-w` and `C
 ### How to resume
 
 1. Load: the slot file `%LOCALAPPDATA%\iw4l-cargo-slot.txt` stays `slots=2`, `jobs=4`, `priority=low`; at most four track runs at once; gentle (`slots=1`) while the owner plays. Never `jobs=8` with two slots (decisions: the crash).
-2. A stopped segment (W w2, F f3, E2 e2b): in its worktree, `git status` must be clean and the branch at the WIP commit named above. Run the `track-runner` workflow with that segment's spec from `docs/round10/runs/<segment>.json`, keeping its `base` (so the review covers the whole segment) and only the groups not yet committed. For the group the WIP commit started, add to its prompt: "The last commit on the branch, '<WIP subject>', is unfinished work for this group: read it, keep what is right, and finish the group in new commits with the brief's subjects; do not rewrite history." Concretely:
+2. A stopped segment (W w2, F f3, E2 e2b): in its worktree (`C:\Dev\Soscraft\mc-wt\track-<x>`, target `D:\iw4l-wt\track-<x>`), `git status` must be clean and the branch at the WIP commit named above. Run the `track-runner` workflow with that segment's spec from `docs/round10/runs/<segment>.json`, keeping its `base` (so the review covers the whole segment) and only the groups not yet committed. For the group the WIP commit started, add to its prompt: "The last commit on the branch, '<WIP subject>', is unfinished work for this group: read it, keep what is right, and finish the group in new commits with the brief's subjects; do not rewrite history." Concretely:
    - **w2:** groups `warden-fight` (prompt: only its second commit, "Minecraft wardens fire sonic booms and spread darkness", is left; bc18d464 is its unfinished start) and `warden-render`, from `docs/round10/runs/w2.json`.
    - **f3:** groups `er-bar-friend` (prompt: only F6.2 is left, friends see his clip, phase and daggers through the hook 94019cde; 81da408f is its unfinished start) and `er-altar`, from `docs/round10/runs/f3.json`.
    - **e2b:** groups `maps-view` (f26f20f6 is its unfinished start), `maps-colours`, `maps-explore` and the optional `ti4-end-targets`, from `docs/round10/runs/e2b.json`.
@@ -85,6 +101,7 @@ Disk: target dirs `D:\iw4l-wt\track-e2`, `track-f`, `track-m1`, `track-w` and `C
 | 1 | track-d merged (d6, keyframes, withers, wind charges) | 6e0e0573 | done 2026-10-28: full suite green (24.9 min, 3863 tests); release 12m 57s (`-p launcher -p iw4l-master`); copied in as `iw4l-survival.exe`, old one kept as `iw4l-survival-f743218.exe`, relay copied (same hash); protocol 6; test steps `docs/round10/release-1-tests.md` |
 
 ## Log
+- 2026-10-30: setup for Soscraft: paths moved to `C:\Dev\Soscraft`, old worktrees removed and the four stopped segments' worktrees made again, licence leftovers, goal and roadmap, rooms of 5, references with REA as a project MCP server. Round 10 not continued.
 - 2026-10-29: stopped for the week (the owner's usage): the four runs stopped, their half-done groups committed as "Unfinished" commits, every track branch and base tag pushed; e1b merged (23b449ef, full suite green, not reviewed); PROTOCOL 10 (e7c9a1c8); release 5 built and copied in; test steps `docs/round10/release-5-tests.md`.
 - 2026-10-29: release 4 copied in; d2 finished and merged (fd93ce96, full suite green); w2 started in d2's place; release 4 test steps written and checked.
 - 2026-10-29: w1 merged (81eaed3f, full suite green); m1a merged (a898c41c, full suite green); PROTOCOL 9 (c41ac6af); release 4 built and copied in.
