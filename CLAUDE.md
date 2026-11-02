@@ -30,7 +30,7 @@ The Minecraft side is built for the host and friends: survival, saving in the va
 
 1. **Finish round 10:** w2, f3, e2b, the e1b review, d0b, M1, M3 and M2, and the known gaps from the release test files (`docs/round10/release-*-tests.md`). Hand-over: `docs/PROGRESS.md`.
 2. **The internet test with real friends,** for 4 to 5 players. It also checks that friends really need only the exe, Minecraft Java and MW2. Friend's install: `docs/round8/friend-install.md`; open tasks for it are in `docs/PROGRESS.md`.
-3. **Elden Ring bosses:** Margit first, then more. The host loads the assets and sends them to friends. Design: `docs/ELDEN-RING-BOSSES.md`.
+3. **Elden Ring bosses:** Margit first, then more. Margit's proof of concept is in (round 10, track F): `/summon iw4l:margit` or a lantern on two gold blocks summons him, and the host and friends fight him with MW2 guns and Minecraft weapons through both phases, with his boss bar, music, fog ring and reward. He is our own stand-in model with vanilla sounds. Next: the host loads the real assets and sends them to friends, then more bosses. Design: `docs/ELDEN-RING-BOSSES.md`.
 4. **ARK creatures** with ARK taming in fitting biomes, with assets from the host only.
 5. **Skate 3:** build it out, starting with skating for friends. Skating already works in Minecraft worlds for the host.
 6. **The Minecraft-style main settings menu** for all games.

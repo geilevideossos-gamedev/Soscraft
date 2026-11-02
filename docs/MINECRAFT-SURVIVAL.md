@@ -80,6 +80,14 @@ Most of this was added by the fork. Items marked [upstream] were already in upst
   - **Waking:** daylight, a hit that hurts, death, the bed being broken or the night skip wake you; you stand beside the bed facing it (`findStandUpPosition`), and a straw bed breaks when you leave it. `time_since_rest` counts every tick awake and resets on sleeping and on death.
   - **Saving:** `SleepTimer`, `sleeping_pos` and the `minecraft:time_since_rest` statistic are saved; a player saved asleep stands up beside the bed when they join.
 
+### Bosses (round 10, track F)
+- Margit, the Fell Omen (`iw4l:margit`), the first Elden Ring boss, built from `docs/ELDEN-RING-BOSSES.md`. `/summon iw4l:margit` or a standing lantern placed on two stacked gold blocks (not on Peaceful) summons him asleep at an anchor; he wakes when a player comes within 24 blocks, fights within a 24-block leash marked by a ring of gold motes on the ground, and resets after 5 s with nobody within 40 blocks.
+- His moves, phases, stance, kneel and criticals are data in the pure crate `crates/elden_boss`; he lives in the entity world as a registered family (`iw4l:margit`, hit key 96) and is saved as a vanilla `minecraft:marker` with `data.iw4l`, so vanilla 26.3 loads the world.
+- Minecraft weapons hurt him with no hurt cooldown, MW2 bullets and blasts through his own resistances; his health scales with the fighters at the wake (x1.6 for two). Lava and fire hurt him.
+- Every player within 48 blocks gets his red boss bar and the boss music; his death tells every fighter GREAT ENEMY FELLED and drops an enchanted golden apple, gold and experience by fighter. Friends see every move, his golden weapons and his daggers in flight.
+- A player cannot sleep in a bed while Margit is within 8 blocks across and 5 up or down of it, asleep or awake, as beside any monster.
+- He is a cube model with a skin painted by code and vanilla sounds; nothing comes from ELDEN RING yet.
+
 ### Mining and placing
 - [upstream] Shooting and knifing breaks blocks by hardness, broken blocks drop items, and grenades blow craters.
 - The hand ray follows the MW2 crosshair in every stance. Items that are not blocks are never placed.
@@ -285,6 +293,7 @@ Since the crate split ([CRATE-SPLIT.md](CRATE-SPLIT.md)), the Minecraft game sta
   - Storage and data: `save.rs` (world folder, `level.dat`, the `data/minecraft` files, player files), `player_nbt.rs` (what a player file holds, in vanilla's keys), `entities.rs` (the server thread handle and the client copies of its mobs, items and orbs) and `data.rs` (recipes, loot, stations and enchantments, read from the jar once per world).
 - **`crates/minecraft_net`** (serde and postcard): the shared ids `Dimension` and `PlayerUuid`, and the multiplayer messages (`messages.rs`) with their codec (`codec.rs`).
 - **`crates/minecraft_terrain`** (edition 2021, so no let-chains): world generation, the `TerrainStream`, the level server thread (`server.rs`: mobs, items, projectiles, the dragon, block updates, hoppers), containers, crafting, stations, game modes, item-use rules, packs, particles and all meshing. It stayed whole in the split, because its scene, stream and server types depend on each other.
+- **`crates/elden_boss`** (edition 2024, only glam): the Elden Ring bosses as data (`margit.rs`) and the pure fight brain, shared by the vendored entities crate, `minecraft_terrain` and `minecraft_survival`.
 - **`crates/minecraft_commands`**: the command tree, `CommandServer`, the `CommandWorld` trait, the suggestion engine and the chat protocol.
 - **`crates/render_anim`**: the Bevy adapter.
   - `minecraft_world.rs`: its `Runtime` holds the loading thread, the client assets, the `Server`, the local player's UUID, the survival carried to the next match (temporary worlds only), the map origin of each open level, the level shown, and presentation. Each frame `follow_levels` closes and opens levels and shows the local player's level when it changes; `update()` looks up the local `Player` and its `Level`, reads the MW2 player state, runs the player's actions and the game procedures, writes health, damage, teleports and abilities back into MW2, and draws the world.
@@ -469,6 +478,7 @@ One list of what is open after round 8. Round 8 finished X6 and all of N6 but lo
   - A zombified piglin holds only its main-hand item and armour; the piglin's offhand item, drop chances and `CanPickUpLoot` stay in its saved tag only. Custom names and leads don't carry over (mobs have none yet).
   - Brutes generated in bastions before round 8 keep what they were saved with: no golden axe and no `home`.
   - Chest boats and chest minecarts don't exist, so breaking one angers nobody. Mining and container opening anger the piglins at the player who did it, the host or a friend.
+- Margit: in water and lava he keeps his dry ground walk, with no swimming and no slowdown; his fog ring blocks nothing. Loading the world resets his fight by design: full health, phase 1, and he walks back to his anchor.
 
 ## Testing workflow
 
