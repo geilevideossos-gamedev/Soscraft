@@ -1186,3 +1186,54 @@ After 08bf2ed1.
   - Only the 17 map items are synced. Vanilla syncs any stack with a `map_id`, which outside of commands only map items have.
 - **Test steps:** none in game for this commit alone: nothing draws a map until group `maps-view`, whose friend steps (the brief's E-maps F1 to F3) check the pictures.
 - **Kit:** none.
+
+## Group maps-view
+
+### 1. Minecraft shows the held map in first person
+
+After f26f20f6, the unfinished commit of this group (stopped for the week on 2026-10-29). This commit finishes it: it checks the unfinished work against javap, builds it, runs its tests and adds the docs, with one change to its code (the channel shading in `map_picture::shade` brackets the shift, same result).
+
+- **Vanilla (26.3, checked with javap):**
+  - `FirstPersonHandsAndItemsRenderer.submitArmWithItem`: nothing at all while scoping (`isScoping`). A stack with `DataComponents.MAP_ID` in the main hand with an empty offhand goes to `renderTwoHandedMap`; any other stack with a map id goes to `renderOneHandedMap` on its own arm.
+  - `renderTwoHandedMap(xRot, inverseArmHeight, attack)`: `translate(0, 0.1 sin(attack π), -0.4 sin(√attack π))`, `translate(0, 0.04 - 1.2 inverseArmHeight - 0.5 tilt, -0.72)`, `rotX(-85 tilt)`, the two arms, `rotX(20 sin(√attack π))`, `scale(2)`. `calculateMapTilt` is `-cos(clamp(1 - xRot / 45 + 0.1, 0, 1) π) 0.5 + 0.5`.
+  - `renderOneHandedMap`: `translate(side 0.125, -0.125, 0)`, the arm, `translate(side 0.51, -0.08 - 1.2 inverseArmHeight, -0.75)`, then with `s = sin(√attack π)`: `translate(side -0.5 s, 0.4 sin(√attack 2π) - 0.3 s, -0.3 sin(attack π))`, `rotX(-45 s)`, `rotY(side s -30)`.
+  - `renderMap`: `rotY(180)`, `rotZ(180)`, `scale(0.38)`, `translate(-0.5, -0.5, 0)`, `scale(1/128)`. The background quad spans -7 to 135 (`MAP_BORDER` 7): `map_background_checkerboard` when the client has the map's data, `map_background` when it has not. `MapRenderer.render` then draws the 128 x 128 colours over 0 to 128.
+  - `MapRenderer.render`: each marker is `translate(x/2 + 64, y/2 + 64)`, `rotZ(rot 360/16)`, `scale(4)`, `translate(-0.125, 0.125)`, a quad from -1 to 1 with (u0, v0) at (-1, 1); later markers lie on top.
+  - `MapColor.<clinit>`: 62 colours `new MapColor(id, rgb)`, ids 0 to 61. `calculateARGBColor` is transparent for `NONE`, otherwise `channel * modifier / 255` with the brightness modifiers 180, 220, 255 and 135. `MapDecorationTypes.<clinit>`: 40 `register(id, asset, …)` calls; the sprites are `textures/map/decorations/<asset>.png`.
+- **Changed:**
+  - `minecraft_terrain/src/map_picture.rs` (new): `MapPalette::from_class` reads `MapColor.<clinit>` with `class_file.rs`, `decoration_assets` the marker types and their textures from `MapDecorationTypes.<clinit>`, and `read_jar` both from the jar. `MapLook::load` adds the two backgrounds and the 40 sprites from the packs, with warnings, not errors, for anything missing. `compose(look, map)` builds the picture at twice the map's resolution (284 x 284 RGBA): the background, the colours as 2 x 2 blocks inside the 7-pixel border, then each marker's 8 x 8 sprite turned by `rot * 22.5°`.
+  - `frame/src/minecraft_ui.rs`: `MinecraftUi.held_maps: Vec<McHeldMap>` next to `spyglass_scope`; `McHeldMap { picture, hands, pitch, swing }` and `McMapHands { Both, Right, Left }`.
+  - `render_anim/src/minecraft_held_map.rs` (new): `layout(main, offhand)`, two-handed only with an empty offhand, and `HeldMaps`, which keeps one picture per hand and composes it again only when its map id or its `MapCache` version changes, into the same image.
+  - `render_anim/src/minecraft_hand.rs` `held_hand_mesh`: a stack with a map id is skipped right after `let Some((slot, stack))`.
+  - `render_anim/src/minecraft_world.rs` (the host, from `Runtime.map_cache`) and `minecraft_remote.rs` (a friend, from `RemoteWorld.maps`): the map looks are loaded with the world, and the pictures are set on `MinecraftUi` next to the hand mesh from the same `Held`, so they follow its rules (no items in third person, asleep, skating, dead or while scoping).
+  - `hud/src/minecraft_held_map.rs` (new) and the job `HudTessPass.minecraft_held_map`: the vanilla pose projected with the hand's fixed 70° field of view (as `minecraft_hand::hand_clip`), in 16 x 16 cells so the perspective stays straight. It is the first Minecraft overlay drawn, so the fire, the spyglass scope and the hotbar cover it.
+  - `docs/MINECRAFT-SURVIVAL.md`: the maps paragraph.
+- **Tests:**
+  - `map_picture::tests::map_colours_are_shaded_like_vanilla_brightness`: GRASS (`0x7FB238`) at NORMAL is (109, 153, 48), with HIGH, LOW and LOWEST too; `NONE` and unknown ids are transparent.
+  - `map_picture::tests::a_map_picture_is_its_colours_at_twice_the_size_inside_the_frame` and `markers_are_eight_map_pixels_turned_by_a_sixteenth_per_step` (rotations 0, 4, 8 and -12; an unknown marker draws nothing).
+  - `map_picture::tests::the_jar_gives_the_map_colours_and_marker_textures` (with the 26.3 jar and pack): 62 colours with GRASS, `COLOR_ORANGE` 15, `COLOR_BROWN` 26 and `GLOW_LICHEN` 61; 40 marker types and sprites; the 64 x 64 and 128 x 128 backgrounds.
+  - `render_anim` `minecraft_held_map::tests::the_map_is_held_in_both_hands_only_while_the_offhand_is_empty` and `a_held_map_swings_with_its_own_hand_and_is_redrawn_when_its_picture_changes` (also: nothing while scoping).
+  - `hud` `minecraft_held_map::tests`: `the_map_tilts_up_as_the_holder_looks_down`, `looking_down_the_two_handed_map_faces_the_eye_upright_and_centred`, `looking_ahead_the_two_handed_map_lies_low_and_leans_away`, `a_one_handed_map_sits_beside_its_hand_and_the_left_mirrors_the_right`, `a_swing_moves_the_map_and_a_finished_swing_puts_it_back` and `nothing_is_drawn_behind_the_eye`.
+  - Run on this commit: `test -p minecraft_terrain` 1590 passed with 3 ignored, `-p frame` 28, `-p hud` 205, `-p render_anim` 219; `check -p launcher` clean.
+- **Decisions:**
+  - The held map is a HUD overlay at vanilla's place, not a quad in the hand mesh, which samples only the block atlas (brief).
+  - `MinecraftUi.held_maps` is a list instead of the brief's one `held_map`: vanilla draws a one-handed map in each hand when both hands hold one.
+  - Any stack with a `minecraft:map_id` is drawn as a map and left out of the hand mesh, as vanilla checks the component, not the item. A map item without an id is drawn as an item.
+  - The map is drawn at full brightness, while vanilla lights it with the light at the player (`RenderTypes.text`). The arms are not drawn, the equip lowering (`inverseArmHeight`) is 0 and the hands' lag behind the camera is left out, as for every held item in the fork.
+  - The pitch is the view's own, not interpolated between ticks.
+  - A picture is composed on the CPU only when an update for its map arrives (markers at most every fifth tick), into the same image, so a 284 x 284 picture is built at most a few times a second.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, by day; the host, then a friend in a second window with `scripts\mp-local.ps1` and `/kit @a` from the host):
+  1. **MV-1. A treasure map.** Load a world with the kit. Run `/locate structure minecraft:shipwreck` and `/tp` to it, drink a water breathing potion and take the Buried Treasure Map from the map chest (or from an ocean ruin chest, as in maps-loot commit 2).
+  2. **MV-2. Two hands.** Select the map with nothing in the offhand and look straight ahead: the map lies low at the bottom of the screen, leaning away. Look down: it rises and faces you in the middle of the screen, with a parchment border, a grey checkerboard where nothing is mapped, orange coastline outlines, the red X and your white arrow pointing where you look. No map item shows in the hand (**MV-2_two_hands**).
+  3. **MV-3. One hand.** Put a torch in the offhand and select the map again: the map moves to the right, smaller, held in one hand, and the torch shows on the left (**MV-3_one_hand**). Press F with the map selected: the map is on the left and the torch on the right.
+  4. **MV-4. Swing and arrow.** Left-click the air: the map swings with its hand. Walk and turn: your arrow moves and turns on the map. Walk away from the X until the arrow reaches the map's edge: it becomes a white circle that stays on the edge (**MV-4_edge**).
+  5. **MV-5. Hidden.** Press F5: no map on screen in third person; press F5 until you are back in first person. Put the spyglass in the offhand, select the map and right-click: the map is gone while you look through the spyglass and comes back after.
+  6. **MV-6. Treasure.** Boat to the X and dig at it with the shovel: a chest under the sand holds a heart of the sea (**MV-6_treasure**).
+  7. **MV-7. Reload.** Save and quit, load the world again and hold the map: it shows the same coastline and X.
+  8. **MV-F1. Friend.** The host drops the treasure map with Q next to the friend, and the friend picks it up and holds it: the friend sees the same coastline and X with their own arrow. The friend then opens another shipwreck map chest and holds that map: its own coastline and X show (**MV-F1_friend**).
+- **Kit** (17 backpack slots):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:iron_shovel,minecraft:diamond_shovel,minecraft:diamond_pickaxe,minecraft:compass,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet,minecraft:diamond_sword,minecraft:shield,minecraft:spyglass
+```

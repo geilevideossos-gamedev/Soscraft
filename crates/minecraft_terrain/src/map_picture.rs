@@ -134,7 +134,7 @@ impl MapPalette {
 
 pub fn shade(rgb: u32, brightness: u8) -> [u8; 4] {
     let modifier = BRIGHTNESS[usize::from(brightness & 3)];
-    let channel = |shift: u32| ((rgb >> shift & 0xFF) * modifier / 255).min(255) as u8;
+    let channel = |shift: u32| (((rgb >> shift) & 0xFF) * modifier / 255) as u8;
     [channel(16), channel(8), channel(0), 255]
 }
 
