@@ -588,6 +588,7 @@ fn update(
                 runtime.held_maps = crate::minecraft_held_map::HeldMaps::load(&world.packs, data_jar().as_deref());
                 runtime.sounds = Some(crate::minecraft_sounds::Sounds::load(&world.packs));
                 globals.data = minecraft_survival::data::GameData::load(assets::minecraft_map::root().as_deref(), data_jar());
+                globals.data.load_map_colors(&globals.registries.blocks);
                 minecraft_survival::server::start_level(globals, level);
                 runtime.inventory_ui.set_station_data(globals.data.stations.clone(), globals.data.enchantments.clone());
                 globals.chat.registries_mut().enchantments = globals.data.enchantments.as_ref().map_or_else(Vec::new, |book| book.list.iter().map(|enchantment| enchantment.id.clone()).collect());
@@ -711,7 +712,7 @@ fn update(
     if std::mem::take(&mut globals.autosave_due) {
         minecraft_survival::server::autosave(globals, levels, players);
     }
-    minecraft_survival::maps::tick(&globals.maps, players, globals.game_time(), planned.len());
+    minecraft_survival::maps::tick(&globals.maps, players, levels, globals.data.map_colors.as_deref(), globals.game_time(), planned.len());
     for update in minecraft_survival::maps::take_updates(&globals.maps, local_uuid) {
         map_cache.apply(update);
     }

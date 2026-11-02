@@ -1274,3 +1274,52 @@ After 5e83e1f0.
 - **Protocol:** no message change.
 - **Test steps:** none in game for this commit alone: nothing reads the table until `maps-explore` commit 2 ("Minecraft maps fill in as their holder walks"), whose steps check the colours.
 - **Kit:** none.
+
+## Group maps-explore
+
+### 1. Minecraft maps fill in as their holder walks
+
+After ef4fae51.
+
+- **Vanilla (26.3, checked with javap):**
+  - `MapItem.inventoryTick(stack, level, entity, slot)`: after `tickCarriedBy`, a map that is not locked runs `update(level, entity, data)` when `slot` is a HAND slot. `Inventory.tick` passes `MAINHAND` only for the selected hotbar slot and `null` for the others; `EntityEquipment.tick` passes `OFFHAND` for the offhand. So a map fills in from the selected slot or the offhand only.
+  - `MapItem.update`: nothing unless the player's level is the map's dimension. `s = 1 << scale`; the holder's pixel is `floor(x - centreX) / s + 64` (Java division, towards zero); the radius is `128 / s`, halved when the dimension `hasCeiling`. `getHoldingPlayer(player).step++`. For each column `x` from `px - r + 1` to `px + r - 1`, only when `(x & 15) == (step & 15)` or the column before changed a pixel: the rows `z` from `pz - r - 1` to `pz + r - 1`, inside `0 <= x < 128`, `-1 <= z < 128`, at block `((centre / s) + x - 64) * s`. A pixel whose chunk `isEmpty` is skipped, and the slope keeps the height before it.
+  - With a ceiling every pixel is DIRT (weight 10) or STONE (weight 100) by `h = x + z * 231871; h = h * h * 31287121 + h * 11; (h >> 20) & 1`, at height 100. Otherwise, for each of its `s * s` block columns: from the `WORLD_SURFACE` height down to the first block with a map colour (bedrock below the floor); a block holding a fluid counts the fluid blocks below it as depth and is drawn as `getCorrectStateForFluidBlock` (the fluid's own block unless its top face is sturdy); the height adds `y / (s * s)`. The pixel takes the most common colour, the first counted on a tie (`LinkedHashMultiset`, `copyHighestCountFirst`).
+  - Brightness: WATER uses `depth / (s * s) * 0.1 + ((x + z) & 1) * 0.2` (below 0.5 HIGH, above 0.9 LOW, else NORMAL); any other colour `(height - height before) * 4 / (s + 4) + (((x + z) & 1) - 0.5) * 0.4` (above 0.6 HIGH, below -0.6 LOW, else NORMAL). Rows below 0 only feed the slope; pixels at `r * r` or more from the holder are left, and those past `(r - 2)^2` only on odd `x + z`. `updateColor` marks the holders' dirty rectangles.
+  - `checkBanners` runs for every block column; banner markers are left for later (brief).
+- **Changed:**
+  - `minecraft_terrain/src/maps.rs`:
+    - `MapSurface` (ceiling, floor, loaded chunks, `WORLD_SURFACE` height and per block the map colour, whether it holds a fluid and the colour it is drawn with) and `MapBlock`.
+    - `MapData::fill_in(holder, step, surface)` ports `MapItem.update` and returns the pixels that change; `speckle` is the ceiling pattern; `COLOR_DIRT`, `COLOR_STONE` and `COLOR_WATER`.
+    - `SceneSurface` reads a `HandcraftedScene` with the `BlockMapColors` table: loaded means a generated chunk is there, the height is the highest non-air block, fluids come from the catalog's fluid states and sturdy tops from the catalog's support shapes.
+    - `CarriedMap.hand`, the holder's `step`, and `MapStore::tick_carried_on(carriers, game_time, surfaces)`, which runs the fill-in right after each in-hand map's `tickCarriedBy` and before the holder's update is built, so a painted rectangle goes out in the same tick. `tick_carried` is the same without surfaces.
+  - `minecraft_survival/src/maps.rs`: `carrier` marks the selected slot and the offhand as hands; `tick` takes the levels and the map colours and gives each level's scene, with its dimension's `has_ceiling`.
+  - `minecraft_survival/src/data.rs`: `GameData.map_colors` and `load_map_colors(blocks)`, read from the data jar with the block registry; a failure is a warning and maps stay blank.
+  - `render_anim/src/minecraft_world.rs`: the host loads the map colours with the game data and passes the levels and colours to the map tick. `session.rs` tests pass no colours.
+  - `docs/MINECRAFT-SURVIVAL.md`: the maps paragraph.
+- **Tests:**
+  - `maps::tests::a_held_map_fills_in_the_stripe_of_its_step_and_runs_on_while_columns_change`: on flat grass, step 1 paints columns 1 to 127 (each one changed, so the next one runs); step 2 changes nothing; step 16 paints only column 0; with sand on every fourth column, step 4 changes only columns 4, 20, …, 116; an unloaded column leaves its pixels and stops the run until the next stripe column.
+  - `maps::tests::map_pixels_are_shaded_by_water_depth_and_slopes_like_vanilla`: depths 1, 4, 5, 9 and 12 on even and odd pixels; one block up is HIGH on both pixels and one block down LOW on both (vanilla's rounding makes 0.6000000000000001), two blocks up HIGH, flat NORMAL.
+  - `maps::tests::a_pixel_takes_its_most_common_block_and_the_first_on_a_tie`: a 2 x 2 pixel with a tie and with three of one, air above looked through, the depth averaged, a waterlogged block drawn as water, an empty column as bedrock at the floor, and a column with no colour down to the floor.
+  - `maps::tests::maps_of_dimensions_with_a_ceiling_show_the_vanilla_speckle`: the hash at seven spots; the halved radius, the circle and the dithered outer ring.
+  - `maps::tests::a_map_in_hand_fills_in_and_its_holder_gets_the_painted_rectangle`: a map in the backpack does not fill in; in hand it paints columns 1 to 127 and the holder's next update is that rectangle (1, 0, 127 x 128); the map is saved; column 0 fills on the sixteenth step; a map of another dimension, a locked map and a map with no loaded level stay blank.
+  - `maps::tests::a_streamed_scene_shows_maps_its_blocks_fluids_and_loaded_chunks` (26.3 jar and data): dirt 10, stone and bedrock 11, water 12; loaded chunks, heights, a waterlogged bottom slab drawn as water and a top slab as stone, lava, glass looked through, and a fill over them.
+  - `minecraft_survival` `maps::tests::maps_in_the_selected_slot_and_the_offhand_are_in_hand`, `maps::tests::a_held_map_fills_in_from_the_level_its_holder_stands_in` (26.3 data: nothing without colours, the stone floor at y 200 with them) and `data::tests::map_colours_come_from_the_jar_for_every_block_state`.
+  - Run on this commit: `test -p minecraft_terrain` 1600 passed with 3 ignored, `test -p minecraft_survival` 808 passed; `check -p launcher` clean.
+- **Decisions:**
+  - Only loaded chunks are drawn. Vanilla's `getChunk` loads a missing chunk on the spot; the server keeps every chunk within the view distance of each player loaded, which covers the 128 blocks at the default view distance.
+  - Banner markers (`checkBanners`) are left for later, as in the brief.
+  - The map colours are read once when the world opens (about half a second in a debug build). Without the jar or with a jar the reader does not understand, held maps stay blank and the log says why.
+  - The fill-in runs on the host for every player, friends included, in each level's own scene; friends get the painted rectangles through the `maps-held` updates.
+- **Protocol:** no message change.
+- **Test steps** (survival, Normal, by day; the empty-map steps come with the next commit):
+  1. **MX-1. Treasure map.** Load a world with the kit. Run `/locate structure minecraft:shipwreck` and `/tp` to it, drink a water breathing potion and take the Buried Treasure Map from the map chest.
+  2. **MX-2. Filling in.** Select the map with nothing in the offhand and swim or boat towards the red X. Once inside the map's area, the land and sea around you fill in, a few columns a moment, in a circle around you: sand, grass and stone in their colours, water blue and darker where it is deeper, and land lighter where it rises towards the south and darker where it falls (**MX-2_filling**).
+  3. **MX-3. Offhand.** Put the map in the offhand (F) with the torch selected: it keeps filling in as you move.
+  4. **MX-4. Backpack.** Put the map in the backpack, swim 100 blocks along the coast and take it out again: the part you passed without it in hand stays as it was.
+  5. **MX-F1. Friend.** A friend holding the map while walking fills it in too (the host drops it with Q for them).
+- **Kit** (17 backpack slots, the same as `maps-view`):
+
+```
+IW4L_MINECRAFT_KIT=minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@long_water_breathing,minecraft:potion@night_vision,minecraft:potion@night_vision,minecraft:oak_boat,minecraft:iron_shovel,minecraft:diamond_shovel,minecraft:diamond_pickaxe,minecraft:compass,minecraft:torch*64,minecraft:cobblestone*64,minecraft:cooked_beef*32,minecraft:turtle_helmet,minecraft:diamond_sword,minecraft:shield,minecraft:spyglass
+```

@@ -2356,7 +2356,7 @@ mod tests {
         };
         sessions.send_maps(&server.globals);
         assert!(maps(&mut sessions).is_empty(), "nothing before a tick");
-        crate::maps::tick(&server.globals.maps, &server.players, 0, 1);
+        crate::maps::tick(&server.globals.maps, &server.players, &server.levels, None, 0, 1);
         sessions.send_maps(&server.globals);
         let sent = maps(&mut sessions);
         assert_eq!(sent.len(), 1);
@@ -2371,7 +2371,7 @@ mod tests {
         assert!(maps(&mut sessions).is_empty(), "sent once");
         assert!(crate::maps::take_updates(&server.globals.maps, &host).is_empty(), "the host carries no map");
         server.globals.maps.lock().unwrap().set_color(0, 3, 0, 4);
-        crate::maps::tick(&server.globals.maps, &server.players, 1, 1);
+        crate::maps::tick(&server.globals.maps, &server.players, &server.levels, None, 1, 1);
         sessions.send_maps(&server.globals);
         let sent = maps(&mut sessions);
         let patch = minecraft_net::messages::MapPatch { x: 3, y: 0, width: 1, height: 1, colors: vec![4] };

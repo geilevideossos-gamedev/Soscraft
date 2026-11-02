@@ -16,6 +16,7 @@ pub struct GameData {
     pub protection: Option<Arc<minecraft_terrain::protection::ProtectionBook>>,
     pub transforms: Option<Arc<minecraft_terrain::transform::TransformBook>>,
     pub mining: Option<Arc<minecraft_terrain::mining_speed::MiningBook>>,
+    pub map_colors: Option<Arc<minecraft_terrain::block_map_colors::BlockMapColors>>,
 }
 
 impl GameData {
@@ -84,6 +85,16 @@ impl GameData {
         data.jar = Some(jar);
         data
     }
+
+    pub fn load_map_colors(&mut self, blocks: &minecraftoss_core::block::BlockRegistry) {
+        let Some(jar) = self.jar.as_deref() else {
+            return;
+        };
+        match minecraft_terrain::block_map_colors::BlockMapColors::read_jar(jar, blocks) {
+            Ok(colors) => self.map_colors = Some(Arc::new(colors)),
+            Err(error) => diag::warn!(World, "Minecraft map colours unavailable, held maps stay blank: {error:#}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +111,7 @@ mod tests {
         assert!(data.protection.is_none());
         assert!(data.transforms.is_none());
         assert!(data.mining.is_none());
+        assert!(data.map_colors.is_none());
     }
 
     #[test]
@@ -111,5 +123,34 @@ mod tests {
         assert!(data.loot.is_none());
         assert!(data.enchantments.is_none());
         assert!(data.mining.is_none());
+    }
+
+    #[test]
+    fn map_colours_come_from_the_jar_for_every_block_state() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let jar = Path::new(&root).join("client.jar");
+        if !jar.is_file() || !paths.block_catalog.is_file() {
+            return;
+        }
+        let blocks = minecraftoss_core::block::BlockRegistry::load(&paths.block_catalog).unwrap();
+        let mut missing = GameData {
+            jar: Some(std::env::temp_dir().join("minecraft-survival-data-missing.jar")),
+            ..GameData::default()
+        };
+        missing.load_map_colors(&blocks);
+        assert!(missing.map_colors.is_none(), "no map colours from a missing jar");
+        let mut data = GameData {
+            jar: Some(jar),
+            ..GameData::default()
+        };
+        data.load_map_colors(&blocks);
+        let colors = data.map_colors.expect("the map colours");
+        assert_eq!(colors.len(), blocks.state_count());
+        assert_eq!(colors.id(blocks.parse_state("minecraft:grass_block").unwrap()), 1);
     }
 }

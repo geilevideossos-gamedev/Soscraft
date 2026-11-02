@@ -4,16 +4,20 @@ use std::time::{Duration, Instant};
 
 use minecraft_net::PlayerUuid;
 use minecraft_net::messages::{MapMark, MapPatch, MapUpdate};
-use minecraftoss_core::ChunkPos;
 use minecraftoss_core::loot::Exploring;
 use minecraftoss_core::nbt::Tag;
+use minecraftoss_core::pos::Direction;
+use minecraftoss_core::{BlockStateId, ChunkPos, SupportType};
 use minecraftoss_generator::zoom;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_world::chunk_map::WorldGen;
 use minecraftoss_world::level_storage::LevelStorage;
 use serde_json::Value;
 
+use crate::block_map_colors::BlockMapColors;
+use crate::fluid::FluidKind;
 use crate::locate::{self, Search};
+use crate::scene::{HandcraftedScene, Scene};
 
 pub const MAP_SIZE: usize = 128;
 pub const COLORS: usize = MAP_SIZE * MAP_SIZE;
@@ -54,6 +58,9 @@ pub const MAP_ITEMS: [&str; 17] = [
 const WORN_SLOTS: [usize; 6] = [36, 37, 38, 39, 41, 42];
 pub const SEARCH_TIME: Duration = Duration::from_secs(2);
 pub const WATER_ON_MAP_OUTLINES: &str = "minecraft:water_on_map_outlines";
+pub const COLOR_DIRT: u8 = 10;
+pub const COLOR_STONE: u8 = 11;
+pub const COLOR_WATER: u8 = 12;
 pub const COLOR_ORANGE: u8 = 15;
 pub const COLOR_BROWN: u8 = 26;
 pub const LOW: u8 = 0;
@@ -149,6 +156,80 @@ impl MapData {
             y: clamp_coordinate(fz),
             rot,
         })
+    }
+
+    pub fn fill_in(
+        &self,
+        (x, z): (f64, f64),
+        step: i32,
+        surface: &dyn MapSurface,
+    ) -> Vec<(usize, usize, u8)> {
+        let scale = 1i32 << self.scale;
+        let holder_x = (x - f64::from(self.x_center)).floor() as i32 / scale + 64;
+        let holder_z = (z - f64::from(self.z_center)).floor() as i32 / scale + 64;
+        let ceiling = surface.ceiling();
+        let mut radius = 128 / scale;
+        if ceiling {
+            radius /= 2;
+        }
+        let size = MAP_SIZE as i32;
+        let mut painted = Vec::new();
+        let mut changed = false;
+        for col in holder_x - radius + 1..holder_x + radius {
+            if col & 15 != step & 15 && !changed {
+                continue;
+            }
+            changed = false;
+            let mut previous = 0.0;
+            for row in holder_z - radius - 1..holder_z + radius {
+                if col < 0 || row < -1 || col >= size || row >= size {
+                    continue;
+                }
+                let distance = (col - holder_x).pow(2) + (row - holder_z).pow(2);
+                let ring = distance > (radius - 2) * (radius - 2);
+                let world_x = (self.x_center / scale + col - 64) * scale;
+                let world_z = (self.z_center / scale + row - 64) * scale;
+                if !surface.loaded(world_x, world_z) {
+                    continue;
+                }
+                let (color, depth, height) = if ceiling {
+                    (speckle(world_x, world_z), 0, 100.0)
+                } else {
+                    surface_colour(surface, (world_x, world_z), scale)
+                };
+                let odd = f64::from((col + row) & 1);
+                let brightness = if color == COLOR_WATER {
+                    let shade = f64::from(depth) * 0.1 + odd * 0.2;
+                    if shade < 0.5 {
+                        HIGH
+                    } else if shade > 0.9 {
+                        LOW
+                    } else {
+                        NORMAL
+                    }
+                } else {
+                    let shade =
+                        (height - previous) * 4.0 / f64::from(scale + 4) + (odd - 0.5) * 0.4;
+                    if shade > 0.6 {
+                        HIGH
+                    } else if shade < -0.6 {
+                        LOW
+                    } else {
+                        NORMAL
+                    }
+                };
+                previous = height;
+                if row < 0 || distance >= radius * radius || (ring && (col + row) & 1 == 0) {
+                    continue;
+                }
+                let packed = packed(color, brightness);
+                if self.colors[col as usize + row as usize * MAP_SIZE] != packed {
+                    changed = true;
+                    painted.push((col as usize, row as usize, packed));
+                }
+            }
+        }
+        painted
     }
 
     pub fn to_tag(&self) -> Tag {
@@ -249,6 +330,161 @@ pub fn nether_rotation(game_time: i64) -> i8 {
 
 pub fn packed(color: u8, brightness: u8) -> u8 {
     (color << 2) | (brightness & 3)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MapBlock {
+    pub color: u8,
+    pub fluid: bool,
+    pub shown: u8,
+}
+
+pub trait MapSurface {
+    fn ceiling(&self) -> bool;
+    fn min_y(&self) -> i32;
+    fn loaded(&self, x: i32, z: i32) -> bool;
+    fn height(&self, x: i32, z: i32) -> i32;
+    fn block(&self, pos: [i32; 3]) -> MapBlock;
+}
+
+pub fn speckle(x: i32, z: i32) -> u8 {
+    let seed = x.wrapping_add(z.wrapping_mul(231_871));
+    let hash = seed
+        .wrapping_mul(seed)
+        .wrapping_mul(31_287_121)
+        .wrapping_add(seed.wrapping_mul(11));
+    if (hash >> 20) & 1 == 0 {
+        COLOR_DIRT
+    } else {
+        COLOR_STONE
+    }
+}
+
+fn surface_colour(surface: &dyn MapSurface, (x, z): (i32, i32), scale: i32) -> (u8, i32, f64) {
+    let min_y = surface.min_y();
+    let mut tally: Vec<(u8, i32)> = Vec::new();
+    let mut depth = 0;
+    let mut height = 0.0;
+    for dx in 0..scale {
+        for dz in 0..scale {
+            let (bx, bz) = (x + dx, z + dz);
+            let mut y = surface.height(bx, bz) + 1;
+            let color = if y > min_y {
+                y -= 1;
+                let mut block = surface.block([bx, y, bz]);
+                while block.color == 0 && y > min_y {
+                    y -= 1;
+                    block = surface.block([bx, y, bz]);
+                }
+                if y > min_y && block.fluid {
+                    let mut below = y - 1;
+                    loop {
+                        let under = surface.block([bx, below, bz]);
+                        below -= 1;
+                        depth += 1;
+                        if below <= min_y || !under.fluid {
+                            break;
+                        }
+                    }
+                    block.shown
+                } else {
+                    block.color
+                }
+            } else {
+                COLOR_STONE
+            };
+            height += f64::from(y) / f64::from(scale * scale);
+            match tally.iter_mut().find(|(seen, _)| *seen == color) {
+                Some((_, count)) => *count += 1,
+                None => tally.push((color, 1)),
+            }
+        }
+    }
+    let mut color = 0;
+    let mut most = 0;
+    for &(seen, count) in &tally {
+        if count > most {
+            (color, most) = (seen, count);
+        }
+    }
+    (color, depth / (scale * scale), height)
+}
+
+pub struct SceneSurface<'a> {
+    scene: &'a HandcraftedScene,
+    colors: &'a BlockMapColors,
+    ceiling: bool,
+    fluids: [u8; 2],
+}
+
+impl<'a> SceneSurface<'a> {
+    pub fn new(scene: &'a HandcraftedScene, colors: &'a BlockMapColors, ceiling: bool) -> Self {
+        let fluid = |name: &str| {
+            let states = scene.states()?;
+            let blocks = &states.registries().blocks;
+            let block = blocks.block_by_name(name)?;
+            Some(colors.id(blocks.block(block).default_state()))
+        };
+        Self {
+            scene,
+            colors,
+            ceiling,
+            fluids: [
+                fluid("minecraft:water").unwrap_or(0),
+                fluid("minecraft:lava").unwrap_or(0),
+            ],
+        }
+    }
+}
+
+impl MapSurface for SceneSurface<'_> {
+    fn ceiling(&self) -> bool {
+        self.ceiling
+    }
+
+    fn min_y(&self) -> i32 {
+        self.scene.vertical_range().start
+    }
+
+    fn loaded(&self, x: i32, z: i32) -> bool {
+        self.scene.generated_chunk((x >> 4, z >> 4)).is_some()
+    }
+
+    fn height(&self, x: i32, z: i32) -> i32 {
+        self.scene
+            .column_top(x, z, |_| true)
+            .unwrap_or(self.min_y() - 1)
+    }
+
+    fn block(&self, [x, y, z]: [i32; 3]) -> MapBlock {
+        let state = self.scene.state_at((x, y, z)).unwrap_or(BlockStateId::AIR);
+        let color = self.colors.id(state);
+        let held = self
+            .scene
+            .states()
+            .and_then(|states| Some((states, states.fluid_cell(state)?)));
+        let Some((states, cell)) = held else {
+            return MapBlock {
+                color,
+                fluid: false,
+                shown: color,
+            };
+        };
+        let blocks = &states.registries().blocks;
+        let shown = if blocks.is_face_sturdy(state, Direction::Up, SupportType::Full) {
+            color
+        } else {
+            match cell.kind {
+                FluidKind::Water => self.fluids[0],
+                FluidKind::Lava => self.fluids[1],
+            }
+        };
+        MapBlock {
+            color,
+            fluid: true,
+            shown,
+        }
+    }
 }
 
 pub fn biome_preview(map: &mut MapData, mut watery: impl FnMut(i32, i32) -> bool) {
@@ -373,6 +609,7 @@ pub struct CarriedMap {
     pub item: String,
     pub id: i32,
     pub marks: Vec<(String, Mark)>,
+    pub hand: bool,
 }
 
 impl CarriedMap {
@@ -406,6 +643,7 @@ impl CarriedMap {
             item: stack.id.clone(),
             id,
             marks,
+            hand: false,
         })
     }
 }
@@ -437,6 +675,7 @@ struct Holding {
     max_y: usize,
     dirty_decorations: bool,
     tick: i32,
+    step: i32,
 }
 
 impl Holding {
@@ -450,6 +689,7 @@ impl Holding {
             max_y: MAP_SIZE - 1,
             dirty_decorations: true,
             tick: 0,
+            step: 0,
         }
     }
 
@@ -854,9 +1094,21 @@ impl MapStore {
     }
 
     pub fn tick_carried(&mut self, carriers: &[Carrier], game_time: i64) {
+        self.tick_carried_on(carriers, game_time, &[]);
+    }
+
+    pub fn tick_carried_on(
+        &mut self,
+        carriers: &[Carrier],
+        game_time: i64,
+        surfaces: &[(&str, &dyn MapSurface)],
+    ) {
         for carrier in carriers {
             for map in &carrier.maps {
                 self.tick_carried_by(carrier, map, carriers, game_time);
+                if map.hand {
+                    self.fill_in(carrier, map.id, surfaces);
+                }
             }
             let updates = self.next_updates(carrier);
             if !updates.is_empty() {
@@ -893,6 +1145,34 @@ impl MapStore {
             for holding in &mut held.holders {
                 holding.mark_colors_dirty(x, y);
             }
+        }
+    }
+
+    fn fill_in(&mut self, carrier: &Carrier, id: i32, surfaces: &[(&str, &dyn MapSurface)]) {
+        let Some(data) = self.maps.get(&id) else {
+            return;
+        };
+        let surface = surfaces
+            .iter()
+            .find(|(dimension, _)| *dimension == carrier.dimension);
+        let Some(&(_, surface)) = surface.filter(|_| !data.locked) else {
+            return;
+        };
+        if data.dimension != carrier.dimension {
+            return;
+        }
+        let holders = &mut self.held.entry(id).or_default().holders;
+        let holding = match holders.iter().position(|h| h.uuid == carrier.uuid) {
+            Some(index) => &mut holders[index],
+            None => {
+                holders.push(Holding::new(&carrier.uuid));
+                holders.last_mut().expect("just pushed")
+            }
+        };
+        holding.step = holding.step.wrapping_add(1);
+        let painted = data.fill_in((carrier.x, carrier.z), holding.step, surface);
+        for (x, y, color) in painted {
+            self.set_color(id, x, y, color);
         }
     }
 
@@ -1765,6 +2045,7 @@ mod tests {
                     (key.to_owned(), mark)
                 })
                 .collect(),
+            hand: false,
         }
     }
 
@@ -2212,5 +2493,495 @@ mod tests {
         let fresh = cache.get(9).unwrap();
         assert_eq!((fresh.scale, fresh.locked, fresh.version), (4, true, 1));
         assert!(fresh.colors.iter().all(|&color| color == 0));
+    }
+
+    type Column = Box<dyn Fn(i32, i32) -> i32>;
+    type Cell = Box<dyn Fn([i32; 3]) -> MapBlock>;
+
+    struct Land {
+        ceiling: bool,
+        top: Column,
+        block: Cell,
+        loaded: Box<dyn Fn(i32, i32) -> bool>,
+    }
+
+    impl MapSurface for Land {
+        fn ceiling(&self) -> bool {
+            self.ceiling
+        }
+
+        fn min_y(&self) -> i32 {
+            -64
+        }
+
+        fn loaded(&self, x: i32, z: i32) -> bool {
+            (self.loaded)(x, z)
+        }
+
+        fn height(&self, x: i32, z: i32) -> i32 {
+            (self.top)(x, z)
+        }
+
+        fn block(&self, pos: [i32; 3]) -> MapBlock {
+            (self.block)(pos)
+        }
+    }
+
+    fn ground(color: u8) -> MapBlock {
+        MapBlock {
+            color,
+            fluid: false,
+            shown: color,
+        }
+    }
+
+    fn water() -> MapBlock {
+        MapBlock {
+            color: COLOR_WATER,
+            fluid: true,
+            shown: COLOR_WATER,
+        }
+    }
+
+    fn land(
+        top: impl Fn(i32, i32) -> i32 + 'static,
+        block: impl Fn([i32; 3]) -> MapBlock + 'static,
+    ) -> Land {
+        Land {
+            ceiling: false,
+            top: Box::new(top),
+            block: Box::new(block),
+            loaded: Box::new(|_, _| true),
+        }
+    }
+
+    fn flat(color: impl Fn(i32, i32) -> u8 + 'static) -> Land {
+        land(
+            |_, _| 64,
+            move |[x, y, z]| match y {
+                64 => ground(color(x, z)),
+                ..64 => ground(COLOR_STONE),
+                _ => MapBlock::default(),
+            },
+        )
+    }
+
+    fn paint(map: &mut MapData, painted: &[(usize, usize, u8)]) {
+        for &(x, y, color) in painted {
+            map.colors[x + y * MAP_SIZE] = color;
+        }
+    }
+
+    fn pixel(painted: &[(usize, usize, u8)], at: (usize, usize)) -> Option<u8> {
+        painted
+            .iter()
+            .find(|&&(x, y, _)| (x, y) == at)
+            .map(|&(_, _, color)| color)
+    }
+
+    const GRASS: u8 = 1;
+    const SAND: u8 = 2;
+
+    #[test]
+    fn a_held_map_fills_in_the_stripe_of_its_step_and_runs_on_while_columns_change() {
+        let mut map = MapData::create_fresh(0.0, 0.0, 0, "minecraft:overworld", true, false);
+        let grass = packed(GRASS, NORMAL);
+        let meadow = flat(|_, _| GRASS);
+        let painted = map.fill_in((0.5, 0.5), 1, &meadow);
+        let columns: BTreeSet<usize> = painted.iter().map(|&(x, _, _)| x).collect();
+        assert_eq!(
+            columns,
+            (1..MAP_SIZE).collect(),
+            "column 1 is step 1's and every column after it changes"
+        );
+        assert_eq!(painted.len(), 127 * MAP_SIZE);
+        assert!(painted.iter().all(|&(_, _, color)| color == grass));
+        paint(&mut map, &painted);
+        assert!(map.fill_in((0.5, 0.5), 2, &meadow).is_empty());
+        let first = map.fill_in((0.5, 0.5), 16, &meadow);
+        assert_eq!(
+            first,
+            (0..MAP_SIZE).map(|y| (0, y, grass)).collect::<Vec<_>>(),
+            "column 0 waits for step 16"
+        );
+        paint(&mut map, &first);
+        let beaches = flat(|x, _| if x.rem_euclid(4) == 0 { SAND } else { GRASS });
+        let sanded = map.fill_in((0.5, 0.5), 4, &beaches);
+        let columns: BTreeSet<usize> = sanded.iter().map(|&(x, _, _)| x).collect();
+        assert_eq!(
+            columns,
+            BTreeSet::from([4, 20, 36, 52, 68, 84, 100, 116]),
+            "only step 4's stripe changes, and the unchanged column after each stops it"
+        );
+        assert!(
+            sanded
+                .iter()
+                .all(|&(_, _, color)| color == packed(SAND, NORMAL))
+        );
+        let mut patchy = flat(|_, _| GRASS);
+        patchy.loaded = Box::new(|x, _| x != 0);
+        let holes = MapData::create_fresh(0.0, 0.0, 0, "minecraft:overworld", true, false).fill_in(
+            (0.5, 0.5),
+            0,
+            &patchy,
+        );
+        assert_eq!(pixel(&holes, (63, 5)), Some(grass));
+        assert_eq!(
+            pixel(&holes, (64, 5)),
+            None,
+            "unloaded chunks are left blank"
+        );
+        assert_eq!(
+            pixel(&holes, (65, 5)),
+            None,
+            "a column with nothing changed stops the run"
+        );
+        assert_eq!(pixel(&holes, (80, 5)), Some(grass), "step 0's next column");
+    }
+
+    #[test]
+    fn map_pixels_are_shaded_by_water_depth_and_slopes_like_vanilla() {
+        let map = MapData::create_fresh(0.0, 0.0, 0, "minecraft:overworld", true, false);
+        let depth = |x: i32| match x {
+            0 => 1,
+            1 => 4,
+            2 => 5,
+            3 => 9,
+            4 => 12,
+            _ => 0,
+        };
+        let ramp = |z: i32| match z {
+            0..=4 => 64 + z,
+            5..=8 => 72 - z,
+            9..=12 => 64 + 2 * (z - 8),
+            _ => 64,
+        };
+        let shore = land(
+            move |x, z| if x == 10 { ramp(z) } else { 64 },
+            move |[x, y, z]| {
+                let top = if x == 10 { ramp(z) } else { 64 };
+                let deep = depth(x);
+                if y > top {
+                    MapBlock::default()
+                } else if y > top - deep {
+                    water()
+                } else if y == top - deep && deep > 0 {
+                    ground(SAND)
+                } else {
+                    ground(GRASS)
+                }
+            },
+        );
+        let painted = map.fill_in((0.5, 0.5), 0, &shore);
+        let at = |x: i32, z: i32| pixel(&painted, ((x + 64) as usize, (z + 64) as usize));
+        let water = |brightness| Some(packed(COLOR_WATER, brightness));
+        assert_eq!((at(0, 0), at(0, 1)), (water(HIGH), water(HIGH)), "depth 1");
+        assert_eq!(
+            (at(1, 1), at(1, 0)),
+            (water(HIGH), water(NORMAL)),
+            "depth 4"
+        );
+        assert_eq!(
+            (at(2, 0), at(2, 1)),
+            (water(NORMAL), water(NORMAL)),
+            "depth 5"
+        );
+        assert_eq!((at(3, 1), at(3, 0)), (water(NORMAL), water(LOW)), "depth 9");
+        assert_eq!((at(4, 0), at(4, 1)), (water(LOW), water(LOW)), "depth 12");
+        let grass = |brightness| Some(packed(GRASS, brightness));
+        assert_eq!(
+            (at(10, 1), at(10, 2)),
+            (grass(HIGH), grass(HIGH)),
+            "one block up"
+        );
+        assert_eq!(
+            (at(10, 5), at(10, 6)),
+            (grass(LOW), grass(LOW)),
+            "one block down"
+        );
+        assert_eq!(at(10, 10), grass(HIGH), "two blocks up");
+        assert_eq!(
+            (at(11, 3), at(11, 4)),
+            (grass(NORMAL), grass(NORMAL)),
+            "flat ground beside the ramp"
+        );
+    }
+
+    #[test]
+    fn a_pixel_takes_its_most_common_block_and_the_first_on_a_tie() {
+        let mixed = land(
+            |x, _| if x == 1 { 66 } else { 64 },
+            |[x, y, z]| match (y, x, z) {
+                (65..=66, 1, _) => MapBlock::default(),
+                (64, 0, 0) | (64, 1, 1) | (64, 0, 2) | (64, 1, 2) | (64, 0, 3) => ground(GRASS),
+                (64, ..) => ground(SAND),
+                _ => ground(COLOR_STONE),
+            },
+        );
+        assert_eq!(
+            surface_colour(&mixed, (0, 0), 2),
+            (GRASS, 0, 64.0),
+            "grass, sand, sand, grass: the first wins the tie, and the air above is looked through"
+        );
+        assert_eq!(
+            surface_colour(&mixed, (0, 2), 2).0,
+            GRASS,
+            "three grass and one sand"
+        );
+        let lake = land(
+            |_, _| 64,
+            |[x, y, z]| match y {
+                65.. => MapBlock::default(),
+                _ if y > 64 - (2 * x + z + 1) => water(),
+                _ => ground(SAND),
+            },
+        );
+        assert_eq!(
+            surface_colour(&lake, (0, 0), 2),
+            (COLOR_WATER, (1 + 2 + 3 + 4) / 4, 64.0),
+            "the depth is averaged over the pixel's columns"
+        );
+        let logged = land(
+            |_, _| 64,
+            |[_, y, _]| match y {
+                64 => MapBlock {
+                    color: COLOR_STONE,
+                    fluid: true,
+                    shown: COLOR_WATER,
+                },
+                63 => water(),
+                ..63 => ground(SAND),
+                _ => MapBlock::default(),
+            },
+        );
+        assert_eq!(
+            surface_colour(&logged, (0, 0), 1),
+            (COLOR_WATER, 2, 64.0),
+            "a waterlogged block shows as the water it holds"
+        );
+        let void = land(|_, _| -65, |_| MapBlock::default());
+        assert_eq!(
+            surface_colour(&void, (0, 0), 1),
+            (COLOR_STONE, 0, -64.0),
+            "an empty column shows bedrock at the floor"
+        );
+        let glass = land(|_, _| 0, |_| MapBlock::default());
+        assert_eq!(
+            surface_colour(&glass, (0, 0), 1),
+            (0, 0, -64.0),
+            "no colour all the way down to the floor"
+        );
+    }
+
+    #[test]
+    fn maps_of_dimensions_with_a_ceiling_show_the_vanilla_speckle() {
+        assert_eq!(
+            [(0, 0), (1, 0), (0, 1), (5, -3), (10, 20), (-1, 0), (0, -1)]
+                .map(|(x, z)| speckle(x, z)),
+            [
+                COLOR_DIRT,
+                COLOR_STONE,
+                COLOR_STONE,
+                COLOR_DIRT,
+                COLOR_STONE,
+                COLOR_STONE,
+                COLOR_DIRT
+            ]
+        );
+        let map = MapData::create_fresh(0.0, 0.0, 0, "minecraft:the_nether", true, false);
+        let mut nether = flat(|_, _| GRASS);
+        nether.ceiling = true;
+        let painted = map.fill_in((0.5, 0.5), 1, &nether);
+        let at = |x: i32, z: i32| pixel(&painted, ((x + 64) as usize, (z + 64) as usize));
+        assert_eq!(at(0, 0), Some(packed(COLOR_DIRT, NORMAL)));
+        assert_eq!(at(1, 0), Some(packed(COLOR_STONE, NORMAL)));
+        assert_eq!(
+            at(-64, 0),
+            None,
+            "half the radius: column 0 is out of reach"
+        );
+        assert_eq!(at(-63, 0), Some(packed(speckle(-63, 0), NORMAL)));
+        assert_eq!(at(0, -63), Some(packed(speckle(0, -63), NORMAL)));
+        assert_eq!(at(46, 46), None, "outside the circle");
+        assert_eq!(at(62, 2), None, "the outer ring keeps only odd pixels");
+        assert_eq!(at(62, 3), Some(packed(speckle(62, 3), NORMAL)));
+        assert_eq!(at(62, 0), Some(packed(speckle(62, 0), NORMAL)));
+    }
+
+    #[test]
+    fn a_map_in_hand_fills_in_and_its_holder_gets_the_painted_rectangle() {
+        let fresh = MapData::create_fresh(0.0, 0.0, 0, "minecraft:overworld", true, false);
+        let mut store = store_with(&[(0, fresh.clone())]);
+        let meadow = flat(|_, _| GRASS);
+        let overworld: [(&str, &dyn MapSurface); 1] = [("minecraft:overworld", &meadow)];
+        let mut steve = holder(
+            "steve",
+            (0.5, 0.5, 0.0),
+            vec![carried("minecraft:filled_map", 0, &[])],
+        );
+        store.tick_carried_on(std::slice::from_ref(&steve), 0, &overworld);
+        assert!(
+            store.get(0).unwrap().colors.iter().all(|&c| c == 0),
+            "a map in the backpack does not fill in"
+        );
+        assert_eq!(sent(&mut store, "steve").len(), 1, "the whole blank map");
+        steve.maps[0].hand = true;
+        store.tick_carried_on(std::slice::from_ref(&steve), 0, &overworld);
+        let colors = &store.get(0).unwrap().colors;
+        assert_eq!((colors[0], colors[1]), (0, packed(GRASS, NORMAL)));
+        let updates = sent(&mut store, "steve");
+        let patch = updates[0].patch.as_ref().expect("the painted part");
+        assert_eq!(
+            (patch.x, patch.y, patch.width, patch.height),
+            (1, 0, 127, 128)
+        );
+        assert_eq!(store.take_writes().maps.len(), 1, "a painted map is saved");
+        for _ in 2..16 {
+            store.tick_carried_on(std::slice::from_ref(&steve), 0, &overworld);
+        }
+        assert_eq!(store.get(0).unwrap().colors[0], 0);
+        store.tick_carried_on(std::slice::from_ref(&steve), 0, &overworld);
+        assert_eq!(
+            store.get(0).unwrap().colors[0],
+            packed(GRASS, NORMAL),
+            "the sixteenth step reaches column 0"
+        );
+        let mut elsewhere = fresh.clone();
+        elsewhere.dimension = "minecraft:the_nether".to_owned();
+        store.insert(1, elsewhere);
+        let mut locked = fresh.clone();
+        locked.locked = true;
+        store.insert(2, locked);
+        store.insert(3, fresh.clone());
+        let in_hand = |id| CarriedMap {
+            hand: true,
+            ..carried("minecraft:filled_map", id, &[])
+        };
+        steve.maps = vec![in_hand(1), in_hand(2)];
+        store.tick_carried_on(std::slice::from_ref(&steve), 0, &overworld);
+        steve.maps = vec![in_hand(3)];
+        store.tick_carried_on(std::slice::from_ref(&steve), 0, &[]);
+        for (id, why) in [
+            (1, "a map of another dimension"),
+            (2, "a locked map"),
+            (3, "a map with no loaded level"),
+        ] {
+            assert!(
+                store.get(id).unwrap().colors.iter().all(|&c| c == 0),
+                "{why} stays as it is"
+            );
+        }
+    }
+
+    #[test]
+    fn a_streamed_scene_shows_maps_its_blocks_fluids_and_loaded_chunks() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        let Ok(paths) = minecraftoss_core::registries::DataPaths::discover() else {
+            return;
+        };
+        let Ok(registries) = minecraftoss_core::Registries::load(&paths) else {
+            return;
+        };
+        if !jar.is_file() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let colors = BlockMapColors::read_jar(&jar, &registries.blocks).unwrap();
+        let id = |text: &str| colors.id(registries.blocks.parse_state(text).unwrap());
+        assert_eq!(
+            [
+                "minecraft:dirt",
+                "minecraft:stone",
+                "minecraft:bedrock",
+                "minecraft:water"
+            ]
+            .map(id),
+            [COLOR_DIRT, COLOR_STONE, COLOR_STONE, COLOR_WATER]
+        );
+        let states = crate::terrain::BlockStates::new(registries.clone(), 0, -64, 384).unwrap();
+        let mut scene = HandcraftedScene::streamed(Arc::new(states));
+        scene.insert_chunk(Arc::new(minecraftoss_core::Chunk::new(
+            ChunkPos::new(0, 0),
+            -64,
+            384,
+            minecraftoss_core::BiomeId(0),
+        )));
+        let slab = |half: &str| {
+            crate::scene::Block::new("minecraft:stone_slab")
+                .with("type", half)
+                .with("waterlogged", "true")
+        };
+        let grass = crate::scene::Block::new("minecraft:grass_block").with("snowy", "false");
+        for (pos, block) in [
+            ((1, 70, 1), grass.clone()),
+            (
+                (2, 70, 2),
+                crate::scene::Block::new("minecraft:water").with("level", "0"),
+            ),
+            ((3, 70, 3), slab("bottom")),
+            ((4, 70, 4), slab("top")),
+            (
+                (5, 70, 5),
+                crate::scene::Block::new("minecraft:lava").with("level", "0"),
+            ),
+            ((6, 70, 6), grass),
+            ((6, 72, 6), crate::scene::Block::new("minecraft:glass")),
+        ] {
+            scene.set(pos, Some(block));
+        }
+        let land = SceneSurface::new(&scene, &colors, false);
+        assert!(!land.ceiling() && SceneSurface::new(&scene, &colors, true).ceiling());
+        assert_eq!(land.min_y(), -64);
+        assert!(land.loaded(0, 0) && land.loaded(15, 15));
+        assert!(!land.loaded(16, 0) && !land.loaded(-1, 0));
+        assert_eq!(
+            (land.height(1, 1), land.height(6, 6), land.height(7, 7)),
+            (70, 72, -65),
+            "the highest block that is not air"
+        );
+        let fire = id("minecraft:lava");
+        let block = |x, z, y| land.block([x, y, z]);
+        let seen = |color, fluid, shown| MapBlock {
+            color,
+            fluid,
+            shown,
+        };
+        assert_eq!(block(1, 1, 70), seen(GRASS, false, GRASS));
+        assert_eq!(block(2, 2, 70), seen(COLOR_WATER, true, COLOR_WATER));
+        assert_eq!(
+            block(3, 3, 70),
+            seen(COLOR_STONE, true, COLOR_WATER),
+            "a waterlogged bottom slab shows its water"
+        );
+        assert_eq!(
+            block(4, 4, 70),
+            seen(COLOR_STONE, true, COLOR_STONE),
+            "a waterlogged top slab is sturdy on top and shows itself"
+        );
+        assert_eq!(block(5, 5, 70), seen(fire, true, fire));
+        assert_eq!(block(6, 6, 72), MapBlock::default(), "glass has no colour");
+        assert_eq!(
+            block(20, 0, 70),
+            MapBlock::default(),
+            "nothing is loaded there"
+        );
+        let map = MapData::create_fresh(8.0, 8.0, 0, "minecraft:overworld", true, false);
+        let painted = map.fill_in((8.5, 8.5), 1, &land);
+        let at = |x: usize| pixel(&painted, (x + 64, x + 64));
+        assert_eq!(
+            at(1),
+            Some(packed(GRASS, HIGH)),
+            "high above the empty floor"
+        );
+        assert_eq!(at(2), Some(packed(COLOR_WATER, HIGH)));
+        assert_eq!(at(3), Some(packed(COLOR_WATER, HIGH)));
+        assert_eq!(at(4), Some(packed(COLOR_STONE, HIGH)));
+        assert_eq!(at(5), Some(packed(fire, HIGH)));
+        assert_eq!(at(6), Some(packed(GRASS, HIGH)), "seen through the glass");
+        assert_eq!(at(7), Some(packed(COLOR_STONE, NORMAL)), "bedrock");
+        assert_eq!(at(16), None, "the next chunk is not loaded");
     }
 }
