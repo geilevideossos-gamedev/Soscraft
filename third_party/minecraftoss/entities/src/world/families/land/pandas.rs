@@ -618,10 +618,19 @@ fn handle_roll(mob: &mut FamilyMob<Panda>) {
     }
 }
 
+fn scare(mob: &mut FamilyMob<Panda>, thundering: bool) {
+    let worried = mob.state.variant() == Gene::Worried;
+    mob.state.goals_mut().scared = worried && thundering;
+}
+
 fn worry(mob: &mut FamilyMob<Panda>) {
     let worried = mob.state.variant() == Gene::Worried;
+    let wet = mob.core.body.touching_water;
     let goals = mob.state.goals_mut();
-    if worried && !goals.eating() {
+    if goals.scared && !wet {
+        goals.sitting = true;
+        goals.eat_counter = 0;
+    } else if worried && !goals.eating() {
         goals.sitting = false;
     }
 }
@@ -919,7 +928,9 @@ impl Family for Panda {
         let Some(base) = world.family_base_tick::<Self, W>(id, level, players) else {
             return;
         };
+        let thundering = level.thundering();
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
+            scare(mob, thundering);
             if let Some(event) = ambient_event(mob.state.variant()) {
                 for (voice, _) in &mut mob.core.voices {
                     if let Voice::Ambient(pitch) = *voice {

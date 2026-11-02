@@ -12,6 +12,8 @@ struct Grove {
     bamboo: Vec<Pos>,
     pen: bool,
     ledge: bool,
+    pool: bool,
+    thunder: bool,
     items: Vec<WorldItem>,
     next_item: i32,
     dropped: Vec<(i32, DVec3)>,
@@ -51,6 +53,9 @@ impl World for Grove {
         if self.pen && wall && (64..=65).contains(&pos.1) {
             return Some(Block::new("minecraft:stone"));
         }
+        if self.pool && pos.0 >= POOL && pos.1 == 64 {
+            return Some(Block::new("minecraft:water"));
+        }
         let floor = if self.ledge && pos.2 >= 1 { 60 } else { 64 };
         (pos.1 < floor).then(|| Block::new("minecraft:grass_block"))
     }
@@ -86,9 +91,14 @@ impl World for Grove {
         let id = self.drop_item(position, &stack.id, i32::from(stack.count), delay);
         self.dropped.push((id, velocity));
     }
+
+    fn thundering(&self) -> bool {
+        self.thunder
+    }
 }
 
 const PEN: i32 = 4;
+const POOL: i32 = 20;
 
 fn at(x: f64, z: f64) -> DVec3 {
     DVec3::new(x, 64.0, z)
@@ -1438,6 +1448,106 @@ fn a_worried_panda_does_not_settle_on_picked_up_bamboo() {
             assert_eq!(lying + kept, 3, "and eats none of it");
         }
     }
+}
+
+#[test]
+fn a_worried_panda_sits_and_trembles_in_thunder_and_refuses_bamboo() {
+    let mut world = EntityWorld::default();
+    let mut grove = Grove {
+        pool: true,
+        thunder: true,
+        ..Grove::default()
+    };
+    let worried = panda_with(&mut world, at(0.5, 0.5), Gene::Worried);
+    let eater = panda_with(&mut world, at(-8.5, 0.5), Gene::Worried);
+    let sleeper = panda_with(&mut world, at(-16.5, 0.5), Gene::Worried);
+    let swimmer = panda_with(&mut world, at(24.5, 0.5), Gene::Worried);
+    let calm = panda_with(&mut world, at(-30.5, 24.5), Gene::Normal);
+    panda_mut(&mut world, sleeper).core.no_ai = true;
+    let mob = panda_mut(&mut world, eater);
+    mob.state.held = Some(ItemStack::new(ai::BAMBOO, 1));
+    let sat = mob.state.goals_mut();
+    sat.sitting = true;
+    sat.eat_counter = 40;
+    let player = player_at(1, at(0.5, 6.5));
+    let start = panda(&world, worried).core.body.position;
+    let mut wet = 0;
+    for tick in 1..=200 {
+        world.tick_with_players(&mut grove, &[player]);
+        for id in [worried, eater, sleeper] {
+            let shown = goals(&world, id);
+            assert!(shown.scared && shown.sitting, "tick {tick}: it sits scared");
+            assert!(
+                !shown.eating() && !shown.can_perform_action(),
+                "tick {tick}"
+            );
+        }
+        let mob = panda(&world, worried);
+        let moved = mob.core.body.position - start;
+        assert!(
+            moved.x.abs() < 1e-9 && moved.z.abs() < 1e-9,
+            "tick {tick}: it holds still"
+        );
+        let running = mob.state.running_goals();
+        assert!(
+            !running.contains(&"PandaAvoidGoal"),
+            "tick {tick}: it does not run from the player"
+        );
+        assert_eq!(
+            held(&world, eater),
+            Some((ai::BAMBOO.to_owned(), 1)),
+            "tick {tick}: it holds its bamboo and eats none"
+        );
+        let mob = panda(&world, swimmer);
+        let shown = mob.state.goals().unwrap();
+        assert!(shown.scared);
+        if mob.core.body.touching_water {
+            wet += 1;
+            assert!(!shown.sitting, "tick {tick}: never in water");
+        }
+        assert!(
+            !goals(&world, calm).scared,
+            "only worried pandas fear thunder"
+        );
+    }
+    assert!(wet > 150, "{wet} ticks in the pool");
+    let sit = panda(&world, worried).state.sit_amount;
+    assert_eq!((sit.old, sit.now), (1.0, 1.0), "fully sat to tremble");
+
+    let _ = world.take_entity_events();
+    let mut bamboo = holding(ai::BAMBOO, 5);
+    let (result, events, _, dropped) =
+        interact(&mut world, worried, &mut bamboo, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::Pass, "bamboo does nothing");
+    assert!(events.is_empty() && dropped.is_none());
+    assert_eq!(count(&bamboo), Some(5));
+    assert_eq!(panda(&world, worried).state.in_love, 0);
+    assert!(world.take_entity_events().is_empty());
+    let (result, events, _, _) = interact(&mut world, calm, &mut bamboo, 0, false).unwrap();
+    assert_eq!(
+        result,
+        InteractionResult::SuccessServer,
+        "a calm panda takes it"
+    );
+    assert_eq!(events, vec![AnimalEvent::Hearts]);
+    assert_eq!(count(&bamboo), Some(4));
+
+    grove.thunder = false;
+    world.tick_with_players(&mut grove, &[player]);
+    for id in [worried, eater, sleeper] {
+        let shown = goals(&world, id);
+        assert!(!shown.scared && !shown.sitting, "after the storm it stands");
+    }
+    let mut fled = false;
+    for _ in 0..40 {
+        world.tick_with_players(&mut grove, &[player]);
+        let running = panda(&world, worried).state.running_goals();
+        fled |= running.contains(&"PandaAvoidGoal");
+    }
+    assert!(fled, "and runs from the player again");
+    let (result, events, _, _) = interact(&mut world, worried, &mut bamboo, 0, false).unwrap();
+    assert_eq!(result, InteractionResult::SuccessServer);
+    assert_eq!(events, vec![AnimalEvent::Hearts], "bamboo works again");
 }
 
 fn goal_only(name: &str, gene: Gene, baby: bool, seed: u64) -> MonsterAi {
