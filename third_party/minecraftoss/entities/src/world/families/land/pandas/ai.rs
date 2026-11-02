@@ -69,16 +69,22 @@ pub struct PandaGoals {
     pub on_back: bool,
     pub rolling: bool,
     pub sneezing: bool,
-    pub eating: bool,
     pub scared: bool,
     pub unhappy: i32,
+    pub sneeze_counter: i32,
+    pub eat_counter: i32,
+    pub roll_counter: i32,
     pub got_bamboo: bool,
     pub did_bite: bool,
 }
 
 impl PandaGoals {
+    pub fn eating(&self) -> bool {
+        self.eat_counter > 0
+    }
+
     pub fn can_perform_action(&self) -> bool {
-        !(self.on_back || self.scared || self.eating || self.rolling || self.sitting)
+        !(self.on_back || self.scared || self.eating() || self.rolling || self.sitting)
     }
 }
 

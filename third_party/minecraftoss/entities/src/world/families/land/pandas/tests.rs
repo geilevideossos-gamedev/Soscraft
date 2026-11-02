@@ -869,6 +869,67 @@ fn a_panda_refuses_a_lead() {
 }
 
 #[test]
+fn the_sit_back_and_roll_amounts_ease_in_and_out_like_vanilla() {
+    let mut world = EntityWorld::default();
+    let mut grove = Grove::default();
+    let id = panda_at(&mut world, at(0.5, 0.5));
+    let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+    let state = &panda(&world, id).state;
+    for amount in [state.sit_amount, state.back_amount, state.roll_amount] {
+        assert_eq!(amount, Amount::default());
+    }
+    panda_mut(&mut world, id).state.goals_mut().sitting = true;
+    let mut sat = Vec::new();
+    for _ in 0..8 {
+        let mob = panda_mut(&mut world, id);
+        mob.core.look.pitch = 30.0;
+        mob.state.ai.state.look_control.pitch = 30.0;
+        world.tick(&mut grove);
+        let mob = panda(&world, id);
+        assert_eq!(
+            (mob.core.look.pitch, mob.state.ai.state.look_control.pitch),
+            (0.0, 0.0),
+            "a sitting panda looks straight ahead"
+        );
+        sat.push(mob.state.sit_amount);
+    }
+    let up = [0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.0, 1.0];
+    for (tick, (amount, expected)) in sat.iter().zip(up).enumerate() {
+        assert!(close(amount.now, expected), "tick {tick}: {amount:?}");
+        let old = if tick == 0 { 0.0 } else { up[tick - 1] };
+        assert!(close(amount.old, old), "tick {tick}: {amount:?}");
+    }
+    assert!(close(sat[2].at(0.5), 0.375), "lerped by the partial tick");
+    assert!(close(sat[2].at(0.0), 0.3) && close(sat[2].at(1.0), 0.45));
+    let back = panda(&world, id).state.back_amount;
+    assert_eq!(back, Amount::default(), "only the sit amount moved");
+
+    let goals = panda_mut(&mut world, id).state.goals_mut();
+    goals.sitting = false;
+    goals.on_back = true;
+    goals.rolling = true;
+    let mut fell = Vec::new();
+    for _ in 0..7 {
+        world.tick(&mut grove);
+        let state = &panda(&world, id).state;
+        fell.push((state.sit_amount.now, state.back_amount.now, state.roll_amount.now));
+    }
+    let down = [0.81, 0.62, 0.43, 0.24, 0.05, 0.0, 0.0];
+    for (tick, &(sit, back, roll)) in fell.iter().enumerate() {
+        assert!(close(sit, down[tick]), "tick {tick}: {sit}");
+        assert!(close(back, up[tick]) && close(roll, up[tick]), "tick {tick}");
+    }
+
+    let goals = panda_mut(&mut world, id).state.goals_mut();
+    goals.on_back = false;
+    goals.rolling = false;
+    goals.eat_counter = 3;
+    assert!(goals.eating() && !goals.can_perform_action());
+    goals.eat_counter = 0;
+    assert!(!goals.eating() && goals.can_perform_action());
+}
+
+#[test]
 fn aggressive_and_worried_pandas_have_their_own_ambient_sounds() {
     for (gene, event) in [
         (Gene::Normal, "entity.panda.ambient"),

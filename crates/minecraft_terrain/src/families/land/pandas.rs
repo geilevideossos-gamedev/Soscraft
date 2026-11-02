@@ -16,13 +16,18 @@ use minecraftoss_entities::world::families::land::pandas::{self, Gene};
 use minecraftoss_player::inventory::ItemStack;
 use std::collections::BTreeMap;
 
+mod render;
+
 pub const SHADOW_RADIUS: f32 = 0.9;
 pub const SITTING: u32 = 1;
 pub const ON_BACK: u32 = 2;
 pub const ROLLING: u32 = 4;
 pub const SNEEZING: u32 = 8;
 pub const SCARED: u32 = 16;
+pub const SNEEZE_VALUE: usize = 0;
+pub const EAT_VALUE: usize = 1;
 pub const UNHAPPY_VALUE: usize = 2;
+pub const ROLL_VALUE: usize = 3;
 pub const HELD_VALUE: usize = 4;
 pub const HELD_NOTHING: i32 = 0;
 pub const HELD_BAMBOO: i32 = 1;
@@ -78,8 +83,9 @@ fn held_of(value: i32) -> Option<ItemStack> {
 impl TerrainFamily for Panda {
     const TRACKING_RANGE: i32 = 10;
     const VOLATILE: &'static [&'static str] = &["equipment", "drop_chances", "ForcedAge"];
-    const TEXTURES: &'static [&'static str] = &[];
+    const TEXTURES: &'static [&'static str] = &render::TEXTURES;
     const SHADOW_RADIUS: f32 = SHADOW_RADIUS;
+    const CAGE_MARGIN: f32 = 0.11;
 
     fn read(mob: &mut FamilyMob<Self>, tag: &Tag) {
         let yaw = mob.core.yaw;
@@ -166,7 +172,10 @@ impl TerrainFamily for Panda {
                     show.flags |= flag;
                 }
             }
+            show.values[SNEEZE_VALUE] = goals.sneeze_counter;
+            show.values[EAT_VALUE] = goals.eat_counter;
             show.values[UNHAPPY_VALUE] = goals.unhappy;
+            show.values[ROLL_VALUE] = goals.roll_counter;
         }
         show.values[HELD_VALUE] = held_value(mob.state.held.as_ref());
         show
@@ -181,17 +190,23 @@ impl TerrainFamily for Panda {
         goals.rolling = show.flags & ROLLING != 0;
         goals.sneezing = show.flags & SNEEZING != 0;
         goals.scared = show.flags & SCARED != 0;
+        goals.sneeze_counter = show.values[SNEEZE_VALUE];
+        goals.eat_counter = show.values[EAT_VALUE];
         goals.unhappy = show.values[UNHAPPY_VALUE];
+        goals.roll_counter = show.values[ROLL_VALUE];
+        state.step_amounts();
     }
 
     fn draw(
-        _out: &mut FamilyDraw<'_>,
-        _mobs: &[FamilyMob<Self>],
-        _poses: &ClientMobs,
-        _atlas: &Atlas,
-        _light: &SkyLight,
-        _partial: f32,
+        out: &mut FamilyDraw<'_>,
+        mobs: &[FamilyMob<Self>],
+        poses: &ClientMobs,
+        atlas: &Atlas,
+        light: &SkyLight,
+        partial: f32,
     ) {
+        let shown = mobs.iter().filter(|mob| !mob.core.removed);
+        render::append_pandas(out.culled, out.held, shown, poses, atlas, light, partial);
     }
 
     fn interact(
@@ -448,6 +463,9 @@ mod tests {
         goals.sneezing = true;
         goals.scared = true;
         goals.unhappy = 20;
+        goals.sneeze_counter = 7;
+        goals.eat_counter = 5;
+        goals.roll_counter = 12;
         let show = shows(&host)[&id].family.unwrap();
         assert_eq!(
             (
@@ -461,11 +479,27 @@ mod tests {
                 HELD_CAKE
             )
         );
+        assert_eq!(
+            (
+                show.values[SNEEZE_VALUE],
+                show.values[EAT_VALUE],
+                show.values[ROLL_VALUE]
+            ),
+            (7, 5, 12)
+        );
         Panda::show_on(friend.family_mob_mut::<Panda>(id).unwrap(), &show);
         let mirror = &panda(&friend, id).state;
         let goals = mirror.goals().unwrap();
         assert!(goals.sitting && goals.on_back && goals.rolling && goals.sneezing && goals.scared);
         assert_eq!(goals.unhappy, 20);
+        assert_eq!(
+            (goals.sneeze_counter, goals.eat_counter, goals.roll_counter),
+            (7, 5, 12)
+        );
+        assert!(goals.eating());
+        for amount in [mirror.sit_amount, mirror.back_amount, mirror.roll_amount] {
+            assert_eq!((amount.old, amount.now), (0.0, 0.15), "stepped once a tick");
+        }
         assert_eq!(mirror.held.as_ref().map(|s| s.id.as_str()), Some(CAKE));
         Panda::show_on(
             friend.family_mob_mut::<Panda>(id).unwrap(),
@@ -475,6 +509,8 @@ mod tests {
         let goals = mirror.goals().unwrap();
         assert!(!(goals.sitting || goals.on_back || goals.rolling || goals.sneezing));
         assert_eq!((goals.unhappy, mirror.held.as_ref()), (0, None));
+        assert!(!goals.eating() && goals.roll_counter == 0);
+        assert_eq!(mirror.sit_amount.now, 0.0);
         let stick = Some(ItemStack::new("minecraft:stick", 1));
         assert_eq!(held_value(stick.as_ref()), HELD_OTHER);
         assert_eq!(held_of(HELD_OTHER), None, "friends draw no other item");

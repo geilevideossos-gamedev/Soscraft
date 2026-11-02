@@ -45,6 +45,8 @@ pub const CANT_BREED_SOUND: &str = "entity.panda.cant_breed";
 pub const STEP_SOUND: &str = "entity.panda.step";
 pub const AGGRESSIVE_AMBIENT: &str = "entity.panda.aggressive_ambient";
 pub const WORRIED_AMBIENT: &str = "entity.panda.worried_ambient";
+pub const AMOUNT_UP: f32 = 0.15;
+pub const AMOUNT_DOWN: f32 = 0.19;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Gene {
@@ -129,6 +131,27 @@ impl Gene {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Amount {
+    pub old: f32,
+    pub now: f32,
+}
+
+impl Amount {
+    pub fn step(&mut self, on: bool) {
+        self.old = self.now;
+        self.now = if on {
+            (self.now + AMOUNT_UP).min(1.0)
+        } else {
+            (self.now - AMOUNT_DOWN).max(0.0)
+        };
+    }
+
+    pub fn at(self, partial: f32) -> f32 {
+        self.old + partial * (self.now - self.old)
+    }
+}
+
 #[derive(Clone)]
 pub struct Panda {
     pub main_gene: Gene,
@@ -141,6 +164,9 @@ pub struct Panda {
     pub drop_chance: f32,
     pub can_pick_up_loot: bool,
     pub bred: bool,
+    pub sit_amount: Amount,
+    pub back_amount: Amount,
+    pub roll_amount: Amount,
     pub ai: Box<MonsterAi>,
 }
 
@@ -178,6 +204,15 @@ impl Panda {
 
     pub fn unhappy(&self) -> i32 {
         self.goals().map_or(0, |goals| goals.unhappy)
+    }
+
+    pub fn step_amounts(&mut self) {
+        let (sitting, on_back, rolling) = self.goals().map_or((false, false, false), |goals| {
+            (goals.sitting, goals.on_back, goals.rolling)
+        });
+        self.sit_amount.step(sitting);
+        self.back_amount.step(on_back);
+        self.roll_amount.step(rolling);
     }
 
     pub fn running_goals(&self) -> Vec<&'static str> {
@@ -426,6 +461,14 @@ fn tail(mob: &mut FamilyMob<Panda>) {
     }
 }
 
+fn animate(mob: &mut FamilyMob<Panda>) {
+    if mob.state.goals().is_some_and(|goals| goals.sitting) {
+        mob.core.look.pitch = 0.0;
+        mob.state.ai.state.look_control.pitch = 0.0;
+    }
+    mob.state.step_amounts();
+}
+
 fn bite(world: &mut EntityWorld, id: u64, target: Target) {
     let Some(mob) = world.family_mob_mut::<Panda>(id) else {
         return;
@@ -561,6 +604,9 @@ impl Family for Panda {
                 drop_chance: DROP_CHANCE,
                 can_pick_up_loot: true,
                 bred: false,
+                sit_amount: Amount::default(),
+                back_amount: Amount::default(),
+                roll_amount: Amount::default(),
                 ai: Box::new(ai),
             },
         })
@@ -633,6 +679,7 @@ impl Family for Panda {
         if let Some(mob) = world.family_mob_mut::<Self>(id) {
             grow(mob);
             tail(mob);
+            animate(mob);
         }
     }
 
