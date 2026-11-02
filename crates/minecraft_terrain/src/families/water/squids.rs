@@ -1,8 +1,10 @@
+use crate::ambient_particles::Kind;
 use crate::client_mobs::ClientMobs;
-use crate::families::{FamilyDraw, FamilyShow, TerrainFamily};
+use crate::families::{ClientFx, FamilyDraw, FamilyShow, TerrainFamily};
 use crate::lighting::SkyLight;
 use crate::mesh::Atlas;
 use crate::mob_actions::{Actor, MobOutcome, MobSound};
+use glam::DVec3;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_entities::age::Age;
 use minecraftoss_entities::animal::{self, AnimalEvent};
@@ -15,6 +17,8 @@ use minecraftoss_entities::world::families::water::squids::{self, GLOW_SQUID};
 mod render;
 
 pub const GLOW_TRACKING_RANGE: i32 = 10;
+pub const MAX_SQUIRTS_SEEN: i32 = 4;
+pub const SPARKLE_SPREAD: f64 = 0.6;
 const TENTACLE_ANGLE: usize = 0;
 const X_BODY_ROT: usize = 1;
 const Z_BODY_ROT: usize = 2;
@@ -32,6 +36,39 @@ fn bits(value: f32) -> i32 {
 
 fn float(value: i32) -> f32 {
     f32::from_bits(value as u32)
+}
+
+fn ink(mob: &FamilyMob<Squid>, fx: &mut ClientFx<'_>) {
+    let (core, state) = (&mob.core, &mob.state);
+    let spurts = state.ink_spurts as i32;
+    let Some(seen) = fx.seen.insert(core.id, spurts) else {
+        return;
+    };
+    let kind = if state.glow {
+        Kind::GlowSquidInk
+    } else {
+        Kind::SquidInk
+    };
+    let (x, y) = (state.x_body_rot_o, state.y_body_rot_o);
+    for _ in 0..spurts.wrapping_sub(seen).clamp(0, MAX_SQUIRTS_SEEN) {
+        let specks = squids::ink(fx.random, x, y, core.baby, core.previous_position);
+        for (at, motion) in specks {
+            fx.ambient.add(kind, at, motion);
+        }
+    }
+}
+
+fn sparkle(mob: &FamilyMob<Squid>, poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+    let Some(shown) = poses.get(mob.core.id) else {
+        return;
+    };
+    let width = f64::from(mob.core.body.width);
+    let height = f64::from(mob.core.body.height);
+    let random = &mut *fx.random;
+    let x = shown.position.x + width * (2.0 * random.next_double() - 1.0) * SPARKLE_SPREAD;
+    let y = shown.position.y + height * random.next_double();
+    let z = shown.position.z + width * (2.0 * random.next_double() - 1.0) * SPARKLE_SPREAD;
+    fx.ambient.add(Kind::Glow, DVec3::new(x, y, z), DVec3::ZERO);
 }
 
 impl TerrainFamily for Squid {
@@ -115,6 +152,15 @@ impl TerrainFamily for Squid {
     ) {
         let shown = mobs.iter().filter(|mob| !mob.core.removed);
         render::append_squids(out.culled, shown, poses, atlas, light, partial);
+    }
+
+    fn client_effects(mobs: &[FamilyMob<Self>], poses: &ClientMobs, fx: &mut ClientFx<'_>) {
+        for mob in mobs.iter().filter(|mob| !mob.core.removed) {
+            ink(mob, fx);
+            if mob.state.glow {
+                sparkle(mob, poses, fx);
+            }
+        }
     }
 
     fn interact(

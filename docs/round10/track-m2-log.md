@@ -48,6 +48,7 @@ No commit of this track has changed a `ToClient`/`ToServer` message or the codec
 - `docs/MINECRAFT-SURVIVAL.md` (water-buckets 1): "Cod, salmon, tropical fish, pufferfish, axolotl and tadpole buckets pour their water with their own splash (a hiss in the Nether; in creative the mob bucket stays in the hand); the sulfur cube bucket pours nothing. Each lets out its mob with the bucket's data and `FromBucket`; until the mob's family is live it is kept in the world but not shown."
 - `docs/MINECRAFT-SURVIVAL.md` (squids-live 3): "Squids spawn near the surface of oceans and rivers (up to 13 blocks below sea level) and glow squids in unlit water 33 or more blocks below it; both wait in the world, not yet shown, until `squids-drawn`."
 - `docs/MINECRAFT-SURVIVAL.md` (squids-drawn 2), replacing squids-live 3's line: "Squids and glow squids are live: they spawn in oceans and rivers (glow squids in unlit water 33 blocks below sea level), hatch from their eggs, swim in pulses, squirt and flee when hit, dry out on land, grow up (a golden dandelion locks a baby) and are saved; a glow squid glows at full brightness and goes dark for five seconds after it squirts. Friends see the same strokes, tilts and rolls."
+- `docs/MINECRAFT-SURVIVAL.md` (squids-drawn 3), after squids-drawn 2's line: "A hit squid leaves a black ink cloud (a glow squid a teal one) that drifts, fades and sinks slowly in air; a glow squid sheds tiny sparkles. Friends see the ink in the same place."
 
 ## Game events still to add
 
@@ -61,11 +62,12 @@ None yet. The mob bucket posts `entity_place` at the block the mob comes out in 
   - The landing height uses the kind's spawn-row width; until a family adds its row (`squids-live`, `fish-spawning`, ..) it is the spawn eggs' 0.6.
   - The family components (salmon size, tropical pattern, axolotl variant, sulfur cube content) start empty in the rows (`MobBucket.components`); each family group fills its own.
 - **Mob buckets in dispensers (water-buckets 3):** 26.3 dispenses the sulfur cube bucket with the same behaviour as the fish buckets; the sulfur cube groups add `"sulfur_cube_bucket"` to the dispenser arm (the level side already lets a cube out without water). A dispensed water mob bucket plays no hiss where water evaporates, as the fork's plain water bucket plays none from a dispenser.
+- **Squids (squids-live 2, squids-drawn):** Impaling's extra damage (`#sensitive_to_impaling`) waits until the fork has Impaling for any mob. The golden dandelion's pause and reset particles are dropped, as for rabbits and polar bears.
 - **Mob bucket pickup (water-buckets 2):** vanilla copies the mob's custom name onto the bucket (`saveDefaultDataToBucketTag`), but `MobCore` holds no name (only the server's tag for the mob keeps it), so a picked-up mob loses its name. A name on the bucket item itself still names the poured mob.
 
 ## Combined kit
 
-Everything this track's test steps need so far (27 stacks; water-buckets 1 counted 24 where its line held 23). The kit is full, so squids-live 2's regression steps with the chicken and spider eggs keep their own kit line; squids-live 3's glass platform takes the glass up to 64.
+Everything this track's test steps need so far (27 stacks; water-buckets 1 counted 24 where its line held 23). The kit is full, so squids-live 2's regression steps with the chicken and spider eggs keep their own kit line; squids-live 3's glass platform takes the glass up to 64. The squids' steps (squids-drawn 2 and 3) keep their own kit lines too; for a test of the whole segment m2a, run them after the steps of this line.
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:rabbit_spawn_egg*4,minecraft:polar_bear_spawn_egg*2,minecraft:silverfish_spawn_egg*2,minecraft:zombie_spawn_egg*2,minecraft:drowned_spawn_egg*2,minecraft:cow_spawn_egg*2,minecraft:water_bucket,minecraft:glass*64,minecraft:stone*64,minecraft:iron_shovel,minecraft:iron_sword,minecraft:cod_bucket,minecraft:salmon_bucket,minecraft:tropical_fish_bucket,minecraft:pufferfish_bucket,minecraft:axolotl_bucket,minecraft:tadpole_bucket,minecraft:sulfur_cube_bucket,minecraft:sulfur_cube_bucket,minecraft:lava_bucket,minecraft:bucket*16,minecraft:cauldron,minecraft:campfire,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:dispenser*2,minecraft:lever*2
@@ -642,4 +644,52 @@ After d11758b3 (its subject starts with a byte-order mark that PowerShell put in
 
 ```
 IW4L_MINECRAFT_KIT=minecraft:squid_spawn_egg*16,minecraft:glow_squid_spawn_egg*16,minecraft:iron_sword,minecraft:bow,minecraft:arrow*64,minecraft:lead*4,minecraft:golden_dandelion*4,minecraft:glass*64,minecraft:spawner,minecraft:cooked_beef*32
+```
+
+#### 3. Minecraft squids leave ink clouds and glow squids sparkle, for friends too
+
+After 93f77e9b.
+
+- **javap (26.3 `client.jar`):**
+  - `SquidInkParticle extends SimpleAnimatedParticle`: no velocity jitter (the 4-argument `Particle` constructor), the sent velocity as is, friction 0.92, `quadSize` 0.5, no physics, gravity 0; colour `0xFF000000` for `squid_ink` and `ARGB.colorFromFloat(1, 0.2, 0.8, 0.6)` for `glow_squid_ink`; lifetime `(int)(quadSize·12 / (nextFloat·0.8 + 0.2))`, 6 to 30 ticks; sprites `generic_7` down to `generic_0` by age (`particles/squid_ink.json`, `glow_squid_ink.json`).
+  - Its `tick`: `SimpleAnimatedParticle.tick` (`Particle.tick`, the sprite, and after half its life `alpha = 1 − (age − life/2)/life`), then, unless removed, `yd −= 0.0074` (the double `0.007400000002235174`) when the block at its position `isAir`.
+  - `SimpleAnimatedParticle`: the `TRANSLUCENT` layer and `getLightCoords` 15728880, full bright.
+  - `GlowParticle$GlowSquidProvider`: `GlowParticle(x, y, z, 0.5 − nextDouble, yd, 0.5 − nextDouble)` (the jittered `Particle` constructor), colour `(0.6, 1, 0.8)` or `(0.08, 0.4, 0.4)` by `nextBoolean`, `yd ×0.2`, and `xd`, `zd ×0.1` when the sent `xd` and `zd` are 0; lifetime `(int)(8 / (nextDouble·0.8 + 0.2))`, 8 to 40 ticks. `GlowParticle`: friction 0.96, `speedUpWhenYMotionIsBlocked`, `quadSize ×0.75`, no physics, the `OPAQUE` layer, sprite `glow`, and `getLightCoords` through `LightCoordsUtil.addSmoothBlockEmission(age + partial)/lifetime`, the flame's rule.
+  - `GlowSquid.aiStep` adds one `GLOW` at `getRandomX(0.6)`, `getRandomY()`, `getRandomZ(0.6)` with no velocity every tick, on the client, dark or not and while it dies.
+  - `Squid.spawnInk` (squids-live 2) sends 30 `squid_ink` or `glow_squid_ink` with count 0, so the client adds each at the origin with `speed · spread` as its velocity.
+- **Changed (terrain crate):**
+  - `ambient_particles.rs` (each line new and of its own, after the flame group, which track D's small and soul flames joined after `Flame` since the brief):
+    - `Kind::SquidInk`, `Kind::GlowSquidInk` and `Kind::Glow` after `SoulFireFlame`;
+    - their constructors `squid_ink` and `glow_sparkle` after `flame`;
+    - their arms after the flame arms in `add`, `sprite` (the generic sheet backwards for the ink, `glow`), `size_at` (their own quad size) and the light (full bright for the ink, the flame's `glow()` on the cell's block light for the glow);
+    - the tick: the ink's arm after `Kind::Flame | Kind::SmallFlame | Kind::SoulFireFlame => particle.rise(),` runs `coast()`, `fade_after_half_life()` and the sink in air; the glow's arm runs `coast()` and the speed-up when its height did not change. Nothing inside `coast`'s own match;
+    - the two inks on new lines of `translucent`, and `glow` chained into `textures()`.
+  - `families/water/squids.rs`: `client_effects`. Each view keeps the last ink counter it saw per squid in `ClientFx.seen`; on first sight it only records it; each new squirt (up to 4 at once) draws 30 specks from `squids::ink` with the view's own random, at the squid's place and turn at the start of the tick (`previous_position`, `x_body_rot_o`, `y_body_rot_o`), as `Squid.spawnInk` used them. A glow squid adds one `Glow` a tick in its box.
+- **Tests added:**
+  - `ambient_particles::tests::squid_ink_is_black_glow_ink_teal_and_sinks_slowly_in_air`
+  - `ambient_particles::tests::a_glow_sparkle_drifts_brightens_and_lives_eight_to_forty_ticks`
+  - `families::water::squids::tests::a_squirt_draws_thirty_specks_behind_the_squid_once_and_none_on_first_sight`
+  - `families::water::squids::tests::a_friend_sees_a_squid_squirt_and_a_glow_squid_go_dark_at_the_same_tick`
+- **Decisions:**
+  - **Ink by counter** (brief decision 4): the host sends the squirt count in `FamilyShow`, each view draws its own 30 specks. They start in the same place in both windows and spread with each view's random.
+  - **The ink's origin is the squid's place at the start of the tick** (`previous_position` with the old turn) rather than where it is after the tick's move, so it matches the turn `spawnInk` used and is the same for the host and a friend.
+  - **Up to 4 squirts are drawn at once** for one squid, a bound for a view that missed many ticks.
+  - **The anchors moved:** the brief put M2's kinds after `Flame`; D's merged `SmallFlame` and `SoulFireFlame` now follow it and share its arms, so M2's kinds and arms go after that group. The friend test sits in the squids' own tests, not in D0's `mob_tracking.rs`, which a family track does not edit.
+  - **`glow` joins `textures()` on a chained line of its own** after the name list, so that long line, which other tracks extend, stays as merged.
+- **Protocol:** none.
+- **Runs:** `test -p minecraft_terrain --locked --lib`: 1727 passed (3 ignored, as before), among them the 4 new tests and the particle tests of the other kinds. `check -p launcher --locked`: green, with only the old render_frame and skate warnings. The squid files pass `rustfmt --check --edition 2021` with empty output; `ambient_particles.rs` keeps its own style (not reformatted).
+- **State doc changes:** `docs/MINECRAFT-SURVIVAL.md`: "A hit squid leaves a black ink cloud (a glow squid a teal one) that drifts, fades and sinks slowly in air; a glow squid sheds tiny sparkles. Friends see the ink in the same place."
+- **Test steps.** Release build, survival, Normal, by day. `/locate biome minecraft:lukewarm_ocean`, `/tp` there, and stand on a 5 x 5 glass platform on the sea surface. Name each screenshot by its label.
+  1. Use the squid egg on the water 6 blocks away twice. Hit one with the sword: a black ink cloud bursts from its rear with a squirt sound, and it darts away. Shoot the other with the bow and then with the M4A1 from 8 blocks: it inks at each hit and flees. **squid11_ink**
+  2. Use a squid egg on the glass and hit it: the ink puffs out behind it, drifts, fades and sinks slowly through the air. **squid12_ink_air**
+  3. `/time set midnight`. Use the glow squid egg on the water: tiny teal and pale green sparkles drift off it and brighten before they vanish. **squid13_sparkles** Hit it: a teal ink cloud, and it goes dark for 5 s while the sparkles go on. `/time set day`.
+  4. Two windows (`scripts\mp-local.ps1`). The host hatches a squid and a glow squid.
+     - The host hits the squid: the friend sees the ink cloud in the same place at the same moment and hears the squirt.
+     - The friend hits the glow squid: teal ink and the glow squid going dark in both windows; it flees from the friend. Both see its sparkles.
+     - The friend kills the squid with the M4A1: the ink sacs drop in both windows.
+     - **squid14-host**, **squid14-friend**
+- **Kit:**
+
+```
+IW4L_MINECRAFT_KIT=minecraft:squid_spawn_egg*8,minecraft:glow_squid_spawn_egg*4,minecraft:iron_sword,minecraft:bow,minecraft:arrow*32,minecraft:glass*64
 ```
