@@ -879,7 +879,7 @@ After 1b7aee18 ("Minecraft lead knots, firework rockets and the ominous item spa
   - A door is posted only when `set_door_open` changed it (vanilla's `setOpen` returns early otherwise).
 - **Not in the fork, so not posted:** zombies, skeletons, drowned and illagers picking up loot (`Mob.pickUpItem`; the fork's only change to their gear is at spawn, on load and on conversion, which vanilla's `firstTick` keeps quiet), raiders picking up banners, foxes (no fox in the fork yet; M1 has not merged them), allays, dolphins, wolf armour, armour stands, shears taking saddles or armour off, dispensers equipping mobs, a piglin's `cancelAdmiring`. **Left for later:** a wandering trader finishing its drink also posts `drink` (8) and `item_interact_finish` and briefly holds the empty bottle or bucket (`completeUsingItem`), so a sensor hears 8 there in vanilla and 4 here: mobs eating and drinking are not in this segment. Other mobs changing blocks seen while looking for these sites post nothing yet: endermen taking and placing blocks, sheep eating grass, villagers harvesting and planting, snow golems' trails, ravagers breaking leaves, withers breaking blocks, trampled farmland.
 - **Vendored files:** patched `entities/src/pig.rs`, `strider.rs`, `world/equines.rs`, `world/families/pests/silverfish.rs`, `world/piglins.rs`, `world/traders.rs`, `world/villagers.rs`, `world/witches.rs` (and W's own `world/game_events.rs`).
-- **Test steps (survival; a sculk sensor with a comparator out of its side into a straight line of 15 redstone dust, so the number of lit dust is the frequency; cover the floor around the sensor with white carpet for 8 blocks each way, so the mobs' steps are not heard; wait 2 s between actions, the sensor is busy 30 ticks and cools down 10 more):**
+- **Test steps (survival; a sculk sensor with a comparator out of its side into a straight line of 15 redstone dust, so the number of lit dust is the frequency; cover the floor within 8 blocks of the sensor with white carpet (a round patch 17 blocks across, about 190 carpets; the dust stays on the bare floor), so the mobs' steps are not heard; wait 2 s between actions, the sensor is busy 30 ticks and cools down 10 more):**
   1. **Silverfish.** Put an infested stone 5 blocks east of the sensor and wait 2 s (placing it is heard: 13). Hatch a silverfish 14 blocks east of the sensor (9 from the stone) and hit it once with your fist from the east, standing 16 or more blocks from the sensor (its hurt is too far away to be heard). About a second later the infested stone breaks and a second silverfish comes out of it: the line shows 12. Then `/gamerule mob_griefing false`, put another infested stone there and do it again: the stone turns back into plain stone and the line stays dark. **w33_silverfish_vibration**
   2. **Villager at a door.** Build a stone wall 5 blocks from the sensor with an oak door in it, the sensor on one side. Put a composter 3 blocks behind the door on the far side and hatch a villager on the sensor's side 3 blocks from the door: it claims the composter (green sparks) and walks to it through the door: the line shows 10 as it opens the door. If it shuts the door behind it, 9 (vanilla villagers sometimes leave a door open when they are past it quickly).
   3. **Villager showing armour.** Put a blast furnace 4 blocks from the sensor and hatch a villager next to it: it becomes an armorer. Stand next to it holding an emerald, crouched (or prone): when it looks at you it shows the iron armour it sells in its hand: 5. When it puts it away: 4. **w34_villager_armour**
@@ -889,7 +889,7 @@ After 1b7aee18 ("Minecraft lead knots, firework rockets and the ominous item spa
   7. **Friend window.** The friend saddles a pig beside the host's sensor (5) and gives a piglin gold in the Nether (4): the host's line shows the same numbers.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*4,minecraft:comparator*2,minecraft:redstone*64,minecraft:white_carpet*64,minecraft:white_carpet*64,minecraft:infested_stone*4,minecraft:silverfish_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:oak_door*2,minecraft:composter*2,minecraft:blast_furnace*2,minecraft:emerald*16,minecraft:piglin_spawn_egg*4,minecraft:gold_ingot*8,minecraft:golden_helmet*2,minecraft:pig_spawn_egg*2,minecraft:saddle*4,minecraft:iron_horse_armor*2,minecraft:red_carpet*4,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:stone*64,minecraft:cooked_beef*16
+IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*4,minecraft:comparator*2,minecraft:redstone*64,minecraft:white_carpet*64,minecraft:white_carpet*64,minecraft:white_carpet*64,minecraft:infested_stone*4,minecraft:silverfish_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:oak_door*2,minecraft:composter*2,minecraft:blast_furnace*2,minecraft:emerald*16,minecraft:piglin_spawn_egg*4,minecraft:gold_ingot*8,minecraft:golden_helmet*2,minecraft:pig_spawn_egg*2,minecraft:saddle*4,minecraft:iron_horse_armor*2,minecraft:red_carpet*4,minecraft:obsidian*10,minecraft:flint_and_steel,minecraft:stone*64,minecraft:cooked_beef*16
 ```
 
 ## Review of segment w3
@@ -919,12 +919,27 @@ After c2d10664 ("Minecraft silverfish, villagers and piglins at doors and mob eq
 - **Tests:** none (no code changed).
 - **Test steps:** the corrected ones above: events-items step 1, and events-mobs steps 1 (w33) and 4 (w35).
 
+## Final verification of segment w3
+
+### 1. Track W's w3 kit covers the segment's steps and the mob steps get enough carpet
+
+After 43407e81 ("Track W's w3 test steps use the mob_griefing game rule, take the cow back standing and wear gold among piglins"). Log only.
+
+- **Touched crates** (`git diff --stat r10-w3-base..HEAD`): `minecraft_terrain`, `minecraftoss-entities`, `minecraftoss-world`.
+- **Clippy:** `clippy -p minecraft_terrain -p minecraftoss-entities -p minecraftoss-world --locked --all-targets -- -A clippy::approx_constant` exits 0. No warning points at a line the segment added (every location checked against `git diff -U0 r10-w3-base..HEAD`); the ones left in files it touched are older (`mob_actions.rs` 68, `server.rs` 695 and 4090: `git blame` gives the base). The two vendored crates show none.
+- **Tests:** none added. minecraftoss-world 137, minecraftoss-entities 618 and minecraft_terrain 1829 (3 ignored) pass. No new files, and the added lines hold no comments.
+- **Cause (this log only):**
+  - The combined kit below was still segment w2's, which went into release 6 (`docs/round10/release-6-tests.md`, part W).
+  - Group events-mobs asked to carpet 8 blocks each way around the sensor (289 blocks) with two stacks of carpet. A sensor hears within 8 blocks of it, a round patch of about 190 floor blocks (197 within that distance, less the sensor, the comparator and the dust).
+- **Changed (this log only):** the events-mobs steps carpet the round patch within 8 blocks of the sensor, and that commit's kit carries a third stack of white carpet (24 stacks). The combined kit is segment w3's (27 stacks); the piglin steps keep their commit's kit.
+- **Test steps:** the ones of each commit of the segment stand (groups events-items and events-mobs, with the review's corrections), with the combined kit below.
+
 ## Combined kit
 
-One kit for segment w2's steps (21 stacks, the same as W6's kit line): the wardens from eggs, `/summon` and a summoning shrieker (w11 to w13, w24; the shrieker comes from `/setblock`), the fight (w14 to w17; the MW2 gun is the loadout's), the model and its animations (w18 to w22; the spawner in creative) and the touch while it climbs out (w28). Players in the fork have no bow, so the trident and the MW2 gun stand in for the arrows of vanilla's steps. Segment w1's steps (w01 to w10, w23, w25 to w27) went into release 4 with their kits (`docs/round10/release-4-tests.md`), and each of their commits keeps its own kit line above.
+One kit for segment w3's steps (27 stacks): group events-items (steps 1 to 7, w29 to w32) and group events-mobs steps 1 to 3 and 6 and the friend's saddle in step 7 (w33, w34). In it the cobblestone stands in for the stone of the walls and the room, a blast furnace for the composter of events-mobs step 2 (the villager claims it as an armorer and walks to it through the door; the second one is step 3's), and a white carpet for the llama's red one; there is no food. The piglin steps (events-mobs steps 4 and 5, w35, and the friend's gold in step 7) need their commit's own kit: the portal's obsidian and flint and steel, the golden helmets, the gold ingots and the piglin eggs do not fit. Segment w2's steps and kit went into release 6 (`docs/round10/release-6-tests.md`, part W) and segment w1's into release 4 (`docs/round10/release-4-tests.md`); each commit keeps its own kit line above.
 
 ```
-IW4L_MINECRAFT_KIT=minecraft:warden_spawn_egg*4,minecraft:cow_spawn_egg*8,minecraft:zombie_spawn_egg*4,minecraft:snowball*16,minecraft:white_wool*64,minecraft:torch*64,minecraft:diamond_sword+sharpness=5,minecraft:shield,minecraft:trident,minecraft:milk_bucket,minecraft:cooked_beef*32,minecraft:diamond_chestplate+protection=4,minecraft:diamond_helmet,minecraft:diamond_leggings,minecraft:diamond_boots,minecraft:totem_of_undying,minecraft:golden_apple*8,minecraft:deepslate*64,minecraft:cobblestone*64,minecraft:ender_pearl*16,minecraft:spawner
+IW4L_MINECRAFT_KIT=minecraft:sculk_sensor*4,minecraft:comparator*2,minecraft:redstone*64,minecraft:white_carpet*64,minecraft:white_carpet*64,minecraft:white_carpet*64,minecraft:cobblestone*64,minecraft:oak_fence*8,minecraft:cow_spawn_egg*4,minecraft:lead*8,minecraft:shears,minecraft:firework_rocket*16,minecraft:firework_rocket[fireworks={flight_duration:1,explosions:[{shape:large_ball,colors:[I;11743532],has_trail:1b}]}]*8,minecraft:dispenser*2,minecraft:lever*2,minecraft:bell*2,minecraft:sculk_shrieker*2,minecraft:snowball*16,minecraft:infested_stone*4,minecraft:silverfish_spawn_egg*2,minecraft:villager_spawn_egg*4,minecraft:oak_door*2,minecraft:blast_furnace*2,minecraft:emerald*16,minecraft:pig_spawn_egg*2,minecraft:saddle*4,minecraft:iron_horse_armor*2
 ```
 
 ## Protocol
@@ -976,6 +991,8 @@ Group events-items, commit 1: no message or codec change (the game events, `Rock
 Group events-mobs, commit 1: no message or codec change (the game events, `Body.game_events` and the mobs' equipment stay on the host).
 
 Review of segment w3: no message or codec change.
+
+Final verification of segment w3: no message or codec change.
 
 ## State doc changes
 
